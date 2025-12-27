@@ -1,0 +1,143 @@
+name: Skit CI
+
+on:
+  workflow_call:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  lint:
+    name: Lint (fmt + clippy)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+
+      - uses: actions/checkout@v5
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.5"
+
+      - name: Build UI
+        working-directory: ./ui
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92.0"
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: |
+          cargo clippy --locked --workspace --all-targets -- -D warnings
+          cargo clippy --locked -p streamkit-server --all-targets --features "moq" -- -D warnings
+
+      - name: Install cargo-deny
+        run: cargo install --locked cargo-deny
+
+      - name: Check licenses
+        run: cargo deny check licenses
+
+      - name: Check advisories
+        run: cargo deny check advisories
+
+  test:
+    name: Test
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+
+      - uses: actions/checkout@v5
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.5"
+
+      - name: Build UI
+        working-directory: ./ui
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92.0"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: |
+          cargo test --locked --workspace
+          cargo test --locked -p streamkit-server --features "moq"
+
+  build:
+    name: Build
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+
+      - uses: actions/checkout@v5
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.5"
+
+      - name: Build UI
+        working-directory: ./ui
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92.0"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build all crates
+        run: |
+          cargo build --locked --workspace --release
+          cargo build --locked -p streamkit-server --bin skit --release --features "moq"
+          cargo build --locked -p streamkit-client --bin skit-cli --release

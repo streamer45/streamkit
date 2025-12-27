@@ -1,0 +1,4 @@
+# The C bindings are pre-generated and committed to the repository
+# This file exists to prevent accidentally ignoring them
+!include/
+!src/

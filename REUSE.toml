@@ -1,0 +1,133 @@
+# REUSE configuration for StreamKit
+# This file specifies licensing information for files that cannot or should not
+# have license headers embedded directly (e.g., generated code, binary files).
+# See: https://reuse.software/spec/
+
+version = 1
+
+# Generated TypeScript types from Rust code
+[[annotations]]
+path = [
+  "ui/src/types/generated/**",
+  "crates/api/bindings/**",
+  "crates/core/bindings/**",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "© 2025 StreamKit Contributors"
+SPDX-License-Identifier = "MPL-2.0"
+
+# Generated WASM plugin bindings (Rust)
+[[annotations]]
+path = "sdks/plugin-sdk/wasm/rust/src/generated/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "© 2025 StreamKit Contributors"
+SPDX-License-Identifier = "MPL-2.0"
+
+# Generated Go bindings for WASM plugins
+[[annotations]]
+path = "sdks/plugin-sdk/go/bindings/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "© 2025 StreamKit Contributors"
+SPDX-License-Identifier = "MPL-2.0"
+
+# Generated C bindings for WASM plugins
+[[annotations]]
+path = ["sdks/plugin-sdk/c/src/**", "sdks/plugin-sdk/c/include/**"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "© 2025 StreamKit Contributors"
+SPDX-License-Identifier = "MPL-2.0"
+
+# Configuration files
+[[annotations]]
+path = [
+  "**/*.toml",
+  "**/*.json",
+  "**/*.yml",
+  "**/*.yaml",
+  ".gitignore",
+  "**/.gitignore",
+  "**/.prettierignore",
+  ".editorconfig",
+  "**/.nvmrc",
+  "rust-toolchain.toml",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "© 2025 StreamKit Contributors"
+SPDX-License-Identifier = "MPL-2.0"
+
+# Binary and data files (audio samples, images, compiled objects)
+[[annotations]]
+path = [
+  "samples/audio/sample.*",
+  "**/*.png",
+  "**/*.ico",
+  "**/*.wasm",
+  "**/*.o",
+  "samples/sample.txt",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "© 2025 StreamKit Contributors"
+SPDX-License-Identifier = "MPL-2.0"
+
+# Lock files (auto-generated, licensed as MPL-2.0 for simplicity)
+[[annotations]]
+path = [
+  "**/Cargo.lock",
+  "**/bun.lock",
+  "**/package-lock.json",
+  "**/wkg.lock",
+  "**/go.sum",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "© 2025 StreamKit Contributors"
+SPDX-License-Identifier = "MPL-2.0"
+
+# Build artifacts and external dependencies (excluded from REUSE checks)
+[[annotations]]
+path = [
+  "target/**",
+  "node_modules/**",
+  "dist/**",
+  "build/**",
+  ".next/**",
+  "wit/deps/**",
+  "docs/dist/**",
+  "docs/.astro/**",
+  "**/go.mod",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "© 2025 StreamKit Contributors"
+SPDX-License-Identifier = "MPL-2.0"
+
+# Our WIT interface definition
+[[annotations]]
+path = "wit/plugin.wit"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "© 2025 StreamKit Contributors"
+SPDX-License-Identifier = "MPL-2.0"
+
+# Documentation site generated/config files
+[[annotations]]
+path = [
+  "docs/_internal/**",
+  "docs/public/**",
+  "docs/src/assets/**",
+  "docs/src/content.config.ts",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "© 2025 StreamKit Contributors"
+SPDX-License-Identifier = "MPL-2.0"
+
+# Vendored third-party docs assets
+[[annotations]]
+path = "docs/public/vendor/**"
+precedence = "override"
+SPDX-FileCopyrightText = "© Mermaid contributors"
+SPDX-License-Identifier = "MIT"
+
+# LibriSpeech audio samples (CC-BY-4.0)
+[[annotations]]
+path = "samples/audio/system/speech_2m.*"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "© 2014 Vassil Panayotov"
+SPDX-License-Identifier = "CC-BY-4.0"

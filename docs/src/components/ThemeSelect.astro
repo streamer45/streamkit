@@ -1,0 +1,113 @@
+---
+// SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+// SPDX-License-Identifier: MPL-2.0
+---
+
+<starlight-theme-select>
+	<button
+		type="button"
+		class="theme-toggle"
+		aria-label={Astro.locals.t('themeSelect.accessibleLabel')}
+	>
+		<svg class="icon icon-sun" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+			<circle cx="12" cy="12" r="4"></circle>
+			<path d="M12 2v2"></path>
+			<path d="M12 20v2"></path>
+			<path d="m4.93 4.93 1.41 1.41"></path>
+			<path d="m17.66 17.66 1.41 1.41"></path>
+			<path d="M2 12h2"></path>
+			<path d="M20 12h2"></path>
+			<path d="m6.34 17.66-1.41 1.41"></path>
+			<path d="m19.07 4.93-1.41 1.41"></path>
+		</svg>
+		<svg class="icon icon-moon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+			<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path>
+		</svg>
+	</button>
+</starlight-theme-select>
+
+{/* Inlined to avoid FOUC. Uses global scope from `ThemeProvider.astro` */}
+<script is:inline>
+	StarlightThemeProvider.updatePickers();
+</script>
+
+<script>
+	type Theme = 'dark' | 'light';
+
+	const storageKey = 'starlight-theme';
+
+	const parseTheme = (theme: unknown): Theme => (theme === 'light' ? 'light' : 'dark');
+
+	const loadTheme = (): Theme =>
+		parseTheme(typeof localStorage !== 'undefined' && localStorage.getItem(storageKey));
+
+	function storeTheme(theme: Theme): void {
+		if (typeof localStorage !== 'undefined') localStorage.setItem(storageKey, theme);
+	}
+
+	function onThemeChange(theme: Theme): void {
+		StarlightThemeProvider.updatePickers(theme);
+		document.documentElement.dataset.theme = theme;
+		storeTheme(theme);
+	}
+
+	class StarlightThemeSelect extends HTMLElement {
+		constructor() {
+			super();
+			onThemeChange(loadTheme());
+			this.querySelector('button')?.addEventListener('click', () => {
+				const currentTheme = loadTheme();
+				const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+				onThemeChange(newTheme);
+			});
+		}
+	}
+
+	customElements.define('starlight-theme-select', StarlightThemeSelect);
+</script>
+
+<style>
+	.theme-toggle {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 2.5rem;
+		height: 2.5rem;
+		padding: 0;
+		border: none;
+		border-radius: 0.5rem;
+		background: transparent;
+		color: var(--sl-color-gray-1);
+		cursor: pointer;
+		transition: background-color 0.2s ease, color 0.2s ease;
+	}
+
+	.theme-toggle:hover {
+		background: var(--sl-color-gray-6);
+		color: var(--sl-color-white);
+	}
+
+	.theme-toggle:focus-visible {
+		outline: 2px solid var(--sl-color-accent);
+		outline-offset: 2px;
+	}
+
+	.icon {
+		display: none;
+	}
+
+	/* Show sun icon in dark mode (click to go light) */
+	:global([data-theme='dark']) .icon-sun {
+		display: block;
+	}
+
+	/* Show moon icon in light mode (click to go dark) */
+	:global([data-theme='light']) .icon-moon {
+		display: block;
+	}
+
+	/* Default to showing sun (dark mode is default) */
+	:global(:root:not([data-theme])) .icon-sun {
+		display: block;
+	}
+</style>

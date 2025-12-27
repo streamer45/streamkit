@@ -1,0 +1,8 @@
+SPDX-License-Identifier: LicenseRef-VoIPTroubleshooter-OpenSpeech
+
+Material from the “Open Speech” American English dataset provided by
+VoIPTroubleshooter.com is freely available for use in VoIP testing, research,
+development, marketing and any other reasonable application, as stated at:
+https://www.voiptroubleshooter.com/open_speech/american.html
+
+All other rights reserved by the original holders.

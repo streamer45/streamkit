@@ -1,0 +1,128 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build-linux-x64:
+    name: Build Linux x64
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.5"
+
+      - name: Build UI
+        working-directory: ./ui
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92.0"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binaries
+        run: |
+          cargo build --locked -p streamkit-server --bin skit --release --features "moq"
+          cargo build --locked -p streamkit-client --bin skit-cli --release
+
+      - name: Strip binaries
+        run: |
+          strip target/release/skit
+          strip target/release/skit-cli
+
+      - name: Prepare release directory
+        run: |
+          mkdir -p streamkit-${{ github.ref_name }}/plugins/{wasm,native}
+          mkdir -p streamkit-${{ github.ref_name }}/samples
+          cp target/release/skit streamkit-${{ github.ref_name }}/
+          cp target/release/skit-cli streamkit-${{ github.ref_name }}/
+          cp LICENSE streamkit-${{ github.ref_name }}/
+          cp README.md streamkit-${{ github.ref_name }}/
+          cp DOCKER.md streamkit-${{ github.ref_name }}/
+          cp NOTICE streamkit-${{ github.ref_name }}/
+          cp -r LICENSES streamkit-${{ github.ref_name }}/
+          cp docker-skit.toml streamkit-${{ github.ref_name }}/
+          cp docker-skit-gpu.toml streamkit-${{ github.ref_name }}/
+          cp samples/skit.toml streamkit-${{ github.ref_name }}/samples/skit.toml
+          cp -r samples/pipelines streamkit-${{ github.ref_name }}/samples/
+
+      - name: Create tarball
+        run: |
+          tar -czf streamkit-${{ github.ref_name }}-linux-x64.tar.gz streamkit-${{ github.ref_name }}/
+
+      - name: Generate checksum
+        run: |
+          sha256sum streamkit-${{ github.ref_name }}-linux-x64.tar.gz > streamkit-${{ github.ref_name }}-linux-x64.tar.gz.sha256
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x64
+          path: |
+            streamkit-${{ github.ref_name }}-linux-x64.tar.gz
+            streamkit-${{ github.ref_name }}-linux-x64.tar.gz.sha256
+
+  create-release:
+    name: Create GitHub Release
+    needs: [build-linux-x64]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0  # Full history for changelog
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Extract version tag
+          VERSION="${{ github.ref_name }}"
+
+          # Simple changelog from git log (can be enhanced with git-cliff later)
+          echo "## What's Changed" > changelog.md
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            git log --pretty=format:"- %s (%h)" ${PREV_TAG}..HEAD >> changelog.md
+          else
+            echo "- Initial release" >> changelog.md
+          fi
+
+          echo "" >> changelog.md
+          echo "" >> changelog.md
+          echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${{ github.ref_name }}" >> changelog.md
+
+          cat changelog.md
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          body_path: changelog.md
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

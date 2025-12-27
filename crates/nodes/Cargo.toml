@@ -1,0 +1,130 @@
+[package]
+name = "streamkit-nodes"
+version = "0.1.0"
+edition = "2021"
+authors = ["Claudio Costa <cstcld91@gmail.com>", "StreamKit Contributors"]
+description = "Built-in processing nodes for StreamKit"
+homepage = "https://github.com/streamer45/streamkit"
+repository = "https://github.com/streamer45/streamkit"
+license = "MPL-2.0"
+keywords = ["audio", "nodes", "codecs", "streaming", "processing"]
+categories = ["multimedia", "network-programming"]
+readme = "README.md"
+publish = false
+
+[dependencies]
+# Skit's core library
+streamkit-core = { workspace = true }
+
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tokio-util = { workspace = true }
+
+bytes = { workspace = true }
+
+# For async traits
+async-trait = { workspace = true }
+
+# For configuration deserialization
+serde = { workspace = true, features = ["derive"] }
+serde-saphyr = { workspace = true }
+
+# For logging within nodes
+tracing = { workspace = true }
+
+# For OpenTelemetry OTLP integration
+opentelemetry = { workspace = true, features = ["metrics", "trace"] }
+schemars = { version = "1.1.0", features = ["derive"], optional = true }
+
+# For the mixer's concurrent input handling
+futures = { workspace = true }
+
+# --- Optional Dependencies ---
+# These are only included if their corresponding feature is enabled.
+ogg = { version = "0.9.2", optional = true, features = ["async"] }
+opus = { version = "0.3", optional = true }
+url = { version = "2.5.7", optional = true, features = ["serde"] }
+rquickjs = { version = "0.10", features = ["array-buffer", "futures", "loader", "parallel"], optional = true }
+wildmatch = { version = "2.6", optional = true }
+
+moq-transport = { version = "0.12.1", optional = true }
+moq-native = { version = "0.10.1", optional = true }
+moq-lite = { version = "0.10.1", optional = true }
+hang = { version = "0.9.1", optional = true }
+
+# For local dev, debugging moq stuff
+# moq-transport = { version = "0.11.0", optional = true }
+# moq-native = { path = "../../moq/rs/moq-native", optional = true }
+# moq-lite = { path = "../../moq/rs/moq", optional = true }
+# hang = { path = "../../moq/rs/hang", optional = true }
+
+serde_json = { version = "1.0", optional = true }
+reqwest = { version = "0.12", optional = true, default-features = false, features = [
+  "rustls-tls",
+  "stream",
+] }
+tempfile = { version = "3", optional = true }
+uuid = { version = "1", optional = true, features = ["v4"] }
+rubato = { version = "0.16", optional = true }
+symphonia = { version = "0.5.5", optional = true, default-features = false, features = [
+  "mp3",
+  "wav",
+  "flac",
+  "pcm",
+  "ogg",
+] }
+webm = { version = "2.2.0", optional = true }
+
+futures-util = "0.3"
+
+[features]
+default = [
+  "passthrough",
+  "audio_gain",
+  "audio_mixer",
+  "audio_resampler",
+  "audio_pacer",
+  "opus",
+  "ogg",
+  "webm",
+  "moq",
+  "file_io",
+  "pacer",
+  "http",
+  "symphonia",
+  "script",
+]
+
+# Individual features for each node.
+passthrough = ["dep:schemars"]
+audio_gain = ["dep:schemars"]
+audio_mixer = ["dep:schemars"]
+audio_resampler = ["dep:schemars", "dep:rubato"]
+audio_pacer = ["dep:schemars"]
+file_io = ["dep:schemars"]
+pacer = ["dep:schemars"]
+http = ["dep:schemars", "dep:reqwest", "dep:tempfile"]
+script = ["dep:rquickjs", "dep:reqwest", "dep:wildmatch", "dep:schemars", "dep:serde_json", "dep:url", "dep:uuid"]
+moq = [
+  "dep:schemars",
+  "dep:moq-transport",
+  "dep:url",
+  "dep:moq-native",
+  "dep:moq-lite",
+  "dep:hang",
+  "dep:serde_json",
+]
+
+# Codecs and Containers
+# The `dep:` syntax enables the optional dependency when the feature is active.
+opus = ["dep:opus", "dep:schemars"]
+ogg = ["dep:ogg", "dep:schemars"]
+webm = ["dep:webm", "dep:schemars"]
+symphonia = ["dep:symphonia", "dep:schemars"]
+
+[dev-dependencies]
+tempfile = "3"
+axum = "0.8"
+tower = "0.5"
+
+[lints]
+workspace = true

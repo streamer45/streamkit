@@ -1,0 +1,267 @@
+/*
+ * SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+ *
+ * SPDX-License-Identifier: MPL-2.0
+ */
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  overflow-x: hidden;
+}
+
+:root {
+  --sk-font-ui:
+    'Inter', system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, 'Apple Color Emoji',
+    'Segoe UI Emoji', 'Segoe UI Symbol', sans-serif;
+  --sk-font-code:
+    'JetBrains Mono', 'Iosevka', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    'Liberation Mono', 'Courier New', monospace;
+
+  /* Light theme (default) - Arctic Sky */
+  --sk-bg: #f8fafc;
+  --sk-sidebar-bg: #f1f5f9;
+  --sk-panel-bg: #ffffff;
+  --sk-text: #0f172a;
+  --sk-text-muted: #475569;
+
+  --sk-border: #e2e8f0;
+  --sk-border-strong: #1e293b;
+
+  --sk-primary: #0ea5e9;
+  --sk-primary-contrast: #ffffff;
+
+  --sk-danger: #ef4444;
+  --sk-danger-hover: #dc2626;
+  --sk-muted: #6c757d;
+
+  --sk-hover-bg: #e2e8f0;
+
+  --sk-primary-hover: #0284c7;
+
+  --sk-shadow: rgba(15, 23, 42, 0.08);
+  --sk-focus-ring: 0 0 0 3px rgba(14, 165, 233, 0.35);
+
+  /* Semantic colors */
+  --sk-success: #22c55e;
+  --sk-warning: #f59e0b;
+  --sk-info: #0ea5e9;
+
+  /* Status indicator colors */
+  --sk-status-initializing: #3498db;
+  --sk-status-running: #2ecc71;
+  --sk-status-recovering: #f1c40f;
+  --sk-status-degraded: #e67e22;
+  --sk-status-failed: #e74c3c;
+  --sk-status-stopped: #95a5a6;
+
+  /* UI accent colors (for buttons, highlights) */
+  --sk-accent-indigo: #6366f1;
+  --sk-accent-indigo-light: #818cf8;
+  --sk-accent-indigo-dark: #4f46e5;
+
+  /* Common opacity variants (dark overlays for light theme) */
+  --sk-overlay-light: rgba(14, 165, 233, 0.08);
+  --sk-overlay-medium: rgba(14, 165, 233, 0.15);
+  --sk-overlay-strong: rgba(14, 165, 233, 0.25);
+
+  /* Text variations */
+  --sk-text-white: #ffffff;
+  --sk-text-light: #f9fafb;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-skit-theme='light']) {
+    --sk-bg: #0b0f19;
+    --sk-sidebar-bg: #121826;
+    --sk-panel-bg: #1a2235;
+    --sk-text: #e2e8f0;
+    --sk-text-muted: #94a3b8;
+
+    --sk-border: #2c364d;
+    --sk-border-strong: #475569;
+
+    --sk-primary: #38bdf8;
+    --sk-primary-contrast: #0b0f19;
+
+    --sk-danger: #ef4444;
+    --sk-danger-hover: #f87171;
+    --sk-muted: #7a8699;
+
+    --sk-hover-bg: #1e293b;
+
+    --sk-primary-hover: #7dd3fc;
+
+    --sk-shadow: rgba(0, 0, 0, 0.6);
+    --sk-focus-ring: 0 0 0 3px rgba(56, 189, 248, 0.4);
+
+    /* Semantic colors */
+    --sk-success: #22c55e;
+    --sk-warning: #f59e0b;
+    --sk-info: #38bdf8;
+
+    /* Status indicator colors (brighter for dark mode) */
+    --sk-status-initializing: #5dade2;
+    --sk-status-running: #58d68d;
+    --sk-status-recovering: #f4d03f;
+    --sk-status-degraded: #f39c12;
+    --sk-status-failed: #ec7063;
+    --sk-status-stopped: #aab7b8;
+
+    /* UI accent colors (adjusted for dark mode) */
+    --sk-accent-indigo: #818cf8;
+    --sk-accent-indigo-light: #a5b4fc;
+    --sk-accent-indigo-dark: #6366f1;
+
+    /* Common opacity variants (darker overlays for dark mode) */
+    --sk-overlay-light: rgba(0, 0, 0, 0.2);
+    --sk-overlay-medium: rgba(0, 0, 0, 0.3);
+    --sk-overlay-strong: rgba(0, 0, 0, 0.4);
+
+    /* Text variations */
+    --sk-text-white: #ffffff;
+    --sk-text-light: #f9fafb;
+  }
+}
+
+/* Explicit theme overrides: allow forcing theme regardless of system preference */
+:root[data-skit-theme='dark'] {
+  --sk-bg: #0b0f19;
+  --sk-sidebar-bg: #121826;
+  --sk-panel-bg: #1a2235;
+  --sk-text: #e2e8f0;
+  --sk-text-muted: #94a3b8;
+
+  --sk-border: #2c364d;
+  --sk-border-strong: #475569;
+
+  --sk-primary: #38bdf8;
+  --sk-primary-contrast: #0b0f19;
+
+  --sk-danger: #ef4444;
+  --sk-danger-hover: #f87171;
+  --sk-muted: #7a8699;
+
+  --sk-hover-bg: #1e293b;
+
+  --sk-primary-hover: #7dd3fc;
+
+  --sk-shadow: rgba(0, 0, 0, 0.6);
+  --sk-focus-ring: 0 0 0 3px rgba(56, 189, 248, 0.4);
+
+  /* Semantic colors */
+  --sk-success: #22c55e;
+  --sk-warning: #f59e0b;
+  --sk-info: #38bdf8;
+
+  /* Status indicator colors (brighter for dark mode) */
+  --sk-status-initializing: #5dade2;
+  --sk-status-running: #58d68d;
+  --sk-status-recovering: #f4d03f;
+  --sk-status-degraded: #f39c12;
+  --sk-status-failed: #ec7063;
+  --sk-status-stopped: #aab7b8;
+
+  /* UI accent colors (adjusted for dark mode) */
+  --sk-accent-indigo: #818cf8;
+  --sk-accent-indigo-light: #a5b4fc;
+  --sk-accent-indigo-dark: #6366f1;
+
+  /* Common opacity variants (darker overlays for dark mode) */
+  --sk-overlay-light: rgba(0, 0, 0, 0.2);
+  --sk-overlay-medium: rgba(0, 0, 0, 0.3);
+  --sk-overlay-strong: rgba(0, 0, 0, 0.4);
+
+  /* Text variations */
+  --sk-text-white: #ffffff;
+  --sk-text-light: #f9fafb;
+}
+
+body {
+  font-family: var(--sk-font-ui);
+  color: var(--sk-text);
+  background-color: var(--sk-bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+pre,
+code,
+.code-font {
+  font-family: var(--sk-font-code);
+}
+
+/* Enforce UI font consistently across form controls and React Flow UI */
+button,
+input,
+select,
+textarea {
+  font-family: var(--sk-font-ui);
+}
+
+.react-flow,
+.react-flow * {
+  font-family: var(--sk-font-ui) !important;
+}
+
+/* React Flow UI polish for theme */
+.xy-theme__select {
+  font-family: var(--sk-font-ui);
+  background-color: var(--sk-panel-bg);
+  color: var(--sk-text);
+  border: 1px solid var(--sk-border);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+
+.react-flow__attribution {
+  background: var(--sk-panel-bg);
+  color: var(--sk-text);
+}
+
+.react-flow__edge-textbg {
+  fill: var(--sk-panel-bg);
+}
+
+.react-flow__controls button {
+  background: var(--sk-panel-bg);
+  color: var(--sk-text);
+  border: 1px solid var(--sk-border);
+}
+
+/* Global scrollbar styling */
+/* Webkit browsers (Chrome, Safari, Edge) */
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--sk-bg);
+  border-radius: 6px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--sk-border);
+  border-radius: 6px;
+  border: 2px solid var(--sk-bg);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--sk-text-muted);
+}
+
+::-webkit-scrollbar-thumb:active {
+  background: var(--sk-primary);
+}
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--sk-border) var(--sk-bg);
+}

@@ -1,0 +1,567 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# StreamKit Server Configuration Example
+#
+# This file demonstrates all available configuration options.
+# Copy this to your working directory and modify as needed.
+
+[server]
+# HTTP/HTTPS server address
+address = "127.0.0.1:4545"
+
+# Enable TLS (requires cert_path and key_path)
+tls = false
+cert_path = ""
+key_path = ""
+
+# Directory containing sample pipelines
+samples_dir = "./samples/pipelines"
+
+# Optional base path for subpath deployments (e.g. "/skit")
+# Used to inject a <base> tag into the embedded UI so it works behind a reverse proxy.
+# base_path = "/skit"
+
+# Maximum request body size for multipart uploads (in bytes)
+# Used by:
+# - POST /api/v1/process (oneshot pipelines)
+# - POST /api/v1/plugins (plugin upload)
+# Note: audio asset uploads are separately limited to 100MB.
+# Default: 100MB
+max_body_size = 104857600
+
+# MoQ WebTransport address (optional, requires 'moq' feature)
+# Note: currently unused; the MoQ acceptor binds to `server.address`.
+# moq_address = "127.0.0.1:4545"
+
+# MoQ Gateway URL to expose to the UI (optional, requires 'moq' feature)
+# moq_gateway_url = "https://example.com/moq"
+
+[server.cors]
+# CORS (Cross-Origin Resource Sharing) configuration
+#
+# Controls which web origins are allowed to make requests to this server.
+# Important when the UI is served from a different domain.
+
+# Allowed origins for CORS requests.
+# Supports wildcards: "http://localhost:*" matches any port on localhost.
+# Default: localhost and 127.0.0.1 on any port (HTTP and HTTPS).
+# Set to `["*"]` to allow all origins (not recommended for production).
+allowed_origins = [
+    "http://localhost",
+    "https://localhost",
+    "http://localhost:*",
+    "https://localhost:*",
+    "http://127.0.0.1",
+    "https://127.0.0.1",
+    "http://127.0.0.1:*",
+    "https://127.0.0.1:*",
+]
+
+# Example: Allow specific production domains
+# allowed_origins = [
+#     "https://app.example.com",
+#     "https://staging.example.com",
+#     "http://localhost:*",  # Keep for development
+# ]
+
+[log]
+# Enable console logging (stdout/stderr)
+console_enable = true
+
+# Enable file logging
+file_enable = true
+
+# Console log level: debug, info, warn, error
+console_level = "info"
+
+# File log level: debug, info, warn, error
+# Note: "debug" level has significant CPU overhead (~40% in profiling).
+# Use "info" for production workloads.
+file_level = "info"
+
+# Log file path
+file_path = "./skit.log"
+
+# File format: "text" (default, faster) or "json" (structured, for log aggregation)
+# JSON format has ~2-3x higher CPU overhead than text format due to serialization.
+file_format = "text"
+
+[telemetry]
+# Enable OpenTelemetry metrics export and system metrics collection
+# Note: tracing is currently initialized with an in-memory provider (no exporter).
+enable = true
+
+# OTLP endpoint for metrics (e.g., OpenTelemetry Collector, Grafana Cloud OTLP gateway)
+# If not specified, metrics are collected but not exported.
+# Example (local collector): http://localhost:4318/v1/metrics
+# otlp_endpoint = "http://localhost:4318/v1/metrics"
+
+# Additional headers for OTLP export (e.g., API keys)
+# otlp_headers = { "Authorization" = "Bearer your-token" }
+
+# Enable tokio-console for async debugging (requires 'tokio-console' feature)
+tokio_console = false
+
+[engine]
+# Performance tuning preset for dynamic sessions (long-running pipelines).
+# Presets provide sensible defaults; explicit capacities below override them.
+# Options: "low-latency", "balanced", "high-throughput"
+# profile = "balanced"
+
+# Packet batch size for processing
+# Higher values = better throughput, higher latency
+# Lower values = lower latency, lower throughput
+packet_batch_size = 32
+
+# Channel buffer sizes (optional, defaults: node_input_capacity=128, pin_distributor_capacity=64)
+# These control how many packets can be buffered between nodes.
+# Higher values = more buffering (smooths out processing spikes, higher latency)
+# Lower values = less buffering (more responsive to control messages, lower latency, more backpressure)
+#
+# For low-latency real-time streaming (e.g., live audio/video):
+# node_input_capacity = 8        # ~160ms buffering at 20ms/frame
+# pin_distributor_capacity = 4   # ~80ms buffering at 20ms/frame
+#
+# For high-throughput batch processing:
+# node_input_capacity = 256      # ~5.1s buffering at 20ms/frame
+# pin_distributor_capacity = 128 # ~2.6s buffering at 20ms/frame
+
+[engine.oneshot]
+# Configuration for oneshot pipelines (HTTP batch processing via /api/v1/process).
+# Oneshot pipelines are optimized for throughput rather than low-latency streaming.
+
+# Packet batch size for processing (same as dynamic engine)
+packet_batch_size = 32
+
+# Buffer size between nodes (in packets)
+# Larger than dynamic sessions for batch efficiency.
+# Default: 256
+# media_channel_capacity = 256
+
+# HTTP I/O stream buffer (in packets)
+# Controls input/output buffering for HTTP request/response streams.
+# Default: 16
+# io_channel_capacity = 16
+
+[engine.advanced]
+# Advanced internal buffer configuration for power users.
+# WARNING: Only modify these if you understand the latency/throughput implications.
+# The defaults are tuned for typical real-time audio processing workloads.
+
+# Async/blocking handoff in codec nodes (Opus, FLAC, MP3)
+# Default: 32
+# Increase if you see backpressure warnings from codec nodes during high-throughput batch processing.
+# Decrease for ultra-low latency at the cost of more CPU overhead.
+# codec_channel_capacity = 32
+
+# Container demuxer streaming channels
+# Default: 8
+# stream_channel_capacity = 8
+
+# OGG demuxer duplex buffer size (in bytes)
+# Default: 65536 (64KB)
+# Increase for large OGG files with complex structures.
+# demuxer_buffer_size = 65536
+
+[plugins]
+# Directory for plugin artifacts (StreamKit uses `<directory>/wasm` and `<directory>/native`)
+directory = ".plugins"
+
+[security]
+# Security configuration for file access and other security-sensitive settings
+
+# Allowed file paths for file_reader nodes.
+# Supports glob patterns (e.g., "samples/**", "/data/media/*").
+# Relative paths are resolved against the server's working directory.
+# Default: `["samples/**"]` - only allow reading from the samples directory.
+# Set to `["**"]` to allow all paths (not recommended for production).
+allowed_file_paths = ["samples/**"]
+
+# Example: Allow multiple directories
+# allowed_file_paths = [
+#     "samples/**",
+#     "media/**",
+#     "/data/audio/**",
+# ]
+
+[resources]
+# Resource management for ML models and other expensive resources
+#
+# StreamKit automatically deduplicates and shares expensive resources (like ML models)
+# across multiple node instances. This prevents loading the same model twice in memory.
+#
+# Note: Native plugins (Kokoro, Whisper) use internal static caching and are not
+# affected by these settings. These settings apply to built-in nodes only.
+
+# Keep loaded models in memory until explicitly unloaded or server shutdown
+# If false, models may be evicted based on LRU policy when memory limits are exceeded
+keep_models_loaded = true
+
+# Optional: Maximum memory limit for cached resources (in megabytes)
+# When exceeded, least-recently-used resources are evicted
+# Commented out = no limit (keep all loaded resources)
+# max_memory_mb = 8192
+
+# Example configurations for different use cases:
+#
+# 1. Development / Small deployments (default):
+#    keep_models_loaded = true
+#    # max_memory_mb not set (unlimited)
+#    → Models stay loaded, never evicted
+#
+# 2. Production / Memory-constrained:
+#    keep_models_loaded = false
+#    max_memory_mb = 8192
+#    → Models evicted when total exceeds 8GB
+#
+# 3. Production / Large memory:
+#    keep_models_loaded = true
+#    max_memory_mb = 32768
+#    → Keep loaded but evict if exceeds 32GB (safety limit)
+
+# Pre-warming: Load models at startup to eliminate first-use latency
+[resources.prewarm]
+# Enable pre-warming (default: false)
+# When enabled, plugins listed below will have their models loaded at server startup
+enabled = false
+
+# List of plugins to pre-warm with their parameters
+# Each entry creates a dummy node instance at startup to trigger model loading
+
+# Example: Kokoro TTS with GPU (fallback to CPU if GPU fails)
+# [[resources.prewarm.plugins]]
+# kind = "plugin::native::kokoro"
+# params = { execution_provider = "cuda", model_dir = "./models/kokoro-multi-lang-v1_1" }
+# fallback_params = { execution_provider = "cpu", model_dir = "./models/kokoro-multi-lang-v1_1" }
+
+# Example: Whisper STT with GPU
+# [[resources.prewarm.plugins]]
+# kind = "plugin::native::whisper"
+# params = { use_gpu = true, gpu_device = 0, model_path = "models/ggml-base.en-q5_1.bin" }
+# fallback_params = { use_gpu = false, model_path = "models/ggml-base.en-q5_1.bin" }
+
+# Example: Kokoro with CPU only (no fallback needed)
+# [[resources.prewarm.plugins]]
+# kind = "plugin::native::kokoro"
+# params = { execution_provider = "cpu", model_dir = "./models/kokoro-multi-lang-v1_1" }
+
+# Example: NLLB Translation with CPU
+# [[resources.prewarm.plugins]]
+# kind = "plugin::native::nllb"
+# params = { model_path = "models/nllb-200-distilled-600M-ct2-int8", source_language = "eng_Latn", target_language = "spa_Latn", beam_size = 1, num_threads = 4, device = "cpu" }
+
+# Example: NLLB Translation with CUDA GPU (fallback to CPU)
+# [[resources.prewarm.plugins]]
+# kind = "plugin::native::nllb"
+# params = { model_path = "models/nllb-200-distilled-600M-ct2-int8", source_language = "eng_Latn", target_language = "spa_Latn", beam_size = 1, num_threads = 4, device = "cuda", device_index = 0 }
+# fallback_params = { model_path = "models/nllb-200-distilled-600M-ct2-int8", source_language = "eng_Latn", target_language = "spa_Latn", beam_size = 1, num_threads = 4, device = "cpu" }
+
+# Example: SenseVoice STT with CPU
+# [[resources.prewarm.plugins]]
+# kind = "plugin::native::sensevoice"
+# params = { model_dir = "models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17", language = "auto", num_threads = 4, execution_provider = "cpu" }
+
+# Example: SenseVoice STT with CUDA GPU (fallback to CPU)
+# [[resources.prewarm.plugins]]
+# kind = "plugin::native::sensevoice"
+# params = { model_dir = "models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17", language = "auto", num_threads = 4, execution_provider = "cuda" }
+# fallback_params = { model_dir = "models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17", language = "auto", num_threads = 4, execution_provider = "cpu" }
+
+[permissions]
+# Default role for unauthenticated requests
+# Options: "admin", "user", or any custom role defined below
+default_role = "admin"
+
+# Optional trusted HTTP header used to select a role (e.g. "x-role")
+#
+# Only set this when running behind a trusted reverse proxy/auth layer that:
+# - strips the incoming header from clients, and
+# - sets it after authenticating the request.
+# role_header = "x-role"
+
+# Global capacity limits (applies to all users)
+# Uncomment to enable limits
+
+# Maximum concurrent dynamic sessions (all users combined)
+# max_concurrent_sessions = 50
+
+# Maximum concurrent oneshot pipelines (all users combined)
+# max_concurrent_oneshots = 100
+
+# Role definitions
+# You can define custom roles with specific permissions
+#
+# SECURITY NOTE: When defining roles in TOML, set boolean fields explicitly.
+# Some booleans default to `true` when omitted.
+# Built-in roles (admin, user) are defined in code with appropriate permissions.
+# Custom roles defined here override the built-in ones.
+
+[permissions.roles.admin]
+# Administrator role - full access to everything
+create_sessions = true
+destroy_sessions = true
+list_sessions = true
+modify_sessions = true
+tune_nodes = true
+load_plugins = true
+delete_plugins = true
+list_nodes = true
+access_all_sessions = true
+upload_assets = true
+delete_assets = true
+
+# Use wildcard "*" to allow everything
+# Empty lists mean "allow nothing" (secure by default)
+allowed_samples = ["*"]
+allowed_nodes = ["*"]
+allowed_plugins = ["*"]
+allowed_assets = ["*"]
+
+[permissions.roles.demo]
+# Demo role - restricted access for public demos
+create_sessions = true
+destroy_sessions = true
+list_sessions = true
+modify_sessions = true  # Can add/remove nodes
+tune_nodes = true       # Can adjust parameters
+upload_assets = false
+delete_assets = false
+
+# Cannot load or manage plugins
+load_plugins = false
+delete_plugins = false
+
+list_nodes = true
+access_all_sessions = false  # Can only access own sessions
+
+# Only allow demo sample pipelines (supports glob patterns)
+allowed_samples = [
+    "demo/*.yml",
+    "demo/*.yaml",
+]
+
+# Only allow safe audio processing and MoQ transport nodes
+allowed_nodes = [
+    "audio::gain",
+    "audio::opus::encoder",
+    "audio::opus::decoder",
+    "transport::moq::peer",
+    "transport::moq::publisher",
+    "transport::moq::subscriber",
+    "core::*",  # All core nodes
+]
+
+# No plugins allowed for demo users
+allowed_plugins = []
+
+# Demo role can list/play bundled system assets
+allowed_assets = ["samples/audio/system/*"]
+
+[permissions.roles.user]
+# Regular user role - moderate access
+create_sessions = true
+destroy_sessions = true
+list_sessions = true
+modify_sessions = true
+tune_nodes = true
+upload_assets = true
+delete_assets = true
+
+# Users cannot load or delete plugins (security risk - plugins can execute arbitrary code)
+load_plugins = false
+delete_plugins = false
+
+list_nodes = true
+access_all_sessions = false
+
+# Users can access all samples except admin-only ones
+allowed_samples = [
+    "oneshot/*.yml",
+    "oneshot/*.yaml",
+    "dynamic/*.yml",
+    "dynamic/*.yaml",
+    "demo/*.yml",
+    "demo/*.yaml",
+    "user/*.yml",
+    "user/*.yaml",
+]
+
+# Users can use most nodes except potentially dangerous ones
+allowed_nodes = [
+    "audio::*",
+    "transport::*",
+    "core::*",
+    "containers::*",
+]
+
+# Users cannot load plugins, so this list is empty
+allowed_plugins = []
+
+# Users can list bundled system assets and their uploaded assets
+allowed_assets = [
+    "samples/audio/system/*",
+    "samples/audio/user/*",
+]
+
+[permissions.roles.readonly]
+# Read-only role - can only view, not modify
+create_sessions = false
+destroy_sessions = false
+list_sessions = true
+modify_sessions = false
+tune_nodes = false
+load_plugins = false
+delete_plugins = false
+list_nodes = true
+access_all_sessions = false
+upload_assets = false
+delete_assets = false
+
+# Can see all samples/nodes but cannot actually use them (no create_sessions)
+allowed_samples = ["*"]
+allowed_nodes = ["*"]
+allowed_plugins = ["*"]
+allowed_assets = ["*"]
+
+[script]
+# Configuration for the core::script node
+#
+# The script node executes user-provided JavaScript code for API integration,
+# webhooks, text transformation, and dynamic routing. These settings control
+# security and resource limits.
+
+# Default timeout for script execution per packet (in milliseconds)
+# Scripts that exceed this timeout will be terminated and packets passed through
+# Default: 100ms
+default_timeout_ms = 100
+
+# Default memory limit for QuickJS runtime (in megabytes)
+# Scripts that exceed this limit will fail to initialize
+# Default: 64MB
+default_memory_limit_mb = 64
+
+# Global fetch allowlist (applies to ALL script nodes in ALL pipelines)
+# Each entry specifies allowed URL patterns and HTTP methods
+#
+# SECURITY:
+# - Empty allowlist = block all fetch() calls (secure by default)
+# - NO per-pipeline override - this is the ONLY allowlist
+# - Prevents bypass via user-uploaded pipelines
+# - Use wildcard patterns for flexible matching: "https://api.example.com/*"
+#
+# Example patterns:
+#   "https://api.example.com/*"           - Allow all endpoints on this host
+#   "https://api.example.com/public/*"    - Allow only public API endpoints
+#   "https://*.example.com/*"             - Allow all subdomains
+#   "https://uselessfacts.jsph.pl/*"      - Allow specific API service
+#
+# Recommended: Only allow trusted APIs and use HTTPS for security
+global_fetch_allowlist = []
+
+# Example: Allow specific public APIs for all scripts
+# [[script.global_fetch_allowlist]]
+# url = "https://api.github.com/*"
+# methods = ["GET"]
+#
+# [[script.global_fetch_allowlist]]
+# url = "https://uselessfacts.jsph.pl/*"
+# methods = ["GET"]
+
+# Example: OpenAI API for voice agent pipeline
+# [[script.global_fetch_allowlist]]
+# url = "https://api.openai.com/v1/chat/completions"
+# methods = ["POST"]
+
+# Example pipeline with script node:
+#   - kind: core::script
+#     params:
+#       timeout_ms: 5000
+#       memory_limit_mb: 128
+#       script: |
+#         function process(packet) {
+#           // fetch() is only allowed if URL matches global_fetch_allowlist above
+#           // No per-pipeline override possible (security by design)
+#           const response = fetch('https://api.github.com/users/octocat');
+#           return packet;
+#         }
+
+# Console logging behavior
+# Script console.log() calls are logged via tracing at INFO level
+# Console output is visible with RUST_LOG=debug or RUST_LOG=streamkit::script=info
+# console.error() uses ERROR level, console.warn() uses WARN level
+# Default behavior: console output goes to server logs only
+
+# ============================================================================
+# ENVIRONMENT SECRETS FOR SCRIPT NODES
+# ============================================================================
+#
+# Secrets enable secure authentication for fetch() calls without exposing
+# credentials in pipeline YAML or JavaScript code.
+#
+# HOW IT WORKS:
+# 1. Server loads secrets from environment variables at startup
+# 2. Pipeline configures header mappings (secret name → HTTP header)
+# 3. At runtime, Rust code injects secret values into HTTP headers
+# 4. JavaScript never has access to secret values
+#
+# SECURITY MODEL:
+# - Secrets are ONLY accessible from skit process environment
+# - Pipeline YAML can only reference secret names, not values
+# - JavaScript code cannot read or log secret values
+# - Empty secrets map = no secrets available to any script
+#
+# CONFIGURATION:
+# [script.secrets.NAME]
+# env = "ENV_VAR_NAME"       # Environment variable containing the secret
+# type = "url|token|apikey|string"  # Secret type (for documentation/validation)
+# description = "..."        # Human-readable description (optional)
+#
+# PIPELINE USAGE:
+# In your pipeline YAML, reference secrets in header mappings:
+#
+#   - kind: core::script
+#     params:
+#       headers:
+#         - secret: NAME                  # Must match [script.secrets.NAME]
+#           header: "Authorization"       # HTTP header name
+#           template: "Bearer {}"         # Optional: format string ({} = secret)
+#       script: |
+#         async function process(packet) {
+#           // Headers are automatically injected - no secret access in JS
+#           // Body must be pre-stringified with JSON.stringify
+#           const response = await fetch('https://api.example.com/data', {
+#             method: 'POST',
+#             body: JSON.stringify({ data: packet.data })
+#           });
+#           return packet;
+#         }
+#
+# Available secrets configuration (empty by default)
+[script.secrets]
+
+# Example: OpenAI API key for voice agent pipeline
+# [script.secrets.openai_key]
+# env = "OPENAI_API_KEY"
+# type = "apikey"
+# allowed_fetch_urls = ["https://api.openai.com/*"]
+# description = "OpenAI API key for GPT-4 integration"
+
+# Example: Slack webhook URL
+# [script.secrets.slack_webhook]
+# env = "SLACK_WEBHOOK_URL"
+# type = "url"
+# description = "Slack incoming webhook URL for notifications"
+
+# Example: GitHub API token
+# [script.secrets.github_token]
+# env = "GITHUB_TOKEN"
+# type = "token"
+# description = "GitHub personal access token for API authentication"
+
+# Example: Generic API key
+# [script.secrets.api_key]
+# env = "EXTERNAL_API_KEY"
+# type = "apikey"
+# description = "API key for external service integration"

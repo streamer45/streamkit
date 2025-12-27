@@ -1,0 +1,68 @@
+#!/usr/bin/env sh
+
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Husky pre-commit hook for warning-only formatting validation
+
+# Disable errexit for this script to handle errors gracefully
+set +e
+
+has_warnings=0
+
+# Check Rust formatting
+echo "🔍 Checking Rust formatting..."
+rust_output=$(cargo fmt --all -- --check 2>&1)
+rust_exit=$?
+
+if [ $rust_exit -ne 0 ]; then
+  echo ""
+  echo "⚠️  ============================================"
+  echo "⚠️  WARNING: Rust code needs formatting"
+  echo "⚠️  ============================================"
+  echo ""
+  echo "$rust_output" | sed 's/^/   /'
+  echo ""
+  echo "⚠️  Run: cargo fmt --all"
+  echo "⚠️  Or: just fix-skit"
+  echo ""
+  echo "⚠️  ============================================"
+  echo ""
+  has_warnings=1
+fi
+
+# Check TypeScript/React formatting (only if ui directory exists)
+if [ -d "ui" ]; then
+  echo "🔍 Checking TypeScript formatting..."
+  prettier_output=$(cd ui && bunx prettier --check src 2>&1)
+  prettier_exit=$?
+
+  if [ $prettier_exit -ne 0 ]; then
+    echo ""
+    echo "⚠️  ============================================"
+    echo "⚠️  WARNING: TypeScript code needs formatting"
+    echo "⚠️  ============================================"
+    echo ""
+    echo "$prettier_output" | sed 's/^/   /'
+    echo ""
+    echo "⚠️  Run: cd ui && bun run format"
+    echo "⚠️  Or: just fix-ui"
+    echo ""
+    echo "⚠️  ============================================"
+    echo ""
+    has_warnings=1
+  fi
+fi
+
+# Summary message
+if [ $has_warnings -eq 0 ]; then
+  echo "✅ All formatting checks passed!"
+else
+  echo "⚠️  Your commit will proceed, but please format your code"
+  echo "⚠️  to keep the codebase consistent. Thanks!"
+  echo ""
+fi
+
+# Always exit with 0 (success) to allow commit
+exit 0

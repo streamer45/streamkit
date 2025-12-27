@@ -1,0 +1,77 @@
+[workspace]
+resolver = "2"
+members = [
+  "apps/skit",
+  "apps/skit-cli",
+  "crates/core",
+  "crates/nodes",
+  "crates/engine",
+  "crates/api",
+  "crates/plugin-wasm",
+  "crates/plugin-native",
+  "sdks/plugin-sdk/wasm/rust",
+  "sdks/plugin-sdk/native",
+]
+exclude = ["examples", "tests", "plugins"]
+
+[workspace.dependencies]
+streamkit-core = { version = "0.1", path = "crates/core" }
+streamkit-nodes = { version = "0.1", path = "crates/nodes" }
+streamkit-engine = { version = "0.1", path = "crates/engine" }
+streamkit-server = { version = "0.1", path = "apps/skit" }
+streamkit-client = { version = "0.1", path = "apps/skit-cli" }
+streamkit-api = { version = "0.1", path = "crates/api" }
+streamkit-plugin-wasm = { version = "0.1", path = "crates/plugin-wasm" }
+streamkit-plugin-native = { version = "0.1", path = "crates/plugin-native" }
+streamkit-plugin-sdk-wasm = { version = "0.1", path = "sdks/plugin-sdk/wasm/rust" }
+streamkit-plugin-sdk-native = { version = "0.1", path = "sdks/plugin-sdk/native" }
+
+tracing = "0.1.44"
+
+tokio = "1.48"
+tokio-util = "0.7"
+
+async-trait = "0.1.89"
+thiserror = "2.0"
+
+bytes = "1.11.0"
+
+futures = "0.3.31"
+
+serde = { version = "1.0.228", features = ["derive", "rc"] }
+serde-saphyr = "0.0.11"
+serde_json = "1.0"
+indexmap = { version = "2.12", features = ["serde"] }
+
+opentelemetry = "0.31.0"
+
+# Profile settings for better profiling experience
+[profile.release]
+debug = 1 # Include line tables for better stack traces in profiling
+
+[profile.dev]
+debug = 2 # Full debug info for development profiling
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+# missing_debug_implementations = "warn"
+# missing_copy_implementations = "warn"
+# missing_docs = "warn"
+
+[workspace.lints.clippy]
+# Categories
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+# Safety
+unwrap_used = "warn"
+expect_used = "warn"
+# Complexity
+cognitive_complexity = "warn"
+# Math
+cast_possible_truncation = "warn"
+cast_precision_loss = "warn"
+cast_sign_loss = "warn"
+# Allow-list (Noise reduction)
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+doc_markdown = "allow"

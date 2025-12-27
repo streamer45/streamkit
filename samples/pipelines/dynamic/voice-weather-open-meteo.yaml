@@ -1,0 +1,151 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+#
+# Prerequisites:
+# - Whisper STT model: `models/ggml-base.en-q5_1.bin`
+# - Silero VAD model (used by Whisper): `models/silero_vad.onnx`
+# - Kokoro model dir: `models/kokoro-multi-lang-v1_1`
+#
+# Server config (skit.toml) required for fetch():
+#
+# [[script.global_fetch_allowlist]]
+# url = "https://api.openai.com/v1/chat/completions"
+# methods = ["POST"]
+#
+# [[script.global_fetch_allowlist]]
+# url = "https://geocoding-api.open-meteo.com/*"
+# methods = ["GET"]
+#
+# [[script.global_fetch_allowlist]]
+# url = "https://api.open-meteo.com/*"
+# methods = ["GET"]
+#
+# [script.secrets.openai_key]
+# env = "OPENAI_API_KEY"
+# type = "apikey"
+# allowed_fetch_urls = ["https://api.openai.com/*"]
+# description = "OpenAI API key for the voice weather sample pipeline"
+
+name: Real-Time Voice Weather (Open-Meteo)
+description: Ask for the weather in a location (STT → Open-Meteo → TTS) via MoQ
+mode: dynamic
+nodes:
+  # ============================================================
+  # INPUT: Receive audio from MoQ broadcast
+  # ============================================================
+  moq_peer:
+    kind: transport::moq::peer
+    params:
+      gateway_path: /moq/voice-weather-open-meteo
+      input_broadcast: input
+      output_broadcast: output
+      allow_reconnect: true
+      output_group_duration_ms: 40
+      output_initial_delay_ms: 250
+    needs: opus_encoder
+
+  # Decode Opus audio (48kHz stereo)
+  opus_decoder:
+    kind: audio::opus::decoder
+    needs: moq_peer
+
+  # ============================================================
+  # STT: Convert audio to text
+  # ============================================================
+  # Resample to 16kHz mono (Whisper requirement)
+  resample_for_stt:
+    kind: audio::resampler
+    params:
+      target_sample_rate: 16000
+      channels: 1
+    needs: opus_decoder
+
+  # Transcribe speech with VAD-based segmentation
+  whisper_stt:
+    kind: plugin::native::whisper
+    params:
+      model_path: models/ggml-base.en-q5_1.bin
+      language: en
+      vad_model_path: models/silero_vad.onnx
+      vad_threshold: 0.35
+      min_silence_duration_ms: 600
+      max_segment_duration_secs: 30.0
+      suppress_non_speech_tokens: true
+      emit_vad_events: true
+      n_threads: 0
+    needs: resample_for_stt
+
+  stt_telemetry_out:
+    kind: core::telemetry_out
+    params:
+      packet_types: ["Transcription"]
+      max_events_per_sec: 20
+    needs:
+      node: whisper_stt
+      mode: best_effort
+
+  # ============================================================
+  # WEATHER: Resolve location + fetch forecast
+  # ============================================================
+  weather_agent:
+    kind: core::script
+    params:
+      timeout_ms: 30000
+      memory_limit_mb: 128
+      headers:
+        - secret: openai_key
+          header: Authorization
+          template: "Bearer {}"
+      script_path: samples/pipelines/dynamic/voice-weather-open-meteo.js
+    needs: whisper_stt
+
+  text_chunker:
+    kind: core::text_chunker
+    params:
+      split_mode: sentences
+      min_length: 10
+    needs: weather_agent
+
+  # ============================================================
+  # TTS: Convert response to speech
+  # ============================================================
+  kokoro_tts:
+    kind: plugin::native::kokoro
+    params:
+      model_dir: models/kokoro-multi-lang-v1_1
+      speaker_id: 0
+      speed: 1.0
+      num_threads: 4
+      min_sentence_length: 10
+      emit_telemetry: true
+      telemetry_preview_chars: 80
+    needs: text_chunker
+
+  # Resample from 24kHz mono (Kokoro output) to 48kHz mono (Opus input)
+  resample_for_output:
+    kind: audio::resampler
+    params:
+      target_sample_rate: 48000
+      channels: 1
+    needs: kokoro_tts
+
+  # Pace audio output and fill gaps with silence to maintain continuous stream
+  audio_pacer:
+    kind: audio::pacer
+    params:
+      speed: 1.0
+      buffer_size: 32
+      generate_silence: true
+      initial_sample_rate: 48000
+      initial_channels: 1
+    needs: resample_for_output
+
+  # ============================================================
+  # OUTPUT: Stream audio back via MoQ
+  # ============================================================
+  opus_encoder:
+    kind: audio::opus::encoder
+    params:
+      bitrate: 128000
+    needs: audio_pacer

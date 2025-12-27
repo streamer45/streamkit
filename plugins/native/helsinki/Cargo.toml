@@ -1,0 +1,57 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+[package]
+name = "helsinki-plugin-native"
+version = "0.1.0"
+edition = "2021"
+license = "MPL-2.0"
+description = "Helsinki-NLP OPUS-MT translation plugin for StreamKit using Candle"
+
+[lib]
+name = "helsinki"
+crate-type = ["cdylib"]
+
+[dependencies]
+streamkit-plugin-sdk-native = { path = "../../../sdks/plugin-sdk/native" }
+
+# Candle ML framework
+candle-core = "0.9"
+candle-nn = "0.9"
+candle-transformers = "0.9"
+
+# Tokenization (onig feature required for regex tokenization)
+tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
+
+# Model loading from HuggingFace
+hf-hub = "0.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Logging
+tracing = "0.1"
+
+[features]
+default = []
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
+
+[lints.clippy]
+# Categories
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+# Safety
+unwrap_used = "warn"
+expect_used = "warn"
+# Complexity
+cognitive_complexity = "warn"
+# Math
+cast_possible_truncation = "warn"
+cast_precision_loss = "warn"
+cast_sign_loss = "warn"
+# Allow-list (Noise reduction)
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+doc_markdown = "allow"

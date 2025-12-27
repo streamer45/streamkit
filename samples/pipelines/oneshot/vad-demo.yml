@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+#
+# skit:input_asset_tags=speech
+
+name: Voice Activity Detection
+description: Detects voice activity and outputs events as JSON
+mode: oneshot
+steps:
+  - kind: streamkit::http_input
+
+  - kind: containers::ogg::demuxer
+
+  - kind: audio::opus::decoder
+
+  - kind: audio::resampler
+    params:
+      chunk_frames: 960
+      output_frame_size: 960
+      target_sample_rate: 16000
+
+  - kind: plugin::native::vad
+    params:
+      model_path: models/ten-vad.onnx
+      output_mode: events
+      threshold: 0.5
+      min_silence_duration_s: 0.5
+      min_speech_duration_s: 0.25
+
+  - kind: core::json_serialize
+    params:
+      pretty: false
+      newline_delimited: true
+
+  - kind: streamkit::http_output
+    params:
+      content_type: application/json

@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Default configuration shipped in the official Docker images.
+#
+# This intentionally avoids any dependency on private/internal demo assets and
+# avoids implicit admin privileges for unauthenticated users.
+
+[server]
+address = "0.0.0.0:4545"
+samples_dir = "/opt/streamkit/samples/pipelines"
+max_body_size = 104857600
+
+# MoQ Gateway URL for the frontend to connect via WebTransport
+# Default assumes Docker is running locally with ports mapped to localhost
+# Override with SK_SERVER__MOQ_GATEWAY_URL env var for remote deployments
+moq_gateway_url = "http://127.0.0.1:4545/moq"
+
+[plugins]
+directory = "/opt/streamkit/plugins"
+
+[log]
+console_enable = true
+file_enable = false
+console_level = "info"
+
+[telemetry]
+enable = true
+tokio_console = false
+
+[engine]
+packet_batch_size = 8
+node_input_capacity = 8
+pin_distributor_capacity = 4
+
+[resources]
+keep_models_loaded = true
+
+[resources.prewarm]
+enabled = false
+
+[permissions]
+default_role = "user"
+# Docker containers must bind to 0.0.0.0 for published ports to work.
+# This is only safe when the published ports are bound to localhost (recommended),
+# e.g. `-p 127.0.0.1:4545:4545/tcp -p 127.0.0.1:4545:4545/udp`, or otherwise firewalled.
+allow_insecure_no_auth = true

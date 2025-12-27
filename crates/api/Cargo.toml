@@ -1,0 +1,25 @@
+[package]
+name = "streamkit-api"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.92"
+authors = ["Claudio Costa <cstcld91@gmail.com>", "StreamKit Contributors"]
+description = "API types and TypeScript bindings for StreamKit"
+homepage = "https://streamkit.dev"
+repository = "https://github.com/streamer45/streamkit"
+license = "MPL-2.0"
+keywords = ["audio", "streaming", "api", "typescript", "media"]
+categories = ["multimedia", "network-programming", "api-bindings"]
+readme = "README.md"
+
+[dependencies]
+streamkit-core = { version = "0.1.0", path = "../core" }
+serde = { version = "1.0.228", features = ["derive", "rc"] }
+serde_json = "1.0"
+serde-saphyr = "0.0.11"
+ts-rs = { version = "11.1.0" }
+indexmap = { version = "2.12", features = ["serde"] }
+
+[[bin]]
+name = "generate-ts-types"
+path = "src/bin/generate_ts_types.rs"

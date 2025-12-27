@@ -1,0 +1,38 @@
+# Load Test Configuration: UI Demo / Populate Mode
+# Creates a busy environment for visual demonstration
+# Runs for extended duration with active session tuning
+
+[server]
+url = "http://127.0.0.1:4545"
+
+[test]
+duration_secs = 3600  # 1 hour - run until manually stopped
+scenario = "dynamic"
+
+[oneshot]
+enabled = false
+concurrency = 0
+pipeline = ""
+input_file = ""
+
+[dynamic]
+enabled = true
+session_count = 50
+tune_interval_ms = 2000  # Tune parameters every 2 seconds for UI activity
+pipelines = [
+    "samples/pipelines/dynamic/moq_selfcontained.yml",
+    "samples/pipelines/dynamic/moq_mixing_selfcontained.yml",
+]
+
+[populate]
+load_plugins = true
+# Uncomment and update paths if you have plugins built:
+# plugins_native = ["examples/gain-plugin-native/target/release/libgain_plugin_native.so"]
+# plugins_wasm = ["examples/gain-plugin-wasm-rust/target/wasm32-wasip1/release/plugin.wasm"]
+plugins_native = []
+plugins_wasm = []
+
+[output]
+format = "text"
+real_time_updates = true
+update_interval_ms = 5000  # Less frequent updates for long-running demo

@@ -1,0 +1,68 @@
+#
+# skit:input_asset_tags=speech
+
+name: Audio Mixing (Upload + Music Track)
+description: Mixes uploaded audio with a built-in music track and returns Opus/WebM
+mode: oneshot
+nodes:
+  http_input:
+    kind: streamkit::http_input
+  music_file_reader:
+    kind: core::file_reader
+    params:
+      chunk_size: 8192
+      path: samples/audio/system/THE LADY IS A TRAMP.opus
+  upload_ogg_demuxer:
+    kind: containers::ogg::demuxer
+    needs: http_input
+  music_ogg_demuxer:
+    kind: containers::ogg::demuxer
+    needs: music_file_reader
+  upload_pacer:
+    kind: core::pacer
+    params:
+      buffer_size: 16
+      speed: 1
+    needs: upload_ogg_demuxer
+  music_pacer:
+    kind: core::pacer
+    params:
+      buffer_size: 16
+      speed: 1
+    needs: music_ogg_demuxer
+  upload_opus_decoder:
+    kind: audio::opus::decoder
+    needs: upload_pacer
+  music_opus_decoder:
+    kind: audio::opus::decoder
+    needs: music_pacer
+  upload_gain:
+    kind: audio::gain
+    params:
+      gain: 1
+    needs: upload_opus_decoder
+  music_gain:
+    kind: audio::gain
+    params:
+      gain: 0.1
+    needs: music_opus_decoder
+  mixer:
+    kind: audio::mixer
+    params:
+      num_inputs: 2
+    needs:
+    - upload_gain
+    - music_gain
+  opus_encoder:
+    kind: audio::opus::encoder
+    needs: mixer
+  webm_muxer:
+    kind: containers::webm::muxer
+    params:
+      channels: 1
+      chunk_size: 65536
+      sample_rate: 48000
+    needs: opus_encoder
+  http_output:
+    kind: streamkit::http_output
+    needs: webm_muxer

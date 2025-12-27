@@ -1,0 +1,16 @@
+name: Gain Filter (Rust WASM)
+description: Applies a gain filter using the Rust WASM plugin
+mode: oneshot
+steps:
+  - kind: streamkit::http_input
+  - kind: containers::ogg::demuxer
+  - kind: audio::opus::decoder
+  - kind: plugin::wasm::gain_filter_rust
+    params:
+      gain_db: -6.0
+  - kind: audio::opus::encoder
+  - kind: containers::ogg::muxer
+    params:
+      channels: 2
+      chunk_size: 65536
+  - kind: streamkit::http_output

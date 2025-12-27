@@ -1,0 +1,7 @@
+Real-Time Streaming with Dynamic Pipelines
+
+This view uses StreamKit's dynamic execution engine - designed for long-running, real-time media processing with live graph manipulation. Unlike oneshot pipelines that process a single request and terminate, dynamic pipelines create persistent sessions that can run indefinitely. You can add/remove nodes, tune parameters, and monitor state changes while audio flows through the system - all without interrupting the stream.
+
+This demo uses Media over QUIC (MoQ) for ultra-low latency bidirectional streaming with sub-100ms round-trip latency. Perfect for interactive scenarios like live streaming, real-time audio effects, and multi-user sessions.
+
+Setup: First, create a session with the MoQ Demo pipeline in the Sessions tab, then return here and click Connect. Certificate fingerprints are automatically fetched for secure local development.

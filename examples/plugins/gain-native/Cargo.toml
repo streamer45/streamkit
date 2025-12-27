@@ -1,0 +1,20 @@
+[package]
+name = "gain-plugin-native"
+version = "0.1.0"
+edition = "2021"
+license = "MPL-2.0"
+
+[dependencies]
+streamkit-plugin-sdk-native = { path = "../../../sdks/plugin-sdk/native" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1"
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+opt-level = 3       # Maximum optimization
+lto = true          # Enable link-time optimization
+strip = true        # Strip symbols
+codegen-units = 1   # Better optimization

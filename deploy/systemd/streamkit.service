@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+[Unit]
+Description=StreamKit Server
+Documentation=https://streamkit.dev
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=streamkit
+Group=streamkit
+
+# Override or add env vars in this file (optional).
+EnvironmentFile=-/etc/streamkit/streamkit.env
+
+ExecStart=/opt/streamkit/skit --config /etc/streamkit/skit.toml serve
+WorkingDirectory=/opt/streamkit
+
+Restart=always
+RestartSec=5
+
+# Security hardening (keep minimal to avoid breaking plugins).
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Data directories (created automatically by systemd).
+StateDirectory=streamkit
+LogsDirectory=streamkit
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=streamkit
+
+[Install]
+WantedBy=multi-user.target
+

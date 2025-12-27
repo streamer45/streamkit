@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+name: MoQ Broadcaster
+description: Reads audio file and publishes to MoQ relay for load testing
+mode: dynamic
+nodes:
+  file_reader:
+    kind: core::file_reader
+    params:
+      path: samples/audio/system/speech_10m.opus
+      chunk_size: 8192
+  demuxer:
+    kind: containers::ogg::demuxer
+    needs: file_reader
+  pacer:
+    kind: core::pacer
+    params:
+      speed: 1
+      buffer_size: 16
+    needs: demuxer
+  moq_publisher:
+    kind: transport::moq::publisher
+    params:
+      url: http://localhost:4443
+      broadcast: input
+    needs: pacer

@@ -1,0 +1,62 @@
+/*
+ * SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+ *
+ * SPDX-License-Identifier: MPL-2.0
+ */
+
+.app-container {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.react-flow-container {
+  width: 100%;
+  height: 100%;
+  background-color: var(--sk-bg);
+  position: relative;
+}
+
+/* Drag and drop styles */
+.dndflow {
+  flex-direction: column;
+  display: flex;
+  flex-grow: 1;
+  height: 100%;
+}
+
+.reactflow-wrapper {
+  flex-grow: 1;
+  height: 100%;
+}
+
+/* Custom edge styles for media flow direction */
+.react-flow__edge-path {
+  stroke: var(--sk-primary);
+  stroke-width: 2;
+}
+
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke: var(--sk-danger);
+  stroke-width: 4;
+  animation: none;
+  stroke-dasharray: none;
+}
+
+.react-flow__edge-text {
+  font-size: 12px;
+  fill: var(--sk-text);
+  background: var(--sk-panel-bg);
+  padding: 2px 4px;
+  border-radius: 3px;
+  border: 1px solid var(--sk-border);
+}
+
+/* Arrow marker styles */
+.react-flow__arrowhead {
+  fill: var(--sk-primary);
+}
+
+.react-flow__edge.selected .react-flow__arrowhead {
+  fill: var(--sk-danger);
+}

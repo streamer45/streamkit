@@ -1,0 +1,158 @@
+[package]
+name = "streamkit-server"
+authors = ["Claudio Costa <cstcld91@gmail.com>", "StreamKit Contributors"]
+repository = "https://github.com/streamer45/streamkit"
+license = "MPL-2.0"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "streamkit_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "skit"
+path = "src/main.rs"
+
+[dependencies]
+# Skit's core library
+streamkit-core = { workspace = true }
+streamkit-nodes = { workspace = true }
+streamkit-engine = { workspace = true }
+streamkit-api = { workspace = true }
+streamkit-plugin-wasm = { workspace = true }
+streamkit-plugin-native = { workspace = true }
+
+# For building the command-line interface
+clap = { version = "4.5.53", features = ["derive"] }
+
+# For layered configuration management
+figment = { version = "0.10.19", features = ["toml", "env"] }
+
+# For serialization and deserialization
+serde = { workspace = true, features = ["derive"] }
+serde-saphyr = { workspace = true }
+serde_json = "1.0"
+schemars = "1.1.0"
+
+# For serializing the default config into TOML format
+toml = "0.9"
+
+# For structured logging
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-appender = "0.2"
+anyhow = "1.0"
+
+# For HTTP server
+axum = { version = "0.8", features = ["multipart", "ws"] }
+tokio = { workspace = true, features = ["full"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace", "fs", "set-header"] }
+tokio-stream = "0.1"
+hyper = { version = "1.8", features = ["full"] }
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+rustls = { version = "0.23", features = ["ring"] }
+bytes = { workspace = true }
+futures = { workspace = true }
+uuid = { version = "1.19", features = ["v4", "serde"] }
+http-body-util = "0.1"
+multer = "3.1"
+
+# For embedding static files
+rust-embed = "8.9"
+mime_guess = "2.0"
+
+# For OpenTelemetry OTLP integration
+opentelemetry = { workspace = true, features = ["metrics", "trace"] }
+opentelemetry_sdk = { version = "0.31.0", features = [
+  "rt-tokio",
+  "metrics",
+  "trace",
+] }
+opentelemetry-otlp = { version = "0.31.0", features = [
+  "http-proto",
+  "metrics",
+  "trace",
+  "grpc-tonic",
+] }
+opentelemetry-http = "0.31.0"
+tracing-opentelemetry = "0.32.0"
+
+# For system metrics collection
+sysinfo = "0.37.2"
+
+# For tokio-console debugging (optional)
+console-subscriber = { version = "0.5", optional = true }
+time = { version = "0.3.44", features = ["formatting"] }
+
+# For CPU profiling (optional)
+# Uses frame-pointer unwinding for much faster stack traces (vs libunwind)
+# Requires building with frame pointers enabled: RUSTFLAGS="-C force-frame-pointers=yes"
+pprof = { version = "0.15", features = [
+  "flamegraph",
+  "prost-codec",
+  "frame-pointer",
+], optional = true }
+
+# For heap profiling (optional)
+tikv-jemallocator = { version = "0.6", features = [
+  "profiling",
+  "unprefixed_malloc_on_supported_platforms",
+], optional = true }
+jemalloc_pprof = { version = "0.8", features = ["symbolize"], optional = true }
+
+# For allocation rate profiling (optional, mutually exclusive with profiling feature)
+dhat = { version = "0.3", optional = true }
+
+# MoQ support (optional)
+moq-native = { version = "0.10.1", optional = true }
+async-trait = { workspace = true }
+
+# For glob pattern matching in permissions
+glob = "0.3"
+
+
+[features]
+default = ["script"]
+tokio-console = ["console-subscriber"]
+profiling = ["dep:pprof", "dep:tikv-jemallocator", "dep:jemalloc_pprof"]
+# DHAT allocation profiling - tracks allocation counts/rates (mutually exclusive with profiling)
+# Use this to find hot allocation sites. Output is written on graceful shutdown.
+dhat-heap = ["dep:dhat"]
+moq = ["dep:moq-native"]
+script = ["streamkit-nodes/script", "streamkit-engine/script"]
+
+[dev-dependencies]
+tokio-test = "0.4"
+reqwest = { version = "0.12", features = ["multipart", "json"] }
+tokio-tungstenite = "0.28"
+futures-util = "0.3"
+ogg = "0.9.2"
+opus = "0.3"
+tempfile = "3.23"
+urlencoding = "2.1"
+
+[lints.rust]
+# Server needs unsafe code for jemalloc profiling configuration (export_name attribute)
+# So we override the workspace forbid with warn
+unsafe_code = "warn"
+
+[lints.clippy]
+# Categories
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+# Safety
+unwrap_used = "warn"
+expect_used = "warn"
+# Complexity
+cognitive_complexity = "warn"
+# Math
+cast_possible_truncation = "warn"
+cast_precision_loss = "warn"
+cast_sign_loss = "warn"
+# Allow-list (Noise reduction)
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+doc_markdown = "allow"

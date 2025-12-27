@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+name: Text-to-Speech (Piper)
+description: Synthesizes speech from text using Piper
+mode: oneshot
+steps:
+  - kind: streamkit::http_input
+  - kind: core::text_chunker
+    params:
+      min_length: 10
+  - kind: plugin::native::piper
+    params:
+      model_dir: "models/vits-piper-en_US-libritts_r-medium"
+      speaker_id: 0
+      speed: 1.0
+      num_threads: 4
+      noise_scale: 0.667
+      noise_scale_w: 0.8
+      length_scale: 1.0
+  - kind: audio::resampler
+    params:
+      chunk_frames: 960
+      output_frame_size: 960
+      target_sample_rate: 48000
+  - kind: audio::opus::encoder
+  - kind: containers::webm::muxer
+    params:
+      channels: 1
+      chunk_size: 65536
+      sample_rate: 48000
+      streaming_mode: live
+  - kind: streamkit::http_output

@@ -1,0 +1,203 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Prerequisites:
+# - Whisper STT model: `models/ggml-base.en-q5_1.bin`
+# - Silero VAD model (used by Whisper): `models/silero_vad.onnx`
+# - Kokoro model dir: `models/kokoro-multi-lang-v1_1`
+#
+# Tip: run `just download-models` to fetch common demo models.
+
+name: Real-Time Voice Agent (OpenAI)
+description: Runs a MoQ voice agent using Whisper STT, OpenAI, and Kokoro TTS
+mode: dynamic
+nodes:
+  # ============================================================
+  # INPUT: Receive audio from MoQ broadcast
+  # ============================================================
+  moq_peer:
+    kind: transport::moq::peer
+    params:
+      gateway_path: /moq/voice-agent-openai
+      input_broadcast: input
+      output_broadcast: output
+      allow_reconnect: true
+      output_group_duration_ms: 40  # 2 Opus frames per group for low latency
+      output_initial_delay_ms: 250  # Playout delay for jitter tolerance (client buffers before playing)
+    needs: opus_encoder
+
+  # Decode Opus audio (48kHz stereo)
+  opus_decoder:
+    kind: audio::opus::decoder
+    needs: moq_peer
+
+  # ============================================================
+  # STT: Convert audio to text
+  # ============================================================
+  # Resample to 16kHz mono (Whisper requirement)
+  resample_for_stt:
+    kind: audio::resampler
+    params:
+      target_sample_rate: 16000
+      channels: 1
+    needs: opus_decoder
+
+  # Transcribe speech with VAD-based segmentation
+  whisper_stt:
+    kind: plugin::native::whisper
+    params:
+      model_path: models/ggml-base.en-q5_1.bin
+      language: en
+      vad_model_path: models/silero_vad.onnx
+      vad_threshold: 0.3
+      min_silence_duration_ms: 500
+      max_segment_duration_secs: 30.0
+      suppress_non_speech_tokens: true
+      emit_vad_events: true
+      n_threads: 0
+    needs: resample_for_stt
+
+  stt_telemetry_out:
+    kind: core::telemetry_out
+    params:
+      packet_types: ["Transcription"]
+      max_events_per_sec: 20
+    needs:
+      node: whisper_stt
+      mode: best_effort
+
+  # ============================================================
+  # LLM: Process text through OpenAI
+  # ============================================================
+  openai_processor:
+    kind: core::script
+    params:
+      timeout_ms: 15000
+      memory_limit_mb: 128
+      headers:
+        - secret: openai_key
+          header: Authorization
+          template: "Bearer {}"
+      script: |
+        let turnCounter = 0;
+
+        async function process(packet) {
+          if (packet.type !== 'Transcription') return null;
+
+          let text = '';
+          if (packet.data && packet.data.text) text = packet.data.text;
+          else if (packet.text) text = packet.text;
+
+          text = String(text || '').trim();
+          if (!text) return null;
+
+          const turnId = `turn-${Date.now()}-${++turnCounter}`;
+
+          const spanId = telemetry.startSpan('llm.request', {
+            correlation_id: turnId,
+            turn_id: turnId,
+            model: 'gpt-4-turbo',
+            input_chars: text.length,
+            input_preview: text.slice(0, 80),
+          });
+
+          try {
+            const responseText = await fetch('https://api.openai.com/v1/chat/completions', {
+              method: 'POST',
+              body: JSON.stringify({
+                model: 'gpt-4-turbo',
+                messages: [
+                  {
+                    role: 'system',
+                    content: 'You are a helpful voice assistant. Keep responses brief and conversational, suitable for speech.'
+                  },
+                  { role: 'user', content: text }
+                ],
+                max_tokens: 200,
+                temperature: 0.7
+              })
+            });
+
+            const result = JSON.parse(responseText);
+
+            const aiResponse =
+              result &&
+              result.choices &&
+              result.choices[0] &&
+              result.choices[0].message &&
+              result.choices[0].message.content
+                ? String(result.choices[0].message.content).trim()
+                : '';
+
+            if (!aiResponse) return null;
+
+            telemetry.endSpan(spanId, {
+              correlation_id: turnId,
+              turn_id: turnId,
+              status: 'success',
+              output_chars: aiResponse.length,
+              output_preview: aiResponse.slice(0, 80),
+            });
+            return { type: 'Text', data: aiResponse };
+          } catch (error) {
+            telemetry.endSpan(spanId, {
+              correlation_id: turnId,
+              turn_id: turnId,
+              status: 'error',
+              error: String(error || 'unknown'),
+            });
+            return { type: 'Text', data: 'Sorry, I had trouble connecting to the AI service.' };
+          }
+        }
+    needs: whisper_stt
+
+  text_chunker:
+    kind: core::text_chunker
+    params:
+      split_mode: sentences
+      min_length: 30
+    needs: openai_processor
+
+  # ============================================================
+  # TTS: Convert AI response to speech
+  # ============================================================
+  kokoro_tts:
+    kind: plugin::native::kokoro
+    params:
+      model_dir: models/kokoro-multi-lang-v1_1
+      speaker_id: 0
+      speed: 1.0
+      num_threads: 4
+      min_sentence_length: 10
+      emit_telemetry: true
+      telemetry_preview_chars: 80
+    needs: text_chunker
+
+  # Resample from 24kHz mono (Kokoro output) to 48kHz mono (Opus input)
+  resample_for_output:
+    kind: audio::resampler
+    params:
+      target_sample_rate: 48000
+      channels: 1
+    needs: kokoro_tts
+
+  # Pace audio output and fill gaps with silence to maintain continuous stream
+  audio_pacer:
+    kind: audio::pacer
+    params:
+      speed: 1.0
+      buffer_size: 32
+      generate_silence: true  # Fill gaps between TTS sentences with silence
+      initial_sample_rate: 48000
+      initial_channels: 1
+    needs: resample_for_output
+
+  # ============================================================
+  # OUTPUT: Stream audio back via MoQ
+  # ============================================================
+  opus_encoder:
+    kind: audio::opus::encoder
+    params:
+      bitrate: 128000
+    needs: audio_pacer

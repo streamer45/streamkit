@@ -1,0 +1,321 @@
+// SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+//
+// SPDX-License-Identifier: MPL-2.0
+
+import styled from '@emotion/styled';
+import React from 'react';
+
+import { useSessionStore } from '@/stores/sessionStore';
+import type { NodeState, NodeStats } from '@/types/types';
+
+import { SKTooltip } from './Tooltip';
+
+const StateIndicator = styled.div<{ color: string }>`
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background-color: ${(props) => props.color};
+  border: 1px solid var(--sk-border-strong);
+  box-shadow: 0 0 4px ${(props) => props.color}40;
+`;
+
+interface NodeStateIndicatorProps {
+  state: NodeState;
+  stats?: NodeStats;
+  showLabel?: boolean;
+  nodeId?: string; // If provided, will fetch stats from session store on demand
+  sessionId?: string; // Required if nodeId is provided
+}
+
+function formatNumber(num: number | bigint): string {
+  return num.toLocaleString();
+}
+
+function getStateColor(state: NodeState): string {
+  if (typeof state === 'string') {
+    switch (state) {
+      case 'Initializing':
+        return 'var(--sk-status-initializing)';
+      case 'Running':
+        return 'var(--sk-status-running)';
+      default:
+        return 'var(--sk-status-stopped)';
+    }
+  }
+
+  if ('Recovering' in state) {
+    return 'var(--sk-status-recovering)';
+  }
+  if ('Degraded' in state) {
+    return 'var(--sk-status-degraded)';
+  }
+  if ('Failed' in state) {
+    return 'var(--sk-status-failed)';
+  }
+  if ('Stopped' in state) {
+    return 'var(--sk-status-stopped)';
+  }
+
+  return 'var(--sk-status-stopped)';
+}
+
+function getStateLabel(state: NodeState): string {
+  if (typeof state === 'string') {
+    return state;
+  }
+
+  if ('Recovering' in state) {
+    return 'Recovering';
+  }
+  if ('Degraded' in state) {
+    return 'Degraded';
+  }
+  if ('Failed' in state) {
+    return 'Failed';
+  }
+  if ('Stopped' in state) {
+    return 'Stopped';
+  }
+
+  return 'Unknown';
+}
+
+function getStateDescription(state: NodeState): string {
+  if (typeof state === 'string') {
+    switch (state) {
+      case 'Initializing':
+        return 'Node is starting up and performing initialization';
+      case 'Running':
+        return 'Node is operating normally and processing data';
+      default:
+        return '';
+    }
+  }
+
+  if ('Recovering' in state) {
+    return 'Node encountered an issue but is actively attempting to recover';
+  }
+  if ('Degraded' in state) {
+    return 'Node is operational but experiencing persistent issues';
+  }
+  if ('Failed' in state) {
+    return 'Node has encountered a fatal error and stopped processing';
+  }
+  if ('Stopped' in state) {
+    return 'Node has stopped processing and shut down';
+  }
+
+  return '';
+}
+
+function getStateDetails(state: NodeState, stats?: NodeStats): React.ReactNode {
+  if (typeof state === 'string') {
+    return (
+      <div style={{ fontSize: 12 }}>
+        <div style={{ fontWeight: 600, marginBottom: 4 }}>{state}</div>
+        <div style={{ color: 'var(--sk-text-muted)' }}>{getStateDescription(state)}</div>
+        {stats &&
+          (() => {
+            // Calculate rates (packets per second)
+            const duration = stats.duration_secs > 0 ? stats.duration_secs : 1;
+            const receivedPps = Math.round(Number(stats.received) / duration);
+            const sentPps = Math.round(Number(stats.sent) / duration);
+
+            return (
+              <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--sk-border)' }}>
+                <div style={{ fontWeight: 600, marginBottom: 4, color: 'var(--sk-text)' }}>
+                  Packet Statistics
+                </div>
+                <div
+                  className="code-font"
+                  style={{ color: 'var(--sk-text)', lineHeight: '1.4', fontSize: 11 }}
+                >
+                  <div style={{ marginBottom: 2 }}>
+                    <span style={{ color: 'var(--sk-text-muted)' }}>In:</span>{' '}
+                    {formatNumber(stats.received)} pkt ({receivedPps} pps)
+                    <span style={{ marginLeft: 8, color: 'var(--sk-text-muted)' }}>Out:</span>{' '}
+                    {formatNumber(stats.sent)} pkt ({sentPps} pps)
+                  </div>
+                  {(stats.discarded > 0 || stats.errored > 0) && (
+                    <div style={{ marginTop: 2, color: 'var(--sk-warning)' }}>
+                      {stats.discarded > 0 && `⚠ Discarded: ${formatNumber(stats.discarded)} pkt`}
+                      {stats.discarded > 0 && stats.errored > 0 && ' | '}
+                      {stats.errored > 0 && `❌ Errors: ${formatNumber(stats.errored)} pkt`}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+      </div>
+    );
+  }
+
+  const renderStats = (stats?: NodeStats) => {
+    if (!stats) return null;
+
+    // Calculate rates (packets per second)
+    const duration = stats.duration_secs > 0 ? stats.duration_secs : 1;
+    const receivedPps = Math.round(Number(stats.received) / duration);
+    const sentPps = Math.round(Number(stats.sent) / duration);
+
+    return (
+      <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--sk-border)' }}>
+        <div style={{ fontWeight: 600, marginBottom: 4, color: 'var(--sk-text)' }}>
+          Packet Statistics
+        </div>
+        <div
+          className="code-font"
+          style={{ color: 'var(--sk-text)', lineHeight: '1.4', fontSize: 11 }}
+        >
+          <div style={{ marginBottom: 2 }}>
+            <span style={{ color: 'var(--sk-text-muted)' }}>In:</span>{' '}
+            {formatNumber(stats.received)} pkt ({receivedPps} pps)
+            <span style={{ marginLeft: 8, color: 'var(--sk-text-muted)' }}>Out:</span>{' '}
+            {formatNumber(stats.sent)} pkt ({sentPps} pps)
+          </div>
+          {(stats.discarded > 0 || stats.errored > 0) && (
+            <div style={{ marginTop: 2, color: 'var(--sk-warning)' }}>
+              {stats.discarded > 0 && `⚠ Discarded: ${formatNumber(stats.discarded)} pkt`}
+              {stats.discarded > 0 && stats.errored > 0 && ' | '}
+              {stats.errored > 0 && `❌ Errors: ${formatNumber(stats.errored)} pkt`}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  if ('Recovering' in state) {
+    const details = state.Recovering.details;
+    const hasDetails = details !== null && details !== undefined && typeof details === 'object';
+
+    return (
+      <div style={{ fontSize: 12 }}>
+        <div style={{ fontWeight: 600, marginBottom: 4 }}>Recovering</div>
+        <div style={{ color: 'var(--sk-text-muted)', marginBottom: 4 }}>
+          {getStateDescription(state)}
+        </div>
+        <div style={{ color: 'var(--sk-text)' }}>{state.Recovering.reason}</div>
+        {hasDetails && (
+          <pre
+            style={{
+              marginTop: 4,
+              fontSize: 10,
+              background: 'var(--sk-bg)',
+              padding: 4,
+              borderRadius: 4,
+              maxWidth: 200,
+              overflow: 'auto',
+            }}
+          >
+            {JSON.stringify(details, null, 2)}
+          </pre>
+        )}
+        {renderStats(stats)}
+      </div>
+    );
+  }
+
+  if ('Degraded' in state) {
+    return (
+      <div style={{ fontSize: 12 }}>
+        <div style={{ fontWeight: 600, marginBottom: 4 }}>Degraded</div>
+        <div style={{ color: 'var(--sk-text-muted)', marginBottom: 4 }}>
+          {getStateDescription(state)}
+        </div>
+        <div style={{ color: 'var(--sk-text)' }}>{state.Degraded.reason}</div>
+        {renderStats(stats)}
+      </div>
+    );
+  }
+
+  if ('Failed' in state) {
+    return (
+      <div style={{ fontSize: 12 }}>
+        <div style={{ fontWeight: 600, marginBottom: 4 }}>Failed</div>
+        <div style={{ color: 'var(--sk-text-muted)', marginBottom: 4 }}>
+          {getStateDescription(state)}
+        </div>
+        <div style={{ color: 'var(--sk-danger)' }}>{state.Failed.reason}</div>
+        {renderStats(stats)}
+      </div>
+    );
+  }
+
+  if ('Stopped' in state) {
+    return (
+      <div style={{ fontSize: 12 }}>
+        <div style={{ fontWeight: 600, marginBottom: 4 }}>Stopped</div>
+        <div style={{ color: 'var(--sk-text-muted)', marginBottom: 4 }}>
+          {getStateDescription(state)}
+        </div>
+        <div style={{ color: 'var(--sk-text)' }}>{state.Stopped.reason}</div>
+        {renderStats(stats)}
+      </div>
+    );
+  }
+
+  return null;
+}
+
+const NodeStateTooltipContent = React.memo(
+  ({ state, stats }: { state: NodeState; stats?: NodeStats }) => getStateDetails(state, stats)
+);
+
+const LiveNodeStateTooltipContent = React.memo(
+  ({
+    state,
+    nodeId,
+    sessionId,
+    fallbackStats,
+  }: {
+    state: NodeState;
+    nodeId: string;
+    sessionId: string;
+    fallbackStats?: NodeStats;
+  }) => {
+    const liveStats = useSessionStore(
+      React.useCallback((s) => s.sessions.get(sessionId)?.nodeStats[nodeId], [nodeId, sessionId])
+    );
+
+    return getStateDetails(state, liveStats ?? fallbackStats);
+  }
+);
+
+export const NodeStateIndicator: React.FC<NodeStateIndicatorProps> = ({
+  state,
+  stats: propStats,
+  showLabel = false,
+  nodeId,
+  sessionId,
+}) => {
+  const color = getStateColor(state);
+  const label = getStateLabel(state);
+
+  const content =
+    nodeId && sessionId ? (
+      <LiveNodeStateTooltipContent
+        state={state}
+        nodeId={nodeId}
+        sessionId={sessionId}
+        fallbackStats={propStats}
+      />
+    ) : (
+      <NodeStateTooltipContent state={state} stats={propStats} />
+    );
+
+  return (
+    <SKTooltip content={content} side="top">
+      <div
+        className="nodrag"
+        style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'help' }}
+      >
+        <StateIndicator color={color} />
+        {showLabel && <span style={{ color: 'var(--sk-text-muted)', fontSize: 11 }}>{label}</span>}
+      </div>
+    </SKTooltip>
+  );
+};
+
+export default NodeStateIndicator;

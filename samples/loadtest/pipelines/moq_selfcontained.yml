@@ -1,0 +1,54 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Self-contained version of `moq.yml`:
+# - Publishes file audio to the MoQ relay ("input")
+# - Subscribes to that broadcast, transcodes, and publishes to "output"
+mode: dynamic
+nodes:
+  file_reader:
+    kind: core::file_reader
+    params:
+      path: samples/audio/system/speech_10m.opus
+      chunk_size: 8192
+  demuxer:
+    kind: containers::ogg::demuxer
+    needs: file_reader
+  pacer:
+    kind: core::pacer
+    params:
+      speed: 1
+      buffer_size: 16
+    needs: demuxer
+  moq_input_publisher:
+    kind: transport::moq::publisher
+    params:
+      url: http://localhost:4443
+      broadcast: input
+    needs: pacer
+
+  moq_subscriber:
+    kind: transport::moq::subscriber
+    params:
+      url: http://localhost:4443
+      broadcast: input
+  decoder:
+    kind: audio::opus::decoder
+    needs: moq_subscriber
+  gain:
+    kind: audio::gain
+    params:
+      gain: 1.0
+    needs: decoder
+  encoder:
+    kind: audio::opus::encoder
+    needs: gain
+  moq_publisher:
+    kind: transport::moq::publisher
+    params:
+      url: http://localhost:4443
+      broadcast: output
+    needs: encoder
+name: MoQ Transcoder (Self-Contained)
+description: Publishes file audio to MoQ, subscribes, transcodes, and republishes

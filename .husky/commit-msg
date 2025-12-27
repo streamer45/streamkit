@@ -1,0 +1,48 @@
+#!/usr/bin/env sh
+
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Husky commit-msg hook for warning-only conventional commit validation
+
+# Disable errexit for this script to handle errors gracefully
+set +e
+
+# Run commitlint but capture output and exit code
+output=$(cd ui && bunx --bun commitlint --edit "$1" 2>&1)
+exit_code=$?
+
+# If commitlint failed, show warning but allow commit to proceed
+if [ $exit_code -ne 0 ]; then
+  echo ""
+  echo "⚠️  ============================================"
+  echo "⚠️  WARNING: Commit message format issue"
+  echo "⚠️  ============================================"
+  echo ""
+  echo "$output" | sed 's/^/   /'
+  echo ""
+  echo "⚠️  Your commit will proceed, but consider using"
+  echo "⚠️  conventional commit format for better changelogs:"
+  echo ""
+  echo "   Examples:"
+  echo "     feat: add new feature"
+  echo "     feat(core): add ProcessorNode trait"
+  echo "     fix: resolve memory leak"
+  echo "     docs: update README"
+  echo "     refactor: simplify pipeline logic"
+  echo "     test: add unit tests for nodes"
+  echo "     chore: update dependencies"
+  echo "     wip: work in progress"
+  echo ""
+  echo "   Format: type(scope): description"
+  echo ""
+  echo "   See CONTRIBUTING.md for more details"
+  echo "   https://www.conventionalcommits.org/"
+  echo ""
+  echo "⚠️  ============================================"
+  echo ""
+fi
+
+# Always exit with 0 (success) to allow commit
+exit 0

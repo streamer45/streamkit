@@ -1,0 +1,264 @@
+/* SPDX-FileCopyrightText: © 2025 StreamKit Contributors */
+/* SPDX-License-Identifier: MPL-2.0 */
+
+/*
+ * StreamKit documentation theme
+ * Matches the StreamKit UI themes (light + dark)
+ */
+
+:root {
+	color-scheme: dark;
+
+	/* StreamKit UI tokens (dark) - Arctic Night */
+	--sk-bg: #0b0f19;
+	--sk-sidebar-bg: #121826;
+	--sk-panel-bg: #1a2235;
+	--sk-text: #e2e8f0;
+	--sk-text-muted: #94a3b8;
+	--sk-border: #2c364d;
+	--sk-border-strong: #475569;
+	--sk-primary: #38bdf8;
+	--sk-primary-hover: #7dd3fc;
+	--sk-primary-contrast: #0b0f19;
+	--sk-muted: #7a8699;
+	--sk-hover-bg: #1e293b;
+	--sk-shadow: rgba(0, 0, 0, 0.6);
+
+	/* Starlight palette (dark) — keep Starlight’s “white/black” semantics. */
+	--sl-color-white: var(--sk-text);
+	--sl-color-gray-1: var(--sk-text-muted);
+	--sl-color-gray-2: color-mix(in oklab, var(--sk-text-muted) 65%, var(--sk-border-strong) 35%);
+	--sl-color-gray-3: var(--sk-border-strong);
+	--sl-color-gray-4: var(--sk-border);
+	--sl-color-gray-5: var(--sk-panel-bg);
+	--sl-color-gray-6: var(--sk-sidebar-bg);
+	--sl-color-black: var(--sk-bg);
+
+	--sl-color-accent-low: color-mix(in oklab, var(--sk-primary) 18%, transparent);
+	--sl-color-accent: var(--sk-primary);
+	--sl-color-accent-high: var(--sk-primary-hover);
+
+	--sl-color-text: var(--sk-text);
+	--sl-color-text-accent: var(--sk-primary);
+	--sl-color-text-invert: var(--sk-primary-contrast);
+
+	--sl-color-bg: var(--sk-bg);
+	--sl-color-bg-nav: var(--sk-sidebar-bg);
+	--sl-color-bg-sidebar: var(--sk-sidebar-bg);
+	--sl-color-bg-inline-code: color-mix(in oklab, var(--sk-panel-bg) 75%, var(--sk-bg) 25%);
+	--sl-color-bg-accent: var(--sk-primary);
+
+	--sl-color-hairline-light: var(--sk-border);
+	--sl-color-hairline: var(--sk-border);
+	--sl-color-hairline-shade: var(--sk-bg);
+
+	/* Expressive Code frame styling (dark) */
+	--ec-frm-edActTabFg: var(--sk-text);
+	--ec-frm-edActTabBg: var(--sk-panel-bg);
+	--ec-frm-edTabBarBg: var(--sk-sidebar-bg);
+	--ec-frm-edTabBarBrdCol: var(--sk-border);
+	--ec-frm-edTabBarBrdBtmCol: var(--sk-border);
+	--ec-frm-edBg: var(--sk-panel-bg);
+	--ec-frm-trmTtbFg: var(--sk-text);
+	--ec-frm-trmTtbBg: var(--sk-panel-bg);
+	--ec-frm-trmTtbBrdBtmCol: var(--sk-border);
+	--ec-frm-trmTtbDotsFg: var(--sk-text-muted);
+	--ec-frm-trmBg: var(--sk-panel-bg);
+	--ec-brdCol: var(--sk-border);
+}
+
+:root[data-theme='light'] {
+	color-scheme: light;
+
+	/* StreamKit UI tokens (light) - Arctic Sky */
+	--sk-bg: #f8fafc;
+	--sk-sidebar-bg: #f1f5f9;
+	--sk-panel-bg: #ffffff;
+	--sk-text: #0f172a;
+	--sk-text-muted: #475569;
+	--sk-border: #e2e8f0;
+	--sk-border-strong: #1e293b;
+	--sk-primary: #0ea5e9;
+	--sk-primary-hover: #0284c7;
+	--sk-primary-contrast: #ffffff;
+	--sk-muted: #6c757d;
+	--sk-hover-bg: #e2e8f0;
+	--sk-shadow: rgba(15, 23, 42, 0.08);
+
+	/* Starlight palette (light) — keep Starlight’s “white/black” semantics. */
+	--sl-color-white: var(--sk-text);
+	--sl-color-gray-1: var(--sk-border-strong);
+	--sl-color-gray-2: var(--sk-text-muted);
+	--sl-color-gray-3: var(--sk-muted);
+	--sl-color-gray-4: color-mix(in oklab, var(--sk-text-muted) 30%, var(--sk-border) 70%);
+	--sl-color-gray-5: var(--sk-border);
+	--sl-color-gray-6: var(--sk-sidebar-bg);
+	--sl-color-gray-7: var(--sk-bg);
+	--sl-color-black: var(--sk-panel-bg);
+
+	--sl-color-accent-low: color-mix(in oklab, var(--sk-primary) 14%, transparent);
+	--sl-color-accent: var(--sk-primary);
+	--sl-color-accent-high: var(--sk-primary-hover);
+
+	--sl-color-text: var(--sk-text);
+	--sl-color-text-accent: var(--sk-primary-hover);
+	--sl-color-text-invert: var(--sk-primary-contrast);
+
+	--sl-color-bg: var(--sk-bg);
+	--sl-color-bg-nav: var(--sk-sidebar-bg);
+	--sl-color-bg-sidebar: var(--sk-sidebar-bg);
+	--sl-color-bg-inline-code: color-mix(in oklab, var(--sk-hover-bg) 65%, var(--sk-bg) 35%);
+	--sl-color-bg-accent: var(--sk-primary);
+
+	--sl-color-hairline-light: var(--sk-border);
+	--sl-color-hairline: var(--sk-border);
+	--sl-color-hairline-shade: var(--sk-border);
+
+	/* Expressive Code frame styling (light) */
+	--ec-frm-edActTabFg: var(--sk-text);
+	--ec-frm-edActTabBg: var(--sk-panel-bg);
+	--ec-frm-edTabBarBg: var(--sk-sidebar-bg);
+	--ec-frm-edTabBarBrdCol: var(--sk-border);
+	--ec-frm-edTabBarBrdBtmCol: var(--sk-border);
+	--ec-frm-edBg: var(--sk-panel-bg);
+	--ec-frm-trmTtbFg: var(--sk-text);
+	--ec-frm-trmTtbBg: var(--sk-sidebar-bg);
+	--ec-frm-trmTtbBrdBtmCol: var(--sk-border);
+	--ec-frm-trmTtbDotsFg: var(--sk-text-muted);
+	--ec-frm-trmBg: var(--sk-panel-bg);
+	--ec-brdCol: var(--sk-border);
+}
+
+/* Slightly wider center column on desktop. */
+@media (min-width: 72rem) {
+	html[data-has-sidebar] {
+		--sl-content-width: 52rem;
+	}
+}
+
+/* Mermaid diagrams */
+.sk-mermaid {
+	margin: 1rem 0;
+}
+.sk-mermaid-target svg {
+	max-width: 100%;
+	height: auto;
+}
+.sk-mermaid-source {
+	display: block;
+	background: var(--sk-panel-bg);
+	border: 1px solid var(--sk-border);
+	border-radius: 0.5rem;
+	padding: 0.75rem 1rem;
+	overflow-x: auto;
+	color: var(--sk-text);
+}
+figure.sk-mermaid[data-rendered='true'] .sk-mermaid-source {
+	display: none;
+}
+
+/* Inline code styling */
+:not(pre) > code {
+	background-color: var(--sk-hover-bg);
+	border: 1px solid var(--sk-border);
+	padding: 0.125rem 0.375rem;
+	border-radius: 0.25rem;
+}
+
+/* Sidebar styling */
+.sidebar-content {
+	background-color: var(--sk-sidebar-bg);
+}
+
+/* Card styling for feature cards on home page */
+.card {
+	background-color: var(--sk-panel-bg);
+	border: 1px solid var(--sk-border);
+	box-shadow: 0 1px 2px var(--sk-shadow);
+}
+
+/* Make the splash hero copy match the main content width. */
+html[data-has-hero] .hero .copy > * {
+	max-width: 100%;
+}
+
+/* Improve hero tagline contrast - prevent text from blending into background */
+/* Override Starlight's gray-2 color which blends into the dark background */
+.hero .tagline {
+	color: var(--sk-text) !important;
+	opacity: 0.9;
+}
+
+/* Dark mode: add subtle text shadow for depth */
+:root:not([data-theme='light']) .hero .tagline {
+	text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+/* Light mode: slightly bolder for better readability */
+:root[data-theme='light'] .hero .tagline {
+	opacity: 0.85;
+	font-weight: 450;
+}
+
+/* Home page auto-playing demo video ("GIF vibe") */
+.sk-landing-video {
+	margin: 1rem 0 1.25rem;
+}
+.sk-landing-video__link {
+	display: block;
+	border: 1px solid var(--sl-color-gray-5);
+	border-radius: 0.75rem;
+	overflow: hidden;
+	background: var(--sl-color-gray-6);
+	box-shadow: 0 6px 18px var(--sk-shadow);
+	text-decoration: none;
+}
+.sk-landing-video__video,
+.sk-landing-video__fallback {
+	display: block;
+	width: 100%;
+	height: auto;
+}
+.sk-landing-video__fallback {
+	display: none;
+}
+.sk-landing-video__caption {
+	margin: 0.5rem 0 0;
+	text-align: center;
+	font-size: 0.95rem;
+	color: var(--sl-color-gray-2);
+}
+@media (prefers-reduced-motion: reduce) {
+	.sk-landing-video__video {
+		display: none;
+	}
+	.sk-landing-video__fallback {
+		display: block;
+	}
+}
+
+/* Reduce "On this page" (right sidebar / TOC) width on wide screens. */
+@media (min-width: 72rem) {
+	html[data-has-toc] {
+		--sk-right-sidebar-width: 16rem;
+	}
+
+	/* Re-center main content (Starlight sets this var on `.main-pane`). */
+	html[data-has-toc][data-has-sidebar] .main-pane {
+		--sl-content-margin-inline: auto;
+	}
+
+	html[data-has-toc] .right-sidebar-container {
+		width: var(--sk-right-sidebar-width);
+	}
+
+	html[data-has-toc][data-has-sidebar] .main-pane {
+		width: auto;
+		flex: 1 1 auto;
+	}
+
+	html[data-has-toc] .right-sidebar-panel .sl-container {
+		width: 100%;
+		max-width: 100%;
+	}
+}

@@ -1,0 +1,58 @@
+[package]
+name = "streamkit-client"
+authors = ["Claudio Costa <cstcld91@gmail.com>", "StreamKit Contributors"]
+repository = "https://github.com/streamer45/streamkit"
+license = "MPL-2.0"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "streamkit_client"
+path = "src/lib.rs"
+
+[[bin]]
+name = "skit-cli"
+path = "src/main.rs"
+
+[dependencies]
+streamkit-api = { workspace = true }
+
+# For building the command-line interface
+clap = { version = "4.5.53", features = ["derive"] }
+
+# For HTTP client functionality
+reqwest = { version = "0.12", features = ["multipart", "stream", "json"] }
+# For WebSocket client
+tokio-tungstenite = { version = "0.28.0", features = ["native-tls"] }
+url = "2.5.7"
+
+# For async runtime
+tokio = { workspace = true, features = ["full"] }
+
+# For streaming
+futures = { workspace = true }
+futures-util = "0.3"
+
+# For structured logging
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# For interactive shell
+rustyline = "17.0.2"
+
+# For file I/O
+bytes = { workspace = true }
+serde-saphyr = { workspace = true }
+serde_json = "1.0"
+uuid = { version = "1.19", features = ["v4"] }
+
+# For load testing
+toml = "0.9"
+rand = "0.9"
+tokio-util = "0.7"
+anyhow = "1.0"
+serde = { workspace = true }
+
+[lints]
+workspace = true

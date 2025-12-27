@@ -1,0 +1,32 @@
+# Load Test Configuration: Heavy One-Shot Workload
+# This config stresses the HTTP endpoint with many concurrent file processing requests.
+# Uses a small sample input so executions complete quickly and emit completion metrics.
+
+[server]
+url = "http://127.0.0.1:4545"
+
+[test]
+duration_secs = 60
+scenario = "oneshot"
+
+[oneshot]
+enabled = true
+concurrency = 20
+pipeline = "samples/pipelines/oneshot/double_volume.yml"
+input_file = "samples/audio/system/sample.ogg"
+
+[dynamic]
+enabled = false
+session_count = 0
+tune_interval_ms = 1000
+pipelines = []
+
+[populate]
+load_plugins = false
+plugins_native = []
+plugins_wasm = []
+
+[output]
+format = "text"
+real_time_updates = true
+update_interval_ms = 2000

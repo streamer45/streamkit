@@ -1,0 +1,41 @@
+---
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+# SPDX-License-Identifier: MPL-2.0
+title: Introduction
+description: What is StreamKit and why use it
+---
+
+StreamKit is a Rust-based media processing engine for building and running modular, node-based pipelines (DAGs). It powers both stateless "oneshot" processing (HTTP request → response) and long-running dynamic sessions controlled via a WebSocket API.
+
+Unlike one-off scripts or cloud APIs, StreamKit gives you a unified runtime for composing pipelines visually, reconfiguring them live, and observing them in production.
+
+## Who is this for?
+
+StreamKit is built for developers who need to process real-time media — whether you're building voice features for an app, prototyping an AI audio pipeline, or self-hosting alternatives to cloud speech APIs.
+
+## Key Features
+
+- **Pipeline engine**: Build typed DAGs of processing nodes
+- **Plugin architecture**: Extend functionality with native (C ABI) or WASM plugins
+- **Low-latency transport**: Real-time media via MoQ/WebTransport (QUIC) plus a WebSocket control plane
+- **Visual Pipeline Editor**: React-based web UI for building and monitoring pipelines
+- **GPU acceleration (optional)**: NVIDIA GPU support for selected ML plugins (via GPU builds)
+
+## Use Cases
+
+- **Live transcription** — Ingest audio via MoQ, run Whisper or SenseVoice STT, stream transcription updates to clients
+- **Voice agents** — TTS-powered bots using Kokoro, Piper, or Matcha that respond to audio input
+- **Real-time translation** — Bilingual streams with live subtitles using NLLB or Helsinki models
+- **Audio processing** — Mixing, gain control, format conversion, encoding/decoding pipelines
+- **Content analysis** — VAD for speech detection, keyword spotting, or custom safety filters
+- **Your idea** — Add your own node or plugin and compose it into a pipeline
+
+## How It Works (High-Level)
+
+Each node runs as an independent Tokio task and communicates via bounded async channels. Outputs can **fan out** to multiple downstream consumers, and connections can be **reliable** (backpressure) or **best-effort** (drop on overload). Pipelines are type-checked before they run (pins declare accepted/produced packet types), and dynamic sessions can be reconfigured at runtime via the control API.
+
+## Next Steps
+
+- [Quick Start](/getting-started/quick-start/) - Get running in 5 minutes
+- [Installation](/getting-started/installation/) - Detailed setup instructions
+- [Creating Pipelines](/guides/creating-pipelines/) - Build your first pipeline

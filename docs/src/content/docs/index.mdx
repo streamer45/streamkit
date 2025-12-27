@@ -1,0 +1,128 @@
+---
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+# SPDX-License-Identifier: MPL-2.0
+title: StreamKit
+description: Open-source real-time media processing engine
+template: splash
+hero:
+  tagline: Build and run real-time media pipelines on your own infrastructure. Speech-to-text, voice agents, live audio processing — composable, observable, self-hosted.
+  actions:
+    - text: Get Started
+      link: /getting-started/quick-start/
+      icon: right-arrow
+    - text: Hosted Demo
+      link: https://demo.streamkit.dev/
+      icon: external
+    - text: View on GitHub
+      link: https://github.com/streamer45/streamkit
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+> [!NOTE]
+> The hosted demo is a public instance. Don’t use sensitive data.
+
+> [!CAUTION]
+> StreamKit is early-stage (`v0.1.0`). Breaking changes are expected and the security model is still evolving.
+> If you expose a StreamKit instance to other machines, read the [Security](/guides/security/) guide first.
+
+> [!NOTE]
+> Official Docker images are published for `linux/amd64` (x86_64). On ARM hosts, use “Build from Source” or run with amd64 emulation.
+
+## A quick look
+
+<div className="sk-landing-video" aria-label="StreamKit demo video">
+	<a className="sk-landing-video__link" href="/skit.mp4">
+		<video
+			className="sk-landing-video__video"
+			autoPlay
+			muted
+			loop
+			playsInline
+			preload="auto"
+			poster="/screenshots/monitor_view.png"
+		>
+			<source src="/skit.mp4" type="video/mp4" />
+		</video>
+		<img
+			className="sk-landing-video__fallback"
+			src="/screenshots/monitor_view.png"
+			alt="StreamKit UI demo preview"
+			loading="lazy"
+		/>
+	</a>
+</div>
+
+## Who is this for?
+
+StreamKit is built for developers who need to process real-time media — whether you're building voice features for an app, prototyping an AI audio pipeline, or self-hosting alternatives to cloud speech APIs.
+
+## What you can build
+
+- **Live transcription** — Ingest audio via MoQ, run Whisper or SenseVoice STT, stream transcription updates to clients
+- **Voice agents** — TTS-powered bots using Kokoro, Piper, or Matcha that respond to audio input
+- **Real-time translation** — Bilingual streams with live subtitles using NLLB or Helsinki models
+- **Audio processing** — Mixing, gain control, format conversion, encoding/decoding pipelines
+- **Content analysis** — VAD for speech detection, keyword spotting, or custom safety filters
+
+## What it is
+
+<CardGrid>
+	<Card title="Server" icon="open-book">
+		A single binary (`skit`) that serves the web UI and exposes an HTTP API and a WebSocket endpoint to create and manage pipelines.
+	</Card>
+	<Card title="Pipelines" icon="laptop">
+		Pipelines are directed acyclic graphs (DAGs) of nodes. You can author them in the web UI or as YAML.
+	</Card>
+	<Card title="Execution" icon="rocket">
+		Run pipelines as request/response batch jobs (HTTP) or as long-lived sessions you can inspect and update while they run (WebSocket).
+	</Card>
+	<Card title="Extensions" icon="puzzle">
+		Add nodes via plugins (`plugin::native::*` or `plugin::wasm::*`) or embed JavaScript logic with `core::script` (with allowlists and limits).
+	</Card>
+</CardGrid>
+
+## Quick Example
+
+Run the server (Docker):
+
+```bash
+TAG=v0.1.0 # replace with the latest release tag
+docker run --rm \
+  -p 127.0.0.1:4545:4545/tcp \
+  -p 127.0.0.1:4545:4545/udp \
+  ghcr.io/streamer45/streamkit:${TAG} \
+  skit serve
+```
+
+Then open [http://localhost:4545](http://localhost:4545) to access the web UI.
+
+> [!CAUTION]
+> StreamKit does not currently implement authentication. Do not expose it directly to the public internet. Bind to localhost (recommended) or put it behind an authenticating reverse proxy and a trusted role header. See [Security](/guides/security/).
+
+> [!NOTE]
+> Some sample pipelines depend on models like Whisper (STT), Kokoro (TTS), and NLLB (translation). The official Docker images keep those out of the base image; mount them when needed. Some models may have restrictive licenses (e.g. NLLB is CC-BY-NC); review model licenses before production use. See [Docker Deployment](/deployment/docker/) and [Plugins Reference](/reference/plugins/) for details.
+
+> [!TIP]
+> Next:
+> - Follow the [Quick Start](/getting-started/quick-start/) to run your first pipeline end-to-end.
+> - Explore the [web UI guide](/guides/web-ui/) and [Creating Pipelines](/guides/creating-pipelines/) when you're ready to build your own graphs.
+
+## Execution modes
+
+StreamKit supports two pipeline execution modes:
+
+- **Oneshot**: stateless batch processing via HTTP (`POST /api/v1/process`). Good for request/response workflows.
+- **Dynamic**: long-running sessions you can inspect and reconfigure at runtime (web UI + WebSocket).
+
+Dynamic sessions use MoQ (Media over QUIC) over WebTransport (QUIC/UDP) for real-time media transport. This is why the Docker example publishes both TCP and UDP on port `4545`.
+
+Today, WebSocket is the control plane (sessions, edits, and telemetry). WebSocket transport nodes are on the roadmap; in the near term, non-media streams may also use MoQ.
+
+See:
+- [HTTP API](/reference/http-api/)
+- [WebSocket API](/reference/websocket-api/)
+- [Node Reference: `transport::moq::peer`](/reference/nodes/transport-moq-peer/)
+- [`samples/pipelines/`](https://github.com/streamer45/streamkit/tree/main/samples/pipelines)

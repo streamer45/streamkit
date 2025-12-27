@@ -1,0 +1,19 @@
+[package]
+name = "streamkit-plugin-sdk-wasm"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.92"
+authors = ["Claudio Costa <cstcld91@gmail.com>", "StreamKit Contributors"]
+description = "SDK for writing WASM plugins for StreamKit"
+homepage = "https://streamkit.dev"
+repository = "https://github.com/streamer45/streamkit"
+license = "MPL-2.0"
+keywords = ["audio", "plugin", "wasm", "webassembly", "streaming"]
+categories = ["multimedia", "api-bindings", "wasm"]
+readme = "README.md"
+
+[dependencies]
+wit-bindgen-rt = { version = "0.44", features = ["bitflags"] }
+
+[lib]
+crate-type = ["rlib"]

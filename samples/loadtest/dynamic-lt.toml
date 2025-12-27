@@ -1,0 +1,31 @@
+# Load Test Configuration: Dynamic Session Stress Test
+# Creates many concurrent sessions with active parameter tuning
+
+[server]
+url = "http://127.0.0.1:4545"
+
+[test]
+duration_secs = 300  # 5 minutes
+scenario = "dynamic"
+
+[oneshot]
+enabled = false
+concurrency = 0
+pipeline = ""
+input_file = ""
+
+[dynamic]
+enabled = true
+session_count = 10
+tune_interval_ms = 1500
+pipelines = ["samples/loadtest/pipelines/moq_mixing_selfcontained.yml"]
+
+[populate]
+load_plugins = true
+plugins_native = []
+plugins_wasm = []
+
+[output]
+format = "text"
+real_time_updates = true
+update_interval_ms = 2000

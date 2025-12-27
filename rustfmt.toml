@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Rustfmt configuration for StreamKit
+# See: https://rust-lang.github.io/rustfmt/
+
+# Use Rust 2021 edition formatting
+edition = "2021"
+
+# Line width
+max_width = 100
+
+# Use small heuristics for better formatting
+use_small_heuristics = "Max"
+
+# Control flow formatting
+match_block_trailing_comma = true
+
+# Macro formatting
+use_field_init_shorthand = true
+
+# Misc
+newline_style = "Unix"
+
+# Note: The following options require nightly Rust:
+# - imports_granularity = "Crate"
+# - group_imports = "StdExternalCrate"
+# - wrap_comments = true
+# - normalize_comments = true
+# - overflow_delimited_expr = true
+# - fn_params_layout = "Tall"
+#
+# To use these features, switch to nightly in rust-toolchain.toml

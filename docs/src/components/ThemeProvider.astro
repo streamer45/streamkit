@@ -1,0 +1,28 @@
+---
+// SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+// SPDX-License-Identifier: MPL-2.0
+---
+
+{/* Inlined to avoid FOUC. Default theme is dark (unless user explicitly picked light). */}
+<script is:inline>
+	window.StarlightThemeProvider = (() => {
+		const storageKey = 'starlight-theme';
+
+		const getStoredTheme = () => {
+			const value = typeof localStorage !== 'undefined' && localStorage.getItem(storageKey);
+			return value === 'light' || value === 'dark' ? value : null;
+		};
+
+		const theme = getStoredTheme() ?? 'dark';
+		document.documentElement.dataset.theme = theme;
+
+		return {
+			updatePickers(theme = getStoredTheme() ?? 'dark') {
+				document.querySelectorAll('starlight-theme-select').forEach((picker) => {
+					const select = picker.querySelector('select');
+					if (select) select.value = theme;
+				});
+			},
+		};
+	})();
+</script>

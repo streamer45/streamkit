@@ -1,0 +1,19 @@
+{
+  "name": "@streamkit/docs",
+  "type": "module",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "astro dev",
+    "start": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.37.1",
+    "astro": "^5.6.1",
+    "mermaid": "^11.12.2",
+    "sharp": "^0.34.2"
+  }
+}

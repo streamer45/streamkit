@@ -1,0 +1,224 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+name: Plugins CI
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  SHERPA_ONNX_VERSION: "1.12.17"
+
+jobs:
+  # Format check for all plugins (no native deps required)
+  format:
+    name: Format Check
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92.0"
+          components: rustfmt
+
+      - name: Check formatting - VAD
+        working-directory: plugins/native/vad
+        run: cargo fmt -- --check
+
+      - name: Check formatting - Whisper
+        working-directory: plugins/native/whisper
+        run: cargo fmt -- --check
+
+      - name: Check formatting - Kokoro
+        working-directory: plugins/native/kokoro
+        run: cargo fmt -- --check
+
+      - name: Check formatting - Piper
+        working-directory: plugins/native/piper
+        run: cargo fmt -- --check
+
+      - name: Check formatting - Matcha
+        working-directory: plugins/native/matcha
+        run: cargo fmt -- --check
+
+      - name: Check formatting - SenseVoice
+        working-directory: plugins/native/sensevoice
+        run: cargo fmt -- --check
+
+      - name: Check formatting - NLLB
+        working-directory: plugins/native/nllb
+        run: cargo fmt -- --check
+
+  # Lint plugins that can build without pre-installed native libraries
+  lint-simple:
+    name: Lint (Simple Plugins)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config libclang-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92.0"
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            plugins/native/vad
+          cache-on-failure: true
+
+      - name: Clippy - VAD
+        working-directory: plugins/native/vad
+        run: cargo clippy -- -D warnings
+
+  # Lint Whisper plugin (builds whisper.cpp from source)
+  lint-whisper:
+    name: Lint (Whisper)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config libclang-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92.0"
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            plugins/native/whisper
+          cache-on-failure: true
+
+      - name: Clippy - Whisper
+        working-directory: plugins/native/whisper
+        run: cargo clippy -- -D warnings
+
+  # Lint NLLB plugin (requires CTranslate2)
+  lint-nllb:
+    name: Lint (NLLB)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config libclang-dev libopenblas-dev
+
+      - name: Cache CTranslate2
+        id: cache-ct2
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/lib/libctranslate2*
+          key: ctranslate2-4.5.0-openmp-comp-${{ runner.os }}
+
+      - name: Build CTranslate2
+        if: steps.cache-ct2.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --recurse-submodules --branch v4.5.0 https://github.com/OpenNMT/CTranslate2.git
+          cd CTranslate2
+          mkdir build && cd build
+          cmake -DCMAKE_BUILD_TYPE=Release \
+                -DWITH_CUDA=OFF \
+                -DWITH_MKL=OFF \
+                -DWITH_OPENBLAS=ON \
+                -DOPENMP_RUNTIME=COMP \
+                -DBUILD_CLI=OFF \
+                ..
+          make -j$(nproc)
+          sudo make install
+          sudo ldconfig
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92.0"
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            plugins/native/nllb
+          cache-on-failure: true
+
+      - name: Clippy - NLLB
+        working-directory: plugins/native/nllb
+        run: cargo clippy -- -D warnings
+
+  # Lint sherpa-onnx based plugins (Kokoro, Piper, Matcha, SenseVoice)
+  lint-sherpa:
+    name: Lint (Sherpa-ONNX Plugins)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config libclang-dev wget
+
+      - name: Cache sherpa-onnx
+        id: cache-sherpa
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/lib/libsherpa*
+          key: sherpa-onnx-${{ env.SHERPA_ONNX_VERSION }}-${{ runner.os }}
+
+      - name: Install sherpa-onnx
+        if: steps.cache-sherpa.outputs.cache-hit != 'true'
+        run: |
+          cd /tmp
+          wget https://github.com/k2-fsa/sherpa-onnx/releases/download/v${SHERPA_ONNX_VERSION}/sherpa-onnx-v${SHERPA_ONNX_VERSION}-linux-x64-shared.tar.bz2
+          tar xf sherpa-onnx-v${SHERPA_ONNX_VERSION}-linux-x64-shared.tar.bz2
+          sudo cp -r sherpa-onnx-v${SHERPA_ONNX_VERSION}-linux-x64-shared/lib/* /usr/local/lib/
+          sudo cp -r sherpa-onnx-v${SHERPA_ONNX_VERSION}-linux-x64-shared/include/* /usr/local/include/
+          sudo ldconfig
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92.0"
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            plugins/native/kokoro
+            plugins/native/piper
+            plugins/native/matcha
+            plugins/native/sensevoice
+          cache-on-failure: true
+
+      - name: Clippy - Kokoro
+        working-directory: plugins/native/kokoro
+        run: cargo clippy -- -D warnings
+
+      - name: Clippy - Piper
+        working-directory: plugins/native/piper
+        run: cargo clippy -- -D warnings
+
+      - name: Clippy - Matcha
+        working-directory: plugins/native/matcha
+        run: cargo clippy -- -D warnings
+
+      - name: Clippy - SenseVoice
+        working-directory: plugins/native/sensevoice
+        run: cargo clippy -- -D warnings

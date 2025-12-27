@@ -1,0 +1,131 @@
+package streamkit:plugin@0.1.0;
+
+/// Core types for audio processing
+interface types {
+    /// Sample format for raw audio
+    enum sample-format {
+        float32,
+        s16-le,
+    }
+
+    /// Audio format specification
+    record audio-format {
+        sample-rate: u32,
+        channels: u16,
+        sample-format: sample-format,
+    }
+
+    /// Packet types that can flow through the pipeline
+    variant packet-type {
+        raw-audio(audio-format),
+        opus-audio,
+        text,
+        binary,
+        /// Extensible structured packet type, identified by a namespaced, versioned id.
+        ///
+        /// Example: `plugin::native::vad/vad-event@1`
+        custom(string),
+        any,
+    }
+
+    /// Encoding for custom packets.
+    enum custom-encoding {
+        json,
+    }
+
+    /// Extensible structured packet payload.
+    ///
+    /// For now, payloads are UTF-8 JSON text for debuggability.
+    record custom-packet {
+        type-id: string,
+        encoding: custom-encoding,
+        data: string,
+    }
+
+    /// Input pin definition
+    record input-pin {
+        name: string,
+        accepts-types: list<packet-type>,
+    }
+
+    /// Output pin definition
+    record output-pin {
+        name: string,
+        produces-type: packet-type,
+    }
+
+    /// Node metadata
+    record node-metadata {
+        kind: string,
+        inputs: list<input-pin>,
+        outputs: list<output-pin>,
+        param-schema: string,
+        categories: list<string>,
+    }
+
+    /// Audio frame data
+    record audio-frame {
+        sample-rate: u32,
+        channels: u16,
+        samples: list<f32>,
+    }
+
+    /// Packet that flows through the pipeline
+    variant packet {
+        audio(audio-frame),
+        text(string),
+        binary(list<u8>),
+        custom(custom-packet),
+    }
+}
+
+/// Host functions that plugins can call
+interface host {
+    use types.{packet};
+
+    /// Log levels for host logging
+    enum log-level {
+        debug,
+        info,
+        warn,
+        error,
+    }
+
+    /// Send a packet to an output pin
+    send-output: func(pin-name: string, packet: packet) -> result<_, string>;
+
+    /// Log a message to the host
+    log: func(level: log-level, message: string);
+}
+
+/// The main interface that plugins must implement
+interface node {
+    use types.{node-metadata, packet};
+
+    /// Get metadata about this node type
+    metadata: func() -> node-metadata;
+
+    /// A stateful node instance resource.
+    resource node-instance {
+        /// Construct a new stateful node instance with optional parameters (JSON string)
+        constructor(params: option<string>);
+
+        /// Process an incoming packet from a specific input pin using this instance's state
+        process: func(input-pin: string, packet: packet) -> result<_, string>;
+
+        /// Update the runtime parameters for this instance. The payload is a JSON string.
+        update-params: func(params: option<string>) -> result<_, string>;
+
+        /// Clean up any resources associated with this instance
+        cleanup: func();
+    }
+}
+
+/// World for StreamKit plugins
+world plugin {
+    import host;
+
+    include wasi:cli/imports@0.2.0;
+
+    export node;
+}

@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+name: MoQ Peer Transcoder (Gateway)
+description: Accepts a WebTransport client via transport::moq::peer, applies gain, and loops processed audio back to subscribers
+mode: dynamic
+
+nodes:
+  # Bidirectional node that accepts WebTransport connections and provides:
+  # - `out`: OpusAudio from the publishing client
+  # - `in`:  OpusAudio to send to subscribing clients
+  moq_peer:
+    kind: transport::moq::peer
+    params:
+      gateway_path: /moq
+      input_broadcast: input
+      output_broadcast: output
+      allow_reconnect: true
+    # Loopback: send processed audio back into the peer for distribution to subscribers.
+    # This is an intentional bidirectional cycle (peer `out` → decode/process → encode → peer `in`).
+    needs: opus_encoder
+
+  opus_decoder:
+    kind: audio::opus::decoder
+    needs: moq_peer
+
+  gain:
+    kind: audio::gain
+    params:
+      gain: 1.0
+    needs: opus_decoder
+
+  opus_encoder:
+    kind: audio::opus::encoder
+    needs: gain

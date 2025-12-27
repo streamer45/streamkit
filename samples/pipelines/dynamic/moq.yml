@@ -1,0 +1,23 @@
+name: Real-Time MoQ Transcoder
+description: Decodes a MoQ input broadcast, applies gain, and republishes to MoQ
+mode: dynamic
+nodes:
+  moq_peer:
+    kind: transport::moq::peer
+    params:
+      gateway_path: /moq/transcoder
+      input_broadcast: input
+      output_broadcast: output
+      allow_reconnect: true
+    needs: opus_encoder
+  opus_decoder:
+    kind: audio::opus::decoder
+    needs: moq_peer
+  gain:
+    kind: audio::gain
+    params:
+      gain: 1.0
+    needs: opus_decoder
+  opus_encoder:
+    kind: audio::opus::encoder
+    needs: gain

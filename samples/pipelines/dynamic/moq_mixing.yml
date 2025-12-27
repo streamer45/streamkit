@@ -1,0 +1,57 @@
+name: Real-Time MoQ Mixing (Mic + Music)
+description: Mixes a live MoQ input stream with a local music track and republishes to MoQ
+mode: dynamic
+nodes:
+  moq_peer:
+    kind: transport::moq::peer
+    params:
+      gateway_path: /moq/mixing
+      input_broadcast: input
+      output_broadcast: output
+      allow_reconnect: true
+    needs: opus_encoder
+  music_file_reader:
+    kind: core::file_reader
+    params:
+      chunk_size: 8192
+      path: samples/audio/system/THE LADY IS A TRAMP.opus
+  mic_opus_decoder:
+    kind: audio::opus::decoder
+    needs: moq_peer
+  music_ogg_demuxer:
+    kind: containers::ogg::demuxer
+    needs: music_file_reader
+  mic_gain:
+    kind: audio::gain
+    params:
+      gain: 1.0
+    needs: mic_opus_decoder
+  music_pacer:
+    kind: core::pacer
+    params:
+      buffer_size: 16
+      speed: 1
+    needs: music_ogg_demuxer
+  music_opus_decoder:
+    kind: audio::opus::decoder
+    needs: music_pacer
+  music_gain:
+    kind: audio::gain
+    params:
+      gain: 0.15
+    needs: music_opus_decoder
+  mixer:
+    kind: audio::mixer
+    params:
+      num_inputs: 2
+      clocked:
+        sample_rate: 48000
+        frame_samples_per_channel: 960
+        jitter_buffer_frames: 3
+        generate_silence: true
+    needs:
+    - mic_gain
+    - music_gain
+  opus_encoder:
+    kind: audio::opus::encoder
+    needs: mixer

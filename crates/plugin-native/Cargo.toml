@@ -1,0 +1,51 @@
+[package]
+name = "streamkit-plugin-native"
+version = "0.1.0"
+edition = "2021"
+authors = ["Claudio Costa <cstcld91@gmail.com>", "StreamKit Contributors"]
+description = "Native plugin runtime for StreamKit"
+homepage = "https://github.com/streamer45/streamkit"
+repository = "https://github.com/streamer45/streamkit"
+license = "MPL-2.0"
+keywords = ["audio", "plugin", "native", "runtime", "streaming"]
+categories = ["multimedia", "api-bindings"]
+readme = "README.md"
+publish = false
+
+[dependencies]
+streamkit-core = { workspace = true }
+streamkit-plugin-sdk-native = { workspace = true }
+
+libloading = "0.9"
+anyhow = "1.0"
+tracing = { workspace = true }
+tokio = { workspace = true, features = ["sync", "macros", "rt"] }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+serde-saphyr = { workspace = true }
+bytes = { workspace = true }
+
+[lib]
+crate-type = ["rlib"]
+
+# We need to override workspace lints to allow unsafe code for FFI
+[lints.rust]
+# Override workspace lint: This crate needs unsafe for FFI with C plugin ABI
+# All unsafe blocks are documented with safety comments
+unsafe_code = "allow"
+
+[lints.clippy]
+# Categories (from workspace)
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+# Safety (from workspace)
+unwrap_used = "warn"
+expect_used = "warn"
+# Math (from workspace)
+cast_possible_truncation = "warn"
+cast_precision_loss = "warn"
+cast_sign_loss = "warn"
+# Allow-list (from workspace)
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+doc_markdown = "allow"

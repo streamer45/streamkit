@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# clippy.toml
+
+# 1. Complexity Limits
+cognitive-complexity-threshold = 50
+too-many-lines-threshold = 300
+
+# 2. Naming consistency
+doc-valid-idents = []
+
+# 3. Banned Types / Methods / Macros
+disallowed-macros = [
+  { path = "std::print", reason = "Use the logging crate instead of stdout" },
+  { path = "std::println", reason = "Use the logging crate instead of stdout" },
+  { path = "std::eprint", reason = "Use the logging crate instead of stderr" },
+  { path = "std::eprintln", reason = "Use the logging crate instead of stderr" },
+  { path = "std::dbg", reason = "Remove debugging macros before commit" },
+]
+
+# 4. Macro expansion setup
+allowed-scripts = ["utf-8"]

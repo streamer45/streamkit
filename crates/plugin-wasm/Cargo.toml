@@ -1,0 +1,35 @@
+[package]
+name = "streamkit-plugin-wasm"
+version = "0.1.0"
+edition = "2021"
+authors = ["Claudio Costa <cstcld91@gmail.com>", "StreamKit Contributors"]
+description = "WASM plugin runtime for StreamKit"
+homepage = "https://github.com/streamer45/streamkit"
+repository = "https://github.com/streamer45/streamkit"
+license = "MPL-2.0"
+keywords = ["audio", "plugin", "wasm", "runtime", "streaming"]
+categories = ["multimedia", "wasm"]
+readme = "README.md"
+publish = false
+
+[dependencies]
+streamkit-core = { workspace = true }
+
+wasmtime = { version = "39.0", features = ["component-model", "async"] }
+wasmtime-wasi = "39.0"
+
+anyhow = "1.0"
+tokio = { workspace = true, features = ["macros", "sync"] }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde-saphyr = { workspace = true }
+futures = { workspace = true }
+
+[build-dependencies]
+wasmtime = { version = "39.0", features = ["component-model"] }
+
+[lints]
+workspace = true

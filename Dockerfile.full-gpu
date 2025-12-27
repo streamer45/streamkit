@@ -1,0 +1,680 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Multi-stage build for StreamKit server with GPU support
+# syntax=docker/dockerfile:1
+
+# Version configuration
+# Update these versions to upgrade dependencies across all build stages
+# Example: docker build --build-arg SHERPA_ONNX_VERSION=1.12.18 -f Dockerfile.gpu -t streamkit:gpu .
+ARG SHERPA_ONNX_VERSION=1.12.17
+# IMPORTANT: Use CUDA 12.3.2 with cuDNN 9 to match sherpa-onnx pre-built GPU binaries
+# This is the recommended version for ONNX Runtime GPU in 2025
+ARG CUDA_VERSION=12.3.2
+
+# Stage 1: Build Rust dependencies
+FROM rust:1.92-slim-bookworm AS rust-deps
+
+WORKDIR /build
+
+# Install build dependencies (includes all deps needed by workspace plugins)
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    g++ \
+    cmake \
+    libopus-dev \
+    libclang-dev \
+    clang \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy workspace files to build dependencies (plugins are now excluded)
+COPY Cargo.toml Cargo.lock ./
+COPY apps ./apps
+COPY crates ./crates
+COPY sdks ./sdks
+COPY wit ./wit
+
+# Create dummy ui/dist directory so server's RustEmbed doesn't fail
+# (will be replaced with real UI in Stage 3)
+RUN mkdir -p ui/dist && echo '<!DOCTYPE html><html><body>Building...</body></html>' > ui/dist/index.html
+
+# Build dependencies with cache mount (plugins are excluded from workspace)
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/build/target \
+    cargo build --release -p streamkit-server --bin skit --features "moq" -j$(nproc) && \
+    # Copy compiled artifacts out of cache mount so they persist in the layer
+    mkdir -p /build/target-out && \
+    cp -r /build/target/release /build/target-out/
+
+# Stage 2: Build UI
+FROM oven/bun:1.3.5-alpine AS ui-builder
+
+WORKDIR /build/ui
+
+# Install UI dependencies
+COPY ui/package.json ui/bun.lock* ./
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    bun install --frozen-lockfile
+
+# Copy UI source and build
+COPY ui/ ./
+RUN bun run build
+
+# Stage 3: Build final server binary with UI embedded
+FROM rust:1.92-slim-bookworm AS rust-builder
+
+WORKDIR /build
+
+# Install build dependencies (same as stage 1, includes all deps needed by workspace)
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    g++ \
+    cmake \
+    libopus-dev \
+    libclang-dev \
+    clang \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy workspace files (plugins are excluded from workspace)
+COPY Cargo.toml Cargo.lock ./
+COPY apps ./apps
+COPY crates ./crates
+COPY sdks ./sdks
+COPY wit ./wit
+
+# Copy built UI from stage 2
+COPY --from=ui-builder /build/ui/dist ./ui/dist
+
+# Remove the server binary from the previous stage to force rebuild with new UI
+# We'll use cache mount with artifacts from stage 1
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/build/target \
+    --mount=type=bind,from=rust-deps,source=/build/target-out/release,target=/build/target-init \
+    bash -c '\
+      # Copy pre-built dependencies if target is empty (first build) \
+      if [ ! -d "/build/target/release/deps" ]; then \
+        echo "Initializing target from cache..."; \
+        cp -r /build/target-init/* /build/target/release/ || true; \
+      fi; \
+      # Remove server binary to force rebuild with new UI \
+      rm -rf /build/target/release/skit \
+        /build/target/release/skit.d \
+        /build/target/release/deps/streamkit_server-* \
+        /build/target/release/.fingerprint/streamkit-server-*; \
+      # Build only the server binary \
+      cargo build --release --features "moq" --bin skit -j$(nproc); \
+      # Copy final binary out of cache mount \
+      mkdir -p /build/bin && cp /build/target/release/skit /build/bin/skit \
+    '
+
+# Stage 4: Build Whisper plugin with CUDA support
+ARG CUDA_VERSION
+FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu22.04 AS whisper-builder
+
+WORKDIR /build
+
+# Install Rust
+RUN apt-get update && apt-get install -y \
+    curl \
+    pkg-config \
+    libssl-dev \
+    g++ \
+    cmake \
+    libclang-dev \
+    clang \
+    git \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.92.0
+
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Copy only what's needed to build whisper plugin
+# Note: Cargo.toml needed for workspace dependency resolution in core/
+COPY Cargo.toml Cargo.lock ./
+COPY crates/core ./crates/core
+COPY sdks/plugin-sdk ./sdks/plugin-sdk
+COPY plugins/native/whisper ./plugins/native/whisper
+
+# Enable CUDA feature in whisper-rs by creating a patch Cargo.toml
+RUN cd plugins/native/whisper && \
+    sed -i 's/whisper-rs = "0.15"/whisper-rs = { version = "0.15", features = ["cuda"] }/' Cargo.toml
+
+# Build whisper plugin with CUDA support
+RUN --mount=type=cache,id=whisper-cargo-registry,target=/root/.cargo/registry \
+    --mount=type=cache,id=whisper-cargo-git,target=/root/.cargo/git \
+    --mount=type=cache,id=whisper-target,target=/build/plugins/native/whisper/target \
+    cd plugins/native/whisper && \
+    cargo build --release --target-dir target -j$(nproc) && \
+    mkdir -p /build/plugins/native && \
+    cp target/release/libwhisper.so /build/plugins/native/
+
+# Download Whisper models (base.en, base multilingual, and tiny.en) and Silero VAD model
+RUN mkdir -p /build/models && \
+    curl -L -o /build/models/ggml-base.en.bin \
+      https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin && \
+    curl -L -o /build/models/ggml-base.en-q5_1.bin \
+      https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q5_1.bin && \
+    curl -L -o /build/models/ggml-base-q5_1.bin \
+      https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin && \
+    curl -L -o /build/models/ggml-tiny.en-q5_1.bin \
+      https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en-q5_1.bin && \
+    curl -L -o /build/models/silero_vad.onnx \
+      https://raw.githubusercontent.com/snakers4/silero-vad/master/src/silero_vad/data/silero_vad.onnx
+
+# Stage 5: Build Kokoro TTS plugin with GPU support
+ARG CUDA_VERSION
+FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu22.04 AS kokoro-builder
+
+WORKDIR /build
+
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    wget \
+    bzip2 \
+    pkg-config \
+    libssl-dev \
+    libclang-dev \
+    clang \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.92.0
+
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Download and install pre-built GPU-enabled sherpa-onnx
+# Note: The pre-built sherpa-onnx GPU binaries bundle ONNX Runtime, so we don't need to install it separately
+# Using CUDA 12.x build which includes ONNX Runtime with CUDA 12 and cuDNN 9 support
+ARG SHERPA_ONNX_VERSION
+RUN cd /tmp && \
+    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/v${SHERPA_ONNX_VERSION}/sherpa-onnx-v${SHERPA_ONNX_VERSION}-cuda-12.x-cudnn-9.x-linux-x64-gpu.tar.bz2 && \
+    tar xf sherpa-onnx-v${SHERPA_ONNX_VERSION}-cuda-12.x-cudnn-9.x-linux-x64-gpu.tar.bz2 && \
+    cp -r sherpa-onnx-v${SHERPA_ONNX_VERSION}-cuda-12.x-cudnn-9.x-linux-x64-gpu/lib/* /usr/local/lib/ && \
+    cp -r sherpa-onnx-v${SHERPA_ONNX_VERSION}-cuda-12.x-cudnn-9.x-linux-x64-gpu/include/* /usr/local/include/ && \
+    ldconfig && \
+    rm -rf /tmp/sherpa-onnx-v${SHERPA_ONNX_VERSION}-cuda-12.x-cudnn-9.x-linux-x64-gpu*
+
+# Copy only what's needed to build kokoro plugin
+# Note: Cargo.toml needed for workspace dependency resolution in core/
+COPY Cargo.toml Cargo.lock ./
+COPY crates/core ./crates/core
+COPY sdks/plugin-sdk ./sdks/plugin-sdk
+COPY plugins/native/kokoro ./plugins/native/kokoro
+
+# Build kokoro plugin
+RUN --mount=type=cache,id=kokoro-cargo-registry,target=/root/.cargo/registry \
+    --mount=type=cache,id=kokoro-cargo-git,target=/root/.cargo/git \
+    --mount=type=cache,id=kokoro-target,target=/build/plugins/native/kokoro/target \
+    cd plugins/native/kokoro && \
+    RUSTFLAGS="-L /usr/local/lib" cargo build --release --target-dir target -j$(nproc) && \
+    mkdir -p /build/plugins/native && \
+    cp target/release/libkokoro.so /build/plugins/native/
+
+# Download Kokoro TTS models
+RUN mkdir -p /build/models && \
+    cd /build/models && \
+    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_1.tar.bz2 && \
+    tar xf kokoro-multi-lang-v1_1.tar.bz2 && \
+    rm kokoro-multi-lang-v1_1.tar.bz2
+
+# Stage 6: Build Piper TTS plugin with GPU support
+ARG CUDA_VERSION
+FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu22.04 AS piper-builder
+
+WORKDIR /build
+
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    wget \
+    bzip2 \
+    pkg-config \
+    libssl-dev \
+    libclang-dev \
+    clang \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.92.0
+
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Copy sherpa-onnx from kokoro-builder
+COPY --from=kokoro-builder /usr/local/lib/*.so* /usr/local/lib/
+COPY --from=kokoro-builder /usr/local/include/sherpa-onnx /usr/local/include/sherpa-onnx
+RUN ldconfig
+
+# Copy only what's needed to build piper plugin
+# Note: Cargo.toml needed for workspace dependency resolution in core/
+COPY Cargo.toml Cargo.lock ./
+COPY crates/core ./crates/core
+COPY sdks/plugin-sdk ./sdks/plugin-sdk
+COPY plugins/native/piper ./plugins/native/piper
+
+# Build piper plugin
+RUN --mount=type=cache,id=piper-cargo-registry,target=/root/.cargo/registry \
+    --mount=type=cache,id=piper-cargo-git,target=/root/.cargo/git \
+    --mount=type=cache,id=piper-target,target=/build/plugins/native/piper/target \
+    cd plugins/native/piper && \
+    RUSTFLAGS="-L /usr/local/lib" cargo build --release --target-dir target -j$(nproc) && \
+    mkdir -p /build/plugins/native && \
+    cp target/release/libpiper.so /build/plugins/native/
+
+# Download Piper TTS models
+RUN mkdir -p /build/models && \
+    cd /build/models && \
+    # English model (sherpa-onnx format)
+    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-libritts_r-medium.tar.bz2 && \
+    tar xf vits-piper-en_US-libritts_r-medium.tar.bz2 && \
+    rm vits-piper-en_US-libritts_r-medium.tar.bz2 && \
+    cd vits-piper-en_US-libritts_r-medium && \
+    if [ ! -f "model.onnx" ] && [ -f "en_US-libritts_r-medium.onnx" ]; then \
+        ln -sf en_US-libritts_r-medium.onnx model.onnx; \
+    fi && \
+    cd /build/models && \
+    # Mexican Spanish model (sherpa-onnx format with espeak-ng-data)
+    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-es_MX-claude-high.tar.bz2 && \
+    tar xf vits-piper-es_MX-claude-high.tar.bz2 && \
+    rm vits-piper-es_MX-claude-high.tar.bz2 && \
+    cd vits-piper-es_MX-claude-high && \
+    if [ ! -f "model.onnx" ] && [ -f "es_MX-claude-high.onnx" ]; then \
+        ln -sf es_MX-claude-high.onnx model.onnx; \
+    fi
+
+# Stage 7: Build SenseVoice STT plugin with GPU support
+ARG CUDA_VERSION
+FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu22.04 AS sensevoice-builder
+
+WORKDIR /build
+
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    wget \
+    bzip2 \
+    pkg-config \
+    libssl-dev \
+    libclang-dev \
+    clang \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.92.0
+
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Copy sherpa-onnx from kokoro-builder
+COPY --from=kokoro-builder /usr/local/lib/*.so* /usr/local/lib/
+COPY --from=kokoro-builder /usr/local/include/sherpa-onnx /usr/local/include/sherpa-onnx
+RUN ldconfig
+
+# Copy only what's needed to build sensevoice plugin
+# Note: Cargo.toml needed for workspace dependency resolution in core/
+COPY Cargo.toml Cargo.lock ./
+COPY crates/core ./crates/core
+COPY sdks/plugin-sdk ./sdks/plugin-sdk
+COPY plugins/native/sensevoice ./plugins/native/sensevoice
+
+# Build sensevoice plugin
+RUN --mount=type=cache,id=sensevoice-cargo-registry,target=/root/.cargo/registry \
+    --mount=type=cache,id=sensevoice-cargo-git,target=/root/.cargo/git \
+    --mount=type=cache,id=sensevoice-target,target=/build/plugins/native/sensevoice/target \
+    cd plugins/native/sensevoice && \
+    RUSTFLAGS="-L /usr/local/lib" cargo build --release --target-dir target -j$(nproc) && \
+    mkdir -p /build/plugins/native && \
+    cp target/release/libsensevoice.so /build/plugins/native/
+
+# Download SenseVoice models
+RUN mkdir -p /build/models && \
+    cd /build/models && \
+    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2 && \
+    tar xf sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2 && \
+    rm sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2
+
+# Stage 8: Build VAD plugin with GPU support
+ARG CUDA_VERSION
+FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu22.04 AS vad-builder
+
+WORKDIR /build
+
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    wget \
+    bzip2 \
+    pkg-config \
+    libssl-dev \
+    libclang-dev \
+    clang \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.92.0
+
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Copy sherpa-onnx from kokoro-builder
+COPY --from=kokoro-builder /usr/local/lib/*.so* /usr/local/lib/
+COPY --from=kokoro-builder /usr/local/include/sherpa-onnx /usr/local/include/sherpa-onnx
+RUN ldconfig
+
+# Copy only what's needed to build vad plugin
+# Note: Cargo.toml needed for workspace dependency resolution in core/
+COPY Cargo.toml Cargo.lock ./
+COPY crates/core ./crates/core
+COPY sdks/plugin-sdk ./sdks/plugin-sdk
+COPY plugins/native/vad ./plugins/native/vad
+
+# Build vad plugin
+RUN --mount=type=cache,id=vad-cargo-registry,target=/root/.cargo/registry \
+    --mount=type=cache,id=vad-cargo-git,target=/root/.cargo/git \
+    --mount=type=cache,id=vad-target,target=/build/plugins/native/vad/target \
+    cd plugins/native/vad && \
+    RUSTFLAGS="-L /usr/local/lib" cargo build --release --target-dir target -j$(nproc) && \
+    mkdir -p /build/plugins/native && \
+    cp target/release/libvad.so /build/plugins/native/
+
+# Download ten-vad model
+RUN mkdir -p /build/models && \
+    curl -L -o /build/models/ten-vad.onnx \
+      https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/ten-vad.onnx
+
+# Stage 9: Build Matcha TTS plugin with GPU support
+ARG CUDA_VERSION
+FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu22.04 AS matcha-builder
+
+WORKDIR /build
+
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    wget \
+    bzip2 \
+    pkg-config \
+    libssl-dev \
+    libclang-dev \
+    clang \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.92.0
+
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Copy sherpa-onnx from kokoro-builder
+COPY --from=kokoro-builder /usr/local/lib/*.so* /usr/local/lib/
+COPY --from=kokoro-builder /usr/local/include/sherpa-onnx /usr/local/include/sherpa-onnx
+RUN ldconfig
+
+# Copy only what's needed to build matcha plugin
+# Note: Cargo.toml needed for workspace dependency resolution in core/
+COPY Cargo.toml Cargo.lock ./
+COPY crates/core ./crates/core
+COPY sdks/plugin-sdk ./sdks/plugin-sdk
+COPY plugins/native/matcha ./plugins/native/matcha
+
+# Build matcha plugin
+RUN --mount=type=cache,id=matcha-cargo-registry,target=/root/.cargo/registry \
+    --mount=type=cache,id=matcha-cargo-git,target=/root/.cargo/git \
+    --mount=type=cache,id=matcha-target,target=/build/plugins/native/matcha/target \
+    cd plugins/native/matcha && \
+    RUSTFLAGS="-L /usr/local/lib" cargo build --release --target-dir target -j$(nproc) && \
+    mkdir -p /build/plugins/native && \
+    cp target/release/libmatcha.so /build/plugins/native/
+
+# Download Matcha TTS models
+RUN mkdir -p /build/models && \
+    cd /build/models && \
+    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/matcha-icefall-en_US-ljspeech.tar.bz2 && \
+    tar xf matcha-icefall-en_US-ljspeech.tar.bz2 && \
+    rm matcha-icefall-en_US-ljspeech.tar.bz2 && \
+    cd matcha-icefall-en_US-ljspeech && \
+    wget -O vocos-22khz-univ.onnx https://github.com/k2-fsa/sherpa-onnx/releases/download/vocoder-models/vocos-22khz-univ.onnx
+
+# Stage 10: Build NLLB Translation plugin with GPU support
+# NOTE: This stage explicitly waits for whisper-builder to complete first
+# to avoid running two heavy Rust+CUDA builds in parallel (disk space constraint on CI runners)
+ARG CUDA_VERSION
+FROM nvidia/cuda:${CUDA_VERSION}-cudnn9-devel-ubuntu22.04 AS nllb-builder
+
+# Force serialization: wait for whisper-builder to complete before starting nllb-builder
+# This reduces peak disk usage on CI runners with limited space
+COPY --from=whisper-builder /build/plugins/native/libwhisper.so /tmp/.wait-for-whisper
+
+WORKDIR /build
+
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    wget \
+    pkg-config \
+    libssl-dev \
+    g++ \
+    cmake \
+    python3 \
+    python3-pip \
+    libclang-dev \
+    clang \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.92.0
+
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Compile and install CTranslate2 with CUDA support from source
+RUN apt-get update && apt-get install -y git && \
+    cd /tmp && \
+    git clone --depth 1 --branch v4.6.1 --recursive https://github.com/OpenNMT/CTranslate2.git && \
+    cd CTranslate2 && \
+    mkdir build && cd build && \
+    cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DWITH_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89;90" -DWITH_MKL=OFF -DWITH_DNNL=OFF -DOPENMP_RUNTIME=COMP .. && \
+    make -j$(nproc) && \
+    make install && \
+    ldconfig && \
+    rm -rf /tmp/CTranslate2 && \
+    apt-get remove -y git && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
+
+# Copy only what's needed to build nllb plugin
+# Note: Cargo.toml needed for workspace dependency resolution in core/
+COPY Cargo.toml Cargo.lock ./
+COPY crates/core ./crates/core
+COPY sdks/plugin-sdk ./sdks/plugin-sdk
+COPY plugins/native/nllb ./plugins/native/nllb
+
+# Enable CUDA features in ct2rs by patching Cargo.toml
+RUN cd plugins/native/nllb && \
+    sed -i 's/ct2rs = "0.9"/ct2rs = { version = "0.9", features = ["cuda", "cudnn"] }/' Cargo.toml
+
+# Build nllb plugin with CUDA support
+RUN --mount=type=cache,id=nllb-cargo-registry,target=/root/.cargo/registry \
+    --mount=type=cache,id=nllb-cargo-git,target=/root/.cargo/git \
+    --mount=type=cache,id=nllb-target,target=/build/plugins/native/nllb/target \
+    cd plugins/native/nllb && \
+    CMAKE_BUILD_PARALLEL_LEVEL=$(nproc) RUSTFLAGS="-L /usr/local/lib" cargo build --release --target-dir target -j$(nproc) && \
+    mkdir -p /build/plugins/native && \
+    cp target/release/libnllb.so /build/plugins/native/
+
+# Download NLLB pre-converted models from Hugging Face
+# - 3.3B-float16: GPU-optimized model (~6.6GB)
+# - 600M-INT8: CPU fallback model (~1.2GB)
+RUN PIP_BREAK_SYSTEM_PACKAGES=1 pip3 install --no-cache-dir huggingface-hub && \
+    mkdir -p /build/models && \
+    cd /build/models && \
+    python3 -c "from huggingface_hub import snapshot_download; snapshot_download('entai2965/nllb-200-3.3B-ctranslate2-float16', local_dir='nllb-200-3.3B-ct2-float16', local_dir_use_symlinks=False)" && \
+    python3 -c "from huggingface_hub import snapshot_download; snapshot_download('entai2965/nllb-200-distilled-600M-ctranslate2', local_dir='nllb-200-distilled-600M-ct2-int8', local_dir_use_symlinks=False)"
+
+# Stage 11: Build Helsinki Translation plugin (Candle) and download OPUS-MT models
+ARG CUDA_VERSION
+FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu22.04 AS helsinki-builder
+
+WORKDIR /build
+
+# Install dependencies (Rust + Python for model conversion)
+RUN apt-get update && apt-get install -y \
+    curl \
+    git \
+    pkg-config \
+    libssl-dev \
+    libclang-dev \
+    clang \
+    python3 \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.92.0
+
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# bindgen_cuda (used by candle-kernels) tries to call `nvidia-smi` to infer the
+# GPU compute capability. During `docker build`, GPUs are typically not exposed
+# and `nvidia-smi` is not present, so we provide a default compute capability.
+# Override at build time if desired, e.g.:
+#   docker build --build-arg HELSINKI_CUDA_COMPUTE_CAP=86 ...
+ARG HELSINKI_CUDA_COMPUTE_CAP=70
+ENV CUDA_COMPUTE_CAP=${HELSINKI_CUDA_COMPUTE_CAP}
+
+# Copy only what's needed to build helsinki plugin
+COPY Cargo.toml Cargo.lock ./
+COPY crates/core ./crates/core
+COPY sdks/plugin-sdk ./sdks/plugin-sdk
+COPY plugins/native/helsinki ./plugins/native/helsinki
+
+# Build helsinki plugin
+RUN --mount=type=cache,id=helsinki-cargo-registry,target=/root/.cargo/registry \
+    --mount=type=cache,id=helsinki-cargo-git,target=/root/.cargo/git \
+    --mount=type=cache,id=helsinki-target,target=/build/plugins/native/helsinki/target \
+    cd plugins/native/helsinki && \
+    cargo build --release --features cuda --target-dir target -j$(nproc) && \
+    mkdir -p /build/plugins/native && \
+    cp target/release/libhelsinki.so /build/plugins/native/
+
+# Download and convert OPUS-MT models to Candle format (safetensors + tokenizer json)
+RUN PIP_BREAK_SYSTEM_PACKAGES=1 pip3 install --no-cache-dir \
+      transformers \
+      sentencepiece \
+      safetensors \
+      torch \
+      tokenizers && \
+    python3 plugins/native/helsinki/download-models.py
+
+# Runtime stage with NVIDIA CUDA runtime + cuDNN
+# IMPORTANT: Use cudnn9-runtime for CUDA 12.x with ONNX Runtime CUDA support
+ARG CUDA_VERSION
+FROM nvidia/cuda:${CUDA_VERSION}-cudnn9-runtime-ubuntu22.04
+
+# Install runtime dependencies and debugging tools
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    libopus0 \
+    libgomp1 \
+    gdb \
+    curl \
+    iproute2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create app user
+RUN useradd -m -u 1000 -s /bin/bash app
+
+# Copy binary from rust builder
+COPY --from=rust-builder /build/bin/skit /usr/local/bin/skit
+
+# Copy ONNX Runtime GPU libraries from kokoro-builder
+COPY --from=kokoro-builder /usr/local/lib/*.so* /usr/local/lib/
+
+# Copy CUDA libraries needed at runtime (cuDNN, cuBLAS, etc.)
+# Note: libcuda.so.1 is provided by the host NVIDIA driver via nvidia-container-toolkit
+# The runtime image includes other CUDA libraries (cuBLAS, cuDNN, etc.)
+# Ensure libraries are in the linker cache
+RUN ldconfig
+
+# Set library path to include NVIDIA libraries
+# The nvidia-container-toolkit will inject /usr/local/nvidia/lib64 at runtime
+ENV LD_LIBRARY_PATH=/usr/local/lib:/usr/local/nvidia/lib64:/usr/local/nvidia/lib:${LD_LIBRARY_PATH}
+
+# Copy whisper plugin and models
+COPY --from=whisper-builder /build/plugins /opt/streamkit/plugins
+COPY --from=whisper-builder /build/models /opt/streamkit/models
+
+# Copy kokoro plugin and models (merge into /opt/streamkit/plugins and /opt/streamkit/models)
+COPY --from=kokoro-builder /build/plugins/native/* /opt/streamkit/plugins/native/
+COPY --from=kokoro-builder /build/models/kokoro-multi-lang-v1_1 /opt/streamkit/models/kokoro-multi-lang-v1_1
+
+# Copy piper plugin and models (merge into /opt/streamkit/plugins and /opt/streamkit/models)
+COPY --from=piper-builder /build/plugins/native/* /opt/streamkit/plugins/native/
+COPY --from=piper-builder /build/models/vits-piper-en_US-libritts_r-medium /opt/streamkit/models/vits-piper-en_US-libritts_r-medium
+COPY --from=piper-builder /build/models/vits-piper-es_MX-claude-high /opt/streamkit/models/vits-piper-es_MX-claude-high
+
+# Copy sensevoice plugin and models (merge into /opt/streamkit/plugins and /opt/streamkit/models)
+COPY --from=sensevoice-builder /build/plugins/native/* /opt/streamkit/plugins/native/
+COPY --from=sensevoice-builder /build/models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09 /opt/streamkit/models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09
+
+# Copy CTranslate2 libraries from nllb-builder
+COPY --from=nllb-builder /usr/local/lib/libctranslate2.so* /usr/local/lib/
+RUN ldconfig
+
+# Copy nllb plugin and models (merge into /opt/streamkit/plugins and /opt/streamkit/models)
+# - 3.3B-float16: GPU-optimized model
+# - 600M-INT8: CPU fallback model
+COPY --from=nllb-builder /build/plugins/native/* /opt/streamkit/plugins/native/
+COPY --from=nllb-builder /build/models/nllb-200-3.3B-ct2-float16 /opt/streamkit/models/nllb-200-3.3B-ct2-float16
+COPY --from=nllb-builder /build/models/nllb-200-distilled-600M-ct2-int8 /opt/streamkit/models/nllb-200-distilled-600M-ct2-int8
+
+# Copy helsinki plugin and models (merge into /opt/streamkit/plugins and /opt/streamkit/models)
+COPY --from=helsinki-builder /build/plugins/native/* /opt/streamkit/plugins/native/
+COPY --from=helsinki-builder /build/models/opus-mt-en-es /opt/streamkit/models/opus-mt-en-es
+COPY --from=helsinki-builder /build/models/opus-mt-es-en /opt/streamkit/models/opus-mt-es-en
+
+# Copy vad plugin and model (merge into /opt/streamkit/plugins and /opt/streamkit/models)
+COPY --from=vad-builder /build/plugins/native/* /opt/streamkit/plugins/native/
+COPY --from=vad-builder /build/models/ten-vad.onnx /opt/streamkit/models/ten-vad.onnx
+
+# Copy matcha plugin and models (merge into /opt/streamkit/plugins and /opt/streamkit/models)
+COPY --from=matcha-builder /build/plugins/native/* /opt/streamkit/plugins/native/
+COPY --from=matcha-builder /build/models/matcha-icefall-en_US-ljspeech /opt/streamkit/models/matcha-icefall-en_US-ljspeech
+
+# Copy sample pipelines
+COPY --chown=app:app samples /opt/streamkit/samples
+
+# Copy official Docker configuration (no dependency on private demo assets)
+RUN mkdir -p /opt/streamkit/config
+COPY --chown=app:app docker-skit.toml /opt/streamkit/config/skit.toml
+COPY --chown=app:app docker-skit-gpu.toml /opt/streamkit/config/skit-gpu.toml
+
+# Copy demo configurations used by `demo/launcher`
+RUN mkdir -p /opt/streamkit/demo
+COPY --chown=app:app demo/skit.toml /opt/streamkit/demo/skit.toml
+COPY --chown=app:app demo/skit-gpu.toml /opt/streamkit/demo/skit-gpu.toml
+
+# Ensure runtime-writable directories exist, and keep /app/* as compatibility symlinks.
+RUN mkdir -p /opt/streamkit/.plugins /opt/streamkit/logs && \
+    chown -R app:app /opt/streamkit && \
+    mkdir -p /app && \
+    ln -sfn /opt/streamkit/config/skit.toml /opt/streamkit/skit.toml && \
+    ln -sfn /opt/streamkit/config/skit-gpu.toml /opt/streamkit/skit-gpu.toml && \
+    ln -sfn /opt/streamkit/plugins /app/plugins && \
+    ln -sfn /opt/streamkit/models /app/models && \
+    ln -sfn /opt/streamkit/samples /app/samples && \
+    ln -sfn /opt/streamkit/demo /app/demo && \
+    ln -sfn /opt/streamkit/config /app/config && \
+    ln -sfn /opt/streamkit/.plugins /app/.plugins && \
+    ln -sfn /opt/streamkit/logs /app/logs
+
+WORKDIR /opt/streamkit
+USER app
+
+# Expose HTTP and UDP ports
+EXPOSE 4545/tcp
+EXPOSE 4545/udp
+
+# OCI image labels
+LABEL org.opencontainers.image.title="StreamKit (GPU)"
+LABEL org.opencontainers.image.description="High-performance real-time media processing engine with GPU-accelerated plugins (CUDA 12.3)"
+LABEL org.opencontainers.image.source="https://github.com/streamer45/streamkit"
+LABEL org.opencontainers.image.licenses="MPL-2.0"
+LABEL org.opencontainers.image.vendor="StreamKit Contributors"
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:4545/healthz || exit 1
+
+# Default command
+CMD ["skit", "serve"]

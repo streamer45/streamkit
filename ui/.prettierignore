@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+bun.lock
+
+# Build output
+dist/
+build/
+.next/
+
+# Generated files
+src/types/generated/
+
+# Coverage
+coverage/
+
+# Config files
+pnpm-lock.yaml
+package-lock.json
+yarn.lock

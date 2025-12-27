@@ -1,0 +1,94 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+name: moq_demo_mixing_selfcontained
+description: Self-contained MoQ mixing demo (file mic input + music bed)
+mode: dynamic
+nodes:
+  # Replace the browser mic broadcaster with a file-based broadcaster.
+  # Publishes Opus packets to the MoQ relay under the "input" broadcast.
+  mic_file_reader:
+    kind: core::file_reader
+    params:
+      chunk_size: 8192
+      path: samples/audio/system/speech_10m.opus
+  mic_demuxer:
+    kind: containers::ogg::demuxer
+    needs: mic_file_reader
+  mic_pacer:
+    kind: core::pacer
+    params:
+      buffer_size: 16
+      speed: 1
+    needs: mic_demuxer
+  moq_input_publisher:
+    kind: transport::moq::publisher
+    params:
+      broadcast: input
+      url: http://localhost:4443
+    needs: mic_pacer
+
+  # Subscriber consumes the mic broadcast from MoQ (same as UI pipeline).
+  moq_subscriber:
+    kind: transport::moq::subscriber
+    params:
+      backoff_cap: 4
+      broadcast: input
+      max_retries: 5
+      url: http://localhost:4443
+
+  # Music bed (file-based).
+  music_file_reader:
+    kind: core::file_reader
+    params:
+      chunk_size: 8192
+      path: samples/audio/system/THE LADY IS A TRAMP.opus
+  music_demuxer:
+    kind: containers::ogg::demuxer
+    needs: music_file_reader
+  music_pacer:
+    kind: core::pacer
+    params:
+      buffer_size: 16
+      speed: 1
+    needs: music_demuxer
+
+  # Decode mic + music, gain, mix, and publish output to MoQ.
+  mic_decoder:
+    kind: audio::opus::decoder
+    needs: moq_subscriber
+  mic_gain:
+    kind: audio::gain
+    params:
+      gain: 1.0
+    needs: mic_decoder
+  music_decoder:
+    kind: audio::opus::decoder
+    needs: music_pacer
+  music_gain:
+    kind: audio::gain
+    params:
+      gain: 0.15
+    needs: music_decoder
+  mixer:
+    kind: audio::mixer
+    params:
+      num_inputs: 2
+      clocked:
+        sample_rate: 48000
+        frame_samples_per_channel: 960
+        jitter_buffer_frames: 3
+        generate_silence: true
+    needs:
+    - mic_gain
+    - music_gain
+  encoder:
+    kind: audio::opus::encoder
+    needs: mixer
+  moq_publisher:
+    kind: transport::moq::publisher
+    params:
+      broadcast: output
+      url: http://localhost:4443
+    needs: encoder

@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Minimal production-ish config for systemd installs.
+# Prefer running behind a reverse proxy (Caddy/Nginx) and keep the bind local.
+
+[server]
+address = "127.0.0.1:4545"
+
+[plugins]
+# Persist dynamically loaded plugins across upgrades.
+directory = "/var/lib/streamkit/plugins"
+
+[log]
+console_enable = true
+file_enable = false
+console_level = "info"
+

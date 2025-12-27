@@ -1,0 +1,102 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# GPU-optimized configuration shipped in the official GPU Docker images.
+# Includes model pre-warming for GPU-accelerated plugins.
+
+[server]
+address = "0.0.0.0:4545"
+samples_dir = "/opt/streamkit/samples/pipelines"
+max_body_size = 104857600
+
+# MoQ Gateway URL for the frontend to connect via WebTransport
+# Default assumes Docker is running locally with ports mapped to localhost
+# Override with SK_SERVER__MOQ_GATEWAY_URL env var for remote deployments
+moq_gateway_url = "http://127.0.0.1:4545/moq"
+
+[plugins]
+directory = "/opt/streamkit/plugins"
+
+[log]
+console_enable = true
+file_enable = false
+console_level = "info"
+
+[telemetry]
+enable = true
+tokio_console = false
+
+[engine]
+packet_batch_size = 8
+node_input_capacity = 8
+pin_distributor_capacity = 4
+
+[resources]
+keep_models_loaded = true
+
+# Pre-warming: Load models at startup to eliminate first-use latency
+[resources.prewarm]
+enabled = true
+
+# Whisper STT - base model with GPU
+[[resources.prewarm.plugins]]
+kind = "plugin::native::whisper"
+params = { model_path = "/opt/streamkit/models/ggml-base.en-q5_1.bin", use_gpu = true, gpu_device = 0, num_threads = 2 }
+fallback_params = { model_path = "/opt/streamkit/models/ggml-base.en-q5_1.bin", use_gpu = false, num_threads = 2 }
+
+# VAD (Voice Activity Detection)
+[[resources.prewarm.plugins]]
+kind = "plugin::native::vad"
+params = { model_path = "/opt/streamkit/models/ten-vad.onnx", output_mode = "events", num_threads = 1, provider = "cpu" }
+
+# Matcha TTS with GPU
+[[resources.prewarm.plugins]]
+kind = "plugin::native::matcha"
+params = { model_dir = "/opt/streamkit/models/matcha-icefall-en_US-ljspeech", speaker_id = 0, speed = 1.0, num_threads = 2, execution_provider = "cuda" }
+fallback_params = { model_dir = "/opt/streamkit/models/matcha-icefall-en_US-ljspeech", speaker_id = 0, speed = 1.0, num_threads = 4, execution_provider = "cpu" }
+
+# Kokoro TTS with GPU
+[[resources.prewarm.plugins]]
+kind = "plugin::native::kokoro"
+params = { model_dir = "/opt/streamkit/models/kokoro-multi-lang-v1_1", speaker_id = 0, speed = 1.0, num_threads = 2, execution_provider = "cuda" }
+fallback_params = { model_dir = "/opt/streamkit/models/kokoro-multi-lang-v1_1", speaker_id = 0, speed = 1.0, num_threads = 4, execution_provider = "cpu" }
+
+# Piper TTS (no GPU support in this plugin)
+[[resources.prewarm.plugins]]
+kind = "plugin::native::piper"
+params = { model_dir = "/opt/streamkit/models/vits-piper-en_US-libritts_r-medium", speaker_id = 0, speed = 1.0, num_threads = 4 }
+
+# SenseVoice STT with GPU
+[[resources.prewarm.plugins]]
+kind = "plugin::native::sensevoice"
+params = { model_dir = "/opt/streamkit/models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09", language = "auto", num_threads = 2, execution_provider = "cuda" }
+fallback_params = { model_dir = "/opt/streamkit/models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09", language = "auto", num_threads = 4, execution_provider = "cpu" }
+
+# NLLB Translation with GPU (3.3B-float16 for GPU, 600M-INT8 for CPU fallback)
+[[resources.prewarm.plugins]]
+kind = "plugin::native::nllb"
+params = { model_path = "/opt/streamkit/models/nllb-200-3.3B-ct2-float16", source_language = "eng_Latn", target_language = "spa_Latn", beam_size = 1, num_threads = 2, device = "cuda", device_index = 0 }
+fallback_params = { model_path = "/opt/streamkit/models/nllb-200-distilled-600M-ct2-int8", source_language = "eng_Latn", target_language = "spa_Latn", beam_size = 1, num_threads = 4, device = "cpu" }
+
+# Script node configuration
+[script]
+
+# OpenAI API Key for LLM integration
+[script.secrets.openai_key]
+env = "OPENAI_API_KEY"
+type = "apikey"
+description = "OpenAI API key for GPT-4 integration in voice agent pipelines"
+allowed_fetch_urls = ["https://api.openai.com/*"]
+
+# Allow fetch() calls to OpenAI API
+[[script.global_fetch_allowlist]]
+url = "https://api.openai.com/v1/chat/completions"
+methods = ["POST"]
+
+[permissions]
+default_role = "user"
+# Docker containers must bind to 0.0.0.0 for published ports to work.
+# This is only safe when the published ports are bound to localhost (recommended),
+# e.g. `-p 127.0.0.1:4545:4545/tcp -p 127.0.0.1:4545:4545/udp`, or otherwise firewalled.
+allow_insecure_no_auth = true

@@ -1,0 +1,146 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Real-Time Speech Translation: English to Spanish (Helsinki OPUS-MT)
+#
+# This pipeline receives English audio via MoQ, transcribes it,
+# translates to Spanish using Helsinki-NLP OPUS-MT, synthesizes
+# Spanish speech, and outputs via MoQ.
+#
+# Unlike NLLB, Helsinki OPUS-MT models are Apache 2.0 licensed,
+# making them suitable for commercial deployments.
+#
+# Prerequisites:
+#   - English Whisper model: models/ggml-base.en-q5_1.bin
+#   - Silero VAD model: models/silero_vad.onnx
+#   - Helsinki OPUS-MT EN->ES: models/opus-mt-en-es
+#   - Mexican Spanish Piper voice: models/vits-piper-es_MX-claude-high
+#
+# Model downloads:
+#   just download-whisper-models
+#   just download-helsinki-models
+#   just download-piper-spanish
+#
+# Expected latency: 3-8 seconds (VAD + STT + Translation + TTS)
+
+name: Real-Time Speech Translation (English → Spanish) - Helsinki
+description: Real-time speech translation from English to Spanish using Apache 2.0 licensed Helsinki OPUS-MT
+mode: dynamic
+
+nodes:
+  # ============================================================
+  # INPUT: Receive English audio from MoQ broadcast
+  # ============================================================
+  moq_peer:
+    kind: transport::moq::peer
+    params:
+      gateway_path: /moq/speech-translate-helsinki-en-es
+      input_broadcast: input
+      output_broadcast: output
+      allow_reconnect: true
+      output_group_duration_ms: 40
+      output_initial_delay_ms: 250
+    needs: opus_encoder
+
+  # Decode Opus audio (48kHz stereo → PCM)
+  opus_decoder:
+    kind: audio::opus::decoder
+    needs: moq_peer
+
+  # ============================================================
+  # STT: Convert English speech to text
+  # ============================================================
+  # Resample to 16kHz mono (Whisper requirement)
+  resample_for_stt:
+    kind: audio::resampler
+    params:
+      target_sample_rate: 16000
+      channels: 1
+    needs: opus_decoder
+
+  # Transcribe English speech with VAD-based segmentation
+  whisper_stt:
+    kind: plugin::native::whisper
+    params:
+      model_path: models/ggml-base.en-q5_1.bin
+      language: en
+      vad_model_path: models/silero_vad.onnx
+      vad_threshold: 0.4
+      min_silence_duration_ms: 600
+      max_segment_duration_secs: 30.0
+      emit_vad_events: true
+      n_threads: 0
+    needs: resample_for_stt
+
+  stt_telemetry_out:
+    kind: core::telemetry_out
+    params:
+      packet_types: ["Transcription"]
+      max_events_per_sec: 20
+    needs:
+      node: whisper_stt
+      mode: best_effort
+
+  # ============================================================
+  # TRANSLATION: English → Spanish (Helsinki OPUS-MT)
+  # ============================================================
+  helsinki_translate:
+    kind: plugin::native::helsinki
+    params:
+      model_dir: models/opus-mt-en-es
+      source_language: en
+      target_language: es
+      device: cpu
+      max_length: 512
+    needs: whisper_stt
+
+  translate_telemetry_out:
+    kind: core::telemetry_out
+    params:
+      packet_types: ["Text"]
+      max_events_per_sec: 20
+    needs:
+      node: helsinki_translate
+      mode: best_effort
+
+  # ============================================================
+  # TTS: Convert Spanish text to speech
+  # ============================================================
+  piper_tts:
+    kind: plugin::native::piper
+    params:
+      model_dir: models/vits-piper-es_MX-claude-high
+      speaker_id: 0
+      speed: 1.0
+      num_threads: 4
+      min_sentence_length: 10
+    needs: helsinki_translate
+
+  # Resample from 22.05kHz mono (Piper output) to 48kHz mono (Opus input)
+  resample_for_output:
+    kind: audio::resampler
+    params:
+      target_sample_rate: 48000
+      channels: 1
+    needs: piper_tts
+
+  # Pace audio output and fill gaps with silence to maintain continuous stream
+  audio_pacer:
+    kind: audio::pacer
+    params:
+      speed: 1.0
+      buffer_size: 32
+      generate_silence: true
+      initial_sample_rate: 48000
+      initial_channels: 1
+    needs: resample_for_output
+
+  # ============================================================
+  # OUTPUT: Stream Spanish audio via MoQ
+  # ============================================================
+  opus_encoder:
+    kind: audio::opus::encoder
+    params:
+      bitrate: 128000
+    needs: audio_pacer

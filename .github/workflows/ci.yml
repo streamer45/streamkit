@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch: {}
+
+jobs:
+  skit:
+    name: Skit
+    uses: ./.github/workflows/skit.yml
+
+  ui:
+    name: UI
+    uses: ./.github/workflows/ui.yml
+
+  plugins:
+    name: Plugins
+    uses: ./.github/workflows/plugins.yml
+
+  all-checks:
+    name: All Checks Passed
+    runs-on: ubuntu-22.04
+    needs: [skit, ui, plugins]
+    steps:
+      - name: All checks passed
+        run: echo "All CI checks passed successfully!"

@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+#
+# skit:input_asset_tags=speech
+
+name: Speech-to-Text (Whisper, VAD-Filtered)
+description: Filters silence with VAD before transcribing with Whisper
+mode: oneshot
+steps:
+  - kind: streamkit::http_input
+
+  - kind: containers::ogg::demuxer
+
+  - kind: audio::opus::decoder
+
+  - kind: audio::resampler
+    params:
+      chunk_frames: 960
+      output_frame_size: 960
+      target_sample_rate: 16000
+
+  - kind: plugin::native::vad
+    params:
+      model_path: models/ten-vad.onnx
+      output_mode: filtered_audio
+      threshold: 0.6
+      min_speech_duration_s: 0.3
+
+  - kind: plugin::native::whisper
+    params:
+      model_path: models/ggml-tiny.en-q5_1.bin
+      language: en
+      vad_model_path: models/silero_vad.onnx
+      vad_threshold: 0.5
+      min_silence_duration_ms: 700
+      max_segment_duration_secs: 30.0
+
+  - kind: core::json_serialize
+    params:
+      pretty: false
+      newline_delimited: true
+
+  - kind: streamkit::http_output
+    params:
+      content_type: application/json

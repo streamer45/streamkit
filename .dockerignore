@@ -1,0 +1,71 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Build artifacts
+target/
+*/target/
+
+# Large local artifacts (not needed for image builds)
+models/
+.plugins/
+
+# Node modules
+node_modules/
+ui/node_modules/
+ui/dist/
+ui/.next/
+ui/.bun_tmp/
+ui/.bun_install/
+
+# Git
+.git/
+.github/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Demo files (not included in official images)
+# Keep demo configs needed by Dockerfile.full* images.
+demo/**
+!demo/skit.toml
+!demo/skit-gpu.toml
+!demo/Dockerfile
+!demo/pipelines/**
+
+# Test files
+**/*test.rs
+**/*_test.rs
+**/tests/
+
+# Examples (toy plugins for documentation only)
+examples/plugins/
+
+# DO NOT exclude plugins/native/* - needed for Docker builds
+
+# Development files
+.claude/
+.skit_history
+.skit_history.*
+.env
+.env.local
+*.log
+
+# Profiling data
+profiling-data.*.json
+*.profdata
+
+# Review documents
+*_REVIEW.md
+*_ANALYSIS.md
+*_SUMMARY.md
+*_FIX.md
+*_GUIDE.md
