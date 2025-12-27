@@ -1,6 +1,6 @@
 [package]
 name = "streamkit-api"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.92"
 authors = ["Claudio Costa <cstcld91@gmail.com>", "StreamKit Contributors"]
