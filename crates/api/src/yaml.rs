@@ -176,6 +176,9 @@ fn detect_cycles(user_nodes: &IndexMap<String, UserNode>) -> Result<(), String> 
             for neighbor in neighbors {
                 if !visited.contains(neighbor) {
                     if let Some(cycle) = dfs(neighbor, adjacency, visited, rec_stack, cycle_path) {
+                        // Ensure we unwind recursion state even when returning early.
+                        rec_stack.remove(node);
+                        cycle_path.pop();
                         return Some(cycle);
                     }
                 } else if rec_stack.contains(neighbor) {
@@ -189,6 +192,9 @@ fn detect_cycles(user_nodes: &IndexMap<String, UserNode>) -> Result<(), String> 
                         cycle_strs.join(" -> "),
                         neighbor
                     );
+                    // Ensure we unwind recursion state even when returning early.
+                    rec_stack.remove(node);
+                    cycle_path.pop();
                     return Some((cycle_nodes, description));
                 }
             }
@@ -504,6 +510,19 @@ nodes:
         assert!(
             result.is_ok(),
             "Cycle with bidirectional node should be allowed: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_sample_moq_mixing_compiles() {
+        let yaml = include_str!("../../../samples/pipelines/dynamic/moq_mixing.yml");
+        let user_pipeline: UserPipeline = serde_saphyr::from_str(yaml).unwrap();
+        let result = compile(user_pipeline);
+
+        assert!(
+            result.is_ok(),
+            "Sample pipeline moq_mixing.yml should compile: {:?}",
             result.err()
         );
     }
