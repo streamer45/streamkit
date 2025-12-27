@@ -559,16 +559,6 @@ impl UnifiedPluginManager {
             }
         }
 
-        if remove_file {
-            if let Err(err) = std::fs::remove_file(&managed.file_path) {
-                warn!(
-                    error = %err,
-                    file = ?managed.file_path,
-                    "Failed to remove plugin file during unload"
-                );
-            }
-        }
-
         let plugin_type = match managed.plugin_type {
             PluginType::Wasm => "wasm",
             PluginType::Native => "native",
@@ -581,7 +571,28 @@ impl UnifiedPluginManager {
         );
         self.update_loaded_gauge();
 
-        Ok(PluginSummary::from_entry(kind.to_string(), &managed))
+        // Capture file path before dropping managed, as we need to delete the file
+        // AFTER the library is unloaded to avoid dlopen caching issues on reload.
+        let file_path = managed.file_path.clone();
+        let summary = PluginSummary::from_entry(kind.to_string(), &managed);
+
+        // Explicitly drop managed to ensure the library (Arc<Library>) is fully
+        // unloaded (dlclose called) BEFORE we delete the file. This prevents race
+        // conditions where dlopen during reload might return a cached handle to
+        // the old library if the file is deleted while the library is still loaded.
+        drop(managed);
+
+        if remove_file {
+            if let Err(err) = std::fs::remove_file(&file_path) {
+                warn!(
+                    error = %err,
+                    file = ?file_path,
+                    "Failed to remove plugin file during unload"
+                );
+            }
+        }
+
+        Ok(summary)
     }
 
     /// Returns all loaded plugins as summaries.
