@@ -17,60 +17,51 @@ just skit serve
 just dev  # For development with hot reload
 ```
 
-## Dashboard Overview
+## Main Routes
 
-The UI surfaces:
+The Web UI has four main routes:
 
-- **Sessions**: active pipelines and their status
-- **Node palette**: built-in nodes + loaded plugins
-- **Samples**: runnable example pipelines (from `samples/pipelines/`)
-- **Plugins**: upload/unload plugins at runtime (if your role allows it)
+- **Design** (default): build and edit pipelines visually.
+- **Monitor**: inspect and manage live sessions.
+- **Convert**: demo/test **oneshot** pipelines (request → response).
+- **Stream**: demo/test **dynamic** pipelines (MOQ-powered streaming sessions).
 
-## Creating a Session
+## Design View
 
-1. Click **"New Session"** in the dashboard
-2. Enter a name for your session
-3. Choose a starting template or start blank
+Design View is the default route and is split into three panes:
 
-## Visual Pipeline Editor
+- **Left pane**: library and tools:
+  - **Nodes**: the node palette/library (built-ins + loaded plugins).
+  - **Plugins**: view/manage loaded plugins (availability depends on your role/config).
+  - **Samples**: example pipelines you can load as a starting point.
+  - **Fragments**: reusable building blocks you can drop into a graph.
+- **Center pane (canvas)**: a React Flow editor where you:
+  - Drag and drop nodes onto the canvas.
+  - Connect nodes by drawing edges between ports.
+  - Use the right-click context menu for actions like import/export.
+- **Right pane**:
+  - **YAML**: the pipeline definition for the canvas (two-way synced).
+  - **Inspector** (when a node is selected): inspect/tune that node’s parameters.
 
-### Adding Nodes
+### What is a Fragment?
 
-- Drag nodes from the **Node Palette** onto the canvas
-- Or right-click the canvas and select from the context menu
+A fragment is a reusable mini-graph (a small, pre-wired set of nodes) that you can insert into a larger pipeline. Use fragments to share common patterns (e.g. “input → preprocess → STT”) without rebuilding them by hand.
 
-### Connecting Nodes
+## Monitor View
 
-- Click and drag from an **output pin** (right side) to an **input pin** (left side)
-- Connections validate automatically based on data types
+Monitor View uses the same overall three-pane layout, but focuses on running sessions:
 
-### Node Configuration
+- **Left pane**: a live list of sessions until you enter **Staging Mode** (then it switches to the node library/palette for editing).
+- **Center pane**: the session graph view.
+- **Right pane** (once a session is selected): the YAML editor plus the Inspector pane for selected nodes.
 
-- Click a node to open its **Properties Panel**
-- Modify parameters in real-time
-- Changes apply immediately to the running pipeline
+## Convert View
 
-## Node States
+Convert is for demoing/testing **oneshot** pipelines: load or author a pipeline, run it against input media, and review outputs.
 
-Nodes display their current state with visual indicators:
+## Stream View
 
-| State | Description |
-|-------|-------------|
-| `Initializing` | Node is starting up |
-| `Ready` | Node is ready; waiting for pipeline start |
-| `Running` | Processing normally |
-| `Recovering` | Attempting to recover from an error |
-| `Degraded` | Running with reduced quality |
-| `Failed` | Fatal error |
-| `Stopped` | Node stopped (completed or shutdown) |
-
-## Real-time Monitoring
-
-The UI provides live updates via WebSocket:
-
-- **Packet flow** visualization on connections
-- **Node metrics** (packets processed, errors)
-- **State changes** reflected instantly
+Stream is for demoing/testing **dynamic** (long-running) pipelines using MOQ-powered streaming sessions.
 
 ## Telemetry Timeline
 
@@ -105,8 +96,7 @@ nodes:
 
 ## Exporting Pipelines
 
-1. Click **"Export"** in the toolbar
-2. Save the YAML for sharing/versioning
+In Design View, use the canvas right-click context menu to export/import pipelines. The YAML pane is also a convenient way to copy/paste pipelines for sharing/versioning.
 
 To run exported YAML without the UI, send it to the server:
 
