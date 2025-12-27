@@ -206,7 +206,8 @@ function schedulePostConnectWarnings(
 
   if (decision.shouldWatch && attempt.watch) {
     const watchRef = attempt.watch;
-    attempt.healthEffect.timeout(() => {
+    // Use setTimeout instead of healthEffect.timeout() which fires immediately
+    setTimeout(() => {
       if (get().status !== 'connected') return;
       if (watchRef.status.peek() !== 'live') {
         set({
@@ -218,15 +219,23 @@ function schedulePostConnectWarnings(
 
   if (decision.shouldPublish && attempt.microphone) {
     const microphoneRef = attempt.microphone;
-    attempt.healthEffect.timeout(() => {
+
+    // Track if the microphone source was EVER acquired during the 10-second window.
+    // This prevents false errors when the source signal transiently goes falsy.
+    let wasEverReady = Boolean(microphoneRef.source.peek()) || get().micStatus === 'ready';
+    attempt.healthEffect.subscribe(microphoneRef.source, (value) => {
+      if (value) wasEverReady = true;
+    });
+
+    // Use setTimeout instead of healthEffect.timeout() which fires immediately
+    setTimeout(() => {
       if (get().status !== 'connected') return;
-      if (!microphoneRef.source.peek()) {
-        set({
-          micStatus: 'error',
-          errorMessage:
-            'Connected to relay, but microphone is not available. Check browser permissions and selected input device.',
-        });
-      }
+      if (wasEverReady) return;
+      set({
+        micStatus: 'error',
+        errorMessage:
+          'Connected to relay, but microphone is not available. Check browser permissions and selected input device.',
+      });
     }, 10_000);
   }
 }
