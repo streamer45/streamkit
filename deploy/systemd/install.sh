@@ -11,6 +11,9 @@ TAG=""
 REPO="$REPO_DEFAULT"
 INSTALL_PREFIX="/opt/streamkit"
 NO_START="0"
+UNINSTALL="0"
+PURGE="0"
+YES="0"
 
 usage() {
 	cat <<'EOF'
@@ -24,11 +27,16 @@ Options:
   --repo owner/name   GitHub repo to install from (default: streamer45/streamkit)
   --prefix PATH       Install prefix (default: /opt/streamkit)
   --no-start          Only install files; don't enable/start the service
+  --uninstall         Uninstall StreamKit (removes service and binaries)
+  --purge             With --uninstall: also remove config, data, and user
+  -y, --yes           Skip confirmation prompts
   -h, --help          Show help
 
 Examples:
   sudo ./install.sh --tag v0.2.0
   sudo ./install.sh --latest
+  sudo ./install.sh --uninstall
+  sudo ./install.sh --uninstall --purge
 EOF
 }
 
@@ -61,6 +69,18 @@ while [[ $# -gt 0 ]]; do
 			NO_START="1"
 			shift
 			;;
+		--uninstall)
+			UNINSTALL="1"
+			shift
+			;;
+		--purge)
+			PURGE="1"
+			shift
+			;;
+		-y|--yes)
+			YES="1"
+			shift
+			;;
 		-h|--help)
 			usage
 			exit 0
@@ -76,6 +96,84 @@ done
 if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
 	echo "Run as root (e.g. via sudo)." >&2
 	exit 1
+fi
+
+do_uninstall() {
+	echo "This will remove:"
+	echo "  - StreamKit binaries (${INSTALL_PREFIX})"
+	echo "  - systemd service unit"
+	if [[ "$PURGE" == "1" ]]; then
+		echo "  - Configuration (/etc/streamkit)"
+		echo "  - Data and plugins (/var/lib/streamkit)"
+		echo "  - streamkit system user"
+	fi
+	echo ""
+	if [[ "$YES" != "1" ]]; then
+		read -r -p "Continue? [y/N] " confirm
+		if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+			echo "Aborted."
+			exit 0
+		fi
+	fi
+
+	echo ""
+	echo "Uninstalling StreamKit..."
+
+	if systemctl is-active --quiet streamkit 2>/dev/null; then
+		echo "Stopping streamkit service..."
+		systemctl stop streamkit
+	fi
+
+	if systemctl is-enabled --quiet streamkit 2>/dev/null; then
+		echo "Disabling streamkit service..."
+		systemctl disable streamkit
+	fi
+
+	if [[ -f /etc/systemd/system/streamkit.service ]]; then
+		echo "Removing service unit..."
+		rm -f /etc/systemd/system/streamkit.service
+		systemctl daemon-reload
+	fi
+
+	if [[ -d "$INSTALL_PREFIX" ]]; then
+		echo "Removing installation directory ${INSTALL_PREFIX}..."
+		rm -rf "$INSTALL_PREFIX"
+	fi
+
+	if [[ "$PURGE" == "1" ]]; then
+		echo "Purging configuration and data..."
+
+		if [[ -d /etc/streamkit ]]; then
+			echo "Removing /etc/streamkit..."
+			rm -rf /etc/streamkit
+		fi
+
+		if [[ -d /var/lib/streamkit ]]; then
+			echo "Removing /var/lib/streamkit..."
+			rm -rf /var/lib/streamkit
+		fi
+
+		if id -u streamkit >/dev/null 2>&1; then
+			echo "Removing streamkit user..."
+			userdel streamkit 2>/dev/null || true
+		fi
+
+		if getent group streamkit >/dev/null 2>&1; then
+			echo "Removing streamkit group..."
+			groupdel streamkit 2>/dev/null || true
+		fi
+	else
+		echo ""
+		echo "Note: Config (/etc/streamkit) and data (/var/lib/streamkit) preserved."
+		echo "Use --purge to remove everything including the streamkit user."
+	fi
+
+	echo "StreamKit uninstalled."
+	exit 0
+}
+
+if [[ "$UNINSTALL" == "1" ]]; then
+	do_uninstall
 fi
 
 need_cmd curl

@@ -12,11 +12,10 @@ This install path is a middle-ground between Docker and "build from source": you
 On a systemd-based Linux host:
 
 ```bash
-TAG=v0.1.0 # replace with the latest release tag
-curl -fsSL https://raw.githubusercontent.com/streamer45/streamkit/${TAG}/deploy/systemd/install.sh -o streamkit-install.sh
+export TAG=v0.1.0 # replace with the latest release tag
+curl -fsSL "https://raw.githubusercontent.com/streamer45/streamkit/${TAG}/deploy/systemd/install.sh" -o streamkit-install.sh
 chmod +x streamkit-install.sh
-
-sudo ./streamkit-install.sh --tag ${TAG}
+sudo ./streamkit-install.sh --tag "${TAG}"
 ```
 
 > [!TIP]
@@ -61,3 +60,23 @@ Re-run the installer with a newer tag (or `--latest`) and restart:
 sudo ./streamkit-install.sh --latest
 sudo systemctl restart streamkit
 ```
+
+## Uninstall
+
+To remove StreamKit while preserving configuration and data:
+
+```bash
+sudo ./streamkit-install.sh --uninstall
+```
+
+To completely remove everything including config, data, and the streamkit user:
+
+```bash
+sudo ./streamkit-install.sh --uninstall --purge
+```
+
+> [!NOTE]
+> Without `--purge`, the following are preserved for potential reinstallation:
+> - `/etc/streamkit/` (configuration)
+> - `/var/lib/streamkit/` (plugins and data)
+> - The `streamkit` system user
