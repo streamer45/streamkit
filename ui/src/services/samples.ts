@@ -47,6 +47,23 @@ export async function listSamples(): Promise<SamplePipeline[]> {
 }
 
 /**
+ * Lists all available sample pipelines (oneshot + dynamic).
+ * @returns A promise that resolves to an array of sample pipelines
+ */
+export async function listAllSamples(): Promise<SamplePipeline[]> {
+  const [oneshot, dynamic] = await Promise.all([listSamples(), listDynamicSamples()]);
+  const merged = [...oneshot, ...dynamic];
+
+  // De-dupe by ID (defensive; endpoints should not overlap)
+  const seen = new Set<string>();
+  return merged.filter((s) => {
+    if (seen.has(s.id)) return false;
+    seen.add(s.id);
+    return true;
+  });
+}
+
+/**
  * Lists all available dynamic sample pipelines
  * @returns A promise that resolves to an array of dynamic sample pipelines
  */

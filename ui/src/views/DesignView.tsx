@@ -119,7 +119,6 @@ const TopRightControls = React.memo(
     onSaveTemplate,
     onCreateSession,
     nodesLength,
-    canSwitchToDynamic,
   }: {
     mode: 'oneshot' | 'dynamic';
     onModeChange: () => void;
@@ -129,13 +128,18 @@ const TopRightControls = React.memo(
     onSaveTemplate: () => void;
     onCreateSession: () => void;
     nodesLength: number;
-    canSwitchToDynamic: boolean;
   }) => {
     const { can } = usePermissions();
 
     return (
       <TopRightControlsContainer>
-        <SKTooltip content="Oneshot mode for file conversion workflows">
+        <SKTooltip
+          content={
+            mode === 'oneshot'
+              ? 'Oneshot mode for file conversion workflows'
+              : 'Switch to oneshot mode (your dynamic canvas is preserved)'
+          }
+        >
           <Button
             variant={mode === 'oneshot' ? 'primary' : 'secondary'}
             size="small"
@@ -146,16 +150,15 @@ const TopRightControls = React.memo(
         </SKTooltip>
         <SKTooltip
           content={
-            canSwitchToDynamic
+            mode === 'dynamic'
               ? 'Dynamic mode for real-time streaming pipelines'
-              : 'Remove oneshot-only nodes to enable dynamic mode'
+              : 'Switch to dynamic mode (your oneshot canvas is preserved)'
           }
         >
           <Button
             variant={mode === 'dynamic' ? 'primary' : 'secondary'}
             size="small"
             onClick={() => mode !== 'dynamic' && onModeChange()}
-            disabled={mode === 'oneshot' && !canSwitchToDynamic}
           >
             ⚡ Dynamic
           </Button>
@@ -240,6 +243,13 @@ type EditorNodeData = {
   definition?: { bidirectional?: boolean };
   onParamChange?: (nodeId: string, paramName: string, value: unknown) => void;
   onLabelChange?: (nodeId: string, newLabel: string) => void;
+};
+
+type PipelineCanvasCache = {
+  nodes: RFNode<EditorNodeData>[];
+  edges: Edge[];
+  name: string;
+  description: string;
 };
 
 /**
@@ -470,15 +480,30 @@ const DesignViewContent: React.FC = () => {
     mode,
     setMode,
     pipelineName,
+    setPipelineName,
     pipelineDescription,
+    setPipelineDescription,
     handleExportYaml,
     handleImportYaml,
     handleYamlChange,
     nextLabelForKind,
     handleParamChange,
     handleLabelChange,
+    regenerateYamlFromCanvas,
     getId,
   } = usePipeline();
+
+  const cachesRef = React.useRef<Partial<Record<'oneshot' | 'dynamic', PipelineCanvasCache>>>({});
+
+  // Keep per-mode caches updated with the latest canvas state.
+  React.useEffect(() => {
+    cachesRef.current[mode] = {
+      nodes,
+      edges,
+      name: pipelineName,
+      description: pipelineDescription,
+    };
+  }, [mode, nodes, edges, pipelineName, pipelineDescription]);
 
   // Create stable callback refs for node data to prevent unnecessary re-renders
   const handleParamChangeRef = React.useRef(handleParamChange);
@@ -500,6 +525,20 @@ const DesignViewContent: React.FC = () => {
     handleLabelChangeRef.current(nodeId, newLabel);
   }, []);
 
+  const rehydrateNodesForCanvas = React.useCallback(
+    (cachedNodes: RFNode<EditorNodeData>[]) => {
+      return cachedNodes.map((n) => ({
+        ...n,
+        data: {
+          ...n.data,
+          onParamChange: stableHandleParamChange,
+          onLabelChange: stableHandleLabelChange,
+        },
+      }));
+    },
+    [stableHandleParamChange, stableHandleLabelChange]
+  );
+
   const {
     isValidConnection: isValidConnectionBase,
     createOnConnect,
@@ -513,6 +552,13 @@ const DesignViewContent: React.FC = () => {
     nodesRef.current = nodes;
     edgesRef.current = edges;
   }, [nodes, edges]);
+
+  const handleNodeDragStop = React.useCallback(() => {
+    // Keep YAML ordering in sync with the canvas (top-down) without regenerating on every drag tick.
+    // Note: onNodeDragStop's third param only contains the dragged nodes, not all nodes.
+    // Use nodesRef.current which has all nodes with updated positions from onNodesChange.
+    regenerateYamlFromCanvas({ nodes: nodesRef.current, edges: edgesRef.current });
+  }, [regenerateYamlFromCanvas]);
 
   // Wrap isValidConnection to pass current nodes and edges via refs
   const isValidConnectionWrapper = React.useCallback(
@@ -679,12 +725,14 @@ const DesignViewContent: React.FC = () => {
       edges: edges.map((e) => ({ source: e.source, target: e.target })),
     });
 
-    setNodes((prev) =>
-      prev.map((n) => ({
-        ...n,
-        position: positions[n.id] ?? n.position,
-      }))
-    );
+    const nextNodes = nodes.map((n) => ({
+      ...n,
+      position: positions[n.id] ?? n.position,
+    }));
+
+    setNodes(nextNodes);
+    // Pass edges explicitly to avoid stale closure issues.
+    regenerateYamlFromCanvas({ nodes: nextNodes, edges: edgesRef.current });
 
     setTimeout(() => {
       rf.current?.fitView({ padding: 0.2, duration: 300 });
@@ -1126,19 +1174,23 @@ const DesignViewContent: React.FC = () => {
     handleAutoLayoutRef.current = handleAutoLayout;
   });
 
-  // Automatically fit the view whenever the node count changes (e.g., after import or add/remove).
-  // If we just imported, also run auto layout to arrange nodes nicely.
+  // Run auto-layout after file imports, or fitView on initial page load.
+  // We no longer fitView on every node add/remove as it's disruptive to manual placement.
   useEffect(() => {
     if (nodes.length > 0) {
-      const timeoutId = window.setTimeout(() => {
-        if (pendingAutoLayoutRef.current) {
+      if (pendingAutoLayoutRef.current) {
+        const timeoutId = window.setTimeout(() => {
           pendingAutoLayoutRef.current = false;
           handleAutoLayoutRef.current();
-        } else {
+        }, 50);
+        return () => window.clearTimeout(timeoutId);
+      } else if (pendingInitialFitViewRef.current) {
+        const timeoutId = window.setTimeout(() => {
+          pendingInitialFitViewRef.current = false;
           rf.current?.fitView({ padding: 0.2, duration: 300 });
-        }
-      }, 50);
-      return () => window.clearTimeout(timeoutId);
+        }, 50);
+        return () => window.clearTimeout(timeoutId);
+      }
     }
   }, [nodes.length]);
 
@@ -1157,25 +1209,39 @@ const DesignViewContent: React.FC = () => {
   const handleModeToggle = React.useCallback(() => {
     const nextMode = mode === 'oneshot' ? 'dynamic' : 'oneshot';
 
-    // Validate switching to dynamic mode
-    if (nextMode === 'dynamic') {
-      const oneshotNodes = nodesRef.current.filter((node) => {
-        const nodeDef = nodeDefinitions.find((def) => def.kind === node.data.kind);
-        return nodeDef?.categories.includes('oneshot');
-      });
+    // Ensure the current canvas is cached even if the user switches immediately after load.
+    cachesRef.current[mode] = {
+      nodes: nodesRef.current,
+      edges: edgesRef.current,
+      name: pipelineName,
+      description: pipelineDescription,
+    };
 
-      if (oneshotNodes.length > 0) {
-        const nodeList = oneshotNodes.map((n) => `"${n.data.label}" (${n.data.kind})`).join(', ');
-        toast.error(
-          `Cannot switch to dynamic mode: Pipeline contains oneshot-only nodes: ${nodeList}. ` +
-            `Remove these nodes first or stay in oneshot mode.`
-        );
-        return; // Don't switch mode
-      }
-    }
+    // Swap canvases instead of forcing users to clear incompatible nodes.
+    // Keep a separate "last state" cache per mode.
+    const nextCache = cachesRef.current[nextMode];
+    const nextNodes = nextCache ? rehydrateNodesForCanvas(nextCache.nodes) : [];
+    const nextEdges = nextCache?.edges ?? [];
 
     setMode(nextMode);
-  }, [mode, setMode, nodeDefinitions, toast]);
+    setNodes(nextNodes);
+    setEdges(nextEdges);
+    setPipelineName(nextCache?.name ?? '');
+    setPipelineDescription(nextCache?.description ?? '');
+    setSelectedNodes([]);
+    regenerateYamlFromCanvas({ nodes: nextNodes, edges: nextEdges, mode: nextMode });
+  }, [
+    mode,
+    setMode,
+    setNodes,
+    setEdges,
+    setPipelineName,
+    setPipelineDescription,
+    pipelineName,
+    pipelineDescription,
+    regenerateYamlFromCanvas,
+    rehydrateNodesForCanvas,
+  ]);
 
   const handleSelectionModeToggle = React.useCallback(() => {
     setSelectionMode(!selectionMode);
@@ -1189,6 +1255,8 @@ const DesignViewContent: React.FC = () => {
 
   // Track when we need to auto-layout after import
   const pendingAutoLayoutRef = React.useRef(false);
+  // Track initial page load to run fitView once when nodes are restored from localStorage
+  const pendingInitialFitViewRef = React.useRef(true);
 
   // File import handlers - kept at DesignView level so file input survives menu close
   const handleImportFileChange = React.useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
@@ -1226,7 +1294,8 @@ const DesignViewContent: React.FC = () => {
         setPendingSample({ yaml: yamlString, name, description });
         handleOpenLoadSampleModal();
       } else {
-        // Canvas is empty, load directly
+        // Canvas is empty, load directly with auto-layout
+        pendingAutoLayoutRef.current = true;
         handleImportYamlRef.current(yamlString, description, name);
         toastRef.current.success(`Loaded sample: ${name}`);
       }
@@ -1236,6 +1305,7 @@ const DesignViewContent: React.FC = () => {
 
   const confirmLoadSample = () => {
     if (pendingSample) {
+      pendingAutoLayoutRef.current = true;
       handleImportYaml(pendingSample.yaml, pendingSample.description, pendingSample.name);
       toast.success(`Loaded sample: ${pendingSample.name}`);
       handleCloseLoadSampleModal();
@@ -1248,17 +1318,6 @@ const DesignViewContent: React.FC = () => {
     handleCloseClearModal();
     toast.success('Canvas cleared');
   }, [setNodes, setEdges, toast, handleCloseClearModal]);
-
-  // Check if we can switch to dynamic mode (no oneshot-only nodes)
-  // Only recompute when node count or definitions change, not on position updates
-  const canSwitchToDynamic = React.useMemo(() => {
-    return !nodesRef.current.some((node) => {
-      const nodeDef = nodeDefinitions.find((def) => def.kind === node.data.kind);
-      return nodeDef?.categories.includes('oneshot');
-    });
-    // nodes.length is intentional - we need to recompute when nodes are added/removed
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodes.length, nodeDefinitions]);
 
   // Memoize left panel to prevent re-renders during drag
   const leftPanel = React.useMemo(
@@ -1304,7 +1363,6 @@ const DesignViewContent: React.FC = () => {
           onSaveTemplate={handleOpenSaveModal}
           onCreateSession={handleOpenCreateModal}
           nodesLength={nodes.length}
-          canSwitchToDynamic={canSwitchToDynamic}
         />
       </CanvasTopBar>
       <FlowCanvas
@@ -1327,6 +1385,7 @@ const DesignViewContent: React.FC = () => {
         onPaneClick={onPaneClick}
         onPaneContextMenu={onPaneContextMenu}
         onNodeContextMenu={onNodeContextMenu}
+        onNodeDragStop={handleNodeDragStop}
         onDrop={onDrop}
         onDragOver={onDragOver}
         reactFlowWrapper={reactFlowWrapper}

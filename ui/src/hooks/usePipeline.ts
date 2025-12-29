@@ -9,7 +9,6 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useToast } from '@/context/ToastContext';
 import { useNodeParamsStore } from '@/stores/nodeParamsStore';
 import { useSchemaStore } from '@/stores/schemaStore';
-import { topoOrderFromEdges } from '@/utils/dag';
 import { hooksLogger } from '@/utils/logger';
 import { parseYamlToPipeline, type EngineMode } from '@/utils/yamlPipeline';
 
@@ -34,6 +33,113 @@ type EditorNodeData = {
 type ConnectionMode = 'reliable' | 'best_effort';
 type NeedsDependency = string | { node: string; mode?: ConnectionMode };
 
+function orderNodeIdsTopDown(
+  nodes: Array<Node<EditorNodeData>>,
+  edges: Array<Edge>
+): Array<string> {
+  const nodeIds = nodes.map((n) => n.id);
+  const posById = new Map(nodeIds.map((id) => [id, { x: 0, y: 0 }]));
+  nodes.forEach((n) => posById.set(n.id, { x: n.position.x, y: n.position.y }));
+
+  const inDegree: Record<string, number> = {};
+  const outgoing: Record<string, string[]> = {};
+  nodeIds.forEach((nodeId) => {
+    inDegree[nodeId] = 0;
+    outgoing[nodeId] = [];
+  });
+
+  edges.forEach((e) => {
+    if (!(e.source in outgoing) || !(e.target in inDegree)) return;
+    outgoing[e.source].push(e.target);
+    inDegree[e.target] += 1;
+  });
+
+  const compare = (a: string, b: string) => {
+    const pa = posById.get(a) ?? { x: 0, y: 0 };
+    const pb = posById.get(b) ?? { x: 0, y: 0 };
+    if (pa.y !== pb.y) return pa.y - pb.y;
+    if (pa.x !== pb.x) return pa.x - pb.x;
+    return a.localeCompare(b);
+  };
+
+  const queue = nodeIds.filter((nodeId) => inDegree[nodeId] === 0).sort(compare);
+  const ordered: string[] = [];
+  const seen = new Set<string>();
+
+  while (queue.length > 0) {
+    const u = queue.shift() as string;
+    if (seen.has(u)) continue;
+    seen.add(u);
+    ordered.push(u);
+    for (const v of outgoing[u]) {
+      inDegree[v] -= 1;
+      if (inDegree[v] === 0) {
+        queue.push(v);
+      }
+    }
+    queue.sort(compare);
+  }
+
+  const remaining = nodeIds.filter((nodeId) => !seen.has(nodeId)).sort(compare);
+  return [...ordered, ...remaining];
+}
+
+function buildPipelineForYaml(
+  nodes: Array<Node<EditorNodeData>>,
+  edges: Array<Edge>,
+  mode: EngineMode,
+  opts?: { includeUiPositions?: boolean }
+): { mode: EngineMode; nodes: Record<string, unknown> } {
+  const includeUiPositions = opts?.includeUiPositions ?? false;
+  const idToLabelMap = new Map(nodes.map((n) => [n.id, n.data.label]));
+  const idToNode = new Map(nodes.map((n) => [n.id, n]));
+  const pipeline: { mode: EngineMode; nodes: Record<string, unknown> } = { mode, nodes: {} };
+
+  const orderedIds = orderNodeIdsTopDown(nodes, edges);
+
+  orderedIds.forEach((nodeId) => {
+    const node = idToNode.get(nodeId);
+    if (!node) return;
+
+    const needs = edges
+      .filter((e) => e.target === node.id)
+      .map((e): NeedsDependency | null => {
+        const label = idToLabelMap.get(e.source);
+        if (!label) return null;
+        const mode = (e.data as { mode?: ConnectionMode } | undefined)?.mode;
+        return mode === 'best_effort' ? { node: label, mode } : label;
+      })
+      .filter((v): v is NeedsDependency => v !== null);
+
+    const nodeConfig: Record<string, unknown> = { kind: node.data.kind };
+
+    if (includeUiPositions) {
+      nodeConfig['ui'] = {
+        position: {
+          x: Math.round(node.position.x),
+          y: Math.round(node.position.y),
+        },
+      };
+    }
+
+    const overrides = useNodeParamsStore.getState().paramsById[node.id];
+    const mergedParams = { ...(node.data.params || {}), ...(overrides || {}) };
+    if (Object.keys(mergedParams).length > 0) {
+      nodeConfig['params'] = mergedParams;
+    }
+
+    if (needs.length === 1) {
+      nodeConfig['needs'] = needs[0];
+    } else if (needs.length > 1) {
+      nodeConfig['needs'] = needs;
+    }
+
+    pipeline.nodes[node.data.label] = nodeConfig;
+  });
+
+  return pipeline;
+}
+
 export const usePipeline = () => {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<EditorNodeData>>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -44,23 +150,21 @@ export const usePipeline = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [mode, setMode] = useState<EngineMode>('dynamic');
   const [yamlError, setYamlError] = useState<string>('');
-  const [pipelineName, setPipelineName] = useState<string>('');
-  const [pipelineDescription, setPipelineDescription] = useState<string>('');
+  const [pipelineName, setPipelineName] = useState<string>(''),
+    [pipelineDescription, setPipelineDescription] = useState<string>('');
   const labelCountersRef = useRef<Record<string, number>>({});
   const toast = useToast();
 
-  // Track update source to prevent circular updates
   const updateSourceRef = useRef<'canvas' | 'yaml' | null>(null);
-  // Track previous nodes for structural change detection
-  const prevNodesRef = useRef<Node<EditorNodeData>[]>([]);
+  const prevNodesRef = useRef<Node<EditorNodeData>[]>([]),
+    prevEdgesRef = useRef<Edge[]>([]),
+    prevModeRef = useRef<EngineMode>(mode);
   const yamlDebounceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const labelValidationTimerRef = useRef<NodeJS.Timeout | null>(null);
-  // Track the validation token to invalidate stale validations
   const labelValidationTokenRef = useRef(0);
 
   const handleLabelChange = useCallback(
     (nodeId: string, newLabel: string) => {
-      // Update the label immediately for responsive editing
       setNodes((nds) => {
         return nds.map((node) => {
           if (node.id === nodeId) {
@@ -70,41 +174,31 @@ export const usePipeline = () => {
         });
       });
 
-      // Clear any existing validation timer
       if (labelValidationTimerRef.current) {
         clearTimeout(labelValidationTimerRef.current);
       }
 
-      // Increment token to invalidate any pending validation callbacks
       labelValidationTokenRef.current += 1;
       const currentToken = labelValidationTokenRef.current;
 
-      // Debounce the duplicate validation to avoid interrupting typing
       labelValidationTimerRef.current = setTimeout(() => {
-        // Check if this validation is still valid (not superseded by newer input)
         if (currentToken !== labelValidationTokenRef.current) {
           return;
         }
 
-        // Use a separate function call to access nodes state and validate
         setNodes((nds) => {
-          // Find the current label for this node
           const currentNode = nds.find((n) => n.id === nodeId);
           if (!currentNode) return nds;
 
-          // Double-check token hasn't changed while we were waiting
           if (currentToken !== labelValidationTokenRef.current) {
             return nds;
           }
 
-          // Only validate if the current label still matches what we scheduled
           if (currentNode.data.label !== newLabel) {
             return nds;
           }
 
           const isDuplicate = nds.some((n) => n.id !== nodeId && n.data.label === newLabel);
-
-          // Schedule toast for next tick to avoid calling setState during render
           if (isDuplicate) {
             setTimeout(() => {
               toast.error(
@@ -115,7 +209,7 @@ export const usePipeline = () => {
 
           return nds;
         });
-      }, 500); // 500ms debounce
+      }, 500);
     },
     [setNodes, toast]
   );
@@ -125,70 +219,42 @@ export const usePipeline = () => {
 
   const handleParamChange = useCallback(
     (nodeId: string, paramName: string, value: unknown) => {
-      // Write live param changes to a lightweight store instead of mutating the nodes array.
-      // This keeps ReactFlow props stable and avoids re-rendering the canvas on every slider tick.
       setParam(nodeId, paramName, value);
     },
     [setParam]
   );
 
+  const regenerateYamlFromCanvas = useCallback(
+    (snapshot?: {
+      nodes?: Array<Node<EditorNodeData>>;
+      edges?: Array<Edge>;
+      mode?: EngineMode;
+    }) => {
+      const nodesForYaml = snapshot?.nodes ?? nodes;
+      const edgesForYaml = snapshot?.edges ?? edges;
+      const modeForYaml = snapshot?.mode ?? mode;
+
+      if (nodesForYaml.length === 0) {
+        setYamlString('# Add nodes to the canvas to see YAML output');
+        setYamlError('');
+        return;
+      }
+
+      setYamlString(
+        dump(buildPipelineForYaml(nodesForYaml, edgesForYaml, modeForYaml), { skipInvalid: true })
+      );
+      setYamlError('');
+    },
+    [nodes, edges, mode]
+  );
+
   const handleExportYaml = () => {
     if (nodes.length === 0) return;
 
-    const idToLabelMap = new Map(nodes.map((n) => [n.id, n.data.label]));
-    const idToNode = new Map(nodes.map((n) => [n.id, n]));
-    const pipeline: { mode: EngineMode; nodes: Record<string, unknown> } = { mode, nodes: {} };
-
-    // Compute topological order of nodes based on edges (sources first)
-    const nodeIds = nodes.map((n) => n.id);
-    const orderedIds = topoOrderFromEdges(
-      nodeIds,
-      edges.map((e) => ({ source: e.source, target: e.target }))
+    const yamlToExport = dump(
+      buildPipelineForYaml(nodes, edges, mode, { includeUiPositions: true }),
+      { skipInvalid: true }
     );
-
-    orderedIds.forEach((nodeId) => {
-      const node = idToNode.get(nodeId);
-      if (!node) return;
-
-      const needs = edges
-        .filter((e) => e.target === node.id)
-        .map((e): NeedsDependency | null => {
-          const label = idToLabelMap.get(e.source);
-          if (!label) return null;
-          const mode = (e.data as { mode?: ConnectionMode } | undefined)?.mode;
-          return mode === 'best_effort' ? { node: label, mode } : label;
-        })
-        .filter((v): v is NeedsDependency => v !== null);
-
-      const nodeConfig: Record<string, unknown> = {
-        kind: node.data.kind,
-        ui: {
-          position: {
-            x: Math.round(node.position.x),
-            y: Math.round(node.position.y),
-          },
-        },
-      };
-
-      // Merge any live overrides from the params store so exports reflect current UI values
-      const overrides = (
-        useNodeParamsStore.getState().paramsById as Record<string, Record<string, unknown>>
-      )[node.id as string];
-      const mergedParams = { ...(node.data.params || {}), ...(overrides || {}) };
-      if (Object.keys(mergedParams).length > 0) {
-        nodeConfig['params'] = mergedParams;
-      }
-
-      if (needs.length === 1) {
-        (nodeConfig as Record<string, unknown>)['needs'] = needs[0];
-      } else if (needs.length > 1) {
-        (nodeConfig as Record<string, unknown>)['needs'] = needs;
-      }
-
-      pipeline.nodes[node.data.label] = nodeConfig;
-    });
-
-    const yamlToExport = dump(pipeline, { skipInvalid: true });
     const blob = new Blob([yamlToExport], { type: 'application/x-yaml' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -221,7 +287,6 @@ export const usePipeline = () => {
 
     updateSourceRef.current = 'yaml';
 
-    // Clear stale parameter overrides for all nodes so sliders can read fresh values from YAML
     result.nodes.forEach((node) => {
       resetNode(node.id);
     });
@@ -232,28 +297,22 @@ export const usePipeline = () => {
     setYamlError('');
     setPipelineName(name);
     setPipelineDescription(description);
-    // Update YAML string immediately so it shows in the editor
     setYamlString(yamlContent);
     toast.success('Pipeline imported successfully!');
 
-    // Reset update source after React finishes processing and the YAML regeneration effect has run
     setTimeout(() => {
       updateSourceRef.current = null;
     }, 100);
   };
 
-  // Handle YAML changes from the editor (debounced)
   const handleYamlChange = useCallback(
     (newYaml: string) => {
-      // Update the YAML string immediately for responsive editing
       setYamlString(newYaml);
 
-      // Clear any existing timer
       if (yamlDebounceTimerRef.current) {
         clearTimeout(yamlDebounceTimerRef.current);
       }
 
-      // Debounce the parsing to avoid rapid updates while typing
       yamlDebounceTimerRef.current = setTimeout(() => {
         const result = parseYamlToPipeline(
           newYaml,
@@ -273,10 +332,8 @@ export const usePipeline = () => {
           return;
         }
 
-        // Mark that this update came from YAML to prevent circular updates
         updateSourceRef.current = 'yaml';
 
-        // Clear stale parameter overrides for all nodes so sliders can read fresh values from YAML
         result.nodes.forEach((node) => {
           resetNode(node.id);
         });
@@ -286,17 +343,14 @@ export const usePipeline = () => {
         setMode(result.mode);
         setYamlError('');
 
-        // Reset update source after React finishes processing and the YAML regeneration effect has run
-        // This needs to be longer than setTimeout(..., 0) to ensure the effect runs with the flag set
         setTimeout(() => {
           updateSourceRef.current = null;
         }, 100);
-      }, 500); // 500ms debounce
+      }, 500);
     },
     [nodeDefinitions, handleParamChange, handleLabelChange, setNodes, setEdges, setMode, resetNode]
   );
 
-  // Load from localStorage on initial mount
   useEffect(() => {
     try {
       const item = window.localStorage.getItem(LOCAL_STORAGE_KEY);
@@ -323,10 +377,9 @@ export const usePipeline = () => {
         };
 
         if (Array.isArray(savedNodes) && Array.isArray(savedEdges)) {
-          // Re-initialize the global ID counter to avoid collisions
           let maxId = 0;
           savedNodes.forEach((node) => {
-            const match = node.id.match(/^skitnode_(\d+)$/);
+            const match = node.id.match(/^skitnode_(\\d+)$/);
             if (match) {
               const num = parseInt(match[1], 10);
               if (num > maxId) {
@@ -336,10 +389,9 @@ export const usePipeline = () => {
           });
           id = maxId + 1;
 
-          // Re-initialize label counters
           const newCounters: Record<string, number> = {};
           savedNodes.forEach((node) => {
-            const match = node.data.label.match(/^(.*)_(\d+)$/);
+            const match = node.data.label.match(/^(.*)_(\\d+)$/);
             if (match) {
               const [, kind, numStr] = match;
               const num = parseInt(numStr, 10);
@@ -350,21 +402,18 @@ export const usePipeline = () => {
           });
           labelCountersRef.current = newCounters;
 
-          // Re-hydrate nodes with callback functions
           const hydratedNodes = savedNodes.map((node) => ({
             ...node,
             data: {
               ...(node.data as Record<string, unknown>),
               onParamChange: handleParamChange,
               onLabelChange: handleLabelChange,
-              // No sessionId - prevents LIVE badge in design view
             },
           })) as unknown as Node<EditorNodeData>[];
 
           setNodes(hydratedNodes);
           setEdges(savedEdges);
 
-          // Restore name and description if saved
           if (savedName) {
             setPipelineName(savedName);
           }
@@ -372,11 +421,9 @@ export const usePipeline = () => {
             setPipelineDescription(savedDescription);
           }
 
-          // Auto-detect mode from loaded nodes if not explicitly saved
           if (savedMode) {
             setMode(savedMode);
           } else {
-            // Auto-detect from node types
             const hasOneshotNodes = hydratedNodes.some((node) => {
               const nodeDef = nodeDefinitions.find((def) => def.kind === node.data.kind);
               return nodeDef?.categories.includes('oneshot');
@@ -390,20 +437,17 @@ export const usePipeline = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [handleParamChange, handleLabelChange, setNodes, setEdges, setMode, nodeDefinitions]); // Dependencies are stable; runs effectively once
+  }, [handleParamChange, handleLabelChange, setNodes, setEdges, setMode, nodeDefinitions]);
 
-  // Save to localStorage when nodes, edges, or mode change
   useEffect(() => {
     if (isLoading) {
-      return; // Don't save on initial render before hydration is complete
+      return;
     }
 
     const serializableNodes = nodes.map((node) => {
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { onParamChange, onLabelChange, ...restData } = node.data as EditorNodeData;
 
-      // Merge live parameter overrides from nodeParamsStore into node.data.params
-      // so they persist across page reloads
       const liveOverrides = useNodeParamsStore.getState().paramsById[node.id];
       const mergedParams = { ...(restData.params || {}), ...(liveOverrides || {}) };
 
@@ -430,7 +474,6 @@ export const usePipeline = () => {
     }
   }, [nodes, edges, mode, pipelineName, pipelineDescription, isLoading]);
 
-  // Track per-kind counters to generate default human-readable labels
   const nextLabelForKind = useCallback((kind: string) => {
     const current = labelCountersRef.current[kind] ?? 0;
     const next = current + 1;
@@ -439,16 +482,16 @@ export const usePipeline = () => {
   }, []);
 
   useEffect(() => {
-    // Don't regenerate YAML if the update came from YAML editor
     if (updateSourceRef.current === 'yaml') {
       return;
     }
 
-    // Check if only non-structural changes occurred (e.g., position changes)
-    // This prevents YAML regeneration when dragging nodes around the canvas
     const prevNodes = prevNodesRef.current;
+    const prevEdges = prevEdgesRef.current;
+    const prevMode = prevModeRef.current;
+
     if (prevNodes.length === nodes.length && nodes.length > 0) {
-      const structurallyEqual = prevNodes.every((prev, i) => {
+      const nodesStructurallyEqual = prevNodes.every((prev, i) => {
         const curr = nodes[i];
         return (
           curr &&
@@ -458,69 +501,42 @@ export const usePipeline = () => {
         );
       });
 
-      if (structurallyEqual) {
-        // Only positions changed, skip YAML regeneration
+      const edgesStructurallyEqual =
+        prevEdges.length === edges.length &&
+        prevEdges.every((prev, i) => {
+          const curr = edges[i];
+          const prevMode = (prev.data as { mode?: ConnectionMode } | undefined)?.mode;
+          const currMode = (curr.data as { mode?: ConnectionMode } | undefined)?.mode;
+          return (
+            curr &&
+            prev.id === curr.id &&
+            prev.source === curr.source &&
+            prev.target === curr.target &&
+            prev.sourceHandle === curr.sourceHandle &&
+            prev.targetHandle === curr.targetHandle &&
+            prevMode === currMode
+          );
+        });
+
+      if (nodesStructurallyEqual && edgesStructurallyEqual && prevMode === mode) {
         prevNodesRef.current = nodes;
+        prevEdgesRef.current = edges;
+        prevModeRef.current = mode;
         return;
       }
     }
 
-    // Update ref with current nodes for next comparison
     prevNodesRef.current = nodes;
+    prevEdgesRef.current = edges;
+    prevModeRef.current = mode;
 
-    // Generate YAML from nodes and edges
     if (nodes.length === 0) {
       setYamlString('# Add nodes to the canvas to see YAML output');
       setYamlError('');
       return;
     }
 
-    const idToLabelMap = new Map(nodes.map((n) => [n.id, n.data.label]));
-    const idToNode = new Map(nodes.map((n) => [n.id, n]));
-    const pipeline: { mode: EngineMode; nodes: Record<string, unknown> } = { mode, nodes: {} };
-
-    // Compute topological order of nodes based on edges (sources first)
-    const nodeIds = nodes.map((n) => n.id);
-    const orderedIds = topoOrderFromEdges(
-      nodeIds,
-      edges.map((e) => ({ source: e.source, target: e.target }))
-    );
-
-    orderedIds.forEach((nodeId) => {
-      const node = idToNode.get(nodeId);
-      if (!node) return;
-
-      const needs = edges
-        .filter((e) => e.target === node.id)
-        .map((e): NeedsDependency | null => {
-          const label = idToLabelMap.get(e.source);
-          if (!label) return null;
-          const mode = (e.data as { mode?: ConnectionMode } | undefined)?.mode;
-          return mode === 'best_effort' ? { node: label, mode } : label;
-        })
-        .filter((v): v is NeedsDependency => v !== null);
-
-      const nodeConfig: Record<string, unknown> = {
-        kind: node.data.kind,
-      };
-
-      // Merge live overrides from the params store so the YAML reflects real-time UI values
-      const overrides = useNodeParamsStore.getState().paramsById[node.id];
-      const mergedParams = { ...(node.data.params || {}), ...(overrides || {}) };
-      if (Object.keys(mergedParams).length > 0) {
-        (nodeConfig as Record<string, unknown>)['params'] = mergedParams;
-      }
-
-      if (needs.length === 1) {
-        (nodeConfig as Record<string, unknown>)['needs'] = needs[0];
-      } else if (needs.length > 1) {
-        (nodeConfig as Record<string, unknown>)['needs'] = needs;
-      }
-
-      pipeline.nodes[node.data.label] = nodeConfig;
-    });
-
-    setYamlString(dump(pipeline, { skipInvalid: true }));
+    setYamlString(dump(buildPipelineForYaml(nodes, edges, mode), { skipInvalid: true }));
     setYamlError('');
   }, [nodes, edges, mode]);
 
@@ -547,6 +563,7 @@ export const usePipeline = () => {
     nextLabelForKind,
     handleParamChange,
     handleLabelChange,
+    regenerateYamlFromCanvas,
     getId,
   };
 };
