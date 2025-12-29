@@ -755,6 +755,14 @@ fix-license-headers:
         -exec sh -c 'if ! head -n 2 "{}" | grep -q "SPDX-License-Identifier"; then reuse annotate --copyright="© 2025 StreamKit Contributors" --license="MPL-2.0" --exclude-year --skip-existing "{}"; fi' \;
     @echo "✓ Done. Run 'just check-license-headers' to verify."
 
+# Generate third-party license report (Rust crates) for redistribution
+gen-third-party-licenses:
+    @echo "Generating THIRD_PARTY_LICENSES.txt..."
+    @cargo about generate --workspace --locked --offline tools/licenses/third-party-licenses.hbs --output-file THIRD_PARTY_LICENSES.txt
+    @echo "Note: cargo-about may log 'GPL-2.0' (deprecated SPDX id) while scanning; output is still generated."
+    # Avoid REUSE falsely interpreting SPDX identifiers inside embedded license texts.
+    @sed -i -e 's/^SPDX-License-Identifier:/SPDX License Identifier:/' -e 's/^SPDX-FileCopyrightText:/SPDX Copyright:/' THIRD_PARTY_LICENSES.txt
+
 # --- Release & Packaging ---
 
 # Generate changelog for a given version (e.g., just changelog v0.2.0)
@@ -793,6 +801,7 @@ package version="dev": build-ui
     @cp LICENSE target/streamkit/
     @cp README.md target/streamkit/
     @cp NOTICE target/streamkit/
+    @cp THIRD_PARTY_LICENSES.txt target/streamkit/
     @cp -r LICENSES target/streamkit/
     @echo "Creating tarball..."
     @cd target && tar -czf streamkit-{{version}}-linux-x64.tar.gz streamkit/

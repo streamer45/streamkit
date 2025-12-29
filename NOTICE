@@ -4,3 +4,44 @@
 
 StreamKit
 © 2025 Claudio Costa <cstcld91@gmail.com> and StreamKit Contributors
+
+Third-Party Notices
+===================
+
+This distribution includes third-party components. Where required by license,
+the copyright notices and attribution information are reproduced below.
+
+Rust crate dependencies
+----------------------
+
+StreamKit is built on top of many third-party Rust crates. A machine-generated
+report of Rust crate licenses (including license texts) is provided in:
+
+- THIRD_PARTY_LICENSES.txt
+
+This file is generated from `Cargo.lock` using `cargo about`.
+
+Vendored documentation assets
+----------------------------
+
+- Mermaid (docs/public/vendor/mermaid.min.js)
+  © Mermaid contributors — MIT
+
+Sample media
+------------
+
+- LibriSpeech sample audio (samples/audio/system/speech_2m.*)
+  © 2014 Vassil Panayotov — CC-BY-4.0 — https://www.openslr.org/12
+
+- OpenSpeech sample audio (samples/audio/system/speech_10m.*)
+  © VoIPTroubleshooter — LicenseRef-VoIPTroubleshooter-OpenSpeech
+  (see LICENSES/LicenseRef-VoIPTroubleshooter-OpenSpeech.txt)
+
+- “paper_lights” (samples/audio/system/ehren-paper_lights-96.*)
+  © Ehren Starks — CC-BY-NC-SA-1.0
+
+- “TEA FOR TWO” (samples/audio/system/TEA FOR TWO.*)
+  © Gege Viezzi Quartet — CC-BY-NC-4.0
+
+- “THE LADY IS A TRAMP” (samples/audio/system/THE LADY IS A TRAMP.*)
+  © Gege Viezzi Quartet — CC-BY-NC-4.0
