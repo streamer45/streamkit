@@ -43,7 +43,9 @@ Point `telemetry.otlp_endpoint` at your Prometheus OTLP endpoint (see the Promet
 
 ### Grafana dashboard
 
-Import `samples/grafana-dashboard.json` into Grafana and select the same Prometheus (or other OTLP-backed) datasource you’re sending metrics to.
+Import [`samples/grafana-dashboard.json`](https://github.com/streamer45/streamkit/blob/main/samples/grafana-dashboard.json) into Grafana and select the same Prometheus (or other OTLP-backed) datasource you're sending metrics to.
+
+![Grafana Dashboard](/screenshots/grafana_dashboard.png)
 
 ## Traces (OTLP)
 
