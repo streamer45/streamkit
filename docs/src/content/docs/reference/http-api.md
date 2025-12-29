@@ -60,9 +60,7 @@ Destroy a session:
 
 **Max body size**: Configurable via `[server].max_body_size` (default: 100 MB).
 
-If `media` is provided, the pipeline must include `streamkit::http_input` and typically ends with `streamkit::http_output`.
-
-If `media` is not provided, the pipeline must include `core::file_reader` and must not include `streamkit::http_input`. In both cases, `streamkit::http_output` is required.
+If `media` is provided, the pipeline must include `streamkit::http_input` to receive it. If no media is needed, `streamkit::http_input` can still be used as a trigger (with empty body) or the pipeline can rely solely on `core::file_reader`. Both nodes can be used together (e.g., mixing uploaded audio with a local file). In all cases, `streamkit::http_output` is required.
 
 > [!NOTE]
 > `streamkit::http_input` and `streamkit::http_output` are **oneshot-only marker nodes**. They are available in schema discovery, but they cannot be used in dynamic sessions.
