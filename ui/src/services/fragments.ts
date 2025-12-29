@@ -6,7 +6,7 @@ import YAML from 'yaml';
 
 import type { SamplePipeline } from '@/types/generated/api-types';
 
-import { saveSample, deleteSample, listSamples } from './samples';
+import { saveSample, deleteSample, listAllSamples } from './samples';
 
 export interface FragmentMetadata {
   tags: string[];
@@ -44,6 +44,25 @@ function decodeDescription(encoded: string): FragmentMetadata {
     : [];
 
   return { tags, description };
+}
+
+export function decodeFragmentMetadata(encodedDescription: string): FragmentMetadata {
+  return decodeDescription(encodedDescription);
+}
+
+export function samplesToFragments(
+  samples: SamplePipeline[]
+): Array<SamplePipeline & FragmentMetadata> {
+  return samples
+    .filter((sample) => sample.is_fragment)
+    .map((sample) => {
+      const { tags, description } = decodeFragmentMetadata(sample.description);
+      return {
+        ...sample,
+        tags,
+        description,
+      };
+    });
 }
 
 /**
@@ -112,16 +131,7 @@ export async function deleteFragment(id: string): Promise<void> {
  * List all fragments (filters samples to only return fragments)
  */
 export async function listFragments(): Promise<Array<SamplePipeline & FragmentMetadata>> {
-  const samples = await listSamples();
+  const samples = await listAllSamples();
 
-  return samples
-    .filter((sample) => sample.is_fragment)
-    .map((sample) => {
-      const { tags, description } = decodeDescription(sample.description);
-      return {
-        ...sample,
-        tags,
-        description,
-      };
-    });
+  return samplesToFragments(samples);
 }

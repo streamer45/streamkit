@@ -10,11 +10,11 @@ import ConfirmModal from '@/components/ConfirmModal';
 import { SKTooltip } from '@/components/Tooltip';
 import { useToast } from '@/context/ToastContext';
 import {
-  listFragments,
   deleteFragment as deleteFragmentService,
+  samplesToFragments,
   yamlToFragment,
 } from '@/services/fragments';
-import { listSamples, deleteSample } from '@/services/samples';
+import { listAllSamples, deleteSample } from '@/services/samples';
 import { createSession } from '@/services/sessions';
 import type { SamplePipeline } from '@/types/generated/api-types';
 import { getLogger } from '@/utils/logger';
@@ -281,9 +281,9 @@ const SamplePipelinesPane = forwardRef<SamplePipelinesPaneRef, SamplePipelinesPa
       try {
         setLoading(true);
         setError(null);
-        const [samplesData, fragmentsData] = await Promise.all([listSamples(), listFragments()]);
+        const samplesData = await listAllSamples();
         setSamples(samplesData);
-        setFragments(fragmentsData);
+        setFragments(samplesToFragments(samplesData));
       } catch (err) {
         logger.error('Failed to load sample pipelines:', err);
         setError(err instanceof Error ? err.message : 'Failed to load samples');
