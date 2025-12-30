@@ -587,8 +587,7 @@ Telemetry and observability configuration (OpenTelemetry, tokio-console).
                 "core::sink"
               ],
               "allowed_plugins": [
-                "plugin::*",
-                "native::audio*"
+                "plugin::*"
               ],
               "allowed_samples": [
                 "oneshot/*.yml",
@@ -1012,8 +1011,7 @@ Telemetry and observability configuration (OpenTelemetry, tokio-console).
               "core::sink"
             ],
             "allowed_plugins": [
-              "plugin::*",
-              "native::audio*"
+              "plugin::*"
             ],
             "allowed_samples": [
               "oneshot/*.yml",

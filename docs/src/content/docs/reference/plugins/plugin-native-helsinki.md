@@ -32,6 +32,7 @@ Source: `plugins/native/helsinki/target/release/libhelsinki.so`
 | `model_dir` | `string` | no | `models/opus-mt-en-es` | Path to model directory containing safetensors and tokenizer files |
 | `source_language` | `string enum[en, es]` | no | `en` | Source language code: 'en' (English) or 'es' (Spanish) |
 | `target_language` | `string enum[en, es]` | no | `es` | Target language code: 'en' (English) or 'es' (Spanish) |
+| `warmup` | `boolean` | no | `false` | If true, run a small warmup translation during initialization to reduce first-request latency |
 
 
 <details>
@@ -86,6 +87,11 @@ Source: `plugins/native/helsinki/target/release/libhelsinki.so`
         "es"
       ],
       "type": "string"
+    },
+    "warmup": {
+      "default": false,
+      "description": "If true, run a small warmup translation during initialization to reduce first-request latency",
+      "type": "boolean"
     }
   },
   "type": "object"

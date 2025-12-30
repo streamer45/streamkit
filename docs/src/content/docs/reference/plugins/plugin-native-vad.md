@@ -43,6 +43,9 @@ Source: `plugins/native/vad/target/release/libvad.so`
 #
 # SPDX-License-Identifier: MPL-2.0
 
+#
+# skit:input_asset_tags=speech
+
 name: Voice Activity Detection
 description: Detects voice activity and outputs events as JSON
 mode: oneshot

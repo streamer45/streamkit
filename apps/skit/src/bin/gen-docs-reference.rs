@@ -346,6 +346,80 @@ fn render_packet_page(entry: &PacketTypeEntry) -> Result<String> {
     out.push_str(&format!("Type system: `{}`\n\n", entry.kind_repr));
     out.push_str(&format!("Runtime: `{}`\n\n", entry.runtime_repr));
 
+    if entry.id == "Custom" {
+        out.push_str(
+            r#"## Why `Custom` exists
+`Custom` is StreamKit's **extensibility escape hatch**: it lets plugins and pipelines exchange
+structured data **without adding new built-in packet variants**.
+
+It was designed to:
+
+- Keep the core packet set small and stable (important for UIs and SDKs).
+- Enable fast iteration for plugin-defined events and typed messages.
+- Preserve type-checking via `type_id` so pipelines still validate before running.
+- Stay user-friendly over JSON APIs (`encoding: "json"` is debuggable and easy to inspect).
+
+## When to use it
+Use `Custom` when you need **structured, typed messages** that don't fit existing packet types, for example:
+
+- Plugin-defined events (e.g. VAD, moderation, scene triggers, rich status updates).
+- Application-level envelopes (e.g. tool results, routing hints, structured logs).
+- Telemetry-like events (see below) that you want to treat as first-class data.
+
+Prefer other packet types when they fit:
+
+- Audio frames/streams: `/reference/packets/raw-audio/` or `/reference/packets/opus-audio/`
+- Plain strings: `/reference/packets/text/`
+- Opaque bytes, blobs, or media: `/reference/packets/binary/`
+- Speech-to-text results: `/reference/packets/transcription/`
+
+## Type IDs, versioning, and compatibility
+`type_id` is the **routing key** for `Custom` and is part of the type system.
+
+- Compatibility: `PacketType::Custom { type_id: "a@1" }` only connects to the same `type_id`.
+  If you truly want "any custom", use `PacketType::Any` on the input pin.
+- Versioning: include a major version suffix like `@1` and bump it for breaking payload changes.
+- Namespacing: use a stable, collision-resistant prefix (examples below).
+
+Examples used in this repo:
+
+- `core::telemetry/event@1` (telemetry envelope used on the WebSocket bus)
+- `plugin::native::vad/vad-event@1` (VAD-style events)
+
+## Payload conventions
+`data` is schema-less JSON: treat it as **untrusted input** and validate it in consumers.
+
+For "event"-shaped payloads, a common convention is an `event_type` string inside `data`:
+
+```json
+{
+  "type_id": "core::telemetry/event@1",
+  "encoding": "json",
+  "data": { "event_type": "vad.start", "source": "mic" },
+  "metadata": { "timestamp_us": 1735257600000000 }
+}
+```
+
+Related docs:
+
+- WebSocket telemetry events: `/reference/websocket-api/#telemetry-events-nodetelemetry`
+- Nodes that observe/emit telemetry: `/reference/nodes/core-telemetry-tap/`, `/reference/nodes/core-telemetry-out/`
+
+## When a core packet type is a better fit
+`Custom` is great for iteration, but adding a new core packet type can be worth it when:
+
+- The payload is **high-volume / performance-sensitive** (zero-copy, binary codecs, large frames).
+- The payload needs **canonical semantics** across the ecosystem (multiple nodes, UIs, SDKs).
+- There are **well-defined fields** that benefit from first-class schema/compat rules (not just `type_id`).
+- The payload should be **universally inspectable/renderable** in the UI (timelines, previews, editors).
+
+In those cases, open a GitHub issue describing the use case and examples (or send a PR). The goal is to keep
+the built-in packet set small and stable, and graduate widely useful patterns out of `Custom` when needed.
+
+"#,
+        );
+    }
+
     let registry = streamkit_core::packet_meta::packet_type_registry();
     if let Some(meta) = registry.iter().find(|m| m.id == entry.id) {
         out.push_str("## UI Metadata\n");
