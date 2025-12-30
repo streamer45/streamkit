@@ -1,0 +1,22 @@
+{
+  "name": "streamkit-e2e",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "format": "../ui/node_modules/.bin/prettier --write . --config ../ui/.prettierrc.json --ignore-path ./.prettierignore",
+    "format:check": "../ui/node_modules/.bin/prettier --check . --config ../ui/.prettierrc.json --ignore-path ./.prettierignore",
+    "lint": "bun run typecheck && bun run format:check",
+    "test": "bun run src/harness/run.ts",
+    "test:only": "playwright test",
+    "test:ui": "playwright test --ui",
+    "test:headed": "bun run src/harness/run.ts -- --headed",
+    "report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0",
+    "@types/node": "^22.0.0",
+    "typescript": "~5.9.3"
+  }
+}

@@ -43,7 +43,7 @@ const ConfirmModal: React.FC<ConfirmModalProps> = ({
     <Dialog open={isOpen} onOpenChange={(open) => !open && onCancel()}>
       <DialogPortal>
         <DialogOverlay />
-        <DialogContent>
+        <DialogContent data-testid="confirm-modal">
           <DialogHeader>
             <DialogTitle>{title}</DialogTitle>
           </DialogHeader>

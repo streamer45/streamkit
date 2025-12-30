@@ -20,10 +20,14 @@ jobs:
     name: Plugins
     uses: ./.github/workflows/plugins.yml
 
+  e2e:
+    name: E2E
+    uses: ./.github/workflows/e2e.yml
+
   all-checks:
     name: All Checks Passed
     runs-on: ubuntu-22.04
-    needs: [skit, ui, plugins]
+    needs: [skit, ui, plugins, e2e]
     steps:
       - name: All checks passed
         run: echo "All CI checks passed successfully!"

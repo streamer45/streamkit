@@ -1437,7 +1437,7 @@ const DesignViewContent: React.FC = () => {
   );
 
   return (
-    <AppContainer className="app-container">
+    <AppContainer className="app-container" data-testid="design-view">
       <ResizableLayout
         left={leftPanel}
         center={centerPanel}

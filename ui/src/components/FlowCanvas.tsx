@@ -148,7 +148,7 @@ export const FlowCanvas = <NodeData extends Record<string, unknown> = Record<str
   });
 
   return (
-    <div ref={reactFlowWrapper} style={{ width: '100%', height: '100%' }}>
+    <div ref={reactFlowWrapper} style={{ width: '100%', height: '100%' }} data-testid="flow-canvas">
       <ReactFlow<Node<NodeData>>
         nodes={nodes}
         edges={edges}

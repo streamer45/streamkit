@@ -1,0 +1,82 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+name: E2E Tests
+
+on:
+  workflow_call:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  e2e:
+    name: Playwright E2E
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+
+      - uses: actions/checkout@v5
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.5"
+
+      - name: Build UI
+        working-directory: ./ui
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92.0"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build skit (debug)
+        run: cargo build -p streamkit-server --bin skit
+
+      - name: Install E2E dependencies
+        working-directory: ./e2e
+        run: bun install --frozen-lockfile
+
+      - name: Install Playwright browsers
+        working-directory: ./e2e
+        run: bunx playwright install chromium --with-deps
+
+      - name: Lint E2E (typecheck + prettier)
+        working-directory: ./e2e
+        run: bun run lint
+
+      - name: Run E2E tests
+        working-directory: ./e2e
+        run: bun run test
+
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: e2e/playwright-report/
+          retention-days: 7
+
+      - name: Upload test artifacts
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-results
+          path: e2e/test-results/
+          retention-days: 7

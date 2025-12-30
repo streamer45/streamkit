@@ -411,7 +411,7 @@ const SamplePipelinesPane = forwardRef<SamplePipelinesPaneRef, SamplePipelinesPa
     const userSamples = filteredSamples.filter((s) => !s.is_system);
 
     return (
-      <PaneWrapper>
+      <PaneWrapper data-testid="samples-pane">
         <PaneHeader>
           <PaneTitle>Samples & Fragments</PaneTitle>
           <PaneSubtitle>Click to load samples or drag fragments to canvas</PaneSubtitle>
@@ -431,7 +431,7 @@ const SamplePipelinesPane = forwardRef<SamplePipelinesPaneRef, SamplePipelinesPa
               <>
                 <SectionHeader>System Samples</SectionHeader>
                 {systemSamples.map((sample) => (
-                  <SampleCard key={sample.id}>
+                  <SampleCard key={sample.id} data-testid="sample-card">
                     <SampleCardButton onClick={() => handleLoadSample(sample)}>
                       <SampleName>
                         {sample.name}
@@ -464,7 +464,7 @@ const SamplePipelinesPane = forwardRef<SamplePipelinesPaneRef, SamplePipelinesPa
               <>
                 <SectionHeader>User Samples</SectionHeader>
                 {userSamples.map((sample) => (
-                  <SampleCard key={sample.id}>
+                  <SampleCard key={sample.id} data-testid="sample-card">
                     <SampleCardButton onClick={() => handleLoadSample(sample)}>
                       <SampleName>{sample.name}</SampleName>
                       {sample.description && (
