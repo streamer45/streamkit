@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+node_modules
+bun.lock
+.playwright
+playwright-report
+test-results
+

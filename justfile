@@ -935,3 +935,44 @@ show-versions:
     @echo "Binaries:"
     @grep '^version' apps/skit/Cargo.toml | head -1 | awk '{print "  streamkit-server (skit):      " $$3}'
     @grep '^version' apps/skit-cli/Cargo.toml | head -1 | awk '{print "  streamkit-client (skit-cli):  " $$3}'
+
+# --- E2E Tests ---
+
+# Install E2E test dependencies
+[working-directory: 'e2e']
+install-e2e:
+    @echo "Installing E2E dependencies..."
+    @bun install
+
+# Lint E2E (TypeScript + formatting)
+lint-e2e: install-e2e
+    @echo "Linting E2E..."
+    @cd e2e && bun run lint
+
+# Install Playwright browsers
+[working-directory: 'e2e']
+install-playwright: install-e2e
+    @echo "Installing Playwright browsers..."
+    @bunx playwright install chromium
+
+# Run E2E tests (builds UI and skit if needed)
+e2e: build-ui install-e2e
+    @echo "Building skit (debug)..."
+    @cargo build -p streamkit-server --bin skit
+    @echo "Running E2E tests..."
+    @cd e2e && bun run test
+
+# Run E2E tests with headed browser
+e2e-headed: build-ui install-e2e
+    @cargo build -p streamkit-server --bin skit
+    @cd e2e && bun run test:headed
+
+# Run E2E against external server
+e2e-external url:
+    @echo "Running E2E tests against {{url}}..."
+    @cd e2e && E2E_BASE_URL={{url}} bun run test:only
+
+# Show E2E test report
+[working-directory: 'e2e']
+e2e-report:
+    @bunx playwright show-report

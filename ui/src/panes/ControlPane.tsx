@@ -790,12 +790,14 @@ const ControlPane: React.FC<ControlPaneProps> = ({
 
   return (
     <>
-      <PanelWrapper>
+      <PanelWrapper data-testid="control-pane">
         <TabsRoot value={activeTab} onValueChange={handleTabChange}>
           <TabsList>
             <TabsTrigger value="nodes">Nodes</TabsTrigger>
             <TabsTrigger value="assets">Assets</TabsTrigger>
-            <TabsTrigger value="samples">Samples</TabsTrigger>
+            <TabsTrigger value="samples" data-testid="samples-tab">
+              Samples
+            </TabsTrigger>
             {isAdmin() && <TabsTrigger value="plugins">Plugins</TabsTrigger>}
           </TabsList>
           <TabsContent value="nodes">{nodeLibraryContent}</TabsContent>

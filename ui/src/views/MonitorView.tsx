@@ -564,7 +564,7 @@ const SessionItem: React.FC<SessionItemProps> = React.memo(
     );
 
     return (
-      <SessionItemWrapper>
+      <SessionItemWrapper data-testid="session-item">
         <Tooltip.Provider delayDuration={300}>
           <Tooltip.Root open={isActive ? false : undefined}>
             <Tooltip.Trigger asChild>
@@ -602,6 +602,7 @@ const SessionItem: React.FC<SessionItemProps> = React.memo(
               className="session-delete-button"
               onClick={handleDelete}
               aria-label="Delete session"
+              data-testid="session-delete-btn"
             >
               🗑️
             </SessionDeleteButton>
@@ -1117,7 +1118,7 @@ const LeftPanel = React.memo(
           </TabsList>
 
           <TabsContent value="sessions">
-            <SessionsContainer>
+            <SessionsContainer data-testid="sessions-list">
               {isLoadingSessions ? (
                 <LoadingText>Loading sessions...</LoadingText>
               ) : sessions.length === 0 ? (
@@ -3014,7 +3015,7 @@ const MonitorViewContent: React.FC = () => {
   );
 
   return (
-    <div style={{ height: '100%' }}>
+    <div style={{ height: '100%' }} data-testid="monitor-view">
       <ResizableLayout
         left={leftPanel}
         center={centerPanel}

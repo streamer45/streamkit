@@ -37,6 +37,17 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       port: 3045,
+      proxy: {
+        // Proxy API requests to skit backend (enables E2E tests against dev server)
+        '/api': {
+          target: `http://${apiUrl}`,
+          changeOrigin: true,
+        },
+        '/healthz': {
+          target: `http://${apiUrl}`,
+          changeOrigin: true,
+        },
+      },
     },
     optimizeDeps: {
       exclude: ['@moq/hang'],

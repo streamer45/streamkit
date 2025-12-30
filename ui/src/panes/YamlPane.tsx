@@ -356,7 +356,7 @@ const YamlPane: React.FC<YamlPaneProps> = ({
   };
 
   return (
-    <PaneWrapper>
+    <PaneWrapper data-testid="yaml-pane">
       <PaneHeader>
         <PaneTitle>Pipeline YAML</PaneTitle>
         <PaneSubtitle>
