@@ -40,6 +40,9 @@ Source: `plugins/native/sensevoice/target/release/libsensevoice.so`
 ## Example Pipeline
 
 ```yaml
+#
+# skit:input_asset_tags=speech
+
 name: Speech-to-Text (SenseVoice)
 description: Transcribes speech in multiple languages using SenseVoice
 mode: oneshot

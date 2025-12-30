@@ -42,6 +42,9 @@ Source: `plugins/native/whisper/target/release/libwhisper.so`
 ## Example Pipeline
 
 ```yaml
+#
+# skit:input_asset_tags=speech
+
 name: Speech-to-Text (Whisper)
 description: Transcribes speech to text using Whisper
 mode: oneshot

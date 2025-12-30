@@ -36,13 +36,13 @@ Source: `plugins/native/nllb/target/release/libnllb.so`
 
 ## Example Pipeline
 
-> [!CAUTION]
-> The NLLB model family is licensed **CC-BY-NC-4.0** (non-commercial). Verify the specific model license and your intended use before deploying in production.
-
 ```yaml
 # SPDX-FileCopyrightText: © 2025 StreamKit Contributors
 #
 # SPDX-License-Identifier: MPL-2.0
+
+#
+# skit:input_asset_tags=speech
 
 name: Speech Translation (English → Spanish)
 description: Translates English speech into Spanish speech
@@ -74,6 +74,7 @@ steps:
       model_path: models/nllb-200-distilled-600M-ct2-int8
       source_language: eng_Latn
       target_language: spa_Latn
+      compute_type: int8
       beam_size: 1
       num_threads: 4
 

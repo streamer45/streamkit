@@ -111,6 +111,7 @@ StreamKit is audio-first today. Video support is a major milestone for v1.0:
 
 - ResourceManager integration for native plugins (unified model caching)
 - Plugin API versioning and compatibility checks
+- Plugin-defined packet schemas/metadata ("virtual packet types") that surface in `/schema/packets` and the UI while flowing as `Custom(type_id)` at runtime
 - Exploration of WASM/Native API convergence
 
 ---

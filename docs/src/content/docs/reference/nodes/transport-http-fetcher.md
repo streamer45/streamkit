@@ -2,12 +2,12 @@
 # SPDX-FileCopyrightText: © 2025 StreamKit Contributors
 # SPDX-License-Identifier: MPL-2.0
 title: "transport::http::fetcher"
-description: "Fetches binary data from an HTTP/HTTPS URL. Security: this is an SSRF-capable node; restrict it via role allowlists. Redirects are disabled (v0.1.0)."
+description: "Fetches binary data from an HTTP/HTTPS URL. Security: this is an SSRF-capable node; restrict it via role allowlists. Redirects are disabled (v0.1.x)."
 ---
 
 `kind`: `transport::http::fetcher`
 
-Fetches binary data from an HTTP/HTTPS URL. Security: this is an SSRF-capable node; restrict it via role allowlists. Redirects are disabled (v0.1.0).
+Fetches binary data from an HTTP/HTTPS URL. Security: this is an SSRF-capable node; restrict it via role allowlists. Redirects are disabled (v0.1.x).
 
 ## Categories
 - `transport`
