@@ -26,6 +26,14 @@ use tokio::sync::{broadcast, mpsc, OwnedSemaphorePermit, Semaphore};
 /// Capacity for the broadcast channel (subscribers)
 const SUBSCRIBER_BROADCAST_CAPACITY: usize = 256;
 
+#[derive(Clone, Copy, Debug, Default)]
+struct NodeStatsDelta {
+    received: u64,
+    sent: u64,
+    discarded: u64,
+    errored: u64,
+}
+
 #[derive(Clone, Debug)]
 struct BroadcastFrame {
     data: bytes::Bytes,
@@ -59,6 +67,17 @@ struct BidirectionalTaskConfig {
     subscriber_count: Arc<AtomicU64>,
     output_group_duration_ms: u64,
     output_initial_delay_ms: u64,
+    stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
+}
+
+struct PublisherReceiveLoopWithSlotConfig {
+    subscribe: moq_lite::OriginConsumer,
+    broadcast_name: String,
+    output_sender: streamkit_core::OutputSender,
+    publisher_slot: Arc<Semaphore>,
+    publisher_events: mpsc::UnboundedSender<PublisherEvent>,
+    publisher_path: String,
+    stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
 }
 
 fn normalize_gateway_path(path: &str) -> String {
@@ -223,6 +242,7 @@ impl ProcessorNode for MoqPeerNode {
 
         // Stats tracking
         let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
+        let (stats_delta_tx, mut stats_delta_rx) = mpsc::channel::<NodeStatsDelta>(1024);
 
         // Subscriber count for logging
         let subscriber_count = Arc::new(AtomicU64::new(0));
@@ -265,6 +285,7 @@ impl ProcessorNode for MoqPeerNode {
                             subscriber_count: sub_count,
                             output_group_duration_ms: self.config.output_group_duration_ms,
                             output_initial_delay_ms: self.config.output_initial_delay_ms,
+                            stats_delta_tx: stats_delta_tx.clone(),
                         },
                     ).await {
                         Ok(_handle) => {
@@ -298,6 +319,7 @@ impl ProcessorNode for MoqPeerNode {
                         context.output_sender.clone(),
                         shutdown_tx.subscribe(),
                         publisher_events_tx.clone(),
+                        stats_delta_tx.clone(),
                     ).await {
                         Ok(_handle) => {
                             tracing::info!("Publisher connected and streaming");
@@ -338,16 +360,33 @@ impl ProcessorNode for MoqPeerNode {
                 packet = pipeline_input_rx.recv() => {
                     if let Some(packet) = packet {
                         if let Packet::Binary { data, metadata, .. } = packet {
-                            stats_tracker.sent();
+                            stats_tracker.received();
                             // Broadcast to all subscribers (ignore if no receivers)
                             let duration_us = super::constants::packet_duration_us(metadata.as_ref());
                             let _ = subscriber_broadcast_tx.send(BroadcastFrame { data, duration_us });
+                            stats_tracker.sent();
                             stats_tracker.maybe_send();
                         }
                     } else {
                         tracing::info!("Pipeline input closed");
                         break Ok(());
                     }
+                }
+
+                Some(delta) = stats_delta_rx.recv() => {
+                    if delta.received > 0 {
+                        stats_tracker.received_n(delta.received);
+                    }
+                    if delta.sent > 0 {
+                        stats_tracker.sent_n(delta.sent);
+                    }
+                    if delta.discarded > 0 {
+                        stats_tracker.discarded_n(delta.discarded);
+                    }
+                    if delta.errored > 0 {
+                        stats_tracker.errored_n(delta.errored);
+                    }
+                    stats_tracker.maybe_send();
                 }
 
                 // Publisher lifecycle events (from both /input and base-path peers)
@@ -425,6 +464,7 @@ impl MoqPeerNode {
         output_sender: streamkit_core::OutputSender,
         mut shutdown_rx: broadcast::Receiver<()>,
         publisher_events: mpsc::UnboundedSender<PublisherEvent>,
+        stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
     ) -> Result<tokio::task::JoinHandle<Result<(), StreamKitError>>, StreamKitError> {
         let path = moq_connection.path.clone();
 
@@ -463,6 +503,7 @@ impl MoqPeerNode {
                 input_broadcast,
                 output_sender,
                 &mut shutdown_rx,
+                stats_delta_tx,
             )
             .await;
 
@@ -519,12 +560,15 @@ impl MoqPeerNode {
 
             let publisher_fut = async {
                 Self::publisher_receive_loop_with_slot(
-                    receive_origin,
-                    config.input_broadcast,
-                    config.output_sender,
-                    config.publisher_slot,
-                    config.publisher_events,
-                    path.clone(),
+                    PublisherReceiveLoopWithSlotConfig {
+                        subscribe: receive_origin,
+                        broadcast_name: config.input_broadcast,
+                        output_sender: config.output_sender,
+                        publisher_slot: config.publisher_slot,
+                        publisher_events: config.publisher_events,
+                        publisher_path: path.clone(),
+                        stats_delta_tx: config.stats_delta_tx.clone(),
+                    },
                     &mut publisher_shutdown_rx,
                 )
                 .await
@@ -561,35 +605,36 @@ impl MoqPeerNode {
     }
 
     async fn publisher_receive_loop_with_slot(
-        subscribe: moq_lite::OriginConsumer,
-        broadcast_name: String,
-        output_sender: streamkit_core::OutputSender,
-        publisher_slot: Arc<Semaphore>,
-        publisher_events: mpsc::UnboundedSender<PublisherEvent>,
-        publisher_path: String,
+        config: PublisherReceiveLoopWithSlotConfig,
         shutdown_rx: &mut broadcast::Receiver<()>,
     ) -> Result<(), StreamKitError> {
         tracing::info!(
-            path = %publisher_path,
+            path = %config.publisher_path,
             "Waiting for peer publisher to announce broadcast: {}",
-            broadcast_name
+            config.broadcast_name
         );
 
-        let Some(broadcast_consumer) =
-            Self::wait_for_broadcast_announcement(subscribe, &broadcast_name, shutdown_rx).await?
+        let Some(broadcast_consumer) = Self::wait_for_broadcast_announcement(
+            config.subscribe,
+            &config.broadcast_name,
+            shutdown_rx,
+        )
+        .await?
         else {
             return Ok(());
         };
 
-        let Ok(permit) = publisher_slot.try_acquire_owned() else {
+        let Ok(permit) = config.publisher_slot.try_acquire_owned() else {
             tracing::warn!(
-                path = %publisher_path,
+                path = %config.publisher_path,
                 "Ignoring peer publisher broadcast - publisher already connected"
             );
             return Ok(());
         };
 
-        let _ = publisher_events.send(PublisherEvent::Connected { path: publisher_path.clone() });
+        let _ = config
+            .publisher_events
+            .send(PublisherEvent::Connected { path: config.publisher_path.clone() });
 
         let result = async {
             let Some((audio_track_name, audio_priority)) =
@@ -599,7 +644,7 @@ impl MoqPeerNode {
             };
 
             tracing::info!(
-                path = %publisher_path,
+                path = %config.publisher_path,
                 "Subscribing to peer publisher audio track: {}",
                 audio_track_name
             );
@@ -609,13 +654,19 @@ impl MoqPeerNode {
                 priority: audio_priority,
             });
 
-            Self::process_publisher_frames(track_consumer, output_sender, shutdown_rx).await
+            Self::process_publisher_frames(
+                track_consumer,
+                config.output_sender,
+                shutdown_rx,
+                &config.stats_delta_tx,
+            )
+            .await
         }
         .await;
 
         drop(permit);
-        let _ = publisher_events.send(PublisherEvent::Disconnected {
-            path: publisher_path,
+        let _ = config.publisher_events.send(PublisherEvent::Disconnected {
+            path: config.publisher_path,
             error: result.as_ref().err().map(std::string::ToString::to_string),
         });
 
@@ -628,6 +679,7 @@ impl MoqPeerNode {
         broadcast_name: String,
         output_sender: streamkit_core::OutputSender,
         shutdown_rx: &mut broadcast::Receiver<()>,
+        stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
     ) -> Result<(), StreamKitError> {
         tracing::info!("Waiting for publisher to announce broadcast: {}", broadcast_name);
 
@@ -651,7 +703,8 @@ impl MoqPeerNode {
             .subscribe_track(&moq_lite::Track { name: audio_track_name, priority: audio_priority });
 
         // Process incoming frames
-        Self::process_publisher_frames(track_consumer, output_sender, shutdown_rx).await
+        Self::process_publisher_frames(track_consumer, output_sender, shutdown_rx, &stats_delta_tx)
+            .await
     }
 
     /// Wait for the publisher to announce the expected broadcast
@@ -725,6 +778,7 @@ impl MoqPeerNode {
         mut track_consumer: moq_lite::TrackConsumer,
         mut output_sender: streamkit_core::OutputSender,
         shutdown_rx: &mut broadcast::Receiver<()>,
+        stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
     ) -> Result<(), StreamKitError> {
         let mut frame_count = 0u64;
         let mut last_log = std::time::Instant::now();
@@ -747,6 +801,7 @@ impl MoqPeerNode {
                     &mut frame_count,
                     &mut last_log,
                     shutdown_rx,
+                    stats_delta_tx,
                 )
                 .await?
                 {
@@ -789,6 +844,7 @@ impl MoqPeerNode {
         frame_count: &mut u64,
         last_log: &mut std::time::Instant,
         shutdown_rx: &mut broadcast::Receiver<()>,
+        stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
     ) -> Result<FrameResult, StreamKitError> {
         tokio::select! {
             biased;
@@ -807,6 +863,8 @@ impl MoqPeerNode {
                         // The hang protocol encodes timestamp at the start of each frame
                         if let Err(e) = u64::decode(&mut payload, moq_lite::lite::Version::Draft02) {
                             tracing::warn!("Failed to decode frame timestamp: {e}");
+                            let _ = stats_delta_tx
+                                .try_send(NodeStatsDelta { received: 1, discarded: 1, ..Default::default() });
                             return Ok(FrameResult::Continue);
                         }
 
@@ -819,13 +877,17 @@ impl MoqPeerNode {
 
                         if output_sender.send("out", packet).await.is_err() {
                             tracing::debug!("Output channel closed");
+                            let _ = stats_delta_tx
+                                .try_send(NodeStatsDelta { received: 1, ..Default::default() });
                             return Ok(FrameResult::Shutdown);
                         }
+                        let _ = stats_delta_tx.try_send(NodeStatsDelta { received: 1, sent: 1, ..Default::default() });
                         Ok(FrameResult::Continue)
                     }
                     Ok(None) => Ok(FrameResult::GroupExhausted),
                     Err(e) => {
                         tracing::warn!("Error reading frame: {e}");
+                        let _ = stats_delta_tx.try_send(NodeStatsDelta { errored: 1, ..Default::default() });
                         Ok(FrameResult::GroupExhausted)
                     }
                 }

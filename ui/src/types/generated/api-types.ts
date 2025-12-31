@@ -83,7 +83,7 @@ bidirectional: boolean, };
 
 export type StopReason = "completed" | "input_closed" | "output_closed" | "shutdown" | "no_inputs" | "unknown";
 
-export type NodeState = "Initializing" | "Ready" | "Running" | { "Recovering": { reason: string, details: JsonValue, } } | { "Degraded": { reason: string, } } | { "Failed": { reason: string, } } | { "Stopped": { reason: StopReason, } };
+export type NodeState = "Initializing" | "Ready" | "Running" | { "Recovering": { reason: string, details: JsonValue, } } | { "Degraded": { reason: string, details: JsonValue, } } | { "Failed": { reason: string, } } | { "Stopped": { reason: StopReason, } };
 
 export type NodeStats = { 
 /**
@@ -345,7 +345,7 @@ is_fragment: boolean, };
 
 export type AudioAsset = { 
 /**
- * Unique identifier (filename without extension)
+ * Unique identifier (filename, including extension)
  */
 id: string, 
 /**
@@ -353,7 +353,7 @@ id: string,
  */
 name: string, 
 /**
- * Absolute path on the server
+ * Server-relative path suitable for `core::file_reader` (e.g., `samples/audio/system/foo.wav`)
  */
 path: string, 
 /**

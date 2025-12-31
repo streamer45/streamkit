@@ -58,6 +58,7 @@ import type {
   NodeDefinition,
   Connection,
   Node,
+  NodeState,
   Pipeline,
   MessageType,
   BatchOperation,
@@ -983,6 +984,52 @@ const buildEdgesFromConnections = (connections: Connection[], nodes: RFNode[]): 
       target: conn.to_node,
       targetHandle: conn.to_pin,
     }));
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && value !== undefined && typeof value === 'object' && !Array.isArray(value);
+
+type SlowTimeoutDetails = {
+  slowPins: string[];
+  newlySlowPins: string[];
+  syncTimeoutMs: number | null;
+};
+
+const extractSlowTimeoutDetailsFromNodeState = (
+  state: NodeState | null | undefined
+): SlowTimeoutDetails | null => {
+  if (!state || typeof state === 'string') return null;
+  if (!('Degraded' in state)) return null;
+  if (state.Degraded.reason !== 'slow_input_timeout') return null;
+
+  const details = state.Degraded.details;
+  if (!isRecord(details)) return null;
+
+  const slowPinsRaw = details['slow_pins'];
+  const newlySlowPinsRaw = details['newly_slow_pins'];
+  const syncTimeoutRaw = details['sync_timeout_ms'];
+
+  const slowPins = Array.isArray(slowPinsRaw)
+    ? slowPinsRaw.filter((p): p is string => typeof p === 'string')
+    : [];
+  const newlySlowPins = Array.isArray(newlySlowPinsRaw)
+    ? newlySlowPinsRaw.filter((p): p is string => typeof p === 'string')
+    : [];
+  const syncTimeoutMs = typeof syncTimeoutRaw === 'number' ? syncTimeoutRaw : null;
+
+  return { slowPins, newlySlowPins, syncTimeoutMs };
+};
+
+const describeSlowInputs = (pipeline: Pipeline, nodeId: string, slowPins: string[]): string[] => {
+  if (slowPins.length === 0) return [];
+  const slowPinSet = new Set(slowPins);
+
+  const sources = pipeline.connections
+    .filter((c) => c.to_node === nodeId && slowPinSet.has(c.to_pin))
+    .map((c) => `${c.from_node}.${c.from_pin} → ${c.to_pin}`);
+
+  sources.sort();
+  return sources;
 };
 
 /**
@@ -2441,6 +2488,85 @@ const MonitorViewContent: React.FC = () => {
     // nodeStats removed from dependencies - no longer causes re-renders
     // Note: setNodes, tuneNode, updateStagedNodeParams are stable and don't need to be dependencies
   ]);
+
+  // Lightweight patch: update edge alerts based on node degraded details.
+  useEffect(() => {
+    if (!pipeline) return;
+
+    const slowPinsByNode = new Map<string, Set<string>>();
+    const slowDetailsByNode = new Map<string, SlowTimeoutDetails>();
+    for (const [nodeId, apiNode] of Object.entries(pipeline.nodes)) {
+      const state = (nodeStates as Record<string, NodeState>)[nodeId] ?? apiNode.state ?? null;
+      const details = extractSlowTimeoutDetailsFromNodeState(state);
+      const slowPins = details?.slowPins ?? [];
+      if (slowPins.length > 0) {
+        slowPinsByNode.set(nodeId, new Set(slowPins));
+      }
+      if (details) {
+        slowDetailsByNode.set(nodeId, details);
+      }
+    }
+
+    React.startTransition(() => {
+      setEdges((prev) => {
+        let changed = false;
+
+        const next = prev.map((edge) => {
+          const targetPin = edge.targetHandle ?? '';
+          const shouldWarn = slowPinsByNode.get(edge.target)?.has(targetPin) ?? false;
+          const currentAlert = isRecord(edge.data) ? edge.data['alert'] : undefined;
+          const currentAlertKind =
+            isRecord(currentAlert) && typeof currentAlert['kind'] === 'string'
+              ? currentAlert['kind']
+              : null;
+          const isCurrentlyWarned = currentAlertKind === 'slow_input_timeout';
+
+          if (shouldWarn === isCurrentlyWarned) return edge;
+
+          changed = true;
+          const nextData: Record<string, unknown> = { ...(edge.data || {}) };
+
+          if (shouldWarn) {
+            const details = slowDetailsByNode.get(edge.target);
+            const slowPins = details?.slowPins ?? [];
+            const slowInputs = pipeline ? describeSlowInputs(pipeline, edge.target, slowPins) : [];
+
+            const lines: string[] = [];
+            if (slowInputs.length > 0) {
+              lines.push(`Slow inputs: ${slowInputs.join(', ')}`);
+            } else if (slowPins.length > 0) {
+              lines.push(`Slow pins: ${slowPins.join(', ')}`);
+            }
+
+            const sourceHandle = edge.sourceHandle ?? '';
+            lines.push(`This: ${edge.source}.${sourceHandle} → ${edge.targetHandle ?? ''}`);
+
+            if (details?.newlySlowPins && details.newlySlowPins.length > 0) {
+              lines.push(`Newly slow: ${details.newlySlowPins.join(', ')}`);
+            }
+            if (details?.syncTimeoutMs !== null && details?.syncTimeoutMs !== undefined) {
+              lines.push(`Timeout: ${details.syncTimeoutMs}ms`);
+            }
+
+            nextData.alert = {
+              kind: 'slow_input_timeout',
+              severity: 'warning',
+              tooltip: {
+                title: `${edge.target} degraded`,
+                lines,
+              },
+            };
+          } else if (isCurrentlyWarned) {
+            delete nextData.alert;
+          }
+
+          return { ...edge, data: nextData };
+        });
+
+        return changed ? next : prev;
+      });
+    });
+  }, [pipeline, nodeStates, setEdges]);
 
   // Create a stable callback that handles both staged and live param changes
   // This avoids recreating callbacks for each node, which would break React.memo

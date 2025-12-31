@@ -477,6 +477,45 @@ impl AudioMixerNode {
         // Track last mix time for timeout detection
         let mut waiting_since: Option<std::time::Instant> = None;
         let mut has_warned_slow = false;
+        let mut last_reported_slow_pins: Vec<String> = Vec::new();
+        let sync_timeout_ms = self.config.sync_timeout_ms;
+        let state_tx = context.state_tx.clone();
+        let node_name_for_state = node_name.clone();
+
+        let mut sync_slow_state = |slots: &[InputSlot], newly_slow_pins: Option<Vec<String>>| {
+            let mut slow_pins: Vec<String> =
+                slots.iter().filter(|s| s.slow).map(|s| s.name.as_ref().to_string()).collect();
+            slow_pins.sort();
+            slow_pins.dedup();
+
+            if slow_pins.is_empty() {
+                if has_warned_slow {
+                    state_helpers::emit_running(&state_tx, &node_name_for_state);
+                    has_warned_slow = false;
+                    last_reported_slow_pins.clear();
+                }
+                return;
+            }
+
+            if slow_pins == last_reported_slow_pins {
+                return;
+            }
+
+            let details = serde_json::json!({
+                "slow_pins": slow_pins.clone(),
+                "newly_slow_pins": newly_slow_pins,
+                "sync_timeout_ms": sync_timeout_ms,
+            });
+
+            state_helpers::emit_degraded(
+                &state_tx,
+                &node_name_for_state,
+                "slow_input_timeout",
+                Some(details),
+            );
+            has_warned_slow = true;
+            last_reported_slow_pins = slow_pins;
+        };
 
         // Track mixed frames sent (for debugging)
         let mut mixed_frame_count: u64 = 0;
@@ -591,26 +630,23 @@ impl AudioMixerNode {
                             continue;
                         }
 
-                        let missing_names: Vec<&str> =
-                            missing_idxs.iter().map(|idx| slots[*idx].name.as_ref()).collect();
+                        let missing_names: Vec<String> = missing_idxs
+                            .iter()
+                            .map(|idx| slots[*idx].name.as_ref().to_string())
+                            .collect();
                         tracing::warn!(
                             "Mixer: timeout waiting for pins {:?}, mixing with silence",
                             missing_names
                         );
 
-                        if !has_warned_slow {
-                            state_helpers::emit_degraded(
-                                &context.state_tx,
-                                &node_name,
-                                "slow_input_timeout"
-                            );
-                            has_warned_slow = true;
-                        }
-
-                        for idx in missing_idxs {
-                            slots[idx].slow = true;
+                        for idx in &missing_idxs {
+                            slots[*idx].slow = true;
                         }
                         waiting_since = None;
+                        sync_slow_state(
+                            &slots,
+                            Some(missing_names),
+                        );
 
                         if let Err(e) = self.mix_and_send(
                             &mut slots,
@@ -656,7 +692,6 @@ impl AudioMixerNode {
                                 let expected_count = slots.iter().filter(|s| !s.slow).count();
                                 if had_no_frames && expected_count > 1 {
                                     waiting_since = Some(std::time::Instant::now());
-                                    has_warned_slow = false;
                                 }
 
                                 // Keep the latest frame per pin.
@@ -681,10 +716,7 @@ impl AudioMixerNode {
                                                 s.slow = false;
                                             }
                                         }
-                                        if slots.iter().all(|s| !s.slow) && has_warned_slow {
-                                            state_helpers::emit_running(&context.state_tx, &node_name);
-                                            has_warned_slow = false;
-                                        }
+                                        sync_slow_state(&slots, None);
                                     }
 
                                     if let Err(e) = self.mix_and_send(
@@ -707,27 +739,19 @@ impl AudioMixerNode {
                                     if cold_start_complete {
                                         if let Some(start) = waiting_since {
                                             if start.elapsed() >= timeout {
-                                                let missing_names: Vec<&str> = slots
+                                                let missing_names: Vec<String> = slots
                                                     .iter()
                                                     .filter(|s| !s.slow && s.frame.is_none())
-                                                    .map(|s| s.name.as_ref())
+                                                    .map(|s| s.name.as_ref().to_string())
                                                     .collect();
 
                                                 if !missing_names.is_empty() {
-                                                    if !has_warned_slow {
-                                                        tracing::warn!(
-                                                            "Mixer sync timeout ({}ms) expired. Missing frames from: {:?}. \
-                                                             Marking as slow and will continue mixing without waiting.",
-                                                            timeout.as_millis(),
-                                                            missing_names
-                                                        );
-                                                        state_helpers::emit_degraded(
-                                                            &context.state_tx,
-                                                            &node_name,
-                                                            "slow_input_timeout"
-                                                        );
-                                                        has_warned_slow = true;
-                                                    }
+                                                    tracing::warn!(
+                                                        "Mixer sync timeout ({}ms) expired. Missing frames from: {:?}. \
+                                                         Marking as slow and will continue mixing without waiting.",
+                                                        timeout.as_millis(),
+                                                        missing_names
+                                                    );
 
                                                     for s in &mut slots {
                                                         if !s.slow && s.frame.is_none() {
@@ -736,6 +760,10 @@ impl AudioMixerNode {
                                                     }
 
                                                     waiting_since = None;
+                                                    sync_slow_state(
+                                                        &slots,
+                                                        Some(missing_names),
+                                                    );
                                                     if let Err(e) = self.mix_and_send(
                                                         &mut slots,
                                                         &mut mix_frames,
@@ -787,11 +815,7 @@ impl AudioMixerNode {
                                 round_robin_idx %= slots.len();
                             }
                             waiting_since = None;
-
-                            if slots.iter().all(|s| !s.slow) && has_warned_slow {
-                                state_helpers::emit_running(&context.state_tx, &node_name);
-                                has_warned_slow = false;
-                            }
+                            sync_slow_state(&slots, None);
 
                             // If we have frames buffered and remaining active pins, mix now.
                             if !slots.is_empty() && slots.iter().any(|s| s.frame.is_some()) {
@@ -1161,6 +1185,7 @@ fn run_clocked_audio_thread(config: &ClockedThreadConfig) {
 
     let mut max_output_channels_seen: u16 = 0;
     let mut has_warned_slow = false;
+    let mut last_reported_slow_pins: Vec<String> = Vec::new();
     let mut next_tick = std::time::Instant::now() + config.tick_duration;
 
     let tick_us = (config.frame_samples_per_channel as u64).saturating_mul(1_000_000)
@@ -1190,9 +1215,12 @@ fn run_clocked_audio_thread(config: &ClockedThreadConfig) {
                 },
                 AudioThreadCommand::RemoveInput { name } => {
                     inputs.retain(|i| i.name != name);
-                    if inputs.is_empty() && has_warned_slow {
-                        state_helpers::emit_running(&config.state_tx, &config.node_name);
+                    if inputs.is_empty() {
+                        if has_warned_slow {
+                            state_helpers::emit_running(&config.state_tx, &config.node_name);
+                        }
                         has_warned_slow = false;
+                        last_reported_slow_pins.clear();
                     }
                 },
                 AudioThreadCommand::Shutdown => break,
@@ -1274,17 +1302,33 @@ fn run_clocked_audio_thread(config: &ClockedThreadConfig) {
                     }
                 }
 
-                let any_slow = inputs.iter().any(|i| i.slow);
-                if any_slow && !has_warned_slow {
+                let mut slow_pins: Vec<String> =
+                    inputs.iter().filter(|i| i.slow).map(|i| i.name.as_ref().to_string()).collect();
+                slow_pins.sort();
+                slow_pins.dedup();
+
+                if slow_pins.is_empty() {
+                    if has_warned_slow {
+                        state_helpers::emit_running(&config.state_tx, &config.node_name);
+                    }
+                    has_warned_slow = false;
+                    last_reported_slow_pins.clear();
+                } else if slow_pins != last_reported_slow_pins {
+                    let details = serde_json::json!({
+                        "slow_pins": slow_pins.clone(),
+                        "newly_slow_pins": serde_json::Value::Null,
+                        "sync_timeout_ms": config
+                            .sync_timeout
+                            .and_then(|d| u64::try_from(d.as_millis()).ok()),
+                    });
                     state_helpers::emit_degraded(
                         &config.state_tx,
                         &config.node_name,
                         "slow_input_timeout",
+                        Some(details),
                     );
                     has_warned_slow = true;
-                } else if !any_slow && has_warned_slow {
-                    state_helpers::emit_running(&config.state_tx, &config.node_name);
-                    has_warned_slow = false;
+                    last_reported_slow_pins = slow_pins;
                 }
 
                 if !any_input_had_frame && !config.generate_silence {

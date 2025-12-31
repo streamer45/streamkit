@@ -6,7 +6,7 @@ import styled from '@emotion/styled';
 import React from 'react';
 
 import { useSessionStore } from '@/stores/sessionStore';
-import type { NodeState, NodeStats } from '@/types/types';
+import type { NodeState, NodeStats, Pipeline } from '@/types/types';
 
 import { SKTooltip } from './Tooltip';
 
@@ -29,6 +29,46 @@ interface NodeStateIndicatorProps {
 
 function formatNumber(num: number | bigint): string {
   return num.toLocaleString();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return (
+    value !== null && value !== undefined && typeof value === 'object' && !Array.isArray(value)
+  );
+}
+
+function asStringArray(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  if (!value.every((v) => typeof v === 'string')) return null;
+  return value;
+}
+
+type SlowInputSource = {
+  slowPin: string;
+  fromNode: string;
+  fromPin: string;
+};
+
+function deriveSlowInputSources(
+  pipeline: Pipeline | null | undefined,
+  nodeId: string,
+  slowPins: string[]
+): SlowInputSource[] {
+  if (!pipeline || slowPins.length === 0) return [];
+
+  const slowPinSet = new Set(slowPins);
+  const sources: SlowInputSource[] = [];
+
+  for (const c of pipeline.connections) {
+    if (c.to_node !== nodeId) continue;
+    if (!slowPinSet.has(c.to_pin)) continue;
+    sources.push({ slowPin: c.to_pin, fromNode: c.from_node, fromPin: c.from_pin });
+  }
+
+  sources.sort(
+    (a, b) => a.slowPin.localeCompare(b.slowPin) || a.fromNode.localeCompare(b.fromNode)
+  );
+  return sources;
 }
 
 function getStateColor(state: NodeState): string {
@@ -108,154 +148,177 @@ function getStateDescription(state: NodeState): string {
   return '';
 }
 
-function getStateDetails(state: NodeState, stats?: NodeStats): React.ReactNode {
-  if (typeof state === 'string') {
-    return (
-      <div style={{ fontSize: 12 }}>
-        <div style={{ fontWeight: 600, marginBottom: 4 }}>{state}</div>
-        <div style={{ color: 'var(--sk-text-muted)' }}>{getStateDescription(state)}</div>
-        {stats &&
-          (() => {
-            // Calculate rates (packets per second)
-            const duration = stats.duration_secs > 0 ? stats.duration_secs : 1;
-            const receivedPps = Math.round(Number(stats.received) / duration);
-            const sentPps = Math.round(Number(stats.sent) / duration);
+const renderPacketStats = (stats?: NodeStats): React.ReactNode => {
+  if (!stats) return null;
 
-            return (
-              <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--sk-border)' }}>
-                <div style={{ fontWeight: 600, marginBottom: 4, color: 'var(--sk-text)' }}>
-                  Packet Statistics
-                </div>
-                <div
-                  className="code-font"
-                  style={{ color: 'var(--sk-text)', lineHeight: '1.4', fontSize: 11 }}
-                >
-                  <div style={{ marginBottom: 2 }}>
-                    <span style={{ color: 'var(--sk-text-muted)' }}>In:</span>{' '}
-                    {formatNumber(stats.received)} pkt ({receivedPps} pps)
-                    <span style={{ marginLeft: 8, color: 'var(--sk-text-muted)' }}>Out:</span>{' '}
-                    {formatNumber(stats.sent)} pkt ({sentPps} pps)
-                  </div>
-                  {(stats.discarded > 0 || stats.errored > 0) && (
-                    <div style={{ marginTop: 2, color: 'var(--sk-warning)' }}>
-                      {stats.discarded > 0 && `⚠ Discarded: ${formatNumber(stats.discarded)} pkt`}
-                      {stats.discarded > 0 && stats.errored > 0 && ' | '}
-                      {stats.errored > 0 && `❌ Errors: ${formatNumber(stats.errored)} pkt`}
-                    </div>
-                  )}
-                </div>
-              </div>
-            );
-          })()}
+  const duration = stats.duration_secs > 0 ? stats.duration_secs : 1;
+  const receivedPps = Math.round(Number(stats.received) / duration);
+  const sentPps = Math.round(Number(stats.sent) / duration);
+
+  return (
+    <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--sk-border)' }}>
+      <div style={{ fontWeight: 600, marginBottom: 4, color: 'var(--sk-text)' }}>
+        Packet Statistics
       </div>
-    );
-  }
-
-  const renderStats = (stats?: NodeStats) => {
-    if (!stats) return null;
-
-    // Calculate rates (packets per second)
-    const duration = stats.duration_secs > 0 ? stats.duration_secs : 1;
-    const receivedPps = Math.round(Number(stats.received) / duration);
-    const sentPps = Math.round(Number(stats.sent) / duration);
-
-    return (
-      <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--sk-border)' }}>
-        <div style={{ fontWeight: 600, marginBottom: 4, color: 'var(--sk-text)' }}>
-          Packet Statistics
+      <div
+        className="code-font"
+        style={{ color: 'var(--sk-text)', lineHeight: '1.4', fontSize: 11 }}
+      >
+        <div style={{ marginBottom: 2 }}>
+          <span style={{ color: 'var(--sk-text-muted)' }}>In:</span> {formatNumber(stats.received)}{' '}
+          pkt ({receivedPps} pps)
+          <span style={{ marginLeft: 8, color: 'var(--sk-text-muted)' }}>Out:</span>{' '}
+          {formatNumber(stats.sent)} pkt ({sentPps} pps)
         </div>
-        <div
-          className="code-font"
-          style={{ color: 'var(--sk-text)', lineHeight: '1.4', fontSize: 11 }}
-        >
-          <div style={{ marginBottom: 2 }}>
-            <span style={{ color: 'var(--sk-text-muted)' }}>In:</span>{' '}
-            {formatNumber(stats.received)} pkt ({receivedPps} pps)
-            <span style={{ marginLeft: 8, color: 'var(--sk-text-muted)' }}>Out:</span>{' '}
-            {formatNumber(stats.sent)} pkt ({sentPps} pps)
+        {(stats.discarded > 0 || stats.errored > 0) && (
+          <div style={{ marginTop: 2, color: 'var(--sk-warning)' }}>
+            {stats.discarded > 0 && `⚠ Discarded: ${formatNumber(stats.discarded)} pkt`}
+            {stats.discarded > 0 && stats.errored > 0 && ' | '}
+            {stats.errored > 0 && `❌ Errors: ${formatNumber(stats.errored)} pkt`}
           </div>
-          {(stats.discarded > 0 || stats.errored > 0) && (
-            <div style={{ marginTop: 2, color: 'var(--sk-warning)' }}>
-              {stats.discarded > 0 && `⚠ Discarded: ${formatNumber(stats.discarded)} pkt`}
-              {stats.discarded > 0 && stats.errored > 0 && ' | '}
-              {stats.errored > 0 && `❌ Errors: ${formatNumber(stats.errored)} pkt`}
+        )}
+      </div>
+    </div>
+  );
+};
+
+const renderStringStateDetails = (
+  state: Extract<NodeState, string>,
+  stats?: NodeStats
+): React.ReactNode => {
+  return (
+    <div style={{ fontSize: 12 }}>
+      <div style={{ fontWeight: 600, marginBottom: 4 }}>{state}</div>
+      <div style={{ color: 'var(--sk-text-muted)' }}>{getStateDescription(state)}</div>
+      {renderPacketStats(stats)}
+    </div>
+  );
+};
+
+const renderRecoveringDetails = (
+  state: Extract<NodeState, { Recovering: { reason: string; details: unknown } }>,
+  stats?: NodeStats
+): React.ReactNode => {
+  const details = state.Recovering.details;
+  const hasDetails = details !== null && details !== undefined && typeof details === 'object';
+
+  return (
+    <div style={{ fontSize: 12 }}>
+      <div style={{ fontWeight: 600, marginBottom: 4 }}>Recovering</div>
+      <div style={{ color: 'var(--sk-text-muted)', marginBottom: 4 }}>
+        {getStateDescription(state)}
+      </div>
+      <div style={{ color: 'var(--sk-text)' }}>{state.Recovering.reason}</div>
+      {hasDetails && (
+        <pre
+          style={{
+            marginTop: 4,
+            fontSize: 10,
+            background: 'var(--sk-bg)',
+            padding: 4,
+            borderRadius: 4,
+            maxWidth: 200,
+            overflow: 'auto',
+          }}
+        >
+          {JSON.stringify(details, null, 2)}
+        </pre>
+      )}
+      {renderPacketStats(stats)}
+    </div>
+  );
+};
+
+const renderDegradedDetails = (
+  state: Extract<NodeState, { Degraded: { reason: string; details: unknown } }>,
+  stats?: NodeStats,
+  context?: { pipeline?: Pipeline | null; nodeId?: string }
+): React.ReactNode => {
+  const detailsObj = isRecord(state.Degraded.details) ? state.Degraded.details : null;
+  const slowPins = detailsObj ? asStringArray(detailsObj['slow_pins']) : null;
+  const newlySlowPins = detailsObj ? asStringArray(detailsObj['newly_slow_pins']) : null;
+  const slowSources =
+    slowPins && context?.pipeline && context?.nodeId
+      ? deriveSlowInputSources(context.pipeline, context.nodeId, slowPins)
+      : [];
+
+  return (
+    <div style={{ fontSize: 12 }}>
+      <div style={{ fontWeight: 600, marginBottom: 4 }}>Degraded</div>
+      <div style={{ color: 'var(--sk-text-muted)', marginBottom: 4 }}>
+        {getStateDescription(state)}
+      </div>
+      <div style={{ color: 'var(--sk-text)' }}>{state.Degraded.reason}</div>
+      {(slowPins || newlySlowPins) && (
+        <div style={{ marginTop: 6, color: 'var(--sk-warning)' }}>
+          {slowSources.length > 0 ? (
+            <div className="code-font" style={{ fontSize: 11, lineHeight: '1.4' }}>
+              Slow inputs:{' '}
+              {slowSources.map((s) => `${s.fromNode}.${s.fromPin} → ${s.slowPin}`).join(', ')}
+            </div>
+          ) : (
+            slowPins &&
+            slowPins.length > 0 && (
+              <div className="code-font" style={{ fontSize: 11, lineHeight: '1.4' }}>
+                Slow pins: {slowPins.join(', ')}
+              </div>
+            )
+          )}
+          {slowPins && slowPins.length > 0 && slowSources.length > 0 && (
+            <div className="code-font" style={{ fontSize: 11, lineHeight: '1.4', marginTop: 2 }}>
+              Pins: {slowPins.join(', ')}
+            </div>
+          )}
+          {newlySlowPins && newlySlowPins.length > 0 && (
+            <div className="code-font" style={{ fontSize: 11, lineHeight: '1.4', marginTop: 2 }}>
+              Newly slow: {newlySlowPins.join(', ')}
             </div>
           )}
         </div>
+      )}
+      {renderPacketStats(stats)}
+    </div>
+  );
+};
+
+const renderFailedDetails = (
+  state: Extract<NodeState, { Failed: { reason: string } }>,
+  stats?: NodeStats
+): React.ReactNode => {
+  return (
+    <div style={{ fontSize: 12 }}>
+      <div style={{ fontWeight: 600, marginBottom: 4 }}>Failed</div>
+      <div style={{ color: 'var(--sk-text-muted)', marginBottom: 4 }}>
+        {getStateDescription(state)}
       </div>
-    );
-  };
+      <div style={{ color: 'var(--sk-danger)' }}>{state.Failed.reason}</div>
+      {renderPacketStats(stats)}
+    </div>
+  );
+};
 
-  if ('Recovering' in state) {
-    const details = state.Recovering.details;
-    const hasDetails = details !== null && details !== undefined && typeof details === 'object';
-
-    return (
-      <div style={{ fontSize: 12 }}>
-        <div style={{ fontWeight: 600, marginBottom: 4 }}>Recovering</div>
-        <div style={{ color: 'var(--sk-text-muted)', marginBottom: 4 }}>
-          {getStateDescription(state)}
-        </div>
-        <div style={{ color: 'var(--sk-text)' }}>{state.Recovering.reason}</div>
-        {hasDetails && (
-          <pre
-            style={{
-              marginTop: 4,
-              fontSize: 10,
-              background: 'var(--sk-bg)',
-              padding: 4,
-              borderRadius: 4,
-              maxWidth: 200,
-              overflow: 'auto',
-            }}
-          >
-            {JSON.stringify(details, null, 2)}
-          </pre>
-        )}
-        {renderStats(stats)}
+const renderStoppedDetails = (
+  state: Extract<NodeState, { Stopped: { reason: unknown } }>,
+  stats?: NodeStats
+): React.ReactNode => {
+  return (
+    <div style={{ fontSize: 12 }}>
+      <div style={{ fontWeight: 600, marginBottom: 4 }}>Stopped</div>
+      <div style={{ color: 'var(--sk-text-muted)', marginBottom: 4 }}>
+        {getStateDescription(state)}
       </div>
-    );
-  }
+      <div style={{ color: 'var(--sk-text)' }}>{String(state.Stopped.reason)}</div>
+      {renderPacketStats(stats)}
+    </div>
+  );
+};
 
-  if ('Degraded' in state) {
-    return (
-      <div style={{ fontSize: 12 }}>
-        <div style={{ fontWeight: 600, marginBottom: 4 }}>Degraded</div>
-        <div style={{ color: 'var(--sk-text-muted)', marginBottom: 4 }}>
-          {getStateDescription(state)}
-        </div>
-        <div style={{ color: 'var(--sk-text)' }}>{state.Degraded.reason}</div>
-        {renderStats(stats)}
-      </div>
-    );
-  }
-
-  if ('Failed' in state) {
-    return (
-      <div style={{ fontSize: 12 }}>
-        <div style={{ fontWeight: 600, marginBottom: 4 }}>Failed</div>
-        <div style={{ color: 'var(--sk-text-muted)', marginBottom: 4 }}>
-          {getStateDescription(state)}
-        </div>
-        <div style={{ color: 'var(--sk-danger)' }}>{state.Failed.reason}</div>
-        {renderStats(stats)}
-      </div>
-    );
-  }
-
-  if ('Stopped' in state) {
-    return (
-      <div style={{ fontSize: 12 }}>
-        <div style={{ fontWeight: 600, marginBottom: 4 }}>Stopped</div>
-        <div style={{ color: 'var(--sk-text-muted)', marginBottom: 4 }}>
-          {getStateDescription(state)}
-        </div>
-        <div style={{ color: 'var(--sk-text)' }}>{state.Stopped.reason}</div>
-        {renderStats(stats)}
-      </div>
-    );
-  }
-
+function getStateDetails(state: NodeState, stats?: NodeStats): React.ReactNode {
+  if (typeof state === 'string') return renderStringStateDetails(state, stats);
+  if ('Recovering' in state) return renderRecoveringDetails(state, stats);
+  if ('Degraded' in state) return renderDegradedDetails(state, stats);
+  if ('Failed' in state) return renderFailedDetails(state, stats);
+  if ('Stopped' in state) return renderStoppedDetails(state, stats);
   return null;
 }
 
@@ -278,6 +341,13 @@ const LiveNodeStateTooltipContent = React.memo(
     const liveStats = useSessionStore(
       React.useCallback((s) => s.sessions.get(sessionId)?.nodeStats[nodeId], [nodeId, sessionId])
     );
+    const pipeline = useSessionStore(
+      React.useCallback((s) => s.sessions.get(sessionId)?.pipeline, [sessionId])
+    );
+
+    if (typeof state === 'object' && 'Degraded' in state) {
+      return renderDegradedDetails(state, liveStats ?? fallbackStats, { pipeline, nodeId });
+    }
 
     return getStateDetails(state, liveStats ?? fallbackStats);
   }
