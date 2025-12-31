@@ -18,6 +18,7 @@ SPDX-License-Identifier: MPL-2.0
   <a href="https://demo.streamkit.dev"><img src="https://img.shields.io/badge/demo-try%20it%20live-brightgreen?style=flat-square" alt="Live Demo"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MPL%202.0-blue?style=flat-square" alt="License: MPL-2.0"></a>
 </p>
+<p align="center"><strong><a href="https://demo.streamkit.dev">Try the live demo</a></strong> — no install required</p>
 <br>
 
 <p align="center">
@@ -81,6 +82,8 @@ If you try it and something feels off, please open an issue (or a small PR). For
 - **Media focus**: audio-first today (Opus, WAV, OGG, FLAC, MP3). Video support is on the [roadmap](ROADMAP.md).
 
 ## Quickstart (Docker)
+
+> **Want to skip the setup?** [Try the live demo](https://demo.streamkit.dev) to explore StreamKit instantly in your browser.
 
 The fastest way to get started is using pre-built Docker images from GitHub Container Registry (GHCR). The image serves the web UI and includes sample pipelines.
 
