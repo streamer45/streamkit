@@ -17,6 +17,7 @@ import { createSession } from '@/services/sessions';
 import { useSchemaStore, ensureSchemasLoaded } from '@/stores/schemaStore';
 import type { Event } from '@/types/types';
 import { getLogger } from '@/utils/logger';
+import { extractMoqPeerSettings, updateUrlPath } from '@/utils/moqPeerSettings';
 import { orderSamplePipelinesSystemFirst } from '@/utils/samplePipelineOrdering';
 
 import { useStreamStore } from '../stores/streamStore';
@@ -505,9 +506,25 @@ const StreamView: React.FC = () => {
       if (template) {
         viewState.setSelectedTemplateId(templateId);
         viewState.setPipelineYaml(template.yaml);
+
+        // Auto-adjust connection settings based on moq_peer node in the pipeline
+        const moqSettings = extractMoqPeerSettings(template.yaml);
+        if (moqSettings) {
+          // Update gateway URL path if specified
+          if (moqSettings.gatewayPath && serverUrl) {
+            setServerUrl(updateUrlPath(serverUrl, moqSettings.gatewayPath));
+          }
+          // Update broadcast names if specified
+          if (moqSettings.inputBroadcast) {
+            setInputBroadcast(moqSettings.inputBroadcast);
+          }
+          if (moqSettings.outputBroadcast) {
+            setOutputBroadcast(moqSettings.outputBroadcast);
+          }
+        }
       }
     },
-    [viewState]
+    [viewState, serverUrl, setServerUrl, setInputBroadcast, setOutputBroadcast]
   );
 
   // Handle session creation
