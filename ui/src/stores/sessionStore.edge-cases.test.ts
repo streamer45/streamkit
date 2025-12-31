@@ -74,7 +74,7 @@ describe('sessionStore edge cases', () => {
       const states: NodeState[] = [
         'Initializing',
         'Running',
-        { Degraded: { reason: 'test degradation' } },
+        { Degraded: { reason: 'test degradation', details: null } },
         'Running',
       ];
 

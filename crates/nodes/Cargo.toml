@@ -97,7 +97,7 @@ default = [
 # Individual features for each node.
 passthrough = ["dep:schemars"]
 audio_gain = ["dep:schemars"]
-audio_mixer = ["dep:schemars"]
+audio_mixer = ["dep:schemars", "dep:serde_json"]
 audio_resampler = ["dep:schemars", "dep:rubato"]
 audio_pacer = ["dep:schemars"]
 file_io = ["dep:schemars"]

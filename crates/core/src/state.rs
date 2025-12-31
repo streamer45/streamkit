@@ -160,7 +160,11 @@ pub enum NodeState {
     /// - Partial functionality (some features unavailable)
     ///
     /// The node continues processing but users should be aware of reduced quality.
-    Degraded { reason: String },
+    Degraded {
+        reason: String,
+        #[ts(type = "JsonValue")]
+        details: Option<serde_json::Value>,
+    },
 
     /// Node has encountered a fatal error and stopped processing.
     /// Manual intervention is required to restart the node.
@@ -306,7 +310,8 @@ pub mod state_helpers {
         state_tx: &mpsc::Sender<NodeStateUpdate>,
         node_name: &str,
         reason: impl Into<String>,
+        details: Option<serde_json::Value>,
     ) {
-        emit_state(state_tx, node_name, NodeState::Degraded { reason: reason.into() });
+        emit_state(state_tx, node_name, NodeState::Degraded { reason: reason.into(), details });
     }
 }
