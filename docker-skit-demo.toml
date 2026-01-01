@@ -44,15 +44,10 @@ keep_models_loaded = true
 [resources.prewarm]
 enabled = true
 
-# Whisper STT - base English model (used by most sample pipelines)
+# Whisper STT - demo image uses a single tiny multilingual model
 [[resources.prewarm.plugins]]
 kind = "plugin::native::whisper"
-params = { model_path = "models/ggml-base.en-q5_1.bin", use_gpu = false, gpu_device = 0, n_threads = 2, vad_model_path = "models/silero_vad.onnx" }
-
-# Whisper STT - multilingual model (used by speech-translate-helsinki-es-en.yaml)
-[[resources.prewarm.plugins]]
-kind = "plugin::native::whisper"
-params = { model_path = "models/ggml-base-q5_1.bin", use_gpu = false, gpu_device = 0, n_threads = 2, vad_model_path = "models/silero_vad.onnx" }
+params = { model_path = "models/ggml-tiny-q5_1.bin", use_gpu = false, gpu_device = 0, n_threads = 2, vad_model_path = "models/silero_vad.onnx" }
 
 # VAD (Voice Activity Detection)
 [[resources.prewarm.plugins]]
