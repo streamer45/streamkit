@@ -153,18 +153,12 @@ RUN --mount=type=cache,id=cargo-registry-whisper,target=/usr/local/cargo/registr
     mkdir -p /build/plugins/native && \
     cp target-portable/release/libwhisper.so /build/plugins/native/
 
-# Download Whisper models (quantized only - no unquantized ggml-base.en.bin)
-# - ggml-base.en-q5_1.bin: English STT (quantized)
-# - ggml-tiny.en-q5_1.bin: Lightweight English STT
-# - ggml-base-q5_1.bin: Multilingual (for ES->EN translation)
+# Download Whisper models (demo image uses a single tiny multilingual model).
+# - ggml-tiny-q5_1.bin: Tiny multilingual STT (quantized)
 # - silero_vad.onnx: VAD model for Whisper
 RUN mkdir -p /build/models && \
-    curl -L -o /build/models/ggml-base.en-q5_1.bin \
-      https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q5_1.bin && \
-    curl -L -o /build/models/ggml-tiny.en-q5_1.bin \
-      https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en-q5_1.bin && \
-    curl -L -o /build/models/ggml-base-q5_1.bin \
-      https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin && \
+    curl -L -o /build/models/ggml-tiny-q5_1.bin \
+      https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q5_1.bin && \
     curl -L -o /build/models/silero_vad.onnx \
       https://raw.githubusercontent.com/snakers4/silero-vad/master/src/silero_vad/data/silero_vad.onnx
 
@@ -498,8 +492,15 @@ COPY --chown=app:app samples/pipelines /opt/streamkit/samples/pipelines
 COPY --chown=app:app samples/audio/system/*.ogg samples/audio/system/*.ogg.license /opt/streamkit/samples/audio/system/
 COPY --chown=app:app samples/audio/system/*.opus samples/audio/system/*.opus.license /opt/streamkit/samples/audio/system/
 
-# Remove pipelines that won't work (NLLB + WASM dependencies not included)
-RUN rm -f \
+# Demo image uses a single tiny multilingual Whisper model, but the committed sample pipelines
+# reference a mix of base.en/tiny.en/multilingual model filenames. Rewrite them inside the image
+# so the shipped samples work without bundling multiple Whisper models.
+RUN find /opt/streamkit/samples/pipelines -type f \( -name '*.yml' -o -name '*.yaml' \) -print0 | \
+    xargs -0 sed -i \
+      -e 's#models/ggml-base\\.en-q5_1\\.bin#models/ggml-tiny-q5_1.bin#g' \
+      -e 's#models/ggml-tiny\\.en-q5_1\\.bin#models/ggml-tiny-q5_1.bin#g' \
+      -e 's#models/ggml-base-q5_1\\.bin#models/ggml-tiny-q5_1.bin#g' && \
+    rm -f \
     /opt/streamkit/samples/pipelines/oneshot/speech_to_text_translate.yml \
     /opt/streamkit/samples/pipelines/oneshot/gain_filter_rust.yml \
     /opt/streamkit/samples/pipelines/dynamic/speech-translate-en-es.yaml \
