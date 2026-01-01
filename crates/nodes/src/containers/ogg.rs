@@ -208,12 +208,13 @@ impl ProcessorNode for OggMuxerNode {
                 if let Packet::Binary { data, metadata, .. } = packet {
                     packet_count += 1;
                     stats_tracker.received();
-
-                    tracing::debug!(
-                        "OggMuxer received packet #{}, {} bytes",
-                        packet_count,
-                        data.len()
-                    );
+                    if packet_count.is_multiple_of(1000) {
+                        tracing::debug!(
+                            "OggMuxer processed {} packets (last packet: {} bytes)",
+                            packet_count,
+                            data.len()
+                        );
+                    }
 
                     // Force every packet to end a page for maximum streaming behavior.
                     // This allows chunk_size to work as expected by ensuring
@@ -229,21 +230,10 @@ impl ProcessorNode for OggMuxerNode {
                         if let Some(timestamp_us) = meta.timestamp_us {
                             // Convert timestamp from microseconds to 48kHz samples
                             last_granule_pos = (timestamp_us * 48000) / 1_000_000;
-                            tracing::debug!(
-                                "Using metadata timestamp: {}us -> granule_pos: {}",
-                                timestamp_us,
-                                last_granule_pos
-                            );
                         } else if let Some(duration_us) = meta.duration_us {
                             // If we don't have timestamp but have duration, accumulate
                             let samples = (duration_us * 48000) / 1_000_000;
                             last_granule_pos += samples;
-                            tracing::debug!(
-                                "Using metadata duration: {}us ({} samples) -> granule_pos: {}",
-                                duration_us,
-                                samples,
-                                last_granule_pos
-                            );
                         } else {
                             // Fallback: assume 960 samples (20ms at 48kHz)
                             last_granule_pos = 960 * packet_count;
@@ -253,11 +243,6 @@ impl ProcessorNode for OggMuxerNode {
                         last_granule_pos = 960 * packet_count;
                     }
 
-                    tracing::debug!(
-                        "About to write packet #{} to OGG writer (granule: {})",
-                        packet_count,
-                        last_granule_pos
-                    );
                     if let Err(e) = writer.write_packet(
                         data.to_vec(),
                         self.config.stream_serial,
@@ -270,7 +255,6 @@ impl ProcessorNode for OggMuxerNode {
                         state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
                         return Err(StreamKitError::Runtime(err_msg));
                     }
-                    tracing::debug!("Packet #{} written to OGG writer successfully", packet_count);
 
                     // Flush any bytes accumulated by the Ogg writer immediately to maximize streaming.
                     // This avoids buffering large chunks in memory and delivers data as soon as pages are ready.
@@ -288,7 +272,6 @@ impl ProcessorNode for OggMuxerNode {
                     };
 
                     if let Some(data) = data_to_send {
-                        tracing::trace!("Flushing {} bytes to output", data.len());
                         if context
                             .output_sender
                             .send(
@@ -468,7 +451,7 @@ impl ProcessorNode for OggDemuxerNode {
         });
 
         // Process packets from the async reader
-        let mut packets_extracted = 0;
+        let mut packets_extracted = 0u64;
         let mut last_granule_pos: Option<u64> = None;
         let mut packets_at_granule_pos = 0u64;
         let mut detected_frame_duration_us: Option<u64> = None;
@@ -494,6 +477,9 @@ impl ProcessorNode for OggDemuxerNode {
                 Ok(packet) => {
                     packets_extracted += 1;
                     stats_tracker.received();
+                    if packets_extracted.is_multiple_of(1000) {
+                        tracing::debug!("OggDemuxer extracted {} packets", packets_extracted);
+                    }
 
                     // Extract granule position for timing metadata
                     let granule_pos = packet.absgp_page();
@@ -558,14 +544,6 @@ impl ProcessorNode for OggDemuxerNode {
                         // No valid granule position (header packets)
                         None
                     };
-
-                    tracing::debug!(
-                        "Extracted Ogg packet {} with {} bytes (granule_pos: {}, metadata: {:?})",
-                        packets_extracted,
-                        packet.data.len(),
-                        granule_pos,
-                        metadata
-                    );
 
                     // Send the packet data to the output with timing metadata
                     let output_packet = Packet::Binary {
@@ -817,7 +795,6 @@ impl ProcessorNode for SymphoniaOggDemuxerNode {
             let data_tx = data_tx;
             while let Some(packet) = input_rx.recv().await {
                 if let Packet::Binary { data, .. } = packet {
-                    tracing::debug!("Forwarding {} bytes to Symphonia reader", data.len());
                     if data_tx.send(data).await.is_err() {
                         break;
                     }

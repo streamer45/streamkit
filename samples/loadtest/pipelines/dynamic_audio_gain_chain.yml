@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+name: "Loadtest: Dynamic Audio Gain Chain"
+description: "Stresses dynamic engine graph + sustained decode; tuner updates audio::gain."
+mode: dynamic
+nodes:
+  file_reader:
+    kind: core::file_reader
+    params:
+      path: samples/audio/system/speech_10m.opus
+      chunk_size: 8192
+
+  demux:
+    kind: containers::ogg::demuxer
+    needs: file_reader
+
+  pacer:
+    kind: core::pacer
+    params:
+      speed: 1
+      buffer_size: 16
+    needs: demux
+
+  decode:
+    kind: audio::opus::decoder
+    needs: pacer
+
+  gain:
+    kind: audio::gain
+    params:
+      gain: 1.0
+    needs: decode
+
+  sink:
+    kind: core::sink
+    needs: gain

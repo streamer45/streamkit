@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+name: "Loadtest: Dynamic Many Gains"
+description: "Stresses control WS + param updates (many tunable audio::gain nodes)."
+mode: dynamic
+nodes:
+  file_reader:
+    kind: core::file_reader
+    params:
+      path: samples/audio/system/speech_10m.opus
+      chunk_size: 8192
+
+  demux:
+    kind: containers::ogg::demuxer
+    needs: file_reader
+
+  pacer:
+    kind: core::pacer
+    params:
+      speed: 1
+      buffer_size: 16
+    needs: demux
+
+  decode:
+    kind: audio::opus::decoder
+    needs: pacer
+
+  gain_0: { kind: audio::gain, params: { gain: 1.0 }, needs: decode }
+  gain_1: { kind: audio::gain, params: { gain: 1.0 }, needs: gain_0 }
+  gain_2: { kind: audio::gain, params: { gain: 1.0 }, needs: gain_1 }
+  gain_3: { kind: audio::gain, params: { gain: 1.0 }, needs: gain_2 }
+  gain_4: { kind: audio::gain, params: { gain: 1.0 }, needs: gain_3 }
+  gain_5: { kind: audio::gain, params: { gain: 1.0 }, needs: gain_4 }
+  gain_6: { kind: audio::gain, params: { gain: 1.0 }, needs: gain_5 }
+  gain_7: { kind: audio::gain, params: { gain: 1.0 }, needs: gain_6 }
+
+  sink:
+    kind: core::sink
+    needs: gain_7

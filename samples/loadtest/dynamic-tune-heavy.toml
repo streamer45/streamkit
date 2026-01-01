@@ -1,11 +1,11 @@
-# Load Test Configuration: Dynamic Session Stress Test
-# Creates many concurrent sessions with active parameter tuning
+# Load Test Configuration: Dynamic Tune Heavy (Many Gain Nodes)
+# Stresses the control WebSocket + node param updates under sustained tuning.
 
 [server]
 url = "http://127.0.0.1:4545"
 
 [test]
-duration_secs = 300  # 5 minutes
+duration_secs = 180
 scenario = "dynamic"
 
 [oneshot]
@@ -17,14 +17,13 @@ input_file = ""
 [dynamic]
 enabled = true
 session_count = 50
-tune_interval_ms = 1500
+tune_interval_ms = 200
 pipelines = [
-  "samples/loadtest/pipelines/moq_selfcontained.yml",
-  "samples/loadtest/pipelines/moq_mixing_selfcontained.yml",
+  "samples/loadtest/pipelines/dynamic_many_gains.yml",
 ]
 
 [populate]
-load_plugins = true
+load_plugins = false
 plugins_native = []
 plugins_wasm = []
 
