@@ -12,8 +12,8 @@ scenario = "oneshot"
 [oneshot]
 enabled = true
 concurrency = 20
-pipeline = "samples/pipelines/oneshot/double_volume.yml"
-input_file = "samples/audio/system/sample.ogg"
+pipeline = "samples/pipelines/oneshot/mixing.yml"
+input_file = "samples/audio/system/speech_2m.opus"
 
 [dynamic]
 enabled = false
