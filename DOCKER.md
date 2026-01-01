@@ -10,10 +10,64 @@ SPDX-License-Identifier: MPL-2.0
 > The documentation site is the canonical source for deployment guidance: <https://streamkit.dev/deployment/docker/>.
 > This file is a repo-local snapshot for convenience and may lag behind the website docs.
 
-This guide covers building and running StreamKit Docker images. The Docker images are slim (~200-400+ MB) and contain the server binary (with the web UI embedded), sample pipelines, and a few small audio samples. Models and plugins must be mounted externally.
+This guide covers building and running StreamKit Docker images. The official “slim” images are small (~200-400+ MB) and contain the server binary (with the web UI embedded), sample pipelines, and a few small audio samples; models and plugins must be mounted externally.
 
 > [!NOTE]
 > Official Docker images are published for `linux/amd64` (x86_64). On ARM hosts (Raspberry Pi, Apple Silicon, etc.), use “Build from Source” or run with amd64 emulation.
+
+## Image Variants
+
+- `Dockerfile` (CPU, slim): includes server + sample pipelines + a few small audio samples; mount models/plugins externally.
+- `Dockerfile.gpu` (GPU, slim): includes server + sample pipelines; mount models/plugins externally.
+- `Dockerfile.demo` (CPU, demo): bundles core native plugins and the models needed by the shipped sample pipelines (including Helsinki OPUS-MT and SenseVoice). This image is much larger and intended for demos/evaluation, not production.
+
+### Demo Image Quick Start
+
+```bash
+docker build -f Dockerfile.demo -t streamkit:demo .
+
+docker run \
+  -p 127.0.0.1:4545:4545/tcp \
+  -p 127.0.0.1:4545:4545/udp \
+  streamkit:demo
+```
+
+If you want the OpenAI-powered sample pipelines, pass `OPENAI_API_KEY` without putting it directly in the command:
+
+```bash
+# Option A: inherit from your current shell environment
+export OPENAI_API_KEY=sk-...
+docker run --env OPENAI_API_KEY \
+  -p 127.0.0.1:4545:4545/tcp -p 127.0.0.1:4545:4545/udp \
+  streamkit:demo
+
+# Option B: env-file (recommended for local dev; keep it out of git)
+printf 'OPENAI_API_KEY=%s\n' 'sk-...' > streamkit.env
+chmod 600 streamkit.env
+docker run --env-file streamkit.env \
+  -p 127.0.0.1:4545:4545/tcp -p 127.0.0.1:4545:4545/udp \
+  streamkit:demo
+```
+
+### Debugging native crashes (gdb)
+
+The demo image includes `gdb`. To attach to the running server inside Docker, run with ptrace enabled:
+
+```bash
+docker run --rm --name streamkit-demo \
+  --cap-add=SYS_PTRACE \
+  --security-opt seccomp=unconfined \
+  --user root \
+  -p 127.0.0.1:4545:4545/tcp -p 127.0.0.1:4545:4545/udp \
+  streamkit:demo
+```
+
+Then, inside the container, the StreamKit server is typically PID 1:
+
+```bash
+ps -eo pid,cmd
+gdb -p 1
+```
 
 ## Quick Start
 

@@ -171,6 +171,9 @@ impl Permissions {
                 "core::telemetry_tap".to_string(),
                 "core::telemetry_out".to_string(),
                 "core::sink".to_string(),
+                // Plugins are represented as node kinds too (e.g. plugin::native::whisper).
+                // This must be aligned with allowed_plugins for RBAC to work as expected.
+                "plugin::*".to_string(),
             ],
             allowed_plugins: vec![
                 // Users can use already-loaded plugins.
@@ -442,6 +445,14 @@ mod tests {
         assert!(perms.is_plugin_allowed("plugin::wasm::gain"));
         assert!(perms.is_plugin_allowed("plugin::native::audio_effect"));
         assert!(!perms.is_plugin_allowed("plugin::native::network"));
+    }
+
+    #[test]
+    fn test_default_user_allows_plugin_nodes() {
+        let user = Permissions::user();
+        assert!(user.is_node_allowed("plugin::native::whisper"));
+        assert!(user.is_node_allowed("plugin::native::kokoro"));
+        assert!(user.is_node_allowed("plugin::wasm::gain_filter_rust"));
     }
 
     #[test]

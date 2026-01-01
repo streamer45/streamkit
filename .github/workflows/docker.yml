@@ -8,6 +8,32 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag to publish (defaults to sha-<short>)"
+        required: false
+        default: ""
+      push:
+        description: "Push to GHCR (disable for build-only smoke test)"
+        required: false
+        default: true
+        type: boolean
+      build_cpu:
+        description: "Build CPU image"
+        required: false
+        default: true
+        type: boolean
+      build_gpu:
+        description: "Build GPU image"
+        required: false
+        default: true
+        type: boolean
+      build_demo:
+        description: "Build demo image"
+        required: false
+        default: true
+        type: boolean
 
 env:
   REGISTRY: ghcr.io
@@ -16,6 +42,7 @@ env:
 jobs:
   build-cpu:
     name: Build CPU Image
+    if: ${{ github.event_name == 'push' || inputs.build_cpu }}
     runs-on: self-hosted
     permissions:
       contents: read
@@ -37,13 +64,22 @@ jobs:
       - name: Extract version from tag
         id: meta
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/}
+          else
+            VERSION_INPUT='${{ inputs.tag }}'
+            if [[ -n "${VERSION_INPUT}" ]]; then
+              VERSION="${VERSION_INPUT}"
+            else
+              VERSION="sha-${GITHUB_SHA::12}"
+            fi
+          fi
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "Building version: ${VERSION}"
           {
             echo "tags<<EOF"
             echo "${REGISTRY}/${IMAGE_NAME}:${VERSION}"
-            if [[ "$VERSION" != *-* ]]; then
+            if [[ "${GITHUB_REF}" == refs/tags/* ]] && [[ "$VERSION" != *-* ]]; then
               echo "${REGISTRY}/${IMAGE_NAME}:latest"
             fi
             echo "EOF"
@@ -54,7 +90,7 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
-          push: true
+          push: ${{ github.event_name == 'push' || inputs.push }}
           tags: ${{ steps.meta.outputs.tags }}
           cache-from: type=local,src=/mnt/docker-cache
           cache-to: type=local,dest=/mnt/docker-cache,mode=max
@@ -63,6 +99,7 @@ jobs:
 
   build-gpu:
     name: Build GPU Image
+    if: ${{ github.event_name == 'push' || inputs.build_gpu }}
     runs-on: self-hosted
     permissions:
       contents: read
@@ -84,13 +121,22 @@ jobs:
       - name: Extract version from tag
         id: meta
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/}
+          else
+            VERSION_INPUT='${{ inputs.tag }}'
+            if [[ -n "${VERSION_INPUT}" ]]; then
+              VERSION="${VERSION_INPUT}"
+            else
+              VERSION="sha-${GITHUB_SHA::12}"
+            fi
+          fi
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "Building version: ${VERSION}"
           {
             echo "tags<<EOF"
             echo "${REGISTRY}/${IMAGE_NAME}:${VERSION}-gpu"
-            if [[ "$VERSION" != *-* ]]; then
+            if [[ "${GITHUB_REF}" == refs/tags/* ]] && [[ "$VERSION" != *-* ]]; then
               echo "${REGISTRY}/${IMAGE_NAME}:latest-gpu"
             fi
             echo "EOF"
@@ -101,7 +147,64 @@ jobs:
         with:
           context: .
           file: ./Dockerfile.gpu
-          push: true
+          push: ${{ github.event_name == 'push' || inputs.push }}
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=local,src=/mnt/docker-cache
+          cache-to: type=local,dest=/mnt/docker-cache,mode=max
+          platforms: linux/amd64
+          provenance: false
+
+  build-demo:
+    name: Build Demo Image
+    if: ${{ github.event_name == 'push' || inputs.build_demo }}
+    runs-on: self-hosted
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version from tag
+        id: meta
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/}
+          else
+            VERSION_INPUT='${{ inputs.tag }}'
+            if [[ -n "${VERSION_INPUT}" ]]; then
+              VERSION="${VERSION_INPUT}"
+            else
+              VERSION="sha-${GITHUB_SHA::12}"
+            fi
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Building version: ${VERSION}"
+          {
+            echo "tags<<EOF"
+            echo "${REGISTRY}/${IMAGE_NAME}:${VERSION}-demo"
+            if [[ "${GITHUB_REF}" == refs/tags/* ]] && [[ "$VERSION" != *-* ]]; then
+              echo "${REGISTRY}/${IMAGE_NAME}:latest-demo"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push Demo image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.demo
+          push: ${{ github.event_name == 'push' || inputs.push }}
           tags: ${{ steps.meta.outputs.tags }}
           cache-from: type=local,src=/mnt/docker-cache
           cache-to: type=local,dest=/mnt/docker-cache,mode=max

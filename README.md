@@ -106,6 +106,37 @@ docker run --rm \
 # Press Ctrl+C to stop
 ```
 
+### Demo image (batteries included)
+
+The `:latest-demo` image bundles core plugins plus the models needed by the shipped sample pipelines (much larger image; intended for demos/evaluation, not production).
+
+```bash
+docker run --rm \
+  -p 127.0.0.1:4545:4545/tcp \
+  -p 127.0.0.1:4545:4545/udp \
+  ghcr.io/streamer45/streamkit:latest-demo
+```
+
+If you want the OpenAI-powered sample pipelines, pass `OPENAI_API_KEY` without putting it directly in the command:
+
+```bash
+# Inherit OPENAI_API_KEY from your current shell environment (recommended).
+# (Make sure it's set on the host before you run this.)
+docker run --rm --env OPENAI_API_KEY \
+  -p 127.0.0.1:4545:4545/tcp -p 127.0.0.1:4545:4545/udp \
+  ghcr.io/streamer45/streamkit:latest-demo
+```
+
+Or use an env-file so the secret never appears in your shell history:
+
+```bash
+printf 'OPENAI_API_KEY=%s\n' 'sk-...' > streamkit.env
+chmod 600 streamkit.env
+docker run --rm --env-file streamkit.env \
+  -p 127.0.0.1:4545:4545/tcp -p 127.0.0.1:4545:4545/udp \
+  ghcr.io/streamer45/streamkit:latest-demo
+```
+
 ### Next steps
 
 - Open the UI at `http://localhost:4545` and load an example from the **Samples** list (bundled in the image under `/opt/streamkit/samples/pipelines`).

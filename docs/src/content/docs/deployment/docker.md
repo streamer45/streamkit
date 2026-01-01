@@ -18,6 +18,53 @@ docker run --rm \
   skit serve # optional: this is the image default
 ```
 
+## Demo Image (Batteries Included)
+
+StreamKit also publishes a `-demo` image intended for demos/evaluation. It bundles core plugins plus the models needed by the shipped sample pipelines, so it should work out of the box (but is much larger than the slim images).
+
+```bash
+docker run --rm \
+  -p 127.0.0.1:4545:4545/tcp \
+  -p 127.0.0.1:4545:4545/udp \
+  ghcr.io/streamer45/streamkit:${TAG}-demo
+```
+
+If you want the OpenAI-powered sample pipelines, pass `OPENAI_API_KEY` without putting it directly in the command:
+
+```bash
+# Inherit OPENAI_API_KEY from your current shell environment (recommended).
+# (Make sure it's set on the host before you run this.)
+docker run --rm --env OPENAI_API_KEY \
+  -p 127.0.0.1:4545:4545/tcp -p 127.0.0.1:4545:4545/udp \
+  ghcr.io/streamer45/streamkit:${TAG}-demo
+```
+
+Or use an env-file so the secret never appears in your shell history:
+
+```bash
+printf 'OPENAI_API_KEY=%s\n' 'sk-...' > streamkit.env
+chmod 600 streamkit.env
+docker run --rm --env-file streamkit.env \
+  -p 127.0.0.1:4545:4545/tcp -p 127.0.0.1:4545:4545/udp \
+  ghcr.io/streamer45/streamkit:${TAG}-demo
+```
+
+### Debugging native crashes (gdb)
+
+The demo image includes `gdb`. To attach to the running server inside Docker, run with ptrace enabled:
+
+```bash
+docker run --rm --name streamkit-demo \
+  --cap-add=SYS_PTRACE \
+  --security-opt seccomp=unconfined \
+  --user root \
+  -p 127.0.0.1:4545:4545/tcp -p 127.0.0.1:4545:4545/udp \
+  ghcr.io/streamer45/streamkit:${TAG}-demo
+
+ps -eo pid,cmd
+gdb -p 1
+```
+
 > [!NOTE]
 > Official Docker images are published for `linux/amd64` (x86_64). On ARM hosts, use “Build from Source” or run with amd64 emulation.
 
@@ -49,6 +96,18 @@ services:
 
 # volumes:
 #   streamkit-plugins:
+```
+
+### Demo Image with Secrets
+
+Use `env_file` to avoid putting secrets in your `docker-compose.yml`:
+
+```yaml
+services:
+  streamkit:
+    image: ghcr.io/streamer45/streamkit:v0.1.0-demo
+    env_file:
+      - ./streamkit.env
 ```
 
 ## Building Images

@@ -137,6 +137,15 @@ RUN apt-get update && apt-get install -y \
 
 ENV PATH="/root/.cargo/bin:${PATH}"
 
+# whisper.cpp/ggml defaults to enabling `GGML_NATIVE` (i.e. `-march=native`) when not cross-compiling.
+# That can produce binaries that crash with SIGILL on older CPUs. Setting SOURCE_DATE_EPOCH disables
+# `GGML_NATIVE_DEFAULT` upstream, making the build portable by default.
+ENV SOURCE_DATE_EPOCH=1
+
+# Extra defense-in-depth: ensure the toolchain doesn't auto-enable newer x86 features.
+ENV CFLAGS="-O3 -pipe -fPIC -march=x86-64 -mtune=generic" \
+    CXXFLAGS="-O3 -pipe -fPIC -march=x86-64 -mtune=generic"
+
 # Copy only what's needed to build whisper plugin
 # Note: Cargo.toml needed for workspace dependency resolution in core/
 COPY Cargo.toml Cargo.lock ./
@@ -151,11 +160,11 @@ RUN cd plugins/native/whisper && \
 # Build whisper plugin with CUDA support
 RUN --mount=type=cache,id=whisper-cargo-registry,target=/root/.cargo/registry \
     --mount=type=cache,id=whisper-cargo-git,target=/root/.cargo/git \
-    --mount=type=cache,id=whisper-target,target=/build/plugins/native/whisper/target \
+    --mount=type=cache,id=whisper-target-portable,target=/build/plugins/native/whisper/target-portable \
     cd plugins/native/whisper && \
-    cargo build --release --target-dir target -j$(nproc) && \
+    cargo build --release --target-dir target-portable -j$(nproc) && \
     mkdir -p /build/plugins/native && \
-    cp target/release/libwhisper.so /build/plugins/native/
+    cp target-portable/release/libwhisper.so /build/plugins/native/
 
 # Download Whisper models (base.en, base multilingual, and tiny.en) and Silero VAD model
 RUN mkdir -p /build/models && \
