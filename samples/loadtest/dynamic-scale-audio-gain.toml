@@ -1,0 +1,33 @@
+# Load Test Configuration: Dynamic Scale (Audio Gain + Sink)
+# Stresses dynamic engine graph management and session lifecycle at high session counts.
+
+[server]
+url = "http://127.0.0.1:4545"
+
+[test]
+duration_secs = 180
+scenario = "dynamic"
+
+[oneshot]
+enabled = false
+concurrency = 0
+pipeline = ""
+input_file = ""
+
+[dynamic]
+enabled = true
+session_count = 200
+tune_interval_ms = 5000
+pipelines = [
+  "samples/loadtest/pipelines/dynamic_audio_gain_chain.yml",
+]
+
+[populate]
+load_plugins = false
+plugins_native = []
+plugins_wasm = []
+
+[output]
+format = "text"
+real_time_updates = true
+update_interval_ms = 2000

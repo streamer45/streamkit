@@ -1,0 +1,38 @@
+# Load Test Configuration: Dynamic MoQ Fanout
+# Requires a MoQ relay at http://localhost:4443.
+# Creates a broadcaster session publishing to "input", then many subscriber sessions that transcode.
+
+[server]
+url = "http://127.0.0.1:4545"
+
+[test]
+duration_secs = 180
+scenario = "dynamic"
+
+[oneshot]
+enabled = false
+concurrency = 0
+pipeline = ""
+input_file = ""
+
+[dynamic]
+enabled = true
+session_count = 100
+tune_interval_ms = 1000
+pipelines = [
+  "samples/loadtest/pipelines/moq_subscriber_transcode.yml",
+]
+
+[dynamic.broadcaster]
+pipeline = "samples/loadtest/pipelines/moq_broadcaster.yml"
+count = 1
+
+[populate]
+load_plugins = false
+plugins_native = []
+plugins_wasm = []
+
+[output]
+format = "text"
+real_time_updates = true
+update_interval_ms = 2000

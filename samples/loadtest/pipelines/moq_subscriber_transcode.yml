@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+name: "Loadtest: MoQ Subscriber Transcode"
+description: "Many sessions subscribe to one broadcast; stresses MoQ + decode/encode + tuning."
+mode: dynamic
+nodes:
+  sub:
+    kind: transport::moq::subscriber
+    params:
+      url: http://localhost:4443
+      broadcast: input
+
+  decode:
+    kind: audio::opus::decoder
+    needs: sub
+
+  gain:
+    kind: audio::gain
+    params:
+      gain: 1.0
+    needs: decode
+
+  encode:
+    kind: audio::opus::encoder
+    needs: gain
+
+  pub:
+    kind: transport::moq::publisher
+    params:
+      url: http://localhost:4443
+      broadcast: output
+    needs: encode

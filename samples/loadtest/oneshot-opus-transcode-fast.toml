@@ -1,6 +1,5 @@
-# Load Test Configuration: Heavy One-Shot Workload
-# This config stresses the HTTP endpoint with many concurrent file processing requests.
-# Uses a small sample input so executions complete quickly and emit completion metrics.
+# Load Test Configuration: OneShot Opus Transcode (No Pacer)
+# Stresses Ogg demux + Opus decode/encode throughput.
 
 [server]
 url = "http://127.0.0.1:4545"
@@ -12,7 +11,7 @@ scenario = "oneshot"
 [oneshot]
 enabled = true
 concurrency = 20
-pipeline = "samples/loadtest/pipelines/oneshot_mixing_no_pacer.yml"
+pipeline = "samples/loadtest/pipelines/oneshot_opus_transcode_fast.yml"
 input_file = "samples/audio/system/speech_2m.opus"
 
 [dynamic]

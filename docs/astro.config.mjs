@@ -57,6 +57,7 @@ export default defineConfig({
 					items: [
 						{ label: 'Creating Pipelines', slug: 'guides/creating-pipelines' },
 						{ label: 'Performance Tuning', slug: 'guides/performance' },
+						{ label: 'Load Testing', slug: 'guides/load-testing' },
 						{ label: 'Observability', slug: 'guides/observability' },
 						{ label: 'Script Node', slug: 'guides/script-node' },
 						{ label: 'Using the Web UI', slug: 'guides/web-ui' },

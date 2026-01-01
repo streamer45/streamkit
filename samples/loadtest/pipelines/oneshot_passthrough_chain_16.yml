@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+name: "Loadtest: Passthrough Chain x16"
+description: "Stresses graph wiring + task/channel overhead (no codecs)."
+mode: oneshot
+nodes:
+  http_input:
+    kind: streamkit::http_input
+
+  p00: { kind: core::passthrough, needs: http_input }
+  p01: { kind: core::passthrough, needs: p00 }
+  p02: { kind: core::passthrough, needs: p01 }
+  p03: { kind: core::passthrough, needs: p02 }
+  p04: { kind: core::passthrough, needs: p03 }
+  p05: { kind: core::passthrough, needs: p04 }
+  p06: { kind: core::passthrough, needs: p05 }
+  p07: { kind: core::passthrough, needs: p06 }
+  p08: { kind: core::passthrough, needs: p07 }
+  p09: { kind: core::passthrough, needs: p08 }
+  p10: { kind: core::passthrough, needs: p09 }
+  p11: { kind: core::passthrough, needs: p10 }
+  p12: { kind: core::passthrough, needs: p11 }
+  p13: { kind: core::passthrough, needs: p12 }
+  p14: { kind: core::passthrough, needs: p13 }
+  p15: { kind: core::passthrough, needs: p14 }
+
+  http_output:
+    kind: streamkit::http_output
+    needs: p15

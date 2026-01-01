@@ -1,0 +1,85 @@
+#
+# Load-test pipeline: mixing without pacing
+#
+# Purpose: maximize throughput/CPU load by removing real-time pacer nodes.
+# This intentionally processes inputs as fast as possible.
+#
+# skit:input_asset_tags=speech
+#
+
+name: "Loadtest: Audio Mixing (No Pacer)"
+description: "Mixes uploaded audio with a local track and returns Opus/WebM; no pacer nodes for maximum throughput."
+mode: oneshot
+nodes:
+  # ============================================================
+  # INPUTS: HTTP upload + local music file
+  # ============================================================
+  http_input:
+    kind: streamkit::http_input
+
+  music_file_reader:
+    kind: core::file_reader
+    params:
+      chunk_size: 8192
+      path: samples/audio/system/THE LADY IS A TRAMP.opus
+
+  # ============================================================
+  # UPLOAD STREAM: Demux, decode, apply gain (no pacer)
+  # ============================================================
+  upload_ogg_demuxer:
+    kind: containers::ogg::demuxer
+    needs: http_input
+
+  upload_opus_decoder:
+    kind: audio::opus::decoder
+    needs: upload_ogg_demuxer
+
+  upload_gain:
+    kind: audio::gain
+    params:
+      gain: 1
+    needs: upload_opus_decoder
+
+  # ============================================================
+  # MUSIC STREAM: Demux, decode, apply gain (no pacer)
+  # ============================================================
+  music_ogg_demuxer:
+    kind: containers::ogg::demuxer
+    needs: music_file_reader
+
+  music_opus_decoder:
+    kind: audio::opus::decoder
+    needs: music_ogg_demuxer
+
+  music_gain:
+    kind: audio::gain
+    params:
+      gain: 0.1
+    needs: music_opus_decoder
+
+  # ============================================================
+  # OUTPUT: Mix streams and encode to WebM
+  # ============================================================
+  mixer:
+    kind: audio::mixer
+    params:
+      num_inputs: 2
+    needs:
+      - upload_gain
+      - music_gain
+
+  opus_encoder:
+    kind: audio::opus::encoder
+    needs: mixer
+
+  webm_muxer:
+    kind: containers::webm::muxer
+    params:
+      channels: 1
+      chunk_size: 65536
+      sample_rate: 48000
+    needs: opus_encoder
+
+  http_output:
+    kind: streamkit::http_output
+    needs: webm_muxer

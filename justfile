@@ -99,25 +99,43 @@ skit-cli *args='':
 skit-lt config='loadtest.toml' *args='':
     @cargo run -p streamkit-client --bin skit-cli -- loadtest {{config}} {{args}}
 
-# Alias for skit-lt
-alias lt := skit-lt
+# Run a load test by preset id (maps to `samples/loadtest/<id>.toml`) or by explicit path.
+#
+# Examples:
+# - `just lt`                           # runs `samples/loadtest/stress-oneshot.toml` by default
+# - `just lt stress-dynamic`            # runs `samples/loadtest/stress-dynamic.toml`
+# - `just lt dynamic-tune-heavy --cleanup`
+# - `just lt samples/loadtest/ui-demo.toml`
+lt preset_or_path='stress-oneshot' *args='':
+    @cfg=""
+    @if [ -f "{{preset_or_path}}" ]; then \
+      cfg="{{preset_or_path}}"; \
+    elif [ -f "samples/loadtest/{{preset_or_path}}.toml" ]; then \
+      cfg="samples/loadtest/{{preset_or_path}}.toml"; \
+    else \
+      echo "❌ Loadtest config not found: '{{preset_or_path}}'"; \
+      echo "   - If passing a preset, expected: samples/loadtest/{{preset_or_path}}.toml"; \
+      echo "   - If passing a path, ensure the file exists"; \
+      exit 1; \
+    fi; \
+    just skit-lt "$cfg" {{args}}
 
 # --- Load test presets ---
 # Run the standard oneshot stress test config
 lt-oneshot *args='':
-    @just skit-lt samples/loadtest/stress-oneshot.toml {{args}}
+    @just lt stress-oneshot {{args}}
 
 # Run the standard dynamic session stress test config
 lt-dynamic *args='':
-    @just skit-lt samples/loadtest/stress-dynamic.toml {{args}}
+    @just lt stress-dynamic {{args}}
 
 # Run the standard dynamic session stress test config with cleanup enabled
 lt-dynamic-cleanup *args='':
-    @just skit-lt samples/loadtest/stress-dynamic.toml --cleanup {{args}}
+    @just lt stress-dynamic --cleanup {{args}}
 
 # Run the long-running UI demo config
 lt-ui-demo *args='':
-    @just skit-lt samples/loadtest/ui-demo.toml {{args}}
+    @just lt ui-demo {{args}}
 
 # Run skit tests
 # Note: We exclude dhat-heap since it's mutually exclusive with profiling (both define global allocators)

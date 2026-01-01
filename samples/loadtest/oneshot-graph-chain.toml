@@ -1,0 +1,31 @@
+# Load Test Configuration: OneShot Passthrough Chain
+# Stresses graph wiring + task/channel overhead (no heavy codecs).
+
+[server]
+url = "http://127.0.0.1:4545"
+
+[test]
+duration_secs = 60
+scenario = "oneshot"
+
+[oneshot]
+enabled = true
+concurrency = 30
+pipeline = "samples/loadtest/pipelines/oneshot_passthrough_chain_16.yml"
+input_file = "samples/audio/system/speech_10m.opus"
+
+[dynamic]
+enabled = false
+session_count = 0
+tune_interval_ms = 1000
+pipelines = []
+
+[populate]
+load_plugins = false
+plugins_native = []
+plugins_wasm = []
+
+[output]
+format = "text"
+real_time_updates = true
+update_interval_ms = 2000

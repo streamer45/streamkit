@@ -512,11 +512,6 @@ impl ProcessorNode for OpusEncoderNode {
 
                     // Only clone if padding is needed, otherwise use slice directly
                     let encode_result = if samples.len() < expected_samples {
-                        tracing::debug!(
-                            "Padding frame from {} to {} samples with silence",
-                            samples.len(),
-                            expected_samples
-                        );
                         let mut padded = samples.as_ref().to_vec();
                         padded.resize(expected_samples, 0.0);
                         enc.encode_float(&padded, &mut encode_buffer)

@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+name: "Loadtest: Opus Transcode (No Pacer)"
+description: "Stresses Ogg demux + Opus decode/encode; streams raw Opus frames out."
+mode: oneshot
+nodes:
+  http_input:
+    kind: streamkit::http_input
+
+  demux:
+    kind: containers::ogg::demuxer
+    needs: http_input
+
+  decode:
+    kind: audio::opus::decoder
+    needs: demux
+
+  gain:
+    kind: audio::gain
+    params:
+      gain: 1.0
+    needs: decode
+
+  encode:
+    kind: audio::opus::encoder
+    needs: gain
+
+  http_output:
+    kind: streamkit::http_output
+    needs: encode

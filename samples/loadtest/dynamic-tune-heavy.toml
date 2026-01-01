@@ -1,0 +1,33 @@
+# Load Test Configuration: Dynamic Tune Heavy (Many Gain Nodes)
+# Stresses the control WebSocket + node param updates under sustained tuning.
+
+[server]
+url = "http://127.0.0.1:4545"
+
+[test]
+duration_secs = 180
+scenario = "dynamic"
+
+[oneshot]
+enabled = false
+concurrency = 0
+pipeline = ""
+input_file = ""
+
+[dynamic]
+enabled = true
+session_count = 50
+tune_interval_ms = 200
+pipelines = [
+  "samples/loadtest/pipelines/dynamic_many_gains.yml",
+]
+
+[populate]
+load_plugins = false
+plugins_native = []
+plugins_wasm = []
+
+[output]
+format = "text"
+real_time_updates = true
+update_interval_ms = 2000
