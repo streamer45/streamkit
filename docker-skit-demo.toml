@@ -1,0 +1,129 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Demo configuration with pre-warming and script support for OpenAI/weather pipelines.
+#
+# Usage:
+#   docker run -e OPENAI_API_KEY=sk-... \
+#     -p 127.0.0.1:4545:4545/tcp \
+#     -p 127.0.0.1:4545:4545/udp \
+#     ghcr.io/streamer45/streamkit:latest-demo
+
+[server]
+address = "0.0.0.0:4545"
+samples_dir = "/opt/streamkit/samples/pipelines"
+max_body_size = 104857600
+
+# MoQ Gateway URL for the frontend to connect via WebTransport
+# Default assumes Docker is running locally with ports mapped to localhost
+# Override with SK_SERVER__MOQ_GATEWAY_URL env var for remote deployments
+moq_gateway_url = "http://127.0.0.1:4545/moq"
+
+[plugins]
+directory = "/opt/streamkit/plugins"
+
+[log]
+console_enable = true
+file_enable = false
+console_level = "info"
+
+[telemetry]
+enable = true
+tokio_console = false
+
+[engine]
+packet_batch_size = 8
+node_input_capacity = 8
+pin_distributor_capacity = 4
+
+[resources]
+keep_models_loaded = true
+
+# Pre-warming: Load models at startup to eliminate first-use latency
+[resources.prewarm]
+enabled = true
+
+# Whisper STT - base English model (used by most sample pipelines)
+[[resources.prewarm.plugins]]
+kind = "plugin::native::whisper"
+params = { model_path = "models/ggml-base.en-q5_1.bin", use_gpu = false, gpu_device = 0, n_threads = 2, vad_model_path = "models/silero_vad.onnx" }
+
+# Whisper STT - multilingual model (used by speech-translate-helsinki-es-en.yaml)
+[[resources.prewarm.plugins]]
+kind = "plugin::native::whisper"
+params = { model_path = "models/ggml-base-q5_1.bin", use_gpu = false, gpu_device = 0, n_threads = 2, vad_model_path = "models/silero_vad.onnx" }
+
+# VAD (Voice Activity Detection)
+[[resources.prewarm.plugins]]
+kind = "plugin::native::vad"
+params = { model_path = "models/ten-vad.onnx", output_mode = "events", num_threads = 1, provider = "cpu" }
+
+# Helsinki OPUS-MT Translation (EN<->ES)
+[[resources.prewarm.plugins]]
+kind = "plugin::native::helsinki"
+params = { model_dir = "models/opus-mt-en-es", source_language = "en", target_language = "es", device = "cpu", max_length = 512, warmup = true }
+
+[[resources.prewarm.plugins]]
+kind = "plugin::native::helsinki"
+params = { model_dir = "models/opus-mt-es-en", source_language = "es", target_language = "en", device = "cpu", max_length = 512, warmup = true }
+
+# Kokoro TTS (default voice)
+[[resources.prewarm.plugins]]
+kind = "plugin::native::kokoro"
+params = { model_dir = "models/kokoro-multi-lang-v1_1", speaker_id = 0, speed = 1.0, num_threads = 4, execution_provider = "cpu" }
+
+# Piper TTS (English + Spanish voices)
+[[resources.prewarm.plugins]]
+kind = "plugin::native::piper"
+params = { model_dir = "models/vits-piper-en_US-libritts_r-medium", speaker_id = 0, speed = 1.0, num_threads = 4 }
+
+[[resources.prewarm.plugins]]
+kind = "plugin::native::piper"
+params = { model_dir = "models/vits-piper-es_MX-claude-high", speaker_id = 0, speed = 1.0, num_threads = 4 }
+
+# Matcha TTS
+[[resources.prewarm.plugins]]
+kind = "plugin::native::matcha"
+params = { model_dir = "models/matcha-icefall-en_US-ljspeech", speaker_id = 0, speed = 1.0, num_threads = 4, execution_provider = "cpu" }
+
+# SenseVoice STT
+[[resources.prewarm.plugins]]
+kind = "plugin::native::sensevoice"
+params = { model_dir = "models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09", language = "auto", num_threads = 4, execution_provider = "cpu", use_vad = true, vad_model_path = "models/silero_vad.onnx" }
+
+# Script node configuration for OpenAI/weather pipelines
+[script]
+
+# OpenAI API Key for LLM integration (voice-agent-openai.yaml)
+[script.secrets.openai_key]
+env = "OPENAI_API_KEY"
+type = "apikey"
+description = "OpenAI API key for GPT-4 integration in voice agent pipelines"
+allowed_fetch_urls = ["https://api.openai.com/*"]
+
+# Allow fetch() calls to OpenAI API
+[[script.global_fetch_allowlist]]
+url = "https://api.openai.com/v1/chat/completions"
+methods = ["POST"]
+
+# Allow Open-Meteo (voice-weather-open-meteo.yaml)
+[[script.global_fetch_allowlist]]
+url = "https://geocoding-api.open-meteo.com/*"
+methods = ["GET"]
+
+[[script.global_fetch_allowlist]]
+url = "https://api.open-meteo.com/*"
+methods = ["GET"]
+
+# Allow useless-facts API (useless-facts-tts.yml)
+[[script.global_fetch_allowlist]]
+url = "https://uselessfacts.jsph.pl/*"
+methods = ["GET"]
+
+[permissions]
+default_role = "user"
+# Docker containers must bind to 0.0.0.0 for published ports to work.
+# This is only safe when the published ports are bound to localhost (recommended),
+# e.g. `-p 127.0.0.1:4545:4545/tcp -p 127.0.0.1:4545:4545/udp`, or otherwise firewalled.
+allow_insecure_no_auth = true

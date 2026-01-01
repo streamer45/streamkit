@@ -2,12 +2,10 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-# Multi-stage build for StreamKit server
+# Demo image: CPU-only with Helsinki translation, all core plugins, and sample pipelines
 # syntax=docker/dockerfile:1
 
 # Version configuration
-# Update these versions to upgrade dependencies across all build stages
-# Example: docker build --build-arg SHERPA_ONNX_VERSION=1.12.18 -t streamkit:cpu .
 ARG SHERPA_ONNX_VERSION=1.12.17
 
 # Stage 1: Build Rust dependencies
@@ -155,14 +153,18 @@ RUN --mount=type=cache,id=cargo-registry-whisper,target=/usr/local/cargo/registr
     mkdir -p /build/plugins/native && \
     cp target-portable/release/libwhisper.so /build/plugins/native/
 
-# Download Whisper models (base.en and tiny.en) and Silero VAD model
+# Download Whisper models (quantized only - no unquantized ggml-base.en.bin)
+# - ggml-base.en-q5_1.bin: English STT (quantized)
+# - ggml-tiny.en-q5_1.bin: Lightweight English STT
+# - ggml-base-q5_1.bin: Multilingual (for ES->EN translation)
+# - silero_vad.onnx: VAD model for Whisper
 RUN mkdir -p /build/models && \
-    curl -L -o /build/models/ggml-base.en.bin \
-      https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin && \
     curl -L -o /build/models/ggml-base.en-q5_1.bin \
       https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q5_1.bin && \
     curl -L -o /build/models/ggml-tiny.en-q5_1.bin \
       https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en-q5_1.bin && \
+    curl -L -o /build/models/ggml-base-q5_1.bin \
+      https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin && \
     curl -L -o /build/models/silero_vad.onnx \
       https://raw.githubusercontent.com/snakers4/silero-vad/master/src/silero_vad/data/silero_vad.onnx
 
@@ -249,7 +251,7 @@ RUN --mount=type=cache,id=cargo-registry-piper,target=/usr/local/cargo/registry 
     mkdir -p /build/plugins/native && \
     cp target/release/libpiper.so /build/plugins/native/
 
-# Download Piper TTS models
+# Download Piper TTS models (English + Spanish for translation output)
 RUN mkdir -p /build/models && \
     cd /build/models && \
     wget https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-libritts_r-medium.tar.bz2 && \
@@ -258,6 +260,14 @@ RUN mkdir -p /build/models && \
     cd vits-piper-en_US-libritts_r-medium && \
     if [ ! -f "model.onnx" ] && [ -f "en_US-libritts_r-medium.onnx" ]; then \
         ln -sf en_US-libritts_r-medium.onnx model.onnx; \
+    fi && \
+    cd /build/models && \
+    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-es_MX-claude-high.tar.bz2 && \
+    tar xf vits-piper-es_MX-claude-high.tar.bz2 && \
+    rm vits-piper-es_MX-claude-high.tar.bz2 && \
+    cd vits-piper-es_MX-claude-high && \
+    if [ ! -f "model.onnx" ] && [ -f "es_MX-claude-high.onnx" ]; then \
+        ln -sf es_MX-claude-high.onnx model.onnx; \
     fi
 
 # Stage 7: Build SenseVoice STT plugin
@@ -389,63 +399,51 @@ RUN mkdir -p /build/models && \
     cd matcha-icefall-en_US-ljspeech && \
     wget -O vocos-22khz-univ.onnx https://github.com/k2-fsa/sherpa-onnx/releases/download/vocoder-models/vocos-22khz-univ.onnx
 
-# Stage 10: Build NLLB Translation plugin
-FROM rust:1.92-slim-bookworm AS nllb-builder
+# Stage 10: Build Helsinki Translation plugin (CPU-only)
+FROM rust:1.92-slim-bookworm AS helsinki-builder
 
 WORKDIR /build
 
-# Install build dependencies for CTranslate2
+# Install dependencies (Rust + Python for model conversion)
 RUN apt-get update && apt-get install -y \
+    curl \
+    git \
     pkg-config \
     libssl-dev \
-    g++ \
-    cmake \
-    wget \
-    python3 \
-    python3-pip \
     libclang-dev \
     clang \
+    python3 \
+    python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-# Compile and install CTranslate2 from source
-RUN apt-get update && apt-get install -y git && \
-    cd /tmp && \
-    git clone --depth 1 --branch v4.6.1 --recursive https://github.com/OpenNMT/CTranslate2.git && \
-    cd CTranslate2 && \
-    mkdir build && cd build && \
-    cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DWITH_MKL=OFF -DWITH_DNNL=OFF -DOPENMP_RUNTIME=COMP .. && \
-    make -j$(nproc) && \
-    make install && \
-    ldconfig && \
-    rm -rf /tmp/CTranslate2 && \
-    apt-get remove -y git && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
-
-# Copy only what's needed to build nllb plugin
-# Note: Cargo.toml needed for workspace dependency resolution in core/
+# Copy only what's needed to build helsinki plugin
 COPY Cargo.toml Cargo.lock ./
 COPY crates/core ./crates/core
 COPY sdks/plugin-sdk ./sdks/plugin-sdk
-COPY plugins/native/nllb ./plugins/native/nllb
+COPY plugins/native/helsinki ./plugins/native/helsinki
 
-# Build nllb plugin
-RUN --mount=type=cache,id=cargo-registry-nllb,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=cargo-git-nllb,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/build/plugins/native/nllb/target \
-    cd plugins/native/nllb && \
-    RUSTFLAGS="-L /usr/local/lib" cargo build --release --target-dir target && \
+# Build helsinki plugin (CPU-only, no cuda feature)
+RUN --mount=type=cache,id=helsinki-cargo-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=helsinki-cargo-git,target=/usr/local/cargo/git \
+    --mount=type=cache,id=helsinki-target,target=/build/plugins/native/helsinki/target \
+    cd plugins/native/helsinki && \
+    cargo build --release --target-dir target && \
     mkdir -p /build/plugins/native && \
-    cp target/release/libnllb.so /build/plugins/native/
+    cp target/release/libhelsinki.so /build/plugins/native/
 
-# Download NLLB pre-converted models from Hugging Face
-RUN PIP_BREAK_SYSTEM_PACKAGES=1 pip3 install --no-cache-dir huggingface-hub && \
-    mkdir -p /build/models && \
-    cd /build/models && \
-    python3 -c "from huggingface_hub import snapshot_download; snapshot_download('entai2965/nllb-200-distilled-600M-ctranslate2', local_dir='nllb-200-distilled-600M-ct2-int8', local_dir_use_symlinks=False)"
+# Download and convert OPUS-MT models (EN<->ES)
+RUN PIP_BREAK_SYSTEM_PACKAGES=1 pip3 install --no-cache-dir \
+      transformers \
+      sentencepiece \
+      safetensors \
+      torch \
+      tokenizers && \
+    python3 plugins/native/helsinki/download-models.py
 
 # Runtime stage
 FROM debian:bookworm-slim
 
-# Install runtime dependencies
+# Install runtime dependencies (include gdb for debugging demo image crashes)
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     libssl3 \
@@ -476,18 +474,16 @@ COPY --from=kokoro-builder /build/models/kokoro-multi-lang-v1_1 /opt/streamkit/m
 # Copy piper plugin and models (merge into /opt/streamkit/plugins and /opt/streamkit/models)
 COPY --from=piper-builder /build/plugins/native/* /opt/streamkit/plugins/native/
 COPY --from=piper-builder /build/models/vits-piper-en_US-libritts_r-medium /opt/streamkit/models/vits-piper-en_US-libritts_r-medium
+COPY --from=piper-builder /build/models/vits-piper-es_MX-claude-high /opt/streamkit/models/vits-piper-es_MX-claude-high
 
 # Copy sensevoice plugin and models (merge into /opt/streamkit/plugins and /opt/streamkit/models)
 COPY --from=sensevoice-builder /build/plugins/native/* /opt/streamkit/plugins/native/
 COPY --from=sensevoice-builder /build/models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09 /opt/streamkit/models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09
 
-# Copy CTranslate2 libraries from nllb-builder
-COPY --from=nllb-builder /usr/local/lib/libctranslate2.so* /usr/local/lib/
-RUN ldconfig
-
-# Copy nllb plugin and models (merge into /opt/streamkit/plugins and /opt/streamkit/models)
-COPY --from=nllb-builder /build/plugins/native/* /opt/streamkit/plugins/native/
-COPY --from=nllb-builder /build/models/nllb-200-distilled-600M-ct2-int8 /opt/streamkit/models/nllb-200-distilled-600M-ct2-int8
+# Copy helsinki plugin and models
+COPY --from=helsinki-builder /build/plugins/native/* /opt/streamkit/plugins/native/
+COPY --from=helsinki-builder /build/models/opus-mt-en-es /opt/streamkit/models/opus-mt-en-es
+COPY --from=helsinki-builder /build/models/opus-mt-es-en /opt/streamkit/models/opus-mt-es-en
 
 # Copy vad plugin and model (merge into /opt/streamkit/plugins and /opt/streamkit/models)
 COPY --from=vad-builder /build/plugins/native/* /opt/streamkit/plugins/native/
@@ -497,29 +493,30 @@ COPY --from=vad-builder /build/models/ten-vad.onnx /opt/streamkit/models/ten-vad
 COPY --from=matcha-builder /build/plugins/native/* /opt/streamkit/plugins/native/
 COPY --from=matcha-builder /build/models/matcha-icefall-en_US-ljspeech /opt/streamkit/models/matcha-icefall-en_US-ljspeech
 
-# Copy sample pipelines
-COPY --chown=app:app samples /opt/streamkit/samples
+# Copy sample pipelines + small bundled audio samples (Opus/Ogg only)
+COPY --chown=app:app samples/pipelines /opt/streamkit/samples/pipelines
+COPY --chown=app:app samples/audio/system/*.ogg samples/audio/system/*.ogg.license /opt/streamkit/samples/audio/system/
+COPY --chown=app:app samples/audio/system/*.opus samples/audio/system/*.opus.license /opt/streamkit/samples/audio/system/
 
-# Copy official Docker configuration (no dependency on private demo assets)
+# Remove pipelines that won't work (NLLB + WASM dependencies not included)
+RUN rm -f \
+    /opt/streamkit/samples/pipelines/oneshot/speech_to_text_translate.yml \
+    /opt/streamkit/samples/pipelines/oneshot/gain_filter_rust.yml \
+    /opt/streamkit/samples/pipelines/dynamic/speech-translate-en-es.yaml \
+    /opt/streamkit/samples/pipelines/dynamic/speech-translate-es-en.yaml
+
+# Copy demo configuration
 RUN mkdir -p /opt/streamkit/config
-COPY --chown=app:app docker-skit.toml /opt/streamkit/config/skit.toml
-COPY --chown=app:app docker-skit-gpu.toml /opt/streamkit/config/skit-gpu.toml
-
-# Copy demo configurations used by `demo/launcher`
-RUN mkdir -p /opt/streamkit/demo
-COPY --chown=app:app demo/skit.toml /opt/streamkit/demo/skit.toml
-COPY --chown=app:app demo/skit-gpu.toml /opt/streamkit/demo/skit-gpu.toml
+COPY --chown=app:app docker-skit-demo.toml /opt/streamkit/config/skit.toml
 
 # Ensure runtime-writable directories exist, and keep /app/* as compatibility symlinks.
 RUN mkdir -p /opt/streamkit/.plugins /opt/streamkit/logs && \
     chown -R app:app /opt/streamkit && \
     mkdir -p /app && \
     ln -sfn /opt/streamkit/config/skit.toml /opt/streamkit/skit.toml && \
-    ln -sfn /opt/streamkit/config/skit-gpu.toml /opt/streamkit/skit-gpu.toml && \
     ln -sfn /opt/streamkit/plugins /app/plugins && \
     ln -sfn /opt/streamkit/models /app/models && \
     ln -sfn /opt/streamkit/samples /app/samples && \
-    ln -sfn /opt/streamkit/demo /app/demo && \
     ln -sfn /opt/streamkit/config /app/config && \
     ln -sfn /opt/streamkit/.plugins /app/.plugins && \
     ln -sfn /opt/streamkit/logs /app/logs
@@ -532,8 +529,8 @@ EXPOSE 4545/tcp
 EXPOSE 4545/udp
 
 # OCI image labels
-LABEL org.opencontainers.image.title="StreamKit"
-LABEL org.opencontainers.image.description="High-performance real-time media processing engine with CPU-optimized plugins"
+LABEL org.opencontainers.image.title="StreamKit Demo"
+LABEL org.opencontainers.image.description="Demo image with pre-configured plugins for speech-to-text, text-to-speech, and translation"
 LABEL org.opencontainers.image.source="https://github.com/streamer45/streamkit"
 LABEL org.opencontainers.image.licenses="MPL-2.0"
 LABEL org.opencontainers.image.vendor="StreamKit Contributors"
