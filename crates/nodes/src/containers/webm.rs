@@ -60,10 +60,14 @@ fn opus_head_codec_private(sample_rate: u32, channels: u32) -> Result<[u8; 19], 
 /// A shared, thread-safe buffer that wraps a Cursor for WebM writing.
 /// This allows us to stream out data as it's written while still supporting Seek.
 ///
-/// Uses a sliding window approach to prevent unbounded memory growth:
-/// - Keeps a configurable window of recent data for WebM library seeks
-/// - Discards old data beyond the window that's been sent
-/// - Tracks a base_offset for proper position calculations after discarding
+/// Supports two buffering modes:
+///
+/// - **Streaming (non-seek)**: Bytes are drained on every `take_data()` call.
+///   This mode is intended for `Writer::new_non_seek` and avoids copying.
+/// - **Seek window**: Keeps a configurable window of recent data for WebM library seeks
+///   and trims old data that has already been sent.
+///
+/// The node selects the appropriate mode based on `WebMStreamingMode`.
 #[derive(Clone)]
 struct SharedPacketBuffer {
     cursor: Arc<Mutex<Cursor<Vec<u8>>>>,
@@ -84,9 +88,14 @@ impl SharedPacketBuffer {
         }
     }
 
-    fn new() -> Self {
-        // Default 1MB window (enough for ~6 seconds of 128kbps audio)
-        Self::new_with_window(1024 * 1024)
+    /// Create a non-seek streaming buffer.
+    ///
+    /// This is designed for `Writer::new_non_seek` in live streaming mode. Since the writer
+    /// does not seek/backpatch, we can drain bytes out by moving the underlying `Vec<u8>`
+    /// (no copy) and reset the cursor to keep memory bounded.
+    fn new_streaming() -> Self {
+        // window_size=0 is treated as "drain everything on take_data"
+        Self::new_with_window(0)
     }
 
     /// Takes any new data written since the last call, and trims old data beyond the window.
@@ -108,30 +117,52 @@ impl SharedPacketBuffer {
         let base = *base_offset_guard;
 
         let result = if current_len > last_sent {
-            // Copy only the new data since last send
-            let new_data = Bytes::copy_from_slice(&vec[last_sent..current_len]);
-            *last_sent_guard = current_len;
+            if self.window_size == 0 {
+                // Streaming mode (non-seek): drain everything written so far without copying.
+                //
+                // This avoids two major sources of allocation churn in DHAT profiles:
+                // - copying out incremental slices on every flush
+                // - repeatedly trimming a sliding window with `split_off` (copies the window)
+                let data_vec = std::mem::take(vec);
+                // Advance base_offset so Seek::Start can clamp consistently if it ever happens.
+                *base_offset_guard = base + current_len;
+                *last_sent_guard = 0;
+                buffer_guard.set_position(0);
+                Some(Bytes::from(data_vec))
+            } else if self.window_size == usize::MAX && last_sent == 0 {
+                // File mode: nothing has been sent yet, so move the entire buffer out.
+                // The segment is finalized before this is called, so no more writes/seeks occur.
+                let data_vec = std::mem::take(vec);
+                *base_offset_guard = base + current_len;
+                *last_sent_guard = 0;
+                buffer_guard.set_position(0);
+                Some(Bytes::from(data_vec))
+            } else {
+                // Seek-window mode: copy incremental bytes while retaining a backwards-seek window.
+                let new_data = Bytes::copy_from_slice(&vec[last_sent..current_len]);
+                *last_sent_guard = current_len;
 
-            // Trim old data if buffer exceeds window size
-            if current_len > self.window_size {
-                let trim_amount = current_len - self.window_size;
-                // Keep the last window_size bytes
-                let remaining = vec.split_off(trim_amount);
-                *vec = remaining;
-                // Update base offset to reflect discarded data
-                *base_offset_guard = base + trim_amount;
-                // Adjust last_sent and cursor position
-                *last_sent_guard = self.window_size;
-                buffer_guard.set_position(self.window_size as u64);
+                // Trim old data if buffer exceeds window size.
+                if current_len > self.window_size {
+                    let trim_amount = current_len - self.window_size;
+                    // Keep the last window_size bytes.
+                    let remaining = vec.split_off(trim_amount);
+                    *vec = remaining;
+                    // Update base offset to reflect discarded data.
+                    *base_offset_guard = base + trim_amount;
+                    // Adjust last_sent and cursor position.
+                    *last_sent_guard = self.window_size;
+                    buffer_guard.set_position(self.window_size as u64);
 
-                tracing::debug!(
-                    "Trimmed {} bytes from WebM buffer, new base_offset: {}",
-                    trim_amount,
-                    *base_offset_guard
-                );
+                    tracing::debug!(
+                        "Trimmed {} bytes from WebM buffer, new base_offset: {}",
+                        trim_amount,
+                        *base_offset_guard
+                    );
+                }
+
+                Some(new_data)
             }
-
-            Some(new_data)
         } else {
             None
         };
@@ -286,11 +317,11 @@ impl ProcessorNode for WebMMuxerNode {
         // Stats tracking
         let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
 
-        // In Live mode we only need a small sliding window to support any internal backtracking
-        // while continuously streaming bytes out; in File mode we must keep the whole buffer
+        // In Live mode we use a non-seek writer, so we can drain bytes out without keeping
+        // any history (zero-copy streaming). In File mode we must keep the whole buffer
         // because we only emit bytes once the segment is finalized.
         let shared_buffer = match self.config.streaming_mode {
-            WebMStreamingMode::Live => SharedPacketBuffer::new(),
+            WebMStreamingMode::Live => SharedPacketBuffer::new_streaming(),
             WebMStreamingMode::File => SharedPacketBuffer::new_with_window(usize::MAX),
         };
 
