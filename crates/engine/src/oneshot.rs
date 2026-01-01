@@ -274,8 +274,8 @@ impl Engine {
         let node_kinds: HashMap<String, String> =
             definition.nodes.iter().map(|(name, def)| (name.clone(), def.kind.clone())).collect();
 
-        // Per-pipeline audio buffer pool for hot paths (e.g., Opus decode).
-        let audio_pool = std::sync::Arc::new(streamkit_core::FramePool::<f32>::audio_default());
+        // Shared audio buffer pool for hot paths (e.g., Opus decode).
+        let audio_pool = self.audio_pool.clone();
 
         // Oneshot pipelines don't track state, so pass None for state_tx
         let live_nodes = graph_builder::wire_and_spawn_graph(

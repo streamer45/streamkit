@@ -52,6 +52,7 @@ use dynamic_actor::DynamicEngine;
 /// It can be used to run stateless pipelines or to start the long-running dynamic actor.
 pub struct Engine {
     pub registry: Arc<RwLock<NodeRegistry>>,
+    pub audio_pool: Arc<streamkit_core::AudioFramePool>,
 }
 impl Default for Engine {
     fn default() -> Self {
@@ -152,7 +153,10 @@ impl Engine {
             Self::load_plugins(&mut registry, plugin_dir);
         }
 
-        Self { registry: Arc::new(RwLock::new(registry)) }
+        Self {
+            registry: Arc::new(RwLock::new(registry)),
+            audio_pool: Arc::new(streamkit_core::AudioFramePool::audio_default()),
+        }
     }
 
     #[cfg(feature = "plugins")]
@@ -233,7 +237,7 @@ impl Engine {
             node_pin_metadata: HashMap::new(),
             batch_size: config.packet_batch_size,
             session_id: config.session_id,
-            audio_pool: Arc::new(streamkit_core::FramePool::<f32>::audio_default()),
+            audio_pool: self.audio_pool.clone(),
             node_input_capacity,
             pin_distributor_capacity,
             node_states: HashMap::new(),

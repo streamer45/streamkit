@@ -111,20 +111,29 @@ impl<T> FramePool<T> {
 }
 
 impl<T: Clone + Default> FramePool<T> {
-    pub fn preallocated(bucket_sizes: &[usize], buffers_per_bucket: usize) -> Self {
-        let pool = Self::with_buckets(bucket_sizes.to_vec(), buffers_per_bucket);
+    pub fn preallocated_with_max(
+        bucket_sizes: &[usize],
+        preallocate_per_bucket: usize,
+        max_per_bucket: usize,
+    ) -> Self {
+        let pool = Self::with_buckets(bucket_sizes.to_vec(), max_per_bucket);
         let Ok(mut guard) = pool.inner.lock() else {
             return pool;
         };
 
+        let preallocate_per_bucket = preallocate_per_bucket.min(max_per_bucket);
         for idx in 0..guard.bucket_sizes.len() {
             let bucket_size = guard.bucket_sizes[idx];
-            for _ in 0..buffers_per_bucket {
+            for _ in 0..preallocate_per_bucket {
                 guard.buckets[idx].push(vec![T::default(); bucket_size]);
             }
         }
         drop(guard);
         pool
+    }
+
+    pub fn preallocated(bucket_sizes: &[usize], buffers_per_bucket: usize) -> Self {
+        Self::preallocated_with_max(bucket_sizes, buffers_per_bucket, buffers_per_bucket)
     }
 
     /// Get pooled storage for at least `min_len` elements.
@@ -232,12 +241,13 @@ impl<T: Clone + Default> Clone for PooledFrameData<T> {
                 if let Ok(mut guard) = inner.lock() {
                     if let Some(bucket_idx) = guard.bucket_index_for_min_len(self.len) {
                         let bucket_size = guard.bucket_sizes[bucket_idx];
-                        let mut data = guard
-                            .buckets
-                            .get_mut(bucket_idx)
-                            .and_then(std::vec::Vec::pop)
-                            .unwrap_or_else(|| vec![T::default(); bucket_size]);
-                        guard.hits += 1;
+                        let data = guard.buckets.get_mut(bucket_idx).and_then(std::vec::Vec::pop);
+                        if data.is_some() {
+                            guard.hits += 1;
+                        } else {
+                            guard.misses += 1;
+                        }
+                        let mut data = data.unwrap_or_else(|| vec![T::default(); bucket_size]);
 
                         data[..self.len].clone_from_slice(self.as_slice());
                         return Self::from_pool(data, self.len, pool.clone(), bucket_idx);
@@ -294,10 +304,15 @@ pub type PooledSamples = PooledFrameData<f32>;
 
 pub const DEFAULT_AUDIO_BUCKET_SIZES: &[usize] = &[960, 1920, 3840, 7680];
 pub const DEFAULT_AUDIO_BUFFERS_PER_BUCKET: usize = 32;
+pub const DEFAULT_AUDIO_MAX_BUFFERS_PER_BUCKET: usize = 256;
 
 impl FramePool<f32> {
     pub fn audio_default() -> Self {
-        Self::preallocated(DEFAULT_AUDIO_BUCKET_SIZES, DEFAULT_AUDIO_BUFFERS_PER_BUCKET)
+        Self::preallocated_with_max(
+            DEFAULT_AUDIO_BUCKET_SIZES,
+            DEFAULT_AUDIO_BUFFERS_PER_BUCKET,
+            DEFAULT_AUDIO_MAX_BUFFERS_PER_BUCKET,
+        )
     }
 }
 
