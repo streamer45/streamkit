@@ -19,8 +19,8 @@ enabled = true
 session_count = 50
 tune_interval_ms = 1500
 pipelines = [
-    "samples/pipelines/dynamic/moq_selfcontained.yml",
-    "samples/pipelines/dynamic/moq_mixing_selfcontained.yml",
+  "samples/loadtest/pipelines/moq_selfcontained.yml",
+  "samples/loadtest/pipelines/moq_mixing_selfcontained.yml",
 ]
 
 [populate]
