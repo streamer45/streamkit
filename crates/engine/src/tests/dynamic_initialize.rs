@@ -64,7 +64,10 @@ async fn test_dynamic_engine_calls_initialize() {
         false,
     );
 
-    let engine = Engine { registry: Arc::new(std::sync::RwLock::new(registry)) };
+    let engine = Engine {
+        registry: Arc::new(std::sync::RwLock::new(registry)),
+        audio_pool: Arc::new(streamkit_core::AudioFramePool::audio_default()),
+    };
     let handle = engine.start_dynamic_actor(DynamicEngineConfig::default());
 
     if let Err(e) = handle
