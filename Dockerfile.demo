@@ -497,9 +497,9 @@ COPY --chown=app:app samples/audio/system/*.opus samples/audio/system/*.opus.lic
 # so the shipped samples work without bundling multiple Whisper models.
 RUN find /opt/streamkit/samples/pipelines -type f \( -name '*.yml' -o -name '*.yaml' \) -print0 | \
     xargs -0 sed -i \
-      -e 's#models/ggml-base\\.en-q5_1\\.bin#models/ggml-tiny-q5_1.bin#g' \
-      -e 's#models/ggml-tiny\\.en-q5_1\\.bin#models/ggml-tiny-q5_1.bin#g' \
-      -e 's#models/ggml-base-q5_1\\.bin#models/ggml-tiny-q5_1.bin#g' && \
+      -e 's#models/ggml-base\.en-q5_1\.bin#models/ggml-tiny-q5_1.bin#g' \
+      -e 's#models/ggml-tiny\.en-q5_1\.bin#models/ggml-tiny-q5_1.bin#g' \
+      -e 's#models/ggml-base-q5_1\.bin#models/ggml-tiny-q5_1.bin#g' && \
     rm -f \
     /opt/streamkit/samples/pipelines/oneshot/speech_to_text_translate.yml \
     /opt/streamkit/samples/pipelines/oneshot/gain_filter_rust.yml \
