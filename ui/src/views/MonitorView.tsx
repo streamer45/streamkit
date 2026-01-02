@@ -397,6 +397,19 @@ const CanvasTopBar = styled.div`
   }
 `;
 
+const TopLeftControls = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+  pointer-events: auto;
+  max-width: min(520px, 60vw);
+
+  @media (max-width: 900px) {
+    max-width: 100%;
+  }
+`;
+
 const TopRightControls = styled.div`
   display: flex;
   flex-direction: column;
@@ -409,51 +422,89 @@ const TopRightControls = styled.div`
   }
 `;
 
-const SessionInfoOverlay = styled.div`
+const SessionChipContainer = styled.div`
+  position: relative;
+`;
+
+const SessionChipButton = styled(Button)`
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  max-width: 100%;
+  user-select: none;
+`;
+
+const SessionChipName = styled.span`
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 260px;
+
+  @media (max-width: 900px) {
+    max-width: 52vw;
+  }
+`;
+
+const SessionChipMeta = styled.span`
+  color: var(--sk-text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+`;
+
+const SessionChipCaret = styled.span`
+  margin-left: 2px;
+  opacity: 0.7;
+`;
+
+const SessionStatusDot = styled.span<{ color: string }>`
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: ${(p) => p.color};
+  box-shadow: 0 0 6px ${(p) => `${p.color}55`};
+`;
+
+const SessionDetailsPanel = styled.div`
   position: absolute;
-  top: 48px;
-  left: 8px;
-  z-index: 11;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 12;
   background: var(--sk-panel-bg);
   border: 1px solid var(--sk-border);
-  border-radius: 6px;
-  padding: 10px 14px;
-  box-shadow: 0 2px 8px var(--sk-shadow);
+  border-radius: 8px;
+  padding: 10px 12px;
+  box-shadow: 0 2px 12px var(--sk-shadow);
   font-family:
     'JetBrains Mono', 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', 'Droid Sans Mono',
     'Courier New', monospace;
   font-size: 11px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-
-  @media (max-width: 900px) {
-    top: 120px;
-    left: 12px;
-    right: 12px;
-  }
+  gap: 6px;
+  min-width: 280px;
+  max-width: min(520px, 80vw);
 `;
 
-const OverlayTitle = styled.div`
-  font-weight: 600;
-  font-size: 12px;
-  margin-bottom: 2px;
-  color: var(--sk-text);
-`;
-
-const OverlayRow = styled.div`
+const DetailsRow = styled.div`
   display: flex;
-  gap: 8px;
-  color: var(--sk-text);
+  gap: 10px;
+  align-items: center;
 `;
 
-const OverlayLabel = styled.span`
+const DetailsLabel = styled.span`
   opacity: 0.7;
-  min-width: 50px;
+  min-width: 56px;
 `;
 
-const OverlayValue = styled.span`
+const DetailsValue = styled.span`
   font-weight: 500;
+  color: var(--sk-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 `;
 
 const ButtonGroup = styled.div`
@@ -491,6 +542,9 @@ interface SessionInfoDisplayProps {
   session: { id: string; name: string | null; created_at: string };
 }
 
+const shortSessionId = (sessionId: string): string =>
+  sessionId.split('-')[0] || sessionId.slice(0, 8);
+
 // Isolated uptime component that only re-renders itself every second
 const SessionUptime: React.FC<{ createdAt: string }> = React.memo(({ createdAt }) => {
   const [uptime, setUptime] = useState('');
@@ -508,7 +562,49 @@ const SessionUptime: React.FC<{ createdAt: string }> = React.memo(({ createdAt }
   return <>{uptime}</>;
 });
 
-const SessionInfoDisplay: React.FC<SessionInfoDisplayProps> = React.memo(({ session }) => {
+const InlineCopyButton: React.FC<{ text: string; tooltip?: string; ariaLabel?: string }> =
+  React.memo(({ text, tooltip = 'Copy to clipboard', ariaLabel = 'Copy to clipboard' }) => {
+    const [copied, setCopied] = useState(false);
+
+    const handleCopy = useCallback(
+      async (e: React.MouseEvent) => {
+        e.stopPropagation();
+        try {
+          await navigator.clipboard.writeText(text);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        } catch {
+          // no-op (clipboard can fail in some environments)
+        }
+      },
+      [text]
+    );
+
+    return (
+      <SKTooltip content={copied ? 'Copied!' : tooltip} side="top">
+        <Button
+          aria-label={ariaLabel}
+          variant="icon"
+          size="small"
+          onClick={handleCopy}
+          style={{ width: 26, height: 26, padding: 4 }}
+        >
+          {copied ? (
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+          ) : (
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+            </svg>
+          )}
+        </Button>
+      </SKTooltip>
+    );
+  });
+
+const SessionInfoChip: React.FC<SessionInfoDisplayProps> = React.memo(({ session }) => {
   // Get node states from session store with shallow comparison
   const nodeStates = useSessionStore(
     useShallow((state) => state.sessions.get(session.id)?.nodeStates ?? {})
@@ -516,26 +612,78 @@ const SessionInfoDisplay: React.FC<SessionInfoDisplayProps> = React.memo(({ sess
 
   // Compute session status - memoized to prevent recalculation on every uptime update
   const sessionStatus = React.useMemo(() => computeSessionStatus(nodeStates), [nodeStates]);
+  const statusColor = React.useMemo(() => getSessionStatusColor(sessionStatus), [sessionStatus]);
   const statusLabel = React.useMemo(() => getSessionStatusLabel(sessionStatus), [sessionStatus]);
 
+  const [isExpanded, setIsExpanded] = useState(false);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  const displayName = session.name || `session-${shortSessionId(session.id)}`;
+
+  useEffect(() => {
+    setIsExpanded(false);
+  }, [session.id]);
+
+  useEffect(() => {
+    if (!isExpanded) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (!containerRef.current) return;
+      if (e.target instanceof Node && containerRef.current.contains(e.target)) return;
+      setIsExpanded(false);
+    };
+    document.addEventListener('mousedown', onMouseDown);
+    return () => document.removeEventListener('mousedown', onMouseDown);
+  }, [isExpanded]);
+
   return (
-    <SessionInfoOverlay>
-      <OverlayTitle>{session.name || session.id}</OverlayTitle>
-      <OverlayRow>
-        <OverlayLabel>Status:</OverlayLabel>
-        <OverlayValue>{statusLabel}</OverlayValue>
-      </OverlayRow>
-      <OverlayRow>
-        <OverlayLabel>Start:</OverlayLabel>
-        <OverlayValue>{formatDateTime(session.created_at)}</OverlayValue>
-      </OverlayRow>
-      <OverlayRow>
-        <OverlayLabel>Up:</OverlayLabel>
-        <OverlayValue>
-          <SessionUptime createdAt={session.created_at} />
-        </OverlayValue>
-      </OverlayRow>
-    </SessionInfoOverlay>
+    <SessionChipContainer ref={containerRef}>
+      <SKTooltip
+        content={`${displayName} (${shortSessionId(session.id)}) — click to ${
+          isExpanded ? 'collapse' : 'expand'
+        }`}
+        side="bottom"
+      >
+        <SessionChipButton
+          aria-expanded={isExpanded}
+          variant="secondary"
+          onClick={() => setIsExpanded((v) => !v)}
+        >
+          <SessionStatusDot color={statusColor} />
+          <SessionChipName>{displayName}</SessionChipName>
+          <SessionChipMeta>{shortSessionId(session.id)}</SessionChipMeta>
+          <SessionChipCaret>{isExpanded ? '▴' : '▾'}</SessionChipCaret>
+        </SessionChipButton>
+      </SKTooltip>
+      {isExpanded && (
+        <SessionDetailsPanel>
+          <DetailsRow>
+            <DetailsLabel>Status</DetailsLabel>
+            <DetailsValue>{statusLabel}</DetailsValue>
+          </DetailsRow>
+          <DetailsRow>
+            <DetailsLabel>Start</DetailsLabel>
+            <DetailsValue>{formatDateTime(session.created_at)}</DetailsValue>
+          </DetailsRow>
+          <DetailsRow>
+            <DetailsLabel>Up</DetailsLabel>
+            <DetailsValue>
+              <SessionUptime createdAt={session.created_at} />
+            </DetailsValue>
+          </DetailsRow>
+          <DetailsRow>
+            <DetailsLabel>ID</DetailsLabel>
+            <SKTooltip content={session.id} side="top">
+              <DetailsValue>{session.id}</DetailsValue>
+            </SKTooltip>
+            <InlineCopyButton
+              text={session.id}
+              tooltip="Copy session id"
+              ariaLabel="Copy session id"
+            />
+          </DetailsRow>
+        </SessionDetailsPanel>
+      )}
+    </SessionChipContainer>
   );
 });
 
@@ -571,7 +719,7 @@ const SessionItem: React.FC<SessionItemProps> = React.memo(
             <Tooltip.Trigger asChild>
               <SessionButton variant="secondary" onClick={handleClick} active={isActive}>
                 <SessionStatusBadge color={statusColor} />
-                <SessionButtonText>{session.name || session.id}</SessionButtonText>
+                <SessionButtonText>{session.name || shortSessionId(session.id)}</SessionButtonText>
               </SessionButton>
             </Tooltip.Trigger>
             {!isActive && (
@@ -3008,7 +3156,10 @@ const MonitorViewContent: React.FC = () => {
     () => (
       <CenterPanelContainer>
         <CanvasTopBar>
-          <MonitorViewTitle />
+          <TopLeftControls>
+            <MonitorViewTitle />
+            {selectedSession && <SessionInfoChip session={selectedSession} />}
+          </TopLeftControls>
           <TopControls
             isConnected={isConnected}
             selectedSessionId={selectedSessionId}
@@ -3020,7 +3171,6 @@ const MonitorViewContent: React.FC = () => {
             onDelete={handleDeleteModalOpen}
           />
         </CanvasTopBar>
-        {selectedSession && <SessionInfoDisplay session={selectedSession} />}
         {selectedSessionId && nodes.length > 0 ? (
           <>
             <FlowCanvas

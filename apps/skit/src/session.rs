@@ -25,6 +25,50 @@ pub fn system_time_to_rfc3339(time: SystemTime) -> String {
     offset_datetime.format(&Rfc3339).unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
 }
 
+fn normalize_optional_name(name: Option<String>) -> Option<String> {
+    name.and_then(|name| {
+        let trimmed = name.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
+}
+
+fn fnv1a_64(input: &str) -> u64 {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0100_0000_01b3;
+
+    let mut hash = FNV_OFFSET_BASIS;
+    for byte in input.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+fn generate_session_name(session_id: &str) -> String {
+    // Deterministic "docker-style" name derived from the session id.
+    // This keeps names consistent across clients without requiring additional storage or APIs.
+    const ADJECTIVES: &[&str] = &[
+        "ancient", "brave", "calm", "clever", "dapper", "eager", "fancy", "gentle", "happy",
+        "jolly", "kind", "lively", "mighty", "noble", "proud", "quick", "quiet", "shiny", "silly",
+        "swift", "wise",
+    ];
+
+    const NOUNS: &[&str] = &[
+        "antelope", "badger", "beaver", "bison", "cougar", "dolphin", "dragon", "eagle", "falcon",
+        "fox", "gecko", "heron", "ibis", "koala", "lemur", "lynx", "otter", "panther", "puma",
+        "raven", "tiger", "yak",
+    ];
+
+    let hash = fnv1a_64(session_id);
+    let adjective_idx = usize::try_from(hash % ADJECTIVES.len() as u64).unwrap_or(0);
+    let noun_idx = usize::try_from((hash >> 8) % NOUNS.len() as u64).unwrap_or(0);
+    let adjective = ADJECTIVES[adjective_idx];
+    let noun = NOUNS[noun_idx];
+    let suffix = (hash >> 16) & 0xffff;
+
+    format!("{adjective}-{noun}-{suffix:04x}")
+}
+
 fn timestamp_us_to_rfc3339(timestamp_us: u64) -> String {
     system_time_to_rfc3339(UNIX_EPOCH + Duration::from_micros(timestamp_us))
 }
@@ -134,6 +178,8 @@ impl Session {
         created_by: Option<String>,
     ) -> Result<Self, String> {
         let session_id = Uuid::new_v4().to_string();
+        let name =
+            normalize_optional_name(name).or_else(|| Some(generate_session_name(&session_id)));
         let display_name = name.as_deref().unwrap_or(&session_id);
         tracing::info!(session_id = %session_id, name = %display_name, "Creating new dynamic session");
 
