@@ -132,7 +132,13 @@ impl NodeStatsTracker {
         // Many nodes only increment one side of the counters (e.g. pure sources only `sent`,
         // pure sinks only `received`). Use the max to keep the threshold behavior consistent
         // across node shapes and avoid the `0.is_multiple_of(..)` pitfall.
-        let packet_count = self.stats.received.max(self.stats.sent).max(self.stats.discarded);
+        // Include errored so error-only updates don't get stuck waiting for packet activity.
+        let packet_count = self
+            .stats
+            .received
+            .max(self.stats.sent)
+            .max(self.stats.discarded)
+            .max(self.stats.errored);
 
         // Always emit the first non-empty snapshot promptly so monitoring can "lock on"
         // even if the node later blocks under backpressure.

@@ -13,7 +13,8 @@ use streamkit_core::types::PacketMetadata;
 use streamkit_core::types::{AudioFormat, AudioFrame, Packet, PacketType, SampleFormat};
 use streamkit_core::AudioFramePool;
 use streamkit_core::{
-    state_helpers, InputPin, NodeContext, OutputPin, PinCardinality, ProcessorNode, StreamKitError,
+    state_helpers, stats::NodeStatsTracker, InputPin, NodeContext, OutputPin, PinCardinality,
+    ProcessorNode, StreamKitError,
 };
 use tokio::sync::mpsc;
 
@@ -230,6 +231,9 @@ impl AudioMixerNode {
         let node_name = context.output_sender.node_name().to_string();
         state_helpers::emit_running(&context.state_tx, &node_name);
 
+        // Stats tracking
+        let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
+
         let mut pin_mgmt_rx = context.pin_management_rx.take();
         let cancellation_token = context.cancellation_token.clone();
 
@@ -247,12 +251,16 @@ impl AudioMixerNode {
         let output_mailbox = Arc::new(OutputMailbox::new());
         let (audio_cmd_tx, audio_cmd_rx) = std::sync::mpsc::channel::<AudioThreadCommand>();
 
+        // Drainers (and the clocked audio thread) report events back to this management loop.
+        let (input_event_tx, mut input_event_rx) = mpsc::channel::<InputEvent>(32);
+
         // Audio thread drives mixing and writes frames to output_mailbox.
         let audio_pool = context.audio_pool.clone();
         let state_tx = context.state_tx.clone();
         let stop_flag = Arc::new(AtomicBool::new(false));
         let stop_flag_thread = stop_flag.clone();
         let output_mailbox_thread = output_mailbox.clone();
+        let input_event_tx_thread = input_event_tx.clone();
 
         let sync_timeout = self.config.sync_timeout_ms.map(std::time::Duration::from_millis);
 
@@ -269,6 +277,7 @@ impl AudioMixerNode {
                     sync_timeout,
                     audio_pool,
                     state_tx,
+                    input_event_tx: input_event_tx_thread,
                     output_mailbox: output_mailbox_thread,
                     cmd_rx: audio_cmd_rx,
                     stop_flag: stop_flag_thread,
@@ -303,8 +312,6 @@ impl AudioMixerNode {
             }
         });
 
-        // Drainers report EOF back to this management loop.
-        let (input_event_tx, mut input_event_rx) = mpsc::channel::<InputEvent>(32);
         let mut drainers: HashMap<Arc<str>, tokio::task::JoinHandle<()>> = HashMap::new();
         let mut stop_reason: &'static str = "shutdown";
 
@@ -400,6 +407,25 @@ impl AudioMixerNode {
                                 break;
                             }
                         }
+                        InputEvent::SampleRateMismatch { pin_name, expected, got } => {
+                            let err_msg = format!(
+                                "Sample rate mismatch on pin '{pin_name}': expected {expected} Hz, got {got} Hz"
+                            );
+                            tracing::error!("Mixer (clocked): {}", err_msg);
+                            stats_tracker.errored();
+                            stats_tracker.force_send();
+                            state_helpers::emit_failed(&context.state_tx, &node_name, err_msg.clone());
+                            // Don't set stop_reason - we're failing, not stopping normally
+                            for (_name, handle) in drainers.drain() {
+                                handle.abort();
+                            }
+                            stop_flag.store(true, Ordering::Relaxed);
+                            let _ = audio_cmd_tx.send(AudioThreadCommand::Shutdown);
+                            output_mailbox.shutdown();
+                            let _ = audio_thread.join();
+                            output_forwarder.abort();
+                            return Err(StreamKitError::Runtime(err_msg));
+                        }
                     }
                 }
             }
@@ -412,6 +438,7 @@ impl AudioMixerNode {
         let _ = audio_thread.join();
         output_forwarder.abort();
 
+        stats_tracker.force_send();
         state_helpers::emit_stopped(&context.state_tx, &node_name, stop_reason);
         Ok(())
     }
@@ -421,6 +448,9 @@ impl AudioMixerNode {
     async fn run_dynamic(mut self, mut context: NodeContext) -> Result<(), StreamKitError> {
         let node_name = context.output_sender.node_name().to_string();
         state_helpers::emit_running(&context.state_tx, &node_name);
+
+        // Stats tracking
+        let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
 
         // Take the pin management channel (optional - only needed for fully dynamic mode)
         // In stateless pipelines with num_inputs specified, this will be None and that's OK
@@ -600,6 +630,7 @@ impl AudioMixerNode {
                         if matches!(control_msg, streamkit_core::control::NodeControlMessage::Shutdown) {
                             state_helpers::emit_stopped(&context.state_tx, &node_name, "shutdown");
                             tracing::info!("AudioMixerNode shutting down (shutdown requested)");
+                            stats_tracker.force_send();
                             return Ok(());
                         }
                     }
@@ -639,6 +670,12 @@ impl AudioMixerNode {
                             missing_names
                         );
 
+                        // Track discarded frames for slow/missing pins
+                        let missing_count = missing_idxs.len();
+                        if missing_count > 0 {
+                            stats_tracker.discarded_n(missing_count as u64);
+                        }
+
                         for idx in &missing_idxs {
                             slots[*idx].slow = true;
                         }
@@ -656,9 +693,12 @@ impl AudioMixerNode {
                             true,
                         ).await {
                             tracing::debug!("Output channel closed: {}", e);
+                            stats_tracker.force_send();
                             return Ok(());
                         }
 
+                        stats_tracker.sent();
+                        stats_tracker.maybe_send();
                         mixed_frame_count += 1;
                         if mixed_frame_count <= 5 || mixed_frame_count.is_multiple_of(50) {
                             tracing::trace!(
@@ -675,6 +715,8 @@ impl AudioMixerNode {
                                 if slot_idx >= slots.len() {
                                     continue;
                                 }
+
+                                stats_tracker.received();
 
                                 // Track maximum output channels; never decreases.
                                 max_output_channels_seen = max_output_channels_seen.max(frame.channels);
@@ -727,9 +769,12 @@ impl AudioMixerNode {
                                         false,
                                     ).await {
                                         tracing::debug!("Output channel closed: {}", e);
+                                        stats_tracker.force_send();
                                         return Ok(());
                                     }
 
+                                    stats_tracker.sent();
+                                    stats_tracker.maybe_send();
                                     mixed_frame_count += 1;
                                     if mixed_frame_count <= 5 || mixed_frame_count.is_multiple_of(50) {
                                         tracing::trace!("[MIX_TRACE] Sent mixed frame #{}", mixed_frame_count);
@@ -753,6 +798,9 @@ impl AudioMixerNode {
                                                         missing_names
                                                     );
 
+                                                    // Track discarded frames for slow/missing pins
+                                                    stats_tracker.discarded_n(missing_names.len() as u64);
+
                                                     for s in &mut slots {
                                                         if !s.slow && s.frame.is_none() {
                                                             s.slow = true;
@@ -772,9 +820,12 @@ impl AudioMixerNode {
                                                         true,
                                                     ).await {
                                                         tracing::debug!("Output channel closed: {}", e);
+                                                        stats_tracker.force_send();
                                                         return Ok(());
                                                     }
 
+                                                    stats_tracker.sent();
+                                                    stats_tracker.maybe_send();
                                                     mixed_frame_count += 1;
                                                     if mixed_frame_count <= 5 || mixed_frame_count.is_multiple_of(50) {
                                                         tracing::trace!(
@@ -827,8 +878,11 @@ impl AudioMixerNode {
                                     false,
                                 ).await {
                                     tracing::debug!("Output channel closed: {}", e);
+                                    stats_tracker.force_send();
                                     return Ok(());
                                 }
+                                stats_tracker.sent();
+                                stats_tracker.maybe_send();
                             }
 
                             if slots.is_empty() {
@@ -838,6 +892,7 @@ impl AudioMixerNode {
                                     "all_inputs_closed"
                                 );
                                 tracing::info!("AudioMixerNode shutting down (all inputs closed)");
+                                stats_tracker.force_send();
                                 return Ok(());
                             }
                         }
@@ -848,11 +903,13 @@ impl AudioMixerNode {
                             // All inputs closed
                             state_helpers::emit_stopped(&context.state_tx, &node_name, "no_inputs");
                             tracing::info!("AudioMixerNode shutting down (no inputs)");
+                            stats_tracker.force_send();
                             return Ok(());
                         }
                         RecvResult::Cancelled => {
                             // Cancellation requested
                             tracing::info!("AudioMixerNode cancelled");
+                            stats_tracker.force_send();
                             return Ok(());
                         }
                     }
@@ -1156,6 +1213,7 @@ enum AudioThreadCommand {
 
 enum InputEvent {
     Eof(Arc<str>),
+    SampleRateMismatch { pin_name: Arc<str>, expected: u32, got: u32 },
 }
 
 struct ClockedThreadConfig {
@@ -1167,6 +1225,7 @@ struct ClockedThreadConfig {
     sync_timeout: Option<std::time::Duration>,
     audio_pool: Option<Arc<AudioFramePool>>,
     state_tx: tokio::sync::mpsc::Sender<streamkit_core::state::NodeStateUpdate>,
+    input_event_tx: mpsc::Sender<InputEvent>,
     output_mailbox: Arc<OutputMailbox>,
     cmd_rx: std::sync::mpsc::Receiver<AudioThreadCommand>,
     stop_flag: Arc<AtomicBool>,
@@ -1265,13 +1324,20 @@ fn run_clocked_audio_thread(config: &ClockedThreadConfig) {
                     let frame = input.ring.pop();
                     if let Some(frame) = frame {
                         if frame.sample_rate != config.sample_rate {
-                            tracing::warn!(
-                                "Clocked mixer input '{}' sample_rate mismatch: got {}, expected {} (dropping frame)",
+                            tracing::error!(
+                                "Clocked mixer input '{}' sample_rate mismatch: got {}, expected {} (fatal)",
                                 input.name,
                                 frame.sample_rate,
                                 config.sample_rate
                             );
-                            continue;
+                            let _ = config.input_event_tx.blocking_send(
+                                InputEvent::SampleRateMismatch {
+                                    pin_name: input.name.clone(),
+                                    expected: config.sample_rate,
+                                    got: frame.sample_rate,
+                                },
+                            );
+                            return;
                         }
 
                         max_output_channels_seen = max_output_channels_seen.max(frame.channels);
@@ -1450,13 +1516,20 @@ async fn run_input_drainer(
 
         if let Packet::Audio(frame) = packet {
             if frame.sample_rate != expected_sample_rate {
-                tracing::warn!(
-                    "Clocked mixer input '{}' sample_rate mismatch: got {}, expected {} (dropping frame)",
+                tracing::error!(
+                    "Clocked mixer input '{}' sample_rate mismatch: got {}, expected {} (fatal)",
                     name,
                     frame.sample_rate,
                     expected_sample_rate
                 );
-                continue;
+                let _ = input_event_tx
+                    .send(InputEvent::SampleRateMismatch {
+                        pin_name: name,
+                        expected: expected_sample_rate,
+                        got: frame.sample_rate,
+                    })
+                    .await;
+                return;
             }
             ring.push(frame);
         }
@@ -1465,9 +1538,23 @@ async fn run_input_drainer(
         loop {
             match rx.try_recv() {
                 Ok(Packet::Audio(frame)) => {
-                    if frame.sample_rate == expected_sample_rate {
-                        ring.push(frame);
+                    if frame.sample_rate != expected_sample_rate {
+                        tracing::error!(
+                            "Clocked mixer input '{}' sample_rate mismatch: got {}, expected {} (fatal)",
+                            name,
+                            frame.sample_rate,
+                            expected_sample_rate
+                        );
+                        let _ = input_event_tx
+                            .send(InputEvent::SampleRateMismatch {
+                                pin_name: name,
+                                expected: expected_sample_rate,
+                                got: frame.sample_rate,
+                            })
+                            .await;
+                        return;
                     }
+                    ring.push(frame);
                 },
                 Ok(_other) => {},
                 Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,

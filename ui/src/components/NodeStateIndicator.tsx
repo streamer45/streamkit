@@ -19,6 +19,22 @@ const StateIndicator = styled.div<{ color: string }>`
   box-shadow: 0 0 4px ${(props) => props.color}40;
 `;
 
+const ErrorBadge = styled.div`
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--sk-danger);
+  border: 1px solid var(--sk-bg);
+`;
+
+const IndicatorWrapper = styled.div`
+  position: relative;
+  display: inline-flex;
+`;
+
 interface NodeStateIndicatorProps {
   state: NodeState;
   stats?: NodeStats;
@@ -154,6 +170,8 @@ const renderPacketStats = (stats?: NodeStats): React.ReactNode => {
   const duration = stats.duration_secs > 0 ? stats.duration_secs : 1;
   const receivedPps = Math.round(Number(stats.received) / duration);
   const sentPps = Math.round(Number(stats.sent) / duration);
+  const erroredPps = stats.errored > 0 ? Math.round(Number(stats.errored) / duration) : 0;
+  const discardedPps = stats.discarded > 0 ? Math.round(Number(stats.discarded) / duration) : 0;
 
   return (
     <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--sk-border)' }}>
@@ -172,9 +190,14 @@ const renderPacketStats = (stats?: NodeStats): React.ReactNode => {
         </div>
         {(stats.discarded > 0 || stats.errored > 0) && (
           <div style={{ marginTop: 2, color: 'var(--sk-warning)' }}>
-            {stats.discarded > 0 && `⚠ Discarded: ${formatNumber(stats.discarded)} pkt`}
+            {stats.discarded > 0 &&
+              `Discarded: ${formatNumber(stats.discarded)} pkt (${discardedPps} pps)`}
             {stats.discarded > 0 && stats.errored > 0 && ' | '}
-            {stats.errored > 0 && `❌ Errors: ${formatNumber(stats.errored)} pkt`}
+            {stats.errored > 0 && (
+              <span style={{ color: 'var(--sk-danger)' }}>
+                Errors: {formatNumber(stats.errored)} pkt ({erroredPps} pps)
+              </span>
+            )}
           </div>
         )}
       </div>
@@ -360,6 +383,16 @@ export const NodeStateIndicator: React.FC<NodeStateIndicatorProps> = ({
   nodeId,
   sessionId,
 }) => {
+  // Get live stats for error badge display
+  const liveStats = useSessionStore(
+    React.useCallback(
+      (s) => (nodeId && sessionId ? s.sessions.get(sessionId)?.nodeStats[nodeId] : undefined),
+      [nodeId, sessionId]
+    )
+  );
+  const stats = liveStats ?? propStats;
+  const hasErrors = stats && stats.errored > 0;
+
   const color = getStateColor(state);
   const label = getStateLabel(state);
 
@@ -381,7 +414,10 @@ export const NodeStateIndicator: React.FC<NodeStateIndicatorProps> = ({
         className="nodrag"
         style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'help' }}
       >
-        <StateIndicator color={color} />
+        <IndicatorWrapper>
+          <StateIndicator color={color} />
+          {hasErrors && <ErrorBadge />}
+        </IndicatorWrapper>
         {showLabel && <span style={{ color: 'var(--sk-text-muted)', fontSize: 11 }}>{label}</span>}
       </div>
     </SKTooltip>

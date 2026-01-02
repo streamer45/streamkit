@@ -345,6 +345,7 @@ impl ProcessorNode for MoqPeerNode {
                         sub_count,
                         self.config.output_group_duration_ms,
                         self.config.output_initial_delay_ms,
+                        stats_delta_tx.clone(),
                     ).await {
                         Ok(_handle) => {
                             let count = subscriber_count.fetch_add(1, Ordering::SeqCst) + 1;
@@ -558,6 +559,10 @@ impl MoqPeerNode {
             let mut publisher_shutdown_rx = config.shutdown_rx.resubscribe();
             let mut subscriber_shutdown_rx = config.shutdown_rx;
 
+            // Clone stats_delta_tx before async blocks to avoid borrow conflicts
+            let publisher_stats_delta_tx = config.stats_delta_tx.clone();
+            let subscriber_stats_delta_tx = config.stats_delta_tx;
+
             let publisher_fut = async {
                 Self::publisher_receive_loop_with_slot(
                     PublisherReceiveLoopWithSlotConfig {
@@ -567,7 +572,7 @@ impl MoqPeerNode {
                         publisher_slot: config.publisher_slot,
                         publisher_events: config.publisher_events,
                         publisher_path: path.clone(),
-                        stats_delta_tx: config.stats_delta_tx.clone(),
+                        stats_delta_tx: publisher_stats_delta_tx,
                     },
                     &mut publisher_shutdown_rx,
                 )
@@ -582,6 +587,7 @@ impl MoqPeerNode {
                     &mut subscriber_shutdown_rx,
                     config.output_group_duration_ms,
                     config.output_initial_delay_ms,
+                    subscriber_stats_delta_tx,
                 )
                 .await
             };
@@ -900,6 +906,7 @@ impl MoqPeerNode {
     }
 
     /// Start a task to handle subscriber connection (sends audio to client)
+    #[allow(clippy::too_many_arguments)]
     async fn start_subscriber_task(
         moq_connection: streamkit_core::moq_gateway::MoqConnection,
         output_broadcast: String,
@@ -908,6 +915,7 @@ impl MoqPeerNode {
         subscriber_count: Arc<AtomicU64>,
         output_group_duration_ms: u64,
         output_initial_delay_ms: u64,
+        stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
     ) -> Result<tokio::task::JoinHandle<()>, StreamKitError> {
         // Extract the WebTransport session
         let web_transport_session = *moq_connection
@@ -943,6 +951,7 @@ impl MoqPeerNode {
                 &mut shutdown_rx,
                 output_group_duration_ms,
                 output_initial_delay_ms,
+                stats_delta_tx,
             )
             .await;
 
@@ -969,6 +978,7 @@ impl MoqPeerNode {
         shutdown_rx: &mut broadcast::Receiver<()>,
         output_group_duration_ms: u64,
         output_initial_delay_ms: u64,
+        stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
     ) -> Result<(), StreamKitError> {
         // Setup broadcast and tracks
         let (_broadcast_producer, mut track_producer, _catalog_producer) =
@@ -983,6 +993,7 @@ impl MoqPeerNode {
             shutdown_rx,
             output_group_duration_ms,
             output_initial_delay_ms,
+            &stats_delta_tx,
         )
         .await?;
 
@@ -1055,6 +1066,7 @@ impl MoqPeerNode {
         shutdown_rx: &mut broadcast::Receiver<()>,
         output_group_duration_ms: u64,
         output_initial_delay_ms: u64,
+        stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
     ) -> Result<u64, StreamKitError> {
         let mut packet_count: u64 = 0;
         let mut last_log = std::time::Instant::now();
@@ -1073,6 +1085,7 @@ impl MoqPeerNode {
                         &mut last_log,
                         group_duration_ms,
                         &mut clock,
+                        stats_delta_tx,
                     )? {
                         SendResult::Continue => {}
                         SendResult::Stop => break,
@@ -1089,6 +1102,7 @@ impl MoqPeerNode {
     }
 
     /// Handle a single broadcast receive result
+    #[allow(clippy::too_many_arguments)]
     fn handle_broadcast_recv(
         recv_result: Result<BroadcastFrame, broadcast::error::RecvError>,
         track_producer: &mut hang::TrackProducer,
@@ -1097,6 +1111,7 @@ impl MoqPeerNode {
         last_log: &mut std::time::Instant,
         group_duration_ms: u64,
         clock: &mut super::constants::MediaClock,
+        stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
     ) -> Result<SendResult, StreamKitError> {
         match recv_result {
             Ok(broadcast_frame) => {
@@ -1124,6 +1139,8 @@ impl MoqPeerNode {
 
                 if let Err(e) = track_producer.write(frame) {
                     tracing::warn!("Failed to write MoQ frame to subscriber: {e}");
+                    let _ = stats_delta_tx
+                        .try_send(NodeStatsDelta { errored: 1, ..Default::default() });
                     return Ok(SendResult::Stop);
                 }
                 clock.advance_by_duration_us(broadcast_frame.duration_us);
@@ -1131,6 +1148,8 @@ impl MoqPeerNode {
             },
             Err(broadcast::error::RecvError::Lagged(n)) => {
                 tracing::warn!("Subscriber lagged, dropped {} packets", n);
+                let _ =
+                    stats_delta_tx.try_send(NodeStatsDelta { discarded: n, ..Default::default() });
                 Ok(SendResult::Continue)
             },
             Err(broadcast::error::RecvError::Closed) => {
