@@ -92,13 +92,16 @@ impl HttpPullNode {
 
         tracing::info!("Starting streaming GET request to {}", url);
 
-        let response = client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| StreamKitError::Runtime(format!("HTTP request failed: {e}")))?;
+        let response = match client.get(url).send().await {
+            Ok(resp) => resp,
+            Err(e) => {
+                stats_tracker.errored();
+                return Err(StreamKitError::Runtime(format!("HTTP request failed: {e}")));
+            },
+        };
 
         if !response.status().is_success() {
+            stats_tracker.errored();
             return Err(StreamKitError::Runtime(format!("HTTP error: {}", response.status())));
         }
 
@@ -119,8 +122,13 @@ impl HttpPullNode {
         let mut buffer = BytesMut::with_capacity(chunk_size.saturating_mul(2));
 
         while let Some(chunk_result) = stream.next().await {
-            let chunk = chunk_result
-                .map_err(|e| StreamKitError::Runtime(format!("Failed to read chunk: {e}")))?;
+            let chunk = match chunk_result {
+                Ok(c) => c,
+                Err(e) => {
+                    stats_tracker.errored();
+                    return Err(StreamKitError::Runtime(format!("Failed to read chunk: {e}")));
+                },
+            };
 
             total_bytes += chunk.len() as u64;
             buffer.put_slice(&chunk);

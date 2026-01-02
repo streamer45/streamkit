@@ -22,8 +22,9 @@ Agent-assisted contributions are welcome, but should be **supervised** and **rev
 ## Workflow expectations
 
 - Keep PRs focused and minimal.
-- Run `just test` and `just lint` when making code changes (or explain why you couldn’t).
+- Run `just test` and `just lint` when making code changes (or explain why you couldn't).
 - Follow `CONTRIBUTING.md` (DCO sign-off, Conventional Commits, SPDX headers where applicable).
+- **Linting discipline**: Do not blindly suppress lint warnings or errors with ignore/exception rules. Instead, consider refactoring or improving the code to address the underlying issue. If an exception is truly necessary, it **must** include a comment explaining the rationale.
 
 ## Docker notes
 

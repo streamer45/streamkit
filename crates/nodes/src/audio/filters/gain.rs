@@ -161,11 +161,13 @@ impl ProcessorNode for AudioGainNode {
                                                     }
                                                     Err(e) => {
                                                         tracing::warn!("Rejected invalid gain parameter: {}", e);
+                                                        stats_tracker.errored();
                                                     }
                                                 }
                                             }
                                             Err(e) => {
                                                 tracing::warn!("Failed to deserialize params for volume_adjust: {}", e);
+                                                stats_tracker.errored();
                                             }
                                         }
                                     },

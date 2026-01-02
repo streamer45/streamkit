@@ -237,6 +237,8 @@ impl ProcessorNode for MoqPushNode {
                             if let Err(e) = track_producer.write(frame) {
                                 let err_msg = format!("Failed to write MoQ frame: {e}");
                                 tracing::warn!("{err_msg}");
+                                stats_tracker.errored();
+                                stats_tracker.force_send();
                                 state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
                                 return Err(StreamKitError::Runtime(err_msg));
                             }

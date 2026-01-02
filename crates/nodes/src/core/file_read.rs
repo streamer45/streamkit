@@ -167,6 +167,8 @@ impl ProcessorNode for FileReadNode {
                             stats_tracker.maybe_send();
                         }
                         Err(e) => {
+                            stats_tracker.errored();
+                            stats_tracker.force_send();
                             state_helpers::emit_failed(
                                 &context.state_tx,
                                 &node_name,

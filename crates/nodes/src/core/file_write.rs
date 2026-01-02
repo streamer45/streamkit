@@ -102,6 +102,8 @@ impl ProcessorNode for FileWriteNode {
                 // Write buffer to file when it reaches chunk_size
                 if buffer.len() >= self.config.chunk_size {
                     if let Err(e) = file.write_all(&buffer).await {
+                        stats_tracker.errored();
+                        stats_tracker.force_send();
                         state_helpers::emit_failed(
                             &context.state_tx,
                             &node_name,
@@ -126,6 +128,8 @@ impl ProcessorNode for FileWriteNode {
         // Write any remaining buffered data
         if !buffer.is_empty() {
             if let Err(e) = file.write_all(&buffer).await {
+                stats_tracker.errored();
+                stats_tracker.force_send();
                 state_helpers::emit_failed(
                     &context.state_tx,
                     &node_name,
@@ -139,6 +143,7 @@ impl ProcessorNode for FileWriteNode {
         // Flush and close the file
         if let Err(e) = file.flush().await {
             tracing::error!("Failed to flush file: {}", e);
+            stats_tracker.errored();
             reason = format!("flush_failed: {e}");
         }
 

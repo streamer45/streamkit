@@ -19,6 +19,22 @@ const StateIndicator = styled.div<{ color: string }>`
   box-shadow: 0 0 4px ${(props) => props.color}40;
 `;
 
+const ErrorBadge = styled.div`
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--sk-danger);
+  border: 1px solid var(--sk-bg);
+`;
+
+const IndicatorWrapper = styled.div`
+  position: relative;
+  display: inline-flex;
+`;
+
 interface NodeStateIndicatorProps {
   state: NodeState;
   stats?: NodeStats;
@@ -49,6 +65,11 @@ type SlowInputSource = {
   fromPin: string;
 };
 
+type DegradedPins = {
+  slowPins: string[] | null;
+  newlySlowPins: string[] | null;
+};
+
 function deriveSlowInputSources(
   pipeline: Pipeline | null | undefined,
   nodeId: string,
@@ -69,6 +90,61 @@ function deriveSlowInputSources(
     (a, b) => a.slowPin.localeCompare(b.slowPin) || a.fromNode.localeCompare(b.fromNode)
   );
   return sources;
+}
+
+function getDegradedPins(details: unknown): DegradedPins {
+  const detailsObj = isRecord(details) ? details : null;
+  const slowPins = detailsObj ? asStringArray(detailsObj['slow_pins']) : null;
+  const newlySlowPins = detailsObj ? asStringArray(detailsObj['newly_slow_pins']) : null;
+  return { slowPins, newlySlowPins };
+}
+
+function getSlowSourcesForDegraded(
+  context: { pipeline?: Pipeline | null; nodeId?: string } | undefined,
+  slowPins: string[] | null
+): SlowInputSource[] {
+  if (!slowPins || slowPins.length === 0) return [];
+  if (!context?.pipeline || !context.nodeId) return [];
+  return deriveSlowInputSources(context.pipeline, context.nodeId, slowPins);
+}
+
+function renderSlowPinsSummary(
+  slowPins: string[] | null,
+  newlySlowPins: string[] | null,
+  slowSources: SlowInputSource[]
+): React.ReactNode {
+  if (!slowPins && !newlySlowPins) return null;
+
+  const hasSources = slowSources.length > 0;
+  const hasPins = !!slowPins && slowPins.length > 0;
+  const hasNewlySlow = !!newlySlowPins && newlySlowPins.length > 0;
+
+  if (!hasSources && !hasPins && !hasNewlySlow) return null;
+
+  return (
+    <div style={{ marginTop: 6, color: 'var(--sk-warning)' }}>
+      {hasSources ? (
+        <div className="code-font" style={{ fontSize: 11, lineHeight: '1.4' }}>
+          Slow inputs:{' '}
+          {slowSources.map((s) => `${s.fromNode}.${s.fromPin} → ${s.slowPin}`).join(', ')}
+        </div>
+      ) : hasPins ? (
+        <div className="code-font" style={{ fontSize: 11, lineHeight: '1.4' }}>
+          Slow pins: {slowPins.join(', ')}
+        </div>
+      ) : null}
+      {hasPins && hasSources && (
+        <div className="code-font" style={{ fontSize: 11, lineHeight: '1.4', marginTop: 2 }}>
+          Pins: {slowPins.join(', ')}
+        </div>
+      )}
+      {hasNewlySlow && (
+        <div className="code-font" style={{ fontSize: 11, lineHeight: '1.4', marginTop: 2 }}>
+          Newly slow: {newlySlowPins.join(', ')}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function getStateColor(state: NodeState): string {
@@ -154,6 +230,8 @@ const renderPacketStats = (stats?: NodeStats): React.ReactNode => {
   const duration = stats.duration_secs > 0 ? stats.duration_secs : 1;
   const receivedPps = Math.round(Number(stats.received) / duration);
   const sentPps = Math.round(Number(stats.sent) / duration);
+  const erroredPps = stats.errored > 0 ? Math.round(Number(stats.errored) / duration) : 0;
+  const discardedPps = stats.discarded > 0 ? Math.round(Number(stats.discarded) / duration) : 0;
 
   return (
     <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--sk-border)' }}>
@@ -172,9 +250,14 @@ const renderPacketStats = (stats?: NodeStats): React.ReactNode => {
         </div>
         {(stats.discarded > 0 || stats.errored > 0) && (
           <div style={{ marginTop: 2, color: 'var(--sk-warning)' }}>
-            {stats.discarded > 0 && `⚠ Discarded: ${formatNumber(stats.discarded)} pkt`}
+            {stats.discarded > 0 &&
+              `Discarded: ${formatNumber(stats.discarded)} pkt (${discardedPps} pps)`}
             {stats.discarded > 0 && stats.errored > 0 && ' | '}
-            {stats.errored > 0 && `❌ Errors: ${formatNumber(stats.errored)} pkt`}
+            {stats.errored > 0 && (
+              <span style={{ color: 'var(--sk-danger)' }}>
+                Errors: {formatNumber(stats.errored)} pkt ({erroredPps} pps)
+              </span>
+            )}
           </div>
         )}
       </div>
@@ -234,13 +317,9 @@ const renderDegradedDetails = (
   stats?: NodeStats,
   context?: { pipeline?: Pipeline | null; nodeId?: string }
 ): React.ReactNode => {
-  const detailsObj = isRecord(state.Degraded.details) ? state.Degraded.details : null;
-  const slowPins = detailsObj ? asStringArray(detailsObj['slow_pins']) : null;
-  const newlySlowPins = detailsObj ? asStringArray(detailsObj['newly_slow_pins']) : null;
-  const slowSources =
-    slowPins && context?.pipeline && context?.nodeId
-      ? deriveSlowInputSources(context.pipeline, context.nodeId, slowPins)
-      : [];
+  const { slowPins, newlySlowPins } = getDegradedPins(state.Degraded.details);
+  const slowSources = getSlowSourcesForDegraded(context, slowPins);
+  const slowSummary = renderSlowPinsSummary(slowPins, newlySlowPins, slowSources);
 
   return (
     <div style={{ fontSize: 12 }}>
@@ -249,33 +328,7 @@ const renderDegradedDetails = (
         {getStateDescription(state)}
       </div>
       <div style={{ color: 'var(--sk-text)' }}>{state.Degraded.reason}</div>
-      {(slowPins || newlySlowPins) && (
-        <div style={{ marginTop: 6, color: 'var(--sk-warning)' }}>
-          {slowSources.length > 0 ? (
-            <div className="code-font" style={{ fontSize: 11, lineHeight: '1.4' }}>
-              Slow inputs:{' '}
-              {slowSources.map((s) => `${s.fromNode}.${s.fromPin} → ${s.slowPin}`).join(', ')}
-            </div>
-          ) : (
-            slowPins &&
-            slowPins.length > 0 && (
-              <div className="code-font" style={{ fontSize: 11, lineHeight: '1.4' }}>
-                Slow pins: {slowPins.join(', ')}
-              </div>
-            )
-          )}
-          {slowPins && slowPins.length > 0 && slowSources.length > 0 && (
-            <div className="code-font" style={{ fontSize: 11, lineHeight: '1.4', marginTop: 2 }}>
-              Pins: {slowPins.join(', ')}
-            </div>
-          )}
-          {newlySlowPins && newlySlowPins.length > 0 && (
-            <div className="code-font" style={{ fontSize: 11, lineHeight: '1.4', marginTop: 2 }}>
-              Newly slow: {newlySlowPins.join(', ')}
-            </div>
-          )}
-        </div>
-      )}
+      {slowSummary}
       {renderPacketStats(stats)}
     </div>
   );
@@ -360,6 +413,16 @@ export const NodeStateIndicator: React.FC<NodeStateIndicatorProps> = ({
   nodeId,
   sessionId,
 }) => {
+  // Get live stats for error badge display
+  const liveStats = useSessionStore(
+    React.useCallback(
+      (s) => (nodeId && sessionId ? s.sessions.get(sessionId)?.nodeStats[nodeId] : undefined),
+      [nodeId, sessionId]
+    )
+  );
+  const stats = liveStats ?? propStats;
+  const hasErrors = stats && stats.errored > 0;
+
   const color = getStateColor(state);
   const label = getStateLabel(state);
 
@@ -381,7 +444,10 @@ export const NodeStateIndicator: React.FC<NodeStateIndicatorProps> = ({
         className="nodrag"
         style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'help' }}
       >
-        <StateIndicator color={color} />
+        <IndicatorWrapper>
+          <StateIndicator color={color} />
+          {hasErrors && <ErrorBadge />}
+        </IndicatorWrapper>
         {showLabel && <span style={{ color: 'var(--sk-text-muted)', fontSize: 11 }}>{label}</span>}
       </div>
     </SKTooltip>

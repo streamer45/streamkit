@@ -22,6 +22,59 @@ export type TypedEdgeData = {
   [key: string]: unknown;
 };
 
+type TypedEdgeAlert = NonNullable<TypedEdgeData['alert']>;
+
+function getTypeColor(resolvedType: PacketType | undefined): string {
+  return resolvedType ? getPacketTypeColor(resolvedType) : 'var(--sk-primary)';
+}
+
+function getAlertColor(alert: TypedEdgeAlert | undefined): string | null {
+  if (!alert) return null;
+  if (alert.severity === 'error') return 'var(--sk-danger)';
+  if (alert.severity === 'warning') return 'var(--sk-warning)';
+  return null;
+}
+
+function getBadgeIcon(alert: TypedEdgeAlert | undefined): string | null {
+  if (!alert) return null;
+  if (alert.severity === 'error') return '❌';
+  if (alert.kind === 'slow_input_timeout') return '⏱️';
+  return '⚠️';
+}
+
+function buildEdgeStyle(
+  style: EdgeProps['style'] | undefined,
+  typeColor: string,
+  alertColor: string | null
+): React.CSSProperties {
+  const baseStyle = (style || {}) as React.CSSProperties;
+  const next: React.CSSProperties = { ...baseStyle, stroke: alertColor ?? typeColor };
+
+  if (alertColor) {
+    next.strokeDasharray = '6, 4';
+    next.strokeWidth = 3;
+  }
+
+  return next;
+}
+
+function renderAlertTooltip(alert: TypedEdgeAlert | undefined, badgeIcon: string | null) {
+  if (!alert?.tooltip || !badgeIcon) return null;
+
+  return (
+    <div style={{ fontSize: 12 }}>
+      <div style={{ fontWeight: 600, marginBottom: 4 }}>
+        {badgeIcon} {alert.tooltip.title}
+      </div>
+      {alert.tooltip.lines.map((line) => (
+        <div key={line} className="code-font" style={{ fontSize: 11, lineHeight: '1.4' }}>
+          {line}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 const TypedEdge: React.FC<EdgeProps> = ({
   sourceX,
   sourceY,
@@ -41,56 +94,21 @@ const TypedEdge: React.FC<EdgeProps> = ({
     targetPosition,
   });
 
-  const resolvedType = (data as TypedEdgeData | undefined)?.resolvedType;
-  const alert = (data as TypedEdgeData | undefined)?.alert;
+  const typedData = data as TypedEdgeData | undefined;
+  const resolvedType = typedData?.resolvedType;
+  const alert = typedData?.alert;
 
-  // Get color based on resolved type
-  const typeColor = resolvedType ? getPacketTypeColor(resolvedType) : 'var(--sk-primary)';
-
-  const alertColor =
-    alert?.severity === 'error'
-      ? 'var(--sk-danger)'
-      : alert?.severity === 'warning'
-        ? 'var(--sk-warning)'
-        : null;
-
-  // Override style with type-specific color
-  const edgeStyle: React.CSSProperties = {
-    ...(style || {}),
-    stroke: alertColor ?? typeColor,
-    strokeDasharray: alertColor
-      ? '6, 4'
-      : (style as React.CSSProperties | undefined)?.strokeDasharray,
-    strokeWidth: alertColor ? 3 : (style as React.CSSProperties | undefined)?.strokeWidth,
-  };
-
-  const badgeIcon =
-    alert?.severity === 'error'
-      ? '❌'
-      : alert?.severity === 'warning' && alert?.kind === 'slow_input_timeout'
-        ? '⏱️'
-        : alert
-          ? '⚠️'
-          : null;
-
-  const tooltipContent =
-    alert?.tooltip && badgeIcon ? (
-      <div style={{ fontSize: 12 }}>
-        <div style={{ fontWeight: 600, marginBottom: 4 }}>
-          {badgeIcon} {alert.tooltip.title}
-        </div>
-        {alert.tooltip.lines.map((line) => (
-          <div key={line} className="code-font" style={{ fontSize: 11, lineHeight: '1.4' }}>
-            {line}
-          </div>
-        ))}
-      </div>
-    ) : null;
+  const typeColor = getTypeColor(resolvedType);
+  const alertColor = getAlertColor(alert);
+  const edgeStyle = buildEdgeStyle(style, typeColor, alertColor);
+  const badgeIcon = getBadgeIcon(alert);
+  const tooltipContent = renderAlertTooltip(alert, badgeIcon);
+  const shouldRenderBadge = !!alertColor && !!badgeIcon;
 
   return (
     <>
       <BaseEdge path={edgePath} style={edgeStyle} />
-      {alertColor && badgeIcon && (
+      {shouldRenderBadge && (
         <EdgeLabelRenderer>
           <SKTooltip content={tooltipContent} side="top">
             <div
@@ -98,7 +116,7 @@ const TypedEdge: React.FC<EdgeProps> = ({
               style={{
                 position: 'absolute',
                 transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
-                background: alertColor,
+                background: alertColor!,
                 color: 'white',
                 border: '1px solid var(--sk-border-strong)',
                 borderRadius: 999,

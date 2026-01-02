@@ -251,15 +251,31 @@ impl ProcessorNode for AudioResamplerNode {
 
                     // Verify audio format matches
                     if Some(frame.sample_rate) != sample_rate || Some(frame.channels) != channels {
-                        // Safe unwraps: sample_rate and channels are Some due to initialization above
-                        #[allow(clippy::unwrap_used)]
-                        return Err(StreamKitError::Runtime(format!(
-                            "Audio format changed mid-stream: expected {}Hz/{}ch, got {}Hz/{}ch",
-                            sample_rate.unwrap(),
-                            channels.unwrap(),
+                        let (Some(expected_sample_rate), Some(expected_channels)) =
+                            (sample_rate, channels)
+                        else {
+                            stats_tracker.errored();
+                            stats_tracker.force_send();
+                            let err_msg =
+                                "AudioResamplerNode internal error: missing stream format state"
+                                    .to_string();
+                            state_helpers::emit_failed(
+                                &context.state_tx,
+                                &node_name,
+                                err_msg.clone(),
+                            );
+                            return Err(StreamKitError::Runtime(err_msg));
+                        };
+
+                        stats_tracker.errored();
+                        stats_tracker.force_send();
+                        let err_msg = format!(
+                            "Audio format changed mid-stream: expected {expected_sample_rate}Hz/{expected_channels}ch, got {}Hz/{}ch",
                             frame.sample_rate,
                             frame.channels
-                        )));
+                        );
+                        state_helpers::emit_failed(&context.state_tx, &node_name, err_msg.clone());
+                        return Err(StreamKitError::Runtime(err_msg));
                     }
 
                     let target_sample_rate = self.config.target_sample_rate;
