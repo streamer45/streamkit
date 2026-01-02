@@ -65,6 +65,11 @@ type SlowInputSource = {
   fromPin: string;
 };
 
+type DegradedPins = {
+  slowPins: string[] | null;
+  newlySlowPins: string[] | null;
+};
+
 function deriveSlowInputSources(
   pipeline: Pipeline | null | undefined,
   nodeId: string,
@@ -85,6 +90,61 @@ function deriveSlowInputSources(
     (a, b) => a.slowPin.localeCompare(b.slowPin) || a.fromNode.localeCompare(b.fromNode)
   );
   return sources;
+}
+
+function getDegradedPins(details: unknown): DegradedPins {
+  const detailsObj = isRecord(details) ? details : null;
+  const slowPins = detailsObj ? asStringArray(detailsObj['slow_pins']) : null;
+  const newlySlowPins = detailsObj ? asStringArray(detailsObj['newly_slow_pins']) : null;
+  return { slowPins, newlySlowPins };
+}
+
+function getSlowSourcesForDegraded(
+  context: { pipeline?: Pipeline | null; nodeId?: string } | undefined,
+  slowPins: string[] | null
+): SlowInputSource[] {
+  if (!slowPins || slowPins.length === 0) return [];
+  if (!context?.pipeline || !context.nodeId) return [];
+  return deriveSlowInputSources(context.pipeline, context.nodeId, slowPins);
+}
+
+function renderSlowPinsSummary(
+  slowPins: string[] | null,
+  newlySlowPins: string[] | null,
+  slowSources: SlowInputSource[]
+): React.ReactNode {
+  if (!slowPins && !newlySlowPins) return null;
+
+  const hasSources = slowSources.length > 0;
+  const hasPins = !!slowPins && slowPins.length > 0;
+  const hasNewlySlow = !!newlySlowPins && newlySlowPins.length > 0;
+
+  if (!hasSources && !hasPins && !hasNewlySlow) return null;
+
+  return (
+    <div style={{ marginTop: 6, color: 'var(--sk-warning)' }}>
+      {hasSources ? (
+        <div className="code-font" style={{ fontSize: 11, lineHeight: '1.4' }}>
+          Slow inputs:{' '}
+          {slowSources.map((s) => `${s.fromNode}.${s.fromPin} → ${s.slowPin}`).join(', ')}
+        </div>
+      ) : hasPins ? (
+        <div className="code-font" style={{ fontSize: 11, lineHeight: '1.4' }}>
+          Slow pins: {slowPins.join(', ')}
+        </div>
+      ) : null}
+      {hasPins && hasSources && (
+        <div className="code-font" style={{ fontSize: 11, lineHeight: '1.4', marginTop: 2 }}>
+          Pins: {slowPins.join(', ')}
+        </div>
+      )}
+      {hasNewlySlow && (
+        <div className="code-font" style={{ fontSize: 11, lineHeight: '1.4', marginTop: 2 }}>
+          Newly slow: {newlySlowPins.join(', ')}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function getStateColor(state: NodeState): string {
@@ -257,13 +317,9 @@ const renderDegradedDetails = (
   stats?: NodeStats,
   context?: { pipeline?: Pipeline | null; nodeId?: string }
 ): React.ReactNode => {
-  const detailsObj = isRecord(state.Degraded.details) ? state.Degraded.details : null;
-  const slowPins = detailsObj ? asStringArray(detailsObj['slow_pins']) : null;
-  const newlySlowPins = detailsObj ? asStringArray(detailsObj['newly_slow_pins']) : null;
-  const slowSources =
-    slowPins && context?.pipeline && context?.nodeId
-      ? deriveSlowInputSources(context.pipeline, context.nodeId, slowPins)
-      : [];
+  const { slowPins, newlySlowPins } = getDegradedPins(state.Degraded.details);
+  const slowSources = getSlowSourcesForDegraded(context, slowPins);
+  const slowSummary = renderSlowPinsSummary(slowPins, newlySlowPins, slowSources);
 
   return (
     <div style={{ fontSize: 12 }}>
@@ -272,33 +328,7 @@ const renderDegradedDetails = (
         {getStateDescription(state)}
       </div>
       <div style={{ color: 'var(--sk-text)' }}>{state.Degraded.reason}</div>
-      {(slowPins || newlySlowPins) && (
-        <div style={{ marginTop: 6, color: 'var(--sk-warning)' }}>
-          {slowSources.length > 0 ? (
-            <div className="code-font" style={{ fontSize: 11, lineHeight: '1.4' }}>
-              Slow inputs:{' '}
-              {slowSources.map((s) => `${s.fromNode}.${s.fromPin} → ${s.slowPin}`).join(', ')}
-            </div>
-          ) : (
-            slowPins &&
-            slowPins.length > 0 && (
-              <div className="code-font" style={{ fontSize: 11, lineHeight: '1.4' }}>
-                Slow pins: {slowPins.join(', ')}
-              </div>
-            )
-          )}
-          {slowPins && slowPins.length > 0 && slowSources.length > 0 && (
-            <div className="code-font" style={{ fontSize: 11, lineHeight: '1.4', marginTop: 2 }}>
-              Pins: {slowPins.join(', ')}
-            </div>
-          )}
-          {newlySlowPins && newlySlowPins.length > 0 && (
-            <div className="code-font" style={{ fontSize: 11, lineHeight: '1.4', marginTop: 2 }}>
-              Newly slow: {newlySlowPins.join(', ')}
-            </div>
-          )}
-        </div>
-      )}
+      {slowSummary}
       {renderPacketStats(stats)}
     </div>
   );
