@@ -718,8 +718,16 @@ impl MoqPullNode {
                     );
                     return Ok(StreamEndReason::Natural);
                 },
+                Err(moq_lite::Error::Cancel) => {
+                    tracing::debug!(
+                        session_packet_count,
+                        total_packet_count = *total_packet_count,
+                        "Track read cancelled"
+                    );
+                    return Ok(StreamEndReason::Reconnect);
+                },
                 Err(e) => {
-                    tracing::error!("Error reading from track: {}", e);
+                    tracing::error!(error = %e, session_packet_count, "Error reading from track");
                     if session_packet_count > 0 {
                         tracing::warn!(
                             "Track ended unexpectedly after {} packets - will retry",
