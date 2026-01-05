@@ -545,6 +545,70 @@ interface SessionInfoDisplayProps {
 const shortSessionId = (sessionId: string): string =>
   sessionId.split('-')[0] || sessionId.slice(0, 8);
 
+type NodeIssue = {
+  nodeId: string;
+  summary: string;
+};
+
+function formatIssueDetails(details: unknown): string | null {
+  if (details == null) return null;
+  try {
+    const serialized = JSON.stringify(details);
+    if (!serialized || serialized === 'null') return null;
+    return serialized.length > 180 ? `${serialized.slice(0, 180)}…` : serialized;
+  } catch {
+    return null;
+  }
+}
+
+function formatIssueSummary(prefix: string, reason: string, details: string | null): string {
+  if (!details) return `${prefix}: ${reason}`;
+  return `${prefix}: ${reason} (${details})`;
+}
+
+function summarizeNodeIssues(nodeStates: Record<string, NodeState>): NodeIssue[] {
+  const issues: NodeIssue[] = [];
+
+  for (const [nodeId, state] of Object.entries(nodeStates)) {
+    if (typeof state !== 'object' || state == null) continue;
+
+    if ('Failed' in state) {
+      issues.push({ nodeId, summary: `Failed: ${state.Failed.reason}` });
+      continue;
+    }
+    if ('Degraded' in state) {
+      const details = formatIssueDetails(state.Degraded.details);
+      issues.push({
+        nodeId,
+        summary: formatIssueSummary('Degraded', state.Degraded.reason, details),
+      });
+      continue;
+    }
+    if ('Recovering' in state) {
+      const details = formatIssueDetails(state.Recovering.details);
+      issues.push({
+        nodeId,
+        summary: formatIssueSummary('Recovering', state.Recovering.reason, details),
+      });
+      continue;
+    }
+    if ('Stopped' in state) {
+      issues.push({ nodeId, summary: `Stopped: ${state.Stopped.reason}` });
+      continue;
+    }
+  }
+
+  const priority = (issue: NodeIssue): number => {
+    if (issue.summary.startsWith('Failed:')) return 0;
+    if (issue.summary.startsWith('Degraded:')) return 1;
+    if (issue.summary.startsWith('Recovering:')) return 2;
+    if (issue.summary.startsWith('Stopped:')) return 3;
+    return 4;
+  };
+
+  return issues.sort((a, b) => priority(a) - priority(b) || a.nodeId.localeCompare(b.nodeId));
+}
+
 // Isolated uptime component that only re-renders itself every second
 const SessionUptime: React.FC<{ createdAt: string }> = React.memo(({ createdAt }) => {
   const [uptime, setUptime] = useState('');
@@ -614,6 +678,15 @@ const SessionInfoChip: React.FC<SessionInfoDisplayProps> = React.memo(({ session
   const sessionStatus = React.useMemo(() => computeSessionStatus(nodeStates), [nodeStates]);
   const statusColor = React.useMemo(() => getSessionStatusColor(sessionStatus), [sessionStatus]);
   const statusLabel = React.useMemo(() => getSessionStatusLabel(sessionStatus), [sessionStatus]);
+  const issues = React.useMemo(() => summarizeNodeIssues(nodeStates), [nodeStates]);
+  const issuesText = React.useMemo(
+    () =>
+      issues
+        .slice(0, 3)
+        .map((issue) => `${issue.nodeId}: ${issue.summary}`)
+        .join('\n'),
+    [issues]
+  );
 
   const [isExpanded, setIsExpanded] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -638,9 +711,17 @@ const SessionInfoChip: React.FC<SessionInfoDisplayProps> = React.memo(({ session
   return (
     <SessionChipContainer ref={containerRef}>
       <SKTooltip
-        content={`${displayName} (${shortSessionId(session.id)}) — click to ${
-          isExpanded ? 'collapse' : 'expand'
-        }`}
+        content={
+          <div style={{ maxWidth: 520 }}>
+            <div>
+              {displayName} ({shortSessionId(session.id)}) — click to{' '}
+              {isExpanded ? 'collapse' : 'expand'}
+            </div>
+            {issuesText && (
+              <div style={{ marginTop: 6, whiteSpace: 'pre-wrap', opacity: 0.9 }}>{issuesText}</div>
+            )}
+          </div>
+        }
         side="bottom"
       >
         <SessionChipButton
@@ -660,6 +741,14 @@ const SessionInfoChip: React.FC<SessionInfoDisplayProps> = React.memo(({ session
             <DetailsLabel>Status</DetailsLabel>
             <DetailsValue>{statusLabel}</DetailsValue>
           </DetailsRow>
+          {issuesText && (
+            <DetailsRow style={{ alignItems: 'flex-start' }}>
+              <DetailsLabel>Issues</DetailsLabel>
+              <DetailsValue style={{ whiteSpace: 'pre-wrap', overflow: 'visible' }}>
+                {issuesText}
+              </DetailsValue>
+            </DetailsRow>
+          )}
           <DetailsRow>
             <DetailsLabel>Start</DetailsLabel>
             <DetailsValue>{formatDateTime(session.created_at)}</DetailsValue>
@@ -699,6 +788,15 @@ const SessionItem: React.FC<SessionItemProps> = React.memo(
     const sessionStatus = React.useMemo(() => computeSessionStatus(nodeStates), [nodeStates]);
     const statusColor = React.useMemo(() => getSessionStatusColor(sessionStatus), [sessionStatus]);
     const statusLabel = React.useMemo(() => getSessionStatusLabel(sessionStatus), [sessionStatus]);
+    const issues = React.useMemo(() => summarizeNodeIssues(nodeStates), [nodeStates]);
+    const issuesText = React.useMemo(
+      () =>
+        issues
+          .slice(0, 3)
+          .map((issue) => `${issue.nodeId}: ${issue.summary}`)
+          .join('\n'),
+      [issues]
+    );
 
     const handleClick = React.useCallback(() => {
       onClick(session.id);
@@ -729,6 +827,12 @@ const SessionItem: React.FC<SessionItemProps> = React.memo(
                     <TooltipLabel>Status:</TooltipLabel>
                     <TooltipValue>{statusLabel}</TooltipValue>
                   </TooltipRow>
+                  {issuesText && (
+                    <TooltipRow style={{ alignItems: 'flex-start' }}>
+                      <TooltipLabel>Issues:</TooltipLabel>
+                      <TooltipValue style={{ whiteSpace: 'pre-wrap' }}>{issuesText}</TooltipValue>
+                    </TooltipRow>
+                  )}
                   <TooltipRow>
                     <TooltipLabel>Start:</TooltipLabel>
                     <TooltipValue>{formatDateTime(session.created_at)}</TooltipValue>

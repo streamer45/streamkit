@@ -325,12 +325,12 @@ describe('WebSocketService reconnection', () => {
       expect(session?.isConnected).toBe(true);
     });
 
-    it('should unsubscribe from session and clear it', () => {
+    it('should unsubscribe from session and keep cached session', () => {
       service.subscribeToSession('session-1');
       service.unsubscribeFromSession('session-1');
 
       const session = useSessionStore.getState().getSession('session-1');
-      expect(session).toBeUndefined();
+      expect(session?.isConnected).toBe(false);
     });
 
     it('should update all subscribed sessions on connection status change', () => {

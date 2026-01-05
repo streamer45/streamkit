@@ -104,6 +104,8 @@ skit-lt config='loadtest.toml' *args='':
 # Examples:
 # - `just lt`                           # runs `samples/loadtest/stress-oneshot.toml` by default
 # - `just lt stress-dynamic`            # runs `samples/loadtest/stress-dynamic.toml`
+# - `just lt stress-dynamic sessions=10` # shorthand for `--sessions 10`
+# - `just lt stress-dynamic --sessions 10`
 # - `just lt dynamic-tune-heavy --cleanup`
 # - `just lt samples/loadtest/ui-demo.toml`
 lt preset_or_path='stress-oneshot' *args='':
@@ -118,7 +120,21 @@ lt preset_or_path='stress-oneshot' *args='':
       echo "   - If passing a path, ensure the file exists"; \
       exit 1; \
     fi; \
-    just skit-lt "$cfg" {{args}}
+    sessions=""; \
+    set -- {{args}}; \
+    if [ $# -ge 1 ]; then \
+      case "$1" in \
+        sessions=*) sessions="${1#sessions=}"; shift;; \
+        [0-9]*) sessions="$1"; shift;; \
+      esac; \
+    fi; \
+    if [ -n "$sessions" ]; then \
+      case "$sessions" in \
+        ''|*[!0-9]*) echo "❌ sessions must be an integer (got: '$sessions')"; exit 1;; \
+      esac; \
+      set -- --sessions "$sessions" "$@"; \
+    fi; \
+    just skit-lt "$cfg" "$@"
 
 # --- Load test presets ---
 # Run the standard oneshot stress test config

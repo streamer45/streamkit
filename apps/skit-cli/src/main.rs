@@ -84,6 +84,11 @@ enum Commands {
         /// Override server URL from config
         #[arg(long)]
         server: Option<String>,
+        /// Override dynamic.session_count from config
+        ///
+        /// Useful for quickly scaling down presets like `stress-dynamic` on laptops.
+        #[arg(long)]
+        sessions: Option<usize>,
         /// Override test duration (seconds)
         #[arg(short, long)]
         duration: Option<u64>,
@@ -382,7 +387,7 @@ async fn main() {
                 std::process::exit(1);
             }
         },
-        Commands::LoadTest { config_path, config, server, duration, cleanup } => {
+        Commands::LoadTest { config_path, config, server, sessions, duration, cleanup } => {
             info!("Starting StreamKit load test");
 
             let config = match (config_path, config) {
@@ -397,7 +402,7 @@ async fn main() {
             };
 
             if let Err(e) =
-                streamkit_client::run_load_test(&config, server, duration, cleanup).await
+                streamkit_client::run_load_test(&config, server, sessions, duration, cleanup).await
             {
                 // Error already logged via tracing above
                 error!(error = %e, "Load test failed");

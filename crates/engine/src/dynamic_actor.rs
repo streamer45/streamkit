@@ -303,8 +303,22 @@ impl DynamicEngine {
 
         // Broadcast to all subscribers
         self.state_subscribers.retain(|subscriber| {
-            // If send fails, the subscriber has disconnected, so we remove it
-            subscriber.try_send(update.clone()).is_ok()
+            // Keep subscribers on transient backpressure (Full); remove only when Closed.
+            //
+            // For state updates we also try to deliver eventually: dropping a state transition
+            // (e.g. Running -> Recovering) can leave clients showing a stale "healthy" status.
+            match subscriber.try_send(update.clone()) {
+                Ok(()) => true,
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    let subscriber = subscriber.clone();
+                    let update = update.clone();
+                    tokio::spawn(async move {
+                        let _ = subscriber.send(update).await;
+                    });
+                    true
+                },
+                Err(mpsc::error::TrySendError::Closed(_)) => false,
+            }
         });
     }
 
@@ -362,8 +376,13 @@ impl DynamicEngine {
 
         // Broadcast to all subscribers
         self.stats_subscribers.retain(|subscriber| {
-            // If send fails, the subscriber has disconnected, so we remove it
-            subscriber.try_send(update.clone()).is_ok()
+            // Keep subscribers on transient backpressure (Full); remove only when Closed.
+            //
+            // Stats are high-frequency, best-effort updates; dropping an update is acceptable.
+            match subscriber.try_send(update.clone()) {
+                Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => true,
+                Err(mpsc::error::TrySendError::Closed(_)) => false,
+            }
         });
     }
 
@@ -463,10 +482,12 @@ impl DynamicEngine {
         };
 
         // 5. Spawn Node
-        let task_handle =
-            tokio::spawn(node.run(context).instrument(
-                tracing::info_span!("node_run", node.name = %node_id, node.kind = %kind),
-            ));
+        let task_handle = tokio::spawn(node.run(context).instrument(tracing::info_span!(
+            "node_run",
+            session.id = %self.session_id.as_deref().unwrap_or("<unknown>"),
+            node.name = %node_id,
+            node.kind = %kind
+        )));
         self.live_nodes
             .insert(node_id.to_string(), graph_builder::LiveNode { control_tx, task_handle });
         self.nodes_active_gauge.record(self.live_nodes.len() as u64, &[]);

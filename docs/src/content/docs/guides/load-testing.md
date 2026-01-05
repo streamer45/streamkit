@@ -30,6 +30,7 @@ Examples:
 
 - `just lt stress-oneshot`
 - `just lt oneshot-opus-transcode-fast`
+- `just lt stress-dynamic sessions=10` (or `just lt stress-dynamic --sessions 10`)
 - `just lt dynamic-tune-heavy --cleanup`
 
 ### Oneshot (HTTP batch pipelines)
