@@ -413,15 +413,22 @@ export const NodeStateIndicator: React.FC<NodeStateIndicatorProps> = ({
   nodeId,
   sessionId,
 }) => {
-  // Get live stats for error badge display
+  const [isTooltipOpen, setIsTooltipOpen] = React.useState(false);
+
+  // IMPORTANT: avoid subscribing to node stats while the tooltip is closed.
+  // Stats are high-frequency and would otherwise cause constant re-renders of all node indicators.
   const liveStats = useSessionStore(
     React.useCallback(
-      (s) => (nodeId && sessionId ? s.sessions.get(sessionId)?.nodeStats[nodeId] : undefined),
-      [nodeId, sessionId]
+      (s) =>
+        isTooltipOpen && nodeId && sessionId
+          ? s.sessions.get(sessionId)?.nodeStats[nodeId]
+          : undefined,
+      [isTooltipOpen, nodeId, sessionId]
     )
   );
+
   const stats = liveStats ?? propStats;
-  const hasErrors = stats && stats.errored > 0;
+  const hasErrors = isTooltipOpen && stats && stats.errored > 0;
 
   const color = getStateColor(state);
   const label = getStateLabel(state);
@@ -439,7 +446,7 @@ export const NodeStateIndicator: React.FC<NodeStateIndicatorProps> = ({
     );
 
   return (
-    <SKTooltip content={content} side="top">
+    <SKTooltip content={content} side="top" onOpenChange={setIsTooltipOpen}>
       <div
         className="nodrag"
         style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'help' }}

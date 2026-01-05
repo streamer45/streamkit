@@ -636,7 +636,7 @@ impl Shell {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if args.is_empty() {
             eprintln!(
-                "Usage: loadtest <config.toml> [--server <url>] [--duration <seconds>] [--cleanup]"
+                "Usage: loadtest <config.toml> [--server <url>] [--sessions <n>] [--duration <seconds>] [--cleanup]"
             );
             eprintln!("Example: loadtest samples/loadtest/stress-moq-peer.toml --duration 30");
             return Ok(());
@@ -654,6 +654,7 @@ impl Shell {
         }
 
         let mut server_override = None;
+        let mut sessions_override = None;
         let mut duration_override = None;
         let mut cleanup = false;
 
@@ -684,6 +685,20 @@ impl Shell {
                         return Ok(());
                     }
                 },
+                "--sessions" => {
+                    if i + 1 < args.len() {
+                        if let Ok(sessions) = args[i + 1].parse::<usize>() {
+                            sessions_override = Some(sessions);
+                            i += 2;
+                        } else {
+                            eprintln!("--sessions requires a numeric value");
+                            return Ok(());
+                        }
+                    } else {
+                        eprintln!("--sessions requires a value");
+                        return Ok(());
+                    }
+                },
                 "--cleanup" => {
                     cleanup = true;
                     i += 1;
@@ -701,6 +716,7 @@ impl Shell {
         match crate::load_test::run_load_test(
             config_path,
             server_override,
+            sessions_override,
             duration_override,
             cleanup,
         )

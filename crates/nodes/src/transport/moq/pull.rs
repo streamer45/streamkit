@@ -541,6 +541,8 @@ impl MoqPullNode {
         let mut current_group: Option<moq_lite::GroupConsumer> = None;
 
         let mut session_packet_count: u32 = 0;
+        let mut consecutive_cancels: u32 = 0;
+        let mut last_payload_at = tokio::time::Instant::now();
 
         // Stats tracking
         let node_name = context.output_sender.node_name().to_string();
@@ -601,6 +603,8 @@ impl MoqPullNode {
 
             match read_result {
                 Ok(Some(first_payload)) => {
+                    consecutive_cancels = 0;
+                    last_payload_at = tokio::time::Instant::now();
                     // Batching is disabled by default (batch_ms=0).
                     if self.config.batch_ms > 0 {
                         let mut batch = Vec::with_capacity(context.batch_size);
@@ -719,12 +723,30 @@ impl MoqPullNode {
                     return Ok(StreamEndReason::Natural);
                 },
                 Err(moq_lite::Error::Cancel) => {
+                    // moq_lite cancels groups when the producer advances and drops old groups.
+                    // This is expected with our "latest group" semantics under load: skip to the
+                    // next group rather than tearing down the entire WebTransport connection.
+                    consecutive_cancels = consecutive_cancels.saturating_add(1);
                     tracing::debug!(
                         session_packet_count,
                         total_packet_count = *total_packet_count,
-                        "Track read cancelled"
+                        consecutive_cancels,
+                        "Track read cancelled (skipping to next group)"
                     );
-                    return Ok(StreamEndReason::Reconnect);
+
+                    // Safety valve: if we see cancels for too long with no payloads, reconnect.
+                    if last_payload_at.elapsed() > Duration::from_secs(5)
+                        && consecutive_cancels >= 50
+                    {
+                        tracing::warn!(
+                            session_packet_count,
+                            total_packet_count = *total_packet_count,
+                            consecutive_cancels,
+                            elapsed_ms = last_payload_at.elapsed().as_millis(),
+                            "Excessive track cancels without payloads; reconnecting"
+                        );
+                        return Ok(StreamEndReason::Reconnect);
+                    }
                 },
                 Err(e) => {
                     tracing::error!(error = %e, session_packet_count, "Error reading from track");

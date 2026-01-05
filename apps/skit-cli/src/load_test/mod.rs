@@ -29,6 +29,7 @@ use crate::load_test::scenarios::{run_dynamic_scenario, run_mixed_scenario, run_
 pub async fn run_load_test(
     config_path: &str,
     server_override: Option<String>,
+    sessions_override: Option<usize>,
     duration_override: Option<u64>,
     cleanup: bool,
 ) -> Result<()> {
@@ -43,6 +44,19 @@ pub async fn run_load_test(
     if let Some(duration) = duration_override {
         config.test.duration_secs = duration;
     }
+    if let Some(sessions) = sessions_override {
+        if sessions == 0 {
+            anyhow::bail!("--sessions must be > 0");
+        }
+        match config.test.scenario {
+            Scenario::Dynamic | Scenario::Mixed => {
+                config.dynamic.session_count = sessions;
+            },
+            Scenario::OneShot => {
+                warn!("Ignoring --sessions because test.scenario=oneshot");
+            },
+        }
+    }
 
     config.validate()?;
 
@@ -50,6 +64,9 @@ pub async fn run_load_test(
     info!("Server: {}", config.server.url);
     info!("Scenario: {:?}", config.test.scenario);
     info!("Duration: {}s", config.test.duration_secs);
+    if matches!(config.test.scenario, Scenario::Dynamic | Scenario::Mixed) {
+        info!("Dynamic sessions: {}", config.dynamic.session_count);
+    }
 
     // Set up graceful shutdown handler
     let shutdown_token = tokio_util::sync::CancellationToken::new();

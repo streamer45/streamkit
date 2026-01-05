@@ -201,6 +201,9 @@ export class WebSocketService {
   }
 
   private handleSessionDestroyed(payload: SessionDestroyedPayload): void {
+    this.subscribedSessions.delete(payload.session_id);
+    useSessionStore.getState().clearSession(payload.session_id);
+    useNodeParamsStore.getState().resetSession(payload.session_id);
     useTelemetryStore.getState().clearSession(payload.session_id);
   }
 
@@ -350,7 +353,9 @@ export class WebSocketService {
 
   unsubscribeFromSession(sessionId: string): void {
     this.subscribedSessions.delete(sessionId);
-    useSessionStore.getState().clearSession(sessionId);
+    // Keep the session entry so the Monitor session list can display the latest known status
+    // even when a session is not actively selected/subscribed.
+    useSessionStore.getState().setConnected(sessionId, false);
     useNodeParamsStore.getState().resetSession(sessionId);
   }
 
