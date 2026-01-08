@@ -12,6 +12,16 @@ StreamKit is currently at **v0.1** (initial public release). This roadmap covers
 
 ---
 
+## What v1.0 means (north star)
+
+For v1.0, StreamKit is aiming to be:
+
+- **Secure-by-default**: built-in authentication suitable for real deployments (not just “behind a proxy”)
+- **Dynamic A/V over MoQ**: real-time audio + video pipelines over WebTransport/MoQ
+- **Timing-correct**: well-defined timestamp/duration semantics and **A/V sync** as a first-class requirement
+- **Basic compositing**: a “main + PiP” compositor (e.g., screen share + webcam) plus simple overlays (watermark/text/images)
+- **Stable interfaces**: clearly versioned HTTP/WS APIs, pipeline YAML, and plugin compatibility expectations
+
 ## What I'm optimizing for (right now)
 
 StreamKit is still a solo-driven project, so this roadmap is intentionally biased toward fundamentals:
@@ -21,7 +31,40 @@ StreamKit is still a solo-driven project, so this roadmap is intentionally biase
 - **Scalability**: repeatable load tests, measurable performance, operable deployments
 - **Capabilities**: new nodes/plugins are welcome, but they'll be prioritized by real use cases from the community
 
+## Already shipped (v0.1)
+
+These are in place today and will be iterated on (not “added from scratch”):
+
+- **Playwright E2E** + CI workflow (expand coverage over time)
+- **Load testing runner + presets** (curate canonical scenarios + track budgets)
+- **Observability baseline** (logs + OTLP metrics/traces + profiling helpers)
+- **RBAC permissions model** (roles + allowlists), even though authentication is not yet implemented
+
 ## Near-Term (v0.1 → v0.5)
+
+### Security & Auth (P0)
+
+- **Built-in authentication (JWT)** — First-class authn/authz for **HTTP + WebSocket control + WebTransport/MoQ**
+  - Local dev: **no auth on loopback** by default
+  - Real deployments: require auth when binding non-loopback (secure-by-default)
+  - StreamKit-managed keys by default (auto-generate, store securely, and support rotation)
+  - **Token issuance flow** for MoQ gateways (so users don’t need external tooling), compatible with the MoQ ecosystem token shape (root-scoped + publish/subscribe permissions)
+  - UX helpers (UI/CLI) for “copy/paste” publisher/watch URLs with tokens embedded where required by WebTransport today
+  - **No secret logging**, especially `?jwt=`-style tokens used by WebTransport today
+
+### Timing & A/V Sync (P0)
+
+- **Timing contract** — Define canonical semantics for packet timing (`timestamp_us`, `duration_us`) and how nodes/engines must preserve/transform it
+- **A/V sync** — Jitter/drift strategy, drop/late-frame policy, and regression tests (dynamic pipelines)
+- **Hang/MoQ alignment** — Clear mapping between StreamKit timing metadata and Hang/MoQ timestamps/groups
+
+### Dynamic Video over MoQ (VP9 MVP) (P0)
+
+- **Video packet types** — First-class video packets alongside audio, with explicit timing requirements
+- **VP9 baseline** — Real-time VP9 encode/decode path suitable for browser clients; **AV1 optional later**
+- **MoQ/Hang-first interop** — Start by interoperating cleanly with `@moq/hang`, then generalize to “MoQ in general”
+- **Compositor MVP (main + PiP)** — Two live video inputs → one composed output, plus simple overlays (watermark/text/images)
+- **Golden-path demo** — A canonical “screen share + webcam → PiP → watchers” dynamic pipeline sample
 
 ### Reliability & Developer Experience
 
@@ -29,12 +72,12 @@ StreamKit is still a solo-driven project, so this roadmap is intentionally biase
 - **API stabilization** — Stabilize HTTP/WebSocket APIs and schemas toward v1.0 with a clear deprecation story
 - **Better defaults** — Safer config defaults (limits, timeouts, permissions) that work well in self-hosted environments
 - **Docs + samples** — Expand "golden path" docs and sample pipelines so it's easy to try and easy to debug
-- **End-to-end tests (Playwright)** — Add canonical UI/API e2e flows (create session, edit graph, inspect metrics, export) and run them in CI
-- **Built-in authentication (optional)** — First-class authn/authz for the HTTP + WebSocket APIs (e.g., API keys and/or OIDC), with role assignment and audit-friendly logging
+- **End-to-end tests (Playwright)** — Expand canonical UI/API e2e flows and keep them running in CI
 
 ### Performance & Load Testing
 
-- **Load test suite** — Curate a few canonical load scenarios (oneshot, dynamic, mixed) and track budgets over time (p95/p99 latency, throughput, CPU/mem)
+- **Load test suite** — Curate canonical scenarios (oneshot, dynamic, mixed) and track budgets over time (p95/p99 latency, throughput, CPU/mem)
+- **Performance budgets** — Add “no-regression” budgets (at least for a few representative pipelines)
 - **Observability polish** — Make metrics/tracing consistent and production-friendly (dashboards that match docs, easier correlation from UI → logs)
 
 ### Capabilities (use-case driven)
@@ -46,8 +89,9 @@ StreamKit is still a solo-driven project, so this roadmap is intentionally biase
 
 ### Transports & Connectivity
 
-- **WebSocket transport nodes** — Subscriber/publisher/peer nodes for non-media packet streams and simpler "no-QUIC" deployments
+- **WebSocket transport nodes (non-media only)** — Subscriber/publisher/peer nodes for events/data/RPC-like patterns (not media)
 - **Non-media MoQ examples** — Canonical examples that use MoQ/WebTransport for non-audio streams (events, data, RPC-like patterns) as a WS alternative
+- **No WebSocket media transport planned** — If a browser-friendly non-MoQ fallback is needed, it will likely be WebRTC
 
 ### Plugin Ecosystem (capability multiplier)
 
@@ -64,6 +108,7 @@ StreamKit is still a solo-driven project, so this roadmap is intentionally biase
 
 - **TypeScript support in script nodes** — Compile `.ts` scripts at load time for type-safe pipeline logic
 - **UI code editor** — In-browser JavaScript/TypeScript editor with syntax highlighting and validation
+- **Compositor UI (basic)** — Dedicated scene/layer editor for main + PiP positioning and simple overlays (crop/transform/watermark)
 - **Admin/Manage section** — Dedicated UI area for plugins, permissions/roles, secrets/config, and operational controls (separate from pipeline design/monitor views)
 
 ### Stability & Polish
@@ -90,14 +135,13 @@ StreamKit is media/processing-focused, not "audio-only". As real use cases emerg
 - **OCR nodes/plugins** — Text extraction pipelines (likely plugin-backed initially)
 - **Event packets** — Structured events for routing/control (webhooks, metadata, detectors)
 
-### Video Support
+### Video Expansion
 
-StreamKit is audio-first today. Video support is a major milestone for v1.0:
+After the VP9 + compositor MVP is solid, expand video capabilities:
 
-- **Video packet types** — Extend core to handle video frames alongside audio
-- **Video codec plugins** — H.264, VP9, AV1 encoding/decoding
-- **Compositing nodes** — Video mixing, overlays, and transformations
-- **Container support** — MP4 and WebM muxing with video tracks
+- **More codecs/accelerators** — AV1, H.264, hardware acceleration options where possible
+- **Container support** — MP4 and WebM muxing with video tracks (beyond the initial WebM-focused PoC path)
+- **More compositing** — Multi-video compositing beyond PiP (layouts, grids, transitions)
 
 ### Advanced Transports
 
@@ -109,7 +153,7 @@ StreamKit is audio-first today. Video support is a major milestone for v1.0:
 
 ### Plugin System
 
-- ResourceManager integration for native plugins (unified model caching)
+- ResourceManager integration for native plugins (unified model caching) and broader adoption across plugins
 - Plugin API versioning and compatibility checks
 - Plugin-defined packet schemas/metadata ("virtual packet types") that surface in `/schema/packets` and the UI while flowing as `Custom(type_id)` at runtime
 - Exploration of WASM/Native API convergence
