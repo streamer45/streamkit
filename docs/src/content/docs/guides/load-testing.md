@@ -17,7 +17,7 @@ Use these when you want to:
 
 - Start the server: `just skit serve`
 - Load tests use the client binary: `just skit-cli -- lt <config>`
-- Some presets require a local MoQ relay at `http://localhost:4443`
+- Some presets require a local MoQ relay at `http://localhost:4443` (if your relay requires auth, set `jwt` in the MoQ node params or include `?jwt=<token>` in the `url`)
 
 ## Running Presets
 

@@ -7,6 +7,20 @@ description: REST endpoints for sessions, schemas, plugins, and oneshot processi
 
 Base URL (default): `http://127.0.0.1:4545`
 
+## Authentication
+
+When built-in auth is enabled, all `/api/v1/*` endpoints require authentication (except `/healthz` and `/health`).
+
+- Non-browser clients: `Authorization: Bearer <token>`
+- Browsers: log in via `/login` (StreamKit stores the JWT in an HttpOnly cookie)
+
+Example:
+
+```bash
+TOKEN="$(skit auth print-admin-token --raw)"
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:4545/api/v1/config
+```
+
 ## Health
 
 - `GET /healthz`

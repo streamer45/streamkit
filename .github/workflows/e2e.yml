@@ -65,6 +65,10 @@ jobs:
         working-directory: ./e2e
         run: bun run test
 
+      - name: Run E2E tests (auth enabled)
+        working-directory: ./e2e
+        run: E2E_AUTH=1 bun run test
+
       - name: Upload Playwright report
         uses: actions/upload-artifact@v4
         if: failure()

@@ -38,7 +38,7 @@ These are in place today and will be iterated on (not “added from scratch”):
 - **Playwright E2E** + CI workflow (expand coverage over time)
 - **Load testing runner + presets** (curate canonical scenarios + track budgets)
 - **Observability baseline** (logs + OTLP metrics/traces + profiling helpers)
-- **RBAC permissions model** (roles + allowlists), even though authentication is not yet implemented
+- **RBAC + built-in auth foundation** (roles/allowlists + JWT auth), with secure-by-default behavior on non-loopback binds
 
 ## Near-Term (v0.1 → v0.5)
 

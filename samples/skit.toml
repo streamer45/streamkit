@@ -66,6 +66,33 @@ allowed_origins = [
 #     "http://localhost:*",  # Keep for development
 # ]
 
+[auth]
+# Built-in JWT authentication for:
+# - HTTP API + Web UI (cookie or Authorization header)
+# - WebSocket control plane
+# - MoQ/WebTransport (via MoQ tokens; passed as ?jwt=)
+#
+# Modes:
+# - "auto" (default): disabled on loopback binds, enabled on non-loopback binds
+# - "enabled": always require auth
+# - "disabled": never require auth (NOT recommended outside localhost)
+mode = "auto"
+
+# Directory for auth state (keys, token metadata, revocations).
+# Persist/mount this path in Docker deployments.
+# state_dir = ".streamkit/auth"
+
+# Cookie name used by the Web UI (HttpOnly).
+# cookie_name = "skit_session"
+
+# API token TTL defaults (seconds).
+# api_default_ttl_secs = 86400   # 24 hours
+# api_max_ttl_secs = 2592000     # 30 days
+
+# MoQ token TTL defaults (seconds).
+# moq_default_ttl_secs = 3600    # 1 hour
+# moq_max_ttl_secs = 86400       # 1 day
+
 [log]
 # Enable console logging (stdout/stderr)
 console_enable = true
@@ -270,8 +297,8 @@ enabled = false
 # fallback_params = { model_dir = "models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17", language = "auto", num_threads = 4, execution_provider = "cpu" }
 
 [permissions]
-# Default role for unauthenticated requests
-# Options: "admin", "user", or any custom role defined below
+# Default role for unauthenticated requests (only when built-in auth is disabled)
+# Options: "admin", "user", "viewer", or any custom role defined below
 default_role = "admin"
 
 # Optional trusted HTTP header used to select a role (e.g. "x-role")
@@ -295,7 +322,7 @@ default_role = "admin"
 #
 # SECURITY NOTE: When defining roles in TOML, set boolean fields explicitly.
 # Some booleans default to `true` when omitted.
-# Built-in roles (admin, user) are defined in code with appropriate permissions.
+# Built-in roles (admin, user, viewer) are defined in code with appropriate permissions.
 # Custom roles defined here override the built-in ones.
 
 [permissions.roles.admin]

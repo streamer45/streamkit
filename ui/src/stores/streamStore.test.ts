@@ -61,6 +61,7 @@ describe('streamStore', () => {
       status: 'disconnected',
       connectionMode: 'session',
       serverUrl: '',
+      moqToken: '',
       inputBroadcast: 'input',
       outputBroadcast: 'output',
       enablePublish: true,
@@ -132,6 +133,13 @@ describe('streamStore', () => {
       setServerUrl('http://example.com:8080/moq');
 
       expect(useStreamStore.getState().serverUrl).toBe('http://example.com:8080/moq');
+    });
+
+    it('should set MoQ token', () => {
+      const { setMoqToken } = useStreamStore.getState();
+      setMoqToken('jwt-token-123');
+
+      expect(useStreamStore.getState().moqToken).toBe('jwt-token-123');
     });
 
     it('should set input broadcast', () => {

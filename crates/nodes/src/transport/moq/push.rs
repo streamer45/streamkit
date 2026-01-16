@@ -17,6 +17,10 @@ use streamkit_core::{
 #[serde(default)]
 pub struct MoqPushConfig {
     pub url: String,
+    /// Optional JWT for authenticated MoQ relays. When set, it is appended as `?jwt=...`.
+    ///
+    /// This is compatible with moq-relay and StreamKit's built-in MoQ auth.
+    pub jwt: Option<String>,
     pub broadcast: String,
     #[serde(default = "default_channels")]
     pub channels: u32,
@@ -48,6 +52,7 @@ impl Default for MoqPushConfig {
     fn default() -> Self {
         Self {
             url: String::new(),
+            jwt: None,
             broadcast: String::new(),
             channels: 2,
             group_duration_ms: default_group_duration_ms(),
@@ -85,15 +90,18 @@ impl ProcessorNode for MoqPushNode {
         let node_name = context.output_sender.node_name().to_string();
         state_helpers::emit_initializing(&context.state_tx, &node_name);
 
-        let url = match self.config.url.parse() {
+        let url = match super::parse_moq_url(&self.config.url, self.config.jwt.as_deref()) {
             Ok(url) => url,
             Err(e) => {
-                let err_msg = format!("Failed to parse MoQ URL '{}': {}", self.config.url, e);
-                state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
-                return Err(StreamKitError::Configuration(err_msg));
+                state_helpers::emit_failed(&context.state_tx, &node_name, e.to_string());
+                return Err(e);
             },
         };
-        tracing::info!(url = %self.config.url, broadcast = %self.config.broadcast, "MoqPushNode starting");
+        tracing::info!(
+            url = %super::redact_url_str_for_logs(&self.config.url),
+            broadcast = %self.config.broadcast,
+            "MoqPushNode starting"
+        );
         tracing::info!(
             group_duration_ms = self.config.group_duration_ms,
             initial_delay_ms = self.config.initial_delay_ms,

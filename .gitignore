@@ -50,6 +50,9 @@ samples/pipelines/user
 samples/audio/user/*
 !samples/audio/user/.gitkeep
 
+# StreamKit runtime state (keys/tokens/config caches)
+.streamkit
+
 # Audio samples - only keep opus/ogg formats
 samples/audio/system/*.wav
 samples/audio/system/*.flac

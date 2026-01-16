@@ -24,5 +24,7 @@ nodes:
     kind: transport::moq::publisher
     params:
       url: http://localhost:4443
+      # Optional: JWT for authenticated relays (appended as `?jwt=...`).
+      # jwt: "<token>"
       broadcast: input
     needs: pacer

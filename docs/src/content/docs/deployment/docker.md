@@ -18,6 +18,30 @@ docker run --rm \
   skit serve # optional: this is the image default
 ```
 
+### Authenticate (built-in auth)
+
+The official images bind to `0.0.0.0:4545` inside the container so published ports work. That means built-in auth is enabled by default (`auth.mode = "auto"`).
+
+Print the bootstrap admin token and paste it into the Web UI at `/login`:
+
+```bash
+docker exec <container> skit auth print-admin-token
+```
+
+### Local demo without login (Linux-only)
+
+If you want a frictionless demo (no login) and you’re running on **Linux**, you can run StreamKit with host networking and bind to loopback inside the container. In `auth.mode = "auto"`, this keeps built-in auth **disabled**:
+
+```bash
+TAG=v0.1.0 # replace with the latest release tag
+docker run --rm -d --name streamkit \
+  --network host \
+  -e SK_SERVER__ADDRESS=127.0.0.1:4545 \
+  ghcr.io/streamer45/streamkit:${TAG}
+```
+
+This mode is intended for local demos/dev only (it doesn’t work on Docker Desktop for macOS/Windows, and it changes the container isolation model).
+
 ## Demo Image (Batteries Included)
 
 StreamKit also publishes a `-demo` image intended for demos/evaluation. It bundles core plugins plus the models needed by the shipped sample pipelines, so it should work out of the box (but is much larger than the slim images).
@@ -28,6 +52,14 @@ docker run --rm \
   -p 127.0.0.1:4545:4545/udp \
   ghcr.io/streamer45/streamkit:${TAG}-demo
 ```
+
+> [!NOTE]
+> In Docker, StreamKit binds to `0.0.0.0` inside the container so published ports work. With `auth.mode=auto`, built-in auth is enabled by default.
+> To log in, print the bootstrap admin token and paste it into the Web UI at `/login`:
+>
+> ```bash
+> docker exec <container> skit auth print-admin-token --raw
+> ```
 
 If you want the OpenAI-powered sample pipelines, pass `OPENAI_API_KEY` without putting it directly in the command:
 
@@ -72,7 +104,7 @@ gdb -p 1
 > The official images ship with `/opt/streamkit/skit.toml` (see `docker-skit.toml` (CPU) / `docker-skit-gpu.toml` (GPU) in the repo). It binds to `0.0.0.0:4545` inside the container so published ports work, but you should publish/bind those ports to localhost (recommended) or otherwise firewall them.
 
 > [!CAUTION]
-> StreamKit does not currently implement authentication. Do not expose it directly to untrusted networks. Put it behind an auth layer and configure a trusted role header. See [Security](/guides/security/).
+> StreamKit ships with built-in authentication. Do not disable auth when exposing it to untrusted networks. See [Authentication](/guides/authentication/) and [Security](/guides/security/).
 
 ## Docker Compose
 
@@ -89,12 +121,17 @@ services:
     command: ["skit", "serve"]
     restart: unless-stopped
 
+    # Recommended: persist auth state (keys + token index) across restarts.
+    # volumes:
+    #   - streamkit-state:/opt/streamkit/.streamkit
+
     # Optional: persist dynamically loaded plugins
     # Note: use a named volume so plugins persist across restarts.
     # volumes:
     #   - streamkit-plugins:/opt/streamkit/plugins
 
 # volumes:
+#   streamkit-state:
 #   streamkit-plugins:
 ```
 
@@ -144,6 +181,7 @@ docker build -f Dockerfile.gpu -t streamkit:gpu .
 | `/opt/streamkit/models` | ML models (Whisper, Kokoro) |
 | `/opt/streamkit/plugins` | Plugin directory (default in official Docker images) |
 | `/opt/streamkit/.plugins` | Optional plugin directory if you set `SK_PLUGINS__DIRECTORY=/opt/streamkit/.plugins` |
+| `/opt/streamkit/.streamkit` | Auth state (keys, token index, bootstrap admin token) |
 | `/opt/streamkit/skit.toml` | Configuration file (default config shipped in the image) |
 
 ## Health Checks

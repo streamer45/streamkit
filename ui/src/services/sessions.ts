@@ -9,7 +9,7 @@
 import type { SessionInfo } from '@/types/types';
 import { getLogger } from '@/utils/logger';
 
-import { getApiUrl } from './base';
+import { fetchApi } from './base';
 
 const logger = getLogger('sessions');
 
@@ -29,10 +29,7 @@ interface CreateSessionResponse {
  * @returns A promise that resolves to an array of sessions
  */
 export async function listSessions(): Promise<SessionInfo[]> {
-  const apiUrl = getApiUrl();
-  const endpoint = `${apiUrl}/api/v1/sessions`;
-
-  const response = await fetch(endpoint, {
+  const response = await fetchApi('/api/v1/sessions', {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
@@ -56,9 +53,6 @@ export async function createSession(
   name: string | null,
   yaml: string
 ): Promise<CreateSessionResponse> {
-  const apiUrl = getApiUrl();
-  const endpoint = `${apiUrl}/api/v1/sessions`;
-
   logger.info('Creating session:', name || '(unnamed)');
 
   const request: CreateSessionRequest = {
@@ -66,7 +60,7 @@ export async function createSession(
     yaml,
   };
 
-  const response = await fetch(endpoint, {
+  const response = await fetchApi('/api/v1/sessions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

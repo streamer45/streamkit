@@ -71,7 +71,7 @@ just install-plugins
 StreamKit uses a TOML configuration file. By default `skit` reads `skit.toml` (or uses defaults if missing).
 
 > [!CAUTION]
-> StreamKit does not currently implement authentication. If you expose the server beyond localhost, put it behind an authenticating reverse proxy (nginx/Caddy/etc) and configure a trusted role header.
+> StreamKit ships with built-in authentication. If you expose the server beyond localhost, keep auth enabled (default in `auth.mode = "auto"`) and follow the [Authentication](/guides/authentication/) and [Security](/guides/security/) guides.
 
 ```toml
 [server]
@@ -85,7 +85,7 @@ keep_models_loaded = true
 max_memory_mb = 8192
 ```
 
-If you bind to a non-loopback address (e.g. `0.0.0.0:4545`), you must either configure a trusted role header (`[permissions].role_header`) behind an auth layer, or explicitly opt out with `[permissions].allow_insecure_no_auth = true` (unsafe).
+If you bind to a non-loopback address (e.g. `0.0.0.0:4545`), StreamKit enables built-in auth by default (`[auth].mode = "auto"`). If you disable built-in auth, you must configure a trusted role header (`[permissions].role_header`) behind an auth layer, or explicitly opt out with `[permissions].allow_insecure_no_auth = true` (unsafe).
 
 Environment variables override config file settings:
 

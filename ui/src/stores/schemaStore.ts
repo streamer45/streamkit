@@ -4,7 +4,7 @@
 
 import { create } from 'zustand';
 
-import { getApiUrl } from '@/services/base';
+import { fetchApi } from '@/services/base';
 import type { PacketTypeMeta } from '@/types/generated/api-types';
 import type { NodeDefinition } from '@/types/types';
 
@@ -36,10 +36,9 @@ export function ensureSchemasLoaded(): Promise<void> {
   if (inFlight) return inFlight;
 
   inFlight = (async () => {
-    const apiUrl = getApiUrl();
     const [typesRes, nodesRes] = await Promise.all([
-      fetch(`${apiUrl}/api/v1/schema/packets`),
-      fetch(`${apiUrl}/api/v1/schema/nodes`),
+      fetchApi('/api/v1/schema/packets'),
+      fetchApi('/api/v1/schema/nodes'),
     ]);
 
     if (!typesRes.ok) {
@@ -66,10 +65,9 @@ export function ensureSchemasLoaded(): Promise<void> {
 }
 
 export async function reloadSchemas(): Promise<void> {
-  const apiUrl = getApiUrl();
   const [typesRes, nodesRes] = await Promise.all([
-    fetch(`${apiUrl}/api/v1/schema/packets`),
-    fetch(`${apiUrl}/api/v1/schema/nodes`),
+    fetchApi('/api/v1/schema/packets'),
+    fetchApi('/api/v1/schema/nodes'),
   ]);
 
   if (!typesRes.ok) {

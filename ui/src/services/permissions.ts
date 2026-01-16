@@ -6,7 +6,7 @@ import { usePermissionStore, type Permissions } from '@/stores/permissionStore';
 import type { PermissionsInfo } from '@/types/generated/api-types';
 import { getLogger } from '@/utils/logger';
 
-import { getApiUrl } from './base';
+import { fetchApi } from './base';
 
 const logger = getLogger('permissions');
 
@@ -46,8 +46,7 @@ function convertPermissions(apiPerms: PermissionsInfo): Permissions {
  */
 export async function initializePermissions(): Promise<void> {
   try {
-    const apiUrl = getApiUrl();
-    const response = await fetch(`${apiUrl}/api/v1/permissions`, {
+    const response = await fetchApi('/api/v1/permissions', {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',

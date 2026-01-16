@@ -348,6 +348,7 @@ const StreamView: React.FC = () => {
     status,
     connectionMode,
     serverUrl,
+    moqToken,
     inputBroadcast,
     outputBroadcast,
     enablePublish,
@@ -361,6 +362,7 @@ const StreamView: React.FC = () => {
     activeSessionName,
     activePipelineName,
     setServerUrl,
+    setMoqToken,
     setInputBroadcast,
     setOutputBroadcast,
     setConnectionMode,
@@ -377,6 +379,7 @@ const StreamView: React.FC = () => {
       status: s.status,
       connectionMode: s.connectionMode,
       serverUrl: s.serverUrl,
+      moqToken: s.moqToken,
       inputBroadcast: s.inputBroadcast,
       outputBroadcast: s.outputBroadcast,
       enablePublish: s.enablePublish,
@@ -390,6 +393,7 @@ const StreamView: React.FC = () => {
       activeSessionName: s.activeSessionName,
       activePipelineName: s.activePipelineName,
       setServerUrl: s.setServerUrl,
+      setMoqToken: s.setMoqToken,
       setInputBroadcast: s.setInputBroadcast,
       setOutputBroadcast: s.setOutputBroadcast,
       setConnectionMode: s.setConnectionMode,
@@ -836,6 +840,18 @@ const StreamView: React.FC = () => {
                 value={serverUrl}
                 onChange={(e) => setServerUrl(e.target.value)}
                 placeholder="http://127.0.0.1:4545/moq"
+                disabled={status !== 'disconnected'}
+              />
+            </InputGroup>
+
+            <InputGroup>
+              <Label htmlFor="moq-token">MoQ Token (optional on localhost)</Label>
+              <Input
+                id="moq-token"
+                type="password"
+                value={moqToken}
+                onChange={(e) => setMoqToken(e.target.value)}
+                placeholder="Paste MoQ JWT (sent as ?jwt=...)"
                 disabled={status !== 'disconnected'}
               />
             </InputGroup>

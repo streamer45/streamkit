@@ -12,14 +12,17 @@ import { TooltipProvider } from './components/Tooltip';
 import { ThemeProvider } from './context/ThemeContext';
 import { ToastProvider } from './context/ToastContext';
 import Layout from './Layout';
+import { fetchAuthMe } from './services/auth';
 import { initializePermissions } from './services/permissions';
 import { ensureSchemasLoaded } from './stores/schemaStore';
 import { getBasePathname } from './utils/baseHref';
 import { getLogger } from './utils/logger';
 import ConvertView from './views/ConvertView';
 import DesignView from './views/DesignView';
+import LoginView from './views/LoginView';
 import MonitorView from './views/MonitorView';
 import StreamView from './views/StreamView';
+import TokensView from './views/TokensView';
 
 const logger = getLogger('App');
 
@@ -35,23 +38,46 @@ const queryClient = new QueryClient({
 });
 
 const App: React.FC = () => {
-  const [schemasLoaded, setSchemasLoaded] = useState(false);
+  const [appReady, setAppReady] = useState(false);
+  const [requiresLogin, setRequiresLogin] = useState(false);
 
   useEffect(() => {
-    // Initialize permissions and schemas in parallel
-    Promise.all([
-      initializePermissions().catch((err) => {
-        logger.error('Failed to initialize permissions:', err);
-      }),
-      ensureSchemasLoaded().catch((err) => {
-        logger.error('Failed to load schemas on startup:', err);
-      }),
-    ]).finally(() => {
-      setSchemasLoaded(true);
-    });
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const me = await fetchAuthMe();
+        if (cancelled) return;
+
+        if (me.auth_enabled && !me.authenticated) {
+          setRequiresLogin(true);
+          setAppReady(true);
+          return;
+        }
+      } catch (err) {
+        logger.error('Failed to check auth status:', err);
+      }
+
+      await Promise.all([
+        initializePermissions().catch((err) => {
+          logger.error('Failed to initialize permissions:', err);
+        }),
+        ensureSchemasLoaded().catch((err) => {
+          logger.error('Failed to load schemas on startup:', err);
+        }),
+      ]);
+
+      if (cancelled) return;
+      setRequiresLogin(false);
+      setAppReady(true);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  if (!schemasLoaded) {
+  if (!appReady) {
     return (
       <ThemeProvider>
         <div
@@ -77,12 +103,20 @@ const App: React.FC = () => {
             <TooltipProvider delayDuration={300} skipDelayDuration={200}>
               <BrowserRouter basename={getBasePathname()}>
                 <Routes>
-                  <Route path="/" element={<Layout />}>
+                  <Route
+                    path="/login"
+                    element={<LoginView onLoggedIn={() => setRequiresLogin(false)} />}
+                  />
+                  <Route
+                    path="/"
+                    element={requiresLogin ? <Navigate to="/login" replace /> : <Layout />}
+                  >
                     <Route index element={<Navigate to="/design" replace />} />
                     <Route path="design" element={<DesignView />} />
                     <Route path="monitor" element={<MonitorView />} />
                     <Route path="convert" element={<ConvertView />} />
                     <Route path="stream" element={<StreamView />} />
+                    <Route path="admin/tokens" element={<TokensView />} />
                   </Route>
                 </Routes>
               </BrowserRouter>

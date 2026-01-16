@@ -86,15 +86,31 @@ Each plugin in `plugins[]`:
 - `params` (object?): params for the warmup instance
 - `fallback_params` (object?): fallback if primary params fail (e.g., GPU → CPU)
 
-## `[permissions]`
+## `[auth]`
 
-Role-based access control. StreamKit does not implement authentication—use a reverse proxy or auth layer.
+Built-in JWT authentication for the HTTP API, WebSocket control plane, and MoQ/WebTransport.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `default_role` | string | `admin` | Role for unauthenticated requests |
+| `mode` | string | `auto` | `auto` disables auth on loopback and enables it on non-loopback; `enabled` always requires auth; `disabled` turns auth off |
+| `state_dir` | string | `.streamkit/auth` | Directory for auth state (keyring, token metadata, revocations, bootstrap admin token) |
+| `cookie_name` | string | `skit_session` | HttpOnly cookie name for browser sessions |
+| `api_default_ttl_secs` | int | `86400` | Default TTL for API tokens (seconds) |
+| `api_max_ttl_secs` | int | `2592000` | Maximum TTL for API tokens (seconds) |
+| `moq_default_ttl_secs` | int | `3600` | Default TTL for MoQ tokens (seconds) |
+| `moq_max_ttl_secs` | int | `86400` | Maximum TTL for MoQ tokens (seconds) |
+
+See [Authentication](/guides/authentication/) for bootstrap and login flows.
+
+## `[permissions]`
+
+Role-based access control (RBAC). When built-in auth is disabled, these rules apply to every request based on the resolved role.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `default_role` | string | `admin` | Role used when built-in auth is disabled |
 | `role_header` | string? | `null` | Trusted header for role selection (only behind a proxy) |
-| `allow_insecure_no_auth` | bool | `false` | Allow binding to a non-loopback address without a trusted role header (unsafe) |
+| `allow_insecure_no_auth` | bool | `false` | Allow binding to a non-loopback address with auth disabled and no trusted role header (unsafe) |
 | `max_concurrent_sessions` | int? | `null` | Global limit for dynamic sessions |
 | `max_concurrent_oneshots` | int? | `null` | Global limit for oneshot requests |
 | `roles` | map | see below | Role name → permissions |

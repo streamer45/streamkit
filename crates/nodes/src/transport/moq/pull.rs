@@ -21,6 +21,10 @@ use streamkit_core::{
 #[serde(default)]
 pub struct MoqPullConfig {
     pub url: String,
+    /// Optional JWT for authenticated MoQ relays. When set, it is appended as `?jwt=...`.
+    ///
+    /// This is compatible with moq-relay and StreamKit's built-in MoQ auth.
+    pub jwt: Option<String>,
     pub broadcast: String,
     /// Batch window in milliseconds. If > 0, after receiving a frame the node will
     /// wait up to this duration to collect additional frames before forwarding.
@@ -99,7 +103,7 @@ impl ProcessorNode for MoqPullNode {
     ) -> Result<streamkit_core::pins::PinUpdate, StreamKitError> {
         tracing::info!(
             node_id = %ctx.node_id,
-            url = %self.config.url,
+            url = %super::redact_url_str_for_logs(&self.config.url),
             broadcast = %self.config.broadcast,
             "MoqPullNode: Discovering tracks from broadcast catalog"
         );
@@ -145,7 +149,11 @@ impl ProcessorNode for MoqPullNode {
     async fn run(self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
         let node_name = context.output_sender.node_name().to_string();
         state_helpers::emit_initializing(&context.state_tx, &node_name);
-        tracing::info!(url = %self.config.url, broadcast = %self.config.broadcast, "MoqPullNode starting");
+        tracing::info!(
+            url = %super::redact_url_str_for_logs(&self.config.url),
+            broadcast = %self.config.broadcast,
+            "MoqPullNode starting"
+        );
         state_helpers::emit_running(&context.state_tx, &node_name);
 
         let mut total_packet_count = 0;
@@ -276,17 +284,12 @@ impl MoqPullNode {
     /// This is used during initialization to create output pins dynamically.
     async fn discover_tracks(&self) -> Result<Vec<moq_lite::Track>, StreamKitError> {
         tracing::info!(
-            url = %self.config.url,
+            url = %super::redact_url_str_for_logs(&self.config.url),
             broadcast = %self.config.broadcast,
             "Connecting to MoQ server to discover tracks"
         );
 
-        let url = self.config.url.parse().map_err(|e| {
-            StreamKitError::Configuration(format!(
-                "Failed to parse MoQ URL '{}': {}",
-                self.config.url, e
-            ))
-        })?;
+        let url = super::parse_moq_url(&self.config.url, self.config.jwt.as_deref())?;
 
         let client = super::shared_insecure_client()?;
 
@@ -424,12 +427,7 @@ impl MoqPullNode {
         context: &mut NodeContext,
         total_packet_count: &mut u32,
     ) -> Result<StreamEndReason, StreamKitError> {
-        let url = self.config.url.parse().map_err(|e| {
-            StreamKitError::Configuration(format!(
-                "Failed to parse MoQ URL '{}': {}",
-                self.config.url, e
-            ))
-        })?;
+        let url = super::parse_moq_url(&self.config.url, self.config.jwt.as_deref())?;
 
         let client = super::shared_insecure_client()?;
 

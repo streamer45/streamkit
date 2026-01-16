@@ -19,12 +19,19 @@ import { waitForHealth } from './health';
 const ROOT_DIR = path.resolve(import.meta.dirname, '../../..');
 const MAX_LOG_BYTES = 256 * 1024;
 
+function isTruthy(value: string | undefined): boolean {
+  if (!value) return false;
+  return value === '1' || value.toLowerCase() === 'true' || value.toLowerCase() === 'yes';
+}
+
 interface ServerInfo {
   process: ChildProcess;
   baseUrl: string;
   port: number;
   stdout: string;
   stderr: string;
+  authStateDir?: string;
+  adminToken?: string;
 }
 
 function appendBounded(buffer: string, chunk: string): string {
@@ -35,9 +42,55 @@ function appendBounded(buffer: string, chunk: string): string {
   return next.slice(next.length - MAX_LOG_BYTES);
 }
 
+async function waitForFile(filePath: string, timeoutMs: number = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    try {
+      const stat = fs.statSync(filePath);
+      if (stat.isFile() && stat.size > 0) {
+        return;
+      }
+    } catch {
+      // Ignore and keep polling
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+
+  throw new Error(`Timed out waiting for file: ${filePath}`);
+}
+
+async function readAdminToken(stateDir: string): Promise<string> {
+  const tokenPath = path.join(stateDir, 'admin.token');
+  await waitForFile(tokenPath);
+  const token = fs.readFileSync(tokenPath, 'utf8').trim();
+  if (!token) {
+    throw new Error(`Admin token file is empty: ${tokenPath}`);
+  }
+  return token;
+}
+
+function cleanupAuthStateDir(stateDir: string | undefined): void {
+  if (!stateDir) return;
+  if (isTruthy(process.env.E2E_KEEP_AUTH_STATE)) return;
+
+  try {
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  } catch {
+    // Best-effort cleanup
+  }
+}
+
 async function startServer(): Promise<ServerInfo> {
   const port = await findFreePort();
   const baseUrl = `http://127.0.0.1:${port}`;
+  const enableAuth = isTruthy(process.env.E2E_AUTH) || process.env.E2E_AUTH_MODE === 'enabled';
+  if (enableAuth) {
+    fs.mkdirSync(path.join(ROOT_DIR, 'target'), { recursive: true });
+  }
+  const authStateDir = enableAuth
+    ? fs.mkdtempSync(path.join(ROOT_DIR, 'target', 'e2e-auth-'))
+    : undefined;
 
   // Check if UI is built
   const uiDistPath = path.join(ROOT_DIR, 'ui/dist/index.html');
@@ -63,6 +116,12 @@ async function startServer(): Promise<ServerInfo> {
       ...process.env,
       SK_SERVER__ADDRESS: `127.0.0.1:${port}`,
       SK_LOG__FILE_ENABLE: 'false', // Avoid writing skit.log
+      ...(enableAuth
+        ? {
+            SK_AUTH__MODE: 'enabled',
+            SK_AUTH__STATE_DIR: authStateDir,
+          }
+        : {}),
       RUST_LOG: 'warn',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -114,16 +173,18 @@ async function startServer(): Promise<ServerInfo> {
       if (trimmedStdout) console.log(`\n[skit stdout]\n${trimmedStdout}\n`);
       if (trimmedStderr) console.error(`\n[skit stderr]\n${trimmedStderr}\n`);
     }
-    await stopServer({ process: serverProcess, baseUrl, port, stdout, stderr });
+    await stopServer({ process: serverProcess, baseUrl, port, stdout, stderr, authStateDir });
     throw error;
   }
 
-  return { process: serverProcess, baseUrl, port, stdout, stderr };
+  const adminToken = enableAuth && authStateDir ? await readAdminToken(authStateDir) : undefined;
+  return { process: serverProcess, baseUrl, port, stdout, stderr, authStateDir, adminToken };
 }
 
 function stopServer(serverInfo: ServerInfo): Promise<void> {
   return new Promise((resolve) => {
     if (serverInfo.process.killed || serverInfo.process.exitCode !== null) {
+      cleanupAuthStateDir(serverInfo.authStateDir);
       resolve();
       return;
     }
@@ -132,6 +193,7 @@ function stopServer(serverInfo: ServerInfo): Promise<void> {
 
     const onExit = () => {
       console.log('Server stopped.');
+      cleanupAuthStateDir(serverInfo.authStateDir);
       resolve();
     };
 
@@ -148,13 +210,18 @@ function stopServer(serverInfo: ServerInfo): Promise<void> {
         if (serverInfo.process.exitCode === null) {
           console.warn('Server did not exit after SIGKILL; continuing anyway.');
         }
+        cleanupAuthStateDir(serverInfo.authStateDir);
         resolve();
       }, 2000);
     }, 5000);
   });
 }
 
-async function runPlaywright(baseUrl: string, extraArgs: string[]): Promise<number> {
+async function runPlaywright(
+  baseUrl: string,
+  extraArgs: string[],
+  envOverrides: Record<string, string> = {}
+): Promise<number> {
   return new Promise((resolve) => {
     const args = ['playwright', 'test', ...extraArgs];
     console.log(`Running: bunx ${args.join(' ')}`);
@@ -164,6 +231,7 @@ async function runPlaywright(baseUrl: string, extraArgs: string[]): Promise<numb
       env: {
         ...process.env,
         E2E_BASE_URL: baseUrl,
+        ...envOverrides,
       },
       stdio: 'inherit',
     });
@@ -199,7 +267,11 @@ async function main(): Promise<void> {
 
   try {
     serverInfo = await startServer();
-    exitCode = await runPlaywright(serverInfo.baseUrl, playwrightArgs);
+    const envOverrides: Record<string, string> = {};
+    if (serverInfo.adminToken) {
+      envOverrides.E2E_ADMIN_TOKEN = serverInfo.adminToken;
+    }
+    exitCode = await runPlaywright(serverInfo.baseUrl, playwrightArgs, envOverrides);
   } catch (error) {
     console.error('Error:', error);
     exitCode = 1;

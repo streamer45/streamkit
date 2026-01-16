@@ -9,11 +9,24 @@
 //! here in core to avoid circular dependencies.
 
 use async_trait::async_trait;
+use std::fmt::Debug;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
 /// Opaque type for WebTransport session - actual type defined in moq-native
 pub type WebTransportSession = Box<dyn std::any::Any + Send>;
+
+/// Trait for MoQ auth permission checking.
+///
+/// This trait is implemented in the server crate with the full MoqAuthContext.
+/// Nodes can use this trait to check permissions without knowing the implementation details.
+pub trait MoqAuthChecker: Send + Sync + Debug {
+    /// Check if a broadcast name is allowed for subscribe.
+    fn can_subscribe(&self, broadcast: &str) -> bool;
+
+    /// Check if a broadcast name is allowed for publish.
+    fn can_publish(&self, broadcast: &str) -> bool;
+}
 
 /// Result of attempting to handle a MoQ connection
 #[derive(Debug)]
@@ -34,6 +47,10 @@ pub struct MoqConnection {
 
     /// Channel to send response back to gateway
     pub response_tx: tokio::sync::oneshot::Sender<MoqConnectionResult>,
+
+    /// Optional auth context for permission checking.
+    /// None when auth is disabled.
+    pub auth: Option<Arc<dyn MoqAuthChecker>>,
 }
 
 /// Gateway interface that nodes can use to register routes

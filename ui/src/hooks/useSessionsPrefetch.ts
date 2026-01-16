@@ -5,13 +5,12 @@
 import { useQuery } from '@tanstack/react-query';
 import { useEffect } from 'react';
 
-import { getApiUrl } from '@/services/base';
+import { fetchApi } from '@/services/base';
 import { useSessionStore } from '@/stores/sessionStore';
 import type { Pipeline, SessionInfo } from '@/types/types';
 
 async function fetchPipeline(sessionId: string): Promise<Pipeline> {
-  const apiUrl = getApiUrl();
-  const response = await fetch(`${apiUrl}/api/v1/sessions/${sessionId}/pipeline`);
+  const response = await fetchApi(`/api/v1/sessions/${sessionId}/pipeline`);
   if (!response.ok) {
     throw new Error(`Failed to fetch pipeline: ${response.statusText}`);
   }

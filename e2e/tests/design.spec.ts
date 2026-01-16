@@ -4,9 +4,12 @@
 
 import { test, expect } from '@playwright/test';
 
+import { ensureLoggedIn } from './auth-helpers';
+
 test.describe('Design View', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/design');
+    await ensureLoggedIn(page);
     // Wait for the design view to load
     await expect(page.getByTestId('design-view')).toBeVisible();
   });

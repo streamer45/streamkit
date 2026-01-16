@@ -28,6 +28,7 @@ No outputs.
 | `channels` | `integer (uint32)` | no | `2` | min: `0` |
 | `group_duration_ms` | `integer (uint64)` | no | `40` | Duration of each MoQ group in milliseconds.<br />Smaller groups = lower latency but more overhead.<br />Larger groups = higher latency but better efficiency.<br />Default: 40ms (2 Opus frames at 20ms each).<br />For real-time applications, use 20-60ms. For high-latency networks, use 100ms+.<br />min: `0` |
 | `initial_delay_ms` | `integer (uint64)` | no | `0` | Adds a timestamp offset (playout delay) so receivers can buffer before playback.<br /><br />This is especially helpful when subscribers are on higher-latency / higher-jitter links,<br />and the client begins playback as soon as it sees the first frame.<br /><br />Default: 0 (no added delay).<br />min: `0` |
+| `jwt` | `null | string` | no | `null` | Optional JWT for authenticated MoQ relays. When set, it is appended as `?jwt=...`.<br /><br />This is compatible with moq-relay and StreamKit's built-in MoQ auth. |
 | `url` | `string` | no | — | — |
 
 
@@ -61,6 +62,14 @@ No outputs.
       "format": "uint64",
       "minimum": 0,
       "type": "integer"
+    },
+    "jwt": {
+      "default": null,
+      "description": "Optional JWT for authenticated MoQ relays. When set, it is appended as `?jwt=...`.\n\nThis is compatible with moq-relay and StreamKit's built-in MoQ auth.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "url": {
       "default": "",

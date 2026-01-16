@@ -245,6 +245,7 @@ interface StreamState {
   status: ConnectionStatus;
   connectionMode: ConnectionMode;
   serverUrl: string;
+  moqToken: string;
   inputBroadcast: string;
   outputBroadcast: string;
 
@@ -278,6 +279,7 @@ interface StreamState {
 
   // Actions
   setServerUrl: (url: string) => void;
+  setMoqToken: (token: string) => void;
   setInputBroadcast: (broadcast: string) => void;
   setOutputBroadcast: (broadcast: string) => void;
   setStatus: (status: ConnectionStatus) => void;
@@ -311,6 +313,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
   status: 'disconnected',
   connectionMode: 'session',
   serverUrl: '',
+  moqToken: '',
   inputBroadcast: 'input',
   outputBroadcast: 'output',
   enablePublish: true,
@@ -336,6 +339,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
 
   // Simple setters
   setServerUrl: (url) => set({ serverUrl: url }),
+  setMoqToken: (token) => set({ moqToken: token }),
   setInputBroadcast: (broadcast) => set({ inputBroadcast: broadcast }),
   setOutputBroadcast: (broadcast) => set({ outputBroadcast: broadcast }),
   setStatus: (status) => set({ status }),
@@ -417,10 +421,15 @@ export const useStreamStore = create<StreamState>((set, get) => ({
 
     try {
       logger.info('Step 1: Creating connection to relay server');
+      const url = new URL(decision.trimmedServerUrl);
+      const jwt = get().moqToken.trim();
+      if (jwt) {
+        url.searchParams.set('jwt', jwt);
+      }
       // Create connection to relay server with auto-reconnect
       // Hang will automatically fetch certificate fingerprints from http://host:port/certificate.sha256
       attempt.connection = new Hang.Moq.Connection.Reload({
-        url: new URL(decision.trimmedServerUrl),
+        url,
         enabled: true,
       });
 

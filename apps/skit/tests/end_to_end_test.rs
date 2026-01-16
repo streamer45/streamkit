@@ -30,7 +30,7 @@ async fn start_test_server() -> Option<(SocketAddr, tokio::task::JoinHandle<()>)
 
     // Start server in background using the existing listener
     let server_handle = tokio::spawn(async move {
-        let (app, _state) = streamkit_server::server::create_app(Config::default());
+        let (app, _state) = streamkit_server::server::create_app(Config::default(), None);
         axum::serve(listener, app.into_make_service()).await.unwrap();
     });
 

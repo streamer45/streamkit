@@ -40,6 +40,16 @@ E2E_BASE_URL=http://localhost:4545 bun run test:only
 just e2e-external http://localhost:4545
 ```
 
+### External server with built-in auth enabled
+
+If the external server has built-in auth enabled, the auth E2E tests need an admin token.
+
+Options:
+
+- Set `E2E_ADMIN_TOKEN` explicitly, or
+- Set `E2E_AUTH_STATE_DIR` to the server's auth state directory (the tests will read `admin.token` from it), or
+- Use the default local state dir `.streamkit/auth` (the tests will try `../.streamkit/auth/admin.token` when running from `e2e/`).
+
 ## Running Against Vite Dev Server
 
 To test against the Vite development server (useful for debugging UI changes):
@@ -66,6 +76,7 @@ Both servers must be running for tests to pass.
 
 - `tests/design.spec.ts` - Design view tests (canvas, samples, YAML editor)
 - `tests/monitor.spec.ts` - Monitor view tests (session lifecycle)
+- `tests/auth.spec.ts` - Built-in auth flow tests (login + cookie + logout)
 
 ## Server Harness
 
@@ -82,6 +93,26 @@ Environment variables set by harness:
 - `SK_SERVER__ADDRESS` - Bind address
 - `SK_LOG__FILE_ENABLE=false` - Disable file logging
 - `RUST_LOG=warn` - Reduce log noise
+
+### Auth-enabled runs
+
+To run the E2E suite with StreamKit's built-in auth enabled:
+
+```bash
+just e2e-auth
+
+# Or directly:
+cd e2e
+E2E_AUTH=1 bun run test
+```
+
+When `E2E_AUTH=1` (or `E2E_AUTH_MODE=enabled`) is set, the harness:
+
+- Starts skit with `SK_AUTH__MODE=enabled`
+- Uses an isolated auth state directory under `target/`
+- Reads the generated bootstrap token from `admin.token` and exposes it to tests as `E2E_ADMIN_TOKEN`
+
+Set `E2E_KEEP_AUTH_STATE=1` to keep the temporary auth state directory for debugging.
 
 ## Scripts
 

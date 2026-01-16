@@ -4,14 +4,13 @@
 
 import type { PluginSummary } from '@/types/types';
 
-import { getApiUrl } from './base';
+import { fetchApi } from './base';
 
 export async function uploadPlugin(file: File): Promise<PluginSummary> {
   const formData = new FormData();
   formData.append('plugin', file, file.name);
 
-  const apiUrl = getApiUrl();
-  const response = await fetch(`${apiUrl}/api/v1/plugins`, {
+  const response = await fetchApi('/api/v1/plugins', {
     method: 'POST',
     body: formData,
   });
@@ -28,9 +27,8 @@ export async function deletePlugin(
   kind: string,
   options?: { keepFile?: boolean }
 ): Promise<PluginSummary> {
-  const apiUrl = getApiUrl();
   const query = options?.keepFile ? '?keep_file=true' : '';
-  const response = await fetch(`${apiUrl}/api/v1/plugins/${encodeURIComponent(kind)}${query}`, {
+  const response = await fetchApi(`/api/v1/plugins/${encodeURIComponent(kind)}${query}`, {
     method: 'DELETE',
   });
 

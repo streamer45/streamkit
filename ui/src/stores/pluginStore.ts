@@ -4,7 +4,7 @@
 
 import { create } from 'zustand';
 
-import { getApiUrl } from '@/services/base';
+import { fetchApi } from '@/services/base';
 import type { PluginSummary } from '@/types/types';
 
 type PluginState = {
@@ -39,8 +39,7 @@ export function ensurePluginsLoaded(): Promise<void> {
   if (isLoaded) return Promise.resolve();
   if (inFlight) return inFlight;
 
-  const apiUrl = getApiUrl();
-  inFlight = fetch(`${apiUrl}/api/v1/plugins`)
+  inFlight = fetchApi('/api/v1/plugins')
     .then((res) => {
       if (!res.ok) {
         throw new Error(`Failed to fetch plugins: ${res.status} ${res.statusText}`);
@@ -60,8 +59,7 @@ export function ensurePluginsLoaded(): Promise<void> {
 }
 
 export async function reloadPlugins(): Promise<void> {
-  const apiUrl = getApiUrl();
-  const res = await fetch(`${apiUrl}/api/v1/plugins`);
+  const res = await fetchApi('/api/v1/plugins');
   if (!res.ok) {
     throw new Error(`Failed to fetch plugins: ${res.status} ${res.statusText}`);
   }

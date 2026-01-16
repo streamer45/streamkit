@@ -17,6 +17,7 @@ mod pull;
 mod push;
 
 use std::sync::OnceLock;
+use url::Url;
 
 // Re-export public types
 pub use peer::{MoqPeerConfig, MoqPeerNode};
@@ -43,6 +44,53 @@ fn shared_insecure_client() -> Result<moq_native::Client, StreamKitError> {
         Ok(client) => Ok(client.clone()),
         Err(message) => Err(StreamKitError::Runtime(message.clone())),
     }
+}
+
+pub(super) fn redact_url_str_for_logs(raw: &str) -> String {
+    raw.parse::<Url>().map_or_else(
+        |_| raw.split(['?', '#']).next().unwrap_or(raw).to_string(),
+        |url| redact_url_for_logs(&url),
+    )
+}
+
+pub(super) fn redact_url_for_logs(url: &Url) -> String {
+    let mut url = url.clone();
+    url.set_query(None);
+    url.set_fragment(None);
+    url.to_string()
+}
+
+pub(super) fn parse_moq_url(raw: &str, jwt: Option<&str>) -> Result<Url, StreamKitError> {
+    let mut url: Url = raw.parse().map_err(|e| {
+        let redacted = redact_url_str_for_logs(raw);
+        StreamKitError::Configuration(format!("Failed to parse MoQ URL '{redacted}': {e}"))
+    })?;
+
+    let Some(jwt) = jwt else {
+        return Ok(url);
+    };
+
+    let jwt = jwt.trim();
+    if jwt.is_empty() {
+        return Err(StreamKitError::Configuration("MoQ jwt param must not be empty".to_string()));
+    }
+
+    let existing: Vec<(String, String)> = url
+        .query_pairs()
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .filter(|(k, _)| k != "jwt")
+        .collect();
+
+    {
+        let mut qp = url.query_pairs_mut();
+        qp.clear();
+        for (k, v) in existing {
+            qp.append_pair(&k, &v);
+        }
+        qp.append_pair("jwt", jwt);
+    }
+
+    Ok(url)
 }
 
 /// Registers the MoQ transport nodes.

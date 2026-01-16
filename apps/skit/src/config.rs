@@ -509,6 +509,89 @@ impl Default for ScriptConfig {
     }
 }
 
+/// Authentication mode for the server.
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, Default, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthMode {
+    /// Auto: disabled on loopback, enabled on non-loopback
+    #[default]
+    Auto,
+    /// Always require authentication
+    Enabled,
+    /// Disable authentication entirely (NOT recommended for production)
+    Disabled,
+}
+
+fn default_auth_state_dir() -> String {
+    ".streamkit/auth".to_string()
+}
+
+fn default_auth_cookie_name() -> String {
+    "skit_session".to_string()
+}
+
+const fn default_api_default_ttl() -> u64 {
+    86400 // 24 hours
+}
+
+const fn default_api_max_ttl() -> u64 {
+    2_592_000 // 30 days
+}
+
+const fn default_moq_default_ttl() -> u64 {
+    3600 // 1 hour
+}
+
+const fn default_moq_max_ttl() -> u64 {
+    86400 // 1 day
+}
+
+/// Authentication configuration for built-in JWT-based auth.
+#[derive(Deserialize, Serialize, Debug, Clone, JsonSchema)]
+pub struct AuthConfig {
+    /// Authentication mode (auto, enabled, disabled)
+    #[serde(default)]
+    pub mode: AuthMode,
+
+    /// Directory for auth state (keys, tokens). Default: ".streamkit/auth"
+    #[serde(default = "default_auth_state_dir")]
+    pub state_dir: String,
+
+    /// Cookie name for browser sessions. Default: "skit_session"
+    #[serde(default = "default_auth_cookie_name")]
+    pub cookie_name: String,
+
+    /// Default TTL for API tokens in seconds. Default: 86400 (24 hours)
+    #[serde(default = "default_api_default_ttl")]
+    pub api_default_ttl_secs: u64,
+
+    /// Maximum TTL for API tokens in seconds. Default: 2592000 (30 days)
+    #[serde(default = "default_api_max_ttl")]
+    pub api_max_ttl_secs: u64,
+
+    /// Default TTL for MoQ tokens in seconds. Default: 3600 (1 hour)
+    #[serde(default = "default_moq_default_ttl")]
+    pub moq_default_ttl_secs: u64,
+
+    /// Maximum TTL for MoQ tokens in seconds. Default: 86400 (1 day)
+    #[serde(default = "default_moq_max_ttl")]
+    pub moq_max_ttl_secs: u64,
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            mode: AuthMode::default(),
+            state_dir: default_auth_state_dir(),
+            cookie_name: default_auth_cookie_name(),
+            api_default_ttl_secs: default_api_default_ttl(),
+            api_max_ttl_secs: default_api_max_ttl(),
+            moq_default_ttl_secs: default_moq_default_ttl(),
+            moq_max_ttl_secs: default_moq_max_ttl(),
+        }
+    }
+}
+
 fn default_allowed_file_paths() -> Vec<String> {
     vec!["samples/**".to_string()]
 }
@@ -577,6 +660,9 @@ pub struct Config {
 
     #[serde(default)]
     pub script: ScriptConfig,
+
+    #[serde(default)]
+    pub auth: AuthConfig,
 }
 
 #[derive(Debug)]

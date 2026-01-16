@@ -9,7 +9,7 @@
 import { getLogger } from '@/utils/logger';
 import { canUseMseForMimeType } from '@/utils/mse';
 
-import { getApiUrl } from './base';
+import { fetchApi } from './base';
 
 const logger = getLogger('converter');
 
@@ -201,18 +201,14 @@ export async function convertFile(
     }
 
     // Determine the API URL
-    const apiUrl = getApiUrl();
-    const processEndpoint = `${apiUrl}/api/v1/process`;
-
     logger.info('Starting conversion:', {
-      endpoint: processEndpoint,
       fileName: mediaFile?.name || '(asset-based)',
       fileSize: mediaFile?.size || 0,
       pipelineLength: pipelineYaml.length,
     });
 
     // Make the request
-    const response = await fetch(processEndpoint, {
+    const response = await fetchApi('/api/v1/process', {
       method: 'POST',
       body: formData,
       signal,

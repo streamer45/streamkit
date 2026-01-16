@@ -73,10 +73,26 @@ just skit serve
 
 ## Verify
 
-Open [http://localhost:4545](http://localhost:4545) in your browser. You should see the StreamKit dashboard.
+Open [http://localhost:4545](http://localhost:4545) in your browser.
+
+If you see the login screen, StreamKit’s built-in auth is enabled (Docker binds to `0.0.0.0` inside the container). Print the bootstrap admin token and paste it into the UI:
+
+```bash
+docker exec streamkit skit auth print-admin-token
+```
+
+If you’re on **Linux** and want a frictionless demo (no login), you can run with host networking and bind to loopback inside the container. In `auth.mode = "auto"`, this keeps built-in auth **disabled**:
+
+```bash
+TAG=v0.1.0 # replace with the latest release tag
+docker run --rm -d --name streamkit \
+  --network host \
+  -e SK_SERVER__ADDRESS=127.0.0.1:4545 \
+  ghcr.io/streamer45/streamkit:${TAG}
+```
 
 > [!CAUTION]
-> StreamKit does not currently implement authentication. If you expose the server beyond localhost, put it behind an authenticating reverse proxy and configure roles via a trusted header.
+> StreamKit ships with built-in authentication. If you expose the server beyond localhost, keep auth enabled (default in `auth.mode = "auto"`) and follow the [Authentication](/guides/authentication/) and [Security](/guides/security/) guides.
 
 ## Run Your First Pipeline
 

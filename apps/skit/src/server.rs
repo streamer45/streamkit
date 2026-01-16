@@ -28,7 +28,7 @@ use std::time::Instant;
 use tower::limit::ConcurrencyLimitLayer;
 use tower::ServiceBuilder;
 use tower_http::{
-    cors::{AllowOrigin, Any, CorsLayer},
+    cors::{AllowHeaders, AllowOrigin, CorsLayer},
     set_header::SetResponseHeaderLayer,
     trace::{DefaultOnFailure, DefaultOnResponse, TraceLayer},
 };
@@ -90,6 +90,22 @@ async fn health_handler() -> impl IntoResponse {
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
     }))
+}
+
+/// Serve the public JWKS (JSON Web Key Set) for verifying StreamKit-issued JWTs.
+///
+/// Exposed at `/.well-known/jwks.json` when built-in auth is enabled.
+async fn jwks_handler(State(app_state): State<Arc<AppState>>) -> Response {
+    if !app_state.auth.is_enabled() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    let Some(key_provider) = app_state.auth.key_provider() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "Auth key provider not available".to_string())
+            .into_response();
+    };
+
+    Json(key_provider.jwks()).into_response()
 }
 
 /// Type alias for a boxed byte stream used in media processing
@@ -155,17 +171,117 @@ fn escape_html_attr(value: &str) -> String {
     out
 }
 
-fn normalized_base_path_for_html(app_state: &AppState) -> Option<String> {
-    app_state
-        .config
-        .server
-        .base_path
-        .as_deref()
+const BUILTIN_AUTH_ROLE_HEADER: &str = "x-streamkit-role";
+
+fn normalize_base_path(base_path: Option<&str>) -> Option<String> {
+    base_path
         .map(str::trim)
         .and_then(|p| if p.is_empty() { None } else { Some(p) })
         .map(|p| p.trim_end_matches('/'))
         .and_then(|p| if p == "/" { None } else { Some(p) })
         .map(|p| if p.starts_with('/') { p.to_string() } else { format!("/{p}") })
+}
+
+fn normalized_base_path_for_html(app_state: &AppState) -> String {
+    normalize_base_path(app_state.config.server.base_path.as_deref()).unwrap_or_default()
+}
+
+fn strip_base_path_prefix<'a>(path: &'a str, base_path: Option<&str>) -> &'a str {
+    let Some(base_path) = base_path else {
+        return path;
+    };
+
+    let base_path = base_path.trim().trim_end_matches('/');
+    if base_path.is_empty() || base_path == "/" {
+        return path;
+    }
+
+    // Normalize matching: config may specify base_path with or without a leading '/'.
+    if base_path.starts_with('/') {
+        let Some(rest) = path.strip_prefix(base_path) else {
+            return path;
+        };
+
+        if rest.is_empty() {
+            return "/";
+        }
+
+        // Only treat this as a base_path prefix if it ends on a boundary ("/" or exact match).
+        if rest.starts_with('/') {
+            return rest;
+        }
+
+        return path;
+    }
+
+    // base_path without leading slash: match against path after the initial '/'
+    if !path.starts_with('/') {
+        return path;
+    }
+
+    let Some(rest) = path[1..].strip_prefix(base_path) else {
+        return path;
+    };
+
+    if rest.is_empty() {
+        return "/";
+    }
+
+    // Only treat this as a base_path prefix if it ends on a boundary ("/" or exact match).
+    if rest.starts_with('/') {
+        rest
+    } else {
+        path
+    }
+}
+
+async fn auth_guard_middleware(
+    State(app_state): State<Arc<AppState>>,
+    mut req: axum::http::Request<Body>,
+    next: Next,
+) -> Response {
+    if !app_state.auth.is_enabled() {
+        return next.run(req).await;
+    }
+
+    let raw_path = req.uri().path();
+    let path = strip_base_path_prefix(raw_path, app_state.config.server.base_path.as_deref());
+
+    // Only guard API routes; static assets (UI) stay public and handle auth via /login.
+    if !path.starts_with("/api/") {
+        return next.run(req).await;
+    }
+
+    // Auth endpoints handle their own auth semantics (login/me/logout).
+    if path.starts_with("/api/v1/auth/") {
+        return next.run(req).await;
+    }
+
+    let auth_ctx = match crate::auth::validate_token_from_headers(
+        req.headers(),
+        &app_state.auth,
+        &app_state.config,
+        &app_state.config.permissions,
+    )
+    .await
+    {
+        Ok(ctx) => ctx,
+        Err((status, msg)) => return (status, msg).into_response(),
+    };
+
+    // Inject the role into a trusted header so existing handlers can use RBAC without refactors.
+    //
+    // SECURITY: Always overwrite any incoming header of the same name.
+    let Ok(role_value) = header::HeaderValue::from_str(&auth_ctx.role) else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Invalid role in token".to_string())
+            .into_response();
+    };
+    // Header name is static and guaranteed to be valid.
+    #[allow(clippy::expect_used)]
+    let header_name = header::HeaderName::from_static(BUILTIN_AUTH_ROLE_HEADER);
+    req.headers_mut().insert(header_name, role_value);
+
+    next.run(req).await
 }
 
 /// Best-effort Origin enforcement for browser security.
@@ -185,7 +301,8 @@ async fn origin_guard_middleware(
 ) -> Response {
     use axum::http::Method;
 
-    let path = req.uri().path();
+    let raw_path = req.uri().path();
+    let path = strip_base_path_prefix(raw_path, app_state.config.server.base_path.as_deref());
     let method = req.method().clone();
 
     let is_api = path.starts_with("/api/");
@@ -220,19 +337,44 @@ async fn origin_guard_middleware(
     next.run(req).await
 }
 
-fn create_cors_layer(config: &crate::config::CorsConfig) -> CorsLayer {
+fn create_cors_layer(
+    config: &crate::config::CorsConfig,
+    auth_enabled: bool,
+) -> Result<CorsLayer, String> {
     use axum::http::{HeaderValue, Method};
 
-    // Check for wildcard (allow all)
-    if config.allowed_origins.iter().any(|o| o == "*") {
-        info!("CORS configured to allow all origins (permissive mode)");
-        return CorsLayer::permissive();
+    let has_wildcard = config.allowed_origins.iter().any(|o| o == "*");
+
+    // CRITICAL: Wildcard origins not allowed with credentials (browsers reject this)
+    if auth_enabled && has_wildcard {
+        return Err(
+            "CORS allowed_origins='*' is incompatible with auth (cookies require explicit origins). \
+             Set allowed_origins to specific origins or disable auth.".to_string()
+        );
+    }
+
+    if has_wildcard {
+        info!("CORS configured to allow all origins (reflect Origin header)");
+        // When credentials are enabled, `Access-Control-Allow-Origin: *` is invalid.
+        // Mirror the request origin instead.
+        return Ok(CorsLayer::new()
+            .allow_origin(AllowOrigin::mirror_request())
+            .allow_methods([
+                Method::GET,
+                Method::POST,
+                Method::PUT,
+                Method::DELETE,
+                Method::OPTIONS,
+                Method::PATCH,
+            ])
+            .allow_headers(AllowHeaders::mirror_request())
+            .allow_credentials(true));
     }
 
     // If no origins specified, use default restrictive behavior
     if config.allowed_origins.is_empty() {
         info!("CORS configured with no allowed origins (most restrictive)");
-        return CorsLayer::new();
+        return Ok(CorsLayer::new());
     }
 
     // Build list of patterns for matching
@@ -240,6 +382,7 @@ fn create_cors_layer(config: &crate::config::CorsConfig) -> CorsLayer {
 
     info!(
         allowed_origins = ?patterns,
+        auth_enabled,
         "CORS configured with origin allowlist"
     );
 
@@ -252,7 +395,7 @@ fn create_cors_layer(config: &crate::config::CorsConfig) -> CorsLayer {
         patterns.iter().any(|pattern| origin_matches_pattern(origin_str, pattern))
     });
 
-    CorsLayer::new()
+    let mut layer = CorsLayer::new()
         .allow_origin(allow_origin)
         .allow_methods([
             Method::GET,
@@ -262,13 +405,36 @@ fn create_cors_layer(config: &crate::config::CorsConfig) -> CorsLayer {
             Method::OPTIONS,
             Method::PATCH,
         ])
-        .allow_headers(Any)
-        .expose_headers(Any)
+        // When credentials are enabled, wildcard headers (`*`) are invalid. Mirror the
+        // preflight request headers instead.
+        .allow_headers(AllowHeaders::mirror_request());
+
+    // Enable credentials for browser clients.
+    //
+    // NOTE: The UI always uses `credentials: 'include'` so cookie auth works without query params.
+    // In dev (Vite), the UI is served cross-origin and talks directly to the backend, so CORS must
+    // allow credentials even when auth is disabled (otherwise browsers will block responses).
+    layer = layer.allow_credentials(true);
+
+    Ok(layer)
+}
+
+fn cors_allowed_origins_are_loopback_only(origins: &[String]) -> bool {
+    if origins.is_empty() {
+        return false;
+    }
+
+    origins.iter().all(|pattern| {
+        origin_matches_pattern("http://localhost:80", pattern)
+            || origin_matches_pattern("http://127.0.0.1:80", pattern)
+            || origin_matches_pattern("https://localhost:443", pattern)
+            || origin_matches_pattern("https://127.0.0.1:443", pattern)
+    })
 }
 
 #[cfg(test)]
 mod cors_tests {
-    use super::origin_matches_pattern;
+    use super::{create_cors_layer, origin_matches_pattern};
 
     #[test]
     fn cors_wildcard_port_matches_localhost_port_only() {
@@ -286,6 +452,18 @@ mod cors_tests {
         assert!(origin_matches_pattern("https://example.com", "https://example.com"));
         assert!(!origin_matches_pattern("https://example.com:443", "https://example.com"));
         assert!(!origin_matches_pattern("https://example.com", "https://example.com:*"));
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn cors_layer_does_not_panic_when_credentials_enabled() {
+        let cors_config = crate::config::CorsConfig::default();
+        let layer = create_cors_layer(&cors_config, false).unwrap();
+
+        // `CorsLayer` validates its configuration when layered; this should not panic.
+        let _app = axum::Router::<()>::new()
+            .route("/", axum::routing::get(|| async { "ok" }))
+            .layer(layer);
     }
 }
 
@@ -388,16 +566,39 @@ struct FrontendConfig {
 }
 
 /// Axum handler to get frontend configuration
-async fn get_config_handler(State(app_state): State<Arc<AppState>>) -> impl IntoResponse {
-    #[cfg(not(feature = "moq"))]
-    let _ = &app_state;
+///
+/// Viewer role is denied - they cannot access server configuration.
+async fn get_config_handler(
+    State(app_state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    // Check auth and deny viewers
+    if app_state.auth.is_enabled() {
+        let auth_ctx = crate::auth::validate_token_from_headers(
+            &headers,
+            &app_state.auth,
+            &app_state.config,
+            &app_state.config.permissions,
+        )
+        .await?;
+
+        if auth_ctx.role == "viewer" {
+            return Err((StatusCode::FORBIDDEN, "Viewers cannot access config".to_string()));
+        }
+    } else {
+        // Auth disabled - still check role for viewer restriction
+        let (role, _) = crate::role_extractor::get_role_and_permissions(&headers, &app_state);
+        if role == "viewer" {
+            return Err((StatusCode::FORBIDDEN, "Viewers cannot access config".to_string()));
+        }
+    }
 
     let config = FrontendConfig {
         #[cfg(feature = "moq")]
         moq_gateway_url: app_state.config.server.moq_gateway_url.clone(),
     };
 
-    Json(config)
+    Ok(Json(config))
 }
 
 async fn list_plugins_handler(
@@ -591,17 +792,41 @@ async fn list_packet_types_handler() -> impl IntoResponse {
 }
 
 /// Axum handler to get MoQ WebTransport certificate fingerprints
+///
+/// Viewer role is denied - fingerprints are sensitive for MoQ connections.
 #[cfg(feature = "moq")]
 async fn get_moq_fingerprints_handler(
     State(app_state): State<Arc<AppState>>,
-) -> Result<impl IntoResponse, StatusCode> {
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    // Check auth and deny viewers
+    if app_state.auth.is_enabled() {
+        let auth_ctx = crate::auth::validate_token_from_headers(
+            &headers,
+            &app_state.auth,
+            &app_state.config,
+            &app_state.config.permissions,
+        )
+        .await?;
+
+        if auth_ctx.role == "viewer" {
+            return Err((StatusCode::FORBIDDEN, "Viewers cannot access fingerprints".to_string()));
+        }
+    } else {
+        // Auth disabled - still check role for viewer restriction
+        let (role, _) = crate::role_extractor::get_role_and_permissions(&headers, &app_state);
+        if role == "viewer" {
+            return Err((StatusCode::FORBIDDEN, "Viewers cannot access fingerprints".to_string()));
+        }
+    }
+
     if let Some(gateway) = &app_state.moq_gateway {
         let fingerprints = gateway.get_fingerprints().await;
         Ok(Json(serde_json::json!({
             "fingerprints": fingerprints
         })))
     } else {
-        Err(StatusCode::SERVICE_UNAVAILABLE)
+        Err((StatusCode::SERVICE_UNAVAILABLE, "MoQ gateway not available".to_string()))
     }
 }
 
@@ -1465,9 +1690,9 @@ async fn process_oneshot_pipeline_handler(
 
     // Enforce role-based access control for oneshot execution.
     //
-    // StreamKit does not implement authentication, but it does implement RBAC.
-    // Even for local demos, enforce the configured role/permissions so deployments
-    // can run safely behind a reverse proxy or other auth layer.
+    // Enforce RBAC for oneshot execution. When built-in auth is enabled, the request is first
+    // authenticated by `auth_guard_middleware`, which injects the resolved role into a trusted
+    // header so existing handlers can apply RBAC without refactors.
     let headers = req.headers().clone();
     let (role_name, perms) = crate::role_extractor::get_role_and_permissions(&headers, &app_state);
     if !perms.create_sessions {
@@ -1605,8 +1830,22 @@ async fn websocket_handler(
         }
     }
 
-    // Extract role name and permissions from headers
-    let (role_name, perms) = crate::role_extractor::get_role_and_permissions(&headers, &app_state);
+    // Require auth when enabled (cookie or Authorization header)
+    let (role_name, perms) = if app_state.auth.is_enabled() {
+        match crate::auth::validate_token_from_headers(
+            &headers,
+            &app_state.auth,
+            &app_state.config,
+            &app_state.config.permissions,
+        )
+        .await
+        {
+            Ok(ctx) => (ctx.role, ctx.permissions),
+            Err((status, msg)) => return (status, msg).into_response(),
+        }
+    } else {
+        crate::role_extractor::get_role_and_permissions(&headers, &app_state)
+    };
     ws.on_upgrade(move |socket| websocket::handle_websocket(socket, app_state, perms, role_name))
 }
 
@@ -1615,11 +1854,13 @@ async fn static_handler(
     State(app_state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     let raw_path = uri.path();
-    if raw_path.starts_with("/api/") {
+    let stripped_path =
+        strip_base_path_prefix(raw_path, app_state.config.server.base_path.as_deref());
+    if stripped_path.starts_with("/api/") {
         return StatusCode::NOT_FOUND.into_response();
     }
 
-    let path = raw_path.trim_start_matches('/');
+    let path = stripped_path.trim_start_matches('/');
 
     // If path is empty, serve index.html
     let path = if path.is_empty() { "index.html" } else { path };
@@ -1639,15 +1880,19 @@ async fn static_handler(
             if path == "index.html" { "no-cache" } else { "public, max-age=31536000, immutable" };
         headers.insert(header::CACHE_CONTROL, axum::http::HeaderValue::from_static(cache_control));
 
-        // Inject <base> tag into index.html if base_path is configured
+        // Inject a <base> tag into index.html for SPA routing.
+        //
+        // Vite builds use relative asset URLs (e.g. `./assets/...`). Without a `<base>` tag, those
+        // URLs resolve relative to the current route (e.g. `/admin/assets/...`), which breaks when
+        // users deep-link to multi-segment routes like `/admin/tokens`. Injecting `<base href="/">`
+        // (or `<base href="/<base_path>/">`) fixes this.
         if path == "index.html" {
-            if let Some(base_path) = normalized_base_path_for_html(app_state.as_ref()) {
-                let base_path = escape_html_attr(&base_path);
-                let html = String::from_utf8_lossy(&content.data);
-                let injected =
-                    html.replace("<head>", &format!("<head>\n    <base href=\"{base_path}/\">"));
-                return (headers, injected.into_bytes()).into_response();
-            }
+            let base_path = normalized_base_path_for_html(app_state.as_ref());
+            let base_path = escape_html_attr(&base_path);
+            let html = String::from_utf8_lossy(&content.data);
+            let injected =
+                html.replace("<head>", &format!("<head>\n    <base href=\"{base_path}/\">"));
+            return (headers, injected.into_bytes()).into_response();
         }
 
         (headers, content.data).into_response()
@@ -1673,16 +1918,12 @@ async fn static_handler(
             );
             headers.insert(header::CACHE_CONTROL, axum::http::HeaderValue::from_static("no-cache"));
 
-            // Inject <base> tag if base_path is configured
-            if let Some(base_path) = normalized_base_path_for_html(app_state.as_ref()) {
-                let base_path = escape_html_attr(&base_path);
-                let html = String::from_utf8_lossy(&content.data);
-                let injected =
-                    html.replace("<head>", &format!("<head>\n    <base href=\"{base_path}/\">"));
-                return (headers, injected.into_bytes()).into_response();
-            }
-
-            (headers, content.data).into_response()
+            let base_path = normalized_base_path_for_html(app_state.as_ref());
+            let base_path = escape_html_attr(&base_path);
+            let html = String::from_utf8_lossy(&content.data);
+            let injected =
+                html.replace("<head>", &format!("<head>\n    <base href=\"{base_path}/\">"));
+            (headers, injected.into_bytes()).into_response()
         } else {
             error!("FATAL: index.html not found in embedded assets!");
             (StatusCode::INTERNAL_SERVER_ERROR, "index.html not found").into_response()
@@ -1728,15 +1969,25 @@ async fn metrics_middleware(req: axum::http::Request<Body>, next: Next) -> Respo
 
 /// Creates the Axum application with all routes and middleware.
 ///
+/// # Arguments
+///
+/// * `config` - The server configuration
+/// * `auth` - Optional pre-initialized AuthState. If None, creates a disabled auth state.
+///
 /// # Panics
 ///
 /// Panics if the plugin manager fails to initialize. This can happen if:
 /// - Plugin directories cannot be created due to filesystem permissions
 /// - Plugin directories exist but are not accessible
+/// - CORS configuration is invalid (wildcard with auth enabled)
 ///
 /// Since this occurs during application initialization, a panic here is acceptable
-/// as the server cannot function without plugin support.
-pub fn create_app(config: Config) -> (Router, Arc<AppState>) {
+/// as the server cannot function without proper configuration.
+#[allow(clippy::expect_used)]
+pub fn create_app(
+    mut config: Config,
+    auth: Option<Arc<crate::auth::AuthState>>,
+) -> (Router, Arc<AppState>) {
     // --- Create the shared application state ---
     let (event_tx, _) = tokio::sync::broadcast::channel(128);
 
@@ -1838,12 +2089,23 @@ pub fn create_app(config: Config) -> (Router, Arc<AppState>) {
         Some(gateway)
     };
 
+    // Use provided auth state or create disabled auth
+    let auth = auth.unwrap_or_else(|| Arc::new(crate::auth::AuthState::disabled()));
+
+    // When built-in auth is enabled, treat the injected role header as the trusted role source.
+    //
+    // SECURITY: This header is overwritten by `auth_guard_middleware` for every API request.
+    if auth.is_enabled() {
+        config.permissions.role_header = Some(BUILTIN_AUTH_ROLE_HEADER.to_string());
+    }
+
     let app_state = Arc::new(AppState {
         engine,
         session_manager: Arc::new(tokio::sync::Mutex::new(SessionManager::default())),
         config: Arc::new(config),
         event_tx,
         plugin_manager,
+        auth,
         #[cfg(feature = "moq")]
         moq_gateway,
     });
@@ -1859,6 +2121,7 @@ pub fn create_app(config: Config) -> (Router, Arc<AppState>) {
     let mut router = Router::new()
         .route("/healthz", get(health_handler))
         .route("/health", get(health_handler))
+        .route("/.well-known/jwks.json", get(jwks_handler))
         .route("/api/v1/process", oneshot_route)
         .route(
             "/api/v1/plugins",
@@ -1912,7 +2175,13 @@ pub fn create_app(config: Config) -> (Router, Arc<AppState>) {
         router = router.route("/certificate.sha256", get(get_certificate_sha256_handler));
     }
 
-    let cors_layer = create_cors_layer(&app_state.config.server.cors);
+    // Add auth routes
+    router = router.nest("/api/v1/auth", crate::auth::auth_router());
+
+    // Configure CORS with auth enabled state
+    let auth_enabled = app_state.auth.is_enabled();
+    let cors_layer = create_cors_layer(&app_state.config.server.cors, auth_enabled)
+        .expect("CORS configuration error");
 
     let router = router.fallback(static_handler);
 
@@ -1938,6 +2207,7 @@ pub fn create_app(config: Config) -> (Router, Arc<AppState>) {
 
     let router = router
         .with_state(Arc::clone(&app_state))
+        .layer(middleware::from_fn_with_state(Arc::clone(&app_state), auth_guard_middleware))
         .layer(middleware::from_fn_with_state(Arc::clone(&app_state), origin_guard_middleware))
         .layer(ServiceBuilder::new().layer(
             TraceLayer::new_for_http()
@@ -1984,6 +2254,8 @@ fn start_moq_webtransport_acceptor(
         warn!("MoQ gateway not initialized, skipping WebTransport acceptor");
         return Ok(());
     };
+
+    let auth_state = Arc::clone(&app_state.auth);
 
     // Parse address for WebTransport (UDP will use the same port as HTTP/HTTPS)
     let addr: SocketAddr = config.server.address.parse()?;
@@ -2032,17 +2304,133 @@ fn start_moq_webtransport_acceptor(
                 // Accept connections in a loop
                 while let Some(request) = server.accept().await {
                     let gateway = Arc::clone(&gateway);
+                    let auth_state = Arc::clone(&auth_state);
 
                     tokio::spawn(async move {
                         match request {
                             moq_native::Request::WebTransport(wt_request) => {
-                                let path = wt_request.url().path().to_string();
+                                let url = wt_request.url();
+                                let path = url.path().to_string();
+
+                                // SECURITY: Never log the full URL (may contain jwt)
                                 debug!(path = %path, "Received WebTransport connection request");
+
+                                // Validate MoQ auth if enabled
+                                let moq_auth = if auth_state.is_enabled() {
+                                    // Extract jwt from query params
+                                    let jwt = url
+                                        .query_pairs()
+                                        .find(|(k, _)| k == "jwt")
+                                        .map(|(_, v)| v.to_string());
+
+                                    let Some(jwt) = jwt else {
+                                        warn!(path = %path, "MoQ auth failed: missing jwt parameter");
+                                        let _ = wt_request
+                                            .close(axum::http::StatusCode::UNAUTHORIZED)
+                                            .await;
+                                        return;
+                                    };
+
+                                    // Validate JWT
+                                    let claims = match auth_state.validate_moq_token(&jwt) {
+                                        Ok(c) => c,
+                                        Err(e) => {
+                                            warn!(path = %path, error = %e, "MoQ JWT validation failed");
+                                            let _ = wt_request
+                                                .close(axum::http::StatusCode::UNAUTHORIZED)
+                                                .await;
+                                            return;
+                                        },
+                                    };
+
+                                    // Check audience
+                                    if claims.aud != crate::auth::AUD_MOQ {
+                                        warn!(path = %path, expected = crate::auth::AUD_MOQ, actual = %claims.aud, "MoQ auth failed: wrong audience");
+                                        let _ = wt_request
+                                            .close(axum::http::StatusCode::UNAUTHORIZED)
+                                            .await;
+                                        return;
+                                    }
+
+                                    let token_hash = crate::auth::hash_token(&jwt);
+
+                                    // Enforce "tokens we mint" policy (parity with HTTP API auth).
+                                    let metadata_store = auth_state.token_metadata_store().cloned();
+                                    let Some(metadata_store) = metadata_store else {
+                                        warn!(path = %path, "MoQ auth failed: token metadata store not available");
+                                        let _ = wt_request
+                                            .close(axum::http::StatusCode::SERVICE_UNAVAILABLE)
+                                            .await;
+                                        return;
+                                    };
+
+                                    let meta = match metadata_store.get(&claims.jti).await {
+                                        Ok(Some(meta)) => meta,
+                                        Ok(None) => {
+                                            warn!(path = %path, jti = %claims.jti, "MoQ auth failed: token not recognized (not minted by this server)");
+                                            let _ = wt_request
+                                                .close(axum::http::StatusCode::UNAUTHORIZED)
+                                                .await;
+                                            return;
+                                        },
+                                        Err(e) => {
+                                            warn!(path = %path, error = %e, "MoQ auth failed: metadata store error");
+                                            let _ = wt_request
+                                                .close(axum::http::StatusCode::SERVICE_UNAVAILABLE)
+                                                .await;
+                                            return;
+                                        },
+                                    };
+
+                                    // Extra robustness: ensure the presented token matches the stored hash.
+                                    if meta.token_hash != token_hash {
+                                        warn!(path = %path, jti = %claims.jti, "MoQ auth failed: token hash mismatch");
+                                        let _ = wt_request
+                                            .close(axum::http::StatusCode::UNAUTHORIZED)
+                                            .await;
+                                        return;
+                                    }
+
+                                    if meta.revoked {
+                                        warn!(path = %path, jti = %claims.jti, "MoQ auth failed: token revoked");
+                                        let _ = wt_request
+                                            .close(axum::http::StatusCode::UNAUTHORIZED)
+                                            .await;
+                                        return;
+                                    }
+
+                                    // Check revocation
+                                    if auth_state.is_revoked(&token_hash) {
+                                        warn!(path = %path, "MoQ auth failed: token revoked");
+                                        let _ = wt_request
+                                            .close(axum::http::StatusCode::UNAUTHORIZED)
+                                            .await;
+                                        return;
+                                    }
+
+                                    // Verify root matches path and reduce permissions
+                                    match crate::auth::verify_moq_token(&claims, &path) {
+                                        Ok(ctx) => Some(Arc::new(ctx)
+                                            as Arc<
+                                                dyn streamkit_core::moq_gateway::MoqAuthChecker,
+                                            >),
+                                        Err(e) => {
+                                            warn!(path = %path, error = %e, "MoQ path verification failed");
+                                            let _ = wt_request
+                                                .close(axum::http::StatusCode::UNAUTHORIZED)
+                                                .await;
+                                            return;
+                                        },
+                                    }
+                                } else {
+                                    None
+                                };
 
                                 match wt_request.ok().await {
                                     Ok(session) => {
-                                        if let Err(e) =
-                                            gateway.accept_connection(session, path.clone()).await
+                                        if let Err(e) = gateway
+                                            .accept_connection(session, path.clone(), moq_auth)
+                                            .await
                                         {
                                             warn!(path = %path, error = %e, "Failed to route WebTransport connection");
                                         }
@@ -2086,18 +2474,134 @@ fn start_moq_webtransport_acceptor(
 /// - The Ctrl+C signal handler cannot be installed (critical OS failure)
 /// - The SIGTERM signal handler cannot be installed on Unix systems (critical OS failure)
 /// - The plugin manager fails to initialize (via `create_app`)
+#[allow(clippy::cognitive_complexity)]
 pub async fn start_server(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
-    let (app, app_state) = create_app(config.clone());
+    let addr: SocketAddr = config.server.address.parse()?;
+
+    // Determine if auth should be enabled based on config mode and bind address
+    let auth_enabled = match config.auth.mode {
+        crate::config::AuthMode::Auto => !addr.ip().is_loopback(),
+        crate::config::AuthMode::Enabled => true,
+        crate::config::AuthMode::Disabled => false,
+    };
+
+    // Deployment footgun: cookie-based auth without TLS.
+    //
+    // When TLS is disabled, session cookies are set without the `Secure` attribute, so browsers
+    // may send them over plain HTTP. This is unsafe on untrusted networks.
+    if auth_enabled && !config.server.tls {
+        warn!(
+            mode = ?config.auth.mode,
+            address = %addr,
+            "Auth is enabled but TLS is disabled; session cookies will be set without the Secure attribute. \
+             Enable TLS (server.tls=true) or terminate TLS in a trusted reverse proxy and ensure cookies are only used over HTTPS."
+        );
+    }
+
+    // Common migration footgun: deployments that previously relied on a reverse proxy setting a
+    // trusted role header may have `auth.mode=auto` and bind to a non-loopback address.
+    //
+    // In that case, built-in auth will turn on implicitly and override `permissions.role_header`
+    // (see `create_app`), which can break proxy-based auth unexpectedly.
+    if matches!(config.auth.mode, crate::config::AuthMode::Auto)
+        && auth_enabled
+        && config.permissions.role_header.is_some()
+    {
+        warn!(
+            mode = ?config.auth.mode,
+            address = %addr,
+            role_header = %config.permissions.role_header.as_deref().unwrap_or_default(),
+            "auth.mode=auto enabled built-in auth due to a non-loopback bind address, but permissions.role_header is set. \
+             Built-in auth overrides role_header and ignores reverse-proxy role headers. \
+             If you rely on proxy auth, set auth.mode=disabled."
+        );
+    }
+
+    // Validate CORS configuration early - fail if wildcard origins with auth enabled
+    let has_wildcard = config.server.cors.allowed_origins.iter().any(|o| o == "*");
+    if auth_enabled && has_wildcard {
+        return Err(
+            "CORS allowed_origins='*' is incompatible with auth (cookies require explicit origins). \
+             Set allowed_origins to specific origins or disable auth.".into()
+        );
+    }
+
+    // Common deploy footgun: auth enabled + localhost-only CORS allowlist.
+    //
+    // When auth is enabled, browser requests rely on cookie auth, which requires that the browser
+    // `Origin` be on the allowlist for mutating endpoints and the WebSocket control plane. If the
+    // server is reachable on a non-loopback address but the allowlist is still localhost-only,
+    // the UI will fail with 403.
+    if auth_enabled
+        && !addr.ip().is_loopback()
+        && cors_allowed_origins_are_loopback_only(&config.server.cors.allowed_origins)
+    {
+        warn!(
+            allowed_origins = ?config.server.cors.allowed_origins,
+            address = %addr,
+            "Auth is enabled, but server.cors.allowed_origins appears to be loopback-only; \
+             browser requests from non-local origins will be rejected. \
+             Configure [server.cors].allowed_origins for your deployment origin(s)."
+        );
+    }
+
+    // Initialize auth state
+    let auth = if auth_enabled {
+        info!(
+            mode = ?config.auth.mode,
+            state_dir = %config.auth.state_dir,
+            "Initializing authentication"
+        );
+        match crate::auth::AuthState::new(&config.auth, true).await {
+            Ok(state) => {
+                info!("Authentication enabled and initialized");
+                // Startup banner (no secrets): how to log in + verify tokens.
+                let scheme = if config.server.tls { "https" } else { "http" };
+                let base_path =
+                    normalize_base_path(config.server.base_path.as_deref()).unwrap_or_default();
+                let login_path = format!("{base_path}/login");
+                let ui_host = if addr.ip().is_unspecified() {
+                    format!("localhost:{}", addr.port())
+                } else {
+                    addr.to_string()
+                };
+
+                let token_path =
+                    std::path::PathBuf::from(&config.auth.state_dir).join("admin.token");
+                if token_path.exists() {
+                    info!(path = %token_path.display(), "Bootstrap admin token file");
+                } else {
+                    warn!(path = %token_path.display(), "Bootstrap admin token file missing");
+                }
+                info!("To print the bootstrap token: skit auth print-admin-token");
+                info!("Web UI login: {}://{}{}", scheme, ui_host, login_path);
+                info!("JWKS (public): {}://{}/.well-known/jwks.json", scheme, ui_host);
+                Arc::new(state)
+            },
+            Err(e) => {
+                return Err(format!("Failed to initialize authentication: {e}").into());
+            },
+        }
+    } else {
+        info!(
+            mode = ?config.auth.mode,
+            is_loopback = addr.ip().is_loopback(),
+            "Authentication disabled"
+        );
+        Arc::new(crate::auth::AuthState::disabled())
+    };
+
+    let (app, app_state) = create_app(config.clone(), Some(auth));
     #[cfg(not(feature = "moq"))]
     let _ = &app_state;
 
-    let addr: SocketAddr = config.server.address.parse()?;
-    if !addr.ip().is_loopback() && config.permissions.role_header.is_none() {
+    // Legacy role_header check - only applies when auth is disabled
+    if !auth_enabled && !addr.ip().is_loopback() && config.permissions.role_header.is_none() {
         if !config.permissions.allow_insecure_no_auth {
             return Err(format!(
-                "Refusing to start: server.address is '{addr}' (non-loopback) but permissions.role_header is not set. \
-                 StreamKit does not implement authentication; without a trusted auth layer, all requests fall back to SK_ROLE/default_role ('{}'). \
-                 Fix: put StreamKit behind an authenticating reverse proxy and set permissions.role_header, or (unsafe) set permissions.allow_insecure_no_auth = true to override.",
+                "Refusing to start: server.address is '{addr}' (non-loopback) but auth is disabled and permissions.role_header is not set. \
+                 Without built-in auth or a trusted auth layer, all requests fall back to SK_ROLE/default_role ('{}'). \
+                 Fix: enable auth (mode=enabled or mode=auto), put StreamKit behind an authenticating reverse proxy and set permissions.role_header, or (unsafe) set permissions.allow_insecure_no_auth = true to override.",
                 config.permissions.default_role
             )
             .into());
@@ -2106,7 +2610,7 @@ pub async fn start_server(config: &Config) -> Result<(), Box<dyn std::error::Err
             address = %addr,
             default_role = %config.permissions.default_role,
             allow_http_management = config.plugins.allow_http_management,
-            "Starting without a trusted role header on a non-loopback address; all requests fall back to SK_ROLE/default_role. \
+            "Starting without built-in auth or a trusted role header on a non-loopback address; all requests fall back to SK_ROLE/default_role. \
              This is unsafe unless the server is only reachable by trusted clients."
         );
     }

@@ -4,6 +4,8 @@
 
 import { test, expect, request } from '@playwright/test';
 
+import { ensureLoggedIn, getAuthHeaders } from './auth-helpers';
+
 test.describe('Monitor View - Session Lifecycle', () => {
   // Unique session name for this test run
   const testSessionName = `e2e-test-session-${Date.now()}`;
@@ -21,6 +23,10 @@ steps:
 
   test.beforeEach(async ({ page }) => {
     await page.goto('/monitor');
+    await ensureLoggedIn(page);
+    if (!page.url().includes('/monitor')) {
+      await page.goto('/monitor');
+    }
     await expect(page.getByTestId('monitor-view')).toBeVisible();
   });
 
@@ -28,7 +34,10 @@ steps:
     page,
     baseURL,
   }) => {
-    const apiContext = await request.newContext({ baseURL: baseURL! });
+    const apiContext = await request.newContext({
+      baseURL: baseURL!,
+      extraHTTPHeaders: getAuthHeaders(),
+    });
 
     try {
       // Step 1: Create session via API
@@ -80,7 +89,10 @@ steps:
     // Cleanup: ensure session is deleted even if test fails
     if (sessionId) {
       try {
-        const apiContext = await request.newContext({ baseURL: baseURL! });
+        const apiContext = await request.newContext({
+          baseURL: baseURL!,
+          extraHTTPHeaders: getAuthHeaders(),
+        });
         await apiContext.delete(`/api/v1/sessions/${sessionId}`);
         await apiContext.dispose();
       } catch {

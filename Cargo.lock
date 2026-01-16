@@ -2229,6 +2229,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "jsonwebtoken"
+version = "10.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c76e1c7d7df3e34443b3621b459b066a7b79644f059fc8b2db7070c825fd417e"
+dependencies = [
+ "aws-lc-rs",
+ "base64 0.22.1",
+ "getrandom 0.2.16",
+ "js-sys",
+ "serde",
+ "serde_json",
+ "signature",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4277,6 +4292,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "signature"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de"
+dependencies = [
+ "rand_core 0.6.4",
+]
+
+[[package]]
 name = "simd-adler32"
 version = "0.3.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4527,8 +4551,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "aws-lc-rs",
  "axum",
  "axum-server",
+ "base64 0.22.1",
  "bytes",
  "clap",
  "console-subscriber",
@@ -4536,11 +4562,15 @@ dependencies = [
  "figment",
  "futures",
  "futures-util",
+ "getrandom 0.3.4",
  "glob",
+ "hex",
  "http-body-util",
  "hyper",
  "jemalloc_pprof",
+ "jsonwebtoken",
  "mime_guess",
+ "moq-lite",
  "moq-native",
  "multer",
  "ogg",
@@ -4557,6 +4587,7 @@ dependencies = [
  "serde",
  "serde-saphyr",
  "serde_json",
+ "sha2",
  "streamkit-api",
  "streamkit-core",
  "streamkit-engine",
@@ -4565,6 +4596,7 @@ dependencies = [
  "streamkit-plugin-wasm",
  "sysinfo",
  "tempfile",
+ "thiserror 2.0.17",
  "tikv-jemallocator",
  "time",
  "tokio",

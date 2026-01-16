@@ -30,7 +30,7 @@ async fn start_test_server_with_base_path(
         let mut config = Config::default();
         config.server.base_path = Some(base_path);
 
-        let (app, _state) = streamkit_server::server::create_app(config);
+        let (app, _state) = streamkit_server::server::create_app(config, None);
         axum::serve(listener, app.into_make_service()).await.unwrap();
     });
 

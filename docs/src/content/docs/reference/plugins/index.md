@@ -14,9 +14,6 @@ curl http://localhost:4545/api/v1/plugins
 curl http://localhost:4545/api/v1/schema/nodes | jq '.[] | select(.kind | startswith("plugin::"))'
 ```
 
-> [!NOTE]
-> The second command requires `jq`.
-
 ## Official plugins (8)
 
 - [`plugin::native::helsinki`](./plugin-native-helsinki/) (original kind: `helsinki`)
