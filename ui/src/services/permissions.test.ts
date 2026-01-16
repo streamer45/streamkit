@@ -12,6 +12,10 @@ import { initializePermissions } from './permissions';
 // Mock getApiUrl to return a consistent test URL
 vi.mock('./base', () => ({
   getApiUrl: () => 'http://localhost:4545',
+  fetchApi: (path: string, options: RequestInit = {}) => {
+    const normalized = path.startsWith('/') ? path : `/${path}`;
+    return fetch(`http://localhost:4545${normalized}`, { ...options, credentials: 'include' });
+  },
 }));
 
 const DENY_ALL_PERMISSIONS = {
@@ -121,6 +125,7 @@ describe('permissions', () => {
         headers: {
           'Content-Type': 'application/json',
         },
+        credentials: 'include',
       });
     });
 

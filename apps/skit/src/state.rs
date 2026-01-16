@@ -8,6 +8,7 @@ use tokio::sync::{broadcast, Mutex};
 use streamkit_api::Event as ApiEvent;
 use streamkit_engine::Engine;
 
+use crate::auth::AuthState;
 use crate::config::Config;
 use crate::plugins::SharedUnifiedPluginManager;
 use crate::session::SessionManager;
@@ -22,6 +23,7 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub event_tx: broadcast::Sender<ApiEvent>,
     pub plugin_manager: SharedUnifiedPluginManager,
+    pub auth: Arc<AuthState>,
     #[cfg(feature = "moq")]
     pub moq_gateway: Option<Arc<MoqGateway>>,
 }

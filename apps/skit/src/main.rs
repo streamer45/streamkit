@@ -31,6 +31,7 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 use clap::Parser;
 
 mod assets;
+mod auth;
 mod cli;
 mod config;
 mod file_security;

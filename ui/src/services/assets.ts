@@ -11,7 +11,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AudioAsset } from '@/types/generated/api-types';
 import { getLogger } from '@/utils/logger';
 
-import { getApiUrl } from './base';
+import { fetchApi } from './base';
 
 const logger = getLogger('assets');
 
@@ -20,12 +20,9 @@ const logger = getLogger('assets');
  * @returns A promise that resolves to an array of audio assets
  */
 export async function listAudioAssets(): Promise<AudioAsset[]> {
-  const apiUrl = getApiUrl();
-  const endpoint = `${apiUrl}/api/v1/assets/audio`;
+  logger.info('Fetching audio assets');
 
-  logger.info('Fetching audio assets from:', endpoint);
-
-  const response = await fetch(endpoint, {
+  const response = await fetchApi('/api/v1/assets/audio', {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
@@ -54,15 +51,12 @@ export async function listAudioAssets(): Promise<AudioAsset[]> {
  * @returns A promise that resolves to the created audio asset
  */
 export async function uploadAudioAsset(file: File): Promise<AudioAsset> {
-  const apiUrl = getApiUrl();
-  const endpoint = `${apiUrl}/api/v1/assets/audio`;
-
   logger.info('Uploading audio asset:', file.name);
 
   const formData = new FormData();
   formData.append('file', file);
 
-  const response = await fetch(endpoint, {
+  const response = await fetchApi('/api/v1/assets/audio', {
     method: 'POST',
     body: formData,
   });
@@ -90,12 +84,9 @@ export async function uploadAudioAsset(file: File): Promise<AudioAsset> {
  * @returns A promise that resolves when the asset is deleted
  */
 export async function deleteAudioAsset(id: string): Promise<void> {
-  const apiUrl = getApiUrl();
-  const endpoint = `${apiUrl}/api/v1/assets/audio/${encodeURIComponent(id)}`;
-
   logger.info('Deleting audio asset:', id);
 
-  const response = await fetch(endpoint, {
+  const response = await fetchApi(`/api/v1/assets/audio/${encodeURIComponent(id)}`, {
     method: 'DELETE',
   });
 

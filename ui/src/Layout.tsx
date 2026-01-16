@@ -13,6 +13,7 @@ import { LayoutPresetButtons } from './components/LayoutPresetButtons';
 import { Button } from './components/ui/Button';
 import { useTheme, type ColorMode } from './context/ThemeContext';
 import { LAYOUT_PRESETS, useLayoutStore, type LayoutPreset } from './stores/layoutStore';
+import { usePermissionStore } from './stores/permissionStore';
 
 const LayoutContainer = styled.div`
   display: flex;
@@ -184,10 +185,13 @@ const ItemLabel = styled.span`
 const Main = styled.main`
   flex: 1;
   overflow: hidden;
+  min-width: 0;
+  min-height: 0;
 `;
 
 const Layout: React.FC = () => {
   const { colorMode, setColorMode } = useTheme();
+  const role = usePermissionStore((s) => s.role);
   const { currentPreset, setPreset } = useLayoutStore(
     useShallow((state) => ({
       currentPreset: state.currentPreset,
@@ -212,6 +216,7 @@ const Layout: React.FC = () => {
           <StyledNavLink to="/monitor">Monitor</StyledNavLink>
           <StyledNavLink to="/convert">Convert</StyledNavLink>
           <StyledNavLink to="/stream">Stream</StyledNavLink>
+          {role === 'admin' && <StyledNavLink to="/admin/tokens">Admin</StyledNavLink>}
         </NavLinks>
         <NavControls>
           <DesktopNavControls>

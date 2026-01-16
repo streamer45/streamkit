@@ -42,6 +42,14 @@ This installs:
 
 By default the installed config binds to `127.0.0.1:4545`. If you want to expose StreamKit on the network, update `server.address` (and consider putting it behind a reverse proxy).
 
+If you bind to a non-loopback address (e.g. `0.0.0.0:4545`), StreamKit enables built-in auth by default (`auth.mode = "auto"`). The bootstrap admin token is written to the auth state directory (recommended: `/var/lib/streamkit/auth/admin.token` for systemd installs).
+
+To print the bootstrap token:
+
+```bash
+sudo -u streamkit /opt/streamkit/skit --config /etc/streamkit/skit.toml auth print-admin-token
+```
+
 If you're using MoQ/WebTransport, that listener is QUIC/UDP on the **same port as** `[server].address`. A traditional HTTP reverse proxy (nginx/Caddy) will not handle the MoQ traffic natively; plan a QUIC/WebTransport-aware gateway or an L4 load balancer for UDP/QUIC, alongside your normal HTTP reverse proxy for the UI/API.
 
 ## Manage the service

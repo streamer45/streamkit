@@ -25,7 +25,7 @@ Both plugin types are uploaded via `POST /api/v1/plugins` (multipart field name 
 Runtime plugin upload is powerful and dangerous:
 
 - Native plugins are arbitrary code execution in the server process.
-- StreamKit does not implement authentication; use an authenticating reverse proxy and a trusted role header for access control.
+- Treat runtime plugin upload/delete as an admin-only feature: use built-in authentication (recommended) or a trusted reverse proxy + role header for access control.
 - HTTP plugin upload/delete is globally disabled by default. To enable it, set `[plugins].allow_http_management = true` and ensure only trusted callers have the `load_plugins` / `delete_plugins` permissions.
 
 See the [Security guide](/guides/security/) for recommended deployment patterns.

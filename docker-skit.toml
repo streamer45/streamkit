@@ -17,6 +17,12 @@ max_body_size = 104857600
 # Override with SK_SERVER__MOQ_GATEWAY_URL env var for remote deployments
 moq_gateway_url = "http://127.0.0.1:4545/moq"
 
+[auth]
+# Built-in authentication is enabled by default when binding non-loopback addresses (auth.mode=auto).
+mode = "auto"
+# Keep auth state under /opt/streamkit so it's easy to persist via a single volume mount.
+state_dir = "/opt/streamkit/.streamkit/auth"
+
 [plugins]
 directory = "/opt/streamkit/plugins"
 
@@ -41,8 +47,7 @@ keep_models_loaded = true
 enabled = false
 
 [permissions]
+# NOTE: When built-in auth is enabled, unauthenticated requests are rejected and `default_role`
+# is not used. This only applies when auth is disabled.
 default_role = "user"
-# Docker containers must bind to 0.0.0.0 for published ports to work.
-# This is only safe when the published ports are bound to localhost (recommended),
-# e.g. `-p 127.0.0.1:4545:4545/tcp -p 127.0.0.1:4545:4545/udp`, or otherwise firewalled.
-allow_insecure_no_auth = true
+# allow_insecure_no_auth = true # Unsafe: only enable if you intentionally disable auth on 0.0.0.0

@@ -25,6 +25,8 @@ nodes:
     kind: transport::moq::publisher
     params:
       url: http://localhost:4443
+      # Optional: JWT for authenticated relays (appended as `?jwt=...`).
+      # jwt: "<token>"
       broadcast: input
     needs: pacer
 
@@ -32,6 +34,8 @@ nodes:
     kind: transport::moq::subscriber
     params:
       url: http://localhost:4443
+      # Optional: JWT for authenticated relays (appended as `?jwt=...`).
+      # jwt: "<token>"
       broadcast: input
   decoder:
     kind: audio::opus::decoder
@@ -48,6 +52,8 @@ nodes:
     kind: transport::moq::publisher
     params:
       url: http://localhost:4443
+      # Optional: JWT for authenticated relays (appended as `?jwt=...`).
+      # jwt: "<token>"
       broadcast: output
     needs: encoder
 name: MoQ Transcoder (Self-Contained)

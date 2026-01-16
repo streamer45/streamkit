@@ -9,6 +9,20 @@ description: Auto-generated configuration reference from schema and defaults
 
 This page is auto-generated from the server's configuration schema and `Config::default()`. For a human-friendly guide and examples, see [Configuration](./configuration/).
 
+## `[auth]`
+
+Authentication configuration for built-in JWT-based auth.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `api_default_ttl_secs` | integer (uint64) | `86400` | Default TTL for API tokens in seconds. Default: 86400 (24 hours) |
+| `api_max_ttl_secs` | integer (uint64) | `2592000` | Maximum TTL for API tokens in seconds. Default: 2592000 (30 days) |
+| `cookie_name` | string | `skit_session` | Cookie name for browser sessions. Default: "skit_session" |
+| `mode` | string | `auto` | Authentication mode for the server. |
+| `moq_default_ttl_secs` | integer (uint64) | `3600` | Default TTL for MoQ tokens in seconds. Default: 3600 (1 hour) |
+| `moq_max_ttl_secs` | integer (uint64) | `86400` | Maximum TTL for MoQ tokens in seconds. Default: 86400 (1 day) |
+| `state_dir` | string | `.streamkit/auth` | Directory for auth state (keys, tokens). Default: ".streamkit/auth" |
+
 ## `[engine]`
 
 Engine configuration for packet processing and buffering.
@@ -41,8 +55,8 @@ Permission configuration section for skit.toml.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `allow_insecure_no_auth` | boolean | `false` | Allow starting the server on a non-loopback address without a trusted role header. StreamKit does not implement authentication; without `role_header`, all requests fall back to `SK_ROLE`/`default_role`. Binding to a non-loopback address without a trusted auth layer is unsafe and the server will refuse to start unless this flag is set. |
-| `default_role` | string | `admin` | Default role for unauthenticated requests Note: StreamKit does not implement authentication by itself; this value becomes the effective role for any request that is not assigned a role by an external auth layer. For production deployments, set this to a least-privileged role and put an auth layer (or reverse proxy) in front of the server. |
+| `allow_insecure_no_auth` | boolean | `false` | Allow starting the server on a non-loopback address without built-in auth or a trusted role header. This only applies when built-in auth is disabled. This is unsafe: all requests fall back to `SK_ROLE`/`default_role`. The server refuses to start in this configuration unless this flag is set. |
+| `default_role` | string | `admin` | Default role for requests without an authenticated role When built-in auth is disabled, this becomes the effective role for requests that are not assigned a role via a trusted role header or `SK_ROLE`. For production deployments, prefer enabling built-in auth (`[auth].mode`) or running behind an authenticating reverse proxy that sets `[permissions].role_header`. |
 | `max_concurrent_oneshots` | integer | null (uint) | `null` | Maximum concurrent oneshot pipelines (global limit) None = unlimited |
 | `max_concurrent_sessions` | integer | null (uint) | `null` | Maximum concurrent dynamic sessions (global limit, applies to all users) None = unlimited |
 | `role_header` | null | string | `null` | Optional trusted HTTP header used to select a role (e.g. "x-role" or "x-streamkit-role"). If unset, StreamKit ignores role headers entirely and uses `SK_ROLE`/`default_role`. Security note: Only enable this when running behind a trusted reverse proxy or auth layer that (a) authenticates the caller and (b) strips any incoming header with the same name before setting it. |
@@ -185,6 +199,75 @@ Telemetry and observability configuration (OpenTelemetry, tokio-console).
         "methods"
       ],
       "type": "object"
+    },
+    "AuthConfig": {
+      "description": "Authentication configuration for built-in JWT-based auth.",
+      "properties": {
+        "api_default_ttl_secs": {
+          "default": 86400,
+          "description": "Default TTL for API tokens in seconds. Default: 86400 (24 hours)",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "api_max_ttl_secs": {
+          "default": 2592000,
+          "description": "Maximum TTL for API tokens in seconds. Default: 2592000 (30 days)",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cookie_name": {
+          "default": "skit_session",
+          "description": "Cookie name for browser sessions. Default: \"skit_session\"",
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/$defs/AuthMode",
+          "default": "auto",
+          "description": "Authentication mode (auto, enabled, disabled)"
+        },
+        "moq_default_ttl_secs": {
+          "default": 3600,
+          "description": "Default TTL for MoQ tokens in seconds. Default: 3600 (1 hour)",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "moq_max_ttl_secs": {
+          "default": 86400,
+          "description": "Maximum TTL for MoQ tokens in seconds. Default: 86400 (1 day)",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state_dir": {
+          "default": ".streamkit/auth",
+          "description": "Directory for auth state (keys, tokens). Default: \".streamkit/auth\"",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "AuthMode": {
+      "description": "Authentication mode for the server.",
+      "oneOf": [
+        {
+          "const": "auto",
+          "description": "Auto: disabled on loopback, enabled on non-loopback",
+          "type": "string"
+        },
+        {
+          "const": "enabled",
+          "description": "Always require authentication",
+          "type": "string"
+        },
+        {
+          "const": "disabled",
+          "description": "Disable authentication entirely (NOT recommended for production)",
+          "type": "string"
+        }
+      ]
     },
     "CorsConfig": {
       "description": "CORS configuration for cross-origin requests.",
@@ -496,12 +579,12 @@ Telemetry and observability configuration (OpenTelemetry, tokio-console).
       "properties": {
         "allow_insecure_no_auth": {
           "default": false,
-          "description": "Allow starting the server on a non-loopback address without a trusted role header.\n\nStreamKit does not implement authentication; without `role_header`, all requests fall back to\n`SK_ROLE`/`default_role`. Binding to a non-loopback address without a trusted auth layer is\nunsafe and the server will refuse to start unless this flag is set.",
+          "description": "Allow starting the server on a non-loopback address without built-in auth or a trusted role\nheader.\n\nThis only applies when built-in auth is disabled.\n\nThis is unsafe: all requests fall back to `SK_ROLE`/`default_role`. The server refuses to\nstart in this configuration unless this flag is set.",
           "type": "boolean"
         },
         "default_role": {
           "default": "admin",
-          "description": "Default role for unauthenticated requests\n\nNote: StreamKit does not implement authentication by itself; this value becomes the\neffective role for any request that is not assigned a role by an external auth layer.\nFor production deployments, set this to a least-privileged role and put an auth layer\n(or reverse proxy) in front of the server.",
+          "description": "Default role for requests without an authenticated role\n\nWhen built-in auth is disabled, this becomes the effective role for requests that are not\nassigned a role via a trusted role header or `SK_ROLE`.\n\nFor production deployments, prefer enabling built-in auth (`[auth].mode`) or running behind\nan authenticating reverse proxy that sets `[permissions].role_header`.",
           "type": "string"
         },
         "max_concurrent_oneshots": {
@@ -584,7 +667,8 @@ Telemetry and observability configuration (OpenTelemetry, tokio-console).
                 "core::script",
                 "core::telemetry_tap",
                 "core::telemetry_out",
-                "core::sink"
+                "core::sink",
+                "plugin::*"
               ],
               "allowed_plugins": [
                 "plugin::*"
@@ -611,6 +695,40 @@ Telemetry and observability configuration (OpenTelemetry, tokio-console).
               "tune_nodes": true,
               "upload_assets": true,
               "write_samples": true
+            },
+            "viewer": {
+              "access_all_sessions": false,
+              "allowed_assets": [
+                "samples/audio/system/*"
+              ],
+              "allowed_nodes": [
+                "*"
+              ],
+              "allowed_plugins": [
+                "*"
+              ],
+              "allowed_samples": [
+                "oneshot/*.yml",
+                "oneshot/*.yaml",
+                "dynamic/*.yml",
+                "dynamic/*.yaml",
+                "user/*.yml",
+                "user/*.yaml"
+              ],
+              "create_sessions": false,
+              "delete_assets": false,
+              "delete_plugins": false,
+              "delete_samples": false,
+              "destroy_sessions": false,
+              "list_nodes": true,
+              "list_samples": true,
+              "list_sessions": true,
+              "load_plugins": false,
+              "modify_sessions": false,
+              "read_samples": true,
+              "tune_nodes": false,
+              "upload_assets": false,
+              "write_samples": false
             }
           },
           "description": "Map of role name -> permissions",
@@ -921,6 +1039,18 @@ Telemetry and observability configuration (OpenTelemetry, tokio-console).
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "Root configuration for the StreamKit server.",
   "properties": {
+    "auth": {
+      "$ref": "#/$defs/AuthConfig",
+      "default": {
+        "api_default_ttl_secs": 86400,
+        "api_max_ttl_secs": 2592000,
+        "cookie_name": "skit_session",
+        "mode": "auto",
+        "moq_default_ttl_secs": 3600,
+        "moq_max_ttl_secs": 86400,
+        "state_dir": ".streamkit/auth"
+      }
+    },
     "engine": {
       "$ref": "#/$defs/EngineConfig",
       "default": {
@@ -1008,7 +1138,8 @@ Telemetry and observability configuration (OpenTelemetry, tokio-console).
               "core::script",
               "core::telemetry_tap",
               "core::telemetry_out",
-              "core::sink"
+              "core::sink",
+              "plugin::*"
             ],
             "allowed_plugins": [
               "plugin::*"
@@ -1035,6 +1166,40 @@ Telemetry and observability configuration (OpenTelemetry, tokio-console).
             "tune_nodes": true,
             "upload_assets": true,
             "write_samples": true
+          },
+          "viewer": {
+            "access_all_sessions": false,
+            "allowed_assets": [
+              "samples/audio/system/*"
+            ],
+            "allowed_nodes": [
+              "*"
+            ],
+            "allowed_plugins": [
+              "*"
+            ],
+            "allowed_samples": [
+              "oneshot/*.yml",
+              "oneshot/*.yaml",
+              "dynamic/*.yml",
+              "dynamic/*.yaml",
+              "user/*.yml",
+              "user/*.yaml"
+            ],
+            "create_sessions": false,
+            "delete_assets": false,
+            "delete_plugins": false,
+            "delete_samples": false,
+            "destroy_sessions": false,
+            "list_nodes": true,
+            "list_samples": true,
+            "list_sessions": true,
+            "load_plugins": false,
+            "modify_sessions": false,
+            "read_samples": true,
+            "tune_nodes": false,
+            "upload_assets": false,
+            "write_samples": false
           }
         }
       }

@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 pub mod assets;
+pub mod auth;
 pub mod cli;
 pub mod config;
 pub mod file_security;

@@ -3,7 +3,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use clap::{Parser, Subcommand};
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use schemars::schema_for;
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use tracing::{error, info, warn};
 
 use crate::config;
@@ -22,6 +25,24 @@ pub struct Cli {
     #[arg(short, long, default_value = "skit.toml")]
     pub config: String,
 
+    /// Server base URL for API calls (defaults to the configured bind address)
+    ///
+    /// Examples:
+    /// - `http://127.0.0.1:4545`
+    /// - `https://demo.streamkit.dev:4545/s/session_abc`
+    #[arg(long, env = "SKIT_SERVER_URL")]
+    pub server_url: Option<String>,
+
+    /// API token to authenticate CLI API calls (Bearer token)
+    ///
+    /// If not set, StreamKit will try to read `${auth.state_dir}/admin.token` from the config.
+    #[arg(long, env = "SKIT_TOKEN")]
+    pub token: Option<String>,
+
+    /// Path to a file containing an API token (Bearer token)
+    #[arg(long, env = "SKIT_TOKEN_FILE")]
+    pub token_file: Option<String>,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
@@ -33,6 +54,9 @@ pub enum Commands {
     /// Manage configuration
     #[command(subcommand)]
     Config(ConfigCommands),
+    /// Manage authentication
+    #[command(subcommand)]
+    Auth(AuthCommands),
 }
 
 #[derive(Subcommand, Debug)]
@@ -41,6 +65,155 @@ pub enum ConfigCommands {
     Default,
     /// Generate a JSON schema for the config and print it to stdout
     Schema,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AuthCommands {
+    /// Print the bootstrap admin token path
+    ///
+    /// The admin token is automatically generated when auth is first initialized.
+    /// Use this command to find where the token is stored.
+    PrintAdminToken {
+        /// Print only the token (for scripting)
+        #[arg(long)]
+        raw: bool,
+    },
+    /// Mint tokens (API or MoQ) and store metadata
+    ///
+    /// This is equivalent to creating tokens via the Web UI, and uses the HTTP API.
+    #[command(subcommand)]
+    Mint(MintTokenCommands),
+    /// Rotate the signing key and mint a new admin token
+    ///
+    /// This will:
+    /// 1. Generate a new signing key
+    /// 2. Keep the old key for validating existing tokens
+    /// 3. Mint a new admin token signed with the new key
+    /// 4. Write the new token to the state directory
+    RotateKey,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum MintTokenCommands {
+    /// Mint an API token (aud: skit-api)
+    Api {
+        /// Role name (must exist in [permissions].roles)
+        #[arg(long)]
+        role: String,
+        /// Optional label for UI display
+        #[arg(long)]
+        label: Option<String>,
+        /// TTL in seconds (defaults to auth.api_default_ttl_secs)
+        #[arg(long)]
+        ttl_secs: Option<u64>,
+        /// Output as JSON (useful for scripting)
+        #[arg(long)]
+        json: bool,
+    },
+    /// Mint a MoQ token (aud: skit-moq)
+    ///
+    /// Notes:
+    /// - `--subscribe ''` / `--publish ''` (empty string) means "allow all"
+    /// - Omitting the flag entirely means "allow none"
+    #[cfg(feature = "moq")]
+    Moq {
+        /// URL path prefix the token applies to (e.g. /session/<id> or /moq/session1)
+        #[arg(long)]
+        root: String,
+        /// Allowed broadcast prefixes to subscribe to (repeatable)
+        #[arg(long)]
+        subscribe: Vec<String>,
+        /// Allowed broadcast prefixes to publish to (repeatable)
+        #[arg(long)]
+        publish: Vec<String>,
+        /// Optional label for UI display
+        #[arg(long)]
+        label: Option<String>,
+        /// TTL in seconds (defaults to auth.moq_default_ttl_secs)
+        #[arg(long)]
+        ttl_secs: Option<u64>,
+        /// Output as JSON (useful for scripting)
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+fn normalize_base_path_for_url(base_path: Option<&str>) -> String {
+    let Some(base_path) = base_path else {
+        return String::new();
+    };
+
+    let trimmed = base_path.trim();
+    if trimmed.is_empty() || trimmed == "/" {
+        return String::new();
+    }
+
+    let trimmed = trimmed.trim_end_matches('/');
+    if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    }
+}
+
+fn hostport_for_client(addr: SocketAddr) -> String {
+    // Binding to "0.0.0.0"/"[::]" means "all interfaces"; for a local client use localhost.
+    if addr.ip().is_unspecified() {
+        return format!("localhost:{}", addr.port());
+    }
+
+    if addr.is_ipv6() {
+        format!("[{}]:{}", addr.ip(), addr.port())
+    } else {
+        format!("{}:{}", addr.ip(), addr.port())
+    }
+}
+
+fn default_server_url(config: &config::Config) -> Result<String, String> {
+    let addr: SocketAddr = config
+        .server
+        .address
+        .parse()
+        .map_err(|e| format!("Invalid server.address '{}': {e}", config.server.address))?;
+    let scheme = if config.server.tls { "https" } else { "http" };
+    let hostport = hostport_for_client(addr);
+    let base_path = normalize_base_path_for_url(config.server.base_path.as_deref());
+    Ok(format!("{scheme}://{hostport}{base_path}"))
+}
+
+fn read_token_file(path: &Path) -> Result<String, String> {
+    std::fs::read_to_string(path)
+        .map(|s| s.trim().to_string())
+        .map_err(|e| format!("Failed to read token file '{}': {e}", path.display()))
+}
+
+fn resolve_cli_token(cli: &Cli, config: &config::Config) -> Result<String, String> {
+    if let Some(token) = cli.token.as_deref() {
+        let token = token.trim();
+        if token.is_empty() {
+            return Err("Empty --token".to_string());
+        }
+        return Ok(token.to_string());
+    }
+
+    if let Some(path) = cli.token_file.as_deref() {
+        let token = read_token_file(Path::new(path))?;
+        if token.is_empty() {
+            return Err(format!("Token file '{path}' is empty"));
+        }
+        return Ok(token);
+    }
+
+    let token_path = PathBuf::from(&config.auth.state_dir).join("admin.token");
+    if token_path.exists() {
+        let token = read_token_file(&token_path)?;
+        if token.is_empty() {
+            return Err(format!("Bootstrap token file '{}' is empty", token_path.display()));
+        }
+        return Ok(token);
+    }
+
+    Err("No token provided. Pass --token/--token-file (or set SKIT_TOKEN/SKIT_TOKEN_FILE), or run this command on the server host where `${auth.state_dir}/admin.token` is readable.".to_string())
 }
 
 /// Initialize telemetry (metrics) if enabled in configuration
@@ -150,6 +323,310 @@ fn handle_config_schema_command() {
     }
 }
 
+/// Handle the "auth print-admin-token" command
+// Allow println/eprintln for CLI output (intentional)
+#[allow(clippy::disallowed_macros)]
+fn handle_auth_print_admin_token(config_path: &str) {
+    let config_result = match config::load(config_path) {
+        Ok(result) => result,
+        Err(e) => {
+            eprintln!("Failed to load configuration: {e}");
+            std::process::exit(1);
+        },
+    };
+
+    let state_dir = std::path::Path::new(&config_result.config.auth.state_dir);
+    let token_path = state_dir.join("admin.token");
+
+    if token_path.exists() {
+        println!("Admin token location: {}", token_path.display());
+        println!();
+        // Try to read and print the token
+        match std::fs::read_to_string(&token_path) {
+            Ok(token) => {
+                println!("Token: {}", token.trim());
+            },
+            Err(e) => {
+                eprintln!("Warning: Could not read token file: {e}");
+                eprintln!("The file exists but may have restricted permissions.");
+            },
+        }
+    } else {
+        eprintln!("Admin token not found at: {}", token_path.display());
+        eprintln!();
+        eprintln!("The admin token is created when auth is first initialized.");
+        eprintln!("Start the server with auth enabled to generate it:");
+        eprintln!("  - Bind to a non-loopback address (auth.mode=auto)");
+        eprintln!("  - Or set auth.mode=enabled in your config");
+        std::process::exit(1);
+    }
+}
+
+/// Handle the "auth print-admin-token --raw" command
+// Allow println/eprintln for CLI output (intentional)
+#[allow(clippy::disallowed_macros)]
+fn handle_auth_print_admin_token_raw(config_path: &str) {
+    let config_result = match config::load(config_path) {
+        Ok(result) => result,
+        Err(e) => {
+            eprintln!("Failed to load configuration: {e}");
+            std::process::exit(1);
+        },
+    };
+
+    let state_dir = std::path::Path::new(&config_result.config.auth.state_dir);
+    let token_path = state_dir.join("admin.token");
+
+    if !token_path.exists() {
+        eprintln!("Admin token not found at: {}", token_path.display());
+        std::process::exit(1);
+    }
+
+    match std::fs::read_to_string(&token_path) {
+        Ok(token) => println!("{}", token.trim()),
+        Err(e) => {
+            eprintln!("Failed to read token file: {e}");
+            std::process::exit(1);
+        },
+    }
+}
+
+/// Handle the "auth rotate-key" command
+// Allow println/eprintln for CLI output (intentional)
+#[allow(clippy::disallowed_macros)]
+async fn handle_auth_rotate_key(config_path: &str) {
+    let config_result = match config::load(config_path) {
+        Ok(result) => result,
+        Err(e) => {
+            eprintln!("Failed to load configuration: {e}");
+            std::process::exit(1);
+        },
+    };
+
+    // Initialize auth state (this will load existing keys)
+    let auth_state = match crate::auth::AuthState::new(&config_result.config.auth, true).await {
+        Ok(state) => state,
+        Err(e) => {
+            eprintln!("Failed to initialize auth: {e}");
+            eprintln!();
+            eprintln!("Make sure auth has been initialized by starting the server first.");
+            std::process::exit(1);
+        },
+    };
+
+    // Rotate the key
+    match auth_state.rotate_key().await {
+        Ok(key_material) => {
+            println!("Key rotated successfully!");
+            println!("New key ID: {}", key_material.kid);
+            println!();
+
+            // Mint a new admin token with the new key
+            match auth_state
+                .mint_api_token(
+                    "admin",
+                    Some("bootstrap-admin"),
+                    config_result.config.auth.api_max_ttl_secs,
+                    "cli-rotate-key",
+                )
+                .await
+            {
+                Ok((token, _meta)) => {
+                    // Write the new admin token
+                    let state_dir = std::path::Path::new(&config_result.config.auth.state_dir);
+                    let token_path = state_dir.join("admin.token");
+
+                    match crate::auth::FileKeyProvider::write_secure(&token_path, &token).await {
+                        Ok(()) => {
+                            println!("New admin token written to: {}", token_path.display());
+                            println!();
+                            println!("Token: {token}");
+                        },
+                        Err(e) => {
+                            eprintln!("Warning: Could not write token file: {e}");
+                            eprintln!("New admin token: {token}");
+                        },
+                    }
+                },
+                Err(e) => {
+                    eprintln!("Failed to mint new admin token: {e}");
+                    std::process::exit(1);
+                },
+            }
+        },
+        Err(e) => {
+            eprintln!("Failed to rotate key: {e}");
+            std::process::exit(1);
+        },
+    }
+}
+
+/// Handle the "auth mint api/moq" commands
+// Allow println/eprintln for CLI output (intentional)
+#[allow(clippy::disallowed_macros)]
+async fn handle_auth_mint_token(cli: &Cli, cmd: &MintTokenCommands) {
+    let config_result = match config::load(&cli.config) {
+        Ok(result) => result,
+        Err(e) => {
+            eprintln!("Failed to load configuration: {e}");
+            std::process::exit(1);
+        },
+    };
+
+    let server_url = match cli.server_url.as_deref() {
+        Some(url) => url.trim().trim_end_matches('/').to_string(),
+        None => match default_server_url(&config_result.config) {
+            Ok(url) => url,
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            },
+        },
+    };
+
+    let token = match resolve_cli_token(cli, &config_result.config) {
+        Ok(token) => token,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        },
+    };
+
+    let mut headers = HeaderMap::new();
+    let Ok(auth_value) = HeaderValue::from_str(&format!("Bearer {token}")) else {
+        eprintln!("Invalid token (contains illegal header characters)");
+        std::process::exit(1);
+    };
+    headers.insert(AUTHORIZATION, auth_value);
+
+    let client = reqwest::Client::new();
+
+    match cmd {
+        MintTokenCommands::Api { role, label, ttl_secs, json } => {
+            let body = crate::auth::handlers::CreateApiTokenRequest {
+                role: role.clone(),
+                label: label.clone().and_then(|s| {
+                    let t = s.trim().to_string();
+                    if t.is_empty() {
+                        None
+                    } else {
+                        Some(t)
+                    }
+                }),
+                ttl_secs: *ttl_secs,
+            };
+
+            let url = format!("{server_url}/api/v1/auth/tokens");
+            let resp = match client.post(&url).headers(headers.clone()).json(&body).send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("Failed to reach server at '{server_url}': {e}");
+                    std::process::exit(1);
+                },
+            };
+
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                eprintln!("Token mint failed ({status}): {text}");
+                std::process::exit(1);
+            }
+
+            let out: crate::auth::handlers::CreateTokenResponse = match resp.json().await {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("Failed to parse response JSON: {e}");
+                    std::process::exit(1);
+                },
+            };
+
+            if *json {
+                match serde_json::to_string_pretty(&out) {
+                    Ok(s) => println!("{s}"),
+                    Err(e) => {
+                        eprintln!("Failed to serialize JSON: {e}");
+                        std::process::exit(1);
+                    },
+                }
+            } else {
+                println!("Token: {}", out.token);
+                println!("jti: {}", out.jti);
+                println!("exp: {}", out.exp);
+            }
+        },
+        #[cfg(feature = "moq")]
+        MintTokenCommands::Moq { root, subscribe, publish, label, ttl_secs, json } => {
+            let root_trimmed = root.trim();
+            if root_trimmed.is_empty() {
+                eprintln!("Missing --root (use '/' to allow any path)");
+                std::process::exit(1);
+            }
+
+            let normalized_root = if root_trimmed.starts_with('/') {
+                root_trimmed.to_string()
+            } else {
+                format!("/{root_trimmed}")
+            };
+
+            let body = crate::auth::handlers::CreateMoqTokenRequest {
+                root: normalized_root,
+                subscribe: subscribe.clone(),
+                publish: publish.clone(),
+                label: label.clone().and_then(|s| {
+                    let t = s.trim().to_string();
+                    if t.is_empty() {
+                        None
+                    } else {
+                        Some(t)
+                    }
+                }),
+                ttl_secs: *ttl_secs,
+            };
+
+            let url = format!("{server_url}/api/v1/auth/moq-tokens");
+            let resp = match client.post(&url).headers(headers.clone()).json(&body).send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("Failed to reach server at '{server_url}': {e}");
+                    std::process::exit(1);
+                },
+            };
+
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                eprintln!("MoQ token mint failed ({status}): {text}");
+                std::process::exit(1);
+            }
+
+            let out: crate::auth::handlers::CreateTokenResponse = match resp.json().await {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("Failed to parse response JSON: {e}");
+                    std::process::exit(1);
+                },
+            };
+
+            if *json {
+                match serde_json::to_string_pretty(&out) {
+                    Ok(s) => println!("{s}"),
+                    Err(e) => {
+                        eprintln!("Failed to serialize JSON: {e}");
+                        std::process::exit(1);
+                    },
+                }
+            } else {
+                println!("Token: {}", out.token);
+                println!("jti: {}", out.jti);
+                println!("exp: {}", out.exp);
+                if let Some(url) = out.url_template.as_deref() {
+                    println!("url: {url}");
+                }
+            }
+        },
+    }
+}
+
 /// Handle CLI commands
 // Allow eprintln/println before logging is initialized (for CLI output)
 #[allow(clippy::disallowed_macros)]
@@ -163,6 +640,19 @@ pub async fn handle_command(cli: &Cli, init_logging: LogInitFn) {
         },
         Commands::Config(ConfigCommands::Schema) => {
             handle_config_schema_command();
+        },
+        Commands::Auth(AuthCommands::PrintAdminToken { raw }) => {
+            if *raw {
+                handle_auth_print_admin_token_raw(&cli.config);
+            } else {
+                handle_auth_print_admin_token(&cli.config);
+            }
+        },
+        Commands::Auth(AuthCommands::Mint(cmd)) => {
+            handle_auth_mint_token(cli, cmd).await;
+        },
+        Commands::Auth(AuthCommands::RotateKey) => {
+            handle_auth_rotate_key(&cli.config).await;
         },
     }
 }

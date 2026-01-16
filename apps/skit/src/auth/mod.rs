@@ -1,0 +1,704 @@
+// SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+//
+// SPDX-License-Identifier: MPL-2.0
+
+//! Built-in JWT authentication for StreamKit.
+//!
+//! This module provides:
+//! - JWT-based authentication for HTTP API, WebSocket, and MoQ/WebTransport
+//! - Pluggable storage backends (file-based by default)
+//! - Token revocation support
+//! - Cookie-based browser sessions
+//!
+//! # Token Types
+//!
+//! - **API tokens** (`aud: "skit-api"`): For HTTP API and WebSocket control plane
+//! - **MoQ tokens** (`aud: "skit-moq"`): For MoQ/WebTransport connections
+//!
+//! # Security Model
+//!
+//! - All tokens require `jti` claim for revocation support
+//! - "Tokens we mint" policy: Only accept tokens whose jti is in our metadata store
+//! - Raw tokens are never stored; only SHA-256 hashes are persisted
+//! - Key material is stored with 0600 permissions
+
+pub mod claims;
+pub mod cookie;
+pub mod extractor;
+pub mod handlers;
+pub mod stores;
+
+#[cfg(feature = "moq")]
+pub mod moq;
+#[cfg(feature = "moq")]
+#[allow(unused_imports)]
+pub use moq::{verify_moq_token, MoqAuthContext};
+
+pub use claims::{ApiClaims, AUD_API};
+#[cfg(feature = "moq")]
+pub use claims::{MoqClaims, AUD_MOQ};
+pub use cookie::{build_logout_cookie, build_session_cookie};
+pub use extractor::{validate_token, validate_token_from_headers, AuthContext};
+pub use handlers::auth_router;
+pub use stores::{
+    AuthStoreError, FileKeyProvider, FileRevocationStore, FileTokenMetadataStore, KeyProvider,
+    RevocationStore, SigningKeyMaterial, TokenMetadata, TokenMetadataStore, TokenType,
+};
+
+use crate::config::{AuthConfig, AuthMode};
+use jsonwebtoken::{
+    decode, decode_header, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation,
+};
+use sha2::{Digest, Sha256};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{SystemTime, SystemTimeError, UNIX_EPOCH};
+use tracing::{debug, info};
+
+/// Errors that can occur during authentication.
+#[derive(Debug, thiserror::Error)]
+#[allow(dead_code)]
+pub enum AuthError {
+    #[error("Authentication is disabled")]
+    Disabled,
+
+    #[error("Store error: {0}")]
+    Store(#[from] AuthStoreError),
+
+    #[error("JWT error: {0}")]
+    Jwt(#[from] jsonwebtoken::errors::Error),
+
+    #[error("Claims validation error: {0}")]
+    Claims(#[from] claims::ClaimsValidationError),
+
+    #[error("Token not found in metadata store (not minted by this server)")]
+    UnknownToken,
+
+    #[error("Token has been revoked")]
+    Revoked,
+
+    #[error("Token expired")]
+    Expired,
+
+    #[error("Invalid audience: expected {expected}, got {actual}")]
+    InvalidAudience { expected: String, actual: String },
+
+    #[error("TTL exceeds maximum allowed ({max} seconds)")]
+    TtlExceedsMax { max: u64 },
+
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("System time error: {0}")]
+    Time(#[from] SystemTimeError),
+
+    #[error("Task join error: {0}")]
+    TaskJoin(#[from] tokio::task::JoinError),
+
+    #[cfg(feature = "moq")]
+    #[error("MoQ auth error: {0}")]
+    Moq(String),
+}
+
+/// Central authentication state for the server.
+///
+/// This struct manages all auth-related state including:
+/// - Whether auth is enabled
+/// - Key storage and rotation
+/// - Token revocation
+/// - Token metadata ("tokens we mint")
+pub struct AuthState {
+    enabled: bool,
+    config: AuthConfig,
+    key_provider: Option<Arc<dyn KeyProvider>>,
+    revocation_store: Option<Arc<dyn RevocationStore>>,
+    token_metadata_store: Option<Arc<dyn TokenMetadataStore>>,
+}
+
+impl AuthState {
+    /// Create a disabled AuthState (sync, for use during initialization).
+    ///
+    /// This is useful when auth is disabled or when you need to create
+    /// the state synchronously before fully initializing.
+    pub fn disabled() -> Self {
+        Self {
+            enabled: false,
+            config: AuthConfig::default(),
+            key_provider: None,
+            revocation_store: None,
+            token_metadata_store: None,
+        }
+    }
+
+    /// Create a new AuthState, initializing stores if auth is enabled.
+    ///
+    /// # Errors
+    ///
+    /// Returns errors for store initialization failures, I/O errors, or
+    /// bootstrap token creation failures.
+    pub async fn new(config: &AuthConfig, enabled: bool) -> Result<Self, AuthError> {
+        if !enabled {
+            info!("Authentication disabled");
+            return Ok(Self {
+                enabled: false,
+                config: config.clone(),
+                key_provider: None,
+                revocation_store: None,
+                token_metadata_store: None,
+            });
+        }
+
+        let state_dir = PathBuf::from(&config.state_dir);
+        info!(state_dir = %state_dir.display(), "Initializing authentication");
+
+        // Initialize stores
+        let key_provider = Arc::new(FileKeyProvider::load_or_init(&state_dir).await?);
+        let revocation_store = Arc::new(FileRevocationStore::new(&state_dir).await?);
+        let token_metadata_store = Arc::new(FileTokenMetadataStore::new(&state_dir).await?);
+
+        // Check if we need to create bootstrap admin token
+        let tokens = token_metadata_store.list().await?;
+        if tokens.is_empty() {
+            info!("No tokens found, creating bootstrap admin token");
+            let state = Self {
+                enabled: true,
+                config: config.clone(),
+                key_provider: Some(key_provider.clone()),
+                revocation_store: Some(revocation_store.clone()),
+                token_metadata_store: Some(token_metadata_store.clone()),
+            };
+
+            let (token, _meta) = state
+                .mint_api_token(
+                    "admin",
+                    Some("Bootstrap admin token"),
+                    config.api_max_ttl_secs,
+                    "bootstrap",
+                )
+                .await?;
+
+            // Write bootstrap token to file
+            let token_path = state_dir.join("admin.token");
+            FileKeyProvider::write_secure(&token_path, &token).await?;
+
+            info!(path = %token_path.display(), "Bootstrap admin token written");
+
+            return Ok(state);
+        }
+
+        Ok(Self {
+            enabled: true,
+            config: config.clone(),
+            key_provider: Some(key_provider),
+            revocation_store: Some(revocation_store),
+            token_metadata_store: Some(token_metadata_store),
+        })
+    }
+
+    /// Check if authentication is enabled.
+    pub const fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Get the revocation store (for checking revocation status).
+    pub fn revocation_store(&self) -> Option<&Arc<dyn RevocationStore>> {
+        self.revocation_store.as_ref()
+    }
+
+    /// Check if a token is revoked by its token hash.
+    ///
+    /// Returns false if auth is disabled or if the revocation store is not available.
+    #[allow(dead_code)]
+    pub fn is_revoked(&self, token_hash: &str) -> bool {
+        self.revocation_store.as_ref().is_some_and(|store| store.is_revoked(token_hash))
+    }
+
+    /// Get the token metadata store.
+    pub fn token_metadata_store(&self) -> Option<&Arc<dyn TokenMetadataStore>> {
+        self.token_metadata_store.as_ref()
+    }
+
+    /// Get the key provider.
+    #[allow(dead_code)]
+    pub fn key_provider(&self) -> Option<&Arc<dyn KeyProvider>> {
+        self.key_provider.as_ref()
+    }
+
+    /// Validate an API token and return its claims.
+    ///
+    /// This performs:
+    /// 1. JWT signature verification
+    /// 2. Expiration check
+    /// 3. Audience validation
+    /// 4. Claims structure validation
+    ///
+    /// Note: Revocation and "tokens we mint" checks should be done separately
+    /// by the caller for flexibility.
+    ///
+    /// # Errors
+    ///
+    /// Returns errors for invalid tokens, expired tokens, signature verification
+    /// failures, or disabled auth.
+    pub fn validate_api_token(&self, token: &str) -> Result<ApiClaims, AuthError> {
+        let key_provider = self.key_provider.as_ref().ok_or(AuthError::Disabled)?;
+
+        // Set up validation
+        let mut validation = Validation::new(Algorithm::EdDSA);
+        validation.set_audience(&[AUD_API]);
+        validation.set_required_spec_claims(&["exp", "aud", "jti"]);
+
+        // Prefer selecting the verification key by `kid` (header), but fall back to trying all
+        // known keys if `kid` is missing (best-effort compatibility).
+        let header = decode_header(token)?;
+        let mut candidates: Vec<String> = Vec::new();
+
+        if let Some(kid) = header.kid {
+            candidates.push(kid);
+        } else {
+            candidates.extend(key_provider.valid_kids());
+        }
+
+        let mut last_error = None;
+
+        for kid in candidates {
+            let Some(key_material) = key_provider.verification_key(&kid) else {
+                continue;
+            };
+
+            let decoding_key = DecodingKey::from_ed_der(&key_material.public_key);
+            match decode::<ApiClaims>(token, &decoding_key, &validation) {
+                Ok(token_data) => {
+                    let claims = token_data.claims;
+                    claims.validate()?;
+                    debug!(jti = %claims.jti, role = %claims.role, kid = %kid, "API token validated");
+                    return Ok(claims);
+                },
+                Err(e) => {
+                    last_error = Some(e);
+                },
+            }
+        }
+
+        Err(last_error.map_or_else(
+            || AuthError::Jwt(jsonwebtoken::errors::ErrorKind::InvalidSignature.into()),
+            AuthError::Jwt,
+        ))
+    }
+
+    /// Validate a MoQ token and return its claims.
+    ///
+    /// # Errors
+    ///
+    /// Returns errors for invalid tokens, expired tokens, signature verification
+    /// failures, or disabled auth.
+    #[cfg(feature = "moq")]
+    pub fn validate_moq_token(&self, token: &str) -> Result<MoqClaims, AuthError> {
+        let key_provider = self.key_provider.as_ref().ok_or(AuthError::Disabled)?;
+
+        let mut validation = Validation::new(Algorithm::EdDSA);
+        validation.set_audience(&[AUD_MOQ]);
+        validation.set_required_spec_claims(&["exp", "aud", "jti"]);
+
+        let header = decode_header(token)?;
+        let mut candidates: Vec<String> = Vec::new();
+
+        if let Some(kid) = header.kid {
+            candidates.push(kid);
+        } else {
+            candidates.extend(key_provider.valid_kids());
+        }
+
+        let mut last_error = None;
+
+        for kid in candidates {
+            let Some(key_material) = key_provider.verification_key(&kid) else {
+                continue;
+            };
+
+            let decoding_key = DecodingKey::from_ed_der(&key_material.public_key);
+            match decode::<MoqClaims>(token, &decoding_key, &validation) {
+                Ok(token_data) => {
+                    let claims = token_data.claims;
+                    claims.validate()?;
+                    debug!(jti = %claims.jti, root = %claims.root, kid = %kid, "MoQ token validated");
+                    return Ok(claims);
+                },
+                Err(e) => {
+                    last_error = Some(e);
+                },
+            }
+        }
+
+        Err(last_error.map_or_else(
+            || AuthError::Jwt(jsonwebtoken::errors::ErrorKind::InvalidSignature.into()),
+            AuthError::Jwt,
+        ))
+    }
+
+    /// Mint a new API token.
+    ///
+    /// Returns the raw token string and its metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns errors if auth is disabled, TTL exceeds max, or token storage fails.
+    pub async fn mint_api_token(
+        &self,
+        role: &str,
+        label: Option<&str>,
+        ttl_secs: u64,
+        created_by: &str,
+    ) -> Result<(String, TokenMetadata), AuthError> {
+        let key_provider = self.key_provider.as_ref().ok_or(AuthError::Disabled)?;
+        let metadata_store = self.token_metadata_store.as_ref().ok_or(AuthError::Disabled)?;
+
+        // Validate TTL
+        if ttl_secs > self.config.api_max_ttl_secs {
+            return Err(AuthError::TtlExceedsMax { max: self.config.api_max_ttl_secs });
+        }
+
+        let now = now_secs()?;
+
+        let jti = uuid::Uuid::new_v4().to_string();
+        let exp = now + ttl_secs;
+
+        let claims = ApiClaims {
+            aud: AUD_API.to_string(),
+            sub: format!("token:{jti}"),
+            role: role.to_string(),
+            iat: now,
+            exp,
+            jti: jti.clone(),
+        };
+
+        // Sign the token (key access uses std::sync locks, so keep it off core async tasks)
+        let key_provider_clone = key_provider.clone();
+        let key_material =
+            tokio::task::spawn_blocking(move || key_provider_clone.active_key()).await?;
+        let mut header = Header::new(Algorithm::EdDSA);
+        header.kid = Some(key_material.kid.clone());
+
+        let encoding_key = EncodingKey::from_ed_der(&key_material.pkcs8);
+        let token = encode(&header, &claims, &encoding_key)?;
+
+        // Store metadata (hash the token, never store raw)
+        let token_hash = hash_token(&token);
+        let meta = TokenMetadata {
+            jti: jti.clone(),
+            token_hash,
+            token_type: TokenType::Api,
+            role: Some(role.to_string()),
+            label: label.map(String::from),
+            created_at: now,
+            exp,
+            revoked: false,
+            created_by: created_by.to_string(),
+        };
+
+        metadata_store.store(meta.clone()).await?;
+
+        info!(jti = %jti, role = %role, ttl_secs, "Minted API token");
+
+        Ok((token, meta))
+    }
+
+    /// Mint a new MoQ token.
+    ///
+    /// # Errors
+    ///
+    /// Returns errors if auth is disabled, TTL exceeds max, or token storage fails.
+    #[cfg(feature = "moq")]
+    pub async fn mint_moq_token(
+        &self,
+        root: &str,
+        subscribe: Vec<String>,
+        publish: Vec<String>,
+        label: Option<&str>,
+        ttl_secs: u64,
+        created_by: &str,
+    ) -> Result<(String, TokenMetadata), AuthError> {
+        let key_provider = self.key_provider.as_ref().ok_or(AuthError::Disabled)?;
+        let metadata_store = self.token_metadata_store.as_ref().ok_or(AuthError::Disabled)?;
+
+        // Validate TTL
+        if ttl_secs > self.config.moq_max_ttl_secs {
+            return Err(AuthError::TtlExceedsMax { max: self.config.moq_max_ttl_secs });
+        }
+
+        let now = now_secs()?;
+
+        let jti = uuid::Uuid::new_v4().to_string();
+        let exp = now + ttl_secs;
+
+        let claims = MoqClaims {
+            aud: AUD_MOQ.to_string(),
+            root: root.to_string(),
+            subscribe,
+            publish,
+            iat: now,
+            exp,
+            jti: jti.clone(),
+        };
+
+        // Sign the token (key access uses std::sync locks, so keep it off core async tasks)
+        let key_provider_clone = key_provider.clone();
+        let key_material =
+            tokio::task::spawn_blocking(move || key_provider_clone.active_key()).await?;
+        let mut header = Header::new(Algorithm::EdDSA);
+        header.kid = Some(key_material.kid.clone());
+
+        let encoding_key = EncodingKey::from_ed_der(&key_material.pkcs8);
+        let token = encode(&header, &claims, &encoding_key)?;
+
+        // Store metadata
+        let token_hash = hash_token(&token);
+        let meta = TokenMetadata {
+            jti: jti.clone(),
+            token_hash,
+            token_type: TokenType::Moq,
+            role: None,
+            label: label.map(String::from),
+            created_at: now,
+            exp,
+            revoked: false,
+            created_by: created_by.to_string(),
+        };
+
+        metadata_store.store(meta.clone()).await?;
+
+        info!(jti = %jti, root = %root, ttl_secs, "Minted MoQ token");
+
+        Ok((token, meta))
+    }
+
+    /// Revoke a token by its jti.
+    ///
+    /// # Errors
+    ///
+    /// Returns errors if auth is disabled, token not found, or store operation fails.
+    pub async fn revoke_token(&self, jti: &str) -> Result<(), AuthError> {
+        let revocation_store = self.revocation_store.as_ref().ok_or(AuthError::Disabled)?;
+        let metadata_store = self.token_metadata_store.as_ref().ok_or(AuthError::Disabled)?;
+
+        // Get the token metadata to find expiration
+        let meta = metadata_store.get(jti).await?;
+        let meta = meta.ok_or(AuthError::UnknownToken)?;
+        let token_hash = meta.token_hash;
+        let exp = meta.exp;
+
+        // Add to revocation store
+        revocation_store.revoke(&token_hash, exp).await?;
+
+        // Mark as revoked in metadata
+        metadata_store.mark_revoked(jti).await?;
+
+        info!(jti = %jti, "Token revoked");
+
+        Ok(())
+    }
+
+    /// Rotate the signing key.
+    ///
+    /// # Errors
+    ///
+    /// Returns errors if auth is disabled or key provider rotation fails.
+    pub async fn rotate_key(&self) -> Result<SigningKeyMaterial, AuthError> {
+        let key_provider = self.key_provider.as_ref().ok_or(AuthError::Disabled)?;
+        let new_key = key_provider.rotate().await?;
+        info!(kid = %new_key.kid, "Signing key rotated");
+        Ok(new_key)
+    }
+
+    /// Check if auth should be enabled based on config and bind address.
+    #[allow(dead_code)]
+    pub const fn should_enable(config: &AuthConfig, bind_addr: &std::net::SocketAddr) -> bool {
+        match config.mode {
+            AuthMode::Auto => !bind_addr.ip().is_loopback(),
+            AuthMode::Enabled => true,
+            AuthMode::Disabled => false,
+        }
+    }
+}
+
+/// Compute SHA-256 hash of a token (hex-encoded).
+pub fn hash_token(token: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(token.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+/// Get current Unix timestamp in seconds.
+///
+/// # Errors
+///
+/// Returns an error if the system clock is before Unix epoch.
+pub fn now_secs() -> Result<u64, AuthError> {
+    Ok(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    async fn create_test_auth_state() -> (AuthState, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let config = AuthConfig {
+            mode: AuthMode::Enabled,
+            state_dir: temp_dir.path().to_string_lossy().to_string(),
+            cookie_name: "test_session".to_string(),
+            api_default_ttl_secs: 3600,
+            api_max_ttl_secs: 86400,
+            moq_default_ttl_secs: 3600,
+            moq_max_ttl_secs: 86400,
+        };
+
+        let state = AuthState::new(&config, true).await.unwrap();
+        (state, temp_dir)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_auth_state_disabled() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = AuthConfig {
+            mode: AuthMode::Disabled,
+            state_dir: temp_dir.path().to_string_lossy().to_string(),
+            ..Default::default()
+        };
+
+        let state = AuthState::new(&config, false).await.unwrap();
+        assert!(!state.is_enabled());
+        assert!(state.key_provider().is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_mint_and_validate_api_token() {
+        let (state, _temp_dir) = create_test_auth_state().await;
+        let state = Arc::new(state);
+
+        // Mint a token
+        let (token, meta) =
+            state.mint_api_token("admin", Some("Test token"), 3600, "test").await.unwrap();
+
+        assert!(!token.is_empty());
+        assert_eq!(meta.role, Some("admin".to_string()));
+        assert!(!meta.revoked);
+
+        // Validate the token (uses blocking_read internally)
+        let state_clone = state.clone();
+        let token_clone = token.clone();
+        let claims =
+            tokio::task::spawn_blocking(move || state_clone.validate_api_token(&token_clone))
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(claims.jti, meta.jti);
+        assert_eq!(claims.role, "admin");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_token_revocation() {
+        let (state, _temp_dir) = create_test_auth_state().await;
+        let state = Arc::new(state);
+
+        // Mint and validate
+        let (token, meta) = state.mint_api_token("user", None, 3600, "test").await.unwrap();
+
+        let state_clone = state.clone();
+        let token_clone = token.clone();
+        let claims =
+            tokio::task::spawn_blocking(move || state_clone.validate_api_token(&token_clone))
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(claims.jti, meta.jti);
+
+        let revocation_store = state.revocation_store().unwrap().clone();
+        let hash_clone = hash_token(&token);
+        let is_revoked =
+            tokio::task::spawn_blocking(move || revocation_store.is_revoked(&hash_clone))
+                .await
+                .unwrap();
+        assert!(!is_revoked);
+
+        // Revoke
+        state.revoke_token(&meta.jti).await.unwrap();
+
+        let revocation_store = state.revocation_store().unwrap().clone();
+        let hash_clone = hash_token(&token);
+        let is_revoked =
+            tokio::task::spawn_blocking(move || revocation_store.is_revoked(&hash_clone))
+                .await
+                .unwrap();
+        assert!(is_revoked);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_ttl_max_enforcement() {
+        let (state, _temp_dir) = create_test_auth_state().await;
+
+        // Try to mint with TTL exceeding max
+        let result = state.mint_api_token("admin", None, 1_000_000, "test").await;
+
+        assert!(matches!(result, Err(AuthError::TtlExceedsMax { .. })));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_bootstrap_token_created() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = AuthConfig {
+            mode: AuthMode::Enabled,
+            state_dir: temp_dir.path().to_string_lossy().to_string(),
+            api_max_ttl_secs: 86400,
+            ..Default::default()
+        };
+
+        // First initialization should create bootstrap token
+        let _state = AuthState::new(&config, true).await.unwrap();
+
+        // Check bootstrap token file exists
+        let token_path = temp_dir.path().join("admin.token");
+        assert!(token_path.exists());
+
+        let token = tokio::fs::read_to_string(&token_path).await.unwrap();
+        assert!(!token.is_empty());
+    }
+
+    #[test]
+    fn test_hash_token() {
+        let hash1 = hash_token("test-token-1");
+        let hash2 = hash_token("test-token-1");
+        let hash3 = hash_token("test-token-2");
+
+        // Same input = same hash
+        assert_eq!(hash1, hash2);
+        // Different input = different hash
+        assert_ne!(hash1, hash3);
+        // Hash is hex-encoded SHA-256 (64 chars)
+        assert_eq!(hash1.len(), 64);
+    }
+
+    #[test]
+    fn test_should_enable() {
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4545);
+        let any = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 4545);
+
+        // Auto mode
+        let auto_config = AuthConfig { mode: AuthMode::Auto, ..Default::default() };
+        assert!(!AuthState::should_enable(&auto_config, &loopback));
+        assert!(AuthState::should_enable(&auto_config, &any));
+
+        // Enabled mode
+        let enabled_config = AuthConfig { mode: AuthMode::Enabled, ..Default::default() };
+        assert!(AuthState::should_enable(&enabled_config, &loopback));
+        assert!(AuthState::should_enable(&enabled_config, &any));
+
+        // Disabled mode
+        let disabled_config = AuthConfig { mode: AuthMode::Disabled, ..Default::default() };
+        assert!(!AuthState::should_enable(&disabled_config, &loopback));
+        assert!(!AuthState::should_enable(&disabled_config, &any));
+    }
+}

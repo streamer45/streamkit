@@ -20,9 +20,9 @@ Set it to `true` only in trusted environments (e.g., local development, or behin
 
 ## Role-Based Permissions
 
-StreamKit uses role-based access control (RBAC) to restrict what users can do. The built-in defaults assign unauthenticated requests the `admin` role (full access), but the official Docker images ship with `docker-skit.toml` which sets `default_role = "user"`.
+StreamKit uses role-based access control (RBAC) to restrict what users can do. When built-in auth is disabled, roles are selected from a trusted header (optional), `SK_ROLE`, or `[permissions].default_role`.
 
-StreamKit does not implement authentication. If you expose the server to untrusted clients, put it behind an authenticating reverse proxy (nginx/Caddy/etc) and configure a trusted role header.
+StreamKit also ships with built-in JWT authentication (recommended for production). See [Authentication](/guides/authentication/) for how auth modes, bootstrap tokens, cookies, and token minting work.
 
 ### Configuring Roles
 

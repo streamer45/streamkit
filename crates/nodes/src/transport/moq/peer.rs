@@ -267,6 +267,27 @@ impl ProcessorNode for MoqPeerNode {
             tokio::select! {
                 // Accept bidirectional peer connections on the base path
                 Some(conn) = base_connection_rx.recv() => {
+                    // Auth check: bidirectional needs both publish and subscribe permissions
+                    if let Some(auth) = &conn.auth {
+                        let input_bc = &self.config.input_broadcast;
+                        let output_bc = &self.config.output_broadcast;
+
+                        if !auth.can_publish(input_bc) || !auth.can_subscribe(output_bc) {
+                            tracing::warn!(
+                                path = %conn.path,
+                                input_broadcast = %input_bc,
+                                output_broadcast = %output_bc,
+                                "Rejecting bidirectional connection - missing publish or subscribe permission"
+                            );
+                            let _ = conn.response_tx.send(
+                                streamkit_core::moq_gateway::MoqConnectionResult::Rejected(
+                                    "Bidirectional requires both publish and subscribe permission".to_string()
+                                )
+                            );
+                            continue;
+                        }
+                    }
+
                     tracing::info!(path = %conn.path, "Peer connecting");
 
                     let sub_count = subscriber_count.clone();
@@ -300,6 +321,25 @@ impl ProcessorNode for MoqPeerNode {
 
                 // Accept publisher connections on /input path
                 Some(conn) = input_connection_rx.recv() => {
+                    // Auth check: publisher needs publish permission
+                    if let Some(auth) = &conn.auth {
+                        let input_bc = &self.config.input_broadcast;
+
+                        if !auth.can_publish(input_bc) {
+                            tracing::warn!(
+                                path = %conn.path,
+                                broadcast = %input_bc,
+                                "Rejecting publisher connection - publish permission denied"
+                            );
+                            let _ = conn.response_tx.send(
+                                streamkit_core::moq_gateway::MoqConnectionResult::Rejected(
+                                    format!("Publish permission denied for broadcast '{input_bc}'")
+                                )
+                            );
+                            continue;
+                        }
+                    }
+
                     let Ok(permit) = publisher_slot.clone().try_acquire_owned() else {
                         tracing::warn!(path = %conn.path, "Rejecting publisher connection - already have a publisher");
                         let _ = conn.response_tx.send(
@@ -332,6 +372,25 @@ impl ProcessorNode for MoqPeerNode {
 
                 // Accept subscriber connections on /output path
                 Some(conn) = output_connection_rx.recv() => {
+                    // Auth check: subscriber needs subscribe permission
+                    if let Some(auth) = &conn.auth {
+                        let output_bc = &self.config.output_broadcast;
+
+                        if !auth.can_subscribe(output_bc) {
+                            tracing::warn!(
+                                path = %conn.path,
+                                broadcast = %output_bc,
+                                "Rejecting subscriber connection - subscribe permission denied"
+                            );
+                            let _ = conn.response_tx.send(
+                                streamkit_core::moq_gateway::MoqConnectionResult::Rejected(
+                                    format!("Subscribe permission denied for broadcast '{output_bc}'")
+                                )
+                            );
+                            continue;
+                        }
+                    }
+
                     tracing::info!(path = %conn.path, "Subscriber connecting");
 
                     let sub_count = subscriber_count.clone();

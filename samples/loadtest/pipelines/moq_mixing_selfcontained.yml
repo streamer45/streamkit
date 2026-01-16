@@ -27,6 +27,8 @@ nodes:
     params:
       broadcast: input
       url: http://localhost:4443
+      # Optional: JWT for authenticated relays (appended as `?jwt=...`).
+      # jwt: "<token>"
     needs: mic_pacer
 
   # Subscriber consumes the mic broadcast from MoQ (same as UI pipeline).
@@ -37,6 +39,8 @@ nodes:
       broadcast: input
       max_retries: 5
       url: http://localhost:4443
+      # Optional: JWT for authenticated relays (appended as `?jwt=...`).
+      # jwt: "<token>"
 
   # Music bed (file-based).
   music_file_reader:
@@ -91,4 +95,6 @@ nodes:
     params:
       broadcast: output
       url: http://localhost:4443
+      # Optional: JWT for authenticated relays (appended as `?jwt=...`).
+      # jwt: "<token>"
     needs: encoder

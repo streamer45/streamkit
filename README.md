@@ -88,7 +88,7 @@ If you try it and something feels off, please open an issue (or a small PR). For
 The fastest way to get started is using pre-built Docker images from GitHub Container Registry (GHCR). The image serves the web UI and includes sample pipelines.
 
 > [!CAUTION]
-> StreamKit does not currently implement authentication. Do not expose it directly to the public internet. Bind to localhost (recommended) or put it behind an authenticating reverse proxy and a trusted role header. See <https://streamkit.dev/guides/security/>.
+> StreamKit ships with built-in authentication (auto-enabled on non-loopback binds). If you see the login page, run `skit auth print-admin-token` and paste the token; admins can mint additional tokens in **Admin → Access Tokens**. Do not disable auth when exposing it beyond localhost; see <https://streamkit.dev/guides/authentication/> and <https://streamkit.dev/guides/security/>.
 
 > [!NOTE]
 > Official Docker images are published for `linux/amd64` (x86_64). On ARM hosts (Raspberry Pi, Apple Silicon, etc.), use “Build from Source” or run with amd64 emulation.
@@ -111,11 +111,29 @@ docker run --rm \
 The `:latest-demo` image bundles core plugins plus the models needed by the shipped sample pipelines (much larger image; intended for demos/evaluation, not production).
 
 ```bash
-docker run --rm \
+docker run --rm --name streamkit-demo \
   -p 127.0.0.1:4545:4545/tcp \
   -p 127.0.0.1:4545:4545/udp \
   ghcr.io/streamer45/streamkit:latest-demo
 ```
+
+> [!NOTE]
+> In Docker, StreamKit binds to `0.0.0.0` inside the container so published ports work. With `auth.mode=auto`, this means built-in auth is enabled by default.
+> To log in, print the bootstrap admin token and paste it into `http://localhost:4545/login`:
+>
+> ```bash
+> docker exec streamkit-demo skit auth print-admin-token --raw
+> ```
+
+> [!NOTE]
+> Linux-only (no login): run with host networking and bind to loopback inside the container to keep auth disabled in `auth.mode=auto`:
+>
+> ```bash
+> docker run --rm --name streamkit-demo \
+>   --network host \
+>   -e SK_SERVER__ADDRESS=127.0.0.1:4545 \
+>   ghcr.io/streamer45/streamkit:latest-demo
+> ```
 
 If you want the OpenAI-powered sample pipelines, pass `OPENAI_API_KEY` without putting it directly in the command:
 

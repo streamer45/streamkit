@@ -61,6 +61,7 @@ export default defineConfig({
 						{ label: 'Observability', slug: 'guides/observability' },
 						{ label: 'Script Node', slug: 'guides/script-node' },
 						{ label: 'Using the Web UI', slug: 'guides/web-ui' },
+						{ label: 'Authentication', slug: 'guides/authentication' },
 						{ label: 'Security', slug: 'guides/security' },
 						{ label: 'Development Workflow', slug: 'guides/development' },
 						{ label: 'Writing Plugins', slug: 'guides/writing-plugins' },

@@ -198,6 +198,47 @@ impl Permissions {
         }
     }
 
+    /// Create viewer role permissions (read-only access)
+    ///
+    /// Viewers can list and read sessions, nodes, and samples, but cannot
+    /// create, modify, or delete anything. This role is useful for monitoring
+    /// dashboards or read-only API access.
+    pub fn viewer() -> Self {
+        Self {
+            // Read-only: can view but not mutate
+            create_sessions: false,
+            destroy_sessions: false,
+            list_sessions: true,
+            modify_sessions: false,
+            tune_nodes: false,
+            load_plugins: false,
+            delete_plugins: false,
+            list_nodes: true,
+            list_samples: true,
+            read_samples: true,
+            write_samples: false,
+            delete_samples: false,
+            allowed_samples: vec![
+                // Viewers can read standard samples
+                "oneshot/*.yml".to_string(),
+                "oneshot/*.yaml".to_string(),
+                "dynamic/*.yml".to_string(),
+                "dynamic/*.yaml".to_string(),
+                "user/*.yml".to_string(),
+                "user/*.yaml".to_string(),
+            ],
+            allowed_nodes: vec!["*".to_string()], // Can see all node types
+            allowed_plugins: vec!["*".to_string()], // Can see all plugins
+            access_all_sessions: false,           // Can only view own sessions
+            upload_assets: false,
+            delete_assets: false,
+            allowed_assets: vec![
+                // Viewers can see system audio assets
+                "samples/audio/system/*".to_string(),
+            ],
+        }
+    }
+
     /// Convert to API PermissionsInfo (without allowlists)
     pub const fn to_info(&self) -> PermissionsInfo {
         PermissionsInfo {
@@ -279,12 +320,13 @@ impl Permissions {
 /// Permission configuration section for skit.toml.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PermissionsConfig {
-    /// Default role for unauthenticated requests
+    /// Default role for requests without an authenticated role
     ///
-    /// Note: StreamKit does not implement authentication by itself; this value becomes the
-    /// effective role for any request that is not assigned a role by an external auth layer.
-    /// For production deployments, set this to a least-privileged role and put an auth layer
-    /// (or reverse proxy) in front of the server.
+    /// When built-in auth is disabled, this becomes the effective role for requests that are not
+    /// assigned a role via a trusted role header or `SK_ROLE`.
+    ///
+    /// For production deployments, prefer enabling built-in auth (`[auth].mode`) or running behind
+    /// an authenticating reverse proxy that sets `[permissions].role_header`.
     #[serde(default = "default_default_role")]
     pub default_role: String,
 
@@ -298,11 +340,13 @@ pub struct PermissionsConfig {
     #[serde(default)]
     pub role_header: Option<String>,
 
-    /// Allow starting the server on a non-loopback address without a trusted role header.
+    /// Allow starting the server on a non-loopback address without built-in auth or a trusted role
+    /// header.
     ///
-    /// StreamKit does not implement authentication; without `role_header`, all requests fall back to
-    /// `SK_ROLE`/`default_role`. Binding to a non-loopback address without a trusted auth layer is
-    /// unsafe and the server will refuse to start unless this flag is set.
+    /// This only applies when built-in auth is disabled.
+    ///
+    /// This is unsafe: all requests fall back to `SK_ROLE`/`default_role`. The server refuses to
+    /// start in this configuration unless this flag is set.
     #[serde(default)]
     pub allow_insecure_no_auth: bool,
 
@@ -342,6 +386,7 @@ fn default_roles() -> HashMap<String, Permissions> {
     let mut roles = HashMap::new();
     roles.insert("admin".to_string(), Permissions::admin());
     roles.insert("user".to_string(), Permissions::user());
+    roles.insert("viewer".to_string(), Permissions::viewer());
     roles
 }
 

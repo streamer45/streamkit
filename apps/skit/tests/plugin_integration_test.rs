@@ -64,7 +64,7 @@ impl TestServer {
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
         let handle = tokio::spawn(async move {
-            let (app, _state) = streamkit_server::server::create_app(config);
+            let (app, _state) = streamkit_server::server::create_app(config, None);
             axum::serve(listener, app.into_make_service())
                 .with_graceful_shutdown(async move {
                     let _ = shutdown_rx.await;

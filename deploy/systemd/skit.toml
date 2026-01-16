@@ -8,6 +8,13 @@
 [server]
 address = "127.0.0.1:4545"
 
+[auth]
+# Built-in auth is disabled on loopback by default (auth.mode=auto), but will auto-enable if you
+# later bind to a non-loopback address. Keep auth state in the systemd StateDirectory so it
+# persists across upgrades.
+mode = "auto"
+state_dir = "/var/lib/streamkit/auth"
+
 [plugins]
 # Persist dynamically loaded plugins across upgrades.
 directory = "/var/lib/streamkit/plugins"
@@ -16,4 +23,3 @@ directory = "/var/lib/streamkit/plugins"
 console_enable = true
 file_enable = false
 console_level = "info"
-

@@ -26,11 +26,29 @@ This guide covers building and running StreamKit Docker images. The official “
 ```bash
 docker build -f Dockerfile.demo -t streamkit:demo .
 
-docker run \
+docker run --rm --name streamkit-demo \
   -p 127.0.0.1:4545:4545/tcp \
   -p 127.0.0.1:4545:4545/udp \
   streamkit:demo
 ```
+
+> [!NOTE]
+> The demo image binds to `0.0.0.0:4545` inside the container so published ports work. With `auth.mode=auto`, built-in auth is enabled by default.
+> To log in, print the bootstrap admin token and paste it into `http://localhost:4545/login`:
+>
+> ```bash
+> docker exec streamkit-demo skit auth print-admin-token --raw
+> ```
+
+> [!NOTE]
+> Linux-only (no login): run with host networking and bind to loopback inside the container to keep auth disabled in `auth.mode=auto`:
+>
+> ```bash
+> docker run --rm --name streamkit-demo \
+>   --network host \
+>   -e SK_SERVER__ADDRESS=127.0.0.1:4545 \
+>   streamkit:demo
+> ```
 
 If you want the OpenAI-powered sample pipelines, pass `OPENAI_API_KEY` without putting it directly in the command:
 
@@ -105,6 +123,28 @@ docker run --rm -d --name streamkit \
   streamkit:latest
 
 # Note: the image defaults to `skit serve` (you can also pass it explicitly).
+
+> [!CAUTION]
+> StreamKit ships with built-in authentication (auto-enabled on non-loopback binds, including Docker’s `0.0.0.0`).
+> If you see the login page, fetch the bootstrap admin token with:
+>
+> ```bash
+> docker exec streamkit skit auth print-admin-token
+> ```
+>
+> The default token path inside the container is `/opt/streamkit/.streamkit/auth/admin.token`.
+> Mount `/opt/streamkit/.streamkit` (or set `[auth].state_dir`) if you want the auth state persisted across restarts.
+>
+> Linux-only (frictionless demo): run with host networking and bind to loopback inside the container to keep auth disabled in `auth.mode=auto`:
+>
+> ```bash
+> docker run --rm -d --name streamkit \
+>   --network host \
+>   -e SK_SERVER__ADDRESS=127.0.0.1:4545 \
+>   -v $(pwd)/models:/opt/streamkit/models:ro \
+>   -v $(pwd)/.plugins:/opt/streamkit/plugins:ro \
+>   streamkit:latest
+> ```
 
 # Open http://localhost:4545 in your browser
 # To stop: docker stop streamkit

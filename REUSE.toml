@@ -86,6 +86,7 @@ SPDX-License-Identifier = "MPL-2.0"
 [[annotations]]
 path = [
   "target/**",
+  ".streamkit/**",
   "node_modules/**",
   "dist/**",
   "build/**",

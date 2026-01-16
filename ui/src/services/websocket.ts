@@ -441,7 +441,24 @@ export function getWebSocketService(): WebSocketService {
     const devWsUrl = import.meta.env.VITE_WS_URL;
 
     const wsUrl =
-      devWsUrl ||
+      (devWsUrl
+        ? (() => {
+            // Keep cookie-based auth working in dev when mixing localhost and 127.0.0.1.
+            // Cookies are keyed by hostname; if the UI is on localhost but the WS URL uses
+            // 127.0.0.1 (or vice-versa), the session cookie won't be sent.
+            try {
+              const url = new URL(devWsUrl);
+              const isLoopback = (host: string) => host === 'localhost' || host === '127.0.0.1';
+              if (isLoopback(url.hostname) && isLoopback(window.location.hostname)) {
+                url.hostname = window.location.hostname;
+                return url.toString();
+              }
+            } catch {
+              // Ignore and fall back to the raw value.
+            }
+            return devWsUrl;
+          })()
+        : undefined) ||
       (() => {
         // Fallback for production: check for <base> tag to handle subpath deployments
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';

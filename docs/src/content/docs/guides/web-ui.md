@@ -17,6 +17,14 @@ just skit serve
 just dev  # For development with hot reload
 ```
 
+If auth is enabled, you’ll be redirected to `/login`. Print the bootstrap admin token and paste it into the UI:
+
+```bash
+skit auth print-admin-token
+```
+
+See the [Authentication guide](/guides/authentication/) for details.
+
 ## Main Routes
 
 The Web UI has four main routes:

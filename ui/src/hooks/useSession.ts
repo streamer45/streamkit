@@ -7,7 +7,7 @@ import { useEffect, useCallback } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { useShallow } from 'zustand/shallow';
 
-import { getApiUrl } from '@/services/base';
+import { fetchApi } from '@/services/base';
 import { getWebSocketService } from '@/services/websocket';
 import { useNodeParamsStore } from '@/stores/nodeParamsStore';
 import { useSessionStore } from '@/stores/sessionStore';
@@ -16,8 +16,7 @@ import type { Pipeline, NodeState, Request, MessageType, BatchOperation } from '
 const EMPTY_NODE_STATES: Record<string, NodeState> = Object.freeze({});
 
 async function fetchPipeline(sessionId: string): Promise<Pipeline> {
-  const apiUrl = getApiUrl();
-  const response = await fetch(`${apiUrl}/api/v1/sessions/${sessionId}/pipeline`);
+  const response = await fetchApi(`/api/v1/sessions/${sessionId}/pipeline`);
   if (!response.ok) {
     throw new Error(`Failed to fetch pipeline: ${response.statusText}`);
   }

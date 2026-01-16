@@ -29,6 +29,10 @@ vi.mock('@/utils/logger', () => ({
 
 vi.mock('./base', () => ({
   getApiUrl: () => 'http://localhost:4545',
+  fetchApi: (path: string, options: RequestInit = {}) => {
+    const normalized = path.startsWith('/') ? path : `/${path}`;
+    return fetch(`http://localhost:4545${normalized}`, { ...options, credentials: 'include' });
+  },
 }));
 
 describe('converter service', () => {

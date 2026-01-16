@@ -68,6 +68,11 @@ impl MoqGateway {
 
     /// Handle an incoming WebTransport connection by routing it to the appropriate node
     ///
+    /// # Arguments
+    /// * `session` - The WebTransport session
+    /// * `path` - The URL path from the connection
+    /// * `auth` - Optional auth context (None when auth is disabled)
+    ///
     /// # Errors
     ///
     /// Returns an error if:
@@ -81,6 +86,7 @@ impl MoqGateway {
         &self,
         session: moq_native::web_transport_quinn::Session,
         path: String,
+        auth: Option<Arc<dyn streamkit_core::moq_gateway::MoqAuthChecker>>,
     ) -> Result<(), String> {
         debug!(path = %path, "Received WebTransport connection");
 
@@ -120,7 +126,8 @@ impl MoqGateway {
             // Type-erase the WebTransport session
             let session_boxed: streamkit_core::moq_gateway::WebTransportSession = Box::new(session);
 
-            let conn = MoqConnection { path: path.clone(), session: session_boxed, response_tx };
+            let conn =
+                MoqConnection { path: path.clone(), session: session_boxed, response_tx, auth };
 
             // Send connection to the node
             if connection_tx.send(conn).is_err() {

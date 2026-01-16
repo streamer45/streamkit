@@ -1001,6 +1001,18 @@ e2e-headed: build-ui install-e2e
     @cargo build -p streamkit-server --bin skit
     @cd e2e && bun run test:headed
 
+# Run E2E tests with built-in auth enabled
+e2e-auth: build-ui install-e2e
+    @echo "Building skit (debug)..."
+    @cargo build -p streamkit-server --bin skit
+    @echo "Running E2E tests (auth enabled)..."
+    @cd e2e && E2E_AUTH=1 bun run test
+
+# Run E2E tests with built-in auth enabled + headed browser
+e2e-auth-headed: build-ui install-e2e
+    @cargo build -p streamkit-server --bin skit
+    @cd e2e && E2E_AUTH=1 bun run test:headed
+
 # Run E2E against external server
 e2e-external url:
     @echo "Running E2E tests against {{url}}..."

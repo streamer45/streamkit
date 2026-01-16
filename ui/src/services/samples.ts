@@ -9,7 +9,7 @@
 import type { SamplePipeline, SavePipelineRequest } from '@/types/generated/api-types';
 import { getLogger } from '@/utils/logger';
 
-import { getApiUrl } from './base';
+import { fetchApi } from './base';
 
 const logger = getLogger('samples');
 
@@ -18,12 +18,9 @@ const logger = getLogger('samples');
  * @returns A promise that resolves to an array of sample pipelines
  */
 export async function listSamples(): Promise<SamplePipeline[]> {
-  const apiUrl = getApiUrl();
-  const endpoint = `${apiUrl}/api/v1/samples/oneshot`;
+  logger.info('Fetching sample pipelines');
 
-  logger.info('Fetching sample pipelines from:', endpoint);
-
-  const response = await fetch(endpoint, {
+  const response = await fetchApi('/api/v1/samples/oneshot', {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
@@ -68,12 +65,9 @@ export async function listAllSamples(): Promise<SamplePipeline[]> {
  * @returns A promise that resolves to an array of dynamic sample pipelines
  */
 export async function listDynamicSamples(): Promise<SamplePipeline[]> {
-  const apiUrl = getApiUrl();
-  const endpoint = `${apiUrl}/api/v1/samples/dynamic`;
+  logger.info('Fetching dynamic sample pipelines');
 
-  logger.info('Fetching dynamic sample pipelines from:', endpoint);
-
-  const response = await fetch(endpoint, {
+  const response = await fetchApi('/api/v1/samples/dynamic', {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
@@ -102,12 +96,9 @@ export async function listDynamicSamples(): Promise<SamplePipeline[]> {
  * @returns A promise that resolves to the sample pipeline
  */
 export async function getSample(id: string): Promise<SamplePipeline> {
-  const apiUrl = getApiUrl();
-  const endpoint = `${apiUrl}/api/v1/samples/oneshot/${encodeURIComponent(id)}`;
-
   logger.info('Fetching sample pipeline:', id);
 
-  const response = await fetch(endpoint, {
+  const response = await fetchApi(`/api/v1/samples/oneshot/${encodeURIComponent(id)}`, {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
@@ -137,12 +128,9 @@ export async function getSample(id: string): Promise<SamplePipeline> {
  * @returns A promise that resolves to the created sample pipeline
  */
 export async function saveSample(request: SavePipelineRequest): Promise<SamplePipeline> {
-  const apiUrl = getApiUrl();
-  const endpoint = `${apiUrl}/api/v1/samples/oneshot`;
-
   logger.info('Saving user pipeline:', request.name);
 
-  const response = await fetch(endpoint, {
+  const response = await fetchApi('/api/v1/samples/oneshot', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -175,12 +163,9 @@ export async function saveSample(request: SavePipelineRequest): Promise<SamplePi
  * @returns A promise that resolves when the deletion is complete
  */
 export async function deleteSample(id: string): Promise<void> {
-  const apiUrl = getApiUrl();
-  const endpoint = `${apiUrl}/api/v1/samples/oneshot/${encodeURIComponent(id)}`;
-
   logger.info('Deleting user pipeline:', id);
 
-  const response = await fetch(endpoint, {
+  const response = await fetchApi(`/api/v1/samples/oneshot/${encodeURIComponent(id)}`, {
     method: 'DELETE',
   });
 
