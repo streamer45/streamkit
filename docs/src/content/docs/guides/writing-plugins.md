@@ -28,7 +28,7 @@ Runtime plugin upload is powerful and dangerous:
 - Treat runtime plugin upload/delete as an admin-only feature: use built-in authentication (recommended) or a trusted reverse proxy + role header for access control.
 - HTTP plugin upload/delete is globally disabled by default. To enable it, set `[plugins].allow_http_management = true` and ensure only trusted callers have the `load_plugins` / `delete_plugins` permissions.
 
-See the [Security guide](/guides/security/) for recommended deployment patterns.
+See [Security Configuration](/guides/security-configuration/) for recommended deployment patterns.
 
 Uploaded plugins are stored under your configured plugin directory (default: `.plugins/`), in subfolders:
 

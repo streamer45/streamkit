@@ -19,7 +19,7 @@ Each GitHub Release includes a Linux x86_64 tarball containing both binaries:
 Install steps:
 
 ```bash
-TAG=v0.1.0 # replace with the latest release tag
+TAG=v0.2.0 # replace with the latest release tag
 curl -LO https://github.com/streamer45/streamkit/releases/download/${TAG}/streamkit-${TAG}-linux-x64.tar.gz
 curl -LO https://github.com/streamer45/streamkit/releases/download/${TAG}/streamkit-${TAG}-linux-x64.tar.gz.sha256
 sha256sum -c streamkit-${TAG}-linux-x64.tar.gz.sha256

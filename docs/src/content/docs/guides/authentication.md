@@ -139,4 +139,4 @@ When auth is disabled, `allowed_origins = ["*"]` is allowed (and the server refl
 
 You can still run StreamKit behind a reverse proxy for TLS, firewalling, rate limiting, etc.
 
-If you prefer **external authentication** instead of StreamKit’s built-in auth, set `auth.mode = "disabled"` and configure a trusted role header (`[permissions].role_header`) that your proxy sets after authenticating the caller. See the [Security guide](/guides/security/).
+If you prefer **external authentication** instead of StreamKit’s built-in auth, set `auth.mode = "disabled"` and configure a trusted role header (`[permissions].role_header`) that your proxy sets after authenticating the caller. See [Authorization & Roles](/guides/authorization/).
