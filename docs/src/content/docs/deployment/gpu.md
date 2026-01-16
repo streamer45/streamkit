@@ -18,7 +18,7 @@ StreamKit can use NVIDIA GPUs for selected native ML plugins. GPU support depend
 ## Quick Start (GPU image)
 
 ```bash
-TAG=v0.1.0 # replace with the latest release tag
+TAG=v0.2.0 # replace with the latest release tag
 docker run --rm \
   --gpus all \
   -p 127.0.0.1:4545:4545/tcp \

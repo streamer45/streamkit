@@ -19,7 +19,7 @@ This guide gets you from zero to a working StreamKit installation in minutes.
 ### Option 1: Docker (recommended)
 
 ```bash
-TAG=v0.1.0 # replace with the latest release tag
+TAG=v0.2.0 # replace with the latest release tag
 docker run --rm -d --name streamkit \
   -p 127.0.0.1:4545:4545/tcp \
   -p 127.0.0.1:4545:4545/udp \
@@ -42,7 +42,7 @@ docker stop streamkit
 ### Option 2: GitHub Release + systemd (Linux)
 
 ```bash
-TAG=v0.1.0 # replace with the latest release tag
+TAG=v0.2.0 # replace with the latest release tag
 curl -fsSL https://raw.githubusercontent.com/streamer45/streamkit/${TAG}/deploy/systemd/install.sh -o streamkit-install.sh
 chmod +x streamkit-install.sh
 
@@ -84,7 +84,7 @@ docker exec streamkit skit auth print-admin-token
 If you’re on **Linux** and want a frictionless demo (no login), you can run with host networking and bind to loopback inside the container. In `auth.mode = "auto"`, this keeps built-in auth **disabled**:
 
 ```bash
-TAG=v0.1.0 # replace with the latest release tag
+TAG=v0.2.0 # replace with the latest release tag
 docker run --rm -d --name streamkit \
   --network host \
   -e SK_SERVER__ADDRESS=127.0.0.1:4545 \
