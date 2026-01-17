@@ -2291,7 +2291,12 @@ fn start_moq_webtransport_acceptor(
         match moq_config.init() {
             Ok(mut server) => {
                 // Store fingerprints in gateway for HTTP endpoint
-                let fingerprints = server.fingerprints().to_vec();
+                let fingerprints = server
+                    .tls_info()
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .fingerprints
+                    .clone();
                 gateway.set_fingerprints(fingerprints.clone()).await;
 
                 for (i, fp) in fingerprints.iter().enumerate() {

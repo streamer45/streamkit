@@ -293,16 +293,10 @@ impl MoqPullNode {
 
         let client = super::shared_insecure_client()?;
 
-        let session = client
-            .connect(url)
-            .await
-            .map_err(|e| StreamKitError::Runtime(format!("Failed to connect: {e}")))?;
-
         let origin = moq_lite::Origin::produce();
-        let _consumer_session =
-            moq_lite::Session::connect(session, None, origin.producer).await.map_err(|e| {
-                StreamKitError::Runtime(format!("Failed to create consumer session: {e}"))
-            })?;
+        let _consumer_session = client.connect(url, None, origin.producer).await.map_err(|e| {
+            StreamKitError::Runtime(format!("Failed to create consumer session: {e}"))
+        })?;
 
         // Subscribe to the specified broadcast.
         //
@@ -431,17 +425,11 @@ impl MoqPullNode {
 
         let client = super::shared_insecure_client()?;
 
-        let session = client
-            .connect(url)
-            .await
-            .map_err(|e| StreamKitError::Runtime(format!("Failed to connect: {e}")))?;
-
         // Create origin for consuming broadcasts only (no publishing to avoid cycles)
         let origin = moq_lite::Origin::produce();
-        let _consumer_session =
-            moq_lite::Session::connect(session, None, origin.producer).await.map_err(|e| {
-                StreamKitError::Runtime(format!("Failed to create consumer session: {e}"))
-            })?;
+        let _consumer_session = client.connect(url, None, origin.producer).await.map_err(|e| {
+            StreamKitError::Runtime(format!("Failed to create consumer session: {e}"))
+        })?;
 
         // Wait for broadcast to become available
         // Note: consume_broadcast() only works after announcement, so we primarily rely on announcements

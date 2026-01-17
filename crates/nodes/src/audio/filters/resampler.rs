@@ -5,7 +5,8 @@
 //! Audio resampler node - Changes playback speed by resampling audio data
 
 use async_trait::async_trait;
-use rubato::{FastFixedIn, Resampler};
+use audioadapter_buffers::direct::InterleavedSlice;
+use rubato::{Async, FixedAsync, PolynomialDegree, Resampler};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -47,7 +48,7 @@ const fn default_output_frame_size() -> usize {
 
 /// A node that resamples audio to convert between different sample rates.
 ///
-/// This node uses rubato's FastFixedIn resampler for efficient, good-quality resampling.
+/// This node uses rubato's async poly resampler with fixed input frames.
 /// Common use cases:
 /// - Converting 48kHz to 24kHz (downsampling)
 /// - Converting 16kHz to 48kHz (upsampling)
@@ -150,7 +151,7 @@ impl ProcessorNode for AudioResamplerNode {
         state_helpers::emit_initializing(&context.state_tx, &node_name);
 
         tracing::info!(
-            "AudioResamplerNode starting with target_sample_rate: {}Hz (chunk_frames: {}, using rubato FastFixedIn)",
+            "AudioResamplerNode starting with target_sample_rate: {}Hz (chunk_frames: {}, using rubato Async)",
             self.config.target_sample_rate,
             self.config.chunk_frames
         );
@@ -165,16 +166,13 @@ impl ProcessorNode for AudioResamplerNode {
         let mut total_output_samples = 0u64;
 
         // State variables for resampler (initialized on first audio packet)
-        let mut resampler: Option<FastFixedIn<f32>> = None;
+        let mut resampler: Option<Async<f32>> = None;
         let mut needs_resample: Option<bool> = None;
         let mut sample_rate: Option<u32> = None;
         let mut channels: Option<u16> = None;
         let mut output_sequence: u64 = 0;
         let mut output_timestamp_us: Option<u64> = None;
 
-        // Pre-allocated buffers for planar format conversion
-        // These will be resized as needed but reused across packets
-        let mut planar_input_buffer: Vec<Vec<f32>> = Vec::new();
         let mut sample_buffer: Vec<f32> = Vec::new(); // Buffer for accumulating input samples
         let mut sample_buffer_offset: usize = 0;
         let mut output_buffer: Vec<f32> = Vec::new(); // Buffer for accumulating output samples to exact frame size
@@ -227,14 +225,15 @@ impl ProcessorNode for AudioResamplerNode {
                                 num_channels
                             );
 
-                            // Create resampler once with fixed chunk size
+                            // Create resampler once with fixed chunk size.
                             resampler = Some(
-                                FastFixedIn::<f32>::new(
+                                Async::<f32>::new_poly(
                                     f64::from(output_rate) / f64::from(input_rate),
-                                    1.0, // Maximum relative ratio change (not used for FastFixedIn)
-                                    rubato::PolynomialDegree::Linear, // Fast linear interpolation
+                                    1.0, // Maximum relative ratio change (not used for fixed input)
+                                    PolynomialDegree::Linear, // Fast linear interpolation
                                     self.config.chunk_frames,
                                     num_channels,
+                                    FixedAsync::Input,
                                 )
                                 .map_err(|e| {
                                     StreamKitError::Runtime(format!(
@@ -242,10 +241,6 @@ impl ProcessorNode for AudioResamplerNode {
                                     ))
                                 })?,
                             );
-
-                            // Pre-allocate planar buffers
-                            planar_input_buffer =
-                                vec![Vec::with_capacity(self.config.chunk_frames); num_channels];
                         }
                     }
 
@@ -388,34 +383,23 @@ impl ProcessorNode for AudioResamplerNode {
                         let chunk_end = chunk_start + chunk_size_samples;
                         let chunk = &sample_buffer[chunk_start..chunk_end];
 
-                        // Clear planar buffers (keep capacity)
-                        for ch_buf in &mut planar_input_buffer {
-                            ch_buf.clear();
-                        }
+                        let input_adapter =
+                            InterleavedSlice::new(chunk, num_channels, self.config.chunk_frames)
+                                .map_err(|e| {
+                                    StreamKitError::Runtime(format!(
+                                        "Invalid resampler input buffer: {e}"
+                                    ))
+                                })?;
 
-                        // Convert chunk to planar format
-                        for frame_idx in 0..self.config.chunk_frames {
-                            for ch in 0..num_channels {
-                                planar_input_buffer[ch].push(chunk[frame_idx * num_channels + ch]);
-                            }
-                        }
-
-                        // Resample
-                        let planar_output =
-                            resampler_ref.process(&planar_input_buffer, None).map_err(|e| {
+                        let output =
+                            resampler_ref.process(&input_adapter, 0, None).map_err(|e| {
                                 StreamKitError::Runtime(format!("Resampling failed: {e}"))
                             })?;
 
-                        // Convert planar output back to interleaved format
-                        let output_frames = planar_output[0].len();
+                        let interleaved_output = output.take_data();
+                        total_output_samples += interleaved_output.len() as u64;
                         if self.config.output_frame_size > 0 {
-                            output_buffer.reserve(output_frames * num_channels);
-                            for frame_idx in 0..output_frames {
-                                for channel_data in planar_output.iter().take(num_channels) {
-                                    output_buffer.push(channel_data[frame_idx]);
-                                }
-                            }
-                            total_output_samples += (output_frames * num_channels) as u64;
+                            output_buffer.extend_from_slice(&interleaved_output);
 
                             let output_frame_samples = self.config.output_frame_size * num_channels;
                             while output_buffer.len().saturating_sub(output_buffer_offset)
@@ -469,15 +453,6 @@ impl ProcessorNode for AudioResamplerNode {
                                 output_buffer_offset = 0;
                             }
                         } else {
-                            let mut interleaved_output =
-                                Vec::with_capacity(output_frames * num_channels);
-                            for frame_idx in 0..output_frames {
-                                for channel_data in planar_output.iter().take(num_channels) {
-                                    interleaved_output.push(channel_data[frame_idx]);
-                                }
-                            }
-                            total_output_samples += interleaved_output.len() as u64;
-
                             let frames_per_channel = interleaved_output.len() / num_channels;
                             let duration_us = Self::duration_us_for_frames(
                                 target_sample_rate,
@@ -561,41 +536,33 @@ impl ProcessorNode for AudioResamplerNode {
                 let output_rate = self.config.target_sample_rate;
 
                 // Create a temporary resampler for the remainder
-                let mut remainder_resampler = FastFixedIn::<f32>::new(
+                let mut remainder_resampler = Async::<f32>::new_poly(
                     f64::from(output_rate) / f64::from(input_rate),
                     1.0,
-                    rubato::PolynomialDegree::Linear,
+                    PolynomialDegree::Linear,
                     remaining_frames,
                     num_channels,
+                    FixedAsync::Input,
                 )
                 .map_err(|e| {
                     StreamKitError::Runtime(format!("Failed to create remainder resampler: {e}"))
                 })?;
 
-                // Convert remaining samples to planar
-                let mut planar_remainder: Vec<Vec<f32>> =
-                    vec![Vec::with_capacity(remaining_frames); num_channels];
                 let remainder_samples = &sample_buffer[sample_buffer_offset..];
-                for frame_idx in 0..remaining_frames {
-                    for ch in 0..num_channels {
-                        planar_remainder[ch].push(remainder_samples[frame_idx * num_channels + ch]);
-                    }
-                }
+                let remainder_adapter =
+                    InterleavedSlice::new(remainder_samples, num_channels, remaining_frames)
+                        .map_err(|e| {
+                            StreamKitError::Runtime(format!(
+                                "Invalid remainder resampler input buffer: {e}"
+                            ))
+                        })?;
 
-                // Resample remainder
-                let planar_output =
-                    remainder_resampler.process(&planar_remainder, None).map_err(|e| {
+                let interleaved_output = remainder_resampler
+                    .process(&remainder_adapter, 0, None)
+                    .map_err(|e| {
                         StreamKitError::Runtime(format!("Resampling remainder failed: {e}"))
-                    })?;
-
-                // Convert to interleaved
-                let output_frames = planar_output[0].len();
-                let mut interleaved_output = Vec::with_capacity(output_frames * num_channels);
-                for frame_idx in 0..output_frames {
-                    for channel_data in planar_output.iter().take(num_channels) {
-                        interleaved_output.push(channel_data[frame_idx]);
-                    }
-                }
+                    })?
+                    .take_data();
 
                 total_output_samples += interleaved_output.len() as u64;
 
@@ -658,8 +625,11 @@ impl ProcessorNode for AudioResamplerNode {
                         output_buffer_offset = 0;
                     }
                 } else {
-                    let duration_us =
-                        Self::duration_us_for_frames(self.config.target_sample_rate, output_frames);
+                    let frames_per_channel = interleaved_output.len() / num_channels;
+                    let duration_us = Self::duration_us_for_frames(
+                        self.config.target_sample_rate,
+                        frames_per_channel,
+                    );
                     let metadata = PacketMetadata {
                         timestamp_us: output_timestamp_us,
                         duration_us: Some(duration_us),

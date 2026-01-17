@@ -43,13 +43,13 @@ futures = { workspace = true }
 ogg = { version = "0.9.2", optional = true, features = ["async"] }
 opus = { version = "0.3.1", optional = true }
 url = { version = "2.5.8", optional = true, features = ["serde"] }
-rquickjs = { version = "0.10", features = ["array-buffer", "futures", "loader", "parallel"], optional = true }
+rquickjs = { version = "0.11", features = ["array-buffer", "futures", "loader", "parallel"], optional = true }
 wildmatch = { version = "2.6", optional = true }
 
 moq-transport = { version = "0.12.1", optional = true }
-moq-native = { version = "0.10.1", optional = true }
-moq-lite = { version = "0.10.1", optional = true }
-hang = { version = "0.9.1", optional = true }
+moq-native = { version = "0.11.0", optional = true }
+moq-lite = { version = "0.11.0", optional = true }
+hang = { version = "0.10.0", optional = true }
 
 # For local dev, debugging moq stuff
 # moq-transport = { version = "0.11.0", optional = true }
@@ -58,13 +58,14 @@ hang = { version = "0.9.1", optional = true }
 # hang = { path = "../../moq/rs/hang", optional = true }
 
 serde_json = { version = "1.0", optional = true }
-reqwest = { version = "0.12", optional = true, default-features = false, features = [
-  "rustls-tls",
+reqwest = { version = "0.13", optional = true, default-features = false, features = [
+  "rustls",
   "stream",
 ] }
 tempfile = { version = "3.24", optional = true }
 uuid = { version = "1", optional = true, features = ["v4"] }
-rubato = { version = "0.16", optional = true }
+rubato = { version = "1.0", optional = true }
+audioadapter-buffers = { version = "2.0", optional = true }
 symphonia = { version = "0.5.5", optional = true, default-features = false, features = [
   "mp3",
   "wav",
@@ -98,7 +99,7 @@ default = [
 passthrough = ["dep:schemars"]
 audio_gain = ["dep:schemars"]
 audio_mixer = ["dep:schemars", "dep:serde_json"]
-audio_resampler = ["dep:schemars", "dep:rubato"]
+audio_resampler = ["dep:schemars", "dep:rubato", "dep:audioadapter-buffers"]
 audio_pacer = ["dep:schemars"]
 file_io = ["dep:schemars"]
 pacer = ["dep:schemars"]
