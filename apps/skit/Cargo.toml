@@ -25,7 +25,7 @@ streamkit-plugin-wasm = { workspace = true }
 streamkit-plugin-native = { workspace = true }
 
 # For building the command-line interface
-clap = { version = "4.5.53", features = ["derive"] }
+clap = { version = "4.5.54", features = ["derive"] }
 
 # For layered configuration management
 figment = { version = "0.10.19", features = ["toml", "env"] }
@@ -34,10 +34,10 @@ figment = { version = "0.10.19", features = ["toml", "env"] }
 serde = { workspace = true, features = ["derive"] }
 serde-saphyr = { workspace = true }
 serde_json = "1.0"
-schemars = "1.1.0"
+schemars = "1.2.0"
 
 # For serializing the default config into TOML format
-toml = "0.9"
+toml = "0.9.11+spec-1.1.0"
 
 # For structured logging
 tracing = { workspace = true }
@@ -48,12 +48,12 @@ anyhow = "1.0"
 # For HTTP server
 axum = { version = "0.8", features = ["multipart", "ws"] }
 tokio = { workspace = true, features = ["full"] }
-tower = "0.5"
+tower = "0.5.3"
 tower-http = { version = "0.6", features = ["cors", "trace", "fs", "set-header"] }
-tokio-stream = "0.1"
+tokio-stream = "0.1.18"
 hyper = { version = "1.8", features = ["full"] }
 axum-server = { version = "0.8", features = ["tls-rustls"] }
-rustls = { version = "0.23", features = ["ring"] }
+rustls = { version = "0.23.36", features = ["ring"] }
 reqwest = { version = "0.12", features = ["multipart", "json"] }
 bytes = { workspace = true }
 futures = { workspace = true }
@@ -62,7 +62,7 @@ http-body-util = "0.1"
 multer = "3.1"
 
 # For embedding static files
-rust-embed = "8.9"
+rust-embed = "8.11"
 mime_guess = "2.0"
 
 # For OpenTelemetry OTLP integration
@@ -86,7 +86,7 @@ sysinfo = "0.37.2"
 
 # For tokio-console debugging (optional)
 console-subscriber = { version = "0.5", optional = true }
-time = { version = "0.3.44", features = ["formatting"] }
+time = { version = "0.3.45", features = ["formatting"] }
 
 # For CPU profiling (optional)
 # Uses frame-pointer unwinding for much faster stack traces (vs libunwind)
@@ -137,12 +137,12 @@ moq = ["dep:moq-native", "dep:moq-lite"]
 script = ["streamkit-nodes/script", "streamkit-engine/script"]
 
 [dev-dependencies]
-tokio-test = "0.4"
+tokio-test = "0.4.5"
 tokio-tungstenite = "0.28"
 futures-util = "0.3"
 ogg = "0.9.2"
-opus = "0.3"
-tempfile = "3.23"
+opus = "0.3.1"
+tempfile = "3.24"
 urlencoding = "2.1"
 
 [lints.rust]

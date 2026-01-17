@@ -33,7 +33,7 @@ tracing = { workspace = true }
 
 # For OpenTelemetry OTLP integration
 opentelemetry = { workspace = true, features = ["metrics", "trace"] }
-schemars = { version = "1.1.0", features = ["derive"], optional = true }
+schemars = { version = "1.2.0", features = ["derive"], optional = true }
 
 # For the mixer's concurrent input handling
 futures = { workspace = true }
@@ -41,8 +41,8 @@ futures = { workspace = true }
 # --- Optional Dependencies ---
 # These are only included if their corresponding feature is enabled.
 ogg = { version = "0.9.2", optional = true, features = ["async"] }
-opus = { version = "0.3", optional = true }
-url = { version = "2.5.7", optional = true, features = ["serde"] }
+opus = { version = "0.3.1", optional = true }
+url = { version = "2.5.8", optional = true, features = ["serde"] }
 rquickjs = { version = "0.10", features = ["array-buffer", "futures", "loader", "parallel"], optional = true }
 wildmatch = { version = "2.6", optional = true }
 
@@ -62,7 +62,7 @@ reqwest = { version = "0.12", optional = true, default-features = false, feature
   "rustls-tls",
   "stream",
 ] }
-tempfile = { version = "3", optional = true }
+tempfile = { version = "3.24", optional = true }
 uuid = { version = "1", optional = true, features = ["v4"] }
 rubato = { version = "0.16", optional = true }
 symphonia = { version = "0.5.5", optional = true, default-features = false, features = [
@@ -122,9 +122,9 @@ webm = ["dep:webm", "dep:schemars"]
 symphonia = ["dep:symphonia", "dep:schemars"]
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = "3.24"
 axum = "0.8"
-tower = "0.5"
+tower = "0.5.3"
 
 [lints]
 workspace = true
