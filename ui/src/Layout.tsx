@@ -11,9 +11,34 @@ import { useShallow } from 'zustand/shallow';
 import logo from './assets/logo.png';
 import { LayoutPresetButtons } from './components/LayoutPresetButtons';
 import { Button } from './components/ui/Button';
+import {
+  Dialog,
+  DialogBody,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogOverlay,
+  DialogPortal,
+  DialogTitle,
+  DialogTrigger,
+  FormGroup,
+  Input,
+  Label,
+} from './components/ui/Dialog';
 import { useTheme, type ColorMode } from './context/ThemeContext';
+import { fetchHealth } from './services/health';
 import { LAYOUT_PRESETS, useLayoutStore, type LayoutPreset } from './stores/layoutStore';
 import { usePermissionStore } from './stores/permissionStore';
+import { getLogger } from './utils/logger';
+
+const logger = getLogger('Layout');
+
+type BuildInfo = {
+  version: string;
+  buildHash: string;
+};
 
 const LayoutContainer = styled.div`
   display: flex;
@@ -42,6 +67,21 @@ const LogoContainer = styled.div`
   display: flex;
   align-items: center;
   user-select: none;
+`;
+
+const LogoButton = styled.button`
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+
+  &:focus-visible {
+    outline: none;
+    box-shadow: var(--sk-focus-ring);
+    border-radius: 8px;
+  }
 `;
 
 const Logo = styled.img`
@@ -190,6 +230,8 @@ const Main = styled.main`
 `;
 
 const Layout: React.FC = () => {
+  const [buildInfo, setBuildInfo] = React.useState<BuildInfo | null>(null);
+  const closeButtonRef = React.useRef<HTMLButtonElement | null>(null);
   const { colorMode, setColorMode } = useTheme();
   const role = usePermissionStore((s) => s.role);
   const { currentPreset, setPreset } = useLayoutStore(
@@ -204,12 +246,75 @@ const Layout: React.FC = () => {
     'focus-canvas',
     'inspector-focus',
   ];
+  const version = buildInfo?.version ?? 'unknown';
+  const buildHash = buildInfo?.buildHash ?? 'unknown';
+  const handleDialogOpenAutoFocus = React.useCallback((event: Event) => {
+    event.preventDefault();
+    closeButtonRef.current?.focus();
+  }, []);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    const controller = new AbortController();
+
+    (async () => {
+      try {
+        const info = await fetchHealth(controller.signal);
+        if (!cancelled) {
+          setBuildInfo(info);
+        }
+      } catch (err) {
+        const isAbortError = err instanceof Error && err.name === 'AbortError';
+        const isAbortRelated = err instanceof DOMException && err.name === 'AbortError';
+        if (!cancelled && !isAbortError && !isAbortRelated) {
+          logger.debug('Failed to load build info', err);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, []);
 
   return (
     <LayoutContainer>
       <Nav>
         <LogoContainer>
-          <Logo src={logo} alt="StreamKit" />
+          <Dialog>
+            <DialogTrigger asChild>
+              <LogoButton type="button" aria-label="About StreamKit">
+                <Logo src={logo} alt="StreamKit" />
+              </LogoButton>
+            </DialogTrigger>
+            <DialogPortal>
+              <DialogOverlay />
+              <DialogContent onOpenAutoFocus={handleDialogOpenAutoFocus}>
+                <DialogHeader>
+                  <DialogTitle>About StreamKit</DialogTitle>
+                  <DialogDescription>Build info for support and debugging.</DialogDescription>
+                </DialogHeader>
+                <DialogBody>
+                  <FormGroup spacing="compact">
+                    <Label htmlFor="about-version">Version</Label>
+                    <Input id="about-version" readOnly value={version} />
+                  </FormGroup>
+                  <FormGroup spacing="compact">
+                    <Label htmlFor="about-build-hash">Build hash</Label>
+                    <Input id="about-build-hash" readOnly value={buildHash} />
+                  </FormGroup>
+                </DialogBody>
+                <DialogFooter>
+                  <DialogClose asChild>
+                    <Button ref={closeButtonRef} variant="primary">
+                      Close
+                    </Button>
+                  </DialogClose>
+                </DialogFooter>
+              </DialogContent>
+            </DialogPortal>
+          </Dialog>
         </LogoContainer>
         <NavLinks>
           <StyledNavLink to="/design">Design</StyledNavLink>

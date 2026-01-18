@@ -85,10 +85,15 @@ async fn profile_heap_handler(
     crate::profiling::profile_heap().await
 }
 
+fn build_hash() -> &'static str {
+    option_env!("SKIT_BUILD_HASH").unwrap_or("unknown")
+}
+
 async fn health_handler() -> impl IntoResponse {
     Json(serde_json::json!({
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
+        "build_hash": build_hash(),
     }))
 }
 
@@ -2291,7 +2296,12 @@ fn start_moq_webtransport_acceptor(
         match moq_config.init() {
             Ok(mut server) => {
                 // Store fingerprints in gateway for HTTP endpoint
-                let fingerprints = server.fingerprints().to_vec();
+                let fingerprints = server
+                    .tls_info()
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .fingerprints
+                    .clone();
                 gateway.set_fingerprints(fingerprints.clone()).await;
 
                 for (i, fp) in fingerprints.iter().enumerate() {

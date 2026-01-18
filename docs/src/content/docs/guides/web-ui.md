@@ -25,6 +25,12 @@ skit auth print-admin-token
 
 See the [Authentication guide](/guides/authentication/) for details.
 
+## Finding Build Info
+
+Click the StreamKit logo in the top-left corner to open the About modal. It shows the server
+version and build hash (commit) for debugging or support. The same data is available from the
+`/healthz` endpoint.
+
 ## Main Routes
 
 The Web UI has four main routes:

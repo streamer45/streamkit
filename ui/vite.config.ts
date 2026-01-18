@@ -9,6 +9,30 @@ import path from 'path';
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
   const apiUrl = env.SK_SERVER__ADDRESS || '127.0.0.1:4545';
+  const moqHangWorkletFix = () => ({
+    name: 'moq-hang-worklet-fix',
+    resolveId(id: string, importer?: string) {
+      if (!importer) {
+        return null;
+      }
+
+      if (!importer.includes('@moq/hang')) {
+        return null;
+      }
+
+      if (id.startsWith('./') && id.includes('.ts?')) {
+        const queryIndex = id.indexOf('?');
+        const query = queryIndex === -1 ? '' : id.slice(queryIndex);
+        const base = queryIndex === -1 ? id : id.slice(0, queryIndex);
+        const resolved = path.resolve(path.dirname(importer.split('?')[0]), base)
+          .replace(/\.ts$/, '.js');
+
+        return `${resolved}${query}`;
+      }
+
+      return null;
+    },
+  });
 
   return {
     base: './', // Use relative paths for assets (required for subpath deployments)
@@ -18,6 +42,8 @@ export default defineConfig(({ mode }) => {
           plugins: ['babel-plugin-react-compiler'],
         },
       }),
+      // @moq/hang publishes a JS worklet file but imports it as .ts.
+      moqHangWorkletFix(),
     ],
     resolve: {
       alias: {

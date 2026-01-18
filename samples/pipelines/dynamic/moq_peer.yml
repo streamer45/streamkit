@@ -18,7 +18,7 @@ nodes:
       output_broadcast: output
       allow_reconnect: true
     # Loopback: send processed audio back into the peer for distribution to subscribers.
-    # This is an intentional bidirectional cycle (peer `out` → decode/process → encode → peer `in`).
+    # This is an intentional bidirectional cycle (peer `out` -> decode/process -> encode -> peer `in`).
     needs: opus_encoder
 
   opus_decoder:

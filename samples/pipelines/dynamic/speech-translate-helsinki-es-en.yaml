@@ -43,7 +43,7 @@ nodes:
       output_initial_delay_ms: 250
     needs: opus_encoder
 
-  # Decode Opus audio (48kHz stereo → PCM)
+  # Decode Opus audio (48kHz stereo -> PCM)
   opus_decoder:
     kind: audio::opus::decoder
     needs: moq_peer
@@ -84,7 +84,7 @@ nodes:
       mode: best_effort
 
   # ============================================================
-  # TRANSLATION: Spanish → English (Helsinki OPUS-MT)
+  # TRANSLATION: Spanish -> English (Helsinki OPUS-MT)
   # ============================================================
   helsinki_translate:
     kind: plugin::native::helsinki
