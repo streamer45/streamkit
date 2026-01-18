@@ -4,6 +4,7 @@
 
 //! MoQ Pull Node - subscribes to broadcasts from a MoQ server
 
+use super::constants::DEFAULT_AUDIO_FRAME_DURATION_US;
 use async_trait::async_trait;
 use bytes::Buf;
 use moq_lite::coding::Decode;
@@ -11,7 +12,8 @@ use moq_lite::AsPath;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::time::Duration;
-use streamkit_core::types::{Packet, PacketType};
+use streamkit_core::timing::MediaClock;
+use streamkit_core::types::{Packet, PacketMetadata, PacketType};
 use streamkit_core::{
     state_helpers, stats::NodeStatsTracker, InputPin, NodeContext, OutputPin, PinCardinality,
     ProcessorNode, StreamKitError,
@@ -241,11 +243,11 @@ enum StreamEndReason {
 impl MoqPullNode {
     fn strip_hang_timestamp_header(
         mut payload: bytes::Bytes,
-    ) -> Result<bytes::Bytes, moq_lite::Error> {
+    ) -> Result<(u64, bytes::Bytes), moq_lite::Error> {
         // hang protocol: frame payload is prefixed with a varint u64 timestamp in microseconds.
-        // We discard it here and forward the remaining bytes (Opus frame data).
-        let _timestamp_micros = u64::decode(&mut payload, moq_lite::lite::Version::Draft02)?;
-        Ok(payload.copy_to_bytes(payload.remaining()))
+        // We parse it and forward the remaining bytes (Opus frame data).
+        let timestamp_micros = u64::decode(&mut payload, moq_lite::lite::Version::Draft02)?;
+        Ok((timestamp_micros, payload.copy_to_bytes(payload.remaining())))
     }
 
     async fn read_next_raw_moq(
@@ -415,7 +417,7 @@ impl MoqPullNode {
 
     // MoQ connection state machine with multiplexed track handling and error recovery
     // High complexity is inherent to protocol handling (track management, object streaming, packet routing)
-    #[allow(clippy::cognitive_complexity)]
+    #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
     async fn run_connection(
         &self,
         context: &mut NodeContext,
@@ -527,6 +529,8 @@ impl MoqPullNode {
         let mut current_group: Option<moq_lite::GroupConsumer> = None;
 
         let mut session_packet_count: u32 = 0;
+        let mut last_timestamp_us: Option<u64> = None;
+        let mut clock = MediaClock::new(0);
         let mut consecutive_cancels: u32 = 0;
         let mut last_payload_at = tokio::time::Instant::now();
 
@@ -630,16 +634,34 @@ impl MoqPullNode {
                                 );
                             }
 
-                            let data = match Self::strip_hang_timestamp_header(payload) {
-                                Ok(data) => data,
-                                Err(e) => {
-                                    tracing::warn!("Failed to decode frame timestamp: {e}");
-                                    stats_tracker.discarded();
-                                    continue;
-                                },
+                            let (timestamp_us, data) =
+                                match Self::strip_hang_timestamp_header(payload) {
+                                    Ok(result) => result,
+                                    Err(e) => {
+                                        tracing::warn!("Failed to decode frame timestamp: {e}");
+                                        stats_tracker.discarded();
+                                        continue;
+                                    },
+                                };
+                            if last_timestamp_us.is_none() {
+                                clock.seed_from_timestamp_us(timestamp_us);
+                            }
+                            let duration_us = last_timestamp_us
+                                .and_then(|prev| timestamp_us.checked_sub(prev))
+                                .filter(|d| *d > 0)
+                                .or(Some(DEFAULT_AUDIO_FRAME_DURATION_US));
+                            let metadata = Some(PacketMetadata {
+                                timestamp_us: Some(timestamp_us),
+                                duration_us,
+                                sequence: None,
+                            });
+                            last_timestamp_us = Some(timestamp_us);
+
+                            let packet = Packet::Binary {
+                                data,
+                                content_type: None,
+                                metadata: metadata.clone(),
                             };
-                            let packet =
-                                Packet::Binary { data, content_type: None, metadata: None };
 
                             if track_pin_registered
                                 && track_pin_name != "out"
@@ -671,16 +693,31 @@ impl MoqPullNode {
                             );
                         }
 
-                        let data = match Self::strip_hang_timestamp_header(first_payload) {
-                            Ok(data) => data,
-                            Err(e) => {
-                                tracing::warn!("Failed to decode frame timestamp: {e}");
-                                stats_tracker.discarded();
-                                continue;
-                            },
-                        };
+                        let (timestamp_us, data) =
+                            match Self::strip_hang_timestamp_header(first_payload) {
+                                Ok(result) => result,
+                                Err(e) => {
+                                    tracing::warn!("Failed to decode frame timestamp: {e}");
+                                    stats_tracker.discarded();
+                                    continue;
+                                },
+                            };
+                        if last_timestamp_us.is_none() {
+                            clock.seed_from_timestamp_us(timestamp_us);
+                        }
+                        let duration_us = last_timestamp_us
+                            .and_then(|prev| timestamp_us.checked_sub(prev))
+                            .filter(|d| *d > 0)
+                            .or(Some(DEFAULT_AUDIO_FRAME_DURATION_US));
+                        let metadata = Some(PacketMetadata {
+                            timestamp_us: Some(timestamp_us),
+                            duration_us,
+                            sequence: None,
+                        });
+                        last_timestamp_us = Some(timestamp_us);
 
-                        let packet = Packet::Binary { data, content_type: None, metadata: None };
+                        let packet =
+                            Packet::Binary { data, content_type: None, metadata: metadata.clone() };
                         if track_pin_registered
                             && track_pin_name != "out"
                             && context
@@ -778,10 +815,11 @@ mod tests {
         buf.extend_from_slice(b"opus-frame-bytes");
         let payload = buf.freeze();
 
-        let stripped = match MoqPullNode::strip_hang_timestamp_header(payload) {
+        let (ts, stripped) = match MoqPullNode::strip_hang_timestamp_header(payload) {
             Ok(stripped) => stripped,
             Err(e) => panic!("decode failed: {e}"),
         };
+        assert_eq!(ts, 123);
         assert_eq!(&stripped[..], b"opus-frame-bytes");
     }
 }

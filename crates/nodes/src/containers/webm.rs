@@ -10,10 +10,10 @@ use std::borrow::Cow;
 use std::io::{Cursor, Seek, SeekFrom, Write};
 use std::sync::{Arc, Mutex};
 use streamkit_core::stats::NodeStatsTracker;
-use streamkit_core::types::{Packet, PacketType};
+use streamkit_core::types::{Packet, PacketMetadata, PacketType};
 use streamkit_core::{
-    state_helpers, InputPin, NodeContext, NodeRegistry, OutputPin, PinCardinality, ProcessorNode,
-    StreamKitError,
+    state_helpers, timing::MediaClock, InputPin, NodeContext, NodeRegistry, OutputPin,
+    PinCardinality, ProcessorNode, StreamKitError,
 };
 use webm::mux::{AudioCodecId, SegmentBuilder, SegmentMode, Writer};
 
@@ -21,6 +21,8 @@ use webm::mux::{AudioCodecId, SegmentBuilder, SegmentMode, Writer};
 
 /// Default chunk size for flushing buffers
 const DEFAULT_CHUNK_SIZE: usize = 65536;
+/// Default frame duration when metadata is missing (20ms Opus frame).
+const DEFAULT_FRAME_DURATION_US: u64 = 20_000;
 /// Opus codec lookahead at 48kHz in samples (typical libopus default).
 ///
 /// This is written to the OpusHead `pre_skip` field so decoders can trim encoder delay.
@@ -383,7 +385,7 @@ impl ProcessorNode for WebMMuxerNode {
         // so we flush it after adding the first frame below
         let mut segment = builder.build();
 
-        let mut current_timestamp_ns = 0u64;
+        let mut clock = MediaClock::new(0);
         let mut header_sent = false;
 
         tracing::info!("WebM segment built, entering receive loop to process incoming packets");
@@ -398,21 +400,31 @@ impl ProcessorNode for WebMMuxerNode {
                 //     data.len()
                 // );
 
-                // Calculate timestamp from metadata
-                // For Opus: timestamps should be in nanoseconds
-                if let Some(meta) = &metadata {
-                    if let Some(timestamp_us) = meta.timestamp_us {
-                        current_timestamp_ns = timestamp_us * 1000;
-                    } else if let Some(duration_us) = meta.duration_us {
-                        current_timestamp_ns += duration_us * 1000;
-                    } else {
-                        // Fallback: assume 20ms per packet (standard Opus frame)
-                        current_timestamp_ns += 20_000_000; // 20ms in nanoseconds
-                    }
-                } else {
-                    // No metadata: fallback to assuming 20ms per packet
-                    current_timestamp_ns = packet_count * 20_000_000;
+                // Calculate timestamp from metadata (microseconds).
+                let incoming_ts_us = metadata.as_ref().and_then(|m| m.timestamp_us);
+                let incoming_duration_us = metadata
+                    .as_ref()
+                    .and_then(|m| m.duration_us)
+                    .or(Some(DEFAULT_FRAME_DURATION_US));
+
+                if let Some(ts) = incoming_ts_us {
+                    clock.seed_from_timestamp_us(ts);
+                } else if clock.timestamp_us() == 0 {
+                    clock.seed_from_timestamp_us(0);
                 }
+
+                let presentation_ts_us = incoming_ts_us.unwrap_or_else(|| clock.timestamp_us());
+
+                // Advance clock for next frame
+                clock.advance_by_duration_us(incoming_duration_us, DEFAULT_FRAME_DURATION_US);
+
+                let current_timestamp_ns = presentation_ts_us.saturating_mul(1000);
+
+                let output_metadata = Some(PacketMetadata {
+                    timestamp_us: Some(presentation_ts_us),
+                    duration_us: incoming_duration_us,
+                    sequence: metadata.as_ref().and_then(|m| m.sequence),
+                });
 
                 // For audio, all frames are effectively "keyframes" (can start playback from any point)
                 let is_keyframe = true;
@@ -492,7 +504,7 @@ impl ProcessorNode for WebMMuxerNode {
                                     content_type: Some(Cow::Borrowed(
                                         "audio/webm; codecs=\"opus\"",
                                     )),
-                                    metadata: metadata.clone(),
+                                    metadata: output_metadata.clone(),
                                 },
                             )
                             .await

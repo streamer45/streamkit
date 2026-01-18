@@ -16,6 +16,8 @@ use std::time::Instant;
 use streamkit_core::types::Packet;
 use tokio::sync::mpsc;
 
+const EWMA_ALPHA: f64 = 0.1;
+
 /// Information about a downstream connection.
 struct OutputConnection {
     tx: mpsc::Sender<Packet>,
@@ -44,8 +46,18 @@ pub struct PinDistributorActor {
     outputs_active_gauge: opentelemetry::metrics::Gauge<u64>,
     /// Telemetry: time spent blocked on downstream backpressure (send().await)
     send_wait_histogram: opentelemetry::metrics::Histogram<f64>,
+    /// Telemetry: depth of the distributor's incoming queue
+    queue_depth_gauge: opentelemetry::metrics::Gauge<u64>,
+    /// Telemetry: estimated backlog in bytes
+    queue_depth_bytes_gauge: opentelemetry::metrics::Gauge<u64>,
+    /// Telemetry: estimated backlog in media seconds (based on observed durations)
+    queue_depth_seconds_gauge: opentelemetry::metrics::Gauge<f64>,
     /// Pre-built metric labels - allocated once in new(), reused on every packet
     metric_labels: [opentelemetry::KeyValue; 2],
+    /// EWMA of packet size in bytes for this pin
+    avg_packet_size_bytes: f64,
+    /// EWMA of packet duration in seconds for this pin (when available)
+    avg_packet_duration_s: f64,
 }
 
 impl PinDistributorActor {
@@ -81,6 +93,20 @@ impl PinDistributorActor {
             .f64_histogram("pin_distributor.send_wait_seconds")
             .with_description("Time spent waiting for downstream capacity (backpressure)")
             .build();
+        let queue_depth_gauge = meter
+            .u64_gauge("pin_distributor.queue_depth")
+            .with_description("Current backlog of packets waiting to be distributed")
+            .build();
+        let queue_depth_bytes_gauge = meter
+            .u64_gauge("pin_distributor.queue_depth_bytes")
+            .with_description("Estimated backlog (bytes) at pin distributor input")
+            .build();
+        let queue_depth_seconds_gauge = meter
+            .f64_gauge("pin_distributor.queue_depth_seconds")
+            .with_description(
+                "Estimated backlog (seconds) at pin distributor input (from packet timing)",
+            )
+            .build();
 
         // Pre-build metric labels once - avoids allocation on every packet
         let metric_labels = [
@@ -100,7 +126,12 @@ impl PinDistributorActor {
             best_effort_drops_counter,
             outputs_active_gauge,
             send_wait_histogram,
+            queue_depth_gauge,
+            queue_depth_bytes_gauge,
+            queue_depth_seconds_gauge,
             metric_labels,
+            avg_packet_size_bytes: 0.0,
+            avg_packet_duration_s: 0.0,
         }
     }
 
@@ -178,10 +209,40 @@ impl PinDistributorActor {
     ///
     /// For `Reliable` connections: synchronized backpressure - waits for slow consumers.
     /// For `BestEffort` connections: drops packets when buffer is full (no waiting).
-    #[allow(clippy::cognitive_complexity)] // Fan-out with mode handling requires multiple paths
+    #[allow(
+        clippy::cognitive_complexity,
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )] // Fan-out with mode handling requires multiple paths and metric estimation casts
     async fn distribute_packet(&mut self, packet: Packet) {
         use futures::stream::{FuturesUnordered, StreamExt};
         use tokio::sync::mpsc::error::TrySendError;
+
+        let queue_len = self.data_rx.len() as u64;
+        self.queue_depth_gauge.record(queue_len, &self.metric_labels);
+
+        let (pkt_bytes, pkt_duration_s) = Self::packet_stats(&packet);
+        self.avg_packet_size_bytes = if self.avg_packet_size_bytes == 0.0 {
+            pkt_bytes
+        } else {
+            self.avg_packet_size_bytes.mul_add(1.0 - EWMA_ALPHA, pkt_bytes * EWMA_ALPHA)
+        };
+        if let Some(dur) = pkt_duration_s {
+            self.avg_packet_duration_s = if self.avg_packet_duration_s == 0.0 {
+                dur
+            } else {
+                self.avg_packet_duration_s.mul_add(1.0 - EWMA_ALPHA, dur * EWMA_ALPHA)
+            };
+        }
+        let est_bytes = (self.avg_packet_size_bytes * queue_len as f64) as u64;
+        if est_bytes > 0 {
+            self.queue_depth_bytes_gauge.record(est_bytes, &self.metric_labels);
+        }
+        if self.avg_packet_duration_s > 0.0 {
+            let est_seconds = self.avg_packet_duration_s * queue_len as f64;
+            self.queue_depth_seconds_gauge.record(est_seconds, &self.metric_labels);
+        }
 
         if self.outputs.is_empty() {
             // No outputs configured - drop packet and record metric
@@ -361,6 +422,33 @@ impl PinDistributorActor {
         }
         if best_effort_drops > 0 {
             self.best_effort_drops_counter.add(best_effort_drops, &self.metric_labels);
+        }
+    }
+
+    /// Extract approximate size in bytes and optional duration (seconds) for a packet.
+    #[allow(clippy::cast_precision_loss)]
+    fn packet_stats(packet: &Packet) -> (f64, Option<f64>) {
+        match packet {
+            Packet::Audio(frame) => {
+                let bytes = (frame.samples.len() * std::mem::size_of::<f32>()) as f64;
+                let dur_s = frame.duration_us().map(|us| us as f64 / 1_000_000.0);
+                (bytes, dur_s)
+            },
+            Packet::Binary { data, metadata, .. } => {
+                let bytes = data.len() as f64;
+                let dur_s =
+                    metadata.as_ref().and_then(|m| m.duration_us).map(|us| us as f64 / 1_000_000.0);
+                (bytes, dur_s)
+            },
+            Packet::Text(t) => (t.len() as f64, None),
+            Packet::Transcription(t) => (
+                t.text.len() as f64,
+                t.metadata.as_ref().and_then(|m| m.duration_us).map(|us| us as f64 / 1_000_000.0),
+            ),
+            Packet::Custom(c) => (
+                c.data.to_string().len() as f64,
+                c.metadata.as_ref().and_then(|m| m.duration_us).map(|us| us as f64 / 1_000_000.0),
+            ),
         }
     }
 }

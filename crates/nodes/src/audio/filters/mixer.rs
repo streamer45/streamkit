@@ -941,6 +941,21 @@ impl AudioMixerNode {
             return Ok(());
         }
 
+        let timestamp_us = mix_frames
+            .iter()
+            .filter_map(|f| f.metadata.as_ref().and_then(|m| m.timestamp_us))
+            .min();
+        let duration_us =
+            mix_frames.iter().filter_map(|f| f.metadata.as_ref().and_then(|m| m.duration_us)).max();
+        let sequence =
+            mix_frames.iter().filter_map(|f| f.metadata.as_ref().and_then(|m| m.sequence)).max();
+        let combined_metadata =
+            if timestamp_us.is_some() || duration_us.is_some() || sequence.is_some() {
+                Some(PacketMetadata { timestamp_us, duration_us, sequence })
+            } else {
+                None
+            };
+
         // Determine output configuration.
         // Output channels never decrease across the lifetime of the node, to avoid downstream
         // format flips when a higher-channel input ends.
@@ -977,6 +992,7 @@ impl AudioMixerNode {
                     output_channels,
                 );
             }
+            base.metadata.clone_from(&combined_metadata);
             base
         } else {
             // Fallback: allocate a fresh output buffer and mix all frames into it.
@@ -991,7 +1007,7 @@ impl AudioMixerNode {
 
             // Preserve metadata from the first frame (timestamp, duration, etc.)
             // Use take() instead of clone() to avoid copying - we're about to clear the buffer anyway
-            let metadata = mix_frames.get_mut(0).and_then(|f| f.metadata.take());
+            let metadata = combined_metadata.clone();
 
             AudioFrame::with_metadata(sample_rate, output_channels, mixed_samples, metadata)
         };
@@ -2107,5 +2123,72 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         assert_state_stopped_eventually(&mut state_rx, std::time::Duration::from_secs(2)).await;
         node_handle.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_mix_and_send_combines_metadata() {
+        let node = AudioMixerNode::new(AudioMixerConfig::default());
+
+        let frame_a = AudioFrame::with_metadata(
+            48_000,
+            1,
+            vec![0.5f32; 4],
+            Some(PacketMetadata {
+                timestamp_us: Some(1),
+                duration_us: Some(20_000),
+                sequence: Some(1),
+            }),
+        );
+        let frame_b = AudioFrame::with_metadata(
+            48_000,
+            1,
+            vec![0.25f32; 4],
+            Some(PacketMetadata {
+                timestamp_us: Some(2),
+                duration_us: Some(40_000),
+                sequence: Some(2),
+            }),
+        );
+
+        let (_tx_a, rx_a) = mpsc::channel(1);
+        let (_tx_b, rx_b) = mpsc::channel(1);
+
+        let mut slots = vec![
+            InputSlot {
+                name: Arc::from("a"),
+                rx: rx_a,
+                has_sent: true,
+                slow: false,
+                frame: Some(frame_a),
+            },
+            InputSlot {
+                name: Arc::from("b"),
+                rx: rx_b,
+                has_sent: true,
+                slow: false,
+                frame: Some(frame_b),
+            },
+        ];
+
+        let mut mix_frames = Vec::new();
+        let (mock_sender, mut packet_rx) =
+            mpsc::channel::<streamkit_core::node::RoutedPacketMessage>(4);
+        let mut output_sender = streamkit_core::OutputSender::new(
+            "mix_meta".to_string(),
+            streamkit_core::node::OutputRouting::Routed(mock_sender),
+        );
+
+        node.mix_and_send(&mut slots, &mut mix_frames, &mut output_sender, 2, false)
+            .await
+            .expect("mix should succeed");
+
+        let (_node, _pin, packet) = packet_rx.recv().await.expect("expected mixed packet");
+        let Packet::Audio(frame) = packet else {
+            panic!("expected audio packet");
+        };
+        let meta = frame.metadata.expect("metadata expected");
+        assert_eq!(meta.timestamp_us, Some(1));
+        assert_eq!(meta.duration_us, Some(40_000));
+        assert_eq!(meta.sequence, Some(2));
     }
 }
