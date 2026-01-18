@@ -88,6 +88,14 @@ Oneshot pipelines use larger defaults than dynamic sessions because they don't n
 Many nodes expose their own buffering/throughput controls in pipeline YAML, for example:
 
 - `core::pacer` / `audio::pacer`: `buffer_size` (queue depth)
+- Timing metrics (exposed via OpenTelemetry):
+  - `pacer.lateness_seconds` (labels: `node`) — observed send lateness vs. packet timestamps.
+  - `pacer.queue_depth` (labels: `node`) — current pacer buffer depth.
+  - `moq.push.clock_offset_ms` (labels: `node`, `broadcast`) — delta between outbound MoQ timestamp and upstream packet timestamp.
+  - `moq.peer.inter_frame_ms` (labels: `node`, `broadcast`) — inter-frame gap seen by MoQ subscribers.
+  - `pin_distributor.queue_depth` (labels: `node_id`, `pin_name`) — packet backlog at each dynamic pin distributor (data plane fan-out).
+  - `pin_distributor.queue_depth_bytes` (labels: `node_id`, `pin_name`) — estimated backlog in bytes (EWMA-based).
+  - `pin_distributor.queue_depth_seconds` (labels: `node_id`, `pin_name`) — estimated backlog in seconds from packet timing (EWMA-based).
 - `containers::ogg::muxer` / `containers::webm::muxer`: `chunk_size` (flush threshold)
 - `core::file_reader` / `core::file_writer` / `transport::http::fetcher`: `chunk_size`
 - `audio::mixer`: `sync_timeout_ms` and (in clocked mode) `jitter_buffer_frames`

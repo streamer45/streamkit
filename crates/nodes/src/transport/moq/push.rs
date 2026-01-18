@@ -4,9 +4,12 @@
 
 //! MoQ Push Node - publishes packets to a MoQ broadcast
 
+use super::constants::DEFAULT_AUDIO_FRAME_DURATION_US;
 use async_trait::async_trait;
+use opentelemetry::{global, KeyValue};
 use schemars::JsonSchema;
 use serde::Deserialize;
+use streamkit_core::timing::MediaClock;
 use streamkit_core::types::{Packet, PacketType};
 use streamkit_core::{
     packet_helpers, state_helpers, stats::NodeStatsTracker, InputPin, NodeContext, OutputPin,
@@ -193,10 +196,20 @@ impl ProcessorNode for MoqPushNode {
 
         let mut input_rx = context.take_input("in")?;
         let mut packet_count: u64 = 0;
-        let mut clock = super::constants::MediaClock::new(self.config.initial_delay_ms);
+        let mut clock = MediaClock::new(self.config.initial_delay_ms);
+        let mut seeded_from_timestamp = false;
 
         // Stats tracking
         let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
+        let meter = global::meter("skit_nodes");
+        let clock_offset_histogram = meter
+            .f64_histogram("moq.push.clock_offset_ms")
+            .with_description("Offset between outgoing MoQ timestamp and upstream packet timestamp")
+            .build();
+        let metric_labels = [
+            KeyValue::new("node", node_name.clone()),
+            KeyValue::new("broadcast", self.config.broadcast.clone()),
+        ];
 
         // Read opus packets and write them to the MoQ track
         tracing::info!("MoqPushNode waiting for input packets...");
@@ -220,10 +233,24 @@ impl ProcessorNode for MoqPushNode {
                                 tracing::debug!(packet = packet_count, "MoQ publisher sending packet");
                             }
 
-                            let duration_us = super::constants::packet_duration_us(metadata.as_ref());
-                            let timestamp_ms = clock.timestamp_ms();
+                            let duration_us = super::constants::packet_duration_us(metadata.as_ref())
+                                .or(Some(DEFAULT_AUDIO_FRAME_DURATION_US));
+                            let timestamp_ms = if let Some(meta_ts) =
+                                metadata.as_ref().and_then(|m| m.timestamp_us)
+                            {
+                                if !seeded_from_timestamp {
+                                    clock.seed_from_timestamp_us(meta_ts);
+                                    seeded_from_timestamp = true;
+                                }
+                                meta_ts
+                                    .saturating_add(999)
+                                    / 1_000
+                                    + self.config.initial_delay_ms
+                            } else {
+                                clock.timestamp_ms()
+                            };
                             let keyframe =
-                                is_first || clock.is_group_boundary(self.config.group_duration_ms);
+                                is_first || clock.is_group_boundary_ms(self.config.group_duration_ms);
 
                             let timestamp = hang::Timestamp::from_millis(timestamp_ms).map_err(|_| {
                                 StreamKitError::Runtime("MoQ frame timestamp overflow".to_string())
@@ -243,7 +270,16 @@ impl ProcessorNode for MoqPushNode {
                                 return Err(StreamKitError::Runtime(err_msg));
                             }
 
-                            clock.advance_by_duration_us(duration_us);
+                            if let Some(meta_ts) = metadata.as_ref().and_then(|m| m.timestamp_us) {
+                                let meta_ms = meta_ts / 1_000;
+                                let offset = timestamp_ms.saturating_sub(meta_ms);
+                                #[allow(clippy::cast_precision_loss)]
+                                {
+                                    clock_offset_histogram.record(offset as f64, &metric_labels);
+                                }
+                            }
+
+                            clock.advance_by_duration_us(duration_us, DEFAULT_AUDIO_FRAME_DURATION_US);
                             stats_tracker.sent();
                         } else {
                             tracing::warn!("MoqPushNode received non-binary packet, ignoring");

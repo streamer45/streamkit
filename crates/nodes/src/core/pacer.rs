@@ -5,12 +5,14 @@
 //! Pacer node - Paces packet output based on timing metadata or calculated durations
 
 use async_trait::async_trait;
+use opentelemetry::global;
+use opentelemetry::KeyValue;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::time::Duration;
 use streamkit_core::control::NodeControlMessage;
-use streamkit_core::types::{AudioFrame, Packet, PacketType};
+use streamkit_core::types::{AudioFrame, Packet, PacketMetadata, PacketType};
 use streamkit_core::{
     config_helpers, state_helpers, stats::NodeStatsTracker, InputPin, NodeContext, OutputPin,
     PinCardinality, ProcessorNode, StreamKitError,
@@ -133,6 +135,16 @@ impl PacerNode {
     fn adjust_for_speed(&self, duration: Duration) -> Duration {
         duration.div_f32(self.speed)
     }
+
+    fn packet_metadata(packet: &Packet) -> Option<&PacketMetadata> {
+        match packet {
+            Packet::Audio(frame) => frame.metadata.as_ref(),
+            Packet::Binary { metadata, .. } => metadata.as_ref(),
+            Packet::Custom(custom) => custom.metadata.as_ref(),
+            Packet::Transcription(transcription) => transcription.metadata.as_ref(),
+            Packet::Text(_) => None,
+        }
+    }
 }
 
 #[async_trait]
@@ -171,6 +183,17 @@ impl ProcessorNode for PacerNode {
 
         state_helpers::emit_running(&context.state_tx, &node_name);
 
+        let meter = global::meter("skit_nodes");
+        let lateness_histogram = meter
+            .f64_histogram("pacer.lateness_seconds")
+            .with_description("Pacer observed send lateness vs. packet timestamp")
+            .build();
+        let queue_gauge = meter
+            .u64_gauge("pacer.queue_depth")
+            .with_description("Pacer buffered packet count")
+            .build();
+        let metric_labels = [KeyValue::new("node", node_name.clone())];
+
         // Internal bounded queue for backpressure control
         let mut packet_queue: VecDeque<streamkit_core::types::Packet> =
             VecDeque::with_capacity(self.buffer_size);
@@ -179,6 +202,7 @@ impl ProcessorNode for PacerNode {
         let mut packet_count = 0u64;
         let mut packets_sent = 0usize;
         let mut last_packet_time = Instant::now();
+        let mut media_base: Option<Instant> = None;
         // Gap threshold for detecting new segments (e.g., between TTS sentences)
         // A gap longer than this resets the burst counter
         let segment_gap_threshold = Duration::from_millis(300);
@@ -222,6 +246,7 @@ impl ProcessorNode for PacerNode {
 
                     // Queue packet for pacing
                     packet_queue.push_back(packet);
+                    queue_gauge.record(packet_queue.len() as u64, &metric_labels);
 
                     // If this is the first packet, or duration changed, create/recreate the interval
                     if interval.is_none() || current_duration != Some(adjusted_duration) {
@@ -265,7 +290,29 @@ impl ProcessorNode for PacerNode {
                 }, if !packet_queue.is_empty() => {
                     // Send the next packet from queue
                     if let Some(packet) = packet_queue.pop_front() {
+                        queue_gauge.record(packet_queue.len() as u64, &metric_labels);
                         let is_burst = packets_sent < self.initial_burst_packets;
+
+                        if let Some(meta) = Self::packet_metadata(&packet) {
+                            if let Some(ts) = meta.timestamp_us {
+                                let base = media_base.get_or_insert_with(|| {
+                                    Instant::now()
+                                        .checked_sub(Duration::from_micros(ts))
+                                        .unwrap_or_else(Instant::now)
+                                });
+                                let due = *base + Duration::from_micros(ts);
+                                let now = Instant::now();
+                                if now < due {
+                                    tokio::time::sleep_until(due).await;
+                                } else {
+                                    let lateness = now.duration_since(due);
+                                    if lateness > Duration::from_millis(50) {
+                                        lateness_histogram.record(lateness.as_secs_f64(), &metric_labels);
+                                        tracing::debug!(?lateness, "Pacer sending late relative to timestamp");
+                                    }
+                                }
+                            }
+                        }
 
                         if is_burst {
                             tracing::debug!(

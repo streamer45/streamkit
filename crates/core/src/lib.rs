@@ -63,6 +63,7 @@ pub mod resource_manager;
 pub mod state;
 pub mod stats;
 pub mod telemetry;
+pub mod timing;
 pub mod types;
 
 // Convenience re-exports for commonly used types
@@ -90,6 +91,9 @@ pub use stats::{NodeStats, NodeStatsUpdate};
 
 // Telemetry
 pub use telemetry::{TelemetryConfig, TelemetryEmitter, TelemetryEvent};
+
+// Timing helpers
+pub use timing::*;
 
 // Pin definitions
 pub use pins::{InputPin, OutputPin, PinCardinality};

@@ -16,6 +16,7 @@ use serde::Deserialize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use streamkit_core::timing::MediaClock;
 use streamkit_core::types::{Packet, PacketType};
 use streamkit_core::{
     state_helpers, stats::NodeStatsTracker, InputPin, NodeContext, OutputPin, PinCardinality,
@@ -59,6 +60,7 @@ enum PublisherEvent {
 struct BidirectionalTaskConfig {
     input_broadcast: String,
     output_broadcast: String,
+    node_id: String,
     output_sender: streamkit_core::OutputSender,
     broadcast_rx: broadcast::Receiver<BroadcastFrame>,
     shutdown_rx: broadcast::Receiver<()>,
@@ -293,14 +295,15 @@ impl ProcessorNode for MoqPeerNode {
                     let sub_count = subscriber_count.clone();
                     let broadcast_rx = subscriber_broadcast_tx.subscribe();
 
-                    match Self::start_bidirectional_task(
-                        conn,
-                        BidirectionalTaskConfig {
-                            input_broadcast: self.config.input_broadcast.clone(),
-                            output_broadcast: self.config.output_broadcast.clone(),
-                            output_sender: context.output_sender.clone(),
-                            broadcast_rx,
-                            shutdown_rx: shutdown_tx.subscribe(),
+            match Self::start_bidirectional_task(
+                conn,
+                BidirectionalTaskConfig {
+                    input_broadcast: self.config.input_broadcast.clone(),
+                    output_broadcast: self.config.output_broadcast.clone(),
+                    node_id: node_name.clone(),
+                    output_sender: context.output_sender.clone(),
+                    broadcast_rx,
+                    shutdown_rx: shutdown_tx.subscribe(),
                             publisher_slot: publisher_slot.clone(),
                             publisher_events: publisher_events_tx.clone(),
                             subscriber_count: sub_count,
@@ -398,6 +401,7 @@ impl ProcessorNode for MoqPeerNode {
 
                     match Self::start_subscriber_task(
                         conn,
+                        node_name.clone(),
                         self.config.output_broadcast.clone(),
                         broadcast_rx,
                         shutdown_tx.subscribe(),
@@ -642,6 +646,7 @@ impl MoqPeerNode {
                 Self::subscriber_send_loop(
                     send_origin,
                     config.output_broadcast,
+                    config.node_id.clone(),
                     config.broadcast_rx,
                     &mut subscriber_shutdown_rx,
                     config.output_group_duration_ms,
@@ -968,6 +973,7 @@ impl MoqPeerNode {
     #[allow(clippy::too_many_arguments)]
     async fn start_subscriber_task(
         moq_connection: streamkit_core::moq_gateway::MoqConnection,
+        node_id: String,
         output_broadcast: String,
         broadcast_rx: broadcast::Receiver<BroadcastFrame>,
         mut shutdown_rx: broadcast::Receiver<()>,
@@ -1006,6 +1012,7 @@ impl MoqPeerNode {
             let result = Self::subscriber_send_loop(
                 send_origin,
                 output_broadcast,
+                node_id,
                 broadcast_rx,
                 &mut shutdown_rx,
                 output_group_duration_ms,
@@ -1030,9 +1037,11 @@ impl MoqPeerNode {
     }
 
     /// Subscriber send loop - receives from broadcast channel and sends to client
+    #[allow(clippy::too_many_arguments)]
     async fn subscriber_send_loop(
         publish: moq_lite::OriginProducer,
         broadcast_name: String,
+        node_id: String,
         broadcast_rx: broadcast::Receiver<BroadcastFrame>,
         shutdown_rx: &mut broadcast::Receiver<()>,
         output_group_duration_ms: u64,
@@ -1052,6 +1061,8 @@ impl MoqPeerNode {
             shutdown_rx,
             output_group_duration_ms,
             output_initial_delay_ms,
+            node_id,
+            broadcast_name,
             &stats_delta_tx,
         )
         .await?;
@@ -1119,19 +1130,32 @@ impl MoqPeerNode {
     }
 
     /// Run the main send loop, forwarding packets to the subscriber
+    #[allow(clippy::too_many_arguments)]
     async fn run_subscriber_send_loop(
         track_producer: &mut hang::TrackProducer,
         mut broadcast_rx: broadcast::Receiver<BroadcastFrame>,
         shutdown_rx: &mut broadcast::Receiver<()>,
         output_group_duration_ms: u64,
         output_initial_delay_ms: u64,
+        node_id: String,
+        broadcast_name: String,
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
     ) -> Result<u64, StreamKitError> {
         let mut packet_count: u64 = 0;
         let mut last_log = std::time::Instant::now();
         let mut frame_count = 0u64;
         let group_duration_ms = output_group_duration_ms.max(1);
-        let mut clock = super::constants::MediaClock::new(output_initial_delay_ms);
+        let mut clock = MediaClock::new(output_initial_delay_ms);
+        let meter = opentelemetry::global::meter("skit_nodes");
+        let gap_histogram = meter
+            .f64_histogram("moq.peer.inter_frame_ms")
+            .with_description("Gap between consecutive frames sent to subscribers")
+            .build();
+        let metric_labels = [
+            opentelemetry::KeyValue::new("node", node_id),
+            opentelemetry::KeyValue::new("broadcast", broadcast_name),
+        ];
+        let mut last_ts_ms: Option<u64> = None;
 
         loop {
             tokio::select! {
@@ -1144,6 +1168,9 @@ impl MoqPeerNode {
                         &mut last_log,
                         group_duration_ms,
                         &mut clock,
+                        &gap_histogram,
+                        &metric_labels,
+                        &mut last_ts_ms,
                         stats_delta_tx,
                     )? {
                         SendResult::Continue => {}
@@ -1161,7 +1188,7 @@ impl MoqPeerNode {
     }
 
     /// Handle a single broadcast receive result
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::cast_precision_loss)]
     fn handle_broadcast_recv(
         recv_result: Result<BroadcastFrame, broadcast::error::RecvError>,
         track_producer: &mut hang::TrackProducer,
@@ -1169,7 +1196,10 @@ impl MoqPeerNode {
         frame_count: &mut u64,
         last_log: &mut std::time::Instant,
         group_duration_ms: u64,
-        clock: &mut super::constants::MediaClock,
+        clock: &mut MediaClock,
+        gap_histogram: &opentelemetry::metrics::Histogram<f64>,
+        metric_labels: &[opentelemetry::KeyValue],
+        last_ts_ms: &mut Option<u64>,
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
     ) -> Result<SendResult, StreamKitError> {
         match recv_result {
@@ -1185,7 +1215,13 @@ impl MoqPeerNode {
 
                 let is_first = *packet_count == 1;
                 let timestamp_ms = clock.timestamp_ms();
-                let keyframe = is_first || clock.is_group_boundary(group_duration_ms);
+                let keyframe = is_first || clock.is_group_boundary_ms(group_duration_ms);
+
+                if let Some(prev) = *last_ts_ms {
+                    let gap = timestamp_ms.saturating_sub(prev);
+                    gap_histogram.record(gap as f64, metric_labels);
+                }
+                *last_ts_ms = Some(timestamp_ms);
 
                 let timestamp = hang::Timestamp::from_millis(timestamp_ms).map_err(|_| {
                     StreamKitError::Runtime("MoQ frame timestamp overflow".to_string())
@@ -1202,7 +1238,10 @@ impl MoqPeerNode {
                         .try_send(NodeStatsDelta { errored: 1, ..Default::default() });
                     return Ok(SendResult::Stop);
                 }
-                clock.advance_by_duration_us(broadcast_frame.duration_us);
+                clock.advance_by_duration_us(
+                    broadcast_frame.duration_us,
+                    super::constants::DEFAULT_AUDIO_FRAME_DURATION_US,
+                );
                 Ok(SendResult::Continue)
             },
             Err(broadcast::error::RecvError::Lagged(n)) => {

@@ -38,7 +38,8 @@ pub struct AudioFormat {
 }
 
 /// Optional timing and sequencing metadata that can be attached to packets.
-/// Used for pacing, synchronization, and A/V alignment.
+/// Used for pacing, synchronization, and A/V alignment. See `timing` module for
+/// canonical semantics (media-time epoch, monotonicity, and preservation rules).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
 pub struct PacketMetadata {
