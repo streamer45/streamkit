@@ -18,7 +18,7 @@ exclude = ["examples", "tests", "plugins"]
 streamkit-core = { version = "0.1", path = "crates/core" }
 streamkit-nodes = { version = "0.1", path = "crates/nodes" }
 streamkit-engine = { version = "0.1", path = "crates/engine" }
-streamkit-server = { version = "0.1", path = "apps/skit" }
+streamkit-server = { version = "0.2", path = "apps/skit" }
 streamkit-client = { version = "0.1", path = "apps/skit-cli" }
 streamkit-api = { version = "0.1", path = "crates/api" }
 streamkit-plugin-wasm = { version = "0.1", path = "crates/plugin-wasm" }

@@ -3,7 +3,7 @@ name = "streamkit-server"
 authors = ["Claudio Costa <cstcld91@gmail.com>", "StreamKit Contributors"]
 repository = "https://github.com/streamer45/streamkit"
 license = "MPL-2.0"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 publish = false
 
