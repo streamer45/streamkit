@@ -116,7 +116,39 @@ fn add_synthetic_oneshot_nodes(defs: &mut Vec<NodeDefinition>) {
              Receives binary data from the HTTP request body."
                 .to_string(),
         ),
-        param_schema: serde_json::json!({}),
+        param_schema: serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "field": {
+                    "type": "string",
+                    "description": "Multipart field name to bind to this input. Defaults to 'media' when only one http_input node exists; otherwise defaults to the node id."
+                },
+                "fields": {
+                    "type": "array",
+                    "description": "Optional list of multipart fields for this node. When set, the node exposes one output pin per entry (pin name matches the field name). Entries may be strings or objects with { name, required }.",
+                    "items": {
+                        "oneOf": [
+                            { "type": "string" },
+                            {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                    "name": { "type": "string" },
+                                    "required": { "type": "boolean", "default": true }
+                                },
+                                "required": ["name"]
+                            }
+                        ]
+                    }
+                },
+                "required": {
+                    "type": "boolean",
+                    "description": "If true (default), the request must include this field.",
+                    "default": true
+                }
+            }
+        }),
         inputs: vec![],
         outputs: vec![OutputPin {
             name: "out".to_string(),

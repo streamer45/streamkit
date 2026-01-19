@@ -157,4 +157,65 @@ nodes:
     expect(result.edges).toHaveLength(1);
     expect((result.edges[0]?.data as { mode?: string } | undefined)?.mode).toBe('best_effort');
   });
+
+  it('parses needs that target specific output pins (e.g., http_input fields)', () => {
+    setPacketTypeRegistry([
+      {
+        id: 'Binary',
+        label: 'Binary',
+        color: '#555555',
+        display_template: null,
+        compatibility: { kind: 'any' },
+      },
+    ]);
+
+    const yaml = `
+mode: oneshot
+nodes:
+  uploads:
+    kind: streamkit::http_input
+    params:
+      fields:
+        - track_a
+        - track_b
+
+  upload_a_demuxer:
+    kind: containers::ogg::demuxer
+    needs: uploads.track_a
+
+  upload_b_demuxer:
+    kind: containers::ogg::demuxer
+    needs: uploads.track_b
+`;
+
+    const nodeDefinitions: NodeDefinition[] = [
+      {
+        kind: 'streamkit::http_input',
+        param_schema: {},
+        inputs: [],
+        outputs: [{ name: 'media', produces_type: 'Binary', cardinality: 'Broadcast' }],
+        categories: [],
+        bidirectional: false,
+      },
+      makeSinkNodeDef('containers::ogg::demuxer', ['Binary']),
+    ];
+
+    let nextId = 1;
+    const result = parseYamlToPipeline(
+      yaml,
+      nodeDefinitions,
+      () => {},
+      () => {},
+      () => `id_${nextId++}`,
+      () => {
+        nextId = 1;
+      }
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.edges).toHaveLength(2);
+    const handles = result.edges.map((e) => e.sourceHandle);
+    expect(handles).toContain('track_a');
+    expect(handles).toContain('track_b');
+  });
 });

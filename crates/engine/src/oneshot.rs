@@ -36,6 +36,7 @@ use streamkit_core::control::NodeControlMessage;
 use streamkit_core::error::StreamKitError;
 use streamkit_core::node::ProcessorNode;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 /// Configuration for oneshot pipeline execution.
 #[derive(Debug, Clone)]
@@ -64,12 +65,30 @@ pub struct OneshotPipelineResult {
     pub content_type: String,
 }
 
+/// Binding between a multipart field and an `streamkit::http_input` node.
+pub struct OneshotInput<S> {
+    /// Node id of the `streamkit::http_input` instance to feed.
+    pub node_id: String,
+    /// Output pin name to send this stream on (typically matches the multipart field).
+    pub output_pin: String,
+    /// Incoming byte stream for this node.
+    pub stream: S,
+    /// Optional request content type associated with this stream.
+    pub content_type: Option<String>,
+    /// Multipart field name (for logging/debugging).
+    pub field_name: String,
+    /// Whether the pipeline marked this input as required.
+    pub required: bool,
+    /// Cancellation token to stop reading if the pipeline is cancelled.
+    pub cancellation_token: Option<CancellationToken>,
+}
+
 impl Engine {
     /// Runs a pipeline as a self-contained, one-shot task from a streaming input.
     ///
     /// Supports two modes:
-    /// - HTTP streaming mode (`has_http_input=true`): Uses http_input node with media stream
-    /// - File-based mode (`has_http_input=false`): Uses file_read nodes reading from disk
+    /// - HTTP streaming mode (`inputs` non-empty): Uses http_input nodes with media streams
+    /// - File-based mode (`inputs` empty): Uses file_read nodes reading from disk
     ///
     /// # Errors
     ///
@@ -86,10 +105,9 @@ impl Engine {
     pub async fn run_oneshot_pipeline<S, E>(
         &self,
         definition: Pipeline,
-        mut input_stream: S,
-        input_content_type: Option<String>,
-        has_http_input: bool,
+        inputs: Vec<OneshotInput<S>>,
         config: Option<OneshotEngineConfig>,
+        cancellation_token: Option<CancellationToken>,
     ) -> Result<OneshotPipelineResult, StreamKitError>
     where
         S: Stream<Item = Result<Bytes, E>> + Send + Unpin + 'static,
@@ -103,7 +121,6 @@ impl Engine {
             definition.connections.len()
         );
 
-        // expect is documented in #[doc] Panics section above
         #[allow(clippy::expect_used)]
         let registry = {
             let guard = self
@@ -113,15 +130,15 @@ impl Engine {
             guard.clone()
         };
 
-        // --- 1. Find the special namespaced input and output nodes ---
-        let mut input_node_id: Option<String> = None;
+        // --- 1. Identify key nodes ---
         let mut output_node_id: Option<String> = None;
         let mut source_node_ids: Vec<String> = Vec::new();
+        let mut http_input_nodes: Vec<String> = Vec::new();
 
         for (name, def) in &definition.nodes {
             tracing::debug!("Found node '{}' of type '{}'", name, def.kind);
             if def.kind == "streamkit::http_input" {
-                input_node_id = Some(name.clone());
+                http_input_nodes.push(name.clone());
             }
             if def.kind == "streamkit::http_output" {
                 output_node_id = Some(name.clone());
@@ -131,26 +148,23 @@ impl Engine {
             }
         }
 
-        // Validate based on mode
+        let has_http_input = !http_input_nodes.is_empty();
+
         if has_http_input {
-            // HTTP streaming mode: require http_input
-            if input_node_id.is_none() {
-                tracing::error!("Pipeline validation failed: missing streamkit::http_input node");
+            if inputs.is_empty() {
+                tracing::error!(
+                    "Pipeline validation failed: no input streams provided for http_input nodes"
+                );
                 return Err(StreamKitError::Configuration(
-                    "Pipeline must contain one 'streamkit::http_input' node.".to_string(),
+                    "Input streams are required for 'streamkit::http_input' nodes.".to_string(),
                 ));
             }
             tracing::info!(
-                "HTTP streaming mode: input='{}', output='{}'",
-                // Safe unwrap: just validated input_node_id.is_some() above
-                {
-                    #[allow(clippy::unwrap_used)]
-                    input_node_id.as_ref().unwrap()
-                },
-                output_node_id.as_ref().map_or("unknown", |s| s.as_str())
+                "HTTP streaming mode: {} http_input node(s), output='{}'",
+                http_input_nodes.len(),
+                output_node_id.as_deref().unwrap_or("unknown")
             );
         } else {
-            // File-based mode: ensure we have source nodes
             if source_node_ids.is_empty() {
                 tracing::error!("Pipeline validation failed: no file_reader nodes found");
                 return Err(StreamKitError::Configuration(
@@ -158,10 +172,19 @@ impl Engine {
                         .to_string(),
                 ));
             }
+            if !inputs.is_empty() {
+                tracing::error!(
+                    "Pipeline validation failed: streams provided but no http_input nodes present"
+                );
+                return Err(StreamKitError::Configuration(
+                    "Multipart streams were provided but the pipeline has no 'streamkit::http_input' nodes."
+                        .to_string(),
+                ));
+            }
             tracing::info!(
                 "File-based mode: {} source node(s), output='{}'",
                 source_node_ids.len(),
-                output_node_id.as_ref().map_or("unknown", |s| s.as_str())
+                output_node_id.as_deref().unwrap_or("unknown")
             );
         }
 
@@ -172,11 +195,106 @@ impl Engine {
             )
         })?;
 
-        // --- 2. Create channels for the I/O streams and cancellation token ---
-        let (input_stream_tx, input_stream_rx) = mpsc::channel(config.io_channel_capacity);
+        // --- 2. I/O channels and cancellation token ---
         let (output_stream_tx, output_stream_rx) = mpsc::channel(config.io_channel_capacity);
-        let cancellation_token = tokio_util::sync::CancellationToken::new();
+        let cancellation_token = cancellation_token.unwrap_or_default();
         tracing::debug!("Created I/O stream channels and cancellation token");
+
+        // --- 2.5. Bind http_input streams ---
+        let mut nodes: HashMap<String, Box<dyn ProcessorNode>> = HashMap::new();
+        let mut provided_inputs: HashMap<String, Vec<OneshotInput<S>>> = HashMap::new();
+        let mut first_input_content_type: Option<String> = None;
+
+        for input in inputs {
+            provided_inputs.entry(input.node_id.clone()).or_default().push(input);
+        }
+
+        if has_http_input {
+            for node_id in &http_input_nodes {
+                let Some(bound_inputs) = provided_inputs.remove(node_id) else {
+                    tracing::error!(
+                        "Pipeline validation failed: no stream provided for http_input node '{}'",
+                        node_id
+                    );
+                    return Err(StreamKitError::Configuration(format!(
+                        "No stream provided for http_input node '{node_id}'"
+                    )));
+                };
+
+                let mut per_pin_receivers: Vec<(String, mpsc::Receiver<Bytes>, Option<String>)> =
+                    Vec::new();
+
+                for input in bound_inputs {
+                    if first_input_content_type.is_none() {
+                        first_input_content_type.clone_from(&input.content_type);
+                    }
+
+                    let (tx, rx) = mpsc::channel(config.io_channel_capacity);
+                    per_pin_receivers.push((
+                        input.output_pin.clone(),
+                        rx,
+                        input.content_type.clone(),
+                    ));
+
+                    let node_name = node_id.clone();
+                    let mut stream = input.stream;
+                    let input_stream_tx = tx;
+                    let input_pump_token =
+                        input.cancellation_token.unwrap_or_else(|| cancellation_token.clone());
+                    let output_pin = input.output_pin.clone();
+
+                    tokio::spawn(async move {
+                        use futures::StreamExt;
+                        let mut chunk_count = 0usize;
+                        tracing::debug!(
+                            "Input stream pump starting for node '{}', pin '{}'",
+                            node_name,
+                            output_pin
+                        );
+                        loop {
+                            tokio::select! {
+                                () = input_pump_token.cancelled() => {
+                                    tracing::info!("Input stream pump for '{}.{}' cancelled after {} chunks", node_name, output_pin, chunk_count);
+                                    break;
+                                }
+                                chunk_result = stream.next() => {
+                                    match chunk_result {
+                                        Some(Ok(chunk)) => {
+                                            chunk_count += 1;
+                                            if input_stream_tx.send(chunk).await.is_err() {
+                                                tracing::warn!("Input node '{}.{}' closed before stream ended.", node_name, output_pin);
+                                                break;
+                                            }
+                                        }
+                                        Some(Err(e)) => {
+                                            tracing::error!("Error reading from input stream for '{}.{}': {}", node_name, output_pin, e);
+                                            break;
+                                        }
+                                        None => {
+                                            tracing::info!("Input stream pump for '{}.{}' finished after {} chunks", node_name, output_pin, chunk_count);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
+
+                tracing::debug!("Creating special input node '{}'", node_id);
+                let input_node = streamkit_nodes::core::bytes_input::BytesInputNode::with_streams(
+                    per_pin_receivers,
+                );
+                nodes.insert(node_id.clone(), Box::new(input_node));
+            }
+
+            if !provided_inputs.is_empty() {
+                let extras = provided_inputs.keys().cloned().collect::<Vec<_>>().join(", ");
+                return Err(StreamKitError::Configuration(format!(
+                    "Unexpected input streams provided for unknown http_input nodes: {extras}"
+                )));
+            }
+        }
 
         // --- 3. Validate that http_output is connected ---
         let final_node_id = definition
@@ -212,23 +330,7 @@ impl Engine {
         };
 
         // --- 4. Instantiate all nodes for the pipeline ---
-        let mut nodes: HashMap<String, Box<dyn ProcessorNode>> = HashMap::new();
-
-        // Manually create the special input node (only in HTTP streaming mode)
-        if has_http_input {
-            // Safe unwrap: validated input_node_id.is_some() when has_http_input is true
-            #[allow(clippy::unwrap_used)]
-            let input_id = input_node_id.as_ref().unwrap();
-            tracing::debug!("Creating special input node '{}'", input_id);
-            let input_node = Box::new(streamkit_nodes::core::bytes_input::BytesInputNode::new(
-                input_stream_rx,
-                input_content_type.clone(),
-            ));
-            nodes.insert(input_id.clone(), input_node);
-        }
-
         tracing::debug!("Creating special output node '{}'", output_node_id);
-        // Get output node definition - this should exist since output_node_id was found in pipeline
         let output_node_def = definition.nodes.get(&output_node_id).ok_or_else(|| {
             StreamKitError::Configuration(format!(
                 "Output node '{output_node_id}' not found in pipeline definition"
@@ -238,17 +340,14 @@ impl Engine {
             output_stream_tx,
             output_node_def.params.as_ref(),
         )?;
-        // Capture the configured content type before moving the node
         let configured_content_type = output_node.configured_content_type();
         nodes.insert(output_node_id.clone(), Box::new(output_node));
 
-        // Create the final node for insertion into the pipeline
         tracing::debug!("Adding final node '{}' to pipeline", final_node_id);
         let final_node_instance =
             registry.create_node(&final_node_def.kind, final_node_def.params.as_ref())?;
         nodes.insert(final_node_id.clone(), final_node_instance);
 
-        // Create all other standard processing nodes from the main registry.
         for (name, def) in &definition.nodes {
             if !nodes.contains_key(name) {
                 tracing::debug!("Creating node '{}' of type '{}'", name, def.kind);
@@ -268,16 +367,14 @@ impl Engine {
 
         tracing::info!("Created {} nodes total", nodes.len());
 
-        // --- 5. Use the shared helper to wire up and spawn the graph ---
+        // --- 5. Wire and spawn ---
         tracing::info!("Wiring up and spawning pipeline graph");
 
         let node_kinds: HashMap<String, String> =
             definition.nodes.iter().map(|(name, def)| (name.clone(), def.kind.clone())).collect();
 
-        // Shared audio buffer pool for hot paths (e.g., Opus decode).
         let audio_pool = self.audio_pool.clone();
 
-        // Oneshot pipelines don't track state, so pass None for state_tx
         let live_nodes = graph_builder::wire_and_spawn_graph(
             nodes,
             &definition.connections,
@@ -291,9 +388,7 @@ impl Engine {
         .await?;
         tracing::info!("Pipeline graph successfully spawned");
 
-        // --- 5.5. Send Start signals to file_reader nodes ---
-        // Note: file_reader nodes need Start signals even in HTTP streaming mode
-        // (e.g., for mixing scenarios where you have both http_input and file_reader)
+        // --- 5.5. Start file readers (if any) ---
         if !source_node_ids.is_empty() {
             tracing::info!(
                 "Sending Start signals to {} file_reader node(s)",
@@ -315,62 +410,21 @@ impl Engine {
             }
         }
 
-        // --- 6. Spawn a task to pump the input stream into the graph (HTTP streaming mode only) ---
-        if has_http_input {
-            tracing::debug!("Starting input stream pump task");
-            let input_pump_token = cancellation_token.clone();
-            tokio::spawn(async move {
-                use futures::StreamExt;
-                let mut chunk_count = 0;
-                tracing::debug!("Input stream pump starting to read from stream");
-                loop {
-                    tokio::select! {
-                        // Use () instead of _ for unit type to be explicit
-                        () = input_pump_token.cancelled() => {
-                            tracing::info!("Input stream pump cancelled after {} chunks", chunk_count);
-                            break;
-                        }
-                        chunk_result = input_stream.next() => {
-                            match chunk_result {
-                                Some(Ok(chunk)) => {
-                                    chunk_count += 1;
-                                    if input_stream_tx.send(chunk).await.is_err() {
-                                        tracing::warn!("Input node closed before stream ended.");
-                                        break;
-                                    }
-                                }
-                                Some(Err(e)) => {
-                                    tracing::error!("Error reading from input stream: {}", e);
-                                    break;
-                                }
-                                None => {
-                                    tracing::info!("Input stream pump finished after {} chunks", chunk_count);
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            });
-        }
-
         // --- 7. Determine content-type for the response ---
         tracing::debug!(
             "Content type sources - configured: {:?}, static: {:?}, input: {:?}",
             configured_content_type,
             static_content_type,
-            input_content_type
+            first_input_content_type
         );
 
-        // Priority: configured (from http_output params) > static (final node) > input > default
         let content_type = configured_content_type
             .or(static_content_type)
-            .or(input_content_type)
+            .or(first_input_content_type)
             .unwrap_or_else(|| "application/octet-stream".to_string());
 
         tracing::info!("Using content type for response: '{}'", content_type);
 
-        // --- 8. Return the result struct ---
         Ok(OneshotPipelineResult { data_stream: output_stream_rx, content_type })
     }
 }

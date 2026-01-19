@@ -4763,6 +4763,7 @@ dependencies = [
  "tokio-stream",
  "tokio-test",
  "tokio-tungstenite 0.28.0",
+ "tokio-util 0.7.18",
  "toml 0.9.11+spec-1.1.0",
  "tower",
  "tower-http",

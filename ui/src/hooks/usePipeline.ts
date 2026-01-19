@@ -106,8 +106,17 @@ function buildPipelineForYaml(
       .map((e): NeedsDependency | null => {
         const label = idToLabelMap.get(e.source);
         if (!label) return null;
+        const sourceNode = idToNode.get(e.source);
+        const sourceOutputs = (sourceNode?.data.outputs || []) as Array<{ name: string }>;
+        const defaultOutput = sourceOutputs[0]?.name;
+        const sourceHandle = e.sourceHandle || defaultOutput;
+        const annotatePin =
+          sourceOutputs.length > 1 ||
+          (sourceHandle && defaultOutput && sourceHandle !== defaultOutput);
+
+        const needsLabel = sourceHandle && annotatePin ? `${label}.${sourceHandle}` : label;
         const mode = (e.data as { mode?: ConnectionMode } | undefined)?.mode;
-        return mode === 'best_effort' ? { node: label, mode } : label;
+        return mode === 'best_effort' ? { node: needsLabel, mode } : needsLabel;
       })
       .filter((v): v is NeedsDependency => v !== null);
 

@@ -215,12 +215,12 @@ curl http://localhost:4545/api/v1/sessions/<id-or-name>/pipeline
 Use `POST /api/v1/process` with multipart fields:
 
 - `config` (YAML, required; must be the first field)
-- `media` (optional)
+- Upload fields for media (optional): names must match `streamkit::http_input` nodes. Default is `media` when a single `http_input` exists with no params; otherwise use the node id or `params.field`. If `params.fields` is set, only the listed fields are accepted and the legacy `media` field is disabled.
 
 Oneshot validation rules:
 
-- If `media` is present: the pipeline must contain `streamkit::http_input`
-- If `media` is absent: the pipeline must contain `core::file_reader` and must not contain `streamkit::http_input`
+- If uploads are present: the pipeline must contain `streamkit::http_input` (field names must match)
+- If uploads are absent: the pipeline must contain `core::file_reader` and must not contain `streamkit::http_input`
 - Always: the pipeline must contain `streamkit::http_output`
 
 ```bash

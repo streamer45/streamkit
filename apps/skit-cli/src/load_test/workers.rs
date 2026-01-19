@@ -44,7 +44,11 @@ pub async fn oneshot_worker(
                 let result = process_oneshot_with_client(
                     &client,
                     pipeline_path,
-                    input_path,
+                    &[crate::client::InputFile {
+                        field: "media".to_string(),
+                        path: input_path.clone(),
+                        content_type: None,
+                    }],
                     output_path,
                     &config.server.url,
                 )

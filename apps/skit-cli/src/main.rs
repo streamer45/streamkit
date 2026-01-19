@@ -2,7 +2,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-use clap::{Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand};
+use streamkit_client::InputFile;
 use tracing::{error, info};
 
 #[derive(Parser, Debug)]
@@ -12,6 +13,22 @@ struct Cli {
     command: Commands,
 }
 
+#[derive(Debug, Clone)]
+struct FieldPath {
+    field: String,
+    path: String,
+}
+
+fn parse_field_path(s: &str) -> Result<FieldPath, String> {
+    let mut parts = s.splitn(2, '=');
+    let field = parts.next().unwrap_or("").trim();
+    let path = parts.next().unwrap_or("").trim();
+    if field.is_empty() || path.is_empty() {
+        return Err("expected form name=path".to_string());
+    }
+    Ok(FieldPath { field: field.to_string(), path: path.to_string() })
+}
+
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Process a pipeline using a remote server (oneshot mode)
@@ -19,8 +36,11 @@ enum Commands {
     OneShot {
         /// Path to the pipeline YAML file
         pipeline: String,
-        /// Input media file path
+        /// Primary input media file path (multipart field defaults to 'media')
         input: String,
+        /// Additional input fields in the form name=path (repeatable)
+        #[arg(long = "input", value_parser = parse_field_path, action = ArgAction::Append)]
+        extra_input: Vec<FieldPath>,
         /// Output file path
         output: String,
         /// Server URL (default: http://127.0.0.1:4545)
@@ -329,11 +349,17 @@ async fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::OneShot { pipeline, input, output, server } => {
+        Commands::OneShot { pipeline, input, extra_input, output, server } => {
             info!("Starting StreamKit client - oneshot processing");
 
+            let mut inputs = Vec::new();
+            inputs.push(InputFile { field: "media".to_string(), path: input, content_type: None });
+            for extra in extra_input {
+                inputs.push(InputFile { field: extra.field, path: extra.path, content_type: None });
+            }
+
             if let Err(e) =
-                streamkit_client::process_oneshot(&pipeline, &input, &output, &server).await
+                streamkit_client::process_oneshot(&pipeline, &inputs, &output, &server).await
             {
                 // Error already logged via tracing above
                 error!(error = %e, "Failed to process oneshot pipeline");

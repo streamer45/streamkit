@@ -16,6 +16,14 @@ use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tracing::{debug, error, info};
 use url::Url;
 
+/// Represents one multipart input file for oneshot execution.
+#[derive(Debug, Clone)]
+pub struct InputFile {
+    pub field: String,
+    pub path: String,
+    pub content_type: Option<String>,
+}
+
 fn http_base_url(server_url: &str) -> Result<Url, Box<dyn std::error::Error + Send + Sync>> {
     let mut url = Url::parse(server_url)?;
     match url.scheme() {
@@ -167,12 +175,12 @@ fn parse_batch_operations(
 #[allow(clippy::cognitive_complexity)]
 pub async fn process_oneshot(
     pipeline_path: &str,
-    input_path: &str,
+    inputs: &[InputFile],
     output_path: &str,
     server_url: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let client = reqwest::Client::new();
-    process_oneshot_with_client(&client, pipeline_path, input_path, output_path, server_url).await
+    process_oneshot_with_client(&client, pipeline_path, inputs, output_path, server_url).await
 }
 
 /// Process a pipeline using a remote server in oneshot mode with a caller-provided HTTP client.
@@ -192,13 +200,17 @@ pub async fn process_oneshot(
 pub async fn process_oneshot_with_client(
     client: &reqwest::Client,
     pipeline_path: &str,
-    input_path: &str,
+    inputs: &[InputFile],
     output_path: &str,
     server_url: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if inputs.is_empty() {
+        return Err("At least one input file is required".into());
+    }
+
     info!(
         pipeline = %pipeline_path,
-        input = %input_path,
+        inputs = inputs.len(),
         output = %output_path,
         server = %server_url,
         "Starting oneshot pipeline processing"
@@ -208,31 +220,41 @@ pub async fn process_oneshot_with_client(
     if !Path::new(pipeline_path).exists() {
         return Err(format!("Pipeline file not found: {pipeline_path}").into());
     }
-    if !Path::new(input_path).exists() {
-        return Err(format!("Input file not found: {input_path}").into());
+    for input in inputs {
+        if !Path::new(&input.path).exists() {
+            return Err(format!("Input file not found: {}", input.path).into());
+        }
     }
 
     // Read pipeline configuration
     debug!("Reading pipeline configuration from {pipeline_path}");
     let pipeline_content = fs::read_to_string(pipeline_path).await?;
 
-    // Read input media file
-    debug!("Reading input media file from {input_path}");
-    let media_data = fs::read(input_path).await?;
-
-    // Extract filename for the multipart form
-    let input_filename = Path::new(input_path)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("input")
-        .to_string();
-
     // Create multipart form
-    let media_len = media_data.len();
-    debug!("Creating multipart form with {media_len} bytes of media data");
-    let form = multipart::Form::new()
-        .text("config", pipeline_content)
-        .part("media", multipart::Part::bytes(media_data).file_name(input_filename));
+    let mut form = multipart::Form::new().text("config", pipeline_content);
+    for input in inputs {
+        debug!("Reading input media file from {}", input.path);
+        let media_data = fs::read(&input.path).await?;
+        let media_len = media_data.len();
+
+        let input_filename = Path::new(&input.path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("input")
+            .to_string();
+
+        debug!(
+            "Adding multipart field '{}' with {} bytes (file: {})",
+            input.field, media_len, input_filename
+        );
+
+        let mut part = multipart::Part::bytes(media_data).file_name(input_filename);
+        if let Some(ct) = &input.content_type {
+            part = part.mime_str(ct)?;
+        }
+
+        form = form.part(input.field.clone(), part);
+    }
 
     // Send request to server
     let url = http_base_url(server_url)?.join("/api/v1/process")?;

@@ -51,6 +51,16 @@ impl NeedsDependency {
         }
     }
 
+    /// Returns (node, from_pin) where from_pin is parsed from "node.pin" syntax if present.
+    fn node_and_pin(&self) -> (&str, Option<&str>) {
+        let label = self.node();
+        if let Some((node, pin)) = label.split_once('.') {
+            (node, Some(pin))
+        } else {
+            (label, None)
+        }
+    }
+
     fn mode(&self) -> ConnectionMode {
         match self {
             Self::Simple(_) => ConnectionMode::default(),
@@ -215,8 +225,8 @@ fn detect_cycles(user_nodes: &IndexMap<String, UserNode>) -> Result<(), String> 
 
         let dependencies: Vec<&str> = match &node_def.needs {
             Needs::None => vec![],
-            Needs::Single(dep) => vec![dep.node()],
-            Needs::Multiple(deps) => deps.iter().map(NeedsDependency::node).collect(),
+            Needs::Single(dep) => vec![dep.node_and_pin().0],
+            Needs::Multiple(deps) => deps.iter().map(|d| d.node_and_pin().0).collect(),
         };
 
         for dep_name in dependencies {
@@ -274,7 +284,7 @@ fn compile_dag(
         };
 
         for (idx, dep) in dependencies.iter().enumerate() {
-            let dep_name = dep.node();
+            let (dep_name, from_pin) = dep.node_and_pin();
 
             // Validate that the referenced node exists
             if !user_nodes.contains_key(dep_name) {
@@ -289,7 +299,7 @@ fn compile_dag(
 
             connections.push(Connection {
                 from_node: dep_name.to_string(),
-                from_pin: "out".to_string(),
+                from_pin: from_pin.unwrap_or("out").to_string(),
                 to_node: node_name.clone(),
                 to_pin,
                 mode: dep.mode(),
