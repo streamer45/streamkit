@@ -3,7 +3,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import styled from '@emotion/styled';
-import React, { useEffect, useRef, useCallback, useState, useMemo } from 'react';
+import { load as loadYaml } from 'js-yaml';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+
+/* eslint-disable max-depth */
 
 import { AssetSelector } from '@/components/converter/AssetSelector';
 import { ConversionProgress } from '@/components/converter/ConversionProgress';
@@ -17,12 +20,97 @@ import { MSEAudioPlayer } from '@/components/MSEAudioPlayer';
 import { RadioGroupRoot, RadioWithLabel } from '@/components/ui/RadioGroup';
 import { useConvertViewState } from '@/hooks/useConvertViewState';
 import { useAudioAssets } from '@/services/assets';
-import { convertFile, type OutputMode, getExtensionFromContentType } from '@/services/converter';
+import {
+  convertFile,
+  getExtensionFromContentType,
+  type OutputMode,
+  type UploadField,
+} from '@/services/converter';
 import { listSamples } from '@/services/samples';
-import { useSchemaStore, ensureSchemasLoaded } from '@/stores/schemaStore';
+import { ensureSchemasLoaded, useSchemaStore } from '@/stores/schemaStore';
 import { viewsLogger } from '@/utils/logger';
 import { orderSamplePipelinesSystemFirst } from '@/utils/samplePipelineOrdering';
 import { injectFileReadNode } from '@/utils/yamlPipeline';
+
+type HttpInputField = { name: string; required: boolean };
+
+const normalizeHttpInputField = (entry: unknown): HttpInputField | null => {
+  if (typeof entry === 'string' && entry.trim()) {
+    return { name: entry.trim(), required: true };
+  }
+  if (entry && typeof entry === 'object' && 'name' in (entry as Record<string, unknown>)) {
+    const name = String((entry as Record<string, unknown>).name ?? '').trim();
+    if (!name) return null;
+    const required = (entry as Record<string, unknown>).required;
+    return { name, required: typeof required === 'boolean' ? required : true };
+  }
+  return null;
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+
+const extractFieldsFromNode = (
+  label: string,
+  node: Record<string, unknown>,
+  defaultField: string | null
+): HttpInputField[] => {
+  const params = isRecord(node.params) ? (node.params as Record<string, unknown>) : {};
+  const fieldsVal = params.fields;
+
+  if (Array.isArray(fieldsVal)) {
+    return fieldsVal
+      .map((entry) => normalizeHttpInputField(entry))
+      .filter((f): f is HttpInputField => Boolean(f));
+  }
+
+  const fieldVal = typeof params.field === 'string' ? params.field.trim() : '';
+  if (fieldVal) {
+    const required = typeof params.required === 'boolean' ? (params.required as boolean) : true;
+    return [{ name: fieldVal, required }];
+  }
+
+  const fallback = defaultField ?? label;
+  return fallback ? [{ name: fallback, required: defaultField ? false : true }] : [];
+};
+
+const deriveHttpInputFields = (
+  yaml: string
+): { fields: HttpInputField[]; hasHttpInput: boolean } => {
+  try {
+    const parsed = loadYaml(yaml) as { nodes?: unknown; steps?: unknown } | null;
+    if (!parsed || typeof parsed !== 'object') return { fields: [], hasHttpInput: false };
+
+    if (isRecord(parsed.nodes)) {
+      const httpEntries = Object.entries(parsed.nodes).filter(
+        ([, node]) => isRecord(node) && node.kind === 'streamkit::http_input'
+      );
+      if (httpEntries.length === 0) return { fields: [], hasHttpInput: false };
+
+      const defaultField = httpEntries.length === 1 ? 'media' : null;
+      const fields = httpEntries.flatMap(([label, node]) =>
+        extractFieldsFromNode(label, node as Record<string, unknown>, defaultField)
+      );
+
+      const unique = new Map<string, HttpInputField>();
+      fields.forEach((f) => unique.set(f.name, f));
+      return { fields: Array.from(unique.values()), hasHttpInput: true };
+    }
+
+    if (Array.isArray(parsed.steps)) {
+      const hasHttpInput = parsed.steps.some(
+        (s) => isRecord(s) && typeof s.kind === 'string' && s.kind === 'streamkit::http_input'
+      );
+      if (hasHttpInput) {
+        return { fields: [{ name: 'media', required: true }], hasHttpInput: true };
+      }
+    }
+
+    return { fields: [], hasHttpInput: false };
+  } catch {
+    return { fields: [], hasHttpInput: false };
+  }
+};
 
 const ViewContainer = styled.div`
   height: 100%;
@@ -432,10 +520,12 @@ const generateCliCommand = (
   templateId: string,
   isNoInput: boolean,
   isTTS: boolean,
+  fields: HttpInputField[],
   serverUrl: string = 'http://127.0.0.1:4545'
 ): string => {
   // Convert template ID to file path (e.g., "oneshot/speech_to_text" -> "samples/pipelines/oneshot/speech_to_text.yml")
   const configPath = `samples/pipelines/${templateId}.yml`;
+  const activeFields = fields.length > 0 ? fields : [{ name: 'media', required: true }];
 
   if (isNoInput) {
     // No input needed - send empty media field
@@ -450,6 +540,29 @@ const generateCliCommand = (
     return `echo "Your text here" | curl --no-buffer \\
   -F config=@${configPath} \\
   -F 'media=@-;type=text/plain' \\
+  ${serverUrl}/api/v1/process -o - | ffplay -f webm -i -`;
+  }
+
+  // Multi-upload pipelines
+  if (activeFields.length > 1) {
+    // Provide real assets for known dual-upload sample
+    if (
+      templateId.endsWith('oneshot/dual_upload_mixing') &&
+      activeFields.some((f) => f.name === 'track_a') &&
+      activeFields.some((f) => f.name === 'track_b')
+    ) {
+      return `curl --no-buffer \\
+  -F config=@${configPath} \\
+  -F track_a=@samples/audio/system/speech_2m.opus \\
+  -F "track_b=@samples/audio/system/THE LADY IS A TRAMP.opus" \\
+  ${serverUrl}/api/v1/process | ffplay -nodisp -autoexit -f webm -i -`;
+    }
+
+    const fieldLines = activeFields.map((f) => `  -F ${f.name}=@your-${f.name}.ogg \\`).join('\n');
+
+    return `curl --no-buffer \\
+  -F config=@${configPath} \\
+${fieldLines}
   ${serverUrl}/api/v1/process -o - | ffplay -f webm -i -`;
   }
 
@@ -519,6 +632,9 @@ const ConvertView: React.FC = () => {
     setShowTechnicalDetails,
   } = useConvertViewState();
 
+  const [httpInputFields, setHttpInputFields] = useState<HttpInputField[]>([]);
+  const [hasHttpInput, setHasHttpInput] = useState(false);
+  const [fieldUploads, setFieldUploads] = useState<Record<string, File | null>>({});
   // State for CLI command copy button
   const [cliCopied, setCliCopied] = useState(false);
   const [msePlaybackError, setMsePlaybackError] = useState<string | null>(null);
@@ -527,8 +643,13 @@ const ConvertView: React.FC = () => {
   // Generate CLI command based on current template and pipeline type
   const cliCommand = useMemo(() => {
     if (!selectedTemplateId) return '';
-    return generateCliCommand(selectedTemplateId, isNoInputPipeline, isTTSPipeline);
-  }, [selectedTemplateId, isNoInputPipeline, isTTSPipeline]);
+    return generateCliCommand(
+      selectedTemplateId,
+      isNoInputPipeline,
+      isTTSPipeline,
+      httpInputFields
+    );
+  }, [selectedTemplateId, isNoInputPipeline, isTTSPipeline, httpInputFields]);
 
   // Handler for copying CLI command to clipboard
   const handleCopyCliCommand = useCallback(async () => {
@@ -651,16 +772,22 @@ const ConvertView: React.FC = () => {
     return false;
   };
 
-  // Filter assets based on pipeline's expected format
+  // Filter assets based on pipeline's expected format; for multi-field uploads, allow all assets so fields can mix
   const filteredAssets = React.useMemo(() => {
-    if (!pipelineYaml || inputMode !== 'asset') {
+    if (!pipelineYaml) {
       return audioAssets;
     }
 
     const expectedFormats = detectExpectedFormats(pipelineYaml);
     const inputAssetTags = detectInputAssetTags(pipelineYaml);
 
-    // If no specific format detected, show all assets
+    // Multi-field pipelines: only filter by format (avoid tag-based narrowing so users can mix content)
+    if (httpInputFields.length > 1) {
+      if (!expectedFormats) return audioAssets;
+      return audioAssets.filter((asset) => expectedFormats.includes(asset.format.toLowerCase()));
+    }
+
+    // Single-field pipelines: apply both format and tag filters if present
     if (!expectedFormats && !inputAssetTags) {
       viewsLogger.debug('No specific format required, showing all assets');
       return audioAssets;
@@ -682,7 +809,7 @@ const ConvertView: React.FC = () => {
     viewsLogger.debug('Filtered to', tagFiltered.length, 'compatible assets');
 
     return tagFiltered;
-  }, [audioAssets, pipelineYaml, inputMode]);
+  }, [audioAssets, pipelineYaml, httpInputFields.length]);
 
   // Clear selected asset if it's no longer in the filtered list
   useEffect(() => {
@@ -691,6 +818,20 @@ const ConvertView: React.FC = () => {
       setSelectedAssetId('');
     }
   }, [filteredAssets, selectedAssetId, setSelectedAssetId]);
+
+  // Track http_input fields for multi-upload pipelines
+  useEffect(() => {
+    const { fields, hasHttpInput: hasHttp } = deriveHttpInputFields(pipelineYaml);
+    setHasHttpInput(hasHttp);
+    setHttpInputFields(fields);
+    setFieldUploads((prev) => {
+      const next: Record<string, File | null> = {};
+      fields.forEach((f) => {
+        next[f.name] = prev[f.name] ?? null;
+      });
+      return next;
+    });
+  }, [pipelineYaml]);
 
   // Watch for pipeline YAML changes and update transcription/TTS detection
   useEffect(() => {
@@ -797,37 +938,61 @@ const ConvertView: React.FC = () => {
     }
   };
 
-  // Helper: Prepare input file based on pipeline type and mode
-  const prepareInputFile = useCallback((): File | null => {
+  const prepareUploads = useCallback(async (): Promise<UploadField[] | null> => {
+    const fields =
+      httpInputFields.length > 0 ? httpInputFields : [{ name: 'media', required: true }];
+
     if (isNoInputPipeline) {
-      // No input needed - create empty file as placeholder for http_input
+      // No input needed - create empty placeholder for the first field
       const blob = new Blob([''], { type: 'application/octet-stream' });
-      return new File([blob], 'empty', { type: 'application/octet-stream' });
+      const file = new File([blob], 'empty', { type: 'application/octet-stream' });
+      return [{ field: fields[0].name, file }];
     }
 
     if (isTTSPipeline) {
-      // For TTS pipelines, convert text to a File object
       if (!textInput.trim()) {
         return null;
       }
       const blob = new Blob([textInput], { type: 'text/plain' });
-      return new File([blob], 'input.txt', { type: 'text/plain' });
+      const file = new File([blob], 'input.txt', { type: 'text/plain' });
+      return [{ field: fields[0].name, file }];
     }
 
     if (inputMode === 'upload') {
+      if (fields.length > 1) {
+        const uploads: UploadField[] = [];
+        for (const field of fields) {
+          const file = fieldUploads[field.name];
+          if (!file) {
+            if (field.required) return null;
+            continue;
+          }
+          uploads.push({ field: field.name, file });
+        }
+        return uploads;
+      }
+
       if (!selectedFile) {
         return null;
       }
-      return selectedFile;
+      return [{ field: fields[0].name, file: selectedFile }];
     }
 
-    // Asset mode - ensure asset is selected
-    if (!selectedAssetId) {
-      return null;
+    if (!selectedAssetId || !hasHttpInput) {
+      return [];
     }
-    // YAML is already modified by useEffect, just use it directly
-    return null;
-  }, [inputMode, isNoInputPipeline, isTTSPipeline, selectedAssetId, selectedFile, textInput]);
+    return [];
+  }, [
+    fieldUploads,
+    httpInputFields,
+    inputMode,
+    isNoInputPipeline,
+    isTTSPipeline,
+    hasHttpInput,
+    selectedAssetId,
+    selectedFile,
+    textInput,
+  ]);
 
   // Helper: Clean up previous conversion state
   const cleanupPreviousState = useCallback(() => {
@@ -913,8 +1078,8 @@ const ConvertView: React.FC = () => {
   // eslint-disable-next-line max-statements -- Intentionally co-locates conversion state + error/cancel handling.
   const handleConvert = async () => {
     // Determine the input source
-    const fileToConvert = prepareInputFile();
-    if (fileToConvert === null && !selectedAssetId) {
+    const uploads = await prepareUploads();
+    if (uploads === null) {
       return; // Validation failed
     }
 
@@ -929,7 +1094,10 @@ const ConvertView: React.FC = () => {
     setConversionMessage('');
 
     try {
-      const result = await convertFile(pipelineYaml, fileToConvert, outputMode, controller.signal);
+      const webmPlayback = outputMode === 'playback' ? 'auto' : 'blob';
+      const result = await convertFile(pipelineYaml, uploads, outputMode, controller.signal, {
+        webmPlayback,
+      });
 
       if (result.success) {
         handleConversionSuccess(result);
@@ -1084,8 +1252,8 @@ const ConvertView: React.FC = () => {
     if (mseFallbackLoading) return;
 
     // Determine the input source
-    const fileToConvert = prepareInputFile();
-    if (fileToConvert === null && !selectedAssetId) {
+    const uploads = await prepareUploads();
+    if (uploads === null) {
       return;
     }
 
@@ -1108,7 +1276,7 @@ const ConvertView: React.FC = () => {
     setMseFallbackLoading(true);
 
     try {
-      const result = await convertFile(pipelineYaml, fileToConvert, 'playback', controller.signal, {
+      const result = await convertFile(pipelineYaml, uploads, 'playback', controller.signal, {
         webmPlayback: 'blob',
       });
 
@@ -1141,20 +1309,28 @@ const ConvertView: React.FC = () => {
     handleConversionSuccess,
     mseFallbackLoading,
     pipelineYaml,
-    prepareInputFile,
-    selectedAssetId,
+    prepareUploads,
     setAbortController,
     setConversionMessage,
     setConversionStatus,
   ]);
+
+  const uploadFields =
+    httpInputFields.length > 0 ? httpInputFields : [{ name: 'media', required: true }];
+  const isMultiUpload = uploadFields.length > 1;
 
   const handleDownloadAudio = () => {
     if (!audioUrl) return;
 
     let outputFileName = 'converted_audio';
 
-    if (inputMode === 'upload' && selectedFile) {
-      const originalName = selectedFile.name;
+    const primaryUpload =
+      isMultiUpload && inputMode === 'upload'
+        ? (uploadFields.map((f) => fieldUploads[f.name]).find((f): f is File => Boolean(f)) ?? null)
+        : selectedFile;
+
+    if (inputMode === 'upload' && primaryUpload) {
+      const originalName = primaryUpload.name;
       const baseName = originalName.includes('.')
         ? originalName.substring(0, originalName.lastIndexOf('.'))
         : originalName;
@@ -1194,8 +1370,26 @@ const ConvertView: React.FC = () => {
       ? true // No input needed for these pipelines
       : isTTSPipeline
         ? textInput.trim() !== ''
-        : (inputMode === 'upload' && selectedFile !== null) ||
-          (inputMode === 'asset' && selectedAssetId !== ''));
+        : (() => {
+            if (!hasHttpInput) {
+              // Pipelines without http_input rely solely on YAML/file_reader; allow run
+              return true;
+            }
+
+            if (isMultiUpload) {
+              return uploadFields.every((f) => (f.required ? !!fieldUploads[f.name] : true));
+            }
+
+            if (inputMode === 'upload') {
+              return selectedFile !== null;
+            }
+
+            if (inputMode === 'asset') {
+              return selectedAssetId !== '';
+            }
+
+            return false;
+          })());
 
   return (
     <ViewContainer>
@@ -1297,23 +1491,49 @@ const ConvertView: React.FC = () => {
                 </TextInputContainer>
               ) : (
                 <>
-                  <InputModeSwitcher>
-                    <ModeButton
-                      active={inputMode === 'upload'}
-                      onClick={() => handleInputModeChange('upload')}
-                    >
-                      Upload File
-                    </ModeButton>
-                    <ModeButton
-                      active={inputMode === 'asset'}
-                      onClick={() => handleInputModeChange('asset')}
-                    >
-                      Select Existing Asset
-                    </ModeButton>
-                  </InputModeSwitcher>
+                  {!isMultiUpload && (
+                    <InputModeSwitcher>
+                      <ModeButton
+                        active={inputMode === 'upload'}
+                        onClick={() => handleInputModeChange('upload')}
+                      >
+                        Upload File
+                      </ModeButton>
+                      <ModeButton
+                        active={inputMode === 'asset'}
+                        onClick={() => handleInputModeChange('asset')}
+                        disabled={isMultiUpload}
+                      >
+                        Select Existing Asset
+                      </ModeButton>
+                    </InputModeSwitcher>
+                  )}
 
-                  {inputMode === 'upload' ? (
-                    <FileUpload file={selectedFile} onFileSelect={setSelectedFile} />
+                  {inputMode === 'upload' || isMultiUpload ? (
+                    isMultiUpload ? (
+                      <div>
+                        <p>
+                          This pipeline expects multiple uploads. For each field, choose an upload
+                          or pick an existing asset.
+                        </p>
+                        {uploadFields.map((field) => (
+                          <div key={field.name} style={{ marginBottom: '12px' }}>
+                            <TextAreaLabel>
+                              {field.name}
+                              {!field.required ? ' (optional)' : ''}
+                            </TextAreaLabel>
+                            <FileUpload
+                              file={fieldUploads[field.name] ?? null}
+                              onFileSelect={(file) =>
+                                setFieldUploads((prev) => ({ ...prev, [field.name]: file }))
+                              }
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <FileUpload file={selectedFile} onFileSelect={setSelectedFile} />
+                    )
                   ) : (
                     <AssetSelector
                       assets={filteredAssets}

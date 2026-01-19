@@ -94,6 +94,7 @@ interface AssetSelectorProps {
   selectedAssetId: string;
   onAssetSelect: (assetId: string) => void;
   isLoading?: boolean;
+  groupId?: string;
 }
 
 export const AssetSelector: React.FC<AssetSelectorProps> = ({
@@ -101,6 +102,7 @@ export const AssetSelector: React.FC<AssetSelectorProps> = ({
   selectedAssetId,
   onAssetSelect,
   isLoading = false,
+  groupId = 'asset',
 }) => {
   if (isLoading) {
     return (
@@ -134,11 +136,12 @@ export const AssetSelector: React.FC<AssetSelectorProps> = ({
         value={selectedAssetId}
         onValueChange={onAssetSelect}
         aria-label="Audio asset selection"
+        name={`asset-selector-${groupId}`}
       >
         <AssetGrid>
           {assets.map((asset) => (
-            <AssetCard key={asset.id} htmlFor={`asset-${asset.id}`}>
-              <RadioItem value={asset.id} id={`asset-${asset.id}`}>
+            <AssetCard key={`${groupId}-${asset.id}`} htmlFor={`${groupId}-asset-${asset.id}`}>
+              <RadioItem value={asset.id} id={`${groupId}-asset-${asset.id}`}>
                 <RadioIndicator />
               </RadioItem>
               <AssetContent>

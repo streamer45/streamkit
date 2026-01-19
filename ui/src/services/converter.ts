@@ -183,9 +183,11 @@ async function handleDownload(
  * @param signal - Optional AbortSignal to cancel the request
  * @returns A promise that resolves when the conversion is complete
  */
+export type UploadField = { field: string; file: File };
+
 export async function convertFile(
   pipelineYaml: string,
-  mediaFile: File | null,
+  uploads: UploadField[] | null,
   mode: OutputMode = 'download',
   signal?: AbortSignal,
   options?: ConvertFileOptions
@@ -195,15 +197,17 @@ export async function convertFile(
     const formData = new FormData();
     formData.append('config', new Blob([pipelineYaml], { type: 'text/yaml' }));
 
-    // Only append media file if provided (not needed for asset-based pipelines)
-    if (mediaFile) {
-      formData.append('media', mediaFile);
+    // Append uploads (multi-field allowed)
+    const files = uploads ?? [];
+    for (const upload of files) {
+      formData.append(upload.field, upload.file);
     }
 
     // Determine the API URL
     logger.info('Starting conversion:', {
-      fileName: mediaFile?.name || '(asset-based)',
-      fileSize: mediaFile?.size || 0,
+      uploads: files.length,
+      fileNames: files.map((f) => f.file.name),
+      fileSizes: files.map((f) => f.file.size),
       pipelineLength: pipelineYaml.length,
     });
 
@@ -244,7 +248,9 @@ export async function convertFile(
     }
 
     // Handle download mode
-    return handleDownload(response, contentType, mediaFile);
+    // Use first upload to infer output naming when possible
+    const primaryFile = files[0]?.file ?? null;
+    return handleDownload(response, contentType, primaryFile);
   } catch (error) {
     logger.error('Conversion error:', error);
     return {
