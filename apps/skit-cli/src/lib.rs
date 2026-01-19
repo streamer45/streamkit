@@ -17,7 +17,7 @@ pub use client::{
     destroy_session, get_config, get_permissions, get_pipeline, get_sample, list_audio_assets,
     list_node_schemas, list_packet_schemas, list_plugins, list_samples_dynamic,
     list_samples_oneshot, list_sessions, process_oneshot, save_sample, tune_node,
-    upload_audio_asset, upload_plugin, watch_events,
+    upload_audio_asset, upload_plugin, watch_events, InputFile,
 };
 pub use load_test::run_load_test;
 

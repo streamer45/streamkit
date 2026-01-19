@@ -18,6 +18,7 @@ Agent-assisted contributions are welcome, but should be **supervised** and **rev
 - **Primary server binary**: `skit` (crate: `streamkit-server`).
 - **Dev task runner**: `just` (see `justfile`).
 - **Docs**: Astro + Starlight in `docs/` (sidebar in `docs/astro.config.mjs`).
+- **UI tooling**: Bun-first. Use `bun install`, `bunx` (or `bun run` scripts) for UI work—avoid npm/pnpm.
 
 ## Workflow expectations
 

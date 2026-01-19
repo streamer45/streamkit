@@ -623,7 +623,12 @@ impl Shell {
 
         // Use the existing process_oneshot function from client.rs
         // This makes a multipart HTTP POST to /api/v1/process
-        crate::client::process_oneshot(pipeline_path, input_path, output_path, &http_url).await?;
+        let inputs = vec![crate::client::InputFile {
+            field: "media".to_string(),
+            path: input_path.to_string(),
+            content_type: None,
+        }];
+        crate::client::process_oneshot(pipeline_path, &inputs, output_path, &http_url).await?;
 
         println!("✅ Oneshot processing completed successfully");
 

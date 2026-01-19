@@ -18,13 +18,14 @@ use bytes::Bytes;
 use multer as raw_multer;
 use opentelemetry::{global, KeyValue};
 use rust_embed::RustEmbed;
+use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::task::{Context as TaskContext, Poll};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tower::limit::ConcurrencyLimitLayer;
 use tower::ServiceBuilder;
 use tower_http::{
@@ -44,12 +45,13 @@ use streamkit_api::Pipeline;
 use streamkit_api::{ApiPipeline, Event as ApiEvent, EventPayload, MessageType};
 use streamkit_core::control::EngineControlMessage;
 use streamkit_core::error::StreamKitError;
-use streamkit_engine::{Engine, OneshotEngineConfig};
+use streamkit_engine::{Engine, OneshotEngineConfig, OneshotInput};
 
 use crate::session::SessionManager;
 
 use crate::config::Config;
 use tokio_stream::wrappers::ReceiverStream;
+use tokio_util::sync::CancellationToken;
 
 use anyhow::Error as AnyhowError;
 use futures::{Stream, StreamExt};
@@ -497,7 +499,39 @@ async fn list_node_definitions_handler(
              Receives binary data from the HTTP request body."
                 .to_string(),
         ),
-        param_schema: serde_json::json!({}),
+        param_schema: serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "field": {
+                    "type": "string",
+                    "description": "Multipart field name to bind to this input. Defaults to 'media' when only one http_input node exists; otherwise defaults to the node id."
+                },
+                "fields": {
+                    "type": "array",
+                    "description": "Optional list of multipart fields for this node. When set, the node exposes one output pin per entry (pin name matches the field name). Entries may be strings or objects with { name, required }.",
+                    "items": {
+                        "oneOf": [
+                            { "type": "string" },
+                            {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                    "name": { "type": "string" },
+                                    "required": { "type": "boolean", "default": true }
+                                },
+                                "required": ["name"]
+                            }
+                        ]
+                    }
+                },
+                "required": {
+                    "type": "boolean",
+                    "description": "If true (default), the request must include this field.",
+                    "default": true
+                }
+            }
+        }),
         inputs: vec![],
         outputs: vec![OutputPin {
             name: "out".to_string(),
@@ -1283,12 +1317,12 @@ async fn get_pipeline_handler(
     Ok(Json(api_pipeline))
 }
 
-/// Result of parsing multipart request with config and optional media stream
-struct MultipartParseResult {
-    user_pipeline: UserPipeline,
-    media_stream: MediaStream,
-    media_content_type: Option<String>,
-    has_media: bool,
+/// Binding between a multipart field and an http_input node.
+struct HttpInputBinding {
+    node_id: String,
+    field_name: String,
+    output_pin: String,
+    required: bool,
 }
 
 /// Extract content-type header and multipart boundary from request headers.
@@ -1316,7 +1350,7 @@ async fn parse_config_field(
     let first_name = first_field.name().map(std::string::ToString::to_string).unwrap_or_default();
     if first_name != "config" {
         return Err(AppError::BadRequest(
-            "Multipart fields must be ordered: 'config' first, then 'media'".to_string(),
+            "Multipart fields must be ordered: 'config' first".to_string(),
         ));
     }
 
@@ -1327,72 +1361,223 @@ async fn parse_config_field(
     serde_saphyr::from_slice(&config_bytes).map_err(Into::into)
 }
 
-/// Parse the multipart request and extract config and media stream.
-/// Returns the parsed pipeline config, media stream (possibly empty), content type, and whether media was provided.
+/// Build http_input bindings from the pipeline definition.
 ///
-/// This needs to stay relatively monolithic because it combines multipart streaming
-/// with a spawned task, and the `Multipart<'_>` lifetime makes further extraction awkward.
-#[allow(clippy::cognitive_complexity)]
-async fn parse_multipart_request(
-    req: axum::extract::Request<Body>,
-) -> Result<MultipartParseResult, AppError> {
-    let headers = req.headers().clone();
-    let boundary = extract_multipart_boundary(&headers)?;
-    let body_stream = req.into_body().into_data_stream();
-    let mut multipart = raw_multer::Multipart::new(body_stream, boundary);
-
-    // Parse the config field
-    let user_pipeline = parse_config_field(&mut multipart).await?;
-
-    // Setup channels for streaming media field
-    let (media_tx, media_rx) = tokio::sync::mpsc::channel::<Result<Bytes, axum::Error>>(16);
-    let (ct_tx, ct_rx) = tokio::sync::oneshot::channel::<Option<String>>();
-    let (has_media_tx, has_media_rx) = tokio::sync::oneshot::channel::<bool>();
-
-    // Spawn producer task to stream media field
-    // Note: Must remain inline due to Multipart<'r> lifetime constraints
-    tokio::spawn(async move {
-        while let Ok(next) = multipart.next_field().await {
-            if let Some(mut field) = next {
-                let fname = field.name().map(std::string::ToString::to_string).unwrap_or_default();
-                if fname == "media" {
-                    let _ = has_media_tx.send(true);
-                    let _ = ct_tx.send(field.content_type().map(std::string::ToString::to_string));
-                    stream_media_field_chunks(&mut field, &media_tx).await;
-                    drop(media_tx);
-                    break;
-                }
-                tracing::warn!("Ignoring unknown multipart field: {}", fname);
-            } else {
-                let _ = has_media_tx.send(false);
-                tracing::debug!("No media field found in multipart");
-                break;
+/// Defaults:
+/// - Single http_input: field name defaults to "media"
+/// - Multiple http_input: field names default to the node id
+fn determine_http_input_bindings(
+    pipeline_def: &Pipeline,
+) -> Result<Vec<HttpInputBinding>, AppError> {
+    // Record which output pins the pipeline references for each http_input node
+    let mut pins_used: HashMap<String, HashSet<String>> = HashMap::new();
+    for conn in &pipeline_def.connections {
+        if let Some(node_def) = pipeline_def.nodes.get(&conn.from_node) {
+            if node_def.kind == "streamkit::http_input" {
+                pins_used.entry(conn.from_node.clone()).or_default().insert(conn.from_pin.clone());
             }
         }
-    });
+    }
 
-    // Wait to see if media field exists (timeout prevents hanging on slow/broken clients).
-    // If this times out, fail the request instead of guessing "no media".
-    let has_media = tokio::time::timeout(std::time::Duration::from_secs(5), has_media_rx)
-        .await
-        .map_err(|_| {
-            AppError::BadRequest("Timed out waiting for multipart media field".to_string())
-        })?
-        .unwrap_or(false);
+    let http_inputs: Vec<(&String, &streamkit_api::Node)> = pipeline_def
+        .nodes
+        .iter()
+        .filter(|(_, node)| node.kind == "streamkit::http_input")
+        .collect();
 
-    let media_stream: MediaStream = Box::new(ReceiverStream::new(media_rx).map(|x| x));
-    let media_content_type: Option<String> = ct_rx.await.ok().flatten();
+    let default_field = if http_inputs.len() == 1 { Some("media".to_string()) } else { None };
+    let mut seen_fields: HashSet<String> = HashSet::new();
+    let mut bindings = Vec::new();
 
-    Ok(MultipartParseResult { user_pipeline, media_stream, media_content_type, has_media })
+    for (node_id, node_def) in http_inputs {
+        let mut node_bindings: Vec<HttpInputBinding> = Vec::new();
+        let mut single_field: Option<String> = None;
+        let mut single_required = true;
+        let mut has_fields_param = false;
+        let mut has_single_field_param = false;
+
+        if let Some(params) = &node_def.params {
+            if let Some(fields_val) = params.get("fields") {
+                has_fields_param = true;
+                let fields = fields_val.as_array().ok_or_else(|| {
+                    AppError::BadRequest(
+                        "streamkit::http_input.params.fields must be an array of strings or objects"
+                            .to_string(),
+                    )
+                })?;
+
+                for entry in fields {
+                    let (name, required) = match entry {
+                        serde_json::Value::String(s) => (s.clone(), true),
+                        serde_json::Value::Object(map) => {
+                            let Some(name_val) = map.get("name") else {
+                                return Err(AppError::BadRequest(
+                                    "fields entries must include 'name'".to_string(),
+                                ));
+                            };
+                            let name = name_val
+                                .as_str()
+                                .ok_or_else(|| {
+                                    AppError::BadRequest("fields.name must be a string".to_string())
+                                })?
+                                .trim()
+                                .to_string();
+                            if name.is_empty() {
+                                return Err(AppError::BadRequest(
+                                    "fields.name must not be empty".to_string(),
+                                ));
+                            }
+                            let required = map
+                                .get("required")
+                                .and_then(serde_json::Value::as_bool)
+                                .unwrap_or(true);
+                            (name, required)
+                        },
+                        _ => {
+                            return Err(AppError::BadRequest(
+                                "fields entries must be strings or objects".to_string(),
+                            ))
+                        },
+                    };
+
+                    node_bindings.push(HttpInputBinding {
+                        node_id: node_id.clone(),
+                        field_name: name,
+                        output_pin: String::new(),
+                        required,
+                    });
+                }
+            } else if let Some(field_val) = params.get("field").and_then(serde_json::Value::as_str)
+            {
+                has_single_field_param = true;
+                let trimmed = field_val.trim();
+                if !trimmed.is_empty() {
+                    single_field = Some(trimmed.to_string());
+                }
+                if let Some(req_val) = params.get("required").and_then(serde_json::Value::as_bool) {
+                    single_required = req_val;
+                }
+            }
+        }
+
+        if has_fields_param && has_single_field_param {
+            return Err(AppError::BadRequest(
+                "streamkit::http_input: use either 'field' or 'fields', not both".to_string(),
+            ));
+        }
+
+        if has_fields_param && node_bindings.is_empty() {
+            return Err(AppError::BadRequest(
+                "streamkit::http_input.params.fields must include at least one field".to_string(),
+            ));
+        }
+
+        if node_bindings.is_empty() {
+            let field_name =
+                single_field.or_else(|| default_field.clone()).unwrap_or_else(|| node_id.clone());
+            node_bindings.push(HttpInputBinding {
+                node_id: node_id.clone(),
+                field_name,
+                output_pin: String::new(),
+                required: single_required,
+            });
+        }
+
+        // Back-compat: allow implicit 'media' only when no fields array is provided.
+        if !has_fields_param
+            && default_field.as_deref() == Some("media")
+            && !node_bindings.iter().any(|b| b.field_name == "media")
+        {
+            node_bindings.push(HttpInputBinding {
+                node_id: node_id.clone(),
+                field_name: "media".to_string(),
+                output_pin: String::new(),
+                required: false,
+            });
+        }
+
+        // Decide pin names based on referenced connections. Keep field names for multi-field mode,
+        // but allow legacy 'out' default when only one pin is referenced (steps format).
+        let used_pins = pins_used.get(node_id.as_str()).cloned().unwrap_or_default();
+        for binding in &mut node_bindings {
+            let pin_name = if used_pins.contains(&binding.field_name) {
+                binding.field_name.clone()
+            } else if used_pins.len() == 1 && !has_fields_param {
+                // Legacy steps pipelines reference 'out'
+                used_pins.iter().next().cloned().unwrap_or_else(|| binding.field_name.clone())
+            } else {
+                binding.field_name.clone()
+            };
+            binding.output_pin = pin_name;
+        }
+
+        for binding in node_bindings {
+            if !seen_fields.insert(binding.field_name.clone()) {
+                return Err(AppError::BadRequest(format!(
+                    "Duplicate multipart field name '{field_name}' across http_input nodes",
+                    field_name = binding.field_name
+                )));
+            }
+            bindings.push(binding);
+        }
+    }
+
+    Ok(bindings)
 }
 
 /// Stream all chunks from a media field through the provided channel.
 async fn stream_media_field_chunks(
     field: &mut raw_multer::Field<'_>,
     media_tx: &tokio::sync::mpsc::Sender<Result<Bytes, axum::Error>>,
+    cancellation_token: Option<&CancellationToken>,
 ) {
     let mut chunk_count: usize = 0;
     let mut total_bytes: usize = 0;
+
+    if let Some(token) = cancellation_token {
+        loop {
+            tokio::select! {
+                () = token.cancelled() => {
+                    tracing::info!(
+                        "Stopped streaming media early after {} chunks ({} bytes) due to cancellation",
+                        chunk_count,
+                        total_bytes
+                    );
+                    break;
+                }
+                chunk_result = field.chunk() => {
+                    match chunk_result {
+                        Ok(Some(chunk)) => {
+                            chunk_count += 1;
+                            total_bytes += chunk.len();
+                            if media_tx.send(Ok(chunk)).await.is_err() {
+                                tracing::debug!(
+                                    "Media consumer dropped after {} chunks ({} bytes)",
+                                    chunk_count,
+                                    total_bytes
+                                );
+                                break;
+                            }
+                        },
+                        Ok(None) => {
+                            tracing::info!(
+                                "Finished streaming media after {} chunks ({} bytes)",
+                                chunk_count,
+                                total_bytes
+                            );
+                            break;
+                        },
+                        Err(e) => {
+                            let _ = media_tx.send(Err(axum::Error::new(e))).await;
+                            break;
+                        },
+                    }
+                }
+            }
+        }
+        return;
+    }
+
     loop {
         match field.chunk().await {
             Ok(Some(chunk)) => {
@@ -1423,44 +1608,88 @@ async fn stream_media_field_chunks(
     }
 }
 
-/// Validate that the pipeline has the required nodes based on whether media was provided.
+/// Route multipart fields into pre-created channels based on expected names.
+async fn route_multipart_fields(
+    mut multipart: raw_multer::Multipart<'_>,
+    mut field_senders: HashMap<String, tokio::sync::mpsc::Sender<Result<Bytes, axum::Error>>>,
+    required_fields: HashSet<String>,
+    mut required_seen_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    parse_done_tx: tokio::sync::oneshot::Sender<Result<(), AppError>>,
+    cancellation_token: CancellationToken,
+) {
+    let mut seen_required: HashSet<String> = HashSet::new();
+
+    let result = async {
+        while let Some(mut field) = multipart
+            .next_field()
+            .await
+            .map_err(|e| AppError::BadRequest(format!("Multipart error: {e}")))?
+        {
+            let fname = field.name().map(std::string::ToString::to_string).unwrap_or_default();
+            if fname.is_empty() {
+                continue;
+            }
+
+            let Some(sender) = field_senders.remove(&fname) else {
+                let expected = if field_senders.is_empty() {
+                    "none".to_string()
+                } else {
+                    field_senders.keys().cloned().collect::<Vec<_>>().join(", ")
+                };
+                return Err(AppError::BadRequest(format!(
+                    "Unexpected multipart field '{fname}'. Expected: {expected}"
+                )));
+            };
+
+            if required_fields.contains(&fname) {
+                seen_required.insert(fname.clone());
+                if seen_required.len() == required_fields.len() {
+                    if let Some(tx) = required_seen_tx.take() {
+                        let _ = tx.send(());
+                    }
+                }
+            }
+
+            stream_media_field_chunks(&mut field, &sender, Some(&cancellation_token)).await;
+        }
+
+        if !required_fields.is_empty() && seen_required.len() < required_fields.len() {
+            let missing: Vec<_> = required_fields.difference(&seen_required).cloned().collect();
+            return Err(AppError::BadRequest(format!(
+                "Missing required multipart field(s): {}",
+                missing.join(", ")
+            )));
+        }
+
+        Ok(())
+    }
+    .await;
+
+    drop(field_senders);
+
+    if let Some(tx) = required_seen_tx.take() {
+        let _ = tx.send(());
+    }
+
+    let _ = parse_done_tx.send(result);
+}
+
+/// Validate that the pipeline has the required nodes for oneshot processing.
 /// Returns (has_http_input, has_file_read, has_http_output) for logging purposes.
-fn validate_pipeline_nodes(
-    pipeline_def: &Pipeline,
-    has_media: bool,
-) -> Result<(bool, bool, bool), AppError> {
+fn validate_pipeline_nodes(pipeline_def: &Pipeline) -> Result<(bool, bool, bool), AppError> {
     let has_http_input =
         pipeline_def.nodes.values().any(|node| node.kind == "streamkit::http_input");
     let has_http_output =
         pipeline_def.nodes.values().any(|node| node.kind == "streamkit::http_output");
     let has_file_read = pipeline_def.nodes.values().any(|node| node.kind == "core::file_reader");
 
-    // Validate entry point based on whether media was provided
-    if has_media {
-        // HTTP streaming mode: require http_input
-        if !has_http_input {
-            return Err(AppError::BadRequest(
-                "Pipeline must contain one 'streamkit::http_input' node when media is provided"
-                    .to_string(),
-            ));
-        }
-    } else {
-        // File-based mode: require file_read, disallow http_input
-        if has_http_input {
-            return Err(AppError::BadRequest(
-                "Pipeline cannot contain 'streamkit::http_input' node when no media is provided"
-                    .to_string(),
-            ));
-        }
-        if !has_file_read {
-            return Err(AppError::BadRequest(
-                "Pipeline must contain at least one 'core::file_reader' node when no media is provided"
-                    .to_string(),
-            ));
-        }
+    if !has_http_input && !has_file_read {
+        return Err(AppError::BadRequest(
+            "Pipeline must contain at least one 'streamkit::http_input' or 'core::file_reader' node for oneshot processing"
+                .to_string(),
+        ));
     }
 
-    // Always require http_output for response streaming
     if !has_http_output {
         return Err(AppError::BadRequest(
             "Pipeline must contain one 'streamkit::http_output' node for oneshot processing"
@@ -1706,17 +1935,21 @@ async fn process_oneshot_pipeline_handler(
         ));
     }
 
-    // Parse multipart request to get config and media stream
-    let parse_result = parse_multipart_request(req).await?;
+    // Parse multipart: read boundary + config first
+    let boundary = extract_multipart_boundary(req.headers())?;
+    let body_stream = req.into_body().into_data_stream();
+    let mut multipart = raw_multer::Multipart::new(body_stream, boundary);
+    let user_pipeline = parse_config_field(&mut multipart).await?;
 
     // Compile pipeline definition
     tracing::debug!("Compiling user pipeline definition");
-    let pipeline_def: Pipeline = compile(parse_result.user_pipeline)?;
+    let pipeline_def: Pipeline = compile(user_pipeline)?;
     tracing::debug!("Pipeline compilation completed");
 
+    let input_bindings = determine_http_input_bindings(&pipeline_def)?;
+
     // Validate pipeline structure
-    let (has_http_input, has_file_read, has_http_output) =
-        validate_pipeline_nodes(&pipeline_def, parse_result.has_media)?;
+    let (has_http_input, has_file_read, has_http_output) = validate_pipeline_nodes(&pipeline_def)?;
 
     // Enforce allowed node/plugin kinds for oneshot execution.
     //
@@ -1742,22 +1975,80 @@ async fn process_oneshot_pipeline_handler(
         }
     }
 
-    // Validate file paths in file-based mode
-    if !parse_result.has_media {
-        validate_file_reader_paths(&pipeline_def, &app_state.config.security)?;
-    }
-
+    // Validate file/script paths
+    validate_file_reader_paths(&pipeline_def, &app_state.config.security)?;
     validate_file_writer_paths(&pipeline_def, &app_state.config.security)?;
     validate_script_paths(&pipeline_def, &app_state.config.security)?;
 
     tracing::info!(
         "Pipeline validation passed: mode={}, has_http_input={}, has_file_read={}, has_http_output={}",
-        if parse_result.has_media { "http-streaming" } else { "file-based" },
+        if has_http_input { "http-streaming" } else { "file-based" },
         has_http_input,
         has_file_read,
         has_http_output
     );
     tracing::info!(role = %role_name, "Executing oneshot pipeline for role");
+
+    // Prepare multipart routing
+    let cancel_token = CancellationToken::new();
+    let mut field_senders: HashMap<String, tokio::sync::mpsc::Sender<Result<Bytes, axum::Error>>> =
+        HashMap::new();
+    let mut engine_inputs = Vec::new();
+    let mut required_fields: HashSet<String> = HashSet::new();
+
+    let io_capacity = app_state
+        .config
+        .engine
+        .oneshot
+        .io_channel_capacity
+        .unwrap_or(streamkit_engine::constants::DEFAULT_ONESHOT_IO_CAPACITY);
+
+    for binding in &input_bindings {
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, axum::Error>>(io_capacity);
+        if binding.required {
+            required_fields.insert(binding.field_name.clone());
+        }
+        field_senders.insert(binding.field_name.clone(), tx);
+
+        let media_stream: MediaStream = Box::new(ReceiverStream::new(rx).map(|x| x));
+        engine_inputs.push(OneshotInput {
+            node_id: binding.node_id.clone(),
+            output_pin: binding.output_pin.clone(),
+            stream: media_stream,
+            content_type: None,
+            field_name: binding.field_name.clone(),
+            required: binding.required,
+            cancellation_token: Some(cancel_token.clone()),
+        });
+    }
+
+    let (required_seen_tx, required_seen_rx) = tokio::sync::oneshot::channel();
+    let mut required_seen_tx = Some(required_seen_tx);
+    if required_fields.is_empty() {
+        if let Some(tx) = required_seen_tx.take() {
+            let _ = tx.send(());
+        }
+    }
+    let (parse_done_tx, parse_done_rx) = tokio::sync::oneshot::channel();
+
+    // Spawn multipart routing task
+    let routing_task = tokio::spawn(route_multipart_fields(
+        multipart,
+        field_senders,
+        required_fields.clone(),
+        required_seen_tx,
+        parse_done_tx,
+        cancel_token.clone(),
+    ));
+
+    // Wait for required fields to appear (prevents hanging on missing uploads)
+    tokio::time::timeout(Duration::from_secs(5), required_seen_rx)
+        .await
+        .map_err(|_| {
+            cancel_token.cancel();
+            AppError::BadRequest("Timed out waiting for required multipart fields".to_string())
+        })?
+        .map_err(|_| AppError::BadRequest("Failed to observe multipart state".into()))?;
 
     // Execute oneshot pipeline
     tracing::info!("Starting oneshot pipeline execution");
@@ -1791,10 +2082,9 @@ async fn process_oneshot_pipeline_handler(
         .engine
         .run_oneshot_pipeline(
             pipeline_def,
-            parse_result.media_stream,
-            parse_result.media_content_type,
-            parse_result.has_media,
+            engine_inputs,
             Some(oneshot_config),
+            Some(cancel_token.clone()),
         )
         .await
     {
@@ -1805,9 +2095,26 @@ async fn process_oneshot_pipeline_handler(
         Err(e) => {
             let labels = [KeyValue::new("status", "error")];
             oneshot_duration_histogram.record(oneshot_start_time.elapsed().as_secs_f64(), &labels);
+            cancel_token.cancel();
             return Err(e.into());
         },
     };
+
+    // Ensure multipart routing finished cleanly
+    match parse_done_rx.await {
+        Ok(Ok(())) => {},
+        Ok(Err(err)) => {
+            let labels = [KeyValue::new("status", "error")];
+            oneshot_duration_histogram.record(oneshot_start_time.elapsed().as_secs_f64(), &labels);
+            cancel_token.cancel();
+            return Err(err);
+        },
+        Err(e) => {
+            cancel_token.cancel();
+            return Err(AppError::BadRequest(format!("Multipart routing task aborted: {e}")));
+        },
+    }
+    let _ = routing_task.await;
 
     // Build and return streaming response
     Ok(build_streaming_response(pipeline_result, oneshot_start_time, oneshot_duration_histogram))

@@ -48,6 +48,7 @@ anyhow = "1.0"
 # For HTTP server
 axum = { version = "0.8", features = ["multipart", "ws"] }
 tokio = { workspace = true, features = ["full"] }
+tokio-util = { workspace = true }
 tower = "0.5.3"
 tower-http = { version = "0.6", features = ["cors", "trace", "fs", "set-header"] }
 tokio-stream = "0.1.18"

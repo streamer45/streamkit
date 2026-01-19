@@ -35,7 +35,7 @@ mod dynamic_pin_distributor;
 pub use dynamic_config::DynamicEngineConfig;
 #[cfg(feature = "dynamic")]
 pub use dynamic_handle::DynamicEngineHandle;
-pub use oneshot::{OneshotEngineConfig, OneshotPipelineResult};
+pub use oneshot::{OneshotEngineConfig, OneshotInput, OneshotPipelineResult};
 
 // Import constants and types (within dynamic module)
 #[cfg(feature = "dynamic")]

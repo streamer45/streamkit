@@ -38,6 +38,7 @@ vi.mock('./base', () => ({
 describe('converter service', () => {
   const MOCK_YAML = 'steps:\n  - id: test\n    kind: core::passthrough';
   const MOCK_FILE = new File(['test content'], 'test.ogg', { type: 'audio/ogg' });
+  const MOCK_UPLOAD = [{ field: 'media', file: MOCK_FILE }];
 
   let originalMediaSource: unknown;
 
@@ -69,7 +70,7 @@ describe('converter service', () => {
         body: mockBody,
       } as Response);
 
-      const result = await convertFile(MOCK_YAML, MOCK_FILE, 'playback');
+      const result = await convertFile(MOCK_YAML, MOCK_UPLOAD, 'playback');
 
       expect(result.success).toBe(true);
       expect(result.useStreaming).toBe(true);
@@ -97,7 +98,7 @@ describe('converter service', () => {
       } as unknown as Response);
 
       const abortController = new AbortController();
-      const result = await convertFile(MOCK_YAML, MOCK_FILE, 'playback', abortController.signal);
+      const result = await convertFile(MOCK_YAML, MOCK_UPLOAD, 'playback', abortController.signal);
 
       expect(result.success).toBe(true);
       expect(result.responseStream).toBeDefined();
@@ -126,7 +127,7 @@ describe('converter service', () => {
         body: mockBody,
       } as Response);
 
-      const result = await convertFile(MOCK_YAML, MOCK_FILE, 'playback');
+      const result = await convertFile(MOCK_YAML, MOCK_UPLOAD, 'playback');
 
       expect(result.success).toBe(true);
       expect(result.useStreaming).toBe(true);
@@ -155,7 +156,7 @@ describe('converter service', () => {
       } as unknown as Response);
 
       const abortController = new AbortController();
-      const result = await convertFile(MOCK_YAML, MOCK_FILE, 'playback', abortController.signal);
+      const result = await convertFile(MOCK_YAML, MOCK_UPLOAD, 'playback', abortController.signal);
 
       expect(result.responseStream).toBeDefined();
 
@@ -178,7 +179,7 @@ describe('converter service', () => {
         blob: vi.fn().mockResolvedValue(mockBlob),
       } as never);
 
-      const result = await convertFile(MOCK_YAML, MOCK_FILE, 'playback');
+      const result = await convertFile(MOCK_YAML, MOCK_UPLOAD, 'playback');
 
       expect(result.success).toBe(true);
       expect(result.useStreaming).toBe(false);
@@ -212,7 +213,7 @@ describe('converter service', () => {
         blob: vi.fn().mockResolvedValue(mockBlob),
       } as never);
 
-      const result = await convertFile(MOCK_YAML, MOCK_FILE, 'download');
+      const result = await convertFile(MOCK_YAML, MOCK_UPLOAD, 'download');
 
       expect(result.success).toBe(true);
       expect(mockLink.href).toBe('blob:download-url');
@@ -244,7 +245,7 @@ describe('converter service', () => {
       } as never);
 
       const file = new File(['content'], 'my-audio.ogg', { type: 'audio/ogg' });
-      await convertFile(MOCK_YAML, file, 'download');
+      await convertFile(MOCK_YAML, [{ field: 'media', file }], 'download');
 
       expect(mockLink.download).toBe('my-audio_converted.wav');
     });
@@ -262,7 +263,7 @@ describe('converter service', () => {
         });
       });
 
-      const resultPromise = convertFile(MOCK_YAML, MOCK_FILE, 'playback', abortController.signal);
+      const resultPromise = convertFile(MOCK_YAML, MOCK_UPLOAD, 'playback', abortController.signal);
       abortController.abort();
 
       const result = await resultPromise;
@@ -280,7 +281,7 @@ describe('converter service', () => {
         blob: vi.fn().mockResolvedValue(new Blob()),
       } as never);
 
-      await convertFile(MOCK_YAML, MOCK_FILE, 'download', abortController.signal);
+      await convertFile(MOCK_YAML, MOCK_UPLOAD, 'download', abortController.signal);
 
       expect(fetch).toHaveBeenCalledWith(
         'http://localhost:4545/api/v1/process',
@@ -300,7 +301,7 @@ describe('converter service', () => {
         text: vi.fn().mockResolvedValue('Invalid pipeline configuration'),
       } as never);
 
-      const result = await convertFile(MOCK_YAML, MOCK_FILE, 'playback');
+      const result = await convertFile(MOCK_YAML, MOCK_UPLOAD, 'playback');
 
       expect(result.success).toBe(false);
       expect(result.error).toContain('Bad Request');
@@ -310,7 +311,7 @@ describe('converter service', () => {
     it('should handle network errors', async () => {
       (fetch as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Network error'));
 
-      const result = await convertFile(MOCK_YAML, MOCK_FILE, 'playback');
+      const result = await convertFile(MOCK_YAML, MOCK_UPLOAD, 'playback');
 
       expect(result.success).toBe(false);
       expect(result.error).toContain('Network error');
@@ -319,7 +320,7 @@ describe('converter service', () => {
     it('should handle unknown errors', async () => {
       (fetch as ReturnType<typeof vi.fn>).mockRejectedValue('Unknown error');
 
-      const result = await convertFile(MOCK_YAML, MOCK_FILE, 'playback');
+      const result = await convertFile(MOCK_YAML, MOCK_UPLOAD, 'playback');
 
       expect(result.success).toBe(false);
       expect(result.error).toBe('Unknown error occurred');
@@ -334,7 +335,7 @@ describe('converter service', () => {
         blob: vi.fn().mockResolvedValue(new Blob()),
       } as never);
 
-      await convertFile(MOCK_YAML, MOCK_FILE, 'download');
+      await convertFile(MOCK_YAML, MOCK_UPLOAD, 'download');
 
       expect(fetch).toHaveBeenCalledWith(
         'http://localhost:4545/api/v1/process',

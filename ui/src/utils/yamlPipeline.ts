@@ -42,6 +42,26 @@ type EditorNodeData = {
 
 type NeedsDependency = string | { node: string; mode?: ConnectionMode };
 
+type ParsedDependency = {
+  sourceLabel: string;
+  sourcePin?: string;
+  mode?: ConnectionMode;
+};
+
+/**
+ * Parse a needs dependency into node label + optional source pin + mode.
+ * Supports "node.pin" shorthand as well as { node, mode } objects.
+ */
+function parseDependency(dep: NeedsDependency): ParsedDependency {
+  const mode = typeof dep === 'string' ? undefined : dep.mode;
+  const raw = typeof dep === 'string' ? dep : dep.node;
+
+  const [sourceLabel, ...rest] = raw.split('.');
+  const sourcePin = rest.length > 0 ? rest.join('.') : undefined;
+
+  return { sourceLabel, sourcePin, mode };
+}
+
 type ImportedNodeConfig = {
   kind: string;
   params?: Record<string, unknown>;
@@ -165,6 +185,45 @@ function expandDynamicInputs(nodeDef: NodeDefinition, config: ImportedNodeConfig
 }
 
 /**
+ * Derive output pins for http_input based on params.fields/field.
+ * - When fields are provided, create one pin per entry (string or { name }).
+ * - Ensure a 'media' pin always exists for backward compatibility.
+ */
+function deriveHttpInputOutputs(
+  params?: Record<string, unknown>
+): Array<{ name: string; produces_type: PacketType; cardinality: 'Broadcast' }> {
+  const normalizeFieldName = (value: unknown): string | null => {
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+    if (value && typeof value === 'object' && 'name' in (value as Record<string, unknown>)) {
+      const name = String((value as Record<string, unknown>).name || '').trim();
+      return name || null;
+    }
+    return null;
+  };
+
+  const fields = params?.fields;
+  const outputs: string[] = Array.isArray(fields)
+    ? fields
+        .map((entry) => normalizeFieldName(entry))
+        .filter((name): name is string => Boolean(name))
+    : [];
+
+  if (outputs.length === 0) {
+    const single = normalizeFieldName(params?.field);
+    outputs.push(single ?? 'media');
+  }
+
+  const unique = Array.from(new Set(outputs));
+  return unique.map((name) => ({
+    name,
+    produces_type: 'Binary' as PacketType,
+    cardinality: 'Broadcast' as const,
+  }));
+}
+
+/**
  * Creates ReactFlow nodes from pipeline nodes
  */
 function createNodesFromPipeline(
@@ -187,6 +246,10 @@ function createNodesFromPipeline(
       labelToIdMap.set(label, newId);
 
       const nodeInputs = expandDynamicInputs(nodeDef, config);
+      const nodeOutputs =
+        config.kind === 'streamkit::http_input'
+          ? deriveHttpInputOutputs(config.params)
+          : nodeDef.outputs || [];
 
       const newNode: Node<EditorNodeData> = {
         id: newId,
@@ -202,7 +265,7 @@ function createNodesFromPipeline(
           params: (config.params as Record<string, unknown>) || {},
           paramSchema: nodeDef.param_schema,
           inputs: nodeInputs,
-          outputs: nodeDef.outputs || [],
+          outputs: nodeOutputs,
           definition: { bidirectional: nodeDef.bidirectional },
           nodeDefinition: nodeDef,
           onParamChange: handleParamChange,
@@ -223,7 +286,8 @@ function createNodesFromPipeline(
 function validateConnectionCompatibility(
   sourceNode: Node<EditorNodeData>,
   targetNode: Node<EditorNodeData>,
-  needsIndex: number,
+  sourceHandleName: string,
+  targetHandleName: string,
   sourceLabel: string,
   targetLabel: string,
   nodes: Node<EditorNodeData>[],
@@ -238,12 +302,15 @@ function validateConnectionCompatibility(
     accepts_types: PacketType[];
   }>;
 
-  // Get default output pin (first output)
-  const sourceOutput = sourceOutputs[0];
-  // For nodes with multiple needs, use the input pin corresponding to the needs index
-  const targetInput = targetInputs[needsIndex] || targetInputs[0];
+  const sourceOutput = sourceOutputs.find((o) => o.name === sourceHandleName) ?? sourceOutputs[0];
+  const targetInput = targetInputs.find((i) => i.name === targetHandleName) ?? targetInputs[0];
 
-  if (!sourceOutput || !targetInput) return;
+  if (!sourceOutput) {
+    throw new Error(
+      `Node "${targetLabel}" references non-existent pin "${sourceHandleName}" on "${sourceLabel}".`
+    );
+  }
+  if (!targetInput) return;
 
   // Resolve the output type (handles Passthrough inference and param-dependent nodes like resampler)
   const resolvedSourceType = resolveOutputType(
@@ -273,7 +340,8 @@ function createEdgeForConnection(
   targetNode: Node<EditorNodeData>,
   sourceId: string,
   targetId: string,
-  needsIndex: number,
+  sourceHandleName: string,
+  targetHandleName: string,
   mode: ConnectionMode | undefined,
   nodeByLabel: Map<string, Node<EditorNodeData>>,
   newEdges: Edge[]
@@ -287,19 +355,19 @@ function createEdgeForConnection(
     accepts_types: PacketType[];
   }>;
 
-  const sourceOutput = sourceOutputs[0];
-  const targetInput = targetInputs[needsIndex] || targetInputs[0];
+  const sourceOutput = sourceOutputs.find((o) => o.name === sourceHandleName) ?? sourceOutputs[0];
+  const targetInput = targetInputs.find((i) => i.name === targetHandleName) ?? targetInputs[0];
 
   if (!sourceOutput || !targetInput) return;
 
   // Get pin names
-  const sourceHandleName = sourceOutput.name;
-  const targetHandleName = targetInput.name;
+  const sourceHandle = sourceOutput.name;
+  const targetHandle = targetInput.name;
 
   // Resolve the output type for this edge (handles Passthrough inference)
   const resolvedType = resolveOutputType(
     sourceNode,
-    sourceHandleName,
+    sourceHandle,
     Array.from(nodeByLabel.values()),
     newEdges
   );
@@ -309,8 +377,8 @@ function createEdgeForConnection(
     id: `${sourceId}-${targetId}-${newEdges.length}`,
     source: sourceId,
     target: targetId,
-    sourceHandle: sourceHandleName,
-    targetHandle: targetHandleName,
+    sourceHandle: sourceHandle,
+    targetHandle: targetHandle,
     data: {
       resolvedType,
       ...(mode === 'best_effort' ? { mode } : {}),
@@ -338,8 +406,7 @@ function createEdgesFromPipeline(
       const needs: NeedsDependency[] = Array.isArray(config.needs) ? config.needs : [config.needs];
 
       needs.forEach((dep: NeedsDependency, needsIndex: number) => {
-        const sourceLabel = typeof dep === 'string' ? dep : dep.node;
-        const mode: ConnectionMode | undefined = typeof dep === 'string' ? undefined : dep.mode;
+        const { sourceLabel, sourcePin, mode } = parseDependency(dep);
 
         const sourceId = labelToIdMap.get(sourceLabel);
 
@@ -353,11 +420,29 @@ function createEdgesFromPipeline(
         const sourceNode = nodeByLabel.get(sourceLabel);
         if (!sourceNode) return;
 
+        const sourceOutputs = (sourceNode.data.outputs || []) as Array<{
+          name: string;
+          produces_type: PacketType;
+        }>;
+        const targetInputs = (targetNode.data.inputs || []) as Array<{
+          name: string;
+          accepts_types: PacketType[];
+        }>;
+
+        const sourceHandleName = sourcePin ?? sourceOutputs[0]?.name;
+        const targetHandleName = (targetInputs[needsIndex] || targetInputs[0])?.name;
+
+        if (!sourceHandleName) {
+          throw new Error(`Node "${sourceLabel}" has no output pins to connect to "${label}".`);
+        }
+        if (!targetHandleName) return;
+
         // Validate connection compatibility
         validateConnectionCompatibility(
           sourceNode,
           targetNode,
-          needsIndex,
+          sourceHandleName,
+          targetHandleName,
           sourceLabel,
           label,
           Array.from(nodeByLabel.values()),
@@ -370,7 +455,8 @@ function createEdgesFromPipeline(
           targetNode,
           sourceId,
           targetId,
-          needsIndex,
+          sourceHandleName,
+          targetHandleName,
           mode,
           nodeByLabel,
           newEdges

@@ -70,11 +70,29 @@ Destroy a session:
 `POST /api/v1/process` accepts multipart:
 
 - `config`: pipeline YAML (required; must be the first field)
-- `media`: optional binary media payload
+- One or more media fields: names must match `streamkit::http_input` nodes
 
 **Max body size**: Configurable via `[server].max_body_size` (default: 100 MB).
 
-If `media` is provided, the pipeline must include `streamkit::http_input` to receive it. If no media is needed, `streamkit::http_input` can still be used as a trigger (with empty body) or the pipeline can rely solely on `core::file_reader`. Both nodes can be used together (e.g., mixing uploaded audio with a local file). In all cases, `streamkit::http_output` is required.
+If one or more media fields are provided, the pipeline must include `streamkit::http_input` nodes to receive them. Each `http_input` can declare:
+
+- `field`: single field name (default `media` when only one http_input exists, otherwise the node id)
+- `required`: whether the field must be present (default `true`)
+- `fields`: list of field entries (string or `{ name, required }`), which exposes one output pin per entry so each upload can be routed independently. When `fields` is set, only the listed fields are accepted; the legacy `media` field is disabled. `field` and `fields` are mutually exclusive.
+
+Unexpected fields cause a `400`, and missing required fields time out.
+
+Example (dual upload mixing sample, real assets + paced playback):
+
+```bash
+curl --no-buffer \
+  -F config=@samples/pipelines/oneshot/dual_upload_mixing.yml \
+  -F track_a=@samples/audio/system/speech_2m.opus \
+  -F "track_b=@samples/audio/system/THE LADY IS A TRAMP.opus" \
+  http://127.0.0.1:4545/api/v1/process | ffplay -nodisp -autoexit -f webm -i -
+```
+
+If no uploads are needed, `streamkit::http_input` can still be used as a trigger (with empty body) or the pipeline can rely solely on `core::file_reader`. Both nodes can be used together (e.g., mixing uploaded audio with a local file). In all cases, `streamkit::http_output` is required.
 
 > [!NOTE]
 > `streamkit::http_input` and `streamkit::http_output` are **oneshot-only marker nodes**. They are available in schema discovery, but they cannot be used in dynamic sessions.

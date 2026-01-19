@@ -1,0 +1,91 @@
+#
+# skit:input_asset_tags=speech
+
+name: Dual Upload Mixer
+description: Mix two uploaded Ogg/Opus tracks and return Opus/WebM
+mode: oneshot
+nodes:
+  # ============================================================
+  # INPUTS: Two uploaded audio tracks
+  # ============================================================
+  uploads:
+    kind: streamkit::http_input
+    params:
+      fields:
+        - name: track_a
+        - name: track_b
+
+  # ============================================================
+  # UPLOAD A: Demux, pace, decode, apply gain
+  # ============================================================
+  upload_a_demuxer:
+    kind: containers::ogg::demuxer
+    needs: uploads.track_a
+
+  upload_a_pacer:
+    kind: core::pacer
+    params:
+      buffer_size: 16
+      speed: 1
+    needs: upload_a_demuxer
+
+  upload_a_decoder:
+    kind: audio::opus::decoder
+    needs: upload_a_pacer
+
+  upload_a_gain:
+    kind: audio::gain
+    params:
+      gain: 1.0
+    needs: upload_a_decoder
+
+  # ============================================================
+  # UPLOAD B: Demux, pace, decode, apply gain
+  # ============================================================
+  upload_b_demuxer:
+    kind: containers::ogg::demuxer
+    needs: uploads.track_b
+
+  upload_b_pacer:
+    kind: core::pacer
+    params:
+      buffer_size: 16
+      speed: 1
+    needs: upload_b_demuxer
+
+  upload_b_decoder:
+    kind: audio::opus::decoder
+    needs: upload_b_pacer
+
+  upload_b_gain:
+    kind: audio::gain
+    params:
+      gain: 0.15
+    needs: upload_b_decoder
+
+  # ============================================================
+  # OUTPUT: Mix streams and encode to WebM
+  # ============================================================
+  mixer:
+    kind: audio::mixer
+    params:
+      num_inputs: 2
+    needs:
+      - upload_a_gain
+      - upload_b_gain
+
+  opus_encoder:
+    kind: audio::opus::encoder
+    needs: mixer
+
+  webm_muxer:
+    kind: containers::webm::muxer
+    params:
+      channels: 1
+      chunk_size: 65536
+      sample_rate: 48000
+    needs: opus_encoder
+
+  http_output:
+    kind: streamkit::http_output
+    needs: webm_muxer
