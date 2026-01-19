@@ -1321,6 +1321,7 @@ async fn get_pipeline_handler(
 struct HttpInputBinding {
     node_id: String,
     field_name: String,
+    output_pin: String,
     required: bool,
 }
 
@@ -1368,6 +1369,16 @@ async fn parse_config_field(
 fn determine_http_input_bindings(
     pipeline_def: &Pipeline,
 ) -> Result<Vec<HttpInputBinding>, AppError> {
+    // Record which output pins the pipeline references for each http_input node
+    let mut pins_used: HashMap<String, HashSet<String>> = HashMap::new();
+    for conn in &pipeline_def.connections {
+        if let Some(node_def) = pipeline_def.nodes.get(&conn.from_node) {
+            if node_def.kind == "streamkit::http_input" {
+                pins_used.entry(conn.from_node.clone()).or_default().insert(conn.from_pin.clone());
+            }
+        }
+    }
+
     let http_inputs: Vec<(&String, &streamkit_api::Node)> = pipeline_def
         .nodes
         .iter()
@@ -1432,6 +1443,7 @@ fn determine_http_input_bindings(
                     node_bindings.push(HttpInputBinding {
                         node_id: node_id.clone(),
                         field_name: name,
+                        output_pin: String::new(),
                         required,
                     });
                 }
@@ -1466,6 +1478,7 @@ fn determine_http_input_bindings(
             node_bindings.push(HttpInputBinding {
                 node_id: node_id.clone(),
                 field_name,
+                output_pin: String::new(),
                 required: single_required,
             });
         }
@@ -1478,8 +1491,24 @@ fn determine_http_input_bindings(
             node_bindings.push(HttpInputBinding {
                 node_id: node_id.clone(),
                 field_name: "media".to_string(),
+                output_pin: String::new(),
                 required: false,
             });
+        }
+
+        // Decide pin names based on referenced connections. Keep field names for multi-field mode,
+        // but allow legacy 'out' default when only one pin is referenced (steps format).
+        let used_pins = pins_used.get(node_id.as_str()).cloned().unwrap_or_default();
+        for binding in &mut node_bindings {
+            let pin_name = if used_pins.contains(&binding.field_name) {
+                binding.field_name.clone()
+            } else if used_pins.len() == 1 && !has_fields_param {
+                // Legacy steps pipelines reference 'out'
+                used_pins.iter().next().cloned().unwrap_or_else(|| binding.field_name.clone())
+            } else {
+                binding.field_name.clone()
+            };
+            binding.output_pin = pin_name;
         }
 
         for binding in node_bindings {
@@ -1984,7 +2013,7 @@ async fn process_oneshot_pipeline_handler(
         let media_stream: MediaStream = Box::new(ReceiverStream::new(rx).map(|x| x));
         engine_inputs.push(OneshotInput {
             node_id: binding.node_id.clone(),
-            output_pin: binding.field_name.clone(),
+            output_pin: binding.output_pin.clone(),
             stream: media_stream,
             content_type: None,
             field_name: binding.field_name.clone(),
