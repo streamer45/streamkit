@@ -575,6 +575,35 @@ impl NativeProcessorNode for WhisperPlugin {
         }
         Ok(())
     }
+
+    fn flush(&mut self, output: &OutputSender) -> Result<(), String> {
+        tracing::debug!(
+            buffered_samples = self.speech_buffer.len(),
+            pending_frame_samples = self.frame_buffer.len(),
+            "Flushing Whisper plugin buffers"
+        );
+
+        if self.speech_buffer.is_empty() {
+            self.frame_buffer.clear();
+            return Ok(());
+        }
+
+        let mut end_time_ms = self.absolute_time_ms;
+
+        if !self.frame_buffer.is_empty() {
+            let remaining: Vec<f32> = self.frame_buffer.drain(..).collect();
+
+            // Attach any trailing samples that never formed a full VAD frame
+            self.speech_buffer.extend(remaining.iter().copied());
+
+            // Account for the partial frame time in telemetry timestamps
+            let remaining_ms = (remaining.len() as u64).div_ceil(16);
+            end_time_ms = end_time_ms.saturating_add(remaining_ms);
+            self.absolute_time_ms = end_time_ms;
+        }
+
+        self.transcribe_and_emit(output, end_time_ms, "stream_end", None)
+    }
 }
 
 impl WhisperPlugin {
