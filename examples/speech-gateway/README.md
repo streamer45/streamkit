@@ -33,9 +33,16 @@ Environment equivalents:
 Transcribe a file:
 
 ```sh
-
 curl -H "Content-Type: audio/ogg" --data-binary @speech.ogg http://127.0.0.1:8080/stt
 ```
+
+Transcribe from microphone (requires ffmpeg):
+
+```sh
+./stt.sh
+```
+
+Press Ctrl-C when done speaking. The script captures audio, sends it to the gateway, and displays the transcription.
 
 Response is NDJSON (one JSON object per line).
 
