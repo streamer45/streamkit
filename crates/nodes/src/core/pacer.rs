@@ -187,12 +187,13 @@ impl ProcessorNode for PacerNode {
         let lateness_histogram = meter
             .f64_histogram("pacer.lateness_seconds")
             .with_description("Pacer observed send lateness vs. packet timestamp")
+            .with_boundaries(streamkit_core::metrics::HISTOGRAM_BOUNDARIES_PACER_LATENESS.to_vec())
             .build();
         let queue_gauge = meter
             .u64_gauge("pacer.queue_depth")
             .with_description("Pacer buffered packet count")
             .build();
-        let metric_labels = [KeyValue::new("node", node_name.clone())];
+        let metric_labels = [KeyValue::new("node_id", node_name.clone())];
 
         // Internal bounded queue for backpressure control
         let mut packet_queue: VecDeque<streamkit_core::types::Packet> =

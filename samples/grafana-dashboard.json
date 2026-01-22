@@ -31,9 +31,9 @@
       },
       "id": 1,
       "panels": [],
-      "title": "System Overview",
+      "title": "Health Overview",
       "type": "row",
-      "description": "Resource usage and key runtime counts."
+      "description": "Core health indicators - if everything is green here, your system is healthy"
     },
     {
       "datasource": {
@@ -49,7 +49,143 @@
             "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
-            "axisLabel": "CPU %",
+            "axisLabel": "Error %",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "gradientMode": "none",
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "mappings": [],
+          "max": 100,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "orange",
+                "value": 5
+              },
+              {
+                "color": "red",
+                "value": 10
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "HTTP 5xx"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 1
+      },
+      "id": 2,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "100 * sum(rate(http_server_requests_total{http_route=~\"/api/.*\", http_status_code=~\"5..\"}[5m])) / clamp_min(sum(rate(http_server_requests_total{http_route=~\"/api/.*\"}[5m])), 1e-9)",
+          "legendFormat": "HTTP 5xx",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "100 * sum(rate(oneshot_pipeline_duration_count{status=\"error\"}[5m])) / clamp_min(sum(rate(oneshot_pipeline_duration_count{status=~\"ok|error\"}[5m])), 1e-9)",
+          "legendFormat": "Oneshot Error",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Error Rates (SLO)",
+      "type": "timeseries",
+      "description": "Error rates for API endpoints and oneshot pipelines. Should be <1% for healthy operation."
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Seconds",
             "axisPlacement": "auto",
             "barAlignment": 0,
             "drawStyle": "line",
@@ -87,22 +223,26 @@
                 "value": null
               },
               {
+                "color": "yellow",
+                "value": 1
+              },
+              {
                 "color": "red",
-                "value": 80
+                "value": 5
               }
             ]
           },
-          "unit": "percent"
+          "unit": "s"
         },
         "overrides": []
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 0,
+        "w": 6,
+        "x": 6,
         "y": 1
       },
-      "id": 2,
+      "id": 3,
       "options": {
         "legend": {
           "calcs": [
@@ -110,12 +250,12 @@
             "max"
           ],
           "displayMode": "table",
-          "placement": "right",
+          "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
           "mode": "multi",
-          "sort": "none"
+          "sort": "desc"
         }
       },
       "targets": [
@@ -125,8 +265,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "system_cpu_utilization_percent",
-          "legendFormat": "System CPU",
+          "expr": "histogram_quantile(0.95, sum(rate(http_server_duration_bucket{http_route=~\"/api/.*\", http_status_code=~\"2..\"}[5m])) by (le))",
+          "legendFormat": "HTTP p95",
           "range": true,
           "refId": "A"
         },
@@ -136,15 +276,15 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "process_cpu_utilization_percent",
-          "legendFormat": "Process CPU",
+          "expr": "histogram_quantile(0.95, sum(rate(oneshot_pipeline_duration_bucket{status=\"ok\"}[5m])) by (le))",
+          "legendFormat": "Oneshot p95",
           "range": true,
           "refId": "B"
         }
       ],
-      "title": "CPU Usage",
+      "title": "Latency p95 (SLO)",
       "type": "timeseries",
-      "description": "Process and host CPU utilization percentage."
+      "description": "95th percentile latency for API requests and oneshot pipelines. Lower is better."
     },
     {
       "datasource": {
@@ -160,7 +300,7 @@
             "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
-            "axisLabel": "GiB",
+            "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
             "drawStyle": "line",
@@ -189,6 +329,7 @@
             }
           },
           "mappings": [],
+          "min": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -198,28 +339,22 @@
               }
             ]
           },
-          "unit": "gbytes"
+          "unit": "percent"
         },
         "overrides": [
           {
             "matcher": {
-              "id": "byName",
-              "options": "System Memory Total"
+              "id": "byFrameRefID",
+              "options": "B"
             },
             "properties": [
               {
-                "id": "custom.lineStyle",
-                "value": {
-                  "dash": [
-                    6,
-                    4
-                  ],
-                  "fill": "dash"
-                }
+                "id": "unit",
+                "value": "gbytes"
               },
               {
-                "id": "custom.lineWidth",
-                "value": 1
+                "id": "custom.axisPlacement",
+                "value": "right"
               }
             ]
           }
@@ -227,11 +362,11 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 8,
+        "w": 6,
+        "x": 12,
         "y": 1
       },
-      "id": 3,
+      "id": 4,
       "options": {
         "legend": {
           "calcs": [
@@ -239,7 +374,7 @@
             "max"
           ],
           "displayMode": "table",
-          "placement": "right",
+          "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
@@ -254,8 +389,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "process_memory_usage_bytes / 1024 / 1024 / 1024",
-          "legendFormat": "Process Memory",
+          "expr": "process_cpu_utilization_percent",
+          "legendFormat": "Process CPU",
           "range": true,
           "refId": "A"
         },
@@ -265,26 +400,15 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "system_memory_usage_bytes / 1024 / 1024 / 1024",
-          "legendFormat": "System Memory Used",
+          "expr": "process_memory_usage_bytes / 1024 / 1024 / 1024",
+          "legendFormat": "Process Memory",
           "range": true,
           "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "system_memory_total_bytes / 1024 / 1024 / 1024",
-          "legendFormat": "System Memory Total",
-          "range": true,
-          "refId": "C"
         }
       ],
-      "title": "Memory Usage",
+      "title": "Process Health",
       "type": "timeseries",
-      "description": "Working set usage compared to host capacity (GiB)."
+      "description": "Skit process CPU and memory usage. High CPU or memory growth indicates resource constraints."
     },
     {
       "datasource": {
@@ -306,7 +430,7 @@
               },
               {
                 "color": "green",
-                "value": 10
+                "value": 1
               },
               {
                 "color": "yellow",
@@ -323,11 +447,11 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 16,
+        "w": 6,
+        "x": 18,
         "y": 1
       },
-      "id": 4,
+      "id": 5,
       "options": {
         "colorMode": "value",
         "graphMode": "area",
@@ -364,8 +488,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "websocket_connections_active",
-          "legendFormat": "WebSocket Connections",
+          "expr": "engine_nodes_active",
+          "legendFormat": "Active Nodes",
           "range": true,
           "refId": "B"
         },
@@ -375,26 +499,15 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "engine_nodes_active",
-          "legendFormat": "Active Nodes",
+          "expr": "websocket_connections_active",
+          "legendFormat": "WebSockets",
           "range": true,
           "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "sum(plugins_loaded)",
-          "legendFormat": "Loaded Plugins",
-          "range": true,
-          "refId": "D"
         }
       ],
       "title": "Active Components",
       "type": "stat",
-      "description": "Active sessions, WebSocket consumers, engine nodes, and loaded plugins."
+      "description": "Current active sessions, engine nodes, and WebSocket connections."
     },
     {
       "collapsed": false,
@@ -404,11 +517,11 @@
         "x": 0,
         "y": 9
       },
-      "id": 5,
+      "id": 6,
       "panels": [],
-      "title": "HTTP API Performance",
+      "title": "HTTP API",
       "type": "row",
-      "description": "Request activity and responsiveness for the HTTP surface."
+      "description": "HTTP server performance and request handling"
     },
     {
       "datasource": {
@@ -446,7 +559,7 @@
             "spanNulls": false,
             "stacking": {
               "group": "A",
-              "mode": "normal"
+              "mode": "none"
             },
             "thresholdsStyle": {
               "mode": "off"
@@ -468,11 +581,11 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 8,
         "x": 0,
         "y": 10
       },
-      "id": 6,
+      "id": 7,
       "options": {
         "legend": {
           "calcs": [
@@ -495,15 +608,15 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(http_server_requests_total[1m])) by (http_method)",
-          "legendFormat": "{{http_method}}",
+          "expr": "sum(rate(http_server_requests_total[1m]))",
+          "legendFormat": "Total RPS",
           "range": true,
           "refId": "A"
         }
       ],
       "title": "HTTP Request Rate",
       "type": "timeseries",
-      "description": "HTTP requests per second grouped by method."
+      "description": "Total HTTP requests per second across all endpoints."
     },
     {
       "datasource": {
@@ -536,7 +649,7 @@
             "spanNulls": false,
             "stacking": {
               "group": "A",
-              "mode": "percent"
+              "mode": "normal"
             },
             "thresholdsStyle": {
               "mode": "off"
@@ -560,11 +673,11 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 6,
-        "x": 12,
+        "w": 8,
+        "x": 8,
         "y": 10
       },
-      "id": 7,
+      "id": 8,
       "options": {
         "legend": {
           "calcs": [
@@ -586,7 +699,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(http_server_requests_total[1m])) by (http_status_code)",
+          "expr": "sum(rate(http_server_requests_total{http_route=~\"/api/.*\"}[1m])) by (http_status_code) / ignoring(http_status_code) group_left sum(rate(http_server_requests_total{http_route=~\"/api/.*\"}[1m]))",
           "legendFormat": "{{http_status_code}}",
           "range": true,
           "refId": "A"
@@ -594,7 +707,7 @@
       ],
       "title": "HTTP Status Mix",
       "type": "timeseries",
-      "description": "Share of HTTP response codes over time."
+      "description": "Distribution of HTTP status codes for API routes (/api/*). Watch for increases in 4xx or 5xx."
     },
     {
       "datasource": {
@@ -654,11 +767,11 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 6,
-        "x": 18,
+        "w": 8,
+        "x": 16,
         "y": 10
       },
-      "id": 8,
+      "id": 9,
       "options": {
         "legend": {
           "calcs": [
@@ -711,7 +824,7 @@
       ],
       "title": "HTTP Latency Percentiles",
       "type": "timeseries",
-      "description": "Rolling p50/p95/p99 latency derived from request duration histogram."
+      "description": "HTTP request duration percentiles. p50 = median, p95/p99 = tail latency."
     },
     {
       "collapsed": false,
@@ -721,11 +834,11 @@
         "x": 0,
         "y": 18
       },
-      "id": 9,
+      "id": 10,
       "panels": [],
-      "title": "Node Performance",
+      "title": "Engine & Data Plane",
       "type": "row",
-      "description": "Execution performance across StreamKit engine nodes."
+      "description": "Pipeline execution performance and backpressure"
     },
     {
       "datasource": {
@@ -789,7 +902,7 @@
         "x": 0,
         "y": 19
       },
-      "id": 10,
+      "id": 11,
       "options": {
         "legend": {
           "calcs": [
@@ -812,8 +925,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(node_packets_sent[1m]))",
-          "legendFormat": "sent (sum)",
+          "expr": "sum(rate(node_packets_sent_total[1m]))",
+          "legendFormat": "Sent",
           "range": true,
           "refId": "A"
         },
@@ -823,15 +936,15 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(node_packets_received[1m]))",
-          "legendFormat": "received (sum)",
+          "expr": "sum(rate(node_packets_received_total[1m]))",
+          "legendFormat": "Received",
           "range": true,
           "refId": "B"
         }
       ],
-      "title": "Node Throughput (packets/sec)",
+      "title": "Node Throughput",
       "type": "timeseries",
-      "description": "Aggregate packet send/receive rates across all nodes."
+      "description": "Aggregate packet processing rate across all nodes. Shows pipeline activity."
     },
     {
       "datasource": {
@@ -872,7 +985,7 @@
               "mode": "none"
             },
             "thresholdsStyle": {
-              "mode": "off"
+              "mode": "line"
             }
           },
           "mappings": [],
@@ -885,7 +998,7 @@
               },
               {
                 "color": "red",
-                "value": 1
+                "value": 0.1
               }
             ]
           },
@@ -899,616 +1012,8 @@
         "x": 12,
         "y": 19
       },
-      "id": 11,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(node_packets_errored[1m]))",
-          "legendFormat": "errors (sum)",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(node_packets_discarded[1m]))",
-          "legendFormat": "discarded (sum)",
-          "range": true,
-          "refId": "B"
-        }
-      ],
-      "title": "Node Errors & Drops (per sec)",
-      "type": "timeseries",
-      "description": "Aggregate error and discard rates across all nodes."
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 100
-              },
-              {
-                "color": "red",
-                "value": 1000
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 24,
-        "x": 0,
-        "y": 27
-      },
       "id": 12,
       "options": {
-        "displayMode": "gradient",
-        "maxVizHeight": 300,
-        "minVizHeight": 16,
-        "minVizWidth": 8,
-        "namePlacement": "auto",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "values": false,
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": ""
-        },
-        "showUnfilled": true,
-        "sizing": "auto",
-        "valueMode": "color"
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "topk(10, node_packets_sent)",
-          "legendFormat": "{{node_id}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Top Nodes by Packets Sent (Total)",
-      "type": "bargauge",
-      "description": "Cumulative packets sent, showing only the top talkers."
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "State",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 20,
-            "gradientMode": "none",
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "stepAfter",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [
-            {
-              "options": {
-                "0": {
-                  "color": "red",
-                  "index": 0,
-                  "text": "Stopped/Failed"
-                },
-                "1": {
-                  "color": "green",
-                  "index": 1,
-                  "text": "Running"
-                }
-              },
-              "type": "value"
-            }
-          ],
-          "max": 1,
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 35
-      },
-      "id": 14,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "node_state{state=\"running\"}",
-          "legendFormat": "{{node_id}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Node State (1=Running, 0=Other)",
-      "type": "timeseries",
-      "description": "Binary running state per node (1 = running)."
-    },
-    {
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 43
-      },
-      "id": 15,
-      "panels": [],
-      "title": "MoQ Transport Nodes",
-      "type": "row",
-      "description": "MoQ subscriber/publisher/peer behaviour and health."
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "Packets/s",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 20,
-            "gradientMode": "none",
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "pps"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "/received/"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "dash": [
-                    10,
-                    10
-                  ],
-                  "fill": "dash"
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 44
-      },
-      "id": 16,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "mean"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "rate(node_packets_sent{node_id=~\"(.*moq::(peer|subscriber|publisher).*|moq_(peer|subscriber|publisher).*)\"}[1m])",
-          "legendFormat": "{{node_id}} sent",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "rate(node_packets_received{node_id=~\"(.*moq::(peer|subscriber|publisher).*|moq_(peer|subscriber|publisher).*)\"}[1m])",
-          "legendFormat": "{{node_id}} received",
-          "range": true,
-          "refId": "B"
-        }
-      ],
-      "title": "MoQ Transport Throughput (packets/sec)",
-      "type": "timeseries",
-      "description": "Send and receive rates for MoQ subscriber/publisher/peer nodes."
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 1000
-              },
-              {
-                "color": "red",
-                "value": 10000
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 6,
-        "x": 12,
-        "y": 44
-      },
-      "id": 17,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "percentChangeColorMode": "standard",
-        "reduceOptions": {
-          "values": false,
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": ""
-        },
-        "showPercentChange": false,
-        "textMode": "valueAndName",
-        "wideLayout": false
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "sum(node_packets_sent{node_id=~\"(.*moq::(peer|subscriber|publisher).*|moq_(peer|subscriber|publisher).*)\"}) by (node_id)",
-          "legendFormat": "{{node_id}} sent",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "sum(node_packets_received{node_id=~\"(.*moq::(peer|subscriber|publisher).*|moq_(peer|subscriber|publisher).*)\"}) by (node_id)",
-          "legendFormat": "{{node_id}} received",
-          "range": true,
-          "refId": "B"
-        }
-      ],
-      "title": "MoQ Transport Packets (Total)",
-      "type": "stat",
-      "description": "Total packets sent/received by each MoQ subscriber/publisher/peer node."
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "State",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 20,
-            "gradientMode": "none",
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "stepAfter",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [
-            {
-              "options": {
-                "0": {
-                  "color": "red",
-                  "index": 0,
-                  "text": "Stopped"
-                },
-                "1": {
-                  "color": "green",
-                  "index": 1,
-                  "text": "Running"
-                }
-              },
-              "type": "value"
-            }
-          ],
-          "max": 1,
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 6,
-        "x": 18,
-        "y": 44
-      },
-      "id": 18,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "node_state{node_id=~\"(.*moq::(peer|subscriber|publisher).*|moq_(peer|subscriber|publisher).*)\", state=\"running\"}",
-          "legendFormat": "{{node_id}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "MoQ Transport State",
-      "type": "timeseries",
-      "description": "Running state of each MoQ subscriber/publisher/peer node."
-    },
-    {
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 52
-      },
-      "id": 19,
-      "panels": [],
-      "title": "SLOs",
-      "type": "row",
-      "description": "High-signal latency and error-rate panels."
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "min": 0,
-          "max": 100
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 53
-      },
-      "id": 20,
-      "options": {
         "legend": {
           "calcs": [
             "lastNotNull",
@@ -1530,8 +1035,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "100 * sum(rate(http_server_requests_total{http_route=~\"/api/.*\", http_status_code=~\"5..\"}[5m])) / clamp_min(sum(rate(http_server_requests_total{http_route=~\"/api/.*\"}[5m])), 1e-9)",
-          "legendFormat": "5xx",
+          "expr": "sum(rate(node_packets_errored_total[1m]))",
+          "legendFormat": "Errors",
           "range": true,
           "refId": "A"
         },
@@ -1541,205 +1046,15 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "100 * sum(rate(http_server_requests_total{http_route=~\"/api/.*\", http_status_code=~\"4..\"}[5m])) / clamp_min(sum(rate(http_server_requests_total{http_route=~\"/api/.*\"}[5m])), 1e-9)",
-          "legendFormat": "4xx",
+          "expr": "sum(rate(node_packets_discarded_total[1m]))",
+          "legendFormat": "Discarded",
           "range": true,
           "refId": "B"
         }
       ],
-      "title": "HTTP Error Rate (API)",
+      "title": "Node Errors & Drops",
       "type": "timeseries",
-      "description": "HTTP error rate for /api/* endpoints (4xx and 5xx)."
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "min": 0
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 53
-      },
-      "id": 21,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(http_server_duration_bucket{http_route=~\"/api/.*\", http_status_code=~\"2..\"}[5m])) by (le))",
-          "legendFormat": "p95",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum(rate(http_server_duration_bucket{http_route=~\"/api/.*\", http_status_code=~\"2..\"}[5m])) by (le))",
-          "legendFormat": "p99",
-          "range": true,
-          "refId": "B"
-        }
-      ],
-      "title": "HTTP Latency (API, 2xx)",
-      "type": "timeseries",
-      "description": "p95/p99 latency for successful /api/* requests (2xx only)."
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "min": 0
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 61
-      },
-      "id": 22,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(oneshot_pipeline_duration_bucket{status=\"ok\"}[5m])) by (le))",
-          "legendFormat": "p95",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum(rate(oneshot_pipeline_duration_bucket{status=\"ok\"}[5m])) by (le))",
-          "legendFormat": "p99",
-          "range": true,
-          "refId": "B"
-        }
-      ],
-      "title": "Oneshot Pipeline Latency (ok)",
-      "type": "timeseries",
-      "description": "p95/p99 runtime for oneshot pipeline executions (status=ok). Samples are emitted when a oneshot pipeline finishes (long-running jobs won't appear until completion)."
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "min": 0,
-          "max": 100
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 61
-      },
-      "id": 23,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "100 * sum(rate(oneshot_pipeline_duration_count{status=\"error\"}[5m])) / clamp_min(sum(rate(oneshot_pipeline_duration_count[5m])), 1e-9)",
-          "legendFormat": "error %",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Oneshot Pipeline Error Rate",
-      "type": "timeseries",
-      "description": "Percentage of oneshot pipeline executions that end with status=error. Samples are emitted when a oneshot pipeline finishes."
-    },
-    {
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 69
-      },
-      "id": 24,
-      "panels": [],
-      "title": "Pin Distributor (Routing)",
-      "type": "row",
-      "description": "Packet fan-out routing performance and backpressure at the output-pin distributor layer."
+      "description": "Processing errors and discarded packets. Should be near zero for healthy operation."
     },
     {
       "datasource": {
@@ -1780,7 +1095,7 @@
               "mode": "none"
             },
             "thresholdsStyle": {
-              "mode": "off"
+              "mode": "line"
             }
           },
           "mappings": [],
@@ -1790,6 +1105,14 @@
               {
                 "color": "green",
                 "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.1
+              },
+              {
+                "color": "red",
+                "value": 1
               }
             ]
           },
@@ -1801,9 +1124,9 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 70
+        "y": 27
       },
-      "id": 25,
+      "id": 13,
       "options": {
         "legend": {
           "calcs": [
@@ -1827,7 +1150,7 @@
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.95, sum(rate(pin_distributor_send_wait_seconds_bucket[5m])) by (le))",
-          "legendFormat": "p95 (global)",
+          "legendFormat": "p95 Wait",
           "range": true,
           "refId": "A"
         },
@@ -1838,14 +1161,14 @@
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.99, sum(rate(pin_distributor_send_wait_seconds_bucket[5m])) by (le))",
-          "legendFormat": "p99 (global)",
+          "legendFormat": "p99 Wait",
           "range": true,
           "refId": "B"
         }
       ],
-      "title": "Pin Distributor Backpressure Wait (p95, p99)",
+      "title": "Pin Distributor Backpressure",
       "type": "timeseries",
-      "description": "p95/p99 of time spent blocked on downstream capacity in output-pin distributors (synchronized backpressure)."
+      "description": "Time spent waiting for downstream capacity. High values indicate bottlenecks."
     },
     {
       "datasource": {
@@ -1861,7 +1184,7 @@
             "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
-            "axisLabel": "Outputs",
+            "axisLabel": "Drops/s",
             "axisPlacement": "auto",
             "barAlignment": 0,
             "drawStyle": "line",
@@ -1886,7 +1209,7 @@
               "mode": "none"
             },
             "thresholdsStyle": {
-              "mode": "off"
+              "mode": "line"
             }
           },
           "mappings": [],
@@ -1896,6 +1219,14 @@
               {
                 "color": "green",
                 "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 10
+              },
+              {
+                "color": "red",
+                "value": 100
               }
             ]
           },
@@ -1907,14 +1238,14 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 70
+        "y": 27
       },
-      "id": 26,
+      "id": 14,
       "options": {
         "legend": {
           "calcs": [
             "lastNotNull",
-            "max"
+            "sum"
           ],
           "displayMode": "table",
           "placement": "right",
@@ -1932,619 +1263,1181 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(pin_distributor_outputs_active)",
-          "legendFormat": "outputs (sum)",
+          "expr": "sum(rate(pin_distributor_best_effort_drops_total[1m]))",
+          "legendFormat": "Best-Effort Drops",
           "range": true,
           "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "max(pin_distributor_outputs_active)",
-          "legendFormat": "outputs (max pin)",
-          "range": true,
-          "refId": "B"
         }
       ],
-      "title": "Pin Distributor Outputs Active",
+      "title": "Best-Effort Drops",
       "type": "timeseries",
-      "description": "Active downstream outputs per distributor. Sum = total fan-out edges; max = most fanned-out single output pin."
+      "description": "Packets dropped on best-effort connections due to slow consumers."
     },
     {
-      "id": 27,
-      "title": "Pacer Lateness p95 (s)",
-      "type": "timeseries",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisLabel": "seconds",
-            "axisPlacement": "auto",
-            "drawStyle": "line",
-            "lineWidth": 2,
-            "fillOpacity": 15,
-            "showPoints": "never",
-            "spanNulls": false,
-            "lineInterpolation": "smooth",
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "s"
-        },
-        "overrides": []
-      },
+      "collapsed": true,
       "gridPos": {
-        "h": 8,
-        "w": 12,
+        "h": 1,
+        "w": 24,
         "x": 0,
-        "y": 80
+        "y": 35
       },
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ],
-          "displayMode": "list",
-          "placement": "right",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
+      "id": 15,
+      "panels": [
         {
-          "refId": "A",
-          "range": true,
           "datasource": {
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by(le, node) (rate(pacer_lateness_seconds_bucket[5m])))",
-          "legendFormat": "{{node}}"
-        }
-      ]
-    },
-    {
-      "id": 28,
-      "title": "Pacer Queue Depth",
-      "type": "timeseries",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisLabel": "packets",
-            "axisPlacement": "auto",
-            "drawStyle": "line",
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "spanNulls": true,
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "Packets/s",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 20,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "tooltip": false,
+                  "viz": false,
+                  "legend": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "smooth",
+                "lineWidth": 2,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "pps"
+            },
+            "overrides": [
               {
-                "color": "green",
-                "value": null
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "/received/"
+                },
+                "properties": [
+                  {
+                    "id": "custom.lineStyle",
+                    "value": {
+                      "dash": [
+                        10,
+                        10
+                      ],
+                      "fill": "dash"
+                    }
+                  }
+                ]
               }
             ]
           },
-          "unit": "none"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 80
-      },
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "max"
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 36
+          },
+          "id": 16,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "mean"
+              ],
+              "displayMode": "table",
+              "placement": "right",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "expr": "rate(node_packets_sent_total{node_id=~\"(.*moq::(peer|subscriber|publisher).*|moq_(peer|subscriber|publisher).*)\"}[1m])",
+              "legendFormat": "{{node_id}} sent",
+              "range": true,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "expr": "rate(node_packets_received_total{node_id=~\"(.*moq::(peer|subscriber|publisher).*|moq_(peer|subscriber|publisher).*)\"}[1m])",
+              "legendFormat": "{{node_id}} received",
+              "range": true,
+              "refId": "B"
+            }
           ],
-          "displayMode": "list",
-          "placement": "right",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
+          "title": "MoQ Transport Throughput",
+          "type": "timeseries",
+          "description": "Packet rates for MoQ transport nodes (peer/subscriber/publisher)."
         }
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "range": true,
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "avg by(node) (pacer_queue_depth)",
-          "legendFormat": "{{node}}"
-        }
-      ]
+      ],
+      "title": "MoQ Transport (Advanced)",
+      "type": "row",
+      "description": "Media over QUIC transport metrics - collapsed by default"
     },
     {
-      "id": 29,
-      "title": "MoQ Push Clock Offset p95 (ms)",
-      "type": "timeseries",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisLabel": "milliseconds",
-            "axisPlacement": "auto",
-            "drawStyle": "line",
-            "lineWidth": 2,
-            "fillOpacity": 15,
-            "showPoints": "never",
-            "spanNulls": false,
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "ms"
-        },
-        "overrides": []
-      },
+      "collapsed": true,
       "gridPos": {
-        "h": 8,
-        "w": 12,
+        "h": 1,
+        "w": 24,
         "x": 0,
-        "y": 88
+        "y": 36
       },
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ],
-          "displayMode": "list",
-          "placement": "right",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
+      "id": 17,
+      "panels": [
         {
-          "refId": "A",
-          "range": true,
           "datasource": {
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by(le, node, broadcast) (rate(moq_push_clock_offset_ms_bucket[5m])))",
-          "legendFormat": "{{node}}/{{broadcast}}"
-        }
-      ]
-    },
-    {
-      "id": 30,
-      "title": "MoQ Peer Inter-frame Gap p95 (ms)",
-      "type": "timeseries",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "yellow",
+                    "value": 100
+                  },
+                  {
+                    "color": "red",
+                    "value": 1000
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
           },
-          "custom": {
-            "axisLabel": "milliseconds",
-            "axisPlacement": "auto",
-            "drawStyle": "line",
-            "lineWidth": 2,
-            "fillOpacity": 15,
-            "showPoints": "never",
-            "spanNulls": false,
-            "thresholdsStyle": {
-              "mode": "off"
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 37
+          },
+          "id": 18,
+          "options": {
+            "displayMode": "gradient",
+            "maxVizHeight": 300,
+            "minVizHeight": 16,
+            "minVizWidth": 8,
+            "namePlacement": "auto",
+            "orientation": "horizontal",
+            "reduceOptions": {
+              "values": false,
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": ""
+            },
+            "showUnfilled": true,
+            "sizing": "auto",
+            "valueMode": "color"
+          },
+          "pluginVersion": "12.0.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "expr": "topk(10, sum by(node_kind) (node_packets_sent_total))",
+              "legendFormat": "{{node_kind}}",
+              "range": true,
+              "refId": "A"
             }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "ms"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 88
-      },
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "max"
           ],
-          "displayMode": "list",
-          "placement": "right",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
+          "title": "Top Node Types by Packets Sent",
+          "type": "bargauge",
+          "description": "Top 10 node types by total packets sent (aggregated by node kind)."
         }
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "range": true,
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by(le, node, broadcast) (rate(moq_peer_inter_frame_ms_bucket[5m])))",
-          "legendFormat": "{{node}}/{{broadcast}}"
-        }
-      ]
+      ],
+      "title": "Per-Node Details (Advanced)",
+      "type": "row",
+      "description": "Deep-dive into individual node performance"
     },
     {
-      "id": 31,
-      "title": "Pin Distributor Queue Depth",
-      "type": "timeseries",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisLabel": "packets",
-            "axisPlacement": "auto",
-            "drawStyle": "line",
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "spanNulls": true,
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "none"
-        },
-        "overrides": []
-      },
+      "collapsed": true,
       "gridPos": {
-        "h": 8,
-        "w": 12,
+        "h": 1,
+        "w": 24,
         "x": 0,
-        "y": 96
+        "y": 37
       },
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ],
-          "displayMode": "list",
-          "placement": "right",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
+      "id": 19,
+      "panels": [
         {
-          "refId": "A",
-          "range": true,
           "datasource": {
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "editorMode": "code",
-          "expr": "avg by(node_id, pin_name) (pin_distributor_queue_depth)",
-          "legendFormat": "{{node_id}}/{{pin_name}}"
-        }
-      ]
-    },
-    {
-      "id": 32,
-      "title": "Pin Distributor Queue Depth (bytes)",
-      "type": "timeseries",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisLabel": "seconds",
+                "axisPlacement": "auto",
+                "drawStyle": "line",
+                "lineWidth": 2,
+                "fillOpacity": 15,
+                "showPoints": "never",
+                "spanNulls": false,
+                "lineInterpolation": "smooth",
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "s"
+            },
+            "overrides": []
           },
-          "custom": {
-            "axisLabel": "bytes",
-            "axisPlacement": "auto",
-            "drawStyle": "line",
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "spanNulls": true,
-            "thresholdsStyle": {
-              "mode": "off"
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 38
+          },
+          "id": 20,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "list",
+              "placement": "right",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
             }
           },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "bytes"
+          "targets": [
+            {
+              "refId": "A",
+              "range": true,
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "expr": "histogram_quantile(0.95, sum by(le, node_id) (rate(pacer_lateness_seconds_bucket[5m])))",
+              "legendFormat": "{{node_id}}"
+            }
+          ],
+          "title": "Pacer Lateness p95",
+          "type": "timeseries",
+          "description": "Audio pacing lateness (95th percentile). Shows timing drift."
         },
-        "overrides": []
-      },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisLabel": "seconds",
+                "axisPlacement": "auto",
+                "drawStyle": "line",
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "showPoints": "never",
+                "spanNulls": true,
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 38
+          },
+          "id": 21,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "list",
+              "placement": "right",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "range": true,
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "expr": "avg by(node_id, pin_name) (pin_distributor_queue_depth_seconds)",
+              "legendFormat": "{{node_id}}/{{pin_name}}"
+            }
+          ],
+          "title": "Pin Distributor Queue Depth (seconds)",
+          "type": "timeseries",
+          "description": "Estimated backlog in media seconds at pin distributors."
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisLabel": "packets",
+                "axisPlacement": "auto",
+                "drawStyle": "line",
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "showPoints": "never",
+                "spanNulls": true,
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 46
+          },
+          "id": 22,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "list",
+              "placement": "right",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "range": true,
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "expr": "avg by(node_id) (pacer_queue_depth)",
+              "legendFormat": "{{node_id}}"
+            }
+          ],
+          "title": "Pacer Queue Depth",
+          "type": "timeseries",
+          "description": "Pacer buffered packet count."
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisLabel": "ms",
+                "axisPlacement": "auto",
+                "drawStyle": "line",
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "showPoints": "never",
+                "spanNulls": true,
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "ms"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 46
+          },
+          "id": 23,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "list",
+              "placement": "right",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "range": true,
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "expr": "histogram_quantile(0.95, sum by(le, node_id, broadcast) (rate(moq_push_clock_offset_ms_bucket[5m])))",
+              "legendFormat": "{{node_id}}/{{broadcast}}"
+            }
+          ],
+          "title": "MoQ Push Clock Offset p95",
+          "type": "timeseries",
+          "description": "Offset between outgoing MoQ timestamp and upstream packet timestamp."
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisLabel": "ms",
+                "axisPlacement": "auto",
+                "drawStyle": "line",
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "showPoints": "never",
+                "spanNulls": true,
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "ms"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 54
+          },
+          "id": 24,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "list",
+              "placement": "right",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "range": true,
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "expr": "histogram_quantile(0.95, sum by(le, node_id, broadcast) (rate(moq_peer_inter_frame_ms_bucket[5m])))",
+              "legendFormat": "{{node_id}}/{{broadcast}}"
+            }
+          ],
+          "title": "MoQ Peer Inter-frame Gap p95",
+          "type": "timeseries",
+          "description": "Gap between consecutive frames sent to subscribers."
+        }
+      ],
+      "title": "Timing & Queue Depths (Advanced)",
+      "type": "row",
+      "description": "Detailed timing and queue metrics"
+    },
+    {
+      "collapsed": true,
       "gridPos": {
-        "h": 8,
-        "w": 12,
+        "h": 1,
+        "w": 24,
         "x": 0,
-        "y": 104
+        "y": 38
       },
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ],
-          "displayMode": "list",
-          "placement": "right",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
+      "id": 25,
+      "panels": [
         {
-          "refId": "A",
-          "range": true,
           "datasource": {
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "editorMode": "code",
-          "expr": "avg by(node_id, pin_name) (pin_distributor_queue_depth_bytes)",
-          "legendFormat": "{{node_id}}/{{pin_name}}"
-        }
-      ]
-    },
-    {
-      "id": 33,
-      "title": "Pin Distributor Queue Depth (seconds)",
-      "type": "timeseries",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisLabel": "seconds",
-            "axisPlacement": "auto",
-            "drawStyle": "line",
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "spanNulls": true,
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "Milliseconds",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 20,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "tooltip": false,
+                  "viz": false,
+                  "legend": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "smooth",
+                "lineWidth": 2,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "ms"
+            },
+            "overrides": [
               {
-                "color": "green",
-                "value": null
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": ".*Throughput.*"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "pps"
+                  },
+                  {
+                    "id": "custom.axisPlacement",
+                    "value": "right"
+                  },
+                  {
+                    "id": "custom.axisLabel",
+                    "value": "Packets/s"
+                  }
+                ]
               }
             ]
           },
-          "unit": "s"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 104
-      },
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "max"
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 39
+          },
+          "id": 26,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "mean"
+              ],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "expr": "histogram_quantile(0.95, sum(rate(opus_decode_duration_bucket[5m])) by (le)) * 1000",
+              "legendFormat": "Decode p95",
+              "range": true,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "expr": "histogram_quantile(0.95, sum(rate(opus_encode_duration_bucket[5m])) by (le)) * 1000",
+              "legendFormat": "Encode p95",
+              "range": true,
+              "refId": "B"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "expr": "sum(rate(opus_decode_duration_count[1m]))",
+              "legendFormat": "Decode Throughput",
+              "range": true,
+              "refId": "C"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "expr": "sum(rate(opus_encode_duration_count[1m]))",
+              "legendFormat": "Encode Throughput",
+              "range": true,
+              "refId": "D"
+            }
           ],
-          "displayMode": "list",
-          "placement": "right",
-          "showLegend": true
+          "title": "Opus Codec Performance",
+          "type": "timeseries",
+          "description": "Opus p95 duration per packet (left axis, typical: 1-10ms) and processing throughput (right axis)."
         },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
         {
-          "refId": "A",
-          "range": true,
           "datasource": {
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "editorMode": "code",
-          "expr": "avg by(node_id, pin_name) (pin_distributor_queue_depth_seconds)",
-          "legendFormat": "{{node_id}}/{{pin_name}}"
-        }
-      ]
-    },
-    {
-      "id": 34,
-      "title": "Pin Distributor Send Wait p95 (s)",
-      "type": "timeseries",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisLabel": "seconds",
-            "axisPlacement": "auto",
-            "drawStyle": "line",
-            "lineWidth": 2,
-            "fillOpacity": 15,
-            "showPoints": "never",
-            "spanNulls": false,
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "Milliseconds",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 20,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "tooltip": false,
+                  "viz": false,
+                  "legend": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "smooth",
+                "lineWidth": 2,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "ms"
+            },
+            "overrides": [
               {
-                "color": "green",
-                "value": null
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": ".*Throughput.*"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "pps"
+                  },
+                  {
+                    "id": "custom.axisPlacement",
+                    "value": "right"
+                  },
+                  {
+                    "id": "custom.axisLabel",
+                    "value": "Packets/s"
+                  }
+                ]
               }
             ]
           },
-          "unit": "s"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 112
-      },
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "max"
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 39
+          },
+          "id": 27,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "mean"
+              ],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "expr": "histogram_quantile(0.95, sum(rate(mp3_decode_duration_bucket[5m])) by (le)) * 1000",
+              "legendFormat": "Decode p95",
+              "range": true,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "expr": "sum(rate(mp3_decode_duration_count[1m]))",
+              "legendFormat": "Decode Throughput",
+              "range": true,
+              "refId": "B"
+            }
           ],
-          "displayMode": "list",
-          "placement": "right",
-          "showLegend": true
+          "title": "MP3 Codec Performance",
+          "type": "timeseries",
+          "description": "MP3 p95 decode duration per packet (left axis) and processing throughput (right axis)."
         },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
         {
-          "refId": "A",
-          "range": true,
           "datasource": {
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by(le, node_id, pin_name) (rate(pin_distributor_send_wait_seconds_bucket[5m])))",
-          "legendFormat": "{{node_id}}/{{pin_name}}"
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "Milliseconds",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 20,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "tooltip": false,
+                  "viz": false,
+                  "legend": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "smooth",
+                "lineWidth": 2,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "ms"
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": ".*Throughput.*"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "pps"
+                  },
+                  {
+                    "id": "custom.axisPlacement",
+                    "value": "right"
+                  },
+                  {
+                    "id": "custom.axisLabel",
+                    "value": "Packets/s"
+                  }
+                ]
+              }
+            ]
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 47
+          },
+          "id": 28,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "mean"
+              ],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "expr": "histogram_quantile(0.95, sum(rate(flac_decode_duration_bucket[5m])) by (le)) * 1000",
+              "legendFormat": "Decode p95",
+              "range": true,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "expr": "sum(rate(flac_decode_duration_count[1m]))",
+              "legendFormat": "Decode Throughput",
+              "range": true,
+              "refId": "B"
+            }
+          ],
+          "title": "FLAC Codec Performance",
+          "type": "timeseries",
+          "description": "FLAC p95 decode duration per packet (left axis) and processing throughput (right axis)."
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "Milliseconds",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 20,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "tooltip": false,
+                  "viz": false,
+                  "legend": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "smooth",
+                "lineWidth": 2,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "ms"
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": ".*Throughput.*"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "pps"
+                  },
+                  {
+                    "id": "custom.axisPlacement",
+                    "value": "right"
+                  },
+                  {
+                    "id": "custom.axisLabel",
+                    "value": "Packets/s"
+                  }
+                ]
+              }
+            ]
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 47
+          },
+          "id": 29,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "mean"
+              ],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "expr": "histogram_quantile(0.95, sum(rate(wav_demux_duration_bucket[5m])) by (le)) * 1000",
+              "legendFormat": "Demux p95",
+              "range": true,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "expr": "sum(rate(wav_demux_duration_count[1m]))",
+              "legendFormat": "Demux Throughput",
+              "range": true,
+              "refId": "B"
+            }
+          ],
+          "title": "WAV Container Performance",
+          "type": "timeseries",
+          "description": "WAV p95 demux duration per packet (left axis) and processing throughput (right axis)."
         }
-      ]
+      ],
+      "title": "Codecs (Advanced)",
+      "type": "row",
+      "description": "Audio codec and container performance metrics"
     }
   ],
   "refresh": "10s",
@@ -2601,7 +2494,7 @@
   "timezone": "browser",
   "title": "StreamKit Performance Dashboard",
   "uid": "streamkit-perf",
-  "version": 2,
+  "version": 1,
   "weekStart": "",
-  "description": "Operational overview of StreamKit runtime health and throughput."
+  "description": "Streamlined operational dashboard focusing on high-signal health indicators. Expanded rows show core metrics, collapsed rows provide deep-dive debugging."
 }

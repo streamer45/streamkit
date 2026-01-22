@@ -25,16 +25,19 @@
 
 use crate::constants::{
     DEFAULT_BATCH_SIZE, DEFAULT_ONESHOT_IO_CAPACITY, DEFAULT_ONESHOT_MEDIA_CAPACITY,
+    DEFAULT_STATE_CHANNEL_CAPACITY,
 };
 // Note: The constants are used in OneshotEngineConfig::default()
 use crate::{graph_builder, Engine};
 use bytes::Bytes;
 use futures::Stream;
+use opentelemetry::{global, KeyValue};
 use std::collections::HashMap;
 use streamkit_api::Pipeline;
 use streamkit_core::control::NodeControlMessage;
 use streamkit_core::error::StreamKitError;
 use streamkit_core::node::ProcessorNode;
+use streamkit_core::stats::{NodeStats, NodeStatsUpdate};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -372,8 +375,11 @@ impl Engine {
 
         let node_kinds: HashMap<String, String> =
             definition.nodes.iter().map(|(name, def)| (name.clone(), def.kind.clone())).collect();
+        let node_kinds_for_metrics = node_kinds.clone();
 
         let audio_pool = self.audio_pool.clone();
+
+        let (stats_tx, stats_rx) = mpsc::channel(DEFAULT_STATE_CHANNEL_CAPACITY);
 
         let live_nodes = graph_builder::wire_and_spawn_graph(
             nodes,
@@ -382,11 +388,14 @@ impl Engine {
             config.packet_batch_size,
             config.media_channel_capacity,
             None, // No state tracking for oneshot pipelines
+            Some(stats_tx),
             Some(cancellation_token.clone()),
             Some(audio_pool),
         )
         .await?;
         tracing::info!("Pipeline graph successfully spawned");
+
+        spawn_oneshot_metrics_recorder(stats_rx, node_kinds_for_metrics);
 
         // --- 5.5. Start file readers (if any) ---
         if !source_node_ids.is_empty() {
@@ -427,4 +436,83 @@ impl Engine {
 
         Ok(OneshotPipelineResult { data_stream: output_stream_rx, content_type })
     }
+}
+
+fn spawn_oneshot_metrics_recorder(
+    mut stats_rx: mpsc::Receiver<NodeStatsUpdate>,
+    node_kinds: HashMap<String, String>,
+) {
+    let meter = global::meter("skit_engine");
+    let node_packets_received_counter = meter
+        .u64_counter("node.packets.received")
+        .with_description("Total packets received by node")
+        .build();
+    let node_packets_sent_counter = meter
+        .u64_counter("node.packets.sent")
+        .with_description("Total packets sent by node")
+        .build();
+    let node_packets_discarded_counter = meter
+        .u64_counter("node.packets.discarded")
+        .with_description("Total packets discarded by node")
+        .build();
+    let node_packets_errored_counter = meter
+        .u64_counter("node.packets.errored")
+        .with_description("Total packet processing errors by node")
+        .build();
+
+    let node_kinds = std::sync::Arc::new(node_kinds);
+
+    tokio::spawn(async move {
+        // Track previous stats per node to compute deltas
+        let mut prev_stats: HashMap<String, NodeStats> = HashMap::new();
+
+        while let Some(update) = stats_rx.recv().await {
+            let node_kind =
+                node_kinds.get(&update.node_id).map_or("unknown", std::string::String::as_str);
+
+            let labels = &[
+                KeyValue::new("node_id", update.node_id.clone()),
+                KeyValue::new("node_kind", node_kind.to_string()),
+            ];
+
+            let prev = prev_stats.get(&update.node_id);
+            let delta_received = prev.map_or(update.stats.received, |p| {
+                if update.stats.received < p.received {
+                    update.stats.received
+                } else {
+                    update.stats.received - p.received
+                }
+            });
+            let delta_sent = prev.map_or(update.stats.sent, |p| {
+                if update.stats.sent < p.sent {
+                    update.stats.sent
+                } else {
+                    update.stats.sent - p.sent
+                }
+            });
+            let delta_discarded = prev.map_or(update.stats.discarded, |p| {
+                if update.stats.discarded < p.discarded {
+                    update.stats.discarded
+                } else {
+                    update.stats.discarded - p.discarded
+                }
+            });
+            let delta_errored = prev.map_or(update.stats.errored, |p| {
+                if update.stats.errored < p.errored {
+                    update.stats.errored
+                } else {
+                    update.stats.errored - p.errored
+                }
+            });
+
+            // Add deltas to counters (not absolute values)
+            node_packets_received_counter.add(delta_received, labels);
+            node_packets_sent_counter.add(delta_sent, labels);
+            node_packets_discarded_counter.add(delta_discarded, labels);
+            node_packets_errored_counter.add(delta_errored, labels);
+
+            // Update previous stats for this node
+            prev_stats.insert(update.node_id.clone(), update.stats);
+        }
+    });
 }

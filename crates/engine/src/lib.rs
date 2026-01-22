@@ -235,6 +235,7 @@ impl Engine {
             pin_distributors: HashMap::new(),
             pin_management_txs: HashMap::new(),
             node_pin_metadata: HashMap::new(),
+            node_kinds: HashMap::new(),
             batch_size: config.packet_batch_size,
             session_id: config.session_id,
             audio_pool: self.audio_pool.clone(),
@@ -257,20 +258,20 @@ impl Engine {
                 .u64_counter("engine.operations")
                 .with_description("Engine control operations")
                 .build(),
-            node_packets_received_gauge: meter
-                .u64_gauge("node.packets.received")
+            node_packets_received_counter: meter
+                .u64_counter("node.packets.received")
                 .with_description("Total packets received by node")
                 .build(),
-            node_packets_sent_gauge: meter
-                .u64_gauge("node.packets.sent")
+            node_packets_sent_counter: meter
+                .u64_counter("node.packets.sent")
                 .with_description("Total packets sent by node")
                 .build(),
-            node_packets_discarded_gauge: meter
-                .u64_gauge("node.packets.discarded")
+            node_packets_discarded_counter: meter
+                .u64_counter("node.packets.discarded")
                 .with_description("Total packets discarded by node")
                 .build(),
-            node_packets_errored_gauge: meter
-                .u64_gauge("node.packets.errored")
+            node_packets_errored_counter: meter
+                .u64_counter("node.packets.errored")
                 .with_description("Total packet processing errors by node")
                 .build(),
             node_state_gauge: meter

@@ -28,6 +28,7 @@ fn create_test_engine() -> DynamicEngine {
         pin_distributors: HashMap::new(),
         pin_management_txs: HashMap::new(),
         node_pin_metadata: HashMap::new(),
+        node_kinds: HashMap::new(),
         batch_size: 32,
         session_id: None,
         audio_pool: std::sync::Arc::new(streamkit_core::FramePool::<f32>::audio_default()),
@@ -41,10 +42,10 @@ fn create_test_engine() -> DynamicEngine {
         nodes_active_gauge: meter.u64_gauge("test.nodes").build(),
         node_state_transitions_counter: meter.u64_counter("test.transitions").build(),
         engine_operations_counter: meter.u64_counter("test.operations").build(),
-        node_packets_received_gauge: meter.u64_gauge("test.received").build(),
-        node_packets_sent_gauge: meter.u64_gauge("test.sent").build(),
-        node_packets_discarded_gauge: meter.u64_gauge("test.discarded").build(),
-        node_packets_errored_gauge: meter.u64_gauge("test.errored").build(),
+        node_packets_received_counter: meter.u64_counter("test.received").build(),
+        node_packets_sent_counter: meter.u64_counter("test.sent").build(),
+        node_packets_discarded_counter: meter.u64_counter("test.discarded").build(),
+        node_packets_errored_counter: meter.u64_counter("test.errored").build(),
         node_state_gauge: meter.u64_gauge("test.state").build(),
     }
 }

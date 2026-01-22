@@ -1150,9 +1150,10 @@ impl MoqPeerNode {
         let gap_histogram = meter
             .f64_histogram("moq.peer.inter_frame_ms")
             .with_description("Gap between consecutive frames sent to subscribers")
+            .with_boundaries(streamkit_core::metrics::HISTOGRAM_BOUNDARIES_FRAME_GAP_MS.to_vec())
             .build();
         let metric_labels = [
-            opentelemetry::KeyValue::new("node", node_id),
+            opentelemetry::KeyValue::new("node_id", node_id),
             opentelemetry::KeyValue::new("broadcast", broadcast_name),
         ];
         let mut last_ts_ms: Option<u64> = None;

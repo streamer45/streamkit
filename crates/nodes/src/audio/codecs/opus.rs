@@ -84,7 +84,10 @@ impl ProcessorNode for OpusDecoderNode {
 
         let meter = global::meter("skit_nodes");
         let packets_processed_counter = meter.u64_counter("opus_packets_processed").build();
-        let decode_duration_histogram = meter.f64_histogram("opus_decode_duration").build();
+        let decode_duration_histogram = meter
+            .f64_histogram("opus_decode_duration")
+            .with_boundaries(streamkit_core::metrics::HISTOGRAM_BOUNDARIES_CODEC_PACKET.to_vec())
+            .build();
 
         // Create channels for communication with the blocking task
         // Now includes metadata with each packet
@@ -436,7 +439,10 @@ impl ProcessorNode for OpusEncoderNode {
 
         let meter = global::meter("skit_nodes");
         let packets_processed_counter = meter.u64_counter("opus_packets_processed").build();
-        let encode_duration_histogram = meter.f64_histogram("opus_encode_duration").build();
+        let encode_duration_histogram = meter
+            .f64_histogram("opus_encode_duration")
+            .with_boundaries(streamkit_core::metrics::HISTOGRAM_BOUNDARIES_CODEC_PACKET.to_vec())
+            .build();
 
         // Create channels for communication with the blocking task
         // Now includes channel count with each frame
@@ -461,8 +467,6 @@ impl ProcessorNode for OpusEncoderNode {
 
             // Use blocking_recv - efficient for spawn_blocking context
             while let Some((samples, channels)) = encode_rx.blocking_recv() {
-                let encode_start_time = Instant::now();
-
                 // Initialize or recreate encoder if channel count changed
                 if current_channels != Some(channels) {
                     let opus_channels =
@@ -495,6 +499,8 @@ impl ProcessorNode for OpusEncoderNode {
                         },
                     };
                 }
+
+                let encode_start_time = Instant::now();
 
                 let result = {
                     // Encoder must exist at this point because we just initialized it above

@@ -354,6 +354,9 @@ impl Default for SessionManager {
                 .f64_histogram("session.duration")
                 .with_description("Session lifetime duration in seconds")
                 .with_unit("s")
+                .with_boundaries(
+                    streamkit_core::metrics::HISTOGRAM_BOUNDARIES_SESSION_DURATION.to_vec(),
+                )
                 .build(),
         }
     }

@@ -52,6 +52,8 @@ pub struct DynamicEngine {
         HashMap<String, mpsc::Sender<streamkit_core::pins::PinManagementMessage>>,
     /// Map of node pin metadata: NodeId -> Pin Metadata (for runtime type validation)
     pub(super) node_pin_metadata: HashMap<String, NodePinMetadata>,
+    /// Map of node_id -> node_kind for labeling metrics
+    pub(super) node_kinds: HashMap<String, String>,
     pub(super) batch_size: usize,
     /// Session ID for gateway registration (if applicable)
     pub(super) session_id: Option<String>,
@@ -75,11 +77,11 @@ pub struct DynamicEngine {
     pub(super) nodes_active_gauge: opentelemetry::metrics::Gauge<u64>,
     pub(super) node_state_transitions_counter: opentelemetry::metrics::Counter<u64>,
     pub(super) engine_operations_counter: opentelemetry::metrics::Counter<u64>,
-    // Node-level packet metrics
-    pub(super) node_packets_received_gauge: opentelemetry::metrics::Gauge<u64>,
-    pub(super) node_packets_sent_gauge: opentelemetry::metrics::Gauge<u64>,
-    pub(super) node_packets_discarded_gauge: opentelemetry::metrics::Gauge<u64>,
-    pub(super) node_packets_errored_gauge: opentelemetry::metrics::Gauge<u64>,
+    // Node-level packet metrics (counters, not gauges - for proper rate() calculation)
+    pub(super) node_packets_received_counter: opentelemetry::metrics::Counter<u64>,
+    pub(super) node_packets_sent_counter: opentelemetry::metrics::Counter<u64>,
+    pub(super) node_packets_discarded_counter: opentelemetry::metrics::Counter<u64>,
+    pub(super) node_packets_errored_counter: opentelemetry::metrics::Counter<u64>,
     // Node state metric (1=running, 0=not running)
     pub(super) node_state_gauge: opentelemetry::metrics::Gauge<u64>,
 }
@@ -363,16 +365,50 @@ impl DynamicEngine {
             "Node stats updated"
         );
 
-        // Store the current stats
+        let node_kind =
+            self.node_kinds.get(&update.node_id).map_or("unknown", std::string::String::as_str);
+        let labels = &[
+            KeyValue::new("node_id", update.node_id.clone()),
+            KeyValue::new("node_kind", node_kind.to_string()),
+        ];
+
+        let prev_stats = self.node_stats.get(&update.node_id);
+
+        let delta_received = prev_stats.map_or(update.stats.received, |prev| {
+            if update.stats.received < prev.received {
+                update.stats.received
+            } else {
+                update.stats.received - prev.received
+            }
+        });
+        let delta_sent = prev_stats.map_or(update.stats.sent, |prev| {
+            if update.stats.sent < prev.sent {
+                update.stats.sent
+            } else {
+                update.stats.sent - prev.sent
+            }
+        });
+        let delta_discarded = prev_stats.map_or(update.stats.discarded, |prev| {
+            if update.stats.discarded < prev.discarded {
+                update.stats.discarded
+            } else {
+                update.stats.discarded - prev.discarded
+            }
+        });
+        let delta_errored = prev_stats.map_or(update.stats.errored, |prev| {
+            if update.stats.errored < prev.errored {
+                update.stats.errored
+            } else {
+                update.stats.errored - prev.errored
+            }
+        });
+
+        self.node_packets_received_counter.add(delta_received, labels);
+        self.node_packets_sent_counter.add(delta_sent, labels);
+        self.node_packets_discarded_counter.add(delta_discarded, labels);
+        self.node_packets_errored_counter.add(delta_errored, labels);
+
         self.node_stats.insert(update.node_id.clone(), update.stats.clone());
-
-        // Record metrics with node_id label
-        let labels = &[KeyValue::new("node_id", update.node_id.clone())];
-
-        self.node_packets_received_gauge.record(update.stats.received, labels);
-        self.node_packets_sent_gauge.record(update.stats.sent, labels);
-        self.node_packets_discarded_gauge.record(update.stats.discarded, labels);
-        self.node_packets_errored_gauge.record(update.stats.errored, labels);
 
         // Broadcast to all subscribers
         self.stats_subscribers.retain(|subscriber| {
@@ -862,6 +898,7 @@ impl DynamicEngine {
         self.node_stats.remove(node_id);
         self.node_pin_metadata.remove(node_id);
         self.pin_management_txs.remove(node_id);
+        self.node_kinds.remove(node_id);
         self.nodes_active_gauge.record(self.live_nodes.len() as u64, &[]);
     }
 
@@ -881,6 +918,7 @@ impl DynamicEngine {
                 tracing::info!(name = %node_id, kind = %kind, "Adding node to graph");
                 match self.registry.create_node(&kind, params.as_ref()) {
                     Ok(node) => {
+                        self.node_kinds.insert(node_id.clone(), kind.clone());
                         // Delegate initialization to helper function
                         // Pass by reference to avoid unnecessary clones
                         if let Err(e) = self
