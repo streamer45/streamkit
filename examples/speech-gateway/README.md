@@ -26,7 +26,8 @@ Environment equivalents:
 - `SKIT_URL` (default `http://127.0.0.1:4545`)
 - `SKIT_TOKEN` (optional bearer sent to Skit)
 - `GATEWAY_MAX_CONCURRENCY` (default 10)
-- `GATEWAY_MAX_BODY_BYTES` (default 10MB)
+- `GATEWAY_MAX_BODY_BYTES` (default 1MB)
+- `GATEWAY_MAX_TTS_TEXT_SIZE` (default 1000 characters)
 
 ## STT via curl (Ogg/Opus)
 
