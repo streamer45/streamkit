@@ -53,6 +53,7 @@ pub mod control;
 pub mod error;
 pub mod frame_pool;
 pub mod helpers;
+pub mod metrics;
 pub mod moq_gateway;
 pub mod node;
 pub mod node_config;

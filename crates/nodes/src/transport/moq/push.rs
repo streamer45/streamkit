@@ -205,9 +205,10 @@ impl ProcessorNode for MoqPushNode {
         let clock_offset_histogram = meter
             .f64_histogram("moq.push.clock_offset_ms")
             .with_description("Offset between outgoing MoQ timestamp and upstream packet timestamp")
+            .with_boundaries(streamkit_core::metrics::HISTOGRAM_BOUNDARIES_CLOCK_OFFSET_MS.to_vec())
             .build();
         let metric_labels = [
-            KeyValue::new("node", node_name.clone()),
+            KeyValue::new("node_id", node_name.clone()),
             KeyValue::new("broadcast", self.config.broadcast.clone()),
         ];
 

@@ -93,7 +93,10 @@ impl ProcessorNode for Mp3DecoderNode {
 
         let meter = global::meter("skit_nodes");
         let packets_processed_counter = meter.u64_counter("mp3_packets_processed").build();
-        let decode_duration_histogram = meter.f64_histogram("mp3_decode_duration").build();
+        let decode_duration_histogram = meter
+            .f64_histogram("mp3_decode_duration")
+            .with_boundaries(streamkit_core::metrics::HISTOGRAM_BOUNDARIES_FILE_OPERATION.to_vec())
+            .build();
 
         // Create channels for communication with the blocking task.
         // This must be bounded to provide backpressure and prevent unbounded buffering.

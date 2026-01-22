@@ -92,6 +92,7 @@ impl PinDistributorActor {
         let send_wait_histogram = meter
             .f64_histogram("pin_distributor.send_wait_seconds")
             .with_description("Time spent waiting for downstream capacity (backpressure)")
+            .with_boundaries(streamkit_core::metrics::HISTOGRAM_BOUNDARIES_BACKPRESSURE.to_vec())
             .build();
         let queue_depth_gauge = meter
             .u64_gauge("pin_distributor.queue_depth")

@@ -13,6 +13,7 @@ use streamkit_core::node::{InitContext, NodeContext, OutputRouting, OutputSender
 use streamkit_core::packet_meta::{can_connect, packet_type_registry};
 use streamkit_core::pins::PinUpdate;
 use streamkit_core::state::{NodeState, NodeStateUpdate, StopReason};
+use streamkit_core::stats::NodeStatsUpdate;
 use streamkit_core::types::{Packet, PacketType};
 use streamkit_core::PinCardinality;
 use tokio::sync::mpsc;
@@ -62,6 +63,7 @@ pub async fn wire_and_spawn_graph(
     batch_size: usize,
     media_channel_capacity: usize,
     state_tx: Option<mpsc::Sender<NodeStateUpdate>>,
+    stats_tx: Option<mpsc::Sender<NodeStatsUpdate>>,
     cancellation_token: Option<tokio_util::sync::CancellationToken>,
     audio_pool: Option<Arc<AudioFramePool>>,
 ) -> Result<HashMap<String, LiveNode>, StreamKitError> {
@@ -356,9 +358,9 @@ pub async fn wire_and_spawn_graph(
             output_sender: OutputSender::new(name.clone(), OutputRouting::Direct(direct_outputs)),
             batch_size,
             state_tx: node_state_tx.clone(),
-            stats_tx: None,     // Stateless pipelines don't track stats
-            telemetry_tx: None, // Stateless pipelines don't emit telemetry
-            session_id: None,   // Stateless pipelines don't have sessions
+            stats_tx: stats_tx.clone(), // Used by oneshot metrics recording
+            telemetry_tx: None,         // Stateless pipelines don't emit telemetry
+            session_id: None,           // Stateless pipelines don't have sessions
             cancellation_token: cancellation_token.clone(),
             pin_management_rx: None, // Stateless pipelines don't support dynamic pins
             audio_pool: audio_pool.clone(),
@@ -384,12 +386,13 @@ pub async fn wire_and_spawn_graph(
                 let meter = global::meter("skit_engine");
                 let histogram = meter
                     .f64_histogram("node.execution.duration")
+                    .with_boundaries(streamkit_core::metrics::HISTOGRAM_BOUNDARIES_NODE_EXECUTION.to_vec())
                     .build();
                 let status = if result.is_ok() { "ok" } else { "error" };
 
                 let labels = [
-                    KeyValue::new("node.name", name.clone()),
-                    KeyValue::new("node.kind", kind.clone()),
+                    KeyValue::new("node_id", name.clone()),
+                    KeyValue::new("node_kind", kind.clone()),
                     KeyValue::new("status", status),
                 ];
                 histogram.record(duration.as_secs_f64(), &labels);

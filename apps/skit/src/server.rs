@@ -1890,9 +1890,7 @@ impl<S> InstrumentedOneshotStream<S> {
 impl<S> Drop for InstrumentedOneshotStream<S> {
     fn drop(&mut self) {
         if !self.recorded {
-            // If the client disconnects early, the response body stream is dropped without EOF.
-            // Record as error so we still get visibility into partial/aborted oneshot executions.
-            self.record("error");
+            self.record("incomplete");
         }
     }
 }
@@ -2059,6 +2057,9 @@ async fn process_oneshot_pipeline_handler(
                 .f64_histogram("oneshot_pipeline.duration")
                 .with_description(
                     "Oneshot pipeline runtime from request start until response stream ends",
+                )
+                .with_boundaries(
+                    streamkit_core::metrics::HISTOGRAM_BOUNDARIES_PIPELINE_DURATION.to_vec(),
                 )
                 .build()
         })
@@ -2262,7 +2263,12 @@ async fn metrics_middleware(req: axum::http::Request<Body>, next: Next) -> Respo
             let meter = global::meter("skit_server");
             (
                 meter.u64_counter("http.server.requests").build(),
-                meter.f64_histogram("http.server.duration").build(),
+                meter
+                    .f64_histogram("http.server.duration")
+                    .with_boundaries(
+                        streamkit_core::metrics::HISTOGRAM_BOUNDARIES_HTTP_DURATION.to_vec(),
+                    )
+                    .build(),
             )
         })
         .clone();
