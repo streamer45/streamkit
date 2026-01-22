@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -96,11 +97,12 @@ steps:
 )
 
 type gateway struct {
-	client      *http.Client
-	skitURL     string
-	authToken   string
-	maxBodySize int64
-	sem         chan struct{}
+	client         *http.Client
+	skitURL        string
+	authToken      string
+	maxBodySize    int64
+	maxTTSTextSize int64
+	sem            chan struct{}
 }
 
 type config struct {
@@ -109,16 +111,18 @@ type config struct {
 	listenAddr     string
 	maxConcurrency int
 	maxBodySize    int64
+	maxTTSTextSize int64
 }
 
 func main() {
 	cfg := loadConfig()
 	gw := &gateway{
-		client:      newHTTPClient(),
-		skitURL:     cfg.skitURL,
-		authToken:   cfg.authToken,
-		maxBodySize: cfg.maxBodySize,
-		sem:         make(chan struct{}, cfg.maxConcurrency),
+		client:         newHTTPClient(),
+		skitURL:        cfg.skitURL,
+		authToken:      cfg.authToken,
+		maxBodySize:    cfg.maxBodySize,
+		maxTTSTextSize: cfg.maxTTSTextSize,
+		sem:            make(chan struct{}, cfg.maxConcurrency),
 	}
 
 	mux := http.NewServeMux()
@@ -142,7 +146,8 @@ func loadConfig() config {
 	skit := flagString("skit-url", getEnvDefault("SKIT_URL", defaultSkitURL), "Skit backend URL")
 	token := flagString("token", os.Getenv("SKIT_TOKEN"), "Bearer token for Skit (overrides SKIT_TOKEN env)")
 	maxConc := flagInt("max-concurrency", envInt("GATEWAY_MAX_CONCURRENCY", 10), "Maximum concurrent in-flight requests")
-	maxBody := flagInt64("max-body-bytes", envInt64("GATEWAY_MAX_BODY_BYTES", 10*1024*1024), "Maximum request body size")
+	maxBody := flagInt64("max-body-bytes", envInt64("GATEWAY_MAX_BODY_BYTES", 1*1024*1024), "Maximum request body size")
+	maxTTSText := flagInt64("max-tts-text-size", envInt64("GATEWAY_MAX_TTS_TEXT_SIZE", 1000), "Maximum TTS text size in characters")
 
 	flag.Parse()
 
@@ -152,6 +157,7 @@ func loadConfig() config {
 		listenAddr:     *listen,
 		maxConcurrency: *maxConc,
 		maxBodySize:    *maxBody,
+		maxTTSTextSize: *maxTTSText,
 	}
 }
 
@@ -267,8 +273,48 @@ func (gw *gateway) handleTTS(w http.ResponseWriter, r *http.Request) {
 	}
 	release := gw.acquire()
 	defer release()
+
+	// Read and validate text size
 	r.Body = http.MaxBytesReader(w, r.Body, gw.maxBodySize)
-	useBuffer := r.ContentLength > 0 && r.ContentLength <= gw.maxBodySize
+
+	// UTF-8 characters can be up to 4 bytes, so read up to 4x the character limit
+	// to ensure we can properly count characters and detect if input exceeds limit
+	maxReadBytes := gw.maxTTSTextSize * 4
+	textBytes, err := io.ReadAll(io.LimitReader(r.Body, maxReadBytes))
+	if err != nil {
+		log.Printf("tts read error: %v", err)
+		http.Error(w, "failed to read request body", http.StatusBadRequest)
+		return
+	}
+
+	// Count UTF-8 runes (characters) instead of bytes
+	runeCount := int64(utf8.RuneCount(textBytes))
+
+	// If we read the full buffer, check if there's more data
+	if int64(len(textBytes)) == maxReadBytes {
+		// Try to read one more byte to see if there's more
+		extra := make([]byte, 1)
+		n, _ := r.Body.Read(extra)
+		if n > 0 {
+			// There's more data, so we definitely exceeded the limit
+			log.Printf("tts text too large: >%d chars (max: %d)", runeCount, gw.maxTTSTextSize)
+			http.Error(w, fmt.Sprintf("text too large: exceeds %d characters", gw.maxTTSTextSize), http.StatusRequestEntityTooLarge)
+			return
+		}
+	}
+
+	if runeCount > gw.maxTTSTextSize {
+		log.Printf("tts text too large: %d chars (max: %d)", runeCount, gw.maxTTSTextSize)
+		http.Error(w, fmt.Sprintf("text too large: %d characters (max: %d)", runeCount, gw.maxTTSTextSize), http.StatusRequestEntityTooLarge)
+		return
+	}
+
+	log.Printf("tts text length: %d chars (%d bytes)", runeCount, len(textBytes))
+
+	// Replace body with buffered content
+	r.Body = io.NopCloser(bytes.NewReader(textBytes))
+
+	useBuffer := true // We've already buffered it
 	if err := gw.proxyMultipart(w, r, ttsPipelineYAML, "media", "text/plain", useBuffer); err != nil {
 		log.Printf("tts error: %v", err)
 		if !errors.Is(err, context.Canceled) {
