@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use streamkit_core::node::{NodeContext, OutputRouting, OutputSender, RoutedPacketMessage};
 use streamkit_core::state::NodeStateUpdate;
-use streamkit_core::types::Packet;
+use streamkit_core::types::{Packet, PixelFormat, VideoFrame, VideoLayout};
 use tokio::sync::mpsc;
 
 /// Creates a test NodeContext with mock channels
@@ -132,6 +132,38 @@ pub fn create_test_audio_packet(
 /// Helper to create a test binary packet
 pub fn create_test_binary_packet(data: Vec<u8>) -> Packet {
     Packet::Binary { data: bytes::Bytes::from(data), content_type: None, metadata: None }
+}
+
+/// Helper to create a simple video frame for testing.
+pub fn create_test_video_frame(
+    width: u32,
+    height: u32,
+    pixel_format: PixelFormat,
+    fill_value: u8,
+) -> VideoFrame {
+    let layout = VideoLayout::packed(width, height, pixel_format);
+    let mut data = vec![fill_value; layout.total_bytes()];
+
+    if pixel_format == PixelFormat::I420 {
+        // Neutral chroma for predictable decoder output.
+        for plane in layout.planes().iter().skip(1) {
+            let start = plane.offset;
+            let end = start + plane.stride * plane.height as usize;
+            data[start..end].fill(128);
+        }
+    }
+
+    VideoFrame::new(width, height, pixel_format, data)
+}
+
+/// Helper to create a simple video packet for testing.
+pub fn create_test_video_packet(
+    width: u32,
+    height: u32,
+    pixel_format: PixelFormat,
+    fill_value: u8,
+) -> Packet {
+    Packet::Video(create_test_video_frame(width, height, pixel_format, fill_value))
 }
 
 /// Helper to extract audio data from a packet

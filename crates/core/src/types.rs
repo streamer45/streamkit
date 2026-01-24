@@ -248,7 +248,7 @@ pub struct TranscriptionData {
 }
 
 /// Layout information for a single video plane.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VideoPlane {
     pub offset: usize,
     pub stride: usize,
@@ -257,31 +257,38 @@ pub struct VideoPlane {
 }
 
 /// Packed layout for a video frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VideoLayout {
     plane_count: usize,
     planes: [VideoPlane; 3],
     total_bytes: usize,
+    stride_align: u32,
 }
 
 impl VideoLayout {
     pub fn packed(width: u32, height: u32, pixel_format: PixelFormat) -> Self {
+        Self::aligned(width, height, pixel_format, 1)
+    }
+
+    pub fn aligned(width: u32, height: u32, pixel_format: PixelFormat, stride_align: u32) -> Self {
         const EMPTY_PLANE: VideoPlane = VideoPlane { offset: 0, stride: 0, width: 0, height: 0 };
         let mut planes = [EMPTY_PLANE; 3];
+        let stride_align = stride_align.max(1);
+        let stride_align_usize = stride_align as usize;
 
         let (plane_count, total_bytes) = match pixel_format {
             PixelFormat::Rgba8 => {
-                let stride = width as usize * 4;
+                let stride = align_up(width as usize * 4, stride_align_usize);
                 let size = stride * height as usize;
                 planes[0] = VideoPlane { offset: 0, stride, width, height };
                 (1, size)
             },
             PixelFormat::I420 => {
-                let luma_stride = width as usize;
+                let luma_stride = align_up(width as usize, stride_align_usize);
                 let luma_size = luma_stride * height as usize;
                 let chroma_width = (width + 1) as usize / 2;
                 let chroma_height = (height + 1) as usize / 2;
-                let chroma_stride = chroma_width;
+                let chroma_stride = align_up(chroma_width, stride_align_usize);
                 let chroma_size = chroma_stride * chroma_height;
 
                 planes[0] = VideoPlane { offset: 0, stride: luma_stride, width, height };
@@ -302,7 +309,7 @@ impl VideoLayout {
             },
         };
 
-        Self { plane_count, planes, total_bytes }
+        Self { plane_count, planes, total_bytes, stride_align }
     }
 
     pub const fn plane_count(&self) -> usize {
@@ -323,6 +330,18 @@ impl VideoLayout {
 
     pub const fn total_bytes(&self) -> usize {
         self.total_bytes
+    }
+
+    pub const fn stride_align(&self) -> u32 {
+        self.stride_align
+    }
+}
+
+fn align_up(value: usize, align: usize) -> usize {
+    if align <= 1 {
+        value
+    } else {
+        value.div_ceil(align) * align
     }
 }
 
@@ -568,6 +587,7 @@ pub struct VideoFrame {
     pub width: u32,
     pub height: u32,
     pub pixel_format: PixelFormat,
+    pub layout: VideoLayout,
     #[serde(serialize_with = "serialize_arc_pooled_video_bytes")]
     pub data: Arc<PooledVideoData>,
     pub metadata: Option<PacketMetadata>,
@@ -578,12 +598,35 @@ impl VideoFrame {
         width: u32,
         height: u32,
         pixel_format: PixelFormat,
-        mut data: PooledVideoData,
+        data: PooledVideoData,
         metadata: Option<PacketMetadata>,
     ) -> Self {
         let layout = VideoLayout::packed(width, height, pixel_format);
+        Self::from_pooled_with_layout(width, height, pixel_format, layout, data, metadata)
+    }
+
+    pub fn from_pooled_with_layout(
+        width: u32,
+        height: u32,
+        pixel_format: PixelFormat,
+        layout: VideoLayout,
+        mut data: PooledVideoData,
+        metadata: Option<PacketMetadata>,
+    ) -> Self {
+        let expected_layout =
+            VideoLayout::aligned(width, height, pixel_format, layout.stride_align());
+        if layout != expected_layout {
+            panic!("VideoFrame layout mismatch: expected {expected_layout:?}, got {layout:?}");
+        }
+        if data.len() < layout.total_bytes() {
+            panic!(
+                "VideoFrame data buffer too small: need {} bytes, have {}",
+                layout.total_bytes(),
+                data.len()
+            );
+        }
         data.truncate(layout.total_bytes());
-        Self { width, height, pixel_format, data: Arc::new(data), metadata }
+        Self { width, height, pixel_format, layout, data: Arc::new(data), metadata }
     }
 
     pub fn new(width: u32, height: u32, pixel_format: PixelFormat, data: Vec<u8>) -> Self {
@@ -600,14 +643,38 @@ impl VideoFrame {
         Self::from_pooled(width, height, pixel_format, PooledVideoData::from_vec(data), metadata)
     }
 
-    pub const fn from_arc(
+    pub fn from_arc(
         width: u32,
         height: u32,
         pixel_format: PixelFormat,
         data: Arc<PooledVideoData>,
         metadata: Option<PacketMetadata>,
     ) -> Self {
-        Self { width, height, pixel_format, data, metadata }
+        let layout = VideoLayout::packed(width, height, pixel_format);
+        Self::from_arc_with_layout(width, height, pixel_format, layout, data, metadata)
+    }
+
+    pub fn from_arc_with_layout(
+        width: u32,
+        height: u32,
+        pixel_format: PixelFormat,
+        layout: VideoLayout,
+        data: Arc<PooledVideoData>,
+        metadata: Option<PacketMetadata>,
+    ) -> Self {
+        let expected_layout =
+            VideoLayout::aligned(width, height, pixel_format, layout.stride_align());
+        if layout != expected_layout {
+            panic!("VideoFrame layout mismatch: expected {expected_layout:?}, got {layout:?}");
+        }
+        if data.len() < layout.total_bytes() {
+            panic!(
+                "VideoFrame data buffer too small: need {} bytes, have {}",
+                layout.total_bytes(),
+                data.len()
+            );
+        }
+        Self { width, height, pixel_format, layout, data, metadata }
     }
 
     pub fn data(&self) -> &[u8] {
@@ -632,7 +699,7 @@ impl VideoFrame {
     }
 
     pub fn layout(&self) -> VideoLayout {
-        VideoLayout::packed(self.width, self.height, self.pixel_format)
+        self.layout
     }
 
     pub fn plane(&self, index: usize) -> Option<VideoPlaneRef<'_>> {

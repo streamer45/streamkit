@@ -85,5 +85,15 @@ Use `null` for `width` or `height` when you want wildcard/unknown dimensions.
 - `width` (u32)
 - `height` (u32)
 - `pixel_format` (`PixelFormat`)
+- `layout` (`VideoLayout`, includes per-plane offsets/strides and `stride_align`)
 - `data` (packed bytes; layout depends on the pixel format)
 - `metadata` (`PacketMetadata`, optional)
+
+`VideoLayout` exposes:
+- `plane_count`
+- `planes[]` with `offset`, `stride`, `width`, `height`
+- `total_bytes`
+- `stride_align` (byte alignment used for each plane stride)
+
+StreamKit assumes raw video frames use a canonical aligned layout (as produced by `VideoLayout::aligned`).
+Codec nodes may reject frames whose layout does not match the expected canonical layout.

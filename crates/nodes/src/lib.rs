@@ -6,10 +6,10 @@ use streamkit_core::NodeRegistry;
 
 // Declare the top-level feature modules directly.
 pub mod audio;
-pub mod core;
-// pub mod video;
 pub mod containers;
+pub mod core;
 pub mod transport;
+pub mod video;
 
 // Shared utilities
 pub mod streaming_utils;
@@ -32,7 +32,7 @@ pub fn register_nodes(
     audio::register_audio_nodes(registry);
     containers::register_container_nodes(registry);
     transport::register_transport_nodes(registry);
-    // video::register_video_nodes(registry);
+    video::register_video_nodes(registry);
 
     tracing::info!("Finished registering built-in nodes.");
 }
@@ -45,7 +45,7 @@ pub fn register_nodes(registry: &mut NodeRegistry) {
     audio::register_audio_nodes(registry);
     containers::register_container_nodes(registry);
     transport::register_transport_nodes(registry);
-    // video::register_video_nodes(registry);
+    video::register_video_nodes(registry);
 
     tracing::info!("Finished registering built-in nodes.");
 }

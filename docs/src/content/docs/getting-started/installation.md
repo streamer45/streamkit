@@ -40,6 +40,7 @@ Required:
 Optional:
 
 - `cargo-watch` (`cargo install cargo-watch`) for `just dev`
+- `libvpx` + `pkg-config` if building with `--features video` (VP9 nodes)
 
 ### Build Steps
 

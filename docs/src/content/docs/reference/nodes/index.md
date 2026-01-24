@@ -30,6 +30,11 @@ Notes:
 - [`audio::pacer`](./audio-pacer/)
 - [`audio::resampler`](./audio-resampler/)
 
+## `video` (2)
+
+- [`video::vp9::decoder`](./video-vp9-decoder/)
+- [`video::vp9::encoder`](./video-vp9-encoder/)
+
 ## `containers` (4)
 
 - [`containers::ogg::demuxer`](./containers-ogg-demuxer/)
