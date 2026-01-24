@@ -378,6 +378,7 @@ impl Engine {
         let node_kinds_for_metrics = node_kinds.clone();
 
         let audio_pool = self.audio_pool.clone();
+        let video_pool = self.video_pool.clone();
 
         let (stats_tx, stats_rx) = mpsc::channel(DEFAULT_STATE_CHANNEL_CAPACITY);
 
@@ -391,6 +392,7 @@ impl Engine {
             Some(stats_tx),
             Some(cancellation_token.clone()),
             Some(audio_pool),
+            Some(video_pool),
         )
         .await?;
         tracing::info!("Pipeline graph successfully spawned");

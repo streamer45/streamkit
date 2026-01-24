@@ -99,6 +99,7 @@ impl TelemetryEvent {
                     timestamp_us: Some(timestamp_us),
                     duration_us: None,
                     sequence: None,
+                    keyframe: None,
                 }),
             },
         }

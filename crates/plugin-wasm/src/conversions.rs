@@ -6,7 +6,8 @@ use crate::wit_types;
 use bytes::Bytes;
 use std::sync::Arc;
 use streamkit_core::types::{
-    AudioFormat as CoreAudioFormat, CustomEncoding, CustomPacketData, PacketType as CorePacketType,
+    AudioCodec, AudioFormat as CoreAudioFormat, CustomEncoding, CustomPacketData,
+    EncodedAudioFormat, PacketType as CorePacketType,
 };
 
 impl TryFrom<wit_types::Packet> for streamkit_core::types::Packet {
@@ -74,6 +75,7 @@ impl From<streamkit_core::types::Packet> for wit_types::Packet {
                     data,
                 })
             },
+            streamkit_core::types::Packet::Video(frame) => Self::Binary(frame.data.to_vec()),
             streamkit_core::types::Packet::Binary { data, .. } => Self::Binary(data.to_vec()),
         }
     }
@@ -91,7 +93,10 @@ impl From<&wit_types::PacketType> for CorePacketType {
                     wit_types::SampleFormat::S16Le => streamkit_core::types::SampleFormat::S16Le,
                 },
             }),
-            wit_types::PacketType::OpusAudio => Self::OpusAudio,
+            wit_types::PacketType::OpusAudio => Self::EncodedAudio(EncodedAudioFormat {
+                codec: AudioCodec::Opus,
+                codec_private: None,
+            }),
             wit_types::PacketType::Text => Self::Text,
             wit_types::PacketType::Binary => Self::Binary,
             wit_types::PacketType::Custom(type_id) => Self::Custom { type_id: type_id.clone() },

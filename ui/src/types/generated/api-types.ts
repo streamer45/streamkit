@@ -8,6 +8,20 @@ export type SampleFormat = "F32" | "S16Le";
 
 export type AudioFormat = { sample_rate: number, channels: number, sample_format: SampleFormat, };
 
+export type PixelFormat = "Rgba8" | "I420";
+
+export type VideoFormat = { width: number | null, height: number | null, pixel_format: PixelFormat, };
+
+export type AudioCodec = "Opus";
+
+export type VideoCodec = "Vp9" | "H264" | "Av1";
+
+export type VideoBitstreamFormat = "AnnexB" | "Avcc";
+
+export type EncodedAudioFormat = { codec: AudioCodec, codec_private: Array<number> | null, };
+
+export type EncodedVideoFormat = { codec: VideoCodec, bitstream_format: VideoBitstreamFormat | null, codec_private: Array<number> | null, profile: string | null, level: string | null, };
+
 export type PacketMetadata = { 
 /**
  * Absolute timestamp in microseconds (presentation time)
@@ -20,7 +34,11 @@ duration_us: bigint | null,
 /**
  * Sequence number for ordering and detecting loss
  */
-sequence: bigint | null, };
+sequence: bigint | null, 
+/**
+ * Keyframe flag for encoded video packets (and raw frames if applicable)
+ */
+keyframe: boolean | null, };
 
 export type TranscriptionSegment = { 
 /**
@@ -58,7 +76,7 @@ language: string | null,
  */
 metadata: PacketMetadata | null, };
 
-export type PacketType = { "RawAudio": AudioFormat } | "OpusAudio" | "Text" | "Transcription" | { "Custom": { type_id: string, } } | "Binary" | "Any" | "Passthrough";
+export type PacketType = { "RawAudio": AudioFormat } | { "RawVideo": VideoFormat } | { "EncodedAudio": EncodedAudioFormat } | { "EncodedVideo": EncodedVideoFormat } | "Text" | "Transcription" | { "Custom": { type_id: string, } } | "Binary" | "Any" | "Passthrough";
 
 export type PinCardinality = "One" | "Broadcast" | { "Dynamic": { prefix: string, } };
 
@@ -115,7 +133,7 @@ export type Compatibility = { "kind": "any" } | { "kind": "exact" } | { "kind": 
 
 export type PacketTypeMeta = { 
 /**
- * Variant identifier (e.g., "RawAudio", "OpusAudio", "Binary", "Any").
+ * Variant identifier (e.g., "RawAudio", "EncodedAudio", "Binary", "Any").
  */
 id: string, 
 /**

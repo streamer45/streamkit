@@ -10,7 +10,7 @@ use std::borrow::Cow;
 use std::io::{Cursor, Seek, SeekFrom, Write};
 use std::sync::{Arc, Mutex};
 use streamkit_core::stats::NodeStatsTracker;
-use streamkit_core::types::{Packet, PacketMetadata, PacketType};
+use streamkit_core::types::{AudioCodec, EncodedAudioFormat, Packet, PacketMetadata, PacketType};
 use streamkit_core::{
     state_helpers, timing::MediaClock, InputPin, NodeContext, NodeRegistry, OutputPin,
     PinCardinality, ProcessorNode, StreamKitError,
@@ -290,7 +290,10 @@ impl ProcessorNode for WebMMuxerNode {
     fn input_pins(&self) -> Vec<InputPin> {
         vec![InputPin {
             name: "in".to_string(),
-            accepts_types: vec![PacketType::OpusAudio], // Accepts Opus audio
+            accepts_types: vec![PacketType::EncodedAudio(EncodedAudioFormat {
+                codec: AudioCodec::Opus,
+                codec_private: None,
+            })], // Accepts Opus audio
             cardinality: PinCardinality::One,
         }]
     }
@@ -424,6 +427,7 @@ impl ProcessorNode for WebMMuxerNode {
                     timestamp_us: Some(presentation_ts_us),
                     duration_us: incoming_duration_us,
                     sequence: metadata.as_ref().and_then(|m| m.sequence),
+                    keyframe: metadata.as_ref().and_then(|m| m.keyframe),
                 });
 
                 // For audio, all frames are effectively "keyframes" (can start playback from any point)

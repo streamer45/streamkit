@@ -16,7 +16,7 @@ Publishes audio to a Media over QUIC (MoQ) broadcast. Sends Opus audio to subscr
 
 ## Pins
 ### Inputs
-- `in` accepts `OpusAudio` (one)
+- `in` accepts `EncodedAudio(EncodedAudioFormat { codec: Opus })` (one)
 
 ### Outputs
 No outputs.

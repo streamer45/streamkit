@@ -19,7 +19,7 @@ Subscribes to a Media over QUIC (MoQ) broadcast. Receives Opus audio from a remo
 No inputs.
 
 ### Outputs
-- `out` produces `OpusAudio` (broadcast)
+- `out` produces `EncodedAudio(EncodedAudioFormat { codec: Opus })` (broadcast)
 
 ## Parameters
 | Name | Type | Required | Default | Description |

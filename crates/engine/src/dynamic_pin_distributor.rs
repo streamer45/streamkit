@@ -435,6 +435,15 @@ impl PinDistributorActor {
                 let dur_s = frame.duration_us().map(|us| us as f64 / 1_000_000.0);
                 (bytes, dur_s)
             },
+            Packet::Video(frame) => {
+                let bytes = frame.data.len() as f64;
+                let dur_s = frame
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.duration_us)
+                    .map(|us| us as f64 / 1_000_000.0);
+                (bytes, dur_s)
+            },
             Packet::Binary { data, metadata, .. } => {
                 let bytes = data.len() as f64;
                 let dur_s =

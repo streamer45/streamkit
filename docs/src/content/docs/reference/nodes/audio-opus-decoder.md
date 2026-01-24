@@ -16,7 +16,7 @@ Decodes Opus-compressed audio packets into raw PCM samples. Opus is the preferre
 
 ## Pins
 ### Inputs
-- `in` accepts `OpusAudio` (one)
+- `in` accepts `EncodedAudio(EncodedAudioFormat { codec: Opus })` (one)
 
 ### Outputs
 - `out` produces `RawAudio(AudioFormat { sample_rate: 48000, channels: 1, sample_format: F32 })` (broadcast)

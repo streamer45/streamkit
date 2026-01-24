@@ -10,7 +10,9 @@ use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Instant;
 use streamkit_core::stats::NodeStatsTracker;
-use streamkit_core::types::{AudioFormat, AudioFrame, Packet, PacketType, SampleFormat};
+use streamkit_core::types::{
+    AudioCodec, AudioFormat, AudioFrame, EncodedAudioFormat, Packet, PacketType, SampleFormat,
+};
 use streamkit_core::{
     get_codec_channel_capacity, packet_helpers, state_helpers, AudioFramePool, InputPin,
     NodeContext, NodeRegistry, OutputPin, PinCardinality, PooledSamples, ProcessorNode,
@@ -57,7 +59,10 @@ impl ProcessorNode for OpusDecoderNode {
     fn input_pins(&self) -> Vec<InputPin> {
         vec![InputPin {
             name: "in".to_string(),
-            accepts_types: vec![PacketType::OpusAudio],
+            accepts_types: vec![PacketType::EncodedAudio(EncodedAudioFormat {
+                codec: AudioCodec::Opus,
+                codec_private: None,
+            })],
             cardinality: PinCardinality::One,
         }]
     }
@@ -419,7 +424,10 @@ impl ProcessorNode for OpusEncoderNode {
     fn output_pins(&self) -> Vec<OutputPin> {
         vec![OutputPin {
             name: "out".to_string(),
-            produces_type: PacketType::OpusAudio,
+            produces_type: PacketType::EncodedAudio(EncodedAudioFormat {
+                codec: AudioCodec::Opus,
+                codec_private: None,
+            }),
             cardinality: PinCardinality::Broadcast,
         }]
     }
@@ -598,6 +606,7 @@ impl ProcessorNode for OpusEncoderNode {
                                     timestamp_us: None, // No absolute timestamp
                                     duration_us: Some(duration_us),
                                     sequence: None, // No sequence tracking yet
+                                    keyframe: None,
                                 }),
                             };
                             if context

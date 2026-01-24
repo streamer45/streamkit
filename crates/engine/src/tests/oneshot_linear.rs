@@ -73,6 +73,7 @@ async fn test_oneshot_rejects_fanout() {
         None,
         None,
         None,
+        None,
     )
     .await
     else {

@@ -53,6 +53,7 @@ use dynamic_actor::DynamicEngine;
 pub struct Engine {
     pub registry: Arc<RwLock<NodeRegistry>>,
     pub audio_pool: Arc<streamkit_core::AudioFramePool>,
+    pub video_pool: Arc<streamkit_core::VideoFramePool>,
 }
 impl Default for Engine {
     fn default() -> Self {
@@ -156,6 +157,7 @@ impl Engine {
         Self {
             registry: Arc::new(RwLock::new(registry)),
             audio_pool: Arc::new(streamkit_core::AudioFramePool::audio_default()),
+            video_pool: Arc::new(streamkit_core::VideoFramePool::video_default()),
         }
     }
 
@@ -239,6 +241,7 @@ impl Engine {
             batch_size: config.packet_batch_size,
             session_id: config.session_id,
             audio_pool: self.audio_pool.clone(),
+            video_pool: self.video_pool.clone(),
             node_input_capacity,
             pin_distributor_capacity,
             node_states: HashMap::new(),

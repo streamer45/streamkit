@@ -118,7 +118,7 @@ pub fn register_moq_nodes(registry: &mut NodeRegistry) {
             vec!["transport".to_string(), "moq".to_string(), "dynamic".to_string()],
             false,
             "Subscribes to a Media over QUIC (MoQ) broadcast. \
-             Receives Opus audio from a remote publisher over WebTransport.",
+             Receives encoded Opus audio from a remote publisher over WebTransport.",
         );
 
         let default_moq_push = MoqPushNode::new(MoqPushConfig::default());
@@ -137,7 +137,7 @@ pub fn register_moq_nodes(registry: &mut NodeRegistry) {
             vec!["transport".to_string(), "moq".to_string(), "dynamic".to_string()],
             false,
             "Publishes audio to a Media over QUIC (MoQ) broadcast. \
-             Sends Opus audio to subscribers over WebTransport.",
+             Sends encoded Opus audio to subscribers over WebTransport.",
         );
 
         let default_moq_peer = MoqPeerNode::new(MoqPeerConfig::default());

@@ -38,6 +38,7 @@ pub fn create_test_context(
         cancellation_token: None,
         pin_management_rx: Some(pin_mgmt_rx), // Provide channel for dynamic pins support
         audio_pool: None,
+        video_pool: None,
     };
 
     (context, mock_sender, state_rx)

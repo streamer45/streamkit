@@ -19,7 +19,7 @@ Encodes raw PCM audio into Opus-compressed packets. Configurable bitrate, applic
 - `in` accepts `RawAudio(AudioFormat { sample_rate: 48000, channels: 1, sample_format: F32 })` (one)
 
 ### Outputs
-- `out` produces `OpusAudio` (broadcast)
+- `out` produces `EncodedAudio(EncodedAudioFormat { codec: Opus })` (broadcast)
 
 ## Parameters
 | Name | Type | Required | Default | Description |

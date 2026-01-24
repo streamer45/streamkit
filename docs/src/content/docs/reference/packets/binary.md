@@ -23,7 +23,7 @@ Binary packets are carried as:
 {
   "data": "<base64>",
   "content_type": "application/octet-stream",
-  "metadata": { "timestamp_us": 0, "duration_us": 20000, "sequence": 42 }
+  "metadata": { "timestamp_us": 0, "duration_us": 20000, "sequence": 42, "keyframe": true }
 }
 ```
 
@@ -31,3 +31,4 @@ Notes:
 
 - `data` is base64-encoded for JSON transport.
 - `content_type` is optional and may be `null`.
+- `metadata.keyframe` is optional and is used for encoded video packets.

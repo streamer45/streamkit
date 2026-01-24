@@ -15,7 +15,7 @@ Muxes Opus audio packets into an Ogg container. Produces streamable Ogg/Opus out
 
 ## Pins
 ### Inputs
-- `in` accepts `OpusAudio` (one)
+- `in` accepts `EncodedAudio(EncodedAudioFormat { codec: Opus })` (one)
 
 ### Outputs
 - `out` produces `Binary` (broadcast)

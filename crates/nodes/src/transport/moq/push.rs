@@ -10,7 +10,7 @@ use opentelemetry::{global, KeyValue};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use streamkit_core::timing::MediaClock;
-use streamkit_core::types::{Packet, PacketType};
+use streamkit_core::types::{AudioCodec, EncodedAudioFormat, Packet, PacketType};
 use streamkit_core::{
     packet_helpers, state_helpers, stats::NodeStatsTracker, InputPin, NodeContext, OutputPin,
     PinCardinality, ProcessorNode, StreamKitError,
@@ -80,7 +80,10 @@ impl ProcessorNode for MoqPushNode {
     fn input_pins(&self) -> Vec<InputPin> {
         vec![InputPin {
             name: "in".to_string(),
-            accepts_types: vec![PacketType::OpusAudio],
+            accepts_types: vec![PacketType::EncodedAudio(EncodedAudioFormat {
+                codec: AudioCodec::Opus,
+                codec_private: None,
+            })],
             cardinality: PinCardinality::One,
         }]
     }

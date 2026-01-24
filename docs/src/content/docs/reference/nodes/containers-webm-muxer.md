@@ -15,7 +15,7 @@ Muxes Opus audio into a WebM container. Produces streamable WebM/Opus output com
 
 ## Pins
 ### Inputs
-- `in` accepts `OpusAudio` (one)
+- `in` accepts `EncodedAudio(EncodedAudioFormat { codec: Opus })` (one)
 
 ### Outputs
 - `out` produces `Binary` (broadcast)

@@ -13,7 +13,7 @@ use std::borrow::Cow;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 use streamkit_core::stats::NodeStatsTracker;
-use streamkit_core::types::{Packet, PacketType};
+use streamkit_core::types::{AudioCodec, EncodedAudioFormat, Packet, PacketType};
 use streamkit_core::{
     get_demuxer_buffer_size, get_stream_channel_capacity, state_helpers, InputPin, NodeContext,
     NodeRegistry, OutputPin, PinCardinality, ProcessorNode, StreamKitError,
@@ -101,7 +101,10 @@ impl ProcessorNode for OggMuxerNode {
     fn input_pins(&self) -> Vec<InputPin> {
         vec![InputPin {
             name: "in".to_string(),
-            accepts_types: vec![PacketType::OpusAudio], // Accepts Opus for now
+            accepts_types: vec![PacketType::EncodedAudio(EncodedAudioFormat {
+                codec: AudioCodec::Opus,
+                codec_private: None,
+            })], // Accepts Opus for now
             cardinality: PinCardinality::One,
         }]
     }
@@ -384,7 +387,10 @@ impl ProcessorNode for OggDemuxerNode {
     fn output_pins(&self) -> Vec<OutputPin> {
         vec![OutputPin {
             name: "out".to_string(),
-            produces_type: PacketType::OpusAudio,
+            produces_type: PacketType::EncodedAudio(EncodedAudioFormat {
+                codec: AudioCodec::Opus,
+                codec_private: None,
+            }),
             cardinality: PinCardinality::Broadcast,
         }]
     }
@@ -539,6 +545,7 @@ impl ProcessorNode for OggDemuxerNode {
                             timestamp_us: Some(timestamp_us),
                             duration_us,
                             sequence: Some(packets_extracted),
+                            keyframe: None,
                         })
                     } else {
                         // No valid granule position (header packets)
@@ -633,7 +640,10 @@ impl ProcessorNode for SymphoniaOggDemuxerNode {
     fn output_pins(&self) -> Vec<OutputPin> {
         vec![OutputPin {
             name: "out".to_string(),
-            produces_type: PacketType::OpusAudio,
+            produces_type: PacketType::EncodedAudio(EncodedAudioFormat {
+                codec: AudioCodec::Opus,
+                codec_private: None,
+            }),
             cardinality: PinCardinality::Broadcast,
         }]
     }
@@ -723,6 +733,7 @@ impl ProcessorNode for SymphoniaOggDemuxerNode {
                                 timestamp_us: Some(timestamp_us),
                                 duration_us: Some(duration_us),
                                 sequence: Some(packets_extracted),
+                                keyframe: None,
                             })
                         } else {
                             None

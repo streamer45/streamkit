@@ -18,7 +18,9 @@ curl http://localhost:4545/api/v1/schema/packets
 | PacketType | Link | Runtime representation | Notes |
 | --- | --- | --- | --- |
 | `RawAudio` | [**Raw Audio**](./raw-audio/) | `Packet::Audio(AudioFrame)` | compat: wildcard fields (sample_rate, channels, sample_format), color: `#f39c12` |
-| `OpusAudio` | [**Opus Audio**](./opus-audio/) | `Packet::Binary { data, metadata, .. }` | compat: exact, color: `#ff6b6b` |
+| `RawVideo` | [**Raw Video**](./raw-video/) | `Packet::Video(VideoFrame)` | compat: wildcard fields (width, height, pixel_format), color: `#1abc9c` |
+| `EncodedAudio` | [**Encoded Audio**](./encoded-audio/) | `Packet::Binary { data, metadata, .. }` | compat: wildcard fields (codec_private), color: `#ff6b6b` |
+| `EncodedVideo` | [**Encoded Video**](./encoded-video/) | `Packet::Binary { data, metadata, .. }` | compat: wildcard fields (bitstream_format, codec_private, profile, level), color: `#2980b9` |
 | `Text` | [**Text**](./text/) | `Packet::Text(Arc<str>)` | compat: exact, color: `#4ecdc4` |
 | `Transcription` | [**Transcription**](./transcription/) | `Packet::Transcription(Arc<TranscriptionData>)` | compat: exact, color: `#9b59b6` |
 | `Custom` | [**Custom**](./custom/) | `Packet::Custom(Arc<CustomPacketData>)` | compat: wildcard fields (type_id), color: `#e67e22` |
@@ -31,4 +33,4 @@ curl http://localhost:4545/api/v1/schema/packets
 `PacketType` serializes as:
 
 - A string for unit variants (e.g., `"Text"`, `"Binary"`).
-- An object for payload variants (e.g., `{"RawAudio": {"sample_rate": 48000, ...}}`).
+- An object for payload variants (e.g., `{"RawAudio": {"sample_rate": 48000, ...}}` or `{"EncodedAudio": {"codec": "Opus"}}`).

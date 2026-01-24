@@ -494,6 +494,44 @@ impl ScriptNode {
                 obj.set("metadata", metadata)
                     .map_err(|e| StreamKitError::Runtime(format!("Failed to set metadata: {e}")))?;
             },
+            Packet::Video(frame) => {
+                obj.set("type", "Video")
+                    .map_err(|e| StreamKitError::Runtime(format!("Failed to set type: {e}")))?;
+
+                let metadata = rquickjs::Object::new(ctx.clone()).map_err(|e| {
+                    StreamKitError::Runtime(format!("Failed to create metadata: {e}"))
+                })?;
+                metadata
+                    .set("width", frame.width)
+                    .map_err(|e| StreamKitError::Runtime(format!("Failed to set width: {e}")))?;
+                metadata
+                    .set("height", frame.height)
+                    .map_err(|e| StreamKitError::Runtime(format!("Failed to set height: {e}")))?;
+                metadata.set("pixel_format", format!("{:?}", frame.pixel_format)).map_err(|e| {
+                    StreamKitError::Runtime(format!("Failed to set pixel_format: {e}"))
+                })?;
+                metadata
+                    .set("bytes", frame.data.len())
+                    .map_err(|e| StreamKitError::Runtime(format!("Failed to set bytes: {e}")))?;
+                if let Some(timestamp_us) = frame.metadata.as_ref().and_then(|m| m.timestamp_us) {
+                    metadata.set("timestamp_us", timestamp_us).map_err(|e| {
+                        StreamKitError::Runtime(format!("Failed to set timestamp_us: {e}"))
+                    })?;
+                }
+                if let Some(duration_us) = frame.metadata.as_ref().and_then(|m| m.duration_us) {
+                    metadata.set("duration_us", duration_us).map_err(|e| {
+                        StreamKitError::Runtime(format!("Failed to set duration_us: {e}"))
+                    })?;
+                }
+                if let Some(keyframe) = frame.metadata.as_ref().and_then(|m| m.keyframe) {
+                    metadata.set("keyframe", keyframe).map_err(|e| {
+                        StreamKitError::Runtime(format!("Failed to set keyframe: {e}"))
+                    })?;
+                }
+
+                obj.set("metadata", metadata)
+                    .map_err(|e| StreamKitError::Runtime(format!("Failed to set metadata: {e}")))?;
+            },
 
             Packet::Transcription(transcription) => {
                 obj.set("type", "Transcription")
@@ -2369,6 +2407,7 @@ mod tests {
                     timestamp_us: Some(1_000_000),
                     duration_us: None,
                     sequence: None,
+                    keyframe: None,
                 }),
             })))
             .await
@@ -2388,6 +2427,7 @@ mod tests {
                     timestamp_us: Some(3_000_000),
                     duration_us: None,
                     sequence: None,
+                    keyframe: None,
                 }),
             })))
             .await

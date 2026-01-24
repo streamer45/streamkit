@@ -1,0 +1,89 @@
+---
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+# SPDX-License-Identifier: MPL-2.0
+title: "Raw Video"
+description: "PacketType RawVideo structure"
+---
+
+`PacketType` id: `RawVideo`
+
+Type system: `PacketType::RawVideo(VideoFormat)`
+
+Runtime: `Packet::Video(VideoFrame)`
+
+## UI Metadata
+- `label`: `Raw Video`
+- `color`: `#1abc9c`
+- `display_template`: `Raw Video ({width|*}x{height|*}, {pixel_format})`
+- `compat: wildcard fields (width, height), color: `#1abc9c``
+
+## Structure
+Raw video is defined by a `VideoFormat` in the type system and carried as `Packet::Video(VideoFrame)` at runtime.
+
+Use `null` for `width` or `height` when you want wildcard/unknown dimensions.
+
+### PacketType payload (`VideoFormat`)
+
+| Name | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `width` | `null | integer (uint32)` | no | — | Frame width in pixels. `null` acts as a wildcard. |
+| `height` | `null | integer (uint32)` | no | — | Frame height in pixels. `null` acts as a wildcard. |
+| `pixel_format` | `string enum[Rgba8, I420]` | yes | — | Pixel format for raw frames. |
+
+<details>
+<summary>Raw JSON Schema</summary>
+
+```json
+{
+  "$defs": {
+    "PixelFormat": {
+      "description": "Describes the pixel format of raw video frames.",
+      "enum": [
+        "Rgba8",
+        "I420"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Contains the detailed metadata for a raw video stream.",
+  "properties": {
+    "height": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "pixel_format": {
+      "$ref": "#/$defs/PixelFormat"
+    },
+    "width": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "pixel_format"
+  ],
+  "title": "VideoFormat",
+  "type": "object"
+}
+```
+
+</details>
+
+### Runtime payload (`VideoFrame`)
+
+`VideoFrame` is optimized for zero-copy fan-out. It contains:
+
+- `width` (u32)
+- `height` (u32)
+- `pixel_format` (`PixelFormat`)
+- `data` (packed bytes; layout depends on the pixel format)
+- `metadata` (`PacketMetadata`, optional)

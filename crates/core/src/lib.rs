@@ -105,7 +105,9 @@ pub use state::state_helpers;
 pub use telemetry::telemetry_helpers;
 
 // Frame pooling (optional hot-path optimization)
-pub use frame_pool::{AudioFramePool, FramePool, PooledFrameData, PooledSamples};
+pub use frame_pool::{
+    AudioFramePool, FramePool, PooledFrameData, PooledSamples, PooledVideoData, VideoFramePool,
+};
 
 // Node buffer configuration
 pub use node_config::{

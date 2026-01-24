@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use streamkit_core::timing::MediaClock;
-use streamkit_core::types::{Packet, PacketType};
+use streamkit_core::types::{AudioCodec, EncodedAudioFormat, Packet, PacketType};
 use streamkit_core::{
     state_helpers, stats::NodeStatsTracker, InputPin, NodeContext, OutputPin, PinCardinality,
     ProcessorNode, StreamKitError,
@@ -155,7 +155,10 @@ impl ProcessorNode for MoqPeerNode {
     fn input_pins(&self) -> Vec<InputPin> {
         vec![InputPin {
             name: "in".to_string(),
-            accepts_types: vec![PacketType::OpusAudio],
+            accepts_types: vec![PacketType::EncodedAudio(EncodedAudioFormat {
+                codec: AudioCodec::Opus,
+                codec_private: None,
+            })],
             cardinality: PinCardinality::One,
         }]
     }
@@ -163,7 +166,10 @@ impl ProcessorNode for MoqPeerNode {
     fn output_pins(&self) -> Vec<OutputPin> {
         vec![OutputPin {
             name: "out".to_string(),
-            produces_type: PacketType::OpusAudio,
+            produces_type: PacketType::EncodedAudio(EncodedAudioFormat {
+                codec: AudioCodec::Opus,
+                codec_private: None,
+            }),
             cardinality: PinCardinality::Broadcast,
         }]
     }

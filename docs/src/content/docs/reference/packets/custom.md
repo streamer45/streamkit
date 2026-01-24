@@ -31,7 +31,7 @@ Use `Custom` when you need **structured, typed messages** that don't fit existin
 
 Prefer other packet types when they fit:
 
-- Audio frames/streams: `/reference/packets/raw-audio/` or `/reference/packets/opus-audio/`
+- Audio frames/streams: `/reference/packets/raw-audio/` or `/reference/packets/encoded-audio/`
 - Plain strings: `/reference/packets/text/`
 - Opaque bytes, blobs, or media: `/reference/packets/binary/`
 - Speech-to-text results: `/reference/packets/transcription/`
@@ -120,6 +120,13 @@ Custom packets are carried as `Packet::Custom(Arc<CustomPacketData>)`.
           "minimum": 0,
           "type": [
             "integer",
+            "null"
+          ]
+        },
+        "keyframe": {
+          "description": "Keyframe flag for encoded video packets (and raw frames if applicable)",
+          "type": [
+            "boolean",
             "null"
           ]
         },

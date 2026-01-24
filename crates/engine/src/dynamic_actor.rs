@@ -19,7 +19,7 @@ use opentelemetry::KeyValue;
 use std::collections::HashMap;
 use streamkit_core::control::{EngineControlMessage, NodeControlMessage};
 use streamkit_core::error::StreamKitError;
-use streamkit_core::frame_pool::AudioFramePool;
+use streamkit_core::frame_pool::{AudioFramePool, VideoFramePool};
 use streamkit_core::node::{InitContext, NodeContext, OutputRouting, OutputSender};
 use streamkit_core::pins::PinUpdate;
 use streamkit_core::registry::NodeRegistry;
@@ -59,6 +59,8 @@ pub struct DynamicEngine {
     pub(super) session_id: Option<String>,
     /// Per-pipeline audio buffer pool for hot paths (e.g., Opus decode).
     pub(super) audio_pool: std::sync::Arc<AudioFramePool>,
+    /// Per-pipeline video buffer pool for hot paths (e.g., video decode).
+    pub(super) video_pool: std::sync::Arc<VideoFramePool>,
     /// Buffer capacity for node input channels
     pub(super) node_input_capacity: usize,
     /// Buffer capacity for pin distributor channels
@@ -515,6 +517,7 @@ impl DynamicEngine {
             cancellation_token: None, // Dynamic pipelines don't use cancellation tokens
             pin_management_rx,
             audio_pool: Some(self.audio_pool.clone()),
+            video_pool: Some(self.video_pool.clone()),
         };
 
         // 5. Spawn Node

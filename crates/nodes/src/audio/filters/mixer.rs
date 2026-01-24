@@ -951,7 +951,7 @@ impl AudioMixerNode {
             mix_frames.iter().filter_map(|f| f.metadata.as_ref().and_then(|m| m.sequence)).max();
         let combined_metadata =
             if timestamp_us.is_some() || duration_us.is_some() || sequence.is_some() {
-                Some(PacketMetadata { timestamp_us, duration_us, sequence })
+                Some(PacketMetadata { timestamp_us, duration_us, sequence, keyframe: None })
             } else {
                 None
             };
@@ -1431,6 +1431,7 @@ fn run_clocked_audio_thread(config: &ClockedThreadConfig) {
                         timestamp_us: None,
                         duration_us: Some(tick_us),
                         sequence: None,
+                        keyframe: None,
                     }));
 
                 let output_frame = mix_clocked_frames(
@@ -2137,6 +2138,7 @@ mod tests {
                 timestamp_us: Some(1),
                 duration_us: Some(20_000),
                 sequence: Some(1),
+                keyframe: None,
             }),
         );
         let frame_b = AudioFrame::with_metadata(
@@ -2147,6 +2149,7 @@ mod tests {
                 timestamp_us: Some(2),
                 duration_us: Some(40_000),
                 sequence: Some(2),
+                keyframe: None,
             }),
         );
 

@@ -13,7 +13,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use std::time::Duration;
 use streamkit_core::timing::MediaClock;
-use streamkit_core::types::{Packet, PacketMetadata, PacketType};
+use streamkit_core::types::{AudioCodec, EncodedAudioFormat, Packet, PacketMetadata, PacketType};
 use streamkit_core::{
     state_helpers, stats::NodeStatsTracker, InputPin, NodeContext, OutputPin, PinCardinality,
     ProcessorNode, StreamKitError,
@@ -36,7 +36,7 @@ pub struct MoqPullConfig {
 }
 
 /// A node that connects to a MoQ server, subscribes to a broadcast,
-/// and outputs the received media as Opus packets.
+/// and outputs the received media as encoded Opus packets.
 ///
 /// This node performs catalog discovery during initialization.
 ///
@@ -58,7 +58,10 @@ impl MoqPullNode {
             // Start with a single stable output pin.
             output_pins: vec![OutputPin {
                 name: "out".to_string(),
-                produces_type: PacketType::OpusAudio,
+                produces_type: PacketType::EncodedAudio(EncodedAudioFormat {
+                    codec: AudioCodec::Opus,
+                    codec_private: None,
+                }),
                 cardinality: PinCardinality::Broadcast,
             }],
         }
@@ -67,7 +70,10 @@ impl MoqPullNode {
     fn stable_out_pin() -> OutputPin {
         OutputPin {
             name: "out".to_string(),
-            produces_type: PacketType::OpusAudio,
+            produces_type: PacketType::EncodedAudio(EncodedAudioFormat {
+                codec: AudioCodec::Opus,
+                codec_private: None,
+            }),
             cardinality: PinCardinality::Broadcast,
         }
     }
@@ -81,7 +87,10 @@ impl MoqPullNode {
             }
             pins.push(OutputPin {
                 name: track.name.clone(),
-                produces_type: PacketType::OpusAudio,
+                produces_type: PacketType::EncodedAudio(EncodedAudioFormat {
+                    codec: AudioCodec::Opus,
+                    codec_private: None,
+                }),
                 cardinality: PinCardinality::Broadcast,
             });
         }
@@ -654,6 +663,7 @@ impl MoqPullNode {
                                 timestamp_us: Some(timestamp_us),
                                 duration_us,
                                 sequence: None,
+                                keyframe: None,
                             });
                             last_timestamp_us = Some(timestamp_us);
 
@@ -713,6 +723,7 @@ impl MoqPullNode {
                             timestamp_us: Some(timestamp_us),
                             duration_us,
                             sequence: None,
+                            keyframe: None,
                         });
                         last_timestamp_us = Some(timestamp_us);
 

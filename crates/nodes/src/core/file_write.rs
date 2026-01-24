@@ -203,6 +203,7 @@ mod tests {
             cancellation_token: None,
             pin_management_rx: None, // Test contexts don't support dynamic pins
             audio_pool: None,
+            video_pool: None,
         };
 
         // Create and run node
@@ -283,6 +284,7 @@ mod tests {
             cancellation_token: None,
             pin_management_rx: None, // Test contexts don't support dynamic pins
             audio_pool: None,
+            video_pool: None,
         };
 
         // Create and run node with small chunk size for testing

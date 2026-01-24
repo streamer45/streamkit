@@ -53,6 +53,13 @@ Transcriptions are carried as `Packet::Transcription(Arc<TranscriptionData>)`.
             "null"
           ]
         },
+        "keyframe": {
+          "description": "Keyframe flag for encoded video packets (and raw frames if applicable)",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "sequence": {
           "description": "Sequence number for ordering and detecting loss",
           "format": "uint64",

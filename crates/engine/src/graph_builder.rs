@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 use streamkit_core::control::NodeControlMessage;
 use streamkit_core::error::StreamKitError;
-use streamkit_core::frame_pool::AudioFramePool;
+use streamkit_core::frame_pool::{AudioFramePool, VideoFramePool};
 use streamkit_core::node::{InitContext, NodeContext, OutputRouting, OutputSender, ProcessorNode};
 use streamkit_core::packet_meta::{can_connect, packet_type_registry};
 use streamkit_core::pins::PinUpdate;
@@ -66,6 +66,7 @@ pub async fn wire_and_spawn_graph(
     stats_tx: Option<mpsc::Sender<NodeStatsUpdate>>,
     cancellation_token: Option<tokio_util::sync::CancellationToken>,
     audio_pool: Option<Arc<AudioFramePool>>,
+    video_pool: Option<Arc<VideoFramePool>>,
 ) -> Result<HashMap<String, LiveNode>, StreamKitError> {
     tracing::info!(
         "Graph builder starting with {} nodes and {} connections",
@@ -364,6 +365,7 @@ pub async fn wire_and_spawn_graph(
             cancellation_token: cancellation_token.clone(),
             pin_management_rx: None, // Stateless pipelines don't support dynamic pins
             audio_pool: audio_pool.clone(),
+            video_pool: video_pool.clone(),
         };
 
         tracing::debug!("Starting task for node '{}'", name);

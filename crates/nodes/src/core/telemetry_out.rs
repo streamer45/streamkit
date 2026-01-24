@@ -79,6 +79,7 @@ impl TelemetryOutNode {
     fn should_tap_packet_type(&self, packet: &Packet) -> bool {
         let type_name = match packet {
             Packet::Audio(_) => "Audio",
+            Packet::Video(_) => "Video",
             Packet::Transcription(_) => "Transcription",
             Packet::Custom(_) => "Custom",
             Packet::Binary { .. } => "Binary",
@@ -211,7 +212,7 @@ impl ProcessorNode for TelemetryOutNode {
                         serde_json::json!({ "size_bytes": data.len(), "has_metadata": metadata.is_some() }),
                     );
                 },
-                Packet::Audio(_) => {
+                Packet::Video(_) | Packet::Audio(_) => {
                     // Intentionally no audio-level telemetry here to avoid noise; use `core::telemetry_tap` if needed.
                 },
             }

@@ -17,7 +17,7 @@ use crate::state::NodeStateUpdate;
 use crate::stats::NodeStatsUpdate;
 use crate::telemetry::TelemetryEvent;
 use crate::types::Packet;
-use crate::AudioFramePool;
+use crate::{AudioFramePool, VideoFramePool};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -223,6 +223,11 @@ pub struct NodeContext {
     /// Nodes that produce audio frames (decoders, resamplers, mixers) may use this to
     /// amortize `Vec<f32>` allocations. If `None`, nodes should fall back to allocating.
     pub audio_pool: Option<Arc<AudioFramePool>>,
+    /// Optional per-pipeline video buffer pool for hot-path allocations.
+    ///
+    /// Nodes that produce video frames (decoders, scalers, compositors) may use this to
+    /// amortize `Vec<u8>` allocations. If `None`, nodes should fall back to allocating.
+    pub video_pool: Option<Arc<VideoFramePool>>,
 }
 
 impl NodeContext {

@@ -6,7 +6,9 @@
 
 use super::super::*;
 use crate::dynamic_actor::{DynamicEngine, NodePinMetadata};
-use streamkit_core::types::{AudioFormat, PacketType, SampleFormat};
+use streamkit_core::types::{
+    AudioCodec, AudioFormat, EncodedAudioFormat, PacketType, SampleFormat,
+};
 use streamkit_core::{InputPin, OutputPin, PinCardinality};
 use tokio::sync::mpsc;
 
@@ -32,6 +34,7 @@ fn create_test_engine() -> DynamicEngine {
         batch_size: 32,
         session_id: None,
         audio_pool: std::sync::Arc::new(streamkit_core::FramePool::<f32>::audio_default()),
+        video_pool: std::sync::Arc::new(streamkit_core::FramePool::<u8>::video_default()),
         node_input_capacity: 128,
         pin_distributor_capacity: 64,
         node_states: HashMap::new(),
@@ -96,14 +99,17 @@ fn test_validate_connection_types_incompatible() {
     let audio_format =
         AudioFormat { sample_rate: 48000, channels: 2, sample_format: SampleFormat::F32 };
 
-    // Create source node with OpusAudio output
+    // Create source node with encoded Opus output
     engine.node_pin_metadata.insert(
         "source".to_string(),
         NodePinMetadata {
             input_pins: vec![],
             output_pins: vec![OutputPin {
                 name: "out".to_string(),
-                produces_type: PacketType::OpusAudio,
+                produces_type: PacketType::EncodedAudio(EncodedAudioFormat {
+                    codec: AudioCodec::Opus,
+                    codec_private: None,
+                }),
                 cardinality: PinCardinality::Broadcast,
             }],
         },
@@ -174,14 +180,17 @@ fn test_validate_connection_types_passthrough_source() {
 fn test_validate_connection_types_any_destination() {
     let mut engine = create_test_engine();
 
-    // Create source node with OpusAudio output
+    // Create source node with encoded Opus output
     engine.node_pin_metadata.insert(
         "source".to_string(),
         NodePinMetadata {
             input_pins: vec![],
             output_pins: vec![OutputPin {
                 name: "out".to_string(),
-                produces_type: PacketType::OpusAudio,
+                produces_type: PacketType::EncodedAudio(EncodedAudioFormat {
+                    codec: AudioCodec::Opus,
+                    codec_private: None,
+                }),
                 cardinality: PinCardinality::Broadcast,
             }],
         },
@@ -228,7 +237,10 @@ fn test_validate_connection_types_pin_not_found() {
             input_pins: vec![],
             output_pins: vec![OutputPin {
                 name: "out".to_string(),
-                produces_type: PacketType::OpusAudio,
+                produces_type: PacketType::EncodedAudio(EncodedAudioFormat {
+                    codec: AudioCodec::Opus,
+                    codec_private: None,
+                }),
                 cardinality: PinCardinality::Broadcast,
             }],
         },
@@ -240,7 +252,10 @@ fn test_validate_connection_types_pin_not_found() {
         NodePinMetadata {
             input_pins: vec![InputPin {
                 name: "in".to_string(),
-                accepts_types: vec![PacketType::OpusAudio],
+                accepts_types: vec![PacketType::EncodedAudio(EncodedAudioFormat {
+                    codec: AudioCodec::Opus,
+                    codec_private: None,
+                })],
                 cardinality: PinCardinality::One,
             }],
             output_pins: vec![],

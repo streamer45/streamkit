@@ -17,10 +17,10 @@ Bidirectional MoQ peer for real-time audio communication. Acts as both publisher
 
 ## Pins
 ### Inputs
-- `in` accepts `OpusAudio` (one)
+- `in` accepts `EncodedAudio(EncodedAudioFormat { codec: Opus })` (one)
 
 ### Outputs
-- `out` produces `OpusAudio` (broadcast)
+- `out` produces `EncodedAudio(EncodedAudioFormat { codec: Opus })` (broadcast)
 
 ## Parameters
 | Name | Type | Required | Default | Description |
