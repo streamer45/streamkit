@@ -44,17 +44,17 @@ These are in place today and will be iterated on (not “added from scratch”):
 
 ### Security & Auth (P0)
 
-- **Built-in authentication (JWT)** — First-class authn/authz for **HTTP + WebSocket control + WebTransport/MoQ**
-  - Local dev: **no auth on loopback** by default
-  - Real deployments: require auth when binding non-loopback (secure-by-default)
-  - StreamKit-managed keys by default (auto-generate, store securely, and support rotation)
-  - **Token issuance flow** for MoQ gateways (so users don’t need external tooling), compatible with the MoQ ecosystem token shape (root-scoped + publish/subscribe permissions)
-  - UX helpers (UI/CLI) for “copy/paste” publisher/watch URLs with tokens embedded where required by WebTransport today
-  - **No secret logging**, especially `?jwt=`-style tokens used by WebTransport today
+- ~~**Built-in authentication (JWT)** — First-class authn/authz for **HTTP + WebSocket control + WebTransport/MoQ**~~
+  - ~~Local dev: **no auth on loopback** by default~~
+  - ~~Real deployments: require auth when binding non-loopback (secure-by-default)~~
+  - ~~StreamKit-managed keys by default (auto-generate, store securely, and support rotation)~~
+  - ~~**Token issuance flow** for MoQ gateways (so users don’t need external tooling), compatible with the MoQ ecosystem token shape (root-scoped + publish/subscribe permissions)~~
+  - ~~UX helpers (UI/CLI) for “copy/paste” publisher/watch URLs with tokens embedded where required by WebTransport today~~
+  - ~~**No secret logging**, especially `?jwt=`-style tokens used by WebTransport today~~
 
 ### Timing & A/V Sync (P0)
 
-- **Timing contract** — Define canonical semantics for packet timing (`timestamp_us`, `duration_us`) and how nodes/engines must preserve/transform it
+- ~~**Timing contract** — Define canonical semantics for packet timing (`timestamp_us`, `duration_us`) and how nodes/engines must preserve/transform it~~
 - **A/V sync** — Jitter/drift strategy, drop/late-frame policy, and regression tests (dynamic pipelines)
 - **Hang/MoQ alignment** — Clear mapping between StreamKit timing metadata and Hang/MoQ timestamps/groups
 
@@ -83,7 +83,7 @@ These are in place today and will be iterated on (not “added from scratch”):
 ### Capabilities (use-case driven)
 
 - **VAD streaming mode** — Zero-latency audio passthrough with per-frame voice activity metadata, enabling downstream nodes to make real-time decisions without buffering delays
-- **Multi-input HTTP oneshot** — Accept multiple input files in a single batch request (e.g., multiple audio tracks for mixing, or audio + subtitles for muxing)
+- ~~**Multi-input HTTP oneshot** — Accept multiple input files in a single batch request (e.g., multiple audio tracks for mixing, or audio + subtitles for muxing)~~
 - **S3 sink node** — Write pipeline output directly to S3-compatible storage
 - **RTMP input node** — Ingest live streams from OBS, encoders, and other RTMP sources
 
