@@ -259,6 +259,7 @@ lint-plugins:
     @cd plugins/native/sensevoice && cargo fmt -- --check && cargo clippy -- -D warnings
     @cd plugins/native/vad && cargo fmt -- --check && cargo clippy -- -D warnings
     @cd plugins/native/matcha && cargo fmt -- --check && cargo clippy -- -D warnings
+    @cd plugins/native/pocket-tts && cargo fmt -- --check && cargo clippy -- -D warnings
     @cd plugins/native/nllb && cargo fmt -- --check && CMAKE_ARGS="-DCMAKE_INSTALL_PREFIX=$$(pwd)/target/cmake-install" cargo clippy -- -D warnings
     @echo "✓ All native plugins passed linting"
 
@@ -271,6 +272,7 @@ fix-plugins:
     @cd plugins/native/sensevoice && cargo fmt && cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
     @cd plugins/native/vad && cargo fmt && cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
     @cd plugins/native/matcha && cargo fmt && cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
+    @cd plugins/native/pocket-tts && cargo fmt && cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
     @cd plugins/native/nllb && cargo fmt && CMAKE_ARGS="-DCMAKE_INSTALL_PREFIX=$$(pwd)/target/cmake-install" cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
     @echo "✓ All native plugins fixed"
 
@@ -531,6 +533,16 @@ download-piper-models:
     @echo "Downloading Piper TTS models..."
     @cd plugins/native/piper && ./download-models.sh
 
+# Download Pocket TTS models and voices
+download-pocket-tts-models:
+    @echo "Downloading Pocket TTS models and voices..."
+    @echo "⚠️  This requires Python with huggingface-hub installed."
+    @echo "⚠️  Install with: pip3 install --user huggingface-hub"
+    @echo "⚠️  Model weights are gated; set HF_TOKEN to authenticate."
+    @echo ""
+    @HF_HOME=models/hf python3 plugins/native/pocket-tts/download-models.py
+    @echo "✓ Pocket TTS models copied to models/pocket-tts (HF cache in models/hf)"
+
 # Setup Piper TTS (install dependencies + download models)
 setup-piper: install-sherpa-onnx download-piper-models
     @echo "✓ Piper TTS setup complete!"
@@ -575,6 +587,19 @@ setup-matcha: install-sherpa-onnx download-matcha-models
 build-plugin-native-matcha:
     @echo "Building native Matcha TTS plugin..."
     @cargo build --release
+
+# Build native Pocket TTS plugin
+[working-directory: 'plugins/native/pocket-tts']
+build-plugin-native-pocket-tts:
+    @echo "Building native Pocket TTS plugin..."
+    @cargo build --release
+
+# Upload Pocket TTS plugin to running server
+[working-directory: 'plugins/native/pocket-tts']
+upload-pocket-tts-plugin: build-plugin-native-pocket-tts
+    @echo "Uploading Pocket TTS plugin to server..."
+    @curl -X POST -F plugin=@target/release/libpocket_tts.so \
+        http://127.0.0.1:4545/api/v1/plugins
 
 # Upload Matcha plugin to running server
 [working-directory: 'plugins/native/matcha']
@@ -686,6 +711,9 @@ download-models: download-whisper-models download-silero-vad download-kokoro-mod
     @echo "Optional: To download NLLB translation models (CC-BY-NC-4.0 license - non-commercial only):"
     @echo "  just download-nllb-models"
     @echo ""
+    @echo "Optional: To download Pocket TTS models (gated; requires HF_TOKEN):"
+    @echo "  just download-pocket-tts-models"
+    @echo ""
     @du -sh models/
 
 # Setup VAD (install dependencies + download models)
@@ -778,7 +806,7 @@ build-plugin-native name:
     @just build-plugin-native-{{name}}
 
 # Build all native plugin examples
-build-plugins-native: build-plugin-native-gain build-plugin-native-whisper build-plugin-native-kokoro build-plugin-native-piper build-plugin-native-matcha build-plugin-native-sensevoice build-plugin-native-nllb build-plugin-native-vad build-plugin-native-helsinki
+build-plugins-native: build-plugin-native-gain build-plugin-native-whisper build-plugin-native-kokoro build-plugin-native-piper build-plugin-native-matcha build-plugin-native-pocket-tts build-plugin-native-sensevoice build-plugin-native-nllb build-plugin-native-vad build-plugin-native-helsinki
 
 ## Combined
 
@@ -823,6 +851,16 @@ copy-plugins-native:
                 cp -f "$f" .plugins/native/
             fi
         done
+    done
+    for f in \
+        plugins/native/pocket-tts/target/release/libpocket_tts.so \
+        plugins/native/pocket-tts/target/release/libpocket_tts.so.* \
+        plugins/native/pocket-tts/target/release/libpocket_tts.dylib \
+        plugins/native/pocket-tts/target/release/pocket_tts.dll
+    do
+        if [[ -f "$f" ]]; then
+            cp -f "$f" .plugins/native/
+        fi
     done
     echo "✓ Native plugins copied to .plugins/native/"
 

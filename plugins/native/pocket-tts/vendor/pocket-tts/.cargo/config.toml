@@ -1,0 +1,6 @@
+# WASM build configuration
+# Required for getrandom 0.3+ to work on wasm32-unknown-unknown
+# See: https://docs.rs/getrandom/latest/#webassembly-support
+
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']
