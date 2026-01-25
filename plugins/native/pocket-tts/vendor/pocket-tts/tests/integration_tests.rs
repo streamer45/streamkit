@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2024 Pocket TTS Contributors
+//
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Integration tests for TTSModel with real weights
 //!
 //! These tests require the HF_TOKEN environment variable to be set

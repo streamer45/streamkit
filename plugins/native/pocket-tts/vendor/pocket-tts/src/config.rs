@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2024 Pocket TTS Contributors
+//
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Configuration types for pocket-tts, matching Python's utils/config.py
 
 use serde::Deserialize;

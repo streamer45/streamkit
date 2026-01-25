@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2024 Pocket TTS Contributors
+//
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use candle_core::Tensor;
 use pocket_tts::TTSModel;
 use pocket_tts::audio::read_wav;

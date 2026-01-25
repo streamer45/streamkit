@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2024 Pocket TTS Contributors
+//
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use crate::ModelState;
 use crate::modules::rope::RotaryEmbedding;
 use candle_core::{DType, Result, Tensor};

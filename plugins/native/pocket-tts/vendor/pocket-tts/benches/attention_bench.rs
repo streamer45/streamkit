@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2024 Pocket TTS Contributors
+//
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};

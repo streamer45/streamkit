@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2024 Pocket TTS Contributors
+//
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Quantization support for Pocket TTS
 //!
 //! This module provides quantization utilities for reduced memory footprint

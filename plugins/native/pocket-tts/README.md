@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2025 StreamKit Contributors
+
+SPDX-License-Identifier: MPL-2.0
+-->
+
 # Pocket TTS Native Plugin
 
 A native StreamKit plugin for Kyutai Pocket TTS using the Rust/Candle port.

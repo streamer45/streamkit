@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2024 Pocket TTS Contributors
+//
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use pocket_tts::TTSModel;
 use std::time::Duration;

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2024 Pocket TTS Contributors
+//
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Main TTSModel struct - orchestrates the TTS pipeline
 //!
 //! This is the high-level API for text-to-speech generation,
