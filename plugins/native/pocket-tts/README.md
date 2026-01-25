@@ -7,6 +7,7 @@ SPDX-License-Identifier: MPL-2.0
 # Pocket TTS Native Plugin
 
 A native StreamKit plugin for Kyutai Pocket TTS using the Rust/Candle port.
+Upstream Rust port: https://github.com/babybirdprd/pocket-tts
 This plugin runs fully on CPU and streams 24kHz mono audio.
 
 ## Build

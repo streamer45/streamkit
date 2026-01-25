@@ -310,9 +310,6 @@ impl ProcessorNode for NativeNodeWrapper {
 
                             // Move the blocking FFI call to spawn_blocking
                             let state = Arc::clone(&self.state);
-                            // spawn_blocking can only fail with JoinError if the task panics.
-                            // If that happens, it's a serious bug that should crash.
-                            #[allow(clippy::expect_used)]
                             let error_msg = tokio::task::spawn_blocking(move || {
                                 let handle = state.begin_call()?;
 
@@ -338,8 +335,11 @@ impl ProcessorNode for NativeNodeWrapper {
                                 error
                             })
                             .await
-                            // spawn_blocking only panics if the task panics, which indicates a serious bug
-                            .expect("Update params task panicked");
+                            .map_err(|e| {
+                                StreamKitError::Runtime(format!(
+                                    "Update params task panicked: {e}"
+                                ))
+                            })?;
 
                             if let Some(err) = error_msg {
                                 warn!(node = %node_name, error = %err, "Parameter update failed");
@@ -369,7 +369,6 @@ impl ProcessorNode for NativeNodeWrapper {
                         let session_id = context.session_id.clone();
                         let node_id = node_name.clone();
 
-                        #[allow(clippy::expect_used)]
                         let (outputs, error) = tokio::task::spawn_blocking(move || {
                             let Some(handle) = state.begin_call() else {
                                 return (Vec::new(), None);
@@ -418,7 +417,7 @@ impl ProcessorNode for NativeNodeWrapper {
                             (outputs, error)
                         })
                         .await
-                        .expect("Plugin flush task panicked");
+                        .map_err(|e| StreamKitError::Runtime(format!("Plugin flush task panicked: {e}")))?;
 
                         // Send flush outputs
                         for (pin, pkt) in outputs {
@@ -439,12 +438,7 @@ impl ProcessorNode for NativeNodeWrapper {
                     let telemetry_tx = context.telemetry_tx.clone();
                     let session_id = context.session_id.clone();
                     let node_id = node_name.clone();
-                    // spawn_blocking can only fail with JoinError if the task panics.
-                    // If that happens, it's a serious bug that should crash.
                     let pin_cstr = Arc::clone(&input_pin_cstrs[pin_index]);
-                    // spawn_blocking can only fail with JoinError if the task panics.
-                    // If that happens, it's a serious bug that should crash.
-                    #[allow(clippy::expect_used)]
                     let (outputs, error) = tokio::task::spawn_blocking(move || {
                         let Some(handle) = state.begin_call() else {
                             return (Vec::new(), None);
@@ -499,8 +493,9 @@ impl ProcessorNode for NativeNodeWrapper {
                         (outputs, error)
                     })
                     .await
-                    // spawn_blocking only panics if the task panics, which indicates a serious bug
-                    .expect("Plugin processing task panicked");
+                    .map_err(|e| {
+                        StreamKitError::Runtime(format!("Plugin processing task panicked: {e}"))
+                    })?;
 
             // Now send outputs (after dropping c_packet and result)
             for (pin, pkt) in outputs {
