@@ -1,0 +1,20 @@
+id: matcha
+name: Matcha
+node_kind: matcha
+kind: native
+entrypoint: libmatcha.so
+artifact: plugins/native/matcha/target/release/libmatcha.so
+description: Text-to-speech using Matcha models
+license: MPL-2.0
+models:
+- id: matcha-icefall-en_US-ljspeech
+  name: Matcha LJSpeech
+  default: true
+  source: huggingface
+  repo_id: streamkit/matcha-models
+  revision: main
+  files:
+  - matcha-icefall-en_US-ljspeech.tar.bz2
+  - matcha-icefall-en_US-ljspeech/vocos-22khz-univ.onnx
+  license: CC-BY-4.0
+  license_url: https://keithito.com/LJ-Speech-Dataset/

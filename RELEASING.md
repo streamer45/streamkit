@@ -12,6 +12,67 @@ This repo ships:
 - Client CLI: `skit-cli` (crate: `streamkit-client`)
 - Optional crates for other developers (crates.io)
 
+## Marketplace registry + bundles
+
+This release flow publishes signed registry metadata to GitHub Pages and bundle
+artifacts to GitHub Releases.
+
+### Setup (one-time)
+
+```bash
+# Generate an unencrypted minisign keypair for registry signing.
+# Keep the secret key safe and commit the public key.
+minisign -G -W -s /tmp/streamkit.key -p docs/public/registry/streamkit.pub
+```
+
+Set the GitHub Actions secret `MINISIGN_SECRET_KEY` to the contents of the
+secret key file:
+
+```bash
+cat /tmp/streamkit.key
+```
+
+If `docs/public/registry/streamkit.pub` contains a placeholder, overwrite it
+with the generated public key before tagging.
+
+### System dependencies (v1)
+
+- When present, `pocket-tts` requires OpenSSL 3 (`libssl.so.3`, `libcrypto.so.3`).
+  - Ubuntu: `libssl3`
+- Native plugins expect system `libstdc++` and `libgcc_s`.
+
+### Trigger a release
+
+```bash
+git tag vX.Y.Z
+git push origin vX.Y.Z
+```
+
+### Marketplace-only release (decoupled)
+
+Use the GitHub Actions workflow `Marketplace Release` with:
+
+- `version`: marketplace version (e.g., `1.2.3`)
+- `release_tag` (optional): defaults to `marketplace-v<version>`
+
+This workflow publishes bundle assets to the GitHub Release for `release_tag`
+and opens the registry PR without rebuilding the server/UI. Both tag releases
+and marketplace-only releases share the same reusable marketplace workflow
+(`.github/workflows/marketplace-build.yml`).
+
+### Verify outputs
+
+- GitHub Release includes `*-bundle.tar.zst` assets.
+- Registry metadata is published after merging the registry PR:
+  `https://<org>.github.io/streamkit/registry/index.json`.
+- Verify a manifest signature:
+
+```bash
+minisign -V -P "$(tail -n 1 docs/public/registry/streamkit.pub)" \
+  -m manifest.json \
+  -x manifest.minisig
+```
+
 ## crates.io publishing
 
 ### Intended publish set

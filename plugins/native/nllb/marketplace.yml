@@ -1,0 +1,19 @@
+id: nllb
+name: NLLB
+node_kind: nllb
+kind: native
+entrypoint: libnllb.so
+artifact: plugins/native/nllb/target/release/libnllb.so
+description: Neural machine translation using NLLB
+license: MPL-2.0
+models:
+- id: nllb-200-distilled-600M-ct2-int8
+  name: NLLB-200 distilled 600M (CTranslate2 int8)
+  default: false
+  source: huggingface
+  repo_id: streamkit/nllb-models
+  revision: main
+  files:
+  - nllb-200-distilled-600M-ct2-int8.tar.bz2
+  license: CC-BY-NC-4.0
+  license_url: https://huggingface.co/facebook/nllb-200-distilled-600M
