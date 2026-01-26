@@ -1,0 +1,59 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+name: Marketplace Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Marketplace version (e.g., 1.2.3)"
+        required: true
+      release_tag:
+        description: "Release tag (defaults to marketplace-v<version>)"
+        required: false
+      prerelease:
+        description: "Mark release as prerelease"
+        required: false
+        type: boolean
+        default: false
+
+env:
+  RELEASE_TAG: ${{ inputs.release_tag || format('marketplace-v{0}', inputs.version) }}
+
+jobs:
+  marketplace:
+    uses: ./.github/workflows/marketplace-build.yml
+    with:
+      version: ${{ inputs.version }}
+      release_tag: ${{ inputs.release_tag || format('marketplace-v{0}', inputs.version) }}
+
+  create-release:
+    name: Create Marketplace Release
+    needs: [marketplace]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
+          name: "Marketplace ${{ inputs.version }}"
+          files: |
+            artifacts/**/marketplace-bundles/*.tar.zst
+          body: |
+            Marketplace bundles for version `${{ inputs.version }}`.
+          draft: false
+          prerelease: ${{ inputs.prerelease }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

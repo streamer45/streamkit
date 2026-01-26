@@ -48,6 +48,18 @@ git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
 
+### Marketplace-only release (decoupled)
+
+Use the GitHub Actions workflow `Marketplace Release` with:
+
+- `version`: marketplace version (e.g., `1.2.3`)
+- `release_tag` (optional): defaults to `marketplace-v<version>`
+
+This workflow publishes bundle assets to the GitHub Release for `release_tag`
+and opens the registry PR without rebuilding the server/UI. Both tag releases
+and marketplace-only releases share the same reusable marketplace workflow
+(`.github/workflows/marketplace-build.yml`).
+
 ### Verify outputs
 
 - GitHub Release includes `*-bundle.tar.zst` assets.

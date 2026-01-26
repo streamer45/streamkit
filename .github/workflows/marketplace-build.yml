@@ -1,0 +1,164 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+name: Marketplace Build (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Marketplace version (e.g., 1.2.3)"
+        required: true
+        type: string
+      release_tag:
+        description: "Release tag for bundle URLs and registry PR"
+        required: true
+        type: string
+      registry_base_url:
+        description: "Registry base URL override"
+        required: false
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  SHERPA_ONNX_VERSION: "1.12.17"
+  MARKETPLACE_VERSION: ${{ inputs.version }}
+  RELEASE_TAG: ${{ inputs.release_tag }}
+  REGISTRY_BASE_URL: ${{ inputs.registry_base_url || format('https://{0}.github.io/streamkit/registry', github.repository_owner) }}
+
+jobs:
+  build-marketplace:
+    name: Build Marketplace Bundles
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config libclang-dev wget libopenblas-dev zstd minisign patchelf
+
+      - name: Install sherpa-onnx
+        run: |
+          cd /tmp
+          wget https://github.com/k2-fsa/sherpa-onnx/releases/download/v${SHERPA_ONNX_VERSION}/sherpa-onnx-v${SHERPA_ONNX_VERSION}-linux-x64-shared.tar.bz2
+          tar xf sherpa-onnx-v${SHERPA_ONNX_VERSION}-linux-x64-shared.tar.bz2
+          sudo cp -r sherpa-onnx-v${SHERPA_ONNX_VERSION}-linux-x64-shared/lib/* /usr/local/lib/
+          sudo cp -r sherpa-onnx-v${SHERPA_ONNX_VERSION}-linux-x64-shared/include/* /usr/local/include/
+          sudo ldconfig
+
+      - name: Build CTranslate2
+        run: |
+          git clone --depth 1 --recurse-submodules --branch v4.5.0 https://github.com/OpenNMT/CTranslate2.git
+          cd CTranslate2
+          mkdir build && cd build
+          cmake -DCMAKE_BUILD_TYPE=Release \
+                -DWITH_CUDA=OFF \
+                -DWITH_MKL=OFF \
+                -DWITH_OPENBLAS=ON \
+                -DOPENMP_RUNTIME=COMP \
+                -DBUILD_CLI=OFF \
+                ..
+          make -j$(nproc)
+          sudo make install
+          sudo ldconfig
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92.0"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            plugins/native/whisper
+            plugins/native/kokoro
+            plugins/native/piper
+            plugins/native/matcha
+            plugins/native/pocket-tts
+            plugins/native/sensevoice
+            plugins/native/nllb
+            plugins/native/vad
+            plugins/native/helsinki
+          cache-on-failure: true
+
+      - name: Build official plugins
+        run: |
+          bash scripts/marketplace/build_official_plugins.sh
+
+      - name: Write minisign key
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          if [ -z "${MINISIGN_SECRET_KEY}" ]; then
+            echo "MINISIGN_SECRET_KEY is not set"
+            exit 1
+          fi
+          echo "${MINISIGN_SECRET_KEY}" > /tmp/streamkit.key
+          chmod 600 /tmp/streamkit.key
+
+      - name: Build registry artifacts
+        run: |
+          VERSION="${MARKETPLACE_VERSION#v}"
+          python3 scripts/marketplace/build_registry.py \
+            --plugins marketplace/official-plugins.json \
+            --version "${VERSION}" \
+            --bundle-base-url "https://github.com/${{ github.repository }}/releases/download/${RELEASE_TAG}" \
+            --registry-base-url "${REGISTRY_BASE_URL}" \
+            --bundles-out dist/bundles \
+            --registry-out dist/registry \
+            --signing-key /tmp/streamkit.key
+
+      - name: Verify marketplace bundle portability
+        run: |
+          python3 scripts/marketplace/verify_bundles.py \
+            --plugins marketplace/official-plugins.json \
+            --bundles dist/bundles
+
+      - name: Upload marketplace bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: marketplace-bundles
+          path: dist/bundles/*.tar.zst
+
+      - name: Upload registry metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: marketplace-registry
+          path: dist/registry/**
+
+  publish-registry:
+    name: Publish Registry (PR)
+    needs: [build-marketplace]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download registry artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: marketplace-registry
+          path: dist/registry
+
+      - name: Update docs registry folder
+        run: |
+          rm -rf docs/public/registry
+          mkdir -p docs/public/registry
+          cp -R dist/registry/* docs/public/registry/
+
+      - name: Create pull request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: "registry/${{ env.RELEASE_TAG }}"
+          title: "chore(registry): publish marketplace registry for ${{ env.RELEASE_TAG }}"
+          commit-message: "chore(registry): publish marketplace registry for ${{ env.RELEASE_TAG }}"
+          body: |
+            Automated registry metadata update for `${{ env.RELEASE_TAG }}`.
+          base: main
