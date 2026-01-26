@@ -72,24 +72,39 @@ jobs:
         with:
           toolchain: "1.92.0"
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            plugins/native/whisper
-            plugins/native/kokoro
-            plugins/native/piper
-            plugins/native/matcha
-            plugins/native/pocket-tts
-            plugins/native/sensevoice
-            plugins/native/nllb
-            plugins/native/vad
-            plugins/native/helsinki
-          cache-on-failure: true
-
       - name: Verify official plugins metadata is current
         run: |
           python3 scripts/marketplace/generate_official_plugins.py
           git diff --exit-code -- marketplace/official-plugins.json
+
+      - name: Collect marketplace workspaces
+        id: marketplace-workspaces
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import sys
+
+          plugins_path = pathlib.Path("marketplace/official-plugins.json")
+          metadata = json.loads(plugins_path.read_text())
+          plugin_ids = [plugin["id"] for plugin in metadata.get("plugins", [])]
+          if not plugin_ids:
+              print("No plugins found in marketplace/official-plugins.json", file=sys.stderr)
+              sys.exit(1)
+
+          out_path = os.environ["GITHUB_OUTPUT"]
+          with open(out_path, "a", encoding="utf-8") as handle:
+              handle.write("workspaces<<EOF\n")
+              for plugin_id in plugin_ids:
+                  handle.write(f"plugins/native/{plugin_id}\n")
+              handle.write("EOF\n")
+          PY
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ steps.marketplace-workspaces.outputs.workspaces }}
+          cache-on-failure: true
 
       - name: Build official plugins
         run: |
