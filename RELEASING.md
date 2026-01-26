@@ -37,7 +37,7 @@ with the generated public key before tagging.
 
 ### System dependencies (v1)
 
-- `pocket-tts` requires OpenSSL 3 (`libssl.so.3`, `libcrypto.so.3`).
+- When present, `pocket-tts` requires OpenSSL 3 (`libssl.so.3`, `libcrypto.so.3`).
   - Ubuntu: `libssl3`
 - Native plugins expect system `libstdc++` and `libgcc_s`.
 

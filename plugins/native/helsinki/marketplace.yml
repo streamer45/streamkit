@@ -1,0 +1,29 @@
+id: helsinki
+name: Helsinki
+node_kind: helsinki
+kind: native
+entrypoint: libhelsinki.so
+artifact: plugins/native/helsinki/target/release/libhelsinki.so
+description: Neural machine translation using OPUS-MT
+license: MPL-2.0
+models:
+- id: opus-mt-en-es
+  name: OPUS-MT en-es
+  default: true
+  source: huggingface
+  repo_id: streamkit/helsinki-models
+  revision: main
+  files:
+  - opus-mt-en-es.tar.bz2
+  license: Apache-2.0
+  license_url: https://huggingface.co/Helsinki-NLP/opus-mt-en-es
+- id: opus-mt-es-en
+  name: OPUS-MT es-en
+  default: false
+  source: huggingface
+  repo_id: streamkit/helsinki-models
+  revision: main
+  files:
+  - opus-mt-es-en.tar.bz2
+  license: Apache-2.0
+  license_url: https://huggingface.co/Helsinki-NLP/opus-mt-es-en

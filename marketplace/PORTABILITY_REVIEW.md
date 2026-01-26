@@ -16,7 +16,6 @@ ldd checks were run on the local dev environment (not a clean container).
 | `matcha` | `libsherpa-onnx-c-api.so`, `libgcc_s.so.1` | `RUNPATH=/usr/local/lib` | ok | must bundle + `$ORIGIN` |
 | `nllb` | `libstdc++.so.6`, `libgcc_s.so.1` | — | ok | system dependency (accepted) |
 | `piper` | `libsherpa-onnx-c-api.so`, `libgcc_s.so.1` | `RUNPATH=/usr/local/lib` | ok | must bundle + `$ORIGIN` |
-| `pocket-tts` | `libssl.so.3`, `libcrypto.so.3`, `libstdc++.so.6`, `libgcc_s.so.1` | — | ok | system dependency (accepted, OpenSSL 3) |
 | `sensevoice` | `libsherpa-onnx-c-api.so`, `libstdc++.so.6`, `libgcc_s.so.1` | `RUNPATH=/usr/local/lib` | ok | must bundle + `$ORIGIN` |
 | `vad` | `libsherpa-onnx-c-api.so`, `libgcc_s.so.1` | `RUNPATH=/usr/local/lib` | ok | must bundle + `$ORIGIN` |
 | `whisper` | `libstdc++.so.6`, `libgcc_s.so.1` | — | ok | system dependency (accepted) |
@@ -27,4 +26,4 @@ Decision: option 3 (mix).
 
 - Bundle sherpa-onnx shared libs with official bundles and set `RUNPATH=$ORIGIN` (or equivalent).
 - Rely on system OpenSSL (libssl/libcrypto) and GCC runtime (libstdc++/libgcc_s).
-- OpenSSL 3 is an accepted system dependency for `pocket-tts`.
+- When present, `pocket-tts` may rely on system OpenSSL 3.

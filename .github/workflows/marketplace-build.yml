@@ -40,7 +40,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake pkg-config libclang-dev wget libopenblas-dev zstd minisign patchelf
+          sudo apt-get install -y cmake pkg-config libclang-dev wget libopenblas-dev zstd minisign patchelf python3-yaml
 
       - name: Install sherpa-onnx
         run: |
@@ -85,6 +85,11 @@ jobs:
             plugins/native/vad
             plugins/native/helsinki
           cache-on-failure: true
+
+      - name: Verify official plugins metadata is current
+        run: |
+          python3 scripts/marketplace/generate_official_plugins.py
+          git diff --exit-code -- marketplace/official-plugins.json
 
       - name: Build official plugins
         run: |

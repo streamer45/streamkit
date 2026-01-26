@@ -1,6 +1,227 @@
 {
   "plugins": [
     {
+      "id": "helsinki",
+      "name": "Helsinki",
+      "node_kind": "helsinki",
+      "kind": "native",
+      "entrypoint": "libhelsinki.so",
+      "artifact": "plugins/native/helsinki/target/release/libhelsinki.so",
+      "description": "Neural machine translation using OPUS-MT",
+      "license": "MPL-2.0",
+      "models": [
+        {
+          "id": "opus-mt-en-es",
+          "name": "OPUS-MT en-es",
+          "default": true,
+          "source": "huggingface",
+          "repo_id": "streamkit/helsinki-models",
+          "revision": "main",
+          "files": [
+            "opus-mt-en-es.tar.bz2"
+          ],
+          "license": "Apache-2.0",
+          "license_url": "https://huggingface.co/Helsinki-NLP/opus-mt-en-es"
+        },
+        {
+          "id": "opus-mt-es-en",
+          "name": "OPUS-MT es-en",
+          "default": false,
+          "source": "huggingface",
+          "repo_id": "streamkit/helsinki-models",
+          "revision": "main",
+          "files": [
+            "opus-mt-es-en.tar.bz2"
+          ],
+          "license": "Apache-2.0",
+          "license_url": "https://huggingface.co/Helsinki-NLP/opus-mt-es-en"
+        }
+      ]
+    },
+    {
+      "id": "kokoro",
+      "name": "Kokoro",
+      "node_kind": "kokoro",
+      "kind": "native",
+      "entrypoint": "libkokoro.so",
+      "artifact": "plugins/native/kokoro/target/release/libkokoro.so",
+      "description": "Text-to-speech using Sherpa-ONNX Kokoro models",
+      "license": "MPL-2.0",
+      "models": [
+        {
+          "id": "kokoro-multi-lang-v1_1",
+          "name": "Kokoro multi-lang v1.1",
+          "default": true,
+          "source": "huggingface",
+          "repo_id": "streamkit/kokoro-models",
+          "revision": "main",
+          "files": [
+            "kokoro-multi-lang-v1_1.tar.bz2"
+          ],
+          "license": "Apache-2.0",
+          "license_url": "https://github.com/k2-fsa/sherpa-onnx/blob/master/LICENSE",
+          "sha256": "a3f4c73d043860e3fd2e5b06f36795eb81de0fc8e8de6df703245edddd87dbad"
+        }
+      ]
+    },
+    {
+      "id": "matcha",
+      "name": "Matcha",
+      "node_kind": "matcha",
+      "kind": "native",
+      "entrypoint": "libmatcha.so",
+      "artifact": "plugins/native/matcha/target/release/libmatcha.so",
+      "description": "Text-to-speech using Matcha models",
+      "license": "MPL-2.0",
+      "models": [
+        {
+          "id": "matcha-icefall-en_US-ljspeech",
+          "name": "Matcha LJSpeech",
+          "default": true,
+          "source": "huggingface",
+          "repo_id": "streamkit/matcha-models",
+          "revision": "main",
+          "files": [
+            "matcha-icefall-en_US-ljspeech.tar.bz2",
+            "matcha-icefall-en_US-ljspeech/vocos-22khz-univ.onnx"
+          ],
+          "license": "CC-BY-4.0",
+          "license_url": "https://keithito.com/LJ-Speech-Dataset/"
+        }
+      ]
+    },
+    {
+      "id": "nllb",
+      "name": "NLLB",
+      "node_kind": "nllb",
+      "kind": "native",
+      "entrypoint": "libnllb.so",
+      "artifact": "plugins/native/nllb/target/release/libnllb.so",
+      "description": "Neural machine translation using NLLB",
+      "license": "MPL-2.0",
+      "models": [
+        {
+          "id": "nllb-200-distilled-600M-ct2-int8",
+          "name": "NLLB-200 distilled 600M (CTranslate2 int8)",
+          "default": false,
+          "source": "huggingface",
+          "repo_id": "streamkit/nllb-models",
+          "revision": "main",
+          "files": [
+            "nllb-200-distilled-600M-ct2-int8.tar.bz2"
+          ],
+          "license": "CC-BY-NC-4.0",
+          "license_url": "https://huggingface.co/facebook/nllb-200-distilled-600M"
+        }
+      ]
+    },
+    {
+      "id": "piper",
+      "name": "Piper",
+      "node_kind": "piper",
+      "kind": "native",
+      "entrypoint": "libpiper.so",
+      "artifact": "plugins/native/piper/target/release/libpiper.so",
+      "description": "Text-to-speech using Piper VITS models",
+      "license": "MPL-2.0",
+      "models": [
+        {
+          "id": "piper-en_US-libritts_r-medium",
+          "name": "Piper en_US libritts_r (medium)",
+          "default": true,
+          "source": "huggingface",
+          "repo_id": "streamkit/piper-models",
+          "revision": "main",
+          "files": [
+            "vits-piper-en_US-libritts_r-medium.tar.bz2"
+          ],
+          "license": "CC-BY-4.0 + GPL-3.0",
+          "license_url": "http://www.openslr.org/141/",
+          "sha256": "78c137daa7eddaf57190cf05c020efd6e593015f62c82ee999ef570fc2dff496"
+        },
+        {
+          "id": "piper-es_MX-claude-high",
+          "name": "Piper es_MX claude (high)",
+          "default": false,
+          "source": "huggingface",
+          "repo_id": "streamkit/piper-models",
+          "revision": "main",
+          "files": [
+            "vits-piper-es_MX-claude-high.tar.bz2"
+          ],
+          "license": "Apache-2.0 + GPL-3.0",
+          "license_url": "https://huggingface.co/spaces/HirCoir/Piper-TTS-Spanish",
+          "sha256": "ec33fb689c248fe64810aab564cba97babf0f506672cfd404928d46e751a4721"
+        }
+      ]
+    },
+    {
+      "id": "sensevoice",
+      "name": "SenseVoice",
+      "node_kind": "sensevoice",
+      "kind": "native",
+      "entrypoint": "libsensevoice.so",
+      "artifact": "plugins/native/sensevoice/target/release/libsensevoice.so",
+      "description": "Streaming speech-to-text using SenseVoice",
+      "license": "MPL-2.0",
+      "models": [
+        {
+          "id": "sensevoice-small-yue",
+          "name": "SenseVoice small (yue)",
+          "default": true,
+          "source": "huggingface",
+          "repo_id": "streamkit/sensevoice-models",
+          "revision": "main",
+          "files": [
+            "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2"
+          ],
+          "license": "Apache-2.0",
+          "license_url": "https://huggingface.co/ASLP-lab/WSYue-ASR",
+          "sha256": "7305f7905bfcf77fa0b39388a313f3da35c68d971661a65475b56fb2162c8e63"
+        },
+        {
+          "id": "silero-vad",
+          "name": "Silero VAD (v6.2)",
+          "default": true,
+          "source": "huggingface",
+          "repo_id": "streamkit/sensevoice-models",
+          "revision": "main",
+          "files": [
+            "silero_vad.onnx"
+          ],
+          "license": "MIT",
+          "license_url": "https://github.com/snakers4/silero-vad/blob/master/LICENSE",
+          "sha256": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3"
+        }
+      ]
+    },
+    {
+      "id": "vad",
+      "name": "VAD",
+      "node_kind": "vad",
+      "kind": "native",
+      "entrypoint": "libvad.so",
+      "artifact": "plugins/native/vad/target/release/libvad.so",
+      "description": "Voice activity detection",
+      "license": "MPL-2.0",
+      "models": [
+        {
+          "id": "ten-vad",
+          "name": "ten-vad",
+          "default": true,
+          "source": "huggingface",
+          "repo_id": "streamkit/vad-models",
+          "revision": "main",
+          "files": [
+            "ten-vad.onnx"
+          ],
+          "license": "LicenseRef-ten-vad",
+          "license_url": "https://github.com/TEN-framework/ten-vad",
+          "sha256": "718cb7eef47e3cf5ddbe7e967a7503f46b8b469c0706872f494dfa921b486206"
+        }
+      ]
+    },
+    {
       "id": "whisper",
       "name": "Whisper",
       "node_kind": "whisper",
@@ -65,237 +286,6 @@
           "license": "MIT",
           "license_url": "https://github.com/snakers4/silero-vad/blob/master/LICENSE",
           "sha256": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3"
-        }
-      ]
-    },
-    {
-      "id": "vad",
-      "name": "VAD",
-      "node_kind": "vad",
-      "kind": "native",
-      "entrypoint": "libvad.so",
-      "artifact": "plugins/native/vad/target/release/libvad.so",
-      "description": "Voice activity detection",
-      "license": "MPL-2.0",
-      "models": [
-        {
-          "id": "ten-vad",
-          "name": "ten-vad",
-          "default": true,
-          "source": "huggingface",
-          "repo_id": "streamkit/vad-models",
-          "revision": "main",
-          "files": [
-            "ten-vad.onnx"
-          ],
-          "license": "LicenseRef-ten-vad",
-          "license_url": "https://github.com/TEN-framework/ten-vad",
-          "sha256": "718cb7eef47e3cf5ddbe7e967a7503f46b8b469c0706872f494dfa921b486206"
-        }
-      ]
-    },
-    {
-      "id": "kokoro",
-      "name": "Kokoro",
-      "node_kind": "kokoro",
-      "kind": "native",
-      "entrypoint": "libkokoro.so",
-      "artifact": "plugins/native/kokoro/target/release/libkokoro.so",
-      "description": "Text-to-speech using Sherpa-ONNX Kokoro models",
-      "license": "MPL-2.0",
-      "models": [
-        {
-          "id": "kokoro-multi-lang-v1_1",
-          "name": "Kokoro multi-lang v1.1",
-          "default": true,
-          "source": "huggingface",
-          "repo_id": "streamkit/kokoro-models",
-          "revision": "main",
-          "files": [
-            "kokoro-multi-lang-v1_1.tar.bz2"
-          ],
-          "license": "Apache-2.0",
-          "license_url": "https://github.com/k2-fsa/sherpa-onnx/blob/master/LICENSE",
-          "sha256": "a3f4c73d043860e3fd2e5b06f36795eb81de0fc8e8de6df703245edddd87dbad"
-        }
-      ]
-    },
-    {
-      "id": "piper",
-      "name": "Piper",
-      "node_kind": "piper",
-      "kind": "native",
-      "entrypoint": "libpiper.so",
-      "artifact": "plugins/native/piper/target/release/libpiper.so",
-      "description": "Text-to-speech using Piper VITS models",
-      "license": "MPL-2.0",
-      "models": [
-        {
-          "id": "piper-en_US-libritts_r-medium",
-          "name": "Piper en_US libritts_r (medium)",
-          "default": true,
-          "source": "huggingface",
-          "repo_id": "streamkit/piper-models",
-          "revision": "main",
-          "files": [
-            "vits-piper-en_US-libritts_r-medium.tar.bz2"
-          ],
-          "license": "CC-BY-4.0 + GPL-3.0",
-          "license_url": "http://www.openslr.org/141/",
-          "sha256": "78c137daa7eddaf57190cf05c020efd6e593015f62c82ee999ef570fc2dff496"
-        },
-        {
-          "id": "piper-es_MX-claude-high",
-          "name": "Piper es_MX claude (high)",
-          "default": false,
-          "source": "huggingface",
-          "repo_id": "streamkit/piper-models",
-          "revision": "main",
-          "files": [
-            "vits-piper-es_MX-claude-high.tar.bz2"
-          ],
-          "license": "Apache-2.0 + GPL-3.0",
-          "license_url": "https://huggingface.co/spaces/HirCoir/Piper-TTS-Spanish",
-          "sha256": "ec33fb689c248fe64810aab564cba97babf0f506672cfd404928d46e751a4721"
-        }
-      ]
-    },
-    {
-      "id": "matcha",
-      "name": "Matcha",
-      "node_kind": "matcha",
-      "kind": "native",
-      "entrypoint": "libmatcha.so",
-      "artifact": "plugins/native/matcha/target/release/libmatcha.so",
-      "description": "Text-to-speech using Matcha models",
-      "license": "MPL-2.0",
-      "models": [
-        {
-          "id": "matcha-icefall-en_US-ljspeech",
-          "name": "Matcha LJSpeech",
-          "default": true,
-          "source": "huggingface",
-          "repo_id": "streamkit/matcha-models",
-          "revision": "main",
-          "files": [
-            "matcha-icefall-en_US-ljspeech.tar.bz2",
-            "matcha-icefall-en_US-ljspeech/vocos-22khz-univ.onnx"
-          ],
-          "license": "CC-BY-4.0",
-          "license_url": "https://keithito.com/LJ-Speech-Dataset/"
-        }
-      ]
-    },
-    {
-      "id": "pocket-tts",
-      "name": "Pocket TTS",
-      "node_kind": "pocket-tts",
-      "kind": "native",
-      "entrypoint": "libpocket_tts.so",
-      "artifact": "plugins/native/pocket-tts/target/release/libpocket_tts.so",
-      "description": "Lightweight CPU TTS using Kyutai Pocket TTS",
-      "license": "MPL-2.0"
-    },
-    {
-      "id": "sensevoice",
-      "name": "SenseVoice",
-      "node_kind": "sensevoice",
-      "kind": "native",
-      "entrypoint": "libsensevoice.so",
-      "artifact": "plugins/native/sensevoice/target/release/libsensevoice.so",
-      "description": "Streaming speech-to-text using SenseVoice",
-      "license": "MPL-2.0",
-      "models": [
-        {
-          "id": "sensevoice-small-yue",
-          "name": "SenseVoice small (yue)",
-          "default": true,
-          "source": "huggingface",
-          "repo_id": "streamkit/sensevoice-models",
-          "revision": "main",
-          "files": [
-            "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2"
-          ],
-          "license": "Apache-2.0",
-          "license_url": "https://huggingface.co/ASLP-lab/WSYue-ASR",
-          "sha256": "7305f7905bfcf77fa0b39388a313f3da35c68d971661a65475b56fb2162c8e63"
-        },
-        {
-          "id": "silero-vad",
-          "name": "Silero VAD (v6.2)",
-          "default": true,
-          "source": "huggingface",
-          "repo_id": "streamkit/sensevoice-models",
-          "revision": "main",
-          "files": [
-            "silero_vad.onnx"
-          ],
-          "license": "MIT",
-          "license_url": "https://github.com/snakers4/silero-vad/blob/master/LICENSE",
-          "sha256": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3"
-        }
-      ]
-    },
-    {
-      "id": "nllb",
-      "name": "NLLB",
-      "node_kind": "nllb",
-      "kind": "native",
-      "entrypoint": "libnllb.so",
-      "artifact": "plugins/native/nllb/target/release/libnllb.so",
-      "description": "Neural machine translation using NLLB",
-      "license": "MPL-2.0",
-      "models": [
-        {
-          "id": "nllb-200-distilled-600M-ct2-int8",
-          "name": "NLLB-200 distilled 600M (CTranslate2 int8)",
-          "default": false,
-          "source": "huggingface",
-          "repo_id": "streamkit/nllb-models",
-          "revision": "main",
-          "files": [
-            "nllb-200-distilled-600M-ct2-int8.tar.bz2"
-          ],
-          "license": "CC-BY-NC-4.0",
-          "license_url": "https://huggingface.co/facebook/nllb-200-distilled-600M"
-        }
-      ]
-    },
-    {
-      "id": "helsinki",
-      "name": "Helsinki",
-      "node_kind": "helsinki",
-      "kind": "native",
-      "entrypoint": "libhelsinki.so",
-      "artifact": "plugins/native/helsinki/target/release/libhelsinki.so",
-      "description": "Neural machine translation using OPUS-MT",
-      "license": "MPL-2.0",
-      "models": [
-        {
-          "id": "opus-mt-en-es",
-          "name": "OPUS-MT en-es",
-          "default": true,
-          "source": "huggingface",
-          "repo_id": "streamkit/helsinki-models",
-          "revision": "main",
-          "files": [
-            "opus-mt-en-es.tar.bz2"
-          ],
-          "license": "Apache-2.0",
-          "license_url": "https://huggingface.co/Helsinki-NLP/opus-mt-en-es"
-        },
-        {
-          "id": "opus-mt-es-en",
-          "name": "OPUS-MT es-en",
-          "default": false,
-          "source": "huggingface",
-          "repo_id": "streamkit/helsinki-models",
-          "revision": "main",
-          "files": [
-            "opus-mt-es-en.tar.bz2"
-          ],
-          "license": "Apache-2.0",
-          "license_url": "https://huggingface.co/Helsinki-NLP/opus-mt-es-en"
         }
       ]
     }
