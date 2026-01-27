@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "id": "piper",
+  "name": "Piper",
+  "version": "0.2.0-dev",
+  "node_kind": "piper",
+  "kind": "native",
+  "description": "Text-to-speech using Piper VITS models",
+  "license": "MPL-2.0",
+  "entrypoint": "libpiper.so",
+  "bundle": {
+    "url": "https://github.com/streamer45/streamkit/releases/download/marketplace-v0.2.0-dev/piper-0.2.0-dev-bundle.tar.zst",
+    "sha256": "422c3e0a09771b32f5f37c6d7063575df857976fa00bad47309ea6f61690d240",
+    "size_bytes": 7625801
+  },
+  "models": [
+    {
+      "id": "piper-en_US-libritts_r-medium",
+      "name": "Piper en_US libritts_r (medium)",
+      "default": true,
+      "source": "huggingface",
+      "repo_id": "streamkit/piper-models",
+      "revision": "main",
+      "files": [
+        "vits-piper-en_US-libritts_r-medium.tar.bz2"
+      ],
+      "license": "CC-BY-4.0 + GPL-3.0",
+      "license_url": "http://www.openslr.org/141/",
+      "sha256": "78c137daa7eddaf57190cf05c020efd6e593015f62c82ee999ef570fc2dff496"
+    },
+    {
+      "id": "piper-es_MX-claude-high",
+      "name": "Piper es_MX claude (high)",
+      "default": false,
+      "source": "huggingface",
+      "repo_id": "streamkit/piper-models",
+      "revision": "main",
+      "files": [
+        "vits-piper-es_MX-claude-high.tar.bz2"
+      ],
+      "license": "Apache-2.0 + GPL-3.0",
+      "license_url": "https://huggingface.co/spaces/HirCoir/Piper-TTS-Spanish",
+      "sha256": "ec33fb689c248fe64810aab564cba97babf0f506672cfd404928d46e751a4721"
+    }
+  ]
+}
