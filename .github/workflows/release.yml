@@ -82,6 +82,10 @@ jobs:
 
   marketplace:
     uses: ./.github/workflows/marketplace-build.yml
+    permissions:
+      contents: write
+      pull-requests: write
+    secrets: inherit
     with:
       version: ${{ github.ref_name }}
       release_tag: ${{ github.ref_name }}

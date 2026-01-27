@@ -19,11 +19,15 @@ on:
         description: "Registry base URL override"
         required: false
         type: string
+    secrets:
+      MINISIGN_SECRET_KEY:
+        required: true
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
   SHERPA_ONNX_VERSION: "1.12.17"
+  MINISIGN_DEB_URL: "http://launchpadlibrarian.net/780165111/minisign_0.12-1_amd64.deb"
   MARKETPLACE_VERSION: ${{ inputs.version }}
   RELEASE_TAG: ${{ inputs.release_tag }}
   REGISTRY_BASE_URL: ${{ inputs.registry_base_url || format('https://{0}.github.io/streamkit/registry', github.repository_owner) }}
@@ -40,7 +44,18 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake pkg-config libclang-dev wget libopenblas-dev zstd minisign patchelf python3-yaml
+          sudo apt-get install -y cmake pkg-config libclang-dev wget libopenblas-dev zstd patchelf python3-yaml
+
+      - name: Install minisign
+        run: |
+          deb_path="/tmp/minisign.deb"
+          wget -O "${deb_path}" "${MINISIGN_DEB_URL}"
+          if ! sudo dpkg -i "${deb_path}"; then
+            echo "dpkg failed, retrying with apt-get"
+            sudo env NEEDRESTART_MODE=a apt-get install -y "${deb_path}" || true
+          fi
+          command -v minisign >/dev/null
+          minisign -h >/dev/null 2>&1 || true
 
       - name: Install sherpa-onnx
         run: |

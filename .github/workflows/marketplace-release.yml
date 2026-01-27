@@ -25,6 +25,10 @@ env:
 jobs:
   marketplace:
     uses: ./.github/workflows/marketplace-build.yml
+    permissions:
+      contents: write
+      pull-requests: write
+    secrets: inherit
     with:
       version: ${{ inputs.version }}
       release_tag: ${{ inputs.release_tag || format('marketplace-v{0}', inputs.version) }}
