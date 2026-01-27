@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "id": "whisper",
+  "name": "Whisper",
+  "version": "0.2.0-dev",
+  "node_kind": "whisper",
+  "kind": "native",
+  "description": "Streaming speech-to-text using whisper.cpp",
+  "license": "MPL-2.0",
+  "entrypoint": "libwhisper.so",
+  "bundle": {
+    "url": "https://github.com/streamer45/streamkit/releases/download/marketplace-v0.2.0-dev/whisper-0.2.0-dev-bundle.tar.zst",
+    "sha256": "ffe8a7aee82f7860439c6eb2234c1e84a7d190dc852239110d33c12712534698",
+    "size_bytes": 8756729
+  },
+  "models": [
+    {
+      "id": "whisper-tiny-en-q5_1",
+      "name": "Whisper tiny.en (q5_1)",
+      "default": true,
+      "source": "huggingface",
+      "repo_id": "streamkit/whisper-models",
+      "revision": "main",
+      "files": [
+        "ggml-tiny.en-q5_1.bin"
+      ],
+      "license": "MIT",
+      "license_url": "https://github.com/openai/whisper/blob/main/LICENSE",
+      "sha256": "c77c5766f1cef09b6b7d47f21b546cbddd4157886b3b5d6d4f709e91e66c7c2b"
+    },
+    {
+      "id": "whisper-base-en-q5_1",
+      "name": "Whisper base.en (q5_1)",
+      "default": false,
+      "source": "huggingface",
+      "repo_id": "streamkit/whisper-models",
+      "revision": "main",
+      "files": [
+        "ggml-base.en-q5_1.bin"
+      ],
+      "license": "MIT",
+      "license_url": "https://github.com/openai/whisper/blob/main/LICENSE",
+      "sha256": "4baf70dd0d7c4247ba2b81fafd9c01005ac77c2f9ef064e00dcf195d0e2fdd2f"
+    },
+    {
+      "id": "whisper-base-q5_1",
+      "name": "Whisper base (q5_1)",
+      "default": false,
+      "source": "huggingface",
+      "repo_id": "streamkit/whisper-models",
+      "revision": "main",
+      "files": [
+        "ggml-base-q5_1.bin"
+      ],
+      "license": "MIT",
+      "license_url": "https://github.com/openai/whisper/blob/main/LICENSE",
+      "sha256": "422f1ae452ade6f30a004d7e5c6a43195e4433bc370bf23fac9cc591f01a8898"
+    },
+    {
+      "id": "silero-vad",
+      "name": "Silero VAD (v6.2)",
+      "default": true,
+      "source": "huggingface",
+      "repo_id": "streamkit/whisper-models",
+      "revision": "main",
+      "files": [
+        "silero_vad.onnx"
+      ],
+      "license": "MIT",
+      "license_url": "https://github.com/snakers4/silero-vad/blob/master/LICENSE",
+      "sha256": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3"
+    }
+  ]
+}

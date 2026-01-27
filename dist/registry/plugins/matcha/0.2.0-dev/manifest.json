@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "id": "matcha",
+  "name": "Matcha",
+  "version": "0.2.0-dev",
+  "node_kind": "matcha",
+  "kind": "native",
+  "description": "Text-to-speech using Matcha models",
+  "license": "MPL-2.0",
+  "entrypoint": "libmatcha.so",
+  "bundle": {
+    "url": "https://github.com/streamer45/streamkit/releases/download/marketplace-v0.2.0-dev/matcha-0.2.0-dev-bundle.tar.zst",
+    "sha256": "eb682662211d0ea5f4f8819a54b6c59977909a5d8c6cfc62de27aee753ced44b",
+    "size_bytes": 7636309
+  },
+  "models": [
+    {
+      "id": "matcha-icefall-en_US-ljspeech",
+      "name": "Matcha LJSpeech",
+      "default": true,
+      "source": "huggingface",
+      "repo_id": "streamkit/matcha-models",
+      "revision": "main",
+      "files": [
+        "matcha-icefall-en_US-ljspeech.tar.bz2",
+        "matcha-icefall-en_US-ljspeech/vocos-22khz-univ.onnx"
+      ],
+      "license": "CC-BY-4.0",
+      "license_url": "https://keithito.com/LJ-Speech-Dataset/"
+    }
+  ]
+}
