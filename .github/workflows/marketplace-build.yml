@@ -30,7 +30,7 @@ env:
   MINISIGN_DEB_URL: "http://launchpadlibrarian.net/780165111/minisign_0.12-1_amd64.deb"
   MARKETPLACE_VERSION: ${{ inputs.version }}
   RELEASE_TAG: ${{ inputs.release_tag }}
-  REGISTRY_BASE_URL: ${{ inputs.registry_base_url || format('https://{0}.github.io/streamkit/registry', github.repository_owner) }}
+  REGISTRY_BASE_URL: ${{ inputs.registry_base_url || 'https://streamkit.dev/registry' }}
 
 jobs:
   build-marketplace:

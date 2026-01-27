@@ -60,11 +60,14 @@ and opens the registry PR without rebuilding the server/UI. Both tag releases
 and marketplace-only releases share the same reusable marketplace workflow
 (`.github/workflows/marketplace-build.yml`).
 
+Ensure "Allow GitHub Actions to create and approve pull requests" is enabled
+in repo settings so the registry PR can be opened automatically.
+
 ### Verify outputs
 
 - GitHub Release includes `*-bundle.tar.zst` assets.
 - Registry metadata is published after merging the registry PR:
-  `https://<org>.github.io/streamkit/registry/index.json`.
+  `https://streamkit.dev/registry/index.json`.
 - Verify a manifest signature:
 
 ```bash
