@@ -7,11 +7,11 @@ name: Marketplace Release
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: "Marketplace version (e.g., 1.2.3)"
+      snapshot_version:
+        description: "Marketplace snapshot version (e.g., 1.2.3, 0.2.0-dev)"
         required: true
       release_tag:
-        description: "Release tag (defaults to marketplace-v<version>)"
+        description: "Release tag (defaults to marketplace-v<snapshot_version>)"
         required: false
       prerelease:
         description: "Mark release as prerelease"
@@ -20,7 +20,7 @@ on:
         default: false
 
 env:
-  RELEASE_TAG: ${{ inputs.release_tag || format('marketplace-v{0}', inputs.version) }}
+  RELEASE_TAG: ${{ inputs.release_tag || format('marketplace-v{0}', inputs.snapshot_version) }}
 
 jobs:
   marketplace:
@@ -30,8 +30,8 @@ jobs:
       pull-requests: write
     secrets: inherit
     with:
-      version: ${{ inputs.version }}
-      release_tag: ${{ inputs.release_tag || format('marketplace-v{0}', inputs.version) }}
+      snapshot_version: ${{ inputs.snapshot_version }}
+      release_tag: ${{ inputs.release_tag || format('marketplace-v{0}', inputs.snapshot_version) }}
 
   create-release:
     name: Create Marketplace Release
@@ -52,11 +52,11 @@ jobs:
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           target_commitish: ${{ github.sha }}
-          name: "Marketplace ${{ inputs.version }}"
+          name: "Marketplace ${{ inputs.snapshot_version }}"
           files: |
             artifacts/**/marketplace-bundles/*.tar.zst
           body: |
-            Marketplace bundles for version `${{ inputs.version }}`.
+            Marketplace bundles for snapshot `${{ inputs.snapshot_version }}`.
           draft: false
           prerelease: ${{ inputs.prerelease }}
         env:

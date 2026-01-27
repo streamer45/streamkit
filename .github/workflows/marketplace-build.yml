@@ -7,8 +7,8 @@ name: Marketplace Build (Reusable)
 on:
   workflow_call:
     inputs:
-      version:
-        description: "Marketplace version (e.g., 1.2.3)"
+      snapshot_version:
+        description: "Marketplace snapshot version (not plugin version; used for release naming)"
         required: true
         type: string
       release_tag:
@@ -36,7 +36,7 @@ env:
   RUST_BACKTRACE: 1
   SHERPA_ONNX_VERSION: "1.12.17"
   MINISIGN_DEB_URL: "http://launchpadlibrarian.net/780165111/minisign_0.12-1_amd64.deb"
-  MARKETPLACE_VERSION: ${{ inputs.version }}
+  SNAPSHOT_VERSION: ${{ inputs.snapshot_version }}
   RELEASE_TAG: ${{ inputs.release_tag }}
   REGISTRY_BASE_URL: ${{ inputs.registry_base_url || 'https://streamkit.dev/registry' }}
 
@@ -52,7 +52,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake pkg-config libclang-dev wget libopenblas-dev zstd patchelf python3-yaml
+          sudo apt-get install -y cmake pkg-config libclang-dev wget libopenblas-dev zstd patchelf python3-yaml python3-tomli
 
       - name: Install minisign
         run: |
@@ -146,10 +146,9 @@ jobs:
 
       - name: Build registry artifacts
         run: |
-          VERSION="${MARKETPLACE_VERSION#v}"
           python3 scripts/marketplace/build_registry.py \
             --plugins marketplace/official-plugins.json \
-            --version "${VERSION}" \
+            --existing-registry docs/public/registry \
             --bundle-base-url "https://github.com/${{ github.repository }}/releases/download/${RELEASE_TAG}" \
             --registry-base-url "${REGISTRY_BASE_URL}" \
             --bundles-out dist/bundles \

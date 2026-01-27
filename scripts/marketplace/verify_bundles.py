@@ -37,18 +37,13 @@ def extract_bundle(bundle_path: pathlib.Path, dest: pathlib.Path) -> None:
     )
 
 
-def find_bundle(bundles_dir: pathlib.Path, plugin_id: str) -> pathlib.Path | None:
-    suffix = "-bundle.tar.zst"
-    matches = [
-        path
-        for path in bundles_dir.glob("*.tar.zst")
-        if path.name.startswith(f"{plugin_id}-") and path.name.endswith(suffix)
-    ]
-    if len(matches) == 1:
-        return matches[0]
-    if len(matches) > 1:
-        raise RuntimeError(f"Multiple bundles found for {plugin_id}: {matches}")
-    return None
+def find_bundle(
+    bundles_dir: pathlib.Path, plugin_id: str, version: str
+) -> pathlib.Path | None:
+    """Find bundle for specific plugin version. Returns None if not found."""
+    bundle_name = f"{plugin_id}-{version}-bundle.tar.zst"
+    bundle_path = bundles_dir / bundle_name
+    return bundle_path if bundle_path.exists() else None
 
 
 def main() -> int:
@@ -77,10 +72,16 @@ def main() -> int:
 
     for plugin in plugins:
         plugin_id = plugin["id"]
+        plugin_version = plugin.get("version")
+        if not plugin_version:
+            errors.append(f"{plugin_id}: missing version field in metadata")
+            continue
+
         entrypoint = plugin["entrypoint"]
-        bundle_path = find_bundle(bundles_dir, plugin_id)
+        bundle_path = find_bundle(bundles_dir, plugin_id, plugin_version)
         if bundle_path is None:
-            errors.append(f"Missing bundle for {plugin_id} in {bundles_dir}")
+            # Bundle not found - assume it was published earlier (append-only mode)
+            print(f"Skipping {plugin_id} v{plugin_version} (bundle not in {bundles_dir}, likely already published)")
             continue
 
         with tempfile.TemporaryDirectory() as tmp_dir:
