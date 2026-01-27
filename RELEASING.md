@@ -69,6 +69,9 @@ Registry PR commits are signed by the workflow. Add these secrets:
 - `REGISTRY_GPG_PASSPHRASE`: passphrase for the private key
 - `REGISTRY_GPG_KEY_ID`: GPG key fingerprint for the registry bot
 
+If you want CI checks to run on the registry PR, add a fine-grained PAT for the
+bot as `REGISTRY_PR_TOKEN` with `contents: write` and `pull-requests: write`.
+
 ### Verify outputs
 
 - GitHub Release includes `*-bundle.tar.zst` assets.

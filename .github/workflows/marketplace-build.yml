@@ -28,6 +28,8 @@ on:
         required: true
       REGISTRY_GPG_KEY_ID:
         required: true
+      REGISTRY_PR_TOKEN:
+        required: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -221,6 +223,7 @@ jobs:
       - name: Create pull request
         uses: peter-evans/create-pull-request@v6
         with:
+          token: ${{ secrets.REGISTRY_PR_TOKEN || github.token }}
           author: "StreamKit Registry Bot <registry-bot@streamkit.dev>"
           committer: "StreamKit Registry Bot <registry-bot@streamkit.dev>"
           branch: "registry/${{ env.RELEASE_TAG }}-${{ github.run_id }}"
