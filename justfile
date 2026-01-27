@@ -411,7 +411,7 @@ build-plugin-wasm-go:
     @tinygo build \
         -target=wasip2 \
         -no-debug \
-        --wit-package ../../../plugin-sdk/wit/streamkit-plugin.wasm \
+        --wit-package ../../../sdks/plugin-sdk/wit/streamkit-plugin.wasm \
         --wit-world plugin \
         -o build/gain_plugin_go.wasm \
         .

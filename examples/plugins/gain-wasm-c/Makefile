@@ -8,7 +8,7 @@
 WASI_SDK ?= /opt/wasi-sdk
 
 # Paths
-SDK_DIR = ../../../plugin-sdk/c
+SDK_DIR = ../../../sdks/plugin-sdk/c
 BUILD_DIR = build
 OUTPUT = $(BUILD_DIR)/gain_plugin_c.wasm
 
