@@ -39,7 +39,7 @@ When making a plugin official and downloadable from the registry, update all of
 the following:
 
 - Plugin source under `plugins/native/<id>/` (crate metadata + README).
-- Plugin metadata in `plugins/native/<id>/marketplace.yml` (id, entrypoint,
+- Plugin metadata in `plugins/native/<id>/plugin.yml` (id, version, entrypoint,
   artifact path, models, licenses, homepage/repo).
 - Generate `marketplace/official-plugins.json` with
   `scripts/marketplace/generate_official_plugins.py` and commit the result.

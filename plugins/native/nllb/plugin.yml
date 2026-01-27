@@ -1,5 +1,6 @@
 id: nllb
 name: NLLB
+version: 0.1.0
 node_kind: nllb
 kind: native
 entrypoint: libnllb.so

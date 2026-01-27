@@ -87,7 +87,7 @@ jobs:
       pull-requests: write
     secrets: inherit
     with:
-      version: ${{ github.ref_name }}
+      snapshot_version: ${{ github.ref_name }}
       release_tag: ${{ github.ref_name }}
 
   create-release:
