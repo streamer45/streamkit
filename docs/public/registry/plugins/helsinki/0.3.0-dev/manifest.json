@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "id": "helsinki",
+  "name": "Helsinki",
+  "version": "0.3.0-dev",
+  "node_kind": "helsinki",
+  "kind": "native",
+  "description": "Neural machine translation using OPUS-MT",
+  "license": "MPL-2.0",
+  "entrypoint": "libhelsinki.so",
+  "bundle": {
+    "url": "https://github.com/streamer45/streamkit/releases/download/marketplace-v0.3.0-dev/helsinki-0.3.0-dev-bundle.tar.zst",
+    "sha256": "8946d037fee15087d51b94de6b41cff865b8dff6d968c1551c99838f47733cf0",
+    "size_bytes": 2788753
+  },
+  "models": [
+    {
+      "id": "opus-mt-en-es",
+      "name": "OPUS-MT en-es",
+      "default": true,
+      "source": "huggingface",
+      "repo_id": "streamkit/helsinki-models",
+      "revision": "main",
+      "files": [
+        "opus-mt-en-es.tar.bz2"
+      ],
+      "license": "Apache-2.0",
+      "license_url": "https://huggingface.co/Helsinki-NLP/opus-mt-en-es"
+    },
+    {
+      "id": "opus-mt-es-en",
+      "name": "OPUS-MT es-en",
+      "default": false,
+      "source": "huggingface",
+      "repo_id": "streamkit/helsinki-models",
+      "revision": "main",
+      "files": [
+        "opus-mt-es-en.tar.bz2"
+      ],
+      "license": "Apache-2.0",
+      "license_url": "https://huggingface.co/Helsinki-NLP/opus-mt-es-en"
+    }
+  ]
+}
