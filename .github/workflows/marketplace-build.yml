@@ -22,6 +22,12 @@ on:
     secrets:
       MINISIGN_SECRET_KEY:
         required: true
+      REGISTRY_GPG_PRIVATE_KEY:
+        required: true
+      REGISTRY_GPG_PASSPHRASE:
+        required: true
+      REGISTRY_GPG_KEY_ID:
+        required: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -188,12 +194,37 @@ jobs:
           mkdir -p docs/public/registry
           cp -R dist/registry/* docs/public/registry/
 
+      - name: Configure signed registry commits
+        env:
+          REGISTRY_GPG_PRIVATE_KEY: ${{ secrets.REGISTRY_GPG_PRIVATE_KEY }}
+          REGISTRY_GPG_PASSPHRASE: ${{ secrets.REGISTRY_GPG_PASSPHRASE }}
+          REGISTRY_GPG_KEY_ID: ${{ secrets.REGISTRY_GPG_KEY_ID }}
+        run: |
+          mkdir -p ~/.gnupg
+          chmod 700 ~/.gnupg
+          echo "${REGISTRY_GPG_PRIVATE_KEY}" | gpg --batch --import
+          key_id="${REGISTRY_GPG_KEY_ID}"
+          passphrase_file="/tmp/registry-gpg-passphrase"
+          printf "%s" "${REGISTRY_GPG_PASSPHRASE}" > "${passphrase_file}"
+          chmod 600 "${passphrase_file}"
+          cat > /tmp/gpg-wrapper.sh <<'EOF'
+          #!/usr/bin/env bash
+          exec gpg --batch --yes --pinentry-mode loopback --passphrase-file /tmp/registry-gpg-passphrase "$@"
+          EOF
+          chmod +x /tmp/gpg-wrapper.sh
+          git config user.name "StreamKit Registry Bot"
+          git config user.email "registry-bot@streamkit.dev"
+          git config user.signingkey "${key_id}"
+          git config commit.gpgsign true
+          git config gpg.program /tmp/gpg-wrapper.sh
+
       - name: Create pull request
         uses: peter-evans/create-pull-request@v6
         with:
-          branch: "registry/${{ env.RELEASE_TAG }}"
+          branch: "registry/${{ env.RELEASE_TAG }}-${{ github.run_id }}"
           title: "chore(registry): publish marketplace registry for ${{ env.RELEASE_TAG }}"
           commit-message: "chore(registry): publish marketplace registry for ${{ env.RELEASE_TAG }}"
           body: |
             Automated registry metadata update for `${{ env.RELEASE_TAG }}`.
+          delete-branch: true
           base: main

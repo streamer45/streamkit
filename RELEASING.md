@@ -63,6 +63,12 @@ and marketplace-only releases share the same reusable marketplace workflow
 Ensure "Allow GitHub Actions to create and approve pull requests" is enabled
 in repo settings so the registry PR can be opened automatically.
 
+Registry PR commits are signed by the workflow. Add these secrets:
+
+- `REGISTRY_GPG_PRIVATE_KEY`: ASCII-armored private key for the registry bot
+- `REGISTRY_GPG_PASSPHRASE`: passphrase for the private key
+- `REGISTRY_GPG_KEY_ID`: GPG key fingerprint for the registry bot
+
 ### Verify outputs
 
 - GitHub Release includes `*-bundle.tar.zst` assets.
