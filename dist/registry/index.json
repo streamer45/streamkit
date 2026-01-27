@@ -1,0 +1,117 @@
+{
+  "schema_version": 1,
+  "plugins": [
+    {
+      "id": "helsinki",
+      "name": "Helsinki",
+      "description": "Neural machine translation using OPUS-MT",
+      "latest": "0.1.0",
+      "versions": [
+        {
+          "version": "0.1.0",
+          "manifest_url": "https://streamkit.dev/registry/plugins/helsinki/0.1.0/manifest.json",
+          "signature_url": "https://streamkit.dev/registry/plugins/helsinki/0.1.0/manifest.minisig",
+          "published_at": "2026-01-27"
+        }
+      ]
+    },
+    {
+      "id": "kokoro",
+      "name": "Kokoro",
+      "description": "Text-to-speech using Sherpa-ONNX Kokoro models",
+      "latest": "0.1.0",
+      "versions": [
+        {
+          "version": "0.1.0",
+          "manifest_url": "https://streamkit.dev/registry/plugins/kokoro/0.1.0/manifest.json",
+          "signature_url": "https://streamkit.dev/registry/plugins/kokoro/0.1.0/manifest.minisig",
+          "published_at": "2026-01-27"
+        }
+      ]
+    },
+    {
+      "id": "matcha",
+      "name": "Matcha",
+      "description": "Text-to-speech using Matcha models",
+      "latest": "0.1.0",
+      "versions": [
+        {
+          "version": "0.1.0",
+          "manifest_url": "https://streamkit.dev/registry/plugins/matcha/0.1.0/manifest.json",
+          "signature_url": "https://streamkit.dev/registry/plugins/matcha/0.1.0/manifest.minisig",
+          "published_at": "2026-01-27"
+        }
+      ]
+    },
+    {
+      "id": "nllb",
+      "name": "NLLB",
+      "description": "Neural machine translation using NLLB",
+      "latest": "0.1.0",
+      "versions": [
+        {
+          "version": "0.1.0",
+          "manifest_url": "https://streamkit.dev/registry/plugins/nllb/0.1.0/manifest.json",
+          "signature_url": "https://streamkit.dev/registry/plugins/nllb/0.1.0/manifest.minisig",
+          "published_at": "2026-01-27"
+        }
+      ]
+    },
+    {
+      "id": "piper",
+      "name": "Piper",
+      "description": "Text-to-speech using Piper VITS models",
+      "latest": "0.1.0",
+      "versions": [
+        {
+          "version": "0.1.0",
+          "manifest_url": "https://streamkit.dev/registry/plugins/piper/0.1.0/manifest.json",
+          "signature_url": "https://streamkit.dev/registry/plugins/piper/0.1.0/manifest.minisig",
+          "published_at": "2026-01-27"
+        }
+      ]
+    },
+    {
+      "id": "sensevoice",
+      "name": "SenseVoice",
+      "description": "Streaming speech-to-text using SenseVoice",
+      "latest": "0.1.0",
+      "versions": [
+        {
+          "version": "0.1.0",
+          "manifest_url": "https://streamkit.dev/registry/plugins/sensevoice/0.1.0/manifest.json",
+          "signature_url": "https://streamkit.dev/registry/plugins/sensevoice/0.1.0/manifest.minisig",
+          "published_at": "2026-01-27"
+        }
+      ]
+    },
+    {
+      "id": "vad",
+      "name": "VAD",
+      "description": "Voice activity detection",
+      "latest": "0.1.0",
+      "versions": [
+        {
+          "version": "0.1.0",
+          "manifest_url": "https://streamkit.dev/registry/plugins/vad/0.1.0/manifest.json",
+          "signature_url": "https://streamkit.dev/registry/plugins/vad/0.1.0/manifest.minisig",
+          "published_at": "2026-01-27"
+        }
+      ]
+    },
+    {
+      "id": "whisper",
+      "name": "Whisper",
+      "description": "Streaming speech-to-text using whisper.cpp",
+      "latest": "0.1.1",
+      "versions": [
+        {
+          "version": "0.1.1",
+          "manifest_url": "https://streamkit.dev/registry/plugins/whisper/0.1.1/manifest.json",
+          "signature_url": "https://streamkit.dev/registry/plugins/whisper/0.1.1/manifest.minisig",
+          "published_at": "2026-01-27"
+        }
+      ]
+    }
+  ]
+}
