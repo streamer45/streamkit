@@ -11,7 +11,7 @@ require (
 	go.bytecodealliance.org/cm v0.3.0
 )
 
-replace github.com/streamkit/streamkit-codex/plugin-sdk/go => ../../../plugin-sdk/go
+replace github.com/streamkit/streamkit-codex/plugin-sdk/go => ../../../sdks/plugin-sdk/go
 
 require (
 	github.com/coreos/go-semver v0.3.1 // indirect
