@@ -204,15 +204,17 @@ directory = ".plugins"
 
 # Allow installing native plugins from the marketplace (default: false)
 # Native plugins run in-process; only enable for fully trusted registries.
-# allow_native_marketplace = false
+# The official StreamKit marketplace uses signed manifests and curated plugins.
+allow_native_marketplace = true
 
 # Minisign public keys (contents of `.pub` files) trusted for marketplace manifests
-# trusted_pubkeys = [
-#   "untrusted comment: minisign public key 81C485A94492F33F\nRWQ/85JEqYXEgX+2kl7Rwd8AcpVjYciSLzvLggzivbGyIrDPjfmcqjYP\n",
-# ]
+# This is the official StreamKit marketplace signing key.
+trusted_pubkeys = [
+    "untrusted comment: minisign public key 81C485A94492F33F\nRWQ/85JEqYXEgX+2kl7Rwd8AcpVjYciSLzvLggzivbGyIrDPjfmcqjYP\n",
+]
 
 # Marketplace registry index URLs (e.g., https://example.com/index.json)
-# registries = ["https://streamkit.dev/marketplace/index.json"]
+registries = ["https://streamkit.dev/marketplace/index.json"]
 
 # Marketplace security controls
 # allow_model_urls = false
