@@ -10,6 +10,7 @@ use streamkit_engine::Engine;
 
 use crate::auth::AuthState;
 use crate::config::Config;
+use crate::marketplace_installer::InstallJobQueue;
 use crate::plugins::SharedUnifiedPluginManager;
 use crate::session::SessionManager;
 
@@ -23,6 +24,7 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub event_tx: broadcast::Sender<ApiEvent>,
     pub plugin_manager: SharedUnifiedPluginManager,
+    pub marketplace_jobs: InstallJobQueue,
     pub auth: Arc<AuthState>,
     #[cfg(feature = "moq")]
     pub moq_gateway: Option<Arc<MoqGateway>>,

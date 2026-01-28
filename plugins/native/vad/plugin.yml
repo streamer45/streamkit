@@ -16,6 +16,7 @@ models:
   revision: main
   files:
   - ten-vad.onnx
+  expected_size_bytes: 332211
   license: LicenseRef-ten-vad
   license_url: https://github.com/TEN-framework/ten-vad
   sha256: 718cb7eef47e3cf5ddbe7e967a7503f46b8b469c0706872f494dfa921b486206

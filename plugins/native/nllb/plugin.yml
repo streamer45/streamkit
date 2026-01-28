@@ -16,5 +16,6 @@ models:
   revision: main
   files:
   - nllb-200-distilled-600M-ct2-int8.tar.bz2
+  expected_size_bytes: 1135260128
   license: CC-BY-NC-4.0
   license_url: https://huggingface.co/facebook/nllb-200-distilled-600M

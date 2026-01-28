@@ -20,6 +20,11 @@ use streamkit_plugin_wasm::{
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
+use crate::{
+    marketplace::PluginKind,
+    plugin_paths,
+    plugin_records::{active_dir as plugin_active_dir, namespaced_kind as active_namespaced_kind},
+};
 /// The type of plugin
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -37,6 +42,7 @@ pub struct PluginSummary {
     pub categories: Vec<String>,
     pub loaded_at_ms: u128,
     pub plugin_type: PluginType,
+    pub version: Option<String>,
 }
 
 impl PluginSummary {
@@ -64,6 +70,7 @@ impl PluginSummary {
             categories: entry.categories.clone(),
             loaded_at_ms,
             plugin_type: entry.plugin_type,
+            version: entry.version.clone(),
         }
     }
 }
@@ -81,6 +88,7 @@ struct ManagedPlugin {
     loaded_at: SystemTime,
     original_kind: String,
     plugin_type: PluginType,
+    version: Option<String>,
 }
 
 impl ManagedPlugin {
@@ -97,6 +105,7 @@ impl ManagedPlugin {
             loaded_at: SystemTime::now(),
             original_kind,
             plugin_type: PluginType::Wasm,
+            version: None,
         }
     }
 
@@ -113,6 +122,7 @@ impl ManagedPlugin {
             loaded_at: SystemTime::now(),
             original_kind,
             plugin_type: PluginType::Native,
+            version: None,
         }
     }
 }
@@ -121,6 +131,7 @@ impl ManagedPlugin {
 pub struct UnifiedPluginManager {
     wasm_runtime: PluginRuntime,
     plugins: HashMap<String, ManagedPlugin>,
+    plugin_base_dir: PathBuf,
     wasm_directory: PathBuf,
     native_directory: PathBuf,
     engine: Arc<Engine>,
@@ -142,6 +153,7 @@ impl UnifiedPluginManager {
     pub fn new(
         engine: Arc<Engine>,
         resource_manager: Arc<streamkit_core::ResourceManager>,
+        plugin_base_dir: PathBuf,
         wasm_directory: PathBuf,
         native_directory: PathBuf,
     ) -> Result<Self> {
@@ -164,6 +176,7 @@ impl UnifiedPluginManager {
         Ok(Self {
             wasm_runtime,
             plugins: HashMap::new(),
+            plugin_base_dir,
             wasm_directory,
             native_directory,
             engine,
@@ -241,6 +254,135 @@ impl UnifiedPluginManager {
         Ok(summaries)
     }
 
+    /// Load marketplace-managed plugins using active records.
+    fn load_active_plugins_from_dir(&mut self) -> Result<Vec<PluginSummary>> {
+        let active_dir = plugin_active_dir(&self.plugin_base_dir);
+        if !active_dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let base_real = std::fs::canonicalize(&self.plugin_base_dir).ok();
+        let mut summaries = Vec::new();
+
+        for entry in std::fs::read_dir(&active_dir).with_context(|| {
+            format!("failed to read active plugins dir {}", active_dir.display())
+        })? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+
+            if let Some(summary) = self.load_active_plugin_record(&path, base_real.as_deref()) {
+                summaries.push(summary);
+            }
+        }
+
+        Ok(summaries)
+    }
+
+    fn load_active_plugin_record(
+        &mut self,
+        record_path: &Path,
+        base_real: Option<&Path>,
+    ) -> Option<PluginSummary> {
+        let record = Self::read_active_record(record_path)?;
+        if let Err(err) = plugin_paths::validate_path_component("plugin id", &record.plugin_id) {
+            warn!(error = %err, file = ?record_path, "Invalid plugin id in active record");
+            return None;
+        }
+        if let Err(err) = plugin_paths::validate_path_component("plugin version", &record.version) {
+            warn!(error = %err, file = ?record_path, "Invalid plugin version in active record");
+            return None;
+        }
+        let entrypoint_path = Self::validate_active_entrypoint(record_path, &record, base_real)?;
+
+        let expected_kind = active_namespaced_kind(&record);
+        let plugin_type = match record.kind {
+            PluginKind::Wasm => PluginType::Wasm,
+            PluginKind::Native => PluginType::Native,
+        };
+
+        let mut summary = match self.load_from_path(plugin_type, &entrypoint_path) {
+            Ok(summary) => summary,
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    kind = %expected_kind,
+                    entrypoint = %entrypoint_path.display(),
+                    "Failed to load active plugin"
+                );
+                return None;
+            },
+        };
+
+        if summary.kind != expected_kind {
+            let actual_kind = summary.kind;
+            warn!(
+                expected = %expected_kind,
+                actual = %actual_kind,
+                "Active plugin kind does not match record"
+            );
+            let _ = self.unload_plugin(&actual_kind, false);
+            return None;
+        }
+
+        let version = record.version;
+        if let Some(managed) = self.plugins.get_mut(&summary.kind) {
+            managed.version = Some(version.clone());
+        }
+        summary.version = Some(version);
+
+        Some(summary)
+    }
+
+    fn read_active_record(record_path: &Path) -> Option<crate::plugin_records::ActivePluginRecord> {
+        let record_bytes = match std::fs::read(record_path) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                warn!(error = %err, file = ?record_path, "Failed to read active plugin record");
+                return None;
+            },
+        };
+        match serde_json::from_slice(&record_bytes) {
+            Ok(record) => Some(record),
+            Err(err) => {
+                warn!(error = %err, file = ?record_path, "Failed to parse active plugin record");
+                None
+            },
+        }
+    }
+
+    fn validate_active_entrypoint(
+        record_path: &Path,
+        record: &crate::plugin_records::ActivePluginRecord,
+        base_real: Option<&Path>,
+    ) -> Option<PathBuf> {
+        let entrypoint_path = PathBuf::from(&record.entrypoint);
+        if !entrypoint_path.exists() {
+            warn!(
+                file = ?record_path,
+                entrypoint = %entrypoint_path.display(),
+                "Active plugin entrypoint missing"
+            );
+            return None;
+        }
+        if let (Some(base_real), Ok(entrypoint_real)) =
+            (base_real, std::fs::canonicalize(&entrypoint_path))
+        {
+            if !entrypoint_real.starts_with(base_real) {
+                warn!(
+                    file = ?record_path,
+                    entrypoint = %entrypoint_real.display(),
+                    "Active plugin entrypoint is outside plugin directory"
+                );
+                return None;
+            }
+        }
+
+        Some(entrypoint_path)
+    }
+
     /// Loads all existing plugins from both WASM and native directories.
     /// Native plugins are loaded first as they are faster to initialize.
     ///
@@ -249,7 +391,8 @@ impl UnifiedPluginManager {
     /// Returns an error if the plugin directories cannot be read.
     /// Individual plugin load failures are logged but do not prevent other plugins from loading.
     pub fn load_existing(&mut self) -> Result<Vec<PluginSummary>> {
-        let mut summaries = self.load_native_plugins_from_dir()?;
+        let mut summaries = self.load_active_plugins_from_dir()?;
+        summaries.extend(self.load_native_plugins_from_dir()?);
         summaries.extend(self.load_wasm_plugins_from_dir()?);
         Ok(summaries)
     }
@@ -314,9 +457,20 @@ impl UnifiedPluginManager {
         tokio::spawn(async move {
             info!("Starting background plugin loading");
 
-            let result = {
-                let mut mgr = manager.lock().await;
-                mgr.load_existing()
+            let result = match tokio::task::spawn_blocking({
+                let manager = Arc::clone(&manager);
+                move || {
+                    let mut mgr = manager.blocking_lock();
+                    mgr.load_existing()
+                }
+            })
+            .await
+            {
+                Ok(result) => result,
+                Err(err) => {
+                    warn!(error = %err, "Plugin load task panicked");
+                    return;
+                },
             };
 
             match result {
@@ -603,6 +757,11 @@ impl UnifiedPluginManager {
             .collect()
     }
 
+    /// Returns true if the plugin kind is currently loaded.
+    pub fn is_plugin_loaded(&self, kind: &str) -> bool {
+        self.plugins.contains_key(kind)
+    }
+
     /// Helper method to update the loaded plugins gauge by counting each type
     fn update_loaded_gauge(&self) {
         let wasm_count =
@@ -747,6 +906,19 @@ impl UnifiedPluginManager {
             PluginType::Wasm => self.load_wasm_plugin(target_path),
             PluginType::Native => self.load_native_plugin(target_path),
         }
+    }
+
+    /// Loads a plugin from an existing on-disk path without moving it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the plugin fails to load.
+    pub fn load_from_path<P: AsRef<Path>>(
+        &mut self,
+        plugin_type: PluginType,
+        path: P,
+    ) -> Result<PluginSummary> {
+        self.load_from_written_path(plugin_type, path.as_ref().to_path_buf())
     }
 }
 

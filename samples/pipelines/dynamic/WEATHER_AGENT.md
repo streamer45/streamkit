@@ -19,7 +19,7 @@ This sample pipeline turns voice questions into spoken weather answers:
 
 ## Prerequisites
 
-- Whisper STT model: `models/ggml-base.en-q5_1.bin`
+- Whisper STT model: `models/ggml-tiny.en-q5_1.bin`
 - Silero VAD model: `models/silero_vad.onnx`
 - Kokoro model dir: `models/kokoro-multi-lang-v1_1`
 

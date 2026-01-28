@@ -38,46 +38,46 @@ No outputs.
 ```json
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MoqPushConfig",
+  "type": "object",
   "properties": {
-    "broadcast": {
-      "default": "",
-      "type": "string"
-    },
-    "channels": {
-      "default": 2,
-      "format": "uint32",
-      "minimum": 0,
-      "type": "integer"
-    },
-    "group_duration_ms": {
-      "default": 40,
-      "description": "Duration of each MoQ group in milliseconds.\nSmaller groups = lower latency but more overhead.\nLarger groups = higher latency but better efficiency.\nDefault: 40ms (2 Opus frames at 20ms each).\nFor real-time applications, use 20-60ms. For high-latency networks, use 100ms+.",
-      "format": "uint64",
-      "minimum": 0,
-      "type": "integer"
-    },
-    "initial_delay_ms": {
-      "default": 0,
-      "description": "Adds a timestamp offset (playout delay) so receivers can buffer before playback.\n\nThis is especially helpful when subscribers are on higher-latency / higher-jitter links,\nand the client begins playback as soon as it sees the first frame.\n\nDefault: 0 (no added delay).",
-      "format": "uint64",
-      "minimum": 0,
-      "type": "integer"
+    "url": {
+      "type": "string",
+      "default": ""
     },
     "jwt": {
-      "default": null,
       "description": "Optional JWT for authenticated MoQ relays. When set, it is appended as `?jwt=...`.\n\nThis is compatible with moq-relay and StreamKit's built-in MoQ auth.",
       "type": [
         "string",
         "null"
-      ]
+      ],
+      "default": null
     },
-    "url": {
-      "default": "",
-      "type": "string"
+    "broadcast": {
+      "type": "string",
+      "default": ""
+    },
+    "channels": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0,
+      "default": 2
+    },
+    "group_duration_ms": {
+      "description": "Duration of each MoQ group in milliseconds.\nSmaller groups = lower latency but more overhead.\nLarger groups = higher latency but better efficiency.\nDefault: 40ms (2 Opus frames at 20ms each).\nFor real-time applications, use 20-60ms. For high-latency networks, use 100ms+.",
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0,
+      "default": 40
+    },
+    "initial_delay_ms": {
+      "description": "Adds a timestamp offset (playout delay) so receivers can buffer before playback.\n\nThis is especially helpful when subscribers are on higher-latency / higher-jitter links,\nand the client begins playback as soon as it sees the first frame.\n\nDefault: 0 (no added delay).",
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0,
+      "default": 0
     }
-  },
-  "title": "MoqPushConfig",
-  "type": "object"
+  }
 }
 ```
 

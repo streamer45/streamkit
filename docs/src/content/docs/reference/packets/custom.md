@@ -100,59 +100,21 @@ Custom packets are carried as `Packet::Custom(Arc<CustomPacketData>)`.
 
 ```json
 {
-  "$defs": {
-    "CustomEncoding": {
-      "description": "Encoding for [`Packet::Custom`] payloads.\n\nThis is intentionally extensible. For now we keep things user-friendly and debuggable.",
-      "oneOf": [
-        {
-          "const": "json",
-          "description": "UTF-8 JSON value (object/array/string/number/bool/null).",
-          "type": "string"
-        }
-      ]
-    },
-    "PacketMetadata": {
-      "description": "Optional timing and sequencing metadata that can be attached to packets.\nUsed for pacing, synchronization, and A/V alignment.",
-      "properties": {
-        "duration_us": {
-          "description": "Duration of this packet/frame in microseconds",
-          "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "sequence": {
-          "description": "Sequence number for ordering and detecting loss",
-          "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "timestamp_us": {
-          "description": "Absolute timestamp in microseconds (presentation time)",
-          "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        }
-      },
-      "type": "object"
-    }
-  },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CustomPacketData",
   "description": "Extensible structured packet data.",
+  "type": "object",
   "properties": {
-    "data": true,
+    "type_id": {
+      "description": "Namespaced, versioned type id (e.g., `plugin::native::vad/vad-event@1`).",
+      "type": "string"
+    },
     "encoding": {
       "$ref": "#/$defs/CustomEncoding"
     },
+    "data": true,
     "metadata": {
+      "description": "Optional timing/ordering metadata.",
       "anyOf": [
         {
           "$ref": "#/$defs/PacketMetadata"
@@ -160,12 +122,7 @@ Custom packets are carried as `Packet::Custom(Arc<CustomPacketData>)`.
         {
           "type": "null"
         }
-      ],
-      "description": "Optional timing/ordering metadata."
-    },
-    "type_id": {
-      "description": "Namespaced, versioned type id (e.g., `plugin::native::vad/vad-event@1`).",
-      "type": "string"
+      ]
     }
   },
   "required": [
@@ -173,8 +130,51 @@ Custom packets are carried as `Packet::Custom(Arc<CustomPacketData>)`.
     "encoding",
     "data"
   ],
-  "title": "CustomPacketData",
-  "type": "object"
+  "$defs": {
+    "CustomEncoding": {
+      "description": "Encoding for [`Packet::Custom`] payloads.\n\nThis is intentionally extensible. For now we keep things user-friendly and debuggable.",
+      "oneOf": [
+        {
+          "description": "UTF-8 JSON value (object/array/string/number/bool/null).",
+          "type": "string",
+          "const": "json"
+        }
+      ]
+    },
+    "PacketMetadata": {
+      "description": "Optional timing and sequencing metadata that can be attached to packets.\nUsed for pacing, synchronization, and A/V alignment. See `timing` module for\ncanonical semantics (media-time epoch, monotonicity, and preservation rules).",
+      "type": "object",
+      "properties": {
+        "timestamp_us": {
+          "description": "Absolute timestamp in microseconds (presentation time)",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "duration_us": {
+          "description": "Duration of this packet/frame in microseconds",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "sequence": {
+          "description": "Sequence number for ordering and detecting loss",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      }
+    }
+  }
 }
 ```
 

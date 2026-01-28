@@ -20,6 +20,10 @@ use serde_json::json;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
+use streamkit_server::marketplace::PluginKind;
+use streamkit_server::plugin_records::{
+    active_dir as plugin_active_dir, record_path as plugin_record_path, ActivePluginRecord,
+};
 use streamkit_server::Config;
 use tokio::fs;
 use tokio::net::TcpListener;
@@ -50,7 +54,13 @@ impl TestServer {
         let temp_dir = tempfile::tempdir().unwrap();
         let plugins_dir = temp_dir.path().join("plugins");
         fs::create_dir_all(&plugins_dir).await.unwrap();
+        Self::start_with_dirs(temp_dir, plugins_dir).await
+    }
 
+    async fn start_with_dirs(
+        temp_dir: tempfile::TempDir,
+        plugins_dir: std::path::PathBuf,
+    ) -> Option<Self> {
         let listener = match TcpListener::bind("127.0.0.1:0").await {
             Ok(listener) => listener,
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return None,
@@ -60,7 +70,7 @@ impl TestServer {
 
         let mut config = Config::default();
         config.plugins.directory = plugins_dir.to_string_lossy().to_string();
-        config.plugins.allow_http_management = true;
+        config.plugins.http_management.allow_http_management = true;
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
         let handle = tokio::spawn(async move {
@@ -85,6 +95,25 @@ impl TestServer {
             handle.abort();
             let _ = handle.await;
         }
+    }
+}
+
+async fn wait_for_plugin(client: &reqwest::Client, url: &str, kind: &str) -> bool {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        if tokio::time::Instant::now() > deadline {
+            return false;
+        }
+        if let Ok(response) = client.get(url).send().await {
+            if response.status().is_success() {
+                if let Ok(plugins) = response.json::<Vec<serde_json::Value>>().await {
+                    if plugins.iter().any(|entry| entry.get("kind") == Some(&json!(kind))) {
+                        return true;
+                    }
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 
@@ -328,6 +357,107 @@ async fn test_native_plugin_in_pipeline() {
     }
 
     println!("✅ Plugin node successfully added to pipeline");
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_load_active_plugin_on_startup() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let _permit = acquire_test_permit().await;
+
+    let plugin_path = ensure_gain_plugin_built().await;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let plugins_dir = temp_dir.path().join("plugins");
+    fs::create_dir_all(&plugins_dir).await.unwrap();
+
+    let bundle_dir = plugins_dir.join("bundles").join("gain").join("1.0.0");
+    fs::create_dir_all(&bundle_dir).await.unwrap();
+    let entrypoint_path = bundle_dir
+        .join(plugin_path.file_name().expect("plugin file name").to_string_lossy().to_string());
+    fs::copy(&plugin_path, &entrypoint_path).await.unwrap();
+
+    fs::create_dir_all(plugin_active_dir(&plugins_dir)).await.unwrap();
+    let record = ActivePluginRecord {
+        plugin_id: "gain".to_string(),
+        version: "1.0.0".to_string(),
+        node_kind: "gain".to_string(),
+        kind: PluginKind::Native,
+        entrypoint: entrypoint_path.to_string_lossy().into_owned(),
+        installed_at_ms: 0,
+    };
+    let record_path = plugin_record_path(&plugins_dir, "gain").unwrap();
+    fs::write(&record_path, serde_json::to_vec_pretty(&record).unwrap()).await.unwrap();
+
+    let Some(server) = TestServer::start_with_dirs(temp_dir, plugins_dir).await else {
+        eprintln!("Skipping plugin integration tests: local TCP bind not permitted");
+        return;
+    };
+
+    let client = reqwest::Client::new();
+    let url = format!("http://{}/api/v1/plugins", server.addr);
+
+    assert!(
+        wait_for_plugin(&client, &url, "plugin::native::gain").await,
+        "Expected plugin to load from active record"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_uninstall_marketplace_plugin_removes_bundle() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let _permit = acquire_test_permit().await;
+
+    let plugin_path = ensure_gain_plugin_built().await;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let plugins_dir = temp_dir.path().join("plugins");
+    fs::create_dir_all(&plugins_dir).await.unwrap();
+
+    let bundle_dir = plugins_dir.join("bundles").join("gain").join("1.0.0");
+    fs::create_dir_all(&bundle_dir).await.unwrap();
+    let entrypoint_path = bundle_dir
+        .join(plugin_path.file_name().expect("plugin file name").to_string_lossy().to_string());
+    fs::copy(&plugin_path, &entrypoint_path).await.unwrap();
+
+    fs::create_dir_all(plugin_active_dir(&plugins_dir)).await.unwrap();
+    let record = ActivePluginRecord {
+        plugin_id: "gain".to_string(),
+        version: "1.0.0".to_string(),
+        node_kind: "gain".to_string(),
+        kind: PluginKind::Native,
+        entrypoint: entrypoint_path.to_string_lossy().into_owned(),
+        installed_at_ms: 0,
+    };
+    let record_path = plugin_record_path(&plugins_dir, "gain").unwrap();
+    fs::write(&record_path, serde_json::to_vec_pretty(&record).unwrap()).await.unwrap();
+
+    let Some(server) = TestServer::start_with_dirs(temp_dir, plugins_dir.clone()).await else {
+        eprintln!("Skipping plugin integration tests: local TCP bind not permitted");
+        return;
+    };
+
+    let client = reqwest::Client::new();
+    let url = format!("http://{}/api/v1/plugins", server.addr);
+    assert!(
+        wait_for_plugin(&client, &url, "plugin::native::gain").await,
+        "Expected plugin to load from active record"
+    );
+
+    let unload_url = format!("http://{}/api/v1/plugins/plugin%3A%3Anative%3A%3Again", server.addr);
+    let response = client.delete(&unload_url).send().await.expect("Failed to unload");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let plugins: Vec<serde_json::Value> =
+        client.get(&url).send().await.unwrap().json().await.unwrap();
+    assert_eq!(plugins.len(), 0, "Plugin should be unloaded");
+
+    assert!(!tokio::fs::try_exists(&record_path).await.unwrap(), "Active record should be removed");
+    assert!(
+        !tokio::fs::try_exists(&bundle_dir).await.unwrap(),
+        "Bundle directory should be removed"
+    );
+
     server.shutdown().await;
 }
 

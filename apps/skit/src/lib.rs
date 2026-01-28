@@ -8,9 +8,14 @@ pub mod cli;
 pub mod config;
 pub mod file_security;
 pub mod logging;
+pub mod marketplace;
+pub mod marketplace_installer;
+pub mod marketplace_security;
 #[cfg(feature = "moq")]
 pub mod moq_gateway;
 pub mod permissions;
+pub mod plugin_paths;
+pub mod plugin_records;
 pub mod plugins;
 pub mod profiling;
 pub mod role_extractor;

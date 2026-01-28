@@ -12,7 +12,7 @@
 # making them suitable for commercial deployments.
 #
 # Prerequisites:
-#   - English Whisper model: models/ggml-base.en-q5_1.bin
+#   - English Whisper model: models/ggml-tiny.en-q5_1.bin
 #   - Silero VAD model: models/silero_vad.onnx
 #   - Helsinki OPUS-MT EN->ES: models/opus-mt-en-es
 #   - Mexican Spanish Piper voice: models/vits-piper-es_MX-claude-high
@@ -63,7 +63,7 @@ nodes:
   whisper_stt:
     kind: plugin::native::whisper
     params:
-      model_path: models/ggml-base.en-q5_1.bin
+      model_path: models/ggml-tiny.en-q5_1.bin
       language: en
       vad_model_path: models/silero_vad.onnx
       vad_threshold: 0.4

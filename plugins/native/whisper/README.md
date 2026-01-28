@@ -56,7 +56,7 @@ The plugin uses a two-stage architecture:
 ## Configuration Parameters
 
 ```yaml
-model_path: "models/ggml-base.en-q5_1.bin" # Path to Whisper GGML model
+model_path: "models/ggml-tiny.en-q5_1.bin" # Path to Whisper GGML model
 language: "en"                              # Language code (en, es, fr, etc.)
 vad_model_path: "models/silero_vad.onnx"   # Path to Silero VAD model
 vad_threshold: 0.5                          # Speech probability threshold (0.0-1.0)
@@ -102,32 +102,20 @@ just install-plugins
 
 ### Whisper Models
 
-Whisper requires GGML model files. Download them from the [official repository](https://huggingface.co/ggerganov/whisper.cpp/tree/main):
+Whisper requires GGML model files. StreamKit mirrors the recommended models on Hugging Face for
+official plugin installs:
 
 ```bash
 # Create models directory in repo root
 mkdir -p models
 
-# Download base.en-q5_1 model (recommended, 60MB, quantized for faster performance)
+# Download tiny.en-q5_1 model (recommended for quick tests)
+curl -L -o models/ggml-tiny.en-q5_1.bin \
+  https://huggingface.co/streamkit/whisper-models/resolve/main/ggml-tiny.en-q5_1.bin
+
+# Optional: base.en-q5_1 model (higher quality)
 curl -L -o models/ggml-base.en-q5_1.bin \
-  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q5_1.bin
-
-# Or download other models:
-# Full precision base.en (148MB, slightly better quality)
-curl -L -o models/ggml-base.en.bin \
-  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
-
-# Q8 quantization (82MB, better quality than q5_1)
-curl -L -o models/ggml-base.en-q8_0.bin \
-  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q8_0.bin
-
-# tiny.en (75MB, fastest, ~40x realtime)
-curl -L -o models/ggml-tiny.en.bin \
-  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin
-
-# small.en (466MB, higher accuracy, ~2-10x realtime)
-curl -L -o models/ggml-small.en.bin \
-  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin
+  https://huggingface.co/streamkit/whisper-models/resolve/main/ggml-base.en-q5_1.bin
 ```
 
 ### VAD Model Setup
@@ -137,7 +125,7 @@ Download the Silero VAD v6 ONNX model:
 ```bash
 # Download Silero VAD model (3.5MB)
 curl -L -o models/silero_vad.onnx \
-  https://raw.githubusercontent.com/snakers4/silero-vad/master/src/silero_vad/data/silero_vad.onnx
+  https://huggingface.co/streamkit/whisper-models/resolve/main/silero_vad.onnx
 ```
 
 **Note**: The VAD model is required for the plugin to function. Without it, initialization will fail.
@@ -253,7 +241,7 @@ Error: Failed to load VAD model from 'models/silero_vad.onnx'
 
 **Solution**: Ensure both model files exist:
 ```bash
-ls -lh models/ggml-base.en-q5_1.bin models/silero_vad.onnx
+ls -lh models/ggml-tiny.en-q5_1.bin models/silero_vad.onnx
 ```
 
 Download missing models using the commands in [Model Setup](#model-setup).
@@ -284,7 +272,7 @@ Download missing models using the commands in [Model Setup](#model-setup).
 
 ### Slow performance
 
-1. **Use smaller model**: Try `ggml-tiny.en.bin` instead of base/small
+1. **Use smaller model**: Try `ggml-tiny.en-q5_1.bin` instead of base/small
 2. **Check CPU usage**: Ensure other processes aren't competing
 3. **Verify VAD overhead**: VAD adds <1ms per 32ms frame (~3% overhead)
 

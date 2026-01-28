@@ -116,6 +116,50 @@ Uploaded plugins are registered under:
 - `plugin::native::<kind>` for native libraries
 - `plugin::wasm::<kind>` for WASM components
 
+## Marketplace
+
+Marketplace browsing (admin-only):
+
+- `GET /api/v1/marketplace/registries`
+- `GET /api/v1/marketplace/plugins?registry=<id>&q=<query>`
+- `GET /api/v1/marketplace/plugins/{plugin_id}?registry=<id>&version=<version>`
+
+Marketplace URL security defaults:
+
+- HTTPS required, localhost/private/link-local/multicast hosts blocked
+- same-origin enforcement for manifest/signature/bundle URLs is optional
+- allowlists never bypass HTTPS or host/IP blocking
+- redirects are validated per-hop, so allowlist must cover every host in the chain (e.g. GitHub
+  Releases uses `github.com` plus `objects.githubusercontent.com` or `release-assets.githubusercontent.com`)
+
+Install jobs:
+
+- `POST /api/v1/plugins/install`
+  - Body: `{ "registry": "...", "plugin_id": "...", "version"?: "...", "install_models"?: bool, "model_ids"?: string[] }`
+- `GET /api/v1/jobs/{job_id}`
+- `POST /api/v1/jobs/{job_id}/cancel`
+
+Example job response:
+
+```json
+{
+  "status": "running",
+  "started_at_ms": 1730000000000,
+  "updated_at_ms": 1730000005000,
+  "summary": "Downloading bundle",
+  "steps": [
+    {
+      "name": "download_bundle",
+      "status": "running",
+      "progress": {
+        "bytes_done": 1048576,
+        "bytes_total": 2097152
+      }
+    }
+  ]
+}
+```
+
 ## Sample Pipelines
 
 Sample pipelines are used by the UI. They live under `[server].samples_dir` (default: `./samples/pipelines`). Permission allowlists for samples (`allowed_samples`) are evaluated against paths relative to that directory (e.g. `oneshot/*.yml`).

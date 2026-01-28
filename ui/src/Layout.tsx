@@ -321,7 +321,7 @@ const Layout: React.FC = () => {
           <StyledNavLink to="/monitor">Monitor</StyledNavLink>
           <StyledNavLink to="/convert">Convert</StyledNavLink>
           <StyledNavLink to="/stream">Stream</StyledNavLink>
-          {role === 'admin' && <StyledNavLink to="/admin/tokens">Admin</StyledNavLink>}
+          {role === 'admin' && <StyledNavLink to="/admin">Admin</StyledNavLink>}
         </NavLinks>
         <NavControls>
           <DesktopNavControls>

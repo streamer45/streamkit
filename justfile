@@ -442,20 +442,28 @@ download-silero-vad:
         echo "✓ Silero VAD model already exists at models/silero_vad.onnx"; \
     else \
         curl -L -o models/silero_vad.onnx \
-            https://raw.githubusercontent.com/snakers4/silero-vad/master/src/silero_vad/data/silero_vad.onnx && \
+            https://huggingface.co/streamkit/whisper-models/resolve/main/silero_vad.onnx && \
         echo "✓ Silero VAD model downloaded to models/silero_vad.onnx ($(du -h models/silero_vad.onnx | cut -f1))"; \
     fi
 
-# Download Whisper models (base.en quantized)
+# Download Whisper models (tiny + base)
 download-whisper-models:
     @echo "Downloading Whisper models..."
     @mkdir -p models
+    @if [ -f models/ggml-tiny.en-q5_1.bin ]; then \
+        echo "✓ Whisper tiny.en model already exists at models/ggml-tiny.en-q5_1.bin"; \
+    else \
+        echo "Downloading ggml-tiny.en-q5_1.bin (~31MB)..." && \
+        curl -L -o models/ggml-tiny.en-q5_1.bin \
+            https://huggingface.co/streamkit/whisper-models/resolve/main/ggml-tiny.en-q5_1.bin && \
+        echo "✓ Whisper tiny.en model downloaded to models/ggml-tiny.en-q5_1.bin ($(du -h models/ggml-tiny.en-q5_1.bin | cut -f1))"; \
+    fi
     @if [ -f models/ggml-base.en-q5_1.bin ]; then \
         echo "✓ Whisper base.en model already exists at models/ggml-base.en-q5_1.bin"; \
     else \
         echo "Downloading ggml-base.en-q5_1.bin (~58MB)..." && \
         curl -L -o models/ggml-base.en-q5_1.bin \
-            https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q5_1.bin && \
+            https://huggingface.co/streamkit/whisper-models/resolve/main/ggml-base.en-q5_1.bin && \
         echo "✓ Whisper base.en model downloaded to models/ggml-base.en-q5_1.bin ($(du -h models/ggml-base.en-q5_1.bin | cut -f1))"; \
     fi
 

@@ -21,6 +21,7 @@ import ConvertView from './views/ConvertView';
 import DesignView from './views/DesignView';
 import LoginView from './views/LoginView';
 import MonitorView from './views/MonitorView';
+import PluginsView from './views/PluginsView';
 import StreamView from './views/StreamView';
 import TokensView from './views/TokensView';
 
@@ -116,6 +117,8 @@ const App: React.FC = () => {
                     <Route path="monitor" element={<MonitorView />} />
                     <Route path="convert" element={<ConvertView />} />
                     <Route path="stream" element={<StreamView />} />
+                    <Route path="admin" element={<Navigate to="/admin/plugins" replace />} />
+                    <Route path="admin/plugins" element={<PluginsView />} />
                     <Route path="admin/tokens" element={<TokensView />} />
                   </Route>
                 </Routes>
