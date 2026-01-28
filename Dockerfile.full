@@ -157,14 +157,12 @@ RUN --mount=type=cache,id=cargo-registry-whisper,target=/usr/local/cargo/registr
 
 # Download Whisper models (base.en and tiny.en) and Silero VAD model
 RUN mkdir -p /build/models && \
-    curl -L -o /build/models/ggml-base.en.bin \
-      https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin && \
     curl -L -o /build/models/ggml-base.en-q5_1.bin \
-      https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q5_1.bin && \
+      https://huggingface.co/streamkit/whisper-models/resolve/main/ggml-base.en-q5_1.bin && \
     curl -L -o /build/models/ggml-tiny.en-q5_1.bin \
-      https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en-q5_1.bin && \
+      https://huggingface.co/streamkit/whisper-models/resolve/main/ggml-tiny.en-q5_1.bin && \
     curl -L -o /build/models/silero_vad.onnx \
-      https://raw.githubusercontent.com/snakers4/silero-vad/master/src/silero_vad/data/silero_vad.onnx
+      https://huggingface.co/streamkit/whisper-models/resolve/main/silero_vad.onnx
 
 # Stage 5: Build Kokoro TTS plugin
 FROM rust:1.92-slim-bookworm AS kokoro-builder
@@ -209,7 +207,8 @@ RUN --mount=type=cache,id=cargo-registry-kokoro,target=/usr/local/cargo/registry
 # Download Kokoro TTS models
 RUN mkdir -p /build/models && \
     cd /build/models && \
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_1.tar.bz2 && \
+    curl -L -o kokoro-multi-lang-v1_1.tar.bz2 \
+      https://huggingface.co/streamkit/kokoro-models/resolve/main/kokoro-multi-lang-v1_1.tar.bz2 && \
     tar xf kokoro-multi-lang-v1_1.tar.bz2 && \
     rm kokoro-multi-lang-v1_1.tar.bz2
 
@@ -252,7 +251,8 @@ RUN --mount=type=cache,id=cargo-registry-piper,target=/usr/local/cargo/registry 
 # Download Piper TTS models
 RUN mkdir -p /build/models && \
     cd /build/models && \
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-libritts_r-medium.tar.bz2 && \
+    curl -L -o vits-piper-en_US-libritts_r-medium.tar.bz2 \
+      https://huggingface.co/streamkit/piper-models/resolve/main/vits-piper-en_US-libritts_r-medium.tar.bz2 && \
     tar xf vits-piper-en_US-libritts_r-medium.tar.bz2 && \
     rm vits-piper-en_US-libritts_r-medium.tar.bz2 && \
     cd vits-piper-en_US-libritts_r-medium && \
@@ -299,7 +299,8 @@ RUN --mount=type=cache,id=cargo-registry-sensevoice,target=/usr/local/cargo/regi
 # Download SenseVoice models
 RUN mkdir -p /build/models && \
     cd /build/models && \
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2 && \
+    curl -L -o sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2 \
+      https://huggingface.co/streamkit/sensevoice-models/resolve/main/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2 && \
     tar xf sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2 && \
     rm sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2
 
@@ -342,7 +343,7 @@ RUN --mount=type=cache,id=cargo-registry-vad,target=/usr/local/cargo/registry \
 # Download ten-vad model
 RUN mkdir -p /build/models && \
     curl -L -o /build/models/ten-vad.onnx \
-      https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/ten-vad.onnx
+      https://huggingface.co/streamkit/vad-models/resolve/main/ten-vad.onnx
 
 # Stage 9: Build Matcha TTS plugin
 FROM rust:1.92-slim-bookworm AS matcha-builder
@@ -383,11 +384,13 @@ RUN --mount=type=cache,id=cargo-registry-matcha,target=/usr/local/cargo/registry
 # Download Matcha TTS models
 RUN mkdir -p /build/models && \
     cd /build/models && \
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/matcha-icefall-en_US-ljspeech.tar.bz2 && \
+    curl -L -o matcha-icefall-en_US-ljspeech.tar.bz2 \
+      https://huggingface.co/streamkit/matcha-models/resolve/main/matcha-icefall-en_US-ljspeech.tar.bz2 && \
     tar xf matcha-icefall-en_US-ljspeech.tar.bz2 && \
     rm matcha-icefall-en_US-ljspeech.tar.bz2 && \
     cd matcha-icefall-en_US-ljspeech && \
-    wget -O vocos-22khz-univ.onnx https://github.com/k2-fsa/sherpa-onnx/releases/download/vocoder-models/vocos-22khz-univ.onnx
+    curl -L -o vocos-22khz-univ.onnx \
+      https://huggingface.co/streamkit/matcha-models/resolve/main/matcha-icefall-en_US-ljspeech/vocos-22khz-univ.onnx
 
 # Stage 10: Build NLLB Translation plugin
 FROM rust:1.92-slim-bookworm AS nllb-builder

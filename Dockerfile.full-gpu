@@ -168,16 +168,14 @@ RUN --mount=type=cache,id=whisper-cargo-registry,target=/root/.cargo/registry \
 
 # Download Whisper models (base.en, base multilingual, and tiny.en) and Silero VAD model
 RUN mkdir -p /build/models && \
-    curl -L -o /build/models/ggml-base.en.bin \
-      https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin && \
     curl -L -o /build/models/ggml-base.en-q5_1.bin \
-      https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q5_1.bin && \
+      https://huggingface.co/streamkit/whisper-models/resolve/main/ggml-base.en-q5_1.bin && \
     curl -L -o /build/models/ggml-base-q5_1.bin \
-      https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin && \
+      https://huggingface.co/streamkit/whisper-models/resolve/main/ggml-base-q5_1.bin && \
     curl -L -o /build/models/ggml-tiny.en-q5_1.bin \
-      https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en-q5_1.bin && \
+      https://huggingface.co/streamkit/whisper-models/resolve/main/ggml-tiny.en-q5_1.bin && \
     curl -L -o /build/models/silero_vad.onnx \
-      https://raw.githubusercontent.com/snakers4/silero-vad/master/src/silero_vad/data/silero_vad.onnx
+      https://huggingface.co/streamkit/whisper-models/resolve/main/silero_vad.onnx
 
 # Stage 5: Build Kokoro TTS plugin with GPU support
 ARG CUDA_VERSION
@@ -230,7 +228,8 @@ RUN --mount=type=cache,id=kokoro-cargo-registry,target=/root/.cargo/registry \
 # Download Kokoro TTS models
 RUN mkdir -p /build/models && \
     cd /build/models && \
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_1.tar.bz2 && \
+    curl -L -o kokoro-multi-lang-v1_1.tar.bz2 \
+      https://huggingface.co/streamkit/kokoro-models/resolve/main/kokoro-multi-lang-v1_1.tar.bz2 && \
     tar xf kokoro-multi-lang-v1_1.tar.bz2 && \
     rm kokoro-multi-lang-v1_1.tar.bz2
 
@@ -279,7 +278,8 @@ RUN --mount=type=cache,id=piper-cargo-registry,target=/root/.cargo/registry \
 RUN mkdir -p /build/models && \
     cd /build/models && \
     # English model (sherpa-onnx format)
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-libritts_r-medium.tar.bz2 && \
+    curl -L -o vits-piper-en_US-libritts_r-medium.tar.bz2 \
+      https://huggingface.co/streamkit/piper-models/resolve/main/vits-piper-en_US-libritts_r-medium.tar.bz2 && \
     tar xf vits-piper-en_US-libritts_r-medium.tar.bz2 && \
     rm vits-piper-en_US-libritts_r-medium.tar.bz2 && \
     cd vits-piper-en_US-libritts_r-medium && \
@@ -288,7 +288,8 @@ RUN mkdir -p /build/models && \
     fi && \
     cd /build/models && \
     # Mexican Spanish model (sherpa-onnx format with espeak-ng-data)
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-es_MX-claude-high.tar.bz2 && \
+    curl -L -o vits-piper-es_MX-claude-high.tar.bz2 \
+      https://huggingface.co/streamkit/piper-models/resolve/main/vits-piper-es_MX-claude-high.tar.bz2 && \
     tar xf vits-piper-es_MX-claude-high.tar.bz2 && \
     rm vits-piper-es_MX-claude-high.tar.bz2 && \
     cd vits-piper-es_MX-claude-high && \
@@ -340,7 +341,8 @@ RUN --mount=type=cache,id=sensevoice-cargo-registry,target=/root/.cargo/registry
 # Download SenseVoice models
 RUN mkdir -p /build/models && \
     cd /build/models && \
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2 && \
+    curl -L -o sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2 \
+      https://huggingface.co/streamkit/sensevoice-models/resolve/main/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2 && \
     tar xf sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2 && \
     rm sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2
 
@@ -388,7 +390,7 @@ RUN --mount=type=cache,id=vad-cargo-registry,target=/root/.cargo/registry \
 # Download ten-vad model
 RUN mkdir -p /build/models && \
     curl -L -o /build/models/ten-vad.onnx \
-      https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/ten-vad.onnx
+      https://huggingface.co/streamkit/vad-models/resolve/main/ten-vad.onnx
 
 # Stage 9: Build Matcha TTS plugin with GPU support
 ARG CUDA_VERSION
@@ -434,11 +436,13 @@ RUN --mount=type=cache,id=matcha-cargo-registry,target=/root/.cargo/registry \
 # Download Matcha TTS models
 RUN mkdir -p /build/models && \
     cd /build/models && \
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/matcha-icefall-en_US-ljspeech.tar.bz2 && \
+    curl -L -o matcha-icefall-en_US-ljspeech.tar.bz2 \
+      https://huggingface.co/streamkit/matcha-models/resolve/main/matcha-icefall-en_US-ljspeech.tar.bz2 && \
     tar xf matcha-icefall-en_US-ljspeech.tar.bz2 && \
     rm matcha-icefall-en_US-ljspeech.tar.bz2 && \
     cd matcha-icefall-en_US-ljspeech && \
-    wget -O vocos-22khz-univ.onnx https://github.com/k2-fsa/sherpa-onnx/releases/download/vocoder-models/vocos-22khz-univ.onnx
+    curl -L -o vocos-22khz-univ.onnx \
+      https://huggingface.co/streamkit/matcha-models/resolve/main/matcha-icefall-en_US-ljspeech/vocos-22khz-univ.onnx
 
 # Stage 10: Build NLLB Translation plugin with GPU support
 # NOTE: This stage explicitly waits for whisper-builder to complete first

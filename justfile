@@ -446,7 +446,7 @@ download-silero-vad:
         echo "✓ Silero VAD model downloaded to models/silero_vad.onnx ($(du -h models/silero_vad.onnx | cut -f1))"; \
     fi
 
-# Download Whisper models (tiny + base)
+# Download Whisper models (tiny.en, base.en, base multilingual)
 download-whisper-models:
     @echo "Downloading Whisper models..."
     @mkdir -p models
@@ -465,6 +465,14 @@ download-whisper-models:
         curl -L -o models/ggml-base.en-q5_1.bin \
             https://huggingface.co/streamkit/whisper-models/resolve/main/ggml-base.en-q5_1.bin && \
         echo "✓ Whisper base.en model downloaded to models/ggml-base.en-q5_1.bin ($(du -h models/ggml-base.en-q5_1.bin | cut -f1))"; \
+    fi
+    @if [ -f models/ggml-base-q5_1.bin ]; then \
+        echo "✓ Whisper base (multilingual) model already exists at models/ggml-base-q5_1.bin"; \
+    else \
+        echo "Downloading ggml-base-q5_1.bin (~57MB)..." && \
+        curl -L -o models/ggml-base-q5_1.bin \
+            https://huggingface.co/streamkit/whisper-models/resolve/main/ggml-base-q5_1.bin && \
+        echo "✓ Whisper base (multilingual) model downloaded to models/ggml-base-q5_1.bin ($(du -h models/ggml-base-q5_1.bin | cut -f1))"; \
     fi
 
 # Setup Whisper (download models + VAD)
@@ -498,19 +506,21 @@ install-sherpa-onnx:
 download-kokoro-models:
     @echo "Downloading Kokoro TTS models..."
     @mkdir -p models
-    @cd models && \
-    if [ -f kokoro-multi-lang-v1_1.tar.bz2 ]; then \
-        echo "Archive already exists, skipping download."; \
+    @if [ -f models/kokoro-multi-lang-v1_1.tar.bz2 ]; then \
+        echo "✓ Kokoro archive already exists at models/kokoro-multi-lang-v1_1.tar.bz2"; \
     else \
-        wget https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_1.tar.bz2; \
-    fi && \
-    if [ -d kokoro-multi-lang-v1_1 ]; then \
-        echo "Models already extracted, skipping."; \
+        echo "Downloading kokoro-multi-lang-v1_1.tar.bz2 (~348MB)..." && \
+        curl -L -o models/kokoro-multi-lang-v1_1.tar.bz2 \
+            https://huggingface.co/streamkit/kokoro-models/resolve/main/kokoro-multi-lang-v1_1.tar.bz2 && \
+        echo "✓ Kokoro archive downloaded"; \
+    fi
+    @if [ -d models/kokoro-multi-lang-v1_1 ]; then \
+        echo "✓ Kokoro models already extracted at models/kokoro-multi-lang-v1_1"; \
     else \
         echo "Extracting models..." && \
-        tar xf kokoro-multi-lang-v1_1.tar.bz2; \
-    fi && \
-    echo "✓ Kokoro v1.1 models ready at models/kokoro-multi-lang-v1_1 (103 speakers, 24kHz)"
+        cd models && tar xf kokoro-multi-lang-v1_1.tar.bz2 && \
+        echo "✓ Kokoro v1.1 models ready at models/kokoro-multi-lang-v1_1 (103 speakers, 24kHz)"; \
+    fi
 
 # Setup Kokoro TTS (install dependencies + download models)
 setup-kokoro: install-sherpa-onnx download-kokoro-models
@@ -577,19 +587,21 @@ upload-matcha-plugin: build-plugin-native-matcha
 download-sensevoice-models:
     @echo "Downloading SenseVoice models..."
     @mkdir -p models
-    @cd models && \
-    if [ -f sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2 ]; then \
-        echo "Archive already exists, skipping download."; \
+    @if [ -f models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2 ]; then \
+        echo "✓ SenseVoice archive already exists"; \
     else \
-        wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2; \
-    fi && \
-    if [ -d sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09 ]; then \
-        echo "Models already extracted, skipping."; \
+        echo "Downloading sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2 (~158MB)..." && \
+        curl -L -o models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2 \
+            https://huggingface.co/streamkit/sensevoice-models/resolve/main/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2 && \
+        echo "✓ SenseVoice archive downloaded"; \
+    fi
+    @if [ -d models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09 ]; then \
+        echo "✓ SenseVoice models already extracted"; \
     else \
         echo "Extracting models..." && \
-        tar xf sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2; \
-    fi && \
-    echo "✓ SenseVoice models ready at models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09 (multilingual: zh, en, ja, ko, yue)"
+        cd models && tar xf sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2 && \
+        echo "✓ SenseVoice models ready at models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09 (multilingual: zh, en, ja, ko, yue)"; \
+    fi
 
 # Setup SenseVoice (install dependencies + download models)
 setup-sensevoice: install-sherpa-onnx download-sensevoice-models download-silero-vad
@@ -611,17 +623,20 @@ upload-sensevoice-plugin: build-plugin-native-sensevoice
 # Download pre-converted NLLB models from Hugging Face
 download-nllb-models:
     @echo "Downloading pre-converted NLLB-200 models from Hugging Face..."
-    @echo "⚠️  This requires Python with huggingface-hub installed."
-    @echo "⚠️  Install with: pip3 install --user huggingface-hub"
-    @echo ""
     @mkdir -p models
-    @cd models && \
-    if [ -d nllb-200-distilled-600M-ct2-int8 ]; then \
-        echo "NLLB model already downloaded, skipping."; \
+    @if [ -f models/nllb-200-distilled-600M-ct2-int8.tar.bz2 ]; then \
+        echo "✓ NLLB archive already exists"; \
     else \
-        echo "Downloading pre-converted NLLB-200-distilled-600M (CTranslate2 format)..."; \
-        echo "This will download ~1.2 GB from Hugging Face."; \
-        python3 -c "from huggingface_hub import snapshot_download; snapshot_download('entai2965/nllb-200-distilled-600M-ctranslate2', local_dir='nllb-200-distilled-600M-ct2-int8', local_dir_use_symlinks=False)" && \
+        echo "Downloading nllb-200-distilled-600M-ct2-int8.tar.bz2 (~1.1GB)..." && \
+        curl -L -o models/nllb-200-distilled-600M-ct2-int8.tar.bz2 \
+            https://huggingface.co/streamkit/nllb-models/resolve/main/nllb-200-distilled-600M-ct2-int8.tar.bz2 && \
+        echo "✓ NLLB archive downloaded"; \
+    fi
+    @if [ -d models/nllb-200-distilled-600M-ct2-int8 ]; then \
+        echo "✓ NLLB model already extracted"; \
+    else \
+        echo "Extracting models..." && \
+        cd models && tar xf nllb-200-distilled-600M-ct2-int8.tar.bz2 && \
         echo "✓ NLLB model ready at models/nllb-200-distilled-600M-ct2-int8 (supports 200 languages)"; \
     fi
 
@@ -656,9 +671,9 @@ download-tenvad-models:
     @if [ -f models/ten-vad.onnx ]; then \
         echo "✓ ten-vad model already exists at models/ten-vad.onnx"; \
     else \
-        echo "Downloading ten-vad.onnx from GitHub releases..."; \
+        echo "Downloading ten-vad.onnx (~324KB)..." && \
         curl -L -o models/ten-vad.onnx \
-            https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/ten-vad.onnx && \
+            https://huggingface.co/streamkit/vad-models/resolve/main/ten-vad.onnx && \
         echo "✓ ten-vad model downloaded to models/ten-vad.onnx ($(du -h models/ten-vad.onnx | cut -f1))"; \
     fi
 
@@ -690,8 +705,44 @@ upload-vad-plugin: build-plugin-native-vad
     @curl -X POST -F plugin=@target/release/libvad.so \
         http://127.0.0.1:4545/api/v1/plugins
 
-# Download Helsinki-NLP OPUS-MT models for translation
+# Download Helsinki-NLP OPUS-MT models for translation (pre-packaged from StreamKit HuggingFace)
 download-helsinki-models:
+    @echo "Downloading Helsinki OPUS-MT models..."
+    @mkdir -p models
+    @if [ -f models/opus-mt-en-es.tar.bz2 ]; then \
+        echo "✓ opus-mt-en-es archive already exists"; \
+    else \
+        echo "Downloading opus-mt-en-es.tar.bz2 (~272MB)..." && \
+        curl -L -o models/opus-mt-en-es.tar.bz2 \
+            https://huggingface.co/streamkit/helsinki-models/resolve/main/opus-mt-en-es.tar.bz2 && \
+        echo "✓ opus-mt-en-es archive downloaded"; \
+    fi
+    @if [ -f models/opus-mt-es-en.tar.bz2 ]; then \
+        echo "✓ opus-mt-es-en archive already exists"; \
+    else \
+        echo "Downloading opus-mt-es-en.tar.bz2 (~272MB)..." && \
+        curl -L -o models/opus-mt-es-en.tar.bz2 \
+            https://huggingface.co/streamkit/helsinki-models/resolve/main/opus-mt-es-en.tar.bz2 && \
+        echo "✓ opus-mt-es-en archive downloaded"; \
+    fi
+    @if [ -d models/opus-mt-en-es ]; then \
+        echo "✓ opus-mt-en-es model already extracted"; \
+    else \
+        echo "Extracting opus-mt-en-es..." && \
+        cd models && tar xf opus-mt-en-es.tar.bz2 && \
+        echo "✓ opus-mt-en-es extracted"; \
+    fi
+    @if [ -d models/opus-mt-es-en ]; then \
+        echo "✓ opus-mt-es-en model already extracted"; \
+    else \
+        echo "Extracting opus-mt-es-en..." && \
+        cd models && tar xf opus-mt-es-en.tar.bz2 && \
+        echo "✓ opus-mt-es-en extracted"; \
+    fi
+    @echo "✓ Helsinki OPUS-MT models ready (Apache 2.0 license)"
+
+# Download Helsinki models from original source (requires Python dependencies)
+download-helsinki-models-source:
     @echo "⚠️  This requires Python with transformers and tokenizers installed."
     @echo "⚠️  Install with: pip3 install --user transformers sentencepiece safetensors torch tokenizers"
     @echo ""
