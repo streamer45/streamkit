@@ -239,6 +239,34 @@
       ]
     },
     {
+      "id": "supertonic",
+      "name": "Supertonic",
+      "version": "0.1.0",
+      "node_kind": "supertonic",
+      "kind": "native",
+      "entrypoint": "libsupertonic.so",
+      "artifact": "plugins/native/supertonic/target/release/libsupertonic.so",
+      "description": "Multilingual TTS using Supertonic (66M params, 5 languages, up to 167x real-time)",
+      "license": "MPL-2.0",
+      "models": [
+        {
+          "id": "supertonic-v2-onnx",
+          "name": "Supertonic v2 ONNX models",
+          "default": true,
+          "source": "huggingface",
+          "repo_id": "streamkit/supertonic-models",
+          "revision": "main",
+          "files": [
+            "supertonic-v2-onnx.tar.bz2"
+          ],
+          "expected_size_bytes": 244451376,
+          "license": "MIT",
+          "license_url": "https://github.com/supertone-inc/supertonic/blob/main/LICENSE",
+          "sha256": "29e18bfdcbfbdd8bef25204b19be21d13fda36d4e66fe31c74e2a01dad457cec"
+        }
+      ]
+    },
+    {
       "id": "vad",
       "name": "VAD",
       "version": "0.1.0",
