@@ -31,6 +31,7 @@ import {
   SectionTitle,
   Select,
   SignatureValue,
+  SubSectionLabel,
   Subtle,
   WarningBox,
 } from '../PluginsView.styles';
@@ -265,7 +266,6 @@ export const MarketplaceDetailsPanel: React.FC<MarketplaceDetailsPanelProps> = (
         kind={details.manifest.kind}
         allowNativeMarketplace={details.allow_native_marketplace}
       />
-      {requiresLicenseAcceptance && <SectionDivider />}
       <MarketplaceLicenseAcceptance
         enabled={requiresLicenseAcceptance}
         checked={licenseAccepted}
@@ -433,11 +433,15 @@ const MarketplaceLicenseAcceptance: React.FC<{
 }> = ({ enabled, checked, onChange }) => {
   if (!enabled) return null;
   return (
-    <CheckboxWithLabel
-      id="plugin-license-accept"
-      label="I understand the plugin and model license terms."
-      checked={checked}
-      onCheckedChange={(value) => onChange(Boolean(value))}
-    />
+    <>
+      <SectionDivider />
+      <SubSectionLabel>License</SubSectionLabel>
+      <CheckboxWithLabel
+        id="plugin-license-accept"
+        label="I understand the plugin and model license terms."
+        checked={checked}
+        onCheckedChange={(value) => onChange(Boolean(value))}
+      />
+    </>
   );
 };

@@ -116,7 +116,7 @@ export const Toaster: React.FC<{
         <ToastItemWrapper key={t.id} role="status" type={t.type}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <ToastTypeLabel className="code-font">{t.type}</ToastTypeLabel>
-            <div style={{ flex: 1 }}>{t.message}</div>
+            <div style={{ flex: 1, overflowWrap: 'break-word', minWidth: 0 }}>{t.message}</div>
             {effectiveOnClose && (
               <CloseButton aria-label="Dismiss" onClick={() => effectiveOnClose(t.id)}>
                 ✕
