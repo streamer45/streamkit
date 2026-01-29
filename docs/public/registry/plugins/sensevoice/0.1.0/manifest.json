@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "id": "sensevoice",
+  "name": "SenseVoice",
+  "version": "0.1.0",
+  "node_kind": "sensevoice",
+  "kind": "native",
+  "description": "Streaming speech-to-text using SenseVoice",
+  "license": "MPL-2.0",
+  "entrypoint": "libsensevoice.so",
+  "bundle": {
+    "url": "https://github.com/streamer45/streamkit/releases/download/plugin-sensevoice-v0.1.0/sensevoice-0.1.0-bundle.tar.zst",
+    "sha256": "794a6613ce878e8cd1991aefd350dfce8795cd1734a6f8bd5bf72a8b8a429217",
+    "size_bytes": 15627755
+  },
+  "models": [
+    {
+      "id": "sensevoice-small-yue",
+      "name": "SenseVoice small (yue)",
+      "default": true,
+      "source": "huggingface",
+      "repo_id": "streamkit/sensevoice-models",
+      "revision": "main",
+      "files": [
+        "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2"
+      ],
+      "expected_size_bytes": 165783878,
+      "license": "Apache-2.0",
+      "license_url": "https://huggingface.co/ASLP-lab/WSYue-ASR",
+      "sha256": "7305f7905bfcf77fa0b39388a313f3da35c68d971661a65475b56fb2162c8e63"
+    },
+    {
+      "id": "silero-vad",
+      "name": "Silero VAD (v6.2)",
+      "default": true,
+      "source": "huggingface",
+      "repo_id": "streamkit/sensevoice-models",
+      "revision": "main",
+      "files": [
+        "silero_vad.onnx"
+      ],
+      "expected_size_bytes": 2327524,
+      "license": "MIT",
+      "license_url": "https://github.com/snakers4/silero-vad/blob/master/LICENSE",
+      "sha256": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3"
+    }
+  ]
+}
