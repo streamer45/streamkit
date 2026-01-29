@@ -103,5 +103,7 @@ jobs:
                   cmd.append('--prerelease')
 
               print(f'Creating release: {tag}')
-              subprocess.run(cmd, check=True)
+              result = subprocess.run(cmd)
+              if result.returncode != 0:
+                  print(f'::warning::Skipping {tag}: release may already exist')
           "
