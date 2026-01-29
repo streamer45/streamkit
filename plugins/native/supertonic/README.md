@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2025 StreamKit Contributors
+
+SPDX-License-Identifier: MPL-2.0
+-->
+
 # Supertonic TTS Plugin
 
 Multilingual text-to-speech plugin for StreamKit using the [Supertonic](https://github.com/supertone-inc/supertonic) TTS engine.
