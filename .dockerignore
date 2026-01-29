@@ -9,6 +9,8 @@ target/
 # Large local artifacts (not needed for image builds)
 models/
 .plugins/
+!plugins/native/pocket-tts/vendor/pocket-tts/src/models/
+!plugins/native/pocket-tts/vendor/pocket-tts/src/models/**
 
 # Node modules
 node_modules/
