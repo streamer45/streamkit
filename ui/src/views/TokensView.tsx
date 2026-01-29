@@ -20,6 +20,7 @@ import { useStreamStore } from '@/stores/streamStore';
 import { getBasePathname } from '@/utils/baseHref';
 import { getLogger } from '@/utils/logger';
 
+import AdminNav from './admin/AdminNav';
 import { MintedTokensTable } from './MintedTokensTable';
 import {
   BottomSpacer,
@@ -388,6 +389,8 @@ const TokensView: React.FC = () => {
                   {renderLogoutButton(canLogout, onLogout)}
                 </Row>
               </TitleRow>
+
+              <AdminNav />
 
               {renderError(error)}
               {renderAuthDisabledNotice(authEnabled)}

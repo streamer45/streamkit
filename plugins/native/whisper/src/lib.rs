@@ -112,7 +112,7 @@ const fn default_suppress_non_speech_tokens() -> bool {
 }
 
 fn default_model_path() -> String {
-    "models/ggml-base.en-q5_1.bin".to_string()
+    "models/ggml-tiny.en-q5_1.bin".to_string()
 }
 
 fn default_language() -> String {
@@ -244,7 +244,7 @@ impl NativeProcessorNode for WhisperPlugin {
                     "model_path": {
                         "type": "string",
                         "description": "Path to Whisper GGML model file (relative to repo root). IMPORTANT: Input audio must be 16kHz mono f32.",
-                        "default": "models/ggml-base.en-q5_1.bin"
+                        "default": "models/ggml-tiny.en-q5_1.bin"
                     },
                     "language": {
                         "type": "string",

@@ -16,6 +16,7 @@ models:
   revision: main
   files:
   - vits-piper-en_US-libritts_r-medium.tar.bz2
+  expected_size_bytes: 82018491
   license: CC-BY-4.0 + GPL-3.0
   license_url: http://www.openslr.org/141/
   sha256: 78c137daa7eddaf57190cf05c020efd6e593015f62c82ee999ef570fc2dff496
@@ -27,6 +28,7 @@ models:
   revision: main
   files:
   - vits-piper-es_MX-claude-high.tar.bz2
+  expected_size_bytes: 67207890
   license: Apache-2.0 + GPL-3.0
   license_url: https://huggingface.co/spaces/HirCoir/Piper-TTS-Spanish
   sha256: ec33fb689c248fe64810aab564cba97babf0f506672cfd404928d46e751a4721

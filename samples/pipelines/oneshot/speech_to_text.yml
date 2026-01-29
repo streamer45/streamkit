@@ -19,7 +19,7 @@ steps:
 
   - kind: plugin::native::whisper
     params:
-      model_path: models/ggml-base.en-q5_1.bin
+      model_path: models/ggml-tiny.en-q5_1.bin
       language: en
       vad_model_path: models/silero_vad.onnx
       vad_threshold: 0.5

@@ -33,32 +33,24 @@ Raw audio is defined by an `AudioFormat` in the type system and carried as `Pack
 
 ```json
 {
-  "$defs": {
-    "SampleFormat": {
-      "description": "Describes the specific format of raw audio data.",
-      "enum": [
-        "F32",
-        "S16Le"
-      ],
-      "type": "string"
-    }
-  },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AudioFormat",
   "description": "Contains the detailed metadata for a raw audio stream.",
+  "type": "object",
   "properties": {
+    "sample_rate": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
     "channels": {
+      "type": "integer",
       "format": "uint16",
-      "maximum": 65535,
       "minimum": 0,
-      "type": "integer"
+      "maximum": 65535
     },
     "sample_format": {
       "$ref": "#/$defs/SampleFormat"
-    },
-    "sample_rate": {
-      "format": "uint32",
-      "minimum": 0,
-      "type": "integer"
     }
   },
   "required": [
@@ -66,8 +58,16 @@ Raw audio is defined by an `AudioFormat` in the type system and carried as `Pack
     "channels",
     "sample_format"
   ],
-  "title": "AudioFormat",
-  "type": "object"
+  "$defs": {
+    "SampleFormat": {
+      "description": "Describes the specific format of raw audio data.",
+      "type": "string",
+      "enum": [
+        "F32",
+        "S16Le"
+      ]
+    }
+  }
 }
 ```
 

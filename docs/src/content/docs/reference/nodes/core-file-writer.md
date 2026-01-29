@@ -33,25 +33,25 @@ No outputs.
 ```json
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FileWriteConfig",
   "description": "Configuration for the FileWriteNode",
+  "type": "object",
   "properties": {
-    "chunk_size": {
-      "default": 8192,
-      "description": "Size of buffer before writing to disk (default: 8192 bytes)",
-      "format": "uint",
-      "minimum": 0,
-      "type": "integer"
-    },
     "path": {
       "description": "Path to the file to write",
       "type": "string"
+    },
+    "chunk_size": {
+      "description": "Size of buffer before writing to disk (default: 8192 bytes)",
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0,
+      "default": 8192
     }
   },
   "required": [
     "path"
-  ],
-  "title": "FileWriteConfig",
-  "type": "object"
+  ]
 }
 ```
 

@@ -43,8 +43,10 @@ export const useToastStore = create<ToastStoreState>((set, get) => ({
 
 export function showToast(message: string, type: ToastType = 'info'): number {
   const id = useToastStore.getState().addToast(message, type);
-  window.setTimeout(() => {
-    useToastStore.getState().removeToast(id);
-  }, 3000);
+  if (type !== 'error') {
+    window.setTimeout(() => {
+      useToastStore.getState().removeToast(id);
+    }, 3000);
+  }
   return id;
 }

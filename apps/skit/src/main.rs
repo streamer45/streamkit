@@ -36,9 +36,14 @@ mod cli;
 mod config;
 mod file_security;
 mod logging;
+mod marketplace;
+mod marketplace_installer;
+mod marketplace_security;
 #[cfg(feature = "moq")]
 mod moq_gateway;
 mod permissions;
+mod plugin_paths;
+mod plugin_records;
 mod plugins;
 mod profiling;
 mod role_extractor;

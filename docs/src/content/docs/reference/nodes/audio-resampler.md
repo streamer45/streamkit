@@ -34,34 +34,34 @@ Converts audio between different sample rates using high-quality resampling. Ess
 ```json
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AudioResamplerConfig",
   "description": "Configuration for the AudioResamplerNode",
+  "type": "object",
   "properties": {
-    "chunk_frames": {
-      "default": 960,
-      "description": "Fixed chunk size for resampler (default: 960 frames = 20ms at 48kHz)\nLarger values = better efficiency but more latency",
-      "format": "uint",
-      "minimum": 1,
-      "type": "integer"
-    },
-    "output_frame_size": {
-      "default": 960,
-      "description": "Output frame size - packets will be buffered to this exact size (default: 960 = 20ms at 48kHz)\nMust be a valid Opus frame size: 120, 240, 480, 960, 1920, or 2880 samples\nSet to 0 to disable output buffering (variable frame sizes)",
-      "format": "uint",
-      "minimum": 0,
-      "type": "integer"
-    },
     "target_sample_rate": {
       "description": "Target output sample rate in Hz (e.g., 48000, 24000, 16000)\nInput audio will be resampled to this rate\nMust be greater than 0",
+      "type": "integer",
       "format": "uint32",
+      "minimum": 1
+    },
+    "chunk_frames": {
+      "description": "Fixed chunk size for resampler (default: 960 frames = 20ms at 48kHz)\nLarger values = better efficiency but more latency",
+      "type": "integer",
+      "format": "uint",
       "minimum": 1,
-      "type": "integer"
+      "default": 960
+    },
+    "output_frame_size": {
+      "description": "Output frame size - packets will be buffered to this exact size (default: 960 = 20ms at 48kHz)\nMust be a valid Opus frame size: 120, 240, 480, 960, 1920, or 2880 samples\nSet to 0 to disable output buffering (variable frame sizes)",
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0,
+      "default": 960
     }
   },
   "required": [
     "target_sample_rate"
-  ],
-  "title": "AudioResamplerConfig",
-  "type": "object"
+  ]
 }
 ```
 

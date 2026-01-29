@@ -33,50 +33,50 @@ Splits text into smaller chunks at sentence or clause boundaries. Essential for 
 
 ```json
 {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TextChunkerConfig",
+  "type": "object",
+  "properties": {
+    "split_mode": {
+      "description": "Splitting mode: \"sentences\" or \"words\"",
+      "$ref": "#/$defs/SplitMode"
+    },
+    "min_length": {
+      "description": "Minimum chunk length before emitting (used in sentence mode)",
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0,
+      "default": 10
+    },
+    "chunk_words": {
+      "description": "Number of words per chunk (used in word mode)",
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0,
+      "default": 5
+    }
+  },
   "$defs": {
     "SplitMode": {
       "oneOf": [
         {
-          "const": "sentences",
           "description": "Split on sentence boundaries (. ! ? etc.)",
-          "type": "string"
+          "type": "string",
+          "const": "sentences"
         },
         {
-          "const": "clauses",
           "description": "Split on sentences AND pauses (commas, dashes, semicolons) for natural streaming",
-          "type": "string"
+          "type": "string",
+          "const": "clauses"
         },
         {
-          "const": "words",
           "description": "Split after N words for lower latency (not recommended for TTS)",
-          "type": "string"
+          "type": "string",
+          "const": "words"
         }
       ]
     }
-  },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "properties": {
-    "chunk_words": {
-      "default": 5,
-      "description": "Number of words per chunk (used in word mode)",
-      "format": "uint",
-      "minimum": 0,
-      "type": "integer"
-    },
-    "min_length": {
-      "default": 10,
-      "description": "Minimum chunk length before emitting (used in sentence mode)",
-      "format": "uint",
-      "minimum": 0,
-      "type": "integer"
-    },
-    "split_mode": {
-      "$ref": "#/$defs/SplitMode",
-      "description": "Splitting mode: \"sentences\" or \"words\""
-    }
-  },
-  "title": "TextChunkerConfig",
-  "type": "object"
+  }
 }
 ```
 

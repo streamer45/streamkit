@@ -34,52 +34,52 @@ Muxes Opus audio into a WebM container. Produces streamable WebM/Opus output com
 
 ```json
 {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WebMMuxerConfig",
+  "type": "object",
+  "properties": {
+    "sample_rate": {
+      "description": "Audio sample rate in Hz",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0,
+      "default": 48000
+    },
+    "channels": {
+      "description": "Number of audio channels (1 for mono, 2 for stereo)",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0,
+      "default": 2
+    },
+    "chunk_size": {
+      "description": "The number of bytes to buffer before flushing to the output. Defaults to 65536.",
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0,
+      "default": 65536
+    },
+    "streaming_mode": {
+      "description": "Streaming mode: \"live\" for real-time streaming (no duration), \"file\" for complete files with duration (default)",
+      "$ref": "#/$defs/WebMStreamingMode"
+    }
+  },
   "$defs": {
     "WebMStreamingMode": {
       "oneOf": [
         {
-          "const": "live",
           "description": "Live streaming mode - optimized for real-time streaming, no duration/seeking info (default)",
-          "type": "string"
+          "type": "string",
+          "const": "live"
         },
         {
-          "const": "file",
           "description": "File mode - includes full duration and seeking information",
-          "type": "string"
+          "type": "string",
+          "const": "file"
         }
       ]
     }
-  },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "properties": {
-    "channels": {
-      "default": 2,
-      "description": "Number of audio channels (1 for mono, 2 for stereo)",
-      "format": "uint32",
-      "minimum": 0,
-      "type": "integer"
-    },
-    "chunk_size": {
-      "default": 65536,
-      "description": "The number of bytes to buffer before flushing to the output. Defaults to 65536.",
-      "format": "uint",
-      "minimum": 0,
-      "type": "integer"
-    },
-    "sample_rate": {
-      "default": 48000,
-      "description": "Audio sample rate in Hz",
-      "format": "uint32",
-      "minimum": 0,
-      "type": "integer"
-    },
-    "streaming_mode": {
-      "$ref": "#/$defs/WebMStreamingMode",
-      "description": "Streaming mode: \"live\" for real-time streaming (no duration), \"file\" for complete files with duration (default)"
-    }
-  },
-  "title": "WebMMuxerConfig",
-  "type": "object"
+  }
 }
 ```
 

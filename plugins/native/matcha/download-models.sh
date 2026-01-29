@@ -10,7 +10,7 @@ cd "$(dirname "$0")/../.."
 
 MODEL_NAME="matcha-icefall-en_US-ljspeech"
 MODEL_DIR="models/${MODEL_NAME}"
-BASE_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models"
+BASE_URL="https://huggingface.co/streamkit/matcha-models/resolve/main"
 
 echo "Downloading Matcha TTS model: ${MODEL_NAME}"
 echo "Model directory: ${MODEL_DIR}"
@@ -18,13 +18,13 @@ echo
 
 mkdir -p models
 
-# Download pre-converted model from sherpa-onnx releases
-echo "Downloading ${MODEL_NAME}.tar.bz2..."
+# Download pre-converted model from StreamKit Hugging Face
+echo "Downloading ${MODEL_NAME}.tar.bz2 (~115MB)..."
 cd models
 if [ -f "${MODEL_NAME}.tar.bz2" ]; then
     echo "Archive already exists, skipping download."
 else
-    wget "${BASE_URL}/${MODEL_NAME}.tar.bz2"
+    curl -L -o "${MODEL_NAME}.tar.bz2" "${BASE_URL}/${MODEL_NAME}.tar.bz2"
 fi
 
 if [ -d "${MODEL_NAME}" ]; then
@@ -39,13 +39,13 @@ cd ..
 # Download Vocos vocoder (required, ~10 MB)
 echo
 echo "Downloading Vocos vocoder model..."
-VOCODER_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/vocoder-models/vocos-22khz-univ.onnx"
+VOCODER_URL="${BASE_URL}/${MODEL_NAME}/vocos-22khz-univ.onnx"
 VOCODER_PATH="${MODEL_DIR}/vocos-22khz-univ.onnx"
 
 if [ -f "${VOCODER_PATH}" ]; then
     echo "Vocoder already exists, skipping download."
 else
-    wget -O "${VOCODER_PATH}" "${VOCODER_URL}"
+    curl -L -o "${VOCODER_PATH}" "${VOCODER_URL}"
     echo "✓ Vocoder downloaded to ${VOCODER_PATH}"
 fi
 

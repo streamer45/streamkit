@@ -36,33 +36,33 @@ No inputs.
 ```json
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MoqPullConfig",
+  "type": "object",
   "properties": {
-    "batch_ms": {
-      "default": 0,
-      "description": "Batch window in milliseconds. If > 0, after receiving a frame the node will\nwait up to this duration to collect additional frames before forwarding.\nDefault: 0 (no batching) - recommended because moq_lite's TrackConsumer::read()\nhas internal allocation overhead that makes batching counterproductive.",
-      "format": "uint64",
-      "minimum": 0,
-      "type": "integer"
-    },
-    "broadcast": {
-      "default": "",
-      "type": "string"
+    "url": {
+      "type": "string",
+      "default": ""
     },
     "jwt": {
-      "default": null,
       "description": "Optional JWT for authenticated MoQ relays. When set, it is appended as `?jwt=...`.\n\nThis is compatible with moq-relay and StreamKit's built-in MoQ auth.",
       "type": [
         "string",
         "null"
-      ]
+      ],
+      "default": null
     },
-    "url": {
-      "default": "",
-      "type": "string"
+    "broadcast": {
+      "type": "string",
+      "default": ""
+    },
+    "batch_ms": {
+      "description": "Batch window in milliseconds. If > 0, after receiving a frame the node will\nwait up to this duration to collect additional frames before forwarding.\nDefault: 0 (no batching) - recommended because moq_lite's TrackConsumer::read()\nhas internal allocation overhead that makes batching counterproductive.",
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0,
+      "default": 0
     }
-  },
-  "title": "MoqPullConfig",
-  "type": "object"
+  }
 }
 ```
 

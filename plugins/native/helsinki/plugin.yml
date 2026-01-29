@@ -16,6 +16,7 @@ models:
   revision: main
   files:
   - opus-mt-en-es.tar.bz2
+  expected_size_bytes: 284844308
   license: Apache-2.0
   license_url: https://huggingface.co/Helsinki-NLP/opus-mt-en-es
 - id: opus-mt-es-en
@@ -26,5 +27,6 @@ models:
   revision: main
   files:
   - opus-mt-es-en.tar.bz2
+  expected_size_bytes: 285443600
   license: Apache-2.0
   license_url: https://huggingface.co/Helsinki-NLP/opus-mt-es-en

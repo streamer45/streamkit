@@ -33,25 +33,25 @@ No inputs.
 ```json
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "HttpPullConfig",
   "description": "Configuration for the HttpPullNode",
+  "type": "object",
   "properties": {
-    "chunk_size": {
-      "default": 8192,
-      "description": "Size of chunks to read (default: 8192 bytes)",
-      "format": "uint",
-      "minimum": 1,
-      "type": "integer"
-    },
     "url": {
       "description": "URL to fetch (HTTP or HTTPS)",
       "type": "string"
+    },
+    "chunk_size": {
+      "description": "Size of chunks to read (default: 8192 bytes)",
+      "type": "integer",
+      "format": "uint",
+      "minimum": 1,
+      "default": 8192
     }
   },
   "required": [
     "url"
-  ],
-  "title": "HttpPullConfig",
-  "type": "object"
+  ]
 }
 ```
 
