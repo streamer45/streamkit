@@ -201,10 +201,38 @@ export const MarketplaceGrid = styled.div`
   display: grid;
   grid-template-columns: minmax(240px, 1fr) minmax(320px, 2fr);
   gap: 16px;
+  align-items: start;
 
   @media (max-width: 1000px) {
     grid-template-columns: 1fr;
   }
+`;
+
+export const DetailsSection = styled.section`
+  box-sizing: border-box;
+  border: 1px solid var(--sk-border);
+  border-radius: 12px;
+  padding: 16px;
+  background: var(--sk-bg);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  min-height: 420px;
+  position: relative;
+`;
+
+export const DetailsLoadingOverlay = styled.div`
+  position: absolute;
+  inset: 0;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--sk-bg) 70%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1;
+  color: var(--sk-text-muted);
+  font-size: 13px;
 `;
 
 export const MarketplaceList = styled.div`

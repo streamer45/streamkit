@@ -2,7 +2,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import React, { useState } from 'react';
+import React from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
 
 import { TabsContent, TabsList, TabsRoot, TabsTrigger } from '@/components/ui/Tabs';
 import { usePermissions } from '@/hooks/usePermissions';
@@ -23,9 +24,16 @@ import {
   TitleRow,
 } from './PluginsView.styles';
 
+type PluginsTab = 'installed' | 'marketplace';
+
+const isValidTab = (tab: string | undefined): tab is PluginsTab =>
+  tab === 'installed' || tab === 'marketplace';
+
 const PluginsView: React.FC = () => {
   const { role, isAdmin } = usePermissions();
-  const [activeTab, setActiveTab] = useState<'installed' | 'marketplace'>('installed');
+  const { tab } = useParams<{ tab: string }>();
+  const navigate = useNavigate();
+  const activeTab: PluginsTab = isValidTab(tab) ? tab : 'installed';
 
   return (
     <Container>
@@ -50,7 +58,7 @@ const PluginsView: React.FC = () => {
 
             <TabsRoot
               value={activeTab}
-              onValueChange={(value) => setActiveTab(value as typeof activeTab)}
+              onValueChange={(value) => navigate(`/admin/plugins/${value}`, { replace: true })}
             >
               <TabsList>
                 <TabsTrigger value="installed">Installed</TabsTrigger>

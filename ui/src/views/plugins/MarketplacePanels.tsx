@@ -12,6 +12,8 @@ import type { PluginSummary } from '@/types/types';
 import {
   DetailsDescription,
   DetailsHeader,
+  DetailsLoadingOverlay,
+  DetailsSection,
   DetailsTitle,
   EmptyState,
   KeyLabel,
@@ -222,7 +224,7 @@ export const MarketplaceDetailsPanel: React.FC<MarketplaceDetailsPanelProps> = (
   onInstallModelsChange,
   onInstall,
 }) => {
-  if (loading) return <MarketplaceDetailsLoading />;
+  if (!details && loading) return <MarketplaceDetailsLoading />;
   if (!details) return <MarketplaceDetailsEmpty />;
 
   const installedVersion = installedPlugin?.version ?? null;
@@ -245,7 +247,8 @@ export const MarketplaceDetailsPanel: React.FC<MarketplaceDetailsPanelProps> = (
   const installLabel = getInstallLabel({ installing, installedPlugin, installModels, hasModels });
 
   return (
-    <Section>
+    <DetailsSection>
+      {loading && <DetailsLoadingOverlay>Loading plugin details...</DetailsLoadingOverlay>}
       <SectionTitle>Details</SectionTitle>
       <MarketplaceDetailsHeader details={details} />
       <MarketplaceInstalledNotice
@@ -288,22 +291,22 @@ export const MarketplaceDetailsPanel: React.FC<MarketplaceDetailsPanelProps> = (
           {installLabel}
         </Button>
       </Row>
-    </Section>
+    </DetailsSection>
   );
 };
 
 const MarketplaceDetailsLoading: React.FC = () => (
-  <Section>
+  <DetailsSection>
     <SectionTitle>Details</SectionTitle>
     <Subtle>Loading plugin details...</Subtle>
-  </Section>
+  </DetailsSection>
 );
 
 const MarketplaceDetailsEmpty: React.FC = () => (
-  <Section>
+  <DetailsSection>
     <SectionTitle>Details</SectionTitle>
     <EmptyState>Select a plugin to view.</EmptyState>
-  </Section>
+  </DetailsSection>
 );
 
 const MarketplaceDetailsHeader: React.FC<{ details: MarketplacePluginDetails }> = ({ details }) => (

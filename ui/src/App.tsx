@@ -118,7 +118,11 @@ const App: React.FC = () => {
                     <Route path="convert" element={<ConvertView />} />
                     <Route path="stream" element={<StreamView />} />
                     <Route path="admin" element={<Navigate to="/admin/plugins" replace />} />
-                    <Route path="admin/plugins" element={<PluginsView />} />
+                    <Route
+                      path="admin/plugins"
+                      element={<Navigate to="/admin/plugins/installed" replace />}
+                    />
+                    <Route path="admin/plugins/:tab" element={<PluginsView />} />
                     <Route path="admin/tokens" element={<TokensView />} />
                   </Route>
                 </Routes>
