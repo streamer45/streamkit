@@ -260,6 +260,7 @@ lint-plugins:
     @cd plugins/native/vad && cargo fmt -- --check && cargo clippy -- -D warnings
     @cd plugins/native/matcha && cargo fmt -- --check && cargo clippy -- -D warnings
     @cd plugins/native/nllb && cargo fmt -- --check && CMAKE_ARGS="-DCMAKE_INSTALL_PREFIX=$$(pwd)/target/cmake-install" cargo clippy -- -D warnings
+    @cd plugins/native/supertonic && cargo fmt -- --check && cargo clippy -- -D warnings
     @echo "✓ All native plugins passed linting"
 
 # Auto-fix formatting and linting issues in native plugins
@@ -272,6 +273,7 @@ fix-plugins:
     @cd plugins/native/vad && cargo fmt && cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
     @cd plugins/native/matcha && cargo fmt && cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
     @cd plugins/native/nllb && cargo fmt && CMAKE_ARGS="-DCMAKE_INSTALL_PREFIX=$$(pwd)/target/cmake-install" cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
+    @cd plugins/native/supertonic && cargo fmt && cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
     @echo "✓ All native plugins fixed"
 
 # --- Profiling ---
@@ -773,12 +775,49 @@ upload-helsinki-plugin: build-plugin-native-helsinki
     @curl -X POST -F plugin=@target/release/libhelsinki.so \
         http://127.0.0.1:4545/api/v1/plugins
 
+# Download Supertonic TTS models
+download-supertonic-models:
+    @echo "Downloading Supertonic TTS models..."
+    @mkdir -p models
+    @if [ -f models/supertonic-v2-onnx.tar.bz2 ]; then \
+        echo "✓ Supertonic archive already exists at models/supertonic-v2-onnx.tar.bz2"; \
+    else \
+        echo "Downloading supertonic-v2-onnx.tar.bz2..." && \
+        curl -L -o models/supertonic-v2-onnx.tar.bz2 \
+            https://huggingface.co/streamkit/supertonic-models/resolve/main/supertonic-v2-onnx.tar.bz2 && \
+        echo "✓ Supertonic archive downloaded"; \
+    fi
+    @if [ -d models/supertonic-v2-onnx ]; then \
+        echo "✓ Supertonic models already extracted at models/supertonic-v2-onnx"; \
+    else \
+        echo "Extracting models..." && \
+        cd models && tar xf supertonic-v2-onnx.tar.bz2 && \
+        echo "✓ Supertonic v2 models ready at models/supertonic-v2-onnx (5 languages, 10 voices)"; \
+    fi
+
+# Setup Supertonic TTS (download models)
+setup-supertonic: download-supertonic-models
+    @echo "✓ Supertonic TTS setup complete!"
+
+# Build native Supertonic TTS plugin
+[working-directory: 'plugins/native/supertonic']
+build-plugin-native-supertonic:
+    @echo "Building native Supertonic TTS plugin..."
+    @cargo build --release
+
+# Upload Supertonic plugin to running server
+[working-directory: 'plugins/native/supertonic']
+upload-supertonic-plugin: build-plugin-native-supertonic
+    @echo "Uploading Supertonic plugin to server..."
+    @curl -X POST -F plugin=@target/release/libsupertonic.so \
+        http://127.0.0.1:4545/api/v1/plugins
+
 # Build specific native plugin by name
 build-plugin-native name:
     @just build-plugin-native-{{name}}
 
 # Build all native plugin examples
-build-plugins-native: build-plugin-native-gain build-plugin-native-whisper build-plugin-native-kokoro build-plugin-native-piper build-plugin-native-matcha build-plugin-native-sensevoice build-plugin-native-nllb build-plugin-native-vad build-plugin-native-helsinki
+build-plugins-native: build-plugin-native-gain build-plugin-native-whisper build-plugin-native-kokoro build-plugin-native-piper build-plugin-native-matcha build-plugin-native-sensevoice build-plugin-native-nllb build-plugin-native-vad build-plugin-native-helsinki build-plugin-native-supertonic
 
 ## Combined
 
@@ -812,7 +851,7 @@ copy-plugins-native:
     cp examples/plugins/gain-native/target/release/libgain_plugin_native.* .plugins/native/ 2>/dev/null || true
 
     # Official native plugins (repo-local)
-    for name in whisper kokoro piper matcha vad sensevoice nllb helsinki; do
+    for name in whisper kokoro piper matcha vad sensevoice nllb helsinki supertonic; do
         for f in \
             plugins/native/"$name"/target/release/lib"$name".so \
             plugins/native/"$name"/target/release/lib"$name".so.* \
