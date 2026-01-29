@@ -76,7 +76,11 @@ def set_runpath_origin(target: pathlib.Path) -> None:
 
 
 def build_bundle(
-    plugin: dict, version: str, bundles_out: pathlib.Path, work_root: pathlib.Path
+    plugin: dict,
+    version: str,
+    bundles_out: pathlib.Path,
+    work_root: pathlib.Path,
+    embedded_manifest: dict | None = None,
 ) -> dict:
     plugin_id = plugin["id"]
     artifact = pathlib.Path(plugin["artifact"])
@@ -106,6 +110,9 @@ def build_bundle(
             src = pathlib.Path(extra["source"])
             dest = pathlib.Path(extra.get("dest", src.name))
         copy_file(src, work_dir / dest)
+
+    if embedded_manifest is not None:
+        write_json(work_dir / "manifest.json", embedded_manifest)
 
     bundle_name = f"{plugin_id}-{version}-bundle.tar.zst"
     bundle_path = bundles_out / bundle_name
@@ -149,7 +156,7 @@ def dump_manifest_bytes(manifest: dict) -> bytes:
 def build_manifest(
     plugin: dict,
     plugin_version: str,
-    bundle_block: dict,
+    bundle_block: dict | None,
 ) -> dict:
     """Build manifest dict from plugin metadata and bundle info."""
     manifest = {
@@ -299,7 +306,9 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--plugins", required=True, help="Path to plugin metadata JSON")
     parser.add_argument(
-        "--bundle-base-url", required=True, help="Base URL for bundle downloads"
+        "--bundle-url-template",
+        required=True,
+        help="URL template for bundle downloads with {plugin_id} and {version} placeholders",
     )
     parser.add_argument(
         "--registry-base-url", required=True, help="Base URL for registry metadata"
@@ -314,6 +323,10 @@ def main() -> int:
     parser.add_argument(
         "--public-key",
         help="Path to minisign public key to include in registry (default: docs/public/registry/streamkit.pub if exists)",
+    )
+    parser.add_argument(
+        "--new-plugins-out",
+        help="Path to write JSON file listing newly built plugins (id + version)",
     )
     args = parser.parse_args()
 
@@ -344,9 +357,10 @@ def main() -> int:
         print("No plugins found in metadata", file=sys.stderr)
         return 1
 
-    bundle_base_url = normalize_base_url(args.bundle_base_url)
+    bundle_url_template = args.bundle_url_template.rstrip("/")
     registry_base_url = normalize_base_url(args.registry_base_url)
     published_at = datetime.date.today().isoformat()
+    new_plugins = []
 
     # Track all versions per plugin for index.json
     plugin_versions_map = {}  # plugin_id -> list of version entries
@@ -410,9 +424,18 @@ def main() -> int:
             shutil.copy2(existing["signature_path"], signature_path)
         else:
             # Build new version
-            bundle_info = build_bundle(plugin, plugin_version, bundles_out, work_root)
+            # Build the embedded manifest first (without bundle block) so it
+            # gets included inside the archive for offline inspection.
+            embedded_manifest = build_manifest(plugin, plugin_version, bundle_block=None)
+            bundle_info = build_bundle(
+                plugin, plugin_version, bundles_out, work_root,
+                embedded_manifest=embedded_manifest,
+            )
+            bundle_base = bundle_url_template.format(
+                plugin_id=plugin_id, version=plugin_version,
+            )
             bundle_block = {
-                "url": f"{bundle_base_url}/{bundle_info['bundle_name']}",
+                "url": f"{bundle_base}/{bundle_info['bundle_name']}",
                 "sha256": bundle_info["sha256"],
                 "size_bytes": bundle_info["size_bytes"],
             }
@@ -422,6 +445,8 @@ def main() -> int:
             manifest_path = manifest_dir / "manifest.json"
             write_json(manifest_path, manifest)
             sign_manifest(manifest_path, signing_key)
+
+            new_plugins.append({"id": plugin_id, "version": plugin_version})
 
             print(
                 f"Built {plugin_id} v{plugin_version} -> {bundle_info['bundle_name']} ({bundle_info['sha256']})"
@@ -529,6 +554,11 @@ def main() -> int:
         print(f"Copied public key to registry: {dest_key}")
     elif args.public_key:
         print(f"WARNING: Specified public key not found: {args.public_key}", file=sys.stderr)
+
+    if args.new_plugins_out:
+        new_plugins_path = pathlib.Path(args.new_plugins_out)
+        write_json(new_plugins_path, {"plugins": new_plugins})
+        print(f"Wrote {len(new_plugins)} new plugin(s) to {new_plugins_path}")
 
     if work_root.exists():
         shutil.rmtree(work_root)

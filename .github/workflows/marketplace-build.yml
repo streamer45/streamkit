@@ -7,14 +7,6 @@ name: Marketplace Build (Reusable)
 on:
   workflow_call:
     inputs:
-      snapshot_version:
-        description: "Marketplace snapshot version (not plugin version; used for release naming)"
-        required: true
-        type: string
-      release_tag:
-        description: "Release tag for bundle URLs and registry PR"
-        required: true
-        type: string
       registry_base_url:
         description: "Registry base URL override"
         required: false
@@ -36,8 +28,6 @@ env:
   RUST_BACKTRACE: 1
   SHERPA_ONNX_VERSION: "1.12.17"
   MINISIGN_DEB_URL: "http://launchpadlibrarian.net/780165111/minisign_0.12-1_amd64.deb"
-  SNAPSHOT_VERSION: ${{ inputs.snapshot_version }}
-  RELEASE_TAG: ${{ inputs.release_tag }}
   REGISTRY_BASE_URL: ${{ inputs.registry_base_url || 'https://streamkit.dev/registry' }}
 
 jobs:
@@ -149,11 +139,12 @@ jobs:
           python3 scripts/marketplace/build_registry.py \
             --plugins marketplace/official-plugins.json \
             --existing-registry docs/public/registry \
-            --bundle-base-url "https://github.com/${{ github.repository }}/releases/download/${RELEASE_TAG}" \
+            --bundle-url-template "https://github.com/${{ github.repository }}/releases/download/plugin-{plugin_id}-v{version}" \
             --registry-base-url "${REGISTRY_BASE_URL}" \
             --bundles-out dist/bundles \
             --registry-out dist/registry \
-            --signing-key /tmp/streamkit.key
+            --signing-key /tmp/streamkit.key \
+            --new-plugins-out dist/new-plugins.json
 
       - name: Verify marketplace bundle portability
         run: |
@@ -166,6 +157,13 @@ jobs:
         with:
           name: marketplace-bundles
           path: dist/bundles/*.tar.zst
+          if-no-files-found: ignore
+
+      - name: Upload new plugins manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: new-plugins
+          path: dist/new-plugins.json
 
       - name: Upload registry metadata
         uses: actions/upload-artifact@v4
@@ -225,10 +223,10 @@ jobs:
           token: ${{ secrets.REGISTRY_PR_TOKEN || github.token }}
           author: "StreamKit Registry Bot <registry-bot@streamkit.dev>"
           committer: "StreamKit Registry Bot <registry-bot@streamkit.dev>"
-          branch: "registry/${{ env.RELEASE_TAG }}-${{ github.run_id }}"
-          title: "chore(registry): publish marketplace registry for ${{ env.RELEASE_TAG }}"
-          commit-message: "chore(registry): publish marketplace registry for ${{ env.RELEASE_TAG }}"
+          branch: "registry/update-${{ github.run_id }}"
+          title: "chore(registry): publish marketplace registry update"
+          commit-message: "chore(registry): publish marketplace registry update"
           body: |
-            Automated registry metadata update for `${{ env.RELEASE_TAG }}`.
+            Automated registry metadata update from run `${{ github.run_id }}`.
           delete-branch: true
           base: main

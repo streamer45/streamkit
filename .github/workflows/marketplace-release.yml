@@ -7,20 +7,11 @@ name: Marketplace Release
 on:
   workflow_dispatch:
     inputs:
-      snapshot_version:
-        description: "Marketplace snapshot version (e.g., 1.2.3, 0.2.0-dev)"
-        required: true
-      release_tag:
-        description: "Release tag (defaults to marketplace-v<snapshot_version>)"
-        required: false
       prerelease:
-        description: "Mark release as prerelease"
+        description: "Mark releases as prerelease"
         required: false
         type: boolean
         default: false
-
-env:
-  RELEASE_TAG: ${{ inputs.release_tag || format('marketplace-v{0}', inputs.snapshot_version) }}
 
 jobs:
   marketplace:
@@ -29,12 +20,9 @@ jobs:
       contents: write
       pull-requests: write
     secrets: inherit
-    with:
-      snapshot_version: ${{ inputs.snapshot_version }}
-      release_tag: ${{ inputs.release_tag || format('marketplace-v{0}', inputs.snapshot_version) }}
 
-  create-release:
-    name: Create Marketplace Release
+  create-releases:
+    name: Create Per-Plugin Releases
     needs: [marketplace]
     runs-on: ubuntu-22.04
     permissions:
@@ -42,22 +30,78 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Download all artifacts
+      - name: Download bundles
         uses: actions/download-artifact@v4
         with:
+          name: marketplace-bundles
+          path: artifacts/bundles
+
+      - name: Download new plugins manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: new-plugins
           path: artifacts
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          target_commitish: ${{ github.sha }}
-          name: "Marketplace ${{ inputs.snapshot_version }}"
-          files: |
-            artifacts/**/marketplace-bundles/*.tar.zst
-          body: |
-            Marketplace bundles for snapshot `${{ inputs.snapshot_version }}`.
-          draft: false
-          prerelease: ${{ inputs.prerelease }}
+      - name: Load plugin metadata
+        id: plugins
+        run: |
+          if [ ! -f artifacts/new-plugins.json ]; then
+            echo "No new-plugins.json found"
+            echo "matrix=[]" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          matrix=$(python3 -c "
+          import json, sys
+          data = json.load(open('artifacts/new-plugins.json'))
+          plugins = data.get('plugins', [])
+          print(json.dumps(plugins))
+          ")
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+
+      - name: Load plugin names
+        id: names
+        run: |
+          names=$(python3 -c "
+          import json
+          data = json.load(open('marketplace/official-plugins.json'))
+          mapping = {p['id']: p.get('name', p['id']) for p in data.get('plugins', [])}
+          print(json.dumps(mapping))
+          ")
+          echo "names=${names}" >> "$GITHUB_OUTPUT"
+
+      - name: Create per-plugin releases
+        if: steps.plugins.outputs.matrix != '[]'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PLUGIN_MATRIX: ${{ steps.plugins.outputs.matrix }}
+          PLUGIN_NAMES: ${{ steps.names.outputs.names }}
+          IS_PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          echo "${PLUGIN_MATRIX}" | python3 -c "
+          import json, os, subprocess, sys
+
+          plugins = json.loads(sys.stdin.read())
+          names = json.loads(os.environ['PLUGIN_NAMES'])
+          is_prerelease = os.environ.get('IS_PRERELEASE', 'false') == 'true'
+
+          for plugin in plugins:
+              pid = plugin['id']
+              version = plugin['version']
+              tag = f'plugin-{pid}-v{version}'
+              name = names.get(pid, pid)
+              release_name = f'{name} v{version}'
+              bundle = f'artifacts/bundles/{pid}-{version}-bundle.tar.zst'
+
+              cmd = [
+                  'gh', 'release', 'create', tag,
+                  '--target', os.environ.get('GITHUB_SHA', 'HEAD'),
+                  '--title', release_name,
+                  '--notes', f'Plugin bundle for {name} v{version}.',
+                  bundle,
+              ]
+              if is_prerelease:
+                  cmd.append('--prerelease')
+
+              print(f'Creating release: {tag}')
+              subprocess.run(cmd, check=True)
+          "
