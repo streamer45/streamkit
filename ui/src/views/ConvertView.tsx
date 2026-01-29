@@ -6,8 +6,6 @@ import styled from '@emotion/styled';
 import { load as loadYaml } from 'js-yaml';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-/* eslint-disable max-depth */
-
 import { AssetSelector } from '@/components/converter/AssetSelector';
 import { ConversionProgress } from '@/components/converter/ConversionProgress';
 import { FileUpload } from '@/components/converter/FileUpload';
@@ -33,6 +31,10 @@ import { orderSamplePipelinesSystemFirst } from '@/utils/samplePipelineOrdering'
 import { injectFileReadNode } from '@/utils/yamlPipeline';
 
 type HttpInputField = { name: string; required: boolean };
+type InputFormatSpec = { all: string[]; perField: Record<string, string[]> };
+
+const resolveUploadFields = (httpInputFields: HttpInputField[]): HttpInputField[] =>
+  httpInputFields.length > 0 ? httpInputFields : [{ name: 'media', required: true }];
 
 const normalizeHttpInputField = (entry: unknown): HttpInputField | null => {
   if (typeof entry === 'string' && entry.trim()) {
@@ -513,6 +515,193 @@ const checkIfTTSPipeline = (yaml: string): boolean => {
   return hasTTS && !hasAudioDemuxer;
 };
 
+const resolveTextField = (fields: HttpInputField[]): HttpInputField | null => {
+  if (fields.length === 0) {
+    return null;
+  }
+  const textField = fields.find((field) => field.name.toLowerCase() === 'text');
+  return textField ?? fields[0];
+};
+
+const splitTtsFields = (
+  fields: HttpInputField[]
+): { textField: HttpInputField | null; extraFields: HttpInputField[] } => {
+  const textField = resolveTextField(fields);
+  if (!textField) {
+    return { textField: null, extraFields: [] };
+  }
+  return {
+    textField,
+    extraFields: fields.filter((field) => field.name !== textField.name),
+  };
+};
+
+const FORMAT_ACCEPT_MAP: Record<string, string> = {
+  ogg: '.ogg',
+  opus: '.opus',
+  mp3: '.mp3',
+  wav: '.wav',
+  flac: '.flac',
+  txt: '.txt',
+  text: '.txt',
+  json: '.json',
+};
+
+const detectInputFormatSpec = (yaml: string): InputFormatSpec | null => {
+  const match = yaml.match(/^\s*#\s*skit:input_formats\s*=\s*([^\n#]+)\s*$/im);
+  if (!match?.[1]) return null;
+
+  const spec: InputFormatSpec = { all: [], perField: {} };
+
+  for (const entry of match[1].split(',')) {
+    const token = entry.trim();
+    if (!token) continue;
+
+    const parts = token.split(':');
+    if (parts.length > 1) {
+      const field = parts[0].trim().toLowerCase();
+      const formats = parts
+        .slice(1)
+        .join(':')
+        .split(/[|+]/)
+        .map((format) => format.trim().toLowerCase())
+        .filter(Boolean);
+
+      if (!field || formats.length === 0) continue;
+
+      const existing = spec.perField[field] ?? [];
+      for (const format of formats) {
+        if (!existing.includes(format)) {
+          existing.push(format);
+        }
+      }
+      spec.perField[field] = existing;
+    } else {
+      const format = token.toLowerCase();
+      if (!spec.all.includes(format)) {
+        spec.all.push(format);
+      }
+    }
+  }
+
+  if (spec.all.length === 0 && Object.keys(spec.perField).length === 0) {
+    return null;
+  }
+
+  return spec;
+};
+
+const resolveFormatsForField = (
+  fieldName: string,
+  formatSpec: InputFormatSpec | null,
+  fallbackFormats: string[] | null
+): string[] | null => {
+  const key = fieldName.toLowerCase();
+  const perField = formatSpec?.perField?.[key];
+  if (perField && perField.length > 0) {
+    return perField;
+  }
+  if (formatSpec?.all && formatSpec.all.length > 0) {
+    return formatSpec.all;
+  }
+  return fallbackFormats;
+};
+
+const buildNoInputUploads = (fields: HttpInputField[]): UploadField[] => {
+  const blob = new Blob([''], { type: 'application/octet-stream' });
+  const file = new File([blob], 'empty', { type: 'application/octet-stream' });
+  return [{ field: fields[0].name, file }];
+};
+
+const buildTtsUploads = (
+  fields: HttpInputField[],
+  textInput: string,
+  fieldUploads: Record<string, File | null>
+): UploadField[] | null => {
+  if (!textInput.trim()) {
+    return null;
+  }
+
+  const { textField, extraFields } = splitTtsFields(fields);
+  const textFieldName = textField?.name ?? fields[0]?.name;
+  if (!textFieldName) {
+    return null;
+  }
+
+  const uploads: UploadField[] = [];
+  const blob = new Blob([textInput], { type: 'text/plain' });
+  const file = new File([blob], 'input.txt', { type: 'text/plain' });
+  uploads.push({ field: textFieldName, file });
+
+  for (const field of extraFields) {
+    const fieldFile = fieldUploads[field.name];
+    if (!fieldFile) {
+      if (field.required) return null;
+      continue;
+    }
+    uploads.push({ field: field.name, file: fieldFile });
+  }
+
+  return uploads;
+};
+
+const buildUploadModeUploads = (
+  fields: HttpInputField[],
+  fieldUploads: Record<string, File | null>,
+  selectedFile: File | null
+): UploadField[] | null => {
+  if (fields.length > 1) {
+    const uploads: UploadField[] = [];
+    for (const field of fields) {
+      const file = fieldUploads[field.name];
+      if (!file) {
+        if (field.required) return null;
+        continue;
+      }
+      uploads.push({ field: field.name, file });
+    }
+    return uploads;
+  }
+
+  if (!selectedFile) {
+    return null;
+  }
+  return [{ field: fields[0].name, file: selectedFile }];
+};
+
+const formatHintForField = (
+  field: HttpInputField,
+  formatSpec: InputFormatSpec | null,
+  fallbackFormats: string[] | null,
+  isTts: boolean
+): { accept?: string; hint?: string } => {
+  const name = field.name.toLowerCase();
+  const fieldOverrides =
+    (formatSpec?.all?.length ?? 0) > 0 || (formatSpec?.perField?.[name]?.length ?? 0) > 0;
+
+  if (isTts && name.includes('voice') && !fieldOverrides) {
+    return { accept: 'audio/wav,.wav,.wave', hint: 'Expected format: WAV audio' };
+  }
+
+  const formats = resolveFormatsForField(field.name, formatSpec, fallbackFormats);
+  if (!formats || formats.length === 0) {
+    return {};
+  }
+
+  const unique = Array.from(new Set(formats.map((format) => format.toLowerCase())));
+  const accept = unique
+    .map((format) => FORMAT_ACCEPT_MAP[format])
+    .filter(Boolean)
+    .join(',');
+  const label = unique.map((format) => format.toUpperCase()).join(', ');
+  const hint = `Expected format${unique.length > 1 ? 's' : ''}: ${label}`;
+
+  return {
+    accept: accept || undefined,
+    hint,
+  };
+};
+
 /**
  * Generates a CLI command for running the pipeline with curl + ffplay
  */
@@ -537,10 +726,16 @@ const generateCliCommand = (
 
   if (isTTS) {
     // TTS pipeline - pipe text input
+    const { textField, extraFields } = splitTtsFields(activeFields);
+    const textFieldName = textField?.name ?? 'media';
+    const extraLines = extraFields
+      .map((field) => `  -F ${field.name}=@your-${field.name}.wav \\`)
+      .join('\n');
+    const extraBlock = extraLines ? `${extraLines}\n` : '';
     return `echo "Your text here" | curl --no-buffer \\
   -F config=@${configPath} \\
-  -F 'media=@-;type=text/plain' \\
-  ${serverUrl}/api/v1/process -o - | ffplay -f webm -i -`;
+  -F '${textFieldName}=@-;type=text/plain' \\
+${extraBlock}  ${serverUrl}/api/v1/process -o - | ffplay -f webm -i -`;
   }
 
   // Multi-upload pipelines
@@ -773,31 +968,37 @@ const ConvertView: React.FC = () => {
   };
 
   // Filter assets based on pipeline's expected format; for multi-field uploads, allow all assets so fields can mix
+  const inputFormatSpec = React.useMemo(() => detectInputFormatSpec(pipelineYaml), [pipelineYaml]);
+  const inferredFormats = React.useMemo(() => detectExpectedFormats(pipelineYaml), [pipelineYaml]);
+  const assetFieldName = httpInputFields.length > 0 ? httpInputFields[0].name : 'media';
+  const assetFormats = React.useMemo(
+    () => resolveFormatsForField(assetFieldName, inputFormatSpec, inferredFormats),
+    [assetFieldName, inputFormatSpec, inferredFormats]
+  );
   const filteredAssets = React.useMemo(() => {
     if (!pipelineYaml) {
       return audioAssets;
     }
 
-    const expectedFormats = detectExpectedFormats(pipelineYaml);
     const inputAssetTags = detectInputAssetTags(pipelineYaml);
 
     // Multi-field pipelines: only filter by format (avoid tag-based narrowing so users can mix content)
     if (httpInputFields.length > 1) {
-      if (!expectedFormats) return audioAssets;
-      return audioAssets.filter((asset) => expectedFormats.includes(asset.format.toLowerCase()));
+      if (!assetFormats) return audioAssets;
+      return audioAssets.filter((asset) => assetFormats.includes(asset.format.toLowerCase()));
     }
 
     // Single-field pipelines: apply both format and tag filters if present
-    if (!expectedFormats && !inputAssetTags) {
+    if (!assetFormats && !inputAssetTags) {
       viewsLogger.debug('No specific format required, showing all assets');
       return audioAssets;
     }
 
-    viewsLogger.debug('Expected formats:', expectedFormats, 'Total assets:', audioAssets.length);
+    viewsLogger.debug('Expected formats:', assetFormats, 'Total assets:', audioAssets.length);
 
     // Filter assets to only those with compatible formats
-    const formatFiltered = expectedFormats
-      ? audioAssets.filter((asset) => expectedFormats.includes(asset.format.toLowerCase()))
+    const formatFiltered = assetFormats
+      ? audioAssets.filter((asset) => assetFormats.includes(asset.format.toLowerCase()))
       : audioAssets;
 
     const tagFiltered = inputAssetTags
@@ -809,7 +1010,7 @@ const ConvertView: React.FC = () => {
     viewsLogger.debug('Filtered to', tagFiltered.length, 'compatible assets');
 
     return tagFiltered;
-  }, [audioAssets, pipelineYaml, httpInputFields.length]);
+  }, [audioAssets, pipelineYaml, httpInputFields.length, assetFormats]);
 
   // Clear selected asset if it's no longer in the filtered list
   useEffect(() => {
@@ -939,43 +1140,18 @@ const ConvertView: React.FC = () => {
   };
 
   const prepareUploads = useCallback(async (): Promise<UploadField[] | null> => {
-    const fields =
-      httpInputFields.length > 0 ? httpInputFields : [{ name: 'media', required: true }];
+    const fields = resolveUploadFields(httpInputFields);
 
     if (isNoInputPipeline) {
-      // No input needed - create empty placeholder for the first field
-      const blob = new Blob([''], { type: 'application/octet-stream' });
-      const file = new File([blob], 'empty', { type: 'application/octet-stream' });
-      return [{ field: fields[0].name, file }];
+      return buildNoInputUploads(fields);
     }
 
     if (isTTSPipeline) {
-      if (!textInput.trim()) {
-        return null;
-      }
-      const blob = new Blob([textInput], { type: 'text/plain' });
-      const file = new File([blob], 'input.txt', { type: 'text/plain' });
-      return [{ field: fields[0].name, file }];
+      return buildTtsUploads(fields, textInput, fieldUploads);
     }
 
     if (inputMode === 'upload') {
-      if (fields.length > 1) {
-        const uploads: UploadField[] = [];
-        for (const field of fields) {
-          const file = fieldUploads[field.name];
-          if (!file) {
-            if (field.required) return null;
-            continue;
-          }
-          uploads.push({ field: field.name, file });
-        }
-        return uploads;
-      }
-
-      if (!selectedFile) {
-        return null;
-      }
-      return [{ field: fields[0].name, file: selectedFile }];
+      return buildUploadModeUploads(fields, fieldUploads, selectedFile);
     }
 
     if (!selectedAssetId || !hasHttpInput) {
@@ -1318,6 +1494,14 @@ const ConvertView: React.FC = () => {
   const uploadFields =
     httpInputFields.length > 0 ? httpInputFields : [{ name: 'media', required: true }];
   const isMultiUpload = uploadFields.length > 1;
+  const { extraFields: ttsExtraFields } = splitTtsFields(uploadFields);
+  const ttsMissingRequiredUploads = ttsExtraFields.some(
+    (field) => field.required && !fieldUploads[field.name]
+  );
+  const singleUploadHint =
+    uploadFields.length > 0
+      ? formatHintForField(uploadFields[0], inputFormatSpec, inferredFormats, isTTSPipeline)
+      : {};
 
   const handleDownloadAudio = () => {
     if (!audioUrl) return;
@@ -1369,7 +1553,7 @@ const ConvertView: React.FC = () => {
     (isNoInputPipeline
       ? true // No input needed for these pipelines
       : isTTSPipeline
-        ? textInput.trim() !== ''
+        ? textInput.trim() !== '' && !ttsMissingRequiredUploads
         : (() => {
             if (!hasHttpInput) {
               // Pipelines without http_input rely solely on YAML/file_reader; allow run
@@ -1488,6 +1672,35 @@ const ConvertView: React.FC = () => {
                     aria-label="Text input for TTS conversion"
                   />
                   <CharCounter>{textInput.length} characters</CharCounter>
+                  {ttsExtraFields.length > 0 && (
+                    <div style={{ marginTop: '12px' }}>
+                      <TextAreaLabel>Additional uploads:</TextAreaLabel>
+                      {ttsExtraFields.map((field) => {
+                        const hint = formatHintForField(
+                          field,
+                          inputFormatSpec,
+                          inferredFormats,
+                          isTTSPipeline
+                        );
+                        return (
+                          <div key={field.name} style={{ marginTop: '8px' }}>
+                            <TextAreaLabel>
+                              {field.name}
+                              {!field.required ? ' (optional)' : ''}
+                            </TextAreaLabel>
+                            <FileUpload
+                              file={fieldUploads[field.name] ?? null}
+                              onFileSelect={(file) =>
+                                setFieldUploads((prev) => ({ ...prev, [field.name]: file }))
+                              }
+                              accept={hint.accept}
+                              hint={hint.hint}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </TextInputContainer>
               ) : (
                 <>
@@ -1516,23 +1729,38 @@ const ConvertView: React.FC = () => {
                           This pipeline expects multiple uploads. For each field, choose an upload
                           or pick an existing asset.
                         </p>
-                        {uploadFields.map((field) => (
-                          <div key={field.name} style={{ marginBottom: '12px' }}>
-                            <TextAreaLabel>
-                              {field.name}
-                              {!field.required ? ' (optional)' : ''}
-                            </TextAreaLabel>
-                            <FileUpload
-                              file={fieldUploads[field.name] ?? null}
-                              onFileSelect={(file) =>
-                                setFieldUploads((prev) => ({ ...prev, [field.name]: file }))
-                              }
-                            />
-                          </div>
-                        ))}
+                        {uploadFields.map((field) => {
+                          const hint = formatHintForField(
+                            field,
+                            inputFormatSpec,
+                            inferredFormats,
+                            isTTSPipeline
+                          );
+                          return (
+                            <div key={field.name} style={{ marginBottom: '12px' }}>
+                              <TextAreaLabel>
+                                {field.name}
+                                {!field.required ? ' (optional)' : ''}
+                              </TextAreaLabel>
+                              <FileUpload
+                                file={fieldUploads[field.name] ?? null}
+                                onFileSelect={(file) =>
+                                  setFieldUploads((prev) => ({ ...prev, [field.name]: file }))
+                                }
+                                accept={hint.accept}
+                                hint={hint.hint}
+                              />
+                            </div>
+                          );
+                        })}
                       </div>
                     ) : (
-                      <FileUpload file={selectedFile} onFileSelect={setSelectedFile} />
+                      <FileUpload
+                        file={selectedFile}
+                        onFileSelect={setSelectedFile}
+                        accept={singleUploadHint.accept}
+                        hint={singleUploadHint.hint}
+                      />
                     )
                   ) : (
                     <AssetSelector

@@ -1,0 +1,22 @@
+# Pocket TTS WASM Build Configuration
+# 
+# Build with: wasm-pack build --target web --features wasm
+#
+# This generates a `pkg/` directory with:
+# - pocket_tts.js     - ES module wrapper
+# - pocket_tts_bg.wasm - WebAssembly binary
+# - pocket_tts.d.ts   - TypeScript definitions
+
+[package]
+name = "pocket-tts"
+
+[package.metadata.wasm-pack.profile.release]
+# Enable optimizations for smaller WASM binary
+wasm-opt = ["-Oz", "--enable-mutable-globals"]
+
+[package.metadata.wasm-pack.profile.dev]
+# Faster builds during development
+wasm-opt = false
+
+[package.metadata.wasm-pack.profile.profiling]
+wasm-opt = ["-O", "--enable-mutable-globals"]

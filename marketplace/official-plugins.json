@@ -168,6 +168,34 @@
       ]
     },
     {
+      "id": "pocket-tts",
+      "name": "Pocket TTS",
+      "version": "0.1.0",
+      "node_kind": "pocket-tts",
+      "kind": "native",
+      "entrypoint": "libpocket_tts.so",
+      "artifact": "plugins/native/pocket-tts/target/release/libpocket_tts.so",
+      "description": "Lightweight CPU TTS using Kyutai Pocket TTS (Candle)",
+      "license": "MPL-2.0",
+      "models": [
+        {
+          "id": "pocket-tts-b6369a24",
+          "name": "Pocket TTS b6369a24",
+          "default": true,
+          "source": "huggingface",
+          "repo_id": "streamkit/pocket-tts-models",
+          "revision": "main",
+          "files": [
+            "pocket-tts-b6369a24.tar.bz2"
+          ],
+          "expected_size_bytes": 169847585,
+          "license": "CC-BY-4.0",
+          "license_url": "https://huggingface.co/kyutai/pocket-tts",
+          "sha256": "7661d610217e8d2b0ae1d8739d384756e50c734fb136047679ca651385ed3035"
+        }
+      ]
+    },
+    {
       "id": "sensevoice",
       "name": "SenseVoice",
       "version": "0.1.0",
