@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "supertonic",
+  "name": "Supertonic",
+  "version": "0.1.0",
+  "node_kind": "supertonic",
+  "kind": "native",
+  "description": "Multilingual TTS using Supertonic (66M params, 5 languages, up to 167x real-time)",
+  "license": "MPL-2.0",
+  "entrypoint": "libsupertonic.so",
+  "bundle": {
+    "url": "https://github.com/streamer45/streamkit/releases/download/plugin-supertonic-v0.1.0/supertonic-0.1.0-bundle.tar.zst",
+    "sha256": "c39ea1021cb476693d70ecb08f3d3c6fdb5128e6b33acfd50f7b34c8dc3c4601",
+    "size_bytes": 9164768
+  },
+  "models": [
+    {
+      "id": "supertonic-v2-onnx",
+      "name": "Supertonic v2 ONNX models",
+      "default": true,
+      "source": "huggingface",
+      "repo_id": "streamkit/supertonic-models",
+      "revision": "main",
+      "files": [
+        "supertonic-v2-onnx.tar.bz2"
+      ],
+      "expected_size_bytes": 244451376,
+      "license": "MIT",
+      "license_url": "https://github.com/supertone-inc/supertonic/blob/main/LICENSE",
+      "sha256": "29e18bfdcbfbdd8bef25204b19be21d13fda36d4e66fe31c74e2a01dad457cec"
+    }
+  ]
+}
