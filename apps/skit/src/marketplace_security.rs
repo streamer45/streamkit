@@ -101,6 +101,7 @@ pub async fn validated_get_response(
     start: &Url,
     registry_origin: Option<&OriginKey>,
     bearer_token: Option<&str>,
+    resume_from_byte: Option<u64>,
 ) -> Result<(Response, Url)> {
     let mut current = start.clone();
     let token_origin = if bearer_token.is_some() { Some(origin_key(start)?) } else { None };
@@ -112,6 +113,9 @@ pub async fn validated_get_response(
             if &current_origin == expected_origin {
                 request = request.bearer_auth(token);
             }
+        }
+        if let Some(offset) = resume_from_byte {
+            request = request.header(reqwest::header::RANGE, format!("bytes={offset}-"));
         }
         let response =
             request.send().await.with_context(|| format!("Failed to fetch {label} {current}"))?;
@@ -158,7 +162,8 @@ pub async fn validated_get_bytes(
     bearer_token: Option<&str>,
 ) -> Result<Bytes> {
     let (response, final_url) =
-        validated_get_response(client, policy, label, start, registry_origin, bearer_token).await?;
+        validated_get_response(client, policy, label, start, registry_origin, bearer_token, None)
+            .await?;
     let response = response
         .error_for_status()
         .with_context(|| format!("{label} request failed for {final_url}"))?;

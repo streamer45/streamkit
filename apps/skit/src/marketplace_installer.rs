@@ -46,6 +46,8 @@ const REGISTRY_TIMEOUT_SECS: u64 = 20;
 const REGISTRY_INDEX_TTL_SECS: u64 = 60;
 const REGISTRY_MANIFEST_TTL_SECS: u64 = 60;
 const MAX_JOB_HISTORY: usize = 200;
+const DOWNLOAD_CONNECT_TIMEOUT_SECS: u64 = 30;
+const DOWNLOAD_READ_TIMEOUT_SECS: u64 = 60;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct InstallPluginRequest {
@@ -300,6 +302,7 @@ impl InstallJobQueue {
                     tracker.mark_cancelled("Cancelled").await;
                 },
                 Err(InstallError::Other(err)) => {
+                    tracing::error!(job_id = %context.job_id, error = %err, "Install job failed");
                     tracker.set_status(JobStatus::Failed, format!("Install failed: {err}")).await;
                 },
             }
@@ -456,6 +459,7 @@ impl JobTracker {
     }
 
     async fn fail_step(&self, step_name: &str, error: String) {
+        tracing::error!(job_id = %self.job_id, step = %step_name, error = %error, "Install step failed");
         self.queue
             .update_job(&self.job_id, |info| {
                 if let Some(step) = info.steps.iter_mut().find(|step| step.name == step_name) {
@@ -533,7 +537,8 @@ impl PluginInstaller {
         settings: PluginInstallerSettings,
     ) -> Result<Self> {
         let download_client = Client::builder()
-            .timeout(Duration::from_secs(REGISTRY_TIMEOUT_SECS))
+            .connect_timeout(Duration::from_secs(DOWNLOAD_CONNECT_TIMEOUT_SECS))
+            .read_timeout(Duration::from_secs(DOWNLOAD_READ_TIMEOUT_SECS))
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .context("Failed to build bundle HTTP client")?;
@@ -935,9 +940,14 @@ impl PluginInstaller {
         plugin_paths::validate_path_component("bundle file name", file_name)?;
 
         let bundle_path = cache_dir.join(file_name);
-        let temp_path = cache_dir.join(format!(".download-{}", Uuid::new_v4()));
+        let temp_path = cache_dir.join(format!(".download-{file_name}"));
 
+        let mut hash_mismatch = false;
         let download_result: Result<(), InstallError> = async {
+            // Check for existing partial download to enable resume.
+            let existing_len = tokio::fs::metadata(&temp_path).await.ok().map(|m| m.len());
+            let resume_from = existing_len.filter(|&len| len > 0);
+
             let (response, final_url) = validated_get_response(
                 &self.download_client,
                 &self.marketplace_policy,
@@ -945,23 +955,58 @@ impl PluginInstaller {
                 &bundle_url,
                 Some(registry_origin),
                 None,
+                resume_from,
             )
             .await?;
             let response = response
                 .error_for_status()
                 .with_context(|| format!("Bundle download failed for {final_url}"))?;
-            let total_bytes = response.content_length();
+
+            let is_partial = response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+            let total_bytes = if is_partial {
+                // For 206 responses, content_length is the remaining bytes.
+                response.content_length().map(|cl| cl + resume_from.unwrap_or(0))
+            } else {
+                response.content_length()
+            };
             let mut stream = response.bytes_stream();
 
-            let mut file = tokio::fs::File::create(&temp_path).await.with_context(|| {
-                format!("Failed to create bundle file {temp_path}", temp_path = temp_path.display())
-            })?;
-            let mut hasher = Sha256::new();
-            let mut bytes_done = 0u64;
+            let (mut file, mut hasher, mut bytes_done) = if is_partial {
+                let offset = resume_from.unwrap_or(0);
+                // Re-hash existing bytes for SHA256 continuity.
+                let existing_data = tokio::fs::read(&temp_path).await.with_context(|| {
+                    format!(
+                        "Failed to read existing temp file {temp_path}",
+                        temp_path = temp_path.display()
+                    )
+                })?;
+                let mut hasher = Sha256::new();
+                hasher.update(&existing_data);
+                let file = tokio::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&temp_path)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "Failed to open bundle file for append {temp_path}",
+                            temp_path = temp_path.display()
+                        )
+                    })?;
+                (file, hasher, offset)
+            } else {
+                let file = tokio::fs::File::create(&temp_path).await.with_context(|| {
+                    format!(
+                        "Failed to create bundle file {temp_path}",
+                        temp_path = temp_path.display()
+                    )
+                })?;
+                (file, Sha256::new(), 0u64)
+            };
 
             while let Some(chunk) = stream.next().await {
                 let chunk = chunk.with_context(|| "Failed to read bundle download stream")?;
                 if cancel.is_cancelled() {
+                    let _ = file.flush().await;
                     return Err(InstallError::Cancelled);
                 }
                 file.write_all(&chunk).await.with_context(|| {
@@ -989,6 +1034,7 @@ impl PluginInstaller {
             if !actual_hash.eq_ignore_ascii_case(&manifest.bundle.sha256) {
                 let expected = manifest.bundle.sha256.as_str();
                 let actual = actual_hash.as_str();
+                hash_mismatch = true;
                 return Err(
                     anyhow!("Bundle hash mismatch: expected {expected}, got {actual}").into()
                 );
@@ -999,7 +1045,11 @@ impl PluginInstaller {
         .await;
 
         if let Err(err) = download_result {
-            let _ = tokio::fs::remove_file(&temp_path).await;
+            // Only delete temp file on hash mismatch; keep it for network errors
+            // and cancellations so the next attempt can resume from the partial file.
+            if hash_mismatch {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+            }
             return Err(err);
         }
 
@@ -1375,33 +1425,77 @@ impl PluginInstaller {
             .marketplace_policy
             .validate_url("model url", url, registry_origin.as_ref())
             .await?;
-        let (response, final_url) = validated_get_response(
-            &self.download_client,
-            &self.marketplace_policy,
-            "model url",
-            &parsed,
-            registry_origin.as_ref(),
-            bearer_token,
-        )
-        .await?;
-        let response = response
-            .error_for_status()
-            .with_context(|| format!("Model download failed for {final_url}"))?;
-        let total_bytes = response.content_length().or(expected_size);
-        let mut stream = response.bytes_stream();
 
-        let temp_path = target_path.with_extension(format!("download-{}", Uuid::new_v4()));
+        let temp_path = target_path.with_extension("download-part");
+        let mut hash_mismatch = false;
         let download_result: Result<(), InstallError> = async {
-            let mut file = tokio::fs::File::create(&temp_path).await.with_context(|| {
-                format!("Failed to create model file {temp_path}", temp_path = temp_path.display())
-            })?;
+            // Check for existing partial download to enable resume.
+            let existing_len = tokio::fs::metadata(&temp_path).await.ok().map(|m| m.len());
+            let resume_from = existing_len.filter(|&len| len > 0);
 
-            let mut hasher = expected_sha256.map(|_| Sha256::new());
-            let mut bytes_done = 0u64;
+            let (response, final_url) = validated_get_response(
+                &self.download_client,
+                &self.marketplace_policy,
+                "model url",
+                &parsed,
+                registry_origin.as_ref(),
+                bearer_token,
+                resume_from,
+            )
+            .await?;
+            let response = response
+                .error_for_status()
+                .with_context(|| format!("Model download failed for {final_url}"))?;
+
+            let is_partial = response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+            let total_bytes = if is_partial {
+                response.content_length().map(|cl| cl + resume_from.unwrap_or(0))
+            } else {
+                response.content_length()
+            }
+            .or(expected_size);
+            let mut stream = response.bytes_stream();
+
+            let (mut file, mut hasher, mut bytes_done) = if is_partial {
+                let offset = resume_from.unwrap_or(0);
+                // Re-hash existing bytes for SHA256 continuity.
+                let existing_data = tokio::fs::read(&temp_path).await.with_context(|| {
+                    format!(
+                        "Failed to read existing temp file {temp_path}",
+                        temp_path = temp_path.display()
+                    )
+                })?;
+                let h = expected_sha256.map(|_| {
+                    let mut hasher = Sha256::new();
+                    hasher.update(&existing_data);
+                    hasher
+                });
+                let file = tokio::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&temp_path)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "Failed to open model file for append {temp_path}",
+                            temp_path = temp_path.display()
+                        )
+                    })?;
+                (file, h, offset)
+            } else {
+                let file = tokio::fs::File::create(&temp_path).await.with_context(|| {
+                    format!(
+                        "Failed to create model file {temp_path}",
+                        temp_path = temp_path.display()
+                    )
+                })?;
+                let h = expected_sha256.map(|_| Sha256::new());
+                (file, h, 0u64)
+            };
 
             while let Some(chunk) = stream.next().await {
                 let chunk = chunk.with_context(|| "Failed to read model download stream")?;
                 if cancel.is_cancelled() {
+                    let _ = file.flush().await;
                     return Err(InstallError::Cancelled);
                 }
                 file.write_all(&chunk).await.with_context(|| {
@@ -1440,6 +1534,7 @@ impl PluginInstaller {
             if let (Some(expected_hash), Some(hasher)) = (expected_sha256, hasher) {
                 let actual_hash = to_hex(&hasher.finalize());
                 if !actual_hash.eq_ignore_ascii_case(expected_hash) {
+                    hash_mismatch = true;
                     return Err(anyhow!(
                         "Model hash mismatch: expected {expected_hash}, got {actual_hash}"
                     )
@@ -1452,7 +1547,9 @@ impl PluginInstaller {
         .await;
 
         if let Err(err) = download_result {
-            let _ = tokio::fs::remove_file(&temp_path).await;
+            if hash_mismatch {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+            }
             return Err(err);
         }
 
