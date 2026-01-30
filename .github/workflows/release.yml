@@ -80,16 +80,9 @@ jobs:
             streamkit-${{ github.ref_name }}-linux-x64.tar.gz
             streamkit-${{ github.ref_name }}-linux-x64.tar.gz.sha256
 
-  marketplace:
-    uses: ./.github/workflows/marketplace-build.yml
-    permissions:
-      contents: write
-      pull-requests: write
-    secrets: inherit
-
   create-release:
     name: Create GitHub Release
-    needs: [build-linux-x64, marketplace]
+    needs: [build-linux-x64]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -130,7 +123,6 @@ jobs:
           files: |
             artifacts/**/streamkit-*.tar.gz
             artifacts/**/streamkit-*.tar.gz.sha256
-            artifacts/**/marketplace-bundles/*.tar.zst
           body_path: changelog.md
           draft: false
           prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
