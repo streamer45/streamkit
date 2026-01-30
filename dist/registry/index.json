@@ -11,7 +11,7 @@
           "version": "0.1.0",
           "manifest_url": "https://streamkit.dev/registry/plugins/helsinki/0.1.0/manifest.json",
           "signature_url": "https://streamkit.dev/registry/plugins/helsinki/0.1.0/manifest.minisig",
-          "published_at": "2026-01-29"
+          "published_at": "2026-01-30"
         }
       ]
     },
@@ -25,7 +25,7 @@
           "version": "0.1.0",
           "manifest_url": "https://streamkit.dev/registry/plugins/kokoro/0.1.0/manifest.json",
           "signature_url": "https://streamkit.dev/registry/plugins/kokoro/0.1.0/manifest.minisig",
-          "published_at": "2026-01-29"
+          "published_at": "2026-01-30"
         }
       ]
     },
@@ -39,7 +39,7 @@
           "version": "0.1.0",
           "manifest_url": "https://streamkit.dev/registry/plugins/matcha/0.1.0/manifest.json",
           "signature_url": "https://streamkit.dev/registry/plugins/matcha/0.1.0/manifest.minisig",
-          "published_at": "2026-01-29"
+          "published_at": "2026-01-30"
         }
       ]
     },
@@ -53,7 +53,7 @@
           "version": "0.1.0",
           "manifest_url": "https://streamkit.dev/registry/plugins/nllb/0.1.0/manifest.json",
           "signature_url": "https://streamkit.dev/registry/plugins/nllb/0.1.0/manifest.minisig",
-          "published_at": "2026-01-29"
+          "published_at": "2026-01-30"
         }
       ]
     },
@@ -67,7 +67,7 @@
           "version": "0.1.0",
           "manifest_url": "https://streamkit.dev/registry/plugins/piper/0.1.0/manifest.json",
           "signature_url": "https://streamkit.dev/registry/plugins/piper/0.1.0/manifest.minisig",
-          "published_at": "2026-01-29"
+          "published_at": "2026-01-30"
         }
       ]
     },
@@ -81,7 +81,7 @@
           "version": "0.1.0",
           "manifest_url": "https://streamkit.dev/registry/plugins/pocket-tts/0.1.0/manifest.json",
           "signature_url": "https://streamkit.dev/registry/plugins/pocket-tts/0.1.0/manifest.minisig",
-          "published_at": "2026-01-29"
+          "published_at": "2026-01-30"
         }
       ]
     },
@@ -95,7 +95,7 @@
           "version": "0.1.0",
           "manifest_url": "https://streamkit.dev/registry/plugins/sensevoice/0.1.0/manifest.json",
           "signature_url": "https://streamkit.dev/registry/plugins/sensevoice/0.1.0/manifest.minisig",
-          "published_at": "2026-01-29"
+          "published_at": "2026-01-30"
         }
       ]
     },
@@ -109,7 +109,7 @@
           "version": "0.1.0",
           "manifest_url": "https://streamkit.dev/registry/plugins/supertonic/0.1.0/manifest.json",
           "signature_url": "https://streamkit.dev/registry/plugins/supertonic/0.1.0/manifest.minisig",
-          "published_at": "2026-01-29"
+          "published_at": "2026-01-30"
         }
       ]
     },
@@ -123,7 +123,7 @@
           "version": "0.1.0",
           "manifest_url": "https://streamkit.dev/registry/plugins/vad/0.1.0/manifest.json",
           "signature_url": "https://streamkit.dev/registry/plugins/vad/0.1.0/manifest.minisig",
-          "published_at": "2026-01-29"
+          "published_at": "2026-01-30"
         }
       ]
     },
@@ -137,7 +137,7 @@
           "version": "0.1.1",
           "manifest_url": "https://streamkit.dev/registry/plugins/whisper/0.1.1/manifest.json",
           "signature_url": "https://streamkit.dev/registry/plugins/whisper/0.1.1/manifest.minisig",
-          "published_at": "2026-01-29"
+          "published_at": "2026-01-30"
         }
       ]
     }
