@@ -112,14 +112,14 @@ const buildInstallBlockedReasons = ({
     reasons.push('License acceptance required.');
   }
   if (missingModelSelection) {
-    reasons.push('Select at least one model or disable model downloads.');
+    reasons.push('Select at least one model to download.');
   }
   if (!allowNativeMarketplace) {
     reasons.push('Native marketplace installs are disabled in server config.');
   }
   if (installedPlugin) {
     if (!installModels) {
-      reasons.push('Plugin already installed. Enable model downloads or uninstall to replace it.');
+      reasons.push('Plugin already installed. Select models to download or uninstall first.');
     } else if (!hasModels) {
       reasons.push('Plugin already installed and has no models to download.');
     } else if (versionMismatch && installedVersion) {
@@ -199,7 +199,6 @@ type MarketplaceDetailsPanelProps = {
   installing: boolean;
   onVersionChange: (value: string) => void;
   onLicenseAccepted: (value: boolean) => void;
-  onInstallModelsChange: (value: boolean) => void;
   onInstall: () => void;
 };
 
@@ -222,7 +221,6 @@ export const MarketplaceDetailsPanel: React.FC<MarketplaceDetailsPanelProps> = (
   installing,
   onVersionChange,
   onLicenseAccepted,
-  onInstallModelsChange,
   onInstall,
 }) => {
   if (!details && loading) return <MarketplaceDetailsLoading />;
@@ -274,12 +272,10 @@ export const MarketplaceDetailsPanel: React.FC<MarketplaceDetailsPanelProps> = (
       <MarketplaceModelsSection
         hasModels={hasModels}
         hasModelSelection={hasModelSelection}
-        installModels={installModels}
         hasGatedModels={hasGatedModels}
         models={details.manifest.models}
         selectedModelIds={selectedModelIds}
         onModelToggle={onModelToggle}
-        onInstallModelsChange={onInstallModelsChange}
       />
       <MarketplaceInstallWarnings
         canInstall={canInstall}

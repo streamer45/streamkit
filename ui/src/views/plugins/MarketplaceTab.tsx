@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { useToast } from '@/context/ToastContext';
 import { usePermissions } from '@/hooks/usePermissions';
@@ -52,17 +52,6 @@ const syncSelectedPluginId = (
     return;
   }
   setSelectedPluginId(index.plugins[0]?.id ?? null);
-};
-
-const syncInstallModels = (
-  details: MarketplacePluginDetails | null,
-  setInstallModels: React.Dispatch<React.SetStateAction<boolean>>
-) => {
-  if (!details) {
-    setInstallModels(false);
-    return;
-  }
-  setInstallModels(details.manifest.models.length > 0);
 };
 
 const defaultModelSelection = (details: MarketplacePluginDetails | null) => {
@@ -192,17 +181,12 @@ const useInstalledPlugin = (
   }, [details, installedPlugins]);
 };
 
-const useModelFlags = (
-  details: MarketplacePluginDetails | null,
-  selectedModelIds: string[],
-  installModels: boolean
-) => {
+const useModelFlags = (details: MarketplacePluginDetails | null, selectedModelIds: string[]) => {
   const flags = useMemo(
     () => deriveModelFlags(details, selectedModelIds),
     [details, selectedModelIds]
   );
-  const missingModelSelection =
-    installModels && flags.hasModelSelection && selectedModelIds.length === 0;
+  const missingModelSelection = false;
   return { ...flags, missingModelSelection };
 };
 
@@ -268,6 +252,82 @@ const startInstall = async ({
   }
 };
 
+const useMarketplaceHandlers = ({
+  details,
+  selectedModelIds,
+  resetJob,
+  setInstalling,
+  setJobId,
+  setSelectedRegistry,
+  setSelectedPluginId,
+  setSelectedModelIds,
+  toast,
+}: {
+  details: MarketplacePluginDetails | null;
+  selectedModelIds: string[];
+  resetJob: () => void;
+  setInstalling: React.Dispatch<React.SetStateAction<boolean>>;
+  setJobId: React.Dispatch<React.SetStateAction<string | null>>;
+  setSelectedRegistry: (value: string) => void;
+  setSelectedPluginId: React.Dispatch<React.SetStateAction<string | null>>;
+  setSelectedModelIds: React.Dispatch<React.SetStateAction<string[]>>;
+  toast: ReturnType<typeof useToast>;
+}) => {
+  const handleInstall = useCallback(() => {
+    const hasSelectedModels =
+      (details?.manifest.models.length ?? 0) > 0 && selectedModelIds.length > 0;
+    void startInstall({
+      details,
+      installModels: hasSelectedModels,
+      selectedModelIds,
+      resetJob,
+      setInstalling,
+      setJobId,
+      toast,
+    });
+  }, [details, selectedModelIds, resetJob, setInstalling, setJobId, toast]);
+
+  const handleClearJob = useCallback(() => {
+    setJobId(null);
+    resetJob();
+  }, [setJobId, resetJob]);
+
+  const handleSelectRegistry = useCallback(
+    (value: string) => {
+      setSelectedRegistry(value);
+      setSelectedPluginId(null);
+    },
+    [setSelectedRegistry, setSelectedPluginId]
+  );
+
+  const handleSelectPlugin = useCallback(
+    (pluginId: string) => {
+      setSelectedPluginId(pluginId);
+    },
+    [setSelectedPluginId]
+  );
+
+  const handleToggleModel = useCallback(
+    (modelId: string, checked: boolean) => {
+      setSelectedModelIds((current) => {
+        if (checked) {
+          return current.includes(modelId) ? current : [...current, modelId];
+        }
+        return current.filter((id) => id !== modelId);
+      });
+    },
+    [setSelectedModelIds]
+  );
+
+  return {
+    handleInstall,
+    handleClearJob,
+    handleSelectRegistry,
+    handleSelectPlugin,
+    handleToggleModel,
+  };
+};
+
 const MarketplaceTab: React.FC<MarketplaceTabProps> = ({ active }) => {
   const { can } = usePermissions();
   const toast = useToast();
@@ -284,10 +344,10 @@ const MarketplaceTab: React.FC<MarketplaceTabProps> = ({ active }) => {
   const { searchInput, setSearchInput, debouncedSearch } = useDebouncedSearch('', 300);
   const [selectedPluginId, setSelectedPluginId] = useState<string | null>(null);
   const [licenseAccepted, setLicenseAccepted] = useState(false);
-  const [installModels, setInstallModels] = useState(false);
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
   const [jobId, setJobId] = useState<string | null>(null);
   const [installing, setInstalling] = useState(false);
+  const jobPanelRef = useRef<HTMLDivElement>(null);
 
   const {
     index,
@@ -312,7 +372,6 @@ const MarketplaceTab: React.FC<MarketplaceTabProps> = ({ active }) => {
   }, [selectedPluginId, selectedVersion]);
 
   useEffect(() => {
-    syncInstallModels(details, setInstallModels);
     setSelectedModelIds(defaultModelSelection(details));
   }, [details, selectedVersion]);
 
@@ -335,42 +394,29 @@ const MarketplaceTab: React.FC<MarketplaceTabProps> = ({ active }) => {
 
   const { jobInfo, jobError, cancelJob, resetJob } = useMarketplaceJob(jobId, jobCallbacks);
 
-  const handleInstall = useCallback(() => {
-    void startInstall({
-      details,
-      installModels,
-      selectedModelIds,
-      resetJob,
-      setInstalling,
-      setJobId,
-      toast,
-    });
-  }, [details, installModels, selectedModelIds, resetJob, setInstalling, setJobId, toast]);
+  useEffect(() => {
+    if (jobId && jobPanelRef.current) {
+      jobPanelRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [jobId]);
 
-  const handleClearJob = useCallback(() => {
-    setJobId(null);
-    resetJob();
-  }, [resetJob]);
-
-  const handleSelectRegistry = useCallback(
-    (value: string) => {
-      setSelectedRegistry(value);
-      setSelectedPluginId(null);
-    },
-    [setSelectedRegistry]
-  );
-
-  const handleSelectPlugin = useCallback((pluginId: string) => {
-    setSelectedPluginId(pluginId);
-  }, []);
-  const handleToggleModel = useCallback((modelId: string, checked: boolean) => {
-    setSelectedModelIds((current) => {
-      if (checked) {
-        return current.includes(modelId) ? current : [...current, modelId];
-      }
-      return current.filter((id) => id !== modelId);
-    });
-  }, []);
+  const {
+    handleInstall,
+    handleClearJob,
+    handleSelectRegistry,
+    handleSelectPlugin,
+    handleToggleModel,
+  } = useMarketplaceHandlers({
+    details,
+    selectedModelIds,
+    resetJob,
+    setInstalling,
+    setJobId,
+    setSelectedRegistry,
+    setSelectedPluginId,
+    setSelectedModelIds,
+    toast,
+  });
 
   const installedPlugin = useInstalledPlugin(details, active);
   const {
@@ -379,7 +425,8 @@ const MarketplaceTab: React.FC<MarketplaceTabProps> = ({ active }) => {
     hasGatedModels,
     requiresLicenseAcceptance,
     missingModelSelection,
-  } = useModelFlags(details, selectedModelIds, installModels);
+  } = useModelFlags(details, selectedModelIds);
+  const installModels = hasModels && selectedModelIds.length > 0;
   const installedVersion = installedPlugin?.version ?? null;
 
   const canInstall = useMemo(
@@ -467,7 +514,6 @@ const MarketplaceTab: React.FC<MarketplaceTabProps> = ({ active }) => {
           onLicenseAccepted={setLicenseAccepted}
           requiresLicenseAcceptance={requiresLicenseAcceptance}
           installModels={installModels}
-          onInstallModelsChange={setInstallModels}
           hasModels={hasModels}
           hasModelSelection={hasModelSelection}
           hasGatedModels={hasGatedModels}
@@ -482,15 +528,17 @@ const MarketplaceTab: React.FC<MarketplaceTabProps> = ({ active }) => {
         />
       </MarketplaceGrid>
 
-      <MarketplaceJobPanel
-        jobId={jobId}
-        jobInfo={jobInfo}
-        jobError={jobError}
-        jobProgress={jobProgress}
-        jobIsActive={jobIsActive}
-        onCancel={cancelJob}
-        onClear={handleClearJob}
-      />
+      <div ref={jobPanelRef}>
+        <MarketplaceJobPanel
+          jobId={jobId}
+          jobInfo={jobInfo}
+          jobError={jobError}
+          jobProgress={jobProgress}
+          jobIsActive={jobIsActive}
+          onCancel={cancelJob}
+          onClear={handleClearJob}
+        />
+      </div>
     </>
   );
 };
