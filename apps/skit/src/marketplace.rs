@@ -264,6 +264,8 @@ pub struct ModelSpec {
     pub source: ModelSource,
     pub expected_size_bytes: Option<u64>,
     pub sha256: Option<String>,
+    #[serde(default)]
+    pub file_checksums: HashMap<String, String>,
     pub license: Option<String>,
     pub license_url: Option<String>,
     #[serde(default)]

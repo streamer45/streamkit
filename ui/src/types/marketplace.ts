@@ -59,6 +59,7 @@ export type ModelSpec = ModelSource & {
   default?: boolean;
   expected_size_bytes?: number | null;
   sha256?: string | null;
+  file_checksums?: Record<string, string>;
   license?: string | null;
   license_url?: string | null;
   gated?: boolean;

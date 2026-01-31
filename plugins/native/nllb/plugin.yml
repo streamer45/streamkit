@@ -19,3 +19,4 @@ models:
   expected_size_bytes: 1135260128
   license: CC-BY-NC-4.0
   license_url: https://huggingface.co/facebook/nllb-200-distilled-600M
+  sha256: 6c95a9bc42239a189c71d32aeb66b3108a4fef97d194e3360f3a749671a05c35

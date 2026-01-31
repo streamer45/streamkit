@@ -19,6 +19,7 @@ import {
   KeyLabel,
   KeyValue,
   KeyValueGrid,
+  LicenseLink,
   MarketplaceList,
   MarketplaceListDescription,
   MarketplaceListItem,
@@ -366,7 +367,19 @@ const MarketplaceDetailsFields: React.FC<MarketplaceDetailsFieldsProps> = ({
         <SignatureValue $verified={details.signature.verified}>{signatureLabel}</SignatureValue>
       </KeyValue>
       <KeyLabel>License</KeyLabel>
-      <KeyValue>{details.manifest.license || details.manifest.license_url || 'Unknown'}</KeyValue>
+      <KeyValue>
+        {details.manifest.license_url ? (
+          <LicenseLink
+            href={details.manifest.license_url}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            {details.manifest.license || details.manifest.license_url}
+          </LicenseLink>
+        ) : (
+          details.manifest.license || 'Unknown'
+        )}
+      </KeyValue>
       {details.manifest.models.length > 0 && (
         <>
           <KeyLabel>Models</KeyLabel>
