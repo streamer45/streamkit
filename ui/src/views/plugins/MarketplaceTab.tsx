@@ -396,7 +396,10 @@ const MarketplaceTab: React.FC<MarketplaceTabProps> = ({ active }) => {
 
   useEffect(() => {
     if (jobId && jobPanelRef.current) {
-      jobPanelRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      const el = jobPanelRef.current;
+      requestAnimationFrame(() => {
+        el.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      });
     }
   }, [jobId]);
 

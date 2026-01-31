@@ -335,19 +335,20 @@ export const StepList = styled.div`
 
 export const StepRow = styled.div`
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  align-items: center;
+  gap: 8px;
   padding: 8px 10px;
   border-radius: 8px;
   border: 1px solid var(--sk-border);
   background: var(--sk-panel-bg);
 `;
 
-export const StepHeader = styled.div`
+export const StepContent = styled.div`
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
 `;
 
 export const StepName = styled.div`
@@ -357,6 +358,9 @@ export const StepName = styled.div`
 `;
 
 export const StepStatus = styled.div<{ $status: string }>`
+  display: flex;
+  align-items: center;
+  gap: 4px;
   font-size: 11px;
   font-weight: 600;
   color: ${(props) => {
@@ -428,4 +432,32 @@ export const ModelName = styled.span`
 export const ModelMeta = styled.span`
   font-size: 11px;
   color: var(--sk-text-muted);
+`;
+
+export const LicenseLink = styled.a`
+  font-size: inherit;
+  color: var(--sk-primary);
+  text-decoration: none;
+
+  &:hover {
+    text-decoration: underline;
+  }
+`;
+
+export const StepSpinner = styled.span`
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--sk-border);
+  border-top-color: var(--sk-primary);
+  border-radius: 50%;
+  flex-shrink: 0;
+
+  @keyframes step-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  animation: step-spin 0.8s linear infinite;
 `;

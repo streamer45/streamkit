@@ -1291,8 +1291,6 @@ impl PluginInstaller {
                         .into());
                     }
                     let revision = revision.as_deref().unwrap_or("main");
-                    let expected_sha256 =
-                        if files.len() == 1 { model.sha256.as_deref() } else { None };
                     for file in files {
                         if cancel.is_cancelled() {
                             return Err(InstallError::Cancelled);
@@ -1301,6 +1299,11 @@ impl PluginInstaller {
                         if !is_safe_relative_path(file_path) {
                             return Err(anyhow!("Invalid model file path '{file}'").into());
                         }
+                        let expected_sha256 = model
+                            .file_checksums
+                            .get(file.as_str())
+                            .map(String::as_str)
+                            .or(if files.len() == 1 { model.sha256.as_deref() } else { None });
                         let target_path = self.models_dir.join(file_path);
                         let display_name = file.as_str();
                         let url = huggingface_model_url(repo_id, revision, file)?;
@@ -1970,6 +1973,7 @@ fn now_ms() -> u128 {
 mod tests {
     use super::*;
     use anyhow::{anyhow, bail, Context, Result};
+    use std::collections::HashMap;
     use std::sync::Arc;
 
     use crate::plugins::UnifiedPluginManager;
@@ -2160,6 +2164,7 @@ mod tests {
             source: crate::marketplace::ModelSource::Url { url: url.clone() },
             expected_size_bytes: Some(payload.len() as u64),
             sha256: Some(hash),
+            file_checksums: HashMap::new(),
             license: None,
             license_url: None,
             gated: false,
@@ -2256,6 +2261,7 @@ mod tests {
             source: crate::marketplace::ModelSource::Url { url: url.clone() },
             expected_size_bytes: Some(payload.len() as u64),
             sha256: Some(hash),
+            file_checksums: HashMap::new(),
             license: None,
             license_url: None,
             gated: false,
@@ -2319,6 +2325,7 @@ mod tests {
             },
             expected_size_bytes: None,
             sha256: None,
+            file_checksums: HashMap::new(),
             license: None,
             license_url: None,
             gated: true,

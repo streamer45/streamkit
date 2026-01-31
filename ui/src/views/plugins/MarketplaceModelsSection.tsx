@@ -8,6 +8,7 @@ import { CheckboxWithLabel } from '@/components/ui/Checkbox';
 import type { MarketplacePluginDetails } from '@/types/marketplace';
 
 import {
+  LicenseLink,
   ModelMeta,
   ModelName,
   ModelRow,
@@ -81,7 +82,17 @@ const MarketplaceModelsSelection: React.FC<{
             />
             <ModelName>{displayName}</ModelName>
             <ModelMeta>{sizeLabel}</ModelMeta>
-            {model.license && <ModelMeta>{model.license}</ModelMeta>}
+            {(model.license || model.license_url) && (
+              <ModelMeta>
+                {model.license_url ? (
+                  <LicenseLink href={model.license_url} target="_blank" rel="noopener noreferrer">
+                    {model.license || model.license_url}
+                  </LicenseLink>
+                ) : (
+                  model.license
+                )}
+              </ModelMeta>
+            )}
             <ModelMeta>
               {fileCount} file{fileCount === 1 ? '' : 's'}
             </ModelMeta>

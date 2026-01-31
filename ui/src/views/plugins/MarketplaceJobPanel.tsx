@@ -13,12 +13,13 @@ import {
   Row,
   Section,
   SectionTitle,
+  StepContent,
   StepError,
-  StepHeader,
   StepList,
   StepMeta,
   StepName,
   StepRow,
+  StepSpinner,
   StepStatus,
   Subtle,
 } from '../PluginsView.styles';
@@ -58,12 +59,15 @@ export const MarketplaceJobPanel: React.FC<MarketplaceJobPanelProps> = ({
               const progress = formatStepProgress(step);
               return (
                 <StepRow key={step.name}>
-                  <StepHeader>
+                  <StepContent>
                     <StepName>{formatStepName(step.name)}</StepName>
-                    <StepStatus $status={step.status}>{step.status}</StepStatus>
-                  </StepHeader>
-                  {progress && <StepMeta>{progress}</StepMeta>}
-                  {step.error && <StepError>{step.error}</StepError>}
+                    {progress && <StepMeta>{progress}</StepMeta>}
+                    {step.error && <StepError>{step.error}</StepError>}
+                  </StepContent>
+                  <StepStatus $status={step.status}>
+                    {step.status}
+                    {step.status === 'running' && <StepSpinner />}
+                  </StepStatus>
                 </StepRow>
               );
             })}
