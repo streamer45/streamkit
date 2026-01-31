@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-# Demo image: CPU-only with Helsinki translation, all core plugins, and sample pipelines
+# Demo image: CPU-only with all core plugins (including Pocket TTS and Supertonic) and sample pipelines
 # syntax=docker/dockerfile:1
 
 # Version configuration
@@ -441,6 +441,86 @@ RUN PIP_BREAK_SYSTEM_PACKAGES=1 pip3 install --no-cache-dir \
       tokenizers && \
     python3 plugins/native/helsinki/download-models.py
 
+# Stage 11: Build Pocket TTS plugin
+FROM rust:1.92-slim-bookworm AS pocket-tts-builder
+
+WORKDIR /build
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    g++ \
+    cmake \
+    curl \
+    libclang-dev \
+    clang \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy only what's needed to build pocket-tts plugin
+COPY Cargo.toml Cargo.lock ./
+COPY crates/core ./crates/core
+COPY sdks/plugin-sdk ./sdks/plugin-sdk
+COPY plugins/native/pocket-tts ./plugins/native/pocket-tts
+
+# Build pocket-tts plugin
+RUN --mount=type=cache,id=cargo-registry-pocket-tts,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=cargo-git-pocket-tts,target=/usr/local/cargo/git \
+    --mount=type=cache,id=pocket-tts-target,target=/build/plugins/native/pocket-tts/target \
+    cd plugins/native/pocket-tts && \
+    cargo build --release --target-dir target && \
+    mkdir -p /build/plugins/native && \
+    cp target/release/libpocket_tts.so /build/plugins/native/
+
+# Download Pocket TTS models
+RUN mkdir -p /build/models && \
+    cd /build/models && \
+    curl -L -o pocket-tts-b6369a24.tar.bz2 \
+      https://huggingface.co/streamkit/pocket-tts-models/resolve/main/pocket-tts-b6369a24.tar.bz2 && \
+    tar xf pocket-tts-b6369a24.tar.bz2 && \
+    rm pocket-tts-b6369a24.tar.bz2
+
+# Stage 12: Build Supertonic TTS plugin
+FROM rust:1.92-slim-bookworm AS supertonic-builder
+
+WORKDIR /build
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    g++ \
+    cmake \
+    curl \
+    libclang-dev \
+    clang \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy only what's needed to build supertonic plugin
+COPY Cargo.toml Cargo.lock ./
+COPY crates/core ./crates/core
+COPY sdks/plugin-sdk ./sdks/plugin-sdk
+COPY plugins/native/supertonic ./plugins/native/supertonic
+
+# Build supertonic plugin
+RUN --mount=type=cache,id=cargo-registry-supertonic,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=cargo-git-supertonic,target=/usr/local/cargo/git \
+    --mount=type=cache,id=supertonic-target,target=/build/plugins/native/supertonic/target \
+    cd plugins/native/supertonic && \
+    cargo build --release --target-dir target && \
+    mkdir -p /build/plugins/native && \
+    cp target/release/libsupertonic.so /build/plugins/native/
+
+# Download Supertonic models
+RUN mkdir -p /build/models && \
+    cd /build/models && \
+    curl -L -o supertonic-v2-onnx.tar.bz2 \
+      https://huggingface.co/streamkit/supertonic-models/resolve/main/supertonic-v2-onnx.tar.bz2 && \
+    tar xf supertonic-v2-onnx.tar.bz2 && \
+    rm supertonic-v2-onnx.tar.bz2
+
 # Runtime stage
 FROM debian:bookworm-slim
 
@@ -493,6 +573,14 @@ COPY --from=vad-builder /build/models/ten-vad.onnx /opt/streamkit/models/ten-vad
 # Copy matcha plugin and models (merge into /opt/streamkit/plugins and /opt/streamkit/models)
 COPY --from=matcha-builder /build/plugins/native/* /opt/streamkit/plugins/native/
 COPY --from=matcha-builder /build/models/matcha-icefall-en_US-ljspeech /opt/streamkit/models/matcha-icefall-en_US-ljspeech
+
+# Copy pocket-tts plugin and models
+COPY --from=pocket-tts-builder /build/plugins/native/* /opt/streamkit/plugins/native/
+COPY --from=pocket-tts-builder /build/models/pocket-tts /opt/streamkit/models/pocket-tts
+
+# Copy supertonic plugin and models
+COPY --from=supertonic-builder /build/plugins/native/* /opt/streamkit/plugins/native/
+COPY --from=supertonic-builder /build/models/supertonic-v2-onnx /opt/streamkit/models/supertonic-v2-onnx
 
 # Copy sample pipelines + small bundled audio samples (Opus/Ogg only)
 COPY --chown=app:app samples/pipelines /opt/streamkit/samples/pipelines
