@@ -34,12 +34,16 @@ If you want a native host install without containers, you can run the released `
 Required:
 
 - Rust toolchain (the repo is pinned via `rust-toolchain.toml`)
-- `just` (`cargo install just`)
-- Bun (`bun` in `$PATH`) to build the embedded web UI (`ui/dist`)
+- [Just](https://github.com/casey/just) task runner (`cargo install just`)
+- [Bun](https://bun.sh) (`bun` in `$PATH`) to build the embedded web UI (`ui/dist`)
+- System libraries (Ubuntu/Debian): `sudo apt install libopus-dev cmake pkg-config libssl-dev`
 
 Optional:
 
 - `cargo-watch` (`cargo install cargo-watch`) for `just dev`
+- `cargo-deny` (`cargo install cargo-deny`) for license checks in `just lint`
+- `reuse` (`pip3 install --user reuse`) for SPDX license header checks in `just lint` (note: the apt package is too old)
+- `clang` and `libclang-dev` (`sudo apt install clang libclang-dev`) for building native ML plugins (e.g. whisper, sensevoice)
 
 ### Build Steps
 
