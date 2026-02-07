@@ -296,8 +296,9 @@ impl MoqPullNode {
         let client = super::shared_insecure_client()?;
 
         let origin = moq_lite::Origin::produce();
+        let consumer = origin.consume();
         let _consumer_session =
-            client.clone().with_consume(origin.producer).connect(url).await.map_err(|e| {
+            client.clone().with_consume(origin).connect(url).await.map_err(|e| {
                 StreamKitError::Runtime(format!("Failed to create consumer session: {e}"))
             })?;
 
@@ -306,7 +307,7 @@ impl MoqPullNode {
         // During dynamic session initialization, the broadcast may not have been announced yet.
         // Treat this as "no tracks discovered" rather than a hard error: the runtime `run()` path
         // already waits for announcements and will connect once the broadcast appears.
-        let Some(broadcast) = origin.consumer.consume_broadcast(&self.config.broadcast) else {
+        let Some(broadcast) = consumer.consume_broadcast(&self.config.broadcast) else {
             tracing::debug!(
                 broadcast = %self.config.broadcast,
                 "Broadcast not available during catalog discovery; using default output pin"
@@ -378,23 +379,20 @@ impl MoqPullNode {
 
             let mut tracks = Vec::new();
 
-            if let Some(audio) = catalog.audio {
-                for (track_name, config) in audio.renditions {
-                    match config.codec {
-                        hang::catalog::AudioCodec::Opus => {
-                            tracing::info!(track = %track_name, "found opus audio track");
-                            let track =
-                                moq_lite::Track { name: track_name, priority: audio.priority };
-                            tracks.push(track);
-                        },
-                        codec => {
-                            tracing::debug!(
-                                "skipping non-opus audio track: {} (codec: {})",
-                                track_name,
-                                codec
-                            );
-                        },
-                    }
+            for (track_name, config) in catalog.audio.renditions {
+                match config.codec {
+                    hang::catalog::AudioCodec::Opus => {
+                        tracing::info!(track = %track_name, "found opus audio track");
+                        let track = moq_lite::Track { name: track_name, priority: 2 };
+                        tracks.push(track);
+                    },
+                    codec => {
+                        tracing::debug!(
+                            "skipping non-opus audio track: {} (codec: {})",
+                            track_name,
+                            codec
+                        );
+                    },
                 }
             }
 
@@ -430,18 +428,19 @@ impl MoqPullNode {
 
         // Create origin for consuming broadcasts only (no publishing to avoid cycles)
         let origin = moq_lite::Origin::produce();
+        let consumer = origin.consume();
         let _consumer_session =
-            client.clone().with_consume(origin.producer).connect(url).await.map_err(|e| {
+            client.clone().with_consume(origin).connect(url).await.map_err(|e| {
                 StreamKitError::Runtime(format!("Failed to create consumer session: {e}"))
             })?;
 
         // Wait for broadcast to become available
         // Note: consume_broadcast() only works after announcement, so we primarily rely on announcements
         let broadcast = {
-            let mut consumer = origin.consumer.clone();
+            let mut announcements = consumer.clone();
 
             // Try immediate consume first (works if broadcast already announced)
-            if let Some(broadcast) = origin.consumer.consume_broadcast(&self.config.broadcast) {
+            if let Some(broadcast) = consumer.consume_broadcast(&self.config.broadcast) {
                 tracing::info!("Broadcast '{}' is immediately available", self.config.broadcast);
                 broadcast
             } else {
@@ -469,7 +468,7 @@ impl MoqPullNode {
                                     }
                                 }
                             }
-                            Some((path, maybe_broadcast)) = consumer.announced() => {
+                            Some((path, maybe_broadcast)) = announcements.announced() => {
                                 if let Some(broadcast) = maybe_broadcast {
                                     // Compare paths without allocation - bind path to extend lifetime
                                     let announced_path = path.as_path();

@@ -214,19 +214,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "async-compression"
-version = "0.4.36"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "98ec5f6c2f8bc326c994cb9e241cc257ddaba9afa8555a43cffbb5dd86efaa37"
-dependencies = [
- "compression-codecs",
- "compression-core",
- "futures-core",
- "pin-project-lite",
- "tokio",
-]
-
-[[package]]
 name = "async-lock"
 version = "3.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -519,18 +506,6 @@ name = "bytes"
 version = "1.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b35204fbdc0b3f4446b89fc1ac2cf84a8a68971995d0bf2e925ec7cd960f9cb3"
-dependencies = [
- "serde",
-]
-
-[[package]]
-name = "bytestring"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "113b4343b5f6617e7ad401ced8de3cc8b012e73a594347c307b90db3e9271289"
-dependencies = [
- "bytes",
-]
 
 [[package]]
 name = "bzip2"
@@ -753,23 +728,6 @@ dependencies = [
  "bytes",
  "memchr",
 ]
-
-[[package]]
-name = "compression-codecs"
-version = "0.4.35"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0f7ac3e5b97fdce45e8922fb05cae2c37f7bbd63d30dd94821dacfd8f3f2bf2"
-dependencies = [
- "compression-core",
- "flate2",
- "memchr",
-]
-
-[[package]]
-name = "compression-core"
-version = "0.4.31"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75984efb6ed102a0d42db99afb6c1948f0380d1d91808d5529916e6c08b49d8d"
 
 [[package]]
 name = "concurrent-queue"
@@ -1683,32 +1641,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "h264-parser"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab2f85be813ce08f0569fcd816f256c6f4287c975d69a9a14ceacc309f1de967"
-
-[[package]]
 name = "hang"
-version = "0.11.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be0cb0bfb07c0d8d184a5553fbe19f512957597d09f8a99266453c85f350b37b"
+checksum = "c05205d948a355a7b260b82a652d64bc502a4ae42d523e25a6931220fdd5f0a0"
 dependencies = [
- "anyhow",
  "buf-list",
  "bytes",
  "derive_more",
  "futures",
- "h264-parser",
  "hex",
  "lazy_static",
- "m3u8-rs",
  "moq-lite",
- "mp4-atom",
- "num_enum",
  "regex",
- "reqwest 0.12.26",
- "scuffle-h265",
  "serde",
  "serde_json",
  "serde_with",
@@ -1898,7 +1843,6 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower-service",
- "webpki-roots 1.0.4",
 ]
 
 [[package]]
@@ -2397,16 +2341,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
-name = "m3u8-rs"
-version = "5.0.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c1d7ba86f7ea62f17f4310c55e93244619ddc7dadfc7e565de1967e4e41e6e7"
-dependencies = [
- "chrono",
- "nom",
-]
-
-[[package]]
 name = "mach2"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2524,9 +2458,9 @@ dependencies = [
 
 [[package]]
 name = "moq-lite"
-version = "0.12.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bac018460d2ad6ac4f17df4a9388757ba4053a9c2c229379ad7d9415902250b5"
+checksum = "4462d2c8aabd99cd8be3f6704ff92b37446cdd5c576997cae5d74fda41705834"
 dependencies = [
  "async-channel",
  "bytes",
@@ -2544,9 +2478,9 @@ dependencies = [
 
 [[package]]
 name = "moq-native"
-version = "0.12.0"
+version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b31ad8aab5956298fa8d9e798a0025bdcfc180bacf4333f2c7371dc988ec4f85"
+checksum = "9d5a0aa1d9d584fd867f8e107d7e487cccc9eef47f27648baf2ebc3731c75706"
 dependencies = [
  "anyhow",
  "clap",
@@ -2592,22 +2526,6 @@ dependencies = [
  "tokio",
  "uuid",
  "web-transport",
-]
-
-[[package]]
-name = "mp4-atom"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e8e949244bbd26ea7eb6d936af3a6a0202be68bcfc9afce700f3c9026860ff7"
-dependencies = [
- "bytes",
- "derive_more",
- "num",
- "paste",
- "serde",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -2825,15 +2743,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "nutype-enum"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1e13adea6de269faa0724df58f43f6fe2a81af7094f1dcb8b5b968eb2103cb3"
-dependencies = [
- "scuffle-workspace-hack",
 ]
 
 [[package]]
@@ -3721,21 +3630,16 @@ dependencies = [
  "http-body",
  "http-body-util",
  "hyper",
- "hyper-rustls",
  "hyper-util",
  "js-sys",
  "log",
  "percent-encoding",
  "pin-project-lite",
- "quinn",
- "rustls",
- "rustls-pki-types",
  "serde",
  "serde_json",
  "serde_urlencoded",
  "sync_wrapper",
  "tokio",
- "tokio-rustls",
  "tower",
  "tower-http",
  "tower-service",
@@ -3743,7 +3647,6 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
- "webpki-roots 1.0.4",
 ]
 
 [[package]]
@@ -4180,49 +4083,6 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
-
-[[package]]
-name = "scuffle-bytes-util"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0417748c2a42f4a08d4e634b68b1d64f22a8c24bef2e7ac93df33aa61202a45b"
-dependencies = [
- "byteorder",
- "bytes",
- "bytestring",
- "scuffle-workspace-hack",
-]
-
-[[package]]
-name = "scuffle-expgolomb"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48d21330974c941e4c0aedc1e7255ea809e8cbac51e135209f6d67843ad1b94d"
-dependencies = [
- "scuffle-bytes-util",
- "scuffle-workspace-hack",
-]
-
-[[package]]
-name = "scuffle-h265"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b04b276c2f79846b7968abe6f87cedf951e06fd2a2b72d99c457e85d7e40f3fb"
-dependencies = [
- "bitflags 2.10.0",
- "byteorder",
- "bytes",
- "nutype-enum",
- "scuffle-bytes-util",
- "scuffle-expgolomb",
- "scuffle-workspace-hack",
-]
-
-[[package]]
-name = "scuffle-workspace-hack"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8028ded836a0d9fabdfa4d713389b76a2098b5153f50a135c8faed7e3a3d5ae2"
 
 [[package]]
 name = "security-framework"
@@ -5524,7 +5384,6 @@ version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4e6559d53cc268e5031cd8429d05415bc4cb4aefc4aa5d6cc35fbf5b924a1f8"
 dependencies = [
- "async-compression",
  "bitflags 2.10.0",
  "bytes",
  "futures-core",
