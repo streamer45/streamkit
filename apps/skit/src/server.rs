@@ -3214,17 +3214,20 @@ fn start_moq_webtransport_acceptor(
             key_path = %config.server.key_path,
             "Using provided TLS certificates for MoQ WebTransport"
         );
-        ServerTlsConfig {
-            cert: vec![std::path::PathBuf::from(&config.server.cert_path)],
-            key: vec![std::path::PathBuf::from(&config.server.key_path)],
-            generate: vec![],
-        }
+        let mut tls = ServerTlsConfig::default();
+        tls.cert = vec![std::path::PathBuf::from(&config.server.cert_path)];
+        tls.key = vec![std::path::PathBuf::from(&config.server.key_path)];
+        tls
     } else {
         info!("Auto-generating self-signed certificate for MoQ WebTransport (14-day validity for local development)");
-        ServerTlsConfig { cert: vec![], key: vec![], generate: vec!["localhost".to_string()] }
+        let mut tls = ServerTlsConfig::default();
+        tls.generate = vec!["localhost".to_string()];
+        tls
     };
 
-    let moq_config = MoqServerConfig { bind: Some(addr), tls };
+    let mut moq_config = MoqServerConfig::default();
+    moq_config.bind = Some(addr);
+    moq_config.tls = tls;
 
     info!(
         address = %addr,
@@ -3256,142 +3259,41 @@ fn start_moq_webtransport_acceptor(
                     let auth_state = Arc::clone(&auth_state);
 
                     tokio::spawn(async move {
-                        match request {
-                            moq_native::Request::WebTransport(wt_request) => {
-                                let url = wt_request.url();
-                                let path = url.path().to_string();
+                        // Extract URL data before consuming the request.
+                        // request.url() borrows, so we copy what we need first.
+                        let (path, jwt_param) = {
+                            let Some(url) = request.url() else {
+                                debug!("Received MoQ connection without URL (raw QUIC), ignoring");
+                                return;
+                            };
+                            let path = url.path().to_string();
+                            let jwt_param = url
+                                .query_pairs()
+                                .find(|(k, _)| k == "jwt")
+                                .map(|(_, v)| v.to_string());
+                            (path, jwt_param)
+                        };
 
-                                // SECURITY: Never log the full URL (may contain jwt)
-                                debug!(path = %path, "Received WebTransport connection request");
+                        // SECURITY: Never log the full URL (may contain jwt)
+                        debug!(path = %path, "Received MoQ connection request");
 
-                                // Validate MoQ auth if enabled
-                                let moq_auth = if auth_state.is_enabled() {
-                                    // Extract jwt from query params
-                                    let jwt = url
-                                        .query_pairs()
-                                        .find(|(k, _)| k == "jwt")
-                                        .map(|(_, v)| v.to_string());
+                        // Validate MoQ auth if enabled
+                        let moq_auth = if auth_state.is_enabled() {
+                            match validate_moq_auth(&auth_state, &path, jwt_param).await {
+                                Ok(ctx) => Some(ctx),
+                                Err(status) => {
+                                    let _ = request.reject(status).await;
+                                    return;
+                                },
+                            }
+                        } else {
+                            None
+                        };
 
-                                    let Some(jwt) = jwt else {
-                                        warn!(path = %path, "MoQ auth failed: missing jwt parameter");
-                                        let _ = wt_request
-                                            .close(axum::http::StatusCode::UNAUTHORIZED)
-                                            .await;
-                                        return;
-                                    };
-
-                                    // Validate JWT
-                                    let claims = match auth_state.validate_moq_token(&jwt) {
-                                        Ok(c) => c,
-                                        Err(e) => {
-                                            warn!(path = %path, error = %e, "MoQ JWT validation failed");
-                                            let _ = wt_request
-                                                .close(axum::http::StatusCode::UNAUTHORIZED)
-                                                .await;
-                                            return;
-                                        },
-                                    };
-
-                                    // Check audience
-                                    if claims.aud != crate::auth::AUD_MOQ {
-                                        warn!(path = %path, expected = crate::auth::AUD_MOQ, actual = %claims.aud, "MoQ auth failed: wrong audience");
-                                        let _ = wt_request
-                                            .close(axum::http::StatusCode::UNAUTHORIZED)
-                                            .await;
-                                        return;
-                                    }
-
-                                    let token_hash = crate::auth::hash_token(&jwt);
-
-                                    // Enforce "tokens we mint" policy (parity with HTTP API auth).
-                                    let metadata_store = auth_state.token_metadata_store().cloned();
-                                    let Some(metadata_store) = metadata_store else {
-                                        warn!(path = %path, "MoQ auth failed: token metadata store not available");
-                                        let _ = wt_request
-                                            .close(axum::http::StatusCode::SERVICE_UNAVAILABLE)
-                                            .await;
-                                        return;
-                                    };
-
-                                    let meta = match metadata_store.get(&claims.jti).await {
-                                        Ok(Some(meta)) => meta,
-                                        Ok(None) => {
-                                            warn!(path = %path, jti = %claims.jti, "MoQ auth failed: token not recognized (not minted by this server)");
-                                            let _ = wt_request
-                                                .close(axum::http::StatusCode::UNAUTHORIZED)
-                                                .await;
-                                            return;
-                                        },
-                                        Err(e) => {
-                                            warn!(path = %path, error = %e, "MoQ auth failed: metadata store error");
-                                            let _ = wt_request
-                                                .close(axum::http::StatusCode::SERVICE_UNAVAILABLE)
-                                                .await;
-                                            return;
-                                        },
-                                    };
-
-                                    // Extra robustness: ensure the presented token matches the stored hash.
-                                    if meta.token_hash != token_hash {
-                                        warn!(path = %path, jti = %claims.jti, "MoQ auth failed: token hash mismatch");
-                                        let _ = wt_request
-                                            .close(axum::http::StatusCode::UNAUTHORIZED)
-                                            .await;
-                                        return;
-                                    }
-
-                                    if meta.revoked {
-                                        warn!(path = %path, jti = %claims.jti, "MoQ auth failed: token revoked");
-                                        let _ = wt_request
-                                            .close(axum::http::StatusCode::UNAUTHORIZED)
-                                            .await;
-                                        return;
-                                    }
-
-                                    // Check revocation
-                                    if auth_state.is_revoked(&token_hash) {
-                                        warn!(path = %path, "MoQ auth failed: token revoked");
-                                        let _ = wt_request
-                                            .close(axum::http::StatusCode::UNAUTHORIZED)
-                                            .await;
-                                        return;
-                                    }
-
-                                    // Verify root matches path and reduce permissions
-                                    match crate::auth::verify_moq_token(&claims, &path) {
-                                        Ok(ctx) => Some(Arc::new(ctx)
-                                            as Arc<
-                                                dyn streamkit_core::moq_gateway::MoqAuthChecker,
-                                            >),
-                                        Err(e) => {
-                                            warn!(path = %path, error = %e, "MoQ path verification failed");
-                                            let _ = wt_request
-                                                .close(axum::http::StatusCode::UNAUTHORIZED)
-                                                .await;
-                                            return;
-                                        },
-                                    }
-                                } else {
-                                    None
-                                };
-
-                                match wt_request.ok().await {
-                                    Ok(session) => {
-                                        if let Err(e) = gateway
-                                            .accept_connection(session, path.clone(), moq_auth)
-                                            .await
-                                        {
-                                            warn!(path = %path, error = %e, "Failed to route WebTransport connection");
-                                        }
-                                    },
-                                    Err(e) => {
-                                        warn!(path = %path, error = %e, "Failed to accept WebTransport session");
-                                    },
-                                }
-                            },
-                            moq_native::Request::Quic(_quic_request) => {
-                                debug!("Received raw QUIC connection (not WebTransport), ignoring");
-                            },
+                        if let Err(e) =
+                            gateway.accept_connection(request, path.clone(), moq_auth).await
+                        {
+                            warn!(path = %path, error = %e, "Failed to route MoQ connection");
                         }
                     });
                 }
@@ -3405,6 +3307,75 @@ fn start_moq_webtransport_acceptor(
     });
 
     Ok(())
+}
+
+/// Validates MoQ auth for an incoming connection, returning the auth context on success
+/// or the HTTP status code to reject with on failure.
+#[cfg(feature = "moq")]
+async fn validate_moq_auth(
+    auth_state: &crate::auth::AuthState,
+    path: &str,
+    jwt_param: Option<String>,
+) -> Result<Arc<dyn streamkit_core::moq_gateway::MoqAuthChecker>, axum::http::StatusCode> {
+    let Some(jwt) = jwt_param else {
+        warn!(path = %path, "MoQ auth failed: missing jwt parameter");
+        return Err(axum::http::StatusCode::UNAUTHORIZED);
+    };
+
+    // Validate JWT
+    let claims = auth_state.validate_moq_token(&jwt).map_err(|e| {
+        warn!(path = %path, error = %e, "MoQ JWT validation failed");
+        axum::http::StatusCode::UNAUTHORIZED
+    })?;
+
+    // Check audience
+    if claims.aud != crate::auth::AUD_MOQ {
+        warn!(path = %path, expected = crate::auth::AUD_MOQ, actual = %claims.aud, "MoQ auth failed: wrong audience");
+        return Err(axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    let token_hash = crate::auth::hash_token(&jwt);
+
+    // Enforce "tokens we mint" policy (parity with HTTP API auth).
+    let metadata_store = auth_state.token_metadata_store().cloned().ok_or_else(|| {
+        warn!(path = %path, "MoQ auth failed: token metadata store not available");
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    })?;
+
+    let meta = metadata_store.get(&claims.jti).await.map_err(|e| {
+        warn!(path = %path, error = %e, "MoQ auth failed: metadata store error");
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    })?;
+
+    let Some(meta) = meta else {
+        warn!(path = %path, jti = %claims.jti, "MoQ auth failed: token not recognized (not minted by this server)");
+        return Err(axum::http::StatusCode::UNAUTHORIZED);
+    };
+
+    // Extra robustness: ensure the presented token matches the stored hash.
+    if meta.token_hash != token_hash {
+        warn!(path = %path, jti = %claims.jti, "MoQ auth failed: token hash mismatch");
+        return Err(axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    if meta.revoked {
+        warn!(path = %path, jti = %claims.jti, "MoQ auth failed: token revoked");
+        return Err(axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    // Check revocation
+    if auth_state.is_revoked(&token_hash) {
+        warn!(path = %path, "MoQ auth failed: token revoked");
+        return Err(axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    // Verify root matches path and reduce permissions
+    crate::auth::verify_moq_token(&claims, path)
+        .map_err(|e| {
+            warn!(path = %path, error = %e, "MoQ path verification failed");
+            axum::http::StatusCode::UNAUTHORIZED
+        })
+        .map(|ctx| Arc::new(ctx) as Arc<dyn streamkit_core::moq_gateway::MoqAuthChecker>)
 }
 
 /// Starts the HTTP/HTTPS server and optional MoQ WebTransport acceptor.

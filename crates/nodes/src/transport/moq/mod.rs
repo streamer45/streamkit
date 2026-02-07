@@ -31,6 +31,11 @@ use streamkit_core::{
 
 static SHARED_INSECURE_CLIENT: OnceLock<Result<moq_native::Client, String>> = OnceLock::new();
 
+/// Returns a cached `moq_native::Client` with TLS verification disabled.
+///
+/// In moq-native 0.12, publish/consume origins are set on the `Client` via builder methods
+/// (`with_publish` / `with_consume`) before calling `connect()`.  The cached client has
+/// neither set, so callers must clone and configure it for each connection.
 fn shared_insecure_client() -> Result<moq_native::Client, StreamKitError> {
     let client = SHARED_INSECURE_CLIENT.get_or_init(|| {
         let mut client_config = moq_native::ClientConfig::default();

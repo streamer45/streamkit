@@ -121,14 +121,15 @@ impl ProcessorNode for MoqPushNode {
         };
 
         let publisher_origin = moq_lite::Origin::produce();
-        let _publisher_session = match client.connect(url, publisher_origin.consumer, None).await {
-            Ok(session) => session,
-            Err(e) => {
-                let err_msg = format!("Failed to create publisher session: {e}");
-                state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
-                return Err(StreamKitError::Runtime(err_msg));
-            },
-        };
+        let _publisher_session =
+            match client.clone().with_publish(publisher_origin.consumer).connect(url).await {
+                Ok(session) => session,
+                Err(e) => {
+                    let err_msg = format!("Failed to create publisher session: {e}");
+                    state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
+                    return Err(StreamKitError::Runtime(err_msg));
+                },
+            };
 
         // Create a transcoded broadcast and publish it
         let transcoded_broadcast = moq_lite::Broadcast::produce();

@@ -532,13 +532,11 @@ impl MoqPeerNode {
     ) -> Result<tokio::task::JoinHandle<Result<(), StreamKitError>>, StreamKitError> {
         let path = moq_connection.path.clone();
 
-        // Extract the WebTransport session
-        let web_transport_session = *moq_connection
+        // Extract the moq-native Request
+        let request = *moq_connection
             .session
-            .downcast::<moq_native::web_transport_quinn::Session>()
-            .map_err(|_| {
-                StreamKitError::Runtime("Invalid WebTransport session type".to_string())
-            })?;
+            .downcast::<moq_native::Request>()
+            .map_err(|_| StreamKitError::Runtime("Invalid MoQ request type".to_string()))?;
 
         // Notify gateway that we accepted the connection
         let _ = moq_connection
@@ -550,13 +548,11 @@ impl MoqPeerNode {
         let receive_origin = client_publish_origin.consumer.clone();
 
         // Accept MoQ session (publisher only sends, no server publish needed)
-        let session = moq_lite::Session::accept(
-            web_transport_session,
-            None, // No server publish origin - publisher is receive-only
-            Some(client_publish_origin.producer),
-        )
-        .await
-        .map_err(|e| StreamKitError::Runtime(format!("Failed to accept session: {e}")))?;
+        let session = request
+            .with_consume(client_publish_origin.producer)
+            .accept()
+            .await
+            .map_err(|e| StreamKitError::Runtime(format!("Failed to accept session: {e}")))?;
 
         let handle = tokio::spawn(async move {
             let _permit = permit;
@@ -590,13 +586,11 @@ impl MoqPeerNode {
     ) -> Result<tokio::task::JoinHandle<()>, StreamKitError> {
         let path = moq_connection.path.clone();
 
-        // Extract the WebTransport session
-        let web_transport_session = *moq_connection
+        // Extract the moq-native Request
+        let request = *moq_connection
             .session
-            .downcast::<moq_native::web_transport_quinn::Session>()
-            .map_err(|_| {
-                StreamKitError::Runtime("Invalid WebTransport session type".to_string())
-            })?;
+            .downcast::<moq_native::Request>()
+            .map_err(|_| StreamKitError::Runtime("Invalid MoQ request type".to_string()))?;
 
         // Notify gateway that we accepted the connection
         let _ = moq_connection
@@ -610,13 +604,12 @@ impl MoqPeerNode {
         let client_publish_origin = moq_lite::Origin::produce();
         let receive_origin = client_publish_origin.consumer.clone();
 
-        let session = moq_lite::Session::accept(
-            web_transport_session,
-            Some(server_publish_origin.consumer),
-            Some(client_publish_origin.producer),
-        )
-        .await
-        .map_err(|e| StreamKitError::Runtime(format!("Failed to accept session: {e}")))?;
+        let session = request
+            .with_publish(server_publish_origin.consumer)
+            .with_consume(client_publish_origin.producer)
+            .accept()
+            .await
+            .map_err(|e| StreamKitError::Runtime(format!("Failed to accept session: {e}")))?;
 
         let handle = tokio::spawn(async move {
             let mut publisher_shutdown_rx = config.shutdown_rx.resubscribe();
@@ -982,13 +975,11 @@ impl MoqPeerNode {
         output_initial_delay_ms: u64,
         stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
     ) -> Result<tokio::task::JoinHandle<()>, StreamKitError> {
-        // Extract the WebTransport session
-        let web_transport_session = *moq_connection
+        // Extract the moq-native Request
+        let request = *moq_connection
             .session
-            .downcast::<moq_native::web_transport_quinn::Session>()
-            .map_err(|_| {
-                StreamKitError::Runtime("Invalid WebTransport session type".to_string())
-            })?;
+            .downcast::<moq_native::Request>()
+            .map_err(|_| StreamKitError::Runtime("Invalid MoQ request type".to_string()))?;
 
         // Notify gateway that we accepted the connection
         let _ = moq_connection
@@ -1000,13 +991,11 @@ impl MoqPeerNode {
         let send_origin = server_publish_origin.producer.clone();
 
         // Accept MoQ session (subscriber only receives, no client publish needed)
-        let session = moq_lite::Session::accept(
-            web_transport_session,
-            Some(server_publish_origin.consumer),
-            None, // No client publish origin - subscriber is send-only
-        )
-        .await
-        .map_err(|e| StreamKitError::Runtime(format!("Failed to accept session: {e}")))?;
+        let session = request
+            .with_publish(server_publish_origin.consumer)
+            .accept()
+            .await
+            .map_err(|e| StreamKitError::Runtime(format!("Failed to accept session: {e}")))?;
 
         let handle = tokio::spawn(async move {
             let result = Self::subscriber_send_loop(
