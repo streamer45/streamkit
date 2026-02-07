@@ -159,7 +159,7 @@ impl ProcessorNode for MoqPushNode {
                 channel_count: self.config.channels,
                 bitrate: Some(128_000),
                 description: None,
-                container: Default::default(),
+                container: hang::catalog::Container::default(),
                 jitter: None,
             },
         );

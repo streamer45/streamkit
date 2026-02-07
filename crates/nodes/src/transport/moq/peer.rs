@@ -1101,7 +1101,7 @@ impl MoqPeerNode {
                 channel_count: 1,
                 bitrate: Some(64_000),
                 description: None,
-                container: Default::default(),
+                container: hang::catalog::Container::default(),
                 jitter: None,
             },
         );
