@@ -57,9 +57,7 @@ fn shared_insecure_client() -> Result<moq_native::Client, StreamKitError> {
 /// schema, but the Rust `hang` 0.13.0 crate removed it from the structs.
 /// The upstream JS source has already dropped the requirement, but a new npm release
 /// hasn't been published yet.  This shim keeps the two sides compatible.
-pub(super) fn catalog_to_json(
-    catalog: &hang::catalog::Catalog,
-) -> Result<String, StreamKitError> {
+pub(super) fn catalog_to_json(catalog: &hang::catalog::Catalog) -> Result<String, StreamKitError> {
     let mut value = serde_json::to_value(catalog)
         .map_err(|e| StreamKitError::Runtime(format!("Failed to serialize catalog: {e}")))?;
 
