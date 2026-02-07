@@ -171,12 +171,11 @@ impl ProcessorNode for MoqPushNode {
 
         // Create catalog track and publish the catalog data
         let mut catalog_producer = broadcast.create_track(hang::catalog::Catalog::default_track());
-        let catalog_json = match catalog.to_string() {
+        let catalog_json = match super::catalog_to_json(&catalog) {
             Ok(json) => json,
             Err(e) => {
-                let err_msg = format!("Failed to serialize catalog: {e}");
-                state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
-                return Err(StreamKitError::Runtime(err_msg));
+                state_helpers::emit_failed(&context.state_tx, &node_name, e.to_string());
+                return Err(e);
             },
         };
         let catalog_data = catalog_json.into_bytes(); // Avoid intermediate Vec allocation

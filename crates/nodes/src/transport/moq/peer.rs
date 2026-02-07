@@ -1113,9 +1113,7 @@ impl MoqPeerNode {
 
         let mut catalog_producer =
             broadcast_producer.create_track(hang::catalog::Catalog::default_track());
-        let catalog_json = catalog
-            .to_string()
-            .map_err(|e| StreamKitError::Runtime(format!("Failed to serialize catalog: {e}")))?;
+        let catalog_json = super::catalog_to_json(&catalog)?;
         catalog_producer.write_frame(catalog_json.into_bytes());
 
         Ok(catalog_producer)
