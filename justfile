@@ -62,6 +62,20 @@ gen-plugin-bindings: fetch-wit-deps
     @gofmt -w sdks/plugin-sdk/go || true
 
 # --- skit ---
+# Pre-flight: ensure the UI has been built (required by RustEmbed)
+check-ui-dist:
+    @if [ ! -d ui/dist ]; then \
+        echo ""; \
+        echo "Error: ui/dist/ does not exist."; \
+        echo ""; \
+        echo "The skit server embeds the web UI at compile time (RustEmbed)."; \
+        echo "Build it first with:"; \
+        echo ""; \
+        echo "  just build-ui"; \
+        echo ""; \
+        exit 1; \
+    fi
+
 # Build the skit in release mode
 build-skit:
     @echo "Building skit..."
@@ -74,7 +88,7 @@ build-skit-profiling:
     @RUSTFLAGS="-C force-frame-pointers=yes" cargo build --release {{moq_features}} {{profiling_features}} -p streamkit-server --bin skit
 
 # Start the skit server
-skit *args='':
+skit *args='': check-ui-dist
     @echo "Starting skit..."
     @cargo run {{moq_features}} -p streamkit-server --bin skit -- {{args}}
 
@@ -165,8 +179,8 @@ test-skit:
 lint-skit:
     @echo "Linting skit..."
     @cargo fmt --all -- --check
-    @cargo clippy --workspace --all-targets -- -D warnings
     @cargo clippy -p streamkit-server --all-targets --features "moq" -- -D warnings
+    @cargo clippy --workspace --exclude streamkit-server --all-targets -- -D warnings
     @mkdir -p target
     @HOST=$(rustc -vV | sed -n 's/^host: //p'); \
       cargo metadata --locked --format-version 1 --filter-platform "$HOST" > target/cargo-metadata.json
@@ -177,8 +191,8 @@ lint-skit:
 fix-skit:
     @echo "Auto-fixing skit code..."
     @cargo fmt --all
-    @cargo clippy --fix --allow-dirty --allow-staged --workspace --all-targets -- -D warnings
     @cargo clippy --fix --allow-dirty --allow-staged -p streamkit-server --all-targets --features "moq" -- -D warnings
+    @cargo clippy --fix --allow-dirty --allow-staged --workspace --exclude streamkit-server --all-targets -- -D warnings
 
 # --- Frontend ---
 # Install UI dependencies using Bun
@@ -393,7 +407,7 @@ dev: install-ui
     @echo "Starting development environment..."
     @echo "Press Ctrl+C to exit."
     @trap 'kill 0' EXIT; \
-    (cd server && cargo watch -x "run {{moq_features}} --bin skit -- serve") & \
+    (cargo watch -x "run {{moq_features}} -p streamkit-server --bin skit -- serve") & \
     (cd ui && bun run dev)
 
 # --- Plugins ---
