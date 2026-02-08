@@ -104,7 +104,7 @@ jobs:
 
           # Simple changelog from git log (can be enhanced with git-cliff later)
           echo "## What's Changed" > changelog.md
-          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          PREV_TAG=$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD^ 2>/dev/null || echo "")
           if [ -n "$PREV_TAG" ]; then
             git log --pretty=format:"- %s (%h)" ${PREV_TAG}..HEAD >> changelog.md
           else
