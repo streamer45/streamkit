@@ -532,13 +532,11 @@ impl MoqPeerNode {
     ) -> Result<tokio::task::JoinHandle<Result<(), StreamKitError>>, StreamKitError> {
         let path = moq_connection.path.clone();
 
-        // Extract the WebTransport session
-        let web_transport_session = *moq_connection
+        // Extract the moq-native Request
+        let request = *moq_connection
             .session
-            .downcast::<moq_native::web_transport_quinn::Session>()
-            .map_err(|_| {
-                StreamKitError::Runtime("Invalid WebTransport session type".to_string())
-            })?;
+            .downcast::<moq_native::Request>()
+            .map_err(|_| StreamKitError::Runtime("Invalid MoQ request type".to_string()))?;
 
         // Notify gateway that we accepted the connection
         let _ = moq_connection
@@ -547,16 +545,14 @@ impl MoqPeerNode {
 
         // Create origin for receiving from client
         let client_publish_origin = moq_lite::Origin::produce();
-        let receive_origin = client_publish_origin.consumer.clone();
+        let receive_origin = client_publish_origin.consume();
 
         // Accept MoQ session (publisher only sends, no server publish needed)
-        let session = moq_lite::Session::accept(
-            web_transport_session,
-            None, // No server publish origin - publisher is receive-only
-            Some(client_publish_origin.producer),
-        )
-        .await
-        .map_err(|e| StreamKitError::Runtime(format!("Failed to accept session: {e}")))?;
+        let session = request
+            .with_consume(client_publish_origin)
+            .accept()
+            .await
+            .map_err(|e| StreamKitError::Runtime(format!("Failed to accept session: {e}")))?;
 
         let handle = tokio::spawn(async move {
             let _permit = permit;
@@ -590,13 +586,11 @@ impl MoqPeerNode {
     ) -> Result<tokio::task::JoinHandle<()>, StreamKitError> {
         let path = moq_connection.path.clone();
 
-        // Extract the WebTransport session
-        let web_transport_session = *moq_connection
+        // Extract the moq-native Request
+        let request = *moq_connection
             .session
-            .downcast::<moq_native::web_transport_quinn::Session>()
-            .map_err(|_| {
-                StreamKitError::Runtime("Invalid WebTransport session type".to_string())
-            })?;
+            .downcast::<moq_native::Request>()
+            .map_err(|_| StreamKitError::Runtime("Invalid MoQ request type".to_string()))?;
 
         // Notify gateway that we accepted the connection
         let _ = moq_connection
@@ -605,18 +599,17 @@ impl MoqPeerNode {
 
         // Create origins for full bidirectional MoQ
         let server_publish_origin = moq_lite::Origin::produce();
-        let send_origin = server_publish_origin.producer.clone();
+        let send_origin = server_publish_origin.clone();
 
         let client_publish_origin = moq_lite::Origin::produce();
-        let receive_origin = client_publish_origin.consumer.clone();
+        let receive_origin = client_publish_origin.consume();
 
-        let session = moq_lite::Session::accept(
-            web_transport_session,
-            Some(server_publish_origin.consumer),
-            Some(client_publish_origin.producer),
-        )
-        .await
-        .map_err(|e| StreamKitError::Runtime(format!("Failed to accept session: {e}")))?;
+        let session = request
+            .with_publish(server_publish_origin.consume())
+            .with_consume(client_publish_origin)
+            .accept()
+            .await
+            .map_err(|e| StreamKitError::Runtime(format!("Failed to accept session: {e}")))?;
 
         let handle = tokio::spawn(async move {
             let mut publisher_shutdown_rx = config.shutdown_rx.resubscribe();
@@ -828,10 +821,11 @@ impl MoqPeerNode {
 
                     tracing::info!("Received catalog from publisher: audio={:?}", catalog.audio);
 
-                    if let Some(audio) = &catalog.audio {
+                    {
+                        let audio = &catalog.audio;
                         if let Some(track_name) = audio.renditions.keys().next() {
                             tracing::info!("Found audio track in catalog: {}", track_name);
-                            return Ok(Some((track_name.clone(), audio.priority)));
+                            return Ok(Some((track_name.clone(), 2)));
                         }
                     }
                     tracing::debug!("Catalog has no audio yet, waiting for update...");
@@ -982,13 +976,11 @@ impl MoqPeerNode {
         output_initial_delay_ms: u64,
         stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
     ) -> Result<tokio::task::JoinHandle<()>, StreamKitError> {
-        // Extract the WebTransport session
-        let web_transport_session = *moq_connection
+        // Extract the moq-native Request
+        let request = *moq_connection
             .session
-            .downcast::<moq_native::web_transport_quinn::Session>()
-            .map_err(|_| {
-                StreamKitError::Runtime("Invalid WebTransport session type".to_string())
-            })?;
+            .downcast::<moq_native::Request>()
+            .map_err(|_| StreamKitError::Runtime("Invalid MoQ request type".to_string()))?;
 
         // Notify gateway that we accepted the connection
         let _ = moq_connection
@@ -997,16 +989,14 @@ impl MoqPeerNode {
 
         // Create origin for sending to client
         let server_publish_origin = moq_lite::Origin::produce();
-        let send_origin = server_publish_origin.producer.clone();
+        let send_origin = server_publish_origin.clone();
 
         // Accept MoQ session (subscriber only receives, no client publish needed)
-        let session = moq_lite::Session::accept(
-            web_transport_session,
-            Some(server_publish_origin.consumer),
-            None, // No client publish origin - subscriber is send-only
-        )
-        .await
-        .map_err(|e| StreamKitError::Runtime(format!("Failed to accept session: {e}")))?;
+        let session = request
+            .with_publish(server_publish_origin.consume())
+            .accept()
+            .await
+            .map_err(|e| StreamKitError::Runtime(format!("Failed to accept session: {e}")))?;
 
         let handle = tokio::spawn(async move {
             let result = Self::subscriber_send_loop(
@@ -1067,7 +1057,7 @@ impl MoqPeerNode {
         )
         .await?;
 
-        track_producer.inner.clone().close();
+        track_producer.track.clone().close();
         tracing::info!("Subscriber task finished after {} packets", packet_count);
         Ok(())
     }
@@ -1077,18 +1067,18 @@ impl MoqPeerNode {
         publish: &moq_lite::OriginProducer,
         broadcast_name: &str,
     ) -> Result<
-        (moq_lite::BroadcastProducer, hang::TrackProducer, moq_lite::TrackProducer),
+        (moq_lite::BroadcastProducer, hang::container::OrderedProducer, moq_lite::TrackProducer),
         StreamKitError,
     > {
         // Create broadcast
-        let broadcast_produce = moq_lite::Broadcast::produce();
-        publish.publish_broadcast(broadcast_name, broadcast_produce.consumer);
-        let mut broadcast_producer = broadcast_produce.producer;
+        let mut broadcast_producer = publish.create_broadcast(broadcast_name).ok_or_else(|| {
+            StreamKitError::Runtime(format!("Failed to create broadcast '{broadcast_name}'"))
+        })?;
 
         // Create audio track
         let audio_track = moq_lite::Track { name: "audio/data".to_string(), priority: 80 };
         let track_producer = broadcast_producer.create_track(audio_track.clone());
-        let track_producer: hang::TrackProducer = track_producer.into();
+        let track_producer: hang::container::OrderedProducer = track_producer.into();
 
         // Create and publish catalog
         let catalog_producer =
@@ -1111,19 +1101,19 @@ impl MoqPeerNode {
                 channel_count: 1,
                 bitrate: Some(64_000),
                 description: None,
+                container: hang::catalog::Container::default(),
+                jitter: None,
             },
         );
 
         let catalog = hang::catalog::Catalog {
-            audio: Some(hang::catalog::Audio { renditions: audio_renditions, priority: 80 }),
+            audio: hang::catalog::Audio { renditions: audio_renditions },
             ..Default::default()
         };
 
         let mut catalog_producer =
             broadcast_producer.create_track(hang::catalog::Catalog::default_track());
-        let catalog_json = catalog
-            .to_string()
-            .map_err(|e| StreamKitError::Runtime(format!("Failed to serialize catalog: {e}")))?;
+        let catalog_json = super::catalog_to_json(&catalog)?;
         catalog_producer.write_frame(catalog_json.into_bytes());
 
         Ok(catalog_producer)
@@ -1132,7 +1122,7 @@ impl MoqPeerNode {
     /// Run the main send loop, forwarding packets to the subscriber
     #[allow(clippy::too_many_arguments)]
     async fn run_subscriber_send_loop(
-        track_producer: &mut hang::TrackProducer,
+        track_producer: &mut hang::container::OrderedProducer,
         mut broadcast_rx: broadcast::Receiver<BroadcastFrame>,
         shutdown_rx: &mut broadcast::Receiver<()>,
         output_group_duration_ms: u64,
@@ -1192,7 +1182,7 @@ impl MoqPeerNode {
     #[allow(clippy::too_many_arguments, clippy::cast_precision_loss)]
     fn handle_broadcast_recv(
         recv_result: Result<BroadcastFrame, broadcast::error::RecvError>,
-        track_producer: &mut hang::TrackProducer,
+        track_producer: &mut hang::container::OrderedProducer,
         packet_count: &mut u64,
         frame_count: &mut u64,
         last_log: &mut std::time::Instant,
@@ -1224,14 +1214,15 @@ impl MoqPeerNode {
                 }
                 *last_ts_ms = Some(timestamp_ms);
 
-                let timestamp = hang::Timestamp::from_millis(timestamp_ms).map_err(|_| {
-                    StreamKitError::Runtime("MoQ frame timestamp overflow".to_string())
-                })?;
+                let timestamp =
+                    hang::container::Timestamp::from_millis(timestamp_ms).map_err(|_| {
+                        StreamKitError::Runtime("MoQ frame timestamp overflow".to_string())
+                    })?;
 
-                let mut payload = hang::BufList::new();
+                let mut payload = hang::container::BufList::new();
                 payload.push_chunk(broadcast_frame.data);
 
-                let frame = hang::Frame { timestamp, keyframe, payload };
+                let frame = hang::container::Frame { timestamp, keyframe, payload };
 
                 if let Err(e) = track_producer.write(frame) {
                     tracing::warn!("Failed to write MoQ frame to subscriber: {e}");

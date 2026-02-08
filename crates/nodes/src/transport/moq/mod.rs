@@ -31,6 +31,11 @@ use streamkit_core::{
 
 static SHARED_INSECURE_CLIENT: OnceLock<Result<moq_native::Client, String>> = OnceLock::new();
 
+/// Returns a cached `moq_native::Client` with TLS verification disabled.
+///
+/// In moq-native 0.12, publish/consume origins are set on the `Client` via builder methods
+/// (`with_publish` / `with_consume`) before calling `connect()`.  The cached client has
+/// neither set, so callers must clone and configure it for each connection.
 fn shared_insecure_client() -> Result<moq_native::Client, StreamKitError> {
     let client = SHARED_INSECURE_CLIENT.get_or_init(|| {
         let mut client_config = moq_native::ClientConfig::default();
@@ -44,6 +49,27 @@ fn shared_insecure_client() -> Result<moq_native::Client, StreamKitError> {
         Ok(client) => Ok(client.clone()),
         Err(message) => Err(StreamKitError::Runtime(message.clone())),
     }
+}
+
+/// Serialize a catalog to JSON with `priority` fields injected into `video` and `audio`.
+///
+/// The published `@moq/hang` JS client (0.1.2) still requires `priority` in the catalog
+/// schema, but the Rust `hang` 0.13.0 crate removed it from the structs.
+/// The upstream JS source has already dropped the requirement, but a new npm release
+/// hasn't been published yet.  This shim keeps the two sides compatible.
+pub(super) fn catalog_to_json(catalog: &hang::catalog::Catalog) -> Result<String, StreamKitError> {
+    let mut value = serde_json::to_value(catalog)
+        .map_err(|e| StreamKitError::Runtime(format!("Failed to serialize catalog: {e}")))?;
+
+    if let Some(video) = value.get_mut("video").and_then(|v| v.as_object_mut()) {
+        video.entry("priority").or_insert(serde_json::json!(60));
+    }
+    if let Some(audio) = value.get_mut("audio").and_then(|v| v.as_object_mut()) {
+        audio.entry("priority").or_insert(serde_json::json!(80));
+    }
+
+    serde_json::to_string(&value)
+        .map_err(|e| StreamKitError::Runtime(format!("Failed to serialize catalog: {e}")))
 }
 
 pub(super) fn redact_url_str_for_logs(raw: &str) -> String {

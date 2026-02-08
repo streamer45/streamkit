@@ -121,24 +121,24 @@ impl ProcessorNode for MoqPushNode {
         };
 
         let publisher_origin = moq_lite::Origin::produce();
-        let _publisher_session = match client.connect(url, publisher_origin.consumer, None).await {
-            Ok(session) => session,
-            Err(e) => {
-                let err_msg = format!("Failed to create publisher session: {e}");
-                state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
-                return Err(StreamKitError::Runtime(err_msg));
-            },
-        };
+        let _publisher_session =
+            match client.clone().with_publish(publisher_origin.consume()).connect(url).await {
+                Ok(session) => session,
+                Err(e) => {
+                    let err_msg = format!("Failed to create publisher session: {e}");
+                    state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
+                    return Err(StreamKitError::Runtime(err_msg));
+                },
+            };
 
         // Create a transcoded broadcast and publish it
-        let transcoded_broadcast = moq_lite::Broadcast::produce();
-
-        // Publish the transcoded broadcast via the publisher session
-        publisher_origin
-            .producer
-            .publish_broadcast(&self.config.broadcast, transcoded_broadcast.consumer);
-
-        let mut broadcast = transcoded_broadcast.producer;
+        let mut broadcast =
+            publisher_origin.create_broadcast(&self.config.broadcast).ok_or_else(|| {
+                StreamKitError::Runtime(format!(
+                    "Failed to create broadcast '{}'",
+                    self.config.broadcast
+                ))
+            })?;
 
         tracing::info!("Publishing to broadcast '{}'", self.config.broadcast);
 
@@ -147,7 +147,7 @@ impl ProcessorNode for MoqPushNode {
         let audio_track = moq_lite::Track { name: "audio/data".to_string(), priority: 80 };
 
         let track_producer = broadcast.create_track(audio_track.clone());
-        let mut track_producer: hang::TrackProducer = track_producer.into();
+        let mut track_producer: hang::container::OrderedProducer = track_producer.into();
 
         // Create and publish a catalog describing our audio track
         let mut audio_renditions = std::collections::BTreeMap::new();
@@ -155,26 +155,27 @@ impl ProcessorNode for MoqPushNode {
             audio_track.name.clone(),
             hang::catalog::AudioConfig {
                 codec: hang::catalog::AudioCodec::Opus,
-                sample_rate: 48000,                  // Default opus sample rate
-                channel_count: self.config.channels, // From configuration
-                bitrate: Some(128_000),              // Default bitrate
+                sample_rate: 48000,
+                channel_count: self.config.channels,
+                bitrate: Some(128_000),
                 description: None,
+                container: hang::catalog::Container::default(),
+                jitter: None,
             },
         );
 
         let catalog = hang::catalog::Catalog {
-            audio: Some(hang::catalog::Audio { renditions: audio_renditions, priority: 80 }),
+            audio: hang::catalog::Audio { renditions: audio_renditions },
             ..Default::default()
         };
 
         // Create catalog track and publish the catalog data
         let mut catalog_producer = broadcast.create_track(hang::catalog::Catalog::default_track());
-        let catalog_json = match catalog.to_string() {
+        let catalog_json = match super::catalog_to_json(&catalog) {
             Ok(json) => json,
             Err(e) => {
-                let err_msg = format!("Failed to serialize catalog: {e}");
-                state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
-                return Err(StreamKitError::Runtime(err_msg));
+                state_helpers::emit_failed(&context.state_tx, &node_name, e.to_string());
+                return Err(e);
             },
         };
         let catalog_data = catalog_json.into_bytes(); // Avoid intermediate Vec allocation
@@ -253,14 +254,14 @@ impl ProcessorNode for MoqPushNode {
                             let keyframe =
                                 is_first || clock.is_group_boundary_ms(self.config.group_duration_ms);
 
-                            let timestamp = hang::Timestamp::from_millis(timestamp_ms).map_err(|_| {
+                            let timestamp = hang::container::Timestamp::from_millis(timestamp_ms).map_err(|_| {
                                 StreamKitError::Runtime("MoQ frame timestamp overflow".to_string())
                             })?;
 
-                            let mut payload = hang::BufList::new();
+                            let mut payload = hang::container::BufList::new();
                             payload.push_chunk(data);
 
-                            let frame = hang::Frame { timestamp, keyframe, payload };
+                            let frame = hang::container::Frame { timestamp, keyframe, payload };
 
                             if let Err(e) = track_producer.write(frame) {
                                 let err_msg = format!("Failed to write MoQ frame: {e}");
@@ -311,7 +312,7 @@ impl ProcessorNode for MoqPushNode {
         state_helpers::emit_stopped(&context.state_tx, &node_name, "input_closed");
 
         // Close the track when done (best-effort)
-        track_producer.inner.clone().close();
+        track_producer.track.clone().close();
 
         tracing::info!("MoqPushNode finished after sending {} packets", packet_count);
         Ok(())
