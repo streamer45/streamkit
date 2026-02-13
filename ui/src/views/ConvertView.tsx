@@ -1576,7 +1576,7 @@ const ConvertView: React.FC = () => {
           })());
 
   return (
-    <ViewContainer>
+    <ViewContainer data-testid="convert-view">
       <ContentArea>
         <ContentWrapper>
           <InfoBox>

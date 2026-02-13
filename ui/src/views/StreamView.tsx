@@ -646,7 +646,7 @@ const StreamView: React.FC = () => {
   };
 
   return (
-    <ViewContainer>
+    <ViewContainer data-testid="stream-view">
       <ConfirmModal
         isOpen={destroyConfirmOpen}
         title="Destroy session?"
