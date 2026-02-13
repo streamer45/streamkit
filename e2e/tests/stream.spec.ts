@@ -121,7 +121,7 @@ test.describe('Stream View - Dynamic Pipeline', () => {
     if (finalConnected) {
       await expect(page.getByText(/Watch: live/)).toBeVisible({ timeout: 15_000 });
 
-      const disconnectButton = page.getByRole('button', { name: /^Disconnect$/i });
+      const disconnectButton = page.getByRole('button', { name: /^Disconnect$/i }).first();
       await expect(disconnectButton).toBeVisible();
       await disconnectButton.click();
 
