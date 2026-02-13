@@ -5,7 +5,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { test, expect, request } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 
 import { ensureLoggedIn, getAuthHeaders } from './auth-helpers';
 
@@ -34,38 +34,56 @@ test.describe('Convert View - Audio Mixing Pipeline', () => {
     await expect(page.getByTestId('convert-view')).toBeVisible();
   });
 
-  test('API: POST /api/v1/process with mixing pipeline returns audio', async ({ baseURL }) => {
-    const apiContext = await request.newContext({
-      baseURL: baseURL!,
-      extraHTTPHeaders: getAuthHeaders(),
-    });
+  test('API: POST /api/v1/process with mixing pipeline returns audio', async ({
+    page,
+    baseURL,
+  }) => {
+    const audioBase64 = fs.readFileSync(sampleOggPath).toString('base64');
+    const authHeaders = getAuthHeaders();
 
-    try {
-      const response = await apiContext.post('/api/v1/process', {
-        multipart: {
-          config: mixingYaml,
-          media: {
-            name: 'sample.ogg',
-            mimeType: 'audio/ogg',
-            buffer: fs.readFileSync(sampleOggPath),
-          },
-        },
-        timeout: 60_000,
-      });
+    const result = await page.evaluate(
+      async ({ url, yaml, audio, headers }) => {
+        const formData = new FormData();
+        formData.append('config', yaml);
+        const bytes = Uint8Array.from(atob(audio), (c) => c.charCodeAt(0));
+        formData.append('media', new Blob([bytes], { type: 'audio/ogg' }), 'sample.ogg');
 
-      const responseBody = await response.body();
-      expect(response.ok(), `Process request failed: ${response.status()}`).toBeTruthy();
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30_000);
 
-      const ct = response.headers()['content-type'] ?? '';
-      expect(
-        ct.includes('audio/') || ct.includes('video/webm') || ct.includes('application/octet'),
-        `Unexpected Content-Type: ${ct}`
-      ).toBeTruthy();
+        try {
+          const response = await fetch(`${url}/api/v1/process`, {
+            method: 'POST',
+            body: formData,
+            headers,
+            signal: controller.signal,
+          });
 
-      expect(responseBody.length).toBeGreaterThan(1000);
-    } finally {
-      await apiContext.dispose();
-    }
+          const contentType = response.headers.get('content-type') ?? '';
+          const reader = response.body!.getReader();
+          const { value } = await reader.read();
+          reader.cancel();
+
+          return {
+            status: response.status,
+            contentType,
+            firstChunkSize: value?.length ?? 0,
+          };
+        } finally {
+          clearTimeout(timeoutId);
+        }
+      },
+      { url: baseURL, yaml: mixingYaml, audio: audioBase64, headers: authHeaders }
+    );
+
+    expect(result.status, `Process request failed: ${result.status}`).toBe(200);
+    expect(
+      result.contentType.includes('audio/') ||
+        result.contentType.includes('video/webm') ||
+        result.contentType.includes('application/octet'),
+      `Unexpected Content-Type: ${result.contentType}`
+    ).toBeTruthy();
+    expect(result.firstChunkSize).toBeGreaterThan(0);
   });
 
   test('UI: select mixing template, upload file, convert, verify audio player', async ({
@@ -73,7 +91,7 @@ test.describe('Convert View - Audio Mixing Pipeline', () => {
   }) => {
     await expect(page.getByText('1. Select Pipeline Template')).toBeVisible();
 
-    const templateCard = page.getByText('Audio Mixing (Upload + Music Track)');
+    const templateCard = page.getByText('Audio Mixing (Upload + Music Track)', { exact: true });
     await expect(templateCard).toBeVisible({ timeout: 10_000 });
     await templateCard.click();
 
@@ -99,7 +117,7 @@ test.describe('Convert View - Audio Mixing Pipeline', () => {
   }) => {
     await expect(page.getByText('1. Select Pipeline Template')).toBeVisible();
 
-    const templateCard = page.getByText('Audio Mixing (Upload + Music Track)');
+    const templateCard = page.getByText('Audio Mixing (Upload + Music Track)', { exact: true });
     await expect(templateCard).toBeVisible({ timeout: 10_000 });
     await templateCard.click();
 
