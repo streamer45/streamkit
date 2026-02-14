@@ -2,10 +2,15 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+import * as path from 'path';
+
 import { defineConfig, devices } from '@playwright/test';
 
 // E2E_BASE_URL is set by the harness runner (run.ts) or passed externally
 const baseURL = process.env.E2E_BASE_URL;
+
+// Path to a WAV file used by Chromium as a fake microphone source
+const fakeAudioPath = path.resolve(import.meta.dirname, '../samples/audio/system/speech_10m.wav');
 
 if (!baseURL) {
   throw new Error(
@@ -37,7 +42,16 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
-      use: { ...devices['Desktop Chrome'] },
+      use: {
+        ...devices['Desktop Chrome'],
+        launchOptions: {
+          args: [
+            '--use-fake-device-for-media-stream',
+            `--use-file-for-fake-audio-capture=${fakeAudioPath}`,
+          ],
+        },
+        permissions: ['microphone'],
+      },
     },
   ],
 });
