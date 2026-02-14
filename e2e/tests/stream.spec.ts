@@ -15,6 +15,8 @@ import {
 
 test.describe('Stream View - Dynamic Pipeline', () => {
   let collector: ConsoleErrorCollector;
+  // Track the active session ID so afterEach can clean it up via the API
+  // even if a test fails mid-way through (e.g. before the UI destroy step).
   let sessionId: string | null = null;
 
   test.beforeEach(async ({ page }) => {
@@ -49,9 +51,13 @@ test.describe('Stream View - Dynamic Pipeline', () => {
 
     await expect(page.getByText(/Session ID:/)).toBeVisible();
 
+    // Extract the session ID from the page so afterEach can clean it up.
     const sessionIdText = await page.getByText(/Session ID:/).textContent();
     sessionId = sessionIdText?.replace(/Session ID:\s*/, '').trim() ?? null;
 
+    // Assert console errors *before* disconnect/destroy.  Tearing down a MoQ
+    // session emits benign WebTransportError noise, so we stop the collector
+    // here to avoid false positives.
     const unexpected = collector.getUnexpected(MOQ_BENIGN_PATTERNS);
     expect(unexpected, `Unexpected console errors: ${unexpected.join('; ')}`).toHaveLength(0);
     collector.stop();
@@ -102,15 +108,17 @@ test.describe('Stream View - Dynamic Pipeline', () => {
     const sessionIdText = await page.getByText(/Session ID:/).textContent();
     sessionId = sessionIdText?.replace(/Session ID:\s*/, '').trim() ?? null;
 
-    // Session creation triggers an auto-connect attempt.
-    // Wait for it to resolve: either connected or back to disconnected.
+    // Session creation triggers an auto-connect attempt via the UI.  In many
+    // environments (especially headless Chromium with self-signed certs) this
+    // first attempt fails silently.  We wait for the auto-connect to settle —
+    // either the "Relay: connected" label appears, or the "Connect & Stream"
+    // button reappears (meaning auto-connect failed and the UI reset).
     const connected = page.getByText('Relay: connected');
     const disconnected = page.getByText('Disconnected');
     const connectButton = page.getByRole('button', {
       name: /Connect & Stream/i,
     });
 
-    // Wait for the auto-connect to settle.
     await expect(connected.or(connectButton)).toBeVisible({ timeout: 20_000 });
 
     const isConnected = await connected.isVisible();
@@ -129,7 +137,11 @@ test.describe('Stream View - Dynamic Pipeline', () => {
         timeout: 15_000,
       });
 
+      // Give the subscribe path time to receive, decode, and start playing audio.
       await page.waitForTimeout(2_000);
+      // Verify the AudioContext tracker (installed in beforeEach) recorded at
+      // least one running context with advancing currentTime — this proves the
+      // subscribe side is actually decoding and playing audio frames.
       const audioState = await verifyAudioContextActive(page);
       expect(
         audioState.running,
@@ -137,6 +149,8 @@ test.describe('Stream View - Dynamic Pipeline', () => {
       ).toBeGreaterThan(0);
       expect(audioState.maxCurrentTime, 'AudioContext should have advanced').toBeGreaterThan(0);
 
+      // Assert console errors before teardown (same pattern as the session
+      // lifecycle test — see collector.stop() comment above).
       const unexpected = collector.getUnexpected(MOQ_BENIGN_PATTERNS);
       expect(unexpected, `Unexpected console errors: ${unexpected.join('; ')}`).toHaveLength(0);
       collector.stop();
@@ -167,6 +181,9 @@ test.describe('Stream View - Dynamic Pipeline', () => {
     sessionId = null;
   });
 
+  // Safety-net cleanup: if a test fails after creating a session but before
+  // destroying it via the UI, delete it through the API so subsequent tests
+  // start with a clean slate.
   test.afterEach(async ({ baseURL }) => {
     if (sessionId) {
       try {
@@ -177,7 +194,7 @@ test.describe('Stream View - Dynamic Pipeline', () => {
         await apiContext.delete(`/api/v1/sessions/${sessionId}`);
         await apiContext.dispose();
       } catch {
-        // Ignore cleanup errors
+        // Best-effort cleanup; ignore errors.
       }
       sessionId = null;
     }

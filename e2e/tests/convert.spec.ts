@@ -34,6 +34,12 @@ test.describe('Convert View - Audio Mixing Pipeline', () => {
     await expect(page.getByTestId('convert-view')).toBeVisible();
   });
 
+  // This test runs the mixing pipeline at the API level to verify the server
+  // can process audio.  We use page.evaluate() to issue the request from the
+  // browser context so it shares the same origin/cookies, and we read only the
+  // *first chunk* of the streamed response before cancelling.  This avoids a
+  // timeout: the mixing pipeline streams output in real-time, so waiting for
+  // the full body would take as long as the audio duration.
   test('API: POST /api/v1/process with mixing pipeline returns audio', async ({
     page,
     baseURL,
@@ -60,6 +66,8 @@ test.describe('Convert View - Audio Mixing Pipeline', () => {
           });
 
           const contentType = response.headers.get('content-type') ?? '';
+          // Read only the first chunk to confirm audio is being produced,
+          // then cancel the stream to avoid waiting for real-time playback.
           const reader = response.body!.getReader();
           const { value } = await reader.read();
           reader.cancel();
