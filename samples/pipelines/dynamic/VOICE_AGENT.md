@@ -56,7 +56,7 @@ The Stream View telemetry timeline shows:
 
 Download and place the following models in the `models/` directory:
 
-- **Whisper STT**: `ggml-base.en-q5_1.bin` (~140 MB)
+- **Whisper STT**: `ggml-tiny.en-q5_1.bin` (~31 MB)
 - **VAD**: `silero_vad.onnx` (~3.5 MB)
 - **Kokoro TTS**: `kokoro-multi-lang-v1_1/` directory (~360 MB)
 

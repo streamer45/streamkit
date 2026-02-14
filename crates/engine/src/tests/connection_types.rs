@@ -6,6 +6,7 @@
 
 use super::super::*;
 use crate::dynamic_actor::{DynamicEngine, NodePinMetadata};
+use streamkit_core::registry::NodeRegistry;
 use streamkit_core::types::{
     AudioCodec, AudioFormat, EncodedAudioFormat, PacketType, SampleFormat,
 };
@@ -22,7 +23,7 @@ fn create_test_engine() -> DynamicEngine {
 
     let meter = opentelemetry::global::meter("test");
     DynamicEngine {
-        registry: NodeRegistry::new(),
+        registry: std::sync::Arc::new(std::sync::RwLock::new(NodeRegistry::new())),
         control_rx,
         query_rx,
         live_nodes: HashMap::new(),

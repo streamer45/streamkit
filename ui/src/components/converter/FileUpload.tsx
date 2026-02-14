@@ -92,15 +92,18 @@ interface FileUploadProps {
   file: File | null;
   onFileSelect: (file: File | null) => void;
   accept?: string;
+  hint?: string;
 }
 
 export const FileUpload: React.FC<FileUploadProps> = ({
   file,
   onFileSelect,
   accept = 'audio/*,.ogg,.opus,.mp3,.wav,.flac',
+  hint,
 }) => {
   const [isDragActive, setIsDragActive] = useState(false);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+  const hintText = hint ?? 'Supports audio files (Ogg/Opus, MP3, WAV, FLAC)';
 
   const handleDrag = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -176,7 +179,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({
         <UploadText>
           {isDragActive ? 'Drop audio file here' : 'Click to upload or drag and drop'}
         </UploadText>
-        <UploadHint>Supports audio files (Ogg/Opus, MP3, WAV, FLAC)</UploadHint>
+        <UploadHint>{hintText}</UploadHint>
       </DropZone>
 
       <HiddenFileInput ref={fileInputRef} type="file" accept={accept} onChange={handleFileChange} />

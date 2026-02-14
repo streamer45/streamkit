@@ -31,7 +31,7 @@ Source: `plugins/native/whisper/target/release/libwhisper.so`
 | `language` | `string` | no | `en` | Language code (e.g., 'en', 'es', 'fr') |
 | `max_segment_duration_secs` | `number` | no | `30.0` | Maximum segment duration before forced transcription (seconds)<br />min: `5`<br />max: `120` |
 | `min_silence_duration_ms` | `integer` | no | `700` | Minimum silence duration before transcription (milliseconds)<br />min: `100`<br />max: `5000` |
-| `model_path` | `string` | no | `models/ggml-base.en-q5_1.bin` | Path to Whisper GGML model file (relative to repo root). IMPORTANT: Input audio must be 16kHz mono f32. |
+| `model_path` | `string` | no | `models/ggml-tiny.en-q5_1.bin` | Path to Whisper GGML model file (relative to repo root). IMPORTANT: Input audio must be 16kHz mono f32. |
 | `n_threads` | `integer` | no | `0` | Number of threads for decoding (0 = auto: min(4, num_cores), 8-12 recommended for modern CPUs)<br />min: `0`<br />max: `32` |
 | `suppress_blank` | `boolean` | no | `true` | Suppress blank/silent audio segments |
 | `suppress_non_speech_tokens` | `boolean` | no | `true` | Suppress non-speech tokens like [BLANK_AUDIO], [MUSIC], [APPLAUSE], etc. |
@@ -63,7 +63,7 @@ steps:
 
   - kind: plugin::native::whisper
     params:
-      model_path: models/ggml-base.en-q5_1.bin
+      model_path: models/ggml-tiny.en-q5_1.bin
       language: en
       vad_model_path: models/silero_vad.onnx
       vad_threshold: 0.5
@@ -119,7 +119,7 @@ steps:
       "type": "integer"
     },
     "model_path": {
-      "default": "models/ggml-base.en-q5_1.bin",
+      "default": "models/ggml-tiny.en-q5_1.bin",
       "description": "Path to Whisper GGML model file (relative to repo root). IMPORTANT: Input audio must be 16kHz mono f32.",
       "type": "string"
     },

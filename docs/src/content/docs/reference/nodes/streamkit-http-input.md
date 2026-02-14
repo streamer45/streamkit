@@ -18,22 +18,62 @@ Synthetic input node for oneshot HTTP pipelines. Receives binary data from the H
 No inputs.
 
 ### Outputs
-- Single-field mode: one `Binary` pin named after `field` (defaults to `media` when a single `http_input` exists).
-- Multi-field mode: one `Binary` pin per `fields` entry. Pin names match the field names and **no legacy `media` pin is added**.
+- `out` produces `Binary` (broadcast)
 
 ## Parameters
-- `field` (`string`, optional) — Multipart field name to bind to this input. Defaults to `media` when there is only one `http_input` node; otherwise defaults to the node id.
-- `fields` (`array`, optional) — List of multipart fields for this node. Each entry can be a string or `{ name, required }`. When set, only these fields are accepted and the legacy `media` field is disabled. `field` and `fields` are mutually exclusive.
-- `required` (`boolean`, default: `true`) — When `true`, the request must include this field. Ignored when `fields` is provided (use per-entry `required` instead).
-
-When `fields` is provided, this node exposes multiple output pins, one per field. Pin names match the field names, allowing you to wire each uploaded stream independently. The legacy `media` pin is not added in this mode.
+| Name | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `field` | `string` | no | — | Multipart field name to bind to this input. Defaults to 'media' when only one http_input node exists; otherwise defaults to the node id. |
+| `fields` | `array<object | string>` | no | — | Optional list of multipart fields for this node. When set, the node exposes one output pin per entry (pin name matches the field name). Entries may be strings or objects with { name, required }. |
+| `required` | `boolean` | no | `true` | If true (default), the request must include this field. |
 
 
 <details>
 <summary>Raw JSON Schema</summary>
 
 ```json
-{}
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "field": {
+      "type": "string",
+      "description": "Multipart field name to bind to this input. Defaults to 'media' when only one http_input node exists; otherwise defaults to the node id."
+    },
+    "fields": {
+      "type": "array",
+      "description": "Optional list of multipart fields for this node. When set, the node exposes one output pin per entry (pin name matches the field name). Entries may be strings or objects with { name, required }.",
+      "items": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "required": {
+                "type": "boolean",
+                "default": true
+              }
+            },
+            "required": [
+              "name"
+            ]
+          }
+        ]
+      }
+    },
+    "required": {
+      "type": "boolean",
+      "description": "If true (default), the request must include this field.",
+      "default": true
+    }
+  }
+}
 ```
 
 </details>

@@ -196,6 +196,44 @@ packet_batch_size = 32
 # Directory for plugin artifacts (StreamKit uses `<directory>/wasm` and `<directory>/native`)
 directory = ".plugins"
 
+# Allow runtime plugin upload/delete via HTTP API (default: false)
+# allow_http_management = false
+
+# Enable plugin marketplace API and UI (default: false)
+# marketplace_enabled = false
+
+# Allow installing native plugins from the marketplace (default: false)
+# Native plugins run in-process; only enable for fully trusted registries.
+# The official StreamKit marketplace uses signed manifests and curated plugins.
+allow_native_marketplace = true
+
+# Minisign public keys (contents of `.pub` files) trusted for marketplace manifests
+# This is the official StreamKit marketplace signing key.
+trusted_pubkeys = [
+    "untrusted comment: minisign public key 81C485A94492F33F\nRWQ/85JEqYXEgX+2kl7Rwd8AcpVjYciSLzvLggzivbGyIrDPjfmcqjYP\n",
+]
+
+# Marketplace registry index URLs (e.g., https://example.com/index.json)
+registries = ["https://streamkit.dev/marketplace/index.json"]
+
+# Marketplace security controls
+# allow_model_urls = false
+# marketplace_require_registry_origin = false
+# marketplace_url_allowlist = [
+#     "https://github.com",
+#     "https://objects.githubusercontent.com",
+#     "https://release-assets.githubusercontent.com",
+# ]
+# marketplace_scheme_policy = "https_only"
+# marketplace_host_policy = "public_only"
+# marketplace_resolve_hostnames = false
+
+# Directory to store downloaded models (default: "models")
+# models_dir = "models"
+
+# Optional Hugging Face token for gated model downloads
+# huggingface_token = "hf_..."
+
 [security]
 # Security configuration for file access and other security-sensitive settings
 
@@ -266,8 +304,8 @@ enabled = false
 # Example: Whisper STT with GPU
 # [[resources.prewarm.plugins]]
 # kind = "plugin::native::whisper"
-# params = { use_gpu = true, gpu_device = 0, model_path = "models/ggml-base.en-q5_1.bin" }
-# fallback_params = { use_gpu = false, model_path = "models/ggml-base.en-q5_1.bin" }
+# params = { use_gpu = true, gpu_device = 0, model_path = "models/ggml-tiny.en-q5_1.bin" }
+# fallback_params = { use_gpu = false, model_path = "models/ggml-tiny.en-q5_1.bin" }
 
 # Example: Kokoro with CPU only (no fallback needed)
 # [[resources.prewarm.plugins]]

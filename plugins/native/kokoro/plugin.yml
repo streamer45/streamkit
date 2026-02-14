@@ -1,0 +1,22 @@
+id: kokoro
+name: Kokoro
+version: 0.1.0
+node_kind: kokoro
+kind: native
+entrypoint: libkokoro.so
+artifact: plugins/native/kokoro/target/release/libkokoro.so
+description: Text-to-speech using Sherpa-ONNX Kokoro models
+license: MPL-2.0
+models:
+- id: kokoro-multi-lang-v1_1
+  name: Kokoro multi-lang v1.1
+  default: true
+  source: huggingface
+  repo_id: streamkit/kokoro-models
+  revision: main
+  files:
+  - kokoro-multi-lang-v1_1.tar.bz2
+  expected_size_bytes: 364816464
+  license: Apache-2.0
+  license_url: https://github.com/k2-fsa/sherpa-onnx/blob/master/LICENSE
+  sha256: a3f4c73d043860e3fd2e5b06f36795eb81de0fc8e8de6df703245edddd87dbad

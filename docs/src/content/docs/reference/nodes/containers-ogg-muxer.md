@@ -34,43 +34,43 @@ Muxes Opus audio packets into an Ogg container. Produces streamable Ogg/Opus out
 
 ```json
 {
-  "$defs": {
-    "OggMuxerCodec": {
-      "enum": [
-        "opus"
-      ],
-      "type": "string"
-    }
-  },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OggMuxerConfig",
+  "type": "object",
   "properties": {
-    "channels": {
-      "default": 1,
-      "description": "Number of audio channels (1 for mono, 2 for stereo). Defaults to 1.",
-      "format": "uint8",
-      "maximum": 255,
+    "stream_serial": {
+      "type": "integer",
+      "format": "uint32",
       "minimum": 0,
-      "type": "integer"
-    },
-    "chunk_size": {
-      "default": 65536,
-      "description": "The number of bytes to buffer before flushing to the output. Defaults to 65536.",
-      "format": "uint",
-      "minimum": 0,
-      "type": "integer"
+      "default": 0
     },
     "codec": {
       "$ref": "#/$defs/OggMuxerCodec"
     },
-    "stream_serial": {
-      "default": 0,
-      "format": "uint32",
+    "channels": {
+      "description": "Number of audio channels (1 for mono, 2 for stereo). Defaults to 1.",
+      "type": "integer",
+      "format": "uint8",
       "minimum": 0,
-      "type": "integer"
+      "maximum": 255,
+      "default": 1
+    },
+    "chunk_size": {
+      "description": "The number of bytes to buffer before flushing to the output. Defaults to 65536.",
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0,
+      "default": 65536
     }
   },
-  "title": "OggMuxerConfig",
-  "type": "object"
+  "$defs": {
+    "OggMuxerCodec": {
+      "type": "string",
+      "enum": [
+        "opus"
+      ]
+    }
+  }
 }
 ```
 

@@ -340,6 +340,26 @@ impl Default for ServerConfig {
 #[derive(Deserialize, Serialize, Debug, Clone, JsonSchema)]
 pub struct PluginConfig {
     pub directory: String,
+    #[serde(flatten, default)]
+    pub http_management: PluginHttpConfig,
+    #[serde(flatten, default)]
+    pub marketplace: PluginMarketplaceConfig,
+    /// Minisign public keys (contents of `.pub` files) trusted for marketplace manifests.
+    #[serde(default)]
+    pub trusted_pubkeys: Vec<String>,
+    /// Registry index URLs (e.g., `https://example.com/index.json`).
+    #[serde(default)]
+    pub registries: Vec<String>,
+    /// Optional directory to store downloaded models (defaults to `models` when unset).
+    #[serde(default)]
+    pub models_dir: Option<String>,
+    /// Optional Hugging Face token for gated model downloads.
+    #[serde(default)]
+    pub huggingface_token: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, JsonSchema)]
+pub struct PluginHttpConfig {
     /// Controls whether runtime plugin upload/delete is allowed via the public APIs.
     ///
     /// Default is false to avoid accidental exposure when running without an auth layer.
@@ -347,10 +367,87 @@ pub struct PluginConfig {
     pub allow_http_management: bool,
 }
 
+#[derive(Deserialize, Serialize, Debug, Clone, Default, JsonSchema)]
+pub struct PluginMarketplaceConfig {
+    /// Enables the plugin marketplace API and UI (default: false).
+    #[serde(default)]
+    pub marketplace_enabled: bool,
+    /// Allows native plugins to be installed from a marketplace (default: false).
+    ///
+    /// Native plugins run in-process and are unsafe without full trust.
+    #[serde(default)]
+    pub allow_native_marketplace: bool,
+    #[serde(flatten, default)]
+    pub security: PluginMarketplaceSecurityConfig,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, JsonSchema, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MarketplaceSchemePolicy {
+    #[default]
+    HttpsOnly,
+    AllowHttp,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, JsonSchema, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MarketplaceHostPolicy {
+    #[default]
+    PublicOnly,
+    AllowPrivate,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, JsonSchema)]
+pub struct PluginMarketplaceSecurityConfig {
+    /// Allow direct URL model downloads from manifests (default: false).
+    #[serde(default)]
+    pub allow_model_urls: bool,
+    /// Require marketplace URLs to share origin with the registry (default: false).
+    #[serde(default = "default_require_registry_origin")]
+    pub marketplace_require_registry_origin: bool,
+    /// Scheme policy for marketplace URLs (default: https_only).
+    #[serde(default)]
+    pub marketplace_scheme_policy: MarketplaceSchemePolicy,
+    /// Host policy for marketplace URLs (default: public_only).
+    #[serde(default)]
+    pub marketplace_host_policy: MarketplaceHostPolicy,
+    /// Resolve hostnames for marketplace URLs and check resolved IPs (default: false).
+    #[serde(default)]
+    pub marketplace_resolve_hostnames: bool,
+    /// Allowed marketplace origins (e.g., "https://example.com", "https://example.com:*").
+    #[serde(default)]
+    pub marketplace_url_allowlist: Vec<String>,
+}
+
+impl Default for PluginMarketplaceSecurityConfig {
+    fn default() -> Self {
+        Self {
+            allow_model_urls: false,
+            marketplace_require_registry_origin: default_require_registry_origin(),
+            marketplace_scheme_policy: MarketplaceSchemePolicy::default(),
+            marketplace_host_policy: MarketplaceHostPolicy::default(),
+            marketplace_resolve_hostnames: false,
+            marketplace_url_allowlist: Vec::new(),
+        }
+    }
+}
+
 impl Default for PluginConfig {
     fn default() -> Self {
-        Self { directory: ".plugins".to_string(), allow_http_management: false }
+        Self {
+            directory: ".plugins".to_string(),
+            http_management: PluginHttpConfig::default(),
+            marketplace: PluginMarketplaceConfig::default(),
+            trusted_pubkeys: Vec::new(),
+            registries: Vec::new(),
+            models_dir: None,
+            huggingface_token: None,
+        }
     }
+}
+
+const fn default_require_registry_origin() -> bool {
+    false
 }
 
 const fn default_keep_models_loaded() -> bool {

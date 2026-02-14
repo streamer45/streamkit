@@ -62,8 +62,21 @@ HTTP server configuration.
 |--------|------|---------|-------------|
 | `directory` | string | `.plugins` | Plugin base directory |
 | `allow_http_management` | bool | `false` | Allow plugin upload/delete via HTTP APIs (enable only in trusted environments) |
+| `marketplace_enabled` | bool | `false` | Enable marketplace browsing/install endpoints and UI |
+| `allow_native_marketplace` | bool | `false` | Allow native plugins to be installed from marketplaces |
+| `trusted_pubkeys` | string[] | `[]` | Minisign public keys trusted for marketplace manifests |
+| `registries` | string[] | `[]` | Registry index URLs |
+| `models_dir` | string? | `null` | Directory for downloaded models (defaults to `models` when unset) |
+| `huggingface_token` | string? | `null` | Hugging Face token for gated model downloads |
+| `allow_model_urls` | bool | `false` | Allow `source: "url"` model downloads from manifests |
+| `marketplace_require_registry_origin` | bool | `false` | Require marketplace URLs to share origin with the registry index |
+| `marketplace_url_allowlist` | string[] | `[]` | Allowlisted marketplace origins (same-origin relaxer, does not bypass HTTPS/host checks) |
+| `marketplace_scheme_policy` | string | `https_only` | Scheme policy for marketplace URLs (`https_only` or `allow_http`) |
+| `marketplace_host_policy` | string | `public_only` | Host policy for marketplace URLs (`public_only` or `allow_private`) |
+| `marketplace_resolve_hostnames` | bool | `false` | Resolve hostnames and block private/loopback addresses (best-effort) |
 
 Plugins are stored in subfolders: `native/` for `.so`/`.dylib`/`.dll`, `wasm/` for `.wasm`.
+Marketplace installs are extracted under `bundles/` with active records in `active/`.
 
 ## `[resources]`
 

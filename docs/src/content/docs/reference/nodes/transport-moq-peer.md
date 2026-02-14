@@ -39,44 +39,44 @@ Bidirectional MoQ peer for real-time audio communication. Acts as both publisher
 ```json
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MoqPeerConfig",
+  "type": "object",
   "properties": {
-    "allow_reconnect": {
-      "default": false,
-      "description": "Allow publisher reconnections without recreating the session",
-      "type": "boolean"
-    },
-    "gateway_path": {
-      "default": "/moq",
-      "description": "Base path for gateway routing (e.g., \"/moq\")\nPublishers connect to \"{gateway_path}/input\", subscribers to \"{gateway_path}/output\"",
-      "type": "string"
-    },
     "input_broadcast": {
-      "default": "input",
       "description": "Broadcast name to receive from publisher client",
-      "type": "string"
+      "type": "string",
+      "default": "input"
     },
     "output_broadcast": {
-      "default": "output",
       "description": "Broadcast name to send to subscriber clients",
-      "type": "string"
+      "type": "string",
+      "default": "output"
+    },
+    "gateway_path": {
+      "description": "Base path for gateway routing (e.g., \"/moq\")\nPublishers connect to \"{gateway_path}/input\", subscribers to \"{gateway_path}/output\"",
+      "type": "string",
+      "default": "/moq"
+    },
+    "allow_reconnect": {
+      "description": "Allow publisher reconnections without recreating the session",
+      "type": "boolean",
+      "default": false
     },
     "output_group_duration_ms": {
-      "default": 40,
       "description": "Duration of each MoQ group in milliseconds for the subscriber output.\n\nDefault: 40ms (2 Opus frames at 20ms each).",
+      "type": "integer",
       "format": "uint64",
       "minimum": 0,
-      "type": "integer"
+      "default": 40
     },
     "output_initial_delay_ms": {
-      "default": 0,
       "description": "Adds a timestamp offset (playout delay) so receivers can buffer before playback.\n\nDefault: 0 (no added delay).",
+      "type": "integer",
       "format": "uint64",
       "minimum": 0,
-      "type": "integer"
+      "default": 0
     }
-  },
-  "title": "MoqPeerConfig",
-  "type": "object"
+  }
 }
 ```
 

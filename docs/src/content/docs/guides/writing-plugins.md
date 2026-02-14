@@ -34,6 +34,12 @@ Uploaded plugins are stored under your configured plugin directory (default: `.p
 
 - `.plugins/native/`
 - `.plugins/wasm/`
+- Marketplace installs use `.plugins/bundles/` and `.plugins/active/`.
+
+## Marketplace packaging
+
+StreamKit also supports signed marketplace bundles with `manifest.json` + `manifest.minisig`.
+See [Publishing to a Registry](/guides/publishing-plugins/) for the bundle layout and signing steps.
 
 ## Native Plugins
 

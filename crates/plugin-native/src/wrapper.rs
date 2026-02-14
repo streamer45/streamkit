@@ -218,15 +218,62 @@ impl ProcessorNode for NativeNodeWrapper {
             warn!(error = %e, node = %node_name, "Failed to send initializing state");
         }
 
-        tracing::debug!(node = %node_name, "Getting input channel");
+        tracing::debug!(node = %node_name, "Getting input channels");
 
-        // Get input channel
-        let mut input_rx = context.take_input("in").map_err(|e| {
-            tracing::error!(node = %node_name, error = %e, "Failed to get input channel");
-            StreamKitError::Runtime(format!("Failed to get input channel: {e}"))
-        })?;
+        let mut inputs = std::mem::take(&mut context.inputs);
+        if inputs.is_empty() {
+            return Err(StreamKitError::Runtime(
+                "Engine did not provide any input pin receivers".to_string(),
+            ));
+        }
 
-        tracing::debug!(node = %node_name, "Got input channel, entering main loop");
+        let mut input_pin_names = Vec::with_capacity(inputs.len());
+        let mut input_pin_cstrs = Vec::with_capacity(inputs.len());
+        let mut input_tasks = Vec::with_capacity(inputs.len());
+        let (merged_tx, mut merged_rx) =
+            tokio::sync::mpsc::channel::<(usize, Packet)>(context.batch_size.max(1));
+        let cancellation_token = context.cancellation_token.clone();
+
+        for (pin_name, mut rx) in inputs.drain() {
+            let pin_cstr = CString::new(pin_name.as_str()).map_err(|e| {
+                StreamKitError::Runtime(format!("Invalid pin name '{pin_name}': {e}"))
+            })?;
+            let pin_index = input_pin_names.len();
+            input_pin_names.push(pin_name);
+            input_pin_cstrs.push(Arc::new(pin_cstr));
+
+            let tx = merged_tx.clone();
+            let token = cancellation_token.clone();
+            let handle = tokio::spawn(async move {
+                loop {
+                    let packet = if let Some(token) = &token {
+                        tokio::select! {
+                            () = token.cancelled() => None,
+                            packet = rx.recv() => packet,
+                        }
+                    } else {
+                        rx.recv().await
+                    };
+
+                    let Some(packet) = packet else {
+                        break;
+                    };
+
+                    if tx.send((pin_index, packet)).await.is_err() {
+                        break;
+                    }
+                }
+            });
+            input_tasks.push(handle);
+        }
+
+        drop(merged_tx);
+
+        tracing::debug!(
+            node = %node_name,
+            inputs = ?input_pin_names,
+            "Got input channels, entering main loop"
+        );
 
         // Emit running state
         if let Err(e) =
@@ -263,9 +310,6 @@ impl ProcessorNode for NativeNodeWrapper {
 
                             // Move the blocking FFI call to spawn_blocking
                             let state = Arc::clone(&self.state);
-                            // spawn_blocking can only fail with JoinError if the task panics.
-                            // If that happens, it's a serious bug that should crash.
-                            #[allow(clippy::expect_used)]
                             let error_msg = tokio::task::spawn_blocking(move || {
                                 let handle = state.begin_call()?;
 
@@ -291,8 +335,11 @@ impl ProcessorNode for NativeNodeWrapper {
                                 error
                             })
                             .await
-                            // spawn_blocking only panics if the task panics, which indicates a serious bug
-                            .expect("Update params task panicked");
+                            .map_err(|e| {
+                                StreamKitError::Runtime(format!(
+                                    "Update params task panicked: {e}"
+                                ))
+                            })?;
 
                             if let Some(err) = error_msg {
                                 warn!(node = %node_name, error = %err, "Parameter update failed");
@@ -311,8 +358,8 @@ impl ProcessorNode for NativeNodeWrapper {
                     }
                 }
 
-                maybe_packet = input_rx.recv() => {
-                    let Some(packet) = maybe_packet else {
+                maybe_packet = merged_rx.recv() => {
+                    let Some((pin_index, packet)) = maybe_packet else {
                         // Input closed - flush any buffered data before shutting down
                         tracing::debug!(node = %node_name, "Native plugin input closed, flushing buffers");
 
@@ -322,7 +369,6 @@ impl ProcessorNode for NativeNodeWrapper {
                         let session_id = context.session_id.clone();
                         let node_id = node_name.clone();
 
-                        #[allow(clippy::expect_used)]
                         let (outputs, error) = tokio::task::spawn_blocking(move || {
                             let Some(handle) = state.begin_call() else {
                                 return (Vec::new(), None);
@@ -371,7 +417,7 @@ impl ProcessorNode for NativeNodeWrapper {
                             (outputs, error)
                         })
                         .await
-                        .expect("Plugin flush task panicked");
+                        .map_err(|e| StreamKitError::Runtime(format!("Plugin flush task panicked: {e}")))?;
 
                         // Send flush outputs
                         for (pin, pkt) in outputs {
@@ -392,9 +438,7 @@ impl ProcessorNode for NativeNodeWrapper {
                     let telemetry_tx = context.telemetry_tx.clone();
                     let session_id = context.session_id.clone();
                     let node_id = node_name.clone();
-                    // spawn_blocking can only fail with JoinError if the task panics.
-                    // If that happens, it's a serious bug that should crash.
-                    #[allow(clippy::expect_used)]
+                    let pin_cstr = Arc::clone(&input_pin_cstrs[pin_index]);
                     let (outputs, error) = tokio::task::spawn_blocking(move || {
                         let Some(handle) = state.begin_call() else {
                             return (Vec::new(), None);
@@ -404,10 +448,6 @@ impl ProcessorNode for NativeNodeWrapper {
                         let api = state.api();
                         // Convert packet to C representation
                         let packet_repr = conversions::packet_to_c(&packet);
-
-                        // Prepare input pin name - hardcoded ASCII string "in" can never contain null bytes
-                        #[allow(clippy::expect_used)]
-                        let pin_cstr = CString::new("in").expect("Hardcoded ASCII string is always valid C string");
 
                         // Create callback context
                         let mut callback_ctx = CallbackContext {
@@ -453,8 +493,9 @@ impl ProcessorNode for NativeNodeWrapper {
                         (outputs, error)
                     })
                     .await
-                    // spawn_blocking only panics if the task panics, which indicates a serious bug
-                    .expect("Plugin processing task panicked");
+                    .map_err(|e| {
+                        StreamKitError::Runtime(format!("Plugin processing task panicked: {e}"))
+                    })?;
 
             // Now send outputs (after dropping c_packet and result)
             for (pin, pkt) in outputs {
@@ -479,10 +520,17 @@ impl ProcessorNode for NativeNodeWrapper {
                     warn!(error = %e, node = %node_name, "Failed to send failed state");
                 }
 
-                return Err(StreamKitError::Runtime(error_msg));
-            }
+                        for handle in &input_tasks {
+                            handle.abort();
+                        }
+                        return Err(StreamKitError::Runtime(error_msg));
+                    }
                 }
             }
+        }
+
+        for handle in &input_tasks {
+            handle.abort();
         }
 
         // Input closed, emit stopped state

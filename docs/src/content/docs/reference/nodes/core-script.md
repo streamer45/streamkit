@@ -43,72 +43,72 @@ Execute custom JavaScript code for API integration, webhooks, text transformatio
 
 ```json
 {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ScriptConfig",
+  "description": "Configuration for the script node",
+  "type": "object",
+  "properties": {
+    "script": {
+      "description": "JavaScript code (must define a process(packet) function)",
+      "type": "string",
+      "default": ""
+    },
+    "script_path": {
+      "description": "Optional path to a JavaScript file to load as the script.\n\nIf set, the file contents are loaded at node creation time.\nFor security, the StreamKit server validates this path against `security.allowed_file_paths`.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "timeout_ms": {
+      "description": "Per-packet timeout in milliseconds (default: 100ms)",
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0,
+      "default": 100
+    },
+    "memory_limit_mb": {
+      "description": "QuickJS memory limit in MB (default: 64MB)",
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0,
+      "default": 64
+    },
+    "headers": {
+      "description": "Header mappings for fetch() calls\nMaps secret names to HTTP headers with optional templates",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/HeaderMapping"
+      },
+      "default": []
+    }
+  },
   "$defs": {
     "HeaderMapping": {
       "description": "Maps a server-configured secret to an HTTP header for fetch() calls",
+      "type": "object",
       "properties": {
-        "header": {
-          "description": "HTTP header name (e.g., \"Authorization\", \"X-API-Key\")",
-          "type": "string"
-        },
         "secret": {
           "description": "Secret name (must exist in server config's [script.secrets])",
           "type": "string"
         },
-        "template": {
-          "default": "{}",
-          "description": "Optional template for formatting the header value\nUse {} as placeholder for the secret value\nExamples: \"Bearer {}\", \"token {}\", \"ApiKey {}\"\nDefault: \"{}\" (raw value)",
+        "header": {
+          "description": "HTTP header name (e.g., \"Authorization\", \"X-API-Key\")",
           "type": "string"
+        },
+        "template": {
+          "description": "Optional template for formatting the header value\nUse {} as placeholder for the secret value\nExamples: \"Bearer {}\", \"token {}\", \"ApiKey {}\"\nDefault: \"{}\" (raw value)",
+          "type": "string",
+          "default": "{}"
         }
       },
       "required": [
         "secret",
         "header"
-      ],
-      "type": "object"
-    }
-  },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "Configuration for the script node",
-  "properties": {
-    "headers": {
-      "default": [],
-      "description": "Header mappings for fetch() calls\nMaps secret names to HTTP headers with optional templates",
-      "items": {
-        "$ref": "#/$defs/HeaderMapping"
-      },
-      "type": "array"
-    },
-    "memory_limit_mb": {
-      "default": 64,
-      "description": "QuickJS memory limit in MB (default: 64MB)",
-      "format": "uint",
-      "minimum": 0,
-      "type": "integer"
-    },
-    "script": {
-      "default": "",
-      "description": "JavaScript code (must define a process(packet) function)",
-      "type": "string"
-    },
-    "script_path": {
-      "default": null,
-      "description": "Optional path to a JavaScript file to load as the script.\n\nIf set, the file contents are loaded at node creation time.\nFor security, the StreamKit server validates this path against `security.allowed_file_paths`.",
-      "type": [
-        "string",
-        "null"
       ]
-    },
-    "timeout_ms": {
-      "default": 100,
-      "description": "Per-packet timeout in milliseconds (default: 100ms)",
-      "format": "uint64",
-      "minimum": 0,
-      "type": "integer"
     }
-  },
-  "title": "ScriptConfig",
-  "type": "object"
+  }
 }
 ```
 

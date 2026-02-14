@@ -7,7 +7,7 @@ set -euo pipefail
 
 MODEL_NAME="vits-piper-es_MX-claude-high"
 MODEL_DIR="models/${MODEL_NAME}"
-BASE_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models"
+BASE_URL="https://huggingface.co/streamkit/piper-models/resolve/main"
 
 echo "Downloading Mexican Spanish Piper TTS model: ${MODEL_NAME}"
 echo "Model directory: ${MODEL_DIR}"
@@ -15,13 +15,13 @@ echo
 
 mkdir -p models
 
-# Download pre-converted model from sherpa-onnx releases
-echo "Downloading ${MODEL_NAME}.tar.bz2..."
+# Download pre-converted model from StreamKit Hugging Face
+echo "Downloading ${MODEL_NAME}.tar.bz2 (~64MB)..."
 cd models
 if [ -f "${MODEL_NAME}.tar.bz2" ]; then
     echo "Archive already exists, skipping download."
 else
-    wget "${BASE_URL}/${MODEL_NAME}.tar.bz2"
+    curl -L -o "${MODEL_NAME}.tar.bz2" "${BASE_URL}/${MODEL_NAME}.tar.bz2"
 fi
 
 if [ -d "${MODEL_NAME}" ]; then

@@ -59,6 +59,8 @@ samples/audio/system/*.flac
 samples/audio/system/*.mp3
 samples/audio/system/*.m4a
 models
+!plugins/native/pocket-tts/vendor/pocket-tts/src/models/
+!plugins/native/pocket-tts/vendor/pocket-tts/src/models/**
 
 # Example plugin build outputs
 /examples/plugins/*/build/

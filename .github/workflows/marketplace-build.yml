@@ -1,0 +1,232 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+name: Marketplace Build (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      registry_base_url:
+        description: "Registry base URL override"
+        required: false
+        type: string
+    secrets:
+      MINISIGN_SECRET_KEY:
+        required: true
+      REGISTRY_GPG_PRIVATE_KEY:
+        required: true
+      REGISTRY_GPG_PASSPHRASE:
+        required: true
+      REGISTRY_GPG_KEY_ID:
+        required: true
+      REGISTRY_PR_TOKEN:
+        required: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  SHERPA_ONNX_VERSION: "1.12.17"
+  MINISIGN_DEB_URL: "http://launchpadlibrarian.net/780165111/minisign_0.12-1_amd64.deb"
+  REGISTRY_BASE_URL: ${{ inputs.registry_base_url || 'https://streamkit.dev/registry' }}
+
+jobs:
+  build-marketplace:
+    name: Build Marketplace Bundles
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config libclang-dev wget libopenblas-dev zstd patchelf python3-yaml python3-tomli
+
+      - name: Install minisign
+        run: |
+          deb_path="/tmp/minisign.deb"
+          wget -O "${deb_path}" "${MINISIGN_DEB_URL}"
+          if ! sudo dpkg -i "${deb_path}"; then
+            echo "dpkg failed, retrying with apt-get"
+            sudo env NEEDRESTART_MODE=a apt-get install -y "${deb_path}" || true
+          fi
+          command -v minisign >/dev/null
+          minisign -h >/dev/null 2>&1 || true
+
+      - name: Install sherpa-onnx
+        run: |
+          cd /tmp
+          wget https://github.com/k2-fsa/sherpa-onnx/releases/download/v${SHERPA_ONNX_VERSION}/sherpa-onnx-v${SHERPA_ONNX_VERSION}-linux-x64-shared.tar.bz2
+          tar xf sherpa-onnx-v${SHERPA_ONNX_VERSION}-linux-x64-shared.tar.bz2
+          sudo cp -r sherpa-onnx-v${SHERPA_ONNX_VERSION}-linux-x64-shared/lib/* /usr/local/lib/
+          sudo cp -r sherpa-onnx-v${SHERPA_ONNX_VERSION}-linux-x64-shared/include/* /usr/local/include/
+          sudo ldconfig
+
+      - name: Build CTranslate2
+        run: |
+          git clone --depth 1 --recurse-submodules --branch v4.5.0 https://github.com/OpenNMT/CTranslate2.git
+          cd CTranslate2
+          mkdir build && cd build
+          cmake -DCMAKE_BUILD_TYPE=Release \
+                -DWITH_CUDA=OFF \
+                -DWITH_MKL=OFF \
+                -DWITH_OPENBLAS=ON \
+                -DOPENMP_RUNTIME=COMP \
+                -DBUILD_CLI=OFF \
+                ..
+          make -j$(nproc)
+          sudo make install
+          sudo ldconfig
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92.0"
+
+      - name: Verify official plugins metadata is current
+        run: |
+          python3 scripts/marketplace/generate_official_plugins.py
+          git diff --exit-code -- marketplace/official-plugins.json
+
+      - name: Collect marketplace workspaces
+        id: marketplace-workspaces
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import sys
+
+          plugins_path = pathlib.Path("marketplace/official-plugins.json")
+          metadata = json.loads(plugins_path.read_text())
+          plugin_ids = [plugin["id"] for plugin in metadata.get("plugins", [])]
+          if not plugin_ids:
+              print("No plugins found in marketplace/official-plugins.json", file=sys.stderr)
+              sys.exit(1)
+
+          out_path = os.environ["GITHUB_OUTPUT"]
+          with open(out_path, "a", encoding="utf-8") as handle:
+              handle.write("workspaces<<EOF\n")
+              for plugin_id in plugin_ids:
+                  handle.write(f"plugins/native/{plugin_id}\n")
+              handle.write("EOF\n")
+          PY
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ steps.marketplace-workspaces.outputs.workspaces }}
+          cache-on-failure: true
+
+      - name: Build official plugins
+        run: |
+          bash scripts/marketplace/build_official_plugins.sh
+
+      - name: Write minisign key
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          if [ -z "${MINISIGN_SECRET_KEY}" ]; then
+            echo "MINISIGN_SECRET_KEY is not set"
+            exit 1
+          fi
+          echo "${MINISIGN_SECRET_KEY}" > /tmp/streamkit.key
+          chmod 600 /tmp/streamkit.key
+
+      - name: Build registry artifacts
+        run: |
+          python3 scripts/marketplace/build_registry.py \
+            --plugins marketplace/official-plugins.json \
+            --existing-registry docs/public/registry \
+            --bundle-url-template "https://github.com/${{ github.repository }}/releases/download/plugin-{plugin_id}-v{version}" \
+            --registry-base-url "${REGISTRY_BASE_URL}" \
+            --bundles-out dist/bundles \
+            --registry-out dist/registry \
+            --signing-key /tmp/streamkit.key \
+            --new-plugins-out dist/new-plugins.json
+
+      - name: Verify marketplace bundle portability
+        run: |
+          python3 scripts/marketplace/verify_bundles.py \
+            --plugins marketplace/official-plugins.json \
+            --bundles dist/bundles
+
+      - name: Upload marketplace bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: marketplace-bundles
+          path: dist/bundles/*.tar.zst
+          if-no-files-found: ignore
+
+      - name: Upload new plugins manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: new-plugins
+          path: dist/new-plugins.json
+
+      - name: Upload registry metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: marketplace-registry
+          path: dist/registry/**
+
+  publish-registry:
+    name: Publish Registry (PR)
+    needs: [build-marketplace]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download registry artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: marketplace-registry
+          path: dist/registry
+
+      - name: Update docs registry folder
+        run: |
+          rm -rf docs/public/registry
+          mkdir -p docs/public/registry
+          cp -R dist/registry/* docs/public/registry/
+
+      - name: Configure signed registry commits
+        env:
+          REGISTRY_GPG_PRIVATE_KEY: ${{ secrets.REGISTRY_GPG_PRIVATE_KEY }}
+          REGISTRY_GPG_PASSPHRASE: ${{ secrets.REGISTRY_GPG_PASSPHRASE }}
+          REGISTRY_GPG_KEY_ID: ${{ secrets.REGISTRY_GPG_KEY_ID }}
+        run: |
+          mkdir -p ~/.gnupg
+          chmod 700 ~/.gnupg
+          echo "${REGISTRY_GPG_PRIVATE_KEY}" | gpg --batch --import
+          key_id="${REGISTRY_GPG_KEY_ID}"
+          passphrase_file="/tmp/registry-gpg-passphrase"
+          printf "%s" "${REGISTRY_GPG_PASSPHRASE}" > "${passphrase_file}"
+          chmod 600 "${passphrase_file}"
+          cat > /tmp/gpg-wrapper.sh <<'EOF'
+          #!/usr/bin/env bash
+          exec gpg --batch --yes --pinentry-mode loopback --passphrase-file /tmp/registry-gpg-passphrase "$@"
+          EOF
+          chmod +x /tmp/gpg-wrapper.sh
+          git config user.name "StreamKit Registry Bot"
+          git config user.email "registry-bot@streamkit.dev"
+          git config user.signingkey "${key_id}"
+          git config commit.gpgsign true
+          git config gpg.program /tmp/gpg-wrapper.sh
+
+      - name: Create pull request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.REGISTRY_PR_TOKEN || github.token }}
+          author: "StreamKit Registry Bot <registry-bot@streamkit.dev>"
+          committer: "StreamKit Registry Bot <registry-bot@streamkit.dev>"
+          branch: "registry/update-${{ github.run_id }}"
+          title: "chore(registry): publish marketplace registry update"
+          commit-message: "chore(registry): publish marketplace registry update"
+          body: |
+            Automated registry metadata update from run `${{ github.run_id }}`.
+          delete-branch: true
+          base: main

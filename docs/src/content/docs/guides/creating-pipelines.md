@@ -27,7 +27,7 @@ steps:
       target_sample_rate: 16000
   - kind: plugin::native::whisper
     params:
-      model_path: models/ggml-base.en-q5_1.bin
+      model_path: models/ggml-tiny.en-q5_1.bin
   - kind: core::json_serialize
   - kind: streamkit::http_output
 ```

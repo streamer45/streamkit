@@ -36,49 +36,49 @@ Controls audio playback timing by releasing frames at their natural rate. Useful
 ```json
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AudioPacerConfig",
   "description": "Configuration for the AudioPacerNode",
+  "type": "object",
   "properties": {
+    "speed": {
+      "description": "Playback speed multiplier (1.0 = real-time, 2.0 = 2x speed, 0.5 = half speed)",
+      "type": "number",
+      "format": "float",
+      "default": 1.0
+    },
     "buffer_size": {
-      "default": 32,
       "description": "Maximum number of audio frames to buffer internally\nDefault: 32 frames (~640ms of audio at 20ms/frame)",
+      "type": "integer",
       "format": "uint",
       "minimum": 1,
-      "type": "integer"
+      "default": 32
     },
     "generate_silence": {
-      "default": true,
       "description": "Generate silence frames when input queue is empty to maintain continuous stream\nPrevents gaps in audio output (useful for real-time streaming protocols like MoQ)\nDefault: true",
-      "type": "boolean"
-    },
-    "initial_channels": {
-      "default": null,
-      "format": "uint16",
-      "maximum": 65535,
-      "minimum": 0,
-      "type": [
-        "integer",
-        "null"
-      ]
+      "type": "boolean",
+      "default": true
     },
     "initial_sample_rate": {
-      "default": null,
       "description": "Optional initial audio format used to start pacing immediately (before the first input frame).\n\nWithout an initial format, the pacer learns `(sample_rate, channels)` from the first\nreceived frame. For pipelines that may take seconds before producing the first frame\n(e.g., STT → LLM → TTS), this can cause downstream consumers to see a long gap and\nunderflow. Setting these lets the pacer emit silence right away.",
-      "format": "uint32",
-      "minimum": 0,
       "type": [
         "integer",
         "null"
-      ]
+      ],
+      "format": "uint32",
+      "minimum": 0,
+      "default": null
     },
-    "speed": {
-      "default": 1.0,
-      "description": "Playback speed multiplier (1.0 = real-time, 2.0 = 2x speed, 0.5 = half speed)",
-      "format": "float",
-      "type": "number"
+    "initial_channels": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint16",
+      "minimum": 0,
+      "maximum": 65535,
+      "default": null
     }
-  },
-  "title": "AudioPacerConfig",
-  "type": "object"
+  }
 }
 ```
 

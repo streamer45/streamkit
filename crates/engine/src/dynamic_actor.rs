@@ -17,6 +17,7 @@ use crate::{
 };
 use opentelemetry::KeyValue;
 use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 use streamkit_core::control::{EngineControlMessage, NodeControlMessage};
 use streamkit_core::error::StreamKitError;
 use streamkit_core::frame_pool::{AudioFramePool, VideoFramePool};
@@ -39,7 +40,7 @@ pub struct NodePinMetadata {
 
 /// The state for the long-running, dynamic engine actor (Control Plane).
 pub struct DynamicEngine {
-    pub(super) registry: NodeRegistry,
+    pub(super) registry: Arc<RwLock<NodeRegistry>>,
     pub(super) control_rx: mpsc::Receiver<EngineControlMessage>,
     pub(super) query_rx: mpsc::Receiver<QueryMessage>,
     pub(super) live_nodes: HashMap<String, graph_builder::LiveNode>,
@@ -919,7 +920,18 @@ impl DynamicEngine {
             EngineControlMessage::AddNode { node_id, kind, params } => {
                 self.engine_operations_counter.add(1, &[KeyValue::new("operation", "add_node")]);
                 tracing::info!(name = %node_id, kind = %kind, "Adding node to graph");
-                match self.registry.create_node(&kind, params.as_ref()) {
+                let node_result = {
+                    let registry = match self.registry.read() {
+                        Ok(guard) => guard,
+                        Err(err) => {
+                            tracing::error!(error = %err, "Registry lock poisoned while adding node");
+                            return true;
+                        },
+                    };
+                    registry.create_node(&kind, params.as_ref())
+                };
+
+                match node_result {
                     Ok(node) => {
                         self.node_kinds.insert(node_id.clone(), kind.clone());
                         // Delegate initialization to helper function

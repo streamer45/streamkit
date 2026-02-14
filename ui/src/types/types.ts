@@ -112,4 +112,6 @@ export interface PluginSummary {
   loaded_at_ms: number;
   /** Plugin type (wasm or native) */
   plugin_type: PluginType;
+  /** Plugin version from the marketplace record, if available */
+  version?: string | null;
 }

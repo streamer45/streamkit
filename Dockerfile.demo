@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-# Demo image: CPU-only with Helsinki translation, all core plugins, and sample pipelines
+# Demo image: CPU-only with all core plugins (including Pocket TTS and Supertonic) and sample pipelines
 # syntax=docker/dockerfile:1
 
 # Version configuration
@@ -155,12 +155,13 @@ RUN --mount=type=cache,id=cargo-registry-whisper,target=/usr/local/cargo/registr
 
 # Download Whisper models (demo image uses a single tiny multilingual model).
 # - ggml-tiny-q5_1.bin: Tiny multilingual STT (quantized)
+#   NOTE: This model is not yet uploaded to streamkit/whisper-models, using original source
 # - silero_vad.onnx: VAD model for Whisper
 RUN mkdir -p /build/models && \
     curl -L -o /build/models/ggml-tiny-q5_1.bin \
       https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q5_1.bin && \
     curl -L -o /build/models/silero_vad.onnx \
-      https://raw.githubusercontent.com/snakers4/silero-vad/master/src/silero_vad/data/silero_vad.onnx
+      https://huggingface.co/streamkit/whisper-models/resolve/main/silero_vad.onnx
 
 # Stage 5: Build Kokoro TTS plugin
 FROM rust:1.92-slim-bookworm AS kokoro-builder
@@ -205,7 +206,8 @@ RUN --mount=type=cache,id=cargo-registry-kokoro,target=/usr/local/cargo/registry
 # Download Kokoro TTS models
 RUN mkdir -p /build/models && \
     cd /build/models && \
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_1.tar.bz2 && \
+    curl -L -o kokoro-multi-lang-v1_1.tar.bz2 \
+      https://huggingface.co/streamkit/kokoro-models/resolve/main/kokoro-multi-lang-v1_1.tar.bz2 && \
     tar xf kokoro-multi-lang-v1_1.tar.bz2 && \
     rm kokoro-multi-lang-v1_1.tar.bz2
 
@@ -248,7 +250,8 @@ RUN --mount=type=cache,id=cargo-registry-piper,target=/usr/local/cargo/registry 
 # Download Piper TTS models (English + Spanish for translation output)
 RUN mkdir -p /build/models && \
     cd /build/models && \
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-libritts_r-medium.tar.bz2 && \
+    curl -L -o vits-piper-en_US-libritts_r-medium.tar.bz2 \
+      https://huggingface.co/streamkit/piper-models/resolve/main/vits-piper-en_US-libritts_r-medium.tar.bz2 && \
     tar xf vits-piper-en_US-libritts_r-medium.tar.bz2 && \
     rm vits-piper-en_US-libritts_r-medium.tar.bz2 && \
     cd vits-piper-en_US-libritts_r-medium && \
@@ -256,7 +259,8 @@ RUN mkdir -p /build/models && \
         ln -sf en_US-libritts_r-medium.onnx model.onnx; \
     fi && \
     cd /build/models && \
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-es_MX-claude-high.tar.bz2 && \
+    curl -L -o vits-piper-es_MX-claude-high.tar.bz2 \
+      https://huggingface.co/streamkit/piper-models/resolve/main/vits-piper-es_MX-claude-high.tar.bz2 && \
     tar xf vits-piper-es_MX-claude-high.tar.bz2 && \
     rm vits-piper-es_MX-claude-high.tar.bz2 && \
     cd vits-piper-es_MX-claude-high && \
@@ -303,7 +307,8 @@ RUN --mount=type=cache,id=cargo-registry-sensevoice,target=/usr/local/cargo/regi
 # Download SenseVoice models
 RUN mkdir -p /build/models && \
     cd /build/models && \
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2 && \
+    curl -L -o sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2 \
+      https://huggingface.co/streamkit/sensevoice-models/resolve/main/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2 && \
     tar xf sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2 && \
     rm sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2
 
@@ -346,7 +351,7 @@ RUN --mount=type=cache,id=cargo-registry-vad,target=/usr/local/cargo/registry \
 # Download ten-vad model
 RUN mkdir -p /build/models && \
     curl -L -o /build/models/ten-vad.onnx \
-      https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/ten-vad.onnx
+      https://huggingface.co/streamkit/vad-models/resolve/main/ten-vad.onnx
 
 # Stage 9: Build Matcha TTS plugin
 FROM rust:1.92-slim-bookworm AS matcha-builder
@@ -387,11 +392,13 @@ RUN --mount=type=cache,id=cargo-registry-matcha,target=/usr/local/cargo/registry
 # Download Matcha TTS models
 RUN mkdir -p /build/models && \
     cd /build/models && \
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/matcha-icefall-en_US-ljspeech.tar.bz2 && \
+    curl -L -o matcha-icefall-en_US-ljspeech.tar.bz2 \
+      https://huggingface.co/streamkit/matcha-models/resolve/main/matcha-icefall-en_US-ljspeech.tar.bz2 && \
     tar xf matcha-icefall-en_US-ljspeech.tar.bz2 && \
     rm matcha-icefall-en_US-ljspeech.tar.bz2 && \
     cd matcha-icefall-en_US-ljspeech && \
-    wget -O vocos-22khz-univ.onnx https://github.com/k2-fsa/sherpa-onnx/releases/download/vocoder-models/vocos-22khz-univ.onnx
+    curl -L -o vocos-22khz-univ.onnx \
+      https://huggingface.co/streamkit/matcha-models/resolve/main/matcha-icefall-en_US-ljspeech/vocos-22khz-univ.onnx
 
 # Stage 10: Build Helsinki Translation plugin (CPU-only)
 FROM rust:1.92-slim-bookworm AS helsinki-builder
@@ -433,6 +440,88 @@ RUN PIP_BREAK_SYSTEM_PACKAGES=1 pip3 install --no-cache-dir \
       torch \
       tokenizers && \
     python3 plugins/native/helsinki/download-models.py
+
+# Stage 11: Build Pocket TTS plugin
+FROM rust:1.92-slim-bookworm AS pocket-tts-builder
+
+WORKDIR /build
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    g++ \
+    cmake \
+    curl \
+    bzip2 \
+    libclang-dev \
+    clang \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy only what's needed to build pocket-tts plugin
+COPY Cargo.toml Cargo.lock ./
+COPY crates/core ./crates/core
+COPY sdks/plugin-sdk ./sdks/plugin-sdk
+COPY plugins/native/pocket-tts ./plugins/native/pocket-tts
+
+# Build pocket-tts plugin
+RUN --mount=type=cache,id=cargo-registry-pocket-tts,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=cargo-git-pocket-tts,target=/usr/local/cargo/git \
+    --mount=type=cache,id=pocket-tts-target,target=/build/plugins/native/pocket-tts/target \
+    cd plugins/native/pocket-tts && \
+    cargo build --release --target-dir target && \
+    mkdir -p /build/plugins/native && \
+    cp target/release/libpocket_tts.so /build/plugins/native/
+
+# Download Pocket TTS models
+RUN mkdir -p /build/models && \
+    cd /build/models && \
+    curl -L -o pocket-tts-b6369a24.tar.bz2 \
+      https://huggingface.co/streamkit/pocket-tts-models/resolve/main/pocket-tts-b6369a24.tar.bz2 && \
+    tar xf pocket-tts-b6369a24.tar.bz2 && \
+    rm pocket-tts-b6369a24.tar.bz2
+
+# Stage 12: Build Supertonic TTS plugin
+FROM rust:1.92-slim-bookworm AS supertonic-builder
+
+WORKDIR /build
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    g++ \
+    cmake \
+    curl \
+    bzip2 \
+    libclang-dev \
+    clang \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy only what's needed to build supertonic plugin
+COPY Cargo.toml Cargo.lock ./
+COPY crates/core ./crates/core
+COPY sdks/plugin-sdk ./sdks/plugin-sdk
+COPY plugins/native/supertonic ./plugins/native/supertonic
+
+# Build supertonic plugin
+RUN --mount=type=cache,id=cargo-registry-supertonic,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=cargo-git-supertonic,target=/usr/local/cargo/git \
+    --mount=type=cache,id=supertonic-target,target=/build/plugins/native/supertonic/target \
+    cd plugins/native/supertonic && \
+    cargo build --release --target-dir target && \
+    mkdir -p /build/plugins/native && \
+    cp target/release/libsupertonic.so /build/plugins/native/
+
+# Download Supertonic models
+RUN mkdir -p /build/models && \
+    cd /build/models && \
+    curl -L -o supertonic-v2-onnx.tar.bz2 \
+      https://huggingface.co/streamkit/supertonic-models/resolve/main/supertonic-v2-onnx.tar.bz2 && \
+    tar xf supertonic-v2-onnx.tar.bz2 && \
+    rm supertonic-v2-onnx.tar.bz2
 
 # Runtime stage
 FROM debian:bookworm-slim
@@ -486,6 +575,14 @@ COPY --from=vad-builder /build/models/ten-vad.onnx /opt/streamkit/models/ten-vad
 # Copy matcha plugin and models (merge into /opt/streamkit/plugins and /opt/streamkit/models)
 COPY --from=matcha-builder /build/plugins/native/* /opt/streamkit/plugins/native/
 COPY --from=matcha-builder /build/models/matcha-icefall-en_US-ljspeech /opt/streamkit/models/matcha-icefall-en_US-ljspeech
+
+# Copy pocket-tts plugin and models
+COPY --from=pocket-tts-builder /build/plugins/native/* /opt/streamkit/plugins/native/
+COPY --from=pocket-tts-builder /build/models/pocket-tts /opt/streamkit/models/pocket-tts
+
+# Copy supertonic plugin and models
+COPY --from=supertonic-builder /build/plugins/native/* /opt/streamkit/plugins/native/
+COPY --from=supertonic-builder /build/models/supertonic-v2-onnx /opt/streamkit/models/supertonic-v2-onnx
 
 # Copy sample pipelines + small bundled audio samples (Opus/Ogg only)
 COPY --chown=app:app samples/pipelines /opt/streamkit/samples/pipelines

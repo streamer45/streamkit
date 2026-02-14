@@ -93,6 +93,16 @@ params = { model_dir = "models/matcha-icefall-en_US-ljspeech", speaker_id = 0, s
 kind = "plugin::native::sensevoice"
 params = { model_dir = "models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09", language = "auto", num_threads = 4, execution_provider = "cpu", use_vad = true, vad_model_path = "models/silero_vad.onnx" }
 
+# Pocket TTS
+[[resources.prewarm.plugins]]
+kind = "plugin::native::pocket-tts"
+params = { weights_path = "models/pocket-tts/tts_b6369a24.safetensors", tokenizer_path = "models/pocket-tts/tokenizer.model", voice_embeddings_dir = "models/pocket-tts/embeddings", voice = "alba", temperature = 0.7 }
+
+# Supertonic TTS
+[[resources.prewarm.plugins]]
+kind = "plugin::native::supertonic"
+params = { model_dir = "models/supertonic-v2-onnx", lang = "en", voice_style = "M1", total_step = 5, speed = 1.05 }
+
 # Script node configuration for OpenAI/weather pipelines
 [script]
 

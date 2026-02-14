@@ -46,7 +46,7 @@ Design View is the default route and is split into three panes:
 
 - **Left pane**: library and tools:
   - **Nodes**: the node palette/library (built-ins + loaded plugins).
-  - **Plugins**: view/manage loaded plugins (availability depends on your role/config).
+  - **Plugins**: view/manage loaded plugins and marketplace installs (availability depends on your role/config).
   - **Samples**: example pipelines you can load as a starting point.
   - **Fragments**: reusable building blocks you can drop into a graph.
 - **Center pane (canvas)**: a React Flow editor where you:

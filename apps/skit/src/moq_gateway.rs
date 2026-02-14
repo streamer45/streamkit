@@ -84,7 +84,7 @@ impl MoqGateway {
     #[allow(clippy::cognitive_complexity)]
     pub async fn accept_connection(
         &self,
-        session: moq_native::web_transport_quinn::Session,
+        request: moq_native::Request,
         path: String,
         auth: Option<Arc<dyn streamkit_core::moq_gateway::MoqAuthChecker>>,
     ) -> Result<(), String> {
@@ -123,8 +123,8 @@ impl MoqGateway {
         if let Some(connection_tx) = connection_tx {
             let (response_tx, response_rx) = oneshot::channel();
 
-            // Type-erase the WebTransport session
-            let session_boxed: streamkit_core::moq_gateway::WebTransportSession = Box::new(session);
+            // Type-erase the moq-native Request
+            let session_boxed: streamkit_core::moq_gateway::WebTransportSession = Box::new(request);
 
             let conn =
                 MoqConnection { path: path.clone(), session: session_boxed, response_tx, auth };

@@ -217,19 +217,9 @@ impl Engine {
             "Starting Dynamic Engine actor"
         );
 
-        // expect is documented in #[doc] Panics section above
-        #[allow(clippy::expect_used)]
-        let registry_snapshot = {
-            let guard = self
-                .registry
-                .read()
-                .expect("Engine registry poisoned while starting dynamic actor");
-            guard.clone()
-        };
-
         let meter = global::meter("skit_engine");
         let dynamic_engine = DynamicEngine {
-            registry: registry_snapshot,
+            registry: Arc::clone(&self.registry),
             control_rx,
             query_rx,
             live_nodes: HashMap::new(),

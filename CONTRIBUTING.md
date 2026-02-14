@@ -11,13 +11,66 @@ SPDX-License-Identifier: MPL-2.0
 ```bash
 git clone https://github.com/streamer45/streamkit.git
 cd streamkit
-cd ui && bun install && cd ..
-just dev    # starts backend + frontend with hot reload
+just build-ui   # build the embedded web UI (required before compiling the server)
+just dev        # starts backend + frontend with hot reload
 ```
 
-**Prerequisites:** Rust 1.92+, Bun 1.3+, [Just](https://github.com/casey/just) (recommended)
+**Prerequisites:** Rust 1.92+, Bun 1.3+, [Just](https://github.com/casey/just)
 
 Run `just --list` to see all available commands.
+
+## Prerequisites (detailed)
+
+### System packages (Ubuntu/Debian)
+
+```bash
+sudo apt install libopus-dev cmake pkg-config libssl-dev
+```
+
+### Rust toolchain
+
+The repo pins the toolchain via `rust-toolchain.toml` (currently Rust 1.92). Install Rust if you haven't already:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+### Bun
+
+```bash
+curl -fsSL https://bun.sh/install | bash
+```
+
+### Just (task runner)
+
+```bash
+cargo install just
+```
+
+### Linting tools
+
+Required by `just lint`:
+
+```bash
+cargo install cargo-deny
+pip3 install --user reuse   # note: the apt version is too old
+```
+
+### Development mode
+
+Required by `just dev`:
+
+```bash
+cargo install cargo-watch
+```
+
+### Native plugin development (optional)
+
+Building ML plugins (e.g. whisper, sensevoice) requires additional dependencies:
+
+```bash
+sudo apt install clang libclang-dev
+```
 
 ## Making Changes
 

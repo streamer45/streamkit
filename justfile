@@ -62,6 +62,20 @@ gen-plugin-bindings: fetch-wit-deps
     @gofmt -w sdks/plugin-sdk/go || true
 
 # --- skit ---
+# Pre-flight: ensure the UI has been built (required by RustEmbed)
+check-ui-dist:
+    @if [ ! -d ui/dist ]; then \
+        echo ""; \
+        echo "Error: ui/dist/ does not exist."; \
+        echo ""; \
+        echo "The skit server embeds the web UI at compile time (RustEmbed)."; \
+        echo "Build it first with:"; \
+        echo ""; \
+        echo "  just build-ui"; \
+        echo ""; \
+        exit 1; \
+    fi
+
 # Build the skit in release mode
 build-skit:
     @echo "Building skit..."
@@ -74,7 +88,7 @@ build-skit-profiling:
     @RUSTFLAGS="-C force-frame-pointers=yes" cargo build --release {{moq_features}} {{profiling_features}} -p streamkit-server --bin skit
 
 # Start the skit server
-skit *args='':
+skit *args='': check-ui-dist
     @echo "Starting skit..."
     @cargo run {{moq_features}} -p streamkit-server --bin skit -- {{args}}
 
@@ -165,8 +179,8 @@ test-skit:
 lint-skit:
     @echo "Linting skit..."
     @cargo fmt --all -- --check
-    @cargo clippy --workspace --all-targets -- -D warnings
     @cargo clippy -p streamkit-server --all-targets --features "moq" -- -D warnings
+    @cargo clippy --workspace --exclude streamkit-server --all-targets -- -D warnings
     @mkdir -p target
     @HOST=$(rustc -vV | sed -n 's/^host: //p'); \
       cargo metadata --locked --format-version 1 --filter-platform "$HOST" > target/cargo-metadata.json
@@ -177,8 +191,8 @@ lint-skit:
 fix-skit:
     @echo "Auto-fixing skit code..."
     @cargo fmt --all
-    @cargo clippy --fix --allow-dirty --allow-staged --workspace --all-targets -- -D warnings
     @cargo clippy --fix --allow-dirty --allow-staged -p streamkit-server --all-targets --features "moq" -- -D warnings
+    @cargo clippy --fix --allow-dirty --allow-staged --workspace --exclude streamkit-server --all-targets -- -D warnings
 
 # --- Frontend ---
 # Install UI dependencies using Bun
@@ -259,7 +273,9 @@ lint-plugins:
     @cd plugins/native/sensevoice && cargo fmt -- --check && cargo clippy -- -D warnings
     @cd plugins/native/vad && cargo fmt -- --check && cargo clippy -- -D warnings
     @cd plugins/native/matcha && cargo fmt -- --check && cargo clippy -- -D warnings
+    @cd plugins/native/pocket-tts && cargo fmt -- --check && cargo clippy -- -D warnings
     @cd plugins/native/nllb && cargo fmt -- --check && CMAKE_ARGS="-DCMAKE_INSTALL_PREFIX=$$(pwd)/target/cmake-install" cargo clippy -- -D warnings
+    @cd plugins/native/supertonic && cargo fmt -- --check && cargo clippy -- -D warnings
     @echo "✓ All native plugins passed linting"
 
 # Auto-fix formatting and linting issues in native plugins
@@ -271,7 +287,9 @@ fix-plugins:
     @cd plugins/native/sensevoice && cargo fmt && cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
     @cd plugins/native/vad && cargo fmt && cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
     @cd plugins/native/matcha && cargo fmt && cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
+    @cd plugins/native/pocket-tts && cargo fmt && cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
     @cd plugins/native/nllb && cargo fmt && CMAKE_ARGS="-DCMAKE_INSTALL_PREFIX=$$(pwd)/target/cmake-install" cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
+    @cd plugins/native/supertonic && cargo fmt && cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
     @echo "✓ All native plugins fixed"
 
 # --- Profiling ---
@@ -389,7 +407,7 @@ dev: install-ui
     @echo "Starting development environment..."
     @echo "Press Ctrl+C to exit."
     @trap 'kill 0' EXIT; \
-    (cd server && cargo watch -x "run {{moq_features}} --bin skit -- serve") & \
+    (cargo watch -x "run {{moq_features}} -p streamkit-server --bin skit -- serve") & \
     (cd ui && bun run dev)
 
 # --- Plugins ---
@@ -411,7 +429,7 @@ build-plugin-wasm-go:
     @tinygo build \
         -target=wasip2 \
         -no-debug \
-        --wit-package ../../../plugin-sdk/wit/streamkit-plugin.wasm \
+        --wit-package ../../../sdks/plugin-sdk/wit/streamkit-plugin.wasm \
         --wit-world plugin \
         -o build/gain_plugin_go.wasm \
         .
@@ -442,21 +460,37 @@ download-silero-vad:
         echo "✓ Silero VAD model already exists at models/silero_vad.onnx"; \
     else \
         curl -L -o models/silero_vad.onnx \
-            https://raw.githubusercontent.com/snakers4/silero-vad/master/src/silero_vad/data/silero_vad.onnx && \
+            https://huggingface.co/streamkit/whisper-models/resolve/main/silero_vad.onnx && \
         echo "✓ Silero VAD model downloaded to models/silero_vad.onnx ($(du -h models/silero_vad.onnx | cut -f1))"; \
     fi
 
-# Download Whisper models (base.en quantized)
+# Download Whisper models (tiny.en, base.en, base multilingual)
 download-whisper-models:
     @echo "Downloading Whisper models..."
     @mkdir -p models
+    @if [ -f models/ggml-tiny.en-q5_1.bin ]; then \
+        echo "✓ Whisper tiny.en model already exists at models/ggml-tiny.en-q5_1.bin"; \
+    else \
+        echo "Downloading ggml-tiny.en-q5_1.bin (~31MB)..." && \
+        curl -L -o models/ggml-tiny.en-q5_1.bin \
+            https://huggingface.co/streamkit/whisper-models/resolve/main/ggml-tiny.en-q5_1.bin && \
+        echo "✓ Whisper tiny.en model downloaded to models/ggml-tiny.en-q5_1.bin ($(du -h models/ggml-tiny.en-q5_1.bin | cut -f1))"; \
+    fi
     @if [ -f models/ggml-base.en-q5_1.bin ]; then \
         echo "✓ Whisper base.en model already exists at models/ggml-base.en-q5_1.bin"; \
     else \
         echo "Downloading ggml-base.en-q5_1.bin (~58MB)..." && \
         curl -L -o models/ggml-base.en-q5_1.bin \
-            https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q5_1.bin && \
+            https://huggingface.co/streamkit/whisper-models/resolve/main/ggml-base.en-q5_1.bin && \
         echo "✓ Whisper base.en model downloaded to models/ggml-base.en-q5_1.bin ($(du -h models/ggml-base.en-q5_1.bin | cut -f1))"; \
+    fi
+    @if [ -f models/ggml-base-q5_1.bin ]; then \
+        echo "✓ Whisper base (multilingual) model already exists at models/ggml-base-q5_1.bin"; \
+    else \
+        echo "Downloading ggml-base-q5_1.bin (~57MB)..." && \
+        curl -L -o models/ggml-base-q5_1.bin \
+            https://huggingface.co/streamkit/whisper-models/resolve/main/ggml-base-q5_1.bin && \
+        echo "✓ Whisper base (multilingual) model downloaded to models/ggml-base-q5_1.bin ($(du -h models/ggml-base-q5_1.bin | cut -f1))"; \
     fi
 
 # Setup Whisper (download models + VAD)
@@ -490,19 +524,21 @@ install-sherpa-onnx:
 download-kokoro-models:
     @echo "Downloading Kokoro TTS models..."
     @mkdir -p models
-    @cd models && \
-    if [ -f kokoro-multi-lang-v1_1.tar.bz2 ]; then \
-        echo "Archive already exists, skipping download."; \
+    @if [ -f models/kokoro-multi-lang-v1_1.tar.bz2 ]; then \
+        echo "✓ Kokoro archive already exists at models/kokoro-multi-lang-v1_1.tar.bz2"; \
     else \
-        wget https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_1.tar.bz2; \
-    fi && \
-    if [ -d kokoro-multi-lang-v1_1 ]; then \
-        echo "Models already extracted, skipping."; \
+        echo "Downloading kokoro-multi-lang-v1_1.tar.bz2 (~348MB)..." && \
+        curl -L -o models/kokoro-multi-lang-v1_1.tar.bz2 \
+            https://huggingface.co/streamkit/kokoro-models/resolve/main/kokoro-multi-lang-v1_1.tar.bz2 && \
+        echo "✓ Kokoro archive downloaded"; \
+    fi
+    @if [ -d models/kokoro-multi-lang-v1_1 ]; then \
+        echo "✓ Kokoro models already extracted at models/kokoro-multi-lang-v1_1"; \
     else \
         echo "Extracting models..." && \
-        tar xf kokoro-multi-lang-v1_1.tar.bz2; \
-    fi && \
-    echo "✓ Kokoro v1.1 models ready at models/kokoro-multi-lang-v1_1 (103 speakers, 24kHz)"
+        cd models && tar xf kokoro-multi-lang-v1_1.tar.bz2 && \
+        echo "✓ Kokoro v1.1 models ready at models/kokoro-multi-lang-v1_1 (103 speakers, 24kHz)"; \
+    fi
 
 # Setup Kokoro TTS (install dependencies + download models)
 setup-kokoro: install-sherpa-onnx download-kokoro-models
@@ -512,6 +548,16 @@ setup-kokoro: install-sherpa-onnx download-kokoro-models
 download-piper-models:
     @echo "Downloading Piper TTS models..."
     @cd plugins/native/piper && ./download-models.sh
+
+# Download Pocket TTS models and voices
+download-pocket-tts-models:
+    @echo "Downloading Pocket TTS models and voices..."
+    @echo "⚠️  This requires Python with huggingface-hub installed."
+    @echo "⚠️  Install with: pip3 install --user huggingface-hub"
+    @echo "⚠️  Model weights are gated; set HF_TOKEN to authenticate."
+    @echo ""
+    @HF_HOME=models/hf python3 plugins/native/pocket-tts/download-models.py
+    @echo "✓ Pocket TTS models copied to models/pocket-tts (HF cache in models/hf)"
 
 # Setup Piper TTS (install dependencies + download models)
 setup-piper: install-sherpa-onnx download-piper-models
@@ -558,6 +604,19 @@ build-plugin-native-matcha:
     @echo "Building native Matcha TTS plugin..."
     @cargo build --release
 
+# Build native Pocket TTS plugin
+[working-directory: 'plugins/native/pocket-tts']
+build-plugin-native-pocket-tts:
+    @echo "Building native Pocket TTS plugin..."
+    @cargo build --release
+
+# Upload Pocket TTS plugin to running server
+[working-directory: 'plugins/native/pocket-tts']
+upload-pocket-tts-plugin: build-plugin-native-pocket-tts
+    @echo "Uploading Pocket TTS plugin to server..."
+    @curl -X POST -F plugin=@target/release/libpocket_tts.so \
+        http://127.0.0.1:4545/api/v1/plugins
+
 # Upload Matcha plugin to running server
 [working-directory: 'plugins/native/matcha']
 upload-matcha-plugin: build-plugin-native-matcha
@@ -569,19 +628,21 @@ upload-matcha-plugin: build-plugin-native-matcha
 download-sensevoice-models:
     @echo "Downloading SenseVoice models..."
     @mkdir -p models
-    @cd models && \
-    if [ -f sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2 ]; then \
-        echo "Archive already exists, skipping download."; \
+    @if [ -f models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2 ]; then \
+        echo "✓ SenseVoice archive already exists"; \
     else \
-        wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2; \
-    fi && \
-    if [ -d sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09 ]; then \
-        echo "Models already extracted, skipping."; \
+        echo "Downloading sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2 (~158MB)..." && \
+        curl -L -o models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2 \
+            https://huggingface.co/streamkit/sensevoice-models/resolve/main/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2 && \
+        echo "✓ SenseVoice archive downloaded"; \
+    fi
+    @if [ -d models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09 ]; then \
+        echo "✓ SenseVoice models already extracted"; \
     else \
         echo "Extracting models..." && \
-        tar xf sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2; \
-    fi && \
-    echo "✓ SenseVoice models ready at models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09 (multilingual: zh, en, ja, ko, yue)"
+        cd models && tar xf sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2 && \
+        echo "✓ SenseVoice models ready at models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09 (multilingual: zh, en, ja, ko, yue)"; \
+    fi
 
 # Setup SenseVoice (install dependencies + download models)
 setup-sensevoice: install-sherpa-onnx download-sensevoice-models download-silero-vad
@@ -603,17 +664,20 @@ upload-sensevoice-plugin: build-plugin-native-sensevoice
 # Download pre-converted NLLB models from Hugging Face
 download-nllb-models:
     @echo "Downloading pre-converted NLLB-200 models from Hugging Face..."
-    @echo "⚠️  This requires Python with huggingface-hub installed."
-    @echo "⚠️  Install with: pip3 install --user huggingface-hub"
-    @echo ""
     @mkdir -p models
-    @cd models && \
-    if [ -d nllb-200-distilled-600M-ct2-int8 ]; then \
-        echo "NLLB model already downloaded, skipping."; \
+    @if [ -f models/nllb-200-distilled-600M-ct2-int8.tar.bz2 ]; then \
+        echo "✓ NLLB archive already exists"; \
     else \
-        echo "Downloading pre-converted NLLB-200-distilled-600M (CTranslate2 format)..."; \
-        echo "This will download ~1.2 GB from Hugging Face."; \
-        python3 -c "from huggingface_hub import snapshot_download; snapshot_download('entai2965/nllb-200-distilled-600M-ctranslate2', local_dir='nllb-200-distilled-600M-ct2-int8', local_dir_use_symlinks=False)" && \
+        echo "Downloading nllb-200-distilled-600M-ct2-int8.tar.bz2 (~1.1GB)..." && \
+        curl -L -o models/nllb-200-distilled-600M-ct2-int8.tar.bz2 \
+            https://huggingface.co/streamkit/nllb-models/resolve/main/nllb-200-distilled-600M-ct2-int8.tar.bz2 && \
+        echo "✓ NLLB archive downloaded"; \
+    fi
+    @if [ -d models/nllb-200-distilled-600M-ct2-int8 ]; then \
+        echo "✓ NLLB model already extracted"; \
+    else \
+        echo "Extracting models..." && \
+        cd models && tar xf nllb-200-distilled-600M-ct2-int8.tar.bz2 && \
         echo "✓ NLLB model ready at models/nllb-200-distilled-600M-ct2-int8 (supports 200 languages)"; \
     fi
 
@@ -648,9 +712,9 @@ download-tenvad-models:
     @if [ -f models/ten-vad.onnx ]; then \
         echo "✓ ten-vad model already exists at models/ten-vad.onnx"; \
     else \
-        echo "Downloading ten-vad.onnx from GitHub releases..."; \
+        echo "Downloading ten-vad.onnx (~324KB)..." && \
         curl -L -o models/ten-vad.onnx \
-            https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/ten-vad.onnx && \
+            https://huggingface.co/streamkit/vad-models/resolve/main/ten-vad.onnx && \
         echo "✓ ten-vad model downloaded to models/ten-vad.onnx ($(du -h models/ten-vad.onnx | cut -f1))"; \
     fi
 
@@ -662,6 +726,9 @@ download-models: download-whisper-models download-silero-vad download-kokoro-mod
     @echo ""
     @echo "Optional: To download NLLB translation models (CC-BY-NC-4.0 license - non-commercial only):"
     @echo "  just download-nllb-models"
+    @echo ""
+    @echo "Optional: To download Pocket TTS models (gated; requires HF_TOKEN):"
+    @echo "  just download-pocket-tts-models"
     @echo ""
     @du -sh models/
 
@@ -682,8 +749,44 @@ upload-vad-plugin: build-plugin-native-vad
     @curl -X POST -F plugin=@target/release/libvad.so \
         http://127.0.0.1:4545/api/v1/plugins
 
-# Download Helsinki-NLP OPUS-MT models for translation
+# Download Helsinki-NLP OPUS-MT models for translation (pre-packaged from StreamKit HuggingFace)
 download-helsinki-models:
+    @echo "Downloading Helsinki OPUS-MT models..."
+    @mkdir -p models
+    @if [ -f models/opus-mt-en-es.tar.bz2 ]; then \
+        echo "✓ opus-mt-en-es archive already exists"; \
+    else \
+        echo "Downloading opus-mt-en-es.tar.bz2 (~272MB)..." && \
+        curl -L -o models/opus-mt-en-es.tar.bz2 \
+            https://huggingface.co/streamkit/helsinki-models/resolve/main/opus-mt-en-es.tar.bz2 && \
+        echo "✓ opus-mt-en-es archive downloaded"; \
+    fi
+    @if [ -f models/opus-mt-es-en.tar.bz2 ]; then \
+        echo "✓ opus-mt-es-en archive already exists"; \
+    else \
+        echo "Downloading opus-mt-es-en.tar.bz2 (~272MB)..." && \
+        curl -L -o models/opus-mt-es-en.tar.bz2 \
+            https://huggingface.co/streamkit/helsinki-models/resolve/main/opus-mt-es-en.tar.bz2 && \
+        echo "✓ opus-mt-es-en archive downloaded"; \
+    fi
+    @if [ -d models/opus-mt-en-es ]; then \
+        echo "✓ opus-mt-en-es model already extracted"; \
+    else \
+        echo "Extracting opus-mt-en-es..." && \
+        cd models && tar xf opus-mt-en-es.tar.bz2 && \
+        echo "✓ opus-mt-en-es extracted"; \
+    fi
+    @if [ -d models/opus-mt-es-en ]; then \
+        echo "✓ opus-mt-es-en model already extracted"; \
+    else \
+        echo "Extracting opus-mt-es-en..." && \
+        cd models && tar xf opus-mt-es-en.tar.bz2 && \
+        echo "✓ opus-mt-es-en extracted"; \
+    fi
+    @echo "✓ Helsinki OPUS-MT models ready (Apache 2.0 license)"
+
+# Download Helsinki models from original source (requires Python dependencies)
+download-helsinki-models-source:
     @echo "⚠️  This requires Python with transformers and tokenizers installed."
     @echo "⚠️  Install with: pip3 install --user transformers sentencepiece safetensors torch tokenizers"
     @echo ""
@@ -714,12 +817,49 @@ upload-helsinki-plugin: build-plugin-native-helsinki
     @curl -X POST -F plugin=@target/release/libhelsinki.so \
         http://127.0.0.1:4545/api/v1/plugins
 
+# Download Supertonic TTS models
+download-supertonic-models:
+    @echo "Downloading Supertonic TTS models..."
+    @mkdir -p models
+    @if [ -f models/supertonic-v2-onnx.tar.bz2 ]; then \
+        echo "✓ Supertonic archive already exists at models/supertonic-v2-onnx.tar.bz2"; \
+    else \
+        echo "Downloading supertonic-v2-onnx.tar.bz2..." && \
+        curl -L -o models/supertonic-v2-onnx.tar.bz2 \
+            https://huggingface.co/streamkit/supertonic-models/resolve/main/supertonic-v2-onnx.tar.bz2 && \
+        echo "✓ Supertonic archive downloaded"; \
+    fi
+    @if [ -d models/supertonic-v2-onnx ]; then \
+        echo "✓ Supertonic models already extracted at models/supertonic-v2-onnx"; \
+    else \
+        echo "Extracting models..." && \
+        cd models && tar xf supertonic-v2-onnx.tar.bz2 && \
+        echo "✓ Supertonic v2 models ready at models/supertonic-v2-onnx (5 languages, 10 voices)"; \
+    fi
+
+# Setup Supertonic TTS (download models)
+setup-supertonic: download-supertonic-models
+    @echo "✓ Supertonic TTS setup complete!"
+
+# Build native Supertonic TTS plugin
+[working-directory: 'plugins/native/supertonic']
+build-plugin-native-supertonic:
+    @echo "Building native Supertonic TTS plugin..."
+    @cargo build --release
+
+# Upload Supertonic plugin to running server
+[working-directory: 'plugins/native/supertonic']
+upload-supertonic-plugin: build-plugin-native-supertonic
+    @echo "Uploading Supertonic plugin to server..."
+    @curl -X POST -F plugin=@target/release/libsupertonic.so \
+        http://127.0.0.1:4545/api/v1/plugins
+
 # Build specific native plugin by name
 build-plugin-native name:
     @just build-plugin-native-{{name}}
 
 # Build all native plugin examples
-build-plugins-native: build-plugin-native-gain build-plugin-native-whisper build-plugin-native-kokoro build-plugin-native-piper build-plugin-native-matcha build-plugin-native-sensevoice build-plugin-native-nllb build-plugin-native-vad build-plugin-native-helsinki
+build-plugins-native: build-plugin-native-gain build-plugin-native-whisper build-plugin-native-kokoro build-plugin-native-piper build-plugin-native-matcha build-plugin-native-pocket-tts build-plugin-native-sensevoice build-plugin-native-nllb build-plugin-native-vad build-plugin-native-helsinki build-plugin-native-supertonic
 
 ## Combined
 
@@ -753,7 +893,7 @@ copy-plugins-native:
     cp examples/plugins/gain-native/target/release/libgain_plugin_native.* .plugins/native/ 2>/dev/null || true
 
     # Official native plugins (repo-local)
-    for name in whisper kokoro piper matcha vad sensevoice nllb helsinki; do
+    for name in whisper kokoro piper matcha vad sensevoice nllb helsinki supertonic; do
         for f in \
             plugins/native/"$name"/target/release/lib"$name".so \
             plugins/native/"$name"/target/release/lib"$name".so.* \
@@ -764,6 +904,16 @@ copy-plugins-native:
                 cp -f "$f" .plugins/native/
             fi
         done
+    done
+    for f in \
+        plugins/native/pocket-tts/target/release/libpocket_tts.so \
+        plugins/native/pocket-tts/target/release/libpocket_tts.so.* \
+        plugins/native/pocket-tts/target/release/libpocket_tts.dylib \
+        plugins/native/pocket-tts/target/release/pocket_tts.dll
+    do
+        if [[ -f "$f" ]]; then
+            cp -f "$f" .plugins/native/
+        fi
     done
     echo "✓ Native plugins copied to .plugins/native/"
 
