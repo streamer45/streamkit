@@ -2,79 +2,74 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import { test, expect, request } from "@playwright/test";
+import { test, expect, request } from '@playwright/test';
 
-import { ensureLoggedIn, getAuthHeaders } from "./auth-helpers";
+import { ensureLoggedIn, getAuthHeaders } from './auth-helpers';
 import {
   type ConsoleErrorCollector,
   MOQ_BENIGN_PATTERNS,
   createConsoleErrorCollector,
   installAudioContextTracker,
   verifyAudioContextActive,
-} from "./test-helpers";
+} from './test-helpers';
 
-test.describe("Stream View - Dynamic Pipeline", () => {
+test.describe('Stream View - Dynamic Pipeline', () => {
   let collector: ConsoleErrorCollector;
   let sessionId: string | null = null;
 
   test.beforeEach(async ({ page }) => {
     collector = createConsoleErrorCollector(page);
     await installAudioContextTracker(page);
-    await page.goto("/stream");
+    await page.goto('/stream');
     await ensureLoggedIn(page);
-    if (!page.url().includes("/stream")) {
-      await page.goto("/stream");
+    if (!page.url().includes('/stream')) {
+      await page.goto('/stream');
     }
-    await expect(page.getByTestId("stream-view")).toBeVisible();
+    await expect(page.getByTestId('stream-view')).toBeVisible();
   });
 
-  test("creates session from template, verifies active badge, then destroys it", async ({
+  test('creates session from template, verifies active badge, then destroys it', async ({
     page,
   }) => {
-    const pipelineHeading = page.getByText("Pipeline Selection");
+    const pipelineHeading = page.getByText('Pipeline Selection');
     await expect(pipelineHeading).toBeVisible({ timeout: 15_000 });
 
-    const templateCard = page.getByText("MoQ Peer Transcoder (Gateway)", {
+    const templateCard = page.getByText('MoQ Peer Transcoder (Gateway)', {
       exact: true,
     });
     await expect(templateCard).toBeVisible({ timeout: 10_000 });
     await templateCard.click();
 
-    const createButton = page.getByRole("button", { name: /Create Session/i });
+    const createButton = page.getByRole('button', { name: /Create Session/i });
     await expect(createButton).toBeEnabled({ timeout: 5_000 });
     await createButton.click();
 
-    const activeBadge = page.getByText("Session Active");
+    const activeBadge = page.getByText('Session Active');
     await expect(activeBadge).toBeVisible({ timeout: 15_000 });
 
     await expect(page.getByText(/Session ID:/)).toBeVisible();
 
     const sessionIdText = await page.getByText(/Session ID:/).textContent();
-    sessionId = sessionIdText?.replace(/Session ID:\s*/, "").trim() ?? null;
+    sessionId = sessionIdText?.replace(/Session ID:\s*/, '').trim() ?? null;
 
-    const destroyButton = page.getByRole("button", {
+    const destroyButton = page.getByRole('button', {
       name: /Destroy Session/i,
     });
     await expect(destroyButton).toBeVisible();
     await destroyButton.click();
 
-    const confirmModal = page.getByTestId("confirm-modal");
+    const confirmModal = page.getByTestId('confirm-modal');
     await expect(confirmModal).toBeVisible();
-    await confirmModal
-      .getByRole("button", { name: /Destroy Session/i })
-      .click();
+    await confirmModal.getByRole('button', { name: /Destroy Session/i }).click();
 
     await expect(createButton).toBeVisible({ timeout: 15_000 });
     sessionId = null;
 
     const unexpected = collector.getUnexpected(MOQ_BENIGN_PATTERNS);
-    expect(
-      unexpected,
-      `Unexpected console errors: ${unexpected.join("; ")}`,
-    ).toHaveLength(0);
+    expect(unexpected, `Unexpected console errors: ${unexpected.join('; ')}`).toHaveLength(0);
   });
 
-  test("connects via MoQ, verifies connection status, then disconnects", async ({
+  test('connects via MoQ, verifies connection status, then disconnects', async ({
     page,
     baseURL,
   }) => {
@@ -86,31 +81,31 @@ test.describe("Stream View - Dynamic Pipeline", () => {
         moq_gateway_url?: string | null;
       };
       if (!config.moq_gateway_url) {
-        test.skip(true, "MoQ gateway not configured on this server");
+        test.skip(true, 'MoQ gateway not configured on this server');
       }
     }
 
-    const templateCard = page.getByText("MoQ Peer Transcoder (Gateway)", {
+    const templateCard = page.getByText('MoQ Peer Transcoder (Gateway)', {
       exact: true,
     });
     await expect(templateCard).toBeVisible({ timeout: 10_000 });
     await templateCard.click();
 
-    const createButton = page.getByRole("button", { name: /Create Session/i });
+    const createButton = page.getByRole('button', { name: /Create Session/i });
     await expect(createButton).toBeEnabled({ timeout: 5_000 });
     await createButton.click();
 
-    const activeBadge = page.getByText("Session Active");
+    const activeBadge = page.getByText('Session Active');
     await expect(activeBadge).toBeVisible({ timeout: 15_000 });
 
     const sessionIdText = await page.getByText(/Session ID:/).textContent();
-    sessionId = sessionIdText?.replace(/Session ID:\s*/, "").trim() ?? null;
+    sessionId = sessionIdText?.replace(/Session ID:\s*/, '').trim() ?? null;
 
     // Session creation triggers an auto-connect attempt.
     // Wait for it to resolve: either connected or back to disconnected.
-    const connected = page.getByText("Relay: connected");
-    const disconnected = page.getByText("Disconnected");
-    const connectButton = page.getByRole("button", {
+    const connected = page.getByText('Relay: connected');
+    const disconnected = page.getByText('Disconnected');
+    const connectButton = page.getByRole('button', {
       name: /Connect & Stream/i,
     });
 
@@ -137,52 +132,37 @@ test.describe("Stream View - Dynamic Pipeline", () => {
       const audioState = await verifyAudioContextActive(page);
       expect(
         audioState.running,
-        "Expected at least one running AudioContext for audio playback",
+        'Expected at least one running AudioContext for audio playback'
       ).toBeGreaterThan(0);
-      expect(
-        audioState.maxCurrentTime,
-        "AudioContext should have advanced",
-      ).toBeGreaterThan(0);
+      expect(audioState.maxCurrentTime, 'AudioContext should have advanced').toBeGreaterThan(0);
 
-      const disconnectButton = page
-        .getByRole("button", { name: /^Disconnect$/i })
-        .first();
+      const disconnectButton = page.getByRole('button', { name: /^Disconnect$/i }).first();
       await expect(disconnectButton).toBeVisible();
       await disconnectButton.click();
 
       await expect(disconnected).toBeVisible({ timeout: 10_000 });
     } else {
-      test.skip(
-        true,
-        "MoQ WebTransport connection could not be established in this environment",
-      );
+      test.skip(true, 'MoQ WebTransport connection could not be established in this environment');
     }
 
-    const destroyButton = page.getByRole("button", {
+    const destroyButton = page.getByRole('button', {
       name: /Destroy Session/i,
     });
     await expect(destroyButton).toBeVisible();
     await destroyButton.click();
 
-    const confirmModal = page.getByTestId("confirm-modal");
+    const confirmModal = page.getByTestId('confirm-modal');
     await expect(confirmModal).toBeVisible();
-    await confirmModal
-      .getByRole("button", { name: /Destroy Session/i })
-      .click();
+    await confirmModal.getByRole('button', { name: /Destroy Session/i }).click();
 
-    await expect(
-      page.getByRole("button", { name: /Create Session/i }),
-    ).toBeVisible({
+    await expect(page.getByRole('button', { name: /Create Session/i })).toBeVisible({
       timeout: 15_000,
     });
 
     sessionId = null;
 
     const unexpected = collector.getUnexpected(MOQ_BENIGN_PATTERNS);
-    expect(
-      unexpected,
-      `Unexpected console errors: ${unexpected.join("; ")}`,
-    ).toHaveLength(0);
+    expect(unexpected, `Unexpected console errors: ${unexpected.join('; ')}`).toHaveLength(0);
   });
 
   test.afterEach(async ({ baseURL }) => {

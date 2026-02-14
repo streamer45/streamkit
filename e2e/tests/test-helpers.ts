@@ -2,13 +2,13 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import type { Page } from "@playwright/test";
+import type { Page } from '@playwright/test';
 
-const ALWAYS_BENIGN = ["ResizeObserver loop", "WebSocket connection"];
+const ALWAYS_BENIGN = ['ResizeObserver loop', 'WebSocket connection'];
 
 export const MOQ_BENIGN_PATTERNS = [
-  "QUIC_TLS_CERTIFICATE_UNKNOWN",
-  "Timed out connecting to MoQ gateway",
+  'QUIC_TLS_CERTIFICATE_UNKNOWN',
+  'Timed out connecting to MoQ gateway',
   "Failed to construct 'WebTransport'",
 ];
 
@@ -20,8 +20,8 @@ export interface ConsoleErrorCollector {
 
 export function createConsoleErrorCollector(page: Page): ConsoleErrorCollector {
   const errors: string[] = [];
-  page.on("console", (msg) => {
-    if (msg.type() === "error") {
+  page.on('console', (msg) => {
+    if (msg.type() === 'error') {
       errors.push(msg.text());
     }
   });
@@ -45,7 +45,7 @@ export async function verifyAudioPlayback(page: Page): Promise<{
   readyState: number;
 }> {
   return page.evaluate(async () => {
-    const audio = document.querySelector("audio") as HTMLAudioElement | null;
+    const audio = document.querySelector('audio') as HTMLAudioElement | null;
     if (!audio)
       return {
         found: false,
@@ -57,15 +57,12 @@ export async function verifyAudioPlayback(page: Page): Promise<{
 
     if (audio.readyState < 1) {
       await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(
-          () => reject(new Error("Audio metadata timeout")),
-          10_000,
-        );
+        const timeout = setTimeout(() => reject(new Error('Audio metadata timeout')), 10_000);
         const done = () => {
           clearTimeout(timeout);
           resolve();
         };
-        audio.addEventListener("loadedmetadata", done, { once: true });
+        audio.addEventListener('loadedmetadata', done, { once: true });
         if (audio.readyState >= 1) done();
       });
     }
@@ -110,7 +107,7 @@ export async function verifyAudioContextActive(page: Page): Promise<{
   return page.evaluate(() => {
     const w = window as Window & { __testAudioContexts?: AudioContext[] };
     const contexts = w.__testAudioContexts ?? [];
-    const running = contexts.filter((ctx) => ctx.state === "running");
+    const running = contexts.filter((ctx) => ctx.state === 'running');
     return {
       count: contexts.length,
       running: running.length,
