@@ -52,6 +52,10 @@ test.describe('Stream View - Dynamic Pipeline', () => {
     const sessionIdText = await page.getByText(/Session ID:/).textContent();
     sessionId = sessionIdText?.replace(/Session ID:\s*/, '').trim() ?? null;
 
+    const unexpected = collector.getUnexpected(MOQ_BENIGN_PATTERNS);
+    expect(unexpected, `Unexpected console errors: ${unexpected.join('; ')}`).toHaveLength(0);
+    collector.stop();
+
     const destroyButton = page.getByRole('button', {
       name: /Destroy Session/i,
     });
@@ -64,9 +68,6 @@ test.describe('Stream View - Dynamic Pipeline', () => {
 
     await expect(createButton).toBeVisible({ timeout: 15_000 });
     sessionId = null;
-
-    const unexpected = collector.getUnexpected(MOQ_BENIGN_PATTERNS);
-    expect(unexpected, `Unexpected console errors: ${unexpected.join('; ')}`).toHaveLength(0);
   });
 
   test('connects via MoQ, verifies connection status, then disconnects', async ({
@@ -136,6 +137,10 @@ test.describe('Stream View - Dynamic Pipeline', () => {
       ).toBeGreaterThan(0);
       expect(audioState.maxCurrentTime, 'AudioContext should have advanced').toBeGreaterThan(0);
 
+      const unexpected = collector.getUnexpected(MOQ_BENIGN_PATTERNS);
+      expect(unexpected, `Unexpected console errors: ${unexpected.join('; ')}`).toHaveLength(0);
+      collector.stop();
+
       const disconnectButton = page.getByRole('button', { name: /^Disconnect$/i }).first();
       await expect(disconnectButton).toBeVisible();
       await disconnectButton.click();
@@ -160,9 +165,6 @@ test.describe('Stream View - Dynamic Pipeline', () => {
     });
 
     sessionId = null;
-
-    const unexpected = collector.getUnexpected(MOQ_BENIGN_PATTERNS);
-    expect(unexpected, `Unexpected console errors: ${unexpected.join('; ')}`).toHaveLength(0);
   });
 
   test.afterEach(async ({ baseURL }) => {

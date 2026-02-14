@@ -15,20 +15,25 @@ export const MOQ_BENIGN_PATTERNS = [
 export interface ConsoleErrorCollector {
   readonly errors: string[];
   reset(): void;
+  stop(): void;
   getUnexpected(extraBenignPatterns?: string[]): string[];
 }
 
 export function createConsoleErrorCollector(page: Page): ConsoleErrorCollector {
   const errors: string[] = [];
-  page.on('console', (msg) => {
+  const handler = (msg: import('@playwright/test').ConsoleMessage) => {
     if (msg.type() === 'error') {
       errors.push(msg.text());
     }
-  });
+  };
+  page.on('console', handler);
   return {
     errors,
     reset() {
       errors.length = 0;
+    },
+    stop() {
+      page.removeListener('console', handler);
     },
     getUnexpected(extraBenignPatterns: string[] = []) {
       const allPatterns = [...ALWAYS_BENIGN, ...extraBenignPatterns];
