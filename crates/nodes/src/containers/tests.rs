@@ -288,7 +288,7 @@ async fn test_ogg_roundtrip() {
 async fn test_webm_muxer_basic() {
     let (input_tx, input_rx) = mpsc::channel(10);
     let mut inputs = HashMap::new();
-    inputs.insert("in".to_string(), input_rx);
+    inputs.insert("audio".to_string(), input_rx);
 
     let (context, mock_sender, mut state_rx) = create_test_context(inputs, 10);
 
@@ -346,7 +346,7 @@ async fn test_webm_muxer_basic() {
 async fn test_webm_muxer_multiple_packets() {
     let (input_tx, input_rx) = mpsc::channel(10);
     let mut inputs = HashMap::new();
-    inputs.insert("in".to_string(), input_rx);
+    inputs.insert("audio".to_string(), input_rx);
 
     let (context, mock_sender, mut state_rx) = create_test_context(inputs, 10);
 
@@ -394,7 +394,7 @@ async fn test_webm_sliding_window() {
     // Test that WebM muxer handles long streams with sliding window
     let (input_tx, input_rx) = mpsc::channel(10);
     let mut inputs = HashMap::new();
-    inputs.insert("in".to_string(), input_rx);
+    inputs.insert("audio".to_string(), input_rx);
 
     let (context, mock_sender, mut state_rx) = create_test_context(inputs, 10);
 
@@ -429,4 +429,125 @@ async fn test_webm_sliding_window() {
         "✅ WebM muxer handled 50 packets with sliding window, produced {} output packets",
         output_packets.len()
     );
+}
+
+/// Smoke test: video-only VP9 frames muxed into WebM produce non-empty, parseable output.
+#[cfg(feature = "vp9")]
+#[tokio::test]
+async fn test_webm_mux_vp9_video_only() {
+    use super::webm::WebMStreamingMode;
+    use crate::test_utils::create_test_video_frame;
+    use crate::video::vp9::{Vp9EncoderConfig, Vp9EncoderNode};
+    use streamkit_core::types::{PacketMetadata, PixelFormat};
+
+    // ---- Step 1: Encode some raw I420 frames to VP9 ----
+
+    let (enc_input_tx, enc_input_rx) = mpsc::channel(10);
+    let mut enc_inputs = HashMap::new();
+    enc_inputs.insert("in".to_string(), enc_input_rx);
+
+    let (enc_context, enc_sender, mut enc_state_rx) = create_test_context(enc_inputs, 10);
+    let encoder_config = Vp9EncoderConfig { keyframe_interval: 1, bitrate_kbps: 800, threads: 1 };
+    let encoder = match Vp9EncoderNode::new(encoder_config) {
+        Ok(enc) => enc,
+        Err(e) => {
+            eprintln!("Skipping VP9 video-only mux test: encoder not available ({e})");
+            return;
+        },
+    };
+    let enc_handle = tokio::spawn(async move { Box::new(encoder).run(enc_context).await });
+
+    assert_state_initializing(&mut enc_state_rx).await;
+    assert_state_running(&mut enc_state_rx).await;
+
+    let frame_count = 5u64;
+    for i in 0..frame_count {
+        let mut frame = create_test_video_frame(64, 64, PixelFormat::I420, 16);
+        frame.metadata = Some(PacketMetadata {
+            timestamp_us: Some(i * 33_333),
+            duration_us: Some(33_333),
+            sequence: Some(i),
+            keyframe: Some(true),
+        });
+        enc_input_tx.send(Packet::Video(frame)).await.unwrap();
+    }
+    drop(enc_input_tx);
+
+    assert_state_stopped(&mut enc_state_rx).await;
+    enc_handle.await.unwrap().unwrap();
+
+    let encoded_packets = enc_sender.get_packets_for_pin("out").await;
+    assert!(!encoded_packets.is_empty(), "VP9 encoder produced no packets");
+
+    // ---- Step 2: Mux the encoded VP9 packets into WebM ----
+
+    let (mux_video_tx, mux_video_rx) = mpsc::channel(10);
+    let mut mux_inputs = HashMap::new();
+    // Only video, no audio
+    mux_inputs.insert("video".to_string(), mux_video_rx);
+
+    let (mux_context, mux_sender, mut mux_state_rx) = create_test_context(mux_inputs, 10);
+    let mux_config = WebMMuxerConfig {
+        video_width: 64,
+        video_height: 64,
+        streaming_mode: WebMStreamingMode::File,
+        ..WebMMuxerConfig::default()
+    };
+    let muxer = WebMMuxerNode::new(mux_config);
+    let mux_handle = tokio::spawn(async move { Box::new(muxer).run(mux_context).await });
+
+    assert_state_initializing(&mut mux_state_rx).await;
+    assert_state_running(&mut mux_state_rx).await;
+
+    for packet in encoded_packets {
+        mux_video_tx.send(packet).await.unwrap();
+    }
+    drop(mux_video_tx);
+
+    assert_state_stopped(&mut mux_state_rx).await;
+    mux_handle.await.unwrap().unwrap();
+
+    // ---- Step 3: Validate output ----
+
+    let output_packets = mux_sender.get_packets_for_pin("out").await;
+    assert!(!output_packets.is_empty(), "WebM muxer produced no output");
+
+    // Collect all output bytes
+    let mut webm_bytes = Vec::new();
+    for packet in &output_packets {
+        if let Packet::Binary { data, .. } = packet {
+            webm_bytes.extend_from_slice(data);
+        }
+    }
+
+    assert!(!webm_bytes.is_empty(), "WebM output is empty");
+    // WebM/EBML files start with 0x1A45DFA3 (EBML header element ID)
+    assert!(webm_bytes.len() >= 4, "WebM output too small: {} bytes", webm_bytes.len());
+    assert_eq!(
+        &webm_bytes[..4],
+        &[0x1A, 0x45, 0xDF, 0xA3],
+        "WebM output does not start with EBML header"
+    );
+
+    // Verify content type
+    if let Packet::Binary { content_type, .. } = &output_packets[0] {
+        let ct = content_type.as_ref().expect("content_type should be set");
+        assert_eq!(ct.as_ref(), "video/webm; codecs=\"vp9\"");
+    }
+
+    println!(
+        "✅ WebM video-only mux test passed: {} output packets, {} total bytes",
+        output_packets.len(),
+        webm_bytes.len()
+    );
+}
+
+/// Test that muxer returns an error if no inputs are connected.
+#[tokio::test]
+async fn test_webm_mux_no_inputs_fails() {
+    let mux_inputs = HashMap::new();
+    let (mux_context, _mux_sender, _mux_state_rx) = create_test_context(mux_inputs, 10);
+    let muxer = WebMMuxerNode::new(WebMMuxerConfig::default());
+    let result = Box::new(muxer).run(mux_context).await;
+    assert!(result.is_err(), "Expected error when no inputs are connected");
 }
