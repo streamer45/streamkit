@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+name: Video Color Bars (MoQ Stream)
+description: Continuously generates SMPTE color bars and streams via MoQ
+mode: dynamic
+
+nodes:
+  colorbars:
+    kind: video::colorbars
+    params:
+      width: 640
+      height: 480
+      fps: 30
+
+  vp9_encoder:
+    kind: video::vp9::encoder
+    needs: colorbars
+
+  moq_peer:
+    kind: transport::moq::peer
+    params:
+      gateway_path: /moq/video
+      output_broadcast: output
+      allow_reconnect: true
+    needs:
+      video: vp9_encoder

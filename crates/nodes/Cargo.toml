@@ -123,7 +123,8 @@ ogg = ["dep:ogg", "dep:schemars"]
 webm = ["dep:webm", "dep:schemars"]
 symphonia = ["dep:symphonia", "dep:schemars"]
 vp9 = ["dep:env-libvpx-sys", "dep:schemars"]
-video = ["vp9"]
+colorbars = ["dep:schemars", "dep:serde_json"]
+video = ["vp9", "colorbars"]
 
 [dev-dependencies]
 tempfile = "3.24"

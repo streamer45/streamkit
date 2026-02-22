@@ -17,7 +17,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use streamkit_core::timing::MediaClock;
-use streamkit_core::types::{AudioCodec, EncodedAudioFormat, Packet, PacketType};
+use streamkit_core::types::{
+    AudioCodec, EncodedAudioFormat, EncodedVideoFormat, Packet, PacketType, VideoCodec,
+};
 use streamkit_core::{
     state_helpers, stats::NodeStatsTracker, InputPin, NodeContext, OutputPin, PinCardinality,
     ProcessorNode, StreamKitError,
@@ -35,10 +37,18 @@ struct NodeStatsDelta {
     errored: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MediaKind {
+    Audio,
+    Video,
+}
+
 #[derive(Clone, Debug)]
 struct BroadcastFrame {
     data: bytes::Bytes,
     duration_us: Option<u64>,
+    kind: MediaKind,
+    keyframe: bool,
 }
 
 /// Result of processing a single frame
@@ -70,6 +80,7 @@ struct BidirectionalTaskConfig {
     output_group_duration_ms: u64,
     output_initial_delay_ms: u64,
     stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
+    has_video: bool,
 }
 
 struct PublisherReceiveLoopWithSlotConfig {
@@ -151,16 +162,30 @@ impl MoqPeerNode {
 }
 
 #[async_trait]
+#[allow(clippy::too_many_lines)]
 impl ProcessorNode for MoqPeerNode {
     fn input_pins(&self) -> Vec<InputPin> {
-        vec![InputPin {
-            name: "in".to_string(),
-            accepts_types: vec![PacketType::EncodedAudio(EncodedAudioFormat {
-                codec: AudioCodec::Opus,
-                codec_private: None,
-            })],
-            cardinality: PinCardinality::One,
-        }]
+        vec![
+            InputPin {
+                name: "in".to_string(),
+                accepts_types: vec![PacketType::EncodedAudio(EncodedAudioFormat {
+                    codec: AudioCodec::Opus,
+                    codec_private: None,
+                })],
+                cardinality: PinCardinality::One,
+            },
+            InputPin {
+                name: "video".to_string(),
+                accepts_types: vec![PacketType::EncodedVideo(EncodedVideoFormat {
+                    codec: VideoCodec::Vp9,
+                    bitstream_format: None,
+                    codec_private: None,
+                    profile: None,
+                    level: None,
+                })],
+                cardinality: PinCardinality::One,
+            },
+        ]
     }
 
     fn output_pins(&self) -> Vec<OutputPin> {
@@ -241,8 +266,21 @@ impl ProcessorNode for MoqPeerNode {
                 StreamKitError::Runtime(err)
             })?;
 
-        // Take ownership of pipeline input channel
-        let mut pipeline_input_rx = context.take_input("in")?;
+        // Take ownership of pipeline input channels.
+        // Audio ("in") and video ("video") are both optional — at least one must be connected.
+        let mut pipeline_input_rx = context.take_input("in").ok();
+        let mut pipeline_video_rx = context.take_input("video").ok();
+        let has_audio = pipeline_input_rx.is_some();
+        let has_video = pipeline_video_rx.is_some();
+
+        if !has_audio && !has_video {
+            return Err(StreamKitError::Configuration(
+                "MoQ peer requires at least one input pin (\"in\" for audio or \"video\" for video)"
+                    .to_string(),
+            ));
+        }
+
+        tracing::info!(has_audio, has_video, "MoQ peer input pins");
 
         // Create broadcast channel for fanning out to subscribers
         let (subscriber_broadcast_tx, _) =
@@ -316,6 +354,7 @@ impl ProcessorNode for MoqPeerNode {
                             output_group_duration_ms: self.config.output_group_duration_ms,
                             output_initial_delay_ms: self.config.output_initial_delay_ms,
                             stats_delta_tx: stats_delta_tx.clone(),
+                            has_video,
                         },
                     ).await {
                         Ok(_handle) => {
@@ -415,6 +454,8 @@ impl ProcessorNode for MoqPeerNode {
                         self.config.output_group_duration_ms,
                         self.config.output_initial_delay_ms,
                         stats_delta_tx.clone(),
+                        has_video,
+                        has_audio,
                     ).await {
                         Ok(_handle) => {
                             let count = subscriber_count.fetch_add(1, Ordering::SeqCst) + 1;
@@ -426,20 +467,34 @@ impl ProcessorNode for MoqPeerNode {
                     }
                 }
 
-                // Forward packets from pipeline to broadcast channel
-                packet = pipeline_input_rx.recv() => {
-                    if let Some(packet) = packet {
-                        if let Packet::Binary { data, metadata, .. } = packet {
-                            stats_tracker.received();
-                            // Broadcast to all subscribers (ignore if no receivers)
-                            let duration_us = super::constants::packet_duration_us(metadata.as_ref());
-                            let _ = subscriber_broadcast_tx.send(BroadcastFrame { data, duration_us });
-                            stats_tracker.sent();
-                            stats_tracker.maybe_send();
-                        }
-                    } else {
-                        tracing::info!("Pipeline input closed");
-                        break Ok(());
+                // Forward audio packets from pipeline to broadcast channel
+                Some(packet) = async {
+                    if let Some(ref mut rx) = pipeline_input_rx { rx.recv().await } else { std::future::pending().await }
+                } => {
+                    if let Packet::Binary { data, metadata, .. } = packet {
+                        stats_tracker.received();
+                        let duration_us = super::constants::packet_duration_us(metadata.as_ref());
+                        let _ = subscriber_broadcast_tx.send(BroadcastFrame {
+                            data, duration_us, kind: MediaKind::Audio, keyframe: false,
+                        });
+                        stats_tracker.sent();
+                        stats_tracker.maybe_send();
+                    }
+                }
+
+                // Forward video packets from pipeline to broadcast channel
+                Some(packet) = async {
+                    if let Some(ref mut rx) = pipeline_video_rx { rx.recv().await } else { std::future::pending().await }
+                } => {
+                    if let Packet::Binary { data, metadata, .. } = packet {
+                        stats_tracker.received();
+                        let duration_us = super::constants::packet_duration_us(metadata.as_ref());
+                        let keyframe = metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(false);
+                        let _ = subscriber_broadcast_tx.send(BroadcastFrame {
+                            data, duration_us, kind: MediaKind::Video, keyframe,
+                        });
+                        stats_tracker.sent();
+                        stats_tracker.maybe_send();
                     }
                 }
 
@@ -651,6 +706,8 @@ impl MoqPeerNode {
                     config.output_group_duration_ms,
                     config.output_initial_delay_ms,
                     subscriber_stats_delta_tx,
+                    config.has_video,
+                    true, // bidirectional always has audio input path
                 )
                 .await
             };
@@ -981,6 +1038,8 @@ impl MoqPeerNode {
         output_group_duration_ms: u64,
         output_initial_delay_ms: u64,
         stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
+        has_video: bool,
+        has_audio: bool,
     ) -> Result<tokio::task::JoinHandle<()>, StreamKitError> {
         // Extract the moq-native Request
         let request = *moq_connection
@@ -1014,6 +1073,8 @@ impl MoqPeerNode {
                 output_group_duration_ms,
                 output_initial_delay_ms,
                 stats_delta_tx,
+                has_video,
+                has_audio,
             )
             .await;
 
@@ -1043,16 +1104,23 @@ impl MoqPeerNode {
         output_group_duration_ms: u64,
         output_initial_delay_ms: u64,
         stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
+        has_video: bool,
+        has_audio: bool,
     ) -> Result<(), StreamKitError> {
         // Setup broadcast and tracks
-        let (_broadcast_producer, mut track_producer, _catalog_producer) =
-            Self::setup_subscriber_broadcast(&publish, &broadcast_name)?;
+        let (
+            _broadcast_producer,
+            mut audio_track_producer,
+            mut video_track_producer,
+            _catalog_producer,
+        ) = Self::setup_subscriber_broadcast(&publish, &broadcast_name, has_video, has_audio)?;
 
-        tracing::info!("Published catalog to subscriber");
+        tracing::info!(has_audio, has_video, "Published catalog to subscriber");
 
         // Run the send loop
         let packet_count = Self::run_subscriber_send_loop(
-            &mut track_producer,
+            &mut audio_track_producer,
+            &mut video_track_producer,
             broadcast_rx,
             shutdown_rx,
             output_group_duration_ms,
@@ -1063,17 +1131,29 @@ impl MoqPeerNode {
         )
         .await?;
 
-        track_producer.track.clone().close();
+        if let Some(ref p) = audio_track_producer {
+            p.track.clone().close();
+        }
+        if let Some(ref p) = video_track_producer {
+            p.track.clone().close();
+        }
         tracing::info!("Subscriber task finished after {} packets", packet_count);
         Ok(())
     }
 
-    /// Setup broadcast, audio track, and catalog for subscriber
+    /// Setup broadcast, media tracks, and catalog for subscriber
     fn setup_subscriber_broadcast(
         publish: &moq_lite::OriginProducer,
         broadcast_name: &str,
+        has_video: bool,
+        has_audio: bool,
     ) -> Result<
-        (moq_lite::BroadcastProducer, hang::container::OrderedProducer, moq_lite::TrackProducer),
+        (
+            moq_lite::BroadcastProducer,
+            Option<hang::container::OrderedProducer>,
+            Option<hang::container::OrderedProducer>,
+            moq_lite::TrackProducer,
+        ),
         StreamKitError,
     > {
         // Create broadcast
@@ -1081,39 +1161,89 @@ impl MoqPeerNode {
             StreamKitError::Runtime(format!("Failed to create broadcast '{broadcast_name}'"))
         })?;
 
-        // Create audio track
-        let audio_track = moq_lite::Track { name: "audio/data".to_string(), priority: 80 };
-        let track_producer = broadcast_producer.create_track(audio_track.clone());
-        let track_producer: hang::container::OrderedProducer = track_producer.into();
+        // Create audio track (if audio input connected)
+        let audio_track = if has_audio {
+            let track = moq_lite::Track { name: "audio/data".to_string(), priority: 80 };
+            let producer = broadcast_producer.create_track(track.clone());
+            Some((track, hang::container::OrderedProducer::from(producer)))
+        } else {
+            None
+        };
+
+        // Create video track (if video input connected)
+        let video_track = if has_video {
+            let track = moq_lite::Track { name: "video/data".to_string(), priority: 90 };
+            let producer = broadcast_producer.create_track(track.clone());
+            Some((track, hang::container::OrderedProducer::from(producer)))
+        } else {
+            None
+        };
 
         // Create and publish catalog
-        let catalog_producer =
-            Self::create_and_publish_catalog(&mut broadcast_producer, &audio_track)?;
+        let catalog_producer = Self::create_and_publish_catalog(
+            &mut broadcast_producer,
+            audio_track.as_ref().map(|(t, _)| t),
+            video_track.as_ref().map(|(t, _)| t),
+        )?;
 
-        Ok((broadcast_producer, track_producer, catalog_producer))
+        Ok((
+            broadcast_producer,
+            audio_track.map(|(_, p)| p),
+            video_track.map(|(_, p)| p),
+            catalog_producer,
+        ))
     }
 
-    /// Create and publish the catalog with audio track info
+    /// Create and publish the catalog with audio and/or video track info
     fn create_and_publish_catalog(
         broadcast_producer: &mut moq_lite::BroadcastProducer,
-        audio_track: &moq_lite::Track,
+        audio_track: Option<&moq_lite::Track>,
+        video_track: Option<&moq_lite::Track>,
     ) -> Result<moq_lite::TrackProducer, StreamKitError> {
         let mut audio_renditions = std::collections::BTreeMap::new();
-        audio_renditions.insert(
-            audio_track.name.clone(),
-            hang::catalog::AudioConfig {
-                codec: hang::catalog::AudioCodec::Opus,
-                sample_rate: 48000,
-                channel_count: 1,
-                bitrate: Some(64_000),
-                description: None,
-                container: hang::catalog::Container::default(),
-                jitter: None,
-            },
-        );
+        if let Some(audio_track) = audio_track {
+            audio_renditions.insert(
+                audio_track.name.clone(),
+                hang::catalog::AudioConfig {
+                    codec: hang::catalog::AudioCodec::Opus,
+                    sample_rate: 48000,
+                    channel_count: 1,
+                    bitrate: Some(64_000),
+                    description: None,
+                    container: hang::catalog::Container::default(),
+                    jitter: None,
+                },
+            );
+        }
+
+        let mut video_renditions = std::collections::BTreeMap::new();
+        if let Some(video_track) = video_track {
+            video_renditions.insert(
+                video_track.name.clone(),
+                hang::catalog::VideoConfig {
+                    codec: hang::catalog::VideoCodec::VP9(hang::catalog::VP9::default()),
+                    coded_width: Some(640),
+                    coded_height: Some(480),
+                    display_ratio_width: None,
+                    display_ratio_height: None,
+                    framerate: Some(30.0),
+                    bitrate: None,
+                    description: None,
+                    optimize_for_latency: Some(true),
+                    container: hang::catalog::Container::default(),
+                    jitter: None,
+                },
+            );
+        }
 
         let catalog = hang::catalog::Catalog {
             audio: hang::catalog::Audio { renditions: audio_renditions },
+            video: hang::catalog::Video {
+                renditions: video_renditions,
+                display: None,
+                rotation: None,
+                flip: None,
+            },
             ..Default::default()
         };
 
@@ -1128,7 +1258,8 @@ impl MoqPeerNode {
     /// Run the main send loop, forwarding packets to the subscriber
     #[allow(clippy::too_many_arguments)]
     async fn run_subscriber_send_loop(
-        track_producer: &mut hang::container::OrderedProducer,
+        audio_track_producer: &mut Option<hang::container::OrderedProducer>,
+        video_track_producer: &mut Option<hang::container::OrderedProducer>,
         mut broadcast_rx: broadcast::Receiver<BroadcastFrame>,
         shutdown_rx: &mut broadcast::Receiver<()>,
         output_group_duration_ms: u64,
@@ -1141,7 +1272,8 @@ impl MoqPeerNode {
         let mut last_log = std::time::Instant::now();
         let mut frame_count = 0u64;
         let group_duration_ms = output_group_duration_ms.max(1);
-        let mut clock = MediaClock::new(output_initial_delay_ms);
+        let mut audio_clock = MediaClock::new(output_initial_delay_ms);
+        let mut video_clock = MediaClock::new(output_initial_delay_ms);
         let meter = opentelemetry::global::meter("skit_nodes");
         let gap_histogram = meter
             .f64_histogram("moq.peer.inter_frame_ms")
@@ -1152,22 +1284,26 @@ impl MoqPeerNode {
             opentelemetry::KeyValue::new("node_id", node_id),
             opentelemetry::KeyValue::new("broadcast", broadcast_name),
         ];
-        let mut last_ts_ms: Option<u64> = None;
+        let mut last_audio_ts_ms: Option<u64> = None;
+        let mut last_video_ts_ms: Option<u64> = None;
 
         loop {
             tokio::select! {
                 recv_result = broadcast_rx.recv() => {
                     match Self::handle_broadcast_recv(
                         recv_result,
-                        track_producer,
+                        audio_track_producer,
+                        video_track_producer,
                         &mut packet_count,
                         &mut frame_count,
                         &mut last_log,
                         group_duration_ms,
-                        &mut clock,
+                        &mut audio_clock,
+                        &mut video_clock,
                         &gap_histogram,
                         &metric_labels,
-                        &mut last_ts_ms,
+                        &mut last_audio_ts_ms,
+                        &mut last_video_ts_ms,
                         stats_delta_tx,
                     )? {
                         SendResult::Continue => {}
@@ -1184,19 +1320,22 @@ impl MoqPeerNode {
         Ok(packet_count)
     }
 
-    /// Handle a single broadcast receive result
+    /// Handle a single broadcast receive result, routing to the correct track producer.
     #[allow(clippy::too_many_arguments, clippy::cast_precision_loss)]
     fn handle_broadcast_recv(
         recv_result: Result<BroadcastFrame, broadcast::error::RecvError>,
-        track_producer: &mut hang::container::OrderedProducer,
+        audio_track_producer: &mut Option<hang::container::OrderedProducer>,
+        video_track_producer: &mut Option<hang::container::OrderedProducer>,
         packet_count: &mut u64,
         frame_count: &mut u64,
         last_log: &mut std::time::Instant,
         group_duration_ms: u64,
-        clock: &mut MediaClock,
+        audio_clock: &mut MediaClock,
+        video_clock: &mut MediaClock,
         gap_histogram: &opentelemetry::metrics::Histogram<f64>,
         metric_labels: &[opentelemetry::KeyValue],
-        last_ts_ms: &mut Option<u64>,
+        last_audio_ts_ms: &mut Option<u64>,
+        last_video_ts_ms: &mut Option<u64>,
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
     ) -> Result<SendResult, StreamKitError> {
         match recv_result {
@@ -1210,9 +1349,25 @@ impl MoqPeerNode {
                     *last_log = std::time::Instant::now();
                 }
 
-                let is_first = *packet_count == 1;
+                // Select the appropriate clock, last_ts, and track producer based on media kind
+                let (clock, last_ts_ms, track_producer) = match broadcast_frame.kind {
+                    MediaKind::Audio => (audio_clock, last_audio_ts_ms, audio_track_producer),
+                    MediaKind::Video => (video_clock, last_video_ts_ms, video_track_producer),
+                };
+
+                let Some(track_producer) = track_producer else {
+                    // No track producer for this media kind — skip frame
+                    return Ok(SendResult::Continue);
+                };
+
                 let timestamp_ms = clock.timestamp_ms();
-                let keyframe = is_first || clock.is_group_boundary_ms(group_duration_ms);
+                // For audio, use time-based group boundaries; for video, use keyframe flag
+                let keyframe = match broadcast_frame.kind {
+                    MediaKind::Audio => {
+                        *packet_count == 1 || clock.is_group_boundary_ms(group_duration_ms)
+                    },
+                    MediaKind::Video => broadcast_frame.keyframe,
+                };
 
                 if let Some(prev) = *last_ts_ms {
                     let gap = timestamp_ms.saturating_sub(prev);
@@ -1231,15 +1386,17 @@ impl MoqPeerNode {
                 let frame = hang::container::Frame { timestamp, keyframe, payload };
 
                 if let Err(e) = track_producer.write(frame) {
-                    tracing::warn!("Failed to write MoQ frame to subscriber: {e}");
+                    tracing::warn!(kind = ?broadcast_frame.kind, "Failed to write MoQ frame to subscriber: {e}");
                     let _ = stats_delta_tx
                         .try_send(NodeStatsDelta { errored: 1, ..Default::default() });
                     return Ok(SendResult::Stop);
                 }
-                clock.advance_by_duration_us(
-                    broadcast_frame.duration_us,
-                    super::constants::DEFAULT_AUDIO_FRAME_DURATION_US,
-                );
+
+                let default_duration = match broadcast_frame.kind {
+                    MediaKind::Audio => super::constants::DEFAULT_AUDIO_FRAME_DURATION_US,
+                    MediaKind::Video => 33_333, // ~30fps default
+                };
+                clock.advance_by_duration_us(broadcast_frame.duration_us, default_duration);
                 Ok(SendResult::Continue)
             },
             Err(broadcast::error::RecvError::Lagged(n)) => {

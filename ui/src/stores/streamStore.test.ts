@@ -315,6 +315,7 @@ describe('streamStore', () => {
         publish: { close: vi.fn() } as never,
         watch: { close: vi.fn() } as never,
         audioEmitter: { close: vi.fn() } as never,
+        videoRenderer: { close: vi.fn() } as never,
         connection: { close: vi.fn() } as never,
         microphone: { close: vi.fn() } as never,
       };

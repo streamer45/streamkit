@@ -361,6 +361,7 @@ const StreamView: React.FC = () => {
     activeSessionId,
     activeSessionName,
     activePipelineName,
+    videoRenderer,
     setServerUrl,
     setMoqToken,
     setInputBroadcast,
@@ -392,6 +393,7 @@ const StreamView: React.FC = () => {
       activeSessionId: s.activeSessionId,
       activeSessionName: s.activeSessionName,
       activePipelineName: s.activePipelineName,
+      videoRenderer: s.videoRenderer,
       setServerUrl: s.setServerUrl,
       setMoqToken: s.setMoqToken,
       setInputBroadcast: s.setInputBroadcast,
@@ -892,6 +894,26 @@ const StreamView: React.FC = () => {
               </InputGroup>
             )}
           </Section>
+
+          {isStreaming && videoRenderer && (
+            <Section>
+              <SectionTitle>Video</SectionTitle>
+              <canvas
+                ref={(el) => {
+                  if (el && videoRenderer) {
+                    videoRenderer.canvas.set(el);
+                  }
+                }}
+                style={{
+                  width: '100%',
+                  maxHeight: 480,
+                  borderRadius: 6,
+                  background: '#000',
+                  aspectRatio: '4 / 3',
+                }}
+              />
+            </Section>
+          )}
 
           {connectionMode === 'session' && activeSessionId && (
             <Section>

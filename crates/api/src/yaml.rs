@@ -77,6 +77,14 @@ pub enum Needs {
     None,
     Single(NeedsDependency),
     Multiple(Vec<NeedsDependency>),
+    /// Map variant: keys are **target input pin names**.
+    /// Enables explicit pin targeting, e.g.
+    /// ```yaml
+    /// needs:
+    ///   video: vp9_encoder
+    ///   audio: opus_encoder
+    /// ```
+    Map(IndexMap<String, NeedsDependency>),
 }
 
 /// The top-level structure for a user-facing pipeline definition.
@@ -227,6 +235,7 @@ fn detect_cycles(user_nodes: &IndexMap<String, UserNode>) -> Result<(), String> 
             Needs::None => vec![],
             Needs::Single(dep) => vec![dep.node_and_pin().0],
             Needs::Multiple(deps) => deps.iter().map(|d| d.node_and_pin().0).collect(),
+            Needs::Map(map) => map.values().map(|d| d.node_and_pin().0).collect(),
         };
 
         for dep_name in dependencies {
@@ -277,13 +286,35 @@ fn compile_dag(
     let mut connections = Vec::new();
 
     for (node_name, node_def) in &user_nodes {
-        let dependencies: Vec<&NeedsDependency> = match &node_def.needs {
+        // Collect dependencies and resolve target pin names.
+        // For Map variant, the map key is the explicit target pin name.
+        // For Single/Multiple, pin names are auto-generated ("in" / "in_N").
+        enum DepEntry<'a> {
+            Auto { idx: usize, total: usize, dep: &'a NeedsDependency },
+            Named { pin: &'a str, dep: &'a NeedsDependency },
+        }
+
+        let entries: Vec<DepEntry<'_>> = match &node_def.needs {
             Needs::None => vec![],
-            Needs::Single(dep) => vec![dep],
-            Needs::Multiple(deps) => deps.iter().collect(),
+            Needs::Single(dep) => vec![DepEntry::Auto { idx: 0, total: 1, dep }],
+            Needs::Multiple(deps) => deps
+                .iter()
+                .enumerate()
+                .map(|(idx, dep)| DepEntry::Auto { idx, total: deps.len(), dep })
+                .collect(),
+            Needs::Map(map) => {
+                map.iter().map(|(pin, dep)| DepEntry::Named { pin: pin.as_str(), dep }).collect()
+            },
         };
 
-        for (idx, dep) in dependencies.iter().enumerate() {
+        for entry in &entries {
+            let (dep, to_pin) = match entry {
+                DepEntry::Auto { idx, total, dep } => {
+                    let pin = if *total > 1 { format!("in_{idx}") } else { "in".to_string() };
+                    (*dep, pin)
+                },
+                DepEntry::Named { pin, dep } => (*dep, (*pin).to_string()),
+            };
             let (dep_name, from_pin) = dep.node_and_pin();
 
             // Validate that the referenced node exists
@@ -292,10 +323,6 @@ fn compile_dag(
                     "Node '{node_name}' references non-existent node '{dep_name}' in 'needs' field"
                 ));
             }
-
-            // Use numbered input pins (in_0, in_1, etc.) when there are multiple inputs
-            let to_pin =
-                if dependencies.len() > 1 { format!("in_{idx}") } else { "in".to_string() };
 
             connections.push(Connection {
                 from_node: dep_name.to_string(),

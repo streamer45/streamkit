@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+name: Video Color Bars (VP9/WebM)
+description: Generates SMPTE color bars, encodes to VP9, and outputs a WebM file (5 seconds)
+mode: oneshot
+
+nodes:
+  colorbars:
+    kind: video::colorbars
+    params:
+      width: 640
+      height: 480
+      fps: 30
+      frame_count: 150  # 5 seconds at 30fps
+
+  vp9_encoder:
+    kind: video::vp9::encoder
+    needs: colorbars
+
+  webm_muxer:
+    kind: containers::webm::muxer
+    params:
+      video_width: 640
+      video_height: 480
+      streaming_mode: file
+    needs:
+      video: vp9_encoder
+
+  http_output:
+    kind: streamkit::http_output
+    needs: webm_muxer

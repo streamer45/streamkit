@@ -6,15 +6,18 @@
 
 use streamkit_core::NodeRegistry;
 
+#[cfg(feature = "colorbars")]
+pub mod colorbars;
+
 #[cfg(feature = "vp9")]
 pub mod vp9;
 
 /// Registers all available video nodes with the engine's registry.
-#[cfg(feature = "vp9")]
-pub fn register_video_nodes(registry: &mut NodeRegistry) {
-    vp9::register_vp9_nodes(registry);
-}
+#[allow(clippy::missing_const_for_fn)]
+pub fn register_video_nodes(_registry: &mut NodeRegistry) {
+    #[cfg(feature = "colorbars")]
+    colorbars::register_colorbars_nodes(_registry);
 
-/// Registers all available video nodes with the engine's registry.
-#[cfg(not(feature = "vp9"))]
-pub const fn register_video_nodes(_registry: &mut NodeRegistry) {}
+    #[cfg(feature = "vp9")]
+    vp9::register_vp9_nodes(_registry);
+}

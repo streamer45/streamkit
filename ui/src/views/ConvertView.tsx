@@ -14,7 +14,7 @@ import { PipelineEditor } from '@/components/converter/PipelineEditor';
 import { TemplateSelector } from '@/components/converter/TemplateSelector';
 import { TranscriptionDisplay } from '@/components/converter/TranscriptionDisplay';
 import { CustomAudioPlayer } from '@/components/CustomAudioPlayer';
-import { MSEAudioPlayer } from '@/components/MSEAudioPlayer';
+import { MSEPlayer } from '@/components/MSEPlayer';
 import { RadioGroupRoot, RadioWithLabel } from '@/components/ui/RadioGroup';
 import { useConvertViewState } from '@/hooks/useConvertViewState';
 import { useAudioAssets } from '@/services/assets';
@@ -1213,14 +1213,16 @@ const ConvertView: React.FC = () => {
                 : 'Streaming JSON output… Results will appear below as they are generated.'
             );
           } else {
-            setConversionMessage('Streaming audio... Click Cancel to stop.');
+            const mediaKind = result.contentType?.startsWith('video/') ? 'video' : 'audio';
+            setConversionMessage(`Streaming ${mediaKind}... Click Cancel to stop.`);
           }
           // Keep processing state for cancellation
         } else if (result.audioUrl) {
           // Use blob URL for other formats
           setAudioUrl(result.audioUrl);
           setAudioContentType(result.contentType || null);
-          setConversionMessage('Conversion complete! You can now play the audio below.');
+          const mediaKind = result.contentType?.startsWith('video/') ? 'video' : 'audio';
+          setConversionMessage(`Conversion complete! You can now play the ${mediaKind} below.`);
           setTimeout(() => {
             setConversionStatus('idle');
             setConversionMessage('');
@@ -1849,11 +1851,13 @@ const ConvertView: React.FC = () => {
                   />
                 )
               ) : (
-                // Render audio player for audio content
+                // Render media player for audio/video content
                 <AudioPlayerContainer>
-                  <AudioPlayerTitle>Converted Audio</AudioPlayerTitle>
+                  <AudioPlayerTitle>
+                    {audioContentType?.startsWith('video/') ? 'Converted Video' : 'Converted Audio'}
+                  </AudioPlayerTitle>
                   {useStreaming && audioStream && audioContentType ? (
-                    <MSEAudioPlayer
+                    <MSEPlayer
                       stream={audioStream}
                       contentType={audioContentType}
                       onComplete={handleAudioStreamComplete}
@@ -1861,20 +1865,39 @@ const ConvertView: React.FC = () => {
                       onError={handleMsePlaybackError}
                     />
                   ) : audioUrl ? (
-                    <>
-                      <HiddenAudio
-                        ref={audioRef}
+                    audioContentType?.startsWith('video/') ? (
+                      <video
                         src={audioUrl}
-                        preload="auto"
-                        aria-label="Converted audio playback"
-                      >
-                        Your browser does not support the audio element.
-                      </HiddenAudio>
-                      <CustomAudioPlayer audioRef={audioRef} autoPlay />
-                    </>
+                        controls
+                        autoPlay
+                        style={{
+                          width: '100%',
+                          maxHeight: 480,
+                          borderRadius: 6,
+                          background: '#000',
+                        }}
+                        aria-label="Converted video playback"
+                      />
+                    ) : (
+                      <>
+                        <HiddenAudio
+                          ref={audioRef}
+                          src={audioUrl}
+                          preload="auto"
+                          aria-label="Converted audio playback"
+                        >
+                          Your browser does not support the audio element.
+                        </HiddenAudio>
+                        <CustomAudioPlayer audioRef={audioRef} autoPlay />
+                      </>
+                    )
                   ) : null}
                   {audioUrl && (
-                    <DownloadLink onClick={handleDownloadAudio}>Download Audio File</DownloadLink>
+                    <DownloadLink onClick={handleDownloadAudio}>
+                      {audioContentType?.startsWith('video/')
+                        ? 'Download Video File'
+                        : 'Download Audio File'}
+                    </DownloadLink>
                   )}
                   {msePlaybackError && (
                     <DownloadLink onClick={handleRetryWithoutStreaming}>

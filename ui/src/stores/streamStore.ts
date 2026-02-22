@@ -31,6 +31,7 @@ type ConnectAttempt = {
   healthEffect: Effect | null;
   watch: Hang.Watch.Broadcast | null;
   audioEmitter: Hang.Watch.Audio.Emitter | null;
+  videoRenderer: Hang.Watch.Video.Renderer | null;
   microphone: Hang.Publish.Source.Microphone | null;
   publish: Hang.Publish.Broadcast | null;
 };
@@ -93,6 +94,7 @@ function formatConnectError(error: unknown): string {
 function cleanupConnectAttempt(attempt: ConnectAttempt): void {
   attempt.healthEffect?.close();
   attempt.publish?.close();
+  attempt.videoRenderer?.close();
   attempt.audioEmitter?.close();
   attempt.watch?.close();
   attempt.connection?.close();
@@ -142,7 +144,11 @@ function setupWatchPath(
   connection: Hang.Moq.Connection.Reload,
   outputBroadcast: string,
   set: (partial: Partial<StreamState>) => void
-): { watch: Hang.Watch.Broadcast; audioEmitter: Hang.Watch.Audio.Emitter } {
+): {
+  watch: Hang.Watch.Broadcast;
+  audioEmitter: Hang.Watch.Audio.Emitter;
+  videoRenderer: Hang.Watch.Video.Renderer;
+} {
   logger.info('Step 2: Creating watch broadcast (subscribe FIRST)');
   const watch = new Hang.Watch.Broadcast({
     connection: connection.established,
@@ -152,6 +158,9 @@ function setupWatchPath(
       enabled: true,
       // latency: 250 as Hang.Time.Milli,
     },
+    video: {
+      enabled: true,
+    },
   });
 
   logger.info('Step 3: Creating audio emitter');
@@ -160,12 +169,15 @@ function setupWatchPath(
     volume: 0.5,
   });
 
+  logger.info('Step 3b: Creating video renderer');
+  const videoRenderer = new Hang.Watch.Video.Renderer(watch.video);
+
   set({ watchStatus: watch.status.peek() });
   healthEffect.subscribe(watch.status, (value) => {
     set({ watchStatus: value });
   });
 
-  return { watch, audioEmitter };
+  return { watch, audioEmitter, videoRenderer };
 }
 
 function setupPublishPath(
@@ -273,6 +285,7 @@ interface StreamState {
   publish: Hang.Publish.Broadcast | null;
   watch: Hang.Watch.Broadcast | null;
   audioEmitter: Hang.Watch.Audio.Emitter | null;
+  videoRenderer: Hang.Watch.Video.Renderer | null;
   connection: Hang.Moq.Connection.Reload | null;
   microphone: Hang.Publish.Source.Microphone | null;
   healthEffect: Effect | null;
@@ -303,6 +316,7 @@ interface StreamState {
     publish: Hang.Publish.Broadcast;
     watch: Hang.Watch.Broadcast;
     audioEmitter: Hang.Watch.Audio.Emitter;
+    videoRenderer: Hang.Watch.Video.Renderer;
     connection: Hang.Moq.Connection.Reload;
     microphone: Hang.Publish.Source.Microphone;
   }) => void;
@@ -333,6 +347,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
   publish: null,
   watch: null,
   audioEmitter: null,
+  videoRenderer: null,
   connection: null,
   microphone: null,
   healthEffect: null,
@@ -386,6 +401,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       publish: refs.publish,
       watch: refs.watch,
       audioEmitter: refs.audioEmitter,
+      videoRenderer: refs.videoRenderer,
       connection: refs.connection,
       microphone: refs.microphone,
     }),
@@ -415,6 +431,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       healthEffect: null,
       watch: null,
       audioEmitter: null,
+      videoRenderer: null,
       microphone: null,
       publish: null,
     };
@@ -445,6 +462,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
         );
         attempt.watch = watchSetup.watch;
         attempt.audioEmitter = watchSetup.audioEmitter;
+        attempt.videoRenderer = watchSetup.videoRenderer;
       }
 
       if (decision.shouldPublish) {
@@ -474,6 +492,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
         publish: attempt.publish,
         watch: attempt.watch,
         audioEmitter: attempt.audioEmitter,
+        videoRenderer: attempt.videoRenderer,
         connection: attempt.connection,
         microphone: attempt.microphone,
         healthEffect: attempt.healthEffect,
@@ -498,6 +517,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
         publish: null,
         watch: null,
         audioEmitter: null,
+        videoRenderer: null,
         connection: null,
         microphone: null,
         healthEffect: null,
@@ -516,6 +536,9 @@ export const useStreamStore = create<StreamState>((set, get) => ({
     // Clean up all MoQ resources
     if (state.publish) {
       state.publish.close();
+    }
+    if (state.videoRenderer) {
+      state.videoRenderer.close();
     }
     if (state.audioEmitter) {
       state.audioEmitter.close();
@@ -548,6 +571,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       publish: null,
       watch: null,
       audioEmitter: null,
+      videoRenderer: null,
       connection: null,
       microphone: null,
       healthEffect: null,
