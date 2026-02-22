@@ -94,6 +94,7 @@ default = [
   "http",
   "symphonia",
   "script",
+  "video",
 ]
 
 # Individual features for each node.
