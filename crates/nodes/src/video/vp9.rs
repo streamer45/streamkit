@@ -1128,8 +1128,12 @@ mod tests {
         enc_inputs.insert("in".to_string(), enc_input_rx);
 
         let (enc_context, enc_sender, mut enc_state_rx) = create_test_context(enc_inputs, 10);
-        let encoder_config =
-            Vp9EncoderConfig { keyframe_interval: 1, bitrate_kbps: 800, threads: 1, ..Default::default() };
+        let encoder_config = Vp9EncoderConfig {
+            keyframe_interval: 1,
+            bitrate_kbps: 800,
+            threads: 1,
+            ..Default::default()
+        };
         let encoder = Vp9EncoderNode::new(encoder_config.clone()).unwrap();
 
         // Debug probe: run a direct encode to surface libvpx details if packets are missing.
