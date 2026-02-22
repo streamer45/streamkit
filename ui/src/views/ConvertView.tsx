@@ -480,6 +480,15 @@ const checkIfNoInputPipeline = (yaml: string): boolean => {
     return true;
   }
 
+  // Pipelines that have http_output but no http_input are self-contained generators
+  // (e.g. video::colorbars → encoder → muxer → http_output)
+  if (
+    lowerYaml.includes('streamkit::http_output') &&
+    !lowerYaml.includes('streamkit::http_input')
+  ) {
+    return true;
+  }
+
   return false;
 };
 
@@ -513,6 +522,19 @@ const checkIfTTSPipeline = (yaml: string): boolean => {
 
   // If we have TTS but no audio demuxer, it's a text input pipeline
   return hasTTS && !hasAudioDemuxer;
+};
+
+/**
+ * Detects if the current pipeline produces video output
+ * (e.g. uses video encoders, video muxer settings, or video generator nodes).
+ */
+const checkIfVideoPipeline = (yaml: string): boolean => {
+  const lowerYaml = yaml.toLowerCase();
+  return (
+    lowerYaml.includes('video::') ||
+    lowerYaml.includes('video_width') ||
+    lowerYaml.includes('video_height')
+  );
 };
 
 const resolveTextField = (fields: HttpInputField[]): HttpInputField | null => {
@@ -834,6 +856,9 @@ const ConvertView: React.FC = () => {
   const [cliCopied, setCliCopied] = useState(false);
   const [msePlaybackError, setMsePlaybackError] = useState<string | null>(null);
   const [mseFallbackLoading, setMseFallbackLoading] = useState<boolean>(false);
+
+  // Derived: detect if the selected pipeline produces video output
+  const isVideoPipeline = useMemo(() => checkIfVideoPipeline(pipelineYaml), [pipelineYaml]);
 
   // Generate CLI command based on current template and pipeline type
   const cliCommand = useMemo(() => {
@@ -1790,8 +1815,8 @@ const ConvertView: React.FC = () => {
                     value="playback"
                     label={
                       <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <span>🎵</span>
-                        <span>Play Audio</span>
+                        <span>{isVideoPipeline ? '🎬' : '🎵'}</span>
+                        <span>{isVideoPipeline ? 'Play Video' : 'Play Audio'}</span>
                       </span>
                     }
                   />
