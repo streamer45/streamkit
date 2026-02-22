@@ -8,6 +8,8 @@ export interface MoqPeerSettings {
   gatewayPath?: string;
   inputBroadcast?: string;
   outputBroadcast?: string;
+  /** Whether the pipeline declares an input_broadcast (i.e. expects a publisher). */
+  hasInputBroadcast: boolean;
 }
 
 type ParsedNode = {
@@ -46,6 +48,7 @@ export function extractMoqPeerSettings(yamlContent: string): MoqPeerSettings | n
           gatewayPath: nodeConfig.params.gateway_path,
           inputBroadcast: nodeConfig.params.input_broadcast,
           outputBroadcast: nodeConfig.params.output_broadcast,
+          hasInputBroadcast: Boolean(nodeConfig.params.input_broadcast),
         };
       }
     }

@@ -80,7 +80,7 @@ function decideConnect(
   }
 
   const shouldWatch = state.connectionMode === 'session' || state.enableWatch;
-  const shouldPublish = state.connectionMode === 'session' || state.enablePublish;
+  const shouldPublish = state.enablePublish;
 
   return { ok: true, trimmedServerUrl, shouldWatch, shouldPublish };
 }

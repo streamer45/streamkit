@@ -199,6 +199,7 @@ impl ProcessorNode for ColorBarsNode {
             let frame = if let Some(pool) = &context.video_pool {
                 let mut pooled = pool.get(total_bytes);
                 pooled.as_mut_slice()[..total_bytes].copy_from_slice(&template);
+                draw_sweep_bar_i420(pooled.as_mut_slice(), width, height, &layout, seq);
                 streamkit_core::types::VideoFrame::from_pooled(
                     width,
                     height,
@@ -207,11 +208,13 @@ impl ProcessorNode for ColorBarsNode {
                     metadata,
                 )
             } else {
+                let mut data = template.clone();
+                draw_sweep_bar_i420(&mut data, width, height, &layout, seq);
                 streamkit_core::types::VideoFrame::with_metadata(
                     width,
                     height,
                     PixelFormat::I420,
-                    template.clone(),
+                    data,
                     metadata,
                 )
             };
@@ -258,6 +261,50 @@ const SMPTE_BARS_YUV: [(u8, u8, u8); 7] = [
     (65, 100, 212),  // red
     (35, 212, 114),  // blue
 ];
+
+/// Draws a bright vertical sweep bar that moves across the frame each tick.
+///
+/// The bar is 4 pixels wide, pure white (Y=235, U=V=128), and its horizontal
+/// position advances by 4 pixels per frame, wrapping around the width.
+fn draw_sweep_bar_i420(
+    data: &mut [u8],
+    width: u32,
+    height: u32,
+    layout: &streamkit_core::types::VideoLayout,
+    seq: u64,
+) {
+    let planes = layout.planes();
+    let y_plane = planes[0];
+    let u_plane = planes[1];
+    let v_plane = planes[2];
+
+    let bar_width: usize = 4;
+    let speed: usize = 4; // pixels per frame
+    let w = width as usize;
+    let h = height as usize;
+    let bar_x = (seq as usize * speed) % w;
+
+    // Y plane: set bar columns to peak white (235).
+    for row in 0..h {
+        for dx in 0..bar_width {
+            let col = (bar_x + dx) % w;
+            data[y_plane.offset + row * y_plane.stride + col] = 235;
+        }
+    }
+
+    // U and V planes (half resolution): set to neutral (128) for pure white.
+    let chroma_w = u_plane.width as usize;
+    let chroma_h = u_plane.height as usize;
+    let chroma_bar_x = bar_x / 2;
+    let chroma_bar_w = (bar_width + 1) / 2; // round up
+    for row in 0..chroma_h {
+        for dx in 0..chroma_bar_w {
+            let col = (chroma_bar_x + dx) % chroma_w;
+            data[u_plane.offset + row * u_plane.stride + col] = 128;
+            data[v_plane.offset + row * v_plane.stride + col] = 128;
+        }
+    }
+}
 
 /// Fills an I420 buffer with SMPTE 75% color bars.
 fn generate_smpte_colorbars_i420(

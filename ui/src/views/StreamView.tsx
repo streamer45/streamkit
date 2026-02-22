@@ -527,10 +527,13 @@ const StreamView: React.FC = () => {
           if (moqSettings.outputBroadcast) {
             setOutputBroadcast(moqSettings.outputBroadcast);
           }
+          // Auto-toggle publish based on whether pipeline expects a publisher.
+          // Receive-only pipelines (no input_broadcast) skip microphone access.
+          setEnablePublish(moqSettings.hasInputBroadcast);
         }
       }
     },
-    [viewState, serverUrl, setServerUrl, setInputBroadcast, setOutputBroadcast]
+    [viewState, serverUrl, setServerUrl, setInputBroadcast, setOutputBroadcast, setEnablePublish]
   );
 
   // Handle session creation
