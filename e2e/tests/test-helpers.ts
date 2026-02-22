@@ -253,8 +253,7 @@ export async function verifyCanvasRendering(page: Page): Promise<{
 }> {
   return page.evaluate(() => {
     const canvas = document.querySelector('canvas') as HTMLCanvasElement | null;
-    if (!canvas)
-      return { found: false, width: 0, height: 0, hasNonBlackPixels: false };
+    if (!canvas) return { found: false, width: 0, height: 0, hasNonBlackPixels: false };
 
     const width = canvas.width;
     const height = canvas.height;
@@ -266,8 +265,7 @@ export async function verifyCanvasRendering(page: Page): Promise<{
     const y = Math.floor((height - sampleH) / 2);
 
     const ctx = canvas.getContext('2d');
-    if (!ctx)
-      return { found: true, width, height, hasNonBlackPixels: false };
+    if (!ctx) return { found: true, width, height, hasNonBlackPixels: false };
 
     const imageData = ctx.getImageData(x, y, sampleW, sampleH);
     const data = imageData.data;

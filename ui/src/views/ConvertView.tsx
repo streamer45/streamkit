@@ -1848,7 +1848,7 @@ const ConvertView: React.FC = () => {
               </ConvertButton>
             ) : (
               <ConvertButton disabled={!canConvert} isProcessing={false} onClick={handleConvert}>
-                {isNoInputPipeline
+                {isNoInputPipeline && inputMode !== 'asset'
                   ? 'Generate'
                   : isTTSPipeline
                     ? 'Convert to Speech'
