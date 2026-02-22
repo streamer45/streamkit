@@ -2288,19 +2288,17 @@ async fn route_multipart_fields(
 
 /// Validate that the pipeline has the required nodes for oneshot processing.
 /// Returns (has_http_input, has_file_read, has_http_output) for logging purposes.
+///
+/// Pipelines must have `streamkit::http_output`. For input, they must have at least one of:
+/// - `streamkit::http_input` (HTTP streaming mode)
+/// - `core::file_reader` (file-based mode)
+/// - Neither (generator mode — the pipeline produces its own data, e.g. video::colorbars)
 fn validate_pipeline_nodes(pipeline_def: &Pipeline) -> Result<(bool, bool, bool), AppError> {
     let has_http_input =
         pipeline_def.nodes.values().any(|node| node.kind == "streamkit::http_input");
     let has_http_output =
         pipeline_def.nodes.values().any(|node| node.kind == "streamkit::http_output");
     let has_file_read = pipeline_def.nodes.values().any(|node| node.kind == "core::file_reader");
-
-    if !has_http_input && !has_file_read {
-        return Err(AppError::BadRequest(
-            "Pipeline must contain at least one 'streamkit::http_input' or 'core::file_reader' node for oneshot processing"
-                .to_string(),
-        ));
-    }
 
     if !has_http_output {
         return Err(AppError::BadRequest(
@@ -2592,7 +2590,7 @@ async fn process_oneshot_pipeline_handler(
 
     tracing::info!(
         "Pipeline validation passed: mode={}, has_http_input={}, has_file_read={}, has_http_output={}",
-        if has_http_input { "http-streaming" } else { "file-based" },
+        if has_http_input { "http-streaming" } else if has_file_read { "file-based" } else { "generator" },
         has_http_input,
         has_file_read,
         has_http_output
