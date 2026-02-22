@@ -44,6 +44,8 @@ const VPX_ENCODER_ABI_VERSION: i32 = 15 + VPX_CODEC_ABI_VERSION + VPX_EXT_RATECT
 const VPX_EFLAG_FORCE_KF: vpx::vpx_enc_frame_flags_t = 1;
 const VPX_FRAME_IS_KEY: u32 = 0x1;
 const VPX_DL_BEST_QUALITY: u64 = 0;
+const VPX_DL_GOOD_QUALITY: u64 = 1_000_000;
+const VPX_DL_REALTIME: u64 = 1;
 const VPX_CODEC_CAP_ENCODER: u32 = 0x2;
 
 const VP9_DEFAULT_BITRATE_KBPS: u32 = 2500;
@@ -62,12 +64,43 @@ impl Default for Vp9DecoderConfig {
     }
 }
 
+/// Controls the CPU time the VP9 encoder is allowed to spend per frame.
+///
+/// Maps to the libvpx `deadline` parameter in `vpx_codec_encode`.
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Vp9EncoderDeadline {
+    /// Real-time encoding – lowest latency, may sacrifice quality (VPX_DL_REALTIME).
+    Realtime,
+    /// Good quality – allows up to ~1 second per frame (VPX_DL_GOOD_QUALITY).
+    GoodQuality,
+    /// Best quality – unlimited time per frame (VPX_DL_BEST_QUALITY).
+    BestQuality,
+}
+
+impl Default for Vp9EncoderDeadline {
+    fn default() -> Self {
+        Self::Realtime
+    }
+}
+
+impl Vp9EncoderDeadline {
+    const fn as_vpx_deadline(self) -> u64 {
+        match self {
+            Self::Realtime => VPX_DL_REALTIME,
+            Self::GoodQuality => VPX_DL_GOOD_QUALITY,
+            Self::BestQuality => VPX_DL_BEST_QUALITY,
+        }
+    }
+}
+
 #[derive(Deserialize, Debug, JsonSchema, Clone)]
 #[serde(default)]
 pub struct Vp9EncoderConfig {
     pub bitrate_kbps: u32,
     pub keyframe_interval: u32,
     pub threads: u32,
+    pub deadline: Vp9EncoderDeadline,
 }
 
 impl Default for Vp9EncoderConfig {
@@ -76,6 +109,7 @@ impl Default for Vp9EncoderConfig {
             bitrate_kbps: VP9_DEFAULT_BITRATE_KBPS,
             keyframe_interval: VP9_DEFAULT_KF_INTERVAL,
             threads: VP9_DEFAULT_THREADS,
+            deadline: Vp9EncoderDeadline::default(),
         }
     }
 }
@@ -412,8 +446,8 @@ impl ProcessorNode for Vp9EncoderNode {
                     packet_helpers::batch_packets_greedy(first_packet, &mut input_rx, batch_size);
 
                 for packet in packet_batch {
-                    if let Packet::Video(frame) = packet {
-                        let metadata = frame.metadata.clone();
+                    if let Packet::Video(mut frame) = packet {
+                        let metadata = frame.metadata.take();
                         if encode_tx_clone.send((frame, metadata)).await.is_err() {
                             tracing::error!(
                                 "Vp9EncoderNode encode task has shut down unexpectedly"
@@ -556,6 +590,7 @@ impl Vp9Decoder {
 
         let mut frames = Vec::new();
         let mut iter: vpx::vpx_codec_iter_t = std::ptr::null_mut();
+        let mut remaining_metadata = metadata;
 
         loop {
             let image_ptr = unsafe {
@@ -571,7 +606,18 @@ impl Vp9Decoder {
                 &*image_ptr
             };
 
-            let frame = copy_vpx_image(image, metadata.clone(), video_pool)?;
+            // Peek ahead: if another frame follows, clone metadata; otherwise move it.
+            let next_ptr = unsafe {
+                let mut peek_iter = iter;
+                vpx::vpx_codec_get_frame(&mut self.ctx, &mut peek_iter)
+            };
+            let meta = if next_ptr.is_null() {
+                remaining_metadata.take()
+            } else {
+                remaining_metadata.clone()
+            };
+
+            let frame = copy_vpx_image(image, meta, video_pool)?;
             frames.push(frame);
         }
 
@@ -591,6 +637,7 @@ impl Drop for Vp9Decoder {
 struct Vp9Encoder {
     ctx: vpx::vpx_codec_ctx_t,
     next_pts: i64,
+    deadline: u64,
 }
 
 impl Vp9Encoder {
@@ -658,7 +705,7 @@ impl Vp9Encoder {
             set_codec_control(&mut ctx, VP8E_SET_CPUUSED as i32, 6)?;
         }
 
-        Ok(Self { ctx, next_pts: 0 })
+        Ok(Self { ctx, next_pts: 0, deadline: config.deadline.as_vpx_deadline() })
     }
 
     fn encode_frame(
@@ -716,7 +763,7 @@ impl Vp9Encoder {
 
         let res = unsafe {
             // SAFETY: image is initialized and ctx is ready for encode.
-            vpx::vpx_codec_encode(&mut self.ctx, &image, pts, duration, flags, VPX_DL_BEST_QUALITY)
+            vpx::vpx_codec_encode(&mut self.ctx, &image, pts, duration, flags, self.deadline)
         };
         check_vpx(res, &mut self.ctx, "VP9 encode")?;
 
@@ -730,7 +777,7 @@ impl Vp9Encoder {
         for _ in 0..16 {
             let res = unsafe {
                 // SAFETY: Passing a null image flushes delayed frames.
-                vpx::vpx_codec_encode(&mut self.ctx, std::ptr::null(), 0, 0, 0, VPX_DL_BEST_QUALITY)
+                vpx::vpx_codec_encode(&mut self.ctx, std::ptr::null(), 0, 0, 0, self.deadline)
             };
             check_vpx(res, &mut self.ctx, "VP9 encode flush")?;
 
@@ -750,6 +797,7 @@ impl Vp9Encoder {
     ) -> Result<Vec<EncodedPacket>, String> {
         let mut packets = Vec::new();
         let mut iter: vpx::vpx_codec_iter_t = std::ptr::null_mut();
+        let mut remaining_metadata = metadata;
         loop {
             let packet_ptr = unsafe {
                 // SAFETY: iter is managed by libvpx and packet_ptr is valid until next call.
@@ -780,8 +828,20 @@ impl Vp9Encoder {
             };
 
             let is_keyframe = (frame_pkt.flags as u32 & VPX_FRAME_IS_KEY) != 0;
+
+            // Peek ahead: if another frame packet follows, clone metadata; otherwise move it.
+            let next_ptr = unsafe {
+                let mut peek_iter = iter;
+                vpx::vpx_codec_get_cx_data(&mut self.ctx, &mut peek_iter)
+            };
+            let meta = if next_ptr.is_null() {
+                remaining_metadata.take()
+            } else {
+                remaining_metadata.clone()
+            };
+
             let output_metadata = merge_keyframe_metadata(
-                metadata.clone(),
+                meta,
                 is_keyframe,
                 frame_pkt.pts,
                 frame_pkt.duration as u64,
@@ -1069,7 +1129,7 @@ mod tests {
 
         let (enc_context, enc_sender, mut enc_state_rx) = create_test_context(enc_inputs, 10);
         let encoder_config =
-            Vp9EncoderConfig { keyframe_interval: 1, bitrate_kbps: 800, threads: 1 };
+            Vp9EncoderConfig { keyframe_interval: 1, bitrate_kbps: 800, threads: 1, ..Default::default() };
         let encoder = Vp9EncoderNode::new(encoder_config.clone()).unwrap();
 
         // Debug probe: run a direct encode to surface libvpx details if packets are missing.

@@ -447,7 +447,7 @@ async fn test_webm_mux_vp9_video_only() {
     enc_inputs.insert("in".to_string(), enc_input_rx);
 
     let (enc_context, enc_sender, mut enc_state_rx) = create_test_context(enc_inputs, 10);
-    let encoder_config = Vp9EncoderConfig { keyframe_interval: 1, bitrate_kbps: 800, threads: 1 };
+    let encoder_config = Vp9EncoderConfig { keyframe_interval: 1, bitrate_kbps: 800, threads: 1, ..Default::default() };
     let encoder = match Vp9EncoderNode::new(encoder_config) {
         Ok(enc) => enc,
         Err(e) => {
