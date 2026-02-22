@@ -1172,7 +1172,7 @@ impl MoqPeerNode {
 
         // Create video track (if video input connected)
         let video_track = if has_video {
-            let track = moq_lite::Track { name: "video/data".to_string(), priority: 90 };
+            let track = moq_lite::Track { name: "video/data".to_string(), priority: 60 };
             let producer = broadcast_producer.create_track(track.clone());
             Some((track, hang::container::OrderedProducer::from(producer)))
         } else {
@@ -1221,7 +1221,12 @@ impl MoqPeerNode {
             video_renditions.insert(
                 video_track.name.clone(),
                 hang::catalog::VideoConfig {
-                    codec: hang::catalog::VideoCodec::VP9(hang::catalog::VP9::default()),
+                    codec: hang::catalog::VideoCodec::VP9(hang::catalog::VP9 {
+                        profile: 0,
+                        level: 10,
+                        bit_depth: 8,
+                        ..hang::catalog::VP9::default()
+                    }),
                     coded_width: Some(640),
                     coded_height: Some(480),
                     display_ratio_width: None,
