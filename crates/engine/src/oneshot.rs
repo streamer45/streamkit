@@ -167,14 +167,7 @@ impl Engine {
                 http_input_nodes.len(),
                 output_node_id.as_deref().unwrap_or("unknown")
             );
-        } else {
-            if source_node_ids.is_empty() {
-                tracing::error!("Pipeline validation failed: no file_reader nodes found");
-                return Err(StreamKitError::Configuration(
-                    "File-based pipelines must contain at least one 'core::file_reader' node."
-                        .to_string(),
-                ));
-            }
+        } else if !source_node_ids.is_empty() {
             if !inputs.is_empty() {
                 tracing::error!(
                     "Pipeline validation failed: streams provided but no http_input nodes present"
@@ -187,6 +180,22 @@ impl Engine {
             tracing::info!(
                 "File-based mode: {} source node(s), output='{}'",
                 source_node_ids.len(),
+                output_node_id.as_deref().unwrap_or("unknown")
+            );
+        } else {
+            // Generator mode: pipeline produces its own data (e.g. video::colorbars)
+            // No http_input or file_reader required — just needs http_output.
+            if !inputs.is_empty() {
+                tracing::error!(
+                    "Pipeline validation failed: streams provided but no http_input nodes present"
+                );
+                return Err(StreamKitError::Configuration(
+                    "Multipart streams were provided but the pipeline has no 'streamkit::http_input' nodes."
+                        .to_string(),
+                ));
+            }
+            tracing::info!(
+                "Generator mode: no input nodes, output='{}'",
                 output_node_id.as_deref().unwrap_or("unknown")
             );
         }
