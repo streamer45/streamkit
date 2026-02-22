@@ -169,3 +169,118 @@ export async function verifyAudioContextActive(page: Page): Promise<{
     };
   });
 }
+
+/**
+ * Run inside the browser to verify a `<video>` element produced by MSEPlayer
+ * actually loaded media and is playing.
+ *
+ * Similar to {@link verifyAudioPlayback} but targets video elements and also
+ * returns the intrinsic video dimensions (`videoWidth` / `videoHeight`), which
+ * prove the decoder produced at least one frame.
+ */
+export async function verifyVideoPlayback(page: Page): Promise<{
+  found: boolean;
+  duration: number;
+  currentTime: number;
+  paused: boolean;
+  readyState: number;
+  videoWidth: number;
+  videoHeight: number;
+}> {
+  return page.evaluate(async () => {
+    const video = document.querySelector('video') as HTMLVideoElement | null;
+    if (!video)
+      return {
+        found: false,
+        duration: 0,
+        currentTime: 0,
+        paused: true,
+        readyState: 0,
+        videoWidth: 0,
+        videoHeight: 0,
+      };
+
+    // Wait for the browser to parse enough of the media to know its dimensions.
+    if (video.readyState < 1) {
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('Video metadata timeout')), 15_000);
+        const done = () => {
+          clearTimeout(timeout);
+          resolve();
+        };
+        video.addEventListener('loadedmetadata', done, { once: true });
+        // Guard against a race where readyState advanced before the listener.
+        if (video.readyState >= 1) done();
+      });
+    }
+
+    try {
+      await video.play();
+    } catch {
+      // Autoplay may be blocked by browser policy; that is acceptable.
+    }
+
+    // Brief pause to let currentTime advance if playback started.
+    await new Promise((r) => setTimeout(r, 500));
+
+    return {
+      found: true,
+      duration: video.duration,
+      currentTime: video.currentTime,
+      paused: video.paused,
+      readyState: video.readyState,
+      videoWidth: video.videoWidth,
+      videoHeight: video.videoHeight,
+    };
+  });
+}
+
+/**
+ * Verify that a `<canvas>` element is rendering non-black frames.
+ *
+ * Used by the MoQ video streaming test to confirm that
+ * `Hang.Watch.Video.Renderer` is actually decoding and painting VP9
+ * frames onto the canvas.
+ *
+ * Samples a small rectangle of pixel data and checks that at least one
+ * pixel has a non-zero RGB value (i.e. not pure black / transparent).
+ */
+export async function verifyCanvasRendering(page: Page): Promise<{
+  found: boolean;
+  width: number;
+  height: number;
+  hasNonBlackPixels: boolean;
+}> {
+  return page.evaluate(() => {
+    const canvas = document.querySelector('canvas') as HTMLCanvasElement | null;
+    if (!canvas)
+      return { found: false, width: 0, height: 0, hasNonBlackPixels: false };
+
+    const width = canvas.width;
+    const height = canvas.height;
+
+    // Sample the center 10x10 region (or full canvas if smaller)
+    const sampleW = Math.min(10, width);
+    const sampleH = Math.min(10, height);
+    const x = Math.floor((width - sampleW) / 2);
+    const y = Math.floor((height - sampleH) / 2);
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx)
+      return { found: true, width, height, hasNonBlackPixels: false };
+
+    const imageData = ctx.getImageData(x, y, sampleW, sampleH);
+    const data = imageData.data;
+
+    // Check if any pixel has a non-zero R, G, or B value.
+    let hasNonBlackPixels = false;
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i] > 0 || data[i + 1] > 0 || data[i + 2] > 0) {
+        hasNonBlackPixels = true;
+        break;
+      }
+    }
+
+    return { found: true, width, height, hasNonBlackPixels };
+  });
+}
