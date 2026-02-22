@@ -24,7 +24,7 @@ nodes:
     params:
       video_width: 640
       video_height: 480
-      streaming_mode: file
+      streaming_mode: live
     needs:
       video: vp9_encoder
 

@@ -630,6 +630,10 @@ const resolveFormatsForField = (
 };
 
 const buildNoInputUploads = (fields: HttpInputField[]): UploadField[] => {
+  // Generator pipelines (e.g. video::colorbars) have no http_input at all —
+  // return empty so the multipart request only contains the config field.
+  if (fields.length === 0) return [];
+
   const blob = new Blob([''], { type: 'application/octet-stream' });
   const file = new File([blob], 'empty', { type: 'application/octet-stream' });
   return [{ field: fields[0].name, file }];
@@ -1165,11 +1169,13 @@ const ConvertView: React.FC = () => {
   };
 
   const prepareUploads = useCallback(async (): Promise<UploadField[] | null> => {
-    const fields = resolveUploadFields(httpInputFields);
-
+    // For no-input (generator) pipelines, use the raw httpInputFields
+    // so that truly input-less pipelines (no http_input node) send no uploads.
     if (isNoInputPipeline) {
-      return buildNoInputUploads(fields);
+      return buildNoInputUploads(httpInputFields);
     }
+
+    const fields = resolveUploadFields(httpInputFields);
 
     if (isTTSPipeline) {
       return buildTtsUploads(fields, textInput, fieldUploads);
@@ -1411,7 +1417,7 @@ const ConvertView: React.FC = () => {
     viewsLogger.info('Audio stream complete');
     setConversionStatus('success');
     setAbortController(null);
-    setConversionMessage('Audio streaming complete!');
+    setConversionMessage('Streaming complete!');
     setTimeout(() => {
       setConversionStatus('idle');
       setConversionMessage('');
@@ -1424,7 +1430,7 @@ const ConvertView: React.FC = () => {
     setAbortController((currentController) => {
       if (currentController) {
         setConversionStatus('idle');
-        setConversionMessage('Audio streaming cancelled');
+        setConversionMessage('Streaming cancelled');
         setTimeout(() => {
           setConversionMessage('');
         }, 3000);

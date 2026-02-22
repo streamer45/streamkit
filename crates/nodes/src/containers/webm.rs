@@ -359,10 +359,17 @@ impl ProcessorNode for WebMMuxerNode {
     }
 
     fn content_type(&self) -> Option<String> {
-        // Determine content type from config: if video dimensions are specified
-        // we assume video will be present, otherwise audio-only.
+        // This static hint is used before the node runs.
+        // We can only infer from config: if video dimensions are set, video is
+        // present. Audio presence is unknown at this stage, so we conservatively
+        // report only what we can confirm — the runtime `run()` method uses the
+        // actual connected tracks for the real content-type.
         let has_video = self.config.video_width > 0 && self.config.video_height > 0;
-        Some(webm_content_type(true, has_video).to_string())
+        // Without a way to know if audio will be connected, assume audio-only
+        // when no video dimensions are configured, and video-only when they are.
+        // Mixed audio+video pipelines will get the correct type at runtime.
+        let has_audio = !has_video;
+        Some(webm_content_type(has_audio, has_video).to_string())
     }
 
     async fn run(self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
