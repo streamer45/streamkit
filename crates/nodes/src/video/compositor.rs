@@ -205,12 +205,14 @@ fn decode_image_overlay(config: &ImageOverlayConfig) -> Result<DecodedOverlay, S
     use image::GenericImageView;
 
     use base64::Engine;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(&config.data_base64)
-        .map_err(|e| StreamKitError::Configuration(format!("Invalid base64 in image overlay: {e}")))?;
+    let bytes =
+        base64::engine::general_purpose::STANDARD.decode(&config.data_base64).map_err(|e| {
+            StreamKitError::Configuration(format!("Invalid base64 in image overlay: {e}"))
+        })?;
 
-    let img = image::load_from_memory(&bytes)
-        .map_err(|e| StreamKitError::Configuration(format!("Failed to decode image overlay: {e}")))?;
+    let img = image::load_from_memory(&bytes).map_err(|e| {
+        StreamKitError::Configuration(format!("Failed to decode image overlay: {e}"))
+    })?;
 
     let rgba = img.to_rgba8();
     let (w, h) = img.dimensions();
@@ -356,9 +358,8 @@ fn scale_blit_rgba(
                         (f32::from(sg) * alpha + f32::from(dst[dst_idx + 1]) * inv_alpha) as u8;
                     dst[dst_idx + 2] =
                         (f32::from(sb) * alpha + f32::from(dst[dst_idx + 2]) * inv_alpha) as u8;
-                    dst[dst_idx + 3] = (f32::from(sa_eff)
-                        + f32::from(dst[dst_idx + 3]) * inv_alpha)
-                        as u8;
+                    dst[dst_idx + 3] =
+                        (f32::from(sa_eff) + f32::from(dst[dst_idx + 3]) * inv_alpha) as u8;
                 }
             }
             // sa_eff == 0: fully transparent, skip.
@@ -532,8 +533,7 @@ impl ProcessorNode for CompositorNode {
             }
         }
         // Drain all pre-connected inputs into slots.
-        let pre_inputs: Vec<(String, mpsc::Receiver<Packet>)> =
-            context.inputs.drain().collect();
+        let pre_inputs: Vec<(String, mpsc::Receiver<Packet>)> = context.inputs.drain().collect();
         for (name, rx) in pre_inputs {
             tracing::info!("CompositorNode: pre-connected input '{}'", name);
             slots.push(InputSlot { name, rx, latest_frame: None });
@@ -725,10 +725,8 @@ impl ProcessorNode for CompositorNode {
             .map_err(|e| StreamKitError::Runtime(format!("Compositor task panicked: {e}")))?;
 
             // Build metadata from the first available input frame.
-            let src_metadata = slots
-                .iter()
-                .find_map(|s| s.latest_frame.as_ref())
-                .and_then(|f| f.metadata.clone());
+            let src_metadata =
+                slots.iter().find_map(|s| s.latest_frame.as_ref()).and_then(|f| f.metadata.clone());
 
             let metadata = Some(PacketMetadata {
                 timestamp_us: src_metadata.as_ref().and_then(|m| m.timestamp_us),
@@ -745,12 +743,7 @@ impl ProcessorNode for CompositorNode {
                 metadata,
             );
 
-            if context
-                .output_sender
-                .send("out", Packet::Video(out_frame))
-                .await
-                .is_err()
-            {
+            if context.output_sender.send("out", Packet::Video(out_frame)).await.is_err() {
                 tracing::debug!("Output channel closed, stopping CompositorNode");
                 stop_reason = "output_closed";
                 break;
@@ -1107,13 +1100,8 @@ mod tests {
         let red = make_rgba_frame(4, 4, 255, 0, 0, 255);
         let green = make_rgba_frame(2, 2, 0, 255, 0, 255);
 
-        let layer0 = LayerSnapshot {
-            data: red.data.clone(),
-            width: 4,
-            height: 4,
-            rect: None,
-            opacity: 1.0,
-        };
+        let layer0 =
+            LayerSnapshot { data: red.data.clone(), width: 4, height: 4, rect: None, opacity: 1.0 };
         let layer1 = LayerSnapshot {
             data: green.data.clone(),
             width: 2,
