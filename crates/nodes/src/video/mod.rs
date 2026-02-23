@@ -9,6 +9,9 @@ use streamkit_core::NodeRegistry;
 #[cfg(feature = "colorbars")]
 pub mod colorbars;
 
+#[cfg(feature = "compositor")]
+pub mod compositor;
+
 #[cfg(feature = "vp9")]
 pub mod vp9;
 
@@ -17,6 +20,9 @@ pub mod vp9;
 pub fn register_video_nodes(_registry: &mut NodeRegistry) {
     #[cfg(feature = "colorbars")]
     colorbars::register_colorbars_nodes(_registry);
+
+    #[cfg(feature = "compositor")]
+    compositor::register_compositor_nodes(_registry);
 
     #[cfg(feature = "vp9")]
     vp9::register_vp9_nodes(_registry);
