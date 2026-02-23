@@ -447,9 +447,7 @@ impl ProcessorNode for WebMMuxerNode {
                 continue;
             };
 
-            let is_video = content_type
-                .as_ref()
-                .map_or(false, |ct| ct.starts_with("video/"));
+            let is_video = content_type.as_ref().map_or(false, |ct| ct.starts_with("video/"));
 
             if is_video {
                 if video_rx.is_some() {
@@ -482,8 +480,7 @@ impl ProcessorNode for WebMMuxerNode {
         let has_video = video_rx.is_some();
 
         if !has_audio && !has_video {
-            let err_msg =
-                "WebMMuxerNode: no usable input packets received on any pin".to_string();
+            let err_msg = "WebMMuxerNode: no usable input packets received on any pin".to_string();
             state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
             return Err(StreamKitError::Runtime(err_msg));
         }
