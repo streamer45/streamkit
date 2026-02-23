@@ -213,6 +213,9 @@ pub async fn wire_and_spawn_graph(
         tracing::warn!("Type inference reached maximum iterations (100), some Passthrough types may remain unresolved");
     }
 
+    // Map from (to_node, to_pin) -> PacketType of the connected upstream output.
+    let mut input_types: HashMap<(String, String), PacketType> = HashMap::new();
+
     for conn in connections {
         tracing::debug!(
             "Creating connection: {}.{} -> {}.{}",
@@ -301,6 +304,10 @@ pub async fn wire_and_spawn_graph(
             }
         }
 
+        // Record the upstream output type so we can provide it to the
+        // receiving node via `NodeContext::input_types`.
+        input_types.insert(to_key.clone(), out_ty.clone());
+
         output_txs.insert(from_key, tx);
         input_rxs.insert(to_key, rx);
     }
@@ -321,12 +328,17 @@ pub async fn wire_and_spawn_graph(
         #[allow(clippy::unwrap_used)]
         let node = nodes.remove(&name).unwrap();
         let mut node_inputs = HashMap::new();
+        let mut node_input_types = HashMap::new();
         let input_pins = node.input_pins();
         tracing::debug!("Node '{}' has {} input pins", name, input_pins.len());
 
         for pin in input_pins {
-            if let Some(rx) = input_rxs.remove(&(name.clone(), pin.name.clone())) {
+            let key = (name.clone(), pin.name.clone());
+            if let Some(rx) = input_rxs.remove(&key) {
                 tracing::debug!("Connected input pin '{}.{}'", name, pin.name);
+                if let Some(ty) = input_types.remove(&key) {
+                    node_input_types.insert(pin.name.clone(), ty);
+                }
                 node_inputs.insert(pin.name, rx);
             } else {
                 tracing::debug!("Input pin '{}.{}' not connected", name, pin.name);
@@ -355,6 +367,7 @@ pub async fn wire_and_spawn_graph(
 
         let context = NodeContext {
             inputs: node_inputs,
+            input_types: node_input_types,
             control_rx,
             output_sender: OutputSender::new(name.clone(), OutputRouting::Direct(direct_outputs)),
             batch_size,

@@ -15,8 +15,8 @@ Muxes Opus audio and/or VP9 video into a WebM container. Produces streamable Web
 
 ## Pins
 
-Input pins use generic names — the media type (audio or video) is detected at
-runtime from each packet's `content_type` field, not from the pin name.
+Input pins use generic names — the media type (audio or video) is determined at
+connection time from the upstream node's output type, not from the pin name.
 
 When `video_width` and `video_height` are **not** configured (default), a single
 `in` pin is exposed, keeping backward compatibility with existing audio-only

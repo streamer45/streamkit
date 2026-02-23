@@ -378,6 +378,7 @@ mod tests {
 
         let context = NodeContext {
             inputs: HashMap::new(),
+            input_types: HashMap::new(),
             control_rx,
             output_sender,
             batch_size: 32,

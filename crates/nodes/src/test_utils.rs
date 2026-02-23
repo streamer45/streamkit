@@ -28,6 +28,7 @@ pub fn create_test_context(
 
     let context = NodeContext {
         inputs,
+        input_types: HashMap::new(),
         control_rx,
         output_sender,
         batch_size,

@@ -504,6 +504,9 @@ impl DynamicEngine {
         // 5. Create NodeContext
         let context = NodeContext {
             inputs: node_inputs_map,
+            // Dynamic pipelines wire connections after nodes are spawned, so
+            // input types are not known at construction time.
+            input_types: HashMap::new(),
             control_rx,
             // We use OutputRouting::Direct, pointing the node directly to its Pin Distributors
             output_sender: OutputSender::new(

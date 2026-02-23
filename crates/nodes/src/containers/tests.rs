@@ -16,7 +16,7 @@ use bytes::Bytes;
 use std::collections::HashMap;
 use std::path::Path;
 use streamkit_core::node::ProcessorNode;
-use streamkit_core::types::Packet;
+use streamkit_core::types::{AudioCodec, EncodedAudioFormat, Packet, PacketType};
 use tokio::sync::mpsc;
 
 /// Helper to read test audio files
@@ -290,7 +290,14 @@ async fn test_webm_muxer_basic() {
     let mut inputs = HashMap::new();
     inputs.insert("in".to_string(), input_rx);
 
-    let (context, mock_sender, mut state_rx) = create_test_context(inputs, 10);
+    let (mut context, mock_sender, mut state_rx) = create_test_context(inputs, 10);
+    context.input_types.insert(
+        "in".to_string(),
+        PacketType::EncodedAudio(EncodedAudioFormat {
+            codec: AudioCodec::Opus,
+            codec_private: None,
+        }),
+    );
 
     // Create WebM muxer node
     let config = WebMMuxerConfig::default();
@@ -348,7 +355,14 @@ async fn test_webm_muxer_multiple_packets() {
     let mut inputs = HashMap::new();
     inputs.insert("in".to_string(), input_rx);
 
-    let (context, mock_sender, mut state_rx) = create_test_context(inputs, 10);
+    let (mut context, mock_sender, mut state_rx) = create_test_context(inputs, 10);
+    context.input_types.insert(
+        "in".to_string(),
+        PacketType::EncodedAudio(EncodedAudioFormat {
+            codec: AudioCodec::Opus,
+            codec_private: None,
+        }),
+    );
 
     let config = WebMMuxerConfig::default();
     let node = WebMMuxerNode::new(config);
@@ -396,7 +410,14 @@ async fn test_webm_sliding_window() {
     let mut inputs = HashMap::new();
     inputs.insert("in".to_string(), input_rx);
 
-    let (context, mock_sender, mut state_rx) = create_test_context(inputs, 10);
+    let (mut context, mock_sender, mut state_rx) = create_test_context(inputs, 10);
+    context.input_types.insert(
+        "in".to_string(),
+        PacketType::EncodedAudio(EncodedAudioFormat {
+            codec: AudioCodec::Opus,
+            codec_private: None,
+        }),
+    );
 
     // Create config with smaller chunk size for testing
     let config = WebMMuxerConfig {
@@ -491,7 +512,17 @@ async fn test_webm_mux_vp9_video_only() {
     // Only video, no audio
     mux_inputs.insert("in".to_string(), mux_video_rx);
 
-    let (mux_context, mux_sender, mut mux_state_rx) = create_test_context(mux_inputs, 10);
+    let (mut mux_context, mux_sender, mut mux_state_rx) = create_test_context(mux_inputs, 10);
+    mux_context.input_types.insert(
+        "in".to_string(),
+        PacketType::EncodedVideo(streamkit_core::types::EncodedVideoFormat {
+            codec: streamkit_core::types::VideoCodec::Vp9,
+            bitstream_format: None,
+            codec_private: None,
+            profile: None,
+            level: None,
+        }),
+    );
     let mux_config = WebMMuxerConfig {
         video_width: 64,
         video_height: 64,

@@ -16,7 +16,7 @@ use crate::pins::{InputPin, OutputPin, PinManagementMessage, PinUpdate};
 use crate::state::NodeStateUpdate;
 use crate::stats::NodeStatsUpdate;
 use crate::telemetry::TelemetryEvent;
-use crate::types::Packet;
+use crate::types::{Packet, PacketType};
 use crate::{AudioFramePool, VideoFramePool};
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -190,6 +190,15 @@ pub struct InitContext {
 /// The context provided by the engine to a node when it is run.
 pub struct NodeContext {
     pub inputs: HashMap<String, mpsc::Receiver<Packet>>,
+    /// The [`PacketType`] that each connected input pin will receive, keyed by
+    /// pin name.  Populated by the graph builder from the upstream node's
+    /// output type so that nodes can make decisions based on the connected
+    /// media type without having to inspect packets at runtime.
+    ///
+    /// Only contains entries for *connected* pins (unconnected pins are absent).
+    /// May be empty for dynamic pipelines where connections are made after the
+    /// node is already running.
+    pub input_types: HashMap<String, PacketType>,
     pub control_rx: mpsc::Receiver<NodeControlMessage>,
     pub output_sender: OutputSender,
     pub batch_size: usize,
