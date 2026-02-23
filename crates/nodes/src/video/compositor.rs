@@ -520,23 +520,6 @@ fn rgba8_to_i420(data: &[u8], width: u32, height: u32) -> Vec<u8> {
     out
 }
 
-/// Convert a `VideoFrame` to RGBA8 if it is I420; pass through if already RGBA8.
-fn ensure_rgba8(frame: &VideoFrame) -> VideoFrame {
-    match frame.pixel_format {
-        PixelFormat::Rgba8 => frame.clone(),
-        PixelFormat::I420 => {
-            let rgba = i420_to_rgba8(frame.data(), frame.width, frame.height);
-            VideoFrame::with_metadata(
-                frame.width,
-                frame.height,
-                PixelFormat::Rgba8,
-                rgba,
-                frame.metadata.clone(),
-            )
-        },
-    }
-}
-
 // ── Input slot ──────────────────────────────────────────────────────────────
 
 /// Holds a receiver and the most-recently-received frame for one input layer.
@@ -757,7 +740,7 @@ impl ProcessorNode for CompositorNode {
             for slot in &mut slots {
                 if let Ok(packet) = slot.rx.try_recv() {
                     if let Packet::Video(frame) = packet {
-                        slot.latest_frame = Some(ensure_rgba8(&frame));
+                        slot.latest_frame = Some(frame);
                         got_any_frame = true;
                     }
                 }
@@ -809,7 +792,7 @@ impl ProcessorNode for CompositorNode {
                     // Wait for a frame from any connected input.
                     result = recv_from_any_slot(&mut slots) => {
                         if let Some((slot_idx, frame)) = result {
-                            slots[slot_idx].latest_frame = Some(ensure_rgba8(&frame));
+                            slots[slot_idx].latest_frame = Some(frame);
                             received_frame = true;
                         } else {
                             // All inputs closed.
@@ -924,6 +907,7 @@ impl ProcessorNode for CompositorNode {
                             data: f.data.clone(),
                             width: f.width,
                             height: f.height,
+                            pixel_format: f.pixel_format,
                             rect,
                             opacity,
                         }
@@ -939,15 +923,24 @@ impl ProcessorNode for CompositorNode {
 
             stats_tracker.received();
 
+            let out_fmt = self.output_format;
             let composite_result = tokio::task::spawn_blocking(move || {
-                composite_frame(
+                let rgba_buf = composite_frame(
                     cw,
                     ch,
                     &layers,
                     &img_overlays,
                     &cloned_text_overlays,
                     pool.as_deref(),
-                )
+                );
+                // Output format conversion also runs inside the blocking
+                // task to keep the async runtime free.
+                if out_fmt == PixelFormat::I420 {
+                    let i420 = rgba8_to_i420(rgba_buf.as_slice(), cw, ch);
+                    (out_fmt, None, Some(i420))
+                } else {
+                    (out_fmt, Some(rgba_buf), None)
+                }
             })
             .await
             .map_err(|e| StreamKitError::Runtime(format!("Compositor task panicked: {e}")))?;
@@ -963,10 +956,9 @@ impl ProcessorNode for CompositorNode {
                 keyframe: Some(true),
             });
 
-            // Convert RGBA8 composite output to the configured output format.
-            let out_frame = if self.output_format == PixelFormat::I420 {
-                let rgba_data = composite_result.as_slice();
-                let i420_data = rgba8_to_i420(rgba_data, self.config.width, self.config.height);
+            let (fmt, rgba_pooled, i420_vec) = composite_result;
+            let out_frame = if fmt == PixelFormat::I420 {
+                let i420_data = i420_vec.expect("I420 output data must be present");
                 VideoFrame::with_metadata(
                     self.config.width,
                     self.config.height,
@@ -975,11 +967,12 @@ impl ProcessorNode for CompositorNode {
                     metadata,
                 )
             } else {
+                let pooled = rgba_pooled.expect("RGBA8 output data must be present");
                 VideoFrame::from_pooled(
                     self.config.width,
                     self.config.height,
                     PixelFormat::Rgba8,
-                    composite_result,
+                    pooled,
                     metadata,
                 )
             };
@@ -1127,6 +1120,7 @@ struct LayerSnapshot {
     data: Arc<streamkit_core::frame_pool::PooledVideoData>,
     width: u32,
     height: u32,
+    pixel_format: PixelFormat,
     rect: Option<Rect>,
     opacity: f32,
 }
@@ -1153,15 +1147,25 @@ fn composite_frame(
     buf[..total_bytes].fill(0);
 
     // Blit each layer (in order — first layer is bottom, last is top).
+    // I420 layers are converted to RGBA8 on-the-fly inside this blocking task.
     for layer in layers.iter().flatten() {
         let dst_rect =
             layer.rect.clone().unwrap_or(Rect { x: 0, y: 0, width: canvas_w, height: canvas_h });
+
+        let rgba_data;
+        let src_data: &[u8] = match layer.pixel_format {
+            PixelFormat::Rgba8 => layer.data.as_slice(),
+            PixelFormat::I420 => {
+                rgba_data = i420_to_rgba8(layer.data.as_slice(), layer.width, layer.height);
+                &rgba_data
+            },
+        };
 
         scale_blit_rgba(
             buf,
             canvas_w,
             canvas_h,
-            layer.data.as_slice(),
+            src_data,
             layer.width,
             layer.height,
             &dst_rect,
@@ -1309,6 +1313,7 @@ mod tests {
             data: data.data.clone(),
             width: 2,
             height: 2,
+            pixel_format: PixelFormat::Rgba8,
             rect: Some(Rect { x: 0, y: 0, width: 4, height: 4 }),
             opacity: 1.0,
         };
@@ -1331,12 +1336,19 @@ mod tests {
         let red = make_rgba_frame(4, 4, 255, 0, 0, 255);
         let green = make_rgba_frame(2, 2, 0, 255, 0, 255);
 
-        let layer0 =
-            LayerSnapshot { data: red.data.clone(), width: 4, height: 4, rect: None, opacity: 1.0 };
+        let layer0 = LayerSnapshot {
+            data: red.data.clone(),
+            width: 4,
+            height: 4,
+            pixel_format: PixelFormat::Rgba8,
+            rect: None,
+            opacity: 1.0,
+        };
         let layer1 = LayerSnapshot {
             data: green.data.clone(),
             width: 2,
             height: 2,
+            pixel_format: PixelFormat::Rgba8,
             rect: Some(Rect { x: 1, y: 1, width: 2, height: 2 }),
             opacity: 1.0,
         };
