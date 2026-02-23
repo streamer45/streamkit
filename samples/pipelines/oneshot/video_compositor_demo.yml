@@ -25,6 +25,7 @@ nodes:
     params:
       width: 640
       height: 480
+      num_inputs: 1
     needs: colorbars
 
   vp9_encoder:

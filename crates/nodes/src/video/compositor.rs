@@ -136,6 +136,11 @@ pub struct CompositorConfig {
     /// Output canvas height in pixels.
     #[serde(default = "default_height")]
     pub height: u32,
+    /// Number of input pins to pre-create.
+    /// Required for stateless/oneshot pipelines where pins must exist before
+    /// graph building. Optional for dynamic pipelines where pins are created
+    /// on-demand. If specified, pins will be named in_0, in_1, ..., in_{N-1}.
+    pub num_inputs: Option<usize>,
     /// Per-layer configuration, keyed by pin name (e.g. `"in_0"`).
     /// Layers without an entry here are scaled to fill the canvas.
     #[serde(default)]
@@ -153,6 +158,7 @@ impl Default for CompositorConfig {
         Self {
             width: default_width(),
             height: default_height(),
+            num_inputs: None,
             layers: HashMap::new(),
             image_overlays: Vec::new(),
             text_overlays: Vec::new(),
@@ -420,8 +426,29 @@ pub struct CompositorNode {
 
 impl CompositorNode {
     #[must_use]
-    pub const fn new(config: CompositorConfig) -> Self {
-        Self { config, input_pins: Vec::new(), next_input_id: 0 }
+    pub fn new(config: CompositorConfig) -> Self {
+        let (input_pins, next_input_id) = config.num_inputs.map_or_else(
+            || {
+                // Dynamic mode - start with no pins
+                (Vec::new(), 0)
+            },
+            |num_inputs| {
+                // Pre-create pins for stateless/oneshot pipelines.
+                // Follow the YAML convention: single input uses "in",
+                // multiple inputs use "in_0", "in_1", etc.
+                let mut pins = Vec::with_capacity(num_inputs);
+                if num_inputs == 1 {
+                    pins.push(Self::make_input_pin("in".to_string()));
+                } else {
+                    for i in 0..num_inputs {
+                        pins.push(Self::make_input_pin(format!("in_{i}")));
+                    }
+                }
+                (pins, num_inputs)
+            },
+        );
+
+        Self { config, input_pins, next_input_id }
     }
 
     /// Returns the definition-time pins for registry (dynamic template).
