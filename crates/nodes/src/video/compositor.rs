@@ -22,9 +22,11 @@
 //! - Bilinear / Lanczos scaling (MVP uses nearest-neighbor).
 
 use async_trait::async_trait;
+use futures::future::select_all;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::Arc;
 use streamkit_core::control::NodeControlMessage;
 use streamkit_core::pins::PinManagementMessage;
@@ -95,7 +97,7 @@ const fn default_opacity() -> f32 {
     1.0
 }
 
-fn default_text_color() -> [u8; 4] {
+const fn default_text_color() -> [u8; 4] {
     [255, 255, 255, 255]
 }
 
@@ -232,8 +234,10 @@ fn rasterize_text_overlay(config: &TextOverlayConfig) -> DecodedOverlay {
     let h = config.rect.height.max(1);
 
     // Create a tiny-skia pixmap for the overlay region.
+    // Safety: w and h are both >= 1 due to .max(1) above, so this should never be None.
+    // The fallback handles any edge case from tiny-skia dimension limits.
     let mut pixmap = tiny_skia::Pixmap::new(w, h).unwrap_or_else(|| {
-        // Fallback: 1x1 transparent pixel if dimensions are degenerate.
+        #[allow(clippy::expect_used)]
         tiny_skia::Pixmap::new(1, 1).expect("1x1 pixmap should always succeed")
     });
 
@@ -259,11 +263,13 @@ fn rasterize_text_overlay(config: &TextOverlayConfig) -> DecodedOverlay {
     let transform = tiny_skia::Transform::identity();
 
     for (i, _ch) in config.text.chars().enumerate() {
+        #[allow(clippy::cast_possible_truncation)]
         let x = (i as u32) * glyph_w;
         if x + glyph_w > w {
             break; // clip to rect
         }
         // Draw a filled rectangle per glyph as a placeholder.
+        #[allow(clippy::cast_precision_loss)]
         if let Some(rect) =
             tiny_skia::Rect::from_xywh(x as f32, 0.0, glyph_w as f32, glyph_h as f32)
         {
@@ -287,6 +293,7 @@ fn rasterize_text_overlay(config: &TextOverlayConfig) -> DecodedOverlay {
 /// Scale and blit a source RGBA8 buffer onto a destination RGBA8 buffer at the
 /// given destination rectangle. Uses nearest-neighbor sampling and clips to
 /// canvas bounds.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::too_many_arguments)]
 fn scale_blit_rgba(
     dst: &mut [u8],
     dst_width: u32,
@@ -350,16 +357,20 @@ fn scale_blit_rgba(
                 // Alpha-blend (src-over).
                 let alpha = f32::from(sa_eff) / 255.0;
                 let inv_alpha = 1.0 - alpha;
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    clippy::suboptimal_flops
+                )]
                 {
                     dst[dst_idx] =
-                        (f32::from(sr) * alpha + f32::from(dst[dst_idx]) * inv_alpha) as u8;
+                        f32::from(sr).mul_add(alpha, f32::from(dst[dst_idx]) * inv_alpha) as u8;
                     dst[dst_idx + 1] =
-                        (f32::from(sg) * alpha + f32::from(dst[dst_idx + 1]) * inv_alpha) as u8;
+                        f32::from(sg).mul_add(alpha, f32::from(dst[dst_idx + 1]) * inv_alpha) as u8;
                     dst[dst_idx + 2] =
-                        (f32::from(sb) * alpha + f32::from(dst[dst_idx + 2]) * inv_alpha) as u8;
+                        f32::from(sb).mul_add(alpha, f32::from(dst[dst_idx + 2]) * inv_alpha) as u8;
                     dst[dst_idx + 3] =
-                        (f32::from(sa_eff) + f32::from(dst[dst_idx + 3]) * inv_alpha) as u8;
+                        f32::from(dst[dst_idx + 3]).mul_add(inv_alpha, f32::from(sa_eff)) as u8;
                 }
             }
             // sa_eff == 0: fully transparent, skip.
@@ -408,7 +419,8 @@ pub struct CompositorNode {
 }
 
 impl CompositorNode {
-    pub fn new(config: CompositorConfig) -> Self {
+    #[must_use]
+    pub const fn new(config: CompositorConfig) -> Self {
         Self { config, input_pins: Vec::new(), next_input_id: 0 }
     }
 
@@ -478,13 +490,10 @@ impl ProcessorNode for CompositorNode {
         let node_name = context.output_sender.node_name().to_string();
         state_helpers::emit_initializing(&context.state_tx, &node_name);
 
-        let canvas_w = self.config.width;
-        let canvas_h = self.config.height;
-
         tracing::info!(
             "CompositorNode starting: {}x{} canvas, {} image overlays, {} text overlays",
-            canvas_w,
-            canvas_h,
+            self.config.width,
+            self.config.height,
             self.config.image_overlays.len(),
             self.config.text_overlays.len(),
         );
@@ -667,11 +676,13 @@ impl ProcessorNode for CompositorNode {
             }
 
             // ── Check for non-blocking control / pin management ──────────
+            let mut should_stop = false;
             while let Ok(ctrl_msg) = context.control_rx.try_recv() {
                 match ctrl_msg {
                     NodeControlMessage::Shutdown => {
                         tracing::info!("CompositorNode received shutdown during compositing");
                         stop_reason = "shutdown";
+                        should_stop = true;
                         break;
                     },
                     NodeControlMessage::UpdateParams(params) => {
@@ -685,6 +696,9 @@ impl ProcessorNode for CompositorNode {
                     },
                     NodeControlMessage::Start => {},
                 }
+            }
+            if should_stop {
+                break;
             }
             if let Some(ref mut pmrx) = pin_mgmt_rx {
                 while let Ok(msg) = pmrx.try_recv() {
@@ -711,15 +725,22 @@ impl ProcessorNode for CompositorNode {
                 .collect();
 
             let img_overlays = image_overlays.clone();
-            let txt_overlays = text_overlays.clone();
+            let cloned_text_overlays = text_overlays.clone();
             let pool = video_pool.clone();
-            let cw = canvas_w;
-            let ch = canvas_h;
+            let cw = self.config.width;
+            let ch = self.config.height;
 
             stats_tracker.received();
 
             let composite_result = tokio::task::spawn_blocking(move || {
-                composite_frame(cw, ch, &layers, &img_overlays, &txt_overlays, pool.as_deref())
+                composite_frame(
+                    cw,
+                    ch,
+                    &layers,
+                    &img_overlays,
+                    &cloned_text_overlays,
+                    pool.as_deref(),
+                )
             })
             .await
             .map_err(|e| StreamKitError::Runtime(format!("Compositor task panicked: {e}")))?;
@@ -736,8 +757,8 @@ impl ProcessorNode for CompositorNode {
             });
 
             let out_frame = VideoFrame::from_pooled(
-                canvas_w,
-                canvas_h,
+                self.config.width,
+                self.config.height,
                 PixelFormat::Rgba8,
                 composite_result,
                 metadata,
@@ -781,14 +802,13 @@ impl CompositorNode {
                         "Updating compositor config"
                     );
 
-                    // Re-decode image overlays if changed.
-                    if new_config.image_overlays.len() != config.image_overlays.len() {
-                        image_overlays.clear();
-                        for img_cfg in &new_config.image_overlays {
-                            match decode_image_overlay(img_cfg) {
-                                Ok(ov) => image_overlays.push(ov),
-                                Err(e) => tracing::warn!("Image overlay decode failed: {e}"),
-                            }
+                    // Always re-decode image overlays (content may have changed
+                    // even if the count is the same).
+                    image_overlays.clear();
+                    for img_cfg in &new_config.image_overlays {
+                        match decode_image_overlay(img_cfg) {
+                            Ok(ov) => image_overlays.push(ov),
+                            Err(e) => tracing::warn!("Image overlay decode failed: {e}"),
                         }
                     }
 
@@ -852,21 +872,20 @@ async fn recv_from_any_slot(slots: &mut [InputSlot]) -> Option<(usize, VideoFram
     }
 
     // Use futures to poll all receivers concurrently.
-    use futures::future::select_all;
-    use std::pin::Pin;
+    type SlotRecvFut<'a> =
+        Pin<Box<dyn futures::Future<Output = (usize, Option<Packet>)> + Send + 'a>>;
 
-    let futs: Vec<Pin<Box<dyn futures::Future<Output = (usize, Option<Packet>)> + Send + '_>>> =
-        slots
-            .iter_mut()
-            .enumerate()
-            .map(|(i, slot)| {
-                let fut = async move {
-                    let pkt = slot.rx.recv().await;
-                    (i, pkt)
-                };
-                Box::pin(fut) as Pin<Box<dyn futures::Future<Output = _> + Send + '_>>
-            })
-            .collect();
+    let futs: Vec<SlotRecvFut<'_>> = slots
+        .iter_mut()
+        .enumerate()
+        .map(|(i, slot)| {
+            let fut = async move {
+                let pkt = slot.rx.recv().await;
+                (i, pkt)
+            };
+            Box::pin(fut) as Pin<Box<dyn futures::Future<Output = _> + Send + '_>>
+        })
+        .collect();
 
     if futs.is_empty() {
         return None;
@@ -875,11 +894,10 @@ async fn recv_from_any_slot(slots: &mut [InputSlot]) -> Option<(usize, VideoFram
     let (result, _idx, _remaining) = select_all(futs).await;
     let (slot_idx, maybe_packet) = result;
 
-    match maybe_packet {
-        Some(Packet::Video(frame)) => Some((slot_idx, frame)),
-        Some(_) => None, // Non-video packet, ignore.
-        None => None,    // Channel closed.
-    }
+    maybe_packet.and_then(|pkt| match pkt {
+        Packet::Video(frame) => Some((slot_idx, frame)),
+        _ => None,
+    })
 }
 
 // ── Compositing kernel (runs in spawn_blocking) ─────────────────────────────
@@ -905,37 +923,30 @@ fn composite_frame(
 ) -> streamkit_core::frame_pool::PooledVideoData {
     let total_bytes = (canvas_w as usize) * (canvas_h as usize) * 4;
 
-    let mut pooled = if let Some(pool) = video_pool {
-        pool.get(total_bytes)
-    } else {
-        streamkit_core::frame_pool::PooledVideoData::from_vec(vec![0u8; total_bytes])
-    };
+    let mut pooled = video_pool.map_or_else(
+        || streamkit_core::frame_pool::PooledVideoData::from_vec(vec![0u8; total_bytes]),
+        |pool| pool.get(total_bytes),
+    );
 
     // Zero the buffer (transparent black).
     let buf = pooled.as_mut_slice();
     buf[..total_bytes].fill(0);
 
     // Blit each layer (in order — first layer is bottom, last is top).
-    for layer_opt in layers {
-        if let Some(layer) = layer_opt {
-            let dst_rect = layer.rect.clone().unwrap_or(Rect {
-                x: 0,
-                y: 0,
-                width: canvas_w,
-                height: canvas_h,
-            });
+    for layer in layers.iter().flatten() {
+        let dst_rect =
+            layer.rect.clone().unwrap_or(Rect { x: 0, y: 0, width: canvas_w, height: canvas_h });
 
-            scale_blit_rgba(
-                buf,
-                canvas_w,
-                canvas_h,
-                layer.data.as_slice(),
-                layer.width,
-                layer.height,
-                &dst_rect,
-                layer.opacity,
-            );
-        }
+        scale_blit_rgba(
+            buf,
+            canvas_w,
+            canvas_h,
+            layer.data.as_slice(),
+            layer.width,
+            layer.height,
+            &dst_rect,
+            layer.opacity,
+        );
     }
 
     // Blit image overlays.
