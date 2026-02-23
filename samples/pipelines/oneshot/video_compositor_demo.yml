@@ -2,8 +2,13 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
+# NOTE: Text/image overlays can be configured at runtime via UpdateParams.
+# Deeply nested params (e.g. text_overlays with rect objects) trigger a
+# serde_saphyr parsing limitation with untagged enums, so they are omitted
+# from this static YAML sample.
+
 name: Video Compositor Demo
-description: Generates SMPTE color bars, composites with a text overlay, encodes to VP9, and outputs a WebM file (3 seconds)
+description: Generates SMPTE color bars, composites them through the compositor node, encodes to VP9, and outputs a WebM file (3 seconds)
 mode: oneshot
 
 nodes:
@@ -20,16 +25,6 @@ nodes:
     params:
       width: 640
       height: 480
-      text_overlays:
-        - text: "StreamKit Compositor"
-          rect:
-            x: 10
-            y: 10
-            width: 300
-            height: 30
-          color: [255, 255, 255, 255]
-          font_size: 24
-          opacity: 0.8
     needs: colorbars
 
   vp9_encoder:
