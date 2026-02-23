@@ -897,17 +897,35 @@ impl ProcessorNode for CompositorNode {
 
             // ── Composite in spawn_blocking ──────────────────────────────
             // Collect the data we need to move into the blocking task.
+            let num_slots = slots.len();
             let layers: Vec<Option<LayerSnapshot>> = slots
                 .iter()
-                .map(|slot| {
+                .enumerate()
+                .map(|(idx, slot)| {
                     slot.latest_frame.as_ref().map(|f| {
                         let layer_cfg = self.config.layers.get(&slot.name);
+                        let (rect, opacity) = if let Some(lc) = layer_cfg {
+                            // Explicit per-layer config.
+                            (lc.rect.clone(), lc.opacity)
+                        } else if idx > 0 && num_slots > 1 {
+                            // Auto-PiP: non-first layers without explicit config
+                            // are placed in the bottom-right corner at 1/3 canvas
+                            // size with slight transparency.
+                            let pip_w = self.config.width / 3;
+                            let pip_h = self.config.height / 3;
+                            let pip_x = self.config.width - pip_w - 20;
+                            let pip_y = self.config.height - pip_h - 20;
+                            (Some(Rect { x: pip_x, y: pip_y, width: pip_w, height: pip_h }), 0.9)
+                        } else {
+                            // First layer (or single input): fill the canvas.
+                            (None, 1.0)
+                        };
                         LayerSnapshot {
                             data: f.data.clone(),
                             width: f.width,
                             height: f.height,
-                            rect: layer_cfg.and_then(|lc| lc.rect.clone()),
-                            opacity: layer_cfg.map_or(1.0, |lc| lc.opacity),
+                            rect,
+                            opacity,
                         }
                     })
                 })

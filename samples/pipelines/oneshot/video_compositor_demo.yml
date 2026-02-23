@@ -2,32 +2,51 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-# NOTE: Text/image overlays can be configured at runtime via UpdateParams.
-# Deeply nested params (e.g. text_overlays with rect objects) trigger a
-# serde_saphyr parsing limitation with untagged enums, so they are omitted
-# from this static YAML sample.
+# Demonstrates the video::compositor node with two colorbars sources:
+#   - A full-size 640x480 background (I420)
+#   - A smaller 320x240 picture-in-picture overlay (RGBA8)
+#
+# The second layer is scaled to fill the canvas and drawn on top of the
+# first, making the compositing visually obvious (different bar widths
+# from the different source resolutions).
+#
+# NOTE: Text/image overlays and per-layer rect/opacity can be configured
+# at runtime via UpdateParams (JSON).  Deeply nested params trigger a
+# serde_saphyr parsing limitation with untagged enums, so they are
+# omitted from this static YAML sample.
 
 name: Video Compositor Demo
-description: Generates SMPTE color bars, composites them through the compositor node, encodes to VP9, and outputs a WebM file (3 seconds)
+description: Composites two colorbars sources (main + PiP) through the compositor node, encodes to VP9, and outputs a WebM file (3 seconds)
 mode: oneshot
 
 nodes:
-  colorbars:
+  colorbars_bg:
     kind: video::colorbars
     params:
       width: 640
       height: 480
       fps: 30
-      frame_count: 90  # 3 seconds at 30fps
+      frame_count: 90
+
+  colorbars_pip:
+    kind: video::colorbars
+    params:
+      width: 320
+      height: 240
+      fps: 30
+      frame_count: 90
+      pixel_format: rgba8
 
   compositor:
     kind: video::compositor
     params:
       width: 640
       height: 480
-      num_inputs: 1
+      num_inputs: 2
       output_pixel_format: i420
-    needs: colorbars
+    needs:
+      - colorbars_bg
+      - colorbars_pip
 
   vp9_encoder:
     kind: video::vp9::encoder
