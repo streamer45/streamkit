@@ -4,7 +4,8 @@
 
 //! SMPTE EIA 75% color bars video generator.
 //!
-//! Produces raw I420 frames with the standard 7-bar test pattern.
+//! Produces raw video frames with the standard 7-bar test pattern.
+//! Supports I420 (default) and RGBA8 pixel formats.
 //! Configurable resolution, frame rate, and frame count.
 //!
 //! - `frame_count > 0`: batch mode — emits exactly N frames with synthetic timestamps (oneshot).
@@ -55,6 +56,24 @@ pub struct ColorBarsConfig {
     /// Total frames to generate. 0 = infinite (real-time pacing).
     #[serde(default = "default_frame_count")]
     pub frame_count: u32,
+    /// Output pixel format. Supported: "i420" (default) and "rgba8".
+    #[serde(default = "default_pixel_format")]
+    pub pixel_format: String,
+}
+
+fn default_pixel_format() -> String {
+    "i420".to_string()
+}
+
+fn parse_pixel_format(s: &str) -> Result<PixelFormat, StreamKitError> {
+    match s.to_lowercase().as_str() {
+        "i420" => Ok(PixelFormat::I420),
+        "rgba8" | "rgba" => Ok(PixelFormat::Rgba8),
+        other => Err(StreamKitError::Configuration(format!(
+            "Unsupported pixel format '{}'. Use 'i420' or 'rgba8'.",
+            other
+        ))),
+    }
 }
 
 impl Default for ColorBarsConfig {
@@ -64,16 +83,20 @@ impl Default for ColorBarsConfig {
             height: default_height(),
             fps: default_fps(),
             frame_count: default_frame_count(),
+            pixel_format: default_pixel_format(),
         }
     }
 }
 
-/// Source node that generates SMPTE EIA 75% color bar I420 frames.
+/// Source node that generates SMPTE EIA 75% color bar frames.
 ///
-/// No input pins. Outputs `PacketType::RawVideo(I420)` on `"out"`.
+/// No input pins. Outputs `PacketType::RawVideo` on `"out"` in the
+/// configured pixel format (I420 or RGBA8).
 /// Follows the Ready → Start lifecycle (like `FileReadNode`).
 pub struct ColorBarsNode {
     config: ColorBarsConfig,
+    /// Resolved pixel format from the config string.
+    pixel_format: PixelFormat,
 }
 
 #[async_trait]
@@ -88,7 +111,7 @@ impl ProcessorNode for ColorBarsNode {
             produces_type: PacketType::RawVideo(VideoFormat {
                 width: None,
                 height: None,
-                pixel_format: PixelFormat::I420,
+                pixel_format: self.pixel_format,
             }),
             cardinality: PinCardinality::Broadcast,
         }]
@@ -112,11 +135,18 @@ impl ProcessorNode for ColorBarsNode {
             frame_count
         );
 
+        let pixel_format = self.pixel_format;
+
         // Pre-generate the color bar pattern into a template buffer.
-        let layout = streamkit_core::types::VideoLayout::packed(width, height, PixelFormat::I420);
+        let layout = streamkit_core::types::VideoLayout::packed(width, height, pixel_format);
         let total_bytes = layout.total_bytes();
         let mut template = vec![0u8; total_bytes];
-        generate_smpte_colorbars_i420(width, height, &mut template, &layout);
+        match pixel_format {
+            PixelFormat::I420 => {
+                generate_smpte_colorbars_i420(width, height, &mut template, &layout)
+            },
+            PixelFormat::Rgba8 => generate_smpte_colorbars_rgba8(width, height, &mut template),
+        }
 
         // Source nodes emit Ready state and wait for Start signal.
         state_helpers::emit_ready(&context.state_tx, &node_name);
@@ -199,21 +229,33 @@ impl ProcessorNode for ColorBarsNode {
             let frame = if let Some(pool) = &context.video_pool {
                 let mut pooled = pool.get(total_bytes);
                 pooled.as_mut_slice()[..total_bytes].copy_from_slice(&template);
-                draw_sweep_bar_i420(pooled.as_mut_slice(), width, height, &layout, seq);
+                match pixel_format {
+                    PixelFormat::I420 => {
+                        draw_sweep_bar_i420(pooled.as_mut_slice(), width, height, &layout, seq)
+                    },
+                    PixelFormat::Rgba8 => {
+                        draw_sweep_bar_rgba8(pooled.as_mut_slice(), width, height, seq)
+                    },
+                }
                 streamkit_core::types::VideoFrame::from_pooled(
                     width,
                     height,
-                    PixelFormat::I420,
+                    pixel_format,
                     pooled,
                     metadata,
                 )
             } else {
                 let mut data = template.clone();
-                draw_sweep_bar_i420(&mut data, width, height, &layout, seq);
+                match pixel_format {
+                    PixelFormat::I420 => {
+                        draw_sweep_bar_i420(&mut data, width, height, &layout, seq)
+                    },
+                    PixelFormat::Rgba8 => draw_sweep_bar_rgba8(&mut data, width, height, seq),
+                }
                 streamkit_core::types::VideoFrame::with_metadata(
                     width,
                     height,
-                    PixelFormat::I420,
+                    pixel_format,
                     data,
                     metadata,
                 )
@@ -306,6 +348,58 @@ fn draw_sweep_bar_i420(
     }
 }
 
+/// SMPTE EIA 75% color bars in RGBA8 format.
+///
+/// Same bar order and approximate 75% amplitude as the YUV table,
+/// converted to full-range RGB.
+const SMPTE_BARS_RGBA: [(u8, u8, u8, u8); 7] = [
+    (191, 191, 191, 255), // white  (75%)
+    (191, 191, 0, 255),   // yellow
+    (0, 191, 191, 255),   // cyan
+    (0, 191, 0, 255),     // green
+    (191, 0, 191, 255),   // magenta
+    (191, 0, 0, 255),     // red
+    (0, 0, 191, 255),     // blue
+];
+
+/// Fills an RGBA8 buffer with SMPTE 75% color bars.
+fn generate_smpte_colorbars_rgba8(width: u32, height: u32, data: &mut [u8]) {
+    let bar_count = SMPTE_BARS_RGBA.len();
+    let stride = width as usize * 4;
+    for row in 0..height as usize {
+        for col in 0..width as usize {
+            let bar_idx = col * bar_count / width as usize;
+            let (r, g, b, a) = SMPTE_BARS_RGBA[bar_idx];
+            let offset = row * stride + col * 4;
+            data[offset] = r;
+            data[offset + 1] = g;
+            data[offset + 2] = b;
+            data[offset + 3] = a;
+        }
+    }
+}
+
+/// Draws a bright vertical sweep bar (pure white, 4px wide) on an RGBA8 buffer.
+fn draw_sweep_bar_rgba8(data: &mut [u8], width: u32, height: u32, seq: u64) {
+    let bar_width: usize = 4;
+    let speed: usize = 4;
+    let w = width as usize;
+    let h = height as usize;
+    let stride = w * 4;
+    let bar_x = (seq as usize * speed) % w;
+
+    for row in 0..h {
+        for dx in 0..bar_width {
+            let col = (bar_x + dx) % w;
+            let offset = row * stride + col * 4;
+            data[offset] = 255; // R
+            data[offset + 1] = 255; // G
+            data[offset + 2] = 255; // B
+            data[offset + 3] = 255; // A
+        }
+    }
+}
+
 /// Fills an I420 buffer with SMPTE 75% color bars.
 fn generate_smpte_colorbars_i420(
     width: u32,
@@ -347,19 +441,22 @@ fn generate_smpte_colorbars_i420(
 
 #[allow(clippy::expect_used)]
 pub fn register_colorbars_nodes(registry: &mut NodeRegistry) {
-    let default_node = ColorBarsNode { config: ColorBarsConfig::default() };
+    let default_node =
+        ColorBarsNode { config: ColorBarsConfig::default(), pixel_format: PixelFormat::I420 };
     registry.register_static_with_description(
         "video::colorbars",
         |params| {
             let config: ColorBarsConfig = config_helpers::parse_config_optional(params)?;
-            Ok(Box::new(ColorBarsNode { config }))
+            let pixel_format = parse_pixel_format(&config.pixel_format)?;
+            Ok(Box::new(ColorBarsNode { config, pixel_format }))
         },
         serde_json::to_value(schema_for!(ColorBarsConfig))
             .expect("ColorBarsConfig schema should serialize to JSON"),
         StaticPins { inputs: default_node.input_pins(), outputs: default_node.output_pins() },
         vec!["video".to_string(), "generators".to_string()],
         false,
-        "Generates SMPTE EIA 75% color bar test frames in I420 format. \
+        "Generates SMPTE EIA 75% color bar test frames. \
+         Supports I420 (default) and RGBA8 pixel formats via the pixel_format config. \
          Use with a video encoder for pipeline testing and validation.",
     );
 }

@@ -26,6 +26,7 @@ nodes:
       width: 640
       height: 480
       num_inputs: 1
+      output_pixel_format: i420
     needs: colorbars
 
   vp9_encoder:

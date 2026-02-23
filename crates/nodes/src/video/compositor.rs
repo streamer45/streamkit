@@ -141,6 +141,10 @@ pub struct CompositorConfig {
     /// graph building. Optional for dynamic pipelines where pins are created
     /// on-demand. If specified, pins will be named in_0, in_1, ..., in_{N-1}.
     pub num_inputs: Option<usize>,
+    /// Output pixel format: "rgba8" (default) or "i420".
+    /// Use "i420" when feeding a VP9/VP8 encoder downstream.
+    #[serde(default = "default_output_pixel_format")]
+    pub output_pixel_format: String,
     /// Per-layer configuration, keyed by pin name (e.g. `"in_0"`).
     /// Layers without an entry here are scaled to fill the canvas.
     #[serde(default)]
@@ -153,12 +157,28 @@ pub struct CompositorConfig {
     pub text_overlays: Vec<TextOverlayConfig>,
 }
 
+fn default_output_pixel_format() -> String {
+    "rgba8".to_string()
+}
+
+fn parse_pixel_format(s: &str) -> Result<PixelFormat, StreamKitError> {
+    match s.to_lowercase().as_str() {
+        "rgba8" | "rgba" => Ok(PixelFormat::Rgba8),
+        "i420" => Ok(PixelFormat::I420),
+        other => Err(StreamKitError::Configuration(format!(
+            "Unsupported output pixel format '{}'. Use 'rgba8' or 'i420'.",
+            other
+        ))),
+    }
+}
+
 impl Default for CompositorConfig {
     fn default() -> Self {
         Self {
             width: default_width(),
             height: default_height(),
             num_inputs: None,
+            output_pixel_format: default_output_pixel_format(),
             layers: HashMap::new(),
             image_overlays: Vec::new(),
             text_overlays: Vec::new(),
@@ -398,6 +418,125 @@ fn blit_overlay(dst: &mut [u8], dst_width: u32, dst_height: u32, overlay: &Decod
     );
 }
 
+// ── Pixel format conversion helpers ─────────────────────────────────────────
+
+/// Convert an I420 frame buffer to packed RGBA8.
+///
+/// Uses BT.601 studio-range YUV→RGB conversion.
+fn i420_to_rgba8(data: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let w = width as usize;
+    let h = height as usize;
+    let y_stride = w;
+    let chroma_w = (w + 1) / 2;
+    let chroma_h = (h + 1) / 2;
+    let u_offset = y_stride * h;
+    let v_offset = u_offset + chroma_w * chroma_h;
+
+    let mut rgba = vec![0u8; w * h * 4];
+    for row in 0..h {
+        for col in 0..w {
+            let y = data[row * y_stride + col] as i32;
+            let u = data[u_offset + (row / 2) * chroma_w + col / 2] as i32;
+            let v = data[v_offset + (row / 2) * chroma_w + col / 2] as i32;
+
+            // BT.601 studio range conversion
+            let c = y - 16;
+            let d = u - 128;
+            let e = v - 128;
+            let r = ((298 * c + 409 * e + 128) >> 8).clamp(0, 255) as u8;
+            let g = ((298 * c - 100 * d - 208 * e + 128) >> 8).clamp(0, 255) as u8;
+            let b = ((298 * c + 516 * d + 128) >> 8).clamp(0, 255) as u8;
+
+            let off = (row * w + col) * 4;
+            rgba[off] = r;
+            rgba[off + 1] = g;
+            rgba[off + 2] = b;
+            rgba[off + 3] = 255;
+        }
+    }
+    rgba
+}
+
+/// Convert a packed RGBA8 buffer to I420.
+///
+/// Uses BT.601 full-range RGB→YUV conversion.
+fn rgba8_to_i420(data: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let w = width as usize;
+    let h = height as usize;
+    let y_stride = w;
+    let chroma_w = (w + 1) / 2;
+    let chroma_h = (h + 1) / 2;
+    let y_size = y_stride * h;
+    let chroma_size = chroma_w * chroma_h;
+    let mut out = vec![0u8; y_size + chroma_size * 2];
+
+    // Y plane
+    for row in 0..h {
+        for col in 0..w {
+            let off = (row * w + col) * 4;
+            let r = data[off] as i32;
+            let g = data[off + 1] as i32;
+            let b = data[off + 2] as i32;
+            let y = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
+            out[row * y_stride + col] = y.clamp(0, 255) as u8;
+        }
+    }
+
+    // U and V planes (subsampled 2×2)
+    let u_offset = y_size;
+    let v_offset = y_size + chroma_size;
+    for crow in 0..chroma_h {
+        for ccol in 0..chroma_w {
+            let r0 = crow * 2;
+            let c0 = ccol * 2;
+            // Average the 2×2 block (handle odd dimensions).
+            let mut sr = 0i32;
+            let mut sg = 0i32;
+            let mut sb = 0i32;
+            let mut count = 0i32;
+            for dr in 0..2 {
+                for dc in 0..2 {
+                    let rr = r0 + dr;
+                    let cc = c0 + dc;
+                    if rr < h && cc < w {
+                        let off = (rr * w + cc) * 4;
+                        sr += data[off] as i32;
+                        sg += data[off + 1] as i32;
+                        sb += data[off + 2] as i32;
+                        count += 1;
+                    }
+                }
+            }
+            let r = sr / count;
+            let g = sg / count;
+            let b = sb / count;
+            let u = ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
+            let v = ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
+            out[u_offset + crow * chroma_w + ccol] = u.clamp(0, 255) as u8;
+            out[v_offset + crow * chroma_w + ccol] = v.clamp(0, 255) as u8;
+        }
+    }
+
+    out
+}
+
+/// Convert a `VideoFrame` to RGBA8 if it is I420; pass through if already RGBA8.
+fn ensure_rgba8(frame: &VideoFrame) -> VideoFrame {
+    match frame.pixel_format {
+        PixelFormat::Rgba8 => frame.clone(),
+        PixelFormat::I420 => {
+            let rgba = i420_to_rgba8(frame.data(), frame.width, frame.height);
+            VideoFrame::with_metadata(
+                frame.width,
+                frame.height,
+                PixelFormat::Rgba8,
+                rgba,
+                frame.metadata.clone(),
+            )
+        },
+    }
+}
+
 // ── Input slot ──────────────────────────────────────────────────────────────
 
 /// Holds a receiver and the most-recently-received frame for one input layer.
@@ -415,9 +554,12 @@ struct InputSlot {
 /// Inputs are dynamic (`PinCardinality::Dynamic`) and can be attached at
 /// runtime. Each input accepts `RawVideo(RGBA8)` with wildcard dimensions.
 ///
-/// Output `"out"` produces `RawVideo(RGBA8)` at the configured canvas size.
+/// Output `"out"` produces `RawVideo` at the configured canvas size and
+/// pixel format (RGBA8 by default, or I420 if `output_pixel_format` is set).
 pub struct CompositorNode {
     config: CompositorConfig,
+    /// Resolved output pixel format.
+    output_format: PixelFormat,
     /// Current input pins (may grow dynamically).
     input_pins: Vec<InputPin>,
     /// Next input ID for dynamic pin naming.
@@ -448,18 +590,28 @@ impl CompositorNode {
             },
         );
 
-        Self { config, input_pins, next_input_id }
+        let output_format =
+            parse_pixel_format(&config.output_pixel_format).unwrap_or(PixelFormat::Rgba8);
+
+        Self { config, output_format, input_pins, next_input_id }
     }
 
     /// Returns the definition-time pins for registry (dynamic template).
     pub fn definition_pins() -> (Vec<InputPin>, Vec<OutputPin>) {
         let inputs = vec![InputPin {
             name: "in".to_string(),
-            accepts_types: vec![PacketType::RawVideo(VideoFormat {
-                width: None,
-                height: None,
-                pixel_format: PixelFormat::Rgba8,
-            })],
+            accepts_types: vec![
+                PacketType::RawVideo(VideoFormat {
+                    width: None,
+                    height: None,
+                    pixel_format: PixelFormat::Rgba8,
+                }),
+                PacketType::RawVideo(VideoFormat {
+                    width: None,
+                    height: None,
+                    pixel_format: PixelFormat::I420,
+                }),
+            ],
             cardinality: PinCardinality::Dynamic { prefix: "in".to_string() },
         }];
 
@@ -480,11 +632,18 @@ impl CompositorNode {
     fn make_input_pin(name: String) -> InputPin {
         InputPin {
             name,
-            accepts_types: vec![PacketType::RawVideo(VideoFormat {
-                width: None,
-                height: None,
-                pixel_format: PixelFormat::Rgba8,
-            })],
+            accepts_types: vec![
+                PacketType::RawVideo(VideoFormat {
+                    width: None,
+                    height: None,
+                    pixel_format: PixelFormat::Rgba8,
+                }),
+                PacketType::RawVideo(VideoFormat {
+                    width: None,
+                    height: None,
+                    pixel_format: PixelFormat::I420,
+                }),
+            ],
             cardinality: PinCardinality::One,
         }
     }
@@ -502,7 +661,7 @@ impl ProcessorNode for CompositorNode {
             produces_type: PacketType::RawVideo(VideoFormat {
                 width: Some(self.config.width),
                 height: Some(self.config.height),
-                pixel_format: PixelFormat::Rgba8,
+                pixel_format: self.output_format,
             }),
             cardinality: PinCardinality::Broadcast,
         }]
@@ -595,7 +754,7 @@ impl ProcessorNode for CompositorNode {
                 // Drain to the latest frame available on each input.
                 while let Ok(packet) = slot.rx.try_recv() {
                     if let Packet::Video(frame) = packet {
-                        slot.latest_frame = Some(frame);
+                        slot.latest_frame = Some(ensure_rgba8(&frame));
                         got_any_frame = true;
                     }
                 }
@@ -647,7 +806,7 @@ impl ProcessorNode for CompositorNode {
                     // Wait for a frame from any connected input.
                     result = recv_from_any_slot(&mut slots) => {
                         if let Some((slot_idx, frame)) = result {
-                            slots[slot_idx].latest_frame = Some(frame);
+                            slots[slot_idx].latest_frame = Some(ensure_rgba8(&frame));
                             received_frame = true;
                         } else {
                             // All inputs closed.
@@ -783,13 +942,26 @@ impl ProcessorNode for CompositorNode {
                 keyframe: Some(true),
             });
 
-            let out_frame = VideoFrame::from_pooled(
-                self.config.width,
-                self.config.height,
-                PixelFormat::Rgba8,
-                composite_result,
-                metadata,
-            );
+            // Convert RGBA8 composite output to the configured output format.
+            let out_frame = if self.output_format == PixelFormat::I420 {
+                let rgba_data = composite_result.as_slice();
+                let i420_data = rgba8_to_i420(rgba_data, self.config.width, self.config.height);
+                VideoFrame::with_metadata(
+                    self.config.width,
+                    self.config.height,
+                    PixelFormat::I420,
+                    i420_data,
+                    metadata,
+                )
+            } else {
+                VideoFrame::from_pooled(
+                    self.config.width,
+                    self.config.height,
+                    PixelFormat::Rgba8,
+                    composite_result,
+                    metadata,
+                )
+            };
 
             if context.output_sender.send("out", Packet::Video(out_frame)).await.is_err() {
                 tracing::debug!("Output channel closed, stopping CompositorNode");
