@@ -748,11 +748,14 @@ impl ProcessorNode for CompositorNode {
         let mut stop_reason: &str = "shutdown";
 
         loop {
-            // ── Drain latest frame from every slot (non-blocking) ────────
+            // ── Take at most one frame from every slot (non-blocking) ───
+            // We intentionally take only one frame per slot per iteration so
+            // that every produced frame is composited and forwarded.  The old
+            // "drain-to-latest" approach dropped intermediate frames when the
+            // compositing step was slower than the producer.
             let mut got_any_frame = false;
             for slot in &mut slots {
-                // Drain to the latest frame available on each input.
-                while let Ok(packet) = slot.rx.try_recv() {
+                if let Ok(packet) = slot.rx.try_recv() {
                     if let Packet::Video(frame) = packet {
                         slot.latest_frame = Some(ensure_rgba8(&frame));
                         got_any_frame = true;
