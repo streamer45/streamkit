@@ -2,20 +2,39 @@
 # SPDX-FileCopyrightText: © 2025 StreamKit Contributors
 # SPDX-License-Identifier: MPL-2.0
 title: "containers::webm::muxer"
-description: "Muxes Opus audio into a WebM container. Produces streamable WebM/Opus output compatible with web browsers."
+description: "Muxes Opus audio and/or VP9 video into a WebM container. Produces streamable WebM output compatible with web browsers."
 ---
 
 `kind`: `containers::webm::muxer`
 
-Muxes Opus audio into a WebM container. Produces streamable WebM/Opus output compatible with web browsers.
+Muxes Opus audio and/or VP9 video into a WebM container. Produces streamable WebM output compatible with web browsers. Supports audio-only, video-only, or combined audio+video muxing.
 
 ## Categories
 - `containers`
 - `webm`
 
 ## Pins
+
+Input pins use generic names — the media type (audio or video) is detected at
+runtime from each packet's `content_type` field, not from the pin name.
+
+When `video_width` and `video_height` are **not** configured (default), a single
+`in` pin is exposed, keeping backward compatibility with existing audio-only
+pipelines (`needs: opus_encoder`).
+
+When video dimensions **are** configured, two pins (`in` + `in_1`) are exposed
+so that both an audio and a video encoder can be connected. Use the map syntax
+to target each pin explicitly:
+
+```yaml
+needs:
+  in: opus_encoder
+  in_1: vp9_encoder
+```
+
 ### Inputs
-- `in` accepts `EncodedAudio(EncodedAudioFormat { codec: Opus })` (one)
+- `in` accepts `EncodedAudio(Opus)` or `EncodedVideo(VP9)` (one)
+- `in_1` accepts `EncodedAudio(Opus)` or `EncodedVideo(VP9)` (one) — only present when `video_width`/`video_height` > 0
 
 ### Outputs
 - `out` produces `Binary` (broadcast)
@@ -26,7 +45,9 @@ Muxes Opus audio into a WebM container. Produces streamable WebM/Opus output com
 | `channels` | `integer (uint32)` | no | `2` | Number of audio channels (1 for mono, 2 for stereo)<br />min: `0` |
 | `chunk_size` | `integer (uint)` | no | `65536` | The number of bytes to buffer before flushing to the output. Defaults to 65536.<br />min: `0` |
 | `sample_rate` | `integer (uint32)` | no | `48000` | Audio sample rate in Hz<br />min: `0` |
-| `streaming_mode` | `string` | no | — | — |
+| `streaming_mode` | `string` | no | — | Streaming mode: `"live"` for real-time streaming (no duration), `"file"` for complete files with duration |
+| `video_width` | `integer (uint32)` | no | `0` | Video frame width in pixels. Set to > 0 together with `video_height` to enable the second input pin for video.<br />min: `0` |
+| `video_height` | `integer (uint32)` | no | `0` | Video frame height in pixels. Set to > 0 together with `video_width` to enable the second input pin for video.<br />min: `0` |
 
 
 <details>

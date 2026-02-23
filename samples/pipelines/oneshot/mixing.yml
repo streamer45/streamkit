@@ -86,8 +86,7 @@ nodes:
       channels: 1
       chunk_size: 65536
       sample_rate: 48000
-    needs:
-      audio: opus_encoder
+    needs: opus_encoder
 
   http_output:
     kind: streamkit::http_output

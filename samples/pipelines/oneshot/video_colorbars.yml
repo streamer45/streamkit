@@ -25,8 +25,7 @@ nodes:
       video_width: 640
       video_height: 480
       streaming_mode: live
-    needs:
-      video: vp9_encoder
+    needs: vp9_encoder
 
   http_output:
     kind: streamkit::http_output

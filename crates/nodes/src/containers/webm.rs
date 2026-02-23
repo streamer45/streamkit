@@ -307,12 +307,18 @@ const fn webm_content_type(has_audio: bool, has_video: bool) -> &'static str {
 
 /// A node that muxes encoded Opus audio and/or VP9 video packets into a WebM container stream.
 ///
-/// The node exposes two input pins:
-/// - `"audio"` - accepts `EncodedAudio(Opus)` packets (optional)
-/// - `"video"` - accepts `EncodedVideo(VP9)` packets (optional)
+/// Input pins use generic names (`"in"`, `"in_1"`, …) — the media type carried by each
+/// input is detected at runtime from the packet's `content_type` field, **not** from the
+/// pin name.  This keeps the node future-proof for additional track types (subtitles,
+/// data channels, etc.) without requiring pin-name changes.
 ///
-/// At least one input must be connected. When both are connected, audio and video frames are
-/// interleaved by arrival order as required by the WebM/Matroska container.
+/// Pin layout (determined by config):
+/// - Default (no video dimensions): single pin `"in"` accepting audio **or** video.
+/// - With `video_width`/`video_height` > 0: two pins `"in"` + `"in_1"`, each accepting
+///   audio or video.  The muxer will auto-detect which track type each pin carries.
+///
+/// At least one input must be connected. When both are connected, audio and video frames
+/// are interleaved by arrival order as required by the WebM/Matroska container.
 pub struct WebMMuxerNode {
     config: WebMMuxerConfig,
 }
@@ -327,27 +333,45 @@ impl WebMMuxerNode {
 #[allow(clippy::too_many_lines)]
 impl ProcessorNode for WebMMuxerNode {
     fn input_pins(&self) -> Vec<InputPin> {
-        vec![
-            InputPin {
-                name: "audio".to_string(),
-                accepts_types: vec![PacketType::EncodedAudio(EncodedAudioFormat {
-                    codec: AudioCodec::Opus,
-                    codec_private: None,
-                })],
+        // Each pin accepts both audio and video — the actual media type is detected
+        // at runtime from the packet content_type, not from the pin name.
+        let media_types = vec![
+            PacketType::EncodedAudio(EncodedAudioFormat {
+                codec: AudioCodec::Opus,
+                codec_private: None,
+            }),
+            PacketType::EncodedVideo(EncodedVideoFormat {
+                codec: VideoCodec::Vp9,
+                bitstream_format: None,
+                codec_private: None,
+                profile: None,
+                level: None,
+            }),
+        ];
+
+        let has_video = self.config.video_width > 0 && self.config.video_height > 0;
+        if has_video {
+            // Two generic inputs for audio + video (order is determined at runtime).
+            vec![
+                InputPin {
+                    name: "in".to_string(),
+                    accepts_types: media_types.clone(),
+                    cardinality: PinCardinality::One,
+                },
+                InputPin {
+                    name: "in_1".to_string(),
+                    accepts_types: media_types,
+                    cardinality: PinCardinality::One,
+                },
+            ]
+        } else {
+            // Single generic input — backward compatible with `needs: encoder_node`.
+            vec![InputPin {
+                name: "in".to_string(),
+                accepts_types: media_types,
                 cardinality: PinCardinality::One,
-            },
-            InputPin {
-                name: "video".to_string(),
-                accepts_types: vec![PacketType::EncodedVideo(EncodedVideoFormat {
-                    codec: VideoCodec::Vp9,
-                    bitstream_format: None,
-                    codec_private: None,
-                    profile: None,
-                    level: None,
-                })],
-                cardinality: PinCardinality::One,
-            },
-        ]
+            }]
+        }
     }
 
     fn output_pins(&self) -> Vec<OutputPin> {
@@ -377,15 +401,89 @@ impl ProcessorNode for WebMMuxerNode {
         state_helpers::emit_initializing(&context.state_tx, &node_name);
         tracing::info!("WebMMuxerNode starting");
 
-        // Take input pins - they may or may not be connected.
-        let mut audio_rx = context.inputs.remove("audio");
-        let mut video_rx = context.inputs.remove("video");
+        // --- Classify generic inputs by probing the first packet on each channel ---
+        //
+        // Inputs use generic pin names ("in", "in_1", …). We peek at the first
+        // packet's `content_type` to decide whether the channel carries audio or
+        // video data.  A content_type starting with "video/" is treated as video;
+        // everything else (including None) is treated as audio.
+
+        // Drain all connected input channels (order doesn't matter — we classify below).
+        let connected_pins: Vec<(String, tokio::sync::mpsc::Receiver<Packet>)> =
+            context.inputs.drain().collect();
+
+        if connected_pins.is_empty() {
+            let err_msg = "WebMMuxerNode requires at least one input (audio or video)".to_string();
+            state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
+            return Err(StreamKitError::Runtime(err_msg));
+        }
+
+        // Emit "running" *before* blocking on the first packet so that
+        // upstream nodes / tests can start sending data.
+        state_helpers::emit_running(&context.state_tx, &node_name);
+
+        // For each connected input, receive the first packet to determine media type.
+        let mut audio_rx: Option<tokio::sync::mpsc::Receiver<Packet>> = None;
+        let mut video_rx: Option<tokio::sync::mpsc::Receiver<Packet>> = None;
+        // First packets that were consumed during classification — will be processed
+        // in the main loop before reading more from the channel.
+        let mut audio_first_packet: Option<(Bytes, Option<PacketMetadata>)> = None;
+        let mut video_first_packet: Option<(Bytes, Option<PacketMetadata>)> = None;
+
+        for (pin_name, mut rx) in connected_pins {
+            // Receive the first Binary packet (skip non-Binary).
+            let first_binary = loop {
+                match rx.recv().await {
+                    Some(Packet::Binary { data, content_type, metadata }) => {
+                        break Some((data, content_type, metadata));
+                    },
+                    Some(_) => continue, // skip non-Binary packets
+                    None => break None,  // channel closed before any Binary
+                }
+            };
+
+            let Some((data, content_type, metadata)) = first_binary else {
+                tracing::info!("WebMMuxerNode input '{pin_name}' closed before first packet");
+                continue;
+            };
+
+            let is_video = content_type
+                .as_ref()
+                .map_or(false, |ct| ct.starts_with("video/"));
+
+            if is_video {
+                if video_rx.is_some() {
+                    let err_msg = format!(
+                        "WebMMuxerNode: multiple video inputs detected (pin '{pin_name}'). \
+                         Only one video track is supported."
+                    );
+                    state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
+                    return Err(StreamKitError::Runtime(err_msg));
+                }
+                tracing::info!("WebMMuxerNode: pin '{pin_name}' classified as VIDEO");
+                video_first_packet = Some((data, metadata));
+                video_rx = Some(rx);
+            } else {
+                if audio_rx.is_some() {
+                    let err_msg = format!(
+                        "WebMMuxerNode: multiple audio inputs detected (pin '{pin_name}'). \
+                         Only one audio track is supported."
+                    );
+                    state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
+                    return Err(StreamKitError::Runtime(err_msg));
+                }
+                tracing::info!("WebMMuxerNode: pin '{pin_name}' classified as AUDIO");
+                audio_first_packet = Some((data, metadata));
+                audio_rx = Some(rx);
+            }
+        }
 
         let has_audio = audio_rx.is_some();
         let has_video = video_rx.is_some();
 
         if !has_audio && !has_video {
-            let err_msg = "WebMMuxerNode requires at least one input (audio or video)".to_string();
+            let err_msg =
+                "WebMMuxerNode: no usable input packets received on any pin".to_string();
             state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
             return Err(StreamKitError::Runtime(err_msg));
         }
@@ -394,8 +492,6 @@ impl ProcessorNode for WebMMuxerNode {
 
         let content_type_str: Cow<'static, str> =
             Cow::Borrowed(webm_content_type(has_audio, has_video));
-
-        state_helpers::emit_running(&context.state_tx, &node_name);
 
         let mut packet_count = 0u64;
         let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
@@ -517,9 +613,17 @@ impl ProcessorNode for WebMMuxerNode {
         tracing::info!("WebM segment built, entering receive loop to process incoming packets");
 
         // -- Receive loop: multiplex audio + video inputs --
+        //
+        // The first packet from each channel was already consumed during
+        // classification.  We feed those in before switching to channel reads.
 
         let mut audio_done = !has_audio;
         let mut video_done = !has_video;
+
+        // Queue of frames to process: seed with the first-packet(s) consumed
+        // during classification, then refill from the channels.
+        let mut pending_first_audio = audio_first_packet.take();
+        let mut pending_first_video = video_first_packet.take();
 
         while !audio_done || !video_done {
             enum MuxFrame {
@@ -529,7 +633,12 @@ impl ProcessorNode for WebMMuxerNode {
                 VideoClosed,
             }
 
-            let frame = if audio_done {
+            // Drain buffered first-packets before reading from channels.
+            let frame = if let Some((data, metadata)) = pending_first_audio.take() {
+                MuxFrame::Audio(data, metadata)
+            } else if let Some((data, metadata)) = pending_first_video.take() {
+                MuxFrame::Video(data, metadata)
+            } else if audio_done {
                 // Only video remains
                 match video_rx.as_mut() {
                     Some(rx) => match rx.recv().await {

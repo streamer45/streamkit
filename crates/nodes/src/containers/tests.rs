@@ -288,7 +288,7 @@ async fn test_ogg_roundtrip() {
 async fn test_webm_muxer_basic() {
     let (input_tx, input_rx) = mpsc::channel(10);
     let mut inputs = HashMap::new();
-    inputs.insert("audio".to_string(), input_rx);
+    inputs.insert("in".to_string(), input_rx);
 
     let (context, mock_sender, mut state_rx) = create_test_context(inputs, 10);
 
@@ -346,7 +346,7 @@ async fn test_webm_muxer_basic() {
 async fn test_webm_muxer_multiple_packets() {
     let (input_tx, input_rx) = mpsc::channel(10);
     let mut inputs = HashMap::new();
-    inputs.insert("audio".to_string(), input_rx);
+    inputs.insert("in".to_string(), input_rx);
 
     let (context, mock_sender, mut state_rx) = create_test_context(inputs, 10);
 
@@ -394,7 +394,7 @@ async fn test_webm_sliding_window() {
     // Test that WebM muxer handles long streams with sliding window
     let (input_tx, input_rx) = mpsc::channel(10);
     let mut inputs = HashMap::new();
-    inputs.insert("audio".to_string(), input_rx);
+    inputs.insert("in".to_string(), input_rx);
 
     let (context, mock_sender, mut state_rx) = create_test_context(inputs, 10);
 
@@ -489,7 +489,7 @@ async fn test_webm_mux_vp9_video_only() {
     let (mux_video_tx, mux_video_rx) = mpsc::channel(10);
     let mut mux_inputs = HashMap::new();
     // Only video, no audio
-    mux_inputs.insert("video".to_string(), mux_video_rx);
+    mux_inputs.insert("in".to_string(), mux_video_rx);
 
     let (mux_context, mux_sender, mut mux_state_rx) = create_test_context(mux_inputs, 10);
     let mux_config = WebMMuxerConfig {
