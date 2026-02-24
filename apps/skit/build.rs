@@ -23,8 +23,8 @@ fn main() {
 
         if let Ok(head_ref) = fs::read_to_string(head_path) {
             if let Some(reference) = head_ref.trim().strip_prefix("ref: ") {
-                if let Some(repo_root) = head_path.parent().and_then(|dir| dir.parent()) {
-                    let ref_path = repo_root.join(reference);
+                if let Some(git_dir) = head_path.parent() {
+                    let ref_path = git_dir.join(reference);
                     println!("cargo:rerun-if-changed={}", ref_path.display());
                 }
             }
