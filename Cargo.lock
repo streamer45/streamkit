@@ -4611,6 +4611,7 @@ version = "0.2.0"
 dependencies = [
  "bytes",
  "futures",
+ "indexmap 2.13.0",
  "opentelemetry",
  "serde",
  "serde-saphyr 0.0.15",

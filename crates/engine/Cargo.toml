@@ -54,7 +54,15 @@ script = ["streamkit-nodes/script"]
 
 [dev-dependencies]
 serde_json = { workspace = true }
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+futures = { workspace = true }
+bytes = { workspace = true }
+streamkit-api = { workspace = true }
+indexmap = { workspace = true }
+
+[[bench]]
+name = "compositor_pipeline"
+harness = false
 
 [lints]
 workspace = true
