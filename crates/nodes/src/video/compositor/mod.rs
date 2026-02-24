@@ -249,7 +249,24 @@ impl ProcessorNode for CompositorNode {
             }
         }
         // Drain all pre-connected inputs into slots.
-        let pre_inputs: Vec<(String, mpsc::Receiver<Packet>)> = context.inputs.drain().collect();
+        // IMPORTANT: HashMap::drain() has non-deterministic iteration order,
+        // so we must sort by pin name to ensure stable slot ordering.
+        // The slot index determines layer stacking (idx 0 = background,
+        // idx > 0 = auto-PiP), so non-deterministic order would randomly
+        // swap which input becomes the background vs. the PiP overlay.
+        let mut pre_inputs: Vec<(String, mpsc::Receiver<Packet>)> =
+            context.inputs.drain().collect();
+        pre_inputs.sort_by(|(a, _), (b, _)| {
+            // Sort numerically by the suffix of "in_N" pin names so that
+            // in_0 < in_1 < ... < in_10.  Fall back to lexicographic order
+            // for non-standard pin names.
+            let a_num = a.strip_prefix("in_").and_then(|s| s.parse::<usize>().ok());
+            let b_num = b.strip_prefix("in_").and_then(|s| s.parse::<usize>().ok());
+            match (a_num, b_num) {
+                (Some(an), Some(bn)) => an.cmp(&bn),
+                _ => a.cmp(b),
+            }
+        });
         for (name, rx) in pre_inputs {
             tracing::info!("CompositorNode: pre-connected input '{}'", name);
             slots.push(InputSlot { name, rx, latest_frame: None });
