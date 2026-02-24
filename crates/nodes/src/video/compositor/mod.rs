@@ -514,6 +514,7 @@ impl ProcessorNode for CompositorNode {
                 .map(|(idx, slot)| {
                     slot.latest_frame.as_ref().map(|f| {
                         let layer_cfg = self.config.layers.get(&slot.name);
+                        #[allow(clippy::option_if_let_else)]
                         let (rect, opacity) = if let Some(lc) = layer_cfg {
                             // Explicit per-layer config.
                             (lc.rect.clone(), lc.opacity)
@@ -560,9 +561,7 @@ impl ProcessorNode for CompositorNode {
                 break;
             }
 
-            let composite_result = if let Some(r) = result_rx.recv().await {
-                r
-            } else {
+            let Some(composite_result) = result_rx.recv().await else {
                 tracing::debug!("Compositing result channel closed");
                 stop_reason = "compositor_thread_gone";
                 break;
@@ -579,6 +578,7 @@ impl ProcessorNode for CompositorNode {
                 keyframe: Some(true),
             });
 
+            #[allow(clippy::expect_used)]
             let out_frame = if composite_result.output_format == PixelFormat::I420 {
                 let i420_pooled =
                     composite_result.i420_data.expect("I420 output data must be present");
@@ -706,15 +706,14 @@ impl CompositorNode {
 
 /// Wait for a video frame from any of the input slots. Returns the slot index
 /// and the received frame, or `None` if all channels are closed.
+type SlotRecvFut<'a> = Pin<Box<dyn futures::Future<Output = (usize, Option<Packet>)> + Send + 'a>>;
+
 async fn recv_from_any_slot(slots: &mut [InputSlot]) -> Option<(usize, VideoFrame)> {
     if slots.is_empty() {
         return None;
     }
 
     // Use futures to poll all receivers concurrently.
-    type SlotRecvFut<'a> =
-        Pin<Box<dyn futures::Future<Output = (usize, Option<Packet>)> + Send + 'a>>;
-
     let futs: Vec<SlotRecvFut<'_>> = slots
         .iter_mut()
         .enumerate()
@@ -742,7 +741,7 @@ async fn recv_from_any_slot(slots: &mut [InputSlot]) -> Option<(usize, VideoFram
 
 // ── Registration ────────────────────────────────────────────────────────────
 
-#[allow(clippy::expect_used)]
+#[allow(clippy::expect_used, clippy::missing_panics_doc)]
 pub fn register_compositor_nodes(registry: &mut NodeRegistry) {
     let (def_inputs, def_outputs) = CompositorNode::definition_pins();
 

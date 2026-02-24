@@ -115,6 +115,7 @@ pub struct Vp9DecoderNode {
 }
 
 impl Vp9DecoderNode {
+    #[allow(clippy::missing_errors_doc)]
     pub const fn new(config: Vp9DecoderConfig) -> Result<Self, StreamKitError> {
         Ok(Self { config })
     }
@@ -303,6 +304,7 @@ pub struct Vp9EncoderNode {
 }
 
 impl Vp9EncoderNode {
+    #[allow(clippy::missing_errors_doc)]
     pub const fn new(config: Vp9EncoderConfig) -> Result<Self, StreamKitError> {
         Ok(Self { config })
     }
@@ -661,6 +663,7 @@ impl Vp9Encoder {
             // SAFETY: iface is non-null.
             vpx::vpx_codec_get_caps(iface)
         };
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         if (caps as u32 & VPX_CODEC_CAP_ENCODER) == 0 {
             return Err("libvpx does not expose VP9 encoder capabilities".to_string());
         }
@@ -788,7 +791,7 @@ impl Vp9Encoder {
         };
         check_vpx(res, &raw mut self.ctx, "VP9 encode")?;
 
-        let packets = self.drain_packets(metadata)?;
+        let packets = self.drain_packets(metadata);
 
         Ok(packets)
     }
@@ -802,7 +805,7 @@ impl Vp9Encoder {
             };
             check_vpx(res, &raw mut self.ctx, "VP9 encode flush")?;
 
-            let mut packets = self.drain_packets(None)?;
+            let mut packets = self.drain_packets(None);
             if packets.is_empty() {
                 break;
             }
@@ -812,10 +815,7 @@ impl Vp9Encoder {
         Ok(output)
     }
 
-    fn drain_packets(
-        &mut self,
-        metadata: Option<PacketMetadata>,
-    ) -> Result<Vec<EncodedPacket>, String> {
+    fn drain_packets(&mut self, metadata: Option<PacketMetadata>) -> Vec<EncodedPacket> {
         let mut packets = Vec::new();
         let mut iter: vpx::vpx_codec_iter_t = std::ptr::null_mut();
         let mut remaining_metadata = metadata;
@@ -844,6 +844,7 @@ impl Vp9Encoder {
 
             let data = unsafe {
                 // SAFETY: frame_pkt.buf is valid for frame_pkt.sz bytes.
+                #[allow(clippy::cast_possible_truncation)]
                 std::slice::from_raw_parts(frame_pkt.buf as *const u8, frame_pkt.sz as usize)
                     .to_vec()
             };
@@ -868,10 +869,10 @@ impl Vp9Encoder {
                 frame_pkt.duration as u64,
             );
 
-            packets.push(EncodedPacket { data, metadata: output_metadata });
+            packets.push(EncodedPacket { data, metadata: Some(output_metadata) });
         }
 
-        Ok(packets)
+        packets
     }
 
     fn next_pts(&mut self, metadata: Option<&PacketMetadata>) -> (i64, u64) {
@@ -879,9 +880,9 @@ impl Vp9Encoder {
 
         let pts = metadata
             .and_then(|meta| meta.timestamp_us)
-            .map_or(self.next_pts, |timestamp| timestamp as i64);
+            .map_or(self.next_pts, |timestamp| timestamp.cast_signed());
 
-        self.next_pts = if duration > 0 { pts + duration as i64 } else { pts + 1 };
+        self.next_pts = if duration > 0 { pts + duration.cast_signed() } else { pts + 1 };
         (pts, duration)
     }
 }
@@ -922,11 +923,10 @@ fn check_vpx(
         }
     };
 
-    if let Some(detail) = detail {
-        Err(format!("{context}: {err} ({detail})"))
-    } else {
-        Err(format!("{context}: {err}"))
-    }
+    detail.map_or_else(
+        || Err(format!("{context}: {err}")),
+        |detail| Err(format!("{context}: {err} ({detail})")),
+    )
 }
 
 unsafe fn set_codec_control(
@@ -1014,6 +1014,7 @@ fn copy_plane(
     if src_stride <= 0 {
         return Err("Invalid source stride for VP9 plane".to_string());
     }
+    #[allow(clippy::cast_sign_loss)]
     let src_stride = src_stride as usize;
 
     for row in 0..height {
@@ -1037,18 +1038,18 @@ const fn merge_keyframe_metadata(
     keyframe: bool,
     pts: i64,
     duration: u64,
-) -> Option<PacketMetadata> {
+) -> PacketMetadata {
     match metadata {
         Some(mut meta) => {
             meta.keyframe = Some(keyframe);
-            Some(meta)
+            meta
         },
-        None => Some(PacketMetadata {
-            timestamp_us: if pts >= 0 { Some(pts as u64) } else { None },
+        None => PacketMetadata {
+            timestamp_us: if pts >= 0 { Some(pts.cast_unsigned()) } else { None },
             duration_us: if duration > 0 { Some(duration) } else { None },
             sequence: None,
             keyframe: Some(keyframe),
-        }),
+        },
     }
 }
 
@@ -1065,7 +1066,7 @@ fn vp9_encoder_available() -> bool {
 use schemars::schema_for;
 use streamkit_core::registry::StaticPins;
 
-#[allow(clippy::expect_used)]
+#[allow(clippy::expect_used, clippy::missing_panics_doc)]
 pub fn register_vp9_nodes(registry: &mut NodeRegistry) {
     let default_decoder = Vp9DecoderNode::new(Vp9DecoderConfig::default())
         .expect("default VP9 decoder config should be valid");
