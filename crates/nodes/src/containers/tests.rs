@@ -456,7 +456,6 @@ async fn test_webm_sliding_window() {
 #[cfg(feature = "vp9")]
 #[tokio::test]
 async fn test_webm_mux_vp9_video_only() {
-    use super::webm::WebMStreamingMode;
     use crate::test_utils::create_test_video_frame;
     use crate::video::vp9::{Vp9EncoderConfig, Vp9EncoderNode};
     use streamkit_core::types::{PacketMetadata, PixelFormat};
@@ -526,7 +525,6 @@ async fn test_webm_mux_vp9_video_only() {
     let mux_config = WebMMuxerConfig {
         video_width: 64,
         video_height: 64,
-        streaming_mode: WebMStreamingMode::File,
         ..WebMMuxerConfig::default()
     };
     let muxer = WebMMuxerNode::new(mux_config);

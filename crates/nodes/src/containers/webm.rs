@@ -472,8 +472,6 @@ impl ProcessorNode for WebMMuxerNode {
         let mut packet_count = 0u64;
         let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
 
-        let is_file_mode = matches!(self.config.streaming_mode, WebMStreamingMode::File);
-
         // In Live mode we use a non-seek writer, so we can drain bytes out without keeping
         // any history (zero-copy streaming). In File mode we must keep the whole buffer
         // because we only emit bytes once the segment is finalized.
@@ -716,22 +714,18 @@ impl ProcessorNode for WebMMuxerNode {
                         keyframe: metadata.as_ref().and_then(|m| m.keyframe),
                     });
 
-                    // In File mode, skip intermediate flushes — the entire buffer
-                    // must remain intact for finalize() to seek-backpatch the header.
-                    if !is_file_mode {
-                        if flush_output(
-                            &mut context,
-                            &shared_buffer,
-                            &content_type_str,
-                            output_metadata,
-                            &mut header_sent,
-                            &mut stats_tracker,
-                            &node_name,
-                        )
-                        .await?
-                        {
-                            break;
-                        }
+                    if flush_output(
+                        &mut context,
+                        &shared_buffer,
+                        &content_type_str,
+                        output_metadata,
+                        &mut header_sent,
+                        &mut stats_tracker,
+                        &node_name,
+                    )
+                    .await?
+                    {
+                        break;
                     }
 
                     stats_tracker.maybe_send();
@@ -788,22 +782,18 @@ impl ProcessorNode for WebMMuxerNode {
                         keyframe: Some(is_keyframe),
                     });
 
-                    // In File mode, skip intermediate flushes — the entire buffer
-                    // must remain intact for finalize() to seek-backpatch the header.
-                    if !is_file_mode {
-                        if flush_output(
-                            &mut context,
-                            &shared_buffer,
-                            &content_type_str,
-                            output_metadata,
-                            &mut header_sent,
-                            &mut stats_tracker,
-                            &node_name,
-                        )
-                        .await?
-                        {
-                            break;
-                        }
+                    if flush_output(
+                        &mut context,
+                        &shared_buffer,
+                        &content_type_str,
+                        output_metadata,
+                        &mut header_sent,
+                        &mut stats_tracker,
+                        &node_name,
+                    )
+                    .await?
+                    {
+                        break;
                     }
 
                     stats_tracker.maybe_send();
