@@ -576,7 +576,11 @@ impl ProcessorNode for CompositorNode {
                             let pip_x = self.config.width - pip_w - 20;
                             let pip_y = self.config.height - pip_h - 20;
                             #[allow(clippy::cast_possible_wrap)]
-                            (Some(Rect { x: pip_x, y: pip_y, width: pip_w, height: pip_h }), 0.9, idx as i32)
+                            (
+                                Some(Rect { x: pip_x, y: pip_y, width: pip_w, height: pip_h }),
+                                0.9,
+                                idx as i32,
+                            )
                         } else {
                             // First layer (or single input): fill the canvas.
                             (None, 1.0, 0)
@@ -598,13 +602,11 @@ impl ProcessorNode for CompositorNode {
             // (bottom of the stack).  `None` entries (slots without a frame)
             // are pushed to the end — they are skipped during compositing
             // anyway.
-            layers.sort_by(|a, b| {
-                match (a, b) {
-                    (Some(la), Some(lb)) => la.z_index.cmp(&lb.z_index),
-                    (Some(_), None) => std::cmp::Ordering::Less,
-                    (None, Some(_)) => std::cmp::Ordering::Greater,
-                    (None, None) => std::cmp::Ordering::Equal,
-                }
+            layers.sort_by(|a, b| match (a, b) {
+                (Some(la), Some(lb)) => la.z_index.cmp(&lb.z_index),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
             });
 
             stats_tracker.received();
