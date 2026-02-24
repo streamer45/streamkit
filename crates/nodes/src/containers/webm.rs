@@ -220,6 +220,7 @@ impl SharedPacketBuffer {
     /// Takes any new data written since the last call, and trims old data beyond the window.
     /// This allows the WebM library to seek backwards within the window while preventing
     /// unbounded memory growth for long streams.
+    #[allow(clippy::significant_drop_tightening)] // Guard must span the entire take-trim-update sequence.
     fn take_data(&self) -> Option<Bytes> {
         // Mutex poisoning is a fatal error - allows expect() for this common pattern
         #[allow(clippy::expect_used)]
@@ -301,6 +302,7 @@ impl Write for SharedPacketBuffer {
 }
 
 impl Seek for SharedPacketBuffer {
+    #[allow(clippy::significant_drop_tightening)] // Guard must span base_offset read + seek + result computation.
     fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
         // Single lock covers both base_offset read and cursor seek, eliminating
         // the lock-ordering concern of the previous triple-mutex design.

@@ -104,7 +104,7 @@ impl Engine {
     ///
     /// Panics if the engine's registry lock is poisoned (only possible if a thread panicked
     /// while holding the lock).
-    #[allow(clippy::cognitive_complexity)]
+    #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
     pub async fn run_oneshot_pipeline<S, E>(
         &self,
         definition: Pipeline,
@@ -334,11 +334,29 @@ impl Engine {
         })?;
         tracing::debug!("Creating final node instance of type '{}'", final_node_def.kind);
 
-        // Get the static content-type from the final node before we move it
+        // Walk backwards from the output node through the connection graph to find
+        // the first node that declares a content_type.  This allows passthrough-style
+        // nodes (pacer, passthrough, telemetry_tap, etc.) to be inserted before
+        // http_output without losing the upstream content type.
         let static_content_type = {
-            let temp_instance =
-                registry.create_node(&final_node_def.kind, final_node_def.params.as_ref())?;
-            temp_instance.content_type()
+            let mut cursor = final_node_id.as_str();
+            let mut found: Option<String> = None;
+            // Limit iterations to prevent infinite loops in malformed graphs.
+            for _ in 0..definition.nodes.len() {
+                if let Some(def) = definition.nodes.get(cursor) {
+                    let temp = registry.create_node(&def.kind, def.params.as_ref())?;
+                    if let Some(ct) = temp.content_type() {
+                        found = Some(ct);
+                        break;
+                    }
+                }
+                // Move to the upstream node that feeds `cursor`.
+                match definition.connections.iter().find(|c| c.to_node == cursor) {
+                    Some(conn) => cursor = conn.from_node.as_str(),
+                    None => break,
+                }
+            }
+            found
         };
 
         // --- 4. Instantiate all nodes for the pipeline ---
