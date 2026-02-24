@@ -522,11 +522,8 @@ async fn test_webm_mux_vp9_video_only() {
             level: None,
         }),
     );
-    let mux_config = WebMMuxerConfig {
-        video_width: 64,
-        video_height: 64,
-        ..WebMMuxerConfig::default()
-    };
+    let mux_config =
+        WebMMuxerConfig { video_width: 64, video_height: 64, ..WebMMuxerConfig::default() };
     let muxer = WebMMuxerNode::new(mux_config);
     let mux_handle = tokio::spawn(async move { Box::new(muxer).run(mux_context).await });
 
