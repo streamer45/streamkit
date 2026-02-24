@@ -289,14 +289,20 @@ impl ProcessorNode for CompositorNode {
                     &work.text_overlays,
                     work.output_format,
                 ) {
-                    let src = work.layers[pt_idx].as_ref().unwrap().data.as_slice();
-                    let pooled = if let Some(ref pool) = work.video_pool {
-                        let mut p = pool.get(src.len());
-                        p.as_mut_slice()[..src.len()].copy_from_slice(src);
-                        p
-                    } else {
-                        streamkit_core::frame_pool::PooledVideoData::from_vec(src.to_vec())
+                    let Some(src_layer) = work.layers.get(pt_idx).and_then(Option::as_ref) else {
+                        continue;
                     };
+                    let src = src_layer.data.as_slice();
+
+                    let pooled = work.video_pool.as_ref().map_or_else(
+                        || streamkit_core::frame_pool::PooledVideoData::from_vec(src.to_vec()),
+                        |pool| {
+                            let mut p = pool.get(src.len());
+                            p.as_mut_slice()[..src.len()].copy_from_slice(src);
+                            p
+                        },
+                    );
+
                     let result = CompositeResult {
                         output_format: work.output_format,
                         rgba_data: None,
@@ -325,11 +331,15 @@ impl ProcessorNode for CompositorNode {
                     let chroma_w = w.div_ceil(2);
                     let chroma_h = h.div_ceil(2);
                     let i420_size = w * h + 2 * chroma_w * chroma_h;
-                    let mut i420_pooled = if let Some(ref pool) = work.video_pool {
-                        pool.get(i420_size)
-                    } else {
-                        streamkit_core::frame_pool::PooledVideoData::from_vec(vec![0u8; i420_size])
-                    };
+                    let mut i420_pooled = work.video_pool.as_ref().map_or_else(
+                        || {
+                            streamkit_core::frame_pool::PooledVideoData::from_vec(vec![
+                                0u8;
+                                i420_size
+                            ])
+                        },
+                        |pool| pool.get(i420_size),
+                    );
                     rgba8_to_i420_buf(
                         rgba_buf.as_slice(),
                         work.canvas_w,
@@ -365,11 +375,9 @@ impl ProcessorNode for CompositorNode {
             // compositing step was slower than the producer.
             let mut got_any_frame = false;
             for slot in &mut slots {
-                if let Ok(packet) = slot.rx.try_recv() {
-                    if let Packet::Video(frame) = packet {
-                        slot.latest_frame = Some(frame);
-                        got_any_frame = true;
-                    }
+                if let Ok(Packet::Video(frame)) = slot.rx.try_recv() {
+                    slot.latest_frame = Some(frame);
+                    got_any_frame = true;
                 }
             }
 
@@ -808,7 +816,9 @@ mod tests {
         scale_blit_rgba(&mut dst, 4, 4, &src, 2, 2, &Rect { x: 1, y: 1, width: 2, height: 2 }, 1.0);
 
         // Pixel at (1,1) should be red.
-        let idx = (1 * 4 + 1) * 4;
+        let x = 1usize;
+        let y = 1usize;
+        let idx = (y * 4 + x) * 4;
         assert_eq!(dst[idx], 255);
         assert_eq!(dst[idx + 1], 0);
         assert_eq!(dst[idx + 2], 0);
@@ -866,7 +876,7 @@ mod tests {
     fn test_composite_frame_single_layer() {
         let data = make_rgba_frame(2, 2, 255, 0, 0, 255);
         let layer = LayerSnapshot {
-            data: data.data.clone(),
+            data: data.data,
             width: 2,
             height: 2,
             pixel_format: PixelFormat::Rgba8,
@@ -894,7 +904,7 @@ mod tests {
         let green = make_rgba_frame(2, 2, 0, 255, 0, 255);
 
         let layer0 = LayerSnapshot {
-            data: red.data.clone(),
+            data: red.data,
             width: 4,
             height: 4,
             pixel_format: PixelFormat::Rgba8,
@@ -902,7 +912,7 @@ mod tests {
             opacity: 1.0,
         };
         let layer1 = LayerSnapshot {
-            data: green.data.clone(),
+            data: green.data,
             width: 2,
             height: 2,
             pixel_format: PixelFormat::Rgba8,
@@ -920,7 +930,9 @@ mod tests {
         assert_eq!(buf[1], 0);
 
         // (1,1) should be green (overwritten by top layer).
-        let idx = (1 * 4 + 1) * 4;
+        let x = 1usize;
+        let y = 1usize;
+        let idx = (y * 4 + x) * 4;
         assert_eq!(buf[idx], 0);
         assert_eq!(buf[idx + 1], 255);
         assert_eq!(buf[idx + 2], 0);

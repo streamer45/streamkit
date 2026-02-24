@@ -31,6 +31,8 @@ pub fn scale_blit_rgba(
     dst_rect: &Rect,
     opacity: f32,
 ) {
+    use rayon::prelude::*;
+
     if src_width == 0 || src_height == 0 || dst_rect.width == 0 || dst_rect.height == 0 {
         return;
     }
@@ -51,8 +53,8 @@ pub fn scale_blit_rgba(
     }
 
     // Clamp the number of columns to the canvas width.
-    let effective_rw = rw.min(dw.saturating_sub(rx));
-    if effective_rw == 0 {
+    let effective_rect_w = rw.min(dw.saturating_sub(rx));
+    if effective_rect_w == 0 {
         return;
     }
 
@@ -61,7 +63,6 @@ pub fn scale_blit_rgba(
     let row_stride = dw * 4;
 
     // Use rayon for parallel row processing when the region is large enough.
-    use rayon::prelude::*;
 
     // We need to give each row its own mutable slice. Split the dst buffer
     // at the first output row.
@@ -71,7 +72,7 @@ pub fn scale_blit_rgba(
     dst_rows.par_chunks_mut(row_stride).take(effective_rh).enumerate().for_each(
         |(dy, row_slice)| {
             let sy = dy * sh / rh;
-            blit_row(row_slice, rx, effective_rw, src, sw, sh, sy, rw, opacity);
+            blit_row(row_slice, rx, effective_rect_w, src, sw, sh, sy, rw, opacity);
         },
     );
 }
@@ -258,7 +259,7 @@ pub fn blit_overlay(canvas: &mut [u8], canvas_w: u32, canvas_h: u32, overlay: &D
 ///
 /// The caller must ensure `out` has length >= `width * height * 4`.
 /// Rows are processed in parallel via `rayon`.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::many_single_char_names)]
 pub fn i420_to_rgba8_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     use rayon::prelude::*;
 
@@ -314,7 +315,7 @@ pub fn i420_to_rgba8(data: &[u8], width: u32, height: u32) -> Vec<u8> {
 ///
 /// The caller must ensure `out` has length >= `w * h + 2 * ((w+1)/2) * ((h+1)/2)`.
 /// Y, U and V planes are processed in parallel via `rayon`.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::many_single_char_names)]
 pub fn rgba8_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     use rayon::prelude::*;
 
@@ -334,13 +335,13 @@ pub fn rgba8_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     y_plane.par_chunks_mut(y_stride).take(h).enumerate().for_each(|(row, y_row)| {
         let rgba_base = row * w * 4;
 
-        for col in 0..w {
+        for (col, y_out) in y_row.iter_mut().enumerate().take(w) {
             let off = rgba_base + col * 4;
             let r = i32::from(data[off]);
             let g = i32::from(data[off + 1]);
             let b = i32::from(data[off + 2]);
             let y = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
-            y_row[col] = y.clamp(0, 255) as u8;
+            *y_out = y.clamp(0, 255) as u8;
         }
     });
 

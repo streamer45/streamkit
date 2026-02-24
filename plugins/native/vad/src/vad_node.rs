@@ -145,6 +145,7 @@ impl VadNode {
                 timestamp_us: Some(timestamp_ms.saturating_mul(1000)),
                 duration_us: None,
                 sequence: None,
+                keyframe: None,
             }),
         }));
 

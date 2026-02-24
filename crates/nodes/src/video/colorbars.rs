@@ -323,7 +323,8 @@ fn draw_sweep_bar_i420(
     let speed: usize = 4; // pixels per frame
     let w = width as usize;
     let h = height as usize;
-    let bar_x = (seq as usize * speed) % w;
+    let seq_usize = usize::try_from(seq).unwrap_or(usize::MAX);
+    let bar_x = seq_usize.saturating_mul(speed) % w;
 
     // Y plane: set bar columns to peak white (235).
     for row in 0..h {
@@ -385,7 +386,8 @@ fn draw_sweep_bar_rgba8(data: &mut [u8], width: u32, height: u32, seq: u64) {
     let w = width as usize;
     let h = height as usize;
     let stride = w * 4;
-    let bar_x = (seq as usize * speed) % w;
+    let seq_usize = usize::try_from(seq).unwrap_or(usize::MAX);
+    let bar_x = seq_usize.saturating_mul(speed) % w;
 
     for row in 0..h {
         for dx in 0..bar_width {
@@ -438,7 +440,7 @@ fn generate_smpte_colorbars_i420(
 
 // ── Registration ────────────────────────────────────────────────────────────
 
-#[allow(clippy::expect_used)]
+#[allow(clippy::expect_used, clippy::missing_panics_doc)]
 pub fn register_colorbars_nodes(registry: &mut NodeRegistry) {
     let default_node =
         ColorBarsNode { config: ColorBarsConfig::default(), pixel_format: PixelFormat::I420 };

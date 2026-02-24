@@ -878,9 +878,8 @@ impl Vp9Encoder {
     fn next_pts(&mut self, metadata: Option<&PacketMetadata>) -> (i64, u64) {
         let duration = metadata.and_then(|meta| meta.duration_us).unwrap_or(0);
 
-        let pts = metadata
-            .and_then(|meta| meta.timestamp_us)
-            .map_or(self.next_pts, |timestamp| timestamp.cast_signed());
+        let pts =
+            metadata.and_then(|meta| meta.timestamp_us).map_or(self.next_pts, u64::cast_signed);
 
         self.next_pts = if duration > 0 { pts + duration.cast_signed() } else { pts + 1 };
         (pts, duration)
@@ -1060,7 +1059,7 @@ fn vp9_encoder_available() -> bool {
         return false;
     }
     let caps = unsafe { vpx::vpx_codec_get_caps(iface) };
-    (caps as u32 & VPX_CODEC_CAP_ENCODER) != 0
+    u32::try_from(caps).is_ok_and(|caps_u32| (caps_u32 & VPX_CODEC_CAP_ENCODER) != 0)
 }
 
 use schemars::schema_for;
@@ -1175,7 +1174,7 @@ mod tests {
                     }
                     let detail = unsafe {
                         // SAFETY: ctx is valid for the duration of the encoder.
-                        vpx_string(vpx::vpx_codec_error_detail(&mut probe_encoder.ctx))
+                        vpx_string(vpx::vpx_codec_error_detail(&raw mut probe_encoder.ctx))
                     };
                     eprintln!("VP9 probe error detail: {detail}");
                 }
@@ -1191,16 +1190,16 @@ mod tests {
         assert_state_running(&mut enc_state_rx).await;
 
         let mut expected_metadata = HashMap::new();
-        for index in 0..5 {
-            let timestamp = 1_000 + 33_333 * index as u64;
-            let duration = 33_333;
-            expected_metadata.insert(index as u64, (timestamp, duration));
+        for index in 0_u64..5 {
+            let timestamp = 1_000 + 33_333_u64 * index;
+            let duration: u64 = 33_333;
+            expected_metadata.insert(index, (timestamp, duration));
 
             let mut frame = create_test_video_frame(64, 64, PixelFormat::I420, 16);
             frame.metadata = Some(PacketMetadata {
                 timestamp_us: Some(timestamp),
                 duration_us: Some(duration),
-                sequence: Some(index as u64),
+                sequence: Some(index),
                 keyframe: Some(true),
             });
             enc_input_tx.send(Packet::Video(frame)).await.unwrap();

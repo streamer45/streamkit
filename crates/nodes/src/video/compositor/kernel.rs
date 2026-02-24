@@ -149,7 +149,7 @@ pub fn try_i420_passthrough(
         }
     }
     let idx = active_idx?;
-    let layer = layers[idx].as_ref().unwrap();
+    let layer = layers.get(idx).and_then(Option::as_ref)?;
 
     if layer.pixel_format != PixelFormat::I420 {
         return None;
