@@ -109,8 +109,20 @@ fn blit_row(
     }
 }
 
+/// Fixed-point alpha blend: `(src * alpha + dst * (255 - alpha) + 128) / 255`
+/// using the well-known `((x + (x >> 8)) >> 8)` fast approximation of `x / 255`.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+const fn blend_u8(src: u8, dst: u8, alpha: u16) -> u8 {
+    let inv = 255 - alpha;
+    let val = src as u16 * alpha + dst as u16 * inv + 128;
+    ((val + (val >> 8)) >> 8) as u8
+}
+
 /// Inner blit for fully-opaque layers (`opacity >= 1.0`).  Skips the
 /// per-pixel f32 multiply on the source alpha channel.
+///
+/// Uses integer-only alpha blending for semi-transparent source pixels.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -129,9 +141,10 @@ fn blit_row_opaque(
     sy: usize,
     rw: usize,
 ) {
+    let src_row_base = sy * sw * 4;
     for dx in 0..effective_rw {
         let sx = dx * sw / rw;
-        let src_idx = (sy * sw + sx) * 4;
+        let src_idx = src_row_base + sx * 4;
         if src_idx + 3 >= src.len() {
             continue;
         }
@@ -141,8 +154,7 @@ fn blit_row_opaque(
         let sb = src[src_idx + 2];
         let sa = src[src_idx + 3];
 
-        let out_x = rx + dx;
-        let dst_idx = out_x * 4;
+        let dst_idx = (rx + dx) * 4;
         if dst_idx + 3 >= row_slice.len() {
             continue;
         }
@@ -153,22 +165,21 @@ fn blit_row_opaque(
             row_slice[dst_idx + 2] = sb;
             row_slice[dst_idx + 3] = 255;
         } else if sa > 0 {
-            let alpha = f32::from(sa) / 255.0;
-            let inv_alpha = 1.0 - alpha;
-            row_slice[dst_idx] =
-                f32::from(sr).mul_add(alpha, f32::from(row_slice[dst_idx]) * inv_alpha) as u8;
-            row_slice[dst_idx + 1] =
-                f32::from(sg).mul_add(alpha, f32::from(row_slice[dst_idx + 1]) * inv_alpha) as u8;
-            row_slice[dst_idx + 2] =
-                f32::from(sb).mul_add(alpha, f32::from(row_slice[dst_idx + 2]) * inv_alpha) as u8;
-            row_slice[dst_idx + 3] =
-                f32::from(row_slice[dst_idx + 3]).mul_add(inv_alpha, f32::from(sa)) as u8;
+            let a16 = sa as u16;
+            row_slice[dst_idx] = blend_u8(sr, row_slice[dst_idx], a16);
+            row_slice[dst_idx + 1] = blend_u8(sg, row_slice[dst_idx + 1], a16);
+            row_slice[dst_idx + 2] = blend_u8(sb, row_slice[dst_idx + 2], a16);
+            // Composite alpha: a_out = a_src + a_dst * (1 - a_src)
+            let da = row_slice[dst_idx + 3] as u16;
+            row_slice[dst_idx + 3] = (a16 + ((da * (255 - a16) + 128) >> 8)).min(255) as u8;
         }
     }
 }
 
 /// Inner blit for layers with fractional opacity (`opacity < 1.0`).
 /// Applies the opacity multiplier to every source pixel's alpha channel.
+///
+/// Uses integer-only alpha blending.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -188,9 +199,13 @@ fn blit_row_alpha(
     rw: usize,
     opacity: f32,
 ) {
+    // Pre-compute opacity as a 0..255 integer multiplier.
+    let opacity_u16 = (opacity * 255.0 + 0.5) as u16;
+    let src_row_base = sy * sw * 4;
+
     for dx in 0..effective_rw {
         let sx = dx * sw / rw;
-        let src_idx = (sy * sw + sx) * 4;
+        let src_idx = src_row_base + sx * 4;
         if src_idx + 3 >= src.len() {
             continue;
         }
@@ -200,29 +215,24 @@ fn blit_row_alpha(
         let sb = src[src_idx + 2];
         let sa = src[src_idx + 3];
 
-        let out_x = rx + dx;
-        let dst_idx = out_x * 4;
+        let dst_idx = (rx + dx) * 4;
         if dst_idx + 3 >= row_slice.len() {
             continue;
         }
 
-        let sa_eff = (f32::from(sa) * opacity).round() as u8;
+        // Effective alpha: (sa * opacity) / 255, done in integer.
+        let sa_eff = ((sa as u16 * opacity_u16 + 128) >> 8).min(255) as u16;
         if sa_eff == 255 {
             row_slice[dst_idx] = sr;
             row_slice[dst_idx + 1] = sg;
             row_slice[dst_idx + 2] = sb;
             row_slice[dst_idx + 3] = 255;
         } else if sa_eff > 0 {
-            let alpha = f32::from(sa_eff) / 255.0;
-            let inv_alpha = 1.0 - alpha;
-            row_slice[dst_idx] =
-                f32::from(sr).mul_add(alpha, f32::from(row_slice[dst_idx]) * inv_alpha) as u8;
-            row_slice[dst_idx + 1] =
-                f32::from(sg).mul_add(alpha, f32::from(row_slice[dst_idx + 1]) * inv_alpha) as u8;
-            row_slice[dst_idx + 2] =
-                f32::from(sb).mul_add(alpha, f32::from(row_slice[dst_idx + 2]) * inv_alpha) as u8;
-            row_slice[dst_idx + 3] =
-                f32::from(row_slice[dst_idx + 3]).mul_add(inv_alpha, f32::from(sa_eff)) as u8;
+            row_slice[dst_idx] = blend_u8(sr, row_slice[dst_idx], sa_eff);
+            row_slice[dst_idx + 1] = blend_u8(sg, row_slice[dst_idx + 1], sa_eff);
+            row_slice[dst_idx + 2] = blend_u8(sb, row_slice[dst_idx + 2], sa_eff);
+            let da = row_slice[dst_idx + 3] as u16;
+            row_slice[dst_idx + 3] = (sa_eff + ((da * (255 - sa_eff) + 128) >> 8)).min(255) as u8;
         }
     }
 }
@@ -249,11 +259,12 @@ pub(crate) fn blit_overlay(
 
 // ── Pixel format conversion ─────────────────────────────────────────────────
 
-/// Convert an I420 (YUV 4:2:0 planar) buffer to RGBA8.
+/// Convert an I420 (YUV 4:2:0 planar) buffer to RGBA8, writing into `out`.
 ///
+/// The caller must ensure `out` has length >= `width * height * 4`.
 /// Rows are processed in parallel via `rayon`.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-pub(crate) fn i420_to_rgba8(data: &[u8], width: u32, height: u32) -> Vec<u8> {
+pub(crate) fn i420_to_rgba8_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     use rayon::prelude::*;
 
     let w = width as usize;
@@ -263,38 +274,81 @@ pub(crate) fn i420_to_rgba8(data: &[u8], width: u32, height: u32) -> Vec<u8> {
     let chroma_h = (h + 1) / 2;
     let u_offset = y_stride * h;
     let v_offset = u_offset + chroma_w * chroma_h;
-
-    let mut rgba = vec![0u8; w * h * 4];
     let rgba_row_stride = w * 4;
 
-    rgba.par_chunks_mut(rgba_row_stride).take(h).enumerate().for_each(|(row, rgba_row)| {
-        for col in 0..w {
-            let y_val = data[row * y_stride + col] as i32;
-            let u_val = data[u_offset + (row / 2) * chroma_w + col / 2] as i32;
-            let v_val = data[v_offset + (row / 2) * chroma_w + col / 2] as i32;
+    out[..w * h * 4].par_chunks_mut(rgba_row_stride).take(h).enumerate().for_each(
+        |(row, rgba_row)| {
+            let y_row_base = row * y_stride;
+            let chroma_row = row / 2;
+            let u_row_base = u_offset + chroma_row * chroma_w;
+            let v_row_base = v_offset + chroma_row * chroma_w;
 
-            let c = y_val - 16;
-            let d = u_val - 128;
-            let e = v_val - 128;
-            let r = ((298 * c + 409 * e + 128) >> 8).clamp(0, 255) as u8;
-            let g = ((298 * c - 100 * d - 208 * e + 128) >> 8).clamp(0, 255) as u8;
-            let b = ((298 * c + 516 * d + 128) >> 8).clamp(0, 255) as u8;
+            // Process 4 pixels at a time for better auto-vectorisation.
+            let chunks = w / 4;
+            let remainder = w % 4;
 
-            let off = col * 4;
-            rgba_row[off] = r;
-            rgba_row[off + 1] = g;
-            rgba_row[off + 2] = b;
-            rgba_row[off + 3] = 255;
-        }
-    });
+            for chunk in 0..chunks {
+                let col_base = chunk * 4;
+                for i in 0..4 {
+                    let col = col_base + i;
+                    let y_val = data[y_row_base + col] as i32;
+                    let u_val = data[u_row_base + col / 2] as i32;
+                    let v_val = data[v_row_base + col / 2] as i32;
+
+                    let c = y_val - 16;
+                    let d = u_val - 128;
+                    let e = v_val - 128;
+                    let r = ((298 * c + 409 * e + 128) >> 8).clamp(0, 255) as u8;
+                    let g = ((298 * c - 100 * d - 208 * e + 128) >> 8).clamp(0, 255) as u8;
+                    let b = ((298 * c + 516 * d + 128) >> 8).clamp(0, 255) as u8;
+
+                    let off = col * 4;
+                    rgba_row[off] = r;
+                    rgba_row[off + 1] = g;
+                    rgba_row[off + 2] = b;
+                    rgba_row[off + 3] = 255;
+                }
+            }
+
+            // Handle remaining pixels.
+            for col in (chunks * 4)..((chunks * 4) + remainder) {
+                let y_val = data[y_row_base + col] as i32;
+                let u_val = data[u_row_base + col / 2] as i32;
+                let v_val = data[v_row_base + col / 2] as i32;
+
+                let c = y_val - 16;
+                let d = u_val - 128;
+                let e = v_val - 128;
+                let r = ((298 * c + 409 * e + 128) >> 8).clamp(0, 255) as u8;
+                let g = ((298 * c - 100 * d - 208 * e + 128) >> 8).clamp(0, 255) as u8;
+                let b = ((298 * c + 516 * d + 128) >> 8).clamp(0, 255) as u8;
+
+                let off = col * 4;
+                rgba_row[off] = r;
+                rgba_row[off + 1] = g;
+                rgba_row[off + 2] = b;
+                rgba_row[off + 3] = 255;
+            }
+        },
+    );
+}
+
+/// Convert an I420 (YUV 4:2:0 planar) buffer to RGBA8 (allocating variant).
+///
+/// Prefer [`i420_to_rgba8_buf`] with a pooled buffer to avoid per-frame allocation.
+#[allow(dead_code, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub(crate) fn i420_to_rgba8(data: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let mut rgba = vec![0u8; width as usize * height as usize * 4];
+    i420_to_rgba8_buf(data, width, height, &mut rgba);
     rgba
 }
 
-/// Convert an RGBA8 buffer to I420 (YUV 4:2:0 planar).
+/// Convert an RGBA8 buffer to I420 (YUV 4:2:0 planar), writing into `out`.
 ///
+/// The caller must ensure `out` has length >= `w * h + 2 * ((w+1)/2) * ((h+1)/2)`.
 /// Y, U and V planes are processed in parallel via `rayon`.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-pub(crate) fn rgba8_to_i420(data: &[u8], width: u32, height: u32) -> Vec<u8> {
+pub(crate) fn rgba8_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     use rayon::prelude::*;
 
     let w = width as usize;
@@ -304,18 +358,33 @@ pub(crate) fn rgba8_to_i420(data: &[u8], width: u32, height: u32) -> Vec<u8> {
     let chroma_h = (h + 1) / 2;
     let y_size = y_stride * h;
     let chroma_size = chroma_w * chroma_h;
-    let total = y_size + 2 * chroma_size;
-
-    let mut out = vec![0u8; total];
 
     // Split output into Y and chroma planes.
-    let (y_plane, chroma_planes) = out.split_at_mut(y_size);
+    let (y_plane, chroma_planes) = out[..y_size + 2 * chroma_size].split_at_mut(y_size);
     let (u_plane, v_plane) = chroma_planes.split_at_mut(chroma_size);
 
-    // Y plane — parallelise by row.
+    // Y plane — parallelise by row, processing 4 pixels at a time.
     y_plane.par_chunks_mut(y_stride).take(h).enumerate().for_each(|(row, y_row)| {
-        for col in 0..w {
-            let off = (row * w + col) * 4;
+        let rgba_row_base = row * w * 4;
+
+        let chunks = w / 4;
+        let remainder = w % 4;
+
+        for chunk in 0..chunks {
+            let col_base = chunk * 4;
+            for i in 0..4 {
+                let col = col_base + i;
+                let off = rgba_row_base + col * 4;
+                let r = data[off] as i32;
+                let g = data[off + 1] as i32;
+                let b = data[off + 2] as i32;
+                let y = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
+                y_row[col] = y.clamp(0, 255) as u8;
+            }
+        }
+
+        for col in (chunks * 4)..((chunks * 4) + remainder) {
+            let off = rgba_row_base + col * 4;
             let r = data[off] as i32;
             let g = data[off + 1] as i32;
             let b = data[off + 2] as i32;
@@ -329,18 +398,21 @@ pub(crate) fn rgba8_to_i420(data: &[u8], width: u32, height: u32) -> Vec<u8> {
     let v_rows: Vec<&mut [u8]> = v_plane.chunks_mut(chroma_w).collect();
 
     u_rows.into_par_iter().zip(v_rows).enumerate().for_each(|(crow, (u_row, v_row))| {
+        let r0 = crow * 2;
         for ccol in 0..chroma_w {
-            let r0 = crow * 2;
             let c0 = ccol * 2;
             let mut sr = 0i32;
             let mut sg = 0i32;
             let mut sb = 0i32;
             let mut count = 0i32;
             for dr in 0..2 {
+                let rr = r0 + dr;
+                if rr >= h {
+                    continue;
+                }
                 for dc in 0..2 {
-                    let rr = r0 + dr;
                     let cc = c0 + dc;
-                    if rr < h && cc < w {
+                    if cc < w {
                         let off = (rr * w + cc) * 4;
                         sr += data[off] as i32;
                         sg += data[off + 1] as i32;
@@ -358,6 +430,19 @@ pub(crate) fn rgba8_to_i420(data: &[u8], width: u32, height: u32) -> Vec<u8> {
             v_row[ccol] = v.clamp(0, 255) as u8;
         }
     });
+}
 
+/// Convert an RGBA8 buffer to I420 (YUV 4:2:0 planar) (allocating variant).
+///
+/// Prefer [`rgba8_to_i420_buf`] with a pooled buffer to avoid per-frame allocation.
+#[allow(dead_code, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub(crate) fn rgba8_to_i420(data: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let w = width as usize;
+    let h = height as usize;
+    let chroma_w = (w + 1) / 2;
+    let chroma_h = (h + 1) / 2;
+    let total = w * h + 2 * chroma_w * chroma_h;
+    let mut out = vec![0u8; total];
+    rgba8_to_i420_buf(data, width, height, &mut out);
     out
 }

@@ -13,7 +13,7 @@ use streamkit_core::types::PixelFormat;
 
 use super::config::Rect;
 use super::overlay::DecodedOverlay;
-use super::pixel_ops::{blit_overlay, i420_to_rgba8, scale_blit_rgba};
+use super::pixel_ops::{blit_overlay, i420_to_rgba8_buf, scale_blit_rgba};
 
 // ── Compositing kernel (runs on a persistent blocking thread) ────────────────
 
@@ -32,8 +32,8 @@ pub(crate) struct CompositeWorkItem {
     pub canvas_w: u32,
     pub canvas_h: u32,
     pub layers: Vec<Option<LayerSnapshot>>,
-    pub image_overlays: Vec<DecodedOverlay>,
-    pub text_overlays: Vec<DecodedOverlay>,
+    pub image_overlays: Vec<Arc<DecodedOverlay>>,
+    pub text_overlays: Vec<Arc<DecodedOverlay>>,
     pub video_pool: Option<Arc<streamkit_core::VideoFramePool>>,
     pub output_format: PixelFormat,
 }
@@ -42,18 +42,22 @@ pub(crate) struct CompositeWorkItem {
 pub(crate) struct CompositeResult {
     pub output_format: PixelFormat,
     pub rgba_data: Option<streamkit_core::frame_pool::PooledVideoData>,
-    pub i420_data: Option<Vec<u8>>,
+    pub i420_data: Option<streamkit_core::frame_pool::PooledVideoData>,
 }
 
 /// Composite all layers + overlays onto a fresh RGBA8 canvas buffer.
 /// Allocates from the video pool if available.
+///
+/// `i420_scratch` is a reusable buffer for I420→RGBA8 conversion, avoiding
+/// per-frame allocation.
 pub(crate) fn composite_frame(
     canvas_w: u32,
     canvas_h: u32,
     layers: &[Option<LayerSnapshot>],
-    image_overlays: &[DecodedOverlay],
-    text_overlays: &[DecodedOverlay],
+    image_overlays: &[Arc<DecodedOverlay>],
+    text_overlays: &[Arc<DecodedOverlay>],
     video_pool: Option<&streamkit_core::VideoFramePool>,
+    i420_scratch: &mut Vec<u8>,
 ) -> streamkit_core::frame_pool::PooledVideoData {
     let total_bytes = (canvas_w as usize) * (canvas_h as usize) * 4;
 
@@ -67,17 +71,25 @@ pub(crate) fn composite_frame(
     buf[..total_bytes].fill(0);
 
     // Blit each layer (in order — first layer is bottom, last is top).
-    // I420 layers are converted to RGBA8 on-the-fly inside this blocking task.
+    // I420 layers are converted to RGBA8 on-the-fly using the scratch buffer.
     for layer in layers.iter().flatten() {
         let dst_rect =
             layer.rect.clone().unwrap_or(Rect { x: 0, y: 0, width: canvas_w, height: canvas_h });
 
-        let rgba_data;
         let src_data: &[u8] = match layer.pixel_format {
             PixelFormat::Rgba8 => layer.data.as_slice(),
             PixelFormat::I420 => {
-                rgba_data = i420_to_rgba8(layer.data.as_slice(), layer.width, layer.height);
-                &rgba_data
+                let needed = layer.width as usize * layer.height as usize * 4;
+                if i420_scratch.len() < needed {
+                    i420_scratch.resize(needed, 0);
+                }
+                i420_to_rgba8_buf(
+                    layer.data.as_slice(),
+                    layer.width,
+                    layer.height,
+                    i420_scratch,
+                );
+                &i420_scratch[..needed]
             },
         };
 
@@ -104,4 +116,55 @@ pub(crate) fn composite_frame(
     }
 
     pooled
+}
+
+/// Check whether the I420→RGBA8→I420 round-trip can be skipped entirely.
+///
+/// This is possible when:
+/// - The output format is I420
+/// - There is exactly one active layer that is already I420
+/// - That layer fills the full canvas (no rect / full-canvas rect)
+/// - Opacity is 1.0
+/// - There are no image or text overlays
+///
+/// Returns `Some(data)` with the pass-through I420 data, or `None` if compositing is needed.
+pub(crate) fn try_i420_passthrough(
+    canvas_w: u32,
+    canvas_h: u32,
+    layers: &[Option<LayerSnapshot>],
+    image_overlays: &[Arc<DecodedOverlay>],
+    text_overlays: &[Arc<DecodedOverlay>],
+    output_format: PixelFormat,
+) -> Option<Arc<streamkit_core::frame_pool::PooledVideoData>> {
+    if output_format != PixelFormat::I420 {
+        return None;
+    }
+    if !image_overlays.is_empty() || !text_overlays.is_empty() {
+        return None;
+    }
+
+    // Collect active (non-None) layers.
+    let active: Vec<&LayerSnapshot> = layers.iter().filter_map(|l| l.as_ref()).collect();
+    if active.len() != 1 {
+        return None;
+    }
+    let layer = active[0];
+    if layer.pixel_format != PixelFormat::I420 {
+        return None;
+    }
+    if layer.opacity < 1.0 {
+        return None;
+    }
+    // Check dimensions match canvas.
+    if layer.width != canvas_w || layer.height != canvas_h {
+        return None;
+    }
+    // Check the rect fills the full canvas (or is None).
+    if let Some(ref rect) = layer.rect {
+        if rect.x != 0 || rect.y != 0 || rect.width != canvas_w || rect.height != canvas_h {
+            return None;
+        }
+    }
+
+    Some(layer.data.clone())
 }

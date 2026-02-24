@@ -34,9 +34,10 @@ use config::{CompositorConfig, Rect};
 use futures::future::select_all;
 use kernel::{CompositeResult, CompositeWorkItem, LayerSnapshot};
 use overlay::{decode_image_overlay, rasterize_text_overlay, DecodedOverlay};
-use pixel_ops::rgba8_to_i420;
+use pixel_ops::rgba8_to_i420_buf;
 use schemars::schema_for;
 use std::pin::Pin;
+use std::sync::Arc;
 use streamkit_core::control::NodeControlMessage;
 use streamkit_core::pins::PinManagementMessage;
 use streamkit_core::registry::StaticPins;
@@ -200,8 +201,9 @@ impl ProcessorNode for CompositorNode {
             self.config.text_overlays.len(),
         );
 
-        // Decode image overlays (once).
-        let mut image_overlays: Vec<DecodedOverlay> =
+        // Decode image overlays (once).  Wrap in Arc so per-frame clones
+        // into the work item are cheap reference-count bumps.
+        let mut image_overlays: Vec<Arc<DecodedOverlay>> =
             Vec::with_capacity(self.config.image_overlays.len());
         for (i, img_cfg) in self.config.image_overlays.iter().enumerate() {
             match decode_image_overlay(img_cfg) {
@@ -216,7 +218,7 @@ impl ProcessorNode for CompositorNode {
                         overlay.rect.width,
                         overlay.rect.height,
                     );
-                    image_overlays.push(overlay);
+                    image_overlays.push(Arc::new(overlay));
                 },
                 Err(e) => {
                     tracing::warn!("Failed to decode image overlay {}: {}", i, e);
@@ -224,11 +226,11 @@ impl ProcessorNode for CompositorNode {
             }
         }
 
-        // Rasterize text overlays (once; re-done on UpdateParams).
-        let mut text_overlays: Vec<DecodedOverlay> =
+        // Rasterize text overlays (once; re-done on UpdateParams).  Also Arc-wrapped.
+        let mut text_overlays: Vec<Arc<DecodedOverlay>> =
             Vec::with_capacity(self.config.text_overlays.len());
         for txt_cfg in &self.config.text_overlays {
-            text_overlays.push(rasterize_text_overlay(txt_cfg));
+            text_overlays.push(Arc::new(rasterize_text_overlay(txt_cfg)));
         }
 
         // Collect initial input slots from pre-connected pins.
@@ -269,7 +271,39 @@ impl ProcessorNode for CompositorNode {
         let (result_tx, mut result_rx) = tokio::sync::mpsc::channel::<CompositeResult>(2);
 
         let composite_thread = tokio::task::spawn_blocking(move || {
+            // Persistent scratch buffers — reused across frames to avoid
+            // per-frame allocation in colour-space conversions.
+            let mut i420_to_rgba_scratch: Vec<u8> = Vec::new();
+            let mut rgba_to_i420_scratch: Vec<u8> = Vec::new();
+
             while let Some(work) = work_rx.blocking_recv() {
+                // Fast path: try I420 pass-through to skip the entire
+                // I420 → RGBA8 → I420 round-trip.
+                if let Some(passthrough_data) = kernel::try_i420_passthrough(
+                    work.canvas_w,
+                    work.canvas_h,
+                    &work.layers,
+                    &work.image_overlays,
+                    &work.text_overlays,
+                    work.output_format,
+                ) {
+                    let pooled = Arc::try_unwrap(passthrough_data)
+                        .unwrap_or_else(|arc| {
+                            streamkit_core::frame_pool::PooledVideoData::from_vec(
+                                arc.as_slice().to_vec(),
+                            )
+                        });
+                    let result = CompositeResult {
+                        output_format: work.output_format,
+                        rgba_data: None,
+                        i420_data: Some(pooled),
+                    };
+                    if result_tx.blocking_send(result).is_err() {
+                        break;
+                    }
+                    continue;
+                }
+
                 let rgba_buf = composite_frame(
                     work.canvas_w,
                     work.canvas_h,
@@ -277,13 +311,39 @@ impl ProcessorNode for CompositorNode {
                     &work.image_overlays,
                     &work.text_overlays,
                     work.video_pool.as_deref(),
+                    &mut i420_to_rgba_scratch,
                 );
                 let result = if work.output_format == PixelFormat::I420 {
-                    let i420 = rgba8_to_i420(rgba_buf.as_slice(), work.canvas_w, work.canvas_h);
+                    // Convert RGBA8 → I420 using the pooled scratch buffer.
+                    let w = work.canvas_w as usize;
+                    let h = work.canvas_h as usize;
+                    let chroma_w = (w + 1) / 2;
+                    let chroma_h = (h + 1) / 2;
+                    let i420_size = w * h + 2 * chroma_w * chroma_h;
+                    if rgba_to_i420_scratch.len() < i420_size {
+                        rgba_to_i420_scratch.resize(i420_size, 0);
+                    }
+                    rgba8_to_i420_buf(
+                        rgba_buf.as_slice(),
+                        work.canvas_w,
+                        work.canvas_h,
+                        &mut rgba_to_i420_scratch,
+                    );
+                    // Use the pool if available for the output buffer.
+                    let i420_pooled = if let Some(ref pool) = work.video_pool {
+                        let mut pooled = pool.get(i420_size);
+                        pooled.as_mut_slice()[..i420_size]
+                            .copy_from_slice(&rgba_to_i420_scratch[..i420_size]);
+                        pooled
+                    } else {
+                        streamkit_core::frame_pool::PooledVideoData::from_vec(
+                            rgba_to_i420_scratch[..i420_size].to_vec(),
+                        )
+                    };
                     CompositeResult {
                         output_format: work.output_format,
                         rgba_data: None,
-                        i420_data: Some(i420),
+                        i420_data: Some(i420_pooled),
                     }
                 } else {
                     CompositeResult {
@@ -525,13 +585,13 @@ impl ProcessorNode for CompositorNode {
             });
 
             let out_frame = if composite_result.output_format == PixelFormat::I420 {
-                let i420_data =
+                let i420_pooled =
                     composite_result.i420_data.expect("I420 output data must be present");
-                VideoFrame::with_metadata(
+                VideoFrame::from_pooled(
                     self.config.width,
                     self.config.height,
                     PixelFormat::I420,
-                    i420_data,
+                    i420_pooled,
                     metadata,
                 )
             } else {
@@ -571,8 +631,8 @@ impl ProcessorNode for CompositorNode {
 impl CompositorNode {
     fn apply_update_params(
         config: &mut CompositorConfig,
-        image_overlays: &mut Vec<DecodedOverlay>,
-        text_overlays: &mut Vec<DecodedOverlay>,
+        image_overlays: &mut Vec<Arc<DecodedOverlay>>,
+        text_overlays: &mut Vec<Arc<DecodedOverlay>>,
         params: serde_json::Value,
         stats_tracker: &mut NodeStatsTracker,
     ) {
@@ -592,7 +652,7 @@ impl CompositorNode {
                     image_overlays.clear();
                     for img_cfg in &new_config.image_overlays {
                         match decode_image_overlay(img_cfg) {
-                            Ok(ov) => image_overlays.push(ov),
+                            Ok(ov) => image_overlays.push(Arc::new(ov)),
                             Err(e) => tracing::warn!("Image overlay decode failed: {e}"),
                         }
                     }
@@ -600,7 +660,7 @@ impl CompositorNode {
                     // Re-rasterize text overlays.
                     text_overlays.clear();
                     for txt_cfg in &new_config.text_overlays {
-                        text_overlays.push(rasterize_text_overlay(txt_cfg));
+                        text_overlays.push(Arc::new(rasterize_text_overlay(txt_cfg)));
                     }
 
                     *config = new_config;
@@ -801,7 +861,8 @@ mod tests {
     #[test]
     fn test_composite_frame_empty_layers() {
         // No layers, no overlays -> transparent black canvas.
-        let result = composite_frame(4, 4, &[], &[], &[], None);
+        let mut scratch = Vec::new();
+        let result = composite_frame(4, 4, &[], &[], &[], None, &mut scratch);
         let buf = result.as_slice();
         assert_eq!(buf.len(), 4 * 4 * 4);
         assert!(buf.iter().all(|&b| b == 0));
@@ -819,7 +880,8 @@ mod tests {
             opacity: 1.0,
         };
 
-        let result = composite_frame(4, 4, &[Some(layer)], &[], &[], None);
+        let mut scratch = Vec::new();
+        let result = composite_frame(4, 4, &[Some(layer)], &[], &[], None, &mut scratch);
         let buf = result.as_slice();
 
         // Entire canvas should be red (scaled from 2x2 to 4x4).
@@ -854,7 +916,8 @@ mod tests {
             opacity: 1.0,
         };
 
-        let result = composite_frame(4, 4, &[Some(layer0), Some(layer1)], &[], &[], None);
+        let mut scratch = Vec::new();
+        let result = composite_frame(4, 4, &[Some(layer0), Some(layer1)], &[], &[], None, &mut scratch);
         let buf = result.as_slice();
 
         // (0,0) should be red.
@@ -1015,7 +1078,8 @@ mod tests {
         let pool = FramePool::<u8>::preallocated(&[total], 2);
         assert_eq!(pool.stats().buckets[0].available, 2);
 
-        let result = composite_frame(canvas_w, canvas_h, &[], &[], &[], Some(&pool));
+        let mut scratch = Vec::new();
+        let result = composite_frame(canvas_w, canvas_h, &[], &[], &[], Some(&pool), &mut scratch);
         assert_eq!(result.as_slice().len(), total);
         // One buffer was taken from the pool.
         assert_eq!(pool.stats().buckets[0].available, 1);
