@@ -16,7 +16,7 @@
 # omitted from this static YAML sample.
 
 name: Video Compositor Demo
-description: Composites two colorbars sources (main + PiP) through the compositor node, encodes to VP9, and outputs a WebM file (3 seconds)
+description: Composites two colorbars sources (main + PiP) through the compositor node, encodes to VP9, and streams a WebM via http_output with real-time pacing (3 seconds)
 mode: oneshot
 
 nodes:
@@ -60,6 +60,10 @@ nodes:
       streaming_mode: live
     needs: vp9_encoder
 
+  pacer:
+    kind: core::pacer
+    needs: webm_muxer
+
   http_output:
     kind: streamkit::http_output
-    needs: webm_muxer
+    needs: pacer
