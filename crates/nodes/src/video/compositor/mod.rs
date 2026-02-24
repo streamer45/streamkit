@@ -271,10 +271,9 @@ impl ProcessorNode for CompositorNode {
         let (result_tx, mut result_rx) = tokio::sync::mpsc::channel::<CompositeResult>(2);
 
         let composite_thread = tokio::task::spawn_blocking(move || {
-            // Persistent scratch buffers — reused across frames to avoid
-            // per-frame allocation in colour-space conversions.
+            // Persistent scratch buffer for I420→RGBA8 layer conversion,
+            // reused across frames to avoid per-frame allocation.
             let mut i420_to_rgba_scratch: Vec<u8> = Vec::new();
-            let mut rgba_to_i420_scratch: Vec<u8> = Vec::new();
 
             while let Some(work) = work_rx.blocking_recv() {
                 // Fast path: try I420 pass-through to skip the entire
@@ -319,32 +318,24 @@ impl ProcessorNode for CompositorNode {
                     &mut i420_to_rgba_scratch,
                 );
                 let result = if work.output_format == PixelFormat::I420 {
-                    // Convert RGBA8 → I420 using the pooled scratch buffer.
+                    // Convert RGBA8 → I420 directly into a pooled buffer
+                    // (no intermediate scratch — avoids a full extra memcpy).
                     let w = work.canvas_w as usize;
                     let h = work.canvas_h as usize;
                     let chroma_w = (w + 1) / 2;
                     let chroma_h = (h + 1) / 2;
                     let i420_size = w * h + 2 * chroma_w * chroma_h;
-                    if rgba_to_i420_scratch.len() < i420_size {
-                        rgba_to_i420_scratch.resize(i420_size, 0);
-                    }
+                    let mut i420_pooled = if let Some(ref pool) = work.video_pool {
+                        pool.get(i420_size)
+                    } else {
+                        streamkit_core::frame_pool::PooledVideoData::from_vec(vec![0u8; i420_size])
+                    };
                     rgba8_to_i420_buf(
                         rgba_buf.as_slice(),
                         work.canvas_w,
                         work.canvas_h,
-                        &mut rgba_to_i420_scratch,
+                        i420_pooled.as_mut_slice(),
                     );
-                    // Use the pool if available for the output buffer.
-                    let i420_pooled = if let Some(ref pool) = work.video_pool {
-                        let mut pooled = pool.get(i420_size);
-                        pooled.as_mut_slice()[..i420_size]
-                            .copy_from_slice(&rgba_to_i420_scratch[..i420_size]);
-                        pooled
-                    } else {
-                        streamkit_core::frame_pool::PooledVideoData::from_vec(
-                            rgba_to_i420_scratch[..i420_size].to_vec(),
-                        )
-                    };
                     CompositeResult {
                         output_format: work.output_format,
                         rgba_data: None,
