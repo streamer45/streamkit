@@ -32,8 +32,11 @@ pub struct CompositeWorkItem {
     pub canvas_w: u32,
     pub canvas_h: u32,
     pub layers: Vec<Option<LayerSnapshot>>,
-    pub image_overlays: Vec<Arc<DecodedOverlay>>,
-    pub text_overlays: Vec<Arc<DecodedOverlay>>,
+    /// Shared, immutable overlay lists.  Using `Arc<[…]>` means cloning
+    /// into the work item each frame is a single ref-count bump instead
+    /// of cloning the entire `Vec`.
+    pub image_overlays: Arc<[Arc<DecodedOverlay>]>,
+    pub text_overlays: Arc<[Arc<DecodedOverlay>]>,
     pub video_pool: Option<Arc<streamkit_core::VideoFramePool>>,
     pub output_format: PixelFormat,
 }

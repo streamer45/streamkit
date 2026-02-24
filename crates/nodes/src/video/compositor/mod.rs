@@ -203,7 +203,7 @@ impl ProcessorNode for CompositorNode {
 
         // Decode image overlays (once).  Wrap in Arc so per-frame clones
         // into the work item are cheap reference-count bumps.
-        let mut image_overlays: Vec<Arc<DecodedOverlay>> =
+        let mut image_overlays_vec: Vec<Arc<DecodedOverlay>> =
             Vec::with_capacity(self.config.image_overlays.len());
         for (i, img_cfg) in self.config.image_overlays.iter().enumerate() {
             match decode_image_overlay(img_cfg) {
@@ -218,7 +218,7 @@ impl ProcessorNode for CompositorNode {
                         overlay.rect.width,
                         overlay.rect.height,
                     );
-                    image_overlays.push(Arc::new(overlay));
+                    image_overlays_vec.push(Arc::new(overlay));
                 },
                 Err(e) => {
                     tracing::warn!("Failed to decode image overlay {}: {}", i, e);
@@ -227,11 +227,16 @@ impl ProcessorNode for CompositorNode {
         }
 
         // Rasterize text overlays (once; re-done on UpdateParams).  Also Arc-wrapped.
-        let mut text_overlays: Vec<Arc<DecodedOverlay>> =
+        let mut text_overlays_vec: Vec<Arc<DecodedOverlay>> =
             Vec::with_capacity(self.config.text_overlays.len());
         for txt_cfg in &self.config.text_overlays {
-            text_overlays.push(Arc::new(rasterize_text_overlay(txt_cfg)));
+            text_overlays_vec.push(Arc::new(rasterize_text_overlay(txt_cfg)));
         }
+
+        // Wrap in Arc<[...]> so per-frame clones into the work item are
+        // a single ref-count bump instead of cloning the entire Vec.
+        let mut image_overlays: Arc<[Arc<DecodedOverlay>]> = Arc::from(image_overlays_vec);
+        let mut text_overlays: Arc<[Arc<DecodedOverlay>]> = Arc::from(text_overlays_vec);
 
         // Collect initial input slots from pre-connected pins.
         let mut slots: Vec<InputSlot> = Vec::new();
@@ -426,13 +431,34 @@ impl ProcessorNode for CompositorNode {
 
                     // Wait for a frame from any connected input.
                     result = recv_from_any_slot(&mut slots) => {
-                        if let Some((slot_idx, frame)) = result {
-                            slots[slot_idx].latest_frame = Some(frame);
-                            received_frame = true;
-                        } else {
-                            // All inputs closed.
-                            stop_reason = "all_inputs_closed";
-                            should_break = true;
+                        match result {
+                            SlotRecvResult::Frame(slot_idx, frame) => {
+                                slots[slot_idx].latest_frame = Some(frame);
+                                received_frame = true;
+                            }
+                            SlotRecvResult::ChannelClosed(slot_idx) => {
+                                tracing::info!(
+                                    "CompositorNode: input '{}' closed",
+                                    slots[slot_idx].name
+                                );
+                                slots.remove(slot_idx);
+                                if slots.is_empty() {
+                                    stop_reason = "all_inputs_closed";
+                                    should_break = true;
+                                }
+                                // Otherwise continue — remaining slots are still active.
+                            }
+                            SlotRecvResult::NonVideo(slot_idx) => {
+                                tracing::debug!(
+                                    "CompositorNode: ignoring non-video packet on '{}'",
+                                    slots[slot_idx].name
+                                );
+                                // Skip and continue waiting.
+                            }
+                            SlotRecvResult::Empty => {
+                                stop_reason = "all_inputs_closed";
+                                should_break = true;
+                            }
                         }
                     }
                 }
@@ -620,6 +646,10 @@ impl ProcessorNode for CompositorNode {
         }
 
         // Drop the work sender to signal the compositing thread to exit.
+        // NOTE: Any composite result currently in-flight (sent to the thread
+        // but not yet received back via result_rx) will be lost here.  This is
+        // acceptable for shutdown semantics — we prefer a fast exit over
+        // draining one extra frame that may never be forwarded downstream.
         drop(work_tx);
         let _ = composite_thread.await;
 
@@ -634,8 +664,8 @@ impl ProcessorNode for CompositorNode {
 impl CompositorNode {
     fn apply_update_params(
         config: &mut CompositorConfig,
-        image_overlays: &mut Vec<Arc<DecodedOverlay>>,
-        text_overlays: &mut Vec<Arc<DecodedOverlay>>,
+        image_overlays: &mut Arc<[Arc<DecodedOverlay>]>,
+        text_overlays: &mut Arc<[Arc<DecodedOverlay>]>,
         params: serde_json::Value,
         stats_tracker: &mut NodeStatsTracker,
     ) {
@@ -652,19 +682,22 @@ impl CompositorNode {
 
                     // Always re-decode image overlays (content may have changed
                     // even if the count is the same).
-                    image_overlays.clear();
+                    let mut new_image_overlays = Vec::with_capacity(new_config.image_overlays.len());
                     for img_cfg in &new_config.image_overlays {
                         match decode_image_overlay(img_cfg) {
-                            Ok(ov) => image_overlays.push(Arc::new(ov)),
+                            Ok(ov) => new_image_overlays.push(Arc::new(ov)),
                             Err(e) => tracing::warn!("Image overlay decode failed: {e}"),
                         }
                     }
+                    *image_overlays = Arc::from(new_image_overlays);
 
                     // Re-rasterize text overlays.
-                    text_overlays.clear();
-                    for txt_cfg in &new_config.text_overlays {
-                        text_overlays.push(Arc::new(rasterize_text_overlay(txt_cfg)));
-                    }
+                    let new_text_overlays: Vec<Arc<DecodedOverlay>> = new_config
+                        .text_overlays
+                        .iter()
+                        .map(|txt_cfg| Arc::new(rasterize_text_overlay(txt_cfg)))
+                        .collect();
+                    *text_overlays = Arc::from(new_text_overlays);
 
                     *config = new_config;
                 },
@@ -712,13 +745,26 @@ impl CompositorNode {
 
 // ── Frame receive helper ────────────────────────────────────────────────────
 
-/// Wait for a video frame from any of the input slots. Returns the slot index
-/// and the received frame, or `None` if all channels are closed.
+/// Result of waiting for a frame from input slots.
+enum SlotRecvResult {
+    /// A video frame was received from the slot at the given index.
+    Frame(usize, VideoFrame),
+    /// The channel at the given index was closed.
+    ChannelClosed(usize),
+    /// A non-video packet was received (and discarded) from the given index.
+    NonVideo(usize),
+    /// All slots are empty (should not happen if caller checks).
+    Empty,
+}
+
 type SlotRecvFut<'a> = Pin<Box<dyn futures::Future<Output = (usize, Option<Packet>)> + Send + 'a>>;
 
-async fn recv_from_any_slot(slots: &mut [InputSlot]) -> Option<(usize, VideoFrame)> {
+/// Wait for a packet from any of the input slots.  Returns a typed result so
+/// the caller can distinguish between a received video frame, a closed channel,
+/// and a non-video packet (which should be skipped, not treated as closure).
+async fn recv_from_any_slot(slots: &mut [InputSlot]) -> SlotRecvResult {
     if slots.is_empty() {
-        return None;
+        return SlotRecvResult::Empty;
     }
 
     // Use futures to poll all receivers concurrently.
@@ -735,16 +781,17 @@ async fn recv_from_any_slot(slots: &mut [InputSlot]) -> Option<(usize, VideoFram
         .collect();
 
     if futs.is_empty() {
-        return None;
+        return SlotRecvResult::Empty;
     }
 
     let (result, _idx, _remaining) = select_all(futs).await;
     let (slot_idx, maybe_packet) = result;
 
-    maybe_packet.and_then(|pkt| match pkt {
-        Packet::Video(frame) => Some((slot_idx, frame)),
-        _ => None,
-    })
+    match maybe_packet {
+        Some(Packet::Video(frame)) => SlotRecvResult::Frame(slot_idx, frame),
+        Some(_) => SlotRecvResult::NonVideo(slot_idx),
+        None => SlotRecvResult::ChannelClosed(slot_idx),
+    }
 }
 
 // ── Registration ────────────────────────────────────────────────────────────
