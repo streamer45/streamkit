@@ -10,8 +10,11 @@
 //!
 //! - Inputs accept `RawVideo(RGBA8)` with wildcard dimensions.
 //! - Output produces `RawVideo(RGBA8)` at the configured canvas size.
-//! - Heavy compositing work runs in `spawn_blocking` to avoid blocking the
-//!   async runtime.
+//! - Heavy compositing work runs on a persistent blocking thread (via
+//!   `spawn_blocking`) to avoid blocking the async runtime and to keep CPU
+//!   caches warm across frames.
+//! - Row-level parallelism via `rayon` for blitting and pixel-format
+//!   conversion.
 //! - Image overlays are decoded once during initialization (PNG/JPEG via the
 //!   `image` crate).
 //! - Text overlays are rasterized via `tiny-skia` once per `UpdateParams`, not
@@ -319,6 +322,9 @@ fn rasterize_text_overlay(config: &TextOverlayConfig) -> DecodedOverlay {
 /// Scale and blit a source RGBA8 buffer onto a destination RGBA8 buffer at the
 /// given destination rectangle. Uses nearest-neighbor sampling and clips to
 /// canvas bounds.
+///
+/// Rows are processed in parallel via `rayon` when the blit region is large
+/// enough to benefit from multi-core dispatch.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::too_many_arguments)]
 fn scale_blit_rgba(
     dst: &mut [u8],
@@ -343,63 +349,189 @@ fn scale_blit_rgba(
     let rw = dst_rect.width as usize;
     let rh = dst_rect.height as usize;
 
-    for dy in 0..rh {
-        let out_y = ry + dy;
-        if out_y >= dh {
-            break;
+    // Clamp the number of rows we actually process to the canvas height.
+    let effective_rh = rh.min(dh.saturating_sub(ry));
+    if effective_rh == 0 {
+        return;
+    }
+
+    // Clamp the number of columns to the canvas width.
+    let effective_rw = rw.min(dw.saturating_sub(rx));
+    if effective_rw == 0 {
+        return;
+    }
+
+    // Split the destination buffer into per-row slices so that each row can
+    // be processed independently (and therefore in parallel).
+    let row_stride = dw * 4;
+
+    // Use rayon for parallel row processing when the region is large enough.
+    use rayon::prelude::*;
+
+    // We need to give each row its own mutable slice. Split the dst buffer
+    // at the first output row.
+    let first_row_byte = ry * row_stride;
+    let dst_rows = &mut dst[first_row_byte..];
+
+    dst_rows
+        .par_chunks_mut(row_stride)
+        .take(effective_rh)
+        .enumerate()
+        .for_each(|(dy, row_slice)| {
+            let sy = dy * sh / rh;
+            blit_row(
+                row_slice, rx, effective_rw, src, sw, sh, sy, rw, opacity,
+            );
+        });
+}
+
+/// Blit a single row of the source onto a destination row slice.
+///
+/// This is the inner kernel extracted so that `scale_blit_rgba` can dispatch
+/// rows in parallel.  The `row_slice` covers exactly one destination row
+/// starting at pixel column 0 (i.e. byte offset `rx * 4` is the first column
+/// we write to).
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::too_many_arguments,
+    clippy::inline_always
+)]
+#[inline(always)]
+fn blit_row(
+    row_slice: &mut [u8],
+    rx: usize,
+    effective_rw: usize,
+    src: &[u8],
+    sw: usize,
+    sh: usize,
+    sy: usize,
+    rw: usize,
+    opacity: f32,
+) {
+    // Fast path: when opacity is 1.0, we can skip the f32 multiply on alpha
+    // and branch more cheaply.
+    if opacity >= 1.0 {
+        blit_row_opaque(row_slice, rx, effective_rw, src, sw, sh, sy, rw);
+    } else {
+        blit_row_alpha(row_slice, rx, effective_rw, src, sw, sh, sy, rw, opacity);
+    }
+}
+
+/// Inner blit for fully-opaque layers (`opacity >= 1.0`).  Skips the
+/// per-pixel f32 multiply on the source alpha channel.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::too_many_arguments,
+    clippy::suboptimal_flops,
+    clippy::inline_always
+)]
+#[inline(always)]
+fn blit_row_opaque(
+    row_slice: &mut [u8],
+    rx: usize,
+    effective_rw: usize,
+    src: &[u8],
+    sw: usize,
+    _sh: usize,
+    sy: usize,
+    rw: usize,
+) {
+    for dx in 0..effective_rw {
+        let sx = dx * sw / rw;
+        let src_idx = (sy * sw + sx) * 4;
+        if src_idx + 3 >= src.len() {
+            continue;
         }
-        // Nearest-neighbor: map destination row to source row.
-        let sy = dy * sh / rh;
-        for dx in 0..rw {
-            let out_x = rx + dx;
-            if out_x >= dw {
-                break;
-            }
-            let sx = dx * sw / rw;
 
-            let src_idx = (sy * sw + sx) * 4;
-            let dst_idx = (out_y * dw + out_x) * 4;
+        let sr = src[src_idx];
+        let sg = src[src_idx + 1];
+        let sb = src[src_idx + 2];
+        let sa = src[src_idx + 3];
 
-            if src_idx + 3 >= src.len() || dst_idx + 3 >= dst.len() {
-                continue;
-            }
+        let out_x = rx + dx;
+        let dst_idx = out_x * 4;
+        if dst_idx + 3 >= row_slice.len() {
+            continue;
+        }
 
-            let sr = src[src_idx];
-            let sg = src[src_idx + 1];
-            let sb = src[src_idx + 2];
-            let sa = src[src_idx + 3];
+        if sa == 255 {
+            row_slice[dst_idx] = sr;
+            row_slice[dst_idx + 1] = sg;
+            row_slice[dst_idx + 2] = sb;
+            row_slice[dst_idx + 3] = 255;
+        } else if sa > 0 {
+            let alpha = f32::from(sa) / 255.0;
+            let inv_alpha = 1.0 - alpha;
+            row_slice[dst_idx] =
+                f32::from(sr).mul_add(alpha, f32::from(row_slice[dst_idx]) * inv_alpha) as u8;
+            row_slice[dst_idx + 1] =
+                f32::from(sg).mul_add(alpha, f32::from(row_slice[dst_idx + 1]) * inv_alpha) as u8;
+            row_slice[dst_idx + 2] =
+                f32::from(sb).mul_add(alpha, f32::from(row_slice[dst_idx + 2]) * inv_alpha) as u8;
+            row_slice[dst_idx + 3] =
+                f32::from(row_slice[dst_idx + 3]).mul_add(inv_alpha, f32::from(sa)) as u8;
+        }
+    }
+}
 
-            // Apply global opacity to source alpha.
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let sa_eff = (f32::from(sa) * opacity).round() as u8;
+/// Inner blit with a sub-1.0 `opacity` multiplier.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::too_many_arguments,
+    clippy::suboptimal_flops,
+    clippy::inline_always
+)]
+#[inline(always)]
+fn blit_row_alpha(
+    row_slice: &mut [u8],
+    rx: usize,
+    effective_rw: usize,
+    src: &[u8],
+    sw: usize,
+    _sh: usize,
+    sy: usize,
+    rw: usize,
+    opacity: f32,
+) {
+    for dx in 0..effective_rw {
+        let sx = dx * sw / rw;
+        let src_idx = (sy * sw + sx) * 4;
+        if src_idx + 3 >= src.len() {
+            continue;
+        }
 
-            if sa_eff == 255 {
-                // Fully opaque — overwrite.
-                dst[dst_idx] = sr;
-                dst[dst_idx + 1] = sg;
-                dst[dst_idx + 2] = sb;
-                dst[dst_idx + 3] = 255;
-            } else if sa_eff > 0 {
-                // Alpha-blend (src-over).
-                let alpha = f32::from(sa_eff) / 255.0;
-                let inv_alpha = 1.0 - alpha;
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    clippy::suboptimal_flops
-                )]
-                {
-                    dst[dst_idx] =
-                        f32::from(sr).mul_add(alpha, f32::from(dst[dst_idx]) * inv_alpha) as u8;
-                    dst[dst_idx + 1] =
-                        f32::from(sg).mul_add(alpha, f32::from(dst[dst_idx + 1]) * inv_alpha) as u8;
-                    dst[dst_idx + 2] =
-                        f32::from(sb).mul_add(alpha, f32::from(dst[dst_idx + 2]) * inv_alpha) as u8;
-                    dst[dst_idx + 3] =
-                        f32::from(dst[dst_idx + 3]).mul_add(inv_alpha, f32::from(sa_eff)) as u8;
-                }
-            }
-            // sa_eff == 0: fully transparent, skip.
+        let sr = src[src_idx];
+        let sg = src[src_idx + 1];
+        let sb = src[src_idx + 2];
+        let sa = src[src_idx + 3];
+
+        let sa_eff = (f32::from(sa) * opacity).round() as u8;
+
+        let out_x = rx + dx;
+        let dst_idx = out_x * 4;
+        if dst_idx + 3 >= row_slice.len() {
+            continue;
+        }
+
+        if sa_eff == 255 {
+            row_slice[dst_idx] = sr;
+            row_slice[dst_idx + 1] = sg;
+            row_slice[dst_idx + 2] = sb;
+            row_slice[dst_idx + 3] = 255;
+        } else if sa_eff > 0 {
+            let alpha = f32::from(sa_eff) / 255.0;
+            let inv_alpha = 1.0 - alpha;
+            row_slice[dst_idx] =
+                f32::from(sr).mul_add(alpha, f32::from(row_slice[dst_idx]) * inv_alpha) as u8;
+            row_slice[dst_idx + 1] =
+                f32::from(sg).mul_add(alpha, f32::from(row_slice[dst_idx + 1]) * inv_alpha) as u8;
+            row_slice[dst_idx + 2] =
+                f32::from(sb).mul_add(alpha, f32::from(row_slice[dst_idx + 2]) * inv_alpha) as u8;
+            row_slice[dst_idx + 3] =
+                f32::from(row_slice[dst_idx + 3]).mul_add(inv_alpha, f32::from(sa_eff)) as u8;
         }
     }
 }
@@ -423,7 +555,10 @@ fn blit_overlay(dst: &mut [u8], dst_width: u32, dst_height: u32, overlay: &Decod
 /// Convert an I420 frame buffer to packed RGBA8.
 ///
 /// Uses BT.601 studio-range YUV→RGB conversion.
+/// Rows are processed in parallel via `rayon`.
 fn i420_to_rgba8(data: &[u8], width: u32, height: u32) -> Vec<u8> {
+    use rayon::prelude::*;
+
     let w = width as usize;
     let h = height as usize;
     let y_stride = w;
@@ -433,27 +568,31 @@ fn i420_to_rgba8(data: &[u8], width: u32, height: u32) -> Vec<u8> {
     let v_offset = u_offset + chroma_w * chroma_h;
 
     let mut rgba = vec![0u8; w * h * 4];
-    for row in 0..h {
-        for col in 0..w {
-            let y = data[row * y_stride + col] as i32;
-            let u = data[u_offset + (row / 2) * chroma_w + col / 2] as i32;
-            let v = data[v_offset + (row / 2) * chroma_w + col / 2] as i32;
+    let rgba_row_stride = w * 4;
 
-            // BT.601 studio range conversion
-            let c = y - 16;
-            let d = u - 128;
-            let e = v - 128;
-            let r = ((298 * c + 409 * e + 128) >> 8).clamp(0, 255) as u8;
-            let g = ((298 * c - 100 * d - 208 * e + 128) >> 8).clamp(0, 255) as u8;
-            let b = ((298 * c + 516 * d + 128) >> 8).clamp(0, 255) as u8;
+    rgba.par_chunks_mut(rgba_row_stride)
+        .take(h)
+        .enumerate()
+        .for_each(|(row, rgba_row)| {
+            for col in 0..w {
+                let y_val = data[row * y_stride + col] as i32;
+                let u_val = data[u_offset + (row / 2) * chroma_w + col / 2] as i32;
+                let v_val = data[v_offset + (row / 2) * chroma_w + col / 2] as i32;
 
-            let off = (row * w + col) * 4;
-            rgba[off] = r;
-            rgba[off + 1] = g;
-            rgba[off + 2] = b;
-            rgba[off + 3] = 255;
-        }
-    }
+                let c = y_val - 16;
+                let d = u_val - 128;
+                let e = v_val - 128;
+                let r = ((298 * c + 409 * e + 128) >> 8).clamp(0, 255) as u8;
+                let g = ((298 * c - 100 * d - 208 * e + 128) >> 8).clamp(0, 255) as u8;
+                let b = ((298 * c + 516 * d + 128) >> 8).clamp(0, 255) as u8;
+
+                let off = col * 4;
+                rgba_row[off] = r;
+                rgba_row[off + 1] = g;
+                rgba_row[off + 2] = b;
+                rgba_row[off + 3] = 255;
+            }
+        });
     rgba
 }
 
@@ -461,6 +600,8 @@ fn i420_to_rgba8(data: &[u8], width: u32, height: u32) -> Vec<u8> {
 ///
 /// Uses BT.601 full-range RGB→YUV conversion.
 fn rgba8_to_i420(data: &[u8], width: u32, height: u32) -> Vec<u8> {
+    use rayon::prelude::*;
+
     let w = width as usize;
     let h = height as usize;
     let y_stride = w;
@@ -470,52 +611,65 @@ fn rgba8_to_i420(data: &[u8], width: u32, height: u32) -> Vec<u8> {
     let chroma_size = chroma_w * chroma_h;
     let mut out = vec![0u8; y_size + chroma_size * 2];
 
-    // Y plane
-    for row in 0..h {
-        for col in 0..w {
-            let off = (row * w + col) * 4;
-            let r = data[off] as i32;
-            let g = data[off + 1] as i32;
-            let b = data[off + 2] as i32;
-            let y = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
-            out[row * y_stride + col] = y.clamp(0, 255) as u8;
-        }
-    }
+    // Split the output buffer into Y plane and chroma planes so we can
+    // parallelise each independently.
+    let (y_plane, chroma_planes) = out.split_at_mut(y_size);
+    let (u_plane, v_plane) = chroma_planes.split_at_mut(chroma_size);
 
-    // U and V planes (subsampled 2×2)
-    let u_offset = y_size;
-    let v_offset = y_size + chroma_size;
-    for crow in 0..chroma_h {
-        for ccol in 0..chroma_w {
-            let r0 = crow * 2;
-            let c0 = ccol * 2;
-            // Average the 2×2 block (handle odd dimensions).
-            let mut sr = 0i32;
-            let mut sg = 0i32;
-            let mut sb = 0i32;
-            let mut count = 0i32;
-            for dr in 0..2 {
-                for dc in 0..2 {
-                    let rr = r0 + dr;
-                    let cc = c0 + dc;
-                    if rr < h && cc < w {
-                        let off = (rr * w + cc) * 4;
-                        sr += data[off] as i32;
-                        sg += data[off + 1] as i32;
-                        sb += data[off + 2] as i32;
-                        count += 1;
+    // Y plane — parallelise by row.
+    y_plane
+        .par_chunks_mut(y_stride)
+        .take(h)
+        .enumerate()
+        .for_each(|(row, y_row)| {
+            for col in 0..w {
+                let off = (row * w + col) * 4;
+                let r = data[off] as i32;
+                let g = data[off + 1] as i32;
+                let b = data[off + 2] as i32;
+                let y = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
+                y_row[col] = y.clamp(0, 255) as u8;
+            }
+        });
+
+    // U and V planes — parallelise by chroma row.
+    let u_rows: Vec<&mut [u8]> = u_plane.chunks_mut(chroma_w).collect();
+    let v_rows: Vec<&mut [u8]> = v_plane.chunks_mut(chroma_w).collect();
+
+    u_rows
+        .into_par_iter()
+        .zip(v_rows)
+        .enumerate()
+        .for_each(|(crow, (u_row, v_row))| {
+            for ccol in 0..chroma_w {
+                let r0 = crow * 2;
+                let c0 = ccol * 2;
+                let mut sr = 0i32;
+                let mut sg = 0i32;
+                let mut sb = 0i32;
+                let mut count = 0i32;
+                for dr in 0..2 {
+                    for dc in 0..2 {
+                        let rr = r0 + dr;
+                        let cc = c0 + dc;
+                        if rr < h && cc < w {
+                            let off = (rr * w + cc) * 4;
+                            sr += data[off] as i32;
+                            sg += data[off + 1] as i32;
+                            sb += data[off + 2] as i32;
+                            count += 1;
+                        }
                     }
                 }
+                let r = sr / count;
+                let g = sg / count;
+                let b = sb / count;
+                let u = ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
+                let v = ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
+                u_row[ccol] = u.clamp(0, 255) as u8;
+                v_row[ccol] = v.clamp(0, 255) as u8;
             }
-            let r = sr / count;
-            let g = sg / count;
-            let b = sb / count;
-            let u = ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
-            let v = ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
-            out[u_offset + crow * chroma_w + ccol] = u.clamp(0, 255) as u8;
-            out[v_offset + crow * chroma_w + ccol] = v.clamp(0, 255) as u8;
-        }
-    }
+        });
 
     out
 }
@@ -727,6 +881,46 @@ impl ProcessorNode for CompositorNode {
         // Shared state for the compositing thread.
         let video_pool = context.video_pool.clone();
 
+        // ── Persistent compositing thread ───────────────────────────────
+        // Instead of spawning a new blocking task per frame, we keep a
+        // single long-lived thread that processes compositing work items
+        // sent via a channel.  This avoids per-frame thread-pool
+        // scheduling overhead and keeps CPU caches warm.
+        let (work_tx, mut work_rx) =
+            tokio::sync::mpsc::channel::<CompositeWorkItem>(2);
+        let (result_tx, mut result_rx) =
+            tokio::sync::mpsc::channel::<CompositeResult>(2);
+
+        let composite_thread = tokio::task::spawn_blocking(move || {
+            while let Some(work) = work_rx.blocking_recv() {
+                let rgba_buf = composite_frame(
+                    work.canvas_w,
+                    work.canvas_h,
+                    &work.layers,
+                    &work.image_overlays,
+                    &work.text_overlays,
+                    work.video_pool.as_deref(),
+                );
+                let result = if work.output_format == PixelFormat::I420 {
+                    let i420 = rgba8_to_i420(rgba_buf.as_slice(), work.canvas_w, work.canvas_h);
+                    CompositeResult {
+                        output_format: work.output_format,
+                        rgba_data: None,
+                        i420_data: Some(i420),
+                    }
+                } else {
+                    CompositeResult {
+                        output_format: work.output_format,
+                        rgba_data: Some(rgba_buf),
+                        i420_data: None,
+                    }
+                };
+                if result_tx.blocking_send(result).is_err() {
+                    break;
+                }
+            }
+        });
+
         let mut output_seq: u64 = 0;
         let mut stop_reason: &str = "shutdown";
 
@@ -878,8 +1072,8 @@ impl ProcessorNode for CompositorNode {
                 }
             }
 
-            // ── Composite in spawn_blocking ──────────────────────────────
-            // Collect the data we need to move into the blocking task.
+            // ── Send work to persistent compositing thread ─────────────
+            // Collect the data we need to send to the blocking thread.
             let num_slots = slots.len();
             let layers: Vec<Option<LayerSnapshot>> = slots
                 .iter()
@@ -915,35 +1109,32 @@ impl ProcessorNode for CompositorNode {
                 })
                 .collect();
 
-            let img_overlays = image_overlays.clone();
-            let cloned_text_overlays = text_overlays.clone();
-            let pool = video_pool.clone();
-            let cw = self.config.width;
-            let ch = self.config.height;
-
             stats_tracker.received();
 
-            let out_fmt = self.output_format;
-            let composite_result = tokio::task::spawn_blocking(move || {
-                let rgba_buf = composite_frame(
-                    cw,
-                    ch,
-                    &layers,
-                    &img_overlays,
-                    &cloned_text_overlays,
-                    pool.as_deref(),
-                );
-                // Output format conversion also runs inside the blocking
-                // task to keep the async runtime free.
-                if out_fmt == PixelFormat::I420 {
-                    let i420 = rgba8_to_i420(rgba_buf.as_slice(), cw, ch);
-                    (out_fmt, None, Some(i420))
-                } else {
-                    (out_fmt, Some(rgba_buf), None)
-                }
-            })
-            .await
-            .map_err(|e| StreamKitError::Runtime(format!("Compositor task panicked: {e}")))?;
+            let work_item = CompositeWorkItem {
+                canvas_w: self.config.width,
+                canvas_h: self.config.height,
+                layers,
+                image_overlays: image_overlays.clone(),
+                text_overlays: text_overlays.clone(),
+                video_pool: video_pool.clone(),
+                output_format: self.output_format,
+            };
+
+            if work_tx.send(work_item).await.is_err() {
+                tracing::debug!("Compositing thread gone, stopping CompositorNode");
+                stop_reason = "compositor_thread_gone";
+                break;
+            }
+
+            let composite_result = match result_rx.recv().await {
+                Some(r) => r,
+                None => {
+                    tracing::debug!("Compositing result channel closed");
+                    stop_reason = "compositor_thread_gone";
+                    break;
+                },
+            };
 
             // Build metadata from the first available input frame.
             let src_metadata =
@@ -956,9 +1147,10 @@ impl ProcessorNode for CompositorNode {
                 keyframe: Some(true),
             });
 
-            let (fmt, rgba_pooled, i420_vec) = composite_result;
-            let out_frame = if fmt == PixelFormat::I420 {
-                let i420_data = i420_vec.expect("I420 output data must be present");
+            let out_frame = if composite_result.output_format == PixelFormat::I420 {
+                let i420_data = composite_result
+                    .i420_data
+                    .expect("I420 output data must be present");
                 VideoFrame::with_metadata(
                     self.config.width,
                     self.config.height,
@@ -967,7 +1159,9 @@ impl ProcessorNode for CompositorNode {
                     metadata,
                 )
             } else {
-                let pooled = rgba_pooled.expect("RGBA8 output data must be present");
+                let pooled = composite_result
+                    .rgba_data
+                    .expect("RGBA8 output data must be present");
                 VideoFrame::from_pooled(
                     self.config.width,
                     self.config.height,
@@ -987,6 +1181,10 @@ impl ProcessorNode for CompositorNode {
             stats_tracker.maybe_send();
             output_seq += 1;
         }
+
+        // Drop the work sender to signal the compositing thread to exit.
+        drop(work_tx);
+        let _ = composite_thread.await;
 
         stats_tracker.force_send();
         state_helpers::emit_stopped(&context.state_tx, &node_name, stop_reason);
@@ -1113,7 +1311,7 @@ async fn recv_from_any_slot(slots: &mut [InputSlot]) -> Option<(usize, VideoFram
     })
 }
 
-// ── Compositing kernel (runs in spawn_blocking) ─────────────────────────────
+// ── Compositing kernel (runs on a persistent blocking thread) ────────────────
 
 /// Snapshot of one input layer's data for the blocking compositor thread.
 struct LayerSnapshot {
@@ -1123,6 +1321,24 @@ struct LayerSnapshot {
     pixel_format: PixelFormat,
     rect: Option<Rect>,
     opacity: f32,
+}
+
+/// Work item sent from the async loop to the persistent compositing thread.
+struct CompositeWorkItem {
+    canvas_w: u32,
+    canvas_h: u32,
+    layers: Vec<Option<LayerSnapshot>>,
+    image_overlays: Vec<DecodedOverlay>,
+    text_overlays: Vec<DecodedOverlay>,
+    video_pool: Option<Arc<streamkit_core::VideoFramePool>>,
+    output_format: PixelFormat,
+}
+
+/// Result sent back from the compositing thread to the async loop.
+struct CompositeResult {
+    output_format: PixelFormat,
+    rgba_data: Option<streamkit_core::frame_pool::PooledVideoData>,
+    i420_data: Option<Vec<u8>>,
 }
 
 /// Composite all layers + overlays onto a fresh RGBA8 canvas buffer.

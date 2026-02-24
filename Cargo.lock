@@ -4645,6 +4645,7 @@ dependencies = [
  "ogg",
  "opentelemetry",
  "opus",
+ "rayon",
  "reqwest 0.13.2",
  "rquickjs",
  "rubato",
