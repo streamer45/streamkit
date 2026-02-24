@@ -287,12 +287,11 @@ impl ProcessorNode for CompositorNode {
                     &work.text_overlays,
                     work.output_format,
                 ) {
-                    let pooled = Arc::try_unwrap(passthrough_data)
-                        .unwrap_or_else(|arc| {
-                            streamkit_core::frame_pool::PooledVideoData::from_vec(
-                                arc.as_slice().to_vec(),
-                            )
-                        });
+                    let pooled = Arc::try_unwrap(passthrough_data).unwrap_or_else(|arc| {
+                        streamkit_core::frame_pool::PooledVideoData::from_vec(
+                            arc.as_slice().to_vec(),
+                        )
+                    });
                     let result = CompositeResult {
                         output_format: work.output_format,
                         rgba_data: None,
@@ -917,7 +916,8 @@ mod tests {
         };
 
         let mut scratch = Vec::new();
-        let result = composite_frame(4, 4, &[Some(layer0), Some(layer1)], &[], &[], None, &mut scratch);
+        let result =
+            composite_frame(4, 4, &[Some(layer0), Some(layer1)], &[], &[], None, &mut scratch);
         let buf = result.as_slice();
 
         // (0,0) should be red.

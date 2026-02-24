@@ -83,12 +83,7 @@ pub(crate) fn composite_frame(
                 if i420_scratch.len() < needed {
                     i420_scratch.resize(needed, 0);
                 }
-                i420_to_rgba8_buf(
-                    layer.data.as_slice(),
-                    layer.width,
-                    layer.height,
-                    i420_scratch,
-                );
+                i420_to_rgba8_buf(layer.data.as_slice(), layer.width, layer.height, i420_scratch);
                 &i420_scratch[..needed]
             },
         };
