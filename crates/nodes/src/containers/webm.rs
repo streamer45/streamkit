@@ -722,6 +722,7 @@ impl ProcessorNode for WebMMuxerNode {
                         &mut header_sent,
                         &mut stats_tracker,
                         &node_name,
+                        self.config.streaming_mode,
                     )
                     .await?
                     {
@@ -790,6 +791,7 @@ impl ProcessorNode for WebMMuxerNode {
                         &mut header_sent,
                         &mut stats_tracker,
                         &node_name,
+                        self.config.streaming_mode,
                     )
                     .await?
                     {
@@ -845,9 +847,15 @@ impl ProcessorNode for WebMMuxerNode {
 
 /// Flushes buffered WebM data to the output sender.
 ///
+/// In **Live** mode, bytes are drained incrementally after every frame to keep
+/// memory bounded and enable real-time streaming.  In **File** mode the writer
+/// may seek backwards to back-patch segment sizes and cues, so we must **not**
+/// drain intermediate bytes — the buffer is only flushed once after
+/// finalization (handled by the caller).
+///
 /// Returns `Ok(true)` if the output channel is closed (node should stop),
 /// `Ok(false)` to continue, or `Err` on fatal errors.
-#[allow(clippy::ptr_arg)] // We need Cow::clone() to produce owned Cow for Packet
+#[allow(clippy::ptr_arg, clippy::too_many_arguments)]
 async fn flush_output(
     context: &mut NodeContext,
     shared_buffer: &SharedPacketBuffer,
@@ -856,7 +864,15 @@ async fn flush_output(
     header_sent: &mut bool,
     stats_tracker: &mut NodeStatsTracker,
     node_name: &str,
+    streaming_mode: WebMStreamingMode,
 ) -> Result<bool, StreamKitError> {
+    // In File mode, skip all intermediate flushes.  The buffer will be
+    // drained once after `segment.finalize()` so back-patched data is
+    // consistent.
+    if matches!(streaming_mode, WebMStreamingMode::File) {
+        return Ok(false);
+    }
+
     if !*header_sent {
         if let Some(data) = shared_buffer.take_data() {
             tracing::info!("Sending WebM header + first frame ({} bytes)", data.len(),);
