@@ -7,8 +7,6 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::collections::HashMap;
-use streamkit_core::types::PixelFormat;
-use streamkit_core::StreamKitError;
 
 // ── Configuration ───────────────────────────────────────────────────────────
 
@@ -128,15 +126,8 @@ fn default_output_pixel_format() -> String {
     "rgba8".to_string()
 }
 
-pub(crate) fn parse_pixel_format(s: &str) -> Result<PixelFormat, StreamKitError> {
-    match s.to_lowercase().as_str() {
-        "rgba8" | "rgba" => Ok(PixelFormat::Rgba8),
-        "i420" => Ok(PixelFormat::I420),
-        other => Err(StreamKitError::Configuration(format!(
-            "Unsupported output pixel format '{other}'. Use 'rgba8' or 'i420'."
-        ))),
-    }
-}
+// Re-export the shared parse_pixel_format from the parent video module.
+pub(crate) use super::super::parse_pixel_format;
 
 impl Default for CompositorConfig {
     fn default() -> Self {

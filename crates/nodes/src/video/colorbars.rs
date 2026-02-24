@@ -65,15 +65,8 @@ fn default_pixel_format() -> String {
     "i420".to_string()
 }
 
-fn parse_pixel_format(s: &str) -> Result<PixelFormat, StreamKitError> {
-    match s.to_lowercase().as_str() {
-        "i420" => Ok(PixelFormat::I420),
-        "rgba8" | "rgba" => Ok(PixelFormat::Rgba8),
-        other => Err(StreamKitError::Configuration(format!(
-            "Unsupported pixel format '{other}'. Use 'i420' or 'rgba8'."
-        ))),
-    }
-}
+// Re-export the shared parse_pixel_format from the parent module.
+use super::parse_pixel_format;
 
 impl Default for ColorBarsConfig {
     fn default() -> Self {

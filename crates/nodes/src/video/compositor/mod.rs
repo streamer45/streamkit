@@ -682,7 +682,8 @@ impl CompositorNode {
 
                     // Always re-decode image overlays (content may have changed
                     // even if the count is the same).
-                    let mut new_image_overlays = Vec::with_capacity(new_config.image_overlays.len());
+                    let mut new_image_overlays =
+                        Vec::with_capacity(new_config.image_overlays.len());
                     for img_cfg in &new_config.image_overlays {
                         match decode_image_overlay(img_cfg) {
                             Ok(ov) => new_image_overlays.push(Arc::new(ov)),
