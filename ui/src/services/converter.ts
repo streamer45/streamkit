@@ -162,12 +162,16 @@ async function handleDownload(
   logger.debug('Downloaded blob size:', blob.size);
 
   // Generate a filename based on the original file
-  const originalName = mediaFile?.name || 'converted_audio';
   const extension = getExtensionFromContentType(contentType);
-  const baseName = originalName.includes('.')
-    ? originalName.substring(0, originalName.lastIndexOf('.'))
-    : originalName;
-  const outputFileName = `${baseName}_converted${extension}`;
+  let outputFileName: string;
+  if (mediaFile) {
+    const baseName = mediaFile.name.includes('.')
+      ? mediaFile.name.substring(0, mediaFile.name.lastIndexOf('.'))
+      : mediaFile.name;
+    outputFileName = `${baseName}_converted${extension}`;
+  } else {
+    outputFileName = `output${extension}`;
+  }
 
   // Trigger download
   downloadBlob(blob, outputFileName);

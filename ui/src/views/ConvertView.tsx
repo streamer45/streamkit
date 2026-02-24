@@ -1539,28 +1539,28 @@ const ConvertView: React.FC = () => {
   const handleDownloadAudio = () => {
     if (!audioUrl) return;
 
-    let outputFileName = 'converted_audio';
+    const extension = audioContentType ? getExtensionFromContentType(audioContentType) : '.ogg';
 
     const primaryUpload =
       isMultiUpload && inputMode === 'upload'
         ? (uploadFields.map((f) => fieldUploads[f.name]).find((f): f is File => Boolean(f)) ?? null)
         : selectedFile;
 
+    let outputFileName: string;
     if (inputMode === 'upload' && primaryUpload) {
       const originalName = primaryUpload.name;
       const baseName = originalName.includes('.')
         ? originalName.substring(0, originalName.lastIndexOf('.'))
         : originalName;
-      outputFileName = `${baseName}_converted`;
+      outputFileName = `${baseName}_converted${extension}`;
     } else if (inputMode === 'asset' && selectedAssetId) {
       const selectedAsset = audioAssets.find((a) => a.id === selectedAssetId);
-      if (selectedAsset) {
-        outputFileName = `${selectedAsset.name}_converted`;
-      }
+      outputFileName = selectedAsset
+        ? `${selectedAsset.name}_converted${extension}`
+        : `output${extension}`;
+    } else {
+      outputFileName = `output${extension}`;
     }
-
-    const extension = audioContentType ? getExtensionFromContentType(audioContentType) : '.ogg';
-    outputFileName += extension;
 
     // Create download link directly from the existing object URL
     const link = document.createElement('a');

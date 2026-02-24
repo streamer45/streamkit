@@ -30,6 +30,107 @@ const DEFAULT_CHUNK_SIZE: usize = 65536;
 const DEFAULT_FRAME_DURATION_US: u64 = 20_000;
 /// Default video frame duration when metadata is missing (~30 fps).
 const DEFAULT_VIDEO_FRAME_DURATION_US: u64 = 33_333;
+
+// ---------------------------------------------------------------------------
+// VP9 keyframe dimension parser
+// ---------------------------------------------------------------------------
+
+/// Minimal bit reader for parsing VP9 uncompressed headers (MSB-first).
+struct BitReader<'a> {
+    data: &'a [u8],
+    byte_offset: usize,
+    bit_offset: u8,
+}
+
+impl<'a> BitReader<'a> {
+    const fn new(data: &'a [u8]) -> Self {
+        Self { data, byte_offset: 0, bit_offset: 0 }
+    }
+
+    /// Read `n` bits (1..=16) as a `u32`, MSB first.
+    fn read(&mut self, n: u8) -> Option<u32> {
+        let mut value: u32 = 0;
+        for _ in 0..n {
+            if self.byte_offset >= self.data.len() {
+                return None;
+            }
+            let bit = (self.data[self.byte_offset] >> (7 - self.bit_offset)) & 1;
+            value = (value << 1) | u32::from(bit);
+            self.bit_offset += 1;
+            if self.bit_offset == 8 {
+                self.bit_offset = 0;
+                self.byte_offset += 1;
+            }
+        }
+        Some(value)
+    }
+}
+
+/// Parse the display dimensions from a VP9 keyframe's uncompressed header.
+///
+/// Returns `Some((width, height))` when the data starts with a valid VP9
+/// keyframe (profile 0–3).  Returns `None` for non-keyframes, truncated
+/// data, or invalid sync codes.
+fn parse_vp9_keyframe_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+    if data.len() < 10 {
+        return None;
+    }
+
+    let mut r = BitReader::new(data);
+
+    // frame_marker (2 bits) – must be 0b10
+    if r.read(2)? != 2 {
+        return None;
+    }
+
+    let profile_low = r.read(1)?;
+    let profile_high = r.read(1)?;
+    let profile = (profile_high << 1) | profile_low;
+
+    if profile > 2 {
+        r.read(1)?; // reserved_zero
+    }
+
+    // show_existing_frame
+    if r.read(1)? != 0 {
+        return None;
+    }
+
+    // frame_type: 0 = KEY_FRAME
+    if r.read(1)? != 0 {
+        return None;
+    }
+
+    r.read(1)?; // show_frame
+    r.read(1)?; // error_resilient_mode
+
+    // frame_sync_code must be 0x49_83_42
+    if r.read(8)? != 0x49 || r.read(8)? != 0x83 || r.read(8)? != 0x42 {
+        return None;
+    }
+
+    // color_config
+    if profile >= 2 {
+        r.read(1)?; // ten_or_twelve_bit
+    }
+    let color_space = r.read(3)?;
+    if color_space != 7 {
+        // not CS_RGB
+        r.read(1)?; // color_range
+        if profile == 1 || profile == 3 {
+            r.read(1)?; // subsampling_x
+            r.read(1)?; // subsampling_y
+            r.read(1)?; // reserved
+        }
+    } else if profile == 1 || profile == 3 {
+        r.read(1)?; // reserved
+    }
+
+    // frame_size: width_minus_1 (16 bits), height_minus_1 (16 bits)
+    let w = r.read(16)? + 1;
+    let h = r.read(16)? + 1;
+    Some((w, h))
+}
 /// Opus codec lookahead at 48kHz in samples (typical libopus default).
 ///
 /// This is written to the OpusHead `pre_skip` field so decoders can trim encoder delay.
@@ -510,27 +611,91 @@ impl ProcessorNode for WebMMuxerNode {
 
         let mut tracks = MuxTracks { audio: None, video: None };
 
-        // Video track is added first so that the segment header lists it prominently
-        // for players that inspect the first track.
-        let builder = if has_video {
-            let width = self.config.video_width;
-            let height = self.config.video_height;
-            if width == 0 || height == 0 {
-                let err_msg = "WebMMuxerNode: video input connected but \
-                               video_width/video_height not configured (both must be > 0)"
-                    .to_string();
+        // --- Resolve video dimensions -----------------------------------------
+        //
+        // When `video_width` / `video_height` are both 0 (the default) and a
+        // video input is connected, we auto-detect the dimensions from the
+        // first VP9 keyframe.  This avoids requiring the user to manually
+        // keep the muxer config in sync with the upstream encoder / compositor.
+        //
+        // The first video packet is buffered so it can be replayed through the
+        // normal receive loop after the segment is built.
+
+        let mut first_video_packet: Option<(Bytes, Option<PacketMetadata>)> = None;
+
+        let (video_width, video_height) = if has_video {
+            let mut w = self.config.video_width;
+            let mut h = self.config.video_height;
+
+            if w == 0 || h == 0 {
+                // Auto-detect: wait for the first video packet and parse its VP9 header.
+                tracing::info!("WebMMuxerNode: video_width/video_height not configured, \
+                                auto-detecting from first VP9 keyframe");
+
+                let first = match video_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => None,
+                };
+
+                if let Some(Packet::Binary { data, metadata, .. }) = first {
+                    if let Some((detected_w, detected_h)) =
+                        parse_vp9_keyframe_dimensions(&data)
+                    {
+                        tracing::info!(
+                            "Auto-detected video dimensions: {}x{}",
+                            detected_w,
+                            detected_h
+                        );
+                        w = detected_w;
+                        h = detected_h;
+                    } else {
+                        let err_msg =
+                            "WebMMuxerNode: failed to parse VP9 keyframe dimensions \
+                             from first video packet (is the upstream encoder VP9?)"
+                                .to_string();
+                        state_helpers::emit_failed(
+                            &context.state_tx,
+                            &node_name,
+                            &err_msg,
+                        );
+                        return Err(StreamKitError::Runtime(err_msg));
+                    }
+                    first_video_packet = Some((data, metadata));
+                } else {
+                    let err_msg =
+                        "WebMMuxerNode: video input closed before sending any packets"
+                            .to_string();
+                    state_helpers::emit_failed(
+                        &context.state_tx,
+                        &node_name,
+                        &err_msg,
+                    );
+                    return Err(StreamKitError::Runtime(err_msg));
+                }
+            }
+
+            if w == 0 || h == 0 {
+                let err_msg = "WebMMuxerNode: video dimensions could not be determined".to_string();
                 state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
                 return Err(StreamKitError::Runtime(err_msg));
             }
+            (w, h)
+        } else {
+            (0, 0)
+        };
 
-            let (builder, vt) =
-                builder.add_video_track(width, height, VideoCodecId::VP9, None).map_err(|e| {
+        // Video track is added first so that the segment header lists it prominently
+        // for players that inspect the first track.
+        let builder = if has_video {
+            let (builder, vt) = builder
+                .add_video_track(video_width, video_height, VideoCodecId::VP9, None)
+                .map_err(|e| {
                     let err_msg = format!("Failed to add video track: {e}");
                     state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
                     StreamKitError::Runtime(err_msg)
                 })?;
             tracks.video = Some(vt);
-            tracing::info!("Added VP9 video track ({}x{})", width, height);
+            tracing::info!("Added VP9 video track ({}x{})", video_width, video_height);
             builder
         } else {
             builder
@@ -592,6 +757,71 @@ impl ProcessorNode for WebMMuxerNode {
 
         let mut audio_done = !has_audio;
         let mut video_done = !has_video;
+
+        // If we buffered the first video packet for dimension detection, replay
+        // it through the normal mux path before entering the receive loop.
+        if let Some((data, metadata)) = first_video_packet.take() {
+            if let Some(video_track) = tracks.video {
+                packet_count += 1;
+                stats_tracker.received();
+
+                let incoming_ts_us = metadata.as_ref().and_then(|m| m.timestamp_us);
+                let incoming_duration_us = metadata
+                    .as_ref()
+                    .and_then(|m| m.duration_us)
+                    .or(Some(DEFAULT_VIDEO_FRAME_DURATION_US));
+
+                if let Some(ts) = incoming_ts_us {
+                    video_clock.seed_from_timestamp_us(ts);
+                } else if video_clock.timestamp_us() == 0 {
+                    video_clock.seed_from_timestamp_us(0);
+                }
+
+                let presentation_ts_us =
+                    incoming_ts_us.unwrap_or_else(|| video_clock.timestamp_us());
+                video_clock
+                    .advance_by_duration_us(incoming_duration_us, DEFAULT_VIDEO_FRAME_DURATION_US);
+
+                let timestamp_ns = presentation_ts_us.saturating_mul(1000);
+                let is_keyframe = metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(true);
+
+                if let Err(e) =
+                    segment.add_frame(video_track, &data, timestamp_ns, is_keyframe)
+                {
+                    stats_tracker.errored();
+                    stats_tracker.maybe_send();
+                    let err_msg = format!("Failed to add first video frame to segment: {e}");
+                    state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
+                    return Err(StreamKitError::Runtime(err_msg));
+                }
+
+                last_written_ns = timestamp_ns;
+
+                let output_metadata = Some(PacketMetadata {
+                    timestamp_us: Some(presentation_ts_us),
+                    duration_us: incoming_duration_us,
+                    sequence: metadata.as_ref().and_then(|m| m.sequence),
+                    keyframe: Some(is_keyframe),
+                });
+
+                if flush_output(
+                    &mut context,
+                    &shared_buffer,
+                    &content_type_str,
+                    output_metadata,
+                    &mut header_sent,
+                    &mut stats_tracker,
+                    &node_name,
+                    self.config.streaming_mode,
+                )
+                .await?
+                {
+                    video_done = true;
+                }
+
+                stats_tracker.maybe_send();
+            }
+        }
 
         while !audio_done || !video_done {
             enum MuxFrame {

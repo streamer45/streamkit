@@ -300,6 +300,8 @@ const SMPTE_BARS_YUV: [(u8, u8, u8); 7] = [
 ///
 /// The bar is 4 pixels wide, pure white (Y=235, U=V=128), and its horizontal
 /// position advances by 4 pixels per frame, wrapping around the width.
+/// Pixels that extend past the right edge are clipped (not wrapped) so the
+/// bar cleanly exits and re-enters the frame.
 fn draw_sweep_bar_i420(
     data: &mut [u8],
     width: u32,
@@ -320,9 +322,13 @@ fn draw_sweep_bar_i420(
     let bar_x = seq_usize.saturating_mul(speed) % w;
 
     // Y plane: set bar columns to peak white (235).
+    // Clip at the right edge so the bar doesn't wrap to column 0.
     for row in 0..h {
         for dx in 0..bar_width {
-            let col = (bar_x + dx) % w;
+            let col = bar_x + dx;
+            if col >= w {
+                break;
+            }
             data[y_plane.offset + row * y_plane.stride + col] = 235;
         }
     }
@@ -334,7 +340,10 @@ fn draw_sweep_bar_i420(
     let chroma_bar_w = bar_width.div_ceil(2); // round up
     for row in 0..chroma_h {
         for dx in 0..chroma_bar_w {
-            let col = (chroma_bar_x + dx) % chroma_w;
+            let col = chroma_bar_x + dx;
+            if col >= chroma_w {
+                break;
+            }
             data[u_plane.offset + row * u_plane.stride + col] = 128;
             data[v_plane.offset + row * v_plane.stride + col] = 128;
         }
@@ -373,6 +382,8 @@ fn generate_smpte_colorbars_rgba8(width: u32, height: u32, data: &mut [u8]) {
 }
 
 /// Draws a bright vertical sweep bar (pure white, 4px wide) on an RGBA8 buffer.
+/// Pixels that extend past the right edge are clipped (not wrapped) so the
+/// bar cleanly exits and re-enters the frame.
 fn draw_sweep_bar_rgba8(data: &mut [u8], width: u32, height: u32, seq: u64) {
     let bar_width: usize = 4;
     let speed: usize = 4;
@@ -384,7 +395,10 @@ fn draw_sweep_bar_rgba8(data: &mut [u8], width: u32, height: u32, seq: u64) {
 
     for row in 0..h {
         for dx in 0..bar_width {
-            let col = (bar_x + dx) % w;
+            let col = bar_x + dx;
+            if col >= w {
+                break;
+            }
             let offset = row * stride + col * 4;
             data[offset] = 255; // R
             data[offset + 1] = 255; // G
