@@ -282,10 +282,10 @@ pub(crate) fn i420_to_rgba8_buf(data: &[u8], width: u32, height: u32, out: &mut 
             // indexing is in-bounds and elide bounds checks.
             let y_slice = &data[row * y_stride..row * y_stride + w];
             let chroma_row = row / 2;
-            let u_slice = &data[u_offset + chroma_row * chroma_w
-                ..u_offset + chroma_row * chroma_w + chroma_w];
-            let v_slice = &data[v_offset + chroma_row * chroma_w
-                ..v_offset + chroma_row * chroma_w + chroma_w];
+            let u_slice = &data
+                [u_offset + chroma_row * chroma_w..u_offset + chroma_row * chroma_w + chroma_w];
+            let v_slice = &data
+                [v_offset + chroma_row * chroma_w..v_offset + chroma_row * chroma_w + chroma_w];
 
             // Use chunks_exact_mut(4) on output + enumerate to iterate
             // without Range::next overhead or per-element bounds checks.
