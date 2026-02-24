@@ -557,16 +557,16 @@ impl ProcessorNode for CompositorNode {
             // ── Send work to persistent compositing thread ─────────────
             // Collect the data we need to send to the blocking thread.
             let num_slots = slots.len();
-            let layers: Vec<Option<LayerSnapshot>> = slots
+            let mut layers: Vec<Option<LayerSnapshot>> = slots
                 .iter()
                 .enumerate()
                 .map(|(idx, slot)| {
                     slot.latest_frame.as_ref().map(|f| {
                         let layer_cfg = self.config.layers.get(&slot.name);
                         #[allow(clippy::option_if_let_else)]
-                        let (rect, opacity) = if let Some(lc) = layer_cfg {
+                        let (rect, opacity, z_index) = if let Some(lc) = layer_cfg {
                             // Explicit per-layer config.
-                            (lc.rect.clone(), lc.opacity)
+                            (lc.rect.clone(), lc.opacity, lc.z_index)
                         } else if idx > 0 && num_slots > 1 {
                             // Auto-PiP: non-first layers without explicit config
                             // are placed in the bottom-right corner at 1/3 canvas
@@ -575,10 +575,11 @@ impl ProcessorNode for CompositorNode {
                             let pip_h = self.config.height / 3;
                             let pip_x = self.config.width - pip_w - 20;
                             let pip_y = self.config.height - pip_h - 20;
-                            (Some(Rect { x: pip_x, y: pip_y, width: pip_w, height: pip_h }), 0.9)
+                            #[allow(clippy::cast_possible_wrap)]
+                            (Some(Rect { x: pip_x, y: pip_y, width: pip_w, height: pip_h }), 0.9, idx as i32)
                         } else {
                             // First layer (or single input): fill the canvas.
-                            (None, 1.0)
+                            (None, 1.0, 0)
                         };
                         LayerSnapshot {
                             data: f.data.clone(),
@@ -587,10 +588,24 @@ impl ProcessorNode for CompositorNode {
                             pixel_format: f.pixel_format,
                             rect,
                             opacity,
+                            z_index,
                         }
                     })
                 })
                 .collect();
+
+            // Sort layers by z_index so that lower values are drawn first
+            // (bottom of the stack).  `None` entries (slots without a frame)
+            // are pushed to the end — they are skipped during compositing
+            // anyway.
+            layers.sort_by(|a, b| {
+                match (a, b) {
+                    (Some(la), Some(lb)) => la.z_index.cmp(&lb.z_index),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                }
+            });
 
             stats_tracker.received();
 
@@ -939,6 +954,7 @@ mod tests {
             pixel_format: PixelFormat::Rgba8,
             rect: Some(Rect { x: 0, y: 0, width: 4, height: 4 }),
             opacity: 1.0,
+            z_index: 0,
         };
 
         let mut scratch = Vec::new();
@@ -967,6 +983,7 @@ mod tests {
             pixel_format: PixelFormat::Rgba8,
             rect: None,
             opacity: 1.0,
+            z_index: 0,
         };
         let layer1 = LayerSnapshot {
             data: green.data,
@@ -975,6 +992,7 @@ mod tests {
             pixel_format: PixelFormat::Rgba8,
             rect: Some(Rect { x: 1, y: 1, width: 2, height: 2 }),
             opacity: 1.0,
+            z_index: 1,
         };
 
         let mut scratch = Vec::new();
@@ -1026,7 +1044,7 @@ mod tests {
     #[test]
     fn test_config_validate_bad_opacity() {
         let mut cfg = CompositorConfig::default();
-        cfg.layers.insert("in_0".to_string(), LayerConfig { rect: None, opacity: 1.5 });
+        cfg.layers.insert("in_0".to_string(), LayerConfig { opacity: 1.5, ..Default::default() });
         assert!(cfg.validate().is_err());
     }
 

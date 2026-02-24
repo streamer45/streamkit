@@ -25,6 +25,9 @@ pub struct LayerSnapshot {
     pub pixel_format: PixelFormat,
     pub rect: Option<Rect>,
     pub opacity: f32,
+    /// Visual stacking order.  Lower values are drawn first (bottom).
+    /// Used to sort layers before compositing; ties broken by slot index.
+    pub z_index: i32,
 }
 
 /// Work item sent from the async loop to the persistent compositing thread.

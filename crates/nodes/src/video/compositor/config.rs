@@ -62,6 +62,10 @@ pub(crate) const fn default_opacity() -> f32 {
     1.0
 }
 
+pub(crate) const fn default_z_index() -> i32 {
+    0
+}
+
 const fn default_text_color() -> [u8; 4] {
     [255, 255, 255, 255]
 }
@@ -79,11 +83,16 @@ pub struct LayerConfig {
     /// Opacity (0.0 .. 1.0). Default 1.0.
     #[serde(default = "default_opacity")]
     pub opacity: f32,
+    /// Visual stacking order.  Lower values are drawn first (bottom);
+    /// higher values are drawn on top.  Ties are broken by slot index
+    /// (pin insertion order).  Default 0.
+    #[serde(default = "default_z_index")]
+    pub z_index: i32,
 }
 
 impl Default for LayerConfig {
     fn default() -> Self {
-        Self { rect: None, opacity: default_opacity() }
+        Self { rect: None, opacity: default_opacity(), z_index: default_z_index() }
     }
 }
 
