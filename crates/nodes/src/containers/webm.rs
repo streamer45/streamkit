@@ -256,8 +256,7 @@ impl SharedPacketBuffer {
             Some(Bytes::from(data_vec))
         } else {
             // Seek-window mode: copy incremental bytes while retaining a backwards-seek window.
-            let new_data =
-                Bytes::copy_from_slice(&state.cursor.get_ref()[last_sent..current_len]);
+            let new_data = Bytes::copy_from_slice(&state.cursor.get_ref()[last_sent..current_len]);
             state.last_sent_pos = current_len;
 
             // Trim old data if buffer exceeds window size.
