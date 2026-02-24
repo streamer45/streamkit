@@ -467,7 +467,7 @@ impl ProcessorNode for Vp9EncoderNode {
                             stats_tracker.received();
 
                             let output_packet = Packet::Binary {
-                                data: Bytes::from(encoded.data),
+                                data: encoded.data,
                                 content_type: Some(Cow::Borrowed(VP9_CONTENT_TYPE)),
                                 metadata: encoded.metadata,
                             };
@@ -491,6 +491,12 @@ impl ProcessorNode for Vp9EncoderNode {
                 Some(control_msg) = context.control_rx.recv() => {
                     if matches!(control_msg, streamkit_core::control::NodeControlMessage::Shutdown) {
                         tracing::info!("Vp9EncoderNode received shutdown signal");
+                        // NOTE: Aborting the input task and dropping encode_tx causes
+                        // the encode thread to flush remaining frames, but because we
+                        // break out of the forwarding loop here those flushed packets
+                        // are never sent downstream.  This differs from the graceful
+                        // input-closed path (below) which does drain result_rx.  Data
+                        // loss on explicit shutdown is acceptable.
                         input_task.abort();
                         drop(encode_tx);
                         break;
@@ -505,7 +511,7 @@ impl ProcessorNode for Vp9EncoderNode {
                                 stats_tracker.received();
 
                                 let output_packet = Packet::Binary {
-                                    data: Bytes::from(encoded.data),
+                                    data: encoded.data,
                                     content_type: Some(Cow::Borrowed(VP9_CONTENT_TYPE)),
                                     metadata: encoded.metadata,
                                 };
@@ -539,7 +545,7 @@ impl ProcessorNode for Vp9EncoderNode {
 }
 
 struct EncodedPacket {
-    data: Vec<u8>,
+    data: Bytes,
     metadata: Option<PacketMetadata>,
 }
 
@@ -598,7 +604,9 @@ impl Vp9Decoder {
         };
         check_vpx(res, &raw mut self.ctx, "VP9 decode")?;
 
-        let mut frames = Vec::new();
+        // Most VP9 packets produce exactly one frame; pre-allocate for that
+        // common case to avoid a heap allocation + realloc in the hot path.
+        let mut frames = Vec::with_capacity(1);
         let mut iter: vpx::vpx_codec_iter_t = std::ptr::null_mut();
         let mut remaining_metadata = metadata;
 
@@ -842,11 +850,15 @@ impl Vp9Encoder {
                 packet.data.frame
             };
 
-            let data = unsafe {
+            let data: Bytes = unsafe {
                 // SAFETY: frame_pkt.buf is valid for frame_pkt.sz bytes.
+                // Copy into Bytes directly so the downstream Packet::Binary
+                // doesn't need a second Vec → Bytes conversion.
                 #[allow(clippy::cast_possible_truncation)]
-                std::slice::from_raw_parts(frame_pkt.buf as *const u8, frame_pkt.sz as usize)
-                    .to_vec()
+                Bytes::copy_from_slice(std::slice::from_raw_parts(
+                    frame_pkt.buf as *const u8,
+                    frame_pkt.sz as usize,
+                ))
             };
 
             let is_keyframe = (frame_pkt.flags as u32 & VPX_FRAME_IS_KEY) != 0;
@@ -876,7 +888,10 @@ impl Vp9Encoder {
     }
 
     fn next_pts(&mut self, metadata: Option<&PacketMetadata>) -> (i64, u64) {
-        let duration = metadata.and_then(|meta| meta.duration_us).unwrap_or(0);
+        // Default to 1µs rather than 0 so libvpx rate-control heuristics
+        // always see a non-zero duration.  The PTS advance fallback already
+        // uses `pts + 1`, so this keeps the two paths consistent.
+        let duration = metadata.and_then(|meta| meta.duration_us).unwrap_or(1);
 
         let pts =
             metadata.and_then(|meta| meta.timestamp_us).map_or(self.next_pts, u64::cast_signed);
