@@ -278,56 +278,30 @@ pub(crate) fn i420_to_rgba8_buf(data: &[u8], width: u32, height: u32, out: &mut 
 
     out[..w * h * 4].par_chunks_mut(rgba_row_stride).take(h).enumerate().for_each(
         |(row, rgba_row)| {
-            let y_row_base = row * y_stride;
+            // Sub-slice the input planes so the compiler can prove all
+            // indexing is in-bounds and elide bounds checks.
+            let y_slice = &data[row * y_stride..row * y_stride + w];
             let chroma_row = row / 2;
-            let u_row_base = u_offset + chroma_row * chroma_w;
-            let v_row_base = v_offset + chroma_row * chroma_w;
+            let u_slice = &data[u_offset + chroma_row * chroma_w
+                ..u_offset + chroma_row * chroma_w + chroma_w];
+            let v_slice = &data[v_offset + chroma_row * chroma_w
+                ..v_offset + chroma_row * chroma_w + chroma_w];
 
-            // Process 4 pixels at a time for better auto-vectorisation.
-            let chunks = w / 4;
-            let remainder = w % 4;
-
-            for chunk in 0..chunks {
-                let col_base = chunk * 4;
-                for i in 0..4 {
-                    let col = col_base + i;
-                    let y_val = data[y_row_base + col] as i32;
-                    let u_val = data[u_row_base + col / 2] as i32;
-                    let v_val = data[v_row_base + col / 2] as i32;
-
-                    let c = y_val - 16;
-                    let d = u_val - 128;
-                    let e = v_val - 128;
-                    let r = ((298 * c + 409 * e + 128) >> 8).clamp(0, 255) as u8;
-                    let g = ((298 * c - 100 * d - 208 * e + 128) >> 8).clamp(0, 255) as u8;
-                    let b = ((298 * c + 516 * d + 128) >> 8).clamp(0, 255) as u8;
-
-                    let off = col * 4;
-                    rgba_row[off] = r;
-                    rgba_row[off + 1] = g;
-                    rgba_row[off + 2] = b;
-                    rgba_row[off + 3] = 255;
-                }
-            }
-
-            // Handle remaining pixels.
-            for col in (chunks * 4)..((chunks * 4) + remainder) {
-                let y_val = data[y_row_base + col] as i32;
-                let u_val = data[u_row_base + col / 2] as i32;
-                let v_val = data[v_row_base + col / 2] as i32;
+            // Use chunks_exact_mut(4) on output + enumerate to iterate
+            // without Range::next overhead or per-element bounds checks.
+            for (col, pixel) in rgba_row.chunks_exact_mut(4).enumerate() {
+                let y_val = y_slice[col] as i32;
+                let u_val = u_slice[col / 2] as i32;
+                let v_val = v_slice[col / 2] as i32;
 
                 let c = y_val - 16;
                 let d = u_val - 128;
                 let e = v_val - 128;
-                let r = ((298 * c + 409 * e + 128) >> 8).clamp(0, 255) as u8;
-                let g = ((298 * c - 100 * d - 208 * e + 128) >> 8).clamp(0, 255) as u8;
-                let b = ((298 * c + 516 * d + 128) >> 8).clamp(0, 255) as u8;
 
-                let off = col * 4;
-                rgba_row[off] = r;
-                rgba_row[off + 1] = g;
-                rgba_row[off + 2] = b;
-                rgba_row[off + 3] = 255;
+                pixel[0] = ((298 * c + 409 * e + 128) >> 8).clamp(0, 255) as u8;
+                pixel[1] = ((298 * c - 100 * d - 208 * e + 128) >> 8).clamp(0, 255) as u8;
+                pixel[2] = ((298 * c + 516 * d + 128) >> 8).clamp(0, 255) as u8;
+                pixel[3] = 255;
             }
         },
     );
@@ -363,31 +337,15 @@ pub(crate) fn rgba8_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut 
     let (y_plane, chroma_planes) = out[..y_size + 2 * chroma_size].split_at_mut(y_size);
     let (u_plane, v_plane) = chroma_planes.split_at_mut(chroma_size);
 
-    // Y plane — parallelise by row, processing 4 pixels at a time.
+    // Y plane — parallelise by row.  Use slice iterators instead of
+    // range-based loops to eliminate Range::next overhead and bounds checks.
     y_plane.par_chunks_mut(y_stride).take(h).enumerate().for_each(|(row, y_row)| {
-        let rgba_row_base = row * w * 4;
+        let rgba_row = &data[row * w * 4..(row + 1) * w * 4];
 
-        let chunks = w / 4;
-        let remainder = w % 4;
-
-        for chunk in 0..chunks {
-            let col_base = chunk * 4;
-            for i in 0..4 {
-                let col = col_base + i;
-                let off = rgba_row_base + col * 4;
-                let r = data[off] as i32;
-                let g = data[off + 1] as i32;
-                let b = data[off + 2] as i32;
-                let y = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
-                y_row[col] = y.clamp(0, 255) as u8;
-            }
-        }
-
-        for col in (chunks * 4)..((chunks * 4) + remainder) {
-            let off = rgba_row_base + col * 4;
-            let r = data[off] as i32;
-            let g = data[off + 1] as i32;
-            let b = data[off + 2] as i32;
+        for (col, pixel) in rgba_row.chunks_exact(4).enumerate() {
+            let r = pixel[0] as i32;
+            let g = pixel[1] as i32;
+            let b = pixel[2] as i32;
             let y = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
             y_row[col] = y.clamp(0, 255) as u8;
         }

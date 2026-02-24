@@ -122,7 +122,7 @@ pub(crate) fn composite_frame(
 /// - Opacity is 1.0
 /// - There are no image or text overlays
 ///
-/// Returns `Some(data)` with the pass-through I420 data, or `None` if compositing is needed.
+/// Returns the index of the pass-through layer, or `None` if compositing is needed.
 pub(crate) fn try_i420_passthrough(
     canvas_w: u32,
     canvas_h: u32,
@@ -130,7 +130,7 @@ pub(crate) fn try_i420_passthrough(
     image_overlays: &[Arc<DecodedOverlay>],
     text_overlays: &[Arc<DecodedOverlay>],
     output_format: PixelFormat,
-) -> Option<Arc<streamkit_core::frame_pool::PooledVideoData>> {
+) -> Option<usize> {
     if output_format != PixelFormat::I420 {
         return None;
     }
@@ -138,12 +138,19 @@ pub(crate) fn try_i420_passthrough(
         return None;
     }
 
-    // Collect active (non-None) layers.
-    let active: Vec<&LayerSnapshot> = layers.iter().filter_map(|l| l.as_ref()).collect();
-    if active.len() != 1 {
-        return None;
+    // Find the single active layer.
+    let mut active_idx = None;
+    for (i, slot) in layers.iter().enumerate() {
+        if slot.is_some() {
+            if active_idx.is_some() {
+                return None; // more than one active layer
+            }
+            active_idx = Some(i);
+        }
     }
-    let layer = active[0];
+    let idx = active_idx?;
+    let layer = layers[idx].as_ref().unwrap();
+
     if layer.pixel_format != PixelFormat::I420 {
         return None;
     }
@@ -161,5 +168,5 @@ pub(crate) fn try_i420_passthrough(
         }
     }
 
-    Some(layer.data.clone())
+    Some(idx)
 }

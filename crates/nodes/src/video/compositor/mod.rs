@@ -278,8 +278,11 @@ impl ProcessorNode for CompositorNode {
 
             while let Some(work) = work_rx.blocking_recv() {
                 // Fast path: try I420 pass-through to skip the entire
-                // I420 → RGBA8 → I420 round-trip.
-                if let Some(passthrough_data) = kernel::try_i420_passthrough(
+                // I420 → RGBA8 → I420 round-trip.  The passthrough returns
+                // the index of the qualifying layer; we copy its data into
+                // a pooled buffer (a cheap memcpy vs. two colour-space
+                // conversions + compositing).
+                if let Some(pt_idx) = kernel::try_i420_passthrough(
                     work.canvas_w,
                     work.canvas_h,
                     &work.layers,
@@ -287,11 +290,14 @@ impl ProcessorNode for CompositorNode {
                     &work.text_overlays,
                     work.output_format,
                 ) {
-                    let pooled = Arc::try_unwrap(passthrough_data).unwrap_or_else(|arc| {
-                        streamkit_core::frame_pool::PooledVideoData::from_vec(
-                            arc.as_slice().to_vec(),
-                        )
-                    });
+                    let src = work.layers[pt_idx].as_ref().unwrap().data.as_slice();
+                    let pooled = if let Some(ref pool) = work.video_pool {
+                        let mut p = pool.get(src.len());
+                        p.as_mut_slice()[..src.len()].copy_from_slice(src);
+                        p
+                    } else {
+                        streamkit_core::frame_pool::PooledVideoData::from_vec(src.to_vec())
+                    };
                     let result = CompositeResult {
                         output_format: work.output_format,
                         rgba_data: None,
