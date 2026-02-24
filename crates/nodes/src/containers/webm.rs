@@ -418,7 +418,7 @@ impl ProcessorNode for WebMMuxerNode {
         let mut video_rx: Option<tokio::sync::mpsc::Receiver<Packet>> = None;
 
         for (pin_name, rx) in context.inputs.drain() {
-            let is_video = context.input_types.get(&pin_name).map_or(false, |ty| {
+            let is_video = context.input_types.get(&pin_name).is_some_and(|ty| {
                 matches!(ty, PacketType::EncodedVideo(_) | PacketType::RawVideo(_))
             });
 

@@ -69,19 +69,15 @@ impl Default for Vp9DecoderConfig {
 /// Maps to the libvpx `deadline` parameter in `vpx_codec_encode`.
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum Vp9EncoderDeadline {
     /// Real-time encoding – lowest latency, may sacrifice quality (VPX_DL_REALTIME).
+    #[default]
     Realtime,
     /// Good quality – allows up to ~1 second per frame (VPX_DL_GOOD_QUALITY).
     GoodQuality,
     /// Best quality – unlimited time per frame (VPX_DL_BEST_QUALITY).
     BestQuality,
-}
-
-impl Default for Vp9EncoderDeadline {
-    fn default() -> Self {
-        Self::Realtime
-    }
 }
 
 impl Vp9EncoderDeadline {
@@ -567,9 +563,15 @@ impl Vp9Decoder {
 
         let res = unsafe {
             // SAFETY: ctx and cfg are valid and iface is non-null.
-            vpx::vpx_codec_dec_init_ver(&mut ctx, iface, &cfg, 0, VPX_DECODER_ABI_VERSION)
+            vpx::vpx_codec_dec_init_ver(
+                &raw mut ctx,
+                iface,
+                &raw const cfg,
+                0,
+                VPX_DECODER_ABI_VERSION,
+            )
         };
-        check_vpx(res, &mut ctx, "VP9 decoder init")?;
+        check_vpx(res, &raw mut ctx, "VP9 decoder init")?;
 
         Ok(Self { ctx })
     }
@@ -584,9 +586,15 @@ impl Vp9Decoder {
             u32::try_from(data.len()).map_err(|_| "VP9 packet too large for libvpx".to_string())?;
         let res = unsafe {
             // SAFETY: libvpx expects a valid buffer for the duration of the call.
-            vpx::vpx_codec_decode(&mut self.ctx, data.as_ptr(), data_len, std::ptr::null_mut(), 0)
+            vpx::vpx_codec_decode(
+                &raw mut self.ctx,
+                data.as_ptr(),
+                data_len,
+                std::ptr::null_mut(),
+                0,
+            )
         };
-        check_vpx(res, &mut self.ctx, "VP9 decode")?;
+        check_vpx(res, &raw mut self.ctx, "VP9 decode")?;
 
         let mut frames = Vec::new();
         let mut iter: vpx::vpx_codec_iter_t = std::ptr::null_mut();
@@ -595,7 +603,7 @@ impl Vp9Decoder {
         loop {
             let image_ptr = unsafe {
                 // SAFETY: iter is managed by libvpx and image_ptr is valid until next call.
-                vpx::vpx_codec_get_frame(&mut self.ctx, &mut iter)
+                vpx::vpx_codec_get_frame(&raw mut self.ctx, &raw mut iter)
             };
             if image_ptr.is_null() {
                 break;
@@ -609,7 +617,7 @@ impl Vp9Decoder {
             // Peek ahead: if another frame follows, clone metadata; otherwise move it.
             let next_ptr = unsafe {
                 let mut peek_iter = iter;
-                vpx::vpx_codec_get_frame(&mut self.ctx, &mut peek_iter)
+                vpx::vpx_codec_get_frame(&raw mut self.ctx, &raw mut peek_iter)
             };
             let meta = if next_ptr.is_null() {
                 remaining_metadata.take()
@@ -629,7 +637,7 @@ impl Drop for Vp9Decoder {
     fn drop(&mut self) {
         unsafe {
             // SAFETY: ctx is initialized by libvpx and must be destroyed exactly once.
-            vpx::vpx_codec_destroy(&mut self.ctx);
+            vpx::vpx_codec_destroy(&raw mut self.ctx);
         }
     }
 }
@@ -685,9 +693,15 @@ impl Vp9Encoder {
 
         let res = unsafe {
             // SAFETY: ctx and cfg are valid and iface is non-null.
-            vpx::vpx_codec_enc_init_ver(&mut ctx, iface, &cfg, 0, VPX_ENCODER_ABI_VERSION)
+            vpx::vpx_codec_enc_init_ver(
+                &raw mut ctx,
+                iface,
+                &raw const cfg,
+                0,
+                VPX_ENCODER_ABI_VERSION,
+            )
         };
-        if let Err(err) = check_vpx(res, &mut ctx, "VP9 encoder init") {
+        if let Err(err) = check_vpx(res, &raw mut ctx, "VP9 encoder init") {
             let cfg_summary = format!(
                 "w={width} h={height} timebase=1/{den} bitrate_kbps={} threads={} lag={} kf_max={}",
                 cfg.rc_target_bitrate,
@@ -701,8 +715,8 @@ impl Vp9Encoder {
 
         unsafe {
             // SAFETY: Control calls are valid after encoder initialization.
-            set_codec_control(&mut ctx, VP8E_SET_ENABLEAUTOALTREF as i32, 0)?;
-            set_codec_control(&mut ctx, VP8E_SET_CPUUSED as i32, 6)?;
+            set_codec_control(&raw mut ctx, VP8E_SET_ENABLEAUTOALTREF as i32, 0)?;
+            set_codec_control(&raw mut ctx, VP8E_SET_CPUUSED as i32, 6)?;
         }
 
         Ok(Self { ctx, next_pts: 0, deadline: config.deadline.as_vpx_deadline() })
@@ -744,7 +758,7 @@ impl Vp9Encoder {
                 frame.width,
                 frame.height,
                 layout.stride_align(),
-                frame.data.as_slice().as_ptr() as *mut u8,
+                frame.data.as_slice().as_ptr().cast_mut(),
             )
         };
         if image_ptr.is_null() {
@@ -763,9 +777,16 @@ impl Vp9Encoder {
 
         let res = unsafe {
             // SAFETY: image is initialized and ctx is ready for encode.
-            vpx::vpx_codec_encode(&mut self.ctx, &image, pts, duration, flags, self.deadline)
+            vpx::vpx_codec_encode(
+                &raw mut self.ctx,
+                &raw const image,
+                pts,
+                duration,
+                flags,
+                self.deadline,
+            )
         };
-        check_vpx(res, &mut self.ctx, "VP9 encode")?;
+        check_vpx(res, &raw mut self.ctx, "VP9 encode")?;
 
         let packets = self.drain_packets(metadata)?;
 
@@ -777,9 +798,9 @@ impl Vp9Encoder {
         for _ in 0..16 {
             let res = unsafe {
                 // SAFETY: Passing a null image flushes delayed frames.
-                vpx::vpx_codec_encode(&mut self.ctx, std::ptr::null(), 0, 0, 0, self.deadline)
+                vpx::vpx_codec_encode(&raw mut self.ctx, std::ptr::null(), 0, 0, 0, self.deadline)
             };
-            check_vpx(res, &mut self.ctx, "VP9 encode flush")?;
+            check_vpx(res, &raw mut self.ctx, "VP9 encode flush")?;
 
             let mut packets = self.drain_packets(None)?;
             if packets.is_empty() {
@@ -801,7 +822,7 @@ impl Vp9Encoder {
         loop {
             let packet_ptr = unsafe {
                 // SAFETY: iter is managed by libvpx and packet_ptr is valid until next call.
-                vpx::vpx_codec_get_cx_data(&mut self.ctx, &mut iter)
+                vpx::vpx_codec_get_cx_data(&raw mut self.ctx, &raw mut iter)
             };
             if packet_ptr.is_null() {
                 break;
@@ -832,7 +853,7 @@ impl Vp9Encoder {
             // Peek ahead: if another frame packet follows, clone metadata; otherwise move it.
             let next_ptr = unsafe {
                 let mut peek_iter = iter;
-                vpx::vpx_codec_get_cx_data(&mut self.ctx, &mut peek_iter)
+                vpx::vpx_codec_get_cx_data(&raw mut self.ctx, &raw mut peek_iter)
             };
             let meta = if next_ptr.is_null() {
                 remaining_metadata.take()
@@ -858,8 +879,7 @@ impl Vp9Encoder {
 
         let pts = metadata
             .and_then(|meta| meta.timestamp_us)
-            .map(|timestamp| timestamp as i64)
-            .unwrap_or(self.next_pts);
+            .map_or(self.next_pts, |timestamp| timestamp as i64);
 
         self.next_pts = if duration > 0 { pts + duration as i64 } else { pts + 1 };
         (pts, duration)
@@ -870,7 +890,7 @@ impl Drop for Vp9Encoder {
     fn drop(&mut self) {
         unsafe {
             // SAFETY: ctx is initialized by libvpx and must be destroyed exactly once.
-            vpx::vpx_codec_destroy(&mut self.ctx);
+            vpx::vpx_codec_destroy(&raw mut self.ctx);
         }
     }
 }
@@ -921,10 +941,10 @@ unsafe fn set_codec_control(
 fn vpx_error(ctx: *mut vpx::vpx_codec_ctx_t, err: vpx::vpx_codec_err_t) -> String {
     unsafe {
         // SAFETY: libvpx returns a NUL-terminated error string.
-        let msg_ptr = if !ctx.is_null() {
-            vpx::vpx_codec_error(ctx)
-        } else {
+        let msg_ptr = if ctx.is_null() {
             vpx::vpx_codec_err_to_string(err)
+        } else {
+            vpx::vpx_codec_error(ctx)
         };
         if msg_ptr.is_null() {
             "libvpx error".to_string()
@@ -943,8 +963,8 @@ fn copy_vpx_image(
         return Err("VP9 decoder produced non-I420 frame".to_string());
     }
 
-    let width = image.d_w as u32;
-    let height = image.d_h as u32;
+    let width = image.d_w;
+    let height = image.d_h;
     if width == 0 || height == 0 {
         return Err("VP9 decoder produced empty frame".to_string());
     }
@@ -1012,7 +1032,7 @@ fn copy_plane(
     Ok(())
 }
 
-fn merge_keyframe_metadata(
+const fn merge_keyframe_metadata(
     metadata: Option<PacketMetadata>,
     keyframe: bool,
     pts: i64,

@@ -11,7 +11,7 @@ use streamkit_core::StreamKitError;
 
 /// A pre-decoded RGBA bitmap overlay ready for per-frame blitting.
 #[derive(Clone)]
-pub(crate) struct DecodedOverlay {
+pub struct DecodedOverlay {
     pub rgba_data: Vec<u8>,
     pub width: u32,
     pub height: u32,
@@ -20,9 +20,7 @@ pub(crate) struct DecodedOverlay {
 }
 
 /// Decode a base64-encoded image (PNG/JPEG) into an RGBA8 bitmap.
-pub(crate) fn decode_image_overlay(
-    config: &ImageOverlayConfig,
-) -> Result<DecodedOverlay, StreamKitError> {
+pub fn decode_image_overlay(config: &ImageOverlayConfig) -> Result<DecodedOverlay, StreamKitError> {
     use image::GenericImageView;
 
     use base64::Engine;
@@ -48,7 +46,7 @@ pub(crate) fn decode_image_overlay(
 }
 
 /// Rasterize a text overlay into an RGBA8 bitmap using `tiny-skia`.
-pub(crate) fn rasterize_text_overlay(config: &TextOverlayConfig) -> DecodedOverlay {
+pub fn rasterize_text_overlay(config: &TextOverlayConfig) -> DecodedOverlay {
     let w = config.rect.width.max(1);
     let h = config.rect.height.max(1);
 

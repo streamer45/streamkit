@@ -21,7 +21,7 @@ use super::overlay::DecodedOverlay;
 /// Rows are processed in parallel via `rayon` when the blit region is large
 /// enough to benefit from multi-core dispatch.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::too_many_arguments)]
-pub(crate) fn scale_blit_rgba(
+pub fn scale_blit_rgba(
     dst: &mut [u8],
     dst_width: u32,
     dst_height: u32,
@@ -165,12 +165,12 @@ fn blit_row_opaque(
             row_slice[dst_idx + 2] = sb;
             row_slice[dst_idx + 3] = 255;
         } else if sa > 0 {
-            let a16 = sa as u16;
+            let a16 = u16::from(sa);
             row_slice[dst_idx] = blend_u8(sr, row_slice[dst_idx], a16);
             row_slice[dst_idx + 1] = blend_u8(sg, row_slice[dst_idx + 1], a16);
             row_slice[dst_idx + 2] = blend_u8(sb, row_slice[dst_idx + 2], a16);
             // Composite alpha: a_out = a_src + a_dst * (1 - a_src)
-            let da = row_slice[dst_idx + 3] as u16;
+            let da = u16::from(row_slice[dst_idx + 3]);
             row_slice[dst_idx + 3] = (a16 + ((da * (255 - a16) + 128) >> 8)).min(255) as u8;
         }
     }
@@ -221,7 +221,7 @@ fn blit_row_alpha(
         }
 
         // Effective alpha: (sa * opacity) / 255, done in integer.
-        let sa_eff = ((sa as u16 * opacity_u16 + 128) >> 8).min(255) as u16;
+        let sa_eff = ((u16::from(sa) * opacity_u16 + 128) >> 8).min(255);
         if sa_eff == 255 {
             row_slice[dst_idx] = sr;
             row_slice[dst_idx + 1] = sg;
@@ -231,7 +231,7 @@ fn blit_row_alpha(
             row_slice[dst_idx] = blend_u8(sr, row_slice[dst_idx], sa_eff);
             row_slice[dst_idx + 1] = blend_u8(sg, row_slice[dst_idx + 1], sa_eff);
             row_slice[dst_idx + 2] = blend_u8(sb, row_slice[dst_idx + 2], sa_eff);
-            let da = row_slice[dst_idx + 3] as u16;
+            let da = u16::from(row_slice[dst_idx + 3]);
             row_slice[dst_idx + 3] = (sa_eff + ((da * (255 - sa_eff) + 128) >> 8)).min(255) as u8;
         }
     }
@@ -239,12 +239,7 @@ fn blit_row_alpha(
 
 /// Blit a pre-decoded overlay onto the canvas (full alpha blend at the
 /// overlay's configured opacity).
-pub(crate) fn blit_overlay(
-    canvas: &mut [u8],
-    canvas_w: u32,
-    canvas_h: u32,
-    overlay: &DecodedOverlay,
-) {
+pub fn blit_overlay(canvas: &mut [u8], canvas_w: u32, canvas_h: u32, overlay: &DecodedOverlay) {
     scale_blit_rgba(
         canvas,
         canvas_w,
@@ -264,14 +259,14 @@ pub(crate) fn blit_overlay(
 /// The caller must ensure `out` has length >= `width * height * 4`.
 /// Rows are processed in parallel via `rayon`.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-pub(crate) fn i420_to_rgba8_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
+pub fn i420_to_rgba8_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     use rayon::prelude::*;
 
     let w = width as usize;
     let h = height as usize;
     let y_stride = w;
-    let chroma_w = (w + 1) / 2;
-    let chroma_h = (h + 1) / 2;
+    let chroma_w = w.div_ceil(2);
+    let chroma_h = h.div_ceil(2);
     let u_offset = y_stride * h;
     let v_offset = u_offset + chroma_w * chroma_h;
     let rgba_row_stride = w * 4;
@@ -287,9 +282,9 @@ pub(crate) fn i420_to_rgba8_buf(data: &[u8], width: u32, height: u32, out: &mut 
             let v_base = v_offset + chroma_row * chroma_w;
 
             for col in 0..w {
-                let y_val = data[y_base + col] as i32;
-                let u_val = data[u_base + col / 2] as i32;
-                let v_val = data[v_base + col / 2] as i32;
+                let y_val = i32::from(data[y_base + col]);
+                let u_val = i32::from(data[u_base + col / 2]);
+                let v_val = i32::from(data[v_base + col / 2]);
 
                 let c = y_val - 16;
                 let d = u_val - 128;
@@ -309,7 +304,7 @@ pub(crate) fn i420_to_rgba8_buf(data: &[u8], width: u32, height: u32, out: &mut 
 ///
 /// Prefer [`i420_to_rgba8_buf`] with a pooled buffer to avoid per-frame allocation.
 #[allow(dead_code, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-pub(crate) fn i420_to_rgba8(data: &[u8], width: u32, height: u32) -> Vec<u8> {
+pub fn i420_to_rgba8(data: &[u8], width: u32, height: u32) -> Vec<u8> {
     let mut rgba = vec![0u8; width as usize * height as usize * 4];
     i420_to_rgba8_buf(data, width, height, &mut rgba);
     rgba
@@ -320,14 +315,14 @@ pub(crate) fn i420_to_rgba8(data: &[u8], width: u32, height: u32) -> Vec<u8> {
 /// The caller must ensure `out` has length >= `w * h + 2 * ((w+1)/2) * ((h+1)/2)`.
 /// Y, U and V planes are processed in parallel via `rayon`.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-pub(crate) fn rgba8_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
+pub fn rgba8_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     use rayon::prelude::*;
 
     let w = width as usize;
     let h = height as usize;
     let y_stride = w;
-    let chroma_w = (w + 1) / 2;
-    let chroma_h = (h + 1) / 2;
+    let chroma_w = w.div_ceil(2);
+    let chroma_h = h.div_ceil(2);
     let y_size = y_stride * h;
     let chroma_size = chroma_w * chroma_h;
 
@@ -341,9 +336,9 @@ pub(crate) fn rgba8_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut 
 
         for col in 0..w {
             let off = rgba_base + col * 4;
-            let r = data[off] as i32;
-            let g = data[off + 1] as i32;
-            let b = data[off + 2] as i32;
+            let r = i32::from(data[off]);
+            let g = i32::from(data[off + 1]);
+            let b = i32::from(data[off + 2]);
             let y = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
             y_row[col] = y.clamp(0, 255) as u8;
         }
@@ -370,9 +365,9 @@ pub(crate) fn rgba8_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut 
                     let cc = c0 + dc;
                     if cc < w {
                         let off = (rr * w + cc) * 4;
-                        sr += data[off] as i32;
-                        sg += data[off + 1] as i32;
-                        sb += data[off + 2] as i32;
+                        sr += i32::from(data[off]);
+                        sg += i32::from(data[off + 1]);
+                        sb += i32::from(data[off + 2]);
                         count += 1;
                     }
                 }
@@ -392,11 +387,11 @@ pub(crate) fn rgba8_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut 
 ///
 /// Prefer [`rgba8_to_i420_buf`] with a pooled buffer to avoid per-frame allocation.
 #[allow(dead_code, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-pub(crate) fn rgba8_to_i420(data: &[u8], width: u32, height: u32) -> Vec<u8> {
+pub fn rgba8_to_i420(data: &[u8], width: u32, height: u32) -> Vec<u8> {
     let w = width as usize;
     let h = height as usize;
-    let chroma_w = (w + 1) / 2;
-    let chroma_h = (h + 1) / 2;
+    let chroma_w = w.div_ceil(2);
+    let chroma_h = h.div_ceil(2);
     let total = w * h + 2 * chroma_w * chroma_h;
     let mut out = vec![0u8; total];
     rgba8_to_i420_buf(data, width, height, &mut out);

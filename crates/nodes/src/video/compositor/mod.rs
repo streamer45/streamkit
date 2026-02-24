@@ -322,8 +322,8 @@ impl ProcessorNode for CompositorNode {
                     // (no intermediate scratch — avoids a full extra memcpy).
                     let w = work.canvas_w as usize;
                     let h = work.canvas_h as usize;
-                    let chroma_w = (w + 1) / 2;
-                    let chroma_h = (h + 1) / 2;
+                    let chroma_w = w.div_ceil(2);
+                    let chroma_h = h.div_ceil(2);
                     let i420_size = w * h + 2 * chroma_w * chroma_h;
                     let mut i420_pooled = if let Some(ref pool) = work.video_pool {
                         pool.get(i420_size)
@@ -560,13 +560,12 @@ impl ProcessorNode for CompositorNode {
                 break;
             }
 
-            let composite_result = match result_rx.recv().await {
-                Some(r) => r,
-                None => {
-                    tracing::debug!("Compositing result channel closed");
-                    stop_reason = "compositor_thread_gone";
-                    break;
-                },
+            let composite_result = if let Some(r) = result_rx.recv().await {
+                r
+            } else {
+                tracing::debug!("Compositing result channel closed");
+                stop_reason = "compositor_thread_gone";
+                break;
             };
 
             // Build metadata from the first available input frame.

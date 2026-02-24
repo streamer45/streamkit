@@ -17,13 +17,13 @@ pub mod vp9;
 
 /// Registers all available video nodes with the engine's registry.
 #[allow(clippy::missing_const_for_fn)]
-pub fn register_video_nodes(_registry: &mut NodeRegistry) {
+pub fn register_video_nodes(registry: &mut NodeRegistry) {
     #[cfg(feature = "colorbars")]
-    colorbars::register_colorbars_nodes(_registry);
+    colorbars::register_colorbars_nodes(registry);
 
     #[cfg(feature = "compositor")]
-    compositor::register_compositor_nodes(_registry);
+    compositor::register_compositor_nodes(registry);
 
     #[cfg(feature = "vp9")]
-    vp9::register_vp9_nodes(_registry);
+    vp9::register_vp9_nodes(registry);
 }

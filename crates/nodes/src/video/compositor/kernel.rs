@@ -18,7 +18,7 @@ use super::pixel_ops::{blit_overlay, i420_to_rgba8_buf, scale_blit_rgba};
 // ── Compositing kernel (runs on a persistent blocking thread) ────────────────
 
 /// Snapshot of one input layer's data for the blocking compositor thread.
-pub(crate) struct LayerSnapshot {
+pub struct LayerSnapshot {
     pub data: Arc<streamkit_core::frame_pool::PooledVideoData>,
     pub width: u32,
     pub height: u32,
@@ -28,7 +28,7 @@ pub(crate) struct LayerSnapshot {
 }
 
 /// Work item sent from the async loop to the persistent compositing thread.
-pub(crate) struct CompositeWorkItem {
+pub struct CompositeWorkItem {
     pub canvas_w: u32,
     pub canvas_h: u32,
     pub layers: Vec<Option<LayerSnapshot>>,
@@ -39,7 +39,7 @@ pub(crate) struct CompositeWorkItem {
 }
 
 /// Result sent back from the compositing thread to the async loop.
-pub(crate) struct CompositeResult {
+pub struct CompositeResult {
     pub output_format: PixelFormat,
     pub rgba_data: Option<streamkit_core::frame_pool::PooledVideoData>,
     pub i420_data: Option<streamkit_core::frame_pool::PooledVideoData>,
@@ -50,7 +50,7 @@ pub(crate) struct CompositeResult {
 ///
 /// `i420_scratch` is a reusable buffer for I420→RGBA8 conversion, avoiding
 /// per-frame allocation.
-pub(crate) fn composite_frame(
+pub fn composite_frame(
     canvas_w: u32,
     canvas_h: u32,
     layers: &[Option<LayerSnapshot>],
@@ -123,7 +123,7 @@ pub(crate) fn composite_frame(
 /// - There are no image or text overlays
 ///
 /// Returns the index of the pass-through layer, or `None` if compositing is needed.
-pub(crate) fn try_i420_passthrough(
+pub fn try_i420_passthrough(
     canvas_w: u32,
     canvas_h: u32,
     layers: &[Option<LayerSnapshot>],

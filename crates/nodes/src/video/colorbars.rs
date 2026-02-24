@@ -70,8 +70,7 @@ fn parse_pixel_format(s: &str) -> Result<PixelFormat, StreamKitError> {
         "i420" => Ok(PixelFormat::I420),
         "rgba8" | "rgba" => Ok(PixelFormat::Rgba8),
         other => Err(StreamKitError::Configuration(format!(
-            "Unsupported pixel format '{}'. Use 'i420' or 'rgba8'.",
-            other
+            "Unsupported pixel format '{other}'. Use 'i420' or 'rgba8'."
         ))),
     }
 }
@@ -143,7 +142,7 @@ impl ProcessorNode for ColorBarsNode {
         let mut template = vec![0u8; total_bytes];
         match pixel_format {
             PixelFormat::I420 => {
-                generate_smpte_colorbars_i420(width, height, &mut template, &layout)
+                generate_smpte_colorbars_i420(width, height, &mut template, &layout);
             },
             PixelFormat::Rgba8 => generate_smpte_colorbars_rgba8(width, height, &mut template),
         }
@@ -231,10 +230,10 @@ impl ProcessorNode for ColorBarsNode {
                 pooled.as_mut_slice()[..total_bytes].copy_from_slice(&template);
                 match pixel_format {
                     PixelFormat::I420 => {
-                        draw_sweep_bar_i420(pooled.as_mut_slice(), width, height, &layout, seq)
+                        draw_sweep_bar_i420(pooled.as_mut_slice(), width, height, &layout, seq);
                     },
                     PixelFormat::Rgba8 => {
-                        draw_sweep_bar_rgba8(pooled.as_mut_slice(), width, height, seq)
+                        draw_sweep_bar_rgba8(pooled.as_mut_slice(), width, height, seq);
                     },
                 }
                 streamkit_core::types::VideoFrame::from_pooled(
@@ -248,7 +247,7 @@ impl ProcessorNode for ColorBarsNode {
                 let mut data = template.clone();
                 match pixel_format {
                     PixelFormat::I420 => {
-                        draw_sweep_bar_i420(&mut data, width, height, &layout, seq)
+                        draw_sweep_bar_i420(&mut data, width, height, &layout, seq);
                     },
                     PixelFormat::Rgba8 => draw_sweep_bar_rgba8(&mut data, width, height, seq),
                 }
@@ -338,7 +337,7 @@ fn draw_sweep_bar_i420(
     let chroma_w = u_plane.width as usize;
     let chroma_h = u_plane.height as usize;
     let chroma_bar_x = bar_x / 2;
-    let chroma_bar_w = (bar_width + 1) / 2; // round up
+    let chroma_bar_w = bar_width.div_ceil(2); // round up
     for row in 0..chroma_h {
         for dx in 0..chroma_bar_w {
             let col = (chroma_bar_x + dx) % chroma_w;

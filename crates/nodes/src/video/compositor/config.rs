@@ -133,8 +133,7 @@ pub(crate) fn parse_pixel_format(s: &str) -> Result<PixelFormat, StreamKitError>
         "rgba8" | "rgba" => Ok(PixelFormat::Rgba8),
         "i420" => Ok(PixelFormat::I420),
         other => Err(StreamKitError::Configuration(format!(
-            "Unsupported output pixel format '{}'. Use 'rgba8' or 'i420'.",
-            other
+            "Unsupported output pixel format '{other}'. Use 'rgba8' or 'i420'."
         ))),
     }
 }
