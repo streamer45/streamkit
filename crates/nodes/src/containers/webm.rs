@@ -629,8 +629,10 @@ impl ProcessorNode for WebMMuxerNode {
 
             if w == 0 || h == 0 {
                 // Auto-detect: wait for the first video packet and parse its VP9 header.
-                tracing::info!("WebMMuxerNode: video_width/video_height not configured, \
-                                auto-detecting from first VP9 keyframe");
+                tracing::info!(
+                    "WebMMuxerNode: video_width/video_height not configured, \
+                                auto-detecting from first VP9 keyframe"
+                );
 
                 let first = match video_rx.as_mut() {
                     Some(rx) => rx.recv().await,
@@ -638,9 +640,7 @@ impl ProcessorNode for WebMMuxerNode {
                 };
 
                 if let Some(Packet::Binary { data, metadata, .. }) = first {
-                    if let Some((detected_w, detected_h)) =
-                        parse_vp9_keyframe_dimensions(&data)
-                    {
+                    if let Some((detected_w, detected_h)) = parse_vp9_keyframe_dimensions(&data) {
                         tracing::info!(
                             "Auto-detected video dimensions: {}x{}",
                             detected_w,
@@ -649,27 +649,17 @@ impl ProcessorNode for WebMMuxerNode {
                         w = detected_w;
                         h = detected_h;
                     } else {
-                        let err_msg =
-                            "WebMMuxerNode: failed to parse VP9 keyframe dimensions \
+                        let err_msg = "WebMMuxerNode: failed to parse VP9 keyframe dimensions \
                              from first video packet (is the upstream encoder VP9?)"
-                                .to_string();
-                        state_helpers::emit_failed(
-                            &context.state_tx,
-                            &node_name,
-                            &err_msg,
-                        );
+                            .to_string();
+                        state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
                         return Err(StreamKitError::Runtime(err_msg));
                     }
                     first_video_packet = Some((data, metadata));
                 } else {
                     let err_msg =
-                        "WebMMuxerNode: video input closed before sending any packets"
-                            .to_string();
-                    state_helpers::emit_failed(
-                        &context.state_tx,
-                        &node_name,
-                        &err_msg,
-                    );
+                        "WebMMuxerNode: video input closed before sending any packets".to_string();
+                    state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
                     return Err(StreamKitError::Runtime(err_msg));
                 }
             }
@@ -785,9 +775,7 @@ impl ProcessorNode for WebMMuxerNode {
                 let timestamp_ns = presentation_ts_us.saturating_mul(1000);
                 let is_keyframe = metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(true);
 
-                if let Err(e) =
-                    segment.add_frame(video_track, &data, timestamp_ns, is_keyframe)
-                {
+                if let Err(e) = segment.add_frame(video_track, &data, timestamp_ns, is_keyframe) {
                     stats_tracker.errored();
                     stats_tracker.maybe_send();
                     let err_msg = format!("Failed to add first video frame to segment: {e}");
