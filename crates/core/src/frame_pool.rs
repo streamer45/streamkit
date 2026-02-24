@@ -323,7 +323,7 @@ pub const DEFAULT_VIDEO_BUCKET_SIZES: &[usize] = &[
     86_400, 230_400, 345_600, 921_600, 1_382_400, 3_110_400, 3_686_400, 8_294_400, 12_441_600,
     33_177_600,
 ];
-pub const DEFAULT_VIDEO_MAX_BUFFERS_PER_BUCKET: usize = 8;
+pub const DEFAULT_VIDEO_MAX_BUFFERS_PER_BUCKET: usize = 16;
 
 impl FramePool<u8> {
     pub fn video_default() -> Self {

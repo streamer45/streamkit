@@ -31,12 +31,10 @@ mod pixel_ops;
 
 use async_trait::async_trait;
 use config::{CompositorConfig, Rect};
-use futures::future::select_all;
 use kernel::{CompositeResult, CompositeWorkItem, LayerSnapshot};
 use overlay::{decode_image_overlay, rasterize_text_overlay, DecodedOverlay};
 use pixel_ops::rgba8_to_i420_buf;
 use schemars::schema_for;
-use std::pin::Pin;
 use std::sync::Arc;
 use streamkit_core::control::NodeControlMessage;
 use streamkit_core::pins::PinManagementMessage;
@@ -758,41 +756,35 @@ enum SlotRecvResult {
     Empty,
 }
 
-type SlotRecvFut<'a> = Pin<Box<dyn futures::Future<Output = (usize, Option<Packet>)> + Send + 'a>>;
-
 /// Wait for a packet from any of the input slots.  Returns a typed result so
 /// the caller can distinguish between a received video frame, a closed channel,
 /// and a non-video packet (which should be skipped, not treated as closure).
+///
+/// Uses `poll_recv` directly to avoid per-call allocations from boxing
+/// futures and collecting them into a `Vec` for `select_all`.
 async fn recv_from_any_slot(slots: &mut [InputSlot]) -> SlotRecvResult {
     if slots.is_empty() {
         return SlotRecvResult::Empty;
     }
 
-    // Use futures to poll all receivers concurrently.
-    let futs: Vec<SlotRecvFut<'_>> = slots
-        .iter_mut()
-        .enumerate()
-        .map(|(i, slot)| {
-            let fut = async move {
-                let pkt = slot.rx.recv().await;
-                (i, pkt)
-            };
-            Box::pin(fut) as Pin<Box<dyn futures::Future<Output = _> + Send + '_>>
-        })
-        .collect();
-
-    if futs.is_empty() {
-        return SlotRecvResult::Empty;
-    }
-
-    let (result, _idx, _remaining) = select_all(futs).await;
-    let (slot_idx, maybe_packet) = result;
-
-    match maybe_packet {
-        Some(Packet::Video(frame)) => SlotRecvResult::Frame(slot_idx, frame),
-        Some(_) => SlotRecvResult::NonVideo(slot_idx),
-        None => SlotRecvResult::ChannelClosed(slot_idx),
-    }
+    std::future::poll_fn(|cx| {
+        for (i, slot) in slots.iter_mut().enumerate() {
+            match slot.rx.poll_recv(cx) {
+                std::task::Poll::Ready(Some(Packet::Video(frame))) => {
+                    return std::task::Poll::Ready(SlotRecvResult::Frame(i, frame));
+                },
+                std::task::Poll::Ready(Some(_)) => {
+                    return std::task::Poll::Ready(SlotRecvResult::NonVideo(i));
+                },
+                std::task::Poll::Ready(None) => {
+                    return std::task::Poll::Ready(SlotRecvResult::ChannelClosed(i));
+                },
+                std::task::Poll::Pending => {},
+            }
+        }
+        std::task::Poll::Pending
+    })
+    .await
 }
 
 // ── Registration ────────────────────────────────────────────────────────────

@@ -167,6 +167,15 @@ fn opus_head_codec_private(sample_rate: u32, channels: u32) -> Result<[u8; 19], 
 
 // --- WebM Muxer ---
 
+/// Internal state for [`SharedPacketBuffer`], protected by a single mutex
+/// to eliminate lock-ordering concerns between cursor, position tracking,
+/// and offset bookkeeping.
+struct BufferState {
+    cursor: Cursor<Vec<u8>>,
+    last_sent_pos: usize,
+    base_offset: usize,
+}
+
 /// A shared, thread-safe buffer that wraps a Cursor for WebM writing.
 /// This allows us to stream out data as it's written while still supporting Seek.
 ///
@@ -180,9 +189,7 @@ fn opus_head_codec_private(sample_rate: u32, channels: u32) -> Result<[u8; 19], 
 /// The node selects the appropriate mode based on `WebMStreamingMode`.
 #[derive(Clone)]
 struct SharedPacketBuffer {
-    cursor: Arc<Mutex<Cursor<Vec<u8>>>>,
-    last_sent_pos: Arc<Mutex<usize>>,
-    base_offset: Arc<Mutex<usize>>,
+    state: Arc<Mutex<BufferState>>,
     window_size: usize,
 }
 
@@ -191,9 +198,11 @@ impl SharedPacketBuffer {
     /// window_size: Maximum bytes to keep in memory (default 1MB for ~6 seconds at 128kbps)
     fn new_with_window(window_size: usize) -> Self {
         Self {
-            cursor: Arc::new(Mutex::new(Cursor::new(Vec::new()))),
-            last_sent_pos: Arc::new(Mutex::new(0)),
-            base_offset: Arc::new(Mutex::new(0)),
+            state: Arc::new(Mutex::new(BufferState {
+                cursor: Cursor::new(Vec::new()),
+                last_sent_pos: 0,
+                base_offset: 0,
+            })),
             window_size,
         }
     }
@@ -214,73 +223,67 @@ impl SharedPacketBuffer {
     fn take_data(&self) -> Option<Bytes> {
         // Mutex poisoning is a fatal error - allows expect() for this common pattern
         #[allow(clippy::expect_used)]
-        let mut buffer_guard = self.cursor.lock().expect("SharedPacketBuffer mutex poisoned");
-        let vec = buffer_guard.get_mut();
+        let mut state = self.state.lock().expect("SharedPacketBuffer mutex poisoned");
 
-        #[allow(clippy::expect_used)]
-        let mut last_sent_guard = self.last_sent_pos.lock().expect("last_sent_pos mutex poisoned");
-        #[allow(clippy::expect_used)]
-        let mut base_offset_guard = self.base_offset.lock().expect("base_offset mutex poisoned");
+        // Read bookkeeping fields first (immutable access only).
+        let last_sent = state.last_sent_pos;
+        let base = state.base_offset;
+        let current_len = state.cursor.get_ref().len();
 
-        let last_sent = *last_sent_guard;
-        let current_len = vec.len();
-        let base = *base_offset_guard;
+        if current_len <= last_sent {
+            return None;
+        }
 
-        let result = if current_len > last_sent {
-            if self.window_size == 0 {
-                // Streaming mode (non-seek): drain everything written so far without copying.
-                //
-                // This avoids two major sources of allocation churn in DHAT profiles:
-                // - copying out incremental slices on every flush
-                // - repeatedly trimming a sliding window with `split_off` (copies the window)
-                let data_vec = std::mem::take(vec);
-                // Advance base_offset so Seek::Start can clamp consistently if it ever happens.
-                *base_offset_guard = base + current_len;
-                *last_sent_guard = 0;
-                buffer_guard.set_position(0);
-                Some(Bytes::from(data_vec))
-            } else if self.window_size == usize::MAX && last_sent == 0 {
-                // File mode: nothing has been sent yet, so move the entire buffer out.
-                // The segment is finalized before this is called, so no more writes/seeks occur.
-                let data_vec = std::mem::take(vec);
-                *base_offset_guard = base + current_len;
-                *last_sent_guard = 0;
-                buffer_guard.set_position(0);
-                Some(Bytes::from(data_vec))
-            } else {
-                // Seek-window mode: copy incremental bytes while retaining a backwards-seek window.
-                let new_data = Bytes::copy_from_slice(&vec[last_sent..current_len]);
-                *last_sent_guard = current_len;
+        if self.window_size == 0 {
+            // Streaming mode (non-seek): drain everything written so far without copying.
+            //
+            // This avoids two major sources of allocation churn in DHAT profiles:
+            // - copying out incremental slices on every flush
+            // - repeatedly trimming a sliding window with `split_off` (copies the window)
+            let data_vec = std::mem::take(state.cursor.get_mut());
+            // Advance base_offset so Seek::Start can clamp consistently if it ever happens.
+            state.base_offset = base + current_len;
+            state.last_sent_pos = 0;
+            state.cursor.set_position(0);
+            Some(Bytes::from(data_vec))
+        } else if self.window_size == usize::MAX && last_sent == 0 {
+            // File mode: nothing has been sent yet, so move the entire buffer out.
+            // The segment is finalized before this is called, so no more writes/seeks occur.
+            let data_vec = std::mem::take(state.cursor.get_mut());
+            state.base_offset = base + current_len;
+            state.last_sent_pos = 0;
+            state.cursor.set_position(0);
+            Some(Bytes::from(data_vec))
+        } else {
+            // Seek-window mode: copy incremental bytes while retaining a backwards-seek window.
+            let new_data =
+                Bytes::copy_from_slice(&state.cursor.get_ref()[last_sent..current_len]);
+            state.last_sent_pos = current_len;
 
-                // Trim old data if buffer exceeds window size.
-                if current_len > self.window_size {
-                    let trim_amount = current_len - self.window_size;
-                    // Keep the last window_size bytes.
+            // Trim old data if buffer exceeds window size.
+            if current_len > self.window_size {
+                let trim_amount = current_len - self.window_size;
+                // Keep the last window_size bytes.
+                {
+                    let vec = state.cursor.get_mut();
                     let remaining = vec.split_off(trim_amount);
                     *vec = remaining;
-                    // Update base offset to reflect discarded data.
-                    *base_offset_guard = base + trim_amount;
-                    // Adjust last_sent and cursor position.
-                    *last_sent_guard = self.window_size;
-                    buffer_guard.set_position(self.window_size as u64);
-
-                    tracing::debug!(
-                        "Trimmed {} bytes from WebM buffer, new base_offset: {}",
-                        trim_amount,
-                        *base_offset_guard
-                    );
                 }
+                // Update base offset to reflect discarded data.
+                state.base_offset = base + trim_amount;
+                // Adjust last_sent and cursor position.
+                state.last_sent_pos = self.window_size;
+                state.cursor.set_position(self.window_size as u64);
 
-                Some(new_data)
+                tracing::debug!(
+                    "Trimmed {} bytes from WebM buffer, new base_offset: {}",
+                    trim_amount,
+                    state.base_offset
+                );
             }
-        } else {
-            None
-        };
 
-        drop(base_offset_guard);
-        drop(last_sent_guard);
-        drop(buffer_guard);
-        result
+            Some(new_data)
+        }
     }
 }
 
@@ -288,27 +291,23 @@ impl Write for SharedPacketBuffer {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         // Mutex poisoning is a fatal error - allows expect() for this common pattern
         #[allow(clippy::expect_used)]
-        self.cursor.lock().expect("SharedPacketBuffer mutex poisoned").write(buf)
+        self.state.lock().expect("SharedPacketBuffer mutex poisoned").cursor.write(buf)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
         // Mutex poisoning is a fatal error - allows expect() for this common pattern
         #[allow(clippy::expect_used)]
-        self.cursor.lock().expect("SharedPacketBuffer mutex poisoned").flush()
+        self.state.lock().expect("SharedPacketBuffer mutex poisoned").cursor.flush()
     }
 }
 
 impl Seek for SharedPacketBuffer {
     fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
-        // When seeking, we need to adjust for the base_offset since we may have
-        // trimmed old data from the beginning of the buffer
+        // Single lock covers both base_offset read and cursor seek, eliminating
+        // the lock-ordering concern of the previous triple-mutex design.
         #[allow(clippy::expect_used)]
-        let base_guard = self.base_offset.lock().expect("base_offset mutex poisoned");
-        let base = *base_guard;
-        drop(base_guard);
-
-        #[allow(clippy::expect_used)]
-        let mut cursor_guard = self.cursor.lock().expect("SharedPacketBuffer mutex poisoned");
+        let mut state = self.state.lock().expect("SharedPacketBuffer mutex poisoned");
+        let base = state.base_offset;
 
         // Adjust seek position by base_offset for absolute seeks
         let adjusted_pos = match pos {
@@ -331,8 +330,7 @@ impl Seek for SharedPacketBuffer {
             SeekFrom::End(offset) => SeekFrom::End(offset),
         };
 
-        let result = cursor_guard.seek(adjusted_pos)?;
-        drop(cursor_guard);
+        let result = state.cursor.seek(adjusted_pos)?;
 
         // Return the absolute position (including base_offset)
         Ok(result + base as u64)
