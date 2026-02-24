@@ -24,15 +24,22 @@
 //! - GPU-accelerated compositing via `wgpu`.
 //! - Bilinear / Lanczos scaling (MVP uses nearest-neighbor).
 
+pub mod config;
+mod kernel;
+mod overlay;
+mod pixel_ops;
+
 use async_trait::async_trait;
+use config::{CompositorConfig, Rect};
 use futures::future::select_all;
-use schemars::JsonSchema;
-use serde::Deserialize;
-use std::collections::HashMap;
+use kernel::{CompositeResult, CompositeWorkItem, LayerSnapshot};
+use overlay::{decode_image_overlay, rasterize_text_overlay, DecodedOverlay};
+use pixel_ops::rgba8_to_i420;
+use schemars::schema_for;
 use std::pin::Pin;
-use std::sync::Arc;
 use streamkit_core::control::NodeControlMessage;
 use streamkit_core::pins::PinManagementMessage;
+use streamkit_core::registry::StaticPins;
 use streamkit_core::stats::NodeStatsTracker;
 use streamkit_core::types::{
     Packet, PacketMetadata, PacketType, PixelFormat, VideoFormat, VideoFrame,
@@ -43,636 +50,8 @@ use streamkit_core::{
 };
 use tokio::sync::mpsc;
 
-use schemars::schema_for;
-use streamkit_core::registry::StaticPins;
-
-// ── Configuration ───────────────────────────────────────────────────────────
-
-const fn default_width() -> u32 {
-    1280
-}
-
-const fn default_height() -> u32 {
-    720
-}
-
-/// Pixel-space rectangle for positioning a layer on the output canvas.
-#[derive(Deserialize, Debug, Clone, JsonSchema)]
-pub struct Rect {
-    pub x: u32,
-    pub y: u32,
-    pub width: u32,
-    pub height: u32,
-}
-
-/// Configuration for a static image overlay (decoded once at init).
-#[derive(Deserialize, Debug, Clone, JsonSchema)]
-pub struct ImageOverlayConfig {
-    /// Base64-encoded image data (PNG or JPEG). Decoded once during
-    /// initialization, not per-frame.
-    pub data_base64: String,
-    /// Destination rectangle on the output canvas.
-    pub rect: Rect,
-    /// Opacity multiplier (0.0 = fully transparent, 1.0 = fully opaque).
-    #[serde(default = "default_opacity")]
-    pub opacity: f32,
-}
-
-/// Configuration for a text overlay (rasterized once per `UpdateParams`).
-#[derive(Deserialize, Debug, Clone, JsonSchema)]
-pub struct TextOverlayConfig {
-    /// The text string to render.
-    pub text: String,
-    /// Destination rectangle on the output canvas.
-    pub rect: Rect,
-    /// RGBA colour, e.g. `[255, 255, 255, 255]`.
-    #[serde(default = "default_text_color")]
-    pub color: [u8; 4],
-    /// Font size in pixels.
-    #[serde(default = "default_font_size")]
-    pub font_size: u32,
-    /// Opacity multiplier (0.0 = fully transparent, 1.0 = fully opaque).
-    #[serde(default = "default_opacity")]
-    pub opacity: f32,
-}
-
-const fn default_opacity() -> f32 {
-    1.0
-}
-
-const fn default_text_color() -> [u8; 4] {
-    [255, 255, 255, 255]
-}
-
-const fn default_font_size() -> u32 {
-    24
-}
-
-/// Layer configuration for a single compositing input.
-#[derive(Deserialize, Debug, Clone, JsonSchema)]
-pub struct LayerConfig {
-    /// Destination rectangle on the output canvas. If `None`, the input is
-    /// scaled to fill the entire canvas.
-    pub rect: Option<Rect>,
-    /// Opacity (0.0 .. 1.0). Default 1.0.
-    #[serde(default = "default_opacity")]
-    pub opacity: f32,
-}
-
-impl Default for LayerConfig {
-    fn default() -> Self {
-        Self { rect: None, opacity: default_opacity() }
-    }
-}
-
-/// Configuration for the video compositor node.
-///
-/// The compositor supports an arbitrary number of dynamic video inputs
-/// (created at runtime via `PinManagementMessage`) plus static image/text
-/// overlays configured here.
-#[derive(Deserialize, Debug, Clone, JsonSchema)]
-#[serde(default)]
-pub struct CompositorConfig {
-    /// Output canvas width in pixels.
-    #[serde(default = "default_width")]
-    pub width: u32,
-    /// Output canvas height in pixels.
-    #[serde(default = "default_height")]
-    pub height: u32,
-    /// Number of input pins to pre-create.
-    /// Required for stateless/oneshot pipelines where pins must exist before
-    /// graph building. Optional for dynamic pipelines where pins are created
-    /// on-demand. If specified, pins will be named in_0, in_1, ..., in_{N-1}.
-    pub num_inputs: Option<usize>,
-    /// Output pixel format: "rgba8" (default) or "i420".
-    /// Use "i420" when feeding a VP9/VP8 encoder downstream.
-    #[serde(default = "default_output_pixel_format")]
-    pub output_pixel_format: String,
-    /// Per-layer configuration, keyed by pin name (e.g. `"in_0"`).
-    /// Layers without an entry here are scaled to fill the canvas.
-    #[serde(default)]
-    pub layers: HashMap<String, LayerConfig>,
-    /// Static image overlays (decoded once during init).
-    #[serde(default)]
-    pub image_overlays: Vec<ImageOverlayConfig>,
-    /// Text overlays (rasterized once per `UpdateParams`).
-    #[serde(default)]
-    pub text_overlays: Vec<TextOverlayConfig>,
-}
-
-fn default_output_pixel_format() -> String {
-    "rgba8".to_string()
-}
-
-fn parse_pixel_format(s: &str) -> Result<PixelFormat, StreamKitError> {
-    match s.to_lowercase().as_str() {
-        "rgba8" | "rgba" => Ok(PixelFormat::Rgba8),
-        "i420" => Ok(PixelFormat::I420),
-        other => Err(StreamKitError::Configuration(format!(
-            "Unsupported output pixel format '{}'. Use 'rgba8' or 'i420'.",
-            other
-        ))),
-    }
-}
-
-impl Default for CompositorConfig {
-    fn default() -> Self {
-        Self {
-            width: default_width(),
-            height: default_height(),
-            num_inputs: None,
-            output_pixel_format: default_output_pixel_format(),
-            layers: HashMap::new(),
-            image_overlays: Vec::new(),
-            text_overlays: Vec::new(),
-        }
-    }
-}
-
-impl CompositorConfig {
-    /// Validate compositor parameters.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error string if width/height are zero or if opacity values
-    /// are out of range.
-    pub fn validate(&self) -> Result<(), String> {
-        if self.width == 0 || self.height == 0 {
-            return Err("Canvas width and height must be > 0".to_string());
-        }
-        for (name, layer) in &self.layers {
-            if !layer.opacity.is_finite() || layer.opacity < 0.0 || layer.opacity > 1.0 {
-                return Err(format!("Layer '{name}' opacity must be in [0.0, 1.0]"));
-            }
-        }
-        for (i, img) in self.image_overlays.iter().enumerate() {
-            if !img.opacity.is_finite() || img.opacity < 0.0 || img.opacity > 1.0 {
-                return Err(format!("Image overlay {i} opacity must be in [0.0, 1.0]"));
-            }
-        }
-        for (i, txt) in self.text_overlays.iter().enumerate() {
-            if !txt.opacity.is_finite() || txt.opacity < 0.0 || txt.opacity > 1.0 {
-                return Err(format!("Text overlay {i} opacity must be in [0.0, 1.0]"));
-            }
-        }
-        Ok(())
-    }
-}
-
-// ── Decoded overlay bitmap ──────────────────────────────────────────────────
-
-/// A pre-decoded RGBA bitmap overlay ready for per-frame blitting.
-#[derive(Clone)]
-struct DecodedOverlay {
-    rgba_data: Vec<u8>,
-    width: u32,
-    height: u32,
-    rect: Rect,
-    opacity: f32,
-}
-
-/// Decode a base64-encoded image (PNG/JPEG) into an RGBA8 bitmap.
-fn decode_image_overlay(config: &ImageOverlayConfig) -> Result<DecodedOverlay, StreamKitError> {
-    use image::GenericImageView;
-
-    use base64::Engine;
-    let bytes =
-        base64::engine::general_purpose::STANDARD.decode(&config.data_base64).map_err(|e| {
-            StreamKitError::Configuration(format!("Invalid base64 in image overlay: {e}"))
-        })?;
-
-    let img = image::load_from_memory(&bytes).map_err(|e| {
-        StreamKitError::Configuration(format!("Failed to decode image overlay: {e}"))
-    })?;
-
-    let rgba = img.to_rgba8();
-    let (w, h) = img.dimensions();
-
-    Ok(DecodedOverlay {
-        rgba_data: rgba.into_raw(),
-        width: w,
-        height: h,
-        rect: config.rect.clone(),
-        opacity: config.opacity,
-    })
-}
-
-/// Rasterize a text overlay into an RGBA8 bitmap using `tiny-skia`.
-fn rasterize_text_overlay(config: &TextOverlayConfig) -> DecodedOverlay {
-    let w = config.rect.width.max(1);
-    let h = config.rect.height.max(1);
-
-    // Create a tiny-skia pixmap for the overlay region.
-    // Safety: w and h are both >= 1 due to .max(1) above, so this should never be None.
-    // The fallback handles any edge case from tiny-skia dimension limits.
-    let mut pixmap = tiny_skia::Pixmap::new(w, h).unwrap_or_else(|| {
-        #[allow(clippy::expect_used)]
-        tiny_skia::Pixmap::new(1, 1).expect("1x1 pixmap should always succeed")
-    });
-
-    // Use a simple built-in glyph renderer: each character is drawn as a
-    // filled rectangle of `font_size` height. This is intentionally
-    // simplistic for the MVP; a proper font rasterizer can replace this
-    // once a font dependency is approved.
-    let font_size = config.font_size.max(1);
-    let glyph_w = font_size * 3 / 5; // approximate glyph width
-    let glyph_h = font_size;
-
-    let color = tiny_skia::Color::from_rgba8(
-        config.color[0],
-        config.color[1],
-        config.color[2],
-        config.color[3],
-    );
-
-    let mut paint = tiny_skia::Paint::default();
-    paint.set_color(color);
-    paint.anti_alias = true;
-
-    let transform = tiny_skia::Transform::identity();
-
-    for (i, _ch) in config.text.chars().enumerate() {
-        #[allow(clippy::cast_possible_truncation)]
-        let x = (i as u32) * glyph_w;
-        if x + glyph_w > w {
-            break; // clip to rect
-        }
-        // Draw a filled rectangle per glyph as a placeholder.
-        #[allow(clippy::cast_precision_loss)]
-        if let Some(rect) =
-            tiny_skia::Rect::from_xywh(x as f32, 0.0, glyph_w as f32, glyph_h as f32)
-        {
-            pixmap.fill_rect(rect, &paint, transform, None);
-        }
-    }
-
-    let rgba_data = pixmap.data().to_vec();
-
-    DecodedOverlay {
-        rgba_data,
-        width: pixmap.width(),
-        height: pixmap.height(),
-        rect: config.rect.clone(),
-        opacity: config.opacity,
-    }
-}
-
-// ── Compositing helpers ─────────────────────────────────────────────────────
-
-/// Scale and blit a source RGBA8 buffer onto a destination RGBA8 buffer at the
-/// given destination rectangle. Uses nearest-neighbor sampling and clips to
-/// canvas bounds.
-///
-/// Rows are processed in parallel via `rayon` when the blit region is large
-/// enough to benefit from multi-core dispatch.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::too_many_arguments)]
-fn scale_blit_rgba(
-    dst: &mut [u8],
-    dst_width: u32,
-    dst_height: u32,
-    src: &[u8],
-    src_width: u32,
-    src_height: u32,
-    dst_rect: &Rect,
-    opacity: f32,
-) {
-    if src_width == 0 || src_height == 0 || dst_rect.width == 0 || dst_rect.height == 0 {
-        return;
-    }
-
-    let dw = dst_width as usize;
-    let dh = dst_height as usize;
-    let sw = src_width as usize;
-    let sh = src_height as usize;
-    let rx = dst_rect.x as usize;
-    let ry = dst_rect.y as usize;
-    let rw = dst_rect.width as usize;
-    let rh = dst_rect.height as usize;
-
-    // Clamp the number of rows we actually process to the canvas height.
-    let effective_rh = rh.min(dh.saturating_sub(ry));
-    if effective_rh == 0 {
-        return;
-    }
-
-    // Clamp the number of columns to the canvas width.
-    let effective_rw = rw.min(dw.saturating_sub(rx));
-    if effective_rw == 0 {
-        return;
-    }
-
-    // Split the destination buffer into per-row slices so that each row can
-    // be processed independently (and therefore in parallel).
-    let row_stride = dw * 4;
-
-    // Use rayon for parallel row processing when the region is large enough.
-    use rayon::prelude::*;
-
-    // We need to give each row its own mutable slice. Split the dst buffer
-    // at the first output row.
-    let first_row_byte = ry * row_stride;
-    let dst_rows = &mut dst[first_row_byte..];
-
-    dst_rows
-        .par_chunks_mut(row_stride)
-        .take(effective_rh)
-        .enumerate()
-        .for_each(|(dy, row_slice)| {
-            let sy = dy * sh / rh;
-            blit_row(
-                row_slice, rx, effective_rw, src, sw, sh, sy, rw, opacity,
-            );
-        });
-}
-
-/// Blit a single row of the source onto a destination row slice.
-///
-/// This is the inner kernel extracted so that `scale_blit_rgba` can dispatch
-/// rows in parallel.  The `row_slice` covers exactly one destination row
-/// starting at pixel column 0 (i.e. byte offset `rx * 4` is the first column
-/// we write to).
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::too_many_arguments,
-    clippy::inline_always
-)]
-#[inline(always)]
-fn blit_row(
-    row_slice: &mut [u8],
-    rx: usize,
-    effective_rw: usize,
-    src: &[u8],
-    sw: usize,
-    sh: usize,
-    sy: usize,
-    rw: usize,
-    opacity: f32,
-) {
-    // Fast path: when opacity is 1.0, we can skip the f32 multiply on alpha
-    // and branch more cheaply.
-    if opacity >= 1.0 {
-        blit_row_opaque(row_slice, rx, effective_rw, src, sw, sh, sy, rw);
-    } else {
-        blit_row_alpha(row_slice, rx, effective_rw, src, sw, sh, sy, rw, opacity);
-    }
-}
-
-/// Inner blit for fully-opaque layers (`opacity >= 1.0`).  Skips the
-/// per-pixel f32 multiply on the source alpha channel.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::too_many_arguments,
-    clippy::suboptimal_flops,
-    clippy::inline_always
-)]
-#[inline(always)]
-fn blit_row_opaque(
-    row_slice: &mut [u8],
-    rx: usize,
-    effective_rw: usize,
-    src: &[u8],
-    sw: usize,
-    _sh: usize,
-    sy: usize,
-    rw: usize,
-) {
-    for dx in 0..effective_rw {
-        let sx = dx * sw / rw;
-        let src_idx = (sy * sw + sx) * 4;
-        if src_idx + 3 >= src.len() {
-            continue;
-        }
-
-        let sr = src[src_idx];
-        let sg = src[src_idx + 1];
-        let sb = src[src_idx + 2];
-        let sa = src[src_idx + 3];
-
-        let out_x = rx + dx;
-        let dst_idx = out_x * 4;
-        if dst_idx + 3 >= row_slice.len() {
-            continue;
-        }
-
-        if sa == 255 {
-            row_slice[dst_idx] = sr;
-            row_slice[dst_idx + 1] = sg;
-            row_slice[dst_idx + 2] = sb;
-            row_slice[dst_idx + 3] = 255;
-        } else if sa > 0 {
-            let alpha = f32::from(sa) / 255.0;
-            let inv_alpha = 1.0 - alpha;
-            row_slice[dst_idx] =
-                f32::from(sr).mul_add(alpha, f32::from(row_slice[dst_idx]) * inv_alpha) as u8;
-            row_slice[dst_idx + 1] =
-                f32::from(sg).mul_add(alpha, f32::from(row_slice[dst_idx + 1]) * inv_alpha) as u8;
-            row_slice[dst_idx + 2] =
-                f32::from(sb).mul_add(alpha, f32::from(row_slice[dst_idx + 2]) * inv_alpha) as u8;
-            row_slice[dst_idx + 3] =
-                f32::from(row_slice[dst_idx + 3]).mul_add(inv_alpha, f32::from(sa)) as u8;
-        }
-    }
-}
-
-/// Inner blit with a sub-1.0 `opacity` multiplier.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::too_many_arguments,
-    clippy::suboptimal_flops,
-    clippy::inline_always
-)]
-#[inline(always)]
-fn blit_row_alpha(
-    row_slice: &mut [u8],
-    rx: usize,
-    effective_rw: usize,
-    src: &[u8],
-    sw: usize,
-    _sh: usize,
-    sy: usize,
-    rw: usize,
-    opacity: f32,
-) {
-    for dx in 0..effective_rw {
-        let sx = dx * sw / rw;
-        let src_idx = (sy * sw + sx) * 4;
-        if src_idx + 3 >= src.len() {
-            continue;
-        }
-
-        let sr = src[src_idx];
-        let sg = src[src_idx + 1];
-        let sb = src[src_idx + 2];
-        let sa = src[src_idx + 3];
-
-        let sa_eff = (f32::from(sa) * opacity).round() as u8;
-
-        let out_x = rx + dx;
-        let dst_idx = out_x * 4;
-        if dst_idx + 3 >= row_slice.len() {
-            continue;
-        }
-
-        if sa_eff == 255 {
-            row_slice[dst_idx] = sr;
-            row_slice[dst_idx + 1] = sg;
-            row_slice[dst_idx + 2] = sb;
-            row_slice[dst_idx + 3] = 255;
-        } else if sa_eff > 0 {
-            let alpha = f32::from(sa_eff) / 255.0;
-            let inv_alpha = 1.0 - alpha;
-            row_slice[dst_idx] =
-                f32::from(sr).mul_add(alpha, f32::from(row_slice[dst_idx]) * inv_alpha) as u8;
-            row_slice[dst_idx + 1] =
-                f32::from(sg).mul_add(alpha, f32::from(row_slice[dst_idx + 1]) * inv_alpha) as u8;
-            row_slice[dst_idx + 2] =
-                f32::from(sb).mul_add(alpha, f32::from(row_slice[dst_idx + 2]) * inv_alpha) as u8;
-            row_slice[dst_idx + 3] =
-                f32::from(row_slice[dst_idx + 3]).mul_add(inv_alpha, f32::from(sa_eff)) as u8;
-        }
-    }
-}
-
-/// Blit a decoded overlay onto the destination canvas with alpha blending.
-fn blit_overlay(dst: &mut [u8], dst_width: u32, dst_height: u32, overlay: &DecodedOverlay) {
-    scale_blit_rgba(
-        dst,
-        dst_width,
-        dst_height,
-        &overlay.rgba_data,
-        overlay.width,
-        overlay.height,
-        &overlay.rect,
-        overlay.opacity,
-    );
-}
-
-// ── Pixel format conversion helpers ─────────────────────────────────────────
-
-/// Convert an I420 frame buffer to packed RGBA8.
-///
-/// Uses BT.601 studio-range YUV→RGB conversion.
-/// Rows are processed in parallel via `rayon`.
-fn i420_to_rgba8(data: &[u8], width: u32, height: u32) -> Vec<u8> {
-    use rayon::prelude::*;
-
-    let w = width as usize;
-    let h = height as usize;
-    let y_stride = w;
-    let chroma_w = (w + 1) / 2;
-    let chroma_h = (h + 1) / 2;
-    let u_offset = y_stride * h;
-    let v_offset = u_offset + chroma_w * chroma_h;
-
-    let mut rgba = vec![0u8; w * h * 4];
-    let rgba_row_stride = w * 4;
-
-    rgba.par_chunks_mut(rgba_row_stride)
-        .take(h)
-        .enumerate()
-        .for_each(|(row, rgba_row)| {
-            for col in 0..w {
-                let y_val = data[row * y_stride + col] as i32;
-                let u_val = data[u_offset + (row / 2) * chroma_w + col / 2] as i32;
-                let v_val = data[v_offset + (row / 2) * chroma_w + col / 2] as i32;
-
-                let c = y_val - 16;
-                let d = u_val - 128;
-                let e = v_val - 128;
-                let r = ((298 * c + 409 * e + 128) >> 8).clamp(0, 255) as u8;
-                let g = ((298 * c - 100 * d - 208 * e + 128) >> 8).clamp(0, 255) as u8;
-                let b = ((298 * c + 516 * d + 128) >> 8).clamp(0, 255) as u8;
-
-                let off = col * 4;
-                rgba_row[off] = r;
-                rgba_row[off + 1] = g;
-                rgba_row[off + 2] = b;
-                rgba_row[off + 3] = 255;
-            }
-        });
-    rgba
-}
-
-/// Convert a packed RGBA8 buffer to I420.
-///
-/// Uses BT.601 full-range RGB→YUV conversion.
-fn rgba8_to_i420(data: &[u8], width: u32, height: u32) -> Vec<u8> {
-    use rayon::prelude::*;
-
-    let w = width as usize;
-    let h = height as usize;
-    let y_stride = w;
-    let chroma_w = (w + 1) / 2;
-    let chroma_h = (h + 1) / 2;
-    let y_size = y_stride * h;
-    let chroma_size = chroma_w * chroma_h;
-    let mut out = vec![0u8; y_size + chroma_size * 2];
-
-    // Split the output buffer into Y plane and chroma planes so we can
-    // parallelise each independently.
-    let (y_plane, chroma_planes) = out.split_at_mut(y_size);
-    let (u_plane, v_plane) = chroma_planes.split_at_mut(chroma_size);
-
-    // Y plane — parallelise by row.
-    y_plane
-        .par_chunks_mut(y_stride)
-        .take(h)
-        .enumerate()
-        .for_each(|(row, y_row)| {
-            for col in 0..w {
-                let off = (row * w + col) * 4;
-                let r = data[off] as i32;
-                let g = data[off + 1] as i32;
-                let b = data[off + 2] as i32;
-                let y = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
-                y_row[col] = y.clamp(0, 255) as u8;
-            }
-        });
-
-    // U and V planes — parallelise by chroma row.
-    let u_rows: Vec<&mut [u8]> = u_plane.chunks_mut(chroma_w).collect();
-    let v_rows: Vec<&mut [u8]> = v_plane.chunks_mut(chroma_w).collect();
-
-    u_rows
-        .into_par_iter()
-        .zip(v_rows)
-        .enumerate()
-        .for_each(|(crow, (u_row, v_row))| {
-            for ccol in 0..chroma_w {
-                let r0 = crow * 2;
-                let c0 = ccol * 2;
-                let mut sr = 0i32;
-                let mut sg = 0i32;
-                let mut sb = 0i32;
-                let mut count = 0i32;
-                for dr in 0..2 {
-                    for dc in 0..2 {
-                        let rr = r0 + dr;
-                        let cc = c0 + dc;
-                        if rr < h && cc < w {
-                            let off = (rr * w + cc) * 4;
-                            sr += data[off] as i32;
-                            sg += data[off + 1] as i32;
-                            sb += data[off + 2] as i32;
-                            count += 1;
-                        }
-                    }
-                }
-                let r = sr / count;
-                let g = sg / count;
-                let b = sb / count;
-                let u = ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
-                let v = ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
-                u_row[ccol] = u.clamp(0, 255) as u8;
-                v_row[ccol] = v.clamp(0, 255) as u8;
-            }
-        });
-
-    out
-}
+use config::parse_pixel_format;
+use kernel::composite_frame;
 
 // ── Input slot ──────────────────────────────────────────────────────────────
 
@@ -886,10 +265,8 @@ impl ProcessorNode for CompositorNode {
         // single long-lived thread that processes compositing work items
         // sent via a channel.  This avoids per-frame thread-pool
         // scheduling overhead and keeps CPU caches warm.
-        let (work_tx, mut work_rx) =
-            tokio::sync::mpsc::channel::<CompositeWorkItem>(2);
-        let (result_tx, mut result_rx) =
-            tokio::sync::mpsc::channel::<CompositeResult>(2);
+        let (work_tx, mut work_rx) = tokio::sync::mpsc::channel::<CompositeWorkItem>(2);
+        let (result_tx, mut result_rx) = tokio::sync::mpsc::channel::<CompositeResult>(2);
 
         let composite_thread = tokio::task::spawn_blocking(move || {
             while let Some(work) = work_rx.blocking_recv() {
@@ -1148,9 +525,8 @@ impl ProcessorNode for CompositorNode {
             });
 
             let out_frame = if composite_result.output_format == PixelFormat::I420 {
-                let i420_data = composite_result
-                    .i420_data
-                    .expect("I420 output data must be present");
+                let i420_data =
+                    composite_result.i420_data.expect("I420 output data must be present");
                 VideoFrame::with_metadata(
                     self.config.width,
                     self.config.height,
@@ -1159,9 +535,7 @@ impl ProcessorNode for CompositorNode {
                     metadata,
                 )
             } else {
-                let pooled = composite_result
-                    .rgba_data
-                    .expect("RGBA8 output data must be present");
+                let pooled = composite_result.rgba_data.expect("RGBA8 output data must be present");
                 VideoFrame::from_pooled(
                     self.config.width,
                     self.config.height,
@@ -1311,97 +685,6 @@ async fn recv_from_any_slot(slots: &mut [InputSlot]) -> Option<(usize, VideoFram
     })
 }
 
-// ── Compositing kernel (runs on a persistent blocking thread) ────────────────
-
-/// Snapshot of one input layer's data for the blocking compositor thread.
-struct LayerSnapshot {
-    data: Arc<streamkit_core::frame_pool::PooledVideoData>,
-    width: u32,
-    height: u32,
-    pixel_format: PixelFormat,
-    rect: Option<Rect>,
-    opacity: f32,
-}
-
-/// Work item sent from the async loop to the persistent compositing thread.
-struct CompositeWorkItem {
-    canvas_w: u32,
-    canvas_h: u32,
-    layers: Vec<Option<LayerSnapshot>>,
-    image_overlays: Vec<DecodedOverlay>,
-    text_overlays: Vec<DecodedOverlay>,
-    video_pool: Option<Arc<streamkit_core::VideoFramePool>>,
-    output_format: PixelFormat,
-}
-
-/// Result sent back from the compositing thread to the async loop.
-struct CompositeResult {
-    output_format: PixelFormat,
-    rgba_data: Option<streamkit_core::frame_pool::PooledVideoData>,
-    i420_data: Option<Vec<u8>>,
-}
-
-/// Composite all layers + overlays onto a fresh RGBA8 canvas buffer.
-/// Allocates from the video pool if available.
-fn composite_frame(
-    canvas_w: u32,
-    canvas_h: u32,
-    layers: &[Option<LayerSnapshot>],
-    image_overlays: &[DecodedOverlay],
-    text_overlays: &[DecodedOverlay],
-    video_pool: Option<&streamkit_core::VideoFramePool>,
-) -> streamkit_core::frame_pool::PooledVideoData {
-    let total_bytes = (canvas_w as usize) * (canvas_h as usize) * 4;
-
-    let mut pooled = video_pool.map_or_else(
-        || streamkit_core::frame_pool::PooledVideoData::from_vec(vec![0u8; total_bytes]),
-        |pool| pool.get(total_bytes),
-    );
-
-    // Zero the buffer (transparent black).
-    let buf = pooled.as_mut_slice();
-    buf[..total_bytes].fill(0);
-
-    // Blit each layer (in order — first layer is bottom, last is top).
-    // I420 layers are converted to RGBA8 on-the-fly inside this blocking task.
-    for layer in layers.iter().flatten() {
-        let dst_rect =
-            layer.rect.clone().unwrap_or(Rect { x: 0, y: 0, width: canvas_w, height: canvas_h });
-
-        let rgba_data;
-        let src_data: &[u8] = match layer.pixel_format {
-            PixelFormat::Rgba8 => layer.data.as_slice(),
-            PixelFormat::I420 => {
-                rgba_data = i420_to_rgba8(layer.data.as_slice(), layer.width, layer.height);
-                &rgba_data
-            },
-        };
-
-        scale_blit_rgba(
-            buf,
-            canvas_w,
-            canvas_h,
-            src_data,
-            layer.width,
-            layer.height,
-            &dst_rect,
-            layer.opacity,
-        );
-    }
-
-    // Blit image overlays.
-    for ov in image_overlays {
-        blit_overlay(buf, canvas_w, canvas_h, ov);
-    }
-
-    // Blit text overlays.
-    for ov in text_overlays {
-        blit_overlay(buf, canvas_w, canvas_h, ov);
-    }
-
-    pooled
-}
-
 // ── Registration ────────────────────────────────────────────────────────────
 
 #[allow(clippy::expect_used)]
@@ -1442,6 +725,8 @@ mod tests {
     use crate::test_utils::{
         assert_state_initializing, assert_state_running, assert_state_stopped, create_test_context,
     };
+    use config::LayerConfig;
+    use pixel_ops::scale_blit_rgba;
     use std::collections::HashMap;
     use tokio::sync::mpsc;
 
@@ -1585,7 +870,7 @@ mod tests {
 
     #[test]
     fn test_rasterize_text_overlay_produces_pixels() {
-        let cfg = TextOverlayConfig {
+        let cfg = config::TextOverlayConfig {
             text: "Hi".to_string(),
             rect: Rect { x: 0, y: 0, width: 64, height: 32 },
             color: [255, 255, 0, 255],
