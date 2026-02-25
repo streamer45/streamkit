@@ -113,6 +113,22 @@ pub enum UserPipeline {
     },
 }
 
+/// Parse a YAML string into a [`UserPipeline`].
+///
+/// Uses a two-step approach (YAML → `serde_json::Value` → `UserPipeline`)
+/// to work around a `serde_saphyr` limitation where deeply nested
+/// structures fail to deserialize inside `#[serde(untagged)]` enums.
+///
+/// # Errors
+///
+/// Returns an error if the YAML is malformed or doesn't match the
+/// `UserPipeline` schema.
+pub fn parse_yaml(yaml: &str) -> Result<UserPipeline, String> {
+    let json_value: serde_json::Value =
+        serde_saphyr::from_str(yaml).map_err(|e| format!("Invalid YAML: {e}"))?;
+    serde_json::from_value(json_value).map_err(|e| format!("Invalid pipeline: {e}"))
+}
+
 /// "Compiles" the user-facing pipeline format into the explicit format the engine requires.
 ///
 /// # Errors

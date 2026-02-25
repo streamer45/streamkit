@@ -192,7 +192,7 @@ fn parse_pipeline_metadata(
     yaml: &str,
     path: &std::path::Path,
 ) -> (Option<String>, Option<String>, streamkit_api::EngineMode) {
-    serde_saphyr::from_str::<streamkit_api::yaml::UserPipeline>(yaml).map_or_else(
+    streamkit_api::yaml::parse_yaml(yaml).map_or_else(
         |e| {
             warn!("Failed to parse pipeline metadata from {}: {}", path.display(), e);
             (None, None, streamkit_api::EngineMode::default())
