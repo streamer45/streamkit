@@ -255,6 +255,9 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
             width: canvasWidth,
             height: canvasHeight,
             transform: `scale(${scale})`,
+            // CSS transform doesn't affect layout box — use negative margin
+            // to collapse the unscaled height so the outer container fits tightly.
+            marginBottom: canvasHeight * (scale - 1),
           }}
           onPointerDown={disabled ? undefined : handlePaneClick}
         >
