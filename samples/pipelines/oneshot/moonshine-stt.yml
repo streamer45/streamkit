@@ -1,0 +1,33 @@
+#
+# skit:input_asset_tags=speech
+
+name: Speech-to-Text (Moonshine)
+description: Transcribes speech to text using Moonshine with built-in VAD
+mode: oneshot
+steps:
+  - kind: streamkit::http_input
+
+  - kind: containers::ogg::demuxer
+
+  - kind: audio::opus::decoder
+
+  - kind: audio::resampler
+    params:
+      chunk_frames: 960
+      output_frame_size: 960
+      target_sample_rate: 16000
+
+  - kind: plugin::native::moonshine
+    params:
+      model_dir: models/moonshine-base-en
+      model_arch: base
+      num_threads: 4
+
+  - kind: core::json_serialize
+    params:
+      pretty: false
+      newline_delimited: true
+
+  - kind: streamkit::http_output
+    params:
+      content_type: application/json

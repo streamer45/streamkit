@@ -1,0 +1,79 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Real-Time Streaming Speech-to-Text with Moonshine
+#
+# This pipeline receives audio via MoQ and transcribes it in real-time
+# using Moonshine's streaming model. Unlike Whisper/SenseVoice, Moonshine
+# emits partial transcriptions while the user is still speaking, with
+# bounded latency independent of utterance length.
+#
+# Prerequisites:
+#   - Moonshine base streaming model: models/moonshine-base-streaming-en
+#
+# Model download:
+#   python scripts/download-moonshine-model.py --model-type base_streaming --model-language en
+#
+# Expected latency: ~100ms time-to-first-token (bounded, constant)
+
+name: Real-Time Streaming STT (Moonshine)
+description: Real-time streaming speech-to-text via MoQ using Moonshine
+mode: dynamic
+
+nodes:
+  # ============================================================
+  # INPUT: Receive audio from MoQ broadcast
+  # ============================================================
+  moq_peer:
+    kind: transport::moq::peer
+    params:
+      gateway_path: /moq/moonshine-stt
+      input_broadcast: input
+      output_broadcast: output
+      allow_reconnect: true
+    needs: json_serialize
+
+  # Decode Opus audio (48kHz stereo -> PCM)
+  opus_decoder:
+    kind: audio::opus::decoder
+    needs: moq_peer
+
+  # ============================================================
+  # STT: Streaming transcription with Moonshine
+  # ============================================================
+  # Resample to 16kHz mono (Moonshine requirement)
+  resample_for_stt:
+    kind: audio::resampler
+    params:
+      target_sample_rate: 16000
+      channels: 1
+    needs: opus_decoder
+
+  # Transcribe with Moonshine streaming model (built-in VAD, partial results)
+  moonshine_stt:
+    kind: plugin::native::moonshine
+    params:
+      model_dir: models/moonshine-base-streaming-en
+      model_arch: base_streaming
+      num_threads: 4
+    needs: resample_for_stt
+
+  stt_telemetry_out:
+    kind: core::telemetry_out
+    params:
+      packet_types: ["Transcription"]
+      max_events_per_sec: 20
+    needs:
+      node: moonshine_stt
+      mode: best_effort
+
+  # ============================================================
+  # OUTPUT: Send transcriptions via MoQ
+  # ============================================================
+  json_serialize:
+    kind: core::json_serialize
+    params:
+      pretty: false
+      newline_delimited: true
+    needs: moonshine_stt
