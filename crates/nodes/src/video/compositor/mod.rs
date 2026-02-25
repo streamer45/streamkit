@@ -111,22 +111,27 @@ impl CompositorNode {
         Self { config, output_format, input_pins, next_input_id }
     }
 
+    /// The set of video packet types accepted by compositor input pins.
+    fn accepted_video_types() -> Vec<PacketType> {
+        vec![
+            PacketType::RawVideo(VideoFormat {
+                width: None,
+                height: None,
+                pixel_format: PixelFormat::Rgba8,
+            }),
+            PacketType::RawVideo(VideoFormat {
+                width: None,
+                height: None,
+                pixel_format: PixelFormat::I420,
+            }),
+        ]
+    }
+
     /// Returns the definition-time pins for registry (dynamic template).
     pub fn definition_pins() -> (Vec<InputPin>, Vec<OutputPin>) {
         let inputs = vec![InputPin {
             name: "in".to_string(),
-            accepts_types: vec![
-                PacketType::RawVideo(VideoFormat {
-                    width: None,
-                    height: None,
-                    pixel_format: PixelFormat::Rgba8,
-                }),
-                PacketType::RawVideo(VideoFormat {
-                    width: None,
-                    height: None,
-                    pixel_format: PixelFormat::I420,
-                }),
-            ],
+            accepts_types: Self::accepted_video_types(),
             cardinality: PinCardinality::Dynamic { prefix: "in".to_string() },
         }];
 
@@ -147,18 +152,7 @@ impl CompositorNode {
     fn make_input_pin(name: String) -> InputPin {
         InputPin {
             name,
-            accepts_types: vec![
-                PacketType::RawVideo(VideoFormat {
-                    width: None,
-                    height: None,
-                    pixel_format: PixelFormat::Rgba8,
-                }),
-                PacketType::RawVideo(VideoFormat {
-                    width: None,
-                    height: None,
-                    pixel_format: PixelFormat::I420,
-                }),
-            ],
+            accepts_types: Self::accepted_video_types(),
             cardinality: PinCardinality::One,
         }
     }

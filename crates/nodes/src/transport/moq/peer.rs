@@ -1438,7 +1438,7 @@ impl MoqPeerNode {
 
                 let default_duration = match broadcast_frame.kind {
                     MediaKind::Audio => super::constants::DEFAULT_AUDIO_FRAME_DURATION_US,
-                    MediaKind::Video => 33_333, // ~30fps default
+                    MediaKind::Video => crate::video::DEFAULT_VIDEO_FRAME_DURATION_US,
                 };
                 clock.advance_by_duration_us(broadcast_frame.duration_us, default_duration);
                 Ok(SendResult::Continue)

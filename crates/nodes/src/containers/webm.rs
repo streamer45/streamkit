@@ -28,8 +28,7 @@ use webm::mux::{
 const DEFAULT_CHUNK_SIZE: usize = 65536;
 /// Default audio frame duration when metadata is missing (20ms Opus frame).
 const DEFAULT_FRAME_DURATION_US: u64 = 20_000;
-/// Default video frame duration when metadata is missing (~30 fps).
-const DEFAULT_VIDEO_FRAME_DURATION_US: u64 = 33_333;
+use crate::video::DEFAULT_VIDEO_FRAME_DURATION_US;
 
 // ---------------------------------------------------------------------------
 // VP9 keyframe dimension parser
@@ -808,61 +807,28 @@ impl ProcessorNode for WebMMuxerNode {
         // it through the normal mux path before entering the receive loop.
         if let Some((data, metadata)) = first_video_packet.take() {
             if let Some(video_track) = tracks.video {
-                packet_count += 1;
-                stats_tracker.received();
-
-                let incoming_ts_us = metadata.as_ref().and_then(|m| m.timestamp_us);
-                let incoming_duration_us = metadata
-                    .as_ref()
-                    .and_then(|m| m.duration_us)
-                    .or(Some(DEFAULT_VIDEO_FRAME_DURATION_US));
-
-                if let Some(ts) = incoming_ts_us {
-                    video_clock.seed_from_timestamp_us(ts);
-                } else if video_clock.timestamp_us() == 0 {
-                    video_clock.seed_from_timestamp_us(0);
-                }
-
-                let presentation_ts_us =
-                    incoming_ts_us.unwrap_or_else(|| video_clock.timestamp_us());
-                video_clock
-                    .advance_by_duration_us(incoming_duration_us, DEFAULT_VIDEO_FRAME_DURATION_US);
-
-                let timestamp_ns = presentation_ts_us.saturating_mul(1000);
                 let is_keyframe = metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(true);
-
-                if let Err(e) = segment.add_frame(video_track, &data, timestamp_ns, is_keyframe) {
-                    stats_tracker.errored();
-                    stats_tracker.maybe_send();
-                    let err_msg = format!("Failed to add first video frame to segment: {e}");
-                    state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
-                    return Err(StreamKitError::Runtime(err_msg));
-                }
-
-                last_written_ns = timestamp_ns;
-
-                let output_metadata = Some(PacketMetadata {
-                    timestamp_us: Some(presentation_ts_us),
-                    duration_us: incoming_duration_us,
-                    sequence: metadata.as_ref().and_then(|m| m.sequence),
-                    keyframe: Some(is_keyframe),
-                });
-
-                if flush_output(
+                if mux_frame(
+                    &data,
+                    metadata.as_ref(),
+                    video_track,
+                    is_keyframe,
+                    DEFAULT_VIDEO_FRAME_DURATION_US,
+                    &mut video_clock,
+                    &mut last_written_ns,
+                    &mut segment,
                     &mut context,
                     live_flush_handle.as_ref(),
                     &content_type_str,
-                    output_metadata,
                     &mut header_sent,
                     &mut stats_tracker,
                     &node_name,
+                    &mut packet_count,
                 )
                 .await?
                 {
                     video_done = true;
                 }
-
-                stats_tracker.maybe_send();
             }
         }
 
@@ -943,133 +909,56 @@ impl ProcessorNode for WebMMuxerNode {
                     let Some(audio_track) = tracks.audio else {
                         continue;
                     };
-
-                    packet_count += 1;
-                    stats_tracker.received();
-
-                    let incoming_ts_us = metadata.as_ref().and_then(|m| m.timestamp_us);
-                    let incoming_duration_us = metadata
-                        .as_ref()
-                        .and_then(|m| m.duration_us)
-                        .or(Some(DEFAULT_FRAME_DURATION_US));
-
-                    if let Some(ts) = incoming_ts_us {
-                        audio_clock.seed_from_timestamp_us(ts);
-                    } else if audio_clock.timestamp_us() == 0 {
-                        audio_clock.seed_from_timestamp_us(0);
-                    }
-
-                    let presentation_ts_us =
-                        incoming_ts_us.unwrap_or_else(|| audio_clock.timestamp_us());
-                    audio_clock
-                        .advance_by_duration_us(incoming_duration_us, DEFAULT_FRAME_DURATION_US);
-
-                    let mut timestamp_ns = presentation_ts_us.saturating_mul(1000);
-                    if timestamp_ns < last_written_ns {
-                        timestamp_ns = last_written_ns;
-                    }
-
-                    // Audio frames are always keyframes
-                    if let Err(e) = segment.add_frame(audio_track, &data, timestamp_ns, true) {
-                        stats_tracker.errored();
-                        stats_tracker.maybe_send();
-                        let err_msg = format!("Failed to add audio frame to segment: {e}");
-                        state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
-                        return Err(StreamKitError::Runtime(err_msg));
-                    }
-
-                    last_written_ns = timestamp_ns;
-
-                    let output_metadata = Some(PacketMetadata {
-                        timestamp_us: Some(presentation_ts_us),
-                        duration_us: incoming_duration_us,
-                        sequence: metadata.as_ref().and_then(|m| m.sequence),
-                        keyframe: metadata.as_ref().and_then(|m| m.keyframe),
-                    });
-
-                    if flush_output(
+                    // Audio frames are always keyframes.
+                    if mux_frame(
+                        &data,
+                        metadata.as_ref(),
+                        audio_track,
+                        true,
+                        DEFAULT_FRAME_DURATION_US,
+                        &mut audio_clock,
+                        &mut last_written_ns,
+                        &mut segment,
                         &mut context,
                         live_flush_handle.as_ref(),
                         &content_type_str,
-                        output_metadata,
                         &mut header_sent,
                         &mut stats_tracker,
                         &node_name,
+                        &mut packet_count,
                     )
                     .await?
                     {
                         break;
                     }
-
-                    stats_tracker.maybe_send();
                 },
                 MuxFrame::Video(data, metadata) => {
                     let Some(video_track) = tracks.video else {
                         continue;
                     };
-
-                    packet_count += 1;
-                    stats_tracker.received();
-
-                    let incoming_ts_us = metadata.as_ref().and_then(|m| m.timestamp_us);
-                    let incoming_duration_us = metadata
-                        .as_ref()
-                        .and_then(|m| m.duration_us)
-                        .or(Some(DEFAULT_VIDEO_FRAME_DURATION_US));
-
-                    if let Some(ts) = incoming_ts_us {
-                        video_clock.seed_from_timestamp_us(ts);
-                    } else if video_clock.timestamp_us() == 0 {
-                        video_clock.seed_from_timestamp_us(0);
-                    }
-
-                    let presentation_ts_us =
-                        incoming_ts_us.unwrap_or_else(|| video_clock.timestamp_us());
-                    video_clock.advance_by_duration_us(
-                        incoming_duration_us,
+                    let is_keyframe =
+                        metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(false);
+                    if mux_frame(
+                        &data,
+                        metadata.as_ref(),
+                        video_track,
+                        is_keyframe,
                         DEFAULT_VIDEO_FRAME_DURATION_US,
-                    );
-
-                    let mut timestamp_ns = presentation_ts_us.saturating_mul(1000);
-                    if timestamp_ns < last_written_ns {
-                        timestamp_ns = last_written_ns;
-                    }
-
-                    let is_keyframe = metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(false);
-
-                    if let Err(e) = segment.add_frame(video_track, &data, timestamp_ns, is_keyframe)
-                    {
-                        stats_tracker.errored();
-                        stats_tracker.maybe_send();
-                        let err_msg = format!("Failed to add video frame to segment: {e}");
-                        state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
-                        return Err(StreamKitError::Runtime(err_msg));
-                    }
-
-                    last_written_ns = timestamp_ns;
-
-                    let output_metadata = Some(PacketMetadata {
-                        timestamp_us: Some(presentation_ts_us),
-                        duration_us: incoming_duration_us,
-                        sequence: metadata.as_ref().and_then(|m| m.sequence),
-                        keyframe: Some(is_keyframe),
-                    });
-
-                    if flush_output(
+                        &mut video_clock,
+                        &mut last_written_ns,
+                        &mut segment,
                         &mut context,
                         live_flush_handle.as_ref(),
                         &content_type_str,
-                        output_metadata,
                         &mut header_sent,
                         &mut stats_tracker,
                         &node_name,
+                        &mut packet_count,
                     )
                     .await?
                     {
                         break;
                     }
-
-                    stats_tracker.maybe_send();
                 },
             }
         }
@@ -1115,6 +1004,81 @@ impl ProcessorNode for WebMMuxerNode {
         tracing::info!("WebMMuxerNode finished");
         Ok(())
     }
+}
+
+/// Timestamps, clocks, and writes a single frame (audio or video) to the WebM
+/// segment, then flushes any buffered output.
+///
+/// Returns `Ok(true)` if the output channel is closed (caller should stop),
+/// `Ok(false)` to continue, or `Err` on fatal errors.
+#[allow(clippy::too_many_arguments)]
+async fn mux_frame(
+    data: &[u8],
+    metadata: Option<&PacketMetadata>,
+    track: impl Into<u64>,
+    is_keyframe: bool,
+    default_duration_us: u64,
+    clock: &mut streamkit_core::timing::MediaClock,
+    last_written_ns: &mut u64,
+    segment: &mut webm::mux::Segment<MuxBuffer>,
+    context: &mut NodeContext,
+    live_buffer: Option<&SharedPacketBuffer>,
+    content_type: &Cow<'static, str>,
+    header_sent: &mut bool,
+    stats_tracker: &mut NodeStatsTracker,
+    node_name: &str,
+    packet_count: &mut u64,
+) -> Result<bool, StreamKitError> {
+    *packet_count += 1;
+    stats_tracker.received();
+
+    let incoming_ts_us = metadata.and_then(|m| m.timestamp_us);
+    let incoming_duration_us = metadata.and_then(|m| m.duration_us).or(Some(default_duration_us));
+
+    if let Some(ts) = incoming_ts_us {
+        clock.seed_from_timestamp_us(ts);
+    } else if clock.timestamp_us() == 0 {
+        clock.seed_from_timestamp_us(0);
+    }
+
+    let presentation_ts_us = incoming_ts_us.unwrap_or_else(|| clock.timestamp_us());
+    clock.advance_by_duration_us(incoming_duration_us, default_duration_us);
+
+    let mut timestamp_ns = presentation_ts_us.saturating_mul(1000);
+    if timestamp_ns < *last_written_ns {
+        timestamp_ns = *last_written_ns;
+    }
+
+    if let Err(e) = segment.add_frame(track, data, timestamp_ns, is_keyframe) {
+        stats_tracker.errored();
+        stats_tracker.maybe_send();
+        let err_msg = format!("Failed to add frame to segment: {e}");
+        state_helpers::emit_failed(&context.state_tx, node_name, &err_msg);
+        return Err(StreamKitError::Runtime(err_msg));
+    }
+
+    *last_written_ns = timestamp_ns;
+
+    let output_metadata = Some(PacketMetadata {
+        timestamp_us: Some(presentation_ts_us),
+        duration_us: incoming_duration_us,
+        sequence: metadata.and_then(|m| m.sequence),
+        keyframe: Some(is_keyframe),
+    });
+
+    let stopped = flush_output(
+        context,
+        live_buffer,
+        content_type,
+        output_metadata,
+        header_sent,
+        stats_tracker,
+        node_name,
+    )
+    .await?;
+
+    stats_tracker.maybe_send();
+    Ok(stopped)
 }
 
 /// Flushes buffered WebM data to the output sender.

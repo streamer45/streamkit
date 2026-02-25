@@ -90,70 +90,24 @@ pub fn rasterize_text_overlay(config: &TextOverlayConfig) -> DecodedOverlay {
 
     let total_bytes = (w as usize) * (h as usize) * 4;
     let mut rgba_data = vec![0u8; total_bytes];
-    let stride = w as usize * 4;
-
-    let font_size_f = config.font_size.max(1) as f32;
-    let [cr, cg, cb, ca] = config.color;
 
     if let Some(font) = font {
-        // ── Real font rendering via fontdue ──────────────────────────────
-        let mut cursor_x: f32 = 0.0;
-
-        // Use a capital letter to establish the baseline position.
-        let (ref_metrics, _) = font.rasterize('A', font_size_f);
-        let baseline_y = ref_metrics.height as f32;
-
-        for ch in config.text.chars() {
-            let (metrics, bitmap) = font.rasterize(ch, font_size_f);
-
-            // Glyph origin in the overlay buffer.
-            let gx = (cursor_x + metrics.xmin as f32) as i32;
-            let gy = (baseline_y - metrics.ymin as f32) as i32 - metrics.height as i32;
-
-            // Blit coverage bitmap into the RGBA overlay buffer.
-            for row in 0..metrics.height {
-                let dst_y = gy + row as i32;
-                if dst_y < 0 || dst_y >= h as i32 {
-                    continue;
-                }
-                for col in 0..metrics.width {
-                    let dst_x = gx + col as i32;
-                    if dst_x < 0 || dst_x >= w as i32 {
-                        continue;
-                    }
-                    let coverage = bitmap[row * metrics.width + col];
-                    if coverage == 0 {
-                        continue;
-                    }
-                    let alpha = u16::from(ca) * u16::from(coverage) / 255;
-                    let off = dst_y as usize * stride + dst_x as usize * 4;
-
-                    if alpha >= 255 {
-                        rgba_data[off] = cr;
-                        rgba_data[off + 1] = cg;
-                        rgba_data[off + 2] = cb;
-                        rgba_data[off + 3] = 255;
-                    } else if alpha > 0 {
-                        let inv = 255 - alpha;
-                        let dr = u16::from(rgba_data[off]);
-                        let dg = u16::from(rgba_data[off + 1]);
-                        let db = u16::from(rgba_data[off + 2]);
-                        let da = u16::from(rgba_data[off + 3]);
-                        rgba_data[off] = ((u16::from(cr) * alpha + dr * inv + 128) / 255) as u8;
-                        rgba_data[off + 1] = ((u16::from(cg) * alpha + dg * inv + 128) / 255) as u8;
-                        rgba_data[off + 2] = ((u16::from(cb) * alpha + db * inv + 128) / 255) as u8;
-                        rgba_data[off + 3] = (alpha + (da * inv + 128) / 255).min(255) as u8;
-                    }
-                }
-            }
-
-            cursor_x += metrics.advance_width;
-            if cursor_x >= w as f32 {
-                break;
-            }
-        }
+        // ── Real font rendering via shared utility ───────────────────────
+        crate::video::blit_text_rgba(
+            &mut rgba_data,
+            w,
+            h,
+            &font,
+            config.font_size.max(1) as f32,
+            &config.text,
+            0,
+            0,
+            config.color,
+        );
     } else {
         // ── Fallback: filled rectangle per glyph (placeholder) ──────────
+        let [cr, cg, cb, ca] = config.color;
+        let stride = w as usize * 4;
         let glyph_w = (config.font_size.max(1) * 3 / 5) as usize;
         let glyph_h = config.font_size.max(1) as usize;
 

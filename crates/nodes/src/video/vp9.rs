@@ -228,70 +228,18 @@ impl ProcessorNode for Vp9DecoderNode {
             tracing::info!("Vp9DecoderNode input stream closed");
         });
 
-        loop {
-            tokio::select! {
-                maybe_result = result_rx.recv() => {
-                    match maybe_result {
-                        Some(Ok(frame)) => {
-                            packets_processed_counter.add(1, &[KeyValue::new("status", "ok")]);
-                            stats_tracker.received();
-
-                            if context.output_sender.send("out", Packet::Video(frame)).await.is_err() {
-                                tracing::debug!("Output channel closed, stopping node");
-                                break;
-                            }
-                            stats_tracker.sent();
-                            stats_tracker.maybe_send();
-                        }
-                        Some(Err(err)) => {
-                            packets_processed_counter.add(1, &[KeyValue::new("status", "error")]);
-                            stats_tracker.received();
-                            stats_tracker.errored();
-                            stats_tracker.maybe_send();
-                            tracing::warn!("VP9 decode error: {}", err);
-                        }
-                        None => break,
-                    }
-                }
-                Some(control_msg) = context.control_rx.recv() => {
-                    if matches!(control_msg, streamkit_core::control::NodeControlMessage::Shutdown) {
-                        tracing::info!("Vp9DecoderNode received shutdown signal");
-                        input_task.abort();
-                        decode_task.abort();
-                        drop(decode_tx);
-                        break;
-                    }
-                }
-                _ = &mut input_task => {
-                    drop(decode_tx);
-                    while let Some(maybe_result) = result_rx.recv().await {
-                        match maybe_result {
-                            Ok(frame) => {
-                                packets_processed_counter.add(1, &[KeyValue::new("status", "ok")]);
-                                stats_tracker.received();
-                                if context.output_sender.send("out", Packet::Video(frame)).await.is_err() {
-                                    tracing::debug!("Output channel closed, stopping node");
-                                    break;
-                                }
-                                stats_tracker.sent();
-                                stats_tracker.maybe_send();
-                            }
-                            Err(err) => {
-                                packets_processed_counter.add(1, &[KeyValue::new("status", "error")]);
-                                stats_tracker.received();
-                                stats_tracker.errored();
-                                stats_tracker.maybe_send();
-                                tracing::warn!("VP9 decode error: {}", err);
-                            }
-                        }
-                    }
-                    break;
-                }
-            }
-        }
-
-        decode_task.abort();
-        let _ = decode_task.await;
+        codec_forward_loop(
+            &mut context,
+            &mut result_rx,
+            &mut input_task,
+            decode_task,
+            decode_tx,
+            &packets_processed_counter,
+            &mut stats_tracker,
+            |frame| Packet::Video(frame),
+            "Vp9DecoderNode",
+        )
+        .await;
 
         state_helpers::emit_stopped(&context.state_tx, &node_name, "input_closed");
         tracing::info!("Vp9DecoderNode finished");
@@ -458,90 +406,127 @@ impl ProcessorNode for Vp9EncoderNode {
             tracing::info!("Vp9EncoderNode input stream closed");
         });
 
-        loop {
-            tokio::select! {
-                maybe_result = result_rx.recv() => {
-                    match maybe_result {
-                        Some(Ok(encoded)) => {
-                            packets_processed_counter.add(1, &[KeyValue::new("status", "ok")]);
-                            stats_tracker.received();
-
-                            let output_packet = Packet::Binary {
-                                data: encoded.data,
-                                content_type: Some(Cow::Borrowed(VP9_CONTENT_TYPE)),
-                                metadata: encoded.metadata,
-                            };
-                            if context.output_sender.send("out", output_packet).await.is_err() {
-                                tracing::debug!("Output channel closed, stopping node");
-                                break;
-                            }
-                            stats_tracker.sent();
-                            stats_tracker.maybe_send();
-                        }
-                        Some(Err(err)) => {
-                            packets_processed_counter.add(1, &[KeyValue::new("status", "error")]);
-                            stats_tracker.received();
-                            stats_tracker.errored();
-                            stats_tracker.maybe_send();
-                            tracing::warn!("VP9 encode error: {}", err);
-                        }
-                        None => break,
-                    }
-                }
-                Some(control_msg) = context.control_rx.recv() => {
-                    if matches!(control_msg, streamkit_core::control::NodeControlMessage::Shutdown) {
-                        tracing::info!("Vp9EncoderNode received shutdown signal");
-                        // NOTE: Aborting the input task and dropping encode_tx causes
-                        // the encode thread to flush remaining frames, but because we
-                        // break out of the forwarding loop here those flushed packets
-                        // are never sent downstream.  This differs from the graceful
-                        // input-closed path (below) which does drain result_rx.  Data
-                        // loss on explicit shutdown is acceptable.
-                        input_task.abort();
-                        drop(encode_tx);
-                        break;
-                    }
-                }
-                _ = &mut input_task => {
-                    drop(encode_tx);
-                    while let Some(maybe_result) = result_rx.recv().await {
-                        match maybe_result {
-                            Ok(encoded) => {
-                                packets_processed_counter.add(1, &[KeyValue::new("status", "ok")]);
-                                stats_tracker.received();
-
-                                let output_packet = Packet::Binary {
-                                    data: encoded.data,
-                                    content_type: Some(Cow::Borrowed(VP9_CONTENT_TYPE)),
-                                    metadata: encoded.metadata,
-                                };
-                                if context.output_sender.send("out", output_packet).await.is_err() {
-                                    tracing::debug!("Output channel closed, stopping node");
-                                    break;
-                                }
-                                stats_tracker.sent();
-                                stats_tracker.maybe_send();
-                            }
-                            Err(err) => {
-                                packets_processed_counter.add(1, &[KeyValue::new("status", "error")]);
-                                stats_tracker.received();
-                                stats_tracker.errored();
-                                stats_tracker.maybe_send();
-                                tracing::warn!("VP9 encode error: {}", err);
-                            }
-                        }
-                    }
-                    break;
-                }
-            }
-        }
-
-        let _ = encode_task.await;
+        codec_forward_loop(
+            &mut context,
+            &mut result_rx,
+            &mut input_task,
+            encode_task,
+            encode_tx,
+            &packets_processed_counter,
+            &mut stats_tracker,
+            |encoded| Packet::Binary {
+                data: encoded.data,
+                content_type: Some(Cow::Borrowed(VP9_CONTENT_TYPE)),
+                metadata: encoded.metadata,
+            },
+            "Vp9EncoderNode",
+        )
+        .await;
 
         state_helpers::emit_stopped(&context.state_tx, &node_name, "input_closed");
         tracing::info!("Vp9EncoderNode finished");
         Ok(())
     }
+}
+
+/// Shared select-loop that forwards codec results to the output sender.
+///
+/// Handles three concurrent events:
+/// 1. Results arriving from the blocking codec task.
+/// 2. Shutdown control messages.
+/// 3. Input task completion (triggers drain of remaining results).
+///
+/// `to_packet` converts a codec-specific result `T` into a [`Packet`].
+#[allow(clippy::too_many_arguments)]
+async fn codec_forward_loop<T: Send + 'static, S: Send>(
+    context: &mut NodeContext,
+    result_rx: &mut mpsc::Receiver<Result<T, String>>,
+    input_task: &mut tokio::task::JoinHandle<()>,
+    codec_task: tokio::task::JoinHandle<()>,
+    codec_tx: mpsc::Sender<S>,
+    counter: &opentelemetry::metrics::Counter<u64>,
+    stats: &mut NodeStatsTracker,
+    to_packet: impl Fn(T) -> Packet,
+    label: &str,
+) {
+    /// Forwards a single successful codec result to the output sender.
+    /// Returns `true` if the output channel is closed (caller should break).
+    async fn forward_one(
+        packet: Packet,
+        context: &mut NodeContext,
+        counter: &opentelemetry::metrics::Counter<u64>,
+        stats: &mut NodeStatsTracker,
+    ) -> bool {
+        counter.add(1, &[KeyValue::new("status", "ok")]);
+        stats.received();
+        if context.output_sender.send("out", packet).await.is_err() {
+            tracing::debug!("Output channel closed, stopping node");
+            return true;
+        }
+        stats.sent();
+        stats.maybe_send();
+        false
+    }
+
+    /// Handles a codec error result by updating counters and logging.
+    fn handle_error(
+        err: String,
+        counter: &opentelemetry::metrics::Counter<u64>,
+        stats: &mut NodeStatsTracker,
+        label: &str,
+    ) {
+        counter.add(1, &[KeyValue::new("status", "error")]);
+        stats.received();
+        stats.errored();
+        stats.maybe_send();
+        tracing::warn!("{label} codec error: {err}");
+    }
+
+    loop {
+        tokio::select! {
+            maybe_result = result_rx.recv() => {
+                match maybe_result {
+                    Some(Ok(item)) => {
+                        if forward_one(to_packet(item), context, counter, stats).await {
+                            break;
+                        }
+                    }
+                    Some(Err(err)) => handle_error(err, counter, stats, label),
+                    None => break,
+                }
+            }
+            Some(control_msg) = context.control_rx.recv() => {
+                if matches!(control_msg, streamkit_core::control::NodeControlMessage::Shutdown) {
+                    tracing::info!("{label} received shutdown signal");
+                    // NOTE: Aborting the input task and dropping codec_tx causes
+                    // the codec thread to exit/flush, but because we break out
+                    // here those flushed results are never sent downstream.
+                    // Data loss on explicit shutdown is acceptable.
+                    input_task.abort();
+                    codec_task.abort();
+                    drop(codec_tx);
+                    break;
+                }
+            }
+            _ = &mut *input_task => {
+                drop(codec_tx);
+                while let Some(maybe_result) = result_rx.recv().await {
+                    match maybe_result {
+                        Ok(item) => {
+                            if forward_one(to_packet(item), context, counter, stats).await {
+                                break;
+                            }
+                        }
+                        Err(err) => handle_error(err, counter, stats, label),
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    codec_task.abort();
+    let _ = codec_task.await;
 }
 
 struct EncodedPacket {

@@ -381,9 +381,13 @@ pub fn scale_blit_rgba_rotated(
         256 // sentinel: means "fully opaque, skip per-pixel multiply"
     };
 
-    for py in bb_y0..bb_y1 {
+    // Per-row closure that processes all columns in a single row of the
+    // bounding box.  Captured values are all immutable or Copy so the closure
+    // can be shared across rayon threads.
+    let process_row = |py: i32, row_slice: &mut [u8]| {
         let dy = py as f32 - cy;
-        let row_base = py as usize * row_stride;
+        // `row_slice` starts at the beginning of this destination row,
+        // so pixel `px` lives at offset `px * 4`.
         for px in bb_x0..bb_x1 {
             let dx_f = px as f32 - cx;
 
@@ -393,16 +397,6 @@ pub fn scale_blit_rgba_rotated(
             let local_y = -dx_f * sin_a + dy * cos_a;
 
             // ── Edge anti-aliasing via signed distance ──────────────
-            //
-            // Compute the signed distance from the pixel centre to each
-            // of the four axis-aligned edges of the (un-rotated) rect.
-            // Positive = inside, negative = outside.  The minimum gives
-            // the distance to the closest edge.
-            //
-            // For pixels well inside (min_dist >= 1.0) we get full
-            // coverage.  For pixels on the boundary (0 < min_dist < 1)
-            // we get fractional coverage proportional to distance.  For
-            // pixels completely outside (min_dist <= 0) we skip.
             let d_left = local_x + half_w;
             let d_right = half_w - local_x;
             let d_top = local_y + half_h;
@@ -416,9 +410,7 @@ pub fn scale_blit_rgba_rotated(
             // Fractional coverage: smoothly ramp from 0→1 over ~1 pixel.
             let edge_coverage = min_dist.min(1.0);
 
-            // Map from local rect coords ([-half_w, half_w]) to source
-            // pixel coords ([0, sw)).  Clamp instead of rejecting so
-            // edge-AA pixels still sample the nearest source texel.
+            // Map from local rect coords to source pixel coords.
             let norm_x = ((local_x + half_w) / rw).clamp(0.0, 1.0 - f32::EPSILON);
             let norm_y = ((local_y + half_h) / rh).clamp(0.0, 1.0 - f32::EPSILON);
 
@@ -451,24 +443,43 @@ pub fn scale_blit_rgba_rotated(
                 continue;
             }
 
-            let dst_idx = row_base + px as usize * 4;
-            if dst_idx + 3 >= dst.len() {
+            let dst_off = px as usize * 4;
+            if dst_off + 3 >= row_slice.len() {
                 continue;
             }
 
             if sa == 255 {
-                dst[dst_idx] = sr;
-                dst[dst_idx + 1] = sg;
-                dst[dst_idx + 2] = sb;
-                dst[dst_idx + 3] = 255;
+                row_slice[dst_off] = sr;
+                row_slice[dst_off + 1] = sg;
+                row_slice[dst_off + 2] = sb;
+                row_slice[dst_off + 3] = 255;
             } else {
                 let a16 = u16::from(sa);
-                dst[dst_idx] = blend_u8(sr, dst[dst_idx], a16);
-                dst[dst_idx + 1] = blend_u8(sg, dst[dst_idx + 1], a16);
-                dst[dst_idx + 2] = blend_u8(sb, dst[dst_idx + 2], a16);
-                let da = u16::from(dst[dst_idx + 3]);
-                dst[dst_idx + 3] = (a16 + ((da * (255 - a16) + 128) >> 8)).min(255) as u8;
+                row_slice[dst_off] = blend_u8(sr, row_slice[dst_off], a16);
+                row_slice[dst_off + 1] = blend_u8(sg, row_slice[dst_off + 1], a16);
+                row_slice[dst_off + 2] = blend_u8(sb, row_slice[dst_off + 2], a16);
+                let da = u16::from(row_slice[dst_off + 3]);
+                row_slice[dst_off + 3] = (a16 + ((da * (255 - a16) + 128) >> 8)).min(255) as u8;
             }
+        }
+    };
+
+    let bb_rows = (bb_y1 - bb_y0) as usize;
+    let first_row_byte = bb_y0 as usize * row_stride;
+    let dst_region = &mut dst[first_row_byte..];
+
+    if bb_rows >= RAYON_ROW_THRESHOLD {
+        use rayon::prelude::*;
+        dst_region
+            .par_chunks_mut(row_stride)
+            .take(bb_rows)
+            .enumerate()
+            .for_each(|(i, row_slice)| {
+                process_row(bb_y0 + i as i32, row_slice);
+            });
+    } else {
+        for (i, row_slice) in dst_region.chunks_mut(row_stride).take(bb_rows).enumerate() {
+            process_row(bb_y0 + i as i32, row_slice);
         }
     }
 }
@@ -479,6 +490,10 @@ pub fn scale_blit_rgba_rotated(
 ///
 /// The caller must ensure `out` has length >= `width * height * 4`.
 /// Rows are processed in parallel via `rayon`.
+///
+/// **Note:** This function assumes a *packed* I420 layout (luma stride = width,
+/// chroma stride = ⌈width/2⌉).  If non-packed / aligned layouts are introduced
+/// in the future, a stride-aware variant should be added.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::many_single_char_names)]
 pub fn i420_to_rgba8_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     use rayon::prelude::*;
@@ -542,6 +557,11 @@ pub fn i420_to_rgba8(data: &[u8], width: u32, height: u32) -> Vec<u8> {
 ///
 /// The caller must ensure `out` has length >= `w * h + 2 * ((w+1)/2) * ((h+1)/2)`.
 /// Y, U and V planes are processed in parallel via `rayon`.
+///
+/// **Note:** This function assumes a *packed* RGBA8 layout (stride = width × 4)
+/// and writes a packed I420 output (luma stride = width, chroma stride = ⌈width/2⌉).
+/// If non-packed / aligned layouts are introduced in the future, a stride-aware
+/// variant should be added.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::many_single_char_names)]
 pub fn rgba8_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     use rayon::prelude::*;

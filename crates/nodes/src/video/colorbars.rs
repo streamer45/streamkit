@@ -429,52 +429,54 @@ fn stamp_time(
     let margin_y: i32 = 8;
     let origin_y = height as i32 - margin_y - DRAW_TIME_FONT_SIZE as i32;
 
-    // Establish baseline from a reference glyph.
-    let (ref_metrics, _) = font.rasterize('A', DRAW_TIME_FONT_SIZE);
-    let baseline_y = ref_metrics.height as f32;
+    match pixel_format {
+        PixelFormat::Rgba8 => {
+            // White, fully opaque text.
+            super::blit_text_rgba(
+                data,
+                width,
+                height,
+                font,
+                DRAW_TIME_FONT_SIZE,
+                &time_str,
+                margin_x,
+                origin_y,
+                [255, 255, 255, 255],
+            );
+        },
+        PixelFormat::I420 => {
+            // I420 needs direct Y/U/V plane manipulation — no shared RGBA
+            // utility applies here.
+            let (ref_metrics, _) = font.rasterize('A', DRAW_TIME_FONT_SIZE);
+            let baseline_y = ref_metrics.height as f32;
 
-    let mut cursor_x: f32 = 0.0;
+            let mut cursor_x: f32 = 0.0;
 
-    for ch in time_str.chars() {
-        let (metrics, bitmap) = font.rasterize(ch, DRAW_TIME_FONT_SIZE);
+            for ch in time_str.chars() {
+                let (metrics, bitmap) = font.rasterize(ch, DRAW_TIME_FONT_SIZE);
 
-        let gx = margin_x + (cursor_x + metrics.xmin as f32) as i32;
-        let gy = origin_y + (baseline_y - metrics.ymin as f32) as i32 - metrics.height as i32;
+                let gx = margin_x + (cursor_x + metrics.xmin as f32) as i32;
+                let gy =
+                    origin_y + (baseline_y - metrics.ymin as f32) as i32 - metrics.height as i32;
 
-        for row in 0..metrics.height {
-            let dst_y = gy + row as i32;
-            if dst_y < 0 || dst_y >= height as i32 {
-                continue;
-            }
-            for col in 0..metrics.width {
-                let dst_x = gx + col as i32;
-                if dst_x < 0 || dst_x >= width as i32 {
-                    continue;
-                }
-                let coverage = bitmap[row * metrics.width + col];
-                if coverage == 0 {
-                    continue;
-                }
+                for row in 0..metrics.height {
+                    let dst_y = gy + row as i32;
+                    if dst_y < 0 || dst_y >= height as i32 {
+                        continue;
+                    }
+                    for col in 0..metrics.width {
+                        let dst_x = gx + col as i32;
+                        if dst_x < 0 || dst_x >= width as i32 {
+                            continue;
+                        }
+                        let coverage = bitmap[row * metrics.width + col];
+                        if coverage == 0 {
+                            continue;
+                        }
 
-                let px = dst_x as usize;
-                let py = dst_y as usize;
+                        let px = dst_x as usize;
+                        let py = dst_y as usize;
 
-                match pixel_format {
-                    PixelFormat::Rgba8 => {
-                        let stride = width as usize * 4;
-                        let off = py * stride + px * 4;
-                        // Alpha-blend white text over the existing pixel.
-                        let alpha = u16::from(coverage);
-                        let inv = 255 - alpha;
-                        let dr = u16::from(data[off]);
-                        let dg = u16::from(data[off + 1]);
-                        let db = u16::from(data[off + 2]);
-                        data[off] = ((255 * alpha + dr * inv + 128) / 255) as u8;
-                        data[off + 1] = ((255 * alpha + dg * inv + 128) / 255) as u8;
-                        data[off + 2] = ((255 * alpha + db * inv + 128) / 255) as u8;
-                        data[off + 3] = 255;
-                    },
-                    PixelFormat::I420 => {
                         let planes = layout.planes();
                         let y_plane = planes[0];
                         let u_plane = planes[1];
@@ -500,15 +502,15 @@ fn stamp_time(
                             data[u_off] = ((128 * alpha + old_u * inv + 128) / 255) as u8;
                             data[v_off] = ((128 * alpha + old_v * inv + 128) / 255) as u8;
                         }
-                    },
+                    }
+                }
+
+                cursor_x += metrics.advance_width;
+                if (margin_x as f32 + cursor_x) >= width as f32 {
+                    break;
                 }
             }
-        }
-
-        cursor_x += metrics.advance_width;
-        if (margin_x as f32 + cursor_x) >= width as f32 {
-            break;
-        }
+        },
     }
 }
 
