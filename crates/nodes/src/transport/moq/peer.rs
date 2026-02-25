@@ -67,6 +67,16 @@ enum PublisherEvent {
     Disconnected { path: String, error: Option<String> },
 }
 
+/// Media and output configuration shared across subscriber-related functions.
+struct SubscriberMediaConfig {
+    has_video: bool,
+    has_audio: bool,
+    video_width: u32,
+    video_height: u32,
+    output_group_duration_ms: u64,
+    output_initial_delay_ms: u64,
+}
+
 struct BidirectionalTaskConfig {
     input_broadcast: String,
     output_broadcast: String,
@@ -77,12 +87,8 @@ struct BidirectionalTaskConfig {
     publisher_slot: Arc<Semaphore>,
     publisher_events: mpsc::UnboundedSender<PublisherEvent>,
     subscriber_count: Arc<AtomicU64>,
-    output_group_duration_ms: u64,
-    output_initial_delay_ms: u64,
     stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
-    has_video: bool,
-    video_width: u32,
-    video_height: u32,
+    media: SubscriberMediaConfig,
 }
 
 struct PublisherReceiveLoopWithSlotConfig {
@@ -360,17 +366,20 @@ impl ProcessorNode for MoqPeerNode {
                     output_sender: context.output_sender.clone(),
                     broadcast_rx,
                     shutdown_rx: shutdown_tx.subscribe(),
-                            publisher_slot: publisher_slot.clone(),
-                            publisher_events: publisher_events_tx.clone(),
-                            subscriber_count: sub_count,
-                            output_group_duration_ms: self.config.output_group_duration_ms,
-                            output_initial_delay_ms: self.config.output_initial_delay_ms,
-                            stats_delta_tx: stats_delta_tx.clone(),
-                            has_video,
-                            video_width: self.config.video_width,
-                            video_height: self.config.video_height,
-                        },
-                    ).await {
+                    publisher_slot: publisher_slot.clone(),
+                    publisher_events: publisher_events_tx.clone(),
+                    subscriber_count: sub_count,
+                    stats_delta_tx: stats_delta_tx.clone(),
+                    media: SubscriberMediaConfig {
+                        has_video,
+                        has_audio: true, // bidirectional always has audio
+                        video_width: self.config.video_width,
+                        video_height: self.config.video_height,
+                        output_group_duration_ms: self.config.output_group_duration_ms,
+                        output_initial_delay_ms: self.config.output_initial_delay_ms,
+                    },
+                },
+            ).await {
                         Ok(_handle) => {
                             let count = subscriber_count.fetch_add(1, Ordering::SeqCst) + 1;
                             tracing::info!("Peer connected (total: {})", count);
@@ -465,13 +474,15 @@ impl ProcessorNode for MoqPeerNode {
                         broadcast_rx,
                         shutdown_tx.subscribe(),
                         sub_count,
-                        self.config.output_group_duration_ms,
-                        self.config.output_initial_delay_ms,
                         stats_delta_tx.clone(),
-                        has_video,
-                        has_audio,
-                        self.config.video_width,
-                        self.config.video_height,
+                        SubscriberMediaConfig {
+                            has_video,
+                            has_audio,
+                            video_width: self.config.video_width,
+                            video_height: self.config.video_height,
+                            output_group_duration_ms: self.config.output_group_duration_ms,
+                            output_initial_delay_ms: self.config.output_initial_delay_ms,
+                        },
                     ).await {
                         Ok(_handle) => {
                             let count = subscriber_count.fetch_add(1, Ordering::SeqCst) + 1;
@@ -737,13 +748,8 @@ impl MoqPeerNode {
                     config.node_id.clone(),
                     config.broadcast_rx,
                     &mut subscriber_shutdown_rx,
-                    config.output_group_duration_ms,
-                    config.output_initial_delay_ms,
                     subscriber_stats_delta_tx,
-                    config.has_video,
-                    true, // bidirectional always has audio input path
-                    config.video_width,
-                    config.video_height,
+                    config.media,
                 )
                 .await
             };
@@ -757,7 +763,7 @@ impl MoqPeerNode {
                 tracing::warn!(path = %path, error = %e, "Peer subscriber task error");
             }
 
-            let count = config.subscriber_count.fetch_sub(1, Ordering::SeqCst) - 1;
+            let count = config.subscriber_count.fetch_sub(1, Ordering::SeqCst).saturating_sub(1);
             tracing::info!(path = %path, "Peer disconnected (remaining: {})", count);
 
             drop(session);
@@ -1071,13 +1077,8 @@ impl MoqPeerNode {
         broadcast_rx: broadcast::Receiver<BroadcastFrame>,
         mut shutdown_rx: broadcast::Receiver<()>,
         subscriber_count: Arc<AtomicU64>,
-        output_group_duration_ms: u64,
-        output_initial_delay_ms: u64,
         stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
-        has_video: bool,
-        has_audio: bool,
-        video_width: u32,
-        video_height: u32,
+        media: SubscriberMediaConfig,
     ) -> Result<tokio::task::JoinHandle<()>, StreamKitError> {
         // Extract the moq-native Request
         let request = *moq_connection
@@ -1108,18 +1109,13 @@ impl MoqPeerNode {
                 node_id,
                 broadcast_rx,
                 &mut shutdown_rx,
-                output_group_duration_ms,
-                output_initial_delay_ms,
                 stats_delta_tx,
-                has_video,
-                has_audio,
-                video_width,
-                video_height,
+                media,
             )
             .await;
 
             // Decrement subscriber count
-            let count = subscriber_count.fetch_sub(1, Ordering::SeqCst) - 1;
+            let count = subscriber_count.fetch_sub(1, Ordering::SeqCst).saturating_sub(1);
             tracing::info!("Subscriber disconnected (remaining: {})", count);
 
             // Keep session alive until task ends
@@ -1134,20 +1130,14 @@ impl MoqPeerNode {
     }
 
     /// Subscriber send loop - receives from broadcast channel and sends to client
-    #[allow(clippy::too_many_arguments)]
     async fn subscriber_send_loop(
         publish: moq_lite::OriginProducer,
         broadcast_name: String,
         node_id: String,
         broadcast_rx: broadcast::Receiver<BroadcastFrame>,
         shutdown_rx: &mut broadcast::Receiver<()>,
-        output_group_duration_ms: u64,
-        output_initial_delay_ms: u64,
         stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
-        has_video: bool,
-        has_audio: bool,
-        video_width: u32,
-        video_height: u32,
+        media: SubscriberMediaConfig,
     ) -> Result<(), StreamKitError> {
         // Setup broadcast and tracks
         let (
@@ -1155,16 +1145,13 @@ impl MoqPeerNode {
             mut audio_track_producer,
             mut video_track_producer,
             _catalog_producer,
-        ) = Self::setup_subscriber_broadcast(
-            &publish,
-            &broadcast_name,
-            has_video,
-            has_audio,
-            video_width,
-            video_height,
-        )?;
+        ) = Self::setup_subscriber_broadcast(&publish, &broadcast_name, &media)?;
 
-        tracing::info!(has_audio, has_video, "Published catalog to subscriber");
+        tracing::info!(
+            has_audio = media.has_audio,
+            has_video = media.has_video,
+            "Published catalog to subscriber"
+        );
 
         // Run the send loop
         let packet_count = Self::run_subscriber_send_loop(
@@ -1172,8 +1159,8 @@ impl MoqPeerNode {
             &mut video_track_producer,
             broadcast_rx,
             shutdown_rx,
-            output_group_duration_ms,
-            output_initial_delay_ms,
+            media.output_group_duration_ms,
+            media.output_initial_delay_ms,
             node_id,
             broadcast_name,
             &stats_delta_tx,
@@ -1194,10 +1181,7 @@ impl MoqPeerNode {
     fn setup_subscriber_broadcast(
         publish: &moq_lite::OriginProducer,
         broadcast_name: &str,
-        has_video: bool,
-        has_audio: bool,
-        video_width: u32,
-        video_height: u32,
+        media: &SubscriberMediaConfig,
     ) -> Result<
         (
             moq_lite::BroadcastProducer,
@@ -1213,7 +1197,7 @@ impl MoqPeerNode {
         })?;
 
         // Create audio track (if audio input connected)
-        let audio_track = if has_audio {
+        let audio_track = if media.has_audio {
             let track = moq_lite::Track { name: "audio/data".to_string(), priority: 80 };
             let producer = broadcast_producer.create_track(track.clone());
             Some((track, hang::container::OrderedProducer::from(producer)))
@@ -1222,7 +1206,7 @@ impl MoqPeerNode {
         };
 
         // Create video track (if video input connected)
-        let video_track = if has_video {
+        let video_track = if media.has_video {
             let track = moq_lite::Track { name: "video/data".to_string(), priority: 60 };
             let producer = broadcast_producer.create_track(track.clone());
             Some((track, hang::container::OrderedProducer::from(producer)))
@@ -1235,8 +1219,8 @@ impl MoqPeerNode {
             &mut broadcast_producer,
             audio_track.as_ref().map(|(t, _)| t),
             video_track.as_ref().map(|(t, _)| t),
-            video_width,
-            video_height,
+            media.video_width,
+            media.video_height,
         )?;
 
         Ok((

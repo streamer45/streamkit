@@ -7,7 +7,7 @@ use bytes::Bytes;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::borrow::Cow;
-use std::io::{Cursor, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Cursor, Read as _, Seek, SeekFrom, Write};
 use std::sync::{Arc, Mutex};
 use streamkit_core::stats::NodeStatsTracker;
 use streamkit_core::types::{
@@ -179,111 +179,56 @@ struct BufferState {
 /// A shared, thread-safe buffer that wraps a Cursor for WebM writing.
 /// This allows us to stream out data as it's written while still supporting Seek.
 ///
-/// Supports two buffering modes:
-///
-/// - **Streaming (non-seek)**: Bytes are drained on every `take_data()` call.
-///   This mode is intended for `Writer::new_non_seek` and avoids copying.
-/// - **Seek window**: Keeps a configurable window of recent data for WebM library seeks
-///   and trims old data that has already been sent.
-///
-/// The node selects the appropriate mode based on `WebMStreamingMode`.
+/// Used for **Live** (streaming) mode only.  Bytes are drained on every
+/// `take_data()` call so that memory stays bounded.
 #[derive(Clone)]
 struct SharedPacketBuffer {
     state: Arc<Mutex<BufferState>>,
-    window_size: usize,
 }
 
 impl SharedPacketBuffer {
-    /// Create a new buffer with a sliding window size.
-    /// window_size: Maximum bytes to keep in memory (default 1MB for ~6 seconds at 128kbps)
-    fn new_with_window(window_size: usize) -> Self {
-        Self {
-            state: Arc::new(Mutex::new(BufferState {
-                cursor: Cursor::new(Vec::new()),
-                last_sent_pos: 0,
-                base_offset: 0,
-            })),
-            window_size,
-        }
-    }
-
     /// Create a non-seek streaming buffer.
     ///
     /// This is designed for `Writer::new_non_seek` in live streaming mode. Since the writer
     /// does not seek/backpatch, we can drain bytes out by moving the underlying `Vec<u8>`
     /// (no copy) and reset the cursor to keep memory bounded.
     fn new_streaming() -> Self {
-        // window_size=0 is treated as "drain everything on take_data"
-        Self::new_with_window(0)
+        Self {
+            state: Arc::new(Mutex::new(BufferState {
+                cursor: Cursor::new(Vec::new()),
+                last_sent_pos: 0,
+                base_offset: 0,
+            })),
+        }
     }
 
-    /// Takes any new data written since the last call, and trims old data beyond the window.
-    /// This allows the WebM library to seek backwards within the window while preventing
-    /// unbounded memory growth for long streams.
-    #[allow(clippy::significant_drop_tightening)] // Guard must span the entire take-trim-update sequence.
+    /// Takes any new data written since the last call.
+    ///
+    /// Streaming mode (non-seek): drain everything written so far without copying.
     fn take_data(&self) -> Option<Bytes> {
         // Mutex poisoning is a fatal error - allows expect() for this common pattern
         #[allow(clippy::expect_used)]
         let mut state = self.state.lock().expect("SharedPacketBuffer mutex poisoned");
 
-        // Read bookkeeping fields first (immutable access only).
-        let last_sent = state.last_sent_pos;
         let base = state.base_offset;
         let current_len = state.cursor.get_ref().len();
 
-        if current_len <= last_sent {
+        if current_len == 0 {
             return None;
         }
 
-        if self.window_size == 0 {
-            // Streaming mode (non-seek): drain everything written so far without copying.
-            //
-            // This avoids two major sources of allocation churn in DHAT profiles:
-            // - copying out incremental slices on every flush
-            // - repeatedly trimming a sliding window with `split_off` (copies the window)
-            let data_vec = std::mem::take(state.cursor.get_mut());
-            // Advance base_offset so Seek::Start can clamp consistently if it ever happens.
-            state.base_offset = base + current_len;
-            state.last_sent_pos = 0;
-            state.cursor.set_position(0);
-            Some(Bytes::from(data_vec))
-        } else if self.window_size == usize::MAX && last_sent == 0 {
-            // File mode: nothing has been sent yet, so move the entire buffer out.
-            // The segment is finalized before this is called, so no more writes/seeks occur.
-            let data_vec = std::mem::take(state.cursor.get_mut());
-            state.base_offset = base + current_len;
-            state.last_sent_pos = 0;
-            state.cursor.set_position(0);
-            Some(Bytes::from(data_vec))
-        } else {
-            // Seek-window mode: copy incremental bytes while retaining a backwards-seek window.
-            let new_data = Bytes::copy_from_slice(&state.cursor.get_ref()[last_sent..current_len]);
-            state.last_sent_pos = current_len;
-
-            // Trim old data if buffer exceeds window size.
-            if current_len > self.window_size {
-                let trim_amount = current_len - self.window_size;
-                // Keep the last window_size bytes.
-                {
-                    let vec = state.cursor.get_mut();
-                    let remaining = vec.split_off(trim_amount);
-                    *vec = remaining;
-                }
-                // Update base offset to reflect discarded data.
-                state.base_offset = base + trim_amount;
-                // Adjust last_sent and cursor position.
-                state.last_sent_pos = self.window_size;
-                state.cursor.set_position(self.window_size as u64);
-
-                tracing::debug!(
-                    "Trimmed {} bytes from WebM buffer, new base_offset: {}",
-                    trim_amount,
-                    state.base_offset
-                );
-            }
-
-            Some(new_data)
-        }
+        // Drain everything written so far without copying.
+        //
+        // This avoids two major sources of allocation churn in DHAT profiles:
+        // - copying out incremental slices on every flush
+        // - repeatedly trimming a sliding window with `split_off` (copies the window)
+        let data_vec = std::mem::take(state.cursor.get_mut());
+        // Advance base_offset so Seek::Start can clamp consistently if it ever happens.
+        state.base_offset = base + current_len;
+        state.last_sent_pos = 0;
+        state.cursor.set_position(0);
+        drop(state);
+        Some(Bytes::from(data_vec))
     }
 }
 
@@ -301,40 +246,136 @@ impl Write for SharedPacketBuffer {
     }
 }
 
-impl Seek for SharedPacketBuffer {
-    #[allow(clippy::significant_drop_tightening)] // Guard must span base_offset read + seek + result computation.
+/// A file-backed buffer for **File** mode WebM muxing.
+///
+/// Instead of accumulating the entire muxed output in memory (which violates
+/// the "never keep entire files in memory" principle), all writes go to an
+/// anonymous temporary file on disk.  The temp file supports full seek so
+/// libwebm can back-patch segment sizes and cues as needed.
+///
+/// At finalization the file contents are read back into a `Bytes` for the
+/// single downstream send.  This is a one-time, bounded operation — the
+/// file is deleted automatically when the struct is dropped.
+struct FileBackedBuffer {
+    inner: BufWriter<std::fs::File>,
+}
+
+impl FileBackedBuffer {
+    /// Create a new file-backed buffer using an anonymous temp file.
+    fn new() -> std::io::Result<Self> {
+        let file = tempfile::tempfile()?;
+        Ok(Self { inner: BufWriter::new(file) })
+    }
+
+    /// Read the entire temp file contents as `Bytes`.
+    ///
+    /// This should only be called **once** after `segment.finalize()` — all
+    /// writes and seeks are complete at that point.
+    fn take_data(&mut self) -> std::io::Result<Option<Bytes>> {
+        self.inner.flush()?;
+        let file = self.inner.get_mut();
+        let len = file.stream_position()?;
+        if len == 0 {
+            return Ok(None);
+        }
+        file.seek(SeekFrom::Start(0))?;
+        let len_usize = usize::try_from(len).map_err(std::io::Error::other)?;
+        let mut buf = vec![0u8; len_usize];
+        file.read_exact(&mut buf)?;
+        Ok(Some(Bytes::from(buf)))
+    }
+}
+
+impl Write for FileBackedBuffer {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.inner.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+impl Seek for FileBackedBuffer {
     fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
-        // Single lock covers both base_offset read and cursor seek, eliminating
-        // the lock-ordering concern of the previous triple-mutex design.
-        #[allow(clippy::expect_used)]
-        let mut state = self.state.lock().expect("SharedPacketBuffer mutex poisoned");
-        let base = state.base_offset;
+        self.inner.seek(pos)
+    }
+}
 
-        // Adjust seek position by base_offset for absolute seeks
-        let adjusted_pos = match pos {
-            SeekFrom::Start(offset) => {
-                // Absolute position from start - subtract base_offset
-                if offset >= base as u64 {
-                    SeekFrom::Start(offset - base as u64)
-                } else {
-                    // Seeking before our window - this is an error but we'll seek to start
-                    tracing::warn!(
-                        "WebM seek to {} before base_offset {}, clamping to start",
-                        offset,
-                        base
-                    );
-                    SeekFrom::Start(0)
-                }
+/// Unified buffer type used by the WebM muxer.
+///
+/// - **Live** mode: wraps a [`SharedPacketBuffer`] (in-memory streaming, non-seek writer).
+/// - **File** mode: wraps a [`FileBackedBuffer`] (temp file on disk, seekable writer).
+///
+/// This enum allows the muxer's `run()` method to use a single generic code
+/// path regardless of the streaming mode.
+enum MuxBuffer {
+    Live(SharedPacketBuffer),
+    File(FileBackedBuffer),
+}
+
+impl MuxBuffer {
+    fn take_data(&mut self) -> Option<Bytes> {
+        match self {
+            Self::Live(buf) => buf.take_data(),
+            Self::File(buf) => match buf.take_data() {
+                Ok(data) => data,
+                Err(e) => {
+                    tracing::error!("Failed to read temp file data: {e}");
+                    None
+                },
             },
-            // Current and End are relative, no adjustment needed
-            SeekFrom::Current(offset) => SeekFrom::Current(offset),
-            SeekFrom::End(offset) => SeekFrom::End(offset),
-        };
+        }
+    }
+}
 
-        let result = state.cursor.seek(adjusted_pos)?;
+impl Write for MuxBuffer {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Live(b) => b.write(buf),
+            Self::File(b) => b.write(buf),
+        }
+    }
 
-        // Return the absolute position (including base_offset)
-        Ok(result + base as u64)
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Live(b) => b.flush(),
+            Self::File(b) => b.flush(),
+        }
+    }
+}
+
+impl Seek for MuxBuffer {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        match self {
+            Self::Live(b) => {
+                // Live mode uses non-seek writer; this should not be called.
+                // Provide a no-op implementation that returns the current position.
+                #[allow(clippy::expect_used)]
+                let mut state = b.state.lock().expect("SharedPacketBuffer mutex poisoned");
+                let base = state.base_offset;
+                let adjusted_pos = match pos {
+                    SeekFrom::Start(offset) => {
+                        if offset >= base as u64 {
+                            SeekFrom::Start(offset - base as u64)
+                        } else {
+                            tracing::warn!(
+                                "WebM seek to {} before base_offset {}, clamping to start",
+                                offset,
+                                base
+                            );
+                            SeekFrom::Start(0)
+                        }
+                    },
+                    SeekFrom::Current(offset) => SeekFrom::Current(offset),
+                    SeekFrom::End(offset) => SeekFrom::End(offset),
+                };
+                let result = state.cursor.seek(adjusted_pos)?;
+                drop(state);
+                Ok(result + base as u64)
+            },
+            Self::File(b) => b.seek(pos),
+        }
     }
 }
 
@@ -572,24 +613,40 @@ impl ProcessorNode for WebMMuxerNode {
         let mut packet_count = 0u64;
         let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
 
-        // In Live mode we use a non-seek writer, so we can drain bytes out without keeping
-        // any history (zero-copy streaming). In File mode we must keep the whole buffer
-        // because we only emit bytes once the segment is finalized.
-        let shared_buffer = match self.config.streaming_mode {
-            WebMStreamingMode::Live => SharedPacketBuffer::new_streaming(),
-            WebMStreamingMode::File => SharedPacketBuffer::new_with_window(usize::MAX),
+        // In Live mode we use a non-seek, in-memory streaming buffer so bytes
+        // can be drained incrementally without keeping history.  In File mode
+        // we use a temp file on disk so the muxer can seek/backpatch without
+        // accumulating the entire output in memory.
+        //
+        // For Live mode we keep a cloned handle (`live_flush_handle`) so the
+        // receive loop can drain bytes while the Writer owns the buffer.
+        let (mux_buffer, live_flush_handle) = match self.config.streaming_mode {
+            WebMStreamingMode::Live => {
+                let spb = SharedPacketBuffer::new_streaming();
+                let flush_handle = spb.clone();
+                (MuxBuffer::Live(spb), Some(flush_handle))
+            },
+            WebMStreamingMode::File => {
+                let fb = FileBackedBuffer::new().map_err(|e| {
+                    let err_msg = format!("Failed to create temp file for WebM file mode: {e}");
+                    state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
+                    StreamKitError::Runtime(err_msg)
+                })?;
+                (MuxBuffer::File(fb), None)
+            },
         };
 
-        // Create writer with shared buffer.
+        // Create writer with the unified buffer.
         //
         // Important: In `Live` mode we must avoid any backwards seeking/backpatching while
         // bytes are being streamed to the client. Using a non-seek writer forces libwebm to
         // produce a forward-only stream (unknown sizes/no cues), which is required for MSE
         // consumers like Firefox that are less tolerant of inconsistent metadata during
-        // progressive append.
+        // progressive append.  In File mode we use a seekable writer so libwebm can
+        // back-patch segment sizes and write cues.
         let writer = match self.config.streaming_mode {
-            WebMStreamingMode::Live => Writer::new_non_seek(shared_buffer.clone()),
-            WebMStreamingMode::File => Writer::new(shared_buffer.clone()),
+            WebMStreamingMode::Live => Writer::new_non_seek(mux_buffer),
+            WebMStreamingMode::File => Writer::new(mux_buffer),
         };
 
         // Create WebM segment builder
@@ -793,13 +850,12 @@ impl ProcessorNode for WebMMuxerNode {
 
                 if flush_output(
                     &mut context,
-                    &shared_buffer,
+                    live_flush_handle.as_ref(),
                     &content_type_str,
                     output_metadata,
                     &mut header_sent,
                     &mut stats_tracker,
                     &node_name,
-                    self.config.streaming_mode,
                 )
                 .await?
                 {
@@ -933,13 +989,12 @@ impl ProcessorNode for WebMMuxerNode {
 
                     if flush_output(
                         &mut context,
-                        &shared_buffer,
+                        live_flush_handle.as_ref(),
                         &content_type_str,
                         output_metadata,
                         &mut header_sent,
                         &mut stats_tracker,
                         &node_name,
-                        self.config.streaming_mode,
                     )
                     .await?
                     {
@@ -1002,13 +1057,12 @@ impl ProcessorNode for WebMMuxerNode {
 
                     if flush_output(
                         &mut context,
-                        &shared_buffer,
+                        live_flush_handle.as_ref(),
                         &content_type_str,
                         output_metadata,
                         &mut header_sent,
                         &mut stats_tracker,
                         &node_name,
-                        self.config.streaming_mode,
                     )
                     .await?
                     {
@@ -1025,15 +1079,16 @@ impl ProcessorNode for WebMMuxerNode {
             packet_count
         );
 
-        // Finalize the segment
-        let _writer = segment.finalize(None).map_err(|_e| {
+        // Finalize the segment and recover the buffer.
+        let writer = segment.finalize(None).map_err(|_e| {
             let err_msg = "Failed to finalize WebM segment".to_string();
             state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
             StreamKitError::Runtime(err_msg)
         })?;
+        let mut mux_buffer = writer.into_inner();
 
         // Flush any remaining data from the buffer
-        if let Some(data) = shared_buffer.take_data() {
+        if let Some(data) = mux_buffer.take_data() {
             tracing::debug!("Writing final data, buffer size: {} bytes", data.len());
             if context
                 .output_sender
@@ -1065,30 +1120,31 @@ impl ProcessorNode for WebMMuxerNode {
 /// Flushes buffered WebM data to the output sender.
 ///
 /// In **Live** mode, bytes are drained incrementally after every frame to keep
-/// memory bounded and enable real-time streaming.  In **File** mode the writer
-/// may seek backwards to back-patch segment sizes and cues, so we must **not**
-/// drain intermediate bytes — the buffer is only flushed once after
-/// finalization (handled by the caller).
+/// memory bounded and enable real-time streaming.  In **File** mode the data
+/// lives on disk in a temp file and is only read back once after finalization
+/// (handled by the caller), so this function is a no-op.
+///
+/// `live_buffer` is `Some` only in Live mode — it is the cloned
+/// `SharedPacketBuffer` handle that shares the same `Arc<Mutex<...>>` backing
+/// store as the `MuxBuffer::Live` variant owned by the Writer.
 ///
 /// Returns `Ok(true)` if the output channel is closed (node should stop),
 /// `Ok(false)` to continue, or `Err` on fatal errors.
-#[allow(clippy::ptr_arg, clippy::too_many_arguments)]
+#[allow(clippy::ptr_arg)]
 async fn flush_output(
     context: &mut NodeContext,
-    shared_buffer: &SharedPacketBuffer,
+    live_buffer: Option<&SharedPacketBuffer>,
     content_type: &Cow<'static, str>,
     output_metadata: Option<PacketMetadata>,
     header_sent: &mut bool,
     stats_tracker: &mut NodeStatsTracker,
     node_name: &str,
-    streaming_mode: WebMStreamingMode,
 ) -> Result<bool, StreamKitError> {
-    // In File mode, skip all intermediate flushes.  The buffer will be
-    // drained once after `segment.finalize()` so back-patched data is
-    // consistent.
-    if matches!(streaming_mode, WebMStreamingMode::File) {
+    // In File mode there is no live buffer — skip all intermediate flushes.
+    // The data will be read from the temp file after `segment.finalize()`.
+    let Some(shared_buffer) = live_buffer else {
         return Ok(false);
-    }
+    };
 
     if !*header_sent {
         if let Some(data) = shared_buffer.take_data() {

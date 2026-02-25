@@ -7,10 +7,19 @@
 //! Contains RGBA8 blitting (with nearest-neighbor scaling), alpha blending,
 //! overlay compositing, and I420 ↔ RGBA8 colour-space conversion.
 //!
-//! All hot loops use row-level parallelism via `rayon`.
+//! All hot loops use row-level parallelism via `rayon` when the region is
+//! large enough to amortise the thread-pool dispatch overhead.  Below the
+//! threshold the same per-row closures run sequentially.
 
 use super::config::Rect;
 use super::overlay::DecodedOverlay;
+
+/// Minimum number of output rows before we dispatch to rayon.  Below this
+/// threshold the per-row work is small enough that the rayon scheduling
+/// overhead (work-stealing queue push/pop, thread wake-up) dominates.
+/// 64 rows at 1280-wide RGBA8 ≈ 320 KiB — a reasonable crossover point
+/// on modern x86-64 cores.
+const RAYON_ROW_THRESHOLD: usize = 64;
 
 // ── Compositing helpers ─────────────────────────────────────────────────────
 
@@ -69,12 +78,19 @@ pub fn scale_blit_rgba(
     let first_row_byte = ry * row_stride;
     let dst_rows = &mut dst[first_row_byte..];
 
-    dst_rows.par_chunks_mut(row_stride).take(effective_rh).enumerate().for_each(
-        |(dy, row_slice)| {
+    if effective_rh >= RAYON_ROW_THRESHOLD {
+        dst_rows.par_chunks_mut(row_stride).take(effective_rh).enumerate().for_each(
+            |(dy, row_slice)| {
+                let sy = dy * sh / rh;
+                blit_row(row_slice, rx, effective_rect_w, src, sw, sh, sy, rw, opacity);
+            },
+        );
+    } else {
+        for (dy, row_slice) in dst_rows.chunks_mut(row_stride).take(effective_rh).enumerate() {
             let sy = dy * sh / rh;
             blit_row(row_slice, rx, effective_rect_w, src, sw, sh, sy, rw, opacity);
-        },
-    );
+        }
+    }
 }
 
 /// Blit a single row of the source onto a destination row slice.
@@ -272,33 +288,40 @@ pub fn i420_to_rgba8_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     let v_offset = u_offset + chroma_w * chroma_h;
     let rgba_row_stride = w * 4;
 
-    out[..w * h * 4].par_chunks_mut(rgba_row_stride).take(h).enumerate().for_each(
-        |(row, rgba_row)| {
-            // Sub-slice the Y/U/V input planes for this row so the compiler
-            // can reason about lengths and potentially elide bounds checks
-            // on the inner indexing.
-            let y_base = row * y_stride;
-            let chroma_row = row / 2;
-            let u_base = u_offset + chroma_row * chroma_w;
-            let v_base = v_offset + chroma_row * chroma_w;
+    let convert_row = |row: usize, rgba_row: &mut [u8]| {
+        let y_base = row * y_stride;
+        let chroma_row = row / 2;
+        let u_base = u_offset + chroma_row * chroma_w;
+        let v_base = v_offset + chroma_row * chroma_w;
 
-            for col in 0..w {
-                let y_val = i32::from(data[y_base + col]);
-                let u_val = i32::from(data[u_base + col / 2]);
-                let v_val = i32::from(data[v_base + col / 2]);
+        for col in 0..w {
+            let y_val = i32::from(data[y_base + col]);
+            let u_val = i32::from(data[u_base + col / 2]);
+            let v_val = i32::from(data[v_base + col / 2]);
 
-                let c = y_val - 16;
-                let d = u_val - 128;
-                let e = v_val - 128;
+            let c = y_val - 16;
+            let d = u_val - 128;
+            let e = v_val - 128;
 
-                let off = col * 4;
-                rgba_row[off] = ((298 * c + 409 * e + 128) >> 8).clamp(0, 255) as u8;
-                rgba_row[off + 1] = ((298 * c - 100 * d - 208 * e + 128) >> 8).clamp(0, 255) as u8;
-                rgba_row[off + 2] = ((298 * c + 516 * d + 128) >> 8).clamp(0, 255) as u8;
-                rgba_row[off + 3] = 255;
-            }
-        },
-    );
+            let off = col * 4;
+            rgba_row[off] = ((298 * c + 409 * e + 128) >> 8).clamp(0, 255) as u8;
+            rgba_row[off + 1] = ((298 * c - 100 * d - 208 * e + 128) >> 8).clamp(0, 255) as u8;
+            rgba_row[off + 2] = ((298 * c + 516 * d + 128) >> 8).clamp(0, 255) as u8;
+            rgba_row[off + 3] = 255;
+        }
+    };
+
+    if h >= RAYON_ROW_THRESHOLD {
+        out[..w * h * 4]
+            .par_chunks_mut(rgba_row_stride)
+            .take(h)
+            .enumerate()
+            .for_each(|(row, rgba_row)| convert_row(row, rgba_row));
+    } else {
+        for (row, rgba_row) in out[..w * h * 4].chunks_mut(rgba_row_stride).take(h).enumerate() {
+            convert_row(row, rgba_row);
+        }
+    }
 }
 
 /// Convert an I420 (YUV 4:2:0 planar) buffer to RGBA8 (allocating variant).
@@ -332,9 +355,8 @@ pub fn rgba8_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     let (u_plane, v_plane) = chroma_planes.split_at_mut(chroma_size);
 
     // Y plane — parallelise by row.
-    y_plane.par_chunks_mut(y_stride).take(h).enumerate().for_each(|(row, y_row)| {
+    let convert_y_row = |row: usize, y_row: &mut [u8]| {
         let rgba_base = row * w * 4;
-
         for (col, y_out) in y_row.iter_mut().enumerate().take(w) {
             let off = rgba_base + col * 4;
             let r = i32::from(data[off]);
@@ -343,13 +365,22 @@ pub fn rgba8_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
             let y = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
             *y_out = y.clamp(0, 255) as u8;
         }
-    });
+    };
+
+    if h >= RAYON_ROW_THRESHOLD {
+        y_plane
+            .par_chunks_mut(y_stride)
+            .take(h)
+            .enumerate()
+            .for_each(|(row, y_row)| convert_y_row(row, y_row));
+    } else {
+        for (row, y_row) in y_plane.chunks_mut(y_stride).take(h).enumerate() {
+            convert_y_row(row, y_row);
+        }
+    }
 
     // U and V planes — parallelise by chroma row.
-    let u_rows: Vec<&mut [u8]> = u_plane.chunks_mut(chroma_w).collect();
-    let v_rows: Vec<&mut [u8]> = v_plane.chunks_mut(chroma_w).collect();
-
-    u_rows.into_par_iter().zip(v_rows).enumerate().for_each(|(crow, (u_row, v_row))| {
+    let convert_chroma_row = |crow: usize, u_row: &mut [u8], v_row: &mut [u8]| {
         let r0 = crow * 2;
         for ccol in 0..chroma_w {
             let c0 = ccol * 2;
@@ -381,7 +412,20 @@ pub fn rgba8_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
             u_row[ccol] = u.clamp(0, 255) as u8;
             v_row[ccol] = v.clamp(0, 255) as u8;
         }
-    });
+    };
+
+    let u_rows: Vec<&mut [u8]> = u_plane.chunks_mut(chroma_w).collect();
+    let v_rows: Vec<&mut [u8]> = v_plane.chunks_mut(chroma_w).collect();
+
+    if chroma_h >= RAYON_ROW_THRESHOLD / 2 {
+        u_rows.into_par_iter().zip(v_rows).enumerate().for_each(|(crow, (u_row, v_row))| {
+            convert_chroma_row(crow, u_row, v_row);
+        });
+    } else {
+        for (crow, (u_row, v_row)) in u_rows.into_iter().zip(v_rows).enumerate() {
+            convert_chroma_row(crow, u_row, v_row);
+        }
+    }
 }
 
 /// Convert an RGBA8 buffer to I420 (YUV 4:2:0 planar) (allocating variant).

@@ -295,12 +295,12 @@ impl ProcessorNode for CompositorNode {
             // reused across frames to avoid per-frame allocation.
             let mut i420_to_rgba_scratch: Vec<u8> = Vec::new();
 
-            while let Some(work) = work_rx.blocking_recv() {
+            while let Some(mut work) = work_rx.blocking_recv() {
                 // Fast path: try I420 pass-through to skip the entire
                 // I420 → RGBA8 → I420 round-trip.  The passthrough returns
-                // the index of the qualifying layer; we copy its data into
-                // a pooled buffer (a cheap memcpy vs. two colour-space
-                // conversions + compositing).
+                // the index of the qualifying layer; when the Arc has no
+                // other owners we can move the buffer directly (zero-copy),
+                // otherwise we fall back to a pooled memcpy.
                 if let Some(pt_idx) = kernel::try_i420_passthrough(
                     work.canvas_w,
                     work.canvas_h,
@@ -309,19 +309,32 @@ impl ProcessorNode for CompositorNode {
                     &work.text_overlays,
                     work.output_format,
                 ) {
-                    let Some(src_layer) = work.layers.get(pt_idx).and_then(Option::as_ref) else {
+                    // Take the layer out of the work item so we own the Arc.
+                    let src_layer = work.layers.get_mut(pt_idx).and_then(Option::take);
+                    let Some(src_layer) = src_layer else {
                         continue;
                     };
-                    let src = src_layer.data.as_slice();
 
-                    let pooled = work.video_pool.as_ref().map_or_else(
-                        || streamkit_core::frame_pool::PooledVideoData::from_vec(src.to_vec()),
-                        |pool| {
-                            let mut p = pool.get(src.len());
-                            p.as_mut_slice()[..src.len()].copy_from_slice(src);
-                            p
+                    // Try to unwrap the Arc — if we're the sole owner, avoid
+                    // both the pool allocation and the memcpy entirely.
+                    let pooled = match Arc::try_unwrap(src_layer.data) {
+                        Ok(data) => data,
+                        Err(shared) => {
+                            let src = shared.as_slice();
+                            work.video_pool.as_ref().map_or_else(
+                                || {
+                                    streamkit_core::frame_pool::PooledVideoData::from_vec(
+                                        src.to_vec(),
+                                    )
+                                },
+                                |pool| {
+                                    let mut p = pool.get(src.len());
+                                    p.as_mut_slice()[..src.len()].copy_from_slice(src);
+                                    p
+                                },
+                            )
                         },
-                    );
+                    };
 
                     let result = CompositeResult {
                         output_format: work.output_format,

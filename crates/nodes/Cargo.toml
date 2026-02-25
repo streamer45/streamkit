@@ -125,7 +125,7 @@ moq = [
 # The `dep:` syntax enables the optional dependency when the feature is active.
 opus = ["dep:opus", "dep:schemars"]
 ogg = ["dep:ogg", "dep:schemars"]
-webm = ["dep:webm", "dep:schemars"]
+webm = ["dep:webm", "dep:schemars", "dep:tempfile"]
 symphonia = ["dep:symphonia", "dep:schemars"]
 vp9 = ["dep:env-libvpx-sys", "dep:schemars"]
 colorbars = ["dep:schemars", "dep:serde_json"]
