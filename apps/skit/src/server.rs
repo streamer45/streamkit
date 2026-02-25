@@ -1621,8 +1621,8 @@ async fn create_session_handler(
     }
 
     // Parse and compile the YAML pipeline
-    let user_pipeline: UserPipeline = streamkit_api::yaml::parse_yaml(&req.yaml)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    let user_pipeline: UserPipeline =
+        streamkit_api::yaml::parse_yaml(&req.yaml).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
     let engine_pipeline = compile(user_pipeline)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid pipeline: {e}")))?;
@@ -1972,8 +1972,7 @@ async fn parse_config_field(
         .map_err(|e| AppError::BadRequest(format!("Failed to read config field: {e}")))?;
     let yaml_str = std::str::from_utf8(&config_bytes)
         .map_err(|e| AppError::BadRequest(format!("Config is not valid UTF-8: {e}")))?;
-    streamkit_api::yaml::parse_yaml(yaml_str)
-        .map_err(|e| AppError::BadRequest(e))
+    streamkit_api::yaml::parse_yaml(yaml_str).map_err(|e| AppError::BadRequest(e))
 }
 
 /// Build http_input bindings from the pipeline definition.
