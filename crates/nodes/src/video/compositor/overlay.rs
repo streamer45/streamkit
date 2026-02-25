@@ -50,6 +50,17 @@ pub fn decode_image_overlay(config: &ImageOverlayConfig) -> Result<DecodedOverla
 /// Path to the system DejaVu Sans font (commonly available on Linux).
 const DEJAVU_SANS_PATH: &str = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
 
+/// Load a font from a filesystem path.
+///
+/// Use this to pre-load a font once and then call
+/// [`rasterize_text_with_font`] per-frame without re-reading the file.
+pub fn load_font_from_path(path: &str) -> Result<fontdue::Font, String> {
+    let font_bytes =
+        std::fs::read(path).map_err(|e| format!("Failed to read font file '{path}': {e}"))?;
+    fontdue::Font::from_bytes(font_bytes, fontdue::FontSettings::default())
+        .map_err(|e| format!("Failed to parse font: {e}"))
+}
+
 /// Load font data, trying (in order):
 /// 1. `font_data_base64` (inline base64-encoded TTF/OTF)
 /// 2. `font_path` (filesystem path)
@@ -180,5 +191,92 @@ pub fn rasterize_text_overlay(config: &TextOverlayConfig) -> DecodedOverlay {
         height: h,
         rect: config.rect.clone(),
         opacity: config.opacity,
+    }
+}
+
+/// Rasterize a text string into a `DecodedOverlay` using a pre-loaded font.
+///
+/// Unlike [`rasterize_text_overlay`], this avoids re-reading the font file
+/// from disk on every call, making it suitable for per-frame rendering
+/// (e.g. the `draw_time` clock overlay).
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+pub fn rasterize_text_with_font(
+    text: &str,
+    rect: &Rect,
+    color: [u8; 4],
+    font_size: u32,
+    opacity: f32,
+    font: &fontdue::Font,
+) -> DecodedOverlay {
+    let w = rect.width.max(1);
+    let h = rect.height.max(1);
+
+    let total_bytes = (w as usize) * (h as usize) * 4;
+    let mut rgba_data = vec![0u8; total_bytes];
+    let stride = w as usize * 4;
+
+    let font_size_f = font_size.max(1) as f32;
+    let [cr, cg, cb, ca] = color;
+
+    let mut cursor_x: f32 = 0.0;
+
+    // Use a capital letter to establish the baseline position.
+    let (ref_metrics, _) = font.rasterize('A', font_size_f);
+    let baseline_y = ref_metrics.height as f32;
+
+    for ch in text.chars() {
+        let (metrics, bitmap) = font.rasterize(ch, font_size_f);
+
+        let gx = (cursor_x + metrics.xmin as f32) as i32;
+        let gy = (baseline_y - metrics.ymin as f32) as i32 - metrics.height as i32;
+
+        for row in 0..metrics.height {
+            let dst_y = gy + row as i32;
+            if dst_y < 0 || dst_y >= h as i32 {
+                continue;
+            }
+            for col in 0..metrics.width {
+                let dst_x = gx + col as i32;
+                if dst_x < 0 || dst_x >= w as i32 {
+                    continue;
+                }
+                let coverage = bitmap[row * metrics.width + col];
+                if coverage == 0 {
+                    continue;
+                }
+                let alpha = u16::from(ca) * u16::from(coverage) / 255;
+                let off = dst_y as usize * stride + dst_x as usize * 4;
+
+                if alpha >= 255 {
+                    rgba_data[off] = cr;
+                    rgba_data[off + 1] = cg;
+                    rgba_data[off + 2] = cb;
+                    rgba_data[off + 3] = 255;
+                } else if alpha > 0 {
+                    let inv = 255 - alpha;
+                    let dr = u16::from(rgba_data[off]);
+                    let dg = u16::from(rgba_data[off + 1]);
+                    let db = u16::from(rgba_data[off + 2]);
+                    let da = u16::from(rgba_data[off + 3]);
+                    rgba_data[off] = ((u16::from(cr) * alpha + dr * inv + 128) / 255) as u8;
+                    rgba_data[off + 1] = ((u16::from(cg) * alpha + dg * inv + 128) / 255) as u8;
+                    rgba_data[off + 2] = ((u16::from(cb) * alpha + db * inv + 128) / 255) as u8;
+                    rgba_data[off + 3] = (alpha + (da * inv + 128) / 255).min(255) as u8;
+                }
+            }
+        }
+
+        cursor_x += metrics.advance_width;
+        if cursor_x >= w as f32 {
+            break;
+        }
+    }
+
+    DecodedOverlay {
+        rgba_data,
+        width: w,
+        height: h,
+        rect: rect.clone(),
+        opacity,
     }
 }

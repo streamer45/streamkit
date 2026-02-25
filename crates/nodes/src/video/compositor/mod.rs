@@ -32,7 +32,10 @@ mod pixel_ops;
 use async_trait::async_trait;
 use config::{CompositorConfig, Rect};
 use kernel::{CompositeResult, CompositeWorkItem, LayerSnapshot};
-use overlay::{decode_image_overlay, rasterize_text_overlay, DecodedOverlay};
+use overlay::{
+    decode_image_overlay, load_font_from_path, rasterize_text_overlay, rasterize_text_with_font,
+    DecodedOverlay,
+};
 use pixel_ops::rgba8_to_i420_buf;
 use schemars::schema_for;
 use std::sync::Arc;
@@ -230,6 +233,25 @@ impl ProcessorNode for CompositorNode {
         for txt_cfg in &self.config.text_overlays {
             text_overlays_vec.push(Arc::new(rasterize_text_overlay(txt_cfg)));
         }
+
+        // Pre-load the monospace font for draw_time (once, if enabled).
+        let draw_time_font = if self.config.draw_time {
+            match load_font_from_path(&self.config.draw_time_font_path) {
+                Ok(f) => {
+                    tracing::info!(
+                        "draw_time enabled: loaded monospace font from {}",
+                        self.config.draw_time_font_path,
+                    );
+                    Some(f)
+                },
+                Err(e) => {
+                    tracing::warn!("draw_time: failed to load font, disabling: {e}");
+                    None
+                },
+            }
+        } else {
+            None
+        };
 
         // Wrap in Arc<[...]> so per-frame clones into the work item are
         // a single ref-count bump instead of cloning the entire Vec.
@@ -629,12 +651,50 @@ impl ProcessorNode for CompositorNode {
 
             stats_tracker.received();
 
+            // If draw_time is enabled, rasterize the current wall-clock
+            // time and append it as an extra text overlay for this frame.
+            let frame_text_overlays = if let Some(ref font) = draw_time_font {
+                use std::time::SystemTime;
+
+                let now = SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap_or_default();
+                let total_secs = now.as_secs();
+                let millis = now.subsec_millis();
+                let secs = total_secs % 60;
+                let mins = (total_secs / 60) % 60;
+                let hrs = (total_secs / 3600) % 24;
+                let time_str = format!("{hrs:02}:{mins:02}:{secs:02}.{millis:03}");
+
+                let time_rect = Rect {
+                    x: 8,
+                    y: (self.config.height as i32) - 32,
+                    width: 200,
+                    height: 30,
+                };
+                let time_overlay = rasterize_text_with_font(
+                    &time_str,
+                    &time_rect,
+                    [255, 255, 255, 255],
+                    24,
+                    1.0,
+                    font,
+                );
+
+                // Build a new Arc slice that appends the dynamic overlay.
+                let mut combined: Vec<Arc<DecodedOverlay>> = text_overlays.to_vec();
+                combined.push(Arc::new(time_overlay));
+                Arc::from(combined)
+            } else {
+                text_overlays.clone()
+            };
+
             let work_item = CompositeWorkItem {
                 canvas_w: self.config.width,
                 canvas_h: self.config.height,
                 layers,
                 image_overlays: image_overlays.clone(),
-                text_overlays: text_overlays.clone(),
+                text_overlays: frame_text_overlays,
                 video_pool: video_pool.clone(),
                 output_format: self.output_format,
             };

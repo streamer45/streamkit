@@ -42,6 +42,10 @@ nodes:
       height: 480
       num_inputs: 2
       output_pixel_format: i420
+      # Draw the current wall-clock time (HH:MM:SS.mmm) in the bottom-left
+      # corner using a monospace font.
+      draw_time: true
+      draw_time_font_path: assets/fonts/DejaVuSansMono.ttf
       layers:
         # Background fills the canvas (default when no rect is specified).
         in_0:

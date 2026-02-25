@@ -149,10 +149,23 @@ pub struct CompositorConfig {
     /// Text overlays (rasterized once per `UpdateParams`).
     #[serde(default)]
     pub text_overlays: Vec<TextOverlayConfig>,
+    /// When `true`, draws the current wall-clock time (`HH:MM:SS.mmm`)
+    /// onto each composited frame.  The timestamp is re-rasterized every
+    /// frame using a bundled monospace font (DejaVu Sans Mono).
+    #[serde(default)]
+    pub draw_time: bool,
+    /// Filesystem path to a monospace TTF/OTF font used for the
+    /// `draw_time` overlay.  Defaults to `assets/fonts/DejaVuSansMono.ttf`.
+    #[serde(default = "default_draw_time_font_path")]
+    pub draw_time_font_path: String,
 }
 
 fn default_output_pixel_format() -> String {
     "rgba8".to_string()
+}
+
+fn default_draw_time_font_path() -> String {
+    "assets/fonts/DejaVuSansMono.ttf".to_string()
 }
 
 // Re-export the shared parse_pixel_format from the parent video module.
@@ -168,6 +181,8 @@ impl Default for CompositorConfig {
             layers: HashMap::new(),
             image_overlays: Vec::new(),
             text_overlays: Vec::new(),
+            draw_time: false,
+            draw_time_font_path: default_draw_time_font_path(),
         }
     }
 }
