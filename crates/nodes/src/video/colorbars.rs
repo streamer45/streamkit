@@ -40,6 +40,10 @@ const fn default_frame_count() -> u32 {
     0
 }
 
+const fn default_sweep_bar() -> bool {
+    true
+}
+
 /// Configuration for the SMPTE color bars generator.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(default)]
@@ -59,6 +63,11 @@ pub struct ColorBarsConfig {
     /// Output pixel format. Supported: "i420" (default) and "rgba8".
     #[serde(default = "default_pixel_format")]
     pub pixel_format: String,
+    /// Whether to draw the animated vertical sweep bar.
+    /// Disable on background layers to prevent the bar from appearing
+    /// to extend beyond a PiP overlay's bounding box.
+    #[serde(default = "default_sweep_bar")]
+    pub sweep_bar: bool,
 }
 
 fn default_pixel_format() -> String {
@@ -76,6 +85,7 @@ impl Default for ColorBarsConfig {
             fps: default_fps(),
             frame_count: default_frame_count(),
             pixel_format: default_pixel_format(),
+            sweep_bar: default_sweep_bar(),
         }
     }
 }
@@ -222,12 +232,13 @@ impl ProcessorNode for ColorBarsNode {
                 let mut pooled = pool.get(total_bytes);
                 pooled.as_mut_slice()[..total_bytes].copy_from_slice(&template);
                 match pixel_format {
-                    PixelFormat::I420 => {
+                    PixelFormat::I420 if self.config.sweep_bar => {
                         draw_sweep_bar_i420(pooled.as_mut_slice(), width, height, &layout, seq);
                     },
-                    PixelFormat::Rgba8 => {
+                    PixelFormat::Rgba8 if self.config.sweep_bar => {
                         draw_sweep_bar_rgba8(pooled.as_mut_slice(), width, height, seq);
                     },
+                    _ => {},
                 }
                 streamkit_core::types::VideoFrame::from_pooled(
                     width,
@@ -239,10 +250,13 @@ impl ProcessorNode for ColorBarsNode {
             } else {
                 let mut data = template.clone();
                 match pixel_format {
-                    PixelFormat::I420 => {
+                    PixelFormat::I420 if self.config.sweep_bar => {
                         draw_sweep_bar_i420(&mut data, width, height, &layout, seq);
                     },
-                    PixelFormat::Rgba8 => draw_sweep_bar_rgba8(&mut data, width, height, seq),
+                    PixelFormat::Rgba8 if self.config.sweep_bar => {
+                        draw_sweep_bar_rgba8(&mut data, width, height, seq);
+                    },
+                    _ => {},
                 }
                 streamkit_core::types::VideoFrame::with_metadata(
                     width,

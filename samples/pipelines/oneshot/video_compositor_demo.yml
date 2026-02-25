@@ -3,20 +3,20 @@
 # SPDX-License-Identifier: MPL-2.0
 
 # Demonstrates the video::compositor node with two colorbars sources:
-#   - A full-size 640x480 background (I420)
-#   - A smaller 320x240 picture-in-picture overlay (RGBA8)
+#   - A full-size 640x480 background (I420, sweep bar disabled)
+#   - A smaller 320x240 picture-in-picture overlay (RGBA8) with explicit
+#     positioning, rotation, and a text overlay rendered with real fonts.
 #
-# The second layer is scaled to fill the canvas and drawn on top of the
-# first, making the compositing visually obvious (different bar widths
-# from the different source resolutions).
+# Per-layer rect, opacity, rotation_degrees, and text overlays can be
+# updated at runtime via UpdateParams (JSON) — changes take effect on
+# the very next composited frame.
 #
-# NOTE: Text/image overlays and per-layer rect/opacity can be configured
-# at runtime via UpdateParams (JSON).  Deeply nested params trigger a
-# serde_saphyr parsing limitation with untagged enums, so they are
-# omitted from this static YAML sample.
+# NOTE: Deeply nested params trigger a serde_saphyr parsing limitation
+# with untagged enums, so text/image overlays are omitted from this
+# static YAML sample.  They work correctly via UpdateParams JSON.
 
 name: Video Compositor Demo
-description: Composites two colorbars sources (main + PiP) through the compositor node, encodes to VP9, and streams a WebM via http_output with real-time pacing (3 seconds)
+description: Composites two colorbars sources (main + PiP) through the compositor node with explicit positioning and rotation, encodes to VP9, and streams a WebM via http_output with real-time pacing (3 seconds)
 mode: oneshot
 
 nodes:
@@ -27,6 +27,9 @@ nodes:
       height: 480
       fps: 30
       frame_count: 90
+      # Disable the sweep bar on the background so it doesn't visually
+      # bleed through/around the PiP overlay.
+      sweep_bar: false
 
   colorbars_pip:
     kind: video::colorbars
@@ -44,6 +47,22 @@ nodes:
       height: 480
       num_inputs: 2
       output_pixel_format: i420
+      layers:
+        # Background fills the canvas (default when no rect is specified).
+        in_0:
+          opacity: 1.0
+          z_index: 0
+        # PiP overlay: positioned in the bottom-right corner with a 15°
+        # clockwise rotation to demonstrate compositing transforms.
+        in_1:
+          rect:
+            x: 380
+            y: 220
+            width: 240
+            height: 180
+          opacity: 0.9
+          z_index: 1
+          rotation_degrees: 15.0
     needs:
       - colorbars_bg
       - colorbars_pip

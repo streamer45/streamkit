@@ -17,7 +17,7 @@
 //!   conversion.
 //! - Image overlays are decoded once during initialization (PNG/JPEG via the
 //!   `image` crate).
-//! - Text overlays are rasterized via `tiny-skia` once per `UpdateParams`, not
+//! - Text overlays are rasterized via `fontdue` once per `UpdateParams`, not
 //!   per frame.
 //!
 //! # Future work
@@ -577,26 +577,29 @@ impl ProcessorNode for CompositorNode {
                     slot.latest_frame.as_ref().map(|f| {
                         let layer_cfg = self.config.layers.get(&slot.name);
                         #[allow(clippy::option_if_let_else)]
-                        let (rect, opacity, z_index) = if let Some(lc) = layer_cfg {
+                        let (rect, opacity, z_index, rotation_degrees) = if let Some(lc) = layer_cfg {
                             // Explicit per-layer config.
-                            (lc.rect.clone(), lc.opacity, lc.z_index)
+                            (lc.rect.clone(), lc.opacity, lc.z_index, lc.rotation_degrees)
                         } else if idx > 0 && num_slots > 1 {
                             // Auto-PiP: non-first layers without explicit config
                             // are placed in the bottom-right corner at 1/3 canvas
                             // size with slight transparency.
                             let pip_w = self.config.width / 3;
                             let pip_h = self.config.height / 3;
-                            let pip_x = self.config.width - pip_w - 20;
-                            let pip_y = self.config.height - pip_h - 20;
+                            #[allow(clippy::cast_possible_wrap)]
+                            let pip_x = (self.config.width - pip_w - 20) as i32;
+                            #[allow(clippy::cast_possible_wrap)]
+                            let pip_y = (self.config.height - pip_h - 20) as i32;
                             #[allow(clippy::cast_possible_wrap)]
                             (
                                 Some(Rect { x: pip_x, y: pip_y, width: pip_w, height: pip_h }),
                                 0.9,
                                 idx as i32,
+                                0.0,
                             )
                         } else {
                             // First layer (or single input): fill the canvas.
-                            (None, 1.0, 0)
+                            (None, 1.0, 0, 0.0)
                         };
                         LayerSnapshot {
                             data: f.data.clone(),
@@ -606,6 +609,7 @@ impl ProcessorNode for CompositorNode {
                             rect,
                             opacity,
                             z_index,
+                            rotation_degrees,
                         }
                     })
                 })
@@ -970,6 +974,7 @@ mod tests {
             rect: Some(Rect { x: 0, y: 0, width: 4, height: 4 }),
             opacity: 1.0,
             z_index: 0,
+            rotation_degrees: 0.0,
         };
 
         let mut scratch = Vec::new();
@@ -999,6 +1004,7 @@ mod tests {
             rect: None,
             opacity: 1.0,
             z_index: 0,
+            rotation_degrees: 0.0,
         };
         let layer1 = LayerSnapshot {
             data: green.data,
@@ -1008,6 +1014,7 @@ mod tests {
             rect: Some(Rect { x: 1, y: 1, width: 2, height: 2 }),
             opacity: 1.0,
             z_index: 1,
+            rotation_degrees: 0.0,
         };
 
         let mut scratch = Vec::new();
@@ -1036,6 +1043,8 @@ mod tests {
             color: [255, 255, 0, 255],
             font_size: 24,
             opacity: 1.0,
+            font_path: None,
+            font_data_base64: None,
         };
         let overlay = rasterize_text_overlay(&cfg);
         assert_eq!(overlay.width, 64);

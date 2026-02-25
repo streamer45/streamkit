@@ -19,10 +19,13 @@ const fn default_height() -> u32 {
 }
 
 /// Pixel-space rectangle for positioning a layer on the output canvas.
+///
+/// `x` and `y` are signed to allow off-screen positioning (e.g. for
+/// slide-in effects or rotation around the rect centre).
 #[derive(Deserialize, Debug, Clone, JsonSchema)]
 pub struct Rect {
-    pub x: u32,
-    pub y: u32,
+    pub x: i32,
+    pub y: i32,
     pub width: u32,
     pub height: u32,
 }
@@ -56,6 +59,14 @@ pub struct TextOverlayConfig {
     /// Opacity multiplier (0.0 = fully transparent, 1.0 = fully opaque).
     #[serde(default = "default_opacity")]
     pub opacity: f32,
+    /// Optional filesystem path to a TTF/OTF font file.
+    /// When omitted, a bundled default font (DejaVu Sans) is used.
+    #[serde(default)]
+    pub font_path: Option<String>,
+    /// Optional base64-encoded TTF/OTF font data.
+    /// Takes precedence over `font_path` when both are provided.
+    #[serde(default)]
+    pub font_data_base64: Option<String>,
 }
 
 pub(crate) const fn default_opacity() -> f32 {
@@ -88,11 +99,20 @@ pub struct LayerConfig {
     /// (pin insertion order).  Default 0.
     #[serde(default = "default_z_index")]
     pub z_index: i32,
+    /// Clockwise rotation in degrees.  Default 0.0 (no rotation).
+    /// The layer is rotated around its destination rect centre.
+    #[serde(default)]
+    pub rotation_degrees: f32,
 }
 
 impl Default for LayerConfig {
     fn default() -> Self {
-        Self { rect: None, opacity: default_opacity(), z_index: default_z_index() }
+        Self {
+            rect: None,
+            opacity: default_opacity(),
+            z_index: default_z_index(),
+            rotation_degrees: 0.0,
+        }
     }
 }
 

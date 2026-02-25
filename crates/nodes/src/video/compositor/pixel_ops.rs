@@ -50,19 +50,30 @@ pub fn scale_blit_rgba(
     let dh = dst_height as usize;
     let sw = src_width as usize;
     let sh = src_height as usize;
-    let rx = dst_rect.x as usize;
-    let ry = dst_rect.y as usize;
     let rw = dst_rect.width as usize;
     let rh = dst_rect.height as usize;
 
+    // Compute the visible region after clipping the (possibly negative)
+    // rect position to the canvas bounds.
+    let (rx, src_col_skip) = if dst_rect.x < 0 {
+        (0usize, (-dst_rect.x) as usize)
+    } else {
+        (dst_rect.x as usize, 0usize)
+    };
+    let (ry, src_row_skip) = if dst_rect.y < 0 {
+        (0usize, (-dst_rect.y) as usize)
+    } else {
+        (dst_rect.y as usize, 0usize)
+    };
+
     // Clamp the number of rows we actually process to the canvas height.
-    let effective_rh = rh.min(dh.saturating_sub(ry));
+    let effective_rh = rh.saturating_sub(src_row_skip).min(dh.saturating_sub(ry));
     if effective_rh == 0 {
         return;
     }
 
     // Clamp the number of columns to the canvas width.
-    let effective_rect_w = rw.min(dw.saturating_sub(rx));
+    let effective_rect_w = rw.saturating_sub(src_col_skip).min(dw.saturating_sub(rx));
     if effective_rect_w == 0 {
         return;
     }
@@ -70,8 +81,6 @@ pub fn scale_blit_rgba(
     // Split the destination buffer into per-row slices so that each row can
     // be processed independently (and therefore in parallel).
     let row_stride = dw * 4;
-
-    // Use rayon for parallel row processing when the region is large enough.
 
     // We need to give each row its own mutable slice. Split the dst buffer
     // at the first output row.
@@ -81,14 +90,14 @@ pub fn scale_blit_rgba(
     if effective_rh >= RAYON_ROW_THRESHOLD {
         dst_rows.par_chunks_mut(row_stride).take(effective_rh).enumerate().for_each(
             |(dy, row_slice)| {
-                let sy = dy * sh / rh;
-                blit_row(row_slice, rx, effective_rect_w, src, sw, sh, sy, rw, opacity);
+                let sy = (dy + src_row_skip) * sh / rh;
+                blit_row(row_slice, rx, effective_rect_w, src, sw, sh, sy, rw, opacity, src_col_skip);
             },
         );
     } else {
         for (dy, row_slice) in dst_rows.chunks_mut(row_stride).take(effective_rh).enumerate() {
-            let sy = dy * sh / rh;
-            blit_row(row_slice, rx, effective_rect_w, src, sw, sh, sy, rw, opacity);
+            let sy = (dy + src_row_skip) * sh / rh;
+            blit_row(row_slice, rx, effective_rect_w, src, sw, sh, sy, rw, opacity, src_col_skip);
         }
     }
 }
@@ -116,13 +125,14 @@ fn blit_row(
     sy: usize,
     rw: usize,
     opacity: f32,
+    src_col_skip: usize,
 ) {
     // Fast path: when opacity is 1.0, we can skip the f32 multiply on alpha
     // and branch more cheaply.
     if opacity >= 1.0 {
-        blit_row_opaque(row_slice, rx, effective_rw, src, sw, sh, sy, rw);
+        blit_row_opaque(row_slice, rx, effective_rw, src, sw, sh, sy, rw, src_col_skip);
     } else {
-        blit_row_alpha(row_slice, rx, effective_rw, src, sw, sh, sy, rw, opacity);
+        blit_row_alpha(row_slice, rx, effective_rw, src, sw, sh, sy, rw, opacity, src_col_skip);
     }
 }
 
@@ -157,10 +167,11 @@ fn blit_row_opaque(
     _sh: usize,
     sy: usize,
     rw: usize,
+    src_col_skip: usize,
 ) {
     let src_row_base = sy * sw * 4;
     for dx in 0..effective_rw {
-        let sx = dx * sw / rw;
+        let sx = (dx + src_col_skip) * sw / rw;
         let src_idx = src_row_base + sx * 4;
         if src_idx + 3 >= src.len() {
             continue;
@@ -215,13 +226,14 @@ fn blit_row_alpha(
     sy: usize,
     rw: usize,
     opacity: f32,
+    src_col_skip: usize,
 ) {
     // Pre-compute opacity as a 0..255 integer multiplier.
     let opacity_u16 = (opacity * 255.0 + 0.5) as u16;
     let src_row_base = sy * sw * 4;
 
     for dx in 0..effective_rw {
-        let sx = dx * sw / rw;
+        let sx = (dx + src_col_skip) * sw / rw;
         let src_idx = src_row_base + sx * 4;
         if src_idx + 3 >= src.len() {
             continue;
@@ -267,6 +279,160 @@ pub fn blit_overlay(canvas: &mut [u8], canvas_w: u32, canvas_h: u32, overlay: &D
         &overlay.rect,
         overlay.opacity,
     );
+}
+
+// ── Rotated blitting ────────────────────────────────────────────────────────
+
+/// Scale and blit a source RGBA8 buffer onto a destination RGBA8 buffer at the
+/// given destination rectangle with clockwise rotation around the rect centre.
+///
+/// Uses inverse-affine mapping with nearest-neighbor sampling.  Falls back to
+/// [`scale_blit_rgba`] when `rotation_deg` is effectively zero.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::too_many_arguments,
+    clippy::cast_precision_loss
+)]
+pub fn scale_blit_rgba_rotated(
+    dst: &mut [u8],
+    dst_width: u32,
+    dst_height: u32,
+    src: &[u8],
+    src_width: u32,
+    src_height: u32,
+    dst_rect: &Rect,
+    opacity: f32,
+    rotation_deg: f32,
+) {
+    // Fast path: no rotation → delegate to the optimised non-rotated blit.
+    if rotation_deg.abs() < 0.01 {
+        scale_blit_rgba(dst, dst_width, dst_height, src, src_width, src_height, dst_rect, opacity);
+        return;
+    }
+
+    if src_width == 0 || src_height == 0 || dst_rect.width == 0 || dst_rect.height == 0 {
+        return;
+    }
+
+    let dw = dst_width as i32;
+    let dh = dst_height as i32;
+    let sw = src_width as usize;
+    let sh = src_height as usize;
+    let rw = dst_rect.width as f32;
+    let rh = dst_rect.height as f32;
+
+    // Rotation centre = centre of the destination rect.
+    let cx = dst_rect.x as f32 + rw * 0.5;
+    let cy = dst_rect.y as f32 + rh * 0.5;
+
+    // Pre-compute sin/cos for the *inverse* rotation (clockwise rotation
+    // means we apply counter-clockwise to map destination → source).
+    let angle_rad = rotation_deg.to_radians();
+    let cos_a = angle_rad.cos();
+    let sin_a = angle_rad.sin();
+
+    // Compute the axis-aligned bounding box of the rotated rect so we only
+    // iterate over pixels that could possibly be covered.
+    let half_w = rw * 0.5;
+    let half_h = rh * 0.5;
+    let corners = [
+        (-half_w, -half_h),
+        (half_w, -half_h),
+        (half_w, half_h),
+        (-half_w, half_h),
+    ];
+    let mut min_x = f32::MAX;
+    let mut max_x = f32::MIN;
+    let mut min_y = f32::MAX;
+    let mut max_y = f32::MIN;
+    for (lx, ly) in &corners {
+        let rx = lx * cos_a - ly * sin_a + cx;
+        let ry = lx * sin_a + ly * cos_a + cy;
+        min_x = min_x.min(rx);
+        max_x = max_x.max(rx);
+        min_y = min_y.min(ry);
+        max_y = max_y.max(ry);
+    }
+
+    let bb_x0 = (min_x.floor() as i32).max(0);
+    let bb_y0 = (min_y.floor() as i32).max(0);
+    let bb_x1 = (max_x.ceil() as i32).min(dw);
+    let bb_y1 = (max_y.ceil() as i32).min(dh);
+
+    let row_stride = dst_width as usize * 4;
+
+    // Pre-compute opacity as a 0..255 integer multiplier.
+    let opacity_u16 = if opacity < 1.0 {
+        (opacity * 255.0 + 0.5) as u16
+    } else {
+        256 // sentinel: means "fully opaque, skip per-pixel multiply"
+    };
+
+    for py in bb_y0..bb_y1 {
+        let dy = py as f32 - cy;
+        let row_base = py as usize * row_stride;
+        for px in bb_x0..bb_x1 {
+            let dx_f = px as f32 - cx;
+
+            // Inverse-rotate to get position in the un-rotated rect's
+            // local coordinate system (origin at rect centre).
+            let local_x = dx_f * cos_a + dy * sin_a;
+            let local_y = -dx_f * sin_a + dy * cos_a;
+
+            // Map from local rect coords ([-half_w, half_w]) to source
+            // pixel coords ([0, sw)).
+            let norm_x = (local_x + half_w) / rw;
+            let norm_y = (local_y + half_h) / rh;
+
+            if !(0.0..1.0).contains(&norm_x) || !(0.0..1.0).contains(&norm_y) {
+                continue; // outside the source rectangle
+            }
+
+            let sx = (norm_x * sw as f32) as usize;
+            let sy = (norm_y * sh as f32) as usize;
+            let sx = sx.min(sw - 1);
+            let sy = sy.min(sh - 1);
+
+            let src_idx = (sy * sw + sx) * 4;
+            if src_idx + 3 >= src.len() {
+                continue;
+            }
+
+            let sr = src[src_idx];
+            let sg = src[src_idx + 1];
+            let sb = src[src_idx + 2];
+            let mut sa = src[src_idx + 3];
+
+            if opacity_u16 < 256 {
+                sa = ((u16::from(sa) * opacity_u16 + 128) >> 8).min(255) as u8;
+            }
+
+            if sa == 0 {
+                continue;
+            }
+
+            let dst_idx = row_base + px as usize * 4;
+            if dst_idx + 3 >= dst.len() {
+                continue;
+            }
+
+            if sa == 255 {
+                dst[dst_idx] = sr;
+                dst[dst_idx + 1] = sg;
+                dst[dst_idx + 2] = sb;
+                dst[dst_idx + 3] = 255;
+            } else {
+                let a16 = u16::from(sa);
+                dst[dst_idx] = blend_u8(sr, dst[dst_idx], a16);
+                dst[dst_idx + 1] = blend_u8(sg, dst[dst_idx + 1], a16);
+                dst[dst_idx + 2] = blend_u8(sb, dst[dst_idx + 2], a16);
+                let da = u16::from(dst[dst_idx + 3]);
+                dst[dst_idx + 3] =
+                    (a16 + ((da * (255 - a16) + 128) >> 8)).min(255) as u8;
+            }
+        }
+    }
 }
 
 // ── Pixel format conversion ─────────────────────────────────────────────────

@@ -13,7 +13,7 @@ use streamkit_core::types::PixelFormat;
 
 use super::config::Rect;
 use super::overlay::DecodedOverlay;
-use super::pixel_ops::{blit_overlay, i420_to_rgba8_buf, scale_blit_rgba};
+use super::pixel_ops::{blit_overlay, i420_to_rgba8_buf, scale_blit_rgba_rotated};
 
 // ── Compositing kernel (runs on a persistent blocking thread) ────────────────
 
@@ -28,6 +28,9 @@ pub struct LayerSnapshot {
     /// Visual stacking order.  Lower values are drawn first (bottom).
     /// Used to sort layers before compositing; ties broken by slot index.
     pub z_index: i32,
+    /// Clockwise rotation in degrees around the destination rect centre.
+    /// Default `0.0` means no rotation.
+    pub rotation_degrees: f32,
 }
 
 /// Work item sent from the async loop to the persistent compositing thread.
@@ -94,7 +97,7 @@ pub fn composite_frame(
             },
         };
 
-        scale_blit_rgba(
+        scale_blit_rgba_rotated(
             buf,
             canvas_w,
             canvas_h,
@@ -103,6 +106,7 @@ pub fn composite_frame(
             layer.height,
             &dst_rect,
             layer.opacity,
+            layer.rotation_degrees,
         );
     }
 
@@ -172,6 +176,10 @@ pub fn try_i420_passthrough(
         if rect.x != 0 || rect.y != 0 || rect.width != canvas_w || rect.height != canvas_h {
             return None;
         }
+    }
+    // Rotation requires compositing.
+    if layer.rotation_degrees.abs() > 0.01 {
+        return None;
     }
 
     Some(idx)
