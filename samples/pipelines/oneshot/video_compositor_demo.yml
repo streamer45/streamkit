@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MPL-2.0
 
 # Demonstrates the video::compositor node with three layers:
-#   1. A full-size 640x480 background colorbars (I420, sweep bar disabled)
+#   1. A full-size 640x480 background colorbars (I420)
 #   2. A smaller 320x240 PiP colorbars overlay (RGBA8) with explicit
 #      positioning and 15° clockwise rotation
 #   3. A text overlay ("StreamKit Demo") rendered with a real font
@@ -50,11 +50,12 @@ nodes:
         in_0:
           opacity: 1.0
           z_index: 0
-        # PiP overlay: positioned in the bottom-right corner with a 15°
-        # clockwise rotation to demonstrate compositing transforms.
+        # PiP overlay: positioned on the left side with a 15° clockwise
+        # rotation to demonstrate compositing transforms.  Placed left so
+        # the main canvas blue bar (rightmost SMPTE bar) stays visible.
         in_1:
           rect:
-            x: 380
+            x: 100
             y: 220
             width: 240
             height: 180
