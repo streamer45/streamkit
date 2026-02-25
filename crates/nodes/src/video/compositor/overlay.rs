@@ -272,11 +272,5 @@ pub fn rasterize_text_with_font(
         }
     }
 
-    DecodedOverlay {
-        rgba_data,
-        width: w,
-        height: h,
-        rect: rect.clone(),
-        opacity,
-    }
+    DecodedOverlay { rgba_data, width: w, height: h, rect: rect.clone(), opacity }
 }

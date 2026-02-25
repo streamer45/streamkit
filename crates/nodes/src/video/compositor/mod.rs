@@ -656,9 +656,8 @@ impl ProcessorNode for CompositorNode {
             let frame_text_overlays = if let Some(ref font) = draw_time_font {
                 use std::time::SystemTime;
 
-                let now = SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap_or_default();
+                let now =
+                    SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
                 let total_secs = now.as_secs();
                 let millis = now.subsec_millis();
                 let secs = total_secs % 60;
@@ -666,12 +665,8 @@ impl ProcessorNode for CompositorNode {
                 let hrs = (total_secs / 3600) % 24;
                 let time_str = format!("{hrs:02}:{mins:02}:{secs:02}.{millis:03}");
 
-                let time_rect = Rect {
-                    x: 8,
-                    y: (self.config.height as i32) - 32,
-                    width: 200,
-                    height: 30,
-                };
+                let time_rect =
+                    Rect { x: 8, y: (self.config.height as i32) - 32, width: 200, height: 30 };
                 let time_overlay = rasterize_text_with_font(
                     &time_str,
                     &time_rect,
