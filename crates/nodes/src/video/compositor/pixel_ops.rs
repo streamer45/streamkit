@@ -297,8 +297,13 @@ pub fn blit_overlay(canvas: &mut [u8], canvas_w: u32, canvas_h: u32, overlay: &D
 /// Scale and blit a source RGBA8 buffer onto a destination RGBA8 buffer at the
 /// given destination rectangle with clockwise rotation around the rect centre.
 ///
-/// Uses inverse-affine mapping with nearest-neighbor sampling.  Falls back to
-/// [`scale_blit_rgba`] when `rotation_deg` is effectively zero.
+/// Uses inverse-affine mapping with nearest-neighbor sampling.  Edge pixels
+/// receive fractional alpha coverage computed from the signed distance to each
+/// of the four rect edges in the un-rotated local coordinate system.  This
+/// eliminates the staircase aliasing that a hard binary inside/outside test
+/// would produce.
+///
+/// Falls back to [`scale_blit_rgba`] when `rotation_deg` is effectively zero.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -361,10 +366,11 @@ pub fn scale_blit_rgba_rotated(
         max_y = max_y.max(ry);
     }
 
-    let bb_x0 = (min_x.floor() as i32).max(0);
-    let bb_y0 = (min_y.floor() as i32).max(0);
-    let bb_x1 = (max_x.ceil() as i32).min(dw);
-    let bb_y1 = (max_y.ceil() as i32).min(dh);
+    // Expand bounding box by 1px on each side so the AA fringe is included.
+    let bb_x0 = ((min_x.floor() as i32) - 1).max(0);
+    let bb_y0 = ((min_y.floor() as i32) - 1).max(0);
+    let bb_x1 = ((max_x.ceil() as i32) + 1).min(dw);
+    let bb_y1 = ((max_y.ceil() as i32) + 1).min(dh);
 
     let row_stride = dst_width as usize * 4;
 
@@ -386,14 +392,35 @@ pub fn scale_blit_rgba_rotated(
             let local_x = dx_f * cos_a + dy * sin_a;
             let local_y = -dx_f * sin_a + dy * cos_a;
 
-            // Map from local rect coords ([-half_w, half_w]) to source
-            // pixel coords ([0, sw)).
-            let norm_x = (local_x + half_w) / rw;
-            let norm_y = (local_y + half_h) / rh;
+            // ── Edge anti-aliasing via signed distance ──────────────
+            //
+            // Compute the signed distance from the pixel centre to each
+            // of the four axis-aligned edges of the (un-rotated) rect.
+            // Positive = inside, negative = outside.  The minimum gives
+            // the distance to the closest edge.
+            //
+            // For pixels well inside (min_dist >= 1.0) we get full
+            // coverage.  For pixels on the boundary (0 < min_dist < 1)
+            // we get fractional coverage proportional to distance.  For
+            // pixels completely outside (min_dist <= 0) we skip.
+            let d_left = local_x + half_w;
+            let d_right = half_w - local_x;
+            let d_top = local_y + half_h;
+            let d_bottom = half_h - local_y;
+            let min_dist = d_left.min(d_right).min(d_top).min(d_bottom);
 
-            if !(0.0..1.0).contains(&norm_x) || !(0.0..1.0).contains(&norm_y) {
-                continue; // outside the source rectangle
+            if min_dist <= 0.0 {
+                continue; // fully outside the rectangle
             }
+
+            // Fractional coverage: smoothly ramp from 0→1 over ~1 pixel.
+            let edge_coverage = min_dist.min(1.0);
+
+            // Map from local rect coords ([-half_w, half_w]) to source
+            // pixel coords ([0, sw)).  Clamp instead of rejecting so
+            // edge-AA pixels still sample the nearest source texel.
+            let norm_x = ((local_x + half_w) / rw).clamp(0.0, 1.0 - f32::EPSILON);
+            let norm_y = ((local_y + half_h) / rh).clamp(0.0, 1.0 - f32::EPSILON);
 
             let sx = (norm_x * sw as f32) as usize;
             let sy = (norm_y * sh as f32) as usize;
@@ -410,8 +437,14 @@ pub fn scale_blit_rgba_rotated(
             let sb = src[src_idx + 2];
             let mut sa = src[src_idx + 3];
 
+            // Apply layer opacity.
             if opacity_u16 < 256 {
                 sa = ((u16::from(sa) * opacity_u16 + 128) >> 8).min(255) as u8;
+            }
+
+            // Apply edge coverage to the alpha channel for smooth borders.
+            if edge_coverage < 1.0 {
+                sa = (f32::from(sa) * edge_coverage + 0.5) as u8;
             }
 
             if sa == 0 {
