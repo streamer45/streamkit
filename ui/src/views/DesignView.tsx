@@ -370,6 +370,9 @@ function processRegularNodeDrop(
   if (type === 'audio::gain') {
     nodeType = 'audioGain';
     defaultParams = { gain: 1.0 };
+  } else if (type === 'video::compositor') {
+    nodeType = 'compositor';
+    defaultParams = { width: 1280, height: 720, output_pixel_format: 'rgba8', layers: {} };
   } else if (
     nodeDefinition &&
     (nodeDefinition.param_schema as JsonSchema | undefined)?.properties

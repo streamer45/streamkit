@@ -1327,13 +1327,21 @@ interface BuildNodeParams {
   finalOutputs: OutputPin[];
   nodeDef: NodeDefinition | undefined;
   stableOnParamChange: (nodeId: string, paramName: string, value: unknown) => void;
+  stableOnConfigChange?: (nodeId: string, config: Record<string, unknown>) => void;
   selectedSessionId: string | null;
 }
+
+/** Determine the ReactFlow node type from the pipeline node kind */
+const nodeTypeForKind = (kind: string): string => {
+  if (kind === 'audio::gain') return 'audioGain';
+  if (kind === 'video::compositor') return 'compositor';
+  return 'configurable';
+};
 
 const buildNodeObject = (params: BuildNodeParams): RFNode => {
   return {
     id: params.nodeName,
-    type: params.apiNode.kind === 'audio::gain' ? 'audioGain' : 'configurable',
+    type: nodeTypeForKind(params.apiNode.kind),
     position: params.position,
     dragHandle: '.drag-handle',
     data: {
@@ -1350,6 +1358,8 @@ const buildNodeObject = (params: BuildNodeParams): RFNode => {
       // NodeStateIndicator will fetch them directly from session store on hover
       // Use stable callback that checks staging mode at call-time
       onParamChange: params.stableOnParamChange,
+      // Full-config change callback for compositor nodes
+      onConfigChange: params.stableOnConfigChange,
       sessionId: params.selectedSessionId || undefined,
       isStaged: params.isStaged,
     },
@@ -1761,6 +1771,7 @@ const MonitorViewContent: React.FC = () => {
     isConnected: sessionIsConnected,
     isLoading: isLoadingPipeline,
     tuneNode,
+    tuneNodeConfig,
     addNode,
     removeNode,
     connectPins,
@@ -2613,6 +2624,7 @@ const MonitorViewContent: React.FC = () => {
         finalOutputs,
         nodeDef,
         stableOnParamChange,
+        stableOnConfigChange,
         selectedSessionId,
       });
 
@@ -2844,6 +2856,25 @@ const MonitorViewContent: React.FC = () => {
       tuneNode(nodeId, paramName, value);
     },
     [selectedSessionId, updateStagedNodeParams, validateParamValue, toast, tuneNode]
+  );
+
+  // Stable callback for full-config updates (compositor nodes).
+  // Supports staging mode: staged config changes are stored locally,
+  // live changes are sent directly via tuneNodeConfig.
+  const stableOnConfigChange = useCallback(
+    (nodeId: string, config: Record<string, unknown>) => {
+      const currentStagingData = useStagingStore.getState().staging[selectedSessionId || ''];
+      const isCurrentlyInStagingMode = currentStagingData?.mode === 'staging';
+      const isNodeStaged = isCurrentlyInStagingMode && currentStagingData?.stagedNodes.has(nodeId);
+
+      if (isNodeStaged && selectedSessionId) {
+        updateStagedNodeParams(selectedSessionId, nodeId, config);
+        return;
+      }
+
+      tuneNodeConfig(nodeId, config);
+    },
+    [selectedSessionId, updateStagedNodeParams, tuneNodeConfig]
   );
 
   // In staging mode, keep each node's `isStaged` flag in sync with `stagedNodes`.

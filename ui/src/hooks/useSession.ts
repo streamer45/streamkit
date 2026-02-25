@@ -91,6 +91,36 @@ export function useSession(sessionId: string | null) {
     [sessionId, wsService]
   );
 
+  // Send a full config object as a single UpdateParams message.
+  // Unlike tuneNode (which sends one key-value pair), this sends the entire
+  // config so nodes like the compositor don't lose fields due to #[serde(default)].
+  const tuneNodeConfig = useCallback(
+    (nodeId: string, config: Record<string, unknown>) => {
+      if (!sessionId) return;
+
+      const paramsStore = useNodeParamsStore.getState();
+      for (const [key, value] of Object.entries(config)) {
+        paramsStore.setParam(nodeId, key, value, sessionId);
+      }
+
+      const request: Request = {
+        type: 'request' as MessageType,
+        correlation_id: uuidv4(),
+        payload: {
+          action: 'tunenodeasync' as const,
+          session_id: sessionId,
+          node_id: nodeId,
+          message: {
+            UpdateParams: config,
+          },
+        },
+      };
+
+      wsService.sendFireAndForget(request);
+    },
+    [sessionId, wsService]
+  );
+
   const addNode = useCallback(
     (nodeId: string, kind: string, params: Record<string, unknown> = {}) => {
       if (!sessionId) return;
@@ -202,6 +232,7 @@ export function useSession(sessionId: string | null) {
     isLoading: pipelineQuery.isLoading,
     error: pipelineQuery.error,
     tuneNode,
+    tuneNodeConfig,
     addNode,
     removeNode,
     connectPins,

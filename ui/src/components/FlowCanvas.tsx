@@ -16,6 +16,7 @@ import React from 'react';
 
 import TypedEdge from '@/components/TypedEdge';
 import AudioGainNode from '@/nodes/AudioGainNode';
+import CompositorNode from '@/nodes/CompositorNode';
 import ConfigurableNode from '@/nodes/ConfigurableNode';
 
 import ConnectionLine from './ConnectionLine';
@@ -98,6 +99,7 @@ export const FlowCanvas = <NodeData extends Record<string, unknown> = Record<str
   edges: Edge[];
   nodeTypes: {
     audioGain: typeof AudioGainNode;
+    compositor: typeof CompositorNode;
     configurable: typeof ConfigurableNode;
   };
   onNodesChange: OnNodesChange<Node<NodeData>>;
