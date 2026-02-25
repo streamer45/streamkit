@@ -19,9 +19,8 @@ steps:
 
   - kind: plugin::native::moonshine
     params:
-      model_dir: models/moonshine-base-en
-      model_arch: base
-      num_threads: 4
+      model_dir: models/moonshine-tiny-en
+      model_arch: tiny
 
   - kind: core::json_serialize
     params:

@@ -16,9 +16,6 @@ pub struct MoonshineConfig {
     #[serde(default = "default_model_arch")]
     pub model_arch: String,
 
-    /// Number of threads for inference (0 = auto)
-    #[serde(default = "default_num_threads")]
-    pub num_threads: i32,
 }
 
 fn default_model_dir() -> String {
@@ -29,23 +26,18 @@ fn default_model_arch() -> String {
     "base".to_string()
 }
 
-const fn default_num_threads() -> i32 {
-    4
-}
-
 impl Default for MoonshineConfig {
     fn default() -> Self {
         Self {
             model_dir: default_model_dir(),
             model_arch: default_model_arch(),
-            num_threads: default_num_threads(),
         }
     }
 }
 
 impl MoonshineConfig {
     /// Convert the model_arch string to the corresponding FFI constant.
-    pub fn arch_to_ffi(&self) -> Result<i32, String> {
+    pub fn arch_to_ffi(&self) -> Result<u32, String> {
         match self.model_arch.as_str() {
             "tiny" => Ok(crate::ffi::MOONSHINE_MODEL_ARCH_TINY),
             "base" => Ok(crate::ffi::MOONSHINE_MODEL_ARCH_BASE),

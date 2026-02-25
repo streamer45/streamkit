@@ -55,6 +55,9 @@ static TRANSCRIBER_CACHE: std::sync::LazyLock<
 pub struct MoonshineNode {
     config: MoonshineConfig,
     transcriber: std::sync::Arc<TranscriberHandle>,
+    /// Stream handle for the Moonshine streaming API.
+    /// Each node has its own stream, while the transcriber may be shared.
+    stream_handle: i32,
     /// Number of completed lines seen so far in streaming mode.
     /// Used to avoid re-emitting already-emitted completed lines.
     emitted_line_count: u64,
@@ -97,13 +100,6 @@ impl NativeProcessorNode for MoonshineNode {
                         "default": "base",
                         "enum": ["tiny", "base", "tiny_streaming", "base_streaming", "small_streaming", "medium_streaming"]
                     },
-                    "num_threads": {
-                        "type": "integer",
-                        "description": "Number of threads for inference (0 = auto)",
-                        "default": 4,
-                        "minimum": 0,
-                        "maximum": 16
-                    }
                 }
             }))
             .category("ml")
@@ -123,10 +119,9 @@ impl NativeProcessorNode for MoonshineNode {
 
         plugin_info!(
             logger,
-            "Config: model_dir={}, model_arch={}, num_threads={}",
+            "Config: model_dir={}, model_arch={}",
             config.model_dir,
-            config.model_arch,
-            config.num_threads
+            config.model_arch
         );
 
         // Build absolute model path
@@ -180,27 +175,6 @@ impl NativeProcessorNode for MoonshineNode {
             let model_path_cstr = CString::new(model_dir_str.as_bytes())
                 .map_err(|e| format!("Invalid model dir path: {e}"))?;
 
-            // Set up options for num_threads if non-default
-            let num_threads_str;
-            let mut options: Vec<ffi::TranscriberOption> = Vec::new();
-            let num_threads_name;
-            if config.num_threads > 0 {
-                num_threads_name = CString::new("num_threads")
-                    .map_err(|_| "Invalid option name".to_string())?;
-                num_threads_str = CString::new(config.num_threads.to_string())
-                    .map_err(|_| "Invalid option value".to_string())?;
-                options.push(ffi::TranscriberOption {
-                    name: num_threads_name.as_ptr(),
-                    value: num_threads_str.as_ptr(),
-                });
-            }
-
-            let options_ptr = if options.is_empty() {
-                std::ptr::null()
-            } else {
-                options.as_ptr()
-            };
-
             plugin_info!(
                 logger,
                 "Loading transcriber from '{}' with arch={}",
@@ -212,8 +186,8 @@ impl NativeProcessorNode for MoonshineNode {
                 ffi::moonshine_load_transcriber_from_files(
                     model_path_cstr.as_ptr(),
                     arch,
-                    options_ptr,
-                    options.len(),
+                    std::ptr::null(),
+                    0,
                     ffi::MOONSHINE_HEADER_VERSION,
                 )
             };
@@ -246,9 +220,44 @@ impl NativeProcessorNode for MoonshineNode {
             handle_arc
         };
 
+        // Create and start a stream for this node instance.
+        // Each node gets its own stream, while the transcriber may be shared.
+        let stream_handle = unsafe {
+            ffi::moonshine_create_stream(transcriber.get(), 0)
+        };
+        if stream_handle < 0 {
+            let error_msg = unsafe {
+                let ptr = ffi::moonshine_error_to_string(stream_handle);
+                if ptr.is_null() {
+                    format!("Unknown error (code {stream_handle})")
+                } else {
+                    CStr::from_ptr(ptr).to_string_lossy().into_owned()
+                }
+            };
+            return Err(format!("Failed to create Moonshine stream: {error_msg}"));
+        }
+
+        let start_err = unsafe {
+            ffi::moonshine_start_stream(transcriber.get(), stream_handle)
+        };
+        if start_err != ffi::MOONSHINE_ERROR_NONE {
+            let error_msg = unsafe {
+                let ptr = ffi::moonshine_error_to_string(start_err);
+                if ptr.is_null() {
+                    format!("Unknown error (code {start_err})")
+                } else {
+                    CStr::from_ptr(ptr).to_string_lossy().into_owned()
+                }
+            };
+            return Err(format!("Failed to start Moonshine stream: {error_msg}"));
+        }
+
+        plugin_info!(logger, "Stream created and started (handle={})", stream_handle);
+
         Ok(Self {
             config,
             transcriber,
+            stream_handle,
             emitted_line_count: 0,
             last_partial_line_id: None,
             absolute_time_ms: 0,
@@ -289,26 +298,48 @@ impl NativeProcessorNode for MoonshineNode {
                 )]
                 let duration_ms = (samples.len() as f64 / 16.0) as u64;
 
-                // Stream audio directly to Moonshine — no intermediate buffering.
-                // Moonshine handles VAD and segmentation internally.
-                let mut transcript_ptr: *mut ffi::Transcript = std::ptr::null_mut();
-
-                let error = unsafe {
-                    ffi::moonshine_transcribe_stream_chunk(
+                // Step 1: Add audio data to the stream buffer.
+                // This is a lightweight operation that does no processing.
+                let add_err = unsafe {
+                    ffi::moonshine_transcribe_add_audio_to_stream(
                         self.transcriber.get(),
+                        self.stream_handle,
                         samples.as_ptr(),
-                        samples.len(),
+                        samples.len() as u64,
                         16000,
                         0, // no flags
+                    )
+                };
+
+                if add_err != ffi::MOONSHINE_ERROR_NONE {
+                    let error_msg = unsafe {
+                        let ptr = ffi::moonshine_error_to_string(add_err);
+                        if ptr.is_null() {
+                            format!("Unknown error (code {add_err})")
+                        } else {
+                            CStr::from_ptr(ptr).to_string_lossy().into_owned()
+                        }
+                    };
+                    return Err(format!("Moonshine add audio error: {error_msg}"));
+                }
+
+                // Step 2: Request an updated transcript.
+                // The library internally throttles to ~200ms between full analyses.
+                let mut transcript_ptr: *mut ffi::Transcript = std::ptr::null_mut();
+                let transcribe_err = unsafe {
+                    ffi::moonshine_transcribe_stream(
+                        self.transcriber.get(),
+                        self.stream_handle,
+                        0, // no flags — let the library throttle
                         &raw mut transcript_ptr,
                     )
                 };
 
-                if error != ffi::MOONSHINE_ERROR_NONE {
+                if transcribe_err != ffi::MOONSHINE_ERROR_NONE {
                     let error_msg = unsafe {
-                        let ptr = ffi::moonshine_error_to_string(error);
+                        let ptr = ffi::moonshine_error_to_string(transcribe_err);
                         if ptr.is_null() {
-                            format!("Unknown error (code {error})")
+                            format!("Unknown error (code {transcribe_err})")
                         } else {
                             CStr::from_ptr(ptr).to_string_lossy().into_owned()
                         }
@@ -335,25 +366,43 @@ impl NativeProcessorNode for MoonshineNode {
     fn flush(&mut self, output: &OutputSender) -> Result<(), String> {
         plugin_info!(self.logger, "Flush called, finalizing stream");
 
-        let mut transcript_ptr: *mut ffi::Transcript = std::ptr::null_mut();
-
-        let error = unsafe {
-            ffi::moonshine_transcribe_stream_flush(
-                self.transcriber.get(),
-                &raw mut transcript_ptr,
-            )
+        // Stop the stream to signal no more audio is coming.
+        let stop_err = unsafe {
+            ffi::moonshine_stop_stream(self.transcriber.get(), self.stream_handle)
         };
-
-        if error != ffi::MOONSHINE_ERROR_NONE {
+        if stop_err != ffi::MOONSHINE_ERROR_NONE {
             let error_msg = unsafe {
-                let ptr = ffi::moonshine_error_to_string(error);
+                let ptr = ffi::moonshine_error_to_string(stop_err);
                 if ptr.is_null() {
-                    format!("Unknown error (code {error})")
+                    format!("Unknown error (code {stop_err})")
                 } else {
                     CStr::from_ptr(ptr).to_string_lossy().into_owned()
                 }
             };
-            return Err(format!("Moonshine flush error: {error_msg}"));
+            return Err(format!("Moonshine stop stream error: {error_msg}"));
+        }
+
+        // Do a final transcription with FORCE_UPDATE to ensure all audio is processed.
+        let mut transcript_ptr: *mut ffi::Transcript = std::ptr::null_mut();
+        let transcribe_err = unsafe {
+            ffi::moonshine_transcribe_stream(
+                self.transcriber.get(),
+                self.stream_handle,
+                ffi::MOONSHINE_FLAG_FORCE_UPDATE,
+                &raw mut transcript_ptr,
+            )
+        };
+
+        if transcribe_err != ffi::MOONSHINE_ERROR_NONE {
+            let error_msg = unsafe {
+                let ptr = ffi::moonshine_error_to_string(transcribe_err);
+                if ptr.is_null() {
+                    format!("Unknown error (code {transcribe_err})")
+                } else {
+                    CStr::from_ptr(ptr).to_string_lossy().into_owned()
+                }
+            };
+            return Err(format!("Moonshine flush transcription error: {error_msg}"));
         }
 
         if !transcript_ptr.is_null() {
@@ -364,7 +413,13 @@ impl NativeProcessorNode for MoonshineNode {
     }
 
     fn cleanup(&mut self) {
-        plugin_info!(self.logger, "Cleanup called");
+        plugin_info!(self.logger, "Cleanup called, freeing stream");
+        if self.stream_handle >= 0 {
+            unsafe {
+                ffi::moonshine_free_stream(self.transcriber.get(), self.stream_handle);
+            }
+            self.stream_handle = -1;
+        }
     }
 }
 
@@ -483,13 +538,23 @@ impl MoonshineNode {
 
     /// Process lines from a non-streaming (oneshot) transcript.
     ///
-    /// All lines are expected to be complete, so emit them all.
+    /// The Moonshine API returns the full accumulated transcript on every call,
+    /// so we track `emitted_line_count` to only emit newly completed lines.
     fn process_oneshot_lines(
-        &self,
+        &mut self,
         lines: &[ffi::TranscriptLine],
         output: &OutputSender,
     ) -> Result<(), String> {
-        for line in lines {
+        for (i, line) in lines.iter().enumerate() {
+            // Allow: index is bounded by line_count which fits in u64
+            #[allow(clippy::cast_possible_truncation)]
+            let line_idx = i as u64;
+
+            // Skip lines we've already emitted
+            if line_idx < self.emitted_line_count {
+                continue;
+            }
+
             let text = if line.text.is_null() {
                 continue;
             } else {
@@ -526,6 +591,8 @@ impl MoonshineNode {
                     metadata: None,
                 })),
             )?;
+
+            self.emitted_line_count = line_idx + 1;
         }
 
         Ok(())

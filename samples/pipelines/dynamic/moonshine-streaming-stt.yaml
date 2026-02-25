@@ -56,7 +56,6 @@ nodes:
     params:
       model_dir: models/moonshine-base-streaming-en
       model_arch: base_streaming
-      num_threads: 4
     needs: resample_for_stt
 
   stt_telemetry_out:
