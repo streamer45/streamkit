@@ -74,11 +74,7 @@ fn load_font(config: &TextOverlayConfig) -> Result<fontdue::Font, String> {
 /// Rasterize a text overlay into an RGBA8 bitmap using `fontdue` for real
 /// font glyph rendering.  Falls back to solid-rectangle placeholders when
 /// font loading fails so the node keeps running.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
 pub fn rasterize_text_overlay(config: &TextOverlayConfig) -> DecodedOverlay {
     let w = config.rect.width.max(1);
     let h = config.rect.height.max(1);
@@ -112,8 +108,7 @@ pub fn rasterize_text_overlay(config: &TextOverlayConfig) -> DecodedOverlay {
 
             // Glyph origin in the overlay buffer.
             let gx = (cursor_x + metrics.xmin as f32) as i32;
-            let gy =
-                (baseline_y - metrics.ymin as f32) as i32 - metrics.height as i32;
+            let gy = (baseline_y - metrics.ymin as f32) as i32 - metrics.height as i32;
 
             // Blit coverage bitmap into the RGBA overlay buffer.
             for row in 0..metrics.height {
@@ -144,14 +139,10 @@ pub fn rasterize_text_overlay(config: &TextOverlayConfig) -> DecodedOverlay {
                         let dg = u16::from(rgba_data[off + 1]);
                         let db = u16::from(rgba_data[off + 2]);
                         let da = u16::from(rgba_data[off + 3]);
-                        rgba_data[off] =
-                            ((u16::from(cr) * alpha + dr * inv + 128) / 255) as u8;
-                        rgba_data[off + 1] =
-                            ((u16::from(cg) * alpha + dg * inv + 128) / 255) as u8;
-                        rgba_data[off + 2] =
-                            ((u16::from(cb) * alpha + db * inv + 128) / 255) as u8;
-                        rgba_data[off + 3] =
-                            (alpha + (da * inv + 128) / 255).min(255) as u8;
+                        rgba_data[off] = ((u16::from(cr) * alpha + dr * inv + 128) / 255) as u8;
+                        rgba_data[off + 1] = ((u16::from(cg) * alpha + dg * inv + 128) / 255) as u8;
+                        rgba_data[off + 2] = ((u16::from(cb) * alpha + db * inv + 128) / 255) as u8;
+                        rgba_data[off + 3] = (alpha + (da * inv + 128) / 255).min(255) as u8;
                     }
                 }
             }

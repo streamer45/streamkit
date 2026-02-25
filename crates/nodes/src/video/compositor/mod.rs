@@ -577,7 +577,8 @@ impl ProcessorNode for CompositorNode {
                     slot.latest_frame.as_ref().map(|f| {
                         let layer_cfg = self.config.layers.get(&slot.name);
                         #[allow(clippy::option_if_let_else)]
-                        let (rect, opacity, z_index, rotation_degrees) = if let Some(lc) = layer_cfg {
+                        let (rect, opacity, z_index, rotation_degrees) = if let Some(lc) = layer_cfg
+                        {
                             // Explicit per-layer config.
                             (lc.rect.clone(), lc.opacity, lc.z_index, lc.rotation_degrees)
                         } else if idx > 0 && num_slots > 1 {

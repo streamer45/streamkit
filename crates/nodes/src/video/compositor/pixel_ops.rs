@@ -91,7 +91,18 @@ pub fn scale_blit_rgba(
         dst_rows.par_chunks_mut(row_stride).take(effective_rh).enumerate().for_each(
             |(dy, row_slice)| {
                 let sy = (dy + src_row_skip) * sh / rh;
-                blit_row(row_slice, rx, effective_rect_w, src, sw, sh, sy, rw, opacity, src_col_skip);
+                blit_row(
+                    row_slice,
+                    rx,
+                    effective_rect_w,
+                    src,
+                    sw,
+                    sh,
+                    sy,
+                    rw,
+                    opacity,
+                    src_col_skip,
+                );
             },
         );
     } else {
@@ -336,12 +347,7 @@ pub fn scale_blit_rgba_rotated(
     // iterate over pixels that could possibly be covered.
     let half_w = rw * 0.5;
     let half_h = rh * 0.5;
-    let corners = [
-        (-half_w, -half_h),
-        (half_w, -half_h),
-        (half_w, half_h),
-        (-half_w, half_h),
-    ];
+    let corners = [(-half_w, -half_h), (half_w, -half_h), (half_w, half_h), (-half_w, half_h)];
     let mut min_x = f32::MAX;
     let mut max_x = f32::MIN;
     let mut min_y = f32::MAX;
@@ -428,8 +434,7 @@ pub fn scale_blit_rgba_rotated(
                 dst[dst_idx + 1] = blend_u8(sg, dst[dst_idx + 1], a16);
                 dst[dst_idx + 2] = blend_u8(sb, dst[dst_idx + 2], a16);
                 let da = u16::from(dst[dst_idx + 3]);
-                dst[dst_idx + 3] =
-                    (a16 + ((da * (255 - a16) + 128) >> 8)).min(255) as u8;
+                dst[dst_idx + 3] = (a16 + ((da * (255 - a16) + 128) >> 8)).min(255) as u8;
             }
         }
     }
