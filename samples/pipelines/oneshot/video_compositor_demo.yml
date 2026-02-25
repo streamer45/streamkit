@@ -25,9 +25,6 @@ nodes:
       height: 480
       fps: 30
       frame_count: 90
-      # Disable the sweep bar on the background so it doesn't visually
-      # bleed through/around the PiP overlay.
-      sweep_bar: false
 
   colorbars_pip:
     kind: video::colorbars

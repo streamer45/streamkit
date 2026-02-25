@@ -40,10 +40,6 @@ const fn default_frame_count() -> u32 {
     0
 }
 
-const fn default_sweep_bar() -> bool {
-    true
-}
-
 /// Configuration for the SMPTE color bars generator.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(default)]
@@ -63,11 +59,6 @@ pub struct ColorBarsConfig {
     /// Output pixel format. Supported: "i420" (default) and "rgba8".
     #[serde(default = "default_pixel_format")]
     pub pixel_format: String,
-    /// Whether to draw the animated vertical sweep bar.
-    /// Disable on background layers to prevent the bar from appearing
-    /// to extend beyond a PiP overlay's bounding box.
-    #[serde(default = "default_sweep_bar")]
-    pub sweep_bar: bool,
 }
 
 fn default_pixel_format() -> String {
@@ -85,7 +76,6 @@ impl Default for ColorBarsConfig {
             fps: default_fps(),
             frame_count: default_frame_count(),
             pixel_format: default_pixel_format(),
-            sweep_bar: default_sweep_bar(),
         }
     }
 }
@@ -231,15 +221,6 @@ impl ProcessorNode for ColorBarsNode {
             let frame = if let Some(pool) = &context.video_pool {
                 let mut pooled = pool.get(total_bytes);
                 pooled.as_mut_slice()[..total_bytes].copy_from_slice(&template);
-                match pixel_format {
-                    PixelFormat::I420 if self.config.sweep_bar => {
-                        draw_sweep_bar_i420(pooled.as_mut_slice(), width, height, &layout, seq);
-                    },
-                    PixelFormat::Rgba8 if self.config.sweep_bar => {
-                        draw_sweep_bar_rgba8(pooled.as_mut_slice(), width, height, seq);
-                    },
-                    _ => {},
-                }
                 streamkit_core::types::VideoFrame::from_pooled(
                     width,
                     height,
@@ -248,16 +229,7 @@ impl ProcessorNode for ColorBarsNode {
                     metadata,
                 )
             } else {
-                let mut data = template.clone();
-                match pixel_format {
-                    PixelFormat::I420 if self.config.sweep_bar => {
-                        draw_sweep_bar_i420(&mut data, width, height, &layout, seq);
-                    },
-                    PixelFormat::Rgba8 if self.config.sweep_bar => {
-                        draw_sweep_bar_rgba8(&mut data, width, height, seq);
-                    },
-                    _ => {},
-                }
+                let data = template.clone();
                 streamkit_core::types::VideoFrame::with_metadata(
                     width,
                     height,
@@ -310,60 +282,6 @@ const SMPTE_BARS_YUV: [(u8, u8, u8); 7] = [
     (35, 212, 114),  // blue
 ];
 
-/// Draws a bright vertical sweep bar that moves across the frame each tick.
-///
-/// The bar is 4 pixels wide, pure white (Y=235, U=V=128), and its horizontal
-/// position advances by 4 pixels per frame, wrapping around the width.
-/// Pixels that extend past the right edge are clipped (not wrapped) so the
-/// bar cleanly exits and re-enters the frame.
-fn draw_sweep_bar_i420(
-    data: &mut [u8],
-    width: u32,
-    height: u32,
-    layout: &streamkit_core::types::VideoLayout,
-    seq: u64,
-) {
-    let planes = layout.planes();
-    let y_plane = planes[0];
-    let u_plane = planes[1];
-    let v_plane = planes[2];
-
-    let bar_width: usize = 4;
-    let speed: usize = 4; // pixels per frame
-    let w = width as usize;
-    let h = height as usize;
-    let seq_usize = usize::try_from(seq).unwrap_or(usize::MAX);
-    let bar_x = seq_usize.saturating_mul(speed) % w;
-
-    // Y plane: set bar columns to peak white (235).
-    // Clip at the right edge so the bar doesn't wrap to column 0.
-    for row in 0..h {
-        for dx in 0..bar_width {
-            let col = bar_x + dx;
-            if col >= w {
-                break;
-            }
-            data[y_plane.offset + row * y_plane.stride + col] = 235;
-        }
-    }
-
-    // U and V planes (half resolution): set to neutral (128) for pure white.
-    let chroma_w = u_plane.width as usize;
-    let chroma_h = u_plane.height as usize;
-    let chroma_bar_x = bar_x / 2;
-    let chroma_bar_w = bar_width.div_ceil(2); // round up
-    for row in 0..chroma_h {
-        for dx in 0..chroma_bar_w {
-            let col = chroma_bar_x + dx;
-            if col >= chroma_w {
-                break;
-            }
-            data[u_plane.offset + row * u_plane.stride + col] = 128;
-            data[v_plane.offset + row * v_plane.stride + col] = 128;
-        }
-    }
-}
-
 /// SMPTE EIA 75% color bars in RGBA8 format.
 ///
 /// Same bar order and approximate 75% amplitude as the YUV table,
@@ -391,33 +309,6 @@ fn generate_smpte_colorbars_rgba8(width: u32, height: u32, data: &mut [u8]) {
             data[offset + 1] = g;
             data[offset + 2] = b;
             data[offset + 3] = a;
-        }
-    }
-}
-
-/// Draws a bright vertical sweep bar (pure white, 4px wide) on an RGBA8 buffer.
-/// Pixels that extend past the right edge are clipped (not wrapped) so the
-/// bar cleanly exits and re-enters the frame.
-fn draw_sweep_bar_rgba8(data: &mut [u8], width: u32, height: u32, seq: u64) {
-    let bar_width: usize = 4;
-    let speed: usize = 4;
-    let w = width as usize;
-    let h = height as usize;
-    let stride = w * 4;
-    let seq_usize = usize::try_from(seq).unwrap_or(usize::MAX);
-    let bar_x = seq_usize.saturating_mul(speed) % w;
-
-    for row in 0..h {
-        for dx in 0..bar_width {
-            let col = bar_x + dx;
-            if col >= w {
-                break;
-            }
-            let offset = row * stride + col * 4;
-            data[offset] = 255; // R
-            data[offset + 1] = 255; // G
-            data[offset + 2] = 255; // B
-            data[offset + 3] = 255; // A
         }
     }
 }
