@@ -253,7 +253,11 @@ function createNodesFromPipeline(
 
       const newNode: Node<EditorNodeData> = {
         id: newId,
-        type: (config.kind === 'audio::gain' ? 'audioGain' : 'configurable') as string,
+        type: (config.kind === 'audio::gain'
+          ? 'audioGain'
+          : config.kind === 'video::compositor'
+            ? 'compositor'
+            : 'configurable') as string,
         dragHandle: '.drag-handle',
         position: (config.ui?.position as XYPosition) || {
           x: Math.random() * 800,
