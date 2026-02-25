@@ -470,13 +470,11 @@ pub fn scale_blit_rgba_rotated(
 
     if bb_rows >= RAYON_ROW_THRESHOLD {
         use rayon::prelude::*;
-        dst_region
-            .par_chunks_mut(row_stride)
-            .take(bb_rows)
-            .enumerate()
-            .for_each(|(i, row_slice)| {
+        dst_region.par_chunks_mut(row_stride).take(bb_rows).enumerate().for_each(
+            |(i, row_slice)| {
                 process_row(bb_y0 + i as i32, row_slice);
-            });
+            },
+        );
     } else {
         for (i, row_slice) in dst_region.chunks_mut(row_stride).take(bb_rows).enumerate() {
             process_row(bb_y0 + i as i32, row_slice);

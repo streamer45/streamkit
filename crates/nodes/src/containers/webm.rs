@@ -936,8 +936,7 @@ impl ProcessorNode for WebMMuxerNode {
                     let Some(video_track) = tracks.video else {
                         continue;
                     };
-                    let is_keyframe =
-                        metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(false);
+                    let is_keyframe = metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(false);
                     if mux_frame(
                         &data,
                         metadata.as_ref(),
