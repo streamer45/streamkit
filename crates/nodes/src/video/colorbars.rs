@@ -40,6 +40,10 @@ const fn default_frame_count() -> u32 {
     0
 }
 
+fn default_draw_time_font_path() -> String {
+    "assets/fonts/DejaVuSansMono.ttf".to_string()
+}
+
 /// Configuration for the SMPTE color bars generator.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(default)]
@@ -59,6 +63,14 @@ pub struct ColorBarsConfig {
     /// Output pixel format. Supported: "i420" (default) and "rgba8".
     #[serde(default = "default_pixel_format")]
     pub pixel_format: String,
+    /// When `true`, draws the current wall-clock time (`HH:MM:SS.mmm`)
+    /// onto each generated frame using a monospace font.
+    #[serde(default)]
+    pub draw_time: bool,
+    /// Filesystem path to a monospace TTF/OTF font used for the
+    /// `draw_time` overlay.  Defaults to `assets/fonts/DejaVuSansMono.ttf`.
+    #[serde(default = "default_draw_time_font_path")]
+    pub draw_time_font_path: String,
 }
 
 fn default_pixel_format() -> String {
@@ -76,6 +88,8 @@ impl Default for ColorBarsConfig {
             fps: default_fps(),
             frame_count: default_frame_count(),
             pixel_format: default_pixel_format(),
+            draw_time: false,
+            draw_time_font_path: default_draw_time_font_path(),
         }
     }
 }
@@ -128,6 +142,31 @@ impl ProcessorNode for ColorBarsNode {
         );
 
         let pixel_format = self.pixel_format;
+
+        // Pre-load the monospace font for draw_time (once, if enabled).
+        let draw_time_font = if self.config.draw_time {
+            let path = &self.config.draw_time_font_path;
+            match std::fs::read(path) {
+                Ok(bytes) => {
+                    match fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()) {
+                        Ok(f) => {
+                            tracing::info!("draw_time enabled: loaded font from {path}");
+                            Some(f)
+                        },
+                        Err(e) => {
+                            tracing::warn!("draw_time: failed to parse font '{path}': {e}");
+                            None
+                        },
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!("draw_time: failed to read font '{path}': {e}");
+                    None
+                },
+            }
+        } else {
+            None
+        };
 
         // Pre-generate the color bar pattern into a template buffer.
         let layout = streamkit_core::types::VideoLayout::packed(width, height, pixel_format);
@@ -221,6 +260,9 @@ impl ProcessorNode for ColorBarsNode {
             let frame = if let Some(pool) = &context.video_pool {
                 let mut pooled = pool.get(total_bytes);
                 pooled.as_mut_slice()[..total_bytes].copy_from_slice(&template);
+                if let Some(ref font) = draw_time_font {
+                    stamp_time(pooled.as_mut_slice(), width, height, pixel_format, &layout, font);
+                }
                 streamkit_core::types::VideoFrame::from_pooled(
                     width,
                     height,
@@ -229,7 +271,10 @@ impl ProcessorNode for ColorBarsNode {
                     metadata,
                 )
             } else {
-                let data = template.clone();
+                let mut data = template.clone();
+                if let Some(ref font) = draw_time_font {
+                    stamp_time(&mut data, width, height, pixel_format, &layout, font);
+                }
                 streamkit_core::types::VideoFrame::with_metadata(
                     width,
                     height,
@@ -346,6 +391,123 @@ fn generate_smpte_colorbars_i420(
             let (_, u, v) = SMPTE_BARS_YUV[bar_idx];
             data[u_plane.offset + row * u_plane.stride + col] = u;
             data[v_plane.offset + row * v_plane.stride + col] = v;
+        }
+    }
+}
+
+// ── draw_time stamping ──────────────────────────────────────────────────────
+
+/// Font size (px) used for the wall-clock timestamp overlay.
+const DRAW_TIME_FONT_SIZE: f32 = 24.0;
+
+/// Stamp the current wall-clock time (`HH:MM:SS.mmm`) onto a frame buffer.
+///
+/// Works for both RGBA8 and I420 pixel formats.  For I420 the text is
+/// rasterized into a tiny RGBA scratch area and then each lit pixel is
+/// converted to YUV and poked into the Y/U/V planes.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+fn stamp_time(
+    data: &mut [u8],
+    width: u32,
+    height: u32,
+    pixel_format: PixelFormat,
+    layout: &streamkit_core::types::VideoLayout,
+    font: &fontdue::Font,
+) {
+    use std::time::SystemTime;
+
+    let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
+    let total_secs = now.as_secs();
+    let millis = now.subsec_millis();
+    let secs = total_secs % 60;
+    let mins = (total_secs / 60) % 60;
+    let hrs = (total_secs / 3600) % 24;
+    let time_str = format!("{hrs:02}:{mins:02}:{secs:02}.{millis:03}");
+
+    // Placement: bottom-left with a small margin.
+    let margin_x: i32 = 8;
+    let margin_y: i32 = 8;
+    let origin_y = height as i32 - margin_y - DRAW_TIME_FONT_SIZE as i32;
+
+    // Establish baseline from a reference glyph.
+    let (ref_metrics, _) = font.rasterize('A', DRAW_TIME_FONT_SIZE);
+    let baseline_y = ref_metrics.height as f32;
+
+    let mut cursor_x: f32 = 0.0;
+
+    for ch in time_str.chars() {
+        let (metrics, bitmap) = font.rasterize(ch, DRAW_TIME_FONT_SIZE);
+
+        let gx = margin_x + (cursor_x + metrics.xmin as f32) as i32;
+        let gy = origin_y + (baseline_y - metrics.ymin as f32) as i32 - metrics.height as i32;
+
+        for row in 0..metrics.height {
+            let dst_y = gy + row as i32;
+            if dst_y < 0 || dst_y >= height as i32 {
+                continue;
+            }
+            for col in 0..metrics.width {
+                let dst_x = gx + col as i32;
+                if dst_x < 0 || dst_x >= width as i32 {
+                    continue;
+                }
+                let coverage = bitmap[row * metrics.width + col];
+                if coverage == 0 {
+                    continue;
+                }
+
+                let px = dst_x as usize;
+                let py = dst_y as usize;
+
+                match pixel_format {
+                    PixelFormat::Rgba8 => {
+                        let stride = width as usize * 4;
+                        let off = py * stride + px * 4;
+                        // Alpha-blend white text over the existing pixel.
+                        let alpha = u16::from(coverage);
+                        let inv = 255 - alpha;
+                        let dr = u16::from(data[off]);
+                        let dg = u16::from(data[off + 1]);
+                        let db = u16::from(data[off + 2]);
+                        data[off] = ((255 * alpha + dr * inv + 128) / 255) as u8;
+                        data[off + 1] = ((255 * alpha + dg * inv + 128) / 255) as u8;
+                        data[off + 2] = ((255 * alpha + db * inv + 128) / 255) as u8;
+                        data[off + 3] = 255;
+                    },
+                    PixelFormat::I420 => {
+                        let planes = layout.planes();
+                        let y_plane = planes[0];
+                        let u_plane = planes[1];
+                        let v_plane = planes[2];
+
+                        // White in YUV = Y:235, U:128, V:128
+                        let alpha = u16::from(coverage);
+                        let inv = 255 - alpha;
+
+                        let y_off = y_plane.offset + py * y_plane.stride + px;
+                        let old_y = u16::from(data[y_off]);
+                        data[y_off] = ((235 * alpha + old_y * inv + 128) / 255) as u8;
+
+                        // Chroma planes are half-resolution; update only once
+                        // per 2×2 block (when both coords are even).
+                        if px % 2 == 0 && py % 2 == 0 {
+                            let cx = px / 2;
+                            let cy = py / 2;
+                            let u_off = u_plane.offset + cy * u_plane.stride + cx;
+                            let v_off = v_plane.offset + cy * v_plane.stride + cx;
+                            let old_u = u16::from(data[u_off]);
+                            let old_v = u16::from(data[v_off]);
+                            data[u_off] = ((128 * alpha + old_u * inv + 128) / 255) as u8;
+                            data[v_off] = ((128 * alpha + old_v * inv + 128) / 255) as u8;
+                        }
+                    },
+                }
+            }
+        }
+
+        cursor_x += metrics.advance_width;
+        if (margin_x as f32 + cursor_x) >= width as f32 {
+            break;
         }
     }
 }
