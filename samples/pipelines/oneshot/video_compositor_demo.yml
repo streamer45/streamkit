@@ -2,21 +2,19 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-# Demonstrates the video::compositor node with two colorbars sources:
-#   - A full-size 640x480 background (I420, sweep bar disabled)
-#   - A smaller 320x240 picture-in-picture overlay (RGBA8) with explicit
-#     positioning, rotation, and a text overlay rendered with real fonts.
+# Demonstrates the video::compositor node with three layers:
+#   1. A full-size 640x480 background colorbars (I420, sweep bar disabled)
+#   2. A smaller 320x240 PiP colorbars overlay (RGBA8) with explicit
+#      positioning and 15° clockwise rotation
+#   3. A text overlay ("StreamKit Demo") rendered with a real font
+#      (DejaVu Sans, bundled in assets/fonts/)
 #
 # Per-layer rect, opacity, rotation_degrees, and text overlays can be
 # updated at runtime via UpdateParams (JSON) — changes take effect on
 # the very next composited frame.
-#
-# NOTE: Deeply nested params trigger a serde_saphyr parsing limitation
-# with untagged enums, so text/image overlays are omitted from this
-# static YAML sample.  They work correctly via UpdateParams JSON.
 
 name: Video Compositor Demo
-description: Composites two colorbars sources (main + PiP) through the compositor node with explicit positioning and rotation, encodes to VP9, and streams a WebM via http_output with real-time pacing (3 seconds)
+description: Composites two colorbars sources (main + PiP) with a text overlay through the compositor node, encodes to VP9, and streams a WebM via http_output with real-time pacing (3 seconds)
 mode: oneshot
 
 nodes:
@@ -63,6 +61,18 @@ nodes:
           opacity: 0.9
           z_index: 1
           rotation_degrees: 15.0
+      # Text overlay rendered with the bundled DejaVu Sans font.
+      text_overlays:
+        - text: "StreamKit Demo"
+          rect:
+            x: 20
+            y: 20
+            width: 400
+            height: 40
+          color: [255, 255, 255, 230]
+          font_size: 32
+          opacity: 1.0
+          font_path: assets/fonts/DejaVuSans.ttf
     needs:
       - colorbars_bg
       - colorbars_pip
