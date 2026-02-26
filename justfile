@@ -276,6 +276,7 @@ lint-plugins:
     @cd plugins/native/pocket-tts && cargo fmt -- --check && cargo clippy -- -D warnings
     @cd plugins/native/nllb && cargo fmt -- --check && CMAKE_ARGS="-DCMAKE_INSTALL_PREFIX=$$(pwd)/target/cmake-install" cargo clippy -- -D warnings
     @cd plugins/native/supertonic && cargo fmt -- --check && cargo clippy -- -D warnings
+    @cd plugins/native/moonshine && cargo fmt -- --check && cargo clippy -- -D warnings
     @echo "✓ All native plugins passed linting"
 
 # Auto-fix formatting and linting issues in native plugins
@@ -290,6 +291,7 @@ fix-plugins:
     @cd plugins/native/pocket-tts && cargo fmt && cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
     @cd plugins/native/nllb && cargo fmt && CMAKE_ARGS="-DCMAKE_INSTALL_PREFIX=$$(pwd)/target/cmake-install" cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
     @cd plugins/native/supertonic && cargo fmt && cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
+    @cd plugins/native/moonshine && cargo fmt && cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
     @echo "✓ All native plugins fixed"
 
 # --- Profiling ---
@@ -720,7 +722,7 @@ download-tenvad-models:
 
 # Download all models (for Docker deployment)
 # NOTE: NLLB is CC-BY-NC-4.0 (non-commercial only) - skipped by default
-download-models: download-whisper-models download-silero-vad download-kokoro-models download-piper-models download-matcha-models download-sensevoice-models download-tenvad-models
+download-models: download-whisper-models download-silero-vad download-kokoro-models download-piper-models download-matcha-models download-sensevoice-models download-tenvad-models download-moonshine-models
     @echo ""
     @echo "✓ All models downloaded to ./models/"
     @echo ""
@@ -854,12 +856,49 @@ upload-supertonic-plugin: build-plugin-native-supertonic
     @curl -X POST -F plugin=@target/release/libsupertonic.so \
         http://127.0.0.1:4545/api/v1/plugins
 
+# Download Moonshine models
+download-moonshine-models:
+    @echo "Downloading Moonshine models..."
+    @mkdir -p models
+    @if [ -f models/moonshine-base-en.tar.bz2 ]; then \
+        echo "✓ Moonshine archive already exists at models/moonshine-base-en.tar.bz2"; \
+    else \
+        echo "Downloading moonshine-base-en.tar.bz2..." && \
+        curl -L -o models/moonshine-base-en.tar.bz2 \
+            https://huggingface.co/streamkit/moonshine-models/resolve/main/moonshine-base-en.tar.bz2 && \
+        echo "✓ Moonshine archive downloaded"; \
+    fi
+    @if [ -d models/moonshine-base-en ]; then \
+        echo "✓ Moonshine models already extracted at models/moonshine-base-en"; \
+    else \
+        echo "Extracting models..." && \
+        cd models && tar xf moonshine-base-en.tar.bz2 && \
+        echo "✓ Moonshine base (English) models ready at models/moonshine-base-en"; \
+    fi
+
+# Setup Moonshine STT (download models)
+setup-moonshine: download-moonshine-models
+    @echo "✓ Moonshine STT setup complete!"
+
+# Build native Moonshine STT plugin
+[working-directory: 'plugins/native/moonshine']
+build-plugin-native-moonshine:
+    @echo "Building native Moonshine STT plugin..."
+    @cargo build --release
+
+# Upload Moonshine plugin to running server
+[working-directory: 'plugins/native/moonshine']
+upload-moonshine-plugin: build-plugin-native-moonshine
+    @echo "Uploading Moonshine plugin to server..."
+    @curl -X POST -F plugin=@target/release/libmoonshine.so \
+        http://127.0.0.1:4545/api/v1/plugins
+
 # Build specific native plugin by name
 build-plugin-native name:
     @just build-plugin-native-{{name}}
 
 # Build all native plugin examples
-build-plugins-native: build-plugin-native-gain build-plugin-native-whisper build-plugin-native-kokoro build-plugin-native-piper build-plugin-native-matcha build-plugin-native-pocket-tts build-plugin-native-sensevoice build-plugin-native-nllb build-plugin-native-vad build-plugin-native-helsinki build-plugin-native-supertonic
+build-plugins-native: build-plugin-native-gain build-plugin-native-whisper build-plugin-native-kokoro build-plugin-native-piper build-plugin-native-matcha build-plugin-native-pocket-tts build-plugin-native-sensevoice build-plugin-native-nllb build-plugin-native-vad build-plugin-native-helsinki build-plugin-native-supertonic build-plugin-native-moonshine
 
 ## Combined
 
@@ -893,7 +932,7 @@ copy-plugins-native:
     cp examples/plugins/gain-native/target/release/libgain_plugin_native.* .plugins/native/ 2>/dev/null || true
 
     # Official native plugins (repo-local)
-    for name in whisper kokoro piper matcha vad sensevoice nllb helsinki supertonic; do
+    for name in whisper kokoro piper matcha vad sensevoice nllb helsinki supertonic moonshine; do
         for f in \
             plugins/native/"$name"/target/release/lib"$name".so \
             plugins/native/"$name"/target/release/lib"$name".so.* \

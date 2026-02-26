@@ -119,16 +119,10 @@ extern "C" {
     /// Creates a stream associated with a transcriber.
     ///
     /// Returns a non-negative stream handle on success, or a negative error code.
-    pub fn moonshine_create_stream(
-        transcriber_handle: i32,
-        flags: u32,
-    ) -> i32;
+    pub fn moonshine_create_stream(transcriber_handle: i32, flags: u32) -> i32;
 
     /// Releases the resources used by a stream.
-    pub fn moonshine_free_stream(
-        transcriber_handle: i32,
-        stream_handle: i32,
-    ) -> i32;
+    pub fn moonshine_free_stream(transcriber_handle: i32, stream_handle: i32) -> i32;
 
     /// Starts a stream. Call before adding audio data.
     ///
@@ -136,18 +130,12 @@ extern "C" {
     /// audio input (e.g. when the user mutes), so we need a way to start fresh.
     ///
     /// Returns zero on success, or a non-zero error code.
-    pub fn moonshine_start_stream(
-        transcriber_handle: i32,
-        stream_handle: i32,
-    ) -> i32;
+    pub fn moonshine_start_stream(transcriber_handle: i32, stream_handle: i32) -> i32;
 
     /// Stops a stream.
     ///
     /// Returns zero on success, or a non-zero error code.
-    pub fn moonshine_stop_stream(
-        transcriber_handle: i32,
-        stream_handle: i32,
-    ) -> i32;
+    pub fn moonshine_stop_stream(transcriber_handle: i32, stream_handle: i32) -> i32;
 
     /// Adds new audio data to a stream's buffer.
     ///

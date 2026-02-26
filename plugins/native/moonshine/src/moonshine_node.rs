@@ -135,11 +135,7 @@ impl NativeProcessorNode for MoonshineNode {
         };
 
         let model_dir = model_dir.canonicalize().map_err(|e| {
-            format!(
-                "Failed to canonicalize model dir '{}': {}",
-                model_dir.display(),
-                e
-            )
+            format!("Failed to canonicalize model dir '{}': {}", model_dir.display(), e)
         })?;
 
         let model_dir_str = model_dir.to_string_lossy().to_string();
@@ -147,12 +143,7 @@ impl NativeProcessorNode for MoonshineNode {
         // Cache key: (model_dir, model_arch)
         let cache_key = (model_dir_str.clone(), config.model_arch.clone());
 
-        plugin_info!(
-            logger,
-            "Cache key: dir='{}' arch='{}'",
-            cache_key.0,
-            cache_key.1
-        );
+        plugin_info!(logger, "Cache key: dir='{}' arch='{}'", cache_key.0, cache_key.1);
 
         // Check cache
         let cached_handle = {
@@ -222,9 +213,7 @@ impl NativeProcessorNode for MoonshineNode {
 
         // Create and start a stream for this node instance.
         // Each node gets its own stream, while the transcriber may be shared.
-        let stream_handle = unsafe {
-            ffi::moonshine_create_stream(transcriber.get(), 0)
-        };
+        let stream_handle = unsafe { ffi::moonshine_create_stream(transcriber.get(), 0) };
         if stream_handle < 0 {
             let error_msg = unsafe {
                 let ptr = ffi::moonshine_error_to_string(stream_handle);
@@ -237,9 +226,7 @@ impl NativeProcessorNode for MoonshineNode {
             return Err(format!("Failed to create Moonshine stream: {error_msg}"));
         }
 
-        let start_err = unsafe {
-            ffi::moonshine_start_stream(transcriber.get(), stream_handle)
-        };
+        let start_err = unsafe { ffi::moonshine_start_stream(transcriber.get(), stream_handle) };
         if start_err != ffi::MOONSHINE_ERROR_NONE {
             let error_msg = unsafe {
                 let ptr = ffi::moonshine_error_to_string(start_err);
@@ -265,12 +252,7 @@ impl NativeProcessorNode for MoonshineNode {
         })
     }
 
-    fn process(
-        &mut self,
-        _pin: &str,
-        packet: Packet,
-        output: &OutputSender,
-    ) -> Result<(), String> {
+    fn process(&mut self, _pin: &str, packet: Packet, output: &OutputSender) -> Result<(), String> {
         match packet {
             Packet::Audio(frame) => {
                 // Validate audio format (must be 16kHz mono f32)
@@ -354,7 +336,7 @@ impl NativeProcessorNode for MoonshineNode {
                 self.absolute_time_ms += duration_ms;
 
                 Ok(())
-            }
+            },
             _ => Err("Moonshine plugin only accepts audio packets".to_string()),
         }
     }
@@ -367,9 +349,8 @@ impl NativeProcessorNode for MoonshineNode {
         plugin_info!(self.logger, "Flush called, finalizing stream");
 
         // Stop the stream to signal no more audio is coming.
-        let stop_err = unsafe {
-            ffi::moonshine_stop_stream(self.transcriber.get(), self.stream_handle)
-        };
+        let stop_err =
+            unsafe { ffi::moonshine_stop_stream(self.transcriber.get(), self.stream_handle) };
         if stop_err != ffi::MOONSHINE_ERROR_NONE {
             let error_msg = unsafe {
                 let ptr = ffi::moonshine_error_to_string(stop_err);
@@ -444,8 +425,7 @@ impl MoonshineNode {
 
         // Allow: line_count from FFI is bounded by available memory; truncation won't occur
         #[allow(clippy::cast_possible_truncation)]
-        let lines =
-            unsafe { std::slice::from_raw_parts(transcript.lines, line_count as usize) };
+        let lines = unsafe { std::slice::from_raw_parts(transcript.lines, line_count as usize) };
 
         if self.config.is_streaming() {
             self.process_streaming_lines(lines, output)?;
@@ -489,16 +469,10 @@ impl MoonshineNode {
             if line.is_complete != 0 {
                 // This line is finalized — emit it
                 // Allow: start_time is in seconds, converting to ms
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss
-                )]
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 let start_time_ms = (line.start_time * 1000.0) as u64;
                 // Allow: duration is in seconds, converting to ms
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss
-                )]
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 let end_time_ms = start_time_ms + (line.duration * 1000.0) as u64;
 
                 let segment = TranscriptionSegment {
@@ -508,12 +482,7 @@ impl MoonshineNode {
                     confidence: None,
                 };
 
-                plugin_info!(
-                    self.logger,
-                    "Emitting completed line {}: '{}'",
-                    line_idx,
-                    trimmed
-                );
+                plugin_info!(self.logger, "Emitting completed line {}: '{}'", line_idx, trimmed);
 
                 output.send(
                     "out",

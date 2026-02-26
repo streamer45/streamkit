@@ -15,7 +15,6 @@ pub struct MoonshineConfig {
     /// Model architecture to use
     #[serde(default = "default_model_arch")]
     pub model_arch: String,
-
 }
 
 fn default_model_dir() -> String {
@@ -28,10 +27,7 @@ fn default_model_arch() -> String {
 
 impl Default for MoonshineConfig {
     fn default() -> Self {
-        Self {
-            model_dir: default_model_dir(),
-            model_arch: default_model_arch(),
-        }
+        Self { model_dir: default_model_dir(), model_arch: default_model_arch() }
     }
 }
 

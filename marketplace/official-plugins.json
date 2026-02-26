@@ -302,6 +302,33 @@
       ]
     },
     {
+      "id": "moonshine",
+      "name": "Moonshine",
+      "version": "0.1.0",
+      "node_kind": "moonshine",
+      "kind": "native",
+      "entrypoint": "libmoonshine.so",
+      "artifact": "plugins/native/moonshine/target/release/libmoonshine.so",
+      "description": "Streaming speech-to-text using Moonshine with built-in VAD",
+      "license": "MPL-2.0",
+      "models": [
+        {
+          "id": "moonshine-base-en",
+          "name": "Moonshine base (English)",
+          "default": true,
+          "source": "huggingface",
+          "repo_id": "streamkit/moonshine-models",
+          "revision": "main",
+          "files": [
+            "moonshine-base-en.tar.bz2"
+          ],
+          "expected_size_bytes": 0,
+          "license": "MIT",
+          "license_url": "https://github.com/moonshine-ai/moonshine/blob/main/LICENSE"
+        }
+      ]
+    },
+    {
       "id": "whisper",
       "name": "Whisper",
       "version": "0.1.1",
