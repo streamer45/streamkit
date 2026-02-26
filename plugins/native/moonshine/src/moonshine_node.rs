@@ -228,6 +228,10 @@ impl NativeProcessorNode for MoonshineNode {
 
         let start_err = unsafe { ffi::moonshine_start_stream(transcriber.get(), stream_handle) };
         if start_err != ffi::MOONSHINE_ERROR_NONE {
+            // Free the stream we just created before returning the error
+            unsafe {
+                ffi::moonshine_free_stream(transcriber.get(), stream_handle);
+            }
             let error_msg = unsafe {
                 let ptr = ffi::moonshine_error_to_string(start_err);
                 if ptr.is_null() {
