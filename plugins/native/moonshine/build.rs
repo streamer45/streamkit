@@ -42,6 +42,7 @@ fn main() {
     let ort_lib_dir = find_or_download_onnxruntime(&out_dir);
 
     // Step 3: Compile moonshine C++ core into a static archive
+    println!("cargo:warning=Compiling Moonshine C++ core (17 files, may take a few minutes)...");
     build_moonshine_static(&core_dir);
 
     // Step 4: Link against onnxruntime dynamically (for ORT symbols used by moonshine)
@@ -80,12 +81,14 @@ fn get_moonshine_source(out_dir: &Path) -> PathBuf {
     );
     let tarball_path = out_dir.join(format!("moonshine-v{MOONSHINE_VERSION}.tar.gz"));
 
-    eprintln!("Downloading Moonshine v{MOONSHINE_VERSION} source...");
+    println!(
+        "cargo:warning=Downloading Moonshine v{MOONSHINE_VERSION} source (first build only)..."
+    );
     run_command(
         Command::new("curl").args(["--fail", "-L", "-o"]).arg(&tarball_path).arg(&tarball_url),
     );
 
-    eprintln!("Extracting Moonshine source...");
+    println!("cargo:warning=Extracting Moonshine source...");
     run_command(Command::new("tar").arg("xf").arg(&tarball_path).arg("-C").arg(out_dir));
 
     assert!(
@@ -113,7 +116,7 @@ fn find_or_download_onnxruntime(out_dir: &Path) -> PathBuf {
     if let Ok(dir) = env::var("ORT_LIB_DIR") {
         let path = PathBuf::from(&dir);
         if has_onnxruntime(&path) {
-            eprintln!("Using ORT_LIB_DIR={dir}");
+            println!("cargo:warning=Using ORT_LIB_DIR={dir}");
             return path;
         }
         panic!("ORT_LIB_DIR={dir} does not contain libonnxruntime.so*");
@@ -123,7 +126,7 @@ fn find_or_download_onnxruntime(out_dir: &Path) -> PathBuf {
     for dir in &search_paths {
         let path = PathBuf::from(dir);
         if has_onnxruntime(&path) {
-            eprintln!("Found onnxruntime at {dir}");
+            println!("cargo:warning=Found onnxruntime at {dir}");
             return path;
         }
     }
@@ -140,7 +143,7 @@ fn download_onnxruntime(out_dir: &Path) -> PathBuf {
     let lib_dir = ort_extract_dir.join("lib");
 
     if has_onnxruntime(&lib_dir) {
-        eprintln!("Using cached onnxruntime at {}", lib_dir.display());
+        println!("cargo:warning=Using cached onnxruntime at {}", lib_dir.display());
         return lib_dir;
     }
 
@@ -149,12 +152,12 @@ fn download_onnxruntime(out_dir: &Path) -> PathBuf {
     );
     let tarball_path = out_dir.join(format!("onnxruntime-{ORT_VERSION}.tgz"));
 
-    eprintln!("Downloading ONNX Runtime v{ORT_VERSION}...");
+    println!("cargo:warning=Downloading ONNX Runtime v{ORT_VERSION} (first build only)...");
     run_command(
         Command::new("curl").args(["--fail", "-L", "-o"]).arg(&tarball_path).arg(&tarball_url),
     );
 
-    eprintln!("Extracting ONNX Runtime...");
+    println!("cargo:warning=Extracting ONNX Runtime...");
     run_command(Command::new("tar").arg("xf").arg(&tarball_path).arg("-C").arg(out_dir));
 
     assert!(
