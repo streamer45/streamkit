@@ -104,34 +104,68 @@ fn get_moonshine_source(out_dir: &Path) -> PathBuf {
 // ONNX Runtime discovery / download
 // ---------------------------------------------------------------------------
 
-/// Finds an existing onnxruntime installation or downloads one.
+/// Required ORT major version (derived from `ORT_VERSION`).
+const ORT_MAJOR: u32 = 1;
+const ORT_MINOR: u32 = 23;
+
+/// Finds a compatible onnxruntime installation or downloads one.
 ///
 /// Search order:
-///   1. `ORT_LIB_DIR` environment variable
-///   2. `/usr/local/lib` (common for CI / system installs)
-///   3. `/usr/lib/x86_64-linux-gnu`
-///   4. `/usr/lib`
+///   1. `ORT_LIB_DIR` environment variable (must contain compatible version)
+///   2. `/usr/local/lib` (only if version matches)
+///   3. `/usr/lib/x86_64-linux-gnu` (only if version matches)
+///   4. `/usr/lib` (only if version matches)
 ///   5. Download from GitHub releases into OUT_DIR
+#[allow(clippy::similar_names)] // path vs patch are semantically distinct
 fn find_or_download_onnxruntime(out_dir: &Path) -> PathBuf {
     if let Ok(dir) = env::var("ORT_LIB_DIR") {
         let path = PathBuf::from(&dir);
-        if has_onnxruntime(&path) {
-            println!("cargo:warning=Using ORT_LIB_DIR={dir}");
-            return path;
+        assert!(has_onnxruntime(&path), "ORT_LIB_DIR={dir} does not contain libonnxruntime.so*");
+        match ort_version_from_dir(&path) {
+            Some((major, minor, _)) if major == ORT_MAJOR && minor == ORT_MINOR => {
+                println!("cargo:warning=Using ORT_LIB_DIR={dir} (v{major}.{minor})");
+                return path;
+            },
+            Some((major, minor, patch)) => {
+                panic!(
+                    "ORT_LIB_DIR={dir} contains ORT {major}.{minor}.{patch} \
+                     but moonshine requires {ORT_MAJOR}.{ORT_MINOR}.x"
+                );
+            },
+            None => {
+                // Can't determine version — trust the user
+                println!("cargo:warning=Using ORT_LIB_DIR={dir} (version unknown)");
+                return path;
+            },
         }
-        panic!("ORT_LIB_DIR={dir} does not contain libonnxruntime.so*");
     }
 
     let search_paths = ["/usr/local/lib", "/usr/lib/x86_64-linux-gnu", "/usr/lib"];
     for dir in &search_paths {
         let path = PathBuf::from(dir);
-        if has_onnxruntime(&path) {
-            println!("cargo:warning=Found onnxruntime at {dir}");
-            return path;
+        if !has_onnxruntime(&path) {
+            continue;
+        }
+        match ort_version_from_dir(&path) {
+            Some((major, minor, _)) if major == ORT_MAJOR && minor == ORT_MINOR => {
+                println!("cargo:warning=Found compatible onnxruntime {major}.{minor} at {dir}");
+                return path;
+            },
+            Some((major, minor, _)) => {
+                println!(
+                    "cargo:warning=Skipping onnxruntime {major}.{minor} at {dir} \
+                     (need {ORT_MAJOR}.{ORT_MINOR})"
+                );
+            },
+            None => {
+                println!(
+                    "cargo:warning=Skipping onnxruntime at {dir} (could not determine version)"
+                );
+            },
         }
     }
 
-    // Not found on system — download it
+    // No compatible version on system — download it
     download_onnxruntime(out_dir)
 }
 
@@ -184,6 +218,30 @@ fn has_onnxruntime(dir: &Path) -> bool {
         }
     }
     false
+}
+
+/// Attempts to extract the ORT version from versioned symlinks in a directory.
+///
+/// Looks for files named `libonnxruntime.so.X.Y.Z` and parses out the version.
+/// Returns `None` if no versioned file is found.
+fn ort_version_from_dir(dir: &Path) -> Option<(u32, u32, u32)> {
+    let entries = fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        // Match libonnxruntime.so.X.Y.Z (the most specific versioned name)
+        if let Some(ver_str) = name.strip_prefix("libonnxruntime.so.") {
+            let parts: Vec<&str> = ver_str.split('.').collect();
+            if parts.len() == 3 {
+                if let (Ok(major), Ok(minor), Ok(patch)) =
+                    (parts[0].parse::<u32>(), parts[1].parse::<u32>(), parts[2].parse::<u32>())
+                {
+                    return Some((major, minor, patch));
+                }
+            }
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
