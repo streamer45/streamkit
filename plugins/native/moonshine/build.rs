@@ -2,19 +2,241 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-// Allow: println! in build.rs is the standard way to communicate with Cargo, not logging
-#![allow(clippy::disallowed_macros)]
+//! Build script for the Moonshine native plugin.
+//!
+//! Compiles the Moonshine C++ core from source as a static library, eliminating
+//! the need for users to pre-install libmoonshine. At runtime, the plugin still
+//! needs libonnxruntime.so (typically bundled alongside the plugin .so).
+//!
+//! Environment variables:
+//!   MOONSHINE_SRC_DIR  - Path to a local moonshine source checkout (skips download)
+//!   ORT_LIB_DIR        - Path to directory containing libonnxruntime.so (skips search)
+
+// Allow: println! in build.rs is the standard way to communicate with Cargo, not logging.
+// Allow: expect/unwrap are standard in build scripts — panicking IS the error handling.
+#![allow(clippy::disallowed_macros, clippy::expect_used, clippy::unwrap_used)]
+
+use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+/// Moonshine C API version to build from source.
+const MOONSHINE_VERSION: &str = "0.0.49";
+
+/// ONNX Runtime version compatible with Moonshine v0.0.49.
+const ORT_VERSION: &str = "1.23.2";
 
 fn main() {
-    // Link against libmoonshine (the Moonshine C API library)
-    println!("cargo:rustc-link-lib=moonshine");
+    println!("cargo:rerun-if-env-changed=MOONSHINE_SRC_DIR");
+    println!("cargo:rerun-if-env-changed=ORT_LIB_DIR");
+    println!("cargo:rerun-if-changed=build.rs");
 
-    // Common library search paths
-    println!("cargo:rustc-link-search=native=/usr/local/lib");
-    println!("cargo:rustc-link-search=native=/usr/lib");
-    println!("cargo:rustc-link-search=native=/usr/lib/x86_64-linux-gnu");
-    println!("cargo:rustc-link-search=native=/opt/homebrew/lib");
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set"));
 
-    // Add rpath so the plugin can find libmoonshine at runtime
-    println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/local/lib");
+    // Step 1: Get moonshine source (download or use local checkout)
+    let moonshine_src = get_moonshine_source(&out_dir);
+    let core_dir = moonshine_src.join("core");
+
+    // Step 2: Find or download ONNX Runtime shared library
+    let ort_lib_dir = find_or_download_onnxruntime(&out_dir);
+
+    // Step 3: Compile moonshine C++ core into a static archive
+    build_moonshine_static(&core_dir);
+
+    // Step 4: Link against onnxruntime dynamically (for ORT symbols used by moonshine)
+    println!("cargo:rustc-link-search=native={}", ort_lib_dir.display());
+    println!("cargo:rustc-link-lib=dylib=onnxruntime");
+
+    // $ORIGIN rpath so the plugin finds libonnxruntime.so next to itself at runtime
+    println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
+}
+
+// ---------------------------------------------------------------------------
+// Moonshine source acquisition
+// ---------------------------------------------------------------------------
+
+/// Returns the path to the moonshine source root directory.
+///
+/// If `MOONSHINE_SRC_DIR` is set, uses that path directly. Otherwise downloads
+/// the source tarball from GitHub.
+fn get_moonshine_source(out_dir: &Path) -> PathBuf {
+    if let Ok(src_dir) = env::var("MOONSHINE_SRC_DIR") {
+        let path = PathBuf::from(src_dir);
+        assert!(
+            path.join("core/moonshine-c-api.h").exists(),
+            "MOONSHINE_SRC_DIR does not contain core/moonshine-c-api.h"
+        );
+        return path;
+    }
+
+    let extract_dir = out_dir.join(format!("moonshine-{MOONSHINE_VERSION}"));
+    if extract_dir.join("core/moonshine-c-api.h").exists() {
+        return extract_dir;
+    }
+
+    let tarball_url = format!(
+        "https://github.com/moonshine-ai/moonshine/archive/refs/tags/v{MOONSHINE_VERSION}.tar.gz"
+    );
+    let tarball_path = out_dir.join(format!("moonshine-v{MOONSHINE_VERSION}.tar.gz"));
+
+    eprintln!("Downloading Moonshine v{MOONSHINE_VERSION} source...");
+    run_command(
+        Command::new("curl").args(["--fail", "-L", "-o"]).arg(&tarball_path).arg(&tarball_url),
+    );
+
+    eprintln!("Extracting Moonshine source...");
+    run_command(Command::new("tar").arg("xf").arg(&tarball_path).arg("-C").arg(out_dir));
+
+    assert!(
+        extract_dir.join("core/moonshine-c-api.h").exists(),
+        "Extracted moonshine source missing core/moonshine-c-api.h at {}",
+        extract_dir.display()
+    );
+
+    extract_dir
+}
+
+// ---------------------------------------------------------------------------
+// ONNX Runtime discovery / download
+// ---------------------------------------------------------------------------
+
+/// Finds an existing onnxruntime installation or downloads one.
+///
+/// Search order:
+///   1. `ORT_LIB_DIR` environment variable
+///   2. `/usr/local/lib` (common for CI / system installs)
+///   3. `/usr/lib/x86_64-linux-gnu`
+///   4. `/usr/lib`
+///   5. Download from GitHub releases into OUT_DIR
+fn find_or_download_onnxruntime(out_dir: &Path) -> PathBuf {
+    if let Ok(dir) = env::var("ORT_LIB_DIR") {
+        let path = PathBuf::from(&dir);
+        if has_onnxruntime(&path) {
+            eprintln!("Using ORT_LIB_DIR={dir}");
+            return path;
+        }
+        panic!("ORT_LIB_DIR={dir} does not contain libonnxruntime.so*");
+    }
+
+    let search_paths = ["/usr/local/lib", "/usr/lib/x86_64-linux-gnu", "/usr/lib"];
+    for dir in &search_paths {
+        let path = PathBuf::from(dir);
+        if has_onnxruntime(&path) {
+            eprintln!("Found onnxruntime at {dir}");
+            return path;
+        }
+    }
+
+    // Not found on system — download it
+    download_onnxruntime(out_dir)
+}
+
+/// Downloads the ONNX Runtime shared library from GitHub releases.
+#[allow(clippy::similar_names)] // ort_extract_dir vs out_dir are semantically distinct
+fn download_onnxruntime(out_dir: &Path) -> PathBuf {
+    let ort_dir_name = format!("onnxruntime-linux-x64-{ORT_VERSION}");
+    let ort_extract_dir = out_dir.join(&ort_dir_name);
+    let lib_dir = ort_extract_dir.join("lib");
+
+    if has_onnxruntime(&lib_dir) {
+        eprintln!("Using cached onnxruntime at {}", lib_dir.display());
+        return lib_dir;
+    }
+
+    let tarball_url = format!(
+        "https://github.com/microsoft/onnxruntime/releases/download/v{ORT_VERSION}/{ort_dir_name}.tgz"
+    );
+    let tarball_path = out_dir.join(format!("onnxruntime-{ORT_VERSION}.tgz"));
+
+    eprintln!("Downloading ONNX Runtime v{ORT_VERSION}...");
+    run_command(
+        Command::new("curl").args(["--fail", "-L", "-o"]).arg(&tarball_path).arg(&tarball_url),
+    );
+
+    eprintln!("Extracting ONNX Runtime...");
+    run_command(Command::new("tar").arg("xf").arg(&tarball_path).arg("-C").arg(out_dir));
+
+    assert!(
+        has_onnxruntime(&lib_dir),
+        "Downloaded onnxruntime missing libonnxruntime.so in {}",
+        lib_dir.display()
+    );
+
+    lib_dir
+}
+
+/// Checks if a directory contains an onnxruntime shared library.
+fn has_onnxruntime(dir: &Path) -> bool {
+    if !dir.is_dir() {
+        return false;
+    }
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name == "libonnxruntime.so" || name.starts_with("libonnxruntime.so.") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+// ---------------------------------------------------------------------------
+// C++ compilation
+// ---------------------------------------------------------------------------
+
+/// Compiles the Moonshine C++ core into a static library using the `cc` crate.
+fn build_moonshine_static(core_dir: &Path) {
+    cc::Build::new()
+        .cpp(true)
+        .flag("-std=c++20")
+        .pic(true)
+        .warnings(false) // suppress warnings from third-party code
+        .opt_level_str("2")
+        // ---- Main moonshine source files ----
+        .file(core_dir.join("moonshine-c-api.cpp"))
+        .file(core_dir.join("cosine-distance.cpp"))
+        .file(core_dir.join("moonshine-model.cpp"))
+        .file(core_dir.join("moonshine-streaming-model.cpp"))
+        .file(core_dir.join("voice-activity-detector.cpp"))
+        .file(core_dir.join("silero-vad.cpp"))
+        .file(core_dir.join("resampler.cpp"))
+        .file(core_dir.join("transcriber.cpp"))
+        .file(core_dir.join("gemma-embedding-model.cpp"))
+        .file(core_dir.join("intent-recognizer.cpp"))
+        .file(core_dir.join("speaker-embedding-model.cpp"))
+        .file(core_dir.join("speaker-embedding-model-data.cpp"))
+        .file(core_dir.join("online-clusterer.cpp"))
+        // ---- ort-utils sub-library ----
+        .file(core_dir.join("ort-utils/ort-utils.cpp"))
+        .file(core_dir.join("ort-utils/moonshine-ort-allocator.cpp"))
+        .file(core_dir.join("ort-utils/moonshine-tensor-view.cpp"))
+        .file(core_dir.join("ort-utils/moonshine-tensor.cpp"))
+        // ---- bin-tokenizer sub-library ----
+        .file(core_dir.join("bin-tokenizer/bin-tokenizer.cpp"))
+        // ---- moonshine-utils sub-library ----
+        .file(core_dir.join("moonshine-utils/string-utils.cpp"))
+        .file(core_dir.join("moonshine-utils/debug-utils.cpp"))
+        // ---- Include directories ----
+        .include(core_dir)
+        .include(core_dir.join("moonshine-utils"))
+        .include(core_dir.join("ort-utils"))
+        .include(core_dir.join("bin-tokenizer"))
+        .include(core_dir.join("third-party/onnxruntime/include"))
+        .include(core_dir.join("third-party/utf-8"))
+        .compile("moonshine_core");
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Runs a command, panicking with a helpful message on failure.
+fn run_command(cmd: &mut Command) {
+    let status = cmd
+        .status()
+        .unwrap_or_else(|e| panic!("Failed to run {}: {e}", cmd.get_program().display()));
+    assert!(status.success(), "Command {} failed with {status}", cmd.get_program().display());
 }

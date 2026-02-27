@@ -55,6 +55,10 @@ jobs:
         working-directory: plugins/native/nllb
         run: cargo fmt -- --check
 
+      - name: Check formatting - Moonshine
+        working-directory: plugins/native/moonshine
+        run: cargo fmt -- --check
+
   # Lint plugins that can build without pre-installed native libraries
   lint-simple:
     name: Lint (Simple Plugins)
@@ -161,6 +165,34 @@ jobs:
 
       - name: Clippy - NLLB
         working-directory: plugins/native/nllb
+        run: cargo clippy -- -D warnings
+
+  # Lint Moonshine plugin (builds moonshine C++ core from source, needs ORT)
+  lint-moonshine:
+    name: Lint (Moonshine)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config libclang-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92.0"
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            plugins/native/moonshine
+          cache-on-failure: true
+
+      - name: Clippy - Moonshine
+        working-directory: plugins/native/moonshine
         run: cargo clippy -- -D warnings
 
   # Lint sherpa-onnx based plugins (Kokoro, Piper, Matcha, SenseVoice)

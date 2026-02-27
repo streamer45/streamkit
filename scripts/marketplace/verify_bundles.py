@@ -112,6 +112,14 @@ def main() -> int:
                         f"{plugin_id}: missing libonnxruntime.so in bundle"
                     )
 
+            # Moonshine plugin bundles onnxruntime (moonshine C++ is linked statically)
+            if plugin_id == "moonshine" and "libonnxruntime.so" in needed:
+                onnx_lib = tmp_path / "libonnxruntime.so"
+                if not onnx_lib.exists():
+                    errors.append(
+                        f"{plugin_id}: missing libonnxruntime.so in bundle"
+                    )
+
     if errors:
         print("Portability verification failed:")
         for err in errors:
