@@ -126,7 +126,15 @@ function buildConfig(
 export const useCompositorLayers = (
   options: UseCompositorLayersOptions
 ): UseCompositorLayersResult => {
-  const { nodeId, canvasWidth, canvasHeight, params, onConfigChange, onParamChange, throttleMs = 100 } = options;
+  const {
+    nodeId,
+    canvasWidth,
+    canvasHeight,
+    params,
+    onConfigChange,
+    onParamChange,
+    throttleMs = 100,
+  } = options;
 
   const [layers, setLayers] = useState<LayerState[]>(() =>
     parseLayers(params, canvasWidth, canvasHeight)
