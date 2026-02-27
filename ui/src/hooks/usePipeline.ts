@@ -226,9 +226,22 @@ export const usePipeline = () => {
   const setParam = useNodeParamsStore((s) => s.setParam);
   const resetNode = useNodeParamsStore((s) => s.resetNode);
 
+  // Ref to hold the latest regenerateYamlFromCanvas without adding it as
+  // a dependency of handleParamChange (which would cause identity churn).
+  const regenerateYamlRef = useRef<() => void>(() => {});
+
   const handleParamChange = useCallback(
     (nodeId: string, paramName: string, value: unknown) => {
       setParam(nodeId, paramName, value);
+      // Keep the YAML editor in sync with param changes made via the canvas
+      // (e.g. compositor layer drag / slider). The guard prevents a feedback
+      // loop when YAML editing triggers parseYamlToPipeline which stores the
+      // onParamChange callback inside node data but never calls it inline.
+      // We defer via queueMicrotask to avoid calling setState (setYamlString)
+      // while React is still rendering the component that triggered this change.
+      if (updateSourceRef.current !== 'yaml') {
+        queueMicrotask(() => regenerateYamlRef.current());
+      }
     },
     [setParam]
   );
@@ -256,6 +269,9 @@ export const usePipeline = () => {
     },
     [nodes, edges, mode]
   );
+
+  // Keep the ref in sync so handleParamChange always calls the latest version.
+  regenerateYamlRef.current = regenerateYamlFromCanvas;
 
   const handleExportYaml = () => {
     if (nodes.length === 0) return;

@@ -36,6 +36,7 @@ export interface UseCompositorLayersOptions {
   canvasHeight: number;
   params: Record<string, unknown>;
   onConfigChange?: (nodeId: string, config: Record<string, unknown>) => void;
+  onParamChange?: (nodeId: string, paramName: string, value: unknown) => void;
   isStaged?: boolean;
   throttleMs?: number;
 }
@@ -125,7 +126,7 @@ function buildConfig(
 export const useCompositorLayers = (
   options: UseCompositorLayersOptions
 ): UseCompositorLayersResult => {
-  const { nodeId, canvasWidth, canvasHeight, params, onConfigChange, throttleMs = 100 } = options;
+  const { nodeId, canvasWidth, canvasHeight, params, onConfigChange, onParamChange, throttleMs = 100 } = options;
 
   const [layers, setLayers] = useState<LayerState[]>(() =>
     parseLayers(params, canvasWidth, canvasHeight)
@@ -163,16 +164,35 @@ export const useCompositorLayers = (
 
   // Throttled config change
   const throttledConfigChange = useMemo(() => {
-    if (!onConfigChange) return null;
+    if (!onConfigChange && !onParamChange) return null;
     return throttle(
       (currentLayers: LayerState[]) => {
-        const config = buildConfig(params, currentLayers);
-        onConfigChange(nodeId, config);
+        if (onConfigChange) {
+          const config = buildConfig(params, currentLayers);
+          onConfigChange(nodeId, config);
+        } else if (onParamChange) {
+          // Design View path: update the layers param directly
+          const layersMap: Record<string, LayerConfig> = {};
+          for (const layer of currentLayers) {
+            layersMap[layer.id] = {
+              rect: {
+                x: Math.round(layer.x),
+                y: Math.round(layer.y),
+                width: Math.max(1, Math.round(layer.width)),
+                height: Math.max(1, Math.round(layer.height)),
+              },
+              opacity: Math.round(layer.opacity * 100) / 100,
+              z_index: layer.zIndex,
+              rotation_degrees: Math.round(layer.rotationDegrees * 10) / 10,
+            };
+          }
+          onParamChange(nodeId, 'layers', layersMap);
+        }
       },
       throttleMs,
       { leading: true, trailing: true }
     );
-  }, [nodeId, onConfigChange, params, throttleMs]);
+  }, [nodeId, onConfigChange, onParamChange, params, throttleMs]);
 
   // Cleanup throttle on unmount
   useEffect(

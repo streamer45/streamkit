@@ -304,10 +304,11 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
     canvasHeight,
     params: data.params ?? {},
     onConfigChange: data.onConfigChange,
+    onParamChange: data.onParamChange,
     isStaged: data.isStaged,
   });
 
-  const disabled = !data.onConfigChange;
+  const disabled = !data.onConfigChange && !data.onParamChange;
 
   // Show live indicator when node is in an active session and is not staged
   const showLiveIndicator = !data.isStaged && !!data.onConfigChange && !!data.sessionId;
