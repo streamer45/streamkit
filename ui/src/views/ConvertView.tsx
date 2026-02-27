@@ -464,6 +464,7 @@ const checkIfTranscriptionPipeline = (yaml: string): boolean => {
   return (
     lowerYaml.includes('plugin::native::whisper') ||
     lowerYaml.includes('plugin::native::sensevoice') ||
+    lowerYaml.includes('plugin::native::moonshine') ||
     lowerYaml.includes('transcription')
   );
 };

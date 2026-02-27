@@ -19,8 +19,8 @@ steps:
 
   - kind: plugin::native::moonshine
     params:
-      model_dir: models/moonshine-tiny-en
-      model_arch: tiny
+      model_dir: models/moonshine-base-en
+      model_arch: base
 
   - kind: core::json_serialize
     params:
