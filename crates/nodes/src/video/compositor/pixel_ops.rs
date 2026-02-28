@@ -1486,7 +1486,7 @@ mod simd {
         use std::arch::x86_64::{
             _mm_add_epi16, _mm_add_epi32, _mm_and_si128, _mm_loadu_si128, _mm_mullo_epi16,
             _mm_packs_epi32, _mm_packus_epi16, _mm_set1_epi16, _mm_set1_epi32, _mm_set_epi16,
-            _mm_setzero_si128, _mm_srai_epi16, _mm_srli_epi32, _mm_storeu_si128, _mm_unpacklo_epi8,
+            _mm_setzero_si128, _mm_srai_epi16, _mm_srli_epi32, _mm_unpacklo_epi8,
         };
 
         let simd_width = chroma_width & !3; // 4 chroma pairs per iteration
@@ -1604,7 +1604,7 @@ mod simd {
 
             // Store 8 bytes (4 UV pairs).
             let out_ptr = uv_out.as_mut_ptr().add(ccol * 2);
-            _mm_storeu_si128(out_ptr.cast(), interleaved);
+            std::ptr::copy_nonoverlapping((&raw const interleaved).cast::<u8>(), out_ptr, 8);
 
             ccol += 4;
         }
