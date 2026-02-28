@@ -547,7 +547,7 @@ pub fn scale_blit_rgba_rotated(
 
     let bb_rows = (bb_y1 - bb_y0) as usize;
     let first_row_byte = bb_y0 as usize * row_stride;
-    let dst_region = &mut dst[first_row_byte..];
+    let dst_region = &mut dst[first_row_byte..first_row_byte + bb_rows * row_stride];
 
     if bb_rows >= RAYON_ROW_THRESHOLD {
         use rayon::prelude::*;
@@ -556,15 +556,14 @@ pub fn scale_blit_rgba_rotated(
             let base_row = chunk_idx * RAYON_CHUNK_ROWS;
             for (j, row_slice) in chunk.chunks_mut(row_stride).enumerate() {
                 let row = base_row + j;
-                if row >= bb_rows {
-                    break;
-                }
+                // `row` is bounded by `bb_rows` which derives from i32 bounding-box coords.
                 #[allow(clippy::cast_possible_wrap)]
                 process_row(bb_y0 + row as i32, row_slice);
             }
         });
     } else {
-        for (i, row_slice) in dst_region.chunks_mut(row_stride).take(bb_rows).enumerate() {
+        for (i, row_slice) in dst_region.chunks_mut(row_stride).enumerate() {
+            // `i` is bounded by `bb_rows` which derives from i32 bounding-box coords.
             #[allow(clippy::cast_possible_wrap)]
             process_row(bb_y0 + i as i32, row_slice);
         }
