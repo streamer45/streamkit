@@ -650,7 +650,402 @@ mod simd {
         _mm_unpacklo_epi32(even_lo, odd_lo)
     }
 
-    // ── RGBA8 → I420 Y-plane (SSE2: 4 pixels / iter, i32 arithmetic) ───
+    // ── I420 → RGBA8 SSE4.1 variant ──────────────────────────────────
+
+    /// Convert up to `width` I420 pixels from one row to RGBA8 using SSE4.1.
+    ///
+    /// Same logic as [`i420_to_rgba8_row_sse2`] but uses `_mm_mullo_epi32`
+    /// for native i32 multiply instead of the 7-instruction `mul32_sse2`
+    /// emulation.
+    ///
+    /// Returns the number of pixels converted (always a multiple of 4).
+    #[target_feature(enable = "sse4.1")]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::similar_names)]
+    pub(super) unsafe fn i420_to_rgba8_row_sse41(
+        y_row: &[u8],
+        u_row: &[u8],
+        v_row: &[u8],
+        rgba_out: &mut [u8],
+        width: usize,
+    ) -> usize {
+        use std::arch::x86_64::{
+            _mm_add_epi32, _mm_mullo_epi32, _mm_or_si128, _mm_packs_epi32, _mm_packus_epi16,
+            _mm_set1_epi32, _mm_set1_epi8, _mm_set_epi32, _mm_setzero_si128, _mm_srai_epi32,
+            _mm_storeu_si128, _mm_sub_epi32, _mm_unpacklo_epi16, _mm_unpacklo_epi8,
+        };
+
+        let simd_width = width & !3;
+        if simd_width == 0 {
+            return 0;
+        }
+
+        let coeff_298 = _mm_set1_epi32(298);
+        let coeff_409 = _mm_set1_epi32(409);
+        let coeff_n100 = _mm_set1_epi32(-100);
+        let coeff_n208 = _mm_set1_epi32(-208);
+        let coeff_516 = _mm_set1_epi32(516);
+        let bias_16 = _mm_set1_epi32(16);
+        let bias_128 = _mm_set1_epi32(128);
+        let rounding = _mm_set1_epi32(128);
+        let alpha_mask = _mm_set1_epi32(0xFF00_0000_u32.cast_signed());
+        let zero = _mm_setzero_si128();
+
+        let mut col = 0usize;
+        while col < simd_width {
+            let y0 = i32::from(y_row[col]);
+            let y1 = i32::from(y_row[col + 1]);
+            let y2 = i32::from(y_row[col + 2]);
+            let y3 = i32::from(y_row[col + 3]);
+            let y32 = _mm_set_epi32(y3, y2, y1, y0);
+
+            let chroma_col = col / 2;
+            let u0 = i32::from(u_row[chroma_col]);
+            let u1 = i32::from(u_row[chroma_col + 1]);
+            let v0 = i32::from(v_row[chroma_col]);
+            let v1 = i32::from(v_row[chroma_col + 1]);
+            let u32x4 = _mm_set_epi32(u1, u1, u0, u0);
+            let v32x4 = _mm_set_epi32(v1, v1, v0, v0);
+
+            let c = _mm_sub_epi32(y32, bias_16);
+            let d = _mm_sub_epi32(u32x4, bias_128);
+            let e = _mm_sub_epi32(v32x4, bias_128);
+
+            let r32 = _mm_srai_epi32(
+                _mm_add_epi32(
+                    _mm_add_epi32(_mm_mullo_epi32(coeff_298, c), _mm_mullo_epi32(coeff_409, e)),
+                    rounding,
+                ),
+                8,
+            );
+
+            let g32 = _mm_srai_epi32(
+                _mm_add_epi32(
+                    _mm_add_epi32(
+                        _mm_add_epi32(
+                            _mm_mullo_epi32(coeff_298, c),
+                            _mm_mullo_epi32(coeff_n100, d),
+                        ),
+                        _mm_mullo_epi32(coeff_n208, e),
+                    ),
+                    rounding,
+                ),
+                8,
+            );
+
+            let b32 = _mm_srai_epi32(
+                _mm_add_epi32(
+                    _mm_add_epi32(_mm_mullo_epi32(coeff_298, c), _mm_mullo_epi32(coeff_516, d)),
+                    rounding,
+                ),
+                8,
+            );
+
+            let r16 = _mm_packs_epi32(r32, zero);
+            let g16 = _mm_packs_epi32(g32, zero);
+            let b16 = _mm_packs_epi32(b32, zero);
+            let r8 = _mm_packus_epi16(r16, zero);
+            let g8 = _mm_packus_epi16(g16, zero);
+            let b8 = _mm_packus_epi16(b16, zero);
+
+            let rg = _mm_unpacklo_epi8(r8, g8);
+            let ba = _mm_unpacklo_epi8(b8, _mm_set1_epi8(-1));
+            let rgba = _mm_unpacklo_epi16(rg, ba);
+            let rgba = _mm_or_si128(rgba, alpha_mask);
+
+            let out_ptr = rgba_out.as_mut_ptr().add(col * 4);
+            _mm_storeu_si128(out_ptr.cast(), rgba);
+
+            col += 4;
+        }
+        simd_width
+    }
+
+    // ── NV12 → RGBA8 (SSE2/SSE4.1: 4 pixels / iter, i32 arithmetic) ──
+
+    /// Convert up to `width` NV12 pixels from one row to RGBA8 using SSE4.1.
+    ///
+    /// Same logic as [`nv12_to_rgba8_row_sse2`] but uses `_mm_mullo_epi32`
+    /// for native i32 multiply instead of the 7-instruction `mul32_sse2`
+    /// emulation.  Falls back to SSE2 on older hardware.
+    ///
+    /// Returns the number of pixels converted (always a multiple of 4).
+    #[target_feature(enable = "sse4.1")]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::similar_names)]
+    pub(super) unsafe fn nv12_to_rgba8_row_sse41(
+        y_row: &[u8],
+        uv_row: &[u8],
+        rgba_out: &mut [u8],
+        width: usize,
+    ) -> usize {
+        use std::arch::x86_64::{
+            _mm_add_epi32, _mm_mullo_epi32, _mm_or_si128, _mm_packs_epi32, _mm_packus_epi16,
+            _mm_set1_epi32, _mm_set1_epi8, _mm_set_epi32, _mm_setzero_si128, _mm_srai_epi32,
+            _mm_storeu_si128, _mm_sub_epi32, _mm_unpacklo_epi16, _mm_unpacklo_epi8,
+        };
+
+        let simd_width = width & !3;
+        if simd_width == 0 {
+            return 0;
+        }
+
+        let coeff_298 = _mm_set1_epi32(298);
+        let coeff_409 = _mm_set1_epi32(409);
+        let coeff_n100 = _mm_set1_epi32(-100);
+        let coeff_n208 = _mm_set1_epi32(-208);
+        let coeff_516 = _mm_set1_epi32(516);
+        let bias_16 = _mm_set1_epi32(16);
+        let bias_128 = _mm_set1_epi32(128);
+        let rounding = _mm_set1_epi32(128);
+        let alpha_mask = _mm_set1_epi32(0xFF00_0000_u32.cast_signed());
+        let zero = _mm_setzero_si128();
+
+        let mut col = 0usize;
+        while col < simd_width {
+            let y0 = i32::from(y_row[col]);
+            let y1 = i32::from(y_row[col + 1]);
+            let y2 = i32::from(y_row[col + 2]);
+            let y3 = i32::from(y_row[col + 3]);
+            let y32 = _mm_set_epi32(y3, y2, y1, y0);
+
+            let chroma_byte = (col / 2) * 2;
+            let u0 = i32::from(uv_row[chroma_byte]);
+            let v0 = i32::from(uv_row[chroma_byte + 1]);
+            let u1 = i32::from(uv_row[chroma_byte + 2]);
+            let v1 = i32::from(uv_row[chroma_byte + 3]);
+            let u32x4 = _mm_set_epi32(u1, u1, u0, u0);
+            let v32x4 = _mm_set_epi32(v1, v1, v0, v0);
+
+            let c = _mm_sub_epi32(y32, bias_16);
+            let d = _mm_sub_epi32(u32x4, bias_128);
+            let e = _mm_sub_epi32(v32x4, bias_128);
+
+            let r32 = _mm_srai_epi32(
+                _mm_add_epi32(
+                    _mm_add_epi32(_mm_mullo_epi32(coeff_298, c), _mm_mullo_epi32(coeff_409, e)),
+                    rounding,
+                ),
+                8,
+            );
+
+            let g32 = _mm_srai_epi32(
+                _mm_add_epi32(
+                    _mm_add_epi32(
+                        _mm_add_epi32(
+                            _mm_mullo_epi32(coeff_298, c),
+                            _mm_mullo_epi32(coeff_n100, d),
+                        ),
+                        _mm_mullo_epi32(coeff_n208, e),
+                    ),
+                    rounding,
+                ),
+                8,
+            );
+
+            let b32 = _mm_srai_epi32(
+                _mm_add_epi32(
+                    _mm_add_epi32(_mm_mullo_epi32(coeff_298, c), _mm_mullo_epi32(coeff_516, d)),
+                    rounding,
+                ),
+                8,
+            );
+
+            let r16 = _mm_packs_epi32(r32, zero);
+            let g16 = _mm_packs_epi32(g32, zero);
+            let b16 = _mm_packs_epi32(b32, zero);
+            let r8 = _mm_packus_epi16(r16, zero);
+            let g8 = _mm_packus_epi16(g16, zero);
+            let b8 = _mm_packus_epi16(b16, zero);
+
+            let rg = _mm_unpacklo_epi8(r8, g8);
+            let ba = _mm_unpacklo_epi8(b8, _mm_set1_epi8(-1));
+            let rgba = _mm_unpacklo_epi16(rg, ba);
+            let rgba = _mm_or_si128(rgba, alpha_mask);
+
+            let out_ptr = rgba_out.as_mut_ptr().add(col * 4);
+            _mm_storeu_si128(out_ptr.cast(), rgba);
+
+            col += 4;
+        }
+        simd_width
+    }
+
+    /// Convert up to `width` NV12 pixels from one row to RGBA8 using SSE2.
+    ///
+    /// Reads luma from `y_row` and chroma from interleaved `uv_row`
+    /// (`[U0, V0, U1, V1, …]`) directly — no deinterleaving scratch
+    /// buffers required.  Same BT.601 math as [`i420_to_rgba8_row_sse2`].
+    ///
+    /// Returns the number of pixels converted (always a multiple of 4).
+    #[target_feature(enable = "sse2")]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::similar_names)]
+    pub(super) unsafe fn nv12_to_rgba8_row_sse2(
+        y_row: &[u8],
+        uv_row: &[u8],
+        rgba_out: &mut [u8],
+        width: usize,
+    ) -> usize {
+        use std::arch::x86_64::{
+            _mm_add_epi32, _mm_or_si128, _mm_packs_epi32, _mm_packus_epi16, _mm_set1_epi32,
+            _mm_set1_epi8, _mm_set_epi32, _mm_setzero_si128, _mm_srai_epi32, _mm_storeu_si128,
+            _mm_sub_epi32, _mm_unpacklo_epi16, _mm_unpacklo_epi8,
+        };
+
+        let simd_width = width & !3; // round down to multiple of 4
+        if simd_width == 0 {
+            return 0;
+        }
+
+        let coeff_298 = _mm_set1_epi32(298);
+        let coeff_409 = _mm_set1_epi32(409);
+        let coeff_n100 = _mm_set1_epi32(-100);
+        let coeff_n208 = _mm_set1_epi32(-208);
+        let coeff_516 = _mm_set1_epi32(516);
+        let bias_16 = _mm_set1_epi32(16);
+        let bias_128 = _mm_set1_epi32(128);
+        let rounding = _mm_set1_epi32(128);
+        let alpha_mask = _mm_set1_epi32(0xFF00_0000_u32.cast_signed());
+        let zero = _mm_setzero_si128();
+
+        let mut col = 0usize;
+        while col < simd_width {
+            // Load 4 Y values and widen to i32.
+            let y0 = i32::from(y_row[col]);
+            let y1 = i32::from(y_row[col + 1]);
+            let y2 = i32::from(y_row[col + 2]);
+            let y3 = i32::from(y_row[col + 3]);
+            let y32 = _mm_set_epi32(y3, y2, y1, y0);
+
+            // Read 2 UV pairs directly from the interleaved NV12 plane.
+            // uv_row layout: [U0, V0, U1, V1, U2, V2, …]
+            let chroma_byte = (col / 2) * 2; // byte offset into uv_row
+            let u0 = i32::from(uv_row[chroma_byte]);
+            let v0 = i32::from(uv_row[chroma_byte + 1]);
+            let u1 = i32::from(uv_row[chroma_byte + 2]);
+            let v1 = i32::from(uv_row[chroma_byte + 3]);
+            let u32x4 = _mm_set_epi32(u1, u1, u0, u0);
+            let v32x4 = _mm_set_epi32(v1, v1, v0, v0);
+
+            // c = Y - 16, d = U - 128, e = V - 128
+            let c = _mm_sub_epi32(y32, bias_16);
+            let d = _mm_sub_epi32(u32x4, bias_128);
+            let e = _mm_sub_epi32(v32x4, bias_128);
+
+            let r32 = _mm_srai_epi32(
+                _mm_add_epi32(
+                    _mm_add_epi32(mul32_sse2(coeff_298, c), mul32_sse2(coeff_409, e)),
+                    rounding,
+                ),
+                8,
+            );
+
+            let g32 = _mm_srai_epi32(
+                _mm_add_epi32(
+                    _mm_add_epi32(
+                        _mm_add_epi32(mul32_sse2(coeff_298, c), mul32_sse2(coeff_n100, d)),
+                        mul32_sse2(coeff_n208, e),
+                    ),
+                    rounding,
+                ),
+                8,
+            );
+
+            let b32 = _mm_srai_epi32(
+                _mm_add_epi32(
+                    _mm_add_epi32(mul32_sse2(coeff_298, c), mul32_sse2(coeff_516, d)),
+                    rounding,
+                ),
+                8,
+            );
+
+            // Pack i32 → i16 → u8, interleave to RGBA.
+            let r16 = _mm_packs_epi32(r32, zero);
+            let g16 = _mm_packs_epi32(g32, zero);
+            let b16 = _mm_packs_epi32(b32, zero);
+            let r8 = _mm_packus_epi16(r16, zero);
+            let g8 = _mm_packus_epi16(g16, zero);
+            let b8 = _mm_packus_epi16(b16, zero);
+
+            let rg = _mm_unpacklo_epi8(r8, g8);
+            let ba = _mm_unpacklo_epi8(b8, _mm_set1_epi8(-1));
+            let rgba = _mm_unpacklo_epi16(rg, ba);
+            let rgba = _mm_or_si128(rgba, alpha_mask);
+
+            let out_ptr = rgba_out.as_mut_ptr().add(col * 4);
+            _mm_storeu_si128(out_ptr.cast(), rgba);
+
+            col += 4;
+        }
+        simd_width
+    }
+
+    // ── RGBA8 → I420 Y-plane (SSE2/SSE4.1: 4 pixels / iter) ───────────
+
+    /// Convert one row of RGBA8 pixels to Y values using SSE4.1.
+    ///
+    /// Same logic as [`rgba8_to_y_row_sse2`] but uses native i32 multiply.
+    #[target_feature(enable = "sse4.1")]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub(super) unsafe fn rgba8_to_y_row_sse41(
+        rgba_row: &[u8],
+        y_out: &mut [u8],
+        width: usize,
+    ) -> usize {
+        use std::arch::x86_64::{
+            _mm_add_epi32, _mm_and_si128, _mm_loadu_si128, _mm_mullo_epi32, _mm_packs_epi32,
+            _mm_packus_epi16, _mm_set1_epi32, _mm_setzero_si128, _mm_srai_epi32, _mm_srli_epi32,
+        };
+
+        let simd_width = width & !3;
+        if simd_width == 0 {
+            return 0;
+        }
+
+        let coeff_66 = _mm_set1_epi32(66);
+        let coeff_129 = _mm_set1_epi32(129);
+        let coeff_25 = _mm_set1_epi32(25);
+        let rounding = _mm_set1_epi32(128);
+        let bias_16 = _mm_set1_epi32(16);
+        let zero = _mm_setzero_si128();
+        let channel_mask = _mm_set1_epi32(0xFF);
+
+        let mut col = 0usize;
+        while col < simd_width {
+            let src_ptr = rgba_row.as_ptr().add(col * 4);
+            let px = _mm_loadu_si128(src_ptr.cast());
+
+            let r = _mm_and_si128(px, channel_mask);
+            let g = _mm_and_si128(_mm_srli_epi32(px, 8), channel_mask);
+            let b = _mm_and_si128(_mm_srli_epi32(px, 16), channel_mask);
+
+            let y32 = _mm_add_epi32(
+                _mm_srai_epi32(
+                    _mm_add_epi32(
+                        _mm_add_epi32(
+                            _mm_add_epi32(
+                                _mm_mullo_epi32(coeff_66, r),
+                                _mm_mullo_epi32(coeff_129, g),
+                            ),
+                            _mm_mullo_epi32(coeff_25, b),
+                        ),
+                        rounding,
+                    ),
+                    8,
+                ),
+                bias_16,
+            );
+
+            let y16 = _mm_packs_epi32(y32, zero);
+            let y8 = _mm_packus_epi16(y16, zero);
+            std::ptr::copy_nonoverlapping(
+                (&raw const y8).cast::<u8>(),
+                y_out.as_mut_ptr().add(col),
+                4,
+            );
+
+            col += 4;
+        }
+        simd_width
+    }
 
     /// Convert one row of RGBA8 pixels to Y values using SSE2.
     ///
@@ -925,12 +1320,20 @@ pub fn i420_to_rgba8_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
 
         let mut start_col = 0usize;
 
-        // SIMD fast path: process 8 pixels at a time with SSE2.
+        // SIMD fast path: prefer SSE4.1 (native i32 mul) over SSE2.
         #[cfg(target_arch = "x86_64")]
         {
-            if is_x86_feature_detected!("sse2") {
-                // SAFETY: feature detection guarantees SSE2 is available;
-                // slice bounds are validated by the caller's buffer sizing.
+            if is_x86_feature_detected!("sse4.1") {
+                start_col = unsafe {
+                    simd::i420_to_rgba8_row_sse41(
+                        &data[y_base..y_base + w],
+                        &data[u_base..u_base + chroma_w],
+                        &data[v_base..v_base + chroma_w],
+                        rgba_row,
+                        w,
+                    )
+                };
+            } else if is_x86_feature_detected!("sse2") {
                 start_col = unsafe {
                     simd::i420_to_rgba8_row_sse2(
                         &data[y_base..y_base + w],
@@ -987,8 +1390,9 @@ pub fn i420_to_rgba8(data: &[u8], width: u32, height: u32) -> Vec<u8> {
 /// Convert an NV12 (Y + interleaved UV) buffer to RGBA8, writing into `out`.
 ///
 /// Same BT.601 math as [`i420_to_rgba8_buf`], but reads U and V from a single
-/// interleaved UV plane instead of two separate planes.  NV12's adjacent U/V
-/// samples improve cache locality for the conversion kernel.
+/// interleaved UV plane instead of two separate planes.  Uses a dedicated
+/// NV12 SSE2 kernel that reads the interleaved UV data in-place — no
+/// scratch-buffer deinterleaving or thread-local storage required.
 ///
 /// The caller must ensure `out` has length >= `width * height * 4`.
 /// Input `data` must be a packed NV12 buffer: `width * height` luma bytes
@@ -996,16 +1400,6 @@ pub fn i420_to_rgba8(data: &[u8], width: u32, height: u32) -> Vec<u8> {
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::many_single_char_names)]
 pub fn nv12_to_rgba8_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     use rayon::prelude::*;
-    use std::cell::RefCell;
-
-    // Thread-local scratch buffers for deinterleaving NV12 UV pairs into
-    // separate U and V planes required by the I420 SSE2 kernel.  Allocated
-    // once per thread and reused across rows, avoiding per-row heap churn.
-    #[cfg(target_arch = "x86_64")]
-    thread_local! {
-        static NV12_U_SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
-        static NV12_V_SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
-    }
 
     let w = width as usize;
     let h = height as usize;
@@ -1022,34 +1416,27 @@ pub fn nv12_to_rgba8_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
 
         let mut start_col = 0usize;
 
-        // SIMD fast path: deinterleave UV into thread-local scratch buffers,
-        // then reuse the existing I420→RGBA8 SSE2 kernel.
+        // SIMD fast path: prefer SSE4.1 (native i32 mul) over SSE2.
         #[cfg(target_arch = "x86_64")]
         {
-            if is_x86_feature_detected!("sse2") {
-                NV12_U_SCRATCH.with(|u_cell| {
-                    NV12_V_SCRATCH.with(|v_cell| {
-                        let mut u_scratch = u_cell.borrow_mut();
-                        let mut v_scratch = v_cell.borrow_mut();
-                        u_scratch.resize(chroma_w, 0);
-                        v_scratch.resize(chroma_w, 0);
-                        for c in 0..chroma_w {
-                            u_scratch[c] = data[uv_base + c * 2];
-                            v_scratch[c] = data[uv_base + c * 2 + 1];
-                        }
-                        // SAFETY: feature detection guarantees SSE2 is available;
-                        // slice bounds are validated by the caller's buffer sizing.
-                        start_col = unsafe {
-                            simd::i420_to_rgba8_row_sse2(
-                                &data[y_base..y_base + w],
-                                &u_scratch,
-                                &v_scratch,
-                                rgba_row,
-                                w,
-                            )
-                        };
-                    });
-                });
+            if is_x86_feature_detected!("sse4.1") {
+                start_col = unsafe {
+                    simd::nv12_to_rgba8_row_sse41(
+                        &data[y_base..y_base + w],
+                        &data[uv_base..uv_base + uv_stride],
+                        rgba_row,
+                        w,
+                    )
+                };
+            } else if is_x86_feature_detected!("sse2") {
+                start_col = unsafe {
+                    simd::nv12_to_rgba8_row_sse2(
+                        &data[y_base..y_base + w],
+                        &data[uv_base..uv_base + uv_stride],
+                        rgba_row,
+                        w,
+                    )
+                };
             }
         }
 
@@ -1114,11 +1501,14 @@ pub fn rgba8_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
         let rgba_base = row * w * 4;
         let mut start_col = 0usize;
 
-        // SIMD fast path: process 8 pixels at a time with SSE2.
+        // SIMD fast path: prefer SSE4.1 (native i32 mul) over SSE2.
         #[cfg(target_arch = "x86_64")]
         {
-            if is_x86_feature_detected!("sse2") {
-                // SAFETY: feature detection guarantees SSE2 is available.
+            if is_x86_feature_detected!("sse4.1") {
+                start_col = unsafe {
+                    simd::rgba8_to_y_row_sse41(&data[rgba_base..rgba_base + w * 4], y_row, w)
+                };
+            } else if is_x86_feature_detected!("sse2") {
                 start_col = unsafe {
                     simd::rgba8_to_y_row_sse2(&data[rgba_base..rgba_base + w * 4], y_row, w)
                 };
@@ -1232,4 +1622,117 @@ pub fn rgba8_to_i420(data: &[u8], width: u32, height: u32) -> Vec<u8> {
     let mut out = vec![0u8; total];
     rgba8_to_i420_buf(data, width, height, &mut out);
     out
+}
+
+/// Convert an RGBA8 buffer to NV12 (Y + interleaved UV), writing into `out`.
+///
+/// The caller must ensure `out` has length >= `w * h + ⌈w/2⌉ * 2 * ⌈h/2⌉`.
+/// Y plane is computed with the same SSE2-accelerated kernel as
+/// [`rgba8_to_i420_buf`].  The chroma plane writes interleaved `[U, V]`
+/// pairs instead of separate U and V planes.
+///
+/// **Note:** Assumes packed RGBA8 input (stride = width × 4) and writes a
+/// packed NV12 output (luma stride = width, chroma stride = ⌈width/2⌉ × 2).
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::many_single_char_names)]
+pub fn rgba8_to_nv12_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
+    use rayon::prelude::*;
+
+    let w = width as usize;
+    let h = height as usize;
+    let y_stride = w;
+    let chroma_w = w.div_ceil(2);
+    let chroma_h = h.div_ceil(2);
+    let y_size = y_stride * h;
+    let uv_stride = chroma_w * 2;
+
+    // Split output into Y plane and UV plane.
+    let (y_plane, uv_plane) = out[..y_size + uv_stride * chroma_h].split_at_mut(y_size);
+
+    // Y plane — parallelise by row (prefers SSE4.1, falls back to SSE2).
+    let convert_y_row = |row: usize, y_row: &mut [u8]| {
+        let rgba_base = row * w * 4;
+        let mut start_col = 0usize;
+
+        #[cfg(target_arch = "x86_64")]
+        {
+            if is_x86_feature_detected!("sse4.1") {
+                start_col = unsafe {
+                    simd::rgba8_to_y_row_sse41(&data[rgba_base..rgba_base + w * 4], y_row, w)
+                };
+            } else if is_x86_feature_detected!("sse2") {
+                start_col = unsafe {
+                    simd::rgba8_to_y_row_sse2(&data[rgba_base..rgba_base + w * 4], y_row, w)
+                };
+            }
+        }
+
+        for (col, y_out) in y_row.iter_mut().enumerate().take(w).skip(start_col) {
+            let off = rgba_base + col * 4;
+            let r = i32::from(data[off]);
+            let g = i32::from(data[off + 1]);
+            let b = i32::from(data[off + 2]);
+            let y = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
+            *y_out = y.clamp(0, 255) as u8;
+        }
+    };
+
+    if h >= RAYON_ROW_THRESHOLD {
+        y_plane
+            .par_chunks_mut(y_stride)
+            .take(h)
+            .enumerate()
+            .for_each(|(row, y_row)| convert_y_row(row, y_row));
+    } else {
+        for (row, y_row) in y_plane.chunks_mut(y_stride).take(h).enumerate() {
+            convert_y_row(row, y_row);
+        }
+    }
+
+    // UV plane — parallelise by chroma row, write interleaved [U, V] pairs.
+    let convert_chroma_row = |crow: usize, uv_row: &mut [u8]| {
+        let r0 = crow * 2;
+
+        for ccol in 0..chroma_w {
+            let c0 = ccol * 2;
+            let mut sr = 0i32;
+            let mut sg = 0i32;
+            let mut sb = 0i32;
+            let mut count = 0i32;
+            for dr in 0..2 {
+                let rr = r0 + dr;
+                if rr >= h {
+                    continue;
+                }
+                for dc in 0..2 {
+                    let cc = c0 + dc;
+                    if cc < w {
+                        let off = (rr * w + cc) * 4;
+                        sr += i32::from(data[off]);
+                        sg += i32::from(data[off + 1]);
+                        sb += i32::from(data[off + 2]);
+                        count += 1;
+                    }
+                }
+            }
+            let r = sr / count;
+            let g = sg / count;
+            let b = sb / count;
+            let u = ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
+            let v = ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
+            uv_row[ccol * 2] = u.clamp(0, 255) as u8;
+            uv_row[ccol * 2 + 1] = v.clamp(0, 255) as u8;
+        }
+    };
+
+    if chroma_h >= RAYON_ROW_THRESHOLD / 2 {
+        uv_plane
+            .par_chunks_mut(uv_stride)
+            .take(chroma_h)
+            .enumerate()
+            .for_each(|(crow, uv_row)| convert_chroma_row(crow, uv_row));
+    } else {
+        for (crow, uv_row) in uv_plane.chunks_mut(uv_stride).take(chroma_h).enumerate() {
+            convert_chroma_row(crow, uv_row);
+        }
+    }
 }

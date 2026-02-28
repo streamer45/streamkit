@@ -326,22 +326,22 @@ impl ProcessorNode for Vp9EncoderNode {
         let encode_task = tokio::task::spawn_blocking(move || {
             let mut encoder: Option<Vp9Encoder> = None;
             let mut current_dimensions: Option<(u32, u32)> = None;
-            // Reusable scratch buffer for RGBA8→I420 conversion, avoids
+            // Reusable scratch buffer for RGBA8→NV12 conversion, avoids
             // per-frame allocation when the encoder receives RGBA8 input
             // (e.g. from the compositor).
-            let mut rgba_to_i420_scratch: Vec<u8> = Vec::new();
+            let mut rgba_to_nv12_scratch: Vec<u8> = Vec::new();
 
             while let Some((frame, metadata)) = encode_rx.blocking_recv() {
-                // Convert RGBA8 to I420 on this blocking thread so the
+                // Convert RGBA8 to NV12 on this blocking thread so the
                 // compositor can output RGBA8 and move on to the next frame
                 // while the encoder converts + encodes in parallel.
                 // NV12 and I420 pass through directly — the encoder handles
                 // both formats natively via VPX_IMG_FMT_NV12 / VPX_IMG_FMT_I420.
                 let encode_frame = if frame.pixel_format == PixelFormat::Rgba8 {
-                    convert_rgba8_to_i420_frame(
+                    convert_rgba8_to_nv12_frame(
                         &frame,
                         video_pool_clone.as_deref(),
-                        &mut rgba_to_i420_scratch,
+                        &mut rgba_to_nv12_scratch,
                     )
                 } else {
                     frame
@@ -1100,37 +1100,41 @@ fn copy_plane(
     Ok(())
 }
 
-/// Convert an RGBA8 `VideoFrame` to I420 for VP9 encoding.
+/// Convert an RGBA8 `VideoFrame` to NV12 for VP9 encoding.
 ///
 /// Uses a caller-supplied scratch buffer to avoid per-frame heap allocation.
 /// The scratch is only used as intermediate storage when no video pool is
-/// available; with a pool the I420 data is allocated from there directly.
+/// available; with a pool the NV12 data is allocated from there directly.
+///
+/// NV12 is preferred over I420 here because the VP9 encoder accepts NV12
+/// natively (`VPX_IMG_FMT_NV12`) and NV12's interleaved UV plane has
+/// better cache locality during encoding.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-fn convert_rgba8_to_i420_frame(
+fn convert_rgba8_to_nv12_frame(
     frame: &VideoFrame,
     video_pool: Option<&VideoFramePool>,
     _scratch: &mut Vec<u8>,
 ) -> VideoFrame {
-    use crate::video::compositor::pixel_ops::rgba8_to_i420_buf;
+    use crate::video::compositor::pixel_ops::rgba8_to_nv12_buf;
 
     let w = frame.width as usize;
     let h = frame.height as usize;
     let chroma_w = w.div_ceil(2);
     let chroma_h = h.div_ceil(2);
-    let i420_size = w * h + 2 * chroma_w * chroma_h;
+    let nv12_size = w * h + chroma_w * 2 * chroma_h;
 
-    let mut i420_data = video_pool.map_or_else(
-        || PooledVideoData::from_vec(vec![0u8; i420_size]),
-        |pool| pool.get(i420_size),
+    let mut nv12_data = video_pool.map_or_else(
+        || PooledVideoData::from_vec(vec![0u8; nv12_size]),
+        |pool| pool.get(nv12_size),
     );
 
-    rgba8_to_i420_buf(frame.data(), frame.width, frame.height, i420_data.as_mut_slice());
+    rgba8_to_nv12_buf(frame.data(), frame.width, frame.height, nv12_data.as_mut_slice());
 
     VideoFrame::from_pooled(
         frame.width,
         frame.height,
-        PixelFormat::I420,
-        i420_data,
+        PixelFormat::Nv12,
+        nv12_data,
         frame.metadata.clone(),
     )
 }
