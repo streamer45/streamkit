@@ -545,6 +545,11 @@ pub fn scale_blit_rgba_rotated(
         }
     };
 
+    // Early-out when the bounding box is empty (rect entirely off-screen).
+    if bb_y1 <= bb_y0 || bb_x1 <= bb_x0 {
+        return;
+    }
+
     let bb_rows = (bb_y1 - bb_y0) as usize;
     let first_row_byte = bb_y0 as usize * row_stride;
     let dst_region = &mut dst[first_row_byte..first_row_byte + bb_rows * row_stride];
