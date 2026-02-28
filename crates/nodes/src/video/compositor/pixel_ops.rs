@@ -492,13 +492,17 @@ mod simd {
     //! returns the number of pixels it fully handled so the caller can fall
     //! back to scalar for any tail pixels.
 
-    // ── I420 → RGBA8 (SSE2: 8 pixels / iter) ────────────────────────────
+    // ── I420 → RGBA8 (SSE2: 4 pixels / iter, i32 arithmetic) ──────────
 
     /// Convert up to `width` I420 pixels from one row to RGBA8 using SSE2.
     ///
-    /// Returns the number of pixels converted (always a multiple of 8).
+    /// Returns the number of pixels converted (always a multiple of 4).
     /// The caller must handle the remaining `width - returned` tail pixels
     /// with the scalar path.
+    ///
+    /// Uses 32-bit arithmetic throughout to avoid i16 overflow with the
+    /// BT.601 coefficients (298, 409, 516 exceed i16 range when multiplied
+    /// by typical Y/U/V values).
     #[target_feature(enable = "sse2")]
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::similar_names)]
     pub(super) unsafe fn i420_to_rgba8_row_sse2(
@@ -509,118 +513,152 @@ mod simd {
         width: usize,
     ) -> usize {
         use std::arch::x86_64::{
-            __m128i, _mm_add_epi16, _mm_cvtsi32_si128, _mm_loadl_epi64, _mm_mullo_epi16,
-            _mm_or_si128, _mm_packus_epi16, _mm_set1_epi16, _mm_set1_epi32, _mm_set1_epi8,
-            _mm_setzero_si128, _mm_srai_epi16, _mm_storeu_si128, _mm_sub_epi16, _mm_unpackhi_epi16,
-            _mm_unpacklo_epi16, _mm_unpacklo_epi8,
+            _mm_add_epi32, _mm_or_si128, _mm_packs_epi32, _mm_packus_epi16, _mm_set1_epi32,
+            _mm_set1_epi8, _mm_set_epi32, _mm_setzero_si128, _mm_srai_epi32, _mm_storeu_si128,
+            _mm_sub_epi32, _mm_unpacklo_epi16, _mm_unpacklo_epi8,
         };
 
-        let simd_width = width & !7; // round down to multiple of 8
+        let simd_width = width & !3; // round down to multiple of 4
         if simd_width == 0 {
             return 0;
         }
 
-        let coeff_298 = _mm_set1_epi16(298);
-        let coeff_409 = _mm_set1_epi16(409);
-        let coeff_n100 = _mm_set1_epi16(-100);
-        let coeff_n208 = _mm_set1_epi16(-208);
-        let coeff_516 = _mm_set1_epi16(516);
-        let bias_16 = _mm_set1_epi16(16);
-        let bias_128_i16 = _mm_set1_epi16(128);
-        let rounding = _mm_set1_epi16(128);
+        let coeff_298 = _mm_set1_epi32(298);
+        let coeff_409 = _mm_set1_epi32(409);
+        let coeff_n100 = _mm_set1_epi32(-100);
+        let coeff_n208 = _mm_set1_epi32(-208);
+        let coeff_516 = _mm_set1_epi32(516);
+        let bias_16 = _mm_set1_epi32(16);
+        let bias_128 = _mm_set1_epi32(128);
+        let rounding = _mm_set1_epi32(128);
         let alpha_mask = _mm_set1_epi32(0xFF00_0000_u32.cast_signed());
         let zero = _mm_setzero_si128();
 
         let mut col = 0usize;
         while col < simd_width {
-            // Load 8 Y values and zero-extend to i16.
-            let y8 = _mm_loadl_epi64(y_row.as_ptr().add(col).cast());
-            let y16 = _mm_unpacklo_epi8(y8, zero);
+            // Load 4 Y values and widen to i32.
+            let y0 = i32::from(y_row[col]);
+            let y1 = i32::from(y_row[col + 1]);
+            let y2 = i32::from(y_row[col + 2]);
+            let y3 = i32::from(y_row[col + 3]);
+            let y32 = _mm_set_epi32(y3, y2, y1, y0);
 
-            // Load 4 U and 4 V values, duplicate each to match 8 luma pixels.
-            let u4 = _mm_cvtsi32_si128(std::ptr::read_unaligned(
-                u_row.as_ptr().add(col / 2).cast::<i32>(),
-            ));
-            let cb_dup = _mm_unpacklo_epi8(u4, u4); // [u0,u0,u1,u1,u2,u2,u3,u3, ...]
-            let cb_wide = _mm_unpacklo_epi8(cb_dup, zero);
+            // Load 2 U and 2 V values, duplicate each for 4 luma pixels.
+            let chroma_col = col / 2;
+            let u0 = i32::from(u_row[chroma_col]);
+            let u1 = i32::from(u_row[chroma_col + 1]);
+            let v0 = i32::from(v_row[chroma_col]);
+            let v1 = i32::from(v_row[chroma_col + 1]);
+            let u32x4 = _mm_set_epi32(u1, u1, u0, u0);
+            let v32x4 = _mm_set_epi32(v1, v1, v0, v0);
 
-            let v4 = _mm_cvtsi32_si128(std::ptr::read_unaligned(
-                v_row.as_ptr().add(col / 2).cast::<i32>(),
-            ));
-            let cr_dup = _mm_unpacklo_epi8(v4, v4);
-            let cr_wide = _mm_unpacklo_epi8(cr_dup, zero);
+            // c = Y - 16, d = U - 128, e = V - 128  (all i32, no overflow)
+            let c = _mm_sub_epi32(y32, bias_16);
+            let d = _mm_sub_epi32(u32x4, bias_128);
+            let e = _mm_sub_epi32(v32x4, bias_128);
 
-            // c = Y - 16, d = U - 128, e = V - 128
-            let c = _mm_sub_epi16(y16, bias_16);
-            let d = _mm_sub_epi16(cb_wide, bias_128_i16);
-            let e = _mm_sub_epi16(cr_wide, bias_128_i16);
+            // R = (298*c + 409*e + 128) >> 8   (i32 multiply via _mm_mullo_epi16
+            //     works here because _mm_mullo_epi16 on 32-bit lanes gives the
+            //     low 16 bits — we need the SSE2-compatible i32 multiply instead).
+            //
+            // SSE2 lacks _mm_mullo_epi32, so we use a helper: multiply pairs of
+            // 16-bit values and accumulate to i32 via _mm_madd_epi16 with one
+            // operand being the value and the other a [coeff, 0] pattern.
+            // Simpler: since our values fit i16 (c ∈ [-16,239], d/e ∈ [-128,127])
+            // but coefficients don't, we swap: put values in i16 slots and use
+            // _mm_madd_epi16 with [coeff, 0] to get i32 products.
 
-            // R = (298*c + 409*e + 128) >> 8
-            let r16 = _mm_srai_epi16(
-                _mm_add_epi16(
-                    _mm_add_epi16(_mm_mullo_epi16(coeff_298, c), _mm_mullo_epi16(coeff_409, e)),
+            // Actually, the simplest SSE2 i32 multiply is via two _mm_mul_epu32
+            // calls (even/odd lanes) then re-interleave. Let's use that approach.
+
+            let r32 = _mm_srai_epi32(
+                _mm_add_epi32(
+                    _mm_add_epi32(mul32_sse2(coeff_298, c), mul32_sse2(coeff_409, e)),
                     rounding,
                 ),
                 8,
             );
 
-            // G = (298*c - 100*d - 208*e + 128) >> 8
-            let g16 = _mm_srai_epi16(
-                _mm_add_epi16(
-                    _mm_add_epi16(
-                        _mm_add_epi16(
-                            _mm_mullo_epi16(coeff_298, c),
-                            _mm_mullo_epi16(coeff_n100, d),
-                        ),
-                        _mm_mullo_epi16(coeff_n208, e),
+            let g32 = _mm_srai_epi32(
+                _mm_add_epi32(
+                    _mm_add_epi32(
+                        _mm_add_epi32(mul32_sse2(coeff_298, c), mul32_sse2(coeff_n100, d)),
+                        mul32_sse2(coeff_n208, e),
                     ),
                     rounding,
                 ),
                 8,
             );
 
-            // B = (298*c + 516*d + 128) >> 8
-            let b16 = _mm_srai_epi16(
-                _mm_add_epi16(
-                    _mm_add_epi16(_mm_mullo_epi16(coeff_298, c), _mm_mullo_epi16(coeff_516, d)),
+            let b32 = _mm_srai_epi32(
+                _mm_add_epi32(
+                    _mm_add_epi32(mul32_sse2(coeff_298, c), mul32_sse2(coeff_516, d)),
                     rounding,
                 ),
                 8,
             );
 
-            // Clamp to [0, 255] via packus (saturating unsigned pack).
-            let r8 = _mm_packus_epi16(r16, zero); // 8 bytes in low half
+            // Pack i32 → i16 (signed saturate) → u8 (unsigned saturate).
+            // packs_epi32 packs 4+4 i32 → 8 i16; packus_epi16 packs 8+8 i16 → 16 u8.
+            let r16 = _mm_packs_epi32(r32, zero); // 4 values in low half
+            let g16 = _mm_packs_epi32(g32, zero);
+            let b16 = _mm_packs_epi32(b32, zero);
+            let r8 = _mm_packus_epi16(r16, zero);
             let g8 = _mm_packus_epi16(g16, zero);
             let b8 = _mm_packus_epi16(b16, zero);
 
             // Interleave to RGBA: [R0,G0,B0,A0, R1,G1,B1,A1, ...]
-            // Step 1: interleave R,G → RG pairs and B,A → BA pairs
-            let rg_lo = _mm_unpacklo_epi8(r8, g8); // [R0,G0,R1,G1,R2,G2,R3,G3,...]
-            let ba_lo = _mm_unpacklo_epi8(b8, _mm_set1_epi8(-1)); // [B0,FF,B1,FF,...]
+            let rg = _mm_unpacklo_epi8(r8, g8); // [R0,G0,R1,G1,...]
+            let ba = _mm_unpacklo_epi8(b8, _mm_set1_epi8(-1)); // [B0,FF,B1,FF,...]
+            let rgba = _mm_unpacklo_epi16(rg, ba); // 4 RGBA pixels
+            let rgba = _mm_or_si128(rgba, alpha_mask);
 
-            // Step 2: interleave RG,BA → RGBA quads
-            let rgba_0123 = _mm_unpacklo_epi16(rg_lo, ba_lo); // first 4 pixels
-            let rgba_4567 = _mm_unpackhi_epi16(rg_lo, ba_lo); // next 4 pixels
-
-            // Force alpha to 0xFF (packus may have clamped differently).
-            let rgba_0123 = _mm_or_si128(rgba_0123, alpha_mask);
-            let rgba_4567 = _mm_or_si128(rgba_4567, alpha_mask);
-
-            // Store 8 RGBA pixels (32 bytes).
+            // Store 4 RGBA pixels (16 bytes).
             let out_ptr = rgba_out.as_mut_ptr().add(col * 4);
-            _mm_storeu_si128(out_ptr.cast(), rgba_0123);
-            _mm_storeu_si128(out_ptr.add(16).cast(), rgba_4567);
+            _mm_storeu_si128(out_ptr.cast(), rgba);
 
-            col += 8;
+            col += 4;
         }
         simd_width
     }
 
-    // ── RGBA8 → I420 Y-plane (SSE2: 8 pixels / iter) ────────────────────
+    /// SSE2-compatible signed 32-bit multiply (low 32 bits of each lane).
+    ///
+    /// SSE2 only has `_mm_mul_epu32` which multiplies lanes 0 and 2 as
+    /// unsigned 32-bit → 64-bit.  We use it twice (even + odd lanes) and
+    /// re-interleave to get all four i32 products.  The unsigned multiply
+    /// gives the correct low-32 result for signed operands (two's complement).
+    #[target_feature(enable = "sse2")]
+    #[inline]
+    unsafe fn mul32_sse2(
+        a: std::arch::x86_64::__m128i,
+        b: std::arch::x86_64::__m128i,
+    ) -> std::arch::x86_64::__m128i {
+        use std::arch::x86_64::{_mm_mul_epu32, _mm_shuffle_epi32, _mm_unpacklo_epi32};
+        // Multiply even lanes (0, 2) → 64-bit results.
+        let even = _mm_mul_epu32(a, b);
+        // Shuffle odd lanes (1, 3) into even positions, then multiply.
+        let odd =
+            _mm_mul_epu32(_mm_shuffle_epi32(a, 0b11_11_01_01), _mm_shuffle_epi32(b, 0b11_11_01_01));
+        // Extract the low 32 bits of each 64-bit product:
+        //   even = [p0_lo, p0_hi, p2_lo, p2_hi]
+        //   odd  = [p1_lo, p1_hi, p3_lo, p3_hi]
+        // shuffle 0b00_00_10_00 picks dwords 0 and 2 → [p_lo0, p_lo2, ?, ?]
+        let even_lo = _mm_shuffle_epi32(even, 0b00_00_10_00);
+        let odd_lo = _mm_shuffle_epi32(odd, 0b00_00_10_00);
+        // Interleave low halves → [p0, p1, p2, p3].
+        _mm_unpacklo_epi32(even_lo, odd_lo)
+    }
+
+    // ── RGBA8 → I420 Y-plane (SSE2: 4 pixels / iter, i32 arithmetic) ───
 
     /// Convert one row of RGBA8 pixels to Y values using SSE2.
     ///
-    /// Returns the number of pixels converted (multiple of 8).
+    /// Returns the number of pixels converted (multiple of 4).
+    ///
+    /// Uses 32-bit arithmetic to avoid i16 overflow: coefficient 129
+    /// multiplied by channel values up to 255 gives 32895, which exceeds
+    /// the signed i16 maximum of 32767.
     #[target_feature(enable = "sse2")]
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     pub(super) unsafe fn rgba8_to_y_row_sse2(
@@ -629,60 +667,41 @@ mod simd {
         width: usize,
     ) -> usize {
         use std::arch::x86_64::{
-            _mm_add_epi16, _mm_and_si128, _mm_loadu_si128, _mm_mullo_epi16, _mm_packs_epi32,
-            _mm_packus_epi16, _mm_set1_epi16, _mm_set1_epi32, _mm_setzero_si128, _mm_srai_epi16,
-            _mm_srli_epi32,
+            _mm_add_epi32, _mm_and_si128, _mm_loadu_si128, _mm_packs_epi32, _mm_packus_epi16,
+            _mm_set1_epi32, _mm_setzero_si128, _mm_srai_epi32, _mm_srli_epi32,
         };
 
-        let simd_width = width & !7;
+        let simd_width = width & !3; // round down to multiple of 4
         if simd_width == 0 {
             return 0;
         }
 
-        let coeff_66 = _mm_set1_epi16(66);
-        let coeff_129 = _mm_set1_epi16(129);
-        let coeff_25 = _mm_set1_epi16(25);
-        let rounding = _mm_set1_epi16(128);
-        let bias_16 = _mm_set1_epi16(16);
+        let coeff_66 = _mm_set1_epi32(66);
+        let coeff_129 = _mm_set1_epi32(129);
+        let coeff_25 = _mm_set1_epi32(25);
+        let rounding = _mm_set1_epi32(128);
+        let bias_16 = _mm_set1_epi32(16);
         let zero = _mm_setzero_si128();
+        let channel_mask = _mm_set1_epi32(0xFF);
 
         let mut col = 0usize;
         while col < simd_width {
-            // Load 8 RGBA pixels (32 bytes) and deinterleave R, G, B.
+            // Load 4 RGBA pixels (16 bytes).
             let src_ptr = rgba_row.as_ptr().add(col * 4);
-            let px0123 = _mm_loadu_si128(src_ptr.cast());
-            let px4567 = _mm_loadu_si128(src_ptr.add(16).cast());
+            let px = _mm_loadu_si128(src_ptr.cast());
 
-            // Extract R, G, B channels using mask+shift+pack.
-            // Byte layout: [R0,G0,B0,A0, R1,G1,B1,A1, ...]
-            // We need to extract every 4th byte for each channel.
-            let channel_mask = _mm_set1_epi32(0xFF);
+            // Extract R, G, B channels as i32.
+            let r = _mm_and_si128(px, channel_mask);
+            let g = _mm_and_si128(_mm_srli_epi32(px, 8), channel_mask);
+            let b = _mm_and_si128(_mm_srli_epi32(px, 16), channel_mask);
 
-            // R channel: bytes 0, 4, 8, 12 from each 128-bit register
-            let r_0123 = _mm_and_si128(px0123, channel_mask);
-            let r_4567 = _mm_and_si128(px4567, channel_mask);
-            let r_packed = _mm_packs_epi32(r_0123, r_4567); // 8x i16
-
-            // G channel: bytes 1, 5, 9, 13
-            let g_0123 = _mm_and_si128(_mm_srli_epi32(px0123, 8), channel_mask);
-            let g_4567 = _mm_and_si128(_mm_srli_epi32(px4567, 8), channel_mask);
-            let g_packed = _mm_packs_epi32(g_0123, g_4567);
-
-            // B channel: bytes 2, 6, 10, 14
-            let b_0123 = _mm_and_si128(_mm_srli_epi32(px0123, 16), channel_mask);
-            let b_4567 = _mm_and_si128(_mm_srli_epi32(px4567, 16), channel_mask);
-            let b_packed = _mm_packs_epi32(b_0123, b_4567);
-
-            // Y = ((66*R + 129*G + 25*B + 128) >> 8) + 16
-            let y16 = _mm_add_epi16(
-                _mm_srai_epi16(
-                    _mm_add_epi16(
-                        _mm_add_epi16(
-                            _mm_add_epi16(
-                                _mm_mullo_epi16(coeff_66, r_packed),
-                                _mm_mullo_epi16(coeff_129, g_packed),
-                            ),
-                            _mm_mullo_epi16(coeff_25, b_packed),
+            // Y = ((66*R + 129*G + 25*B + 128) >> 8) + 16   (all i32)
+            let y32 = _mm_add_epi32(
+                _mm_srai_epi32(
+                    _mm_add_epi32(
+                        _mm_add_epi32(
+                            _mm_add_epi32(mul32_sse2(coeff_66, r), mul32_sse2(coeff_129, g)),
+                            mul32_sse2(coeff_25, b),
                         ),
                         rounding,
                     ),
@@ -691,16 +710,17 @@ mod simd {
                 bias_16,
             );
 
-            // Clamp and pack to u8.
+            // Pack i32 → i16 → u8 (saturating).
+            let y16 = _mm_packs_epi32(y32, zero);
             let y8 = _mm_packus_epi16(y16, zero);
-            // Store 8 Y values.
+            // Store 4 Y values.
             std::ptr::copy_nonoverlapping(
                 (&raw const y8).cast::<u8>(),
                 y_out.as_mut_ptr().add(col),
-                8,
+                4,
             );
 
-            col += 8;
+            col += 4;
         }
         simd_width
     }
