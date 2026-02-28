@@ -47,7 +47,9 @@ opentelemetry = "0.31.0"
 
 # Profile settings for better profiling experience
 [profile.release]
-debug = 1 # Include line tables for better stack traces in profiling
+debug = 1          # Include line tables for better stack traces in profiling
+lto = "thin"       # Cross-crate inlining (significant for multi-crate workspace)
+codegen-units = 1  # Maximum LLVM optimisation visibility
 
 [profile.dev]
 debug = 2 # Full debug info for development profiling
