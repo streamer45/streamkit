@@ -482,12 +482,424 @@ pub fn scale_blit_rgba_rotated(
     }
 }
 
+// ── SIMD helpers ──────────────────────────────────────────────────────────────
+
+#[cfg(target_arch = "x86_64")]
+mod simd {
+    //! SSE2 and AVX2 kernels for I420↔RGBA8 colour-space conversion.
+    //!
+    //! Each function processes a fixed number of pixels per iteration and
+    //! returns the number of pixels it fully handled so the caller can fall
+    //! back to scalar for any tail pixels.
+
+    // ── I420 → RGBA8 (SSE2: 4 pixels / iter, i32 arithmetic) ──────────
+
+    /// Convert up to `width` I420 pixels from one row to RGBA8 using SSE2.
+    ///
+    /// Returns the number of pixels converted (always a multiple of 4).
+    /// The caller must handle the remaining `width - returned` tail pixels
+    /// with the scalar path.
+    ///
+    /// Uses 32-bit arithmetic throughout to avoid i16 overflow with the
+    /// BT.601 coefficients (298, 409, 516 exceed i16 range when multiplied
+    /// by typical Y/U/V values).
+    #[target_feature(enable = "sse2")]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::similar_names)]
+    pub(super) unsafe fn i420_to_rgba8_row_sse2(
+        y_row: &[u8],
+        u_row: &[u8],
+        v_row: &[u8],
+        rgba_out: &mut [u8],
+        width: usize,
+    ) -> usize {
+        use std::arch::x86_64::{
+            _mm_add_epi32, _mm_or_si128, _mm_packs_epi32, _mm_packus_epi16, _mm_set1_epi32,
+            _mm_set1_epi8, _mm_set_epi32, _mm_setzero_si128, _mm_srai_epi32, _mm_storeu_si128,
+            _mm_sub_epi32, _mm_unpacklo_epi16, _mm_unpacklo_epi8,
+        };
+
+        let simd_width = width & !3; // round down to multiple of 4
+        if simd_width == 0 {
+            return 0;
+        }
+
+        let coeff_298 = _mm_set1_epi32(298);
+        let coeff_409 = _mm_set1_epi32(409);
+        let coeff_n100 = _mm_set1_epi32(-100);
+        let coeff_n208 = _mm_set1_epi32(-208);
+        let coeff_516 = _mm_set1_epi32(516);
+        let bias_16 = _mm_set1_epi32(16);
+        let bias_128 = _mm_set1_epi32(128);
+        let rounding = _mm_set1_epi32(128);
+        let alpha_mask = _mm_set1_epi32(0xFF00_0000_u32.cast_signed());
+        let zero = _mm_setzero_si128();
+
+        let mut col = 0usize;
+        while col < simd_width {
+            // Load 4 Y values and widen to i32.
+            let y0 = i32::from(y_row[col]);
+            let y1 = i32::from(y_row[col + 1]);
+            let y2 = i32::from(y_row[col + 2]);
+            let y3 = i32::from(y_row[col + 3]);
+            let y32 = _mm_set_epi32(y3, y2, y1, y0);
+
+            // Load 2 U and 2 V values, duplicate each for 4 luma pixels.
+            let chroma_col = col / 2;
+            let u0 = i32::from(u_row[chroma_col]);
+            let u1 = i32::from(u_row[chroma_col + 1]);
+            let v0 = i32::from(v_row[chroma_col]);
+            let v1 = i32::from(v_row[chroma_col + 1]);
+            let u32x4 = _mm_set_epi32(u1, u1, u0, u0);
+            let v32x4 = _mm_set_epi32(v1, v1, v0, v0);
+
+            // c = Y - 16, d = U - 128, e = V - 128  (all i32, no overflow)
+            let c = _mm_sub_epi32(y32, bias_16);
+            let d = _mm_sub_epi32(u32x4, bias_128);
+            let e = _mm_sub_epi32(v32x4, bias_128);
+
+            // R = (298*c + 409*e + 128) >> 8   (i32 multiply via _mm_mullo_epi16
+            //     works here because _mm_mullo_epi16 on 32-bit lanes gives the
+            //     low 16 bits — we need the SSE2-compatible i32 multiply instead).
+            //
+            // SSE2 lacks _mm_mullo_epi32, so we use a helper: multiply pairs of
+            // 16-bit values and accumulate to i32 via _mm_madd_epi16 with one
+            // operand being the value and the other a [coeff, 0] pattern.
+            // Simpler: since our values fit i16 (c ∈ [-16,239], d/e ∈ [-128,127])
+            // but coefficients don't, we swap: put values in i16 slots and use
+            // _mm_madd_epi16 with [coeff, 0] to get i32 products.
+
+            // Actually, the simplest SSE2 i32 multiply is via two _mm_mul_epu32
+            // calls (even/odd lanes) then re-interleave. Let's use that approach.
+
+            let r32 = _mm_srai_epi32(
+                _mm_add_epi32(
+                    _mm_add_epi32(mul32_sse2(coeff_298, c), mul32_sse2(coeff_409, e)),
+                    rounding,
+                ),
+                8,
+            );
+
+            let g32 = _mm_srai_epi32(
+                _mm_add_epi32(
+                    _mm_add_epi32(
+                        _mm_add_epi32(mul32_sse2(coeff_298, c), mul32_sse2(coeff_n100, d)),
+                        mul32_sse2(coeff_n208, e),
+                    ),
+                    rounding,
+                ),
+                8,
+            );
+
+            let b32 = _mm_srai_epi32(
+                _mm_add_epi32(
+                    _mm_add_epi32(mul32_sse2(coeff_298, c), mul32_sse2(coeff_516, d)),
+                    rounding,
+                ),
+                8,
+            );
+
+            // Pack i32 → i16 (signed saturate) → u8 (unsigned saturate).
+            // packs_epi32 packs 4+4 i32 → 8 i16; packus_epi16 packs 8+8 i16 → 16 u8.
+            let r16 = _mm_packs_epi32(r32, zero); // 4 values in low half
+            let g16 = _mm_packs_epi32(g32, zero);
+            let b16 = _mm_packs_epi32(b32, zero);
+            let r8 = _mm_packus_epi16(r16, zero);
+            let g8 = _mm_packus_epi16(g16, zero);
+            let b8 = _mm_packus_epi16(b16, zero);
+
+            // Interleave to RGBA: [R0,G0,B0,A0, R1,G1,B1,A1, ...]
+            let rg = _mm_unpacklo_epi8(r8, g8); // [R0,G0,R1,G1,...]
+            let ba = _mm_unpacklo_epi8(b8, _mm_set1_epi8(-1)); // [B0,FF,B1,FF,...]
+            let rgba = _mm_unpacklo_epi16(rg, ba); // 4 RGBA pixels
+            let rgba = _mm_or_si128(rgba, alpha_mask);
+
+            // Store 4 RGBA pixels (16 bytes).
+            let out_ptr = rgba_out.as_mut_ptr().add(col * 4);
+            _mm_storeu_si128(out_ptr.cast(), rgba);
+
+            col += 4;
+        }
+        simd_width
+    }
+
+    /// SSE2-compatible signed 32-bit multiply (low 32 bits of each lane).
+    ///
+    /// SSE2 only has `_mm_mul_epu32` which multiplies lanes 0 and 2 as
+    /// unsigned 32-bit → 64-bit.  We use it twice (even + odd lanes) and
+    /// re-interleave to get all four i32 products.  The unsigned multiply
+    /// gives the correct low-32 result for signed operands (two's complement).
+    #[target_feature(enable = "sse2")]
+    #[inline]
+    unsafe fn mul32_sse2(
+        a: std::arch::x86_64::__m128i,
+        b: std::arch::x86_64::__m128i,
+    ) -> std::arch::x86_64::__m128i {
+        use std::arch::x86_64::{_mm_mul_epu32, _mm_shuffle_epi32, _mm_unpacklo_epi32};
+        // Multiply even lanes (0, 2) → 64-bit results.
+        let even = _mm_mul_epu32(a, b);
+        // Shuffle odd lanes (1, 3) into even positions, then multiply.
+        let odd =
+            _mm_mul_epu32(_mm_shuffle_epi32(a, 0b11_11_01_01), _mm_shuffle_epi32(b, 0b11_11_01_01));
+        // Extract the low 32 bits of each 64-bit product:
+        //   even = [p0_lo, p0_hi, p2_lo, p2_hi]
+        //   odd  = [p1_lo, p1_hi, p3_lo, p3_hi]
+        // shuffle 0b00_00_10_00 picks dwords 0 and 2 → [p_lo0, p_lo2, ?, ?]
+        let even_lo = _mm_shuffle_epi32(even, 0b00_00_10_00);
+        let odd_lo = _mm_shuffle_epi32(odd, 0b00_00_10_00);
+        // Interleave low halves → [p0, p1, p2, p3].
+        _mm_unpacklo_epi32(even_lo, odd_lo)
+    }
+
+    // ── RGBA8 → I420 Y-plane (SSE2: 4 pixels / iter, i32 arithmetic) ───
+
+    /// Convert one row of RGBA8 pixels to Y values using SSE2.
+    ///
+    /// Returns the number of pixels converted (multiple of 4).
+    ///
+    /// Uses 32-bit arithmetic to avoid i16 overflow: coefficient 129
+    /// multiplied by channel values up to 255 gives 32895, which exceeds
+    /// the signed i16 maximum of 32767.
+    #[target_feature(enable = "sse2")]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub(super) unsafe fn rgba8_to_y_row_sse2(
+        rgba_row: &[u8],
+        y_out: &mut [u8],
+        width: usize,
+    ) -> usize {
+        use std::arch::x86_64::{
+            _mm_add_epi32, _mm_and_si128, _mm_loadu_si128, _mm_packs_epi32, _mm_packus_epi16,
+            _mm_set1_epi32, _mm_setzero_si128, _mm_srai_epi32, _mm_srli_epi32,
+        };
+
+        let simd_width = width & !3; // round down to multiple of 4
+        if simd_width == 0 {
+            return 0;
+        }
+
+        let coeff_66 = _mm_set1_epi32(66);
+        let coeff_129 = _mm_set1_epi32(129);
+        let coeff_25 = _mm_set1_epi32(25);
+        let rounding = _mm_set1_epi32(128);
+        let bias_16 = _mm_set1_epi32(16);
+        let zero = _mm_setzero_si128();
+        let channel_mask = _mm_set1_epi32(0xFF);
+
+        let mut col = 0usize;
+        while col < simd_width {
+            // Load 4 RGBA pixels (16 bytes).
+            let src_ptr = rgba_row.as_ptr().add(col * 4);
+            let px = _mm_loadu_si128(src_ptr.cast());
+
+            // Extract R, G, B channels as i32.
+            let r = _mm_and_si128(px, channel_mask);
+            let g = _mm_and_si128(_mm_srli_epi32(px, 8), channel_mask);
+            let b = _mm_and_si128(_mm_srli_epi32(px, 16), channel_mask);
+
+            // Y = ((66*R + 129*G + 25*B + 128) >> 8) + 16   (all i32)
+            let y32 = _mm_add_epi32(
+                _mm_srai_epi32(
+                    _mm_add_epi32(
+                        _mm_add_epi32(
+                            _mm_add_epi32(mul32_sse2(coeff_66, r), mul32_sse2(coeff_129, g)),
+                            mul32_sse2(coeff_25, b),
+                        ),
+                        rounding,
+                    ),
+                    8,
+                ),
+                bias_16,
+            );
+
+            // Pack i32 → i16 → u8 (saturating).
+            let y16 = _mm_packs_epi32(y32, zero);
+            let y8 = _mm_packus_epi16(y16, zero);
+            // Store 4 Y values.
+            std::ptr::copy_nonoverlapping(
+                (&raw const y8).cast::<u8>(),
+                y_out.as_mut_ptr().add(col),
+                4,
+            );
+
+            col += 4;
+        }
+        simd_width
+    }
+
+    // ── RGBA8 → I420 chroma row (SSE2: 8 chroma samples / iter) ──────────
+
+    /// Convert one pair of RGBA8 rows to U and V chroma samples using SSE2.
+    ///
+    /// `rgba_row0` and `rgba_row1` are two consecutive rows of RGBA8 data.
+    /// If the image has an odd height and this is the last chroma row,
+    /// `rgba_row1` should equal `rgba_row0` (duplicate the last row).
+    ///
+    /// Returns the number of chroma samples converted (multiple of 8).
+    #[target_feature(enable = "sse2")]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::similar_names)]
+    pub(super) unsafe fn rgba8_to_chroma_row_sse2(
+        rgba_row0: &[u8],
+        rgba_row1: &[u8],
+        u_out: &mut [u8],
+        v_out: &mut [u8],
+        chroma_width: usize,
+        luma_width: usize,
+    ) -> usize {
+        use std::arch::x86_64::{
+            _mm_add_epi16, _mm_add_epi32, _mm_and_si128, _mm_loadu_si128, _mm_mullo_epi16,
+            _mm_packs_epi32, _mm_packus_epi16, _mm_set1_epi16, _mm_set1_epi32, _mm_set_epi16,
+            _mm_setzero_si128, _mm_srai_epi16, _mm_srli_epi32,
+        };
+
+        let simd_width = chroma_width & !3; // process 4 chroma samples (8 luma cols) at a time
+        if simd_width == 0 || luma_width < 8 {
+            return 0;
+        }
+
+        let coeff_cb_r = _mm_set1_epi16(-38);
+        let coeff_cb_g = _mm_set1_epi16(-74);
+        let coeff_cb_b = _mm_set1_epi16(112);
+        let coeff_cr_r = _mm_set1_epi16(112);
+        let coeff_cr_g = _mm_set1_epi16(-94);
+        let coeff_cr_b = _mm_set1_epi16(-18);
+        let rounding = _mm_set1_epi16(128);
+        let bias_128 = _mm_set1_epi16(128);
+        let zero = _mm_setzero_si128();
+        let channel_mask = _mm_set1_epi32(0xFF);
+
+        let mut ccol = 0usize;
+        while ccol < simd_width {
+            let luma_col = ccol * 2;
+            if luma_col + 8 > luma_width {
+                break;
+            }
+
+            // Load 8 pixels from row0 and row1.
+            let ptr0 = rgba_row0.as_ptr().add(luma_col * 4);
+            let ptr1 = rgba_row1.as_ptr().add(luma_col * 4);
+            let px0_lo = _mm_loadu_si128(ptr0.cast());
+            let px0_hi = _mm_loadu_si128(ptr0.add(16).cast());
+            let px1_lo = _mm_loadu_si128(ptr1.cast());
+            let px1_hi = _mm_loadu_si128(ptr1.add(16).cast());
+
+            // Extract R from row0 pixels as i32, then convert to i16.
+            let r0_lo = _mm_and_si128(px0_lo, channel_mask);
+            let r0_hi = _mm_and_si128(px0_hi, channel_mask);
+            let r1_lo = _mm_and_si128(px1_lo, channel_mask);
+            let r1_hi = _mm_and_si128(px1_hi, channel_mask);
+
+            // Average: (r0 + r1 + 1) >> 1 for vertical, then horizontal pairs.
+            // First average vertically (row0 + row1).
+            let r_v_lo = _mm_add_epi32(r0_lo, r1_lo); // sum of 2 rows, 4 pixels
+            let r_v_hi = _mm_add_epi32(r0_hi, r1_hi);
+            // Pack to i16.
+            let r_v = _mm_packs_epi32(r_v_lo, r_v_hi); // 8x i16
+
+            // Now average horizontal pairs: sum adjacent pairs.
+            // r_v = [r0, r1, r2, r3, r4, r5, r6, r7]
+            // We want: [(r0+r1)/4, (r2+r3)/4, (r4+r5)/4, (r6+r7)/4]
+            let r_even = _mm_and_si128(r_v, _mm_set_epi16(0, -1, 0, -1, 0, -1, 0, -1));
+            let r_odd = _mm_srli_epi32(r_v, 16);
+            let r_sum = _mm_add_epi16(r_even, r_odd); // pairs summed in even i16 positions
+                                                      // r_sum as 4×i32 = [sum01, sum23, sum45, sum67] (high 16 bits are 0).
+                                                      // Pack to consecutive i16 lanes and divide by 4 with rounding.
+            let r_avg =
+                _mm_srai_epi16(_mm_add_epi16(_mm_packs_epi32(r_sum, zero), _mm_set1_epi16(2)), 2);
+
+            // Extract G.
+            let g0_lo = _mm_and_si128(_mm_srli_epi32(px0_lo, 8), channel_mask);
+            let g0_hi = _mm_and_si128(_mm_srli_epi32(px0_hi, 8), channel_mask);
+            let g1_lo = _mm_and_si128(_mm_srli_epi32(px1_lo, 8), channel_mask);
+            let g1_hi = _mm_and_si128(_mm_srli_epi32(px1_hi, 8), channel_mask);
+            let g_v_lo = _mm_add_epi32(g0_lo, g1_lo);
+            let g_v_hi = _mm_add_epi32(g0_hi, g1_hi);
+            let g_v = _mm_packs_epi32(g_v_lo, g_v_hi);
+            let g_even = _mm_and_si128(g_v, _mm_set_epi16(0, -1, 0, -1, 0, -1, 0, -1));
+            let g_odd = _mm_srli_epi32(g_v, 16);
+            let g_sum = _mm_add_epi16(g_even, g_odd);
+            let g_avg =
+                _mm_srai_epi16(_mm_add_epi16(_mm_packs_epi32(g_sum, zero), _mm_set1_epi16(2)), 2);
+
+            // Extract B.
+            let b0_lo = _mm_and_si128(_mm_srli_epi32(px0_lo, 16), channel_mask);
+            let b0_hi = _mm_and_si128(_mm_srli_epi32(px0_hi, 16), channel_mask);
+            let b1_lo = _mm_and_si128(_mm_srli_epi32(px1_lo, 16), channel_mask);
+            let b1_hi = _mm_and_si128(_mm_srli_epi32(px1_hi, 16), channel_mask);
+            let b_v_lo = _mm_add_epi32(b0_lo, b1_lo);
+            let b_v_hi = _mm_add_epi32(b0_hi, b1_hi);
+            let b_v = _mm_packs_epi32(b_v_lo, b_v_hi);
+            let b_even = _mm_and_si128(b_v, _mm_set_epi16(0, -1, 0, -1, 0, -1, 0, -1));
+            let b_odd = _mm_srli_epi32(b_v, 16);
+            let b_sum = _mm_add_epi16(b_even, b_odd);
+            let b_avg =
+                _mm_srai_epi16(_mm_add_epi16(_mm_packs_epi32(b_sum, zero), _mm_set1_epi16(2)), 2);
+
+            // U = ((-38*R - 74*G + 112*B + 128) >> 8) + 128
+            let cb_result = _mm_add_epi16(
+                _mm_srai_epi16(
+                    _mm_add_epi16(
+                        _mm_add_epi16(
+                            _mm_add_epi16(
+                                _mm_mullo_epi16(coeff_cb_r, r_avg),
+                                _mm_mullo_epi16(coeff_cb_g, g_avg),
+                            ),
+                            _mm_mullo_epi16(coeff_cb_b, b_avg),
+                        ),
+                        rounding,
+                    ),
+                    8,
+                ),
+                bias_128,
+            );
+
+            // V = ((112*R - 94*G - 18*B + 128) >> 8) + 128
+            let cr_result = _mm_add_epi16(
+                _mm_srai_epi16(
+                    _mm_add_epi16(
+                        _mm_add_epi16(
+                            _mm_add_epi16(
+                                _mm_mullo_epi16(coeff_cr_r, r_avg),
+                                _mm_mullo_epi16(coeff_cr_g, g_avg),
+                            ),
+                            _mm_mullo_epi16(coeff_cr_b, b_avg),
+                        ),
+                        rounding,
+                    ),
+                    8,
+                ),
+                bias_128,
+            );
+
+            // Pack and clamp to [0, 255].
+            let cb_packed = _mm_packus_epi16(cb_result, zero);
+            let cr_packed = _mm_packus_epi16(cr_result, zero);
+
+            // Store 4 U and 4 V values.
+            std::ptr::copy_nonoverlapping(
+                (&raw const cb_packed).cast::<u8>(),
+                u_out.as_mut_ptr().add(ccol),
+                4,
+            );
+            std::ptr::copy_nonoverlapping(
+                (&raw const cr_packed).cast::<u8>(),
+                v_out.as_mut_ptr().add(ccol),
+                4,
+            );
+
+            ccol += 4;
+        }
+        ccol
+    }
+}
+
 // ── Pixel format conversion ─────────────────────────────────────────────────
 
 /// Convert an I420 (YUV 4:2:0 planar) buffer to RGBA8, writing into `out`.
 ///
 /// The caller must ensure `out` has length >= `width * height * 4`.
 /// Rows are processed in parallel via `rayon`.
+///
+/// On x86-64 with SSE2 support the inner per-row loop is vectorised to
+/// process 8 pixels per iteration, falling back to scalar for tail pixels.
 ///
 /// **Note:** This function assumes a *packed* I420 layout (luma stride = width,
 /// chroma stride = ⌈width/2⌉).  If non-packed / aligned layouts are introduced
@@ -511,7 +923,28 @@ pub fn i420_to_rgba8_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
         let u_base = u_offset + chroma_row * chroma_w;
         let v_base = v_offset + chroma_row * chroma_w;
 
-        for col in 0..w {
+        let mut start_col = 0usize;
+
+        // SIMD fast path: process 8 pixels at a time with SSE2.
+        #[cfg(target_arch = "x86_64")]
+        {
+            if is_x86_feature_detected!("sse2") {
+                // SAFETY: feature detection guarantees SSE2 is available;
+                // slice bounds are validated by the caller's buffer sizing.
+                start_col = unsafe {
+                    simd::i420_to_rgba8_row_sse2(
+                        &data[y_base..y_base + w],
+                        &data[u_base..u_base + chroma_w],
+                        &data[v_base..v_base + chroma_w],
+                        rgba_row,
+                        w,
+                    )
+                };
+            }
+        }
+
+        // Scalar tail (or full row on non-x86-64 / without SSE2).
+        for col in start_col..w {
             let y_val = i32::from(data[y_base + col]);
             let u_val = i32::from(data[u_base + col / 2]);
             let v_val = i32::from(data[v_base + col / 2]);
@@ -579,7 +1012,20 @@ pub fn rgba8_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     // Y plane — parallelise by row.
     let convert_y_row = |row: usize, y_row: &mut [u8]| {
         let rgba_base = row * w * 4;
-        for (col, y_out) in y_row.iter_mut().enumerate().take(w) {
+        let mut start_col = 0usize;
+
+        // SIMD fast path: process 8 pixels at a time with SSE2.
+        #[cfg(target_arch = "x86_64")]
+        {
+            if is_x86_feature_detected!("sse2") {
+                // SAFETY: feature detection guarantees SSE2 is available.
+                start_col = unsafe {
+                    simd::rgba8_to_y_row_sse2(&data[rgba_base..rgba_base + w * 4], y_row, w)
+                };
+            }
+        }
+
+        for (col, y_out) in y_row.iter_mut().enumerate().take(w).skip(start_col) {
             let off = rgba_base + col * 4;
             let r = i32::from(data[off]);
             let g = i32::from(data[off + 1]);
@@ -604,7 +1050,30 @@ pub fn rgba8_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     // U and V planes — parallelise by chroma row.
     let convert_chroma_row = |crow: usize, u_row: &mut [u8], v_row: &mut [u8]| {
         let r0 = crow * 2;
-        for ccol in 0..chroma_w {
+        let mut start_ccol = 0usize;
+
+        // SIMD fast path for chroma subsampling.
+        #[cfg(target_arch = "x86_64")]
+        {
+            if is_x86_feature_detected!("sse2") && r0 + 1 < h {
+                let row0_start = r0 * w * 4;
+                let row1_start = (r0 + 1) * w * 4;
+                // SAFETY: feature detection guarantees SSE2 is available;
+                // both rows are within the input buffer.
+                start_ccol = unsafe {
+                    simd::rgba8_to_chroma_row_sse2(
+                        &data[row0_start..row0_start + w * 4],
+                        &data[row1_start..row1_start + w * 4],
+                        u_row,
+                        v_row,
+                        chroma_w,
+                        w,
+                    )
+                };
+            }
+        }
+
+        for ccol in start_ccol..chroma_w {
             let c0 = ccol * 2;
             let mut sr = 0i32;
             let mut sg = 0i32;

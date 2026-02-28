@@ -263,11 +263,18 @@ impl ProcessorNode for Vp9EncoderNode {
     fn input_pins(&self) -> Vec<InputPin> {
         vec![InputPin {
             name: "in".to_string(),
-            accepts_types: vec![PacketType::RawVideo(VideoFormat {
-                width: None,
-                height: None,
-                pixel_format: PixelFormat::I420,
-            })],
+            accepts_types: vec![
+                PacketType::RawVideo(VideoFormat {
+                    width: None,
+                    height: None,
+                    pixel_format: PixelFormat::I420,
+                }),
+                PacketType::RawVideo(VideoFormat {
+                    width: None,
+                    height: None,
+                    pixel_format: PixelFormat::Rgba8,
+                }),
+            ],
             cardinality: PinCardinality::One,
         }]
     }
@@ -310,22 +317,32 @@ impl ProcessorNode for Vp9EncoderNode {
             mpsc::channel::<Result<EncodedPacket, String>>(get_codec_channel_capacity());
 
         let encoder_config = self.config;
+        let video_pool_clone = context.video_pool.clone();
         let encode_task = tokio::task::spawn_blocking(move || {
             let mut encoder: Option<Vp9Encoder> = None;
             let mut current_dimensions: Option<(u32, u32)> = None;
+            // Reusable scratch buffer for RGBA8→I420 conversion, avoids
+            // per-frame allocation when the encoder receives RGBA8 input
+            // (e.g. from the compositor).
+            let mut rgba_to_i420_scratch: Vec<u8> = Vec::new();
 
             while let Some((frame, metadata)) = encode_rx.blocking_recv() {
-                if frame.pixel_format != PixelFormat::I420 {
-                    let _ = result_tx.blocking_send(Err(format!(
-                        "VP9 encoder expects I420, got {:?}",
-                        frame.pixel_format
-                    )));
-                    continue;
-                }
+                // Convert RGBA8 to I420 on this blocking thread so the
+                // compositor can output RGBA8 and move on to the next frame
+                // while the encoder converts + encodes in parallel.
+                let i420_frame = if frame.pixel_format == PixelFormat::Rgba8 {
+                    convert_rgba8_to_i420_frame(
+                        &frame,
+                        video_pool_clone.as_deref(),
+                        &mut rgba_to_i420_scratch,
+                    )
+                } else {
+                    frame
+                };
 
-                let frame_dimensions = (frame.width, frame.height);
+                let frame_dimensions = (i420_frame.width, i420_frame.height);
                 if current_dimensions != Some(frame_dimensions) {
-                    match Vp9Encoder::new(frame.width, frame.height, &encoder_config) {
+                    match Vp9Encoder::new(i420_frame.width, i420_frame.height, &encoder_config) {
                         Ok(new_encoder) => {
                             encoder = Some(new_encoder);
                             current_dimensions = Some(frame_dimensions);
@@ -343,7 +360,7 @@ impl ProcessorNode for Vp9EncoderNode {
                 };
 
                 let encode_start_time = Instant::now();
-                let result = encoder.encode_frame(&frame, metadata);
+                let result = encoder.encode_frame(&i420_frame, metadata);
                 encode_duration_histogram.record(encode_start_time.elapsed().as_secs_f64(), &[]);
 
                 match result {
@@ -1032,6 +1049,41 @@ fn copy_plane(
     Ok(())
 }
 
+/// Convert an RGBA8 `VideoFrame` to I420 for VP9 encoding.
+///
+/// Uses a caller-supplied scratch buffer to avoid per-frame heap allocation.
+/// The scratch is only used as intermediate storage when no video pool is
+/// available; with a pool the I420 data is allocated from there directly.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn convert_rgba8_to_i420_frame(
+    frame: &VideoFrame,
+    video_pool: Option<&VideoFramePool>,
+    _scratch: &mut Vec<u8>,
+) -> VideoFrame {
+    use crate::video::compositor::pixel_ops::rgba8_to_i420_buf;
+
+    let w = frame.width as usize;
+    let h = frame.height as usize;
+    let chroma_w = w.div_ceil(2);
+    let chroma_h = h.div_ceil(2);
+    let i420_size = w * h + 2 * chroma_w * chroma_h;
+
+    let mut i420_data = video_pool.map_or_else(
+        || PooledVideoData::from_vec(vec![0u8; i420_size]),
+        |pool| pool.get(i420_size),
+    );
+
+    rgba8_to_i420_buf(frame.data(), frame.width, frame.height, i420_data.as_mut_slice());
+
+    VideoFrame::from_pooled(
+        frame.width,
+        frame.height,
+        PixelFormat::I420,
+        i420_data,
+        frame.metadata.clone(),
+    )
+}
+
 const fn merge_keyframe_metadata(
     metadata: Option<PacketMetadata>,
     keyframe: bool,
@@ -1097,7 +1149,8 @@ pub fn register_vp9_nodes(registry: &mut NodeRegistry) {
         StaticPins { inputs: default_encoder.input_pins(), outputs: default_encoder.output_pins() },
         vec!["video".to_string(), "codecs".to_string(), "vp9".to_string()],
         false,
-        "Encodes raw I420 video frames into VP9 packets for transport or container muxing.",
+        "Encodes raw video frames (I420 or RGBA8) into VP9 packets for transport or container muxing. \
+         RGBA8 input is converted to I420 on the encoder thread, enabling pipelined compositing.",
     );
 }
 

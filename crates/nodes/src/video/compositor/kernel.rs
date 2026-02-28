@@ -44,14 +44,11 @@ pub struct CompositeWorkItem {
     pub image_overlays: Arc<[Arc<DecodedOverlay>]>,
     pub text_overlays: Arc<[Arc<DecodedOverlay>]>,
     pub video_pool: Option<Arc<streamkit_core::VideoFramePool>>,
-    pub output_format: PixelFormat,
 }
 
 /// Result sent back from the compositing thread to the async loop.
 pub struct CompositeResult {
-    pub output_format: PixelFormat,
-    pub rgba_data: Option<streamkit_core::frame_pool::PooledVideoData>,
-    pub i420_data: Option<streamkit_core::frame_pool::PooledVideoData>,
+    pub rgba_data: streamkit_core::frame_pool::PooledVideoData,
 }
 
 /// Composite all layers + overlays onto a fresh RGBA8 canvas buffer.
@@ -121,66 +118,4 @@ pub fn composite_frame(
     }
 
     pooled
-}
-
-/// Check whether the I420→RGBA8→I420 round-trip can be skipped entirely.
-///
-/// This is possible when:
-/// - The output format is I420
-/// - There is exactly one active layer that is already I420
-/// - That layer fills the full canvas (no rect / full-canvas rect)
-/// - Opacity is 1.0
-/// - There are no image or text overlays
-///
-/// Returns the index of the pass-through layer, or `None` if compositing is needed.
-pub fn try_i420_passthrough(
-    canvas_w: u32,
-    canvas_h: u32,
-    layers: &[Option<LayerSnapshot>],
-    image_overlays: &[Arc<DecodedOverlay>],
-    text_overlays: &[Arc<DecodedOverlay>],
-    output_format: PixelFormat,
-) -> Option<usize> {
-    if output_format != PixelFormat::I420 {
-        return None;
-    }
-    if !image_overlays.is_empty() || !text_overlays.is_empty() {
-        return None;
-    }
-
-    // Find the single active layer.
-    let mut active_idx = None;
-    for (i, slot) in layers.iter().enumerate() {
-        if slot.is_some() {
-            if active_idx.is_some() {
-                return None; // more than one active layer
-            }
-            active_idx = Some(i);
-        }
-    }
-    let idx = active_idx?;
-    let layer = layers.get(idx).and_then(Option::as_ref)?;
-
-    if layer.pixel_format != PixelFormat::I420 {
-        return None;
-    }
-    if layer.opacity < 1.0 {
-        return None;
-    }
-    // Check dimensions match canvas.
-    if layer.width != canvas_w || layer.height != canvas_h {
-        return None;
-    }
-    // Check the rect fills the full canvas (or is None).
-    if let Some(ref rect) = layer.rect {
-        if rect.x != 0 || rect.y != 0 || rect.width != canvas_w || rect.height != canvas_h {
-            return None;
-        }
-    }
-    // Rotation requires compositing.
-    if layer.rotation_degrees.abs() > 0.01 {
-        return None;
-    }
-
-    Some(idx)
 }

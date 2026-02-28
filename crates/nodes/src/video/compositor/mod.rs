@@ -27,13 +27,12 @@
 pub mod config;
 mod kernel;
 mod overlay;
-mod pixel_ops;
+pub mod pixel_ops;
 
 use async_trait::async_trait;
 use config::{CompositorConfig, Rect};
 use kernel::{CompositeResult, CompositeWorkItem, LayerSnapshot};
 use overlay::{decode_image_overlay, rasterize_text_overlay, DecodedOverlay};
-use pixel_ops::rgba8_to_i420_buf;
 use schemars::schema_for;
 use std::sync::Arc;
 use streamkit_core::control::NodeControlMessage;
@@ -49,7 +48,6 @@ use streamkit_core::{
 };
 use tokio::sync::mpsc;
 
-use config::parse_pixel_format;
 use kernel::composite_frame;
 
 // ── Input slot ──────────────────────────────────────────────────────────────
@@ -67,14 +65,14 @@ struct InputSlot {
 /// optional image/text overlays.
 ///
 /// Inputs are dynamic (`PinCardinality::Dynamic`) and can be attached at
-/// runtime. Each input accepts `RawVideo(RGBA8)` with wildcard dimensions.
+/// runtime. Each input accepts `RawVideo(RGBA8)` or `RawVideo(I420)` with
+/// wildcard dimensions.
 ///
-/// Output `"out"` produces `RawVideo` at the configured canvas size and
-/// pixel format (RGBA8 by default, or I420 if `output_pixel_format` is set).
+/// Output `"out"` always produces `RawVideo(RGBA8)` at the configured canvas
+/// size.  Downstream nodes (e.g. the VP9 encoder) are responsible for any
+/// further format conversion.
 pub struct CompositorNode {
     config: CompositorConfig,
-    /// Resolved output pixel format.
-    output_format: PixelFormat,
     /// Current input pins (may grow dynamically).
     input_pins: Vec<InputPin>,
     /// Next input ID for dynamic pin naming.
@@ -105,10 +103,7 @@ impl CompositorNode {
             },
         );
 
-        let output_format =
-            parse_pixel_format(&config.output_pixel_format).unwrap_or(PixelFormat::Rgba8);
-
-        Self { config, output_format, input_pins, next_input_id }
+        Self { config, input_pins, next_input_id }
     }
 
     /// The set of video packet types accepted by compositor input pins.
@@ -170,7 +165,7 @@ impl ProcessorNode for CompositorNode {
             produces_type: PacketType::RawVideo(VideoFormat {
                 width: Some(self.config.width),
                 height: Some(self.config.height),
-                pixel_format: self.output_format,
+                pixel_format: PixelFormat::Rgba8,
             }),
             cardinality: PinCardinality::Broadcast,
         }]
@@ -289,58 +284,7 @@ impl ProcessorNode for CompositorNode {
             // reused across frames to avoid per-frame allocation.
             let mut i420_to_rgba_scratch: Vec<u8> = Vec::new();
 
-            while let Some(mut work) = work_rx.blocking_recv() {
-                // Fast path: try I420 pass-through to skip the entire
-                // I420 → RGBA8 → I420 round-trip.  The passthrough returns
-                // the index of the qualifying layer; when the Arc has no
-                // other owners we can move the buffer directly (zero-copy),
-                // otherwise we fall back to a pooled memcpy.
-                if let Some(pt_idx) = kernel::try_i420_passthrough(
-                    work.canvas_w,
-                    work.canvas_h,
-                    &work.layers,
-                    &work.image_overlays,
-                    &work.text_overlays,
-                    work.output_format,
-                ) {
-                    // Take the layer out of the work item so we own the Arc.
-                    let src_layer = work.layers.get_mut(pt_idx).and_then(Option::take);
-                    let Some(src_layer) = src_layer else {
-                        continue;
-                    };
-
-                    // Try to unwrap the Arc — if we're the sole owner, avoid
-                    // both the pool allocation and the memcpy entirely.
-                    let pooled = match Arc::try_unwrap(src_layer.data) {
-                        Ok(data) => data,
-                        Err(shared) => {
-                            let src = shared.as_slice();
-                            work.video_pool.as_ref().map_or_else(
-                                || {
-                                    streamkit_core::frame_pool::PooledVideoData::from_vec(
-                                        src.to_vec(),
-                                    )
-                                },
-                                |pool| {
-                                    let mut p = pool.get(src.len());
-                                    p.as_mut_slice()[..src.len()].copy_from_slice(src);
-                                    p
-                                },
-                            )
-                        },
-                    };
-
-                    let result = CompositeResult {
-                        output_format: work.output_format,
-                        rgba_data: None,
-                        i420_data: Some(pooled),
-                    };
-                    if result_tx.blocking_send(result).is_err() {
-                        break;
-                    }
-                    continue;
-                }
-
+            while let Some(work) = work_rx.blocking_recv() {
                 let rgba_buf = composite_frame(
                     work.canvas_w,
                     work.canvas_h,
@@ -350,41 +294,7 @@ impl ProcessorNode for CompositorNode {
                     work.video_pool.as_deref(),
                     &mut i420_to_rgba_scratch,
                 );
-                let result = if work.output_format == PixelFormat::I420 {
-                    // Convert RGBA8 → I420 directly into a pooled buffer
-                    // (no intermediate scratch — avoids a full extra memcpy).
-                    let w = work.canvas_w as usize;
-                    let h = work.canvas_h as usize;
-                    let chroma_w = w.div_ceil(2);
-                    let chroma_h = h.div_ceil(2);
-                    let i420_size = w * h + 2 * chroma_w * chroma_h;
-                    let mut i420_pooled = work.video_pool.as_ref().map_or_else(
-                        || {
-                            streamkit_core::frame_pool::PooledVideoData::from_vec(vec![
-                                0u8;
-                                i420_size
-                            ])
-                        },
-                        |pool| pool.get(i420_size),
-                    );
-                    rgba8_to_i420_buf(
-                        rgba_buf.as_slice(),
-                        work.canvas_w,
-                        work.canvas_h,
-                        i420_pooled.as_mut_slice(),
-                    );
-                    CompositeResult {
-                        output_format: work.output_format,
-                        rgba_data: None,
-                        i420_data: Some(i420_pooled),
-                    }
-                } else {
-                    CompositeResult {
-                        output_format: work.output_format,
-                        rgba_data: Some(rgba_buf),
-                        i420_data: None,
-                    }
-                };
+                let result = CompositeResult { rgba_data: rgba_buf };
                 if result_tx.blocking_send(result).is_err() {
                     break;
                 }
@@ -630,7 +540,6 @@ impl ProcessorNode for CompositorNode {
                 image_overlays: image_overlays.clone(),
                 text_overlays: text_overlays.clone(),
                 video_pool: video_pool.clone(),
-                output_format: self.output_format,
             };
 
             if work_tx.send(work_item).await.is_err() {
@@ -656,27 +565,13 @@ impl ProcessorNode for CompositorNode {
                 keyframe: Some(true),
             });
 
-            #[allow(clippy::expect_used)]
-            let out_frame = if composite_result.output_format == PixelFormat::I420 {
-                let i420_pooled =
-                    composite_result.i420_data.expect("I420 output data must be present");
-                VideoFrame::from_pooled(
-                    self.config.width,
-                    self.config.height,
-                    PixelFormat::I420,
-                    i420_pooled,
-                    metadata,
-                )
-            } else {
-                let pooled = composite_result.rgba_data.expect("RGBA8 output data must be present");
-                VideoFrame::from_pooled(
-                    self.config.width,
-                    self.config.height,
-                    PixelFormat::Rgba8,
-                    pooled,
-                    metadata,
-                )
-            };
+            let out_frame = VideoFrame::from_pooled(
+                self.config.width,
+                self.config.height,
+                PixelFormat::Rgba8,
+                composite_result.rgba_data,
+                metadata,
+            );
 
             if context.output_sender.send("out", Packet::Video(out_frame)).await.is_err() {
                 tracing::debug!("Output channel closed, stopping CompositorNode");
@@ -1188,5 +1083,163 @@ mod tests {
         // Drop returns to pool.
         drop(result);
         assert_eq!(pool.stats().buckets[0].available, 2);
+    }
+
+    // ── SIMD vs scalar equivalence tests ────────────────────────────────
+
+    /// Helper: scalar I420→RGBA8 conversion for a single pixel (reference).
+    fn scalar_i420_to_rgba8(y: u8, u: u8, v: u8) -> [u8; 4] {
+        let c = i32::from(y) - 16;
+        let d = i32::from(u) - 128;
+        let e = i32::from(v) - 128;
+        let r = ((298 * c + 409 * e + 128) >> 8).clamp(0, 255) as u8;
+        let g = ((298 * c - 100 * d - 208 * e + 128) >> 8).clamp(0, 255) as u8;
+        let b = ((298 * c + 516 * d + 128) >> 8).clamp(0, 255) as u8;
+        [r, g, b, 255]
+    }
+
+    /// Helper: scalar RGBA8→Y for a single pixel (reference).
+    fn scalar_rgba8_to_y(r: u8, g: u8, b: u8) -> u8 {
+        let y = ((66 * i32::from(r) + 129 * i32::from(g) + 25 * i32::from(b) + 128) >> 8) + 16;
+        y.clamp(0, 255) as u8
+    }
+
+    #[test]
+    fn test_i420_to_rgba8_simd_matches_scalar() {
+        // Test a variety of YUV values, including edge cases that trigger
+        // i16 overflow with the BT.601 coefficients.
+        let test_cases: Vec<(u8, u8, u8)> = vec![
+            (16, 128, 128),  // black
+            (235, 128, 128), // white
+            (81, 90, 240),   // pure red
+            (145, 54, 34),   // pure green
+            (41, 240, 110),  // pure blue
+            (255, 128, 128), // max Y
+            (0, 0, 0),       // min everything
+            (255, 255, 255), // max everything
+            (16, 0, 255),    // extreme chroma
+            (235, 255, 0),   // extreme chroma
+        ];
+
+        let width = test_cases.len() as u32;
+        // Build I420 buffer.
+        let mut y_plane = Vec::new();
+        let mut u_plane = Vec::new();
+        let mut v_plane = Vec::new();
+        for &(y, u, v) in &test_cases {
+            y_plane.push(y);
+            // Each chroma sample covers 2 luma pixels horizontally.
+            if y_plane.len() % 2 == 1 {
+                u_plane.push(u);
+                v_plane.push(v);
+            }
+        }
+        let chroma_w = (width as usize).div_ceil(2);
+        // Pad if needed.
+        while u_plane.len() < chroma_w {
+            u_plane.push(128);
+            v_plane.push(128);
+        }
+
+        let mut i420_data = Vec::new();
+        i420_data.extend_from_slice(&y_plane);
+        i420_data.extend_from_slice(&u_plane);
+        i420_data.extend_from_slice(&v_plane);
+
+        // Convert using the public function (which uses SIMD internally).
+        let mut simd_out = vec![0u8; width as usize * 4];
+        pixel_ops::i420_to_rgba8_buf(&i420_data, width, 1, &mut simd_out);
+
+        // Compare with scalar reference.
+        for (i, &(y, u, v)) in test_cases.iter().enumerate() {
+            // For chroma, each sample covers 2 pixels, so use the chroma
+            // value from the corresponding pair.
+            let chroma_idx = i / 2;
+            let actual_u = u_plane[chroma_idx];
+            let actual_v = v_plane[chroma_idx];
+            let expected = scalar_i420_to_rgba8(y, actual_u, actual_v);
+            let got = &simd_out[i * 4..(i + 1) * 4];
+            assert_eq!(
+                got, &expected,
+                "pixel {i}: Y={y} U={actual_u} V={actual_v} → expected {expected:?}, got {got:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_rgba8_to_i420_simd_matches_scalar() {
+        // Test RGBA→Y conversion with values that trigger i16 overflow
+        // (129 * 255 = 32895 > i16::MAX).
+        let test_pixels: Vec<(u8, u8, u8)> = vec![
+            (0, 0, 0),       // black
+            (255, 255, 255), // white
+            (255, 0, 0),     // red
+            (0, 255, 0),     // green
+            (0, 0, 255),     // blue
+            (128, 128, 128), // mid grey
+            (0, 254, 0),     // just below overflow threshold
+            (0, 255, 0),     // at overflow threshold
+        ];
+
+        let width = test_pixels.len() as u32;
+        let mut rgba_data = Vec::with_capacity(width as usize * 4);
+        for &(r, g, b) in &test_pixels {
+            rgba_data.extend_from_slice(&[r, g, b, 255]);
+        }
+
+        // Convert using the public function (SIMD internally).
+        let i420_out = pixel_ops::rgba8_to_i420(&rgba_data, width, 1);
+
+        // Check Y plane matches scalar.
+        for (i, &(r, g, b)) in test_pixels.iter().enumerate() {
+            let expected_y = scalar_rgba8_to_y(r, g, b);
+            let got_y = i420_out[i];
+            assert_eq!(
+                got_y, expected_y,
+                "pixel {i}: R={r} G={g} B={b} → expected Y={expected_y}, got Y={got_y}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_i420_rgba8_roundtrip_preserves_values() {
+        // A full I420→RGBA8→I420 round-trip should produce values close
+        // to the originals (within ±2 due to integer rounding).
+        let width: u32 = 8;
+        let height: u32 = 2;
+        let w = width as usize;
+        let h = height as usize;
+        let chroma_w = w.div_ceil(2);
+
+        // Build a simple I420 test pattern.
+        let mut i420_data = vec![0u8; w * h + 2 * chroma_w * (h / 2)];
+        // Y plane: gradient.
+        for i in 0..w * h {
+            i420_data[i] = (16 + (i * 219 / (w * h))) as u8;
+        }
+        // U/V planes: mid-range.
+        let u_offset = w * h;
+        let v_offset = u_offset + chroma_w * (h / 2);
+        for i in 0..chroma_w * (h / 2) {
+            i420_data[u_offset + i] = 128;
+            i420_data[v_offset + i] = 128;
+        }
+
+        // I420 → RGBA8 → I420
+        let mut rgba = vec![0u8; w * h * 4];
+        pixel_ops::i420_to_rgba8_buf(&i420_data, width, height, &mut rgba);
+        let mut i420_roundtrip = vec![0u8; i420_data.len()];
+        pixel_ops::rgba8_to_i420_buf(&rgba, width, height, &mut i420_roundtrip);
+
+        // Y values should be close (within ±2 of originals due to rounding).
+        for i in 0..w * h {
+            let orig = i420_data[i] as i32;
+            let rt = i420_roundtrip[i] as i32;
+            assert!(
+                (orig - rt).abs() <= 2,
+                "Y[{i}]: original={orig}, roundtrip={rt}, diff={}",
+                (orig - rt).abs()
+            );
+        }
     }
 }
