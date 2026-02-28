@@ -9,4 +9,5 @@ export const DEFAULT_VERTICAL_GAP = 60;
 
 export const ESTIMATED_HEIGHT_BY_KIND: Record<string, number> = {
   'audio::gain': 200,
+  'video::compositor': 500,
 };
