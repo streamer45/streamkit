@@ -13,7 +13,9 @@ use streamkit_core::types::PixelFormat;
 
 use super::config::Rect;
 use super::overlay::DecodedOverlay;
-use super::pixel_ops::{blit_overlay, i420_to_rgba8_buf, scale_blit_rgba_rotated};
+use super::pixel_ops::{
+    blit_overlay, i420_to_rgba8_buf, rgba8_to_i420_buf, scale_blit_rgba_rotated,
+};
 
 // ── Compositing kernel (runs on a persistent blocking thread) ────────────────
 
@@ -48,7 +50,11 @@ pub struct CompositeWorkItem {
 
 /// Result sent back from the compositing thread to the async loop.
 pub struct CompositeResult {
-    pub rgba_data: streamkit_core::frame_pool::PooledVideoData,
+    /// Composited frame data.  The pixel format matches the
+    /// `output_pixel_format` passed to [`composite_frame`].
+    pub data: streamkit_core::frame_pool::PooledVideoData,
+    /// The pixel format of the returned data.
+    pub pixel_format: PixelFormat,
 }
 
 /// Composite all layers + overlays onto a fresh RGBA8 canvas buffer.
@@ -56,6 +62,12 @@ pub struct CompositeResult {
 ///
 /// `i420_scratch` is a reusable buffer for I420→RGBA8 conversion, avoiding
 /// per-frame allocation.
+///
+/// When `output_pixel_format` is [`PixelFormat::I420`], the finished RGBA8
+/// canvas is converted to I420 on this thread (while the data is still
+/// cache-warm from blitting), and the returned [`CompositeResult`] contains
+/// I420 data.  This avoids a redundant RGBA8→I420 conversion in a
+/// downstream VP9 encoder.
 pub fn composite_frame(
     canvas_w: u32,
     canvas_h: u32,
@@ -64,17 +76,18 @@ pub fn composite_frame(
     text_overlays: &[Arc<DecodedOverlay>],
     video_pool: Option<&streamkit_core::VideoFramePool>,
     i420_scratch: &mut Vec<u8>,
-) -> streamkit_core::frame_pool::PooledVideoData {
-    let total_bytes = (canvas_w as usize) * (canvas_h as usize) * 4;
+    output_pixel_format: PixelFormat,
+) -> CompositeResult {
+    let rgba_total_bytes = (canvas_w as usize) * (canvas_h as usize) * 4;
 
     let mut pooled = video_pool.map_or_else(
-        || streamkit_core::frame_pool::PooledVideoData::from_vec(vec![0u8; total_bytes]),
-        |pool| pool.get(total_bytes),
+        || streamkit_core::frame_pool::PooledVideoData::from_vec(vec![0u8; rgba_total_bytes]),
+        |pool| pool.get(rgba_total_bytes),
     );
 
     // Zero the buffer (transparent black).
     let buf = pooled.as_mut_slice();
-    buf[..total_bytes].fill(0);
+    buf[..rgba_total_bytes].fill(0);
 
     // Blit each layer (in order — first layer is bottom, last is top).
     // I420 layers are converted to RGBA8 on-the-fly using the scratch buffer.
@@ -117,5 +130,25 @@ pub fn composite_frame(
         blit_overlay(buf, canvas_w, canvas_h, ov);
     }
 
-    pooled
+    // Convert to I420 if requested.  The RGBA8 canvas data is still in
+    // L1/L2 cache from the blitting above, so this conversion is
+    // significantly cheaper than doing it on a separate thread later.
+    if output_pixel_format == PixelFormat::I420 {
+        let w = canvas_w as usize;
+        let h = canvas_h as usize;
+        let chroma_w = w.div_ceil(2);
+        let chroma_h = h.div_ceil(2);
+        let i420_size = w * h + 2 * chroma_w * chroma_h;
+
+        let mut i420_pooled = video_pool.map_or_else(
+            || streamkit_core::frame_pool::PooledVideoData::from_vec(vec![0u8; i420_size]),
+            |pool| pool.get(i420_size),
+        );
+
+        rgba8_to_i420_buf(pooled.as_slice(), canvas_w, canvas_h, i420_pooled.as_mut_slice());
+
+        return CompositeResult { data: i420_pooled, pixel_format: PixelFormat::I420 };
+    }
+
+    CompositeResult { data: pooled, pixel_format: PixelFormat::Rgba8 }
 }

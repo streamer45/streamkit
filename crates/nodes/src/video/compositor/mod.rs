@@ -160,12 +160,14 @@ impl ProcessorNode for CompositorNode {
     }
 
     fn output_pins(&self) -> Vec<OutputPin> {
+        let output_fmt = super::parse_pixel_format(&self.config.output_pixel_format)
+            .unwrap_or(PixelFormat::Rgba8);
         vec![OutputPin {
             name: "out".to_string(),
             produces_type: PacketType::RawVideo(VideoFormat {
                 width: Some(self.config.width),
                 height: Some(self.config.height),
-                pixel_format: PixelFormat::Rgba8,
+                pixel_format: output_fmt,
             }),
             cardinality: PinCardinality::Broadcast,
         }]
@@ -279,13 +281,16 @@ impl ProcessorNode for CompositorNode {
         let (work_tx, mut work_rx) = tokio::sync::mpsc::channel::<CompositeWorkItem>(2);
         let (result_tx, mut result_rx) = tokio::sync::mpsc::channel::<CompositeResult>(2);
 
+        let output_pixel_format = super::parse_pixel_format(&self.config.output_pixel_format)
+            .unwrap_or(PixelFormat::Rgba8);
+
         let composite_thread = tokio::task::spawn_blocking(move || {
             // Persistent scratch buffer for I420→RGBA8 layer conversion,
             // reused across frames to avoid per-frame allocation.
             let mut i420_to_rgba_scratch: Vec<u8> = Vec::new();
 
             while let Some(work) = work_rx.blocking_recv() {
-                let rgba_buf = composite_frame(
+                let result = composite_frame(
                     work.canvas_w,
                     work.canvas_h,
                     &work.layers,
@@ -293,8 +298,8 @@ impl ProcessorNode for CompositorNode {
                     &work.text_overlays,
                     work.video_pool.as_deref(),
                     &mut i420_to_rgba_scratch,
+                    output_pixel_format,
                 );
-                let result = CompositeResult { rgba_data: rgba_buf };
                 if result_tx.blocking_send(result).is_err() {
                     break;
                 }
@@ -568,8 +573,8 @@ impl ProcessorNode for CompositorNode {
             let out_frame = VideoFrame::from_pooled(
                 self.config.width,
                 self.config.height,
-                PixelFormat::Rgba8,
-                composite_result.rgba_data,
+                composite_result.pixel_format,
+                composite_result.data,
                 metadata,
             );
 
@@ -847,8 +852,8 @@ mod tests {
     fn test_composite_frame_empty_layers() {
         // No layers, no overlays -> transparent black canvas.
         let mut scratch = Vec::new();
-        let result = composite_frame(4, 4, &[], &[], &[], None, &mut scratch);
-        let buf = result.as_slice();
+        let result = composite_frame(4, 4, &[], &[], &[], None, &mut scratch, PixelFormat::Rgba8);
+        let buf = result.data.as_slice();
         assert_eq!(buf.len(), 4 * 4 * 4);
         assert!(buf.iter().all(|&b| b == 0));
     }
@@ -868,8 +873,9 @@ mod tests {
         };
 
         let mut scratch = Vec::new();
-        let result = composite_frame(4, 4, &[Some(layer)], &[], &[], None, &mut scratch);
-        let buf = result.as_slice();
+        let result =
+            composite_frame(4, 4, &[Some(layer)], &[], &[], None, &mut scratch, PixelFormat::Rgba8);
+        let buf = result.data.as_slice();
 
         // Entire canvas should be red (scaled from 2x2 to 4x4).
         for pixel in buf.chunks_exact(4) {
@@ -908,9 +914,17 @@ mod tests {
         };
 
         let mut scratch = Vec::new();
-        let result =
-            composite_frame(4, 4, &[Some(layer0), Some(layer1)], &[], &[], None, &mut scratch);
-        let buf = result.as_slice();
+        let result = composite_frame(
+            4,
+            4,
+            &[Some(layer0), Some(layer1)],
+            &[],
+            &[],
+            None,
+            &mut scratch,
+            PixelFormat::Rgba8,
+        );
+        let buf = result.data.as_slice();
 
         // (0,0) should be red.
         assert_eq!(buf[0], 255);
@@ -1075,8 +1089,17 @@ mod tests {
         assert_eq!(pool.stats().buckets[0].available, 2);
 
         let mut scratch = Vec::new();
-        let result = composite_frame(canvas_w, canvas_h, &[], &[], &[], Some(&pool), &mut scratch);
-        assert_eq!(result.as_slice().len(), total);
+        let result = composite_frame(
+            canvas_w,
+            canvas_h,
+            &[],
+            &[],
+            &[],
+            Some(&pool),
+            &mut scratch,
+            PixelFormat::Rgba8,
+        );
+        assert_eq!(result.data.as_slice().len(), total);
         // One buffer was taken from the pool.
         assert_eq!(pool.stats().buckets[0].available, 1);
 

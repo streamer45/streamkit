@@ -486,13 +486,126 @@ pub fn scale_blit_rgba_rotated(
 
 #[cfg(target_arch = "x86_64")]
 mod simd {
-    //! SSE2 and AVX2 kernels for I420↔RGBA8 colour-space conversion.
+    //! SSE2 / SSE4.1 kernels for I420↔RGBA8 colour-space conversion.
     //!
     //! Each function processes a fixed number of pixels per iteration and
     //! returns the number of pixels it fully handled so the caller can fall
     //! back to scalar for any tail pixels.
+    //!
+    //! SSE4.1 variants use `_mm_mullo_epi32` (single-instruction i32 multiply)
+    //! instead of the SSE2 `mul32_sse2` helper (two `_mm_mul_epu32` + shuffle +
+    //! interleave), plus vectorised byte-loads via `_mm_cvtsi32_si128` + unpack
+    //! instead of scalar loads + `_mm_set_epi32`.  Callers prefer SSE4.1 at
+    //! runtime and fall back to SSE2 on older hardware.
 
-    // ── I420 → RGBA8 (SSE2: 4 pixels / iter, i32 arithmetic) ──────────
+    // ── I420 → RGBA8 ──────────────────────────────────────────────────
+
+    /// Convert up to `width` I420 pixels from one row to RGBA8 using SSE4.1.
+    ///
+    /// Identical algorithm to the SSE2 variant but uses `_mm_mullo_epi32`
+    /// (single instruction) instead of the `mul32_sse2` helper (5 instructions),
+    /// and a vectorised Y-byte load instead of four scalar `i32::from` calls.
+    ///
+    /// Returns the number of pixels converted (always a multiple of 4).
+    #[target_feature(enable = "sse4.1")]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::similar_names)]
+    pub(super) unsafe fn i420_to_rgba8_row_sse41(
+        y_row: &[u8],
+        u_row: &[u8],
+        v_row: &[u8],
+        rgba_out: &mut [u8],
+        width: usize,
+    ) -> usize {
+        use std::arch::x86_64::{
+            _mm_add_epi32, _mm_cvtsi32_si128, _mm_mullo_epi32, _mm_or_si128, _mm_packs_epi32,
+            _mm_packus_epi16, _mm_set1_epi32, _mm_set1_epi8, _mm_set_epi32, _mm_setzero_si128,
+            _mm_srai_epi32, _mm_storeu_si128, _mm_sub_epi32, _mm_unpacklo_epi16, _mm_unpacklo_epi8,
+        };
+
+        let simd_width = width & !3;
+        if simd_width == 0 {
+            return 0;
+        }
+
+        let coeff_298 = _mm_set1_epi32(298);
+        let coeff_409 = _mm_set1_epi32(409);
+        let coeff_n100 = _mm_set1_epi32(-100);
+        let coeff_n208 = _mm_set1_epi32(-208);
+        let coeff_516 = _mm_set1_epi32(516);
+        let bias_16 = _mm_set1_epi32(16);
+        let bias_128 = _mm_set1_epi32(128);
+        let rounding = _mm_set1_epi32(128);
+        let alpha_mask = _mm_set1_epi32(0xFF00_0000_u32.cast_signed());
+        let zero = _mm_setzero_si128();
+
+        let mut col = 0usize;
+        while col < simd_width {
+            // Vectorised load: 4 Y bytes → 4×i32
+            let y_bytes =
+                _mm_cvtsi32_si128(std::ptr::read_unaligned(y_row.as_ptr().add(col).cast::<i32>()));
+            let y32 = _mm_unpacklo_epi16(_mm_unpacklo_epi8(y_bytes, zero), zero);
+
+            // Load 2 U and 2 V values, duplicate each for 4 luma pixels.
+            let chroma_col = col / 2;
+            let u0 = i32::from(u_row[chroma_col]);
+            let u1 = i32::from(u_row[chroma_col + 1]);
+            let v0 = i32::from(v_row[chroma_col]);
+            let v1 = i32::from(v_row[chroma_col + 1]);
+            let u32x4 = _mm_set_epi32(u1, u1, u0, u0);
+            let v32x4 = _mm_set_epi32(v1, v1, v0, v0);
+
+            let c = _mm_sub_epi32(y32, bias_16);
+            let d = _mm_sub_epi32(u32x4, bias_128);
+            let e = _mm_sub_epi32(v32x4, bias_128);
+
+            let r32 = _mm_srai_epi32(
+                _mm_add_epi32(
+                    _mm_add_epi32(_mm_mullo_epi32(coeff_298, c), _mm_mullo_epi32(coeff_409, e)),
+                    rounding,
+                ),
+                8,
+            );
+
+            let g32 = _mm_srai_epi32(
+                _mm_add_epi32(
+                    _mm_add_epi32(
+                        _mm_add_epi32(
+                            _mm_mullo_epi32(coeff_298, c),
+                            _mm_mullo_epi32(coeff_n100, d),
+                        ),
+                        _mm_mullo_epi32(coeff_n208, e),
+                    ),
+                    rounding,
+                ),
+                8,
+            );
+
+            let b32 = _mm_srai_epi32(
+                _mm_add_epi32(
+                    _mm_add_epi32(_mm_mullo_epi32(coeff_298, c), _mm_mullo_epi32(coeff_516, d)),
+                    rounding,
+                ),
+                8,
+            );
+
+            let r16 = _mm_packs_epi32(r32, zero);
+            let g16 = _mm_packs_epi32(g32, zero);
+            let b16 = _mm_packs_epi32(b32, zero);
+            let r8 = _mm_packus_epi16(r16, zero);
+            let g8 = _mm_packus_epi16(g16, zero);
+            let b8 = _mm_packus_epi16(b16, zero);
+
+            let rg = _mm_unpacklo_epi8(r8, g8);
+            let ba = _mm_unpacklo_epi8(b8, _mm_set1_epi8(-1));
+            let rgba = _mm_or_si128(_mm_unpacklo_epi16(rg, ba), alpha_mask);
+
+            let out_ptr = rgba_out.as_mut_ptr().add(col * 4);
+            _mm_storeu_si128(out_ptr.cast(), rgba);
+
+            col += 4;
+        }
+        simd_width
+    }
 
     /// Convert up to `width` I420 pixels from one row to RGBA8 using SSE2.
     ///
@@ -628,6 +741,10 @@ mod simd {
     /// unsigned 32-bit → 64-bit.  We use it twice (even + odd lanes) and
     /// re-interleave to get all four i32 products.  The unsigned multiply
     /// gives the correct low-32 result for signed operands (two's complement).
+    ///
+    /// **Performance note:** This is the #1 CPU hotspot in compositing
+    /// pipelines.  Prefer calling the SSE4.1 variants of the conversion
+    /// functions which use the single-instruction `_mm_mullo_epi32` instead.
     #[target_feature(enable = "sse2")]
     #[inline]
     unsafe fn mul32_sse2(
@@ -650,7 +767,75 @@ mod simd {
         _mm_unpacklo_epi32(even_lo, odd_lo)
     }
 
-    // ── RGBA8 → I420 Y-plane (SSE2: 4 pixels / iter, i32 arithmetic) ───
+    // ── RGBA8 → I420 Y-plane ─────────────────────────────────────────────
+
+    /// Convert one row of RGBA8 pixels to Y values using SSE4.1.
+    ///
+    /// Uses `_mm_mullo_epi32` (single instruction) instead of `mul32_sse2`.
+    /// Returns the number of pixels converted (multiple of 4).
+    #[target_feature(enable = "sse4.1")]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub(super) unsafe fn rgba8_to_y_row_sse41(
+        rgba_row: &[u8],
+        y_out: &mut [u8],
+        width: usize,
+    ) -> usize {
+        use std::arch::x86_64::{
+            _mm_add_epi32, _mm_and_si128, _mm_loadu_si128, _mm_mullo_epi32, _mm_packs_epi32,
+            _mm_packus_epi16, _mm_set1_epi32, _mm_setzero_si128, _mm_srai_epi32, _mm_srli_epi32,
+        };
+
+        let simd_width = width & !3;
+        if simd_width == 0 {
+            return 0;
+        }
+
+        let coeff_66 = _mm_set1_epi32(66);
+        let coeff_129 = _mm_set1_epi32(129);
+        let coeff_25 = _mm_set1_epi32(25);
+        let rounding = _mm_set1_epi32(128);
+        let bias_16 = _mm_set1_epi32(16);
+        let zero = _mm_setzero_si128();
+        let channel_mask = _mm_set1_epi32(0xFF);
+
+        let mut col = 0usize;
+        while col < simd_width {
+            let src_ptr = rgba_row.as_ptr().add(col * 4);
+            let px = _mm_loadu_si128(src_ptr.cast());
+
+            let r = _mm_and_si128(px, channel_mask);
+            let g = _mm_and_si128(_mm_srli_epi32(px, 8), channel_mask);
+            let b = _mm_and_si128(_mm_srli_epi32(px, 16), channel_mask);
+
+            let y32 = _mm_add_epi32(
+                _mm_srai_epi32(
+                    _mm_add_epi32(
+                        _mm_add_epi32(
+                            _mm_add_epi32(
+                                _mm_mullo_epi32(coeff_66, r),
+                                _mm_mullo_epi32(coeff_129, g),
+                            ),
+                            _mm_mullo_epi32(coeff_25, b),
+                        ),
+                        rounding,
+                    ),
+                    8,
+                ),
+                bias_16,
+            );
+
+            let y16 = _mm_packs_epi32(y32, zero);
+            let y8 = _mm_packus_epi16(y16, zero);
+            std::ptr::copy_nonoverlapping(
+                (&raw const y8).cast::<u8>(),
+                y_out.as_mut_ptr().add(col),
+                4,
+            );
+
+            col += 4;
+        }
+        simd_width
+    }
 
     /// Convert one row of RGBA8 pixels to Y values using SSE2.
     ///
@@ -925,12 +1110,24 @@ pub fn i420_to_rgba8_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
 
         let mut start_col = 0usize;
 
-        // SIMD fast path: process 8 pixels at a time with SSE2.
+        // SIMD fast path: prefer SSE4.1 (single-instruction i32 multiply +
+        // vectorised loads) over SSE2 (multi-instruction mul32 helper +
+        // scalar loads).  Both process 4 pixels per iteration.
         #[cfg(target_arch = "x86_64")]
         {
-            if is_x86_feature_detected!("sse2") {
-                // SAFETY: feature detection guarantees SSE2 is available;
+            if is_x86_feature_detected!("sse4.1") {
+                // SAFETY: feature detection guarantees SSE4.1 is available;
                 // slice bounds are validated by the caller's buffer sizing.
+                start_col = unsafe {
+                    simd::i420_to_rgba8_row_sse41(
+                        &data[y_base..y_base + w],
+                        &data[u_base..u_base + chroma_w],
+                        &data[v_base..v_base + chroma_w],
+                        rgba_row,
+                        w,
+                    )
+                };
+            } else if is_x86_feature_detected!("sse2") {
                 start_col = unsafe {
                     simd::i420_to_rgba8_row_sse2(
                         &data[y_base..y_base + w],
@@ -1014,11 +1211,15 @@ pub fn rgba8_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
         let rgba_base = row * w * 4;
         let mut start_col = 0usize;
 
-        // SIMD fast path: process 8 pixels at a time with SSE2.
+        // SIMD fast path: prefer SSE4.1 over SSE2.
         #[cfg(target_arch = "x86_64")]
         {
-            if is_x86_feature_detected!("sse2") {
-                // SAFETY: feature detection guarantees SSE2 is available.
+            if is_x86_feature_detected!("sse4.1") {
+                // SAFETY: feature detection guarantees SSE4.1 is available.
+                start_col = unsafe {
+                    simd::rgba8_to_y_row_sse41(&data[rgba_base..rgba_base + w * 4], y_row, w)
+                };
+            } else if is_x86_feature_detected!("sse2") {
                 start_col = unsafe {
                     simd::rgba8_to_y_row_sse2(&data[rgba_base..rgba_base + w * 4], y_row, w)
                 };

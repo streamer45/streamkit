@@ -135,8 +135,13 @@ pub struct CompositorConfig {
     /// graph building. Optional for dynamic pipelines where pins are created
     /// on-demand. If specified, pins will be named in_0, in_1, ..., in_{N-1}.
     pub num_inputs: Option<usize>,
-    /// Output pixel format (deprecated — the compositor now always outputs
-    /// RGBA8).  Kept for backward-compatible YAML deserialization.
+    /// Output pixel format: `"rgba8"` (default) or `"i420"`.
+    ///
+    /// When set to `"i420"`, the compositor converts its internal RGBA8
+    /// canvas to I420 on the compositing thread (where the data is still
+    /// cache-warm from blitting), avoiding a redundant conversion in a
+    /// downstream VP9 encoder.  For pipelines that feed directly into a
+    /// VP9 encoder, `"i420"` reduces CPU usage significantly.
     #[serde(default = "default_output_pixel_format")]
     pub output_pixel_format: String,
     /// Per-layer configuration, keyed by pin name (e.g. `"in_0"`).
