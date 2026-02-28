@@ -81,11 +81,18 @@ build-skit:
     @echo "Building skit..."
     @cargo build --release {{moq_features}} -p streamkit-server --bin skit
 
+# Build skit in release mode with native CPU optimisations
+# Produces a binary tuned for the build host's microarchitecture (not portable).
+build-skit-native:
+    @echo "Building skit (target-cpu=native)..."
+    @RUSTFLAGS="-C target-cpu=native" cargo build --release {{moq_features}} -p streamkit-server --bin skit
+
 # Build the skit with profiling support
 # Uses frame pointers for fast stack unwinding (required by pprof frame-pointer feature)
+# Enables target-cpu=native so profiles reflect host-tuned codegen.
 build-skit-profiling:
-    @echo "Building skit with profiling support (frame pointers enabled)..."
-    @RUSTFLAGS="-C force-frame-pointers=yes" cargo build --release {{moq_features}} {{profiling_features}} -p streamkit-server --bin skit
+    @echo "Building skit with profiling support (frame pointers + native CPU enabled)..."
+    @RUSTFLAGS="-C force-frame-pointers=yes -C target-cpu=native" cargo build --release {{moq_features}} {{profiling_features}} -p streamkit-server --bin skit
 
 # Start the skit server
 skit *args='': check-ui-dist
@@ -94,10 +101,11 @@ skit *args='': check-ui-dist
 
 # Start the skit server with profiling support (CPU + heap)
 # Uses frame pointers for fast stack unwinding (required by pprof frame-pointer feature)
+# Enables target-cpu=native so profiles reflect host-tuned codegen.
 skit-profiling *args='':
-    @echo "Starting skit with profiling support (CPU + heap, frame pointers enabled)..."
+    @echo "Starting skit with profiling support (CPU + heap, frame pointers + native CPU enabled)..."
     @echo "Note: Heap profiling configuration is embedded in the binary"
-    @RUSTFLAGS="-C force-frame-pointers=yes" cargo run {{moq_features}} {{profiling_features}} -p streamkit-server --bin skit -- {{args}}
+    @RUSTFLAGS="-C force-frame-pointers=yes -C target-cpu=native" cargo run {{moq_features}} {{profiling_features}} -p streamkit-server --bin skit -- {{args}}
 
 # Start the skit server with tokio-console support
 skit-console *args='':
