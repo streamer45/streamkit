@@ -119,6 +119,11 @@ impl CompositorNode {
                 height: None,
                 pixel_format: PixelFormat::I420,
             }),
+            PacketType::RawVideo(VideoFormat {
+                width: None,
+                height: None,
+                pixel_format: PixelFormat::Nv12,
+            }),
         ]
     }
 

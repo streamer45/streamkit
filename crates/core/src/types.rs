@@ -43,6 +43,7 @@ pub struct AudioFormat {
 pub enum PixelFormat {
     Rgba8,
     I420,
+    Nv12,
 }
 
 /// Contains the detailed metadata for a raw video stream.
@@ -306,6 +307,24 @@ impl VideoLayout {
                 };
 
                 (3, luma_size + chroma_size * 2)
+            },
+            PixelFormat::Nv12 => {
+                let luma_stride = align_up(width as usize, stride_align_usize);
+                let luma_size = luma_stride * height as usize;
+                let chroma_width = (width + 1) as usize / 2 * 2; // interleaved UV pairs
+                let chroma_height = (height + 1) as usize / 2;
+                let chroma_stride = align_up(chroma_width, stride_align_usize);
+                let chroma_size = chroma_stride * chroma_height;
+
+                planes[0] = VideoPlane { offset: 0, stride: luma_stride, width, height };
+                planes[1] = VideoPlane {
+                    offset: luma_size,
+                    stride: chroma_stride,
+                    width: chroma_width as u32,
+                    height: chroma_height as u32,
+                };
+
+                (2, luma_size + chroma_size)
             },
         };
 

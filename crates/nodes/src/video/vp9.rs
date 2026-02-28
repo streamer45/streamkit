@@ -26,7 +26,7 @@ use streamkit_core::{
 use tokio::sync::mpsc;
 use vpx::vp8e_enc_control_id::{VP8E_SET_CPUUSED, VP8E_SET_ENABLEAUTOALTREF};
 use vpx::vpx_codec_cx_pkt_kind::VPX_CODEC_CX_FRAME_PKT;
-use vpx::vpx_img_fmt::VPX_IMG_FMT_I420;
+use vpx::vpx_img_fmt::{VPX_IMG_FMT_I420, VPX_IMG_FMT_NV12};
 use vpx::vpx_kf_mode::VPX_KF_AUTO;
 use vpx_sys as vpx;
 
@@ -143,7 +143,7 @@ impl ProcessorNode for Vp9DecoderNode {
             produces_type: PacketType::RawVideo(VideoFormat {
                 width: None,
                 height: None,
-                pixel_format: PixelFormat::I420,
+                pixel_format: PixelFormat::Nv12,
             }),
             cardinality: PinCardinality::Broadcast,
         }]
@@ -272,6 +272,11 @@ impl ProcessorNode for Vp9EncoderNode {
                 PacketType::RawVideo(VideoFormat {
                     width: None,
                     height: None,
+                    pixel_format: PixelFormat::Nv12,
+                }),
+                PacketType::RawVideo(VideoFormat {
+                    width: None,
+                    height: None,
                     pixel_format: PixelFormat::Rgba8,
                 }),
             ],
@@ -330,7 +335,9 @@ impl ProcessorNode for Vp9EncoderNode {
                 // Convert RGBA8 to I420 on this blocking thread so the
                 // compositor can output RGBA8 and move on to the next frame
                 // while the encoder converts + encodes in parallel.
-                let i420_frame = if frame.pixel_format == PixelFormat::Rgba8 {
+                // NV12 and I420 pass through directly — the encoder handles
+                // both formats natively via VPX_IMG_FMT_NV12 / VPX_IMG_FMT_I420.
+                let encode_frame = if frame.pixel_format == PixelFormat::Rgba8 {
                     convert_rgba8_to_i420_frame(
                         &frame,
                         video_pool_clone.as_deref(),
@@ -340,9 +347,10 @@ impl ProcessorNode for Vp9EncoderNode {
                     frame
                 };
 
-                let frame_dimensions = (i420_frame.width, i420_frame.height);
+                let frame_dimensions = (encode_frame.width, encode_frame.height);
                 if current_dimensions != Some(frame_dimensions) {
-                    match Vp9Encoder::new(i420_frame.width, i420_frame.height, &encoder_config) {
+                    match Vp9Encoder::new(encode_frame.width, encode_frame.height, &encoder_config)
+                    {
                         Ok(new_encoder) => {
                             encoder = Some(new_encoder);
                             current_dimensions = Some(frame_dimensions);
@@ -360,7 +368,7 @@ impl ProcessorNode for Vp9EncoderNode {
                 };
 
                 let encode_start_time = Instant::now();
-                let result = encoder.encode_frame(&i420_frame, metadata);
+                let result = encoder.encode_frame(&encode_frame, metadata);
                 encode_duration_histogram.record(encode_start_time.elapsed().as_secs_f64(), &[]);
 
                 match result {
@@ -740,9 +748,13 @@ impl Vp9Encoder {
         frame: &VideoFrame,
         metadata: Option<PacketMetadata>,
     ) -> Result<Vec<EncodedPacket>, String> {
-        if frame.pixel_format != PixelFormat::I420 {
-            return Err(format!("VP9 encoder expects I420 input, got {:?}", frame.pixel_format));
-        }
+        let vpx_fmt = match frame.pixel_format {
+            PixelFormat::I420 => VPX_IMG_FMT_I420,
+            PixelFormat::Nv12 => VPX_IMG_FMT_NV12,
+            other @ PixelFormat::Rgba8 => {
+                return Err(format!("VP9 encoder expects I420 or NV12 input, got {other:?}"));
+            },
+        };
 
         let layout = frame.layout();
         if frame.data_len() < layout.total_bytes() {
@@ -759,7 +771,10 @@ impl Vp9Encoder {
             layout.stride_align(),
         );
         if layout != expected_layout {
-            return Err("VP9 encoder requires the canonical aligned I420 layout".to_string());
+            return Err(format!(
+                "VP9 encoder requires the canonical aligned {:?} layout",
+                frame.pixel_format
+            ));
         }
 
         let mut image = std::mem::MaybeUninit::<vpx::vpx_image_t>::uninit();
@@ -767,7 +782,7 @@ impl Vp9Encoder {
             // SAFETY: frame data is valid for the duration of this call.
             vpx::vpx_img_wrap(
                 image.as_mut_ptr(),
-                VPX_IMG_FMT_I420,
+                vpx_fmt,
                 frame.width,
                 frame.height,
                 layout.stride_align(),
@@ -775,7 +790,7 @@ impl Vp9Encoder {
             )
         };
         if image_ptr.is_null() {
-            return Err("Failed to wrap I420 frame for VP9 encoder".to_string());
+            return Err(format!("Failed to wrap {:?} frame for VP9 encoder", frame.pixel_format));
         }
         let image = unsafe {
             // SAFETY: vpx_img_wrap initialized image on success.
@@ -970,6 +985,12 @@ fn vpx_error(ctx: *mut vpx::vpx_codec_ctx_t, err: vpx::vpx_codec_err_t) -> Strin
     }
 }
 
+/// Copy a decoded I420 vpx_image into an NV12 `VideoFrame`.
+///
+/// libvpx always decodes VP9 to I420 (three separate Y, U, V planes).
+/// We convert to NV12 on the fly by copying the Y plane as-is and
+/// interleaving the U and V planes into a single UV plane.
+/// This is a cheap operation — just zipping two half-size planes.
 fn copy_vpx_image(
     image: &vpx::vpx_image_t,
     metadata: Option<PacketMetadata>,
@@ -985,38 +1006,68 @@ fn copy_vpx_image(
         return Err("VP9 decoder produced empty frame".to_string());
     }
 
-    let layout = VideoLayout::packed(width, height, PixelFormat::I420);
+    // Output layout is NV12 (Y + interleaved UV).
+    let nv12_layout = VideoLayout::packed(width, height, PixelFormat::Nv12);
     let mut data = video_pool.map_or_else(
-        || PooledVideoData::from_vec(vec![0u8; layout.total_bytes()]),
-        |pool| pool.get(layout.total_bytes()),
+        || PooledVideoData::from_vec(vec![0u8; nv12_layout.total_bytes()]),
+        |pool| pool.get(nv12_layout.total_bytes()),
     );
     let data_slice = data.as_mut_slice();
 
-    for (index, plane) in layout.planes().iter().enumerate() {
-        let src_ptr = image.planes[index];
-        if src_ptr.is_null() {
-            return Err("VP9 decoder returned null plane".to_string());
-        }
+    let nv12_planes = nv12_layout.planes();
+    let y_plane = nv12_planes[0];
+    let uv_plane = nv12_planes[1];
 
-        let src_stride = image.stride[index];
-        let dst_offset = plane.offset;
-        let dst_stride = plane.stride;
-        let dst_len = plane.stride * plane.height as usize;
-        if dst_offset + dst_len > data_slice.len() {
-            return Err("VP9 plane copy out of bounds".to_string());
-        }
+    // ── Copy Y plane (plane 0) — identical for I420 and NV12 ──
+    let y_src_ptr = image.planes[0];
+    if y_src_ptr.is_null() {
+        return Err("VP9 decoder returned null Y plane".to_string());
+    }
+    copy_plane(
+        &mut data_slice[y_plane.offset..y_plane.offset + y_plane.stride * y_plane.height as usize],
+        y_plane.stride,
+        y_src_ptr,
+        image.stride[0],
+        width as usize,
+        height as usize,
+    )?;
 
-        copy_plane(
-            &mut data_slice[dst_offset..dst_offset + dst_len],
-            dst_stride,
-            src_ptr,
-            src_stride,
-            plane.width as usize,
-            plane.height as usize,
-        )?;
+    // ── Interleave U + V into NV12's single UV plane ──
+    let u_src_ptr = image.planes[1];
+    let v_src_ptr = image.planes[2];
+    if u_src_ptr.is_null() || v_src_ptr.is_null() {
+        return Err("VP9 decoder returned null chroma plane".to_string());
     }
 
-    Ok(VideoFrame::from_pooled(width, height, PixelFormat::I420, data, metadata))
+    let chroma_w = (width as usize).div_ceil(2);
+    let chroma_h = uv_plane.height as usize;
+
+    #[allow(clippy::cast_sign_loss)]
+    let u_src_stride = image.stride[1] as usize;
+    #[allow(clippy::cast_sign_loss)]
+    let v_src_stride = image.stride[2] as usize;
+
+    if image.stride[1] <= 0 || image.stride[2] <= 0 {
+        return Err("Invalid source stride for VP9 chroma plane".to_string());
+    }
+
+    for row in 0..chroma_h {
+        let u_row = unsafe {
+            // SAFETY: u_src_ptr is valid with u_src_stride bytes per row.
+            std::slice::from_raw_parts(u_src_ptr.add(row * u_src_stride), chroma_w)
+        };
+        let v_row = unsafe {
+            // SAFETY: v_src_ptr is valid with v_src_stride bytes per row.
+            std::slice::from_raw_parts(v_src_ptr.add(row * v_src_stride), chroma_w)
+        };
+        let dst_start = uv_plane.offset + row * uv_plane.stride;
+        for col in 0..chroma_w {
+            data_slice[dst_start + col * 2] = u_row[col];
+            data_slice[dst_start + col * 2 + 1] = v_row[col];
+        }
+    }
+
+    Ok(VideoFrame::from_pooled(width, height, PixelFormat::Nv12, data, metadata))
 }
 
 fn copy_plane(
@@ -1211,7 +1262,7 @@ mod tests {
 
         // Debug probe: run a direct encode to surface libvpx details if packets are missing.
         let mut probe_encoder = Vp9Encoder::new(64, 64, &encoder_config).unwrap();
-        let mut probe_frame = create_test_video_frame(64, 64, PixelFormat::I420, 16);
+        let mut probe_frame = create_test_video_frame(64, 64, PixelFormat::Nv12, 16);
         probe_frame.metadata = Some(PacketMetadata {
             timestamp_us: Some(1_000),
             duration_us: Some(33_333),
@@ -1248,7 +1299,7 @@ mod tests {
             let duration: u64 = 33_333;
             expected_metadata.insert(index, (timestamp, duration));
 
-            let mut frame = create_test_video_frame(64, 64, PixelFormat::I420, 16);
+            let mut frame = create_test_video_frame(64, 64, PixelFormat::Nv12, 16);
             frame.metadata = Some(PacketMetadata {
                 timestamp_us: Some(timestamp),
                 duration_us: Some(duration),
@@ -1333,7 +1384,7 @@ mod tests {
                 Packet::Video(frame) => {
                     assert_eq!(frame.width, 64);
                     assert_eq!(frame.height, 64);
-                    assert_eq!(frame.pixel_format, PixelFormat::I420);
+                    assert_eq!(frame.pixel_format, PixelFormat::Nv12);
                     assert!(!frame.data().is_empty(), "Decoded frame should have data");
 
                     let meta = frame.metadata.as_ref().expect("Decoded VP9 frame missing metadata");

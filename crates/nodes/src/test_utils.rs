@@ -145,8 +145,10 @@ pub fn create_test_video_frame(
     let layout = VideoLayout::packed(width, height, pixel_format);
     let mut data = vec![fill_value; layout.total_bytes()];
 
-    if pixel_format == PixelFormat::I420 {
+    if pixel_format == PixelFormat::I420 || pixel_format == PixelFormat::Nv12 {
         // Neutral chroma for predictable decoder output.
+        // Works for both I420 (separate U/V planes) and NV12 (interleaved UV plane):
+        // filling with 128 produces neutral grey regardless of interleaving.
         for plane in layout.planes().iter().skip(1) {
             let start = plane.offset;
             let end = start + plane.stride * plane.height as usize;

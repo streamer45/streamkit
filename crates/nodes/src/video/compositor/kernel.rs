@@ -13,7 +13,9 @@ use streamkit_core::types::PixelFormat;
 
 use super::config::Rect;
 use super::overlay::DecodedOverlay;
-use super::pixel_ops::{blit_overlay, i420_to_rgba8_buf, scale_blit_rgba_rotated};
+use super::pixel_ops::{
+    blit_overlay, i420_to_rgba8_buf, nv12_to_rgba8_buf, scale_blit_rgba_rotated,
+};
 
 // ── Compositing kernel (runs on a persistent blocking thread) ────────────────
 
@@ -54,8 +56,8 @@ pub struct CompositeResult {
 /// Composite all layers + overlays onto a fresh RGBA8 canvas buffer.
 /// Allocates from the video pool if available.
 ///
-/// `i420_scratch` is a reusable buffer for I420→RGBA8 conversion, avoiding
-/// per-frame allocation.
+/// `i420_scratch` is a reusable buffer for I420/NV12→RGBA8 conversion,
+/// avoiding per-frame allocation.
 pub fn composite_frame(
     canvas_w: u32,
     canvas_h: u32,
@@ -90,6 +92,14 @@ pub fn composite_frame(
                     i420_scratch.resize(needed, 0);
                 }
                 i420_to_rgba8_buf(layer.data.as_slice(), layer.width, layer.height, i420_scratch);
+                &i420_scratch[..needed]
+            },
+            PixelFormat::Nv12 => {
+                let needed = layer.width as usize * layer.height as usize * 4;
+                if i420_scratch.len() < needed {
+                    i420_scratch.resize(needed, 0);
+                }
+                nv12_to_rgba8_buf(layer.data.as_slice(), layer.width, layer.height, i420_scratch);
                 &i420_scratch[..needed]
             },
         };

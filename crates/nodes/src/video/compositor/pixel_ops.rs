@@ -984,6 +984,90 @@ pub fn i420_to_rgba8(data: &[u8], width: u32, height: u32) -> Vec<u8> {
     rgba
 }
 
+/// Convert an NV12 (Y + interleaved UV) buffer to RGBA8, writing into `out`.
+///
+/// Same BT.601 math as [`i420_to_rgba8_buf`], but reads U and V from a single
+/// interleaved UV plane instead of two separate planes.  NV12's adjacent U/V
+/// samples improve cache locality for the conversion kernel.
+///
+/// The caller must ensure `out` has length >= `width * height * 4`.
+/// Input `data` must be a packed NV12 buffer: `width * height` luma bytes
+/// followed by `⌈width/2⌉ * 2 * ⌈height/2⌉` interleaved UV bytes.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::many_single_char_names)]
+pub fn nv12_to_rgba8_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
+    use rayon::prelude::*;
+
+    let w = width as usize;
+    let h = height as usize;
+    let y_stride = w;
+    let chroma_w = w.div_ceil(2);
+    let uv_stride = chroma_w * 2; // interleaved UV pairs
+    let uv_offset = y_stride * h;
+    let rgba_row_stride = w * 4;
+
+    let convert_row = |row: usize, rgba_row: &mut [u8]| {
+        let y_base = row * y_stride;
+        let chroma_row = row / 2;
+        let uv_base = uv_offset + chroma_row * uv_stride;
+
+        let mut start_col = 0usize;
+
+        // SIMD fast path: deinterleave UV into scratch buffers, then
+        // reuse the existing I420→RGBA8 SSE2 kernel.
+        #[cfg(target_arch = "x86_64")]
+        {
+            if is_x86_feature_detected!("sse2") {
+                let mut u_scratch = vec![0u8; chroma_w];
+                let mut v_scratch = vec![0u8; chroma_w];
+                for c in 0..chroma_w {
+                    u_scratch[c] = data[uv_base + c * 2];
+                    v_scratch[c] = data[uv_base + c * 2 + 1];
+                }
+                // SAFETY: feature detection guarantees SSE2 is available;
+                // slice bounds are validated by the caller's buffer sizing.
+                start_col = unsafe {
+                    simd::i420_to_rgba8_row_sse2(
+                        &data[y_base..y_base + w],
+                        &u_scratch,
+                        &v_scratch,
+                        rgba_row,
+                        w,
+                    )
+                };
+            }
+        }
+
+        // Scalar tail (or full row on non-x86-64 / without SSE2).
+        for col in start_col..w {
+            let y_val = i32::from(data[y_base + col]);
+            let u_val = i32::from(data[uv_base + (col / 2) * 2]);
+            let v_val = i32::from(data[uv_base + (col / 2) * 2 + 1]);
+
+            let c = y_val - 16;
+            let d = u_val - 128;
+            let e = v_val - 128;
+
+            let off = col * 4;
+            rgba_row[off] = ((298 * c + 409 * e + 128) >> 8).clamp(0, 255) as u8;
+            rgba_row[off + 1] = ((298 * c - 100 * d - 208 * e + 128) >> 8).clamp(0, 255) as u8;
+            rgba_row[off + 2] = ((298 * c + 516 * d + 128) >> 8).clamp(0, 255) as u8;
+            rgba_row[off + 3] = 255;
+        }
+    };
+
+    if h >= RAYON_ROW_THRESHOLD {
+        out[..w * h * 4]
+            .par_chunks_mut(rgba_row_stride)
+            .take(h)
+            .enumerate()
+            .for_each(|(row, rgba_row)| convert_row(row, rgba_row));
+    } else {
+        for (row, rgba_row) in out[..w * h * 4].chunks_mut(rgba_row_stride).take(h).enumerate() {
+            convert_row(row, rgba_row);
+        }
+    }
+}
+
 /// Convert an RGBA8 buffer to I420 (YUV 4:2:0 planar), writing into `out`.
 ///
 /// The caller must ensure `out` has length >= `w * h + 2 * ((w+1)/2) * ((h+1)/2)`.
