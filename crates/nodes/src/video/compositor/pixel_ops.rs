@@ -996,6 +996,16 @@ pub fn i420_to_rgba8(data: &[u8], width: u32, height: u32) -> Vec<u8> {
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::many_single_char_names)]
 pub fn nv12_to_rgba8_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     use rayon::prelude::*;
+    use std::cell::RefCell;
+
+    // Thread-local scratch buffers for deinterleaving NV12 UV pairs into
+    // separate U and V planes required by the I420 SSE2 kernel.  Allocated
+    // once per thread and reused across rows, avoiding per-row heap churn.
+    #[cfg(target_arch = "x86_64")]
+    thread_local! {
+        static NV12_U_SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+        static NV12_V_SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    }
 
     let w = width as usize;
     let h = height as usize;
@@ -1012,28 +1022,34 @@ pub fn nv12_to_rgba8_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
 
         let mut start_col = 0usize;
 
-        // SIMD fast path: deinterleave UV into scratch buffers, then
-        // reuse the existing I420→RGBA8 SSE2 kernel.
+        // SIMD fast path: deinterleave UV into thread-local scratch buffers,
+        // then reuse the existing I420→RGBA8 SSE2 kernel.
         #[cfg(target_arch = "x86_64")]
         {
             if is_x86_feature_detected!("sse2") {
-                let mut u_scratch = vec![0u8; chroma_w];
-                let mut v_scratch = vec![0u8; chroma_w];
-                for c in 0..chroma_w {
-                    u_scratch[c] = data[uv_base + c * 2];
-                    v_scratch[c] = data[uv_base + c * 2 + 1];
-                }
-                // SAFETY: feature detection guarantees SSE2 is available;
-                // slice bounds are validated by the caller's buffer sizing.
-                start_col = unsafe {
-                    simd::i420_to_rgba8_row_sse2(
-                        &data[y_base..y_base + w],
-                        &u_scratch,
-                        &v_scratch,
-                        rgba_row,
-                        w,
-                    )
-                };
+                NV12_U_SCRATCH.with(|u_cell| {
+                    NV12_V_SCRATCH.with(|v_cell| {
+                        let mut u_scratch = u_cell.borrow_mut();
+                        let mut v_scratch = v_cell.borrow_mut();
+                        u_scratch.resize(chroma_w, 0);
+                        v_scratch.resize(chroma_w, 0);
+                        for c in 0..chroma_w {
+                            u_scratch[c] = data[uv_base + c * 2];
+                            v_scratch[c] = data[uv_base + c * 2 + 1];
+                        }
+                        // SAFETY: feature detection guarantees SSE2 is available;
+                        // slice bounds are validated by the caller's buffer sizing.
+                        start_col = unsafe {
+                            simd::i420_to_rgba8_row_sse2(
+                                &data[y_base..y_base + w],
+                                &u_scratch,
+                                &v_scratch,
+                                rgba_row,
+                                w,
+                            )
+                        };
+                    });
+                });
             }
         }
 
