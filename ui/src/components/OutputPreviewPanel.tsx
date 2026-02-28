@@ -2,8 +2,16 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+/**
+ * Floating, draggable output preview panel for the Monitor View.
+ *
+ * Renders as a compact window that can be repositioned anywhere on the
+ * canvas. When collapsed it shows only a small title bar; when expanded
+ * it displays the live MoQ video stream at the correct aspect ratio.
+ */
+
 import styled from '@emotion/styled';
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { useShallow } from 'zustand/shallow';
 
 import { useStreamStore } from '@/stores/streamStore';
@@ -13,55 +21,54 @@ import type { WatchStatus } from '@/stores/streamStore';
 // Styled components
 // ---------------------------------------------------------------------------
 
-const PanelContainer = styled.div<{ collapsed: boolean }>`
+const FloatingPanel = styled.div`
   position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  z-index: 12;
+  z-index: 20;
   display: flex;
   flex-direction: column;
   background: var(--sk-panel-bg);
-  border-top: 1px solid var(--sk-border);
-  height: ${({ collapsed }) => (collapsed ? '32px' : '240px')};
-  transition: height 0.2s ease;
+  border: 1px solid var(--sk-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
   pointer-events: auto;
+  overflow: hidden;
+  min-width: 180px;
 `;
 
-const PanelHeader = styled.button`
+const DragHeader = styled.div`
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 12px;
-  height: 32px;
-  min-height: 32px;
+  padding: 0 8px;
+  height: 28px;
+  min-height: 28px;
   background: var(--sk-panel-bg);
-  border: none;
   border-bottom: 1px solid var(--sk-border);
-  cursor: pointer;
+  cursor: grab;
   color: var(--sk-text);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.02em;
-  font-family: inherit;
-  width: 100%;
-  text-align: left;
+  user-select: none;
 
-  &:hover {
-    background: var(--sk-bg-hover);
+  &:active {
+    cursor: grabbing;
   }
 `;
 
 const HeaderLeft = styled.span`
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
+  overflow: hidden;
+  white-space: nowrap;
 `;
 
 const StatusDot = styled.span<{ status: WatchStatus }>`
   width: 6px;
   height: 6px;
   border-radius: 50%;
+  flex-shrink: 0;
   background: ${({ status }) => {
     switch (status) {
       case 'live':
@@ -74,38 +81,51 @@ const StatusDot = styled.span<{ status: WatchStatus }>`
   }};
 `;
 
-const ChevronIcon = styled.span<{ collapsed: boolean }>`
+const HeaderButton = styled.button`
   display: inline-flex;
-  transform: ${({ collapsed }) => (collapsed ? 'rotate(0deg)' : 'rotate(180deg)')};
-  transition: transform 0.2s ease;
-  font-size: 14px;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: none;
   color: var(--sk-text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  flex-shrink: 0;
+
+  &:hover {
+    background: var(--sk-overlay-medium);
+    color: var(--sk-text);
+  }
 `;
 
 const PanelBody = styled.div`
-  flex: 1;
-  min-height: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  padding: 8px;
+  padding: 6px;
+  background: #0a0a0f;
 `;
 
 const EmptyMessage = styled.div`
   color: var(--sk-text-muted);
-  font-size: 12px;
+  font-size: 11px;
   text-align: center;
-  line-height: 1.5;
-  max-width: 280px;
+  line-height: 1.4;
+  padding: 12px 8px;
+  max-width: 220px;
 `;
 
 const PreviewCanvas = styled.canvas`
-  max-width: 100%;
-  max-height: 100%;
-  border-radius: 4px;
+  width: 100%;
+  border-radius: 3px;
   background: #000;
-  object-fit: contain;
+  display: block;
 `;
 
 // ---------------------------------------------------------------------------
@@ -117,8 +137,19 @@ interface OutputPreviewPanelProps {
   hasSession: boolean;
 }
 
+/** Default panel width (px) */
+const DEFAULT_WIDTH = 320;
+
 const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(({ hasSession }) => {
-  const [collapsed, setCollapsed] = useState(true);
+  const [collapsed, setCollapsed] = useState(false);
+  // Position relative to bottom-right of the container
+  const [pos, setPos] = useState({ x: 16, y: 16 });
+  const dragRef = useRef<{
+    startX: number;
+    startY: number;
+    origX: number;
+    origY: number;
+  } | null>(null);
 
   const { status, watchStatus, videoRenderer, activeSessionId } = useStreamStore(
     useShallow((s) => ({
@@ -145,6 +176,43 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(({ hasS
     [videoRenderer]
   );
 
+  // ── Drag handling ────────────────────────────────────────────────────────
+  const handleDragStart = useCallback(
+    (e: React.PointerEvent) => {
+      // Only start drag from the header itself (not buttons inside it)
+      if ((e.target as HTMLElement).closest('button')) return;
+      e.preventDefault();
+      e.stopPropagation();
+      dragRef.current = {
+        startX: e.clientX,
+        startY: e.clientY,
+        origX: pos.x,
+        origY: pos.y,
+      };
+
+      const handleMove = (ev: PointerEvent) => {
+        if (!dragRef.current) return;
+        const dx = ev.clientX - dragRef.current.startX;
+        const dy = ev.clientY - dragRef.current.startY;
+        // Inverted because position is relative to bottom-right
+        setPos({
+          x: Math.max(0, dragRef.current.origX - dx),
+          y: Math.max(0, dragRef.current.origY + dy),
+        });
+      };
+
+      const handleUp = () => {
+        dragRef.current = null;
+        document.removeEventListener('pointermove', handleMove);
+        document.removeEventListener('pointerup', handleUp);
+      };
+
+      document.addEventListener('pointermove', handleMove);
+      document.addEventListener('pointerup', handleUp);
+    },
+    [pos]
+  );
+
   const statusLabel =
     watchStatus === 'live'
       ? 'Live'
@@ -152,33 +220,29 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(({ hasS
         ? 'Loading...'
         : isConnected
           ? 'Connected'
-          : 'Disconnected';
+          : 'Off';
 
   const renderBody = () => {
     if (!hasSession) {
-      return <EmptyMessage>Select a session to preview its output stream.</EmptyMessage>;
+      return <EmptyMessage>Select a session to preview output.</EmptyMessage>;
     }
 
     if (!isConnected) {
       return (
         <EmptyMessage>
-          Connect to the MoQ gateway in the <strong>Stream</strong> view to preview the output
-          stream here.
+          Connect to the MoQ gateway in the <strong>Stream</strong> view to preview.
         </EmptyMessage>
       );
     }
 
     if (!videoRenderer) {
-      return (
-        <EmptyMessage>No video renderer available. Enable Watch mode to preview.</EmptyMessage>
-      );
+      return <EmptyMessage>No video renderer. Enable Watch mode.</EmptyMessage>;
     }
 
     if (!isLive && watchStatus !== 'loading') {
       return (
         <EmptyMessage>
-          Waiting for video stream
-          {activeSessionId ? ` from session` : ''}...
+          Waiting for video stream{activeSessionId ? ' from session' : ''}...
         </EmptyMessage>
       );
     }
@@ -194,19 +258,25 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(({ hasS
   };
 
   return (
-    <PanelContainer collapsed={collapsed}>
-      <PanelHeader onClick={toggleCollapsed} type="button" aria-label="Toggle output preview">
+    <FloatingPanel
+      style={{
+        right: pos.x,
+        bottom: pos.y,
+        width: collapsed ? undefined : DEFAULT_WIDTH,
+      }}
+    >
+      <DragHeader onPointerDown={handleDragStart}>
         <HeaderLeft>
           <StatusDot status={watchStatus} />
-          Output Preview
+          Preview
           {isConnected && ` \u2014 ${statusLabel}`}
         </HeaderLeft>
-        <ChevronIcon collapsed={collapsed} aria-hidden>
-          &#9650;
-        </ChevronIcon>
-      </PanelHeader>
+        <HeaderButton onClick={toggleCollapsed} title={collapsed ? 'Expand' : 'Collapse'}>
+          {collapsed ? '\u25B3' : '\u25BD'}
+        </HeaderButton>
+      </DragHeader>
       {!collapsed && <PanelBody>{renderBody()}</PanelBody>}
-    </PanelContainer>
+    </FloatingPanel>
   );
 });
 

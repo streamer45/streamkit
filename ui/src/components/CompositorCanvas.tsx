@@ -6,15 +6,33 @@
  * Visual canvas for the video compositor node.
  *
  * Renders a scaled representation of the compositor output with draggable,
- * resizable layer boxes. All interaction is handled via pointer events;
- * visual updates during drag use direct DOM manipulation (refs) so React
- * never re-renders mid-interaction.
+ * resizable layer boxes. Each layer type (video input, text overlay, image
+ * overlay) is rendered differently:
+ *
+ * - Video input layers: colored rectangles with a unique hue per layer
+ * - Text overlays: render the actual text content at scaled font size
+ * - Image overlays: rectangles with an image icon and crosshatch pattern
+ *
+ * All interaction is handled via pointer events; visual updates during drag
+ * use direct DOM manipulation (refs) so React never re-renders mid-interaction.
  */
 
 import styled from '@emotion/styled';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
-import type { LayerState, ResizeHandle } from '@/hooks/useCompositorLayers';
+import type {
+  LayerState,
+  TextOverlayState,
+  ImageOverlayState,
+  ResizeHandle,
+} from '@/hooks/useCompositorLayers';
+
+// ── Hue generation ──────────────────────────────────────────────────────────
+
+/** Golden-angle-based hue to maximise visual separation between layers */
+function layerHue(index: number): number {
+  return (index * 137.508) % 360;
+}
 
 // ── Styled components ───────────────────────────────────────────────────────
 
@@ -34,24 +52,13 @@ const CanvasInner = styled.div`
   overflow: hidden;
 `;
 
-const LayerBox = styled.div<{ isSelected: boolean }>`
+const LayerBox = styled.div`
   position: absolute;
   box-sizing: border-box;
-  border: 2px solid
-    ${(props) => (props.isSelected ? 'var(--sk-primary)' : 'rgba(255, 255, 255, 0.5)')};
-  background: ${(props) =>
-    props.isSelected ? 'rgba(99, 102, 241, 0.15)' : 'rgba(255, 255, 255, 0.08)'};
   cursor: move;
   user-select: none;
   will-change: transform, left, top, width, height;
   touch-action: none;
-
-  &:hover {
-    border-color: ${(props) =>
-      props.isSelected ? 'var(--sk-primary)' : 'rgba(255, 255, 255, 0.8)'};
-    background: ${(props) =>
-      props.isSelected ? 'rgba(99, 102, 241, 0.2)' : 'rgba(255, 255, 255, 0.12)'};
-  }
 `;
 
 const LayerLabel = styled.div`
@@ -60,10 +67,36 @@ const LayerLabel = styled.div`
   left: 4px;
   font-size: 10px;
   font-weight: 600;
-  color: rgba(255, 255, 255, 0.9);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+  color: rgba(255, 255, 255, 0.95);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
   pointer-events: none;
   white-space: nowrap;
+  z-index: 2;
+`;
+
+/** Text content rendered inside text overlay layers */
+const TextContent = styled.div`
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  overflow: hidden;
+  padding: 2px 4px;
+  z-index: 1;
+`;
+
+/** Icon badge for image overlay layers */
+const ImageBadge = styled.div`
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0.5;
 `;
 
 const LayerDimensions = styled.div`
@@ -75,6 +108,7 @@ const LayerDimensions = styled.div`
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
   pointer-events: none;
   font-variant-numeric: tabular-nums;
+  z-index: 2;
 `;
 
 const HANDLE_SIZE = 8;
@@ -143,15 +177,36 @@ const ResizeHandles: React.FC<{
 ));
 ResizeHandles.displayName = 'ResizeHandles';
 
-// ── Layer component ─────────────────────────────────────────────────────────
+// ── Image icon SVG ──────────────────────────────────────────────────────────
 
-const Layer: React.FC<{
+const ImageIcon: React.FC<{ size?: number }> = ({ size = 24 }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.5"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    style={{ color: 'rgba(255,255,255,0.5)' }}
+  >
+    <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+    <circle cx="8.5" cy="8.5" r="1.5" />
+    <polyline points="21 15 16 10 5 21" />
+  </svg>
+);
+
+// ── Video input layer ───────────────────────────────────────────────────────
+
+const VideoLayer: React.FC<{
   layer: LayerState;
+  index: number;
   isSelected: boolean;
   onPointerDown: (layerId: string, e: React.PointerEvent) => void;
   onResizeStart: (layerId: string, handle: ResizeHandle, e: React.PointerEvent) => void;
   layerRef: (el: HTMLDivElement | null) => void;
-}> = React.memo(({ layer, isSelected, onPointerDown, onResizeStart, layerRef }) => {
+}> = React.memo(({ layer, index, isSelected, onPointerDown, onResizeStart, layerRef }) => {
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
       onPointerDown(layer.id, e);
@@ -159,10 +214,13 @@ const Layer: React.FC<{
     [layer.id, onPointerDown]
   );
 
+  const hue = layerHue(index);
+  const borderColor = isSelected ? 'var(--sk-primary)' : `hsla(${hue}, 70%, 65%, 0.8)`;
+  const bgColor = isSelected ? `hsla(${hue}, 60%, 50%, 0.25)` : `hsla(${hue}, 60%, 50%, 0.15)`;
+
   return (
     <LayerBox
       ref={layerRef}
-      isSelected={isSelected}
       className="nodrag nopan"
       style={{
         left: layer.x,
@@ -172,18 +230,132 @@ const Layer: React.FC<{
         opacity: layer.opacity,
         transform: layer.rotationDegrees !== 0 ? `rotate(${layer.rotationDegrees}deg)` : undefined,
         zIndex: layer.zIndex + 1,
+        border: `2px solid ${borderColor}`,
+        background: bgColor,
       }}
       onPointerDown={handlePointerDown}
     >
       <LayerLabel>{layer.id}</LayerLabel>
       <LayerDimensions>
-        {Math.round(layer.width)}x{Math.round(layer.height)}
+        {Math.round(layer.width)}&times;{Math.round(layer.height)}
       </LayerDimensions>
       {isSelected && <ResizeHandles layerId={layer.id} onResizeStart={onResizeStart} />}
     </LayerBox>
   );
 });
-Layer.displayName = 'Layer';
+VideoLayer.displayName = 'VideoLayer';
+
+// ── Text overlay layer ──────────────────────────────────────────────────────
+
+const TextOverlayLayer: React.FC<{
+  overlay: TextOverlayState;
+  index: number;
+  isSelected: boolean;
+  scale: number;
+  onPointerDown: (layerId: string, e: React.PointerEvent) => void;
+  onResizeStart: (layerId: string, handle: ResizeHandle, e: React.PointerEvent) => void;
+  layerRef: (el: HTMLDivElement | null) => void;
+}> = React.memo(({ overlay, index, isSelected, scale, onPointerDown, onResizeStart, layerRef }) => {
+  const handlePointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      onPointerDown(overlay.id, e);
+    },
+    [overlay.id, onPointerDown]
+  );
+
+  const hue = layerHue(index + 100); // offset from video layers
+  const borderColor = isSelected ? 'var(--sk-primary)' : `hsla(${hue}, 70%, 65%, 0.8)`;
+  const bgColor = isSelected ? `hsla(${hue}, 60%, 50%, 0.25)` : `hsla(${hue}, 60%, 50%, 0.12)`;
+
+  const [r, g, b, a] = overlay.color;
+  const textColor = `rgba(${r}, ${g}, ${b}, ${(a ?? 255) / 255})`;
+
+  return (
+    <LayerBox
+      ref={layerRef}
+      className="nodrag nopan"
+      style={{
+        left: overlay.x,
+        top: overlay.y,
+        width: overlay.width,
+        height: overlay.height,
+        opacity: overlay.opacity,
+        zIndex: 100 + index,
+        border: `2px dashed ${borderColor}`,
+        background: bgColor,
+      }}
+      onPointerDown={handlePointerDown}
+    >
+      <LayerLabel>T: {overlay.text.slice(0, 20)}</LayerLabel>
+      <TextContent>
+        <span
+          style={{
+            fontSize: Math.max(8, overlay.fontSize * scale),
+            color: textColor,
+            fontWeight: 600,
+            textShadow: '0 1px 3px rgba(0,0,0,0.7)',
+            lineHeight: 1.1,
+            textAlign: 'center',
+            wordBreak: 'break-word',
+          }}
+        >
+          {overlay.text}
+        </span>
+      </TextContent>
+      {isSelected && <ResizeHandles layerId={overlay.id} onResizeStart={onResizeStart} />}
+    </LayerBox>
+  );
+});
+TextOverlayLayer.displayName = 'TextOverlayLayer';
+
+// ── Image overlay layer ─────────────────────────────────────────────────────
+
+const ImageOverlayLayer: React.FC<{
+  overlay: ImageOverlayState;
+  index: number;
+  isSelected: boolean;
+  onPointerDown: (layerId: string, e: React.PointerEvent) => void;
+  onResizeStart: (layerId: string, handle: ResizeHandle, e: React.PointerEvent) => void;
+  layerRef: (el: HTMLDivElement | null) => void;
+}> = React.memo(({ overlay, index, isSelected, onPointerDown, onResizeStart, layerRef }) => {
+  const handlePointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      onPointerDown(overlay.id, e);
+    },
+    [overlay.id, onPointerDown]
+  );
+
+  const hue = layerHue(index + 200); // offset from text overlays
+  const borderColor = isSelected ? 'var(--sk-primary)' : `hsla(${hue}, 70%, 65%, 0.8)`;
+  const bgColor = isSelected ? `hsla(${hue}, 60%, 50%, 0.25)` : `hsla(${hue}, 60%, 50%, 0.12)`;
+
+  return (
+    <LayerBox
+      ref={layerRef}
+      className="nodrag nopan"
+      style={{
+        left: overlay.x,
+        top: overlay.y,
+        width: overlay.width,
+        height: overlay.height,
+        opacity: overlay.opacity,
+        zIndex: 200 + index,
+        border: `2px dotted ${borderColor}`,
+        background: bgColor,
+        backgroundImage:
+          'repeating-linear-gradient(45deg, transparent, transparent 6px, rgba(255,255,255,0.04) 6px, rgba(255,255,255,0.04) 12px)',
+      }}
+      onPointerDown={handlePointerDown}
+    >
+      <LayerLabel>IMG #{index}</LayerLabel>
+      <ImageBadge>
+        <ImageIcon size={24} />
+      </ImageBadge>
+      {isSelected && <ResizeHandles layerId={overlay.id} onResizeStart={onResizeStart} />}
+    </LayerBox>
+  );
+});
+ImageOverlayLayer.displayName = 'ImageOverlayLayer';
 
 // ── Main canvas ─────────────────────────────────────────────────────────────
 
@@ -191,6 +363,8 @@ export interface CompositorCanvasProps {
   canvasWidth: number;
   canvasHeight: number;
   layers: LayerState[];
+  textOverlays?: TextOverlayState[];
+  imageOverlays?: ImageOverlayState[];
   selectedLayerId: string | null;
   onSelectLayer: (id: string | null) => void;
   onLayerPointerDown: (layerId: string, e: React.PointerEvent) => void;
@@ -204,6 +378,8 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
     canvasWidth,
     canvasHeight,
     layers,
+    textOverlays = [],
+    imageOverlays = [],
     selectedLayerId,
     onSelectLayer,
     onLayerPointerDown,
@@ -247,6 +423,14 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
       [layerRefs]
     );
 
+    const noopPointerDown = useCallback(() => {}, []);
+    const noopResizeStart = useCallback(
+      (() => {}) as (id: string, handle: ResizeHandle, e: React.PointerEvent) => void,
+      []
+    );
+
+    const hasContent = layers.length > 0 || textOverlays.length > 0 || imageOverlays.length > 0;
+
     return (
       <CanvasOuter ref={outerRef} className="nodrag nopan">
         <CanvasInner
@@ -261,19 +445,45 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
           }}
           onPointerDown={disabled ? undefined : handlePaneClick}
         >
-          {layers.length === 0 ? (
+          {!hasContent ? (
             <EmptyState>No layers configured</EmptyState>
           ) : (
-            layers.map((layer) => (
-              <Layer
-                key={layer.id}
-                layer={layer}
-                isSelected={selectedLayerId === layer.id}
-                onPointerDown={disabled ? () => {} : onLayerPointerDown}
-                onResizeStart={disabled ? () => {} : onResizePointerDown}
-                layerRef={setLayerRef(layer.id)}
-              />
-            ))
+            <>
+              {layers.map((layer, i) => (
+                <VideoLayer
+                  key={layer.id}
+                  layer={layer}
+                  index={i}
+                  isSelected={selectedLayerId === layer.id}
+                  onPointerDown={disabled ? noopPointerDown : onLayerPointerDown}
+                  onResizeStart={disabled ? noopResizeStart : onResizePointerDown}
+                  layerRef={setLayerRef(layer.id)}
+                />
+              ))}
+              {textOverlays.map((overlay, i) => (
+                <TextOverlayLayer
+                  key={overlay.id}
+                  overlay={overlay}
+                  index={i}
+                  isSelected={selectedLayerId === overlay.id}
+                  scale={scale}
+                  onPointerDown={disabled ? noopPointerDown : onLayerPointerDown}
+                  onResizeStart={disabled ? noopResizeStart : onResizePointerDown}
+                  layerRef={setLayerRef(overlay.id)}
+                />
+              ))}
+              {imageOverlays.map((overlay, i) => (
+                <ImageOverlayLayer
+                  key={overlay.id}
+                  overlay={overlay}
+                  index={i}
+                  isSelected={selectedLayerId === overlay.id}
+                  onPointerDown={disabled ? noopPointerDown : onLayerPointerDown}
+                  onResizeStart={disabled ? noopResizeStart : onResizePointerDown}
+                  layerRef={setLayerRef(overlay.id)}
+                />
+              ))}
+            </>
           )}
         </CanvasInner>
       </CanvasOuter>

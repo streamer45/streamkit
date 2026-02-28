@@ -3,14 +3,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import styled from '@emotion/styled';
-import * as Tooltip from '@radix-ui/react-tooltip';
 import { Image, Plus, Type, X } from 'lucide-react';
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 import { CompositorCanvas } from '@/components/CompositorCanvas';
 import { NodeFrame } from '@/components/node/NodeFrame';
+import { SKTooltip } from '@/components/Tooltip';
 import { useCompositorLayers } from '@/hooks/useCompositorLayers';
 import type { TextOverlayState, ImageOverlayState } from '@/hooks/useCompositorLayers';
+import { setCompositorSelection } from '@/hooks/useCompositorSelection';
 import type { InputPin, OutputPin, NodeState, NodeStats, NodeDefinition } from '@/types/types';
 import { nodesLogger } from '@/utils/logger';
 
@@ -82,18 +83,6 @@ const LiveDot = styled.div`
   }
 `;
 
-const TooltipContent = styled(Tooltip.Content)`
-  background: var(--sk-panel-bg);
-  border: 1px solid var(--sk-border);
-  border-radius: 6px;
-  padding: 8px 12px;
-  box-shadow: 0 4px 12px var(--sk-shadow);
-  font-size: 11px;
-  z-index: 1000;
-  max-width: 250px;
-  color: var(--sk-text);
-`;
-
 const LayerControls = styled.div`
   display: flex;
   flex-direction: column;
@@ -142,27 +131,37 @@ const ZIndexRow = styled.div`
   font-size: 11px;
 `;
 
-const ZIndexInput = styled.input`
-  width: 40px;
-  padding: 2px 4px;
+const NumericInput = styled.input`
+  width: 44px;
+  padding: 3px 4px;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   text-align: center;
   border: 1px solid var(--sk-border);
-  border-radius: 3px;
+  border-radius: 4px;
   background: var(--sk-input-bg);
   color: var(--sk-text);
   outline: none;
   pointer-events: auto;
+  transition: border-color 0.15s;
 
   &:focus {
     border-color: var(--sk-primary);
+    box-shadow: 0 0 0 1px var(--sk-primary);
   }
 
   &:disabled {
     cursor: not-allowed;
     opacity: 0.5;
   }
+
+  /* Hide spinners */
+  &::-webkit-inner-spin-button,
+  &::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  -moz-appearance: textfield;
 `;
 
 const StackButton = styled.button`
@@ -376,22 +375,9 @@ const OverlayTextInput = styled.input`
   }
 `;
 
-const OverlayNumInput = styled.input`
+const OverlayNumInput = styled(NumericInput)`
   width: 40px;
-  padding: 2px 4px;
   font-size: 10px;
-  font-variant-numeric: tabular-nums;
-  text-align: center;
-  border: 1px solid var(--sk-border);
-  border-radius: 3px;
-  background: var(--sk-input-bg);
-  color: var(--sk-text);
-  outline: none;
-  pointer-events: auto;
-
-  &:focus {
-    border-color: var(--sk-primary);
-  }
 `;
 
 // ── Overlay management components ───────────────────────────────────────────
@@ -498,14 +484,15 @@ const OverlayList: React.FC<{
               >
                 {o.text}
               </OverlayLabel>
-              <RemoveButton
-                title="Remove text overlay"
-                disabled={disabled}
-                className="nodrag nopan"
-                onClick={() => onRemoveText(o.id)}
-              >
-                <X size={12} />
-              </RemoveButton>
+              <SKTooltip content="Remove text overlay">
+                <RemoveButton
+                  disabled={disabled}
+                  className="nodrag nopan"
+                  onClick={() => onRemoveText(o.id)}
+                >
+                  <X size={12} />
+                </RemoveButton>
+              </SKTooltip>
             </OverlayItem>
             {editingId === o.id && (
               <>
@@ -557,14 +544,15 @@ const OverlayList: React.FC<{
               <Image size={11} />
             </OverlayIcon>
             <OverlayLabel>Image {o.id.replace('img_', '#')}</OverlayLabel>
-            <RemoveButton
-              title="Remove image overlay"
-              disabled={disabled}
-              className="nodrag nopan"
-              onClick={() => onRemoveImage(o.id)}
-            >
-              <X size={12} />
-            </RemoveButton>
+            <SKTooltip content="Remove image overlay">
+              <RemoveButton
+                disabled={disabled}
+                className="nodrag nopan"
+                onClick={() => onRemoveImage(o.id)}
+              >
+                <X size={12} />
+              </RemoveButton>
+            </SKTooltip>
           </OverlayItem>
         ))}
 
@@ -676,20 +664,21 @@ const SelectedLayerControls: React.FC<{
 
         <ZIndexRow>
           <ControlLabel>Order</ControlLabel>
-          <StackButton
-            title="Send backward"
-            disabled={disabled || isBottommost}
-            className="nodrag nopan"
-            onClick={() => {
-              if (isBottommost) return;
-              const below = sortedByZ[stackIndex - 1];
-              // Swap z-index values with the layer below
-              onZIndexChange(selectedLayer.id, below.zIndex - 1);
-            }}
-          >
-            ▼
-          </StackButton>
-          <ZIndexInput
+          <SKTooltip content="Send backward">
+            <StackButton
+              disabled={disabled || isBottommost}
+              className="nodrag nopan"
+              onClick={() => {
+                if (isBottommost) return;
+                const below = sortedByZ[stackIndex - 1];
+                // Swap z-index values with the layer below
+                onZIndexChange(selectedLayer.id, below.zIndex - 1);
+              }}
+            >
+              ▼
+            </StackButton>
+          </SKTooltip>
+          <NumericInput
             type="number"
             value={selectedLayer.zIndex}
             onChange={(e) => {
@@ -699,19 +688,20 @@ const SelectedLayerControls: React.FC<{
             disabled={disabled}
             className="nodrag nopan"
           />
-          <StackButton
-            title="Bring forward"
-            disabled={disabled || isTopmost}
-            className="nodrag nopan"
-            onClick={() => {
-              if (isTopmost) return;
-              const above = sortedByZ[stackIndex + 1];
-              // Swap z-index values with the layer above
-              onZIndexChange(selectedLayer.id, above.zIndex + 1);
-            }}
-          >
-            ▲
-          </StackButton>
+          <SKTooltip content="Bring forward">
+            <StackButton
+              disabled={disabled || isTopmost}
+              className="nodrag nopan"
+              onClick={() => {
+                if (isTopmost) return;
+                const above = sortedByZ[stackIndex + 1];
+                // Swap z-index values with the layer above
+                onZIndexChange(selectedLayer.id, above.zIndex + 1);
+              }}
+            >
+              ▲
+            </StackButton>
+          </SKTooltip>
         </ZIndexRow>
       </LayerControls>
     );
@@ -757,6 +747,12 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
 
   const disabled = !data.onConfigChange && !data.onParamChange;
 
+  // Broadcast compositor layer selection for YAML highlighting
+  useEffect(() => {
+    setCompositorSelection(selected ? data.label : null, selectedLayerId);
+    return () => setCompositorSelection(null, null);
+  }, [selected, data.label, selectedLayerId]);
+
   // Show live indicator when node is in an active session and is not staged
   const showLiveIndicator = !data.isStaged && !!data.onConfigChange && !!data.sessionId;
 
@@ -779,22 +775,12 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
             <CanvasLabel>
               Compositor
               {showLiveIndicator && (
-                <Tooltip.Provider delayDuration={300}>
-                  <Tooltip.Root>
-                    <Tooltip.Trigger asChild>
-                      <LiveIndicator style={{ marginLeft: 6 }}>
-                        <LiveDot />
-                        LIVE
-                      </LiveIndicator>
-                    </Tooltip.Trigger>
-                    <Tooltip.Portal>
-                      <TooltipContent side="top" sideOffset={5}>
-                        Layer changes apply immediately to the running pipeline
-                        <Tooltip.Arrow style={{ fill: 'var(--sk-border)' }} />
-                      </TooltipContent>
-                    </Tooltip.Portal>
-                  </Tooltip.Root>
-                </Tooltip.Provider>
+                <SKTooltip content="Layer changes apply immediately to the running pipeline">
+                  <LiveIndicator style={{ marginLeft: 6 }}>
+                    <LiveDot />
+                    LIVE
+                  </LiveIndicator>
+                </SKTooltip>
               )}
             </CanvasLabel>
             <ResolutionLabel>
@@ -806,6 +792,8 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
             canvasWidth={canvasWidth}
             canvasHeight={canvasHeight}
             layers={layers}
+            textOverlays={textOverlays}
+            imageOverlays={imageOverlays}
             selectedLayerId={selectedLayerId}
             onSelectLayer={selectLayer}
             onLayerPointerDown={handleLayerPointerDown}

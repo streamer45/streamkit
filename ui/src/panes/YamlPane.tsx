@@ -13,6 +13,7 @@ import CodeMirror from '@uiw/react-codemirror';
 import React, { useMemo, useRef, useEffect } from 'react';
 
 import { CopyButton } from '@/components/CopyButton';
+import { useCompositorSelection } from '@/hooks/useCompositorSelection';
 import { useResolvedColorMode } from '@/hooks/useResolvedColorMode';
 import type { NodeDefinition } from '@/types/generated/api-types';
 import { createYamlAutocompletion } from '@/utils/yamlAutocompletion';
@@ -189,6 +190,110 @@ function findNodeLineRange(
   return null;
 }
 
+/**
+ * Find a compositor layer/overlay sub-key within a node's YAML range.
+ * Supports video layers (e.g. "in_0" under "layers:"), text overlays
+ * ("text_0" → array index 0 under "text_overlays:"), and image overlays
+ * ("img_0" → array index 0 under "image_overlays:").
+ */
+function findLayerLineRange(
+  yaml: string,
+  nodeRange: { startLine: number; endLine: number },
+  layerId: string
+): { startLine: number; endLine: number } | null {
+  const lines = yaml.split('\n');
+
+  // Determine whether this is a video layer, text overlay, or image overlay
+  let sectionKey: string;
+  let subKey: string | null = null;
+  let arrayIndex = -1;
+
+  if (layerId.startsWith('text_')) {
+    sectionKey = 'text_overlays';
+    arrayIndex = parseInt(layerId.replace('text_', ''), 10);
+  } else if (layerId.startsWith('img_')) {
+    sectionKey = 'image_overlays';
+    arrayIndex = parseInt(layerId.replace('img_', ''), 10);
+  } else {
+    // Video layer — key lives directly under "layers:"
+    sectionKey = 'layers';
+    subKey = layerId;
+  }
+
+  // Find the section key (e.g. "layers:", "text_overlays:") within the node range
+  let sectionStart = -1;
+  let sectionIndent = -1;
+
+  for (let i = nodeRange.startLine; i <= nodeRange.endLine; i++) {
+    const trimmed = lines[i].trim();
+    if (trimmed === `${sectionKey}:`) {
+      sectionStart = i;
+      sectionIndent = lines[i].length - lines[i].trimStart().length;
+      break;
+    }
+  }
+  if (sectionStart === -1) return null;
+
+  if (subKey !== null) {
+    // Map-style lookup (video layers): find "in_0:" under "layers:"
+    let keyStart = -1;
+    let keyIndent = -1;
+    for (let i = sectionStart + 1; i <= nodeRange.endLine; i++) {
+      const line = lines[i];
+      const indent = line.length - line.trimStart().length;
+      if (indent <= sectionIndent && line.trim().length > 0) break; // left the section
+      const m = line.match(/^(\s+)([a-zA-Z0-9_:.-]+):\s*$/);
+      if (m && m[2] === subKey && indent > sectionIndent) {
+        keyStart = i;
+        keyIndent = indent;
+        continue;
+      }
+      if (keyStart !== -1 && indent <= keyIndent && line.trim().length > 0) {
+        return { startLine: keyStart, endLine: i - 1 };
+      }
+    }
+    if (keyStart !== -1) {
+      return { startLine: keyStart, endLine: nodeRange.endLine };
+    }
+  } else {
+    // Array-style lookup (text/image overlays): find the Nth "- " item
+    let itemCount = -1;
+    let itemStart = -1;
+    let itemIndent = -1;
+    for (let i = sectionStart + 1; i <= nodeRange.endLine; i++) {
+      const line = lines[i];
+      const indent = line.length - line.trimStart().length;
+      if (indent <= sectionIndent && line.trim().length > 0) break;
+      if (line.trimStart().startsWith('- ') && indent > sectionIndent) {
+        // Close previous item if we had one
+        if (itemStart !== -1 && itemCount === arrayIndex) {
+          return { startLine: itemStart, endLine: i - 1 };
+        }
+        itemCount++;
+        itemStart = i;
+        itemIndent = indent;
+      }
+    }
+    // Check if last item is the one we want
+    if (itemStart !== -1 && itemCount === arrayIndex) {
+      // Find the end of this item
+      for (let i = itemStart + 1; i <= nodeRange.endLine; i++) {
+        const line = lines[i];
+        const indent = line.length - line.trimStart().length;
+        if (indent <= sectionIndent && line.trim().length > 0) {
+          return { startLine: itemStart, endLine: i - 1 };
+        }
+        if (line.trimStart().startsWith('- ') && indent <= itemIndent) {
+          return { startLine: itemStart, endLine: i - 1 };
+        }
+      }
+      return { startLine: itemStart, endLine: nodeRange.endLine };
+    }
+  }
+
+  return null;
+}
+
 const YamlPane: React.FC<YamlPaneProps> = ({
   yaml,
   onChange,
@@ -258,11 +363,29 @@ const YamlPane: React.FC<YamlPaneProps> = ({
     endLine: number;
   } | null>;
 
-  // Update highlights when highlightNodeLabel changes
+  // Read compositor layer selection (published by CompositorNode)
+  const compositorSelection = useCompositorSelection();
+
+  // Update highlights when highlightNodeLabel or compositor layer selection changes
   useEffect(() => {
     if (!editorViewRef.current) return;
 
-    const range = findNodeLineRange(yaml, highlightNodeLabel || '');
+    // If a compositor layer is selected, drill into that layer's YAML range
+    let range: { startLine: number; endLine: number } | null = null;
+    const nodeLabel = highlightNodeLabel || '';
+
+    if (
+      compositorSelection.layerId &&
+      compositorSelection.nodeId &&
+      compositorSelection.nodeId === nodeLabel
+    ) {
+      const nodeRange = findNodeLineRange(yaml, nodeLabel);
+      if (nodeRange) {
+        range = findLayerLineRange(yaml, nodeRange, compositorSelection.layerId) ?? nodeRange;
+      }
+    } else {
+      range = findNodeLineRange(yaml, nodeLabel);
+    }
 
     if (range) {
       // Apply highlight and scroll to view
@@ -283,7 +406,7 @@ const YamlPane: React.FC<YamlPaneProps> = ({
         effects: setHighlightEffect.of(null),
       });
     }
-  }, [highlightNodeLabel, yaml, setHighlightEffect]);
+  }, [highlightNodeLabel, yaml, setHighlightEffect, compositorSelection]);
 
   // Create autocompletion extension with keyboard shortcuts
   const autocompletionExtension = useMemo(() => {
