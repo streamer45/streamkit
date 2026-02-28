@@ -1042,14 +1042,14 @@ fn copy_vpx_image(
     let chroma_w = (width as usize).div_ceil(2);
     let chroma_h = uv_plane.height as usize;
 
+    if image.stride[1] <= 0 || image.stride[2] <= 0 {
+        return Err("Invalid source stride for VP9 chroma plane".to_string());
+    }
+
     #[allow(clippy::cast_sign_loss)]
     let u_src_stride = image.stride[1] as usize;
     #[allow(clippy::cast_sign_loss)]
     let v_src_stride = image.stride[2] as usize;
-
-    if image.stride[1] <= 0 || image.stride[2] <= 0 {
-        return Err("Invalid source stride for VP9 chroma plane".to_string());
-    }
 
     for row in 0..chroma_h {
         let u_row = unsafe {
@@ -1183,7 +1183,7 @@ pub fn register_vp9_nodes(registry: &mut NodeRegistry) {
         StaticPins { inputs: default_decoder.input_pins(), outputs: default_decoder.output_pins() },
         vec!["video".to_string(), "codecs".to_string(), "vp9".to_string()],
         false,
-        "Decodes VP9-compressed packets into raw I420 video frames. \
+        "Decodes VP9-compressed packets into raw NV12 video frames. \
          Use this before CPU compositing or analysis pipelines.",
     );
 
