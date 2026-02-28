@@ -1200,8 +1200,9 @@ pub fn register_vp9_nodes(registry: &mut NodeRegistry) {
         StaticPins { inputs: default_encoder.input_pins(), outputs: default_encoder.output_pins() },
         vec!["video".to_string(), "codecs".to_string(), "vp9".to_string()],
         false,
-        "Encodes raw video frames (I420 or RGBA8) into VP9 packets for transport or container muxing. \
-         RGBA8 input is converted to I420 on the encoder thread, enabling pipelined compositing.",
+        "Encodes raw video frames (NV12, I420, or RGBA8) into VP9 packets for transport or container muxing. \
+         NV12 and I420 are accepted natively; RGBA8 input is converted to I420 on the encoder thread, \
+         enabling pipelined compositing.",
     );
 }
 
