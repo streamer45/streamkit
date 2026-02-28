@@ -800,12 +800,10 @@ mod simd {
             let r_even = _mm_and_si128(r_v, _mm_set_epi16(0, -1, 0, -1, 0, -1, 0, -1));
             let r_odd = _mm_srli_epi32(r_v, 16);
             let r_sum = _mm_add_epi16(r_even, r_odd); // pairs summed in even i16 positions
-            // r_sum as 4×i32 = [sum01, sum23, sum45, sum67] (high 16 bits are 0).
-            // Pack to consecutive i16 lanes and divide by 4 with rounding.
-            let r_avg = _mm_srai_epi16(
-                _mm_add_epi16(_mm_packs_epi32(r_sum, zero), _mm_set1_epi16(2)),
-                2,
-            );
+                                                      // r_sum as 4×i32 = [sum01, sum23, sum45, sum67] (high 16 bits are 0).
+                                                      // Pack to consecutive i16 lanes and divide by 4 with rounding.
+            let r_avg =
+                _mm_srai_epi16(_mm_add_epi16(_mm_packs_epi32(r_sum, zero), _mm_set1_epi16(2)), 2);
 
             // Extract G.
             let g0_lo = _mm_and_si128(_mm_srli_epi32(px0_lo, 8), channel_mask);
@@ -818,10 +816,8 @@ mod simd {
             let g_even = _mm_and_si128(g_v, _mm_set_epi16(0, -1, 0, -1, 0, -1, 0, -1));
             let g_odd = _mm_srli_epi32(g_v, 16);
             let g_sum = _mm_add_epi16(g_even, g_odd);
-            let g_avg = _mm_srai_epi16(
-                _mm_add_epi16(_mm_packs_epi32(g_sum, zero), _mm_set1_epi16(2)),
-                2,
-            );
+            let g_avg =
+                _mm_srai_epi16(_mm_add_epi16(_mm_packs_epi32(g_sum, zero), _mm_set1_epi16(2)), 2);
 
             // Extract B.
             let b0_lo = _mm_and_si128(_mm_srli_epi32(px0_lo, 16), channel_mask);
@@ -834,10 +830,8 @@ mod simd {
             let b_even = _mm_and_si128(b_v, _mm_set_epi16(0, -1, 0, -1, 0, -1, 0, -1));
             let b_odd = _mm_srli_epi32(b_v, 16);
             let b_sum = _mm_add_epi16(b_even, b_odd);
-            let b_avg = _mm_srai_epi16(
-                _mm_add_epi16(_mm_packs_epi32(b_sum, zero), _mm_set1_epi16(2)),
-                2,
-            );
+            let b_avg =
+                _mm_srai_epi16(_mm_add_epi16(_mm_packs_epi32(b_sum, zero), _mm_set1_epi16(2)), 2);
 
             // U = ((-38*R - 74*G + 112*B + 128) >> 8) + 128
             let cb_result = _mm_add_epi16(
