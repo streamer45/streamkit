@@ -135,8 +135,8 @@ pub struct CompositorConfig {
     /// graph building. Optional for dynamic pipelines where pins are created
     /// on-demand. If specified, pins will be named in_0, in_1, ..., in_{N-1}.
     pub num_inputs: Option<usize>,
-    /// Output pixel format: "rgba8" (default) or "i420".
-    /// Use "i420" when feeding a VP9/VP8 encoder downstream.
+    /// Output pixel format (deprecated — the compositor now always outputs
+    /// RGBA8).  Kept for backward-compatible YAML deserialization.
     #[serde(default = "default_output_pixel_format")]
     pub output_pixel_format: String,
     /// Per-layer configuration, keyed by pin name (e.g. `"in_0"`).
@@ -154,9 +154,6 @@ pub struct CompositorConfig {
 fn default_output_pixel_format() -> String {
     "rgba8".to_string()
 }
-
-// Re-export the shared parse_pixel_format from the parent video module.
-pub(crate) use super::super::parse_pixel_format;
 
 impl Default for CompositorConfig {
     fn default() -> Self {

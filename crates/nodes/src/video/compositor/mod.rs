@@ -27,13 +27,12 @@
 pub mod config;
 mod kernel;
 mod overlay;
-mod pixel_ops;
+pub mod pixel_ops;
 
 use async_trait::async_trait;
 use config::{CompositorConfig, Rect};
 use kernel::{CompositeResult, CompositeWorkItem, LayerSnapshot};
 use overlay::{decode_image_overlay, rasterize_text_overlay, DecodedOverlay};
-use pixel_ops::rgba8_to_i420_buf;
 use schemars::schema_for;
 use std::sync::Arc;
 use streamkit_core::control::NodeControlMessage;
@@ -49,7 +48,6 @@ use streamkit_core::{
 };
 use tokio::sync::mpsc;
 
-use config::parse_pixel_format;
 use kernel::composite_frame;
 
 // ── Input slot ──────────────────────────────────────────────────────────────
@@ -67,14 +65,14 @@ struct InputSlot {
 /// optional image/text overlays.
 ///
 /// Inputs are dynamic (`PinCardinality::Dynamic`) and can be attached at
-/// runtime. Each input accepts `RawVideo(RGBA8)` with wildcard dimensions.
+/// runtime. Each input accepts `RawVideo(RGBA8)` or `RawVideo(I420)` with
+/// wildcard dimensions.
 ///
-/// Output `"out"` produces `RawVideo` at the configured canvas size and
-/// pixel format (RGBA8 by default, or I420 if `output_pixel_format` is set).
+/// Output `"out"` always produces `RawVideo(RGBA8)` at the configured canvas
+/// size.  Downstream nodes (e.g. the VP9 encoder) are responsible for any
+/// further format conversion.
 pub struct CompositorNode {
     config: CompositorConfig,
-    /// Resolved output pixel format.
-    output_format: PixelFormat,
     /// Current input pins (may grow dynamically).
     input_pins: Vec<InputPin>,
     /// Next input ID for dynamic pin naming.
@@ -105,10 +103,7 @@ impl CompositorNode {
             },
         );
 
-        let output_format =
-            parse_pixel_format(&config.output_pixel_format).unwrap_or(PixelFormat::Rgba8);
-
-        Self { config, output_format, input_pins, next_input_id }
+        Self { config, input_pins, next_input_id }
     }
 
     /// The set of video packet types accepted by compositor input pins.
@@ -170,7 +165,7 @@ impl ProcessorNode for CompositorNode {
             produces_type: PacketType::RawVideo(VideoFormat {
                 width: Some(self.config.width),
                 height: Some(self.config.height),
-                pixel_format: self.output_format,
+                pixel_format: PixelFormat::Rgba8,
             }),
             cardinality: PinCardinality::Broadcast,
         }]
@@ -289,58 +284,7 @@ impl ProcessorNode for CompositorNode {
             // reused across frames to avoid per-frame allocation.
             let mut i420_to_rgba_scratch: Vec<u8> = Vec::new();
 
-            while let Some(mut work) = work_rx.blocking_recv() {
-                // Fast path: try I420 pass-through to skip the entire
-                // I420 → RGBA8 → I420 round-trip.  The passthrough returns
-                // the index of the qualifying layer; when the Arc has no
-                // other owners we can move the buffer directly (zero-copy),
-                // otherwise we fall back to a pooled memcpy.
-                if let Some(pt_idx) = kernel::try_i420_passthrough(
-                    work.canvas_w,
-                    work.canvas_h,
-                    &work.layers,
-                    &work.image_overlays,
-                    &work.text_overlays,
-                    work.output_format,
-                ) {
-                    // Take the layer out of the work item so we own the Arc.
-                    let src_layer = work.layers.get_mut(pt_idx).and_then(Option::take);
-                    let Some(src_layer) = src_layer else {
-                        continue;
-                    };
-
-                    // Try to unwrap the Arc — if we're the sole owner, avoid
-                    // both the pool allocation and the memcpy entirely.
-                    let pooled = match Arc::try_unwrap(src_layer.data) {
-                        Ok(data) => data,
-                        Err(shared) => {
-                            let src = shared.as_slice();
-                            work.video_pool.as_ref().map_or_else(
-                                || {
-                                    streamkit_core::frame_pool::PooledVideoData::from_vec(
-                                        src.to_vec(),
-                                    )
-                                },
-                                |pool| {
-                                    let mut p = pool.get(src.len());
-                                    p.as_mut_slice()[..src.len()].copy_from_slice(src);
-                                    p
-                                },
-                            )
-                        },
-                    };
-
-                    let result = CompositeResult {
-                        output_format: work.output_format,
-                        rgba_data: None,
-                        i420_data: Some(pooled),
-                    };
-                    if result_tx.blocking_send(result).is_err() {
-                        break;
-                    }
-                    continue;
-                }
-
+            while let Some(work) = work_rx.blocking_recv() {
                 let rgba_buf = composite_frame(
                     work.canvas_w,
                     work.canvas_h,
@@ -350,41 +294,7 @@ impl ProcessorNode for CompositorNode {
                     work.video_pool.as_deref(),
                     &mut i420_to_rgba_scratch,
                 );
-                let result = if work.output_format == PixelFormat::I420 {
-                    // Convert RGBA8 → I420 directly into a pooled buffer
-                    // (no intermediate scratch — avoids a full extra memcpy).
-                    let w = work.canvas_w as usize;
-                    let h = work.canvas_h as usize;
-                    let chroma_w = w.div_ceil(2);
-                    let chroma_h = h.div_ceil(2);
-                    let i420_size = w * h + 2 * chroma_w * chroma_h;
-                    let mut i420_pooled = work.video_pool.as_ref().map_or_else(
-                        || {
-                            streamkit_core::frame_pool::PooledVideoData::from_vec(vec![
-                                0u8;
-                                i420_size
-                            ])
-                        },
-                        |pool| pool.get(i420_size),
-                    );
-                    rgba8_to_i420_buf(
-                        rgba_buf.as_slice(),
-                        work.canvas_w,
-                        work.canvas_h,
-                        i420_pooled.as_mut_slice(),
-                    );
-                    CompositeResult {
-                        output_format: work.output_format,
-                        rgba_data: None,
-                        i420_data: Some(i420_pooled),
-                    }
-                } else {
-                    CompositeResult {
-                        output_format: work.output_format,
-                        rgba_data: Some(rgba_buf),
-                        i420_data: None,
-                    }
-                };
+                let result = CompositeResult { rgba_data: rgba_buf };
                 if result_tx.blocking_send(result).is_err() {
                     break;
                 }
@@ -630,7 +540,6 @@ impl ProcessorNode for CompositorNode {
                 image_overlays: image_overlays.clone(),
                 text_overlays: text_overlays.clone(),
                 video_pool: video_pool.clone(),
-                output_format: self.output_format,
             };
 
             if work_tx.send(work_item).await.is_err() {
@@ -656,27 +565,13 @@ impl ProcessorNode for CompositorNode {
                 keyframe: Some(true),
             });
 
-            #[allow(clippy::expect_used)]
-            let out_frame = if composite_result.output_format == PixelFormat::I420 {
-                let i420_pooled =
-                    composite_result.i420_data.expect("I420 output data must be present");
-                VideoFrame::from_pooled(
-                    self.config.width,
-                    self.config.height,
-                    PixelFormat::I420,
-                    i420_pooled,
-                    metadata,
-                )
-            } else {
-                let pooled = composite_result.rgba_data.expect("RGBA8 output data must be present");
-                VideoFrame::from_pooled(
-                    self.config.width,
-                    self.config.height,
-                    PixelFormat::Rgba8,
-                    pooled,
-                    metadata,
-                )
-            };
+            let out_frame = VideoFrame::from_pooled(
+                self.config.width,
+                self.config.height,
+                PixelFormat::Rgba8,
+                composite_result.rgba_data,
+                metadata,
+            );
 
             if context.output_sender.send("out", Packet::Video(out_frame)).await.is_err() {
                 tracing::debug!("Output channel closed, stopping CompositorNode");

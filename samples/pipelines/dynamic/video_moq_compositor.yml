@@ -28,7 +28,6 @@ nodes:
       width: 640
       height: 480
       num_inputs: 2
-      output_pixel_format: i420
       layers:
         in_0:
           opacity: 1.0
