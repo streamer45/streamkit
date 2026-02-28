@@ -5,7 +5,7 @@
 //! SMPTE EIA 75% color bars video generator.
 //!
 //! Produces raw video frames with the standard 7-bar test pattern.
-//! Supports I420 (default) and RGBA8 pixel formats.
+//! Supports NV12 (default), I420, and RGBA8 pixel formats.
 //! Configurable resolution, frame rate, and frame count.
 //!
 //! - `frame_count > 0`: batch mode — emits exactly N frames with synthetic timestamps (oneshot).
@@ -60,7 +60,7 @@ pub struct ColorBarsConfig {
     /// Total frames to generate. 0 = infinite (real-time pacing).
     #[serde(default = "default_frame_count")]
     pub frame_count: u32,
-    /// Output pixel format. Supported: "i420" (default) and "rgba8".
+    /// Output pixel format. Supported: "nv12" (default), "i420", and "rgba8".
     #[serde(default = "default_pixel_format")]
     pub pixel_format: String,
     /// When `true`, draws the current wall-clock time (`HH:MM:SS.mmm`)
@@ -74,7 +74,7 @@ pub struct ColorBarsConfig {
 }
 
 fn default_pixel_format() -> String {
-    "i420".to_string()
+    "nv12".to_string()
 }
 
 // Re-export the shared parse_pixel_format from the parent module.
@@ -175,6 +175,9 @@ impl ProcessorNode for ColorBarsNode {
         match pixel_format {
             PixelFormat::I420 => {
                 generate_smpte_colorbars_i420(width, height, &mut template, &layout);
+            },
+            PixelFormat::Nv12 => {
+                generate_smpte_colorbars_nv12(width, height, &mut template, &layout);
             },
             PixelFormat::Rgba8 => generate_smpte_colorbars_rgba8(width, height, &mut template),
         }
@@ -358,6 +361,45 @@ fn generate_smpte_colorbars_rgba8(width: u32, height: u32, data: &mut [u8]) {
     }
 }
 
+/// Fills an NV12 buffer with SMPTE 75% color bars.
+///
+/// Same YUV values as I420 but U and V are interleaved in a single chroma plane.
+fn generate_smpte_colorbars_nv12(
+    width: u32,
+    height: u32,
+    data: &mut [u8],
+    layout: &streamkit_core::types::VideoLayout,
+) {
+    let planes = layout.planes();
+    let y_plane = planes[0];
+    let uv_plane = planes[1];
+
+    let bar_count = SMPTE_BARS_YUV.len();
+
+    // Fill Y plane (identical to I420).
+    for row in 0..height as usize {
+        for col in 0..width as usize {
+            let bar_idx = col * bar_count / width as usize;
+            let (y, _, _) = SMPTE_BARS_YUV[bar_idx];
+            data[y_plane.offset + row * y_plane.stride + col] = y;
+        }
+    }
+
+    // Fill interleaved UV plane (half resolution).
+    let chroma_w = (width + 1) as usize / 2;
+    let chroma_h = uv_plane.height as usize;
+    for row in 0..chroma_h {
+        for col in 0..chroma_w {
+            let src_col = col * 2;
+            let bar_idx = src_col * bar_count / width as usize;
+            let (_, u, v) = SMPTE_BARS_YUV[bar_idx];
+            let offset = uv_plane.offset + row * uv_plane.stride + col * 2;
+            data[offset] = u;
+            data[offset + 1] = v;
+        }
+    }
+}
+
 /// Fills an I420 buffer with SMPTE 75% color bars.
 fn generate_smpte_colorbars_i420(
     width: u32,
@@ -444,8 +486,8 @@ fn stamp_time(
                 [255, 255, 255, 255],
             );
         },
-        PixelFormat::I420 => {
-            // I420 needs direct Y/U/V plane manipulation — no shared RGBA
+        PixelFormat::I420 | PixelFormat::Nv12 => {
+            // YUV formats need direct plane manipulation — no shared RGBA
             // utility applies here.
             let (ref_metrics, _) = font.rasterize('A', DRAW_TIME_FONT_SIZE);
             let baseline_y = ref_metrics.height as f32;
@@ -479,8 +521,6 @@ fn stamp_time(
 
                         let planes = layout.planes();
                         let y_plane = planes[0];
-                        let u_plane = planes[1];
-                        let v_plane = planes[2];
 
                         // White in YUV = Y:235, U:128, V:128
                         let alpha = u16::from(coverage);
@@ -495,12 +535,28 @@ fn stamp_time(
                         if px % 2 == 0 && py % 2 == 0 {
                             let cx = px / 2;
                             let cy = py / 2;
-                            let u_off = u_plane.offset + cy * u_plane.stride + cx;
-                            let v_off = v_plane.offset + cy * v_plane.stride + cx;
-                            let old_u = u16::from(data[u_off]);
-                            let old_v = u16::from(data[v_off]);
-                            data[u_off] = ((128 * alpha + old_u * inv + 128) / 255) as u8;
-                            data[v_off] = ((128 * alpha + old_v * inv + 128) / 255) as u8;
+                            match pixel_format {
+                                PixelFormat::I420 => {
+                                    let u_plane = planes[1];
+                                    let v_plane = planes[2];
+                                    let u_off = u_plane.offset + cy * u_plane.stride + cx;
+                                    let v_off = v_plane.offset + cy * v_plane.stride + cx;
+                                    let old_u = u16::from(data[u_off]);
+                                    let old_v = u16::from(data[v_off]);
+                                    data[u_off] = ((128 * alpha + old_u * inv + 128) / 255) as u8;
+                                    data[v_off] = ((128 * alpha + old_v * inv + 128) / 255) as u8;
+                                },
+                                PixelFormat::Nv12 => {
+                                    let uv_plane = planes[1];
+                                    let uv_off = uv_plane.offset + cy * uv_plane.stride + cx * 2;
+                                    let old_u = u16::from(data[uv_off]);
+                                    let old_v = u16::from(data[uv_off + 1]);
+                                    data[uv_off] = ((128 * alpha + old_u * inv + 128) / 255) as u8;
+                                    data[uv_off + 1] =
+                                        ((128 * alpha + old_v * inv + 128) / 255) as u8;
+                                },
+                                PixelFormat::Rgba8 => unreachable!(),
+                            }
                         }
                     }
                 }
@@ -519,7 +575,7 @@ fn stamp_time(
 #[allow(clippy::expect_used, clippy::missing_panics_doc)]
 pub fn register_colorbars_nodes(registry: &mut NodeRegistry) {
     let default_node =
-        ColorBarsNode { config: ColorBarsConfig::default(), pixel_format: PixelFormat::I420 };
+        ColorBarsNode { config: ColorBarsConfig::default(), pixel_format: PixelFormat::Nv12 };
     registry.register_static_with_description(
         "video::colorbars",
         |params| {
@@ -533,7 +589,7 @@ pub fn register_colorbars_nodes(registry: &mut NodeRegistry) {
         vec!["video".to_string(), "generators".to_string()],
         false,
         "Generates SMPTE EIA 75% color bar test frames. \
-         Supports I420 (default) and RGBA8 pixel formats via the pixel_format config. \
+         Supports NV12 (default), I420, and RGBA8 pixel formats via the pixel_format config. \
          Use with a video encoder for pipeline testing and validation.",
     );
 }

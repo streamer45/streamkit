@@ -15,7 +15,7 @@ pub const DEFAULT_VIDEO_FRAME_DURATION_US: u64 = 33_333;
 
 /// Parse a pixel format string into a [`PixelFormat`].
 ///
-/// Accepts `"i420"`, `"rgba8"`, or `"rgba"` (case-insensitive).
+/// Accepts `"i420"`, `"nv12"`, `"rgba8"`, or `"rgba"` (case-insensitive).
 ///
 /// # Errors
 ///
@@ -23,9 +23,10 @@ pub const DEFAULT_VIDEO_FRAME_DURATION_US: u64 = 33_333;
 pub fn parse_pixel_format(s: &str) -> Result<PixelFormat, StreamKitError> {
     match s.to_lowercase().as_str() {
         "i420" => Ok(PixelFormat::I420),
+        "nv12" => Ok(PixelFormat::Nv12),
         "rgba8" | "rgba" => Ok(PixelFormat::Rgba8),
         other => Err(StreamKitError::Configuration(format!(
-            "Unsupported pixel format '{other}'. Use 'i420' or 'rgba8'."
+            "Unsupported pixel format '{other}'. Use 'i420', 'nv12', or 'rgba8'."
         ))),
     }
 }
