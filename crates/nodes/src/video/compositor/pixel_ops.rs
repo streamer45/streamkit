@@ -494,9 +494,9 @@ mod simd {
     //!
     //! SSE4.1 variants use `_mm_mullo_epi32` (single-instruction i32 multiply)
     //! instead of the SSE2 `mul32_sse2` helper (two `_mm_mul_epu32` + shuffle +
-    //! interleave), plus vectorised byte-loads via `_mm_cvtsi32_si128` + unpack
-    //! instead of scalar loads + `_mm_set_epi32`.  Callers prefer SSE4.1 at
-    //! runtime and fall back to SSE2 on older hardware.
+    //! interleave), plus a vectorised Y-byte load via `_mm_cvtsi32_si128` +
+    //! unpack instead of four scalar `i32::from` calls.  Callers prefer SSE4.1
+    //! at runtime and fall back to SSE2 on older hardware.
 
     // ── I420 → RGBA8 ──────────────────────────────────────────────────
 
