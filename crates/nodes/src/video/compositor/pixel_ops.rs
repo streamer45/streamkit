@@ -747,7 +747,7 @@ mod simd {
         use std::arch::x86_64::{
             _mm_add_epi16, _mm_add_epi32, _mm_and_si128, _mm_loadu_si128, _mm_mullo_epi16,
             _mm_packs_epi32, _mm_packus_epi16, _mm_set1_epi16, _mm_set1_epi32, _mm_set_epi16,
-            _mm_set_epi32, _mm_setzero_si128, _mm_srai_epi16, _mm_srli_epi32, _mm_srli_si128,
+            _mm_setzero_si128, _mm_srai_epi16, _mm_srli_epi32,
         };
 
         let simd_width = chroma_width & !3; // process 4 chroma samples (8 luma cols) at a time
@@ -799,21 +799,13 @@ mod simd {
             // We want: [(r0+r1)/4, (r2+r3)/4, (r4+r5)/4, (r6+r7)/4]
             let r_even = _mm_and_si128(r_v, _mm_set_epi16(0, -1, 0, -1, 0, -1, 0, -1));
             let r_odd = _mm_srli_epi32(r_v, 16);
-            let r_sum = _mm_add_epi16(r_even, r_odd); // pairs summed in even positions
-                                                      // r_sum has results in positions 0, 2, 4, 6.  Pack them together.
+            let r_sum = _mm_add_epi16(r_even, r_odd); // pairs summed in even i16 positions
+            // r_sum as 4×i32 = [sum01, sum23, sum45, sum67] (high 16 bits are 0).
+            // Pack to consecutive i16 lanes and divide by 4 with rounding.
             let r_avg = _mm_srai_epi16(
-                _mm_add_epi16(
-                    _mm_packs_epi32(
-                        _mm_and_si128(r_sum, _mm_set_epi32(0, 0xFFFF, 0, 0xFFFF)),
-                        _mm_and_si128(
-                            _mm_srli_si128(r_sum, 8),
-                            _mm_set_epi32(0, 0xFFFF, 0, 0xFFFF),
-                        ),
-                    ),
-                    _mm_set1_epi16(2),
-                ),
+                _mm_add_epi16(_mm_packs_epi32(r_sum, zero), _mm_set1_epi16(2)),
                 2,
-            ); // divide by 4 with rounding
+            );
 
             // Extract G.
             let g0_lo = _mm_and_si128(_mm_srli_epi32(px0_lo, 8), channel_mask);
@@ -827,16 +819,7 @@ mod simd {
             let g_odd = _mm_srli_epi32(g_v, 16);
             let g_sum = _mm_add_epi16(g_even, g_odd);
             let g_avg = _mm_srai_epi16(
-                _mm_add_epi16(
-                    _mm_packs_epi32(
-                        _mm_and_si128(g_sum, _mm_set_epi32(0, 0xFFFF, 0, 0xFFFF)),
-                        _mm_and_si128(
-                            _mm_srli_si128(g_sum, 8),
-                            _mm_set_epi32(0, 0xFFFF, 0, 0xFFFF),
-                        ),
-                    ),
-                    _mm_set1_epi16(2),
-                ),
+                _mm_add_epi16(_mm_packs_epi32(g_sum, zero), _mm_set1_epi16(2)),
                 2,
             );
 
@@ -852,16 +835,7 @@ mod simd {
             let b_odd = _mm_srli_epi32(b_v, 16);
             let b_sum = _mm_add_epi16(b_even, b_odd);
             let b_avg = _mm_srai_epi16(
-                _mm_add_epi16(
-                    _mm_packs_epi32(
-                        _mm_and_si128(b_sum, _mm_set_epi32(0, 0xFFFF, 0, 0xFFFF)),
-                        _mm_and_si128(
-                            _mm_srli_si128(b_sum, 8),
-                            _mm_set_epi32(0, 0xFFFF, 0, 0xFFFF),
-                        ),
-                    ),
-                    _mm_set1_epi16(2),
-                ),
+                _mm_add_epi16(_mm_packs_epi32(b_sum, zero), _mm_set1_epi16(2)),
                 2,
             );
 

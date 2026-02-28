@@ -45,7 +45,6 @@ nodes:
       width: 640
       height: 480
       num_inputs: 2
-      output_pixel_format: i420
       layers:
         # Background fills the canvas (default when no rect is specified).
         in_0:

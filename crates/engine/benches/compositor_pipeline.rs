@@ -154,7 +154,6 @@ fn build_pipeline(width: u32, height: u32, fps: u32, frame_count: u32) -> stream
                 "width": width,
                 "height": height,
                 "num_inputs": 2,
-                "output_pixel_format": "i420",
             })),
             state: None,
         },
