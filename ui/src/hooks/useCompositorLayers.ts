@@ -26,6 +26,33 @@ export interface LayerState {
   rotationDegrees: number;
 }
 
+/** A text overlay stored in compositor config */
+export interface TextOverlayState {
+  /** Unique client-side id (index-based) */
+  id: string;
+  text: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  color: [number, number, number, number];
+  fontSize: number;
+  opacity: number;
+}
+
+/** An image overlay stored in compositor config */
+export interface ImageOverlayState {
+  /** Unique client-side id (index-based) */
+  id: string;
+  /** Base64-encoded image data */
+  dataBase64: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  opacity: number;
+}
+
 /** Which edge/corner is being resized */
 export type ResizeHandle = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
 
@@ -54,6 +81,16 @@ export interface UseCompositorLayersResult {
   layerRefs: React.MutableRefObject<Map<string, HTMLDivElement>>;
   /** Whether a drag/resize is currently in progress */
   isDragging: boolean;
+  /** Text overlays */
+  textOverlays: TextOverlayState[];
+  /** Image overlays */
+  imageOverlays: ImageOverlayState[];
+  addTextOverlay: (text: string) => void;
+  updateTextOverlay: (id: string, updates: Partial<Omit<TextOverlayState, 'id'>>) => void;
+  removeTextOverlay: (id: string) => void;
+  addImageOverlay: (dataBase64: string) => void;
+  updateImageOverlay: (id: string, updates: Partial<Omit<ImageOverlayState, 'id'>>) => void;
+  removeImageOverlay: (id: string) => void;
 }
 
 interface Rect {
@@ -68,6 +105,20 @@ interface LayerConfig {
   opacity?: number;
   z_index?: number;
   rotation_degrees?: number;
+}
+
+interface TextOverlayConfig {
+  text: string;
+  rect: Rect;
+  color?: [number, number, number, number];
+  font_size?: number;
+  opacity?: number;
+}
+
+interface ImageOverlayConfig {
+  data_base64: string;
+  rect: Rect;
+  opacity?: number;
 }
 
 /** Parse layers from compositor params into LayerState array */
@@ -93,10 +144,74 @@ function parseLayers(
     .sort((a, b) => a.zIndex - b.zIndex);
 }
 
+/** Parse text overlays from compositor params */
+function parseTextOverlays(params: Record<string, unknown>): TextOverlayState[] {
+  const overlays = params.text_overlays as TextOverlayConfig[] | undefined;
+  if (!Array.isArray(overlays)) return [];
+  return overlays.map((o, i) => ({
+    id: `text_${i}`,
+    text: o.text ?? '',
+    x: o.rect?.x ?? 0,
+    y: o.rect?.y ?? 0,
+    width: o.rect?.width ?? 200,
+    height: o.rect?.height ?? 40,
+    color: o.color ?? [255, 255, 255, 255],
+    fontSize: o.font_size ?? 24,
+    opacity: o.opacity ?? 1.0,
+  }));
+}
+
+/** Parse image overlays from compositor params */
+function parseImageOverlays(params: Record<string, unknown>): ImageOverlayState[] {
+  const overlays = params.image_overlays as ImageOverlayConfig[] | undefined;
+  if (!Array.isArray(overlays)) return [];
+  return overlays.map((o, i) => ({
+    id: `img_${i}`,
+    dataBase64: o.data_base64 ?? '',
+    x: o.rect?.x ?? 0,
+    y: o.rect?.y ?? 0,
+    width: o.rect?.width ?? 200,
+    height: o.rect?.height ?? 200,
+    opacity: o.opacity ?? 1.0,
+  }));
+}
+
+/** Serialize text overlays back to config format */
+function serializeTextOverlays(overlays: TextOverlayState[]): TextOverlayConfig[] {
+  return overlays.map((o) => ({
+    text: o.text,
+    rect: {
+      x: Math.round(o.x),
+      y: Math.round(o.y),
+      width: Math.max(1, Math.round(o.width)),
+      height: Math.max(1, Math.round(o.height)),
+    },
+    color: o.color,
+    font_size: o.fontSize,
+    opacity: Math.round(o.opacity * 100) / 100,
+  }));
+}
+
+/** Serialize image overlays back to config format */
+function serializeImageOverlays(overlays: ImageOverlayState[]): ImageOverlayConfig[] {
+  return overlays.map((o) => ({
+    data_base64: o.dataBase64,
+    rect: {
+      x: Math.round(o.x),
+      y: Math.round(o.y),
+      width: Math.max(1, Math.round(o.width)),
+      height: Math.max(1, Math.round(o.height)),
+    },
+    opacity: Math.round(o.opacity * 100) / 100,
+  }));
+}
+
 /** Build the full compositor config from current params + updated layers */
 function buildConfig(
   params: Record<string, unknown>,
-  layers: LayerState[]
+  layers: LayerState[],
+  textOverlays?: TextOverlayState[],
+  imageOverlays?: ImageOverlayState[]
 ): Record<string, unknown> {
   const layersMap: Record<string, LayerConfig> = {};
   for (const layer of layers) {
@@ -118,8 +233,12 @@ function buildConfig(
     height: params.height ?? 720,
     output_pixel_format: params.output_pixel_format ?? 'rgba8',
     layers: layersMap,
-    image_overlays: params.image_overlays ?? [],
-    text_overlays: params.text_overlays ?? [],
+    image_overlays: imageOverlays
+      ? serializeImageOverlays(imageOverlays)
+      : (params.image_overlays ?? []),
+    text_overlays: textOverlays
+      ? serializeTextOverlays(textOverlays)
+      : (params.text_overlays ?? []),
   };
 }
 
@@ -139,8 +258,24 @@ export const useCompositorLayers = (
   const [layers, setLayers] = useState<LayerState[]>(() =>
     parseLayers(params, canvasWidth, canvasHeight)
   );
+  const [textOverlays, setTextOverlays] = useState<TextOverlayState[]>(() =>
+    parseTextOverlays(params)
+  );
+  const [imageOverlays, setImageOverlays] = useState<ImageOverlayState[]>(() =>
+    parseImageOverlays(params)
+  );
   const [selectedLayerId, setSelectedLayerId] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+
+  // Keep overlay refs in sync for config building
+  const textOverlaysRef = useRef(textOverlays);
+  const imageOverlaysRef = useRef(imageOverlays);
+  useEffect(() => {
+    textOverlaysRef.current = textOverlays;
+  }, [textOverlays]);
+  useEffect(() => {
+    imageOverlaysRef.current = imageOverlays;
+  }, [imageOverlays]);
 
   // Refs for zero-render drag/resize
   const layerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -168,6 +303,8 @@ export const useCompositorLayers = (
     if (dragStateRef.current) return;
     const parsed = parseLayers(params, canvasWidth, canvasHeight);
     setLayers(parsed);
+    setTextOverlays(parseTextOverlays(params));
+    setImageOverlays(parseImageOverlays(params));
   }, [params, canvasWidth, canvasHeight]);
 
   // Throttled config change
@@ -424,6 +561,115 @@ export const useCompositorLayers = (
     [throttledConfigChange]
   );
 
+  // ── Overlay commit helper ─────────────────────────────────────────────────
+
+  const commitOverlays = useCallback(
+    (nextText: TextOverlayState[], nextImg: ImageOverlayState[]) => {
+      if (onConfigChange) {
+        const config = buildConfig(params, layersRef.current, nextText, nextImg);
+        onConfigChange(nodeId, config);
+      } else if (onParamChange) {
+        onParamChange(nodeId, 'text_overlays', serializeTextOverlays(nextText));
+        onParamChange(nodeId, 'image_overlays', serializeImageOverlays(nextImg));
+      }
+    },
+    [nodeId, onConfigChange, onParamChange, params]
+  );
+
+  // ── Text overlay CRUD ─────────────────────────────────────────────────────
+
+  const addTextOverlay = useCallback(
+    (text: string) => {
+      setTextOverlays((prev) => {
+        const next: TextOverlayState[] = [
+          ...prev,
+          {
+            id: `text_${prev.length}`,
+            text,
+            x: 40,
+            y: 40 + prev.length * 50,
+            width: 200,
+            height: 40,
+            color: [255, 255, 255, 255],
+            fontSize: 24,
+            opacity: 1.0,
+          },
+        ];
+        commitOverlays(next, imageOverlaysRef.current);
+        return next;
+      });
+    },
+    [commitOverlays]
+  );
+
+  const updateTextOverlay = useCallback(
+    (id: string, updates: Partial<Omit<TextOverlayState, 'id'>>) => {
+      setTextOverlays((prev) => {
+        const next = prev.map((o) => (o.id === id ? { ...o, ...updates } : o));
+        commitOverlays(next, imageOverlaysRef.current);
+        return next;
+      });
+    },
+    [commitOverlays]
+  );
+
+  const removeTextOverlay = useCallback(
+    (id: string) => {
+      setTextOverlays((prev) => {
+        const next = prev.filter((o) => o.id !== id).map((o, i) => ({ ...o, id: `text_${i}` }));
+        commitOverlays(next, imageOverlaysRef.current);
+        return next;
+      });
+    },
+    [commitOverlays]
+  );
+
+  // ── Image overlay CRUD ────────────────────────────────────────────────────
+
+  const addImageOverlay = useCallback(
+    (dataBase64: string) => {
+      setImageOverlays((prev) => {
+        const next: ImageOverlayState[] = [
+          ...prev,
+          {
+            id: `img_${prev.length}`,
+            dataBase64,
+            x: 40,
+            y: 40 + prev.length * 60,
+            width: 200,
+            height: 200,
+            opacity: 1.0,
+          },
+        ];
+        commitOverlays(textOverlaysRef.current, next);
+        return next;
+      });
+    },
+    [commitOverlays]
+  );
+
+  const updateImageOverlay = useCallback(
+    (id: string, updates: Partial<Omit<ImageOverlayState, 'id'>>) => {
+      setImageOverlays((prev) => {
+        const next = prev.map((o) => (o.id === id ? { ...o, ...updates } : o));
+        commitOverlays(textOverlaysRef.current, next);
+        return next;
+      });
+    },
+    [commitOverlays]
+  );
+
+  const removeImageOverlay = useCallback(
+    (id: string) => {
+      setImageOverlays((prev) => {
+        const next = prev.filter((o) => o.id !== id).map((o, i) => ({ ...o, id: `img_${i}` }));
+        commitOverlays(textOverlaysRef.current, next);
+        return next;
+      });
+    },
+    [commitOverlays]
+  );
+
   return {
     layers,
     selectedLayerId,
@@ -435,5 +681,13 @@ export const useCompositorLayers = (
     updateLayerZIndex,
     layerRefs,
     isDragging,
+    textOverlays,
+    imageOverlays,
+    addTextOverlay,
+    updateTextOverlay,
+    removeTextOverlay,
+    addImageOverlay,
+    updateImageOverlay,
+    removeImageOverlay,
   };
 };

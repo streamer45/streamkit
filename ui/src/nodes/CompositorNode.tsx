@@ -4,11 +4,13 @@
 
 import styled from '@emotion/styled';
 import * as Tooltip from '@radix-ui/react-tooltip';
-import React from 'react';
+import { Image, Plus, Type, X } from 'lucide-react';
+import React, { useCallback, useRef, useState } from 'react';
 
 import { CompositorCanvas } from '@/components/CompositorCanvas';
 import { NodeFrame } from '@/components/node/NodeFrame';
 import { useCompositorLayers } from '@/hooks/useCompositorLayers';
+import type { TextOverlayState, ImageOverlayState } from '@/hooks/useCompositorLayers';
 import type { InputPin, OutputPin, NodeState, NodeStats, NodeDefinition } from '@/types/types';
 import { nodesLogger } from '@/utils/logger';
 
@@ -133,6 +135,65 @@ const SliderInput = styled.input`
   }
 `;
 
+const ZIndexRow = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+`;
+
+const ZIndexInput = styled.input`
+  width: 40px;
+  padding: 2px 4px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  border: 1px solid var(--sk-border);
+  border-radius: 3px;
+  background: var(--sk-input-bg);
+  color: var(--sk-text);
+  outline: none;
+  pointer-events: auto;
+
+  &:focus {
+    border-color: var(--sk-primary);
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+`;
+
+const StackButton = styled.button`
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--sk-border);
+  border-radius: 3px;
+  background: var(--sk-input-bg);
+  color: var(--sk-text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  pointer-events: auto;
+  flex-shrink: 0;
+
+  &:hover:not(:disabled) {
+    background: var(--sk-overlay-medium);
+    color: var(--sk-text);
+    border-color: var(--sk-primary);
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.4;
+  }
+`;
+
 const LayerInfoRow = styled.div`
   display: flex;
   align-items: center;
@@ -165,6 +226,354 @@ const LayerCount = styled.div`
   text-align: center;
   padding: 2px 0;
 `;
+
+// ── Overlay management styled components ────────────────────────────────────
+
+const OverlaySection = styled.div`
+  border-top: 1px solid var(--sk-border);
+  padding: 4px 0;
+`;
+
+const OverlaySectionHeader = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 0;
+  font-size: 11px;
+  color: var(--sk-text-muted);
+  font-weight: 600;
+`;
+
+const AddOverlayButton = styled.button`
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border: 1px solid var(--sk-border);
+  border-radius: 3px;
+  background: var(--sk-input-bg);
+  color: var(--sk-text-muted);
+  cursor: pointer;
+  font-size: 10px;
+  pointer-events: auto;
+
+  &:hover:not(:disabled) {
+    background: var(--sk-overlay-medium);
+    color: var(--sk-text);
+    border-color: var(--sk-primary);
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.4;
+  }
+`;
+
+const AddMenu = styled.div`
+  position: absolute;
+  right: 0;
+  top: 100%;
+  margin-top: 2px;
+  background: var(--sk-panel-bg);
+  border: 1px solid var(--sk-border);
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  z-index: 10;
+  min-width: 120px;
+  overflow: hidden;
+`;
+
+const AddMenuItem = styled.button`
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  background: none;
+  color: var(--sk-text);
+  cursor: pointer;
+  font-size: 11px;
+  text-align: left;
+  pointer-events: auto;
+
+  &:hover {
+    background: var(--sk-overlay-medium);
+  }
+`;
+
+const OverlayItem = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 0;
+  font-size: 11px;
+`;
+
+const OverlayLabel = styled.span`
+  flex: 1;
+  color: var(--sk-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+`;
+
+const OverlayIcon = styled.span`
+  display: inline-flex;
+  align-items: center;
+  color: var(--sk-text-muted);
+  flex-shrink: 0;
+`;
+
+const RemoveButton = styled.button`
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 2px;
+  background: none;
+  color: var(--sk-text-muted);
+  cursor: pointer;
+  pointer-events: auto;
+  flex-shrink: 0;
+
+  &:hover {
+    background: var(--sk-danger-alpha, rgba(220, 38, 38, 0.15));
+    color: var(--sk-danger);
+  }
+`;
+
+const HiddenFileInput = styled.input`
+  display: none;
+`;
+
+const OverlayEditRow = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0 2px 20px;
+  font-size: 10px;
+`;
+
+const OverlayTextInput = styled.input`
+  flex: 1;
+  padding: 2px 4px;
+  font-size: 11px;
+  border: 1px solid var(--sk-border);
+  border-radius: 3px;
+  background: var(--sk-input-bg);
+  color: var(--sk-text);
+  outline: none;
+  min-width: 0;
+  pointer-events: auto;
+
+  &:focus {
+    border-color: var(--sk-primary);
+  }
+`;
+
+const OverlayNumInput = styled.input`
+  width: 40px;
+  padding: 2px 4px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  border: 1px solid var(--sk-border);
+  border-radius: 3px;
+  background: var(--sk-input-bg);
+  color: var(--sk-text);
+  outline: none;
+  pointer-events: auto;
+
+  &:focus {
+    border-color: var(--sk-primary);
+  }
+`;
+
+// ── Overlay management components ───────────────────────────────────────────
+
+const OverlayList: React.FC<{
+  textOverlays: TextOverlayState[];
+  imageOverlays: ImageOverlayState[];
+  onAddText: (text: string) => void;
+  onUpdateText: (id: string, updates: Partial<Omit<TextOverlayState, 'id'>>) => void;
+  onRemoveText: (id: string) => void;
+  onAddImage: (dataBase64: string) => void;
+  onRemoveImage: (id: string) => void;
+  disabled: boolean;
+}> = React.memo(
+  ({
+    textOverlays,
+    imageOverlays,
+    onAddText,
+    onUpdateText,
+    onRemoveText,
+    onAddImage,
+    onRemoveImage,
+    disabled,
+  }) => {
+    const [menuOpen, setMenuOpen] = useState(false);
+    const [editingId, setEditingId] = useState<string | null>(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+
+    const handleAddText = useCallback(() => {
+      onAddText('Text');
+      setMenuOpen(false);
+    }, [onAddText]);
+
+    const handleAddImage = useCallback(() => {
+      setMenuOpen(false);
+      fileInputRef.current?.click();
+    }, []);
+
+    const handleImageFileChange = useCallback(
+      (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        // Validate image type
+        if (!file.type.startsWith('image/')) return;
+
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = reader.result as string;
+          // Strip the data:image/...;base64, prefix
+          const base64 = result.split(',')[1];
+          if (base64) onAddImage(base64);
+        };
+        reader.readAsDataURL(file);
+        e.target.value = '';
+      },
+      [onAddImage]
+    );
+
+    const totalOverlays = textOverlays.length + imageOverlays.length;
+
+    return (
+      <OverlaySection>
+        <OverlaySectionHeader>
+          <span>Overlays ({totalOverlays})</span>
+          <div style={{ position: 'relative' }}>
+            <AddOverlayButton
+              disabled={disabled}
+              className="nodrag nopan"
+              onClick={() => setMenuOpen((p) => !p)}
+            >
+              <Plus size={10} /> Add
+            </AddOverlayButton>
+            {menuOpen && (
+              <AddMenu className="nodrag nopan">
+                <AddMenuItem onClick={handleAddText}>
+                  <Type size={12} /> Text
+                </AddMenuItem>
+                <AddMenuItem onClick={handleAddImage}>
+                  <Image size={12} /> Image
+                </AddMenuItem>
+              </AddMenu>
+            )}
+          </div>
+        </OverlaySectionHeader>
+
+        <HiddenFileInput
+          ref={fileInputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/webp,image/gif"
+          onChange={handleImageFileChange}
+        />
+
+        {textOverlays.map((o) => (
+          <React.Fragment key={o.id}>
+            <OverlayItem>
+              <OverlayIcon>
+                <Type size={11} />
+              </OverlayIcon>
+              <OverlayLabel
+                title={o.text}
+                style={{ cursor: disabled ? 'default' : 'pointer' }}
+                onClick={() => !disabled && setEditingId(editingId === o.id ? null : o.id)}
+              >
+                {o.text}
+              </OverlayLabel>
+              <RemoveButton
+                title="Remove text overlay"
+                disabled={disabled}
+                className="nodrag nopan"
+                onClick={() => onRemoveText(o.id)}
+              >
+                <X size={12} />
+              </RemoveButton>
+            </OverlayItem>
+            {editingId === o.id && (
+              <>
+                <OverlayEditRow>
+                  <OverlayTextInput
+                    value={o.text}
+                    onChange={(e) => onUpdateText(o.id, { text: e.target.value })}
+                    placeholder="Text content"
+                    disabled={disabled}
+                    className="nodrag nopan"
+                  />
+                </OverlayEditRow>
+                <OverlayEditRow>
+                  <span style={{ color: 'var(--sk-text-muted)' }}>Size</span>
+                  <OverlayNumInput
+                    type="number"
+                    value={o.fontSize}
+                    onChange={(e) => {
+                      const v = Number.parseInt(e.target.value, 10);
+                      if (!Number.isNaN(v) && v > 0) onUpdateText(o.id, { fontSize: v });
+                    }}
+                    disabled={disabled}
+                    className="nodrag nopan"
+                  />
+                  <span style={{ color: 'var(--sk-text-muted)' }}>Opacity</span>
+                  <OverlayNumInput
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.1"
+                    value={o.opacity}
+                    onChange={(e) => {
+                      const v = Number.parseFloat(e.target.value);
+                      if (!Number.isNaN(v))
+                        onUpdateText(o.id, { opacity: Math.max(0, Math.min(1, v)) });
+                    }}
+                    disabled={disabled}
+                    className="nodrag nopan"
+                  />
+                </OverlayEditRow>
+              </>
+            )}
+          </React.Fragment>
+        ))}
+
+        {imageOverlays.map((o) => (
+          <OverlayItem key={o.id}>
+            <OverlayIcon>
+              <Image size={11} />
+            </OverlayIcon>
+            <OverlayLabel>Image {o.id.replace('img_', '#')}</OverlayLabel>
+            <RemoveButton
+              title="Remove image overlay"
+              disabled={disabled}
+              className="nodrag nopan"
+              onClick={() => onRemoveImage(o.id)}
+            >
+              <X size={12} />
+            </RemoveButton>
+          </OverlayItem>
+        ))}
+
+        {totalOverlays === 0 && <NoSelectionText>No overlays added</NoSelectionText>}
+      </OverlaySection>
+    );
+  }
+);
+OverlayList.displayName = 'OverlayList';
 
 // ── Node data interface ─────────────────────────────────────────────────────
 
@@ -220,6 +629,12 @@ const SelectedLayerControls: React.FC<{
       );
     }
 
+    // Compute whether the selected layer is already at the top or bottom of the stack
+    const sortedByZ = [...layers].sort((a, b) => a.zIndex - b.zIndex);
+    const stackIndex = sortedByZ.findIndex((l) => l.id === selectedLayer.id);
+    const isBottommost = stackIndex === 0;
+    const isTopmost = stackIndex === sortedByZ.length - 1;
+
     return (
       <LayerControls>
         <LayerInfoRow>
@@ -259,20 +674,45 @@ const SelectedLayerControls: React.FC<{
           <ControlValue>{selectedLayer.rotationDegrees.toFixed(0)}&deg;</ControlValue>
         </ControlRow>
 
-        <ControlRow>
-          <ControlLabel>Z-Index</ControlLabel>
-          <SliderInput
-            type="range"
-            min="-10"
-            max="10"
-            step="1"
+        <ZIndexRow>
+          <ControlLabel>Order</ControlLabel>
+          <StackButton
+            title="Send backward"
+            disabled={disabled || isBottommost}
+            className="nodrag nopan"
+            onClick={() => {
+              if (isBottommost) return;
+              const below = sortedByZ[stackIndex - 1];
+              // Swap z-index values with the layer below
+              onZIndexChange(selectedLayer.id, below.zIndex - 1);
+            }}
+          >
+            ▼
+          </StackButton>
+          <ZIndexInput
+            type="number"
             value={selectedLayer.zIndex}
-            onChange={(e) => onZIndexChange(selectedLayer.id, Number.parseInt(e.target.value, 10))}
+            onChange={(e) => {
+              const val = Number.parseInt(e.target.value, 10);
+              if (!Number.isNaN(val)) onZIndexChange(selectedLayer.id, val);
+            }}
             disabled={disabled}
             className="nodrag nopan"
           />
-          <ControlValue>{selectedLayer.zIndex}</ControlValue>
-        </ControlRow>
+          <StackButton
+            title="Bring forward"
+            disabled={disabled || isTopmost}
+            className="nodrag nopan"
+            onClick={() => {
+              if (isTopmost) return;
+              const above = sortedByZ[stackIndex + 1];
+              // Swap z-index values with the layer above
+              onZIndexChange(selectedLayer.id, above.zIndex + 1);
+            }}
+          >
+            ▲
+          </StackButton>
+        </ZIndexRow>
       </LayerControls>
     );
   }
@@ -297,6 +737,13 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
     updateLayerRotation,
     updateLayerZIndex,
     layerRefs,
+    textOverlays,
+    imageOverlays,
+    addTextOverlay,
+    updateTextOverlay,
+    removeTextOverlay,
+    addImageOverlay,
+    removeImageOverlay,
   } = useCompositorLayers({
     nodeId: id,
     sessionId: data.sessionId,
@@ -377,8 +824,21 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
           disabled={disabled}
         />
 
+        <OverlayList
+          textOverlays={textOverlays}
+          imageOverlays={imageOverlays}
+          onAddText={addTextOverlay}
+          onUpdateText={updateTextOverlay}
+          onRemoveText={removeTextOverlay}
+          onAddImage={addImageOverlay}
+          onRemoveImage={removeImageOverlay}
+          disabled={disabled}
+        />
+
         <LayerCount>
           {layers.length} layer{layers.length !== 1 ? 's' : ''}
+          {textOverlays.length + imageOverlays.length > 0 &&
+            ` · ${textOverlays.length + imageOverlays.length} overlay${textOverlays.length + imageOverlays.length !== 1 ? 's' : ''}`}
         </LayerCount>
       </CompositorWrapper>
     </NodeFrame>

@@ -139,8 +139,7 @@ function canConnectPair(out: PacketType, input: PacketType): boolean {
         const av = (ap as Record<string, unknown>)[f.name];
         const bv = (bp as Record<string, unknown>)[f.name];
         const wildcard = f.wildcard_value;
-        const isWild = (v: unknown) =>
-          wildcard !== undefined && wildcard !== null && deepEqual(v, wildcard);
+        const isWild = (v: unknown) => wildcard !== undefined && deepEqual(v, wildcard);
         return isWild(av) || isWild(bv) || deepEqual(av, bv);
       });
     }
@@ -267,7 +266,45 @@ function getOutputPinForHandle(
   return outputs.find((o) => o.name === (sourceHandle || 'out'));
 }
 
-function inferConfiguredOutputType(sourceNode: Node, sourceOutput: OutputPin): PacketType | null {
+function inferCompositorOutputType(sourceNode: Node, sourceOutput: OutputPin): PacketType | null {
+  const sourceKind = getNodeKind(sourceNode);
+  if (sourceKind !== 'video::compositor' || sourceOutput.name !== 'out') return null;
+
+  const params = getNodeParams(sourceNode);
+  const outVariant = variantOf(sourceOutput.produces_type);
+  if (outVariant.kind !== 'RawVideo') return null;
+
+  const payload = (outVariant.payload as Record<string, unknown> | undefined) ?? {};
+  const format =
+    typeof params.output_pixel_format === 'string'
+      ? params.output_pixel_format.toLowerCase()
+      : 'rgba8';
+
+  // Also reflect configured width/height so downstream nodes see concrete
+  // dimensions instead of the definition-time wildcards.
+  const width: number | null =
+    typeof params.width === 'number'
+      ? params.width
+      : typeof payload.width === 'number'
+        ? payload.width
+        : null;
+  const height: number | null =
+    typeof params.height === 'number'
+      ? params.height
+      : typeof payload.height === 'number'
+        ? payload.height
+        : null;
+
+  return {
+    RawVideo: {
+      width,
+      height,
+      pixel_format: format === 'i420' ? 'I420' : 'Rgba8',
+    },
+  };
+}
+
+function inferResamplerOutputType(sourceNode: Node, sourceOutput: OutputPin): PacketType | null {
   const sourceKind = getNodeKind(sourceNode);
   if (sourceKind !== 'audio::resampler' || sourceOutput.name !== 'out') return null;
 
@@ -294,6 +331,13 @@ function inferConfiguredOutputType(sourceNode: Node, sourceOutput: OutputPin): P
       sample_format: 'F32',
     },
   };
+}
+
+function inferConfiguredOutputType(sourceNode: Node, sourceOutput: OutputPin): PacketType | null {
+  return (
+    inferCompositorOutputType(sourceNode, sourceOutput) ??
+    inferResamplerOutputType(sourceNode, sourceOutput)
+  );
 }
 
 function resolvePassthroughSource(

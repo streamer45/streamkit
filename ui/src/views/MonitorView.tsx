@@ -25,6 +25,7 @@ import ConfirmModal from '@/components/ConfirmModal';
 import ContextMenu from '@/components/ContextMenu';
 import { FlowCanvas } from '@/components/FlowCanvas';
 import NodePalette from '@/components/NodePalette';
+import { OutputPreviewPanel } from '@/components/OutputPreviewPanel';
 import PaneContextMenu from '@/components/PaneContextMenu';
 import { PipelineRightPane } from '@/components/PipelineRightPane';
 import { ResizableLayout } from '@/components/ResizableLayout';
@@ -3352,6 +3353,7 @@ const MonitorViewContent: React.FC = () => {
             )}
           </EmptyMonitorState>
         )}
+        <OutputPreviewPanel hasSession={selectedSessionId != null} />
       </CenterPanelContainer>
     ),
     // Intentional sparse dependencies for performance optimization:
