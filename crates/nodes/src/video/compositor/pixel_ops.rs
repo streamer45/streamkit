@@ -21,6 +21,12 @@ use super::overlay::DecodedOverlay;
 /// on modern x86-64 cores.
 const RAYON_ROW_THRESHOLD: usize = 64;
 
+/// Number of rows to bundle into a single rayon task once parallel mode is
+/// entered.  Reduces work-stealing overhead from ~1 task/row to
+/// ~rows/RAYON_CHUNK_ROWS tasks.  8 rows keeps each chunk small enough for
+/// good load-balancing while cutting scheduling cost by ~8×.
+const RAYON_CHUNK_ROWS: usize = 8;
+
 // ── Compositing helpers ─────────────────────────────────────────────────────
 
 /// Scale and blit a source RGBA8 buffer onto a destination RGBA8 buffer at the
@@ -376,26 +382,33 @@ pub fn scale_blit_rgba_rotated(
 
     // Pre-compute opacity as a 0..255 integer multiplier.
     let opacity_u16 = if opacity < 1.0 {
-        (opacity * 255.0 + 0.5) as u16
+        opacity.mul_add(255.0, 0.5) as u16
     } else {
         256 // sentinel: means "fully opaque, skip per-pixel multiply"
     };
 
     // Per-row closure that processes all columns in a single row of the
-    // bounding box.  Captured values are all immutable or Copy so the closure
-    // can be shared across rayon threads.
+    // bounding box.  Uses an incremental stepper: since `dx_f` increments
+    // by 1.0 each column, `local_x` and `local_y` change by `+cos_a` and
+    // `-sin_a` respectively — replacing 2 multiplies with 2 adds per pixel.
+    //
+    // For interior pixels where `min_dist >= 1.0` the edge-coverage clamp
+    // is a no-op, so we skip the coverage math entirely for the bulk of
+    // each span.
     let process_row = |py: i32, row_slice: &mut [u8]| {
         let dy = py as f32 - cy;
-        // `row_slice` starts at the beginning of this destination row,
-        // so pixel `px` lives at offset `px * 4`.
-        for px in bb_x0..bb_x1 {
-            let dx_f = px as f32 - cx;
 
-            // Inverse-rotate to get position in the un-rotated rect's
-            // local coordinate system (origin at rect centre).
-            let local_x = dx_f * cos_a + dy * sin_a;
-            let local_y = -dx_f * sin_a + dy * cos_a;
+        // Seed the stepper at the first column of the bounding box.
+        let dx_f0 = bb_x0 as f32 - cx;
+        let mut local_x = dx_f0 * cos_a + dy * sin_a;
+        let mut local_y = (-dx_f0).mul_add(sin_a, dy * cos_a);
 
+        // Per-row constants for edge distances (top/bottom depend only on
+        // local_y, which also steps — but the step is `-sin_a`, so we
+        // compute d_top/d_bottom inline together with the stepper).
+
+        let mut px = bb_x0;
+        while px < bb_x1 {
             // ── Edge anti-aliasing via signed distance ──────────────
             let d_left = local_x + half_w;
             let d_right = half_w - local_x;
@@ -404,23 +417,25 @@ pub fn scale_blit_rgba_rotated(
             let min_dist = d_left.min(d_right).min(d_top).min(d_bottom);
 
             if min_dist <= 0.0 {
-                continue; // fully outside the rectangle
+                // Fully outside — step and continue.
+                local_x += cos_a;
+                local_y -= sin_a;
+                px += 1;
+                continue;
             }
-
-            // Fractional coverage: smoothly ramp from 0→1 over ~1 pixel.
-            let edge_coverage = min_dist.min(1.0);
 
             // Map from local rect coords to source pixel coords.
             let norm_x = ((local_x + half_w) / rw).clamp(0.0, 1.0 - f32::EPSILON);
             let norm_y = ((local_y + half_h) / rh).clamp(0.0, 1.0 - f32::EPSILON);
 
-            let sx = (norm_x * sw as f32) as usize;
-            let sy = (norm_y * sh as f32) as usize;
-            let sx = sx.min(sw - 1);
-            let sy = sy.min(sh - 1);
+            let sx = ((norm_x * sw as f32) as usize).min(sw - 1);
+            let sy = ((norm_y * sh as f32) as usize).min(sh - 1);
 
             let src_idx = (sy * sw + sx) * 4;
             if src_idx + 3 >= src.len() {
+                local_x += cos_a;
+                local_y -= sin_a;
+                px += 1;
                 continue;
             }
 
@@ -434,33 +449,99 @@ pub fn scale_blit_rgba_rotated(
                 sa = ((u16::from(sa) * opacity_u16 + 128) >> 8).min(255) as u8;
             }
 
-            // Apply edge coverage to the alpha channel for smooth borders.
-            if edge_coverage < 1.0 {
-                sa = (f32::from(sa) * edge_coverage + 0.5) as u8;
+            // Apply edge coverage only when near a border.
+            if min_dist < 1.0 {
+                sa = f32::from(sa).mul_add(min_dist, 0.5) as u8;
             }
 
-            if sa == 0 {
-                continue;
+            if sa > 0 {
+                let dst_off = px as usize * 4;
+                if dst_off + 3 < row_slice.len() {
+                    if sa == 255 {
+                        row_slice[dst_off] = sr;
+                        row_slice[dst_off + 1] = sg;
+                        row_slice[dst_off + 2] = sb;
+                        row_slice[dst_off + 3] = 255;
+                    } else {
+                        let a16 = u16::from(sa);
+                        row_slice[dst_off] = blend_u8(sr, row_slice[dst_off], a16);
+                        row_slice[dst_off + 1] = blend_u8(sg, row_slice[dst_off + 1], a16);
+                        row_slice[dst_off + 2] = blend_u8(sb, row_slice[dst_off + 2], a16);
+                        let da = u16::from(row_slice[dst_off + 3]);
+                        row_slice[dst_off + 3] =
+                            (a16 + ((da * (255 - a16) + 128) >> 8)).min(255) as u8;
+                    }
+                }
             }
 
-            let dst_off = px as usize * 4;
-            if dst_off + 3 >= row_slice.len() {
-                continue;
+            // Interior fast-forward: if we are well inside the rect
+            // (min_dist >= 1.0 + some margin), we know subsequent pixels
+            // will also be interior until we approach an edge.  Compute
+            // how many columns we can skip the coverage math for.
+            //
+            // The minimum distance decreases by at most 1.0 per column
+            // step (the directional derivative of each edge distance w.r.t.
+            // the column step is at most ±1 since |cos_a|, |sin_a| ≤ 1).
+            // So if min_dist >= 2.0, at least the next pixel is also fully
+            // interior (min_dist ≥ 1.0).  We use this to batch interior
+            // pixels with a tighter loop that skips the coverage branch.
+            if min_dist >= 2.0 {
+                // Number of pixels we can safely process without AA.
+                // Conservative: (min_dist - 1.0).floor() guarantees
+                // min_dist stays >= 1.0 for all skipped pixels.
+                let skip = ((min_dist - 1.0).floor() as i32).min(bb_x1 - px - 1);
+                if skip > 0 {
+                    // Advance stepper and process interior pixels.
+                    for _ in 0..skip {
+                        local_x += cos_a;
+                        local_y -= sin_a;
+                        px += 1;
+
+                        // Source lookup (incremental local coords).
+                        let nx = ((local_x + half_w) / rw).clamp(0.0, 1.0 - f32::EPSILON);
+                        let ny = ((local_y + half_h) / rh).clamp(0.0, 1.0 - f32::EPSILON);
+                        let isx = ((nx * sw as f32) as usize).min(sw - 1);
+                        let isy = ((ny * sh as f32) as usize).min(sh - 1);
+                        let si = (isy * sw + isx) * 4;
+                        if si + 3 >= src.len() {
+                            continue;
+                        }
+
+                        let ir = src[si];
+                        let ig = src[si + 1];
+                        let ib = src[si + 2];
+                        let mut ia = src[si + 3];
+
+                        if opacity_u16 < 256 {
+                            ia = ((u16::from(ia) * opacity_u16 + 128) >> 8).min(255) as u8;
+                        }
+                        // No edge coverage — interior pixel.
+                        if ia > 0 {
+                            let doff = px as usize * 4;
+                            if doff + 3 < row_slice.len() {
+                                if ia == 255 {
+                                    row_slice[doff] = ir;
+                                    row_slice[doff + 1] = ig;
+                                    row_slice[doff + 2] = ib;
+                                    row_slice[doff + 3] = 255;
+                                } else {
+                                    let a16 = u16::from(ia);
+                                    row_slice[doff] = blend_u8(ir, row_slice[doff], a16);
+                                    row_slice[doff + 1] = blend_u8(ig, row_slice[doff + 1], a16);
+                                    row_slice[doff + 2] = blend_u8(ib, row_slice[doff + 2], a16);
+                                    let da = u16::from(row_slice[doff + 3]);
+                                    row_slice[doff + 3] =
+                                        (a16 + ((da * (255 - a16) + 128) >> 8)).min(255) as u8;
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
-            if sa == 255 {
-                row_slice[dst_off] = sr;
-                row_slice[dst_off + 1] = sg;
-                row_slice[dst_off + 2] = sb;
-                row_slice[dst_off + 3] = 255;
-            } else {
-                let a16 = u16::from(sa);
-                row_slice[dst_off] = blend_u8(sr, row_slice[dst_off], a16);
-                row_slice[dst_off + 1] = blend_u8(sg, row_slice[dst_off + 1], a16);
-                row_slice[dst_off + 2] = blend_u8(sb, row_slice[dst_off + 2], a16);
-                let da = u16::from(row_slice[dst_off + 3]);
-                row_slice[dst_off + 3] = (a16 + ((da * (255 - a16) + 128) >> 8)).min(255) as u8;
-            }
+            local_x += cos_a;
+            local_y -= sin_a;
+            px += 1;
         }
     };
 
@@ -470,13 +551,21 @@ pub fn scale_blit_rgba_rotated(
 
     if bb_rows >= RAYON_ROW_THRESHOLD {
         use rayon::prelude::*;
-        dst_region.par_chunks_mut(row_stride).take(bb_rows).enumerate().for_each(
-            |(i, row_slice)| {
-                process_row(bb_y0 + i as i32, row_slice);
-            },
-        );
+        let chunk_bytes = row_stride * RAYON_CHUNK_ROWS;
+        dst_region.par_chunks_mut(chunk_bytes).enumerate().for_each(|(chunk_idx, chunk)| {
+            let base_row = chunk_idx * RAYON_CHUNK_ROWS;
+            for (j, row_slice) in chunk.chunks_mut(row_stride).enumerate() {
+                let row = base_row + j;
+                if row >= bb_rows {
+                    break;
+                }
+                #[allow(clippy::cast_possible_wrap)]
+                process_row(bb_y0 + row as i32, row_slice);
+            }
+        });
     } else {
         for (i, row_slice) in dst_region.chunks_mut(row_stride).take(bb_rows).enumerate() {
+            #[allow(clippy::cast_possible_wrap)]
             process_row(bb_y0 + i as i32, row_slice);
         }
     }
@@ -1047,6 +1136,96 @@ mod simd {
         simd_width
     }
 
+    // ── RGBA8 → Y-plane (AVX2: 8 pixels / iter) ───────────────────────
+
+    /// Convert one row of RGBA8 pixels to Y values using AVX2.
+    ///
+    /// Processes 8 pixels per iteration (256-bit registers) — double the
+    /// throughput of the SSE4.1 variant.  Falls back gracefully: callers
+    /// should check `is_x86_feature_detected!("avx2")` and use the
+    /// SSE4.1/SSE2 kernels when AVX2 is unavailable.
+    ///
+    /// Returns the number of pixels converted (multiple of 8).
+    #[target_feature(enable = "avx2")]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub(super) unsafe fn rgba8_to_y_row_avx2(
+        rgba_row: &[u8],
+        y_out: &mut [u8],
+        width: usize,
+    ) -> usize {
+        use std::arch::x86_64::{
+            _mm256_add_epi32, _mm256_and_si256, _mm256_castsi256_si128, _mm256_extracti128_si256,
+            _mm256_loadu_si256, _mm256_mullo_epi32, _mm256_packs_epi32, _mm256_packus_epi16,
+            _mm256_set1_epi32, _mm256_setzero_si256, _mm256_srai_epi32, _mm256_srli_epi32,
+            _mm_unpacklo_epi32,
+        };
+
+        let simd_width = width & !7; // round down to multiple of 8
+        if simd_width == 0 {
+            return 0;
+        }
+
+        let coeff_66 = _mm256_set1_epi32(66);
+        let coeff_129 = _mm256_set1_epi32(129);
+        let coeff_25 = _mm256_set1_epi32(25);
+        let rounding = _mm256_set1_epi32(128);
+        let bias_16 = _mm256_set1_epi32(16);
+        let zero = _mm256_setzero_si256();
+        let channel_mask = _mm256_set1_epi32(0xFF);
+
+        let mut col = 0usize;
+        while col < simd_width {
+            // Load 8 RGBA pixels (32 bytes = 256 bits).
+            let src_ptr = rgba_row.as_ptr().add(col * 4);
+            let px = _mm256_loadu_si256(src_ptr.cast());
+
+            // Extract R, G, B channels from the 8 pixels.
+            // AVX2 lane layout: pixels [0..3] in lane 0, [4..7] in lane 1.
+            let r = _mm256_and_si256(px, channel_mask);
+            let g = _mm256_and_si256(_mm256_srli_epi32(px, 8), channel_mask);
+            let b = _mm256_and_si256(_mm256_srli_epi32(px, 16), channel_mask);
+
+            // Y = ((66*R + 129*G + 25*B + 128) >> 8) + 16
+            let y32 = _mm256_add_epi32(
+                _mm256_srai_epi32(
+                    _mm256_add_epi32(
+                        _mm256_add_epi32(
+                            _mm256_add_epi32(
+                                _mm256_mullo_epi32(coeff_66, r),
+                                _mm256_mullo_epi32(coeff_129, g),
+                            ),
+                            _mm256_mullo_epi32(coeff_25, b),
+                        ),
+                        rounding,
+                    ),
+                    8,
+                ),
+                bias_16,
+            );
+
+            // Pack i32→i16→u8.  AVX2 pack ops work per 128-bit lane:
+            //   packs_epi32:  lane0=[y0,y1,y2,y3, 0,0,0,0]  lane1=[y4,y5,y6,y7, 0,0,0,0]  (i16)
+            //   packus_epi16: lane0=[y0,y1,y2,y3, 0..0]      lane1=[y4,y5,y6,y7, 0..0]     (u8)
+            // Each lane has 4 Y bytes in the low dword.  Extract both halves
+            // and interleave the low dwords to get [y0..y3, y4..y7] contiguous.
+            let y16 = _mm256_packs_epi32(y32, zero);
+            let y8 = _mm256_packus_epi16(y16, zero);
+            let lo = _mm256_castsi256_si128(y8); // lane 0: [y0,y1,y2,y3, 0..0]
+            let hi = _mm256_extracti128_si256(y8, 1); // lane 1: [y4,y5,y6,y7, 0..0]
+            let combined = _mm_unpacklo_epi32(lo, hi); // [y0,y1,y2,y3, y4,y5,y6,y7, ...]
+
+            // Store the low 8 bytes: [y0, y1, y2, y3, y4, y5, y6, y7].
+            std::ptr::copy_nonoverlapping(
+                (&raw const combined).cast::<u8>(),
+                y_out.as_mut_ptr().add(col),
+                8,
+            );
+
+            col += 8;
+        }
+        simd_width
+    }
+
     /// Convert one row of RGBA8 pixels to Y values using SSE2.
     ///
     /// Returns the number of pixels converted (multiple of 4).
@@ -1284,6 +1463,153 @@ mod simd {
         }
         ccol
     }
+
+    // ── RGBA8 → NV12 chroma row (SSE2: 4 interleaved UV pairs / iter) ────
+
+    /// Convert one pair of RGBA8 rows to interleaved `[U, V, U, V, …]`
+    /// chroma samples for NV12 output, using SSE2.
+    ///
+    /// Identical 2×2 averaging and coefficient maths as
+    /// [`rgba8_to_chroma_row_sse2`], but the final store interleaves U and V
+    /// bytes instead of writing to separate planes.
+    ///
+    /// Returns the number of chroma *pairs* converted (multiple of 4).
+    #[target_feature(enable = "sse2")]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::similar_names)]
+    pub(super) unsafe fn rgba8_to_chroma_row_nv12_sse2(
+        rgba_row0: &[u8],
+        rgba_row1: &[u8],
+        uv_out: &mut [u8],
+        chroma_width: usize,
+        luma_width: usize,
+    ) -> usize {
+        use std::arch::x86_64::{
+            _mm_add_epi16, _mm_add_epi32, _mm_and_si128, _mm_loadu_si128, _mm_mullo_epi16,
+            _mm_packs_epi32, _mm_packus_epi16, _mm_set1_epi16, _mm_set1_epi32, _mm_set_epi16,
+            _mm_setzero_si128, _mm_srai_epi16, _mm_srli_epi32, _mm_storeu_si128, _mm_unpacklo_epi8,
+        };
+
+        let simd_width = chroma_width & !3; // 4 chroma pairs per iteration
+        if simd_width == 0 || luma_width < 8 {
+            return 0;
+        }
+
+        let coeff_cb_r = _mm_set1_epi16(-38);
+        let coeff_cb_g = _mm_set1_epi16(-74);
+        let coeff_cb_b = _mm_set1_epi16(112);
+        let coeff_cr_r = _mm_set1_epi16(112);
+        let coeff_cr_g = _mm_set1_epi16(-94);
+        let coeff_cr_b = _mm_set1_epi16(-18);
+        let rounding = _mm_set1_epi16(128);
+        let bias_128 = _mm_set1_epi16(128);
+        let zero = _mm_setzero_si128();
+        let channel_mask = _mm_set1_epi32(0xFF);
+
+        let mut ccol = 0usize;
+        while ccol < simd_width {
+            let luma_col = ccol * 2;
+            if luma_col + 8 > luma_width {
+                break;
+            }
+
+            // Load 8 pixels from row0 and row1.
+            let ptr0 = rgba_row0.as_ptr().add(luma_col * 4);
+            let ptr1 = rgba_row1.as_ptr().add(luma_col * 4);
+            let px0_lo = _mm_loadu_si128(ptr0.cast());
+            let px0_hi = _mm_loadu_si128(ptr0.add(16).cast());
+            let px1_lo = _mm_loadu_si128(ptr1.cast());
+            let px1_hi = _mm_loadu_si128(ptr1.add(16).cast());
+
+            // ── 2×2 average for R channel ──
+            let r0_lo = _mm_and_si128(px0_lo, channel_mask);
+            let r0_hi = _mm_and_si128(px0_hi, channel_mask);
+            let r1_lo = _mm_and_si128(px1_lo, channel_mask);
+            let r1_hi = _mm_and_si128(px1_hi, channel_mask);
+            let r_v_lo = _mm_add_epi32(r0_lo, r1_lo);
+            let r_v_hi = _mm_add_epi32(r0_hi, r1_hi);
+            let r_v = _mm_packs_epi32(r_v_lo, r_v_hi);
+            let r_even = _mm_and_si128(r_v, _mm_set_epi16(0, -1, 0, -1, 0, -1, 0, -1));
+            let r_odd = _mm_srli_epi32(r_v, 16);
+            let r_sum = _mm_add_epi16(r_even, r_odd);
+            let r_avg =
+                _mm_srai_epi16(_mm_add_epi16(_mm_packs_epi32(r_sum, zero), _mm_set1_epi16(2)), 2);
+
+            // ── 2×2 average for G channel ──
+            let g0_lo = _mm_and_si128(_mm_srli_epi32(px0_lo, 8), channel_mask);
+            let g0_hi = _mm_and_si128(_mm_srli_epi32(px0_hi, 8), channel_mask);
+            let g1_lo = _mm_and_si128(_mm_srli_epi32(px1_lo, 8), channel_mask);
+            let g1_hi = _mm_and_si128(_mm_srli_epi32(px1_hi, 8), channel_mask);
+            let g_v_lo = _mm_add_epi32(g0_lo, g1_lo);
+            let g_v_hi = _mm_add_epi32(g0_hi, g1_hi);
+            let g_v = _mm_packs_epi32(g_v_lo, g_v_hi);
+            let g_even = _mm_and_si128(g_v, _mm_set_epi16(0, -1, 0, -1, 0, -1, 0, -1));
+            let g_odd = _mm_srli_epi32(g_v, 16);
+            let g_sum = _mm_add_epi16(g_even, g_odd);
+            let g_avg =
+                _mm_srai_epi16(_mm_add_epi16(_mm_packs_epi32(g_sum, zero), _mm_set1_epi16(2)), 2);
+
+            // ── 2×2 average for B channel ──
+            let b0_lo = _mm_and_si128(_mm_srli_epi32(px0_lo, 16), channel_mask);
+            let b0_hi = _mm_and_si128(_mm_srli_epi32(px0_hi, 16), channel_mask);
+            let b1_lo = _mm_and_si128(_mm_srli_epi32(px1_lo, 16), channel_mask);
+            let b1_hi = _mm_and_si128(_mm_srli_epi32(px1_hi, 16), channel_mask);
+            let b_v_lo = _mm_add_epi32(b0_lo, b1_lo);
+            let b_v_hi = _mm_add_epi32(b0_hi, b1_hi);
+            let b_v = _mm_packs_epi32(b_v_lo, b_v_hi);
+            let b_even = _mm_and_si128(b_v, _mm_set_epi16(0, -1, 0, -1, 0, -1, 0, -1));
+            let b_odd = _mm_srli_epi32(b_v, 16);
+            let b_sum = _mm_add_epi16(b_even, b_odd);
+            let b_avg =
+                _mm_srai_epi16(_mm_add_epi16(_mm_packs_epi32(b_sum, zero), _mm_set1_epi16(2)), 2);
+
+            // ── Cb / Cr coefficient multiplies (same as I420 kernel) ──
+            let cb_result = _mm_add_epi16(
+                _mm_srai_epi16(
+                    _mm_add_epi16(
+                        _mm_add_epi16(
+                            _mm_add_epi16(
+                                _mm_mullo_epi16(coeff_cb_r, r_avg),
+                                _mm_mullo_epi16(coeff_cb_g, g_avg),
+                            ),
+                            _mm_mullo_epi16(coeff_cb_b, b_avg),
+                        ),
+                        rounding,
+                    ),
+                    8,
+                ),
+                bias_128,
+            );
+
+            let cr_result = _mm_add_epi16(
+                _mm_srai_epi16(
+                    _mm_add_epi16(
+                        _mm_add_epi16(
+                            _mm_add_epi16(
+                                _mm_mullo_epi16(coeff_cr_r, r_avg),
+                                _mm_mullo_epi16(coeff_cr_g, g_avg),
+                            ),
+                            _mm_mullo_epi16(coeff_cr_b, b_avg),
+                        ),
+                        rounding,
+                    ),
+                    8,
+                ),
+                bias_128,
+            );
+
+            // Pack to u8 and interleave: [U0,V0,U1,V1,U2,V2,U3,V3].
+            let cb_packed = _mm_packus_epi16(cb_result, zero);
+            let cr_packed = _mm_packus_epi16(cr_result, zero);
+            let interleaved = _mm_unpacklo_epi8(cb_packed, cr_packed);
+
+            // Store 8 bytes (4 UV pairs).
+            let out_ptr = uv_out.as_mut_ptr().add(ccol * 2);
+            _mm_storeu_si128(out_ptr.cast(), interleaved);
+
+            ccol += 4;
+        }
+        ccol
+    }
 }
 
 // ── Pixel format conversion ─────────────────────────────────────────────────
@@ -1365,11 +1691,17 @@ pub fn i420_to_rgba8_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     };
 
     if h >= RAYON_ROW_THRESHOLD {
-        out[..w * h * 4]
-            .par_chunks_mut(rgba_row_stride)
-            .take(h)
-            .enumerate()
-            .for_each(|(row, rgba_row)| convert_row(row, rgba_row));
+        let chunk_bytes = rgba_row_stride * RAYON_CHUNK_ROWS;
+        out[..w * h * 4].par_chunks_mut(chunk_bytes).enumerate().for_each(|(chunk_idx, chunk)| {
+            let base_row = chunk_idx * RAYON_CHUNK_ROWS;
+            for (j, rgba_row) in chunk.chunks_mut(rgba_row_stride).enumerate() {
+                let row = base_row + j;
+                if row >= h {
+                    break;
+                }
+                convert_row(row, rgba_row);
+            }
+        });
     } else {
         for (row, rgba_row) in out[..w * h * 4].chunks_mut(rgba_row_stride).take(h).enumerate() {
             convert_row(row, rgba_row);
@@ -1459,11 +1791,17 @@ pub fn nv12_to_rgba8_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     };
 
     if h >= RAYON_ROW_THRESHOLD {
-        out[..w * h * 4]
-            .par_chunks_mut(rgba_row_stride)
-            .take(h)
-            .enumerate()
-            .for_each(|(row, rgba_row)| convert_row(row, rgba_row));
+        let chunk_bytes = rgba_row_stride * RAYON_CHUNK_ROWS;
+        out[..w * h * 4].par_chunks_mut(chunk_bytes).enumerate().for_each(|(chunk_idx, chunk)| {
+            let base_row = chunk_idx * RAYON_CHUNK_ROWS;
+            for (j, rgba_row) in chunk.chunks_mut(rgba_row_stride).enumerate() {
+                let row = base_row + j;
+                if row >= h {
+                    break;
+                }
+                convert_row(row, rgba_row);
+            }
+        });
     } else {
         for (row, rgba_row) in out[..w * h * 4].chunks_mut(rgba_row_stride).take(h).enumerate() {
             convert_row(row, rgba_row);
@@ -1501,10 +1839,25 @@ pub fn rgba8_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
         let rgba_base = row * w * 4;
         let mut start_col = 0usize;
 
-        // SIMD fast path: prefer SSE4.1 (native i32 mul) over SSE2.
+        // SIMD fast path: prefer AVX2 > SSE4.1 > SSE2.
         #[cfg(target_arch = "x86_64")]
         {
-            if is_x86_feature_detected!("sse4.1") {
+            if is_x86_feature_detected!("avx2") {
+                start_col = unsafe {
+                    simd::rgba8_to_y_row_avx2(&data[rgba_base..rgba_base + w * 4], y_row, w)
+                };
+                // Handle remaining pixels (up to 7) with SSE4.1/SSE2.
+                if start_col < w && is_x86_feature_detected!("sse4.1") {
+                    let tail = unsafe {
+                        simd::rgba8_to_y_row_sse41(
+                            &data[rgba_base + start_col * 4..rgba_base + w * 4],
+                            &mut y_row[start_col..],
+                            w - start_col,
+                        )
+                    };
+                    start_col += tail;
+                }
+            } else if is_x86_feature_detected!("sse4.1") {
                 start_col = unsafe {
                     simd::rgba8_to_y_row_sse41(&data[rgba_base..rgba_base + w * 4], y_row, w)
                 };
@@ -1526,11 +1879,17 @@ pub fn rgba8_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     };
 
     if h >= RAYON_ROW_THRESHOLD {
-        y_plane
-            .par_chunks_mut(y_stride)
-            .take(h)
-            .enumerate()
-            .for_each(|(row, y_row)| convert_y_row(row, y_row));
+        let chunk_bytes = y_stride * RAYON_CHUNK_ROWS;
+        y_plane.par_chunks_mut(chunk_bytes).enumerate().for_each(|(chunk_idx, chunk)| {
+            let base_row = chunk_idx * RAYON_CHUNK_ROWS;
+            for (j, y_row) in chunk.chunks_mut(y_stride).enumerate() {
+                let row = base_row + j;
+                if row >= h {
+                    break;
+                }
+                convert_y_row(row, y_row);
+            }
+        });
     } else {
         for (row, y_row) in y_plane.chunks_mut(y_stride).take(h).enumerate() {
             convert_y_row(row, y_row);
@@ -1653,9 +2012,25 @@ pub fn rgba8_to_nv12_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
         let rgba_base = row * w * 4;
         let mut start_col = 0usize;
 
+        // SIMD fast path: prefer AVX2 > SSE4.1 > SSE2.
         #[cfg(target_arch = "x86_64")]
         {
-            if is_x86_feature_detected!("sse4.1") {
+            if is_x86_feature_detected!("avx2") {
+                start_col = unsafe {
+                    simd::rgba8_to_y_row_avx2(&data[rgba_base..rgba_base + w * 4], y_row, w)
+                };
+                // Handle remaining pixels (up to 7) with SSE4.1/SSE2.
+                if start_col < w && is_x86_feature_detected!("sse4.1") {
+                    let tail = unsafe {
+                        simd::rgba8_to_y_row_sse41(
+                            &data[rgba_base + start_col * 4..rgba_base + w * 4],
+                            &mut y_row[start_col..],
+                            w - start_col,
+                        )
+                    };
+                    start_col += tail;
+                }
+            } else if is_x86_feature_detected!("sse4.1") {
                 start_col = unsafe {
                     simd::rgba8_to_y_row_sse41(&data[rgba_base..rgba_base + w * 4], y_row, w)
                 };
@@ -1677,11 +2052,17 @@ pub fn rgba8_to_nv12_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     };
 
     if h >= RAYON_ROW_THRESHOLD {
-        y_plane
-            .par_chunks_mut(y_stride)
-            .take(h)
-            .enumerate()
-            .for_each(|(row, y_row)| convert_y_row(row, y_row));
+        let chunk_bytes = y_stride * RAYON_CHUNK_ROWS;
+        y_plane.par_chunks_mut(chunk_bytes).enumerate().for_each(|(chunk_idx, chunk)| {
+            let base_row = chunk_idx * RAYON_CHUNK_ROWS;
+            for (j, y_row) in chunk.chunks_mut(y_stride).enumerate() {
+                let row = base_row + j;
+                if row >= h {
+                    break;
+                }
+                convert_y_row(row, y_row);
+            }
+        });
     } else {
         for (row, y_row) in y_plane.chunks_mut(y_stride).take(h).enumerate() {
             convert_y_row(row, y_row);
@@ -1689,10 +2070,32 @@ pub fn rgba8_to_nv12_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     }
 
     // UV plane — parallelise by chroma row, write interleaved [U, V] pairs.
+    // Uses SSE2 SIMD for the bulk of each row, with a scalar tail.
     let convert_chroma_row = |crow: usize, uv_row: &mut [u8]| {
         let r0 = crow * 2;
+        let mut start_ccol = 0usize;
 
-        for ccol in 0..chroma_w {
+        // SIMD fast path for interleaved NV12 chroma subsampling.
+        #[cfg(target_arch = "x86_64")]
+        {
+            if is_x86_feature_detected!("sse2") && r0 + 1 < h {
+                let row0_start = r0 * w * 4;
+                let row1_start = (r0 + 1) * w * 4;
+                // SAFETY: feature detection guarantees SSE2 is available;
+                // both rows are within the input buffer.
+                start_ccol = unsafe {
+                    simd::rgba8_to_chroma_row_nv12_sse2(
+                        &data[row0_start..row0_start + w * 4],
+                        &data[row1_start..row1_start + w * 4],
+                        uv_row,
+                        chroma_w,
+                        w,
+                    )
+                };
+            }
+        }
+
+        for ccol in start_ccol..chroma_w {
             let c0 = ccol * 2;
             let mut sr = 0i32;
             let mut sg = 0i32;
@@ -1725,11 +2128,17 @@ pub fn rgba8_to_nv12_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     };
 
     if chroma_h >= RAYON_ROW_THRESHOLD / 2 {
-        uv_plane
-            .par_chunks_mut(uv_stride)
-            .take(chroma_h)
-            .enumerate()
-            .for_each(|(crow, uv_row)| convert_chroma_row(crow, uv_row));
+        let chunk_bytes = uv_stride * RAYON_CHUNK_ROWS;
+        uv_plane.par_chunks_mut(chunk_bytes).enumerate().for_each(|(chunk_idx, chunk)| {
+            let base_crow = chunk_idx * RAYON_CHUNK_ROWS;
+            for (j, uv_row) in chunk.chunks_mut(uv_stride).enumerate() {
+                let crow = base_crow + j;
+                if crow >= chroma_h {
+                    break;
+                }
+                convert_chroma_row(crow, uv_row);
+            }
+        });
     } else {
         for (crow, uv_row) in uv_plane.chunks_mut(uv_stride).take(chroma_h).enumerate() {
             convert_chroma_row(crow, uv_row);
