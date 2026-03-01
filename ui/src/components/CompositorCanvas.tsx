@@ -303,11 +303,12 @@ const TextOverlayLayer: React.FC<{
 
   const commitEdit = useCallback(() => {
     if (cancelledRef.current) return;
+    if (!editing) return; // guard against double-fire (Enter + blur)
     setEditing(false);
     if (editText.trim() && editText !== overlay.text && onTextEdit) {
       onTextEdit(overlay.id, { text: editText.trim() });
     }
-  }, [editText, overlay.id, overlay.text, onTextEdit]);
+  }, [editing, editText, overlay.id, overlay.text, onTextEdit]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {

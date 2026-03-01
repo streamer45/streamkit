@@ -335,8 +335,34 @@ export const useCompositorLayers = (
     const sinceCommit = Date.now() - overlayCommitGuardRef.current;
     if (sinceCommit < 1500) return;
 
-    setTextOverlays(parseTextOverlays(params));
-    setImageOverlays(parseImageOverlays(params));
+    setTextOverlays((currentText) => {
+      const parsed = parseTextOverlays(params);
+      return parsed.map((p) => {
+        const existing = currentText.find((o) => o.id === p.id);
+        if (existing) {
+          return {
+            ...p,
+            visible: existing.visible,
+            opacity: existing.visible ? p.opacity : existing.opacity,
+          };
+        }
+        return p;
+      });
+    });
+    setImageOverlays((currentImg) => {
+      const parsed = parseImageOverlays(params);
+      return parsed.map((p) => {
+        const existing = currentImg.find((o) => o.id === p.id);
+        if (existing) {
+          return {
+            ...p,
+            visible: existing.visible,
+            opacity: existing.visible ? p.opacity : existing.opacity,
+          };
+        }
+        return p;
+      });
+    });
   }, [params, canvasWidth, canvasHeight]);
 
   /** Resolve a layer ID to its state and kind across all layer types */
