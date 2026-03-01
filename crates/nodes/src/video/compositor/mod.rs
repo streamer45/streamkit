@@ -48,7 +48,7 @@ use streamkit_core::{
 };
 use tokio::sync::mpsc;
 
-use kernel::composite_frame;
+use kernel::{composite_frame, ConversionCache};
 
 // ── Input slot ──────────────────────────────────────────────────────────────
 
@@ -285,9 +285,9 @@ impl ProcessorNode for CompositorNode {
         let (result_tx, mut result_rx) = tokio::sync::mpsc::channel::<CompositeResult>(2);
 
         let composite_thread = tokio::task::spawn_blocking(move || {
-            // Persistent scratch buffer for I420→RGBA8 layer conversion,
-            // reused across frames to avoid per-frame allocation.
-            let mut i420_to_rgba_scratch: Vec<u8> = Vec::new();
+            // Per-slot cache for YUV→RGBA conversions. Avoids redundant
+            // conversion when the source Arc hasn't changed between frames.
+            let mut conversion_cache = ConversionCache::new();
 
             while let Some(work) = work_rx.blocking_recv() {
                 let rgba_buf = composite_frame(
@@ -297,7 +297,7 @@ impl ProcessorNode for CompositorNode {
                     &work.image_overlays,
                     &work.text_overlays,
                     work.video_pool.as_deref(),
-                    &mut i420_to_rgba_scratch,
+                    &mut conversion_cache,
                 );
                 let result = CompositeResult { rgba_data: rgba_buf };
                 if result_tx.blocking_send(result).is_err() {
@@ -851,8 +851,8 @@ mod tests {
     #[test]
     fn test_composite_frame_empty_layers() {
         // No layers, no overlays -> transparent black canvas.
-        let mut scratch = Vec::new();
-        let result = composite_frame(4, 4, &[], &[], &[], None, &mut scratch);
+        let mut cache = ConversionCache::new();
+        let result = composite_frame(4, 4, &[], &[], &[], None, &mut cache);
         let buf = result.as_slice();
         assert_eq!(buf.len(), 4 * 4 * 4);
         assert!(buf.iter().all(|&b| b == 0));
@@ -872,8 +872,8 @@ mod tests {
             rotation_degrees: 0.0,
         };
 
-        let mut scratch = Vec::new();
-        let result = composite_frame(4, 4, &[Some(layer)], &[], &[], None, &mut scratch);
+        let mut cache = ConversionCache::new();
+        let result = composite_frame(4, 4, &[Some(layer)], &[], &[], None, &mut cache);
         let buf = result.as_slice();
 
         // Entire canvas should be red (scaled from 2x2 to 4x4).
@@ -912,9 +912,9 @@ mod tests {
             rotation_degrees: 0.0,
         };
 
-        let mut scratch = Vec::new();
+        let mut cache = ConversionCache::new();
         let result =
-            composite_frame(4, 4, &[Some(layer0), Some(layer1)], &[], &[], None, &mut scratch);
+            composite_frame(4, 4, &[Some(layer0), Some(layer1)], &[], &[], None, &mut cache);
         let buf = result.as_slice();
 
         // (0,0) should be red.
@@ -1079,8 +1079,8 @@ mod tests {
         let pool = FramePool::<u8>::preallocated(&[total], 2);
         assert_eq!(pool.stats().buckets[0].available, 2);
 
-        let mut scratch = Vec::new();
-        let result = composite_frame(canvas_w, canvas_h, &[], &[], &[], Some(&pool), &mut scratch);
+        let mut cache = ConversionCache::new();
+        let result = composite_frame(canvas_w, canvas_h, &[], &[], &[], Some(&pool), &mut cache);
         assert_eq!(result.as_slice().len(), total);
         // One buffer was taken from the pool.
         assert_eq!(pool.stats().buckets[0].available, 1);

@@ -19,6 +19,116 @@ use super::pixel_ops::{
 
 // ── Compositing kernel (runs on a persistent blocking thread) ────────────────
 
+// ── YUV → RGBA conversion cache ─────────────────────────────────────────────
+
+/// Cached RGBA conversion result for a single layer slot.
+struct CachedConversion {
+    /// Identity of the source data (`Arc::as_ptr` cast to `usize`).
+    /// When the `Arc<PooledVideoData>` pointer hasn't changed between frames
+    /// the underlying data is identical and the conversion can be skipped.
+    data_identity: usize,
+    width: u32,
+    height: u32,
+    /// Pre-converted RGBA8 data, stored as a plain `Vec<u8>`.
+    rgba: Vec<u8>,
+}
+
+/// Per-slot cache for YUV → RGBA conversions.
+///
+/// Avoids redundant per-frame I420/NV12 → RGBA8 conversion when the source
+/// `Arc<PooledVideoData>` hasn't changed since the previous frame.
+pub struct ConversionCache {
+    entries: Vec<Option<CachedConversion>>,
+}
+
+impl ConversionCache {
+    pub const fn new() -> Self {
+        Self { entries: Vec::new() }
+    }
+
+    /// Look up or perform a YUV→RGBA conversion for layer at `slot_idx`.
+    /// Returns a slice of RGBA8 data.
+    fn get_or_convert(&mut self, slot_idx: usize, layer: &LayerSnapshot) -> &[u8] {
+        let identity = Arc::as_ptr(&layer.data) as usize;
+
+        // Ensure the cache Vec is large enough.
+        if self.entries.len() <= slot_idx {
+            self.entries.resize_with(slot_idx + 1, || None);
+        }
+
+        // Check if the cached entry is still valid.
+        let needs_convert = match &self.entries[slot_idx] {
+            Some(cached) => {
+                cached.data_identity != identity
+                    || cached.width != layer.width
+                    || cached.height != layer.height
+            },
+            None => true,
+        };
+
+        if needs_convert {
+            let needed = layer.width as usize * layer.height as usize * 4;
+            // Reuse the existing allocation if possible.
+            let mut rgba = self.entries[slot_idx].take().map(|c| c.rgba).unwrap_or_default();
+            if rgba.len() < needed {
+                rgba.resize(needed, 0);
+            }
+
+            match layer.pixel_format {
+                PixelFormat::I420 => {
+                    i420_to_rgba8_buf(layer.data.as_slice(), layer.width, layer.height, &mut rgba);
+                },
+                PixelFormat::Nv12 => {
+                    nv12_to_rgba8_buf(layer.data.as_slice(), layer.width, layer.height, &mut rgba);
+                },
+                PixelFormat::Rgba8 => {
+                    // Should not be called for RGBA, but handle gracefully.
+                    rgba[..needed].copy_from_slice(&layer.data.as_slice()[..needed]);
+                },
+            }
+
+            self.entries[slot_idx] = Some(CachedConversion {
+                data_identity: identity,
+                width: layer.width,
+                height: layer.height,
+                rgba,
+            });
+        }
+
+        let cached = self.entries[slot_idx].as_ref().expect("just inserted");
+        let needed = layer.width as usize * layer.height as usize * 4;
+        &cached.rgba[..needed]
+    }
+}
+
+/// Returns `true` if the first visible layer is fully opaque, unrotated, and
+/// covers the entire canvas — meaning the canvas clear can be skipped.
+fn first_layer_covers_canvas(
+    layers: &[Option<LayerSnapshot>],
+    canvas_w: u32,
+    canvas_h: u32,
+) -> bool {
+    let Some(first) = layers.iter().flatten().next() else {
+        return false;
+    };
+
+    if first.opacity < 1.0 || first.rotation_degrees.abs() >= 0.01 {
+        return false;
+    }
+
+    // Check if the layer fully covers the canvas.
+    // A layer with no rect fills the entire canvas by default.
+    match &first.rect {
+        None => true,
+        Some(r) => {
+            r.x <= 0
+                && r.y <= 0
+                && i64::from(r.width) + i64::from(r.x) >= i64::from(canvas_w)
+                && i64::from(r.height) + i64::from(r.y) >= i64::from(canvas_h)
+        },
+    }
+}
+
 /// Snapshot of one input layer's data for the blocking compositor thread.
 pub struct LayerSnapshot {
     pub data: Arc<streamkit_core::frame_pool::PooledVideoData>,
@@ -56,8 +166,8 @@ pub struct CompositeResult {
 /// Composite all layers + overlays onto a fresh RGBA8 canvas buffer.
 /// Allocates from the video pool if available.
 ///
-/// `i420_scratch` is a reusable buffer for I420/NV12→RGBA8 conversion,
-/// avoiding per-frame allocation.
+/// `conversion_cache` caches YUV→RGBA8 conversions across frames so that
+/// unchanged layers skip the conversion entirely.
 pub fn composite_frame(
     canvas_w: u32,
     canvas_h: u32,
@@ -65,7 +175,7 @@ pub fn composite_frame(
     image_overlays: &[Arc<DecodedOverlay>],
     text_overlays: &[Arc<DecodedOverlay>],
     video_pool: Option<&streamkit_core::VideoFramePool>,
-    i420_scratch: &mut Vec<u8>,
+    conversion_cache: &mut ConversionCache,
 ) -> streamkit_core::frame_pool::PooledVideoData {
     let total_bytes = (canvas_w as usize) * (canvas_h as usize) * 4;
 
@@ -74,33 +184,25 @@ pub fn composite_frame(
         |pool| pool.get(total_bytes),
     );
 
-    // Zero the buffer (transparent black).
     let buf = pooled.as_mut_slice();
-    buf[..total_bytes].fill(0);
+
+    // Skip the canvas clear when the first layer is opaque, unrotated, and
+    // covers the entire canvas — the blit will fully overwrite every pixel.
+    if !first_layer_covers_canvas(layers, canvas_w, canvas_h) {
+        buf[..total_bytes].fill(0);
+    }
 
     // Blit each layer (in order — first layer is bottom, last is top).
-    // I420 layers are converted to RGBA8 on-the-fly using the scratch buffer.
-    for layer in layers.iter().flatten() {
+    // Non-RGBA layers use the conversion cache to avoid redundant per-frame
+    // YUV→RGBA8 conversion when the source data hasn't changed.
+    for (slot_idx, layer) in layers.iter().flatten().enumerate() {
         let dst_rect =
             layer.rect.clone().unwrap_or(Rect { x: 0, y: 0, width: canvas_w, height: canvas_h });
 
         let src_data: &[u8] = match layer.pixel_format {
             PixelFormat::Rgba8 => layer.data.as_slice(),
-            PixelFormat::I420 => {
-                let needed = layer.width as usize * layer.height as usize * 4;
-                if i420_scratch.len() < needed {
-                    i420_scratch.resize(needed, 0);
-                }
-                i420_to_rgba8_buf(layer.data.as_slice(), layer.width, layer.height, i420_scratch);
-                &i420_scratch[..needed]
-            },
-            PixelFormat::Nv12 => {
-                let needed = layer.width as usize * layer.height as usize * 4;
-                if i420_scratch.len() < needed {
-                    i420_scratch.resize(needed, 0);
-                }
-                nv12_to_rgba8_buf(layer.data.as_slice(), layer.width, layer.height, i420_scratch);
-                &i420_scratch[..needed]
+            PixelFormat::I420 | PixelFormat::Nv12 => {
+                conversion_cache.get_or_convert(slot_idx, layer)
             },
         };
 
