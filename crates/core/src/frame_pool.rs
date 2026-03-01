@@ -325,10 +325,15 @@ pub const DEFAULT_VIDEO_BUCKET_SIZES: &[usize] = &[
 ];
 pub const DEFAULT_VIDEO_MAX_BUFFERS_PER_BUCKET: usize = 16;
 
+/// Number of buffers to preallocate per video bucket at startup.
+/// Avoids cold-start misses for the first few frames.
+pub const DEFAULT_VIDEO_PREALLOCATE_PER_BUCKET: usize = 2;
+
 impl FramePool<u8> {
     pub fn video_default() -> Self {
-        Self::with_buckets(
-            DEFAULT_VIDEO_BUCKET_SIZES.to_vec(),
+        Self::preallocated_with_max(
+            DEFAULT_VIDEO_BUCKET_SIZES,
+            DEFAULT_VIDEO_PREALLOCATE_PER_BUCKET,
             DEFAULT_VIDEO_MAX_BUFFERS_PER_BUCKET,
         )
     }
