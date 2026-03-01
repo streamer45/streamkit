@@ -101,11 +101,6 @@ pub fn scale_blit_rgba(
         return;
     }
 
-    // Precompute the source-X lookup table once.  This replaces the per-pixel
-    // `(dx + src_col_skip) * sw / rw` integer division with a single table
-    // lookup in the inner blit loops.
-    let x_map: Vec<usize> = (0..effective_rect_w).map(|dx| (dx + src_col_skip) * sw / rw).collect();
-
     // Split the destination buffer into per-row slices so that each row can
     // be processed independently (and therefore in parallel).
     let row_stride = dw * 4;
@@ -114,6 +109,60 @@ pub fn scale_blit_rgba(
     // at the first output row.
     let first_row_byte = ry * row_stride;
     let dst_rows = &mut dst[first_row_byte..];
+
+    // ── Identity-scale fast path ───────────────────────────────────────
+    // When source dimensions exactly match the destination rect and opacity
+    // is fully opaque, we can avoid per-pixel scaling entirely and use
+    // direct row copies (memcpy) for fully-opaque source rows.
+    if rw == sw && rh == sh && opacity >= 1.0 && src_col_skip == 0 && src_row_skip == 0 {
+        let src_row_bytes = sw * 4;
+        let copy_bytes = effective_rect_w * 4;
+        for (dy, row_slice) in dst_rows.chunks_mut(row_stride).take(effective_rh).enumerate() {
+            let src_start = dy * src_row_bytes;
+            let src_end = src_start + copy_bytes;
+            if src_end > src.len() {
+                break;
+            }
+            let dst_start = rx * 4;
+            let dst_end = dst_start + copy_bytes;
+            if dst_end > row_slice.len() {
+                break;
+            }
+            // Check if the source row has any semi-transparent pixels.
+            // For fully-opaque rows, use bulk memcpy.  For rows with alpha,
+            // fall back to per-pixel blending.
+            let src_row = &src[src_start..src_end];
+            let all_opaque = src_row.chunks_exact(4).all(|px| px[3] == 255);
+            if all_opaque {
+                row_slice[dst_start..dst_end].copy_from_slice(src_row);
+            } else {
+                // Per-pixel alpha blend (identity scale, so sx == dx).
+                for dx in 0..effective_rect_w {
+                    let si = dx * 4;
+                    let sa = src_row[si + 3];
+                    if sa == 255 {
+                        row_slice[dst_start + dx * 4..dst_start + dx * 4 + 4]
+                            .copy_from_slice(&src_row[si..si + 4]);
+                    } else if sa > 0 {
+                        let di = dst_start + dx * 4;
+                        let a16 = u16::from(sa);
+                        row_slice[di] = blend_u8(src_row[si], row_slice[di], a16);
+                        row_slice[di + 1] = blend_u8(src_row[si + 1], row_slice[di + 1], a16);
+                        row_slice[di + 2] = blend_u8(src_row[si + 2], row_slice[di + 2], a16);
+                        let da = u16::from(row_slice[di + 3]);
+                        row_slice[di + 3] = (a16 + ((da * (255 - a16) + 128) >> 8)).min(255) as u8;
+                    }
+                }
+            }
+        }
+        return;
+    }
+
+    // ── Scaled blit path ───────────────────────────────────────────────
+    // Precompute the source-X lookup table once.  This replaces the per-pixel
+    // `(dx + src_col_skip) * sw / rw` integer division with a single table
+    // lookup in the inner blit loops.
+    let x_map: Vec<usize> = (0..effective_rect_w).map(|dx| (dx + src_col_skip) * sw / rw).collect();
 
     if effective_rh >= RAYON_ROW_THRESHOLD {
         dst_rows.par_chunks_mut(row_stride).take(effective_rh).enumerate().for_each(
