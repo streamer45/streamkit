@@ -33,9 +33,16 @@ const RAYON_ROW_THRESHOLD: usize = 64;
 /// This keeps chunk counts proportional to hardware parallelism while
 /// avoiding both excessive scheduling overhead (too many tiny chunks)
 /// and poor load-balancing (too few large chunks).
+///
+/// The CPU count is cached in a `LazyLock` so we avoid a `sysconf` syscall
+/// (~40 µs on Linux) on every call.
 fn rayon_chunk_rows(total_rows: usize) -> usize {
-    let cpus = std::thread::available_parallelism().map(std::num::NonZero::get).unwrap_or(1);
-    let ideal = total_rows.div_ceil(cpus * 4);
+    static CPUS: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
+        std::thread::available_parallelism()
+            .map(std::num::NonZero::get)
+            .unwrap_or(1)
+    });
+    let ideal = total_rows.div_ceil(*CPUS * 4);
     ideal.clamp(8, 64)
 }
 
