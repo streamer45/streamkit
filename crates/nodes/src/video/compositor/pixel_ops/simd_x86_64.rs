@@ -188,6 +188,273 @@ pub(super) unsafe fn blend_4px_alpha_sse2(dst_ptr: *mut u8, src_pixels: [u32; 4]
     _mm_storeu_si128(dst_ptr.cast::<__m128i>(), _mm_packus_epi16(result_lo, result_hi));
 }
 
+// ── AVX2 alpha-blend helpers ─────────────────────────────────────────────────
+//
+// Process 8 RGBA pixels at a time using AVX2 integer arithmetic.
+// Same algorithm as the SSE2 helpers above, widened to 256-bit registers.
+
+/// Blend 8 gathered source RGBA pixels onto 8 contiguous destination pixels
+/// using AVX2 "over" compositing (no opacity modifier).
+///
+/// # Safety
+///
+/// `dst_ptr` must point to at least 32 writable bytes.  Source pixel values
+/// in `src_pixels` must be valid RGBA `u32` values.
+#[target_feature(enable = "avx2")]
+#[inline]
+#[allow(clippy::cast_ptr_alignment)]
+pub(super) unsafe fn blend_8px_opaque_avx2(dst_ptr: *mut u8, src_pixels: [u32; 8]) {
+    use std::arch::x86_64::{
+        __m256i, _mm256_add_epi16, _mm256_and_si256, _mm256_cmpeq_epi8, _mm256_loadu_si256,
+        _mm256_movemask_epi8, _mm256_mullo_epi16, _mm256_or_si256, _mm256_packus_epi16,
+        _mm256_permute4x64_epi64, _mm256_set1_epi16, _mm256_set1_epi32, _mm256_set_epi32,
+        _mm256_setzero_si256, _mm256_shufflehi_epi16, _mm256_shufflelo_epi16, _mm256_srli_epi16,
+        _mm256_storeu_si256, _mm256_sub_epi16, _mm256_unpackhi_epi8, _mm256_unpacklo_epi8,
+    };
+
+    let zero = _mm256_setzero_si256();
+    let c255 = _mm256_set1_epi16(255);
+    let c128 = _mm256_set1_epi16(128);
+
+    // Assemble 8 gathered source pixels into one 256-bit register.
+    let src8 = _mm256_set_epi32(
+        src_pixels[7].cast_signed(),
+        src_pixels[6].cast_signed(),
+        src_pixels[5].cast_signed(),
+        src_pixels[4].cast_signed(),
+        src_pixels[3].cast_signed(),
+        src_pixels[2].cast_signed(),
+        src_pixels[1].cast_signed(),
+        src_pixels[0].cast_signed(),
+    );
+
+    let alpha_byte_mask = _mm256_set1_epi32(0xFF00_0000_u32.cast_signed());
+
+    // Fast path: all 8 source pixels fully opaque → direct copy.
+    let alpha_bytes = _mm256_and_si256(src8, alpha_byte_mask);
+    if _mm256_movemask_epi8(_mm256_cmpeq_epi8(alpha_bytes, alpha_byte_mask)) == -1i32 {
+        _mm256_storeu_si256(dst_ptr.cast::<__m256i>(), src8);
+        return;
+    }
+
+    // Fast path: all 8 source pixels fully transparent → nothing to do.
+    if _mm256_movemask_epi8(_mm256_cmpeq_epi8(alpha_bytes, zero)) == -1i32 {
+        return;
+    }
+
+    let dst8 = _mm256_loadu_si256(dst_ptr.cast::<__m256i>().cast_const());
+    let src_blend = _mm256_or_si256(src8, alpha_byte_mask);
+
+    // --- Low 4 pixels (within each 128-bit lane) ---
+    let src_lo = _mm256_unpacklo_epi8(src_blend, zero);
+    let dst_lo = _mm256_unpacklo_epi8(dst8, zero);
+    let src_orig_lo = _mm256_unpacklo_epi8(src8, zero);
+    let alpha_lo = _mm256_shufflehi_epi16(_mm256_shufflelo_epi16(src_orig_lo, 0xFF), 0xFF);
+
+    let inv_alpha_lo = _mm256_sub_epi16(c255, alpha_lo);
+    let val_lo = _mm256_add_epi16(
+        _mm256_add_epi16(
+            _mm256_mullo_epi16(src_lo, alpha_lo),
+            _mm256_mullo_epi16(dst_lo, inv_alpha_lo),
+        ),
+        c128,
+    );
+    let result_lo = _mm256_srli_epi16(_mm256_add_epi16(val_lo, _mm256_srli_epi16(val_lo, 8)), 8);
+
+    // --- High 4 pixels (within each 128-bit lane) ---
+    let src_hi = _mm256_unpackhi_epi8(src_blend, zero);
+    let dst_hi = _mm256_unpackhi_epi8(dst8, zero);
+    let src_orig_hi = _mm256_unpackhi_epi8(src8, zero);
+    let alpha_hi = _mm256_shufflehi_epi16(_mm256_shufflelo_epi16(src_orig_hi, 0xFF), 0xFF);
+
+    let inv_alpha_hi = _mm256_sub_epi16(c255, alpha_hi);
+    let val_hi = _mm256_add_epi16(
+        _mm256_add_epi16(
+            _mm256_mullo_epi16(src_hi, alpha_hi),
+            _mm256_mullo_epi16(dst_hi, inv_alpha_hi),
+        ),
+        c128,
+    );
+    let result_hi = _mm256_srli_epi16(_mm256_add_epi16(val_hi, _mm256_srli_epi16(val_hi, 8)), 8);
+
+    // Pack back to u8.  _mm256_packus_epi16 packs within 128-bit lanes, so
+    // the result is [px0 px1 px4 px5 | px2 px3 px6 px7].  We need a
+    // cross-lane permute to restore the correct pixel order.
+    let packed = _mm256_packus_epi16(result_lo, result_hi);
+    let ordered = _mm256_permute4x64_epi64(packed, 0b11_01_10_00);
+    _mm256_storeu_si256(dst_ptr.cast::<__m256i>(), ordered);
+}
+
+/// Blend 8 gathered source RGBA pixels onto 8 contiguous destination pixels
+/// using AVX2 "over" compositing **with** an opacity multiplier applied to
+/// each pixel's source alpha.
+///
+/// # Safety
+///
+/// `dst_ptr` must point to at least 32 writable bytes.
+#[target_feature(enable = "avx2")]
+#[inline]
+#[allow(clippy::cast_ptr_alignment)]
+pub(super) unsafe fn blend_8px_alpha_avx2(dst_ptr: *mut u8, src_pixels: [u32; 8], opacity: u16) {
+    use std::arch::x86_64::{
+        __m256i, _mm256_add_epi16, _mm256_loadu_si256, _mm256_mullo_epi16, _mm256_or_si256,
+        _mm256_packus_epi16, _mm256_permute4x64_epi64, _mm256_set1_epi16, _mm256_set1_epi32,
+        _mm256_set_epi32, _mm256_setzero_si256, _mm256_shufflehi_epi16, _mm256_shufflelo_epi16,
+        _mm256_srli_epi16, _mm256_storeu_si256, _mm256_sub_epi16, _mm256_unpackhi_epi8,
+        _mm256_unpacklo_epi8,
+    };
+
+    let zero = _mm256_setzero_si256();
+    let c255 = _mm256_set1_epi16(255);
+    let c128 = _mm256_set1_epi16(128);
+    let opacity_v = _mm256_set1_epi16(opacity.cast_signed());
+
+    let src8 = _mm256_set_epi32(
+        src_pixels[7].cast_signed(),
+        src_pixels[6].cast_signed(),
+        src_pixels[5].cast_signed(),
+        src_pixels[4].cast_signed(),
+        src_pixels[3].cast_signed(),
+        src_pixels[2].cast_signed(),
+        src_pixels[1].cast_signed(),
+        src_pixels[0].cast_signed(),
+    );
+
+    let dst8 = _mm256_loadu_si256(dst_ptr.cast::<__m256i>().cast_const());
+    let alpha_byte_mask = _mm256_set1_epi32(0xFF00_0000_u32.cast_signed());
+    let src_blend = _mm256_or_si256(src8, alpha_byte_mask);
+
+    // --- Low 4 pixels ---
+    let src_lo = _mm256_unpacklo_epi8(src_blend, zero);
+    let dst_lo = _mm256_unpacklo_epi8(dst8, zero);
+    let src_orig_lo = _mm256_unpacklo_epi8(src8, zero);
+    let raw_alpha_lo = _mm256_shufflehi_epi16(_mm256_shufflelo_epi16(src_orig_lo, 0xFF), 0xFF);
+    let alpha_lo =
+        _mm256_srli_epi16(_mm256_add_epi16(_mm256_mullo_epi16(raw_alpha_lo, opacity_v), c128), 8);
+
+    let inv_alpha_lo = _mm256_sub_epi16(c255, alpha_lo);
+    let val_lo = _mm256_add_epi16(
+        _mm256_add_epi16(
+            _mm256_mullo_epi16(src_lo, alpha_lo),
+            _mm256_mullo_epi16(dst_lo, inv_alpha_lo),
+        ),
+        c128,
+    );
+    let result_lo = _mm256_srli_epi16(_mm256_add_epi16(val_lo, _mm256_srli_epi16(val_lo, 8)), 8);
+
+    // --- High 4 pixels ---
+    let src_hi = _mm256_unpackhi_epi8(src_blend, zero);
+    let dst_hi = _mm256_unpackhi_epi8(dst8, zero);
+    let src_orig_hi = _mm256_unpackhi_epi8(src8, zero);
+    let raw_alpha_hi = _mm256_shufflehi_epi16(_mm256_shufflelo_epi16(src_orig_hi, 0xFF), 0xFF);
+    let alpha_hi =
+        _mm256_srli_epi16(_mm256_add_epi16(_mm256_mullo_epi16(raw_alpha_hi, opacity_v), c128), 8);
+
+    let inv_alpha_hi = _mm256_sub_epi16(c255, alpha_hi);
+    let val_hi = _mm256_add_epi16(
+        _mm256_add_epi16(
+            _mm256_mullo_epi16(src_hi, alpha_hi),
+            _mm256_mullo_epi16(dst_hi, inv_alpha_hi),
+        ),
+        c128,
+    );
+    let result_hi = _mm256_srli_epi16(_mm256_add_epi16(val_hi, _mm256_srli_epi16(val_hi, 8)), 8);
+
+    let packed = _mm256_packus_epi16(result_lo, result_hi);
+    let ordered = _mm256_permute4x64_epi64(packed, 0b11_01_10_00);
+    _mm256_storeu_si256(dst_ptr.cast::<__m256i>(), ordered);
+}
+
+// ── SIMD alpha-opaqueness check ─────────────────────────────────────────────
+
+/// Check if all alpha bytes in an RGBA8 row are 0xFF using SSE2.
+///
+/// Processes 4 pixels (16 bytes) per iteration.  Returns `true` if every
+/// pixel's alpha channel is 255.
+///
+/// # Safety
+///
+/// Caller must ensure `row` length is a multiple of 4 bytes (always true
+/// for valid RGBA8 data).
+#[target_feature(enable = "sse2")]
+#[inline]
+pub(super) unsafe fn all_alpha_opaque_sse2(row: &[u8]) -> bool {
+    use std::arch::x86_64::{
+        _mm_and_si128, _mm_cmpeq_epi8, _mm_loadu_si128, _mm_movemask_epi8, _mm_set1_epi32,
+    };
+
+    let alpha_mask = _mm_set1_epi32(0xFF00_0000_u32.cast_signed());
+    let len = row.len();
+    let simd_end = len & !15; // round down to multiple of 16 (4 pixels)
+    let mut i = 0;
+
+    while i < simd_end {
+        let chunk = _mm_loadu_si128(row.as_ptr().add(i).cast());
+        let alpha_bytes = _mm_and_si128(chunk, alpha_mask);
+        // Check that all alpha-position bytes equal 0xFF.
+        // After AND with mask, alpha positions have 0xFF if opaque.
+        // cmpeq + movemask: if all 16 bytes match, mask == 0xFFFF.
+        // But we only care about bytes 3,7,11,15 (alpha positions).
+        // After AND, non-alpha bytes are 0x00; cmpeq with mask will set
+        // those to 0x00 as well.  We want the alpha-position bits of the
+        // movemask: bits 3,7,11,15 = 0x8888.
+        if _mm_movemask_epi8(_mm_cmpeq_epi8(alpha_bytes, alpha_mask)) & 0x8888 != 0x8888 {
+            return false;
+        }
+        i += 16;
+    }
+
+    // Scalar tail.
+    while i + 3 < len {
+        if row[i + 3] != 255 {
+            return false;
+        }
+        i += 4;
+    }
+    true
+}
+
+/// Check if all alpha bytes in an RGBA8 row are 0xFF using AVX2.
+///
+/// Processes 8 pixels (32 bytes) per iteration.
+///
+/// # Safety
+///
+/// Caller must ensure `row` length is a multiple of 4 bytes.
+#[target_feature(enable = "avx2")]
+#[inline]
+pub(super) unsafe fn all_alpha_opaque_avx2(row: &[u8]) -> bool {
+    use std::arch::x86_64::{
+        _mm256_and_si256, _mm256_cmpeq_epi8, _mm256_loadu_si256, _mm256_movemask_epi8,
+        _mm256_set1_epi32,
+    };
+
+    let alpha_mask = _mm256_set1_epi32(0xFF00_0000_u32.cast_signed());
+    let len = row.len();
+    let simd_end = len & !31; // round down to multiple of 32 (8 pixels)
+    let mut i = 0;
+
+    while i < simd_end {
+        let chunk = _mm256_loadu_si256(row.as_ptr().add(i).cast());
+        let alpha_bytes = _mm256_and_si256(chunk, alpha_mask);
+        // Alpha-position bits: bytes 3,7,11,15,19,23,27,31 → mask bits 0x88888888.
+        let cmp_mask = _mm256_movemask_epi8(_mm256_cmpeq_epi8(alpha_bytes, alpha_mask));
+        if cmp_mask & 0x8888_8888_u32.cast_signed() != 0x8888_8888_u32.cast_signed() {
+            return false;
+        }
+        i += 32;
+    }
+
+    // Scalar tail.
+    while i + 3 < len {
+        if row[i + 3] != 255 {
+            return false;
+        }
+        i += 4;
+    }
+    true
+}
+
 // ── SSE2-compatible i32 multiply helper ─────────────────────────────────────
 
 /// SSE2-compatible signed 32-bit multiply (low 32 bits of each lane).
@@ -510,6 +777,145 @@ pub(super) unsafe fn nv12_to_rgba8_row_avx2(
         let uv8 = _mm_loadl_epi64(uv_row.as_ptr().add(chroma_byte).cast());
         let u32x8 = _mm256_cvtepu8_epi32(_mm_shuffle_epi8(uv8, u_shuf));
         let v32x8 = _mm256_cvtepu8_epi32(_mm_shuffle_epi8(uv8, v_shuf));
+
+        let c = _mm256_sub_epi32(y32, bias_16);
+        let d = _mm256_sub_epi32(u32x8, bias_128);
+        let e = _mm256_sub_epi32(v32x8, bias_128);
+
+        let r32 = _mm256_srai_epi32(
+            _mm256_add_epi32(
+                _mm256_add_epi32(
+                    _mm256_mullo_epi32(coeff_298, c),
+                    _mm256_mullo_epi32(coeff_409, e),
+                ),
+                rounding,
+            ),
+            8,
+        );
+
+        let g32 = _mm256_srai_epi32(
+            _mm256_add_epi32(
+                _mm256_add_epi32(
+                    _mm256_add_epi32(
+                        _mm256_mullo_epi32(coeff_298, c),
+                        _mm256_mullo_epi32(coeff_n100, d),
+                    ),
+                    _mm256_mullo_epi32(coeff_n208, e),
+                ),
+                rounding,
+            ),
+            8,
+        );
+
+        let b32 = _mm256_srai_epi32(
+            _mm256_add_epi32(
+                _mm256_add_epi32(
+                    _mm256_mullo_epi32(coeff_298, c),
+                    _mm256_mullo_epi32(coeff_516, d),
+                ),
+                rounding,
+            ),
+            8,
+        );
+
+        // ── Pack + interleave: split into two 4-pixel halves ──────
+        let r_lo = _mm256_castsi256_si128(r32);
+        let r_hi = _mm256_extracti128_si256(r32, 1);
+        let g_lo = _mm256_castsi256_si128(g32);
+        let g_hi = _mm256_extracti128_si256(g32, 1);
+        let b_lo = _mm256_castsi256_si128(b32);
+        let b_hi = _mm256_extracti128_si256(b32, 1);
+
+        // Pixels 0–3
+        let r16 = _mm_packs_epi32(r_lo, zero);
+        let g16 = _mm_packs_epi32(g_lo, zero);
+        let b16 = _mm_packs_epi32(b_lo, zero);
+        let r8 = _mm_packus_epi16(r16, zero);
+        let g8 = _mm_packus_epi16(g16, zero);
+        let b8 = _mm_packus_epi16(b16, zero);
+
+        let rg = _mm_unpacklo_epi8(r8, g8);
+        let ba = _mm_unpacklo_epi8(b8, _mm_set1_epi8(-1));
+        let rgba = _mm_unpacklo_epi16(rg, ba);
+        let rgba = _mm_or_si128(rgba, alpha_mask);
+        _mm_storeu_si128(rgba_out.as_mut_ptr().add(col * 4).cast(), rgba);
+
+        // Pixels 4–7
+        let r16 = _mm_packs_epi32(r_hi, zero);
+        let g16 = _mm_packs_epi32(g_hi, zero);
+        let b16 = _mm_packs_epi32(b_hi, zero);
+        let r8 = _mm_packus_epi16(r16, zero);
+        let g8 = _mm_packus_epi16(g16, zero);
+        let b8 = _mm_packus_epi16(b16, zero);
+
+        let rg = _mm_unpacklo_epi8(r8, g8);
+        let ba = _mm_unpacklo_epi8(b8, _mm_set1_epi8(-1));
+        let rgba = _mm_unpacklo_epi16(rg, ba);
+        let rgba = _mm_or_si128(rgba, alpha_mask);
+        _mm_storeu_si128(rgba_out.as_mut_ptr().add((col + 4) * 4).cast(), rgba);
+
+        col += 8;
+    }
+    simd_width
+}
+
+// ── I420 → RGBA8 AVX2 (8 pixels / iter) ─────────────────────────────────────
+
+/// Convert up to `width` I420 pixels from one row to RGBA8 using AVX2.
+///
+/// Processes 8 pixels per iteration (256-bit registers) — double the
+/// throughput of the SSE4.1 variant.  Same BT.601 math as the NV12 AVX2
+/// variant, but reads U and V from separate planes instead of interleaved.
+///
+/// Returns the number of pixels converted (always a multiple of 8).
+#[target_feature(enable = "avx2")]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::similar_names)]
+pub(super) unsafe fn i420_to_rgba8_row_avx2(
+    y_row: &[u8],
+    u_row: &[u8],
+    v_row: &[u8],
+    rgba_out: &mut [u8],
+    width: usize,
+) -> usize {
+    use std::arch::x86_64::{
+        _mm256_add_epi32, _mm256_castsi256_si128, _mm256_cvtepu8_epi32, _mm256_extracti128_si256,
+        _mm256_mullo_epi32, _mm256_set1_epi32, _mm256_srai_epi32, _mm256_sub_epi32,
+        _mm_loadl_epi64, _mm_or_si128, _mm_packs_epi32, _mm_packus_epi16, _mm_set1_epi32,
+        _mm_set1_epi8, _mm_set_epi8, _mm_setzero_si128, _mm_shuffle_epi8, _mm_storeu_si128,
+        _mm_unpacklo_epi16, _mm_unpacklo_epi8,
+    };
+
+    let simd_width = width & !7; // round down to multiple of 8
+    if simd_width == 0 {
+        return 0;
+    }
+
+    let coeff_298 = _mm256_set1_epi32(298);
+    let coeff_409 = _mm256_set1_epi32(409);
+    let coeff_n100 = _mm256_set1_epi32(-100);
+    let coeff_n208 = _mm256_set1_epi32(-208);
+    let coeff_516 = _mm256_set1_epi32(516);
+    let bias_16 = _mm256_set1_epi32(16);
+    let bias_128 = _mm256_set1_epi32(128);
+    let rounding = _mm256_set1_epi32(128);
+    let alpha_mask = _mm_set1_epi32(0xFF00_0000_u32.cast_signed());
+    let zero = _mm_setzero_si128();
+
+    // Shuffle control to duplicate each byte: [a,b,c,d,...] → [a,a,b,b,c,c,d,d]
+    let dup_shuf = _mm_set_epi8(-1, -1, -1, -1, -1, -1, -1, -1, 3, 3, 2, 2, 1, 1, 0, 0);
+
+    let mut col = 0usize;
+    while col < simd_width {
+        // Load 8 luma samples.
+        let y8 = _mm_loadl_epi64(y_row.as_ptr().add(col).cast());
+        let y32 = _mm256_cvtepu8_epi32(y8);
+
+        // Load 4 U and 4 V chroma samples, duplicate each to pair with 2 luma.
+        let chroma_col = col / 2;
+        let u4 = _mm_loadl_epi64(u_row.as_ptr().add(chroma_col).cast());
+        let v4 = _mm_loadl_epi64(v_row.as_ptr().add(chroma_col).cast());
+        let u32x8 = _mm256_cvtepu8_epi32(_mm_shuffle_epi8(u4, dup_shuf));
+        let v32x8 = _mm256_cvtepu8_epi32(_mm_shuffle_epi8(v4, dup_shuf));
 
         let c = _mm256_sub_epi32(y32, bias_16);
         let d = _mm256_sub_epi32(u32x8, bias_128);

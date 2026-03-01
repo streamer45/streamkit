@@ -142,6 +142,8 @@ pub fn i420_to_rgba8_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     let rgba_row_stride = w * 4;
 
     #[cfg(target_arch = "x86_64")]
+    let use_avx2 = is_x86_feature_detected!("avx2");
+    #[cfg(target_arch = "x86_64")]
     let use_sse41 = is_x86_feature_detected!("sse4.1");
     #[cfg(target_arch = "x86_64")]
     let use_sse2 = is_x86_feature_detected!("sse2");
@@ -156,7 +158,29 @@ pub fn i420_to_rgba8_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
 
         #[cfg(target_arch = "x86_64")]
         {
-            if use_sse41 {
+            if use_avx2 {
+                start_col = unsafe {
+                    simd::i420_to_rgba8_row_avx2(
+                        &data[y_base..y_base + w],
+                        &data[u_base..u_base + chroma_w],
+                        &data[v_base..v_base + chroma_w],
+                        rgba_row,
+                        w,
+                    )
+                };
+                if start_col < w && use_sse41 {
+                    let tail = unsafe {
+                        simd::i420_to_rgba8_row_sse41(
+                            &data[y_base + start_col..y_base + w],
+                            &data[u_base + start_col / 2..u_base + chroma_w],
+                            &data[v_base + start_col / 2..v_base + chroma_w],
+                            &mut rgba_row[start_col * 4..],
+                            w - start_col,
+                        )
+                    };
+                    start_col += tail;
+                }
+            } else if use_sse41 {
                 start_col = unsafe {
                     simd::i420_to_rgba8_row_sse41(
                         &data[y_base..y_base + w],
