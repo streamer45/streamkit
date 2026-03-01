@@ -351,7 +351,7 @@ const OverlayEditRow = styled.div`
   font-size: 10px;
 `;
 
-const OverlayTextInput = styled.input`
+const OverlayTextInput = styled.textarea`
   flex: 1;
   padding: 2px 4px;
   font-size: 11px;
@@ -362,6 +362,13 @@ const OverlayTextInput = styled.input`
   outline: none;
   min-width: 0;
   pointer-events: auto;
+  resize: vertical;
+  min-height: 22px;
+  max-height: 80px;
+  font-family: inherit;
+  line-height: 1.3;
+  white-space: pre-wrap;
+  word-break: break-word;
 
   &:focus {
     border-color: var(--sk-primary);
@@ -847,10 +854,13 @@ const UnifiedLayerList: React.FC<{
           </LayerListItem>
         ))}
 
+        {/* Issue #6: visual separator between layer list and per-layer controls */}
         {/* Controls for the selected video layer */}
         {selectedLayer && (
           <>
-            <LayerInfoRow style={{ marginTop: 4 }}>
+            <LayerInfoRow
+              style={{ marginTop: 4, paddingTop: 6, borderTop: '1px solid var(--sk-border)' }}
+            >
               <LayerName>{selectedLayer.id}</LayerName>
               <LayerPosition>
                 ({Math.round(selectedLayer.x)}, {Math.round(selectedLayer.y)})
@@ -934,9 +944,12 @@ const UnifiedLayerList: React.FC<{
         )}
 
         {/* Controls for the selected text overlay */}
+        {/* Issue #6: visual separator + Issue #7: opacity/rotation sliders for text */}
         {selectedTextOverlay && (
           <>
-            <LayerInfoRow style={{ marginTop: 4 }}>
+            <LayerInfoRow
+              style={{ marginTop: 4, paddingTop: 6, borderTop: '1px solid var(--sk-border)' }}
+            >
               <LayerName>Text</LayerName>
               <LayerPosition>
                 ({Math.round(selectedTextOverlay.x)}, {Math.round(selectedTextOverlay.y)})
@@ -964,24 +977,47 @@ const UnifiedLayerList: React.FC<{
                 disabled={disabled}
                 className="nodrag nopan"
               />
-              <span style={{ color: 'var(--sk-text-muted)' }}>Opacity</span>
-              <OverlayNumInput
-                type="number"
+            </OverlayEditRow>
+
+            {/* Issue #7: opacity slider for text layers (same as video layers) */}
+            <ControlRow>
+              <ControlLabel>Opacity</ControlLabel>
+              <SliderInput
+                type="range"
                 min="0"
                 max="1"
-                step="0.1"
+                step="0.01"
                 value={selectedTextOverlay.opacity}
-                onChange={(e) => {
-                  const v = Number.parseFloat(e.target.value);
-                  if (!Number.isNaN(v))
-                    onUpdateText(selectedTextOverlay.id, {
-                      opacity: Math.max(0, Math.min(1, v)),
-                    });
-                }}
+                onChange={(e) =>
+                  onUpdateText(selectedTextOverlay.id, {
+                    opacity: Number.parseFloat(e.target.value),
+                  })
+                }
                 disabled={disabled}
                 className="nodrag nopan"
               />
-            </OverlayEditRow>
+              <ControlValue>{(selectedTextOverlay.opacity * 100).toFixed(0)}%</ControlValue>
+            </ControlRow>
+
+            {/* Issue #7: rotation slider for text layers (same as video layers) */}
+            <ControlRow>
+              <ControlLabel>Rotation</ControlLabel>
+              <SliderInput
+                type="range"
+                min="-180"
+                max="180"
+                step="1"
+                value={selectedTextOverlay.rotationDegrees}
+                onChange={(e) =>
+                  onUpdateText(selectedTextOverlay.id, {
+                    rotationDegrees: Number.parseFloat(e.target.value),
+                  })
+                }
+                disabled={disabled}
+                className="nodrag nopan"
+              />
+              <ControlValue>{selectedTextOverlay.rotationDegrees.toFixed(0)}&deg;</ControlValue>
+            </ControlRow>
           </>
         )}
       </LayerControls>

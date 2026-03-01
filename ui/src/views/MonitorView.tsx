@@ -78,6 +78,7 @@ import {
   ESTIMATED_HEIGHT_BY_KIND,
 } from '@/utils/layoutConstants';
 import { viewsLogger } from '@/utils/logger';
+import { updateUrlPath } from '@/utils/moqPeerSettings';
 import { validatePipeline } from '@/utils/pipelineValidation';
 import { nodeTypes, defaultEdgeOptions } from '@/utils/reactFlowDefaults';
 import { collectNodeHeights } from '@/utils/reactFlowInstance';
@@ -1806,8 +1807,12 @@ const MonitorViewContent: React.FC = () => {
   const previewSetEnablePublish = useStreamStore((s) => s.setEnablePublish);
   const previewSetEnableWatch = useStreamStore((s) => s.setEnableWatch);
   const previewConfigLoaded = useStreamStore((s) => s.configLoaded);
+  const previewSetServerUrl = useStreamStore((s) => s.setServerUrl);
+  const previewSetOutputBroadcast = useStreamStore((s) => s.setOutputBroadcast);
   const isPreviewConnected = previewStatus === 'connected';
 
+  // Issue #3 fix: extract MoQ peer settings from the selected session's pipeline
+  // so preview connects to the correct gateway path and output broadcast.
   const handleStartPreview = useCallback(async () => {
     // Configure for watch-only mode (no publish/mic)
     previewSetEnablePublish(false);
@@ -1815,6 +1820,24 @@ const MonitorViewContent: React.FC = () => {
     if (!previewConfigLoaded) {
       await previewLoadConfig();
     }
+
+    // Extract gateway_path and output_broadcast from the pipeline's moq_peer node
+    const moqNode = pipeline
+      ? Object.values(pipeline.nodes).find((n) => n.kind === 'transport::moq::peer' && n.params)
+      : undefined;
+    if (moqNode?.params) {
+      const params = moqNode.params as Record<string, unknown>;
+      const gatewayPath = params.gateway_path as string | undefined;
+      const outputBroadcast = params.output_broadcast as string | undefined;
+      const currentUrl = useStreamStore.getState().serverUrl;
+      if (gatewayPath && currentUrl) {
+        previewSetServerUrl(updateUrlPath(currentUrl, gatewayPath));
+      }
+      if (outputBroadcast) {
+        previewSetOutputBroadcast(outputBroadcast);
+      }
+    }
+
     await previewConnect();
   }, [
     previewSetEnablePublish,
@@ -1822,6 +1845,9 @@ const MonitorViewContent: React.FC = () => {
     previewConfigLoaded,
     previewLoadConfig,
     previewConnect,
+    pipeline,
+    previewSetServerUrl,
+    previewSetOutputBroadcast,
   ]);
 
   // Handle entering staging mode
