@@ -38,6 +38,7 @@ use std::time::Instant;
 
 use streamkit_core::frame_pool::PooledVideoData;
 use streamkit_core::types::PixelFormat;
+use streamkit_core::VideoFramePool;
 
 // Re-use the compositor kernel and pixel_ops directly.
 use streamkit_nodes::video::compositor::config::Rect;
@@ -170,7 +171,10 @@ fn generate_nv12_frame(width: u32, height: u32) -> Vec<u8> {
 /// Call the real `composite_frame` kernel for `frame_count` iterations,
 /// returning per-frame timing statistics.  This exercises all kernel
 /// optimizations: conversion cache, skip-canvas-clear, identity-scale
-/// fast-path, precomputed x-map, etc.
+/// fast-path, precomputed x-map, SSE2 blend, etc.
+///
+/// Uses a real `VideoFramePool` to match production behaviour (pooled buffer
+/// reuse instead of per-frame heap allocation).
 fn bench_composite(
     _label: &str,
     canvas_w: u32,
@@ -180,6 +184,7 @@ fn bench_composite(
 ) -> BenchResult {
     let empty_overlays: Vec<Arc<DecodedOverlay>> = Vec::new();
     let mut conversion_cache = ConversionCache::new();
+    let pool = VideoFramePool::video_default();
 
     let start = Instant::now();
 
@@ -190,7 +195,7 @@ fn bench_composite(
             layers,
             &empty_overlays,
             &empty_overlays,
-            None,
+            Some(&pool),
             &mut conversion_cache,
         );
     }

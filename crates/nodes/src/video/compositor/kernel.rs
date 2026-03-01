@@ -37,13 +37,42 @@ struct CachedConversion {
 ///
 /// Avoids redundant per-frame I420/NV12 → RGBA8 conversion when the source
 /// `Arc<PooledVideoData>` hasn't changed since the previous frame.
+///
+/// Also caches the first-layer alpha-scan result so that the canvas-clear
+/// skip check doesn't re-scan every frame when the source hasn't changed.
 pub struct ConversionCache {
     entries: Vec<Option<CachedConversion>>,
+    /// Cached result of the alpha-opaqueness scan for the first visible layer.
+    /// `(data_identity, all_opaque)` — valid when the `Arc` pointer matches.
+    first_layer_alpha_cache: Option<(usize, bool)>,
 }
 
 impl ConversionCache {
     pub const fn new() -> Self {
-        Self { entries: Vec::new() }
+        Self { entries: Vec::new(), first_layer_alpha_cache: None }
+    }
+
+    /// Check whether the first visible layer's source data is fully opaque.
+    ///
+    /// For I420/NV12 layers, the converted RGBA always has alpha == 255, so
+    /// we return `true` immediately without scanning.  For RGBA layers we
+    /// scan once and cache the result keyed by `Arc::as_ptr`.
+    fn first_layer_all_opaque(&mut self, layer: &LayerSnapshot, rgba_data: &[u8]) -> bool {
+        // I420/NV12 → RGBA conversion always writes alpha = 255.
+        if layer.pixel_format != PixelFormat::Rgba8 {
+            return true;
+        }
+
+        let identity = Arc::as_ptr(&layer.data) as usize;
+        if let Some((cached_id, cached_result)) = self.first_layer_alpha_cache {
+            if cached_id == identity {
+                return cached_result;
+            }
+        }
+
+        let all_opaque = rgba_data.chunks_exact(4).all(|px| px[3] == 255);
+        self.first_layer_alpha_cache = Some((identity, all_opaque));
+        all_opaque
     }
 
     /// Return a previously-cached RGBA slice for `slot_idx`.
@@ -115,50 +144,6 @@ impl ConversionCache {
         let needed = layer.width as usize * layer.height as usize * 4;
         &cached.rgba[..needed]
     }
-}
-
-/// Returns `true` if the first visible layer is fully opaque (both layer
-/// opacity *and* source pixel alpha), unrotated, and covers the entire
-/// canvas — meaning the canvas clear can be skipped.
-///
-/// `first_src_data` is the RGBA8 source buffer for the first layer (after
-/// any YUV→RGBA conversion).  We check that every pixel in the region that
-/// will be blitted has `alpha == 255`; if any pixel is semi-transparent the
-/// clear cannot be skipped because the blit would blend with uninitialised
-/// (or stale pooled) canvas bytes.
-fn first_layer_covers_canvas(
-    layers: &[Option<LayerSnapshot>],
-    canvas_w: u32,
-    canvas_h: u32,
-    first_src_data: Option<&[u8]>,
-) -> bool {
-    let Some(first) = layers.iter().flatten().next() else {
-        return false;
-    };
-
-    if first.opacity < 1.0 || first.rotation_degrees.abs() >= 0.01 {
-        return false;
-    }
-
-    // Check if the layer fully covers the canvas.
-    // A layer with no rect fills the entire canvas by default.
-    let covers = first.rect.as_ref().map_or(true, |r| {
-        r.x <= 0
-            && r.y <= 0
-            && i64::from(r.width) + i64::from(r.x) >= i64::from(canvas_w)
-            && i64::from(r.height) + i64::from(r.y) >= i64::from(canvas_h)
-    });
-    if !covers {
-        return false;
-    }
-
-    // Verify that *all* source pixels are fully opaque (alpha == 255).
-    // Without this check, semi-transparent source pixels would blend with
-    // uninitialised canvas bytes when the clear is skipped.
-    let Some(src) = first_src_data else {
-        return false;
-    };
-    src.chunks_exact(4).all(|px| px[3] == 255)
 }
 
 /// Snapshot of one input layer's data for the blocking compositor thread.
@@ -234,6 +219,41 @@ pub fn composite_frame(
         }
     }
 
+    // Between pass 1 and pass 2: check whether the first layer allows
+    // skipping the canvas clear.  We do the alpha-opaqueness check here
+    // while `conversion_cache` is still mutably available.  The result
+    // is a simple bool so no borrows leak into pass 2.
+    let skip_clear = layers
+        .iter()
+        .enumerate()
+        .find_map(|(i, e)| e.as_ref().map(|l| (i, l)))
+        .map_or(false, |(_slot_idx, layer)| {
+            // Quick checks that don't need the pixel data.
+            if layer.opacity < 1.0 || layer.rotation_degrees.abs() >= 0.01 {
+                return false;
+            }
+            let covers = layer.rect.as_ref().map_or(true, |r| {
+                r.x <= 0
+                    && r.y <= 0
+                    && i64::from(r.width) + i64::from(r.x) >= i64::from(canvas_w)
+                    && i64::from(r.height) + i64::from(r.y) >= i64::from(canvas_h)
+            });
+            if !covers {
+                return false;
+            }
+            // Alpha check — needs mutable access to conversion_cache.
+            match layer.pixel_format {
+                // I420/NV12 → RGBA conversion always writes alpha = 255.
+                PixelFormat::I420 | PixelFormat::Nv12 => true,
+                PixelFormat::Rgba8 => {
+                    conversion_cache.first_layer_all_opaque(layer, layer.data.as_slice())
+                },
+            }
+        });
+    if !skip_clear {
+        buf[..total_bytes].fill(0);
+    }
+
     // Pass 2: build resolved references.  The mutable borrow of
     // `conversion_cache` from pass 1 is released, so we can now take
     // shared references into the cache alongside references into `layers`.
@@ -254,13 +274,6 @@ pub fn composite_frame(
             })
         })
         .collect();
-
-    // Now that we have the first layer's resolved RGBA data, check whether
-    // the canvas clear can be skipped.
-    let first_src = resolved.iter().flatten().next().map(|(_, d)| *d);
-    if !first_layer_covers_canvas(layers, canvas_w, canvas_h, first_src) {
-        buf[..total_bytes].fill(0);
-    }
 
     // Blit each layer (in order — first layer is bottom, last is top).
     for (layer, src_data) in resolved.iter().flatten() {

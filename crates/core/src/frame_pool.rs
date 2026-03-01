@@ -139,6 +139,11 @@ impl<T: Clone + Default> FramePool<T> {
     /// Get pooled storage for at least `min_len` elements.
     ///
     /// If `min_len` doesn't fit in any bucket, returns a non-pooled buffer of exact size.
+    ///
+    /// On the first miss for a given bucket (cold start), an extra buffer is
+    /// allocated and placed into the pool so that the *next* `get()` at the
+    /// same size is a hit.  This amortises cold-start allocation cost without
+    /// pre-allocating every bucket size up front.
     pub fn get(&self, min_len: usize) -> PooledFrameData<T> {
         let (handle, bucket_idx, bucket_size, maybe_buf) = {
             let Ok(mut guard) = self.inner.lock() else {
@@ -154,6 +159,12 @@ impl<T: Clone + Default> FramePool<T> {
                 guard.hits += 1;
             } else {
                 guard.misses += 1;
+                // Lazy preallocate: on first miss for this bucket, seed the
+                // pool with one extra buffer so subsequent gets are hits.
+                if guard.buckets[bucket_idx].is_empty() && guard.buckets[bucket_idx].capacity() == 0
+                {
+                    guard.buckets[bucket_idx].push(vec![T::default(); bucket_size]);
+                }
             }
             (self.handle(), bucket_idx, bucket_size, buf)
         };
