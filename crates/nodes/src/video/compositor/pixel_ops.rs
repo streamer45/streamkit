@@ -915,11 +915,7 @@ pub fn scale_blit_rgba_rotated(
                                     if opacity_u16 >= 256 {
                                         blend_4px_over_sse2(dst_ptr, src_pixels);
                                     } else {
-                                        blend_4px_over_alpha_sse2(
-                                            dst_ptr,
-                                            src_pixels,
-                                            opacity_u16,
-                                        );
+                                        blend_4px_over_alpha_sse2(dst_ptr, src_pixels, opacity_u16);
                                     }
                                 }
                             }
