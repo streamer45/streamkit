@@ -55,6 +55,7 @@ import {
   type StagedChange,
   type ValidationError,
 } from '@/stores/stagingStore';
+import { useStreamStore } from '@/stores/streamStore';
 import type {
   NodeDefinition,
   Connection,
@@ -918,6 +919,8 @@ interface TopControlsProps {
   onDiscard: () => void;
   onEnterStaging: () => void;
   onDelete: () => void;
+  onStartPreview: () => void;
+  isPreviewConnected: boolean;
 }
 
 /**
@@ -941,6 +944,8 @@ const areTopControlPropsEqual = (
   if (prevProps.onDiscard !== nextProps.onDiscard) return false;
   if (prevProps.onEnterStaging !== nextProps.onEnterStaging) return false;
   if (prevProps.onDelete !== nextProps.onDelete) return false;
+  if (prevProps.onStartPreview !== nextProps.onStartPreview) return false;
+  if (prevProps.isPreviewConnected !== nextProps.isPreviewConnected) return false;
 
   // Compare changes array length and validation errors
   const prevChanges = prevProps.stagingData?.changes ?? [];
@@ -966,6 +971,8 @@ const TopControls = React.memo(
     onDiscard,
     onEnterStaging,
     onDelete,
+    onStartPreview,
+    isPreviewConnected,
   }: TopControlsProps) => {
     // Only extract the fields we need to minimize re-renders
     const changes = stagingData?.changes ?? [];
@@ -973,7 +980,16 @@ const TopControls = React.memo(
 
     return (
       <TopRightControls>
-        <ConnectionStatus connected={isConnected} />
+        <ButtonGroup>
+          <ConnectionStatus connected={isConnected} />
+          {selectedSessionId && !isPreviewConnected && (
+            <SKTooltip content="Connect to MoQ gateway and start watching the output preview">
+              <Button variant="ghost" size="small" onClick={onStartPreview}>
+                Preview
+              </Button>
+            </SKTooltip>
+          )}
+        </ButtonGroup>
         {selectedSessionId && (
           <ButtonGroup>
             {isInStagingMode && stagingData && (
@@ -1782,6 +1798,31 @@ const MonitorViewContent: React.FC = () => {
 
   // Use session-specific connection status if a session is selected, otherwise use global
   const isConnected = selectedSessionId ? sessionIsConnected : globalIsConnected;
+
+  // Preview: stream store for watch-only MoQ connection from Monitor view
+  const previewStatus = useStreamStore((s) => s.status);
+  const previewLoadConfig = useStreamStore((s) => s.loadConfig);
+  const previewConnect = useStreamStore((s) => s.connect);
+  const previewSetEnablePublish = useStreamStore((s) => s.setEnablePublish);
+  const previewSetEnableWatch = useStreamStore((s) => s.setEnableWatch);
+  const previewConfigLoaded = useStreamStore((s) => s.configLoaded);
+  const isPreviewConnected = previewStatus === 'connected';
+
+  const handleStartPreview = useCallback(async () => {
+    // Configure for watch-only mode (no publish/mic)
+    previewSetEnablePublish(false);
+    previewSetEnableWatch(true);
+    if (!previewConfigLoaded) {
+      await previewLoadConfig();
+    }
+    await previewConnect();
+  }, [
+    previewSetEnablePublish,
+    previewSetEnableWatch,
+    previewConfigLoaded,
+    previewLoadConfig,
+    previewConnect,
+  ]);
 
   // Handle entering staging mode
   // Use ref to avoid recreating callback when pipeline changes
@@ -3305,6 +3346,8 @@ const MonitorViewContent: React.FC = () => {
             onDiscard={handleDiscardChanges}
             onEnterStaging={handleEnterStagingMode}
             onDelete={handleDeleteModalOpen}
+            onStartPreview={handleStartPreview}
+            isPreviewConnected={isPreviewConnected}
           />
         </CanvasTopBar>
         {selectedSessionId && nodes.length > 0 ? (
@@ -3353,7 +3396,7 @@ const MonitorViewContent: React.FC = () => {
             )}
           </EmptyMonitorState>
         )}
-        <OutputPreviewPanel hasSession={selectedSessionId != null} />
+        <OutputPreviewPanel hasSession={selectedSessionId != null} conditionalRender />
       </CenterPanelContainer>
     ),
     // Intentional sparse dependencies for performance optimization:
@@ -3374,6 +3417,8 @@ const MonitorViewContent: React.FC = () => {
       onInit,
       editMode,
       isLoadingPipeline,
+      handleStartPreview,
+      isPreviewConnected,
     ]
   );
 
