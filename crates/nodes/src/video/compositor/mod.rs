@@ -1285,7 +1285,9 @@ mod tests {
         }
 
         // Convert using the public function (SIMD internally).
-        let i420_out = pixel_ops::rgba8_to_i420(&rgba_data, width, 1);
+        let i420_size = width as usize + 2 * (width as usize).div_ceil(2);
+        let mut i420_out = vec![0u8; i420_size];
+        pixel_ops::rgba8_to_i420_buf(&rgba_data, width, 1, &mut i420_out);
 
         // Check Y plane matches scalar.
         for (i, &(r, g, b)) in test_pixels.iter().enumerate() {
