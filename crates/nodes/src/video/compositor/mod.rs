@@ -1021,10 +1021,14 @@ mod tests {
     fn test_rasterize_text_overlay_produces_pixels() {
         let cfg = config::TextOverlayConfig {
             text: "Hi".to_string(),
-            rect: Rect { x: 0, y: 0, width: 64, height: 32 },
+            transform: config::OverlayTransform {
+                rect: Rect { x: 0, y: 0, width: 64, height: 32 },
+                opacity: 1.0,
+                rotation_degrees: 0.0,
+                z_index: 0,
+            },
             color: [255, 255, 0, 255],
             font_size: 24,
-            opacity: 1.0,
             font_path: None,
             font_data_base64: None,
         };

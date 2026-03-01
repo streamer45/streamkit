@@ -13,9 +13,7 @@ use streamkit_core::types::PixelFormat;
 
 use super::config::Rect;
 use super::overlay::DecodedOverlay;
-use super::pixel_ops::{
-    blit_overlay, i420_to_rgba8_buf, nv12_to_rgba8_buf, scale_blit_rgba_rotated,
-};
+use super::pixel_ops::{i420_to_rgba8_buf, nv12_to_rgba8_buf, scale_blit_rgba_rotated};
 
 // ── Compositing kernel (runs on a persistent blocking thread) ────────────────
 
@@ -182,6 +180,19 @@ pub struct CompositeResult {
     pub rgba_data: streamkit_core::frame_pool::PooledVideoData,
 }
 
+/// A resolved, ready-to-blit item.  Unifies video layers and decoded
+/// overlays into a single type for the z-sorted compositing loop.
+struct BlitItem<'a> {
+    src_data: &'a [u8],
+    src_width: u32,
+    src_height: u32,
+    dst_rect: Rect,
+    opacity: f32,
+    rotation_degrees: f32,
+    /// `(z_index, insertion_order)` for stable sorting.
+    sort_key: (i32, usize),
+}
+
 /// Composite all layers + overlays onto a fresh RGBA8 canvas buffer.
 /// Allocates from the video pool if available.
 ///
@@ -275,32 +286,76 @@ pub fn composite_frame(
         })
         .collect();
 
-    // Blit each layer (in order — first layer is bottom, last is top).
+    // ── Unified z-sorted blit ─────────────────────────────────────────────
+    //
+    // Collect all blittable items (video layers + image/text overlays) into
+    // a single list, sort by (z_index, insertion_order), then blit in order.
+    // This replaces the former three separate loops and allows overlays to
+    // be interleaved with video layers via z_index.
+
+    let mut items: Vec<BlitItem<'_>> = Vec::new();
+    let mut insertion_order: usize = 0;
+
+    // Video layers.
     for (layer, src_data) in resolved.iter().flatten() {
         let dst_rect =
             layer.rect.clone().unwrap_or(Rect { x: 0, y: 0, width: canvas_w, height: canvas_h });
+        items.push(BlitItem {
+            src_data,
+            src_width: layer.width,
+            src_height: layer.height,
+            dst_rect,
+            opacity: layer.opacity,
+            rotation_degrees: layer.rotation_degrees,
+            sort_key: (layer.z_index, insertion_order),
+        });
+        insertion_order += 1;
+    }
 
+    // Image overlays.
+    for ov in image_overlays {
+        items.push(BlitItem {
+            src_data: &ov.rgba_data,
+            src_width: ov.width,
+            src_height: ov.height,
+            dst_rect: ov.rect.clone(),
+            opacity: ov.opacity,
+            rotation_degrees: ov.rotation_degrees,
+            sort_key: (ov.z_index, insertion_order),
+        });
+        insertion_order += 1;
+    }
+
+    // Text overlays.
+    for ov in text_overlays {
+        items.push(BlitItem {
+            src_data: &ov.rgba_data,
+            src_width: ov.width,
+            src_height: ov.height,
+            dst_rect: ov.rect.clone(),
+            opacity: ov.opacity,
+            rotation_degrees: ov.rotation_degrees,
+            sort_key: (ov.z_index, insertion_order),
+        });
+        insertion_order += 1;
+    }
+
+    // Stable sort: lower z_index drawn first (bottom), ties broken by
+    // insertion order (video layers first, then image, then text).
+    items.sort_by_key(|item| item.sort_key);
+
+    for item in &items {
         scale_blit_rgba_rotated(
             buf,
             canvas_w,
             canvas_h,
-            src_data,
-            layer.width,
-            layer.height,
-            &dst_rect,
-            layer.opacity,
-            layer.rotation_degrees,
+            item.src_data,
+            item.src_width,
+            item.src_height,
+            &item.dst_rect,
+            item.opacity,
+            item.rotation_degrees,
         );
-    }
-
-    // Blit image overlays.
-    for ov in image_overlays {
-        blit_overlay(buf, canvas_w, canvas_h, ov);
-    }
-
-    // Blit text overlays.
-    for ov in text_overlays {
-        blit_overlay(buf, canvas_w, canvas_h, ov);
     }
 
     pooled

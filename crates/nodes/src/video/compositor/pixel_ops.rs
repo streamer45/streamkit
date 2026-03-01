@@ -12,7 +12,6 @@
 //! threshold the same per-row closures run sequentially.
 
 use super::config::Rect;
-use super::overlay::DecodedOverlay;
 
 /// Minimum number of output rows before we dispatch to rayon.  Below this
 /// threshold the per-row work is small enough that the rayon scheduling
@@ -619,21 +618,6 @@ fn blit_row_alpha(
     }
 }
 
-/// Blit a pre-decoded overlay onto the canvas (full alpha blend at the
-/// overlay's configured opacity).
-pub fn blit_overlay(canvas: &mut [u8], canvas_w: u32, canvas_h: u32, overlay: &DecodedOverlay) {
-    scale_blit_rgba(
-        canvas,
-        canvas_w,
-        canvas_h,
-        &overlay.rgba_data,
-        overlay.width,
-        overlay.height,
-        &overlay.rect,
-        overlay.opacity,
-    );
-}
-
 // ── Rotated blitting ────────────────────────────────────────────────────────
 
 /// Scale and blit a source RGBA8 buffer onto a destination RGBA8 buffer at the
@@ -877,45 +861,147 @@ pub fn scale_blit_rgba_rotated(
                 // min_dist stays >= 1.0 for all skipped pixels.
                 let skip = ((min_dist - 1.0).floor() as i32).min(bb_x1 - px - 1);
                 if skip > 0 {
-                    // Advance stepper and process interior pixels.
-                    for _ in 0..skip {
-                        local_x += cos_a;
-                        local_y -= sin_a;
-                        px += 1;
+                    let skip_u = skip as usize;
 
-                        // Source lookup (incremental local coords).
-                        let isx = (((local_x + half_cw) * inv_fit_scale) as usize).min(sw - 1);
-                        let isy = (((local_y + half_ch) * inv_fit_scale) as usize).min(sh - 1);
-                        let si = (isy * sw + isx) * 4;
-                        if si + 3 >= src.len() {
-                            continue;
-                        }
-
-                        let ir = src[si];
-                        let ig = src[si + 1];
-                        let ib = src[si + 2];
-                        let mut ia = src[si + 3];
-
-                        if opacity_u16 < 256 {
-                            ia = ((u16::from(ia) * opacity_u16 + 128) >> 8).min(255) as u8;
-                        }
-                        // No edge coverage — interior pixel.
-                        if ia > 0 {
-                            let doff = px as usize * 4;
-                            if doff + 3 < row_slice.len() {
-                                if ia == 255 {
-                                    row_slice[doff] = ir;
-                                    row_slice[doff + 1] = ig;
-                                    row_slice[doff + 2] = ib;
-                                    row_slice[doff + 3] = 255;
+                    // ── SSE2 batched path: process 4 interior pixels at a time ──
+                    #[cfg(target_arch = "x86_64")]
+                    {
+                        let mut done = 0usize;
+                        // Process groups of 4 pixels with SIMD blending.
+                        while done + 4 <= skip_u {
+                            // Gather 4 source pixels into a u32 array for the
+                            // existing SSE2 blend helpers.
+                            let mut src_pixels = [0u32; 4];
+                            let mut all_valid = true;
+                            for sp in &mut src_pixels {
+                                local_x += cos_a;
+                                local_y -= sin_a;
+                                let isx =
+                                    (((local_x + half_cw) * inv_fit_scale) as usize).min(sw - 1);
+                                let isy =
+                                    (((local_y + half_ch) * inv_fit_scale) as usize).min(sh - 1);
+                                let si = (isy * sw + isx) * 4;
+                                if si + 3 < src.len() {
+                                    // SAFETY: bounds checked above.
+                                    *sp = unsafe { read_rgba_u32(src, si) };
                                 } else {
-                                    let a16 = u16::from(ia);
-                                    row_slice[doff] = blend_u8(ir, row_slice[doff], a16);
-                                    row_slice[doff + 1] = blend_u8(ig, row_slice[doff + 1], a16);
-                                    row_slice[doff + 2] = blend_u8(ib, row_slice[doff + 2], a16);
-                                    let da = u16::from(row_slice[doff + 3]);
-                                    row_slice[doff + 3] =
-                                        (a16 + ((da * (255 - a16) + 128) >> 8)).min(255) as u8;
+                                    all_valid = false;
+                                    break;
+                                }
+                            }
+
+                            if all_valid {
+                                let dst_off = (px as usize + done + 1) * 4;
+                                if dst_off + 15 < row_slice.len() {
+                                    // SAFETY: blend helpers require 16 writable
+                                    // bytes at dst_ptr; bounds checked above.
+                                    // SSE2 is always available on x86_64.
+                                    unsafe {
+                                        let dst_ptr = row_slice.as_mut_ptr().add(dst_off);
+                                        if opacity_u16 >= 256 {
+                                            blend_4px_over_sse2(dst_ptr, src_pixels);
+                                        } else {
+                                            blend_4px_over_alpha_sse2(
+                                                dst_ptr,
+                                                src_pixels,
+                                                opacity_u16,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+
+                            px += 4;
+                            done += 4;
+                        }
+
+                        // Scalar remainder for leftover pixels (0..3).
+                        for _ in done..skip_u {
+                            local_x += cos_a;
+                            local_y -= sin_a;
+                            px += 1;
+
+                            let isx = (((local_x + half_cw) * inv_fit_scale) as usize).min(sw - 1);
+                            let isy = (((local_y + half_ch) * inv_fit_scale) as usize).min(sh - 1);
+                            let si = (isy * sw + isx) * 4;
+                            if si + 3 >= src.len() {
+                                continue;
+                            }
+
+                            let ir = src[si];
+                            let ig = src[si + 1];
+                            let ib = src[si + 2];
+                            let mut ia = src[si + 3];
+
+                            if opacity_u16 < 256 {
+                                ia = ((u16::from(ia) * opacity_u16 + 128) >> 8).min(255) as u8;
+                            }
+                            if ia > 0 {
+                                let doff = px as usize * 4;
+                                if doff + 3 < row_slice.len() {
+                                    if ia == 255 {
+                                        row_slice[doff] = ir;
+                                        row_slice[doff + 1] = ig;
+                                        row_slice[doff + 2] = ib;
+                                        row_slice[doff + 3] = 255;
+                                    } else {
+                                        let a16 = u16::from(ia);
+                                        row_slice[doff] = blend_u8(ir, row_slice[doff], a16);
+                                        row_slice[doff + 1] =
+                                            blend_u8(ig, row_slice[doff + 1], a16);
+                                        row_slice[doff + 2] =
+                                            blend_u8(ib, row_slice[doff + 2], a16);
+                                        let da = u16::from(row_slice[doff + 3]);
+                                        row_slice[doff + 3] =
+                                            (a16 + ((da * (255 - a16) + 128) >> 8)).min(255) as u8;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Non-x86_64 fallback: scalar loop ──
+                    #[cfg(not(target_arch = "x86_64"))]
+                    {
+                        for _ in 0..skip_u {
+                            local_x += cos_a;
+                            local_y -= sin_a;
+                            px += 1;
+
+                            let isx = (((local_x + half_cw) * inv_fit_scale) as usize).min(sw - 1);
+                            let isy = (((local_y + half_ch) * inv_fit_scale) as usize).min(sh - 1);
+                            let si = (isy * sw + isx) * 4;
+                            if si + 3 >= src.len() {
+                                continue;
+                            }
+
+                            let ir = src[si];
+                            let ig = src[si + 1];
+                            let ib = src[si + 2];
+                            let mut ia = src[si + 3];
+
+                            if opacity_u16 < 256 {
+                                ia = ((u16::from(ia) * opacity_u16 + 128) >> 8).min(255) as u8;
+                            }
+                            if ia > 0 {
+                                let doff = px as usize * 4;
+                                if doff + 3 < row_slice.len() {
+                                    if ia == 255 {
+                                        row_slice[doff] = ir;
+                                        row_slice[doff + 1] = ig;
+                                        row_slice[doff + 2] = ib;
+                                        row_slice[doff + 3] = 255;
+                                    } else {
+                                        let a16 = u16::from(ia);
+                                        row_slice[doff] = blend_u8(ir, row_slice[doff], a16);
+                                        row_slice[doff + 1] =
+                                            blend_u8(ig, row_slice[doff + 1], a16);
+                                        row_slice[doff + 2] =
+                                            blend_u8(ib, row_slice[doff + 2], a16);
+                                        let da = u16::from(row_slice[doff + 3]);
+                                        row_slice[doff + 3] =
+                                            (a16 + ((da * (255 - a16) + 128) >> 8)).min(255) as u8;
+                                    }
                                 }
                             }
                         }

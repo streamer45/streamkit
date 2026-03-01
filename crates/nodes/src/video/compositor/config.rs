@@ -30,17 +30,46 @@ pub struct Rect {
     pub height: u32,
 }
 
+/// Common spatial and visual properties shared by all overlay types.
+///
+/// Flattened into each overlay config via `#[serde(flatten)]` so the JSON
+/// shape stays identical (fields remain at the top level).
+#[derive(Deserialize, Debug, Clone, JsonSchema)]
+pub struct OverlayTransform {
+    /// Destination rectangle on the output canvas.
+    pub rect: Rect,
+    /// Opacity multiplier (0.0 = fully transparent, 1.0 = fully opaque).
+    #[serde(default = "default_opacity")]
+    pub opacity: f32,
+    /// Clockwise rotation in degrees around the rect centre.  Default 0.0.
+    #[serde(default)]
+    pub rotation_degrees: f32,
+    /// Visual stacking order.  Lower values are drawn first (bottom);
+    /// higher values are drawn on top.  Default 0.
+    #[serde(default = "default_z_index")]
+    pub z_index: i32,
+}
+
+impl Default for OverlayTransform {
+    fn default() -> Self {
+        Self {
+            rect: Rect { x: 0, y: 0, width: 0, height: 0 },
+            opacity: default_opacity(),
+            rotation_degrees: 0.0,
+            z_index: default_z_index(),
+        }
+    }
+}
+
 /// Configuration for a static image overlay (decoded once at init).
 #[derive(Deserialize, Debug, Clone, JsonSchema)]
 pub struct ImageOverlayConfig {
     /// Base64-encoded image data (PNG or JPEG). Decoded once during
     /// initialization, not per-frame.
     pub data_base64: String,
-    /// Destination rectangle on the output canvas.
-    pub rect: Rect,
-    /// Opacity multiplier (0.0 = fully transparent, 1.0 = fully opaque).
-    #[serde(default = "default_opacity")]
-    pub opacity: f32,
+    /// Spatial and visual properties (rect, opacity, rotation, z_index).
+    #[serde(flatten)]
+    pub transform: OverlayTransform,
 }
 
 /// Configuration for a text overlay (rasterized once per `UpdateParams`).
@@ -48,17 +77,15 @@ pub struct ImageOverlayConfig {
 pub struct TextOverlayConfig {
     /// The text string to render.
     pub text: String,
-    /// Destination rectangle on the output canvas.
-    pub rect: Rect,
+    /// Spatial and visual properties (rect, opacity, rotation, z_index).
+    #[serde(flatten)]
+    pub transform: OverlayTransform,
     /// RGBA colour, e.g. `[255, 255, 255, 255]`.
     #[serde(default = "default_text_color")]
     pub color: [u8; 4],
     /// Font size in pixels.
     #[serde(default = "default_font_size")]
     pub font_size: u32,
-    /// Opacity multiplier (0.0 = fully transparent, 1.0 = fully opaque).
-    #[serde(default = "default_opacity")]
-    pub opacity: f32,
     /// Optional filesystem path to a TTF/OTF font file.
     /// When omitted, a bundled default font (DejaVu Sans) is used.
     #[serde(default)]
@@ -186,12 +213,18 @@ impl CompositorConfig {
             }
         }
         for (i, img) in self.image_overlays.iter().enumerate() {
-            if !img.opacity.is_finite() || img.opacity < 0.0 || img.opacity > 1.0 {
+            if !img.transform.opacity.is_finite()
+                || img.transform.opacity < 0.0
+                || img.transform.opacity > 1.0
+            {
                 return Err(format!("Image overlay {i} opacity must be in [0.0, 1.0]"));
             }
         }
         for (i, txt) in self.text_overlays.iter().enumerate() {
-            if !txt.opacity.is_finite() || txt.opacity < 0.0 || txt.opacity > 1.0 {
+            if !txt.transform.opacity.is_finite()
+                || txt.transform.opacity < 0.0
+                || txt.transform.opacity > 1.0
+            {
                 return Err(format!("Text overlay {i} opacity must be in [0.0, 1.0]"));
             }
         }

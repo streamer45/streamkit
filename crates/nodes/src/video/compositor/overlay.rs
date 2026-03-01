@@ -17,6 +17,10 @@ pub struct DecodedOverlay {
     pub height: u32,
     pub rect: Rect,
     pub opacity: f32,
+    /// Clockwise rotation in degrees around the rect centre.
+    pub rotation_degrees: f32,
+    /// Visual stacking order for unified z-sorting with video layers.
+    pub z_index: i32,
 }
 
 /// Decode a base64-encoded image (PNG/JPEG) into an RGBA8 bitmap.
@@ -36,13 +40,13 @@ pub fn decode_image_overlay(config: &ImageOverlayConfig) -> Result<DecodedOverla
     let rgba = img.to_rgba8();
     let (w, h) = img.dimensions();
 
-    let target_w = config.rect.width;
-    let target_h = config.rect.height;
+    let target_w = config.transform.rect.width;
+    let target_h = config.transform.rect.height;
 
     // Pre-scale the decoded image to the target rect dimensions so that
-    // the per-frame `blit_overlay` → `scale_blit_rgba` call hits the
-    // identity-scale fast path (direct memcpy) instead of doing
-    // nearest-neighbor scaling every frame.
+    // the per-frame `scale_blit_rgba_rotated` call hits the identity-scale
+    // fast path (direct memcpy) instead of doing nearest-neighbor scaling
+    // every frame.
     if target_w > 0 && target_h > 0 && (w != target_w || h != target_h) {
         let raw = rgba.into_raw();
         let scaled = prescale_rgba(&raw, w, h, target_w, target_h);
@@ -50,16 +54,20 @@ pub fn decode_image_overlay(config: &ImageOverlayConfig) -> Result<DecodedOverla
             rgba_data: scaled,
             width: target_w,
             height: target_h,
-            rect: config.rect.clone(),
-            opacity: config.opacity,
+            rect: config.transform.rect.clone(),
+            opacity: config.transform.opacity,
+            rotation_degrees: config.transform.rotation_degrees,
+            z_index: config.transform.z_index,
         })
     } else {
         Ok(DecodedOverlay {
             rgba_data: rgba.into_raw(),
             width: w,
             height: h,
-            rect: config.rect.clone(),
-            opacity: config.opacity,
+            rect: config.transform.rect.clone(),
+            opacity: config.transform.opacity,
+            rotation_degrees: config.transform.rotation_degrees,
+            z_index: config.transform.z_index,
         })
     }
 }
@@ -115,8 +123,8 @@ fn load_font(config: &TextOverlayConfig) -> Result<fontdue::Font, String> {
 /// font loading fails so the node keeps running.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
 pub fn rasterize_text_overlay(config: &TextOverlayConfig) -> DecodedOverlay {
-    let w = config.rect.width.max(1);
-    let h = config.rect.height.max(1);
+    let w = config.transform.rect.width.max(1);
+    let h = config.transform.rect.height.max(1);
 
     // Attempt to load the font; fall back to rectangle placeholders on error.
     let font = match load_font(config) {
@@ -171,7 +179,9 @@ pub fn rasterize_text_overlay(config: &TextOverlayConfig) -> DecodedOverlay {
         rgba_data,
         width: w,
         height: h,
-        rect: config.rect.clone(),
-        opacity: config.opacity,
+        rect: config.transform.rect.clone(),
+        opacity: config.transform.opacity,
+        rotation_degrees: config.transform.rotation_degrees,
+        z_index: config.transform.z_index,
     }
 }

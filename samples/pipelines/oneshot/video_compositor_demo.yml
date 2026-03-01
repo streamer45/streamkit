@@ -65,7 +65,9 @@ nodes:
           opacity: 0.9
           z_index: 1
           rotation_degrees: 15.0
-      # Text overlay rendered with the bundled DejaVu Sans font.
+      # Text overlays rendered with the bundled DejaVu Sans font.
+      # All overlay types now support rotation_degrees and z_index via the
+      # unified OverlayTransform consolidation.
       text_overlays:
         - text: "StreamKit Demo"
           rect:
@@ -76,6 +78,8 @@ nodes:
           color: [255, 255, 255, 230]
           font_size: 32
           opacity: 1.0
+          rotation_degrees: 0.0
+          z_index: 2
           font_path: assets/fonts/DejaVuSans.ttf
     needs:
       - colorbars_bg

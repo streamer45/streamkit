@@ -41,6 +41,7 @@ export interface TextOverlayState {
   fontSize: number;
   opacity: number;
   rotationDegrees: number;
+  zIndex: number;
   /** Client-side visibility toggle (hidden overlays send opacity=0 to backend) */
   visible: boolean;
 }
@@ -56,6 +57,8 @@ export interface ImageOverlayState {
   width: number;
   height: number;
   opacity: number;
+  rotationDegrees: number;
+  zIndex: number;
   /** Client-side visibility toggle (hidden overlays send opacity=0 to backend) */
   visible: boolean;
 }
@@ -125,12 +128,15 @@ interface TextOverlayConfig {
   font_size?: number;
   opacity?: number;
   rotation_degrees?: number;
+  z_index?: number;
 }
 
 interface ImageOverlayConfig {
   data_base64: string;
   rect: Rect;
   opacity?: number;
+  rotation_degrees?: number;
+  z_index?: number;
 }
 
 /** Parse layers from compositor params into LayerState array */
@@ -172,6 +178,7 @@ function parseTextOverlays(params: Record<string, unknown>): TextOverlayState[] 
     fontSize: o.font_size ?? 24,
     opacity: o.opacity ?? 1.0,
     rotationDegrees: o.rotation_degrees ?? 0,
+    zIndex: o.z_index ?? 0,
     visible: true,
   }));
 }
@@ -188,6 +195,8 @@ function parseImageOverlays(params: Record<string, unknown>): ImageOverlayState[
     width: o.rect?.width ?? 200,
     height: o.rect?.height ?? 200,
     opacity: o.opacity ?? 1.0,
+    rotationDegrees: o.rotation_degrees ?? 0,
+    zIndex: o.z_index ?? 0,
     visible: true,
   }));
 }
@@ -206,6 +215,7 @@ function serializeTextOverlays(overlays: TextOverlayState[]): TextOverlayConfig[
     font_size: o.fontSize,
     opacity: o.visible ? Math.round(o.opacity * 100) / 100 : 0,
     rotation_degrees: Math.round(o.rotationDegrees * 10) / 10,
+    z_index: o.zIndex,
   }));
 }
 
@@ -220,6 +230,8 @@ function serializeImageOverlays(overlays: ImageOverlayState[]): ImageOverlayConf
       height: Math.max(1, Math.round(o.height)),
     },
     opacity: o.visible ? Math.round(o.opacity * 100) / 100 : 0,
+    rotation_degrees: Math.round(o.rotationDegrees * 10) / 10,
+    z_index: o.zIndex,
   }));
 }
 
@@ -582,6 +594,43 @@ export const useCompositorLayers = (
         newY = orig.y + (orig.height - newH);
       }
 
+      // Constrain video layer resize to maintain aspect ratio.
+      // Text/image overlays (layerKind !== 'video') are not constrained here
+      // because text overlays no longer have resize handles and image overlays
+      // may intentionally use different dimensions.
+      if (state.layerKind === 'video' && orig.width > 0 && orig.height > 0) {
+        const ar = orig.width / orig.height;
+        const isCorner = handle.length === 2; // 'ne', 'nw', 'se', 'sw'
+
+        if (isCorner) {
+          // Corner handles: use the dominant axis (whichever changed more)
+          const dw = Math.abs(newW - orig.width);
+          const dh = Math.abs(newH - orig.height);
+          if (dw >= dh) {
+            newH = newW / ar;
+          } else {
+            newW = newH * ar;
+          }
+        } else if (handle === 'e' || handle === 'w') {
+          newH = newW / ar;
+        } else {
+          // 'n' or 's'
+          newW = newH * ar;
+        }
+
+        // Re-clamp
+        newW = Math.max(20, newW);
+        newH = Math.max(20, newH);
+
+        // Adjust position for north/west handles to keep opposite edge fixed
+        if (handle.includes('w')) {
+          newX = orig.x + (orig.width - newW);
+        }
+        if (handle.includes('n')) {
+          newY = orig.y + (orig.height - newH);
+        }
+      }
+
       return { ...orig, x: newX, y: newY, width: newW, height: newH };
     },
     []
@@ -867,6 +916,7 @@ export const useCompositorLayers = (
             fontSize: 24,
             opacity: 1.0,
             rotationDegrees: 0,
+            zIndex: 0,
             visible: true,
           },
         ];
@@ -923,6 +973,8 @@ export const useCompositorLayers = (
             width: 200,
             height: 200,
             opacity: 1.0,
+            rotationDegrees: 0,
+            zIndex: 0,
             visible: true,
           },
         ];

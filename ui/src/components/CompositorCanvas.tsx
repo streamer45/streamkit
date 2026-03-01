@@ -278,11 +278,10 @@ const TextOverlayLayer: React.FC<{
   isSelected: boolean;
   scale: number;
   onPointerDown: (layerId: string, e: React.PointerEvent) => void;
-  onResizeStart: (layerId: string, handle: ResizeHandle, e: React.PointerEvent) => void;
   onTextEdit?: (id: string, updates: Partial<Omit<TextOverlayState, 'id'>>) => void;
   layerRef: (el: HTMLDivElement | null) => void;
 }> = React.memo(
-  ({ overlay, index, isSelected, scale, onPointerDown, onResizeStart, onTextEdit, layerRef }) => {
+  ({ overlay, index, isSelected, scale, onPointerDown, onTextEdit, layerRef }) => {
     const [editing, setEditing] = useState(false);
     const [editText, setEditText] = useState(overlay.text);
     const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -413,7 +412,6 @@ const TextOverlayLayer: React.FC<{
             </span>
           </TextContent>
         )}
-        {isSelected && <ResizeHandles layerId={overlay.id} onResizeStart={onResizeStart} />}
       </LayerBox>
     );
   }
@@ -588,7 +586,6 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
                   isSelected={selectedLayerId === overlay.id}
                   scale={scale}
                   onPointerDown={disabled ? noopPointerDown : onLayerPointerDown}
-                  onResizeStart={disabled ? noopResizeStart : onResizePointerDown}
                   onTextEdit={disabled ? undefined : onTextEdit}
                   layerRef={setLayerRef(overlay.id)}
                 />
