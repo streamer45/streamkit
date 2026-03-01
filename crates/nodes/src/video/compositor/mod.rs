@@ -1537,9 +1537,15 @@ mod tests {
         // exactly as the compositor does).
         let mut canvas = vec![0u8; wu * hu * 4];
         pixel_ops::scale_blit_rgba_rotated(
-            &mut canvas, w, h, &src_rgba, w, h,
+            &mut canvas,
+            w,
+            h,
+            &src_rgba,
+            w,
+            h,
             &Rect { x: 0, y: 0, width: w, height: h },
-            0.9, 0.0,
+            0.9,
+            0.0,
         );
 
         // Verify compositor output: every row should have non-zero pixels.
@@ -1561,10 +1567,7 @@ mod tests {
         for row in 0..hu {
             let y_row = &nv12[row * wu..(row + 1) * wu];
             let max_y = *y_row.iter().max().unwrap();
-            assert!(
-                max_y > 16,
-                "NV12 Y-plane row {row}: max Y={max_y}, expected >16 (not black)"
-            );
+            assert!(max_y > 16, "NV12 Y-plane row {row}: max Y={max_y}, expected >16 (not black)");
         }
 
         // Step 3: Convert NV12 → RGBA (simulates decoder display).
@@ -1576,11 +1579,9 @@ mod tests {
             let row_start = row * wu * 4;
             let row_slice = &decoded_rgba[row_start..row_start + wu * 4];
             // Check that at least some pixels have R, G, or B > 10 (not near-black).
-            let has_visible = row_slice.chunks_exact(4).any(|px| px[0] > 10 || px[1] > 10 || px[2] > 10);
-            assert!(
-                has_visible,
-                "Decoded row {row} has no visible pixels (all near-black)"
-            );
+            let has_visible =
+                row_slice.chunks_exact(4).any(|px| px[0] > 10 || px[1] > 10 || px[2] > 10);
+            assert!(has_visible, "Decoded row {row} has no visible pixels (all near-black)");
         }
     }
 
@@ -1600,10 +1601,10 @@ mod tests {
         for row in 0..hu {
             for col in 0..wu {
                 let off = (row * wu + col) * 4;
-                rgba[off] = ((col * 3 + row * 7) % 256) as u8;     // R
+                rgba[off] = ((col * 3 + row * 7) % 256) as u8; // R
                 rgba[off + 1] = ((col * 5 + row * 11) % 256) as u8; // G
                 rgba[off + 2] = ((col * 7 + row * 13) % 256) as u8; // B
-                rgba[off + 3] = 255;                                  // A
+                rgba[off + 3] = 255; // A
             }
         }
 
@@ -1624,7 +1625,9 @@ mod tests {
                 let mut count = 0i32;
                 for dr in 0..2u32 {
                     let rr = r0 + dr as usize;
-                    if rr >= hu { continue; }
+                    if rr >= hu {
+                        continue;
+                    }
                     for dc in 0..2u32 {
                         let cc = c0 + dc as usize;
                         if cc < wu {
@@ -1667,7 +1670,8 @@ mod tests {
                 let r = i32::from(rgba[off]);
                 let g = i32::from(rgba[off + 1]);
                 let b = i32::from(rgba[off + 2]);
-                let expected_y = (((66 * r + 129 * g + 25 * b + 128) >> 8) + 16).clamp(0, 255) as u8;
+                let expected_y =
+                    (((66 * r + 129 * g + 25 * b + 128) >> 8) + 16).clamp(0, 255) as u8;
                 let got_y = nv12_simd[row * wu + col];
                 assert!(
                     (i16::from(got_y) - i16::from(expected_y)).abs() <= 1,
