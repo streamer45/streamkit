@@ -692,21 +692,16 @@ pub fn scale_blit_rgba_rotated(
     let cos_a = angle_rad.cos();
     let sin_a = angle_rad.sin();
 
-    // ── Rotation-aware aspect-ratio-preserving fit ────────────────────
-    // When rotating the source by θ its axis-aligned bounding box grows:
-    //   bb_w = src_w·|cos θ| + src_h·|sin θ|
-    //   bb_h = src_w·|sin θ| + src_h·|cos θ|
-    // We compute a uniform scale that fits this *rotated* bounding box
-    // inside the destination rect (like CSS `object-fit: contain` applied
-    // *after* rotation).  The content is centred, with transparent padding
-    // in the letterbox / pillarbox area.
+    // ── Aspect-ratio-preserving fit (angle-independent) ───────────────
+    // Uniformly scale the source so it fits inside the destination rect
+    // at 0° rotation.  The scale is intentionally *not* adjusted for the
+    // current rotation angle: this keeps the apparent content size
+    // constant as the layer rotates, avoiding a "pulsating" effect.
+    // Any corners of the rotated content that extend beyond the rect
+    // are naturally clipped by the bounding-box iteration below.
     let sw_f = src_width as f32;
     let sh_f = src_height as f32;
-    let cos_abs = cos_a.abs();
-    let sin_abs = sin_a.abs();
-    let rotated_bb_w = sw_f.mul_add(cos_abs, sh_f * sin_abs);
-    let rotated_bb_h = sw_f.mul_add(sin_abs, sh_f * cos_abs);
-    let fit_scale = (rw / rotated_bb_w).min(rh / rotated_bb_h);
+    let fit_scale = (rw / sw_f).min(rh / sh_f);
     let content_w = sw_f * fit_scale; // un-rotated content width
     let content_h = sh_f * fit_scale; // un-rotated content height
     let half_cw = content_w * 0.5;

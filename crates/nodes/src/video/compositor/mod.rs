@@ -895,12 +895,12 @@ mod tests {
         // A wide 4×2 red source blitted into a square 20×20 rect with 45°
         // rotation on a 40×40 canvas.
         //
-        // The rotation-aware fit scale accounts for the rotated bounding box:
-        //   cos(45°) = sin(45°) ≈ 0.7071
-        //   rotated_bb_w = 4·0.7071 + 2·0.7071 ≈ 4.243
-        //   rotated_bb_h = 4·0.7071 + 2·0.7071 ≈ 4.243
-        //   fit_scale = min(20/4.243, 20/4.243) ≈ 4.714
-        //   content ≈ 18.9×9.4, centred and rotated within the 20×20 rect
+        // Angle-independent fit scale: min(20/4, 20/2) = 5.0
+        //   content = 20×10, centred and rotated within the 20×20 rect.
+        //
+        // The scale does NOT change with the rotation angle — this prevents
+        // a "pulsating" effect when the angle is animated.  Corners of the
+        // rotated content that extend beyond the rect are clipped.
         //
         // The canvas centre (20,20) should still be covered by red source
         // pixels, while the rect corner (10,10) should remain transparent.

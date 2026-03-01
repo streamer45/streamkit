@@ -59,6 +59,7 @@ const LayerBox = styled.div`
   user-select: none;
   will-change: transform, left, top, width, height;
   touch-action: none;
+  transform-origin: center center;
 `;
 
 const LayerLabel = styled.div`
@@ -83,8 +84,24 @@ const TextContent = styled.div`
   justify-content: center;
   pointer-events: none;
   overflow: hidden;
-  padding: 2px 4px;
   z-index: 1;
+`;
+
+/** Inline text editing input shown on double-click */
+const InlineTextInput = styled.input`
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.6);
+  border: 2px solid var(--sk-primary);
+  border-radius: 2px;
+  color: #fff;
+  font-weight: 600;
+  text-align: center;
+  outline: none;
+  z-index: 3;
+  box-sizing: border-box;
 `;
 
 /** Icon badge for image overlay layers */
@@ -227,11 +244,12 @@ const VideoLayer: React.FC<{
         top: layer.y,
         width: layer.width,
         height: layer.height,
-        opacity: layer.opacity,
+        opacity: layer.visible ? layer.opacity : 0.2,
         transform: layer.rotationDegrees !== 0 ? `rotate(${layer.rotationDegrees}deg)` : undefined,
         zIndex: layer.zIndex + 1,
-        border: `2px solid ${borderColor}`,
+        border: `2px ${layer.visible ? 'solid' : 'dashed'} ${borderColor}`,
         background: bgColor,
+        filter: layer.visible ? undefined : 'grayscale(0.6)',
       }}
       onPointerDown={handlePointerDown}
     >
@@ -253,14 +271,55 @@ const TextOverlayLayer: React.FC<{
   isSelected: boolean;
   scale: number;
   onPointerDown: (layerId: string, e: React.PointerEvent) => void;
-  onResizeStart: (layerId: string, handle: ResizeHandle, e: React.PointerEvent) => void;
+  onTextEdit?: (id: string, updates: Partial<Omit<TextOverlayState, 'id'>>) => void;
   layerRef: (el: HTMLDivElement | null) => void;
-}> = React.memo(({ overlay, index, isSelected, scale, onPointerDown, onResizeStart, layerRef }) => {
+}> = React.memo(({ overlay, index, isSelected, scale, onPointerDown, onTextEdit, layerRef }) => {
+  const [editing, setEditing] = useState(false);
+  const [editText, setEditText] = useState(overlay.text);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const cancelledRef = useRef(false);
+
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
+      if (editing) return; // don't start drag while editing
       onPointerDown(overlay.id, e);
     },
-    [overlay.id, onPointerDown]
+    [overlay.id, onPointerDown, editing]
+  );
+
+  const handleDoubleClick = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      e.preventDefault();
+      if (!onTextEdit) return;
+      setEditText(overlay.text);
+      cancelledRef.current = false;
+      setEditing(true);
+      // Focus the input after React renders it
+      requestAnimationFrame(() => inputRef.current?.focus());
+    },
+    [onTextEdit, overlay.text]
+  );
+
+  const commitEdit = useCallback(() => {
+    if (cancelledRef.current) return;
+    if (!editing) return; // guard against double-fire (Enter + blur)
+    setEditing(false);
+    if (editText.trim() && editText !== overlay.text && onTextEdit) {
+      onTextEdit(overlay.id, { text: editText.trim() });
+    }
+  }, [editing, editText, overlay.id, overlay.text, onTextEdit]);
+
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      e.stopPropagation();
+      if (e.key === 'Enter') commitEdit();
+      if (e.key === 'Escape') {
+        cancelledRef.current = true;
+        setEditing(false);
+      }
+    },
+    [commitEdit]
   );
 
   const hue = layerHue(index + 100); // offset from video layers
@@ -279,30 +338,43 @@ const TextOverlayLayer: React.FC<{
         top: overlay.y,
         width: overlay.width,
         height: overlay.height,
-        opacity: overlay.opacity,
+        opacity: overlay.visible ? overlay.opacity : 0.2,
         zIndex: 100 + index,
         border: `2px dashed ${borderColor}`,
         background: bgColor,
+        filter: overlay.visible ? undefined : 'grayscale(0.6)',
       }}
       onPointerDown={handlePointerDown}
+      onDoubleClick={handleDoubleClick}
     >
-      <LayerLabel>T: {overlay.text.slice(0, 20)}</LayerLabel>
-      <TextContent>
-        <span
-          style={{
-            fontSize: Math.max(8, overlay.fontSize * scale),
-            color: textColor,
-            fontWeight: 600,
-            textShadow: '0 1px 3px rgba(0,0,0,0.7)',
-            lineHeight: 1.1,
-            textAlign: 'center',
-            wordBreak: 'break-word',
-          }}
-        >
-          {overlay.text}
-        </span>
-      </TextContent>
-      {isSelected && <ResizeHandles layerId={overlay.id} onResizeStart={onResizeStart} />}
+      <LayerLabel>text_{index}</LayerLabel>
+      {editing ? (
+        <InlineTextInput
+          ref={inputRef}
+          className="nodrag nopan"
+          value={editText}
+          onChange={(e) => setEditText(e.target.value)}
+          onBlur={commitEdit}
+          onKeyDown={handleKeyDown}
+          style={{ fontSize: Math.max(10, overlay.fontSize * scale * 0.6) }}
+        />
+      ) : (
+        <TextContent>
+          <span
+            style={{
+              fontSize: Math.max(8, overlay.fontSize * scale),
+              color: textColor,
+              fontWeight: 600,
+              textShadow: '0 1px 3px rgba(0,0,0,0.7)',
+              lineHeight: 1.1,
+              textAlign: 'center',
+              wordBreak: 'break-word',
+            }}
+          >
+            {overlay.text}
+          </span>
+        </TextContent>
+      )}
     </LayerBox>
   );
 });
@@ -338,10 +410,11 @@ const ImageOverlayLayer: React.FC<{
         top: overlay.y,
         width: overlay.width,
         height: overlay.height,
-        opacity: overlay.opacity,
+        opacity: overlay.visible ? overlay.opacity : 0.2,
         zIndex: 200 + index,
         border: `2px dotted ${borderColor}`,
         background: bgColor,
+        filter: overlay.visible ? undefined : 'grayscale(0.6)',
         backgroundImage:
           'repeating-linear-gradient(45deg, transparent, transparent 6px, rgba(255,255,255,0.04) 6px, rgba(255,255,255,0.04) 12px)',
       }}
@@ -369,6 +442,7 @@ export interface CompositorCanvasProps {
   onSelectLayer: (id: string | null) => void;
   onLayerPointerDown: (layerId: string, e: React.PointerEvent) => void;
   onResizePointerDown: (layerId: string, handle: ResizeHandle, e: React.PointerEvent) => void;
+  onTextEdit?: (id: string, updates: Partial<Omit<TextOverlayState, 'id'>>) => void;
   layerRefs: React.MutableRefObject<Map<string, HTMLDivElement>>;
   disabled?: boolean;
 }
@@ -384,6 +458,7 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
     onSelectLayer,
     onLayerPointerDown,
     onResizePointerDown,
+    onTextEdit,
     layerRefs,
     disabled,
   }) => {
@@ -468,7 +543,7 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
                   isSelected={selectedLayerId === overlay.id}
                   scale={scale}
                   onPointerDown={disabled ? noopPointerDown : onLayerPointerDown}
-                  onResizeStart={disabled ? noopResizeStart : onResizePointerDown}
+                  onTextEdit={disabled ? undefined : onTextEdit}
                   layerRef={setLayerRef(overlay.id)}
                 />
               ))}
