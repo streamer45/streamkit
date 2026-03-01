@@ -1011,6 +1011,7 @@ impl ProcessorNode for WebMMuxerNode {
 /// Returns `Ok(true)` if the output channel is closed (caller should stop),
 /// `Ok(false)` to continue, or `Err` on fatal errors.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::ptr_arg)] // content_type is cloned as Cow<'static, str> for Packet; &str would force allocation
 async fn mux_frame(
     data: &[u8],
     metadata: Option<&PacketMetadata>,

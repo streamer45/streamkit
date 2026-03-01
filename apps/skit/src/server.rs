@@ -1972,7 +1972,7 @@ async fn parse_config_field(
         .map_err(|e| AppError::BadRequest(format!("Failed to read config field: {e}")))?;
     let yaml_str = std::str::from_utf8(&config_bytes)
         .map_err(|e| AppError::BadRequest(format!("Config is not valid UTF-8: {e}")))?;
-    streamkit_api::yaml::parse_yaml(yaml_str).map_err(|e| AppError::BadRequest(e))
+    streamkit_api::yaml::parse_yaml(yaml_str).map_err(AppError::BadRequest)
 }
 
 /// Build http_input bindings from the pipeline definition.

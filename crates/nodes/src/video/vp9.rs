@@ -236,7 +236,7 @@ impl ProcessorNode for Vp9DecoderNode {
             decode_tx,
             &packets_processed_counter,
             &mut stats_tracker,
-            |frame| Packet::Video(frame),
+            Packet::Video,
             "Vp9DecoderNode",
         )
         .await;
@@ -495,7 +495,7 @@ async fn codec_forward_loop<T: Send + 'static, S: Send>(
 
     /// Handles a codec error result by updating counters and logging.
     fn handle_error(
-        err: String,
+        err: &str,
         counter: &opentelemetry::metrics::Counter<u64>,
         stats: &mut NodeStatsTracker,
         label: &str,
@@ -516,7 +516,7 @@ async fn codec_forward_loop<T: Send + 'static, S: Send>(
                             break;
                         }
                     }
-                    Some(Err(err)) => handle_error(err, counter, stats, label),
+                    Some(Err(err)) => handle_error(&err, counter, stats, label),
                     None => break,
                 }
             }
@@ -542,7 +542,7 @@ async fn codec_forward_loop<T: Send + 'static, S: Send>(
                                 break;
                             }
                         }
-                        Err(err) => handle_error(err, counter, stats, label),
+                        Err(err) => handle_error(&err, counter, stats, label),
                     }
                 }
                 break;

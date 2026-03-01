@@ -45,6 +45,12 @@ pub struct ConversionCache {
     first_layer_alpha_cache: Option<(usize, bool)>,
 }
 
+impl Default for ConversionCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ConversionCache {
     pub const fn new() -> Self {
         Self { entries: Vec::new(), first_layer_alpha_cache: None }
@@ -100,7 +106,7 @@ impl ConversionCache {
         }
 
         // Check if the cached entry is still valid.
-        let needs_convert = self.entries[slot_idx].as_ref().map_or(true, |cached| {
+        let needs_convert = self.entries[slot_idx].as_ref().is_none_or(|cached| {
             cached.data_identity != identity
                 || cached.width != layer.width
                 || cached.height != layer.height
@@ -234,33 +240,32 @@ pub fn composite_frame(
     // skipping the canvas clear.  We do the alpha-opaqueness check here
     // while `conversion_cache` is still mutably available.  The result
     // is a simple bool so no borrows leak into pass 2.
-    let skip_clear = layers
-        .iter()
-        .enumerate()
-        .find_map(|(i, e)| e.as_ref().map(|l| (i, l)))
-        .map_or(false, |(_slot_idx, layer)| {
-            // Quick checks that don't need the pixel data.
-            if layer.opacity < 1.0 || layer.rotation_degrees.abs() >= 0.01 {
-                return false;
-            }
-            let covers = layer.rect.as_ref().map_or(true, |r| {
-                r.x <= 0
-                    && r.y <= 0
-                    && i64::from(r.width) + i64::from(r.x) >= i64::from(canvas_w)
-                    && i64::from(r.height) + i64::from(r.y) >= i64::from(canvas_h)
-            });
-            if !covers {
-                return false;
-            }
-            // Alpha check — needs mutable access to conversion_cache.
-            match layer.pixel_format {
-                // I420/NV12 → RGBA conversion always writes alpha = 255.
-                PixelFormat::I420 | PixelFormat::Nv12 => true,
-                PixelFormat::Rgba8 => {
-                    conversion_cache.first_layer_all_opaque(layer, layer.data.as_slice())
-                },
-            }
-        });
+    let skip_clear =
+        layers.iter().enumerate().find_map(|(i, e)| e.as_ref().map(|l| (i, l))).is_some_and(
+            |(_slot_idx, layer)| {
+                // Quick checks that don't need the pixel data.
+                if layer.opacity < 1.0 || layer.rotation_degrees.abs() >= 0.01 {
+                    return false;
+                }
+                let covers = layer.rect.as_ref().is_none_or(|r| {
+                    r.x <= 0
+                        && r.y <= 0
+                        && i64::from(r.width) + i64::from(r.x) >= i64::from(canvas_w)
+                        && i64::from(r.height) + i64::from(r.y) >= i64::from(canvas_h)
+                });
+                if !covers {
+                    return false;
+                }
+                // Alpha check — needs mutable access to conversion_cache.
+                match layer.pixel_format {
+                    // I420/NV12 → RGBA conversion always writes alpha = 255.
+                    PixelFormat::I420 | PixelFormat::Nv12 => true,
+                    PixelFormat::Rgba8 => {
+                        conversion_cache.first_layer_all_opaque(layer, layer.data.as_slice())
+                    },
+                }
+            },
+        );
     if !skip_clear {
         buf[..total_bytes].fill(0);
     }

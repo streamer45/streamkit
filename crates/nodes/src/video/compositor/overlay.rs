@@ -24,6 +24,10 @@ pub struct DecodedOverlay {
 }
 
 /// Decode a base64-encoded image (PNG/JPEG) into an RGBA8 bitmap.
+///
+/// # Errors
+///
+/// Returns an error if the base64 data is invalid or the image cannot be decoded.
 pub fn decode_image_overlay(config: &ImageOverlayConfig) -> Result<DecodedOverlay, StreamKitError> {
     use image::GenericImageView;
 

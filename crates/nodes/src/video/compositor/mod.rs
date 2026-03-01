@@ -904,7 +904,7 @@ mod tests {
         //
         // The canvas centre (20,20) should still be covered by red source
         // pixels, while the rect corner (10,10) should remain transparent.
-        let src = vec![255u8, 0, 0, 255].repeat(4 * 2); // 4×2 solid red
+        let src = [255u8, 0, 0, 255].repeat(4 * 2); // 4×2 solid red
         let mut dst = vec![0u8; 40 * 40 * 4];
 
         scale_blit_rgba_rotated(
@@ -1184,6 +1184,7 @@ mod tests {
     // ── SIMD vs scalar equivalence tests ────────────────────────────────
 
     /// Helper: scalar I420→RGBA8 conversion for a single pixel (reference).
+    #[allow(clippy::many_single_char_names)]
     fn scalar_i420_to_rgba8(y: u8, u: u8, v: u8) -> [u8; 4] {
         let c = i32::from(y) - 16;
         let d = i32::from(u) - 128;
@@ -1247,7 +1248,7 @@ mod tests {
         pixel_ops::i420_to_rgba8_buf(&i420_data, width, 1, &mut simd_out);
 
         // Compare with scalar reference.
-        for (i, &(y, u, v)) in test_cases.iter().enumerate() {
+        for (i, &(y, _u, _v)) in test_cases.iter().enumerate() {
             // For chroma, each sample covers 2 pixels, so use the chroma
             // value from the corresponding pair.
             let chroma_idx = i / 2;
@@ -1310,8 +1311,8 @@ mod tests {
         // Build a simple I420 test pattern.
         let mut i420_data = vec![0u8; w * h + 2 * chroma_w * (h / 2)];
         // Y plane: gradient.
-        for i in 0..w * h {
-            i420_data[i] = (16 + (i * 219 / (w * h))) as u8;
+        for (i, val) in i420_data[..w * h].iter_mut().enumerate() {
+            *val = (16 + (i * 219 / (w * h))) as u8;
         }
         // U/V planes: mid-range.
         let u_offset = w * h;
@@ -1328,12 +1329,12 @@ mod tests {
         pixel_ops::rgba8_to_i420_buf(&rgba, width, height, &mut i420_roundtrip);
 
         // Y values should be close (within ±2 of originals due to rounding).
-        for i in 0..w * h {
-            let orig = i420_data[i] as i32;
-            let rt = i420_roundtrip[i] as i32;
+        for (idx, orig_val) in i420_data[..w * h].iter().enumerate() {
+            let orig = i32::from(*orig_val);
+            let rt = i32::from(i420_roundtrip[idx]);
             assert!(
                 (orig - rt).abs() <= 2,
-                "Y[{i}]: original={orig}, roundtrip={rt}, diff={}",
+                "Y[{idx}]: original={orig}, roundtrip={rt}, diff={}",
                 (orig - rt).abs()
             );
         }

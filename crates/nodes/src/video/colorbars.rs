@@ -447,7 +447,12 @@ const DRAW_TIME_FONT_SIZE: f32 = 24.0;
 /// Works for both RGBA8 and I420 pixel formats.  For I420 the text is
 /// rasterized into a tiny RGBA scratch area and then each lit pixel is
 /// converted to YUV and poked into the Y/U/V planes.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_wrap
+)]
 fn stamp_time(
     data: &mut [u8],
     width: u32,
@@ -532,7 +537,7 @@ fn stamp_time(
 
                         // Chroma planes are half-resolution; update only once
                         // per 2×2 block (when both coords are even).
-                        if px % 2 == 0 && py % 2 == 0 {
+                        if px.is_multiple_of(2) && py.is_multiple_of(2) {
                             let cx = px / 2;
                             let cy = py / 2;
                             match pixel_format {

@@ -240,9 +240,9 @@ const fn blend_u8(src: u8, dst: u8, alpha: u16) -> u8 {
 /// # Safety
 ///
 /// Caller must ensure `offset + 3 < src.len()`.
-#[inline(always)]
-unsafe fn read_rgba_u32(src: &[u8], offset: usize) -> u32 {
-    std::ptr::read_unaligned(src.as_ptr().add(offset) as *const u32)
+#[inline]
+const unsafe fn read_rgba_u32(src: &[u8], offset: usize) -> u32 {
+    std::ptr::read_unaligned(src.as_ptr().add(offset).cast::<u32>())
 }
 
 /// Blend 4 gathered source RGBA pixels onto 4 contiguous destination pixels
@@ -254,8 +254,14 @@ unsafe fn read_rgba_u32(src: &[u8], offset: usize) -> u32 {
 /// in `src_pixels` must be valid RGBA `u32` values.
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
+#[allow(clippy::cast_ptr_alignment)] // _mm_storeu/loadu_si128 do not require alignment
 unsafe fn blend_4px_over_sse2(dst_ptr: *mut u8, src_pixels: [u32; 4]) {
-    use std::arch::x86_64::*;
+    use std::arch::x86_64::{
+        __m128i, _mm_add_epi16, _mm_and_si128, _mm_cmpeq_epi8, _mm_loadu_si128, _mm_movemask_epi8,
+        _mm_mullo_epi16, _mm_or_si128, _mm_packus_epi16, _mm_set1_epi16, _mm_set1_epi32,
+        _mm_set_epi32, _mm_setzero_si128, _mm_shufflehi_epi16, _mm_shufflelo_epi16, _mm_srli_epi16,
+        _mm_storeu_si128, _mm_sub_epi16, _mm_unpackhi_epi8, _mm_unpacklo_epi8,
+    };
 
     let zero = _mm_setzero_si128();
     let c255 = _mm_set1_epi16(255);
@@ -263,19 +269,19 @@ unsafe fn blend_4px_over_sse2(dst_ptr: *mut u8, src_pixels: [u32; 4]) {
 
     // Assemble 4 gathered source pixels into one register.
     let src4 = _mm_set_epi32(
-        src_pixels[3] as i32,
-        src_pixels[2] as i32,
-        src_pixels[1] as i32,
-        src_pixels[0] as i32,
+        src_pixels[3].cast_signed(),
+        src_pixels[2].cast_signed(),
+        src_pixels[1].cast_signed(),
+        src_pixels[0].cast_signed(),
     );
 
     // Mask with 0xFF at each pixel's alpha-byte position (bytes 3,7,11,15).
-    let alpha_byte_mask = _mm_set1_epi32(0xFF00_0000_u32 as i32);
+    let alpha_byte_mask = _mm_set1_epi32(0xFF00_0000_u32.cast_signed());
 
     // Fast path: all 4 source pixels fully opaque → direct copy.
     let alpha_bytes = _mm_and_si128(src4, alpha_byte_mask);
     if _mm_movemask_epi8(_mm_cmpeq_epi8(alpha_bytes, alpha_byte_mask)) == 0xFFFF {
-        _mm_storeu_si128(dst_ptr as *mut __m128i, src4);
+        _mm_storeu_si128(dst_ptr.cast::<__m128i>(), src4);
         return;
     }
 
@@ -284,7 +290,7 @@ unsafe fn blend_4px_over_sse2(dst_ptr: *mut u8, src_pixels: [u32; 4]) {
         return;
     }
 
-    let dst4 = _mm_loadu_si128(dst_ptr as *const __m128i);
+    let dst4 = _mm_loadu_si128(dst_ptr.cast::<__m128i>().cast_const());
 
     // Replace source alpha channel with 255 for correct composite-alpha
     // via blend_u8(255, dst_alpha, src_alpha).
@@ -320,7 +326,7 @@ unsafe fn blend_4px_over_sse2(dst_ptr: *mut u8, src_pixels: [u32; 4]) {
     let result_hi = _mm_srli_epi16(_mm_add_epi16(val_hi, _mm_srli_epi16(val_hi, 8)), 8);
 
     // Pack back to u8 and store.
-    _mm_storeu_si128(dst_ptr as *mut __m128i, _mm_packus_epi16(result_lo, result_hi));
+    _mm_storeu_si128(dst_ptr.cast::<__m128i>(), _mm_packus_epi16(result_lo, result_hi));
 }
 
 /// Blend 4 gathered source RGBA pixels onto 4 contiguous destination pixels
@@ -332,23 +338,29 @@ unsafe fn blend_4px_over_sse2(dst_ptr: *mut u8, src_pixels: [u32; 4]) {
 /// `dst_ptr` must point to at least 16 writable bytes.
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
+#[allow(clippy::cast_ptr_alignment)] // _mm_storeu/loadu_si128 do not require alignment
 unsafe fn blend_4px_over_alpha_sse2(dst_ptr: *mut u8, src_pixels: [u32; 4], opacity: u16) {
-    use std::arch::x86_64::*;
+    use std::arch::x86_64::{
+        __m128i, _mm_add_epi16, _mm_loadu_si128, _mm_mullo_epi16, _mm_or_si128, _mm_packus_epi16,
+        _mm_set1_epi16, _mm_set1_epi32, _mm_set_epi32, _mm_setzero_si128, _mm_shufflehi_epi16,
+        _mm_shufflelo_epi16, _mm_srli_epi16, _mm_storeu_si128, _mm_sub_epi16, _mm_unpackhi_epi8,
+        _mm_unpacklo_epi8,
+    };
 
     let zero = _mm_setzero_si128();
     let c255 = _mm_set1_epi16(255);
     let c128 = _mm_set1_epi16(128);
-    let opacity_v = _mm_set1_epi16(opacity as i16);
+    let opacity_v = _mm_set1_epi16(opacity.cast_signed());
 
     let src4 = _mm_set_epi32(
-        src_pixels[3] as i32,
-        src_pixels[2] as i32,
-        src_pixels[1] as i32,
-        src_pixels[0] as i32,
+        src_pixels[3].cast_signed(),
+        src_pixels[2].cast_signed(),
+        src_pixels[1].cast_signed(),
+        src_pixels[0].cast_signed(),
     );
 
-    let dst4 = _mm_loadu_si128(dst_ptr as *const __m128i);
-    let alpha_byte_mask = _mm_set1_epi32(0xFF00_0000_u32 as i32);
+    let dst4 = _mm_loadu_si128(dst_ptr.cast::<__m128i>().cast_const());
+    let alpha_byte_mask = _mm_set1_epi32(0xFF00_0000_u32.cast_signed());
     let src_blend = _mm_or_si128(src4, alpha_byte_mask);
 
     // --- Low 2 pixels ---
@@ -382,7 +394,7 @@ unsafe fn blend_4px_over_alpha_sse2(dst_ptr: *mut u8, src_pixels: [u32; 4], opac
     );
     let result_hi = _mm_srli_epi16(_mm_add_epi16(val_hi, _mm_srli_epi16(val_hi, 8)), 8);
 
-    _mm_storeu_si128(dst_ptr as *mut __m128i, _mm_packus_epi16(result_lo, result_hi));
+    _mm_storeu_si128(dst_ptr.cast::<__m128i>(), _mm_packus_epi16(result_lo, result_hi));
 }
 
 /// Inner blit for fully-opaque layers (`opacity >= 1.0`).  Skips the
@@ -643,7 +655,9 @@ fn blit_row_alpha(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::too_many_arguments,
-    clippy::cast_precision_loss
+    clippy::cast_precision_loss,
+    clippy::similar_names,
+    clippy::cast_possible_wrap
 )]
 pub fn scale_blit_rgba_rotated(
     dst: &mut [u8],
@@ -673,8 +687,8 @@ pub fn scale_blit_rgba_rotated(
         let fit_scale = (rw / sw_f).min(rh / sh_f);
         let content_w = (sw_f * fit_scale).round() as u32;
         let content_h = (sh_f * fit_scale).round() as u32;
-        let offset_x = (dst_rect.width.saturating_sub(content_w) / 2) as i32;
-        let offset_y = (dst_rect.height.saturating_sub(content_h) / 2) as i32;
+        let offset_x = (dst_rect.width.saturating_sub(content_w) / 2).cast_signed();
+        let offset_y = (dst_rect.height.saturating_sub(content_h) / 2).cast_signed();
         let fit_rect = super::config::Rect {
             x: dst_rect.x + offset_x,
             y: dst_rect.y + offset_y,
@@ -685,8 +699,8 @@ pub fn scale_blit_rgba_rotated(
         return;
     }
 
-    let dw = dst_width as i32;
-    let dh = dst_height as i32;
+    let dw = dst_width.cast_signed();
+    let dh = dst_height.cast_signed();
     let sw = src_width as usize;
     let sh = src_height as usize;
 

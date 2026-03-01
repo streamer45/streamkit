@@ -117,6 +117,7 @@ impl BenchArgs {
 // ── Frame generators ────────────────────────────────────────────────────────
 
 /// Generate an RGBA8 color-bar frame (opaque, all alpha = 255).
+#[allow(clippy::many_single_char_names)]
 fn generate_rgba_frame(width: u32, height: u32) -> Vec<u8> {
     let w = width as usize;
     let h = height as usize;
@@ -226,6 +227,7 @@ struct Scenario {
     layers: Vec<Option<LayerSnapshot>>,
 }
 
+#[allow(clippy::too_many_arguments, clippy::unnecessary_wraps)]
 fn make_layer(
     data: Vec<u8>,
     width: u32,
@@ -251,8 +253,8 @@ fn make_layer(
 fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
     let pip_w = canvas_w / 3;
     let pip_h = canvas_h / 3;
-    let pip_x = (canvas_w - pip_w - 20) as i32;
-    let pip_y = (canvas_h - pip_h - 20) as i32;
+    let pip_x = (canvas_w - pip_w - 20).cast_signed();
+    let pip_y = (canvas_h - pip_h - 20).cast_signed();
 
     vec![
         // 1 layer RGBA — baseline
