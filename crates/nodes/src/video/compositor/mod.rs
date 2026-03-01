@@ -1341,4 +1341,162 @@ mod tests {
             );
         }
     }
+
+    /// Test that `scale_blit_rgba` with opacity < 1.0 writes all rows correctly
+    /// on a buffer wide enough to exercise the AVX2 blend path (32 pixels).
+    /// This verifies the AVX2 → SSE2 → scalar cascade in `blit_row_alpha`.
+    #[test]
+    fn test_scale_blit_opacity_all_rows_written() {
+        let w = 32usize;
+        let h = 32usize;
+        // Fully opaque red source.
+        let src: Vec<u8> = [200, 50, 30, 255].repeat(w * h);
+        // All-black destination (simulates cleared canvas).
+        let mut dst = vec![0u8; w * h * 4];
+
+        scale_blit_rgba(
+            &mut dst,
+            w as u32,
+            h as u32,
+            &src,
+            w as u32,
+            h as u32,
+            &Rect { x: 0, y: 0, width: w as u32, height: h as u32 },
+            0.9,
+        );
+
+        // Every single row should have been written to (non-zero pixels).
+        for row in 0..h {
+            let row_start = row * w * 4;
+            let row_slice = &dst[row_start..row_start + w * 4];
+            let any_written = row_slice.iter().any(|&b| b != 0);
+            assert!(any_written, "Row {row} was not written to (all zeros)");
+
+            // Verify each pixel matches the expected scalar blend.
+            // opacity_u16 = (0.9 * 255 + 0.5) as u16 = 230
+            // sa_eff = (255 * 230 + 128) >> 8 = 229
+            // Dst is black (0), so blended = src * sa_eff / 255.
+            let opacity_u16: u16 = 230;
+            let sa_eff = ((255u16 * opacity_u16 + 128) >> 8).min(255);
+            let expected_r = {
+                let blend = 200u16 * sa_eff + 128;
+                ((blend + (blend >> 8)) >> 8) as u8
+            };
+            let expected_g = {
+                let blend = 50u16 * sa_eff + 128;
+                ((blend + (blend >> 8)) >> 8) as u8
+            };
+            let expected_b = {
+                let blend = 30u16 * sa_eff + 128;
+                ((blend + (blend >> 8)) >> 8) as u8
+            };
+            for col in 0..w {
+                let idx = row_start + col * 4;
+                let got_r = dst[idx];
+                let got_g = dst[idx + 1];
+                let got_b = dst[idx + 2];
+                let got_a = dst[idx + 3];
+
+                // Allow ±1 for rounding differences between SIMD and scalar paths.
+                assert!(
+                    (i16::from(got_r) - i16::from(expected_r)).abs() <= 1,
+                    "Row {row}, Col {col}: R={got_r}, expected ~{expected_r}"
+                );
+                assert!(
+                    (i16::from(got_g) - i16::from(expected_g)).abs() <= 1,
+                    "Row {row}, Col {col}: G={got_g}, expected ~{expected_g}"
+                );
+                assert!(
+                    (i16::from(got_b) - i16::from(expected_b)).abs() <= 1,
+                    "Row {row}, Col {col}: B={got_b}, expected ~{expected_b}"
+                );
+                assert!(got_a > 200, "Row {row}, Col {col}: A={got_a}, expected >200");
+            }
+        }
+    }
+
+    /// Test I420→RGBA8 AVX2 kernel correctness with a multi-row buffer wide
+    /// enough to exercise the 8-pixel AVX2 path plus scalar remainder.
+    /// Verifies the OOB-safe scalar chroma reads produce identical output to
+    /// the scalar reference for every pixel.
+    #[test]
+    fn test_i420_to_rgba8_avx2_wide_multirow() {
+        // 24 pixels wide = 3 AVX2 iterations (8px each) with 0 remainder.
+        // 4 rows to exercise multi-row chroma subsampling.
+        let width: u32 = 24;
+        let height: u32 = 4;
+        let w = width as usize;
+        let h = height as usize;
+        let chroma_w = w / 2;
+
+        // Build a varied I420 test pattern.
+        let mut i420_data = vec![0u8; w * h + 2 * chroma_w * (h / 2)];
+        // Y plane: gradient across rows and columns.
+        for row in 0..h {
+            for col in 0..w {
+                i420_data[row * w + col] = (16 + ((row * w + col) * 219) / (w * h)) as u8;
+            }
+        }
+        // U/V planes: varying chroma values.
+        let u_offset = w * h;
+        let v_offset = u_offset + chroma_w * (h / 2);
+        for i in 0..chroma_w * (h / 2) {
+            i420_data[u_offset + i] = (64 + (i * 3) % 192) as u8;
+            i420_data[v_offset + i] = (32 + (i * 7) % 224) as u8;
+        }
+
+        // Convert using the public function (dispatches to AVX2 on this machine).
+        let mut simd_out = vec![0u8; w * h * 4];
+        pixel_ops::i420_to_rgba8_buf(&i420_data, width, height, &mut simd_out);
+
+        // Compare every pixel against the scalar reference.
+        for row in 0..h {
+            for col in 0..w {
+                let luma = i420_data[row * w + col];
+                let chroma_r = row / 2;
+                let chroma_c = col / 2;
+                let u_val = i420_data[u_offset + chroma_r * chroma_w + chroma_c];
+                let v_val = i420_data[v_offset + chroma_r * chroma_w + chroma_c];
+                let expected = scalar_i420_to_rgba8(luma, u_val, v_val);
+                let got_idx = (row * w + col) * 4;
+                let got = &simd_out[got_idx..got_idx + 4];
+                assert_eq!(
+                    got, &expected,
+                    "row={row} col={col}: Y={luma} U={u_val} V={v_val} → expected {expected:?}, got {got:?}"
+                );
+            }
+        }
+    }
+
+    /// Test that opacity < 1.0 through `composite_frame` produces correct
+    /// output with no black borders when source matches canvas dimensions.
+    #[test]
+    fn test_composite_frame_opacity_no_black_borders() {
+        let w = 32u32;
+        let h = 32u32;
+        let frame = make_rgba_frame(w, h, 200, 100, 50, 255);
+
+        let layer = LayerSnapshot {
+            data: frame.data,
+            width: w,
+            height: h,
+            pixel_format: PixelFormat::Rgba8,
+            rect: Some(Rect { x: 0, y: 0, width: w, height: h }),
+            opacity: 0.8,
+            z_index: 0,
+            rotation_degrees: 0.0,
+        };
+
+        let mut cache = ConversionCache::new();
+        let result = composite_frame(w, h, &[Some(layer)], &[], &[], None, &mut cache);
+        let buf = result.as_slice();
+
+        // Every row should have non-zero content (no black borders).
+        for row in 0..h as usize {
+            let row_start = row * w as usize * 4;
+            let row_end = row_start + w as usize * 4;
+            let any_nonzero = buf[row_start..row_end].iter().any(|&b| b != 0);
+            assert!(any_nonzero, "Row {row} is all zeros — black border detected");
+        }
+    }
 }

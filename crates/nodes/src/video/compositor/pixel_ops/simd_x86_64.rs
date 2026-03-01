@@ -878,10 +878,10 @@ pub(super) unsafe fn i420_to_rgba8_row_avx2(
 ) -> usize {
     use std::arch::x86_64::{
         _mm256_add_epi32, _mm256_castsi256_si128, _mm256_cvtepu8_epi32, _mm256_extracti128_si256,
-        _mm256_mullo_epi32, _mm256_set1_epi32, _mm256_srai_epi32, _mm256_sub_epi32,
-        _mm_loadl_epi64, _mm_or_si128, _mm_packs_epi32, _mm_packus_epi16, _mm_set1_epi32,
-        _mm_set1_epi8, _mm_set_epi8, _mm_setzero_si128, _mm_shuffle_epi8, _mm_storeu_si128,
-        _mm_unpacklo_epi16, _mm_unpacklo_epi8,
+        _mm256_mullo_epi32, _mm256_set1_epi32, _mm256_set_epi32, _mm256_srai_epi32,
+        _mm256_sub_epi32, _mm_loadl_epi64, _mm_or_si128, _mm_packs_epi32, _mm_packus_epi16,
+        _mm_set1_epi32, _mm_set1_epi8, _mm_setzero_si128, _mm_storeu_si128, _mm_unpacklo_epi16,
+        _mm_unpacklo_epi8,
     };
 
     let simd_width = width & !7; // round down to multiple of 8
@@ -900,21 +900,27 @@ pub(super) unsafe fn i420_to_rgba8_row_avx2(
     let alpha_mask = _mm_set1_epi32(0xFF00_0000_u32.cast_signed());
     let zero = _mm_setzero_si128();
 
-    // Shuffle control to duplicate each byte: [a,b,c,d,...] → [a,a,b,b,c,c,d,d]
-    let dup_shuf = _mm_set_epi8(-1, -1, -1, -1, -1, -1, -1, -1, 3, 3, 2, 2, 1, 1, 0, 0);
-
     let mut col = 0usize;
     while col < simd_width {
         // Load 8 luma samples.
         let y8 = _mm_loadl_epi64(y_row.as_ptr().add(col).cast());
         let y32 = _mm256_cvtepu8_epi32(y8);
 
-        // Load 4 U and 4 V chroma samples, duplicate each to pair with 2 luma.
+        // Load 4 U and 4 V chroma samples via scalar reads, duplicating each
+        // to pair with 2 luma pixels.  We avoid `_mm_loadl_epi64` here because
+        // the chroma planes may have only 4 bytes remaining at the last
+        // iteration, and `_mm_loadl_epi64` always reads 8 bytes.
         let chroma_col = col / 2;
-        let u4 = _mm_loadl_epi64(u_row.as_ptr().add(chroma_col).cast());
-        let v4 = _mm_loadl_epi64(v_row.as_ptr().add(chroma_col).cast());
-        let u32x8 = _mm256_cvtepu8_epi32(_mm_shuffle_epi8(u4, dup_shuf));
-        let v32x8 = _mm256_cvtepu8_epi32(_mm_shuffle_epi8(v4, dup_shuf));
+        let u0 = i32::from(u_row[chroma_col]);
+        let u1 = i32::from(u_row[chroma_col + 1]);
+        let u2 = i32::from(u_row[chroma_col + 2]);
+        let u3 = i32::from(u_row[chroma_col + 3]);
+        let u32x8 = _mm256_set_epi32(u3, u3, u2, u2, u1, u1, u0, u0);
+        let v0 = i32::from(v_row[chroma_col]);
+        let v1 = i32::from(v_row[chroma_col + 1]);
+        let v2 = i32::from(v_row[chroma_col + 2]);
+        let v3 = i32::from(v_row[chroma_col + 3]);
+        let v32x8 = _mm256_set_epi32(v3, v3, v2, v2, v1, v1, v0, v0);
 
         let c = _mm256_sub_epi32(y32, bias_16);
         let d = _mm256_sub_epi32(u32x8, bias_128);
