@@ -3417,6 +3417,8 @@ const MonitorViewContent: React.FC = () => {
       onInit,
       editMode,
       isLoadingPipeline,
+      handleStartPreview,
+      isPreviewConnected,
     ]
   );
 

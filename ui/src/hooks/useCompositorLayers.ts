@@ -322,7 +322,13 @@ export const useCompositorLayers = (
   useEffect(() => {
     if (dragStateRef.current) return;
     const parsed = parseLayers(params, canvasWidth, canvasHeight);
-    setLayers(parsed);
+    // Preserve client-side `visible` state from existing layers
+    const current = layersRef.current;
+    const merged = parsed.map((p) => {
+      const existing = current.find((l) => l.id === p.id);
+      return existing ? { ...p, visible: existing.visible } : p;
+    });
+    setLayers(merged);
 
     // Skip overlay re-parse if we just committed a local overlay change.
     // This prevents stale params from overwriting the local removal/add.
