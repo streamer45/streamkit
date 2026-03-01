@@ -38,6 +38,7 @@ nodes:
       fps: 30
       frame_count: 90
       pixel_format: rgba8
+      draw_time: true
 
   compositor:
     kind: video::compositor
