@@ -101,6 +101,11 @@ pub fn scale_blit_rgba(
         return;
     }
 
+    // Precompute the source-X lookup table once.  This replaces the per-pixel
+    // `(dx + src_col_skip) * sw / rw` integer division with a single table
+    // lookup in the inner blit loops.
+    let x_map: Vec<usize> = (0..effective_rect_w).map(|dx| (dx + src_col_skip) * sw / rw).collect();
+
     // Split the destination buffer into per-row slices so that each row can
     // be processed independently (and therefore in parallel).
     let row_stride = dw * 4;
@@ -114,24 +119,13 @@ pub fn scale_blit_rgba(
         dst_rows.par_chunks_mut(row_stride).take(effective_rh).enumerate().for_each(
             |(dy, row_slice)| {
                 let sy = (dy + src_row_skip) * sh / rh;
-                blit_row(
-                    row_slice,
-                    rx,
-                    effective_rect_w,
-                    src,
-                    sw,
-                    sh,
-                    sy,
-                    rw,
-                    opacity,
-                    src_col_skip,
-                );
+                blit_row(row_slice, rx, effective_rect_w, src, sw, sy, opacity, &x_map);
             },
         );
     } else {
         for (dy, row_slice) in dst_rows.chunks_mut(row_stride).take(effective_rh).enumerate() {
             let sy = (dy + src_row_skip) * sh / rh;
-            blit_row(row_slice, rx, effective_rect_w, src, sw, sh, sy, rw, opacity, src_col_skip);
+            blit_row(row_slice, rx, effective_rect_w, src, sw, sy, opacity, &x_map);
         }
     }
 }
@@ -142,6 +136,9 @@ pub fn scale_blit_rgba(
 /// rows in parallel.  The `row_slice` covers exactly one destination row
 /// starting at pixel column 0 (i.e. byte offset `rx * 4` is the first column
 /// we write to).
+///
+/// `x_map` is a precomputed table mapping each destination column to the
+/// corresponding source column, eliminating per-pixel integer division.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -155,18 +152,16 @@ fn blit_row(
     effective_rw: usize,
     src: &[u8],
     sw: usize,
-    sh: usize,
     sy: usize,
-    rw: usize,
     opacity: f32,
-    src_col_skip: usize,
+    x_map: &[usize],
 ) {
     // Fast path: when opacity is 1.0, we can skip the f32 multiply on alpha
     // and branch more cheaply.
     if opacity >= 1.0 {
-        blit_row_opaque(row_slice, rx, effective_rw, src, sw, sh, sy, rw, src_col_skip);
+        blit_row_opaque(row_slice, rx, effective_rw, src, sw, sy, x_map);
     } else {
-        blit_row_alpha(row_slice, rx, effective_rw, src, sw, sh, sy, rw, opacity, src_col_skip);
+        blit_row_alpha(row_slice, rx, effective_rw, src, sw, sy, opacity, x_map);
     }
 }
 
@@ -184,6 +179,7 @@ const fn blend_u8(src: u8, dst: u8, alpha: u16) -> u8 {
 /// per-pixel f32 multiply on the source alpha channel.
 ///
 /// Uses integer-only alpha blending for semi-transparent source pixels.
+/// `x_map` provides precomputed source-X indices (one per destination column).
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -198,14 +194,12 @@ fn blit_row_opaque(
     effective_rw: usize,
     src: &[u8],
     sw: usize,
-    _sh: usize,
     sy: usize,
-    rw: usize,
-    src_col_skip: usize,
+    x_map: &[usize],
 ) {
     let src_row_base = sy * sw * 4;
     for dx in 0..effective_rw {
-        let sx = (dx + src_col_skip) * sw / rw;
+        let sx = x_map[dx];
         let src_idx = src_row_base + sx * 4;
         if src_idx + 3 >= src.len() {
             continue;
@@ -242,6 +236,7 @@ fn blit_row_opaque(
 /// Applies the opacity multiplier to every source pixel's alpha channel.
 ///
 /// Uses integer-only alpha blending.
+/// `x_map` provides precomputed source-X indices (one per destination column).
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -256,18 +251,16 @@ fn blit_row_alpha(
     effective_rw: usize,
     src: &[u8],
     sw: usize,
-    _sh: usize,
     sy: usize,
-    rw: usize,
     opacity: f32,
-    src_col_skip: usize,
+    x_map: &[usize],
 ) {
     // Pre-compute opacity as a 0..255 integer multiplier.
     let opacity_u16 = (opacity * 255.0 + 0.5) as u16;
     let src_row_base = sy * sw * 4;
 
     for dx in 0..effective_rw {
-        let sx = (dx + src_col_skip) * sw / rw;
+        let sx = x_map[dx];
         let src_idx = src_row_base + sx * 4;
         if src_idx + 3 >= src.len() {
             continue;
