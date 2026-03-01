@@ -170,7 +170,9 @@ fn generate_nv12_frame(width: u32, height: u32) -> Vec<u8> {
     let chroma_h = h.div_ceil(2);
     let nv12_size = w * h + chroma_w * 2 * chroma_h;
     let mut nv12 = vec![0u8; nv12_size];
-    streamkit_nodes::video::compositor::pixel_ops::rgba8_to_nv12_buf(&rgba, width, height, &mut nv12);
+    streamkit_nodes::video::compositor::pixel_ops::rgba8_to_nv12_buf(
+        &rgba, width, height, &mut nv12,
+    );
     nv12
 }
 
@@ -251,10 +253,7 @@ fn bench_composite(
     }
 
     let elapsed = start.elapsed();
-    BenchResult {
-        total_secs: elapsed.as_secs_f64(),
-        frame_count,
-    }
+    BenchResult { total_secs: elapsed.as_secs_f64(), frame_count }
 }
 
 struct BenchResult {
@@ -341,12 +340,7 @@ fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
                     pip_w,
                     pip_h,
                     PixelFormat::Rgba8,
-                    Some(Rect {
-                        x: pip_x,
-                        y: pip_y,
-                        width: pip_w,
-                        height: pip_h,
-                    }),
+                    Some(Rect { x: pip_x, y: pip_y, width: pip_w, height: pip_h }),
                     0.9,
                     1,
                     0.0,
@@ -372,12 +366,7 @@ fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
                     pip_w,
                     pip_h,
                     PixelFormat::Rgba8,
-                    Some(Rect {
-                        x: pip_x,
-                        y: pip_y,
-                        width: pip_w,
-                        height: pip_h,
-                    }),
+                    Some(Rect { x: pip_x, y: pip_y, width: pip_w, height: pip_h }),
                     0.9,
                     1,
                     0.0,
@@ -387,12 +376,7 @@ fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
                     pip_w,
                     pip_h,
                     PixelFormat::Rgba8,
-                    Some(Rect {
-                        x: 20,
-                        y: 20,
-                        width: pip_w,
-                        height: pip_h,
-                    }),
+                    Some(Rect { x: 20, y: 20, width: pip_w, height: pip_h }),
                     0.8,
                     2,
                     0.0,
@@ -402,12 +386,7 @@ fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
                     pip_w,
                     pip_h,
                     PixelFormat::Rgba8,
-                    Some(Rect {
-                        x: 20,
-                        y: pip_y,
-                        width: pip_w,
-                        height: pip_h,
-                    }),
+                    Some(Rect { x: 20, y: pip_y, width: pip_w, height: pip_h }),
                     0.7,
                     3,
                     0.0,
@@ -433,12 +412,7 @@ fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
                     pip_w,
                     pip_h,
                     PixelFormat::Rgba8,
-                    Some(Rect {
-                        x: pip_x,
-                        y: pip_y,
-                        width: pip_w,
-                        height: pip_h,
-                    }),
+                    Some(Rect { x: pip_x, y: pip_y, width: pip_w, height: pip_h }),
                     0.9,
                     1,
                     0.0,
@@ -464,12 +438,7 @@ fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
                     pip_w,
                     pip_h,
                     PixelFormat::Rgba8,
-                    Some(Rect {
-                        x: pip_x,
-                        y: pip_y,
-                        width: pip_w,
-                        height: pip_h,
-                    }),
+                    Some(Rect { x: pip_x, y: pip_y, width: pip_w, height: pip_h }),
                     0.9,
                     1,
                     0.0,
@@ -495,12 +464,7 @@ fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
                     pip_w,
                     pip_h,
                     PixelFormat::Rgba8,
-                    Some(Rect {
-                        x: pip_x,
-                        y: pip_y,
-                        width: pip_w,
-                        height: pip_h,
-                    }),
+                    Some(Rect { x: pip_x, y: pip_y, width: pip_w, height: pip_h }),
                     0.9,
                     1,
                     15.0, // 15° rotation
@@ -511,9 +475,8 @@ fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
         Scenario {
             label: "2-layer-rgba-static".to_string(),
             layers: {
-                let bg = Arc::new(PooledVideoData::from_vec(generate_rgba_frame(
-                    canvas_w, canvas_h,
-                )));
+                let bg =
+                    Arc::new(PooledVideoData::from_vec(generate_rgba_frame(canvas_w, canvas_h)));
                 let pip = Arc::new(PooledVideoData::from_vec(generate_rgba_frame(pip_w, pip_h)));
                 vec![
                     Some(LayerSnapshot {
@@ -531,12 +494,7 @@ fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
                         width: pip_w,
                         height: pip_h,
                         pixel_format: PixelFormat::Rgba8,
-                        rect: Some(Rect {
-                            x: pip_x,
-                            y: pip_y,
-                            width: pip_w,
-                            height: pip_h,
-                        }),
+                        rect: Some(Rect { x: pip_x, y: pip_y, width: pip_w, height: pip_h }),
                         opacity: 0.9,
                         z_index: 1,
                         rotation_degrees: 0.0,
@@ -568,11 +526,7 @@ fn main() {
     eprintln!("╠══════════════════════════════════════════════════════════╣");
     eprintln!(
         "║  Resolutions : {:<41}║",
-        resolutions
-            .iter()
-            .map(|(w, h)| format!("{w}×{h}"))
-            .collect::<Vec<_>>()
-            .join(", ")
+        resolutions.iter().map(|(w, h)| format!("{w}×{h}")).collect::<Vec<_>>().join(", ")
     );
     eprintln!("║  Frames      : {:<41}║", args.frame_count);
     eprintln!("║  Iterations  : {:<41}║", args.iterations);
@@ -621,11 +575,7 @@ fn main() {
 
             eprintln!(
                 "  {:<28} avg: {:>8.1} fps  ({:.2} ms/frame, min={:.2}, max={:.2})",
-                "",
-                mean_fps,
-                mean_ms,
-                min_ms,
-                max_ms,
+                "", mean_fps, mean_ms, min_ms, max_ms,
             );
 
             json_results.push(serde_json::json!({
