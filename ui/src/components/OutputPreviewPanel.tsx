@@ -15,6 +15,7 @@ import { Maximize2, Minimize2 } from 'lucide-react';
 import React, { useCallback, useRef, useState } from 'react';
 import { useShallow } from 'zustand/shallow';
 
+import { useCanvasAspectRatio } from '@/hooks/useCanvasAspectRatio';
 import { useStreamStore } from '@/stores/streamStore';
 import type { WatchStatus } from '@/stores/streamStore';
 
@@ -172,6 +173,8 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
   ({ hasSession, conditionalRender = false }) => {
     const [collapsed, setCollapsed] = useState(false);
     const [isFullscreen, setIsFullscreen] = useState(false);
+    const [canvasEl, setCanvasEl] = useState<HTMLCanvasElement | null>(null);
+    const canvasAspectRatio = useCanvasAspectRatio(canvasEl);
     // Position relative to bottom-right of the container
     const [pos, setPos] = useState({ x: 16, y: 16 });
     const [panelWidth, setPanelWidth] = useState(DEFAULT_WIDTH);
@@ -231,6 +234,7 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
 
     const canvasRef = useCallback(
       (el: HTMLCanvasElement | null) => {
+        setCanvasEl(el);
         if (el && videoRenderer) {
           videoRenderer.canvas.set(el);
         }
@@ -359,7 +363,7 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
         <PreviewCanvas
           ref={canvasRef}
           style={{
-            aspectRatio: '16 / 9',
+            aspectRatio: canvasAspectRatio,
           }}
         />
       );

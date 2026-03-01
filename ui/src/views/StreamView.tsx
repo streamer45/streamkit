@@ -3,13 +3,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import styled from '@emotion/styled';
-import React, { useEffect, useCallback } from 'react';
+import React, { useEffect, useCallback, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useShallow } from 'zustand/shallow';
 
 import ConfirmModal from '@/components/ConfirmModal';
 import { PipelineSelectionSection } from '@/components/stream/PipelineSelectionSection';
 import TelemetryTimelineComponent from '@/components/TelemetryTimeline';
+import { useCanvasAspectRatio } from '@/hooks/useCanvasAspectRatio';
 import { useStreamViewState } from '@/hooks/useStreamViewState';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { listDynamicSamples } from '@/services/samples';
@@ -334,6 +335,8 @@ const StreamView: React.FC = () => {
   const [showTechnicalDetails, setShowTechnicalDetails] = React.useState<boolean>(false);
   const [destroyConfirmOpen, setDestroyConfirmOpen] = React.useState<boolean>(false);
   const [destroyConfirmLoading, setDestroyConfirmLoading] = React.useState<boolean>(false);
+  const [canvasEl, setCanvasEl] = useState<HTMLCanvasElement | null>(null);
+  const canvasAspectRatio = useCanvasAspectRatio(canvasEl);
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -903,16 +906,20 @@ const StreamView: React.FC = () => {
               <SectionTitle>Video</SectionTitle>
               <canvas
                 ref={(el) => {
+                  setCanvasEl(el);
                   if (el && videoRenderer) {
                     videoRenderer.canvas.set(el);
                   }
                 }}
                 style={{
-                  width: '100%',
+                  display: 'block',
+                  width: 'auto',
+                  maxWidth: '100%',
                   maxHeight: 480,
+                  margin: '0 auto',
                   borderRadius: 6,
                   background: '#000',
-                  aspectRatio: '4 / 3',
+                  aspectRatio: canvasAspectRatio,
                 }}
               />
             </Section>

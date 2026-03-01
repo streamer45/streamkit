@@ -51,7 +51,10 @@ nodes:
           opacity: 1.0
           z_index: 0
         # PiP overlay: positioned on the left side with a 15° clockwise
-        # rotation to demonstrate compositing transforms.  Placed left so
+        # rotation to demonstrate compositing transforms.  The source
+        # (320×240, 4:3) is uniformly fitted into a 240×180 (also 4:3)
+        # rect; if the rect aspect ratio differed the image would be
+        # letterboxed/pillarboxed rather than stretched.  Placed left so
         # the main canvas blue bar (rightmost SMPTE bar) stays visible.
         in_1:
           rect:

@@ -816,7 +816,7 @@ mod tests {
         assert_state_initializing, assert_state_running, assert_state_stopped, create_test_context,
     };
     use config::{LayerConfig, Rect};
-    use pixel_ops::scale_blit_rgba;
+    use pixel_ops::{scale_blit_rgba, scale_blit_rgba_rotated};
     use std::collections::HashMap;
     use tokio::sync::mpsc;
 
@@ -888,6 +888,51 @@ mod tests {
         }
         // Outside should remain black.
         assert_eq!(dst[0], 0);
+    }
+
+    #[test]
+    fn test_rotated_blit_preserves_aspect_ratio() {
+        // A wide 4×2 red source blitted into a square 20×20 rect with 45°
+        // rotation on a 40×40 canvas.
+        //
+        // Angle-independent fit scale: min(20/4, 20/2) = 5.0
+        //   content = 20×10, centred and rotated within the 20×20 rect.
+        //
+        // The scale does NOT change with the rotation angle — this prevents
+        // a "pulsating" effect when the angle is animated.  Corners of the
+        // rotated content that extend beyond the rect are clipped.
+        //
+        // The canvas centre (20,20) should still be covered by red source
+        // pixels, while the rect corner (10,10) should remain transparent.
+        let src = vec![255u8, 0, 0, 255].repeat(4 * 2); // 4×2 solid red
+        let mut dst = vec![0u8; 40 * 40 * 4];
+
+        scale_blit_rgba_rotated(
+            &mut dst,
+            40,
+            40,
+            &src,
+            4,
+            2,
+            &Rect { x: 10, y: 10, width: 20, height: 20 },
+            1.0,
+            45.0,
+        );
+
+        // The centre of the rect (canvas pixel 20,20) should be covered
+        // by source content (red).
+        let cx = 20usize;
+        let cy = 20usize;
+        let idx = (cy * 40 + cx) * 4;
+        assert_eq!(dst[idx], 255, "Centre R");
+        assert_eq!(dst[idx + 1], 0, "Centre G");
+        assert_eq!(dst[idx + 2], 0, "Centre B");
+        assert!(dst[idx + 3] > 200, "Centre A should be mostly opaque");
+
+        // The rect corner (10,10) is well outside the fitted+rotated
+        // content area and should remain transparent.
+        let corner_idx = (10usize * 40 + 10) * 4;
+        assert_eq!(dst[corner_idx + 3], 0, "Rect corner should be transparent (padding)");
     }
 
     #[test]
