@@ -40,6 +40,7 @@ export interface TextOverlayState {
   color: [number, number, number, number];
   fontSize: number;
   opacity: number;
+  rotationDegrees: number;
   /** Client-side visibility toggle (hidden overlays send opacity=0 to backend) */
   visible: boolean;
 }
@@ -123,6 +124,7 @@ interface TextOverlayConfig {
   color?: [number, number, number, number];
   font_size?: number;
   opacity?: number;
+  rotation_degrees?: number;
 }
 
 interface ImageOverlayConfig {
@@ -169,6 +171,7 @@ function parseTextOverlays(params: Record<string, unknown>): TextOverlayState[] 
     color: o.color ?? [255, 255, 255, 255],
     fontSize: o.font_size ?? 24,
     opacity: o.opacity ?? 1.0,
+    rotationDegrees: o.rotation_degrees ?? 0,
     visible: true,
   }));
 }
@@ -202,6 +205,7 @@ function serializeTextOverlays(overlays: TextOverlayState[]): TextOverlayConfig[
     color: o.color,
     font_size: o.fontSize,
     opacity: o.visible ? Math.round(o.opacity * 100) / 100 : 0,
+    rotation_degrees: Math.round(o.rotationDegrees * 10) / 10,
   }));
 }
 
@@ -334,7 +338,27 @@ export const useCompositorLayers = (
           }
         : p;
     });
-    setLayers(merged);
+
+    // Issue #4 fix: only update layers state if the merged result actually
+    // differs from current state.  This prevents unnecessary re-renders that
+    // cause positions to briefly revert when switching selected layers.
+    const layersChanged =
+      merged.length !== current.length ||
+      merged.some(
+        (m, i) =>
+          m.id !== current[i].id ||
+          m.x !== current[i].x ||
+          m.y !== current[i].y ||
+          m.width !== current[i].width ||
+          m.height !== current[i].height ||
+          m.opacity !== current[i].opacity ||
+          m.zIndex !== current[i].zIndex ||
+          m.rotationDegrees !== current[i].rotationDegrees ||
+          m.visible !== current[i].visible
+      );
+    if (layersChanged) {
+      setLayers(merged);
+    }
 
     // Skip overlay re-parse if we just committed a local overlay change.
     // This prevents stale params from overwriting the local removal/add.
@@ -343,7 +367,7 @@ export const useCompositorLayers = (
 
     setTextOverlays((currentText) => {
       const parsed = parseTextOverlays(params);
-      return parsed.map((p) => {
+      const merged = parsed.map((p) => {
         const existing = currentText.find((o) => o.id === p.id);
         if (existing) {
           return {
@@ -354,10 +378,27 @@ export const useCompositorLayers = (
         }
         return p;
       });
+      // Skip update if nothing changed
+      const changed =
+        merged.length !== currentText.length ||
+        merged.some(
+          (m, i) =>
+            m.id !== currentText[i].id ||
+            m.x !== currentText[i].x ||
+            m.y !== currentText[i].y ||
+            m.width !== currentText[i].width ||
+            m.height !== currentText[i].height ||
+            m.opacity !== currentText[i].opacity ||
+            m.rotationDegrees !== currentText[i].rotationDegrees ||
+            m.text !== currentText[i].text ||
+            m.fontSize !== currentText[i].fontSize ||
+            m.visible !== currentText[i].visible
+        );
+      return changed ? merged : currentText;
     });
     setImageOverlays((currentImg) => {
       const parsed = parseImageOverlays(params);
-      return parsed.map((p) => {
+      const merged = parsed.map((p) => {
         const existing = currentImg.find((o) => o.id === p.id);
         if (existing) {
           return {
@@ -368,6 +409,20 @@ export const useCompositorLayers = (
         }
         return p;
       });
+      // Skip update if nothing changed
+      const changed =
+        merged.length !== currentImg.length ||
+        merged.some(
+          (m, i) =>
+            m.id !== currentImg[i].id ||
+            m.x !== currentImg[i].x ||
+            m.y !== currentImg[i].y ||
+            m.width !== currentImg[i].width ||
+            m.height !== currentImg[i].height ||
+            m.opacity !== currentImg[i].opacity ||
+            m.visible !== currentImg[i].visible
+        );
+      return changed ? merged : currentImg;
     });
   }, [params, canvasWidth, canvasHeight]);
 
@@ -388,7 +443,7 @@ export const useCompositorLayers = (
             height: textOverlay.height,
             opacity: textOverlay.opacity,
             zIndex: 0,
-            rotationDegrees: 0,
+            rotationDegrees: textOverlay.rotationDegrees,
             visible: textOverlay.visible,
           },
           kind: 'text',
@@ -465,12 +520,24 @@ export const useCompositorLayers = (
       clientX: number,
       clientY: number
     ): LayerState => {
-      const dx = (clientX - state.startX) / state.scale;
-      const dy = (clientY - state.startY) / state.scale;
+      const rawDx = (clientX - state.startX) / state.scale;
+      const rawDy = (clientY - state.startY) / state.scale;
       const orig = state.origLayer;
 
       if (state.type === 'drag') {
-        return { ...orig, x: orig.x + dx, y: orig.y + dy };
+        return { ...orig, x: orig.x + rawDx, y: orig.y + rawDy };
+      }
+
+      // Issue #5 fix: transform mouse delta into the layer's local coordinate
+      // system so resize handles behave naturally on rotated layers.
+      let dx = rawDx;
+      let dy = rawDy;
+      if (orig.rotationDegrees !== 0) {
+        const rad = (-orig.rotationDegrees * Math.PI) / 180;
+        const cos = Math.cos(rad);
+        const sin = Math.sin(rad);
+        dx = rawDx * cos - rawDy * sin;
+        dy = rawDx * sin + rawDy * cos;
       }
 
       // Resize
@@ -779,6 +846,7 @@ export const useCompositorLayers = (
             color: [255, 255, 255, 255],
             fontSize: 24,
             opacity: 1.0,
+            rotationDegrees: 0,
             visible: true,
           },
         ];

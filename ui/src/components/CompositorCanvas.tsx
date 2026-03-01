@@ -280,6 +280,22 @@ const TextOverlayLayer: React.FC<{
   const cancelledRef = useRef(false);
   const committedRef = useRef(false);
 
+  // Issue #1 fix: when the layer is deselected while editing, commit the edit.
+  const prevSelectedRef = useRef(isSelected);
+  useEffect(() => {
+    if (prevSelectedRef.current && !isSelected && editing) {
+      // Layer was deselected while editing – commit
+      if (!cancelledRef.current && !committedRef.current) {
+        committedRef.current = true;
+        if (editText.trim() && editText !== overlay.text && onTextEdit) {
+          onTextEdit(overlay.id, { text: editText.trim() });
+        }
+      }
+      setEditing(false);
+    }
+    prevSelectedRef.current = isSelected;
+  }, [isSelected, editing, editText, overlay.id, overlay.text, onTextEdit]);
+
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
       if (editing) return; // don't start drag while editing
@@ -346,6 +362,9 @@ const TextOverlayLayer: React.FC<{
         border: `2px dashed ${borderColor}`,
         background: bgColor,
         filter: overlay.visible ? undefined : 'grayscale(0.6)',
+        // Issue #7: render rotation for text overlays (matching video layers)
+        transform:
+          overlay.rotationDegrees !== 0 ? `rotate(${overlay.rotationDegrees}deg)` : undefined,
       }}
       onPointerDown={handlePointerDown}
       onDoubleClick={handleDoubleClick}
@@ -486,7 +505,12 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
       return () => observer.disconnect();
     }, [canvasWidth]);
 
+    // Issue #1 fix: blur any active element (e.g. inline text input) before
+    // deselecting so that the input's onBlur → commitEdit fires reliably.
     const handlePaneClick = useCallback(() => {
+      if (document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur();
+      }
       onSelectLayer(null);
     }, [onSelectLayer]);
 
