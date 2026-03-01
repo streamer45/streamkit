@@ -13,6 +13,7 @@ nodes:
       width: 640
       height: 480
       fps: 30
+      pixel_format: nv12
 
   vp9_encoder:
     kind: video::vp9::encoder

@@ -8,7 +8,7 @@
 //!
 //! Runs the same graph as `samples/pipelines/oneshot/video_compositor_demo.yml`:
 //!
-//!   colorbars_bg (I420) ──┐
+//!   colorbars_bg (RGBA8) ──┐
 //!                         ├─► compositor ──► vp9_encoder ──► http_output
 //!   colorbars_pip (RGBA8) ┘
 //!
@@ -114,7 +114,7 @@ fn build_pipeline(width: u32, height: u32, fps: u32, frame_count: u32) -> stream
 
     let mut nodes = indexmap::IndexMap::new();
 
-    // --- colorbars_bg (I420, full-size) ---
+    // --- colorbars_bg (RGBA8, full-size) ---
     nodes.insert(
         "colorbars_bg".to_string(),
         Node {

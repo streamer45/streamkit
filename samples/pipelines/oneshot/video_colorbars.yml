@@ -14,6 +14,7 @@ nodes:
       height: 480
       fps: 30
       frame_count: 150  # 5 seconds at 30fps
+      pixel_format: nv12
 
   vp9_encoder:
     kind: video::vp9::encoder

@@ -5,7 +5,7 @@
 //! SMPTE EIA 75% color bars video generator.
 //!
 //! Produces raw video frames with the standard 7-bar test pattern.
-//! Supports NV12 (default), I420, and RGBA8 pixel formats.
+//! Supports RGBA8 (default), NV12, and I420 pixel formats.
 //! Configurable resolution, frame rate, and frame count.
 //!
 //! - `frame_count > 0`: batch mode — emits exactly N frames with synthetic timestamps (oneshot).
@@ -60,7 +60,7 @@ pub struct ColorBarsConfig {
     /// Total frames to generate. 0 = infinite (real-time pacing).
     #[serde(default = "default_frame_count")]
     pub frame_count: u32,
-    /// Output pixel format. Supported: "nv12" (default), "i420", and "rgba8".
+    /// Output pixel format. Supported: "rgba8" (default), "nv12", and "i420".
     #[serde(default = "default_pixel_format")]
     pub pixel_format: String,
     /// When `true`, draws the current wall-clock time (`HH:MM:SS.mmm`)
@@ -74,7 +74,7 @@ pub struct ColorBarsConfig {
 }
 
 fn default_pixel_format() -> String {
-    "nv12".to_string()
+    "rgba8".to_string()
 }
 
 // Re-export the shared parse_pixel_format from the parent module.
