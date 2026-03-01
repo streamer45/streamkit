@@ -290,6 +290,11 @@ export const useCompositorLayers = (
     imageOverlaysRef.current = imageOverlays;
   }, [imageOverlays]);
 
+  // Guard against sync-from-params overwriting a local overlay mutation.
+  // After any local overlay commit we set this to Date.now().  The sync
+  // effect skips overlay parsing while the guard is active (< 1.5 s).
+  const overlayCommitGuardRef = useRef<number>(0);
+
   // Refs for zero-render drag/resize
   const layerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const dragStateRef = useRef<{
@@ -318,6 +323,12 @@ export const useCompositorLayers = (
     if (dragStateRef.current) return;
     const parsed = parseLayers(params, canvasWidth, canvasHeight);
     setLayers(parsed);
+
+    // Skip overlay re-parse if we just committed a local overlay change.
+    // This prevents stale params from overwriting the local removal/add.
+    const sinceCommit = Date.now() - overlayCommitGuardRef.current;
+    if (sinceCommit < 1500) return;
+
     setTextOverlays(parseTextOverlays(params));
     setImageOverlays(parseImageOverlays(params));
   }, [params, canvasWidth, canvasHeight]);
@@ -691,6 +702,10 @@ export const useCompositorLayers = (
 
   const commitOverlays = useCallback(
     (nextText: TextOverlayState[], nextImg: ImageOverlayState[]) => {
+      // Arm the guard so the sync effect won't overwrite overlays with
+      // stale params before the backend echoes back this change.
+      overlayCommitGuardRef.current = Date.now();
+
       if (onConfigChange) {
         const config = buildConfig(params, layersRef.current, nextText, nextImg);
         onConfigChange(nodeId, config);

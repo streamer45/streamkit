@@ -34,6 +34,29 @@ const FloatingPanel = styled.div`
   pointer-events: auto;
   overflow: hidden;
   min-width: 180px;
+  max-width: 90vw;
+`;
+
+/** Invisible resize handle on the left edge of the panel */
+const ResizeEdgeLeft = styled.div`
+  position: absolute;
+  top: 0;
+  left: -3px;
+  width: 6px;
+  height: 100%;
+  cursor: ew-resize;
+  z-index: 25;
+`;
+
+/** Invisible resize handle on the top edge of the panel */
+const ResizeEdgeTop = styled.div`
+  position: absolute;
+  top: -3px;
+  left: 0;
+  width: 100%;
+  height: 6px;
+  cursor: ns-resize;
+  z-index: 25;
 `;
 
 const DragHeader = styled.div`
@@ -142,6 +165,8 @@ interface OutputPreviewPanelProps {
 
 /** Default panel width (px) */
 const DEFAULT_WIDTH = 320;
+const MIN_WIDTH = 180;
+const MAX_WIDTH = 800;
 
 const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
   ({ hasSession, conditionalRender = false }) => {
@@ -149,12 +174,19 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
     const [isFullscreen, setIsFullscreen] = useState(false);
     // Position relative to bottom-right of the container
     const [pos, setPos] = useState({ x: 16, y: 16 });
+    const [panelWidth, setPanelWidth] = useState(DEFAULT_WIDTH);
     const panelRef = useRef<HTMLDivElement>(null);
     const dragRef = useRef<{
       startX: number;
       startY: number;
       origX: number;
       origY: number;
+    } | null>(null);
+    const resizeRef = useRef<{
+      startX: number;
+      startY: number;
+      origWidth: number;
+      edge: 'left' | 'top';
     } | null>(null);
 
     const { status, watchStatus, videoRenderer, activeSessionId } = useStreamStore(
@@ -204,6 +236,47 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
         }
       },
       [videoRenderer]
+    );
+
+    // ── Resize handling ─────────────────────────────────────────────────────
+    const handleResizeStart = useCallback(
+      (edge: 'left' | 'top', e: React.PointerEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        resizeRef.current = {
+          startX: e.clientX,
+          startY: e.clientY,
+          origWidth: panelWidth,
+          edge,
+        };
+
+        const handleResizeMove = (ev: PointerEvent) => {
+          if (!resizeRef.current) return;
+          if (resizeRef.current.edge === 'left') {
+            // Dragging left edge: moving left increases width (panel anchored to right)
+            const dx = resizeRef.current.startX - ev.clientX;
+            setPanelWidth(
+              Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, resizeRef.current.origWidth + dx))
+            );
+          } else {
+            // Dragging top edge: moving up increases height → increase width proportionally
+            const dy = resizeRef.current.startY - ev.clientY;
+            setPanelWidth(
+              Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, resizeRef.current.origWidth + dy * 1.78))
+            );
+          }
+        };
+
+        const handleResizeUp = () => {
+          resizeRef.current = null;
+          document.removeEventListener('pointermove', handleResizeMove);
+          document.removeEventListener('pointerup', handleResizeUp);
+        };
+
+        document.addEventListener('pointermove', handleResizeMove);
+        document.addEventListener('pointerup', handleResizeUp);
+      },
+      [panelWidth]
     );
 
     // ── Drag handling ────────────────────────────────────────────────────────
@@ -298,11 +371,23 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
         style={{
           right: isFullscreen ? 0 : pos.x,
           bottom: isFullscreen ? 0 : pos.y,
-          width: isFullscreen ? '100%' : collapsed ? undefined : DEFAULT_WIDTH,
+          width: isFullscreen ? '100%' : collapsed ? undefined : panelWidth,
           height: isFullscreen ? '100%' : undefined,
           borderRadius: isFullscreen ? 0 : undefined,
         }}
       >
+        {!isFullscreen && !collapsed && (
+          <>
+            <ResizeEdgeLeft
+              className="nodrag nopan"
+              onPointerDown={(e) => handleResizeStart('left', e)}
+            />
+            <ResizeEdgeTop
+              className="nodrag nopan"
+              onPointerDown={(e) => handleResizeStart('top', e)}
+            />
+          </>
+        )}
         <DragHeader onPointerDown={handleDragStart}>
           <HeaderLeft>
             <StatusDot status={watchStatus} />

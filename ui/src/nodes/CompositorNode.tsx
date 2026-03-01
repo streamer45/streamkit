@@ -649,6 +649,11 @@ const UnifiedLayerList: React.FC<{
   onRotationChange: (layerId: string, degrees: number) => void;
   onZIndexChange: (layerId: string, zIndex: number) => void;
   onToggleVisibility: (layerId: string) => void;
+  onAddText: (text: string) => void;
+  onUpdateText: (id: string, updates: Partial<Omit<TextOverlayState, 'id'>>) => void;
+  onRemoveText: (id: string) => void;
+  onAddImage: (dataBase64: string) => void;
+  onRemoveImage: (id: string) => void;
   disabled: boolean;
 }> = React.memo(
   ({
@@ -661,6 +666,11 @@ const UnifiedLayerList: React.FC<{
     onRotationChange,
     onZIndexChange,
     onToggleVisibility,
+    onAddText,
+    onUpdateText,
+    onRemoveText,
+    onAddImage,
+    onRemoveImage,
     disabled,
   }) => {
     // Build a unified list of all layers sorted by z-index (highest first for
@@ -706,6 +716,41 @@ const UnifiedLayerList: React.FC<{
     const isBottommost = stackIndex === 0;
     const isTopmost = stackIndex === sortedVideoByZ.length - 1;
 
+    // Add overlay menu state
+    const [menuOpen, setMenuOpen] = useState(false);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+
+    // Find selected text overlay for inline editing controls
+    const selectedTextOverlay = textOverlays.find((o) => o.id === selectedLayerId);
+
+    const handleAddText = useCallback(() => {
+      onAddText('Text');
+      setMenuOpen(false);
+    }, [onAddText]);
+
+    const handleAddImage = useCallback(() => {
+      setMenuOpen(false);
+      fileInputRef.current?.click();
+    }, []);
+
+    const handleImageFileChange = useCallback(
+      (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        if (!file.type.startsWith('image/')) return;
+
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = reader.result as string;
+          const base64 = result.split(',')[1];
+          if (base64) onAddImage(base64);
+        };
+        reader.readAsDataURL(file);
+        e.target.value = '';
+      },
+      [onAddImage]
+    );
+
     const iconForKind = (kind: LayerKind) => {
       switch (kind) {
         case 'text':
@@ -719,8 +764,34 @@ const UnifiedLayerList: React.FC<{
 
     return (
       <LayerControls>
+        <HiddenFileInput
+          ref={fileInputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/webp,image/gif"
+          onChange={handleImageFileChange}
+        />
+
         <LayerInfoRow>
           <ControlLabel style={{ fontWeight: 600 }}>Layers ({entries.length})</ControlLabel>
+          <div style={{ position: 'relative' }}>
+            <AddOverlayButton
+              disabled={disabled}
+              className="nodrag nopan"
+              onClick={() => setMenuOpen((p) => !p)}
+            >
+              <Plus size={10} /> Add
+            </AddOverlayButton>
+            {menuOpen && (
+              <AddMenu className="nodrag nopan">
+                <AddMenuItem onClick={handleAddText}>
+                  <Type size={12} /> Text
+                </AddMenuItem>
+                <AddMenuItem onClick={handleAddImage}>
+                  <Image size={12} /> Image
+                </AddMenuItem>
+              </AddMenu>
+            )}
+          </div>
         </LayerInfoRow>
 
         {entries.length === 0 && <NoSelectionText>No layers configured</NoSelectionText>}
@@ -758,6 +829,21 @@ const UnifiedLayerList: React.FC<{
                 {entry.visible ? <Eye size={12} /> : <EyeOff size={12} />}
               </VisibilityButton>
             </SKTooltip>
+            {(entry.kind === 'text' || entry.kind === 'image') && (
+              <SKTooltip content="Remove layer">
+                <RemoveButton
+                  disabled={disabled}
+                  className="nodrag nopan"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (entry.kind === 'text') onRemoveText(entry.id);
+                    else onRemoveImage(entry.id);
+                  }}
+                >
+                  <X size={12} />
+                </RemoveButton>
+              </SKTooltip>
+            )}
           </LayerListItem>
         ))}
 
@@ -844,6 +930,58 @@ const UnifiedLayerList: React.FC<{
                 </StackButton>
               </SKTooltip>
             </ZIndexRow>
+          </>
+        )}
+
+        {/* Controls for the selected text overlay */}
+        {selectedTextOverlay && (
+          <>
+            <LayerInfoRow style={{ marginTop: 4 }}>
+              <LayerName>Text</LayerName>
+              <LayerPosition>
+                ({Math.round(selectedTextOverlay.x)}, {Math.round(selectedTextOverlay.y)})
+              </LayerPosition>
+            </LayerInfoRow>
+            <OverlayEditRow style={{ paddingLeft: 0 }}>
+              <OverlayTextInput
+                value={selectedTextOverlay.text}
+                onChange={(e) => onUpdateText(selectedTextOverlay.id, { text: e.target.value })}
+                placeholder="Text content"
+                disabled={disabled}
+                className="nodrag nopan"
+              />
+            </OverlayEditRow>
+            <OverlayEditRow style={{ paddingLeft: 0 }}>
+              <span style={{ color: 'var(--sk-text-muted)' }}>Size</span>
+              <OverlayNumInput
+                type="number"
+                value={selectedTextOverlay.fontSize}
+                onChange={(e) => {
+                  const v = Number.parseInt(e.target.value, 10);
+                  if (!Number.isNaN(v) && v > 0)
+                    onUpdateText(selectedTextOverlay.id, { fontSize: v });
+                }}
+                disabled={disabled}
+                className="nodrag nopan"
+              />
+              <span style={{ color: 'var(--sk-text-muted)' }}>Opacity</span>
+              <OverlayNumInput
+                type="number"
+                min="0"
+                max="1"
+                step="0.1"
+                value={selectedTextOverlay.opacity}
+                onChange={(e) => {
+                  const v = Number.parseFloat(e.target.value);
+                  if (!Number.isNaN(v))
+                    onUpdateText(selectedTextOverlay.id, {
+                      opacity: Math.max(0, Math.min(1, v)),
+                    });
+                }}
+                disabled={disabled}
+                className="nodrag nopan"
+              />
+            </OverlayEditRow>
           </>
         )}
       </LayerControls>
@@ -942,6 +1080,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
             onSelectLayer={selectLayer}
             onLayerPointerDown={handleLayerPointerDown}
             onResizePointerDown={handleResizePointerDown}
+            onTextEdit={disabled ? undefined : updateTextOverlay}
             layerRefs={layerRefs}
             disabled={disabled}
           />
@@ -957,12 +1096,6 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
           onRotationChange={updateLayerRotation}
           onZIndexChange={updateLayerZIndex}
           onToggleVisibility={toggleLayerVisibility}
-          disabled={disabled}
-        />
-
-        <OverlayList
-          textOverlays={textOverlays}
-          imageOverlays={imageOverlays}
           onAddText={addTextOverlay}
           onUpdateText={updateTextOverlay}
           onRemoveText={removeTextOverlay}
