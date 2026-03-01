@@ -1089,6 +1089,154 @@ mod simd {
         simd_width
     }
 
+    // ── NV12 → RGBA8 (AVX2: 8 pixels / iter, i32 arithmetic) ──────────
+
+    /// Convert up to `width` NV12 pixels from one row to RGBA8 using AVX2.
+    ///
+    /// Processes 8 pixels per iteration (256-bit registers) — double the
+    /// throughput of the SSE4.1 variant.  The heavy i32 multiplies run in
+    /// 256-bit lanes while the final u8 pack + RGBA interleave drops to
+    /// 128-bit SSE to avoid AVX2 lane-crossing headaches.
+    ///
+    /// Returns the number of pixels converted (always a multiple of 8).
+    #[target_feature(enable = "avx2")]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::similar_names)]
+    pub(super) unsafe fn nv12_to_rgba8_row_avx2(
+        y_row: &[u8],
+        uv_row: &[u8],
+        rgba_out: &mut [u8],
+        width: usize,
+    ) -> usize {
+        use std::arch::x86_64::{
+            _mm256_add_epi32, _mm256_castsi256_si128, _mm256_cvtepu8_epi32,
+            _mm256_extracti128_si256, _mm256_mullo_epi32, _mm256_set1_epi32, _mm256_srai_epi32,
+            _mm256_sub_epi32, _mm_loadl_epi64, _mm_or_si128, _mm_packs_epi32, _mm_packus_epi16,
+            _mm_set1_epi32, _mm_set1_epi8, _mm_set_epi8, _mm_setzero_si128, _mm_shuffle_epi8,
+            _mm_storeu_si128, _mm_unpacklo_epi16, _mm_unpacklo_epi8,
+        };
+
+        let simd_width = width & !7; // round down to multiple of 8
+        if simd_width == 0 {
+            return 0;
+        }
+
+        let coeff_298 = _mm256_set1_epi32(298);
+        let coeff_409 = _mm256_set1_epi32(409);
+        let coeff_n100 = _mm256_set1_epi32(-100);
+        let coeff_n208 = _mm256_set1_epi32(-208);
+        let coeff_516 = _mm256_set1_epi32(516);
+        let bias_16 = _mm256_set1_epi32(16);
+        let bias_128 = _mm256_set1_epi32(128);
+        let rounding = _mm256_set1_epi32(128);
+        let alpha_mask = _mm_set1_epi32(0xFF00_0000_u32.cast_signed());
+        let zero = _mm_setzero_si128();
+
+        // Shuffle controls for deinterleaving + duplicating NV12 UV pairs.
+        // Input:  [U0,V0, U1,V1, U2,V2, U3,V3] (low 8 bytes)
+        // U out:  [U0,U0, U1,U1, U2,U2, U3,U3]
+        // V out:  [V0,V0, V1,V1, V2,V2, V3,V3]
+        let u_shuf = _mm_set_epi8(-1, -1, -1, -1, -1, -1, -1, -1, 6, 6, 4, 4, 2, 2, 0, 0);
+        let v_shuf = _mm_set_epi8(-1, -1, -1, -1, -1, -1, -1, -1, 7, 7, 5, 5, 3, 3, 1, 1);
+
+        let mut col = 0usize;
+        while col < simd_width {
+            // Load 8 Y values and zero-extend u8→i32.
+            let y8 = _mm_loadl_epi64(y_row.as_ptr().add(col).cast());
+            let y32 = _mm256_cvtepu8_epi32(y8);
+
+            // Load 4 interleaved UV pairs, deinterleave + duplicate for 8 pixels.
+            let chroma_byte = (col / 2) * 2;
+            let uv8 = _mm_loadl_epi64(uv_row.as_ptr().add(chroma_byte).cast());
+            let u32x8 = _mm256_cvtepu8_epi32(_mm_shuffle_epi8(uv8, u_shuf));
+            let v32x8 = _mm256_cvtepu8_epi32(_mm_shuffle_epi8(uv8, v_shuf));
+
+            // c = Y - 16, d = U - 128, e = V - 128
+            let c = _mm256_sub_epi32(y32, bias_16);
+            let d = _mm256_sub_epi32(u32x8, bias_128);
+            let e = _mm256_sub_epi32(v32x8, bias_128);
+
+            // R = (298*c + 409*e + 128) >> 8
+            let r32 = _mm256_srai_epi32(
+                _mm256_add_epi32(
+                    _mm256_add_epi32(
+                        _mm256_mullo_epi32(coeff_298, c),
+                        _mm256_mullo_epi32(coeff_409, e),
+                    ),
+                    rounding,
+                ),
+                8,
+            );
+
+            // G = (298*c - 100*d - 208*e + 128) >> 8
+            let g32 = _mm256_srai_epi32(
+                _mm256_add_epi32(
+                    _mm256_add_epi32(
+                        _mm256_add_epi32(
+                            _mm256_mullo_epi32(coeff_298, c),
+                            _mm256_mullo_epi32(coeff_n100, d),
+                        ),
+                        _mm256_mullo_epi32(coeff_n208, e),
+                    ),
+                    rounding,
+                ),
+                8,
+            );
+
+            // B = (298*c + 516*d + 128) >> 8
+            let b32 = _mm256_srai_epi32(
+                _mm256_add_epi32(
+                    _mm256_add_epi32(
+                        _mm256_mullo_epi32(coeff_298, c),
+                        _mm256_mullo_epi32(coeff_516, d),
+                    ),
+                    rounding,
+                ),
+                8,
+            );
+
+            // ── Pack + interleave: split into two 4-pixel halves ──────
+            // Drop to 128-bit SSE for pack/interleave to sidestep AVX2
+            // lane-crossing issues in packs_epi32 / packus_epi16.
+            let r_lo = _mm256_castsi256_si128(r32);
+            let r_hi = _mm256_extracti128_si256(r32, 1);
+            let g_lo = _mm256_castsi256_si128(g32);
+            let g_hi = _mm256_extracti128_si256(g32, 1);
+            let b_lo = _mm256_castsi256_si128(b32);
+            let b_hi = _mm256_extracti128_si256(b32, 1);
+
+            // Pixels 0–3
+            let r16 = _mm_packs_epi32(r_lo, zero);
+            let g16 = _mm_packs_epi32(g_lo, zero);
+            let b16 = _mm_packs_epi32(b_lo, zero);
+            let r8 = _mm_packus_epi16(r16, zero);
+            let g8 = _mm_packus_epi16(g16, zero);
+            let b8 = _mm_packus_epi16(b16, zero);
+
+            let rg = _mm_unpacklo_epi8(r8, g8);
+            let ba = _mm_unpacklo_epi8(b8, _mm_set1_epi8(-1));
+            let rgba = _mm_unpacklo_epi16(rg, ba);
+            let rgba = _mm_or_si128(rgba, alpha_mask);
+            _mm_storeu_si128(rgba_out.as_mut_ptr().add(col * 4).cast(), rgba);
+
+            // Pixels 4–7
+            let r16 = _mm_packs_epi32(r_hi, zero);
+            let g16 = _mm_packs_epi32(g_hi, zero);
+            let b16 = _mm_packs_epi32(b_hi, zero);
+            let r8 = _mm_packus_epi16(r16, zero);
+            let g8 = _mm_packus_epi16(g16, zero);
+            let b8 = _mm_packus_epi16(b16, zero);
+
+            let rg = _mm_unpacklo_epi8(r8, g8);
+            let ba = _mm_unpacklo_epi8(b8, _mm_set1_epi8(-1));
+            let rgba = _mm_unpacklo_epi16(rg, ba);
+            let rgba = _mm_or_si128(rgba, alpha_mask);
+            _mm_storeu_si128(rgba_out.as_mut_ptr().add((col + 4) * 4).cast(), rgba);
+
+            col += 8;
+        }
+        simd_width
+    }
+
     // ── RGBA8 → I420 Y-plane (SSE2/SSE4.1: 4 pixels / iter) ───────────
 
     /// Convert one row of RGBA8 pixels to Y values using SSE4.1.
@@ -1972,6 +2120,12 @@ pub fn i420_to_rgba8_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     let v_offset = u_offset + chroma_w * chroma_h;
     let rgba_row_stride = w * 4;
 
+    // Hoist CPU feature detection once, outside the per-row closure.
+    #[cfg(target_arch = "x86_64")]
+    let use_sse41 = is_x86_feature_detected!("sse4.1");
+    #[cfg(target_arch = "x86_64")]
+    let use_sse2 = is_x86_feature_detected!("sse2");
+
     let convert_row = |row: usize, rgba_row: &mut [u8]| {
         let y_base = row * y_stride;
         let chroma_row = row / 2;
@@ -1983,7 +2137,7 @@ pub fn i420_to_rgba8_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
         // SIMD fast path: prefer SSE4.1 (native i32 mul) over SSE2.
         #[cfg(target_arch = "x86_64")]
         {
-            if is_x86_feature_detected!("sse4.1") {
+            if use_sse41 {
                 start_col = unsafe {
                     simd::i420_to_rgba8_row_sse41(
                         &data[y_base..y_base + w],
@@ -1993,7 +2147,7 @@ pub fn i420_to_rgba8_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
                         w,
                     )
                 };
-            } else if is_x86_feature_detected!("sse2") {
+            } else if use_sse2 {
                 start_col = unsafe {
                     simd::i420_to_rgba8_row_sse2(
                         &data[y_base..y_base + w],
@@ -2076,6 +2230,14 @@ pub fn nv12_to_rgba8_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     let uv_offset = y_stride * h;
     let rgba_row_stride = w * 4;
 
+    // Hoist CPU feature detection once, outside the per-row closure.
+    #[cfg(target_arch = "x86_64")]
+    let use_avx2 = is_x86_feature_detected!("avx2");
+    #[cfg(target_arch = "x86_64")]
+    let use_sse41 = is_x86_feature_detected!("sse4.1");
+    #[cfg(target_arch = "x86_64")]
+    let use_sse2 = is_x86_feature_detected!("sse2");
+
     let convert_row = |row: usize, rgba_row: &mut [u8]| {
         let y_base = row * y_stride;
         let chroma_row = row / 2;
@@ -2083,10 +2245,30 @@ pub fn nv12_to_rgba8_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
 
         let mut start_col = 0usize;
 
-        // SIMD fast path: prefer SSE4.1 (native i32 mul) over SSE2.
+        // SIMD fast path: prefer AVX2 > SSE4.1 > SSE2.
         #[cfg(target_arch = "x86_64")]
         {
-            if is_x86_feature_detected!("sse4.1") {
+            if use_avx2 {
+                start_col = unsafe {
+                    simd::nv12_to_rgba8_row_avx2(
+                        &data[y_base..y_base + w],
+                        &data[uv_base..uv_base + uv_stride],
+                        rgba_row,
+                        w,
+                    )
+                };
+                // Handle remaining pixels (up to 7) with SSE4.1.
+                if start_col < w && use_sse41 {
+                    start_col += unsafe {
+                        simd::nv12_to_rgba8_row_sse41(
+                            &data[y_base + start_col..y_base + w],
+                            &data[uv_base + (start_col / 2) * 2..uv_base + uv_stride],
+                            &mut rgba_row[start_col * 4..],
+                            w - start_col,
+                        )
+                    };
+                }
+            } else if use_sse41 {
                 start_col = unsafe {
                     simd::nv12_to_rgba8_row_sse41(
                         &data[y_base..y_base + w],
@@ -2095,7 +2277,7 @@ pub fn nv12_to_rgba8_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
                         w,
                     )
                 };
-            } else if is_x86_feature_detected!("sse2") {
+            } else if use_sse2 {
                 start_col = unsafe {
                     simd::nv12_to_rgba8_row_sse2(
                         &data[y_base..y_base + w],
@@ -2170,6 +2352,14 @@ pub fn rgba8_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     let (y_plane, chroma_planes) = out[..y_size + 2 * chroma_size].split_at_mut(y_size);
     let (u_plane, v_plane) = chroma_planes.split_at_mut(chroma_size);
 
+    // Hoist CPU feature detection once, outside the per-row closures.
+    #[cfg(target_arch = "x86_64")]
+    let use_avx2 = is_x86_feature_detected!("avx2");
+    #[cfg(target_arch = "x86_64")]
+    let use_sse41 = is_x86_feature_detected!("sse4.1");
+    #[cfg(target_arch = "x86_64")]
+    let use_sse2 = is_x86_feature_detected!("sse2");
+
     // Y plane — parallelise by row.
     let convert_y_row = |row: usize, y_row: &mut [u8]| {
         let rgba_base = row * w * 4;
@@ -2178,12 +2368,12 @@ pub fn rgba8_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
         // SIMD fast path: prefer AVX2 > SSE4.1 > SSE2.
         #[cfg(target_arch = "x86_64")]
         {
-            if is_x86_feature_detected!("avx2") {
+            if use_avx2 {
                 start_col = unsafe {
                     simd::rgba8_to_y_row_avx2(&data[rgba_base..rgba_base + w * 4], y_row, w)
                 };
                 // Handle remaining pixels (up to 7) with SSE4.1/SSE2.
-                if start_col < w && is_x86_feature_detected!("sse4.1") {
+                if start_col < w && use_sse41 {
                     let tail = unsafe {
                         simd::rgba8_to_y_row_sse41(
                             &data[rgba_base + start_col * 4..rgba_base + w * 4],
@@ -2193,11 +2383,11 @@ pub fn rgba8_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
                     };
                     start_col += tail;
                 }
-            } else if is_x86_feature_detected!("sse4.1") {
+            } else if use_sse41 {
                 start_col = unsafe {
                     simd::rgba8_to_y_row_sse41(&data[rgba_base..rgba_base + w * 4], y_row, w)
                 };
-            } else if is_x86_feature_detected!("sse2") {
+            } else if use_sse2 {
                 start_col = unsafe {
                     simd::rgba8_to_y_row_sse2(&data[rgba_base..rgba_base + w * 4], y_row, w)
                 };
@@ -2248,7 +2438,7 @@ pub fn rgba8_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
                 let rgba_row0 = &data[row0_start..row0_start + w * 4];
                 let rgba_row1 = &data[row1_start..row1_start + w * 4];
 
-                if is_x86_feature_detected!("avx2") {
+                if use_avx2 {
                     // SAFETY: feature detection guarantees AVX2 is available.
                     start_ccol = unsafe {
                         simd::rgba8_to_chroma_row_avx2(
@@ -2257,7 +2447,7 @@ pub fn rgba8_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
                     };
                 }
                 // SSE2 tail (or full row if AVX2 unavailable).
-                if start_ccol < chroma_w && is_x86_feature_detected!("sse2") {
+                if start_ccol < chroma_w && use_sse2 {
                     start_ccol += unsafe {
                         simd::rgba8_to_chroma_row_sse2(
                             &rgba_row0[start_ccol * 2 * 4..],
@@ -2357,7 +2547,15 @@ pub fn rgba8_to_nv12_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     // Split output into Y plane and UV plane.
     let (y_plane, uv_plane) = out[..y_size + uv_stride * chroma_h].split_at_mut(y_size);
 
-    // Y plane — parallelise by row (prefers SSE4.1, falls back to SSE2).
+    // Hoist CPU feature detection once, outside the per-row closures.
+    #[cfg(target_arch = "x86_64")]
+    let use_avx2 = is_x86_feature_detected!("avx2");
+    #[cfg(target_arch = "x86_64")]
+    let use_sse41 = is_x86_feature_detected!("sse4.1");
+    #[cfg(target_arch = "x86_64")]
+    let use_sse2 = is_x86_feature_detected!("sse2");
+
+    // Y plane — parallelise by row (prefers AVX2, falls back to SSE4.1/SSE2).
     let convert_y_row = |row: usize, y_row: &mut [u8]| {
         let rgba_base = row * w * 4;
         let mut start_col = 0usize;
@@ -2365,12 +2563,12 @@ pub fn rgba8_to_nv12_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
         // SIMD fast path: prefer AVX2 > SSE4.1 > SSE2.
         #[cfg(target_arch = "x86_64")]
         {
-            if is_x86_feature_detected!("avx2") {
+            if use_avx2 {
                 start_col = unsafe {
                     simd::rgba8_to_y_row_avx2(&data[rgba_base..rgba_base + w * 4], y_row, w)
                 };
                 // Handle remaining pixels (up to 7) with SSE4.1/SSE2.
-                if start_col < w && is_x86_feature_detected!("sse4.1") {
+                if start_col < w && use_sse41 {
                     let tail = unsafe {
                         simd::rgba8_to_y_row_sse41(
                             &data[rgba_base + start_col * 4..rgba_base + w * 4],
@@ -2380,11 +2578,11 @@ pub fn rgba8_to_nv12_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
                     };
                     start_col += tail;
                 }
-            } else if is_x86_feature_detected!("sse4.1") {
+            } else if use_sse41 {
                 start_col = unsafe {
                     simd::rgba8_to_y_row_sse41(&data[rgba_base..rgba_base + w * 4], y_row, w)
                 };
-            } else if is_x86_feature_detected!("sse2") {
+            } else if use_sse2 {
                 start_col = unsafe {
                     simd::rgba8_to_y_row_sse2(&data[rgba_base..rgba_base + w * 4], y_row, w)
                 };
@@ -2436,7 +2634,7 @@ pub fn rgba8_to_nv12_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
                 let rgba_row0 = &data[row0_start..row0_start + w * 4];
                 let rgba_row1 = &data[row1_start..row1_start + w * 4];
 
-                if is_x86_feature_detected!("avx2") {
+                if use_avx2 {
                     // SAFETY: feature detection guarantees AVX2 is available.
                     start_ccol = unsafe {
                         simd::rgba8_to_chroma_row_nv12_avx2(
@@ -2445,7 +2643,7 @@ pub fn rgba8_to_nv12_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
                     };
                 }
                 // SSE2 tail (or full row if AVX2 unavailable).
-                if start_ccol < chroma_w && is_x86_feature_detected!("sse2") {
+                if start_ccol < chroma_w && use_sse2 {
                     start_ccol += unsafe {
                         simd::rgba8_to_chroma_row_nv12_sse2(
                             &rgba_row0[start_ccol * 2 * 4..],
