@@ -23,9 +23,21 @@ const RAYON_ROW_THRESHOLD: usize = 64;
 
 /// Number of rows to bundle into a single rayon task once parallel mode is
 /// entered.  Reduces work-stealing overhead from ~1 task/row to
-/// ~rows/RAYON_CHUNK_ROWS tasks.  8 rows keeps each chunk small enough for
-/// good load-balancing while cutting scheduling cost by ~8×.
-const RAYON_CHUNK_ROWS: usize = 8;
+/// ~rows/chunk tasks.
+///
+/// [`rayon_chunk_rows`] auto-tunes the chunk size based on workload:
+/// wider or taller frames produce fewer, larger chunks, keeping
+/// scheduling cost proportional to the actual parallelism available.
+///
+/// Formula: `max(8, total_rows / (num_cpus * 4))`, clamped to `[8, 64]`.
+/// This keeps chunk counts proportional to hardware parallelism while
+/// avoiding both excessive scheduling overhead (too many tiny chunks)
+/// and poor load-balancing (too few large chunks).
+fn rayon_chunk_rows(total_rows: usize) -> usize {
+    let cpus = std::thread::available_parallelism().map(std::num::NonZero::get).unwrap_or(1);
+    let ideal = total_rows.div_ceil(cpus * 4);
+    ideal.clamp(8, 64)
+}
 
 // ── Compositing helpers ─────────────────────────────────────────────────────
 
@@ -556,9 +568,10 @@ pub fn scale_blit_rgba_rotated(
 
     if bb_rows >= RAYON_ROW_THRESHOLD {
         use rayon::prelude::*;
-        let chunk_bytes = row_stride * RAYON_CHUNK_ROWS;
+        let chunk_rows = rayon_chunk_rows(bb_rows);
+        let chunk_bytes = row_stride * chunk_rows;
         dst_region.par_chunks_mut(chunk_bytes).enumerate().for_each(|(chunk_idx, chunk)| {
-            let base_row = chunk_idx * RAYON_CHUNK_ROWS;
+            let base_row = chunk_idx * chunk_rows;
             for (j, row_slice) in chunk.chunks_mut(row_stride).enumerate() {
                 let row = base_row + j;
                 // `row` is bounded by `bb_rows` which derives from i32 bounding-box coords.
@@ -1086,6 +1099,7 @@ mod simd {
         use std::arch::x86_64::{
             _mm_add_epi32, _mm_and_si128, _mm_loadu_si128, _mm_mullo_epi32, _mm_packs_epi32,
             _mm_packus_epi16, _mm_set1_epi32, _mm_setzero_si128, _mm_srai_epi32, _mm_srli_epi32,
+            _mm_storeu_si32,
         };
 
         let simd_width = width & !3;
@@ -1129,11 +1143,8 @@ mod simd {
 
             let y16 = _mm_packs_epi32(y32, zero);
             let y8 = _mm_packus_epi16(y16, zero);
-            std::ptr::copy_nonoverlapping(
-                (&raw const y8).cast::<u8>(),
-                y_out.as_mut_ptr().add(col),
-                4,
-            );
+            // Store 4 Y values via a single movd instruction.
+            _mm_storeu_si32(y_out.as_mut_ptr().add(col).cast(), y8);
 
             col += 4;
         }
@@ -1161,7 +1172,7 @@ mod simd {
             _mm256_add_epi32, _mm256_and_si256, _mm256_castsi256_si128, _mm256_extracti128_si256,
             _mm256_loadu_si256, _mm256_mullo_epi32, _mm256_packs_epi32, _mm256_packus_epi16,
             _mm256_set1_epi32, _mm256_setzero_si256, _mm256_srai_epi32, _mm256_srli_epi32,
-            _mm_unpacklo_epi32,
+            _mm_storel_epi64, _mm_unpacklo_epi32,
         };
 
         let simd_width = width & !7; // round down to multiple of 8
@@ -1218,12 +1229,8 @@ mod simd {
             let hi = _mm256_extracti128_si256(y8, 1); // lane 1: [y4,y5,y6,y7, 0..0]
             let combined = _mm_unpacklo_epi32(lo, hi); // [y0,y1,y2,y3, y4,y5,y6,y7, ...]
 
-            // Store the low 8 bytes: [y0, y1, y2, y3, y4, y5, y6, y7].
-            std::ptr::copy_nonoverlapping(
-                (&raw const combined).cast::<u8>(),
-                y_out.as_mut_ptr().add(col),
-                8,
-            );
+            // Store the low 8 bytes via a single movq instruction.
+            _mm_storel_epi64(y_out.as_mut_ptr().add(col).cast(), combined);
 
             col += 8;
         }
@@ -1246,7 +1253,7 @@ mod simd {
     ) -> usize {
         use std::arch::x86_64::{
             _mm_add_epi32, _mm_and_si128, _mm_loadu_si128, _mm_packs_epi32, _mm_packus_epi16,
-            _mm_set1_epi32, _mm_setzero_si128, _mm_srai_epi32, _mm_srli_epi32,
+            _mm_set1_epi32, _mm_setzero_si128, _mm_srai_epi32, _mm_srli_epi32, _mm_storeu_si32,
         };
 
         let simd_width = width & !3; // round down to multiple of 4
@@ -1291,12 +1298,8 @@ mod simd {
             // Pack i32 → i16 → u8 (saturating).
             let y16 = _mm_packs_epi32(y32, zero);
             let y8 = _mm_packus_epi16(y16, zero);
-            // Store 4 Y values.
-            std::ptr::copy_nonoverlapping(
-                (&raw const y8).cast::<u8>(),
-                y_out.as_mut_ptr().add(col),
-                4,
-            );
+            // Store 4 Y values via a single movd instruction.
+            _mm_storeu_si32(y_out.as_mut_ptr().add(col).cast(), y8);
 
             col += 4;
         }
@@ -1325,7 +1328,7 @@ mod simd {
         use std::arch::x86_64::{
             _mm_add_epi16, _mm_add_epi32, _mm_and_si128, _mm_loadu_si128, _mm_mullo_epi16,
             _mm_packs_epi32, _mm_packus_epi16, _mm_set1_epi16, _mm_set1_epi32, _mm_set_epi16,
-            _mm_setzero_si128, _mm_srai_epi16, _mm_srli_epi32,
+            _mm_setzero_si128, _mm_srai_epi16, _mm_srli_epi32, _mm_storeu_si32,
         };
 
         let simd_width = chroma_width & !3; // process 4 chroma samples (8 luma cols) at a time
@@ -1451,17 +1454,9 @@ mod simd {
             let cb_packed = _mm_packus_epi16(cb_result, zero);
             let cr_packed = _mm_packus_epi16(cr_result, zero);
 
-            // Store 4 U and 4 V values.
-            std::ptr::copy_nonoverlapping(
-                (&raw const cb_packed).cast::<u8>(),
-                u_out.as_mut_ptr().add(ccol),
-                4,
-            );
-            std::ptr::copy_nonoverlapping(
-                (&raw const cr_packed).cast::<u8>(),
-                v_out.as_mut_ptr().add(ccol),
-                4,
-            );
+            // Store 4 U and 4 V values via single movd instructions.
+            _mm_storeu_si32(u_out.as_mut_ptr().add(ccol).cast(), cb_packed);
+            _mm_storeu_si32(v_out.as_mut_ptr().add(ccol).cast(), cr_packed);
 
             ccol += 4;
         }
@@ -1490,7 +1485,7 @@ mod simd {
         use std::arch::x86_64::{
             _mm_add_epi16, _mm_add_epi32, _mm_and_si128, _mm_loadu_si128, _mm_mullo_epi16,
             _mm_packs_epi32, _mm_packus_epi16, _mm_set1_epi16, _mm_set1_epi32, _mm_set_epi16,
-            _mm_setzero_si128, _mm_srai_epi16, _mm_srli_epi32, _mm_unpacklo_epi8,
+            _mm_setzero_si128, _mm_srai_epi16, _mm_srli_epi32, _mm_storel_epi64, _mm_unpacklo_epi8,
         };
 
         let simd_width = chroma_width & !3; // 4 chroma pairs per iteration
@@ -1606,11 +1601,337 @@ mod simd {
             let cr_packed = _mm_packus_epi16(cr_result, zero);
             let interleaved = _mm_unpacklo_epi8(cb_packed, cr_packed);
 
-            // Store 8 bytes (4 UV pairs).
-            let out_ptr = uv_out.as_mut_ptr().add(ccol * 2);
-            std::ptr::copy_nonoverlapping((&raw const interleaved).cast::<u8>(), out_ptr, 8);
+            // Store 8 bytes (4 UV pairs) via a single movq instruction.
+            _mm_storel_epi64(uv_out.as_mut_ptr().add(ccol * 2).cast(), interleaved);
 
             ccol += 4;
+        }
+        ccol
+    }
+
+    // ── RGBA8 → NV12 chroma row (AVX2: 8 interleaved UV pairs / iter) ────
+
+    /// Convert one pair of RGBA8 rows to interleaved `[U, V, U, V, …]`
+    /// chroma samples for NV12 output, using AVX2.
+    ///
+    /// Processes 8 chroma pairs (16 luma pixels) per iteration — double the
+    /// throughput of the SSE2 variant.  Same 2×2 averaging and BT.601
+    /// coefficient maths.
+    ///
+    /// Returns the number of chroma *pairs* converted (multiple of 8).
+    #[target_feature(enable = "avx2")]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::similar_names)]
+    pub(super) unsafe fn rgba8_to_chroma_row_nv12_avx2(
+        rgba_row0: &[u8],
+        rgba_row1: &[u8],
+        uv_out: &mut [u8],
+        chroma_width: usize,
+        luma_width: usize,
+    ) -> usize {
+        use std::arch::x86_64::{
+            _mm256_add_epi16, _mm256_add_epi32, _mm256_and_si256, _mm256_castsi256_si128,
+            _mm256_extracti128_si256, _mm256_loadu_si256, _mm256_mullo_epi16, _mm256_packs_epi32,
+            _mm256_packus_epi16, _mm256_set1_epi16, _mm256_set1_epi32, _mm256_set_epi16,
+            _mm256_setzero_si256, _mm256_srai_epi16, _mm256_srli_epi32, _mm_storeu_si128,
+            _mm_unpacklo_epi32, _mm_unpacklo_epi8,
+        };
+
+        let simd_width = chroma_width & !7; // 8 chroma pairs per iteration
+        if simd_width == 0 || luma_width < 16 {
+            return 0;
+        }
+
+        let coeff_cb_r = _mm256_set1_epi16(-38);
+        let coeff_cb_g = _mm256_set1_epi16(-74);
+        let coeff_cb_b = _mm256_set1_epi16(112);
+        let coeff_cr_r = _mm256_set1_epi16(112);
+        let coeff_cr_g = _mm256_set1_epi16(-94);
+        let coeff_cr_b = _mm256_set1_epi16(-18);
+        let rounding = _mm256_set1_epi16(128);
+        let bias_128 = _mm256_set1_epi16(128);
+        let zero = _mm256_setzero_si256();
+        let channel_mask = _mm256_set1_epi32(0xFF);
+        let even_mask = _mm256_set_epi16(0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1);
+
+        let mut ccol = 0usize;
+        while ccol < simd_width {
+            let luma_col = ccol * 2;
+            if luma_col + 16 > luma_width {
+                break;
+            }
+
+            // Load 16 pixels from row0 and row1 (64 bytes each = 4 × 128-bit).
+            let ptr0 = rgba_row0.as_ptr().add(luma_col * 4);
+            let ptr1 = rgba_row1.as_ptr().add(luma_col * 4);
+            let px0_a = _mm256_loadu_si256(ptr0.cast()); // pixels 0..7
+            let px0_b = _mm256_loadu_si256(ptr0.add(32).cast()); // pixels 8..15
+            let px1_a = _mm256_loadu_si256(ptr1.cast());
+            let px1_b = _mm256_loadu_si256(ptr1.add(32).cast());
+
+            // ── 2×2 average for R channel ──
+            let r0_a = _mm256_and_si256(px0_a, channel_mask);
+            let r0_b = _mm256_and_si256(px0_b, channel_mask);
+            let r1_a = _mm256_and_si256(px1_a, channel_mask);
+            let r1_b = _mm256_and_si256(px1_b, channel_mask);
+            let r_v_a = _mm256_add_epi32(r0_a, r1_a);
+            let r_v_b = _mm256_add_epi32(r0_b, r1_b);
+            let r_v = _mm256_packs_epi32(r_v_a, r_v_b); // 16× i16
+            let r_even = _mm256_and_si256(r_v, even_mask);
+            let r_odd = _mm256_srli_epi32(r_v, 16);
+            let r_sum = _mm256_add_epi16(r_even, r_odd);
+            let r_avg = _mm256_srai_epi16(
+                _mm256_add_epi16(_mm256_packs_epi32(r_sum, zero), _mm256_set1_epi16(2)),
+                2,
+            );
+
+            // ── 2×2 average for G channel ──
+            let g0_a = _mm256_and_si256(_mm256_srli_epi32(px0_a, 8), channel_mask);
+            let g0_b = _mm256_and_si256(_mm256_srli_epi32(px0_b, 8), channel_mask);
+            let g1_a = _mm256_and_si256(_mm256_srli_epi32(px1_a, 8), channel_mask);
+            let g1_b = _mm256_and_si256(_mm256_srli_epi32(px1_b, 8), channel_mask);
+            let g_v_a = _mm256_add_epi32(g0_a, g1_a);
+            let g_v_b = _mm256_add_epi32(g0_b, g1_b);
+            let g_v = _mm256_packs_epi32(g_v_a, g_v_b);
+            let g_even = _mm256_and_si256(g_v, even_mask);
+            let g_odd = _mm256_srli_epi32(g_v, 16);
+            let g_sum = _mm256_add_epi16(g_even, g_odd);
+            let g_avg = _mm256_srai_epi16(
+                _mm256_add_epi16(_mm256_packs_epi32(g_sum, zero), _mm256_set1_epi16(2)),
+                2,
+            );
+
+            // ── 2×2 average for B channel ──
+            let b0_a = _mm256_and_si256(_mm256_srli_epi32(px0_a, 16), channel_mask);
+            let b0_b = _mm256_and_si256(_mm256_srli_epi32(px0_b, 16), channel_mask);
+            let b1_a = _mm256_and_si256(_mm256_srli_epi32(px1_a, 16), channel_mask);
+            let b1_b = _mm256_and_si256(_mm256_srli_epi32(px1_b, 16), channel_mask);
+            let b_v_a = _mm256_add_epi32(b0_a, b1_a);
+            let b_v_b = _mm256_add_epi32(b0_b, b1_b);
+            let b_v = _mm256_packs_epi32(b_v_a, b_v_b);
+            let b_even = _mm256_and_si256(b_v, even_mask);
+            let b_odd = _mm256_srli_epi32(b_v, 16);
+            let b_sum = _mm256_add_epi16(b_even, b_odd);
+            let b_avg = _mm256_srai_epi16(
+                _mm256_add_epi16(_mm256_packs_epi32(b_sum, zero), _mm256_set1_epi16(2)),
+                2,
+            );
+
+            // ── Cb / Cr coefficient multiplies ──
+            let cb_result = _mm256_add_epi16(
+                _mm256_srai_epi16(
+                    _mm256_add_epi16(
+                        _mm256_add_epi16(
+                            _mm256_add_epi16(
+                                _mm256_mullo_epi16(coeff_cb_r, r_avg),
+                                _mm256_mullo_epi16(coeff_cb_g, g_avg),
+                            ),
+                            _mm256_mullo_epi16(coeff_cb_b, b_avg),
+                        ),
+                        rounding,
+                    ),
+                    8,
+                ),
+                bias_128,
+            );
+
+            let cr_result = _mm256_add_epi16(
+                _mm256_srai_epi16(
+                    _mm256_add_epi16(
+                        _mm256_add_epi16(
+                            _mm256_add_epi16(
+                                _mm256_mullo_epi16(coeff_cr_r, r_avg),
+                                _mm256_mullo_epi16(coeff_cr_g, g_avg),
+                            ),
+                            _mm256_mullo_epi16(coeff_cr_b, b_avg),
+                        ),
+                        rounding,
+                    ),
+                    8,
+                ),
+                bias_128,
+            );
+
+            // Pack to u8 and interleave U/V for NV12 layout.
+            // AVX2 pack operates per 128-bit lane, so we need to de-lane.
+            let cb_packed = _mm256_packus_epi16(cb_result, zero);
+            let cr_packed = _mm256_packus_epi16(cr_result, zero);
+            // cb_packed lanes: lane0=[cb0,cb1,cb2,cb3, 0..0]  lane1=[cb4,cb5,cb6,cb7, 0..0]
+            let cb_lo = _mm256_castsi256_si128(cb_packed);
+            let cb_hi = _mm256_extracti128_si256(cb_packed, 1);
+            let cr_lo = _mm256_castsi256_si128(cr_packed);
+            let cr_hi = _mm256_extracti128_si256(cr_packed, 1);
+            // Combine the two 4-byte halves into contiguous 8-byte vectors.
+            let cb8 = _mm_unpacklo_epi32(cb_lo, cb_hi); // [cb0..cb3, cb4..cb7, 0..0, 0..0]
+            let cr8 = _mm_unpacklo_epi32(cr_lo, cr_hi); // [cr0..cr3, cr4..cr7, 0..0, 0..0]
+                                                        // Interleave bytes: _mm_unpacklo_epi8 on the dword-combined vectors
+                                                        // gives [cb0,cr0,cb1,cr1,…,cb7,cr7] — exactly 16 bytes of UV pairs.
+            let interleaved = _mm_unpacklo_epi8(cb8, cr8);
+
+            // Store 16 bytes (8 UV pairs) via a single movdqu instruction.
+            _mm_storeu_si128(uv_out.as_mut_ptr().add(ccol * 2).cast(), interleaved);
+
+            ccol += 8;
+        }
+        ccol
+    }
+
+    // ── RGBA8 → I420 chroma row (AVX2: 8 chroma samples / iter) ──────────
+
+    /// Convert one pair of RGBA8 rows to U and V chroma samples using AVX2.
+    ///
+    /// Processes 8 chroma samples (16 luma pixels) per iteration — double
+    /// the throughput of the SSE2 variant.  Same 2×2 averaging and BT.601
+    /// coefficient maths.
+    ///
+    /// Returns the number of chroma samples converted (multiple of 8).
+    #[target_feature(enable = "avx2")]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::similar_names)]
+    pub(super) unsafe fn rgba8_to_chroma_row_avx2(
+        rgba_row0: &[u8],
+        rgba_row1: &[u8],
+        u_out: &mut [u8],
+        v_out: &mut [u8],
+        chroma_width: usize,
+        luma_width: usize,
+    ) -> usize {
+        use std::arch::x86_64::{
+            _mm256_add_epi16, _mm256_add_epi32, _mm256_and_si256, _mm256_castsi256_si128,
+            _mm256_extracti128_si256, _mm256_loadu_si256, _mm256_mullo_epi16, _mm256_packs_epi32,
+            _mm256_packus_epi16, _mm256_set1_epi16, _mm256_set1_epi32, _mm256_set_epi16,
+            _mm256_setzero_si256, _mm256_srai_epi16, _mm256_srli_epi32, _mm_storel_epi64,
+            _mm_unpacklo_epi32,
+        };
+
+        let simd_width = chroma_width & !7; // 8 chroma samples per iteration
+        if simd_width == 0 || luma_width < 16 {
+            return 0;
+        }
+
+        let coeff_cb_r = _mm256_set1_epi16(-38);
+        let coeff_cb_g = _mm256_set1_epi16(-74);
+        let coeff_cb_b = _mm256_set1_epi16(112);
+        let coeff_cr_r = _mm256_set1_epi16(112);
+        let coeff_cr_g = _mm256_set1_epi16(-94);
+        let coeff_cr_b = _mm256_set1_epi16(-18);
+        let rounding = _mm256_set1_epi16(128);
+        let bias_128 = _mm256_set1_epi16(128);
+        let zero = _mm256_setzero_si256();
+        let channel_mask = _mm256_set1_epi32(0xFF);
+        let even_mask = _mm256_set_epi16(0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1);
+
+        let mut ccol = 0usize;
+        while ccol < simd_width {
+            let luma_col = ccol * 2;
+            if luma_col + 16 > luma_width {
+                break;
+            }
+
+            let ptr0 = rgba_row0.as_ptr().add(luma_col * 4);
+            let ptr1 = rgba_row1.as_ptr().add(luma_col * 4);
+            let px0_a = _mm256_loadu_si256(ptr0.cast());
+            let px0_b = _mm256_loadu_si256(ptr0.add(32).cast());
+            let px1_a = _mm256_loadu_si256(ptr1.cast());
+            let px1_b = _mm256_loadu_si256(ptr1.add(32).cast());
+
+            // ── 2×2 average for R channel ──
+            let r0_a = _mm256_and_si256(px0_a, channel_mask);
+            let r0_b = _mm256_and_si256(px0_b, channel_mask);
+            let r1_a = _mm256_and_si256(px1_a, channel_mask);
+            let r1_b = _mm256_and_si256(px1_b, channel_mask);
+            let r_v_a = _mm256_add_epi32(r0_a, r1_a);
+            let r_v_b = _mm256_add_epi32(r0_b, r1_b);
+            let r_v = _mm256_packs_epi32(r_v_a, r_v_b);
+            let r_even = _mm256_and_si256(r_v, even_mask);
+            let r_odd = _mm256_srli_epi32(r_v, 16);
+            let r_sum = _mm256_add_epi16(r_even, r_odd);
+            let r_avg = _mm256_srai_epi16(
+                _mm256_add_epi16(_mm256_packs_epi32(r_sum, zero), _mm256_set1_epi16(2)),
+                2,
+            );
+
+            // ── 2×2 average for G channel ──
+            let g0_a = _mm256_and_si256(_mm256_srli_epi32(px0_a, 8), channel_mask);
+            let g0_b = _mm256_and_si256(_mm256_srli_epi32(px0_b, 8), channel_mask);
+            let g1_a = _mm256_and_si256(_mm256_srli_epi32(px1_a, 8), channel_mask);
+            let g1_b = _mm256_and_si256(_mm256_srli_epi32(px1_b, 8), channel_mask);
+            let g_v_a = _mm256_add_epi32(g0_a, g1_a);
+            let g_v_b = _mm256_add_epi32(g0_b, g1_b);
+            let g_v = _mm256_packs_epi32(g_v_a, g_v_b);
+            let g_even = _mm256_and_si256(g_v, even_mask);
+            let g_odd = _mm256_srli_epi32(g_v, 16);
+            let g_sum = _mm256_add_epi16(g_even, g_odd);
+            let g_avg = _mm256_srai_epi16(
+                _mm256_add_epi16(_mm256_packs_epi32(g_sum, zero), _mm256_set1_epi16(2)),
+                2,
+            );
+
+            // ── 2×2 average for B channel ──
+            let b0_a = _mm256_and_si256(_mm256_srli_epi32(px0_a, 16), channel_mask);
+            let b0_b = _mm256_and_si256(_mm256_srli_epi32(px0_b, 16), channel_mask);
+            let b1_a = _mm256_and_si256(_mm256_srli_epi32(px1_a, 16), channel_mask);
+            let b1_b = _mm256_and_si256(_mm256_srli_epi32(px1_b, 16), channel_mask);
+            let b_v_a = _mm256_add_epi32(b0_a, b1_a);
+            let b_v_b = _mm256_add_epi32(b0_b, b1_b);
+            let b_v = _mm256_packs_epi32(b_v_a, b_v_b);
+            let b_even = _mm256_and_si256(b_v, even_mask);
+            let b_odd = _mm256_srli_epi32(b_v, 16);
+            let b_sum = _mm256_add_epi16(b_even, b_odd);
+            let b_avg = _mm256_srai_epi16(
+                _mm256_add_epi16(_mm256_packs_epi32(b_sum, zero), _mm256_set1_epi16(2)),
+                2,
+            );
+
+            // ── Cb / Cr coefficient multiplies ──
+            let cb_result = _mm256_add_epi16(
+                _mm256_srai_epi16(
+                    _mm256_add_epi16(
+                        _mm256_add_epi16(
+                            _mm256_add_epi16(
+                                _mm256_mullo_epi16(coeff_cb_r, r_avg),
+                                _mm256_mullo_epi16(coeff_cb_g, g_avg),
+                            ),
+                            _mm256_mullo_epi16(coeff_cb_b, b_avg),
+                        ),
+                        rounding,
+                    ),
+                    8,
+                ),
+                bias_128,
+            );
+
+            let cr_result = _mm256_add_epi16(
+                _mm256_srai_epi16(
+                    _mm256_add_epi16(
+                        _mm256_add_epi16(
+                            _mm256_add_epi16(
+                                _mm256_mullo_epi16(coeff_cr_r, r_avg),
+                                _mm256_mullo_epi16(coeff_cr_g, g_avg),
+                            ),
+                            _mm256_mullo_epi16(coeff_cr_b, b_avg),
+                        ),
+                        rounding,
+                    ),
+                    8,
+                ),
+                bias_128,
+            );
+
+            // Pack to u8.  AVX2 packus works per 128-bit lane.
+            let cb_packed = _mm256_packus_epi16(cb_result, zero);
+            let cr_packed = _mm256_packus_epi16(cr_result, zero);
+            // Each has 4 values in low dword of lane 0, 4 values in low dword of lane 1.
+            let cb_lo = _mm256_castsi256_si128(cb_packed);
+            let cb_hi = _mm256_extracti128_si256(cb_packed, 1);
+            let cr_lo = _mm256_castsi256_si128(cr_packed);
+            let cr_hi = _mm256_extracti128_si256(cr_packed, 1);
+            let cb8 = _mm_unpacklo_epi32(cb_lo, cb_hi); // [cb0..cb3, cb4..cb7]
+            let cr8 = _mm_unpacklo_epi32(cr_lo, cr_hi); // [cr0..cr3, cr4..cr7]
+
+            // Store 8 U and 8 V values via single movq instructions.
+            _mm_storel_epi64(u_out.as_mut_ptr().add(ccol).cast(), cb8);
+            _mm_storel_epi64(v_out.as_mut_ptr().add(ccol).cast(), cr8);
+
+            ccol += 8;
         }
         ccol
     }
@@ -1695,9 +2016,10 @@ pub fn i420_to_rgba8_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     };
 
     if h >= RAYON_ROW_THRESHOLD {
-        let chunk_bytes = rgba_row_stride * RAYON_CHUNK_ROWS;
+        let chunk_rows = rayon_chunk_rows(h);
+        let chunk_bytes = rgba_row_stride * chunk_rows;
         out[..w * h * 4].par_chunks_mut(chunk_bytes).enumerate().for_each(|(chunk_idx, chunk)| {
-            let base_row = chunk_idx * RAYON_CHUNK_ROWS;
+            let base_row = chunk_idx * chunk_rows;
             for (j, rgba_row) in chunk.chunks_mut(rgba_row_stride).enumerate() {
                 let row = base_row + j;
                 if row >= h {
@@ -1795,9 +2117,10 @@ pub fn nv12_to_rgba8_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     };
 
     if h >= RAYON_ROW_THRESHOLD {
-        let chunk_bytes = rgba_row_stride * RAYON_CHUNK_ROWS;
+        let chunk_rows = rayon_chunk_rows(h);
+        let chunk_bytes = rgba_row_stride * chunk_rows;
         out[..w * h * 4].par_chunks_mut(chunk_bytes).enumerate().for_each(|(chunk_idx, chunk)| {
-            let base_row = chunk_idx * RAYON_CHUNK_ROWS;
+            let base_row = chunk_idx * chunk_rows;
             for (j, rgba_row) in chunk.chunks_mut(rgba_row_stride).enumerate() {
                 let row = base_row + j;
                 if row >= h {
@@ -1883,9 +2206,10 @@ pub fn rgba8_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     };
 
     if h >= RAYON_ROW_THRESHOLD {
-        let chunk_bytes = y_stride * RAYON_CHUNK_ROWS;
+        let chunk_rows = rayon_chunk_rows(h);
+        let chunk_bytes = y_stride * chunk_rows;
         y_plane.par_chunks_mut(chunk_bytes).enumerate().for_each(|(chunk_idx, chunk)| {
-            let base_row = chunk_idx * RAYON_CHUNK_ROWS;
+            let base_row = chunk_idx * chunk_rows;
             for (j, y_row) in chunk.chunks_mut(y_stride).enumerate() {
                 let row = base_row + j;
                 if row >= h {
@@ -1906,23 +2230,36 @@ pub fn rgba8_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
         let mut start_ccol = 0usize;
 
         // SIMD fast path for chroma subsampling.
+        // Prefer AVX2 (8 chroma samples/iter) > SSE2 (4 samples/iter).
         #[cfg(target_arch = "x86_64")]
         {
-            if is_x86_feature_detected!("sse2") && r0 + 1 < h {
+            if r0 + 1 < h {
                 let row0_start = r0 * w * 4;
                 let row1_start = (r0 + 1) * w * 4;
-                // SAFETY: feature detection guarantees SSE2 is available;
-                // both rows are within the input buffer.
-                start_ccol = unsafe {
-                    simd::rgba8_to_chroma_row_sse2(
-                        &data[row0_start..row0_start + w * 4],
-                        &data[row1_start..row1_start + w * 4],
-                        u_row,
-                        v_row,
-                        chroma_w,
-                        w,
-                    )
-                };
+                let rgba_row0 = &data[row0_start..row0_start + w * 4];
+                let rgba_row1 = &data[row1_start..row1_start + w * 4];
+
+                if is_x86_feature_detected!("avx2") {
+                    // SAFETY: feature detection guarantees AVX2 is available.
+                    start_ccol = unsafe {
+                        simd::rgba8_to_chroma_row_avx2(
+                            rgba_row0, rgba_row1, u_row, v_row, chroma_w, w,
+                        )
+                    };
+                }
+                // SSE2 tail (or full row if AVX2 unavailable).
+                if start_ccol < chroma_w && is_x86_feature_detected!("sse2") {
+                    start_ccol += unsafe {
+                        simd::rgba8_to_chroma_row_sse2(
+                            &rgba_row0[start_ccol * 2 * 4..],
+                            &rgba_row1[start_ccol * 2 * 4..],
+                            &mut u_row[start_ccol..],
+                            &mut v_row[start_ccol..],
+                            chroma_w - start_ccol,
+                            w - start_ccol * 2,
+                        )
+                    };
+                }
             }
         }
 
@@ -2056,9 +2393,10 @@ pub fn rgba8_to_nv12_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     };
 
     if h >= RAYON_ROW_THRESHOLD {
-        let chunk_bytes = y_stride * RAYON_CHUNK_ROWS;
+        let chunk_rows = rayon_chunk_rows(h);
+        let chunk_bytes = y_stride * chunk_rows;
         y_plane.par_chunks_mut(chunk_bytes).enumerate().for_each(|(chunk_idx, chunk)| {
-            let base_row = chunk_idx * RAYON_CHUNK_ROWS;
+            let base_row = chunk_idx * chunk_rows;
             for (j, y_row) in chunk.chunks_mut(y_stride).enumerate() {
                 let row = base_row + j;
                 if row >= h {
@@ -2080,22 +2418,35 @@ pub fn rgba8_to_nv12_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
         let mut start_ccol = 0usize;
 
         // SIMD fast path for interleaved NV12 chroma subsampling.
+        // Prefer AVX2 (8 chroma pairs/iter) > SSE2 (4 pairs/iter).
         #[cfg(target_arch = "x86_64")]
         {
-            if is_x86_feature_detected!("sse2") && r0 + 1 < h {
+            if r0 + 1 < h {
                 let row0_start = r0 * w * 4;
                 let row1_start = (r0 + 1) * w * 4;
-                // SAFETY: feature detection guarantees SSE2 is available;
-                // both rows are within the input buffer.
-                start_ccol = unsafe {
-                    simd::rgba8_to_chroma_row_nv12_sse2(
-                        &data[row0_start..row0_start + w * 4],
-                        &data[row1_start..row1_start + w * 4],
-                        uv_row,
-                        chroma_w,
-                        w,
-                    )
-                };
+                let rgba_row0 = &data[row0_start..row0_start + w * 4];
+                let rgba_row1 = &data[row1_start..row1_start + w * 4];
+
+                if is_x86_feature_detected!("avx2") {
+                    // SAFETY: feature detection guarantees AVX2 is available.
+                    start_ccol = unsafe {
+                        simd::rgba8_to_chroma_row_nv12_avx2(
+                            rgba_row0, rgba_row1, uv_row, chroma_w, w,
+                        )
+                    };
+                }
+                // SSE2 tail (or full row if AVX2 unavailable).
+                if start_ccol < chroma_w && is_x86_feature_detected!("sse2") {
+                    start_ccol += unsafe {
+                        simd::rgba8_to_chroma_row_nv12_sse2(
+                            &rgba_row0[start_ccol * 2 * 4..],
+                            &rgba_row1[start_ccol * 2 * 4..],
+                            &mut uv_row[start_ccol * 2..],
+                            chroma_w - start_ccol,
+                            w - start_ccol * 2,
+                        )
+                    };
+                }
             }
         }
 
@@ -2132,9 +2483,10 @@ pub fn rgba8_to_nv12_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     };
 
     if chroma_h >= RAYON_ROW_THRESHOLD / 2 {
-        let chunk_bytes = uv_stride * RAYON_CHUNK_ROWS;
+        let chunk_rows = rayon_chunk_rows(chroma_h);
+        let chunk_bytes = uv_stride * chunk_rows;
         uv_plane.par_chunks_mut(chunk_bytes).enumerate().for_each(|(chunk_idx, chunk)| {
-            let base_crow = chunk_idx * RAYON_CHUNK_ROWS;
+            let base_crow = chunk_idx * chunk_rows;
             for (j, uv_row) in chunk.chunks_mut(uv_stride).enumerate() {
                 let crow = base_crow + j;
                 if crow >= chroma_h {
