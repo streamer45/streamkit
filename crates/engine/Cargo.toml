@@ -64,5 +64,9 @@ indexmap = { workspace = true }
 name = "compositor_pipeline"
 harness = false
 
+[[bench]]
+name = "compositor_only"
+harness = false
+
 [lints]
 workspace = true

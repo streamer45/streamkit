@@ -25,12 +25,12 @@
 //! - Bilinear / Lanczos scaling (MVP uses nearest-neighbor).
 
 pub mod config;
-mod kernel;
-mod overlay;
+pub mod kernel;
+pub mod overlay;
 pub mod pixel_ops;
 
 use async_trait::async_trait;
-use config::{CompositorConfig, Rect};
+use config::CompositorConfig;
 use kernel::{CompositeResult, CompositeWorkItem, LayerSnapshot};
 use overlay::{decode_image_overlay, rasterize_text_overlay, DecodedOverlay};
 use schemars::schema_for;
@@ -48,7 +48,7 @@ use streamkit_core::{
 };
 use tokio::sync::mpsc;
 
-use kernel::composite_frame;
+use kernel::{composite_frame, ConversionCache};
 
 // ── Input slot ──────────────────────────────────────────────────────────────
 
@@ -57,6 +57,63 @@ struct InputSlot {
     name: String,
     rx: mpsc::Receiver<Packet>,
     latest_frame: Option<VideoFrame>,
+}
+
+// ── Cached layer config ─────────────────────────────────────────────────────
+
+/// Pre-resolved layer configuration for a single slot.
+/// Rebuilt only when compositor config or pin set changes, avoiding
+/// per-frame `HashMap` lookups and `sort_by` calls.
+#[derive(Clone)]
+struct ResolvedSlotConfig {
+    rect: Option<config::Rect>,
+    opacity: f32,
+    z_index: i32,
+    rotation_degrees: f32,
+}
+
+/// Rebuild the per-slot resolved configs and the z-sorted draw order.
+///
+/// Called once at startup and whenever `UpdateParams` or pin management
+/// changes the layer set.  The returned draw order is a list of slot
+/// indices sorted by `(z_index, slot_index)`.
+fn rebuild_layer_cache(
+    slots: &[InputSlot],
+    config: &CompositorConfig,
+) -> (Vec<ResolvedSlotConfig>, Vec<usize>) {
+    let num_slots = slots.len();
+    let mut configs: Vec<ResolvedSlotConfig> = Vec::with_capacity(num_slots);
+    for (idx, slot) in slots.iter().enumerate() {
+        let layer_cfg = config.layers.get(&slot.name);
+        #[allow(clippy::option_if_let_else)]
+        let (rect, opacity, z_index, rotation_degrees) = if let Some(lc) = layer_cfg {
+            (lc.rect.clone(), lc.opacity, lc.z_index, lc.rotation_degrees)
+        } else if idx > 0 && num_slots > 1 {
+            // Auto-PiP: non-first layers without explicit config.
+            let pip_w = config.width / 3;
+            let pip_h = config.height / 3;
+            #[allow(clippy::cast_possible_wrap)]
+            let pip_x = (config.width - pip_w - 20) as i32;
+            #[allow(clippy::cast_possible_wrap)]
+            let pip_y = (config.height - pip_h - 20) as i32;
+            #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
+            (
+                Some(config::Rect { x: pip_x, y: pip_y, width: pip_w, height: pip_h }),
+                0.9,
+                idx as i32,
+                0.0,
+            )
+        } else {
+            (None, 1.0, 0, 0.0)
+        };
+        configs.push(ResolvedSlotConfig { rect, opacity, z_index, rotation_degrees });
+    }
+
+    // Pre-sort by (z_index, slot_index).
+    let mut draw_order: Vec<usize> = (0..num_slots).collect();
+    draw_order.sort_by(|&a, &b| configs[a].z_index.cmp(&configs[b].z_index).then(a.cmp(&b)));
+
+    (configs, draw_order)
 }
 
 // ── Node ────────────────────────────────────────────────────────────────────
@@ -285,9 +342,9 @@ impl ProcessorNode for CompositorNode {
         let (result_tx, mut result_rx) = tokio::sync::mpsc::channel::<CompositeResult>(2);
 
         let composite_thread = tokio::task::spawn_blocking(move || {
-            // Persistent scratch buffer for I420→RGBA8 layer conversion,
-            // reused across frames to avoid per-frame allocation.
-            let mut i420_to_rgba_scratch: Vec<u8> = Vec::new();
+            // Per-slot cache for YUV→RGBA conversions. Avoids redundant
+            // conversion when the source Arc hasn't changed between frames.
+            let mut conversion_cache = ConversionCache::new();
 
             while let Some(work) = work_rx.blocking_recv() {
                 let rgba_buf = composite_frame(
@@ -297,7 +354,7 @@ impl ProcessorNode for CompositorNode {
                     &work.image_overlays,
                     &work.text_overlays,
                     work.video_pool.as_deref(),
-                    &mut i420_to_rgba_scratch,
+                    &mut conversion_cache,
                 );
                 let result = CompositeResult { rgba_data: rgba_buf };
                 if result_tx.blocking_send(result).is_err() {
@@ -308,6 +365,14 @@ impl ProcessorNode for CompositorNode {
 
         let mut output_seq: u64 = 0;
         let mut stop_reason: &str = "shutdown";
+
+        // ── Cached layer config + draw order ────────────────────────────
+        // Rebuilt only when config or pin set changes (UpdateParams,
+        // pin add/remove, channel close).  Avoids per-frame HashMap
+        // lookups and sort_by calls.
+        let mut layer_configs_dirty = true;
+        let mut resolved_configs: Vec<ResolvedSlotConfig> = Vec::new();
+        let mut sorted_draw_order: Vec<usize> = Vec::new();
 
         loop {
             // ── Take at most one frame from every slot (non-blocking) ───
@@ -347,6 +412,7 @@ impl ProcessorNode for CompositorNode {
                                     params,
                                     &mut stats_tracker,
                                 );
+                                layer_configs_dirty = true;
                             },
                             NodeControlMessage::Start => {},
                         }
@@ -364,6 +430,7 @@ impl ProcessorNode for CompositorNode {
                             msg,
                             &mut slots,
                         );
+                        layer_configs_dirty = true;
                     }
 
                     // Wait for a frame from any connected input.
@@ -379,6 +446,7 @@ impl ProcessorNode for CompositorNode {
                                     slots[slot_idx].name
                                 );
                                 slots.remove(slot_idx);
+                                layer_configs_dirty = true;
                                 if slots.is_empty() {
                                     stop_reason = "all_inputs_closed";
                                     should_break = true;
@@ -425,6 +493,7 @@ impl ProcessorNode for CompositorNode {
                                     params,
                                     &mut stats_tracker,
                                 );
+                                layer_configs_dirty = true;
                             },
                             NodeControlMessage::Start => {},
                         }
@@ -440,6 +509,7 @@ impl ProcessorNode for CompositorNode {
                             msg,
                             &mut slots,
                         );
+                        layer_configs_dirty = true;
                     }
                 }
                 continue;
@@ -463,6 +533,7 @@ impl ProcessorNode for CompositorNode {
                             params,
                             &mut stats_tracker,
                         );
+                        layer_configs_dirty = true;
                     },
                     NodeControlMessage::Start => {},
                 }
@@ -473,68 +544,39 @@ impl ProcessorNode for CompositorNode {
             if let Some(ref mut pmrx) = pin_mgmt_rx {
                 while let Ok(msg) = pmrx.try_recv() {
                     Self::handle_pin_management(&mut self, msg, &mut slots);
+                    layer_configs_dirty = true;
                 }
             }
 
+            // ── Rebuild layer config cache if needed ─────────────────────
+            if layer_configs_dirty {
+                let (cfgs, order) = rebuild_layer_cache(&slots, &self.config);
+                resolved_configs = cfgs;
+                sorted_draw_order = order;
+                layer_configs_dirty = false;
+            }
+
             // ── Send work to persistent compositing thread ─────────────
-            // Collect the data we need to send to the blocking thread.
-            let num_slots = slots.len();
-            let mut layers: Vec<Option<LayerSnapshot>> = slots
+            // Build layer snapshots in pre-sorted draw order using the
+            // cached per-slot configs (no HashMap lookup, no sort).
+            let layers: Vec<Option<LayerSnapshot>> = sorted_draw_order
                 .iter()
-                .enumerate()
-                .map(|(idx, slot)| {
-                    slot.latest_frame.as_ref().map(|f| {
-                        let layer_cfg = self.config.layers.get(&slot.name);
-                        #[allow(clippy::option_if_let_else)]
-                        let (rect, opacity, z_index, rotation_degrees) = if let Some(lc) = layer_cfg
-                        {
-                            // Explicit per-layer config.
-                            (lc.rect.clone(), lc.opacity, lc.z_index, lc.rotation_degrees)
-                        } else if idx > 0 && num_slots > 1 {
-                            // Auto-PiP: non-first layers without explicit config
-                            // are placed in the bottom-right corner at 1/3 canvas
-                            // size with slight transparency.
-                            let pip_w = self.config.width / 3;
-                            let pip_h = self.config.height / 3;
-                            #[allow(clippy::cast_possible_wrap)]
-                            let pip_x = (self.config.width - pip_w - 20) as i32;
-                            #[allow(clippy::cast_possible_wrap)]
-                            let pip_y = (self.config.height - pip_h - 20) as i32;
-                            #[allow(clippy::cast_possible_wrap)]
-                            (
-                                Some(Rect { x: pip_x, y: pip_y, width: pip_w, height: pip_h }),
-                                0.9,
-                                idx as i32,
-                                0.0,
-                            )
-                        } else {
-                            // First layer (or single input): fill the canvas.
-                            (None, 1.0, 0, 0.0)
-                        };
+                .map(|&idx| {
+                    slots[idx].latest_frame.as_ref().map(|f| {
+                        let cfg = &resolved_configs[idx];
                         LayerSnapshot {
                             data: f.data.clone(),
                             width: f.width,
                             height: f.height,
                             pixel_format: f.pixel_format,
-                            rect,
-                            opacity,
-                            z_index,
-                            rotation_degrees,
+                            rect: cfg.rect.clone(),
+                            opacity: cfg.opacity,
+                            z_index: cfg.z_index,
+                            rotation_degrees: cfg.rotation_degrees,
                         }
                     })
                 })
                 .collect();
-
-            // Sort layers by z_index so that lower values are drawn first
-            // (bottom of the stack).  `None` entries (slots without a frame)
-            // are pushed to the end — they are skipped during compositing
-            // anyway.
-            layers.sort_by(|a, b| match (a, b) {
-                (Some(la), Some(lb)) => la.z_index.cmp(&lb.z_index),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => std::cmp::Ordering::Equal,
-            });
 
             stats_tracker.received();
 
@@ -773,7 +815,7 @@ mod tests {
     use crate::test_utils::{
         assert_state_initializing, assert_state_running, assert_state_stopped, create_test_context,
     };
-    use config::LayerConfig;
+    use config::{LayerConfig, Rect};
     use pixel_ops::scale_blit_rgba;
     use std::collections::HashMap;
     use tokio::sync::mpsc;
@@ -851,8 +893,8 @@ mod tests {
     #[test]
     fn test_composite_frame_empty_layers() {
         // No layers, no overlays -> transparent black canvas.
-        let mut scratch = Vec::new();
-        let result = composite_frame(4, 4, &[], &[], &[], None, &mut scratch);
+        let mut cache = ConversionCache::new();
+        let result = composite_frame(4, 4, &[], &[], &[], None, &mut cache);
         let buf = result.as_slice();
         assert_eq!(buf.len(), 4 * 4 * 4);
         assert!(buf.iter().all(|&b| b == 0));
@@ -872,8 +914,8 @@ mod tests {
             rotation_degrees: 0.0,
         };
 
-        let mut scratch = Vec::new();
-        let result = composite_frame(4, 4, &[Some(layer)], &[], &[], None, &mut scratch);
+        let mut cache = ConversionCache::new();
+        let result = composite_frame(4, 4, &[Some(layer)], &[], &[], None, &mut cache);
         let buf = result.as_slice();
 
         // Entire canvas should be red (scaled from 2x2 to 4x4).
@@ -912,9 +954,9 @@ mod tests {
             rotation_degrees: 0.0,
         };
 
-        let mut scratch = Vec::new();
+        let mut cache = ConversionCache::new();
         let result =
-            composite_frame(4, 4, &[Some(layer0), Some(layer1)], &[], &[], None, &mut scratch);
+            composite_frame(4, 4, &[Some(layer0), Some(layer1)], &[], &[], None, &mut cache);
         let buf = result.as_slice();
 
         // (0,0) should be red.
@@ -1079,8 +1121,8 @@ mod tests {
         let pool = FramePool::<u8>::preallocated(&[total], 2);
         assert_eq!(pool.stats().buckets[0].available, 2);
 
-        let mut scratch = Vec::new();
-        let result = composite_frame(canvas_w, canvas_h, &[], &[], &[], Some(&pool), &mut scratch);
+        let mut cache = ConversionCache::new();
+        let result = composite_frame(canvas_w, canvas_h, &[], &[], &[], Some(&pool), &mut cache);
         assert_eq!(result.as_slice().len(), total);
         // One buffer was taken from the pool.
         assert_eq!(pool.stats().buckets[0].available, 1);

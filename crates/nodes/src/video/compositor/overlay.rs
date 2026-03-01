@@ -36,13 +36,52 @@ pub fn decode_image_overlay(config: &ImageOverlayConfig) -> Result<DecodedOverla
     let rgba = img.to_rgba8();
     let (w, h) = img.dimensions();
 
-    Ok(DecodedOverlay {
-        rgba_data: rgba.into_raw(),
-        width: w,
-        height: h,
-        rect: config.rect.clone(),
-        opacity: config.opacity,
-    })
+    let target_w = config.rect.width;
+    let target_h = config.rect.height;
+
+    // Pre-scale the decoded image to the target rect dimensions so that
+    // the per-frame `blit_overlay` → `scale_blit_rgba` call hits the
+    // identity-scale fast path (direct memcpy) instead of doing
+    // nearest-neighbor scaling every frame.
+    if target_w > 0 && target_h > 0 && (w != target_w || h != target_h) {
+        let raw = rgba.into_raw();
+        let scaled = prescale_rgba(&raw, w, h, target_w, target_h);
+        Ok(DecodedOverlay {
+            rgba_data: scaled,
+            width: target_w,
+            height: target_h,
+            rect: config.rect.clone(),
+            opacity: config.opacity,
+        })
+    } else {
+        Ok(DecodedOverlay {
+            rgba_data: rgba.into_raw(),
+            width: w,
+            height: h,
+            rect: config.rect.clone(),
+            opacity: config.opacity,
+        })
+    }
+}
+
+/// Nearest-neighbor scale an RGBA8 buffer from `(sw, sh)` to `(dw, dh)`.
+/// Used once at config time so the per-frame blit is a 1:1 copy.
+fn prescale_rgba(src: &[u8], sw: u32, sh: u32, dw: u32, dh: u32) -> Vec<u8> {
+    let sw = sw as usize;
+    let sh = sh as usize;
+    let dw = dw as usize;
+    let dh = dh as usize;
+    let mut out = vec![0u8; dw * dh * 4];
+    for dy in 0..dh {
+        let sy = dy * sh / dh;
+        for dx in 0..dw {
+            let sx = dx * sw / dw;
+            let si = (sy * sw + sx) * 4;
+            let di = (dy * dw + dx) * 4;
+            out[di..di + 4].copy_from_slice(&src[si..si + 4]);
+        }
+    }
+    out
 }
 
 // ── Bundled default font ────────────────────────────────────────────────────

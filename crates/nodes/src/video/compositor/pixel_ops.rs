@@ -110,28 +110,71 @@ pub fn scale_blit_rgba(
     let first_row_byte = ry * row_stride;
     let dst_rows = &mut dst[first_row_byte..];
 
+    // ── Identity-scale fast path ───────────────────────────────────────
+    // When source dimensions exactly match the destination rect and opacity
+    // is fully opaque, we can avoid per-pixel scaling entirely and use
+    // direct row copies (memcpy) for fully-opaque source rows.
+    if rw == sw && rh == sh && opacity >= 1.0 && src_col_skip == 0 && src_row_skip == 0 {
+        let src_row_bytes = sw * 4;
+        let copy_bytes = effective_rect_w * 4;
+        for (dy, row_slice) in dst_rows.chunks_mut(row_stride).take(effective_rh).enumerate() {
+            let src_start = dy * src_row_bytes;
+            let src_end = src_start + copy_bytes;
+            if src_end > src.len() {
+                break;
+            }
+            let dst_start = rx * 4;
+            let dst_end = dst_start + copy_bytes;
+            if dst_end > row_slice.len() {
+                break;
+            }
+            // Check if the source row has any semi-transparent pixels.
+            // For fully-opaque rows, use bulk memcpy.  For rows with alpha,
+            // fall back to per-pixel blending.
+            let src_row = &src[src_start..src_end];
+            let all_opaque = src_row.chunks_exact(4).all(|px| px[3] == 255);
+            if all_opaque {
+                row_slice[dst_start..dst_end].copy_from_slice(src_row);
+            } else {
+                // Per-pixel alpha blend (identity scale, so sx == dx).
+                for dx in 0..effective_rect_w {
+                    let si = dx * 4;
+                    let sa = src_row[si + 3];
+                    if sa == 255 {
+                        row_slice[dst_start + dx * 4..dst_start + dx * 4 + 4]
+                            .copy_from_slice(&src_row[si..si + 4]);
+                    } else if sa > 0 {
+                        let di = dst_start + dx * 4;
+                        let a16 = u16::from(sa);
+                        row_slice[di] = blend_u8(src_row[si], row_slice[di], a16);
+                        row_slice[di + 1] = blend_u8(src_row[si + 1], row_slice[di + 1], a16);
+                        row_slice[di + 2] = blend_u8(src_row[si + 2], row_slice[di + 2], a16);
+                        let da = u16::from(row_slice[di + 3]);
+                        row_slice[di + 3] = (a16 + ((da * (255 - a16) + 128) >> 8)).min(255) as u8;
+                    }
+                }
+            }
+        }
+        return;
+    }
+
+    // ── Scaled blit path ───────────────────────────────────────────────
+    // Precompute the source-X lookup table once.  This replaces the per-pixel
+    // `(dx + src_col_skip) * sw / rw` integer division with a single table
+    // lookup in the inner blit loops.
+    let x_map: Vec<usize> = (0..effective_rect_w).map(|dx| (dx + src_col_skip) * sw / rw).collect();
+
     if effective_rh >= RAYON_ROW_THRESHOLD {
         dst_rows.par_chunks_mut(row_stride).take(effective_rh).enumerate().for_each(
             |(dy, row_slice)| {
                 let sy = (dy + src_row_skip) * sh / rh;
-                blit_row(
-                    row_slice,
-                    rx,
-                    effective_rect_w,
-                    src,
-                    sw,
-                    sh,
-                    sy,
-                    rw,
-                    opacity,
-                    src_col_skip,
-                );
+                blit_row(row_slice, rx, effective_rect_w, src, sw, sy, opacity, &x_map);
             },
         );
     } else {
         for (dy, row_slice) in dst_rows.chunks_mut(row_stride).take(effective_rh).enumerate() {
             let sy = (dy + src_row_skip) * sh / rh;
-            blit_row(row_slice, rx, effective_rect_w, src, sw, sh, sy, rw, opacity, src_col_skip);
+            blit_row(row_slice, rx, effective_rect_w, src, sw, sy, opacity, &x_map);
         }
     }
 }
@@ -142,6 +185,9 @@ pub fn scale_blit_rgba(
 /// rows in parallel.  The `row_slice` covers exactly one destination row
 /// starting at pixel column 0 (i.e. byte offset `rx * 4` is the first column
 /// we write to).
+///
+/// `x_map` is a precomputed table mapping each destination column to the
+/// corresponding source column, eliminating per-pixel integer division.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -155,18 +201,16 @@ fn blit_row(
     effective_rw: usize,
     src: &[u8],
     sw: usize,
-    sh: usize,
     sy: usize,
-    rw: usize,
     opacity: f32,
-    src_col_skip: usize,
+    x_map: &[usize],
 ) {
     // Fast path: when opacity is 1.0, we can skip the f32 multiply on alpha
     // and branch more cheaply.
     if opacity >= 1.0 {
-        blit_row_opaque(row_slice, rx, effective_rw, src, sw, sh, sy, rw, src_col_skip);
+        blit_row_opaque(row_slice, rx, effective_rw, src, sw, sy, x_map);
     } else {
-        blit_row_alpha(row_slice, rx, effective_rw, src, sw, sh, sy, rw, opacity, src_col_skip);
+        blit_row_alpha(row_slice, rx, effective_rw, src, sw, sy, opacity, x_map);
     }
 }
 
@@ -180,16 +224,184 @@ const fn blend_u8(src: u8, dst: u8, alpha: u16) -> u8 {
     ((val + (val >> 8)) >> 8) as u8
 }
 
+// ── SSE2 alpha-blend helpers (x86-64) ──────────────────────────────────────
+//
+// Process 4 RGBA pixels at a time using SSE2 integer arithmetic.
+// Source pixels are gathered (non-contiguous via x_map), destination pixels
+// are contiguous.  The blend formula is identical to the scalar `blend_u8`:
+//   result = ((src*alpha + dst*(255-alpha) + 128) + ((…) >> 8)) >> 8
+//
+// For the alpha channel we set source-alpha to 255 before blending so that
+// `blend_u8(255, dst_alpha, src_alpha)` naturally computes the standard
+// over-composite alpha `a_src + a_dst*(1-a_src)` (within ±1 of the scalar
+// approximation — both are approximate divisions by 255).
+
+/// Read 4 bytes from `src` at `offset` as a native-endian `u32`.
+///
+/// # Safety
+///
+/// Caller must ensure `offset + 3 < src.len()`.
+#[inline(always)]
+unsafe fn read_rgba_u32(src: &[u8], offset: usize) -> u32 {
+    std::ptr::read_unaligned(src.as_ptr().add(offset) as *const u32)
+}
+
+/// Blend 4 gathered source RGBA pixels onto 4 contiguous destination pixels
+/// using SSE2 "over" compositing (no opacity modifier).
+///
+/// # Safety
+///
+/// `dst_ptr` must point to at least 16 writable bytes.  Source pixel values
+/// in `src_pixels` must be valid RGBA `u32` values.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+unsafe fn blend_4px_over_sse2(dst_ptr: *mut u8, src_pixels: [u32; 4]) {
+    use std::arch::x86_64::*;
+
+    let zero = _mm_setzero_si128();
+    let c255 = _mm_set1_epi16(255);
+    let c128 = _mm_set1_epi16(128);
+
+    // Assemble 4 gathered source pixels into one register.
+    let src4 = _mm_set_epi32(
+        src_pixels[3] as i32,
+        src_pixels[2] as i32,
+        src_pixels[1] as i32,
+        src_pixels[0] as i32,
+    );
+
+    // Mask with 0xFF at each pixel's alpha-byte position (bytes 3,7,11,15).
+    let alpha_byte_mask = _mm_set1_epi32(0xFF00_0000_u32 as i32);
+
+    // Fast path: all 4 source pixels fully opaque → direct copy.
+    let alpha_bytes = _mm_and_si128(src4, alpha_byte_mask);
+    if _mm_movemask_epi8(_mm_cmpeq_epi8(alpha_bytes, alpha_byte_mask)) == 0xFFFF {
+        _mm_storeu_si128(dst_ptr as *mut __m128i, src4);
+        return;
+    }
+
+    // Fast path: all 4 source pixels fully transparent → nothing to do.
+    if _mm_movemask_epi8(_mm_cmpeq_epi8(alpha_bytes, zero)) == 0xFFFF {
+        return;
+    }
+
+    let dst4 = _mm_loadu_si128(dst_ptr as *const __m128i);
+
+    // Replace source alpha channel with 255 for correct composite-alpha
+    // via blend_u8(255, dst_alpha, src_alpha).
+    let src_blend = _mm_or_si128(src4, alpha_byte_mask);
+
+    // --- Low 2 pixels (u16 arithmetic) ---
+    let src_lo = _mm_unpacklo_epi8(src_blend, zero);
+    let dst_lo = _mm_unpacklo_epi8(dst4, zero);
+
+    // Extract original source alpha and broadcast within each 4-u16 pixel group.
+    let src_orig_lo = _mm_unpacklo_epi8(src4, zero);
+    // _MM_SHUFFLE(3,3,3,3) = 0xFF → replicate element 3 (alpha) to all 4 positions.
+    let alpha_lo = _mm_shufflehi_epi16(_mm_shufflelo_epi16(src_orig_lo, 0xFF), 0xFF);
+
+    let inv_alpha_lo = _mm_sub_epi16(c255, alpha_lo);
+    let val_lo = _mm_add_epi16(
+        _mm_add_epi16(_mm_mullo_epi16(src_lo, alpha_lo), _mm_mullo_epi16(dst_lo, inv_alpha_lo)),
+        c128,
+    );
+    let result_lo = _mm_srli_epi16(_mm_add_epi16(val_lo, _mm_srli_epi16(val_lo, 8)), 8);
+
+    // --- High 2 pixels ---
+    let src_hi = _mm_unpackhi_epi8(src_blend, zero);
+    let dst_hi = _mm_unpackhi_epi8(dst4, zero);
+    let src_orig_hi = _mm_unpackhi_epi8(src4, zero);
+    let alpha_hi = _mm_shufflehi_epi16(_mm_shufflelo_epi16(src_orig_hi, 0xFF), 0xFF);
+
+    let inv_alpha_hi = _mm_sub_epi16(c255, alpha_hi);
+    let val_hi = _mm_add_epi16(
+        _mm_add_epi16(_mm_mullo_epi16(src_hi, alpha_hi), _mm_mullo_epi16(dst_hi, inv_alpha_hi)),
+        c128,
+    );
+    let result_hi = _mm_srli_epi16(_mm_add_epi16(val_hi, _mm_srli_epi16(val_hi, 8)), 8);
+
+    // Pack back to u8 and store.
+    _mm_storeu_si128(dst_ptr as *mut __m128i, _mm_packus_epi16(result_lo, result_hi));
+}
+
+/// Blend 4 gathered source RGBA pixels onto 4 contiguous destination pixels
+/// using SSE2 "over" compositing **with** an opacity multiplier applied to
+/// each pixel's source alpha.
+///
+/// # Safety
+///
+/// `dst_ptr` must point to at least 16 writable bytes.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+unsafe fn blend_4px_over_alpha_sse2(dst_ptr: *mut u8, src_pixels: [u32; 4], opacity: u16) {
+    use std::arch::x86_64::*;
+
+    let zero = _mm_setzero_si128();
+    let c255 = _mm_set1_epi16(255);
+    let c128 = _mm_set1_epi16(128);
+    let opacity_v = _mm_set1_epi16(opacity as i16);
+
+    let src4 = _mm_set_epi32(
+        src_pixels[3] as i32,
+        src_pixels[2] as i32,
+        src_pixels[1] as i32,
+        src_pixels[0] as i32,
+    );
+
+    let dst4 = _mm_loadu_si128(dst_ptr as *const __m128i);
+    let alpha_byte_mask = _mm_set1_epi32(0xFF00_0000_u32 as i32);
+    let src_blend = _mm_or_si128(src4, alpha_byte_mask);
+
+    // --- Low 2 pixels ---
+    let src_lo = _mm_unpacklo_epi8(src_blend, zero);
+    let dst_lo = _mm_unpacklo_epi8(dst4, zero);
+
+    // Extract original alpha, apply opacity: sa_eff = (sa * opacity + 128) >> 8.
+    // Max value: (255*255+128)>>8 = 254, so no clamping needed.
+    let src_orig_lo = _mm_unpacklo_epi8(src4, zero);
+    let raw_alpha_lo = _mm_shufflehi_epi16(_mm_shufflelo_epi16(src_orig_lo, 0xFF), 0xFF);
+    let alpha_lo = _mm_srli_epi16(_mm_add_epi16(_mm_mullo_epi16(raw_alpha_lo, opacity_v), c128), 8);
+
+    let inv_alpha_lo = _mm_sub_epi16(c255, alpha_lo);
+    let val_lo = _mm_add_epi16(
+        _mm_add_epi16(_mm_mullo_epi16(src_lo, alpha_lo), _mm_mullo_epi16(dst_lo, inv_alpha_lo)),
+        c128,
+    );
+    let result_lo = _mm_srli_epi16(_mm_add_epi16(val_lo, _mm_srli_epi16(val_lo, 8)), 8);
+
+    // --- High 2 pixels ---
+    let src_hi = _mm_unpackhi_epi8(src_blend, zero);
+    let dst_hi = _mm_unpackhi_epi8(dst4, zero);
+    let src_orig_hi = _mm_unpackhi_epi8(src4, zero);
+    let raw_alpha_hi = _mm_shufflehi_epi16(_mm_shufflelo_epi16(src_orig_hi, 0xFF), 0xFF);
+    let alpha_hi = _mm_srli_epi16(_mm_add_epi16(_mm_mullo_epi16(raw_alpha_hi, opacity_v), c128), 8);
+
+    let inv_alpha_hi = _mm_sub_epi16(c255, alpha_hi);
+    let val_hi = _mm_add_epi16(
+        _mm_add_epi16(_mm_mullo_epi16(src_hi, alpha_hi), _mm_mullo_epi16(dst_hi, inv_alpha_hi)),
+        c128,
+    );
+    let result_hi = _mm_srli_epi16(_mm_add_epi16(val_hi, _mm_srli_epi16(val_hi, 8)), 8);
+
+    _mm_storeu_si128(dst_ptr as *mut __m128i, _mm_packus_epi16(result_lo, result_hi));
+}
+
 /// Inner blit for fully-opaque layers (`opacity >= 1.0`).  Skips the
 /// per-pixel f32 multiply on the source alpha channel.
 ///
 /// Uses integer-only alpha blending for semi-transparent source pixels.
+/// `x_map` provides precomputed source-X indices (one per destination column).
+///
+/// On x86-64, processes 4 pixels at a time using SSE2 SIMD when the row is
+/// wide enough and bounds can be pre-validated.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::too_many_arguments,
     clippy::suboptimal_flops,
-    clippy::inline_always
+    clippy::inline_always,
+    // dx is used as both x_map index and dst offset, so an iterator is non-trivial.
+    clippy::needless_range_loop
 )]
 #[inline(always)]
 fn blit_row_opaque(
@@ -198,14 +410,65 @@ fn blit_row_opaque(
     effective_rw: usize,
     src: &[u8],
     sw: usize,
-    _sh: usize,
     sy: usize,
-    rw: usize,
-    src_col_skip: usize,
+    x_map: &[usize],
 ) {
     let src_row_base = sy * sw * 4;
+
+    // ── SSE2 fast path: process 4 pixels at a time ─────────────────────
+    #[cfg(target_arch = "x86_64")]
+    {
+        // Pre-validate bounds so the inner SIMD loop is branch-free.
+        let src_row_end = src_row_base + sw * 4;
+        let dst_end = (rx + effective_rw) * 4;
+        if src_row_end <= src.len() && dst_end <= row_slice.len() {
+            let chunks = effective_rw / 4;
+            for c in 0..chunks {
+                let dx = c * 4;
+                // SAFETY: bounds pre-validated above; x_map values < sw;
+                // dst range (rx+dx)*4..(rx+dx+4)*4 < dst_end <= row_slice.len().
+                unsafe {
+                    let pixels = [
+                        read_rgba_u32(src, src_row_base + x_map[dx] * 4),
+                        read_rgba_u32(src, src_row_base + x_map[dx + 1] * 4),
+                        read_rgba_u32(src, src_row_base + x_map[dx + 2] * 4),
+                        read_rgba_u32(src, src_row_base + x_map[dx + 3] * 4),
+                    ];
+                    blend_4px_over_sse2(row_slice.as_mut_ptr().add((rx + dx) * 4), pixels);
+                }
+            }
+
+            // Scalar tail for remaining 0-3 pixels.
+            let tail_start = chunks * 4;
+            for dx in tail_start..effective_rw {
+                let sx = x_map[dx];
+                let src_idx = src_row_base + sx * 4;
+                let sr = src[src_idx];
+                let sg = src[src_idx + 1];
+                let sb = src[src_idx + 2];
+                let sa = src[src_idx + 3];
+                let dst_idx = (rx + dx) * 4;
+                if sa == 255 {
+                    row_slice[dst_idx] = sr;
+                    row_slice[dst_idx + 1] = sg;
+                    row_slice[dst_idx + 2] = sb;
+                    row_slice[dst_idx + 3] = 255;
+                } else if sa > 0 {
+                    let a16 = u16::from(sa);
+                    row_slice[dst_idx] = blend_u8(sr, row_slice[dst_idx], a16);
+                    row_slice[dst_idx + 1] = blend_u8(sg, row_slice[dst_idx + 1], a16);
+                    row_slice[dst_idx + 2] = blend_u8(sb, row_slice[dst_idx + 2], a16);
+                    let da = u16::from(row_slice[dst_idx + 3]);
+                    row_slice[dst_idx + 3] = (a16 + ((da * (255 - a16) + 128) >> 8)).min(255) as u8;
+                }
+            }
+            return;
+        }
+    }
+
+    // ── Scalar fallback (bounds-checked per pixel) ─────────────────────
     for dx in 0..effective_rw {
-        let sx = (dx + src_col_skip) * sw / rw;
+        let sx = x_map[dx];
         let src_idx = src_row_base + sx * 4;
         if src_idx + 3 >= src.len() {
             continue;
@@ -231,7 +494,6 @@ fn blit_row_opaque(
             row_slice[dst_idx] = blend_u8(sr, row_slice[dst_idx], a16);
             row_slice[dst_idx + 1] = blend_u8(sg, row_slice[dst_idx + 1], a16);
             row_slice[dst_idx + 2] = blend_u8(sb, row_slice[dst_idx + 2], a16);
-            // Composite alpha: a_out = a_src + a_dst * (1 - a_src)
             let da = u16::from(row_slice[dst_idx + 3]);
             row_slice[dst_idx + 3] = (a16 + ((da * (255 - a16) + 128) >> 8)).min(255) as u8;
         }
@@ -242,12 +504,18 @@ fn blit_row_opaque(
 /// Applies the opacity multiplier to every source pixel's alpha channel.
 ///
 /// Uses integer-only alpha blending.
+/// `x_map` provides precomputed source-X indices (one per destination column).
+///
+/// On x86-64, processes 4 pixels at a time using SSE2 SIMD when the row is
+/// wide enough and bounds can be pre-validated.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::too_many_arguments,
     clippy::suboptimal_flops,
-    clippy::inline_always
+    clippy::inline_always,
+    // dx is used as both x_map index and dst offset, so an iterator is non-trivial.
+    clippy::needless_range_loop
 )]
 #[inline(always)]
 fn blit_row_alpha(
@@ -256,18 +524,70 @@ fn blit_row_alpha(
     effective_rw: usize,
     src: &[u8],
     sw: usize,
-    _sh: usize,
     sy: usize,
-    rw: usize,
     opacity: f32,
-    src_col_skip: usize,
+    x_map: &[usize],
 ) {
     // Pre-compute opacity as a 0..255 integer multiplier.
     let opacity_u16 = (opacity * 255.0 + 0.5) as u16;
     let src_row_base = sy * sw * 4;
 
+    // ── SSE2 fast path ─────────────────────────────────────────────────
+    #[cfg(target_arch = "x86_64")]
+    {
+        let src_row_end = src_row_base + sw * 4;
+        let dst_end = (rx + effective_rw) * 4;
+        if src_row_end <= src.len() && dst_end <= row_slice.len() {
+            let chunks = effective_rw / 4;
+            for c in 0..chunks {
+                let dx = c * 4;
+                unsafe {
+                    let pixels = [
+                        read_rgba_u32(src, src_row_base + x_map[dx] * 4),
+                        read_rgba_u32(src, src_row_base + x_map[dx + 1] * 4),
+                        read_rgba_u32(src, src_row_base + x_map[dx + 2] * 4),
+                        read_rgba_u32(src, src_row_base + x_map[dx + 3] * 4),
+                    ];
+                    blend_4px_over_alpha_sse2(
+                        row_slice.as_mut_ptr().add((rx + dx) * 4),
+                        pixels,
+                        opacity_u16,
+                    );
+                }
+            }
+
+            // Scalar tail.
+            let tail_start = chunks * 4;
+            for dx in tail_start..effective_rw {
+                let sx = x_map[dx];
+                let src_idx = src_row_base + sx * 4;
+                let sr = src[src_idx];
+                let sg = src[src_idx + 1];
+                let sb = src[src_idx + 2];
+                let sa = src[src_idx + 3];
+                let dst_idx = (rx + dx) * 4;
+                let sa_eff = ((u16::from(sa) * opacity_u16 + 128) >> 8).min(255);
+                if sa_eff == 255 {
+                    row_slice[dst_idx] = sr;
+                    row_slice[dst_idx + 1] = sg;
+                    row_slice[dst_idx + 2] = sb;
+                    row_slice[dst_idx + 3] = 255;
+                } else if sa_eff > 0 {
+                    row_slice[dst_idx] = blend_u8(sr, row_slice[dst_idx], sa_eff);
+                    row_slice[dst_idx + 1] = blend_u8(sg, row_slice[dst_idx + 1], sa_eff);
+                    row_slice[dst_idx + 2] = blend_u8(sb, row_slice[dst_idx + 2], sa_eff);
+                    let da = u16::from(row_slice[dst_idx + 3]);
+                    row_slice[dst_idx + 3] =
+                        (sa_eff + ((da * (255 - sa_eff) + 128) >> 8)).min(255) as u8;
+                }
+            }
+            return;
+        }
+    }
+
+    // ── Scalar fallback ────────────────────────────────────────────────
     for dx in 0..effective_rw {
-        let sx = (dx + src_col_skip) * sw / rw;
+        let sx = x_map[dx];
         let src_idx = src_row_base + sx * 4;
         if src_idx + 3 >= src.len() {
             continue;
@@ -283,7 +603,6 @@ fn blit_row_alpha(
             continue;
         }
 
-        // Effective alpha: (sa * opacity) / 255, done in integer.
         let sa_eff = ((u16::from(sa) * opacity_u16 + 128) >> 8).min(255);
         if sa_eff == 255 {
             row_slice[dst_idx] = sr;
