@@ -227,11 +227,12 @@ const VideoLayer: React.FC<{
         top: layer.y,
         width: layer.width,
         height: layer.height,
-        opacity: layer.opacity,
+        opacity: layer.visible ? layer.opacity : 0.2,
         transform: layer.rotationDegrees !== 0 ? `rotate(${layer.rotationDegrees}deg)` : undefined,
         zIndex: layer.zIndex + 1,
-        border: `2px solid ${borderColor}`,
+        border: `2px ${layer.visible ? 'solid' : 'dashed'} ${borderColor}`,
         background: bgColor,
+        filter: layer.visible ? undefined : 'grayscale(0.6)',
       }}
       onPointerDown={handlePointerDown}
     >
@@ -279,10 +280,11 @@ const TextOverlayLayer: React.FC<{
         top: overlay.y,
         width: overlay.width,
         height: overlay.height,
-        opacity: overlay.opacity,
+        opacity: overlay.visible ? overlay.opacity : 0.2,
         zIndex: 100 + index,
         border: `2px dashed ${borderColor}`,
         background: bgColor,
+        filter: overlay.visible ? undefined : 'grayscale(0.6)',
       }}
       onPointerDown={handlePointerDown}
     >
@@ -338,10 +340,11 @@ const ImageOverlayLayer: React.FC<{
         top: overlay.y,
         width: overlay.width,
         height: overlay.height,
-        opacity: overlay.opacity,
+        opacity: overlay.visible ? overlay.opacity : 0.2,
         zIndex: 200 + index,
         border: `2px dotted ${borderColor}`,
         background: bgColor,
+        filter: overlay.visible ? undefined : 'grayscale(0.6)',
         backgroundImage:
           'repeating-linear-gradient(45deg, transparent, transparent 6px, rgba(255,255,255,0.04) 6px, rgba(255,255,255,0.04) 12px)',
       }}

@@ -11,6 +11,7 @@
  */
 
 import styled from '@emotion/styled';
+import { Maximize2, Minimize2 } from 'lucide-react';
 import React, { useCallback, useRef, useState } from 'react';
 import { useShallow } from 'zustand/shallow';
 
@@ -135,150 +136,198 @@ const PreviewCanvas = styled.canvas`
 interface OutputPreviewPanelProps {
   /** Whether a session is selected in the Monitor View */
   hasSession: boolean;
+  /** When true the panel is only rendered if there is something to preview */
+  conditionalRender?: boolean;
 }
 
 /** Default panel width (px) */
 const DEFAULT_WIDTH = 320;
 
-const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(({ hasSession }) => {
-  const [collapsed, setCollapsed] = useState(false);
-  // Position relative to bottom-right of the container
-  const [pos, setPos] = useState({ x: 16, y: 16 });
-  const dragRef = useRef<{
-    startX: number;
-    startY: number;
-    origX: number;
-    origY: number;
-  } | null>(null);
+const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
+  ({ hasSession, conditionalRender = false }) => {
+    const [collapsed, setCollapsed] = useState(false);
+    const [isFullscreen, setIsFullscreen] = useState(false);
+    // Position relative to bottom-right of the container
+    const [pos, setPos] = useState({ x: 16, y: 16 });
+    const panelRef = useRef<HTMLDivElement>(null);
+    const dragRef = useRef<{
+      startX: number;
+      startY: number;
+      origX: number;
+      origY: number;
+    } | null>(null);
 
-  const { status, watchStatus, videoRenderer, activeSessionId } = useStreamStore(
-    useShallow((s) => ({
-      status: s.status,
-      watchStatus: s.watchStatus,
-      videoRenderer: s.videoRenderer,
-      activeSessionId: s.activeSessionId,
-    }))
-  );
+    const { status, watchStatus, videoRenderer, activeSessionId } = useStreamStore(
+      useShallow((s) => ({
+        status: s.status,
+        watchStatus: s.watchStatus,
+        videoRenderer: s.videoRenderer,
+        activeSessionId: s.activeSessionId,
+      }))
+    );
 
-  const isConnected = status === 'connected';
-  const isLive = watchStatus === 'live';
+    const isConnected = status === 'connected';
+    const isLive = watchStatus === 'live';
 
-  const toggleCollapsed = useCallback(() => {
-    setCollapsed((prev) => !prev);
-  }, []);
+    const toggleCollapsed = useCallback(() => {
+      setCollapsed((prev) => !prev);
+    }, []);
 
-  const canvasRef = useCallback(
-    (el: HTMLCanvasElement | null) => {
-      if (el && videoRenderer) {
-        videoRenderer.canvas.set(el);
+    const toggleFullscreen = useCallback(() => {
+      if (!panelRef.current) return;
+      if (!document.fullscreenElement) {
+        panelRef.current
+          .requestFullscreen()
+          .then(() => setIsFullscreen(true))
+          .catch(() => {});
+      } else {
+        document
+          .exitFullscreen()
+          .then(() => setIsFullscreen(false))
+          .catch(() => {});
       }
-    },
-    [videoRenderer]
-  );
+    }, []);
 
-  // ── Drag handling ────────────────────────────────────────────────────────
-  const handleDragStart = useCallback(
-    (e: React.PointerEvent) => {
-      // Only start drag from the header itself (not buttons inside it)
-      if ((e.target as HTMLElement).closest('button')) return;
-      e.preventDefault();
-      e.stopPropagation();
-      dragRef.current = {
-        startX: e.clientX,
-        startY: e.clientY,
-        origX: pos.x,
-        origY: pos.y,
+    // Sync fullscreen state when user exits via Escape key
+    React.useEffect(() => {
+      const handler = () => {
+        if (!document.fullscreenElement) setIsFullscreen(false);
       };
+      document.addEventListener('fullscreenchange', handler);
+      return () => document.removeEventListener('fullscreenchange', handler);
+    }, []);
 
-      const handleMove = (ev: PointerEvent) => {
-        if (!dragRef.current) return;
-        const dx = ev.clientX - dragRef.current.startX;
-        const dy = ev.clientY - dragRef.current.startY;
-        // Inverted because position is relative to bottom-right
-        setPos({
-          x: Math.max(0, dragRef.current.origX - dx),
-          y: Math.max(0, dragRef.current.origY + dy),
-        });
-      };
+    const canvasRef = useCallback(
+      (el: HTMLCanvasElement | null) => {
+        if (el && videoRenderer) {
+          videoRenderer.canvas.set(el);
+        }
+      },
+      [videoRenderer]
+    );
 
-      const handleUp = () => {
-        dragRef.current = null;
-        document.removeEventListener('pointermove', handleMove);
-        document.removeEventListener('pointerup', handleUp);
-      };
+    // ── Drag handling ────────────────────────────────────────────────────────
+    const handleDragStart = useCallback(
+      (e: React.PointerEvent) => {
+        // Only start drag from the header itself (not buttons inside it)
+        if ((e.target as HTMLElement).closest('button')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        dragRef.current = {
+          startX: e.clientX,
+          startY: e.clientY,
+          origX: pos.x,
+          origY: pos.y,
+        };
 
-      document.addEventListener('pointermove', handleMove);
-      document.addEventListener('pointerup', handleUp);
-    },
-    [pos]
-  );
+        const handleMove = (ev: PointerEvent) => {
+          if (!dragRef.current) return;
+          const dx = ev.clientX - dragRef.current.startX;
+          const dy = ev.clientY - dragRef.current.startY;
+          // Inverted because position is relative to bottom-right
+          setPos({
+            x: Math.max(0, dragRef.current.origX - dx),
+            y: Math.max(0, dragRef.current.origY - dy),
+          });
+        };
 
-  const statusLabel =
-    watchStatus === 'live'
-      ? 'Live'
-      : watchStatus === 'loading'
-        ? 'Loading...'
-        : isConnected
-          ? 'Connected'
-          : 'Off';
+        const handleUp = () => {
+          dragRef.current = null;
+          document.removeEventListener('pointermove', handleMove);
+          document.removeEventListener('pointerup', handleUp);
+        };
 
-  const renderBody = () => {
-    if (!hasSession) {
-      return <EmptyMessage>Select a session to preview output.</EmptyMessage>;
-    }
+        document.addEventListener('pointermove', handleMove);
+        document.addEventListener('pointerup', handleUp);
+      },
+      [pos]
+    );
 
-    if (!isConnected) {
+    // Conditional rendering: hide panel when there's nothing to preview.
+    // Placed after all hooks to satisfy rules-of-hooks (no conditional hook calls).
+    const shouldShow = !conditionalRender || (isConnected && (isLive || watchStatus === 'loading'));
+    if (!shouldShow) return null;
+
+    const statusLabel =
+      watchStatus === 'live'
+        ? 'Live'
+        : watchStatus === 'loading'
+          ? 'Loading...'
+          : isConnected
+            ? 'Connected'
+            : 'Off';
+
+    const renderBody = () => {
+      if (!hasSession) {
+        return <EmptyMessage>Select a session to preview output.</EmptyMessage>;
+      }
+
+      if (!isConnected) {
+        return (
+          <EmptyMessage>
+            Connect to the MoQ gateway in the <strong>Stream</strong> view to preview.
+          </EmptyMessage>
+        );
+      }
+
+      if (!videoRenderer) {
+        return <EmptyMessage>No video renderer. Enable Watch mode.</EmptyMessage>;
+      }
+
+      if (!isLive && watchStatus !== 'loading') {
+        return (
+          <EmptyMessage>
+            Waiting for video stream{activeSessionId ? ' from session' : ''}...
+          </EmptyMessage>
+        );
+      }
+
       return (
-        <EmptyMessage>
-          Connect to the MoQ gateway in the <strong>Stream</strong> view to preview.
-        </EmptyMessage>
+        <PreviewCanvas
+          ref={canvasRef}
+          style={{
+            aspectRatio: '16 / 9',
+          }}
+        />
       );
-    }
-
-    if (!videoRenderer) {
-      return <EmptyMessage>No video renderer. Enable Watch mode.</EmptyMessage>;
-    }
-
-    if (!isLive && watchStatus !== 'loading') {
-      return (
-        <EmptyMessage>
-          Waiting for video stream{activeSessionId ? ' from session' : ''}...
-        </EmptyMessage>
-      );
-    }
+    };
 
     return (
-      <PreviewCanvas
-        ref={canvasRef}
+      <FloatingPanel
+        ref={panelRef}
         style={{
-          aspectRatio: '16 / 9',
+          right: isFullscreen ? 0 : pos.x,
+          bottom: isFullscreen ? 0 : pos.y,
+          width: isFullscreen ? '100%' : collapsed ? undefined : DEFAULT_WIDTH,
+          height: isFullscreen ? '100%' : undefined,
+          borderRadius: isFullscreen ? 0 : undefined,
         }}
-      />
+      >
+        <DragHeader onPointerDown={handleDragStart}>
+          <HeaderLeft>
+            <StatusDot status={watchStatus} />
+            Preview
+            {isConnected && ` \u2014 ${statusLabel}`}
+          </HeaderLeft>
+          <span style={{ display: 'flex', gap: 2 }}>
+            <HeaderButton
+              onClick={toggleFullscreen}
+              title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+            >
+              {isFullscreen ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
+            </HeaderButton>
+            <HeaderButton onClick={toggleCollapsed} title={collapsed ? 'Expand' : 'Collapse'}>
+              {collapsed ? '\u25B3' : '\u25BD'}
+            </HeaderButton>
+          </span>
+        </DragHeader>
+        {!collapsed && (
+          <PanelBody style={isFullscreen ? { flex: 1 } : undefined}>{renderBody()}</PanelBody>
+        )}
+      </FloatingPanel>
     );
-  };
-
-  return (
-    <FloatingPanel
-      style={{
-        right: pos.x,
-        bottom: pos.y,
-        width: collapsed ? undefined : DEFAULT_WIDTH,
-      }}
-    >
-      <DragHeader onPointerDown={handleDragStart}>
-        <HeaderLeft>
-          <StatusDot status={watchStatus} />
-          Preview
-          {isConnected && ` \u2014 ${statusLabel}`}
-        </HeaderLeft>
-        <HeaderButton onClick={toggleCollapsed} title={collapsed ? 'Expand' : 'Collapse'}>
-          {collapsed ? '\u25B3' : '\u25BD'}
-        </HeaderButton>
-      </DragHeader>
-      {!collapsed && <PanelBody>{renderBody()}</PanelBody>}
-    </FloatingPanel>
-  );
-});
+  }
+);
 
 OutputPreviewPanel.displayName = 'OutputPreviewPanel';
 

@@ -24,6 +24,8 @@ export interface LayerState {
   opacity: number;
   zIndex: number;
   rotationDegrees: number;
+  /** Client-side visibility toggle (hidden layers send opacity=0 to backend) */
+  visible: boolean;
 }
 
 /** A text overlay stored in compositor config */
@@ -38,6 +40,8 @@ export interface TextOverlayState {
   color: [number, number, number, number];
   fontSize: number;
   opacity: number;
+  /** Client-side visibility toggle (hidden overlays send opacity=0 to backend) */
+  visible: boolean;
 }
 
 /** An image overlay stored in compositor config */
@@ -51,6 +55,8 @@ export interface ImageOverlayState {
   width: number;
   height: number;
   opacity: number;
+  /** Client-side visibility toggle (hidden overlays send opacity=0 to backend) */
+  visible: boolean;
 }
 
 /** Which edge/corner is being resized */
@@ -68,6 +74,9 @@ export interface UseCompositorLayersOptions {
   throttleMs?: number;
 }
 
+/** Which category a layer belongs to for drag commit routing */
+export type LayerKind = 'video' | 'text' | 'image';
+
 export interface UseCompositorLayersResult {
   layers: LayerState[];
   selectedLayerId: string | null;
@@ -77,6 +86,7 @@ export interface UseCompositorLayersResult {
   updateLayerOpacity: (layerId: string, opacity: number) => void;
   updateLayerRotation: (layerId: string, degrees: number) => void;
   updateLayerZIndex: (layerId: string, zIndex: number) => void;
+  toggleLayerVisibility: (layerId: string) => void;
   /** Ref map: layer elements register here for direct DOM manipulation during drag */
   layerRefs: React.MutableRefObject<Map<string, HTMLDivElement>>;
   /** Whether a drag/resize is currently in progress */
@@ -140,6 +150,7 @@ function parseLayers(
       opacity: cfg.opacity ?? 1.0,
       zIndex: cfg.z_index ?? 0,
       rotationDegrees: cfg.rotation_degrees ?? 0,
+      visible: true,
     }))
     .sort((a, b) => a.zIndex - b.zIndex);
 }
@@ -158,6 +169,7 @@ function parseTextOverlays(params: Record<string, unknown>): TextOverlayState[] 
     color: o.color ?? [255, 255, 255, 255],
     fontSize: o.font_size ?? 24,
     opacity: o.opacity ?? 1.0,
+    visible: true,
   }));
 }
 
@@ -173,6 +185,7 @@ function parseImageOverlays(params: Record<string, unknown>): ImageOverlayState[
     width: o.rect?.width ?? 200,
     height: o.rect?.height ?? 200,
     opacity: o.opacity ?? 1.0,
+    visible: true,
   }));
 }
 
@@ -188,7 +201,7 @@ function serializeTextOverlays(overlays: TextOverlayState[]): TextOverlayConfig[
     },
     color: o.color,
     font_size: o.fontSize,
-    opacity: Math.round(o.opacity * 100) / 100,
+    opacity: o.visible ? Math.round(o.opacity * 100) / 100 : 0,
   }));
 }
 
@@ -202,7 +215,7 @@ function serializeImageOverlays(overlays: ImageOverlayState[]): ImageOverlayConf
       width: Math.max(1, Math.round(o.width)),
       height: Math.max(1, Math.round(o.height)),
     },
-    opacity: Math.round(o.opacity * 100) / 100,
+    opacity: o.visible ? Math.round(o.opacity * 100) / 100 : 0,
   }));
 }
 
@@ -222,7 +235,7 @@ function buildConfig(
         width: Math.max(1, Math.round(layer.width)),
         height: Math.max(1, Math.round(layer.height)),
       },
-      opacity: Math.round(layer.opacity * 100) / 100,
+      opacity: layer.visible ? Math.round(layer.opacity * 100) / 100 : 0,
       z_index: layer.zIndex,
       rotation_degrees: Math.round(layer.rotationDegrees * 10) / 10,
     };
@@ -282,6 +295,8 @@ export const useCompositorLayers = (
   const dragStateRef = useRef<{
     type: 'drag' | 'resize';
     layerId: string;
+    /** Which layer array this item belongs to, for correct commit on pointer-up */
+    layerKind: LayerKind;
     handle?: ResizeHandle;
     startX: number;
     startY: number;
@@ -307,6 +322,53 @@ export const useCompositorLayers = (
     setImageOverlays(parseImageOverlays(params));
   }, [params, canvasWidth, canvasHeight]);
 
+  /** Resolve a layer ID to its state and kind across all layer types */
+  const findAnyLayer = useCallback(
+    (layerId: string): { state: LayerState; kind: LayerKind } | null => {
+      const videoLayer = layersRef.current.find((l) => l.id === layerId);
+      if (videoLayer) return { state: videoLayer, kind: 'video' };
+
+      const textOverlay = textOverlaysRef.current.find((o) => o.id === layerId);
+      if (textOverlay) {
+        return {
+          state: {
+            id: textOverlay.id,
+            x: textOverlay.x,
+            y: textOverlay.y,
+            width: textOverlay.width,
+            height: textOverlay.height,
+            opacity: textOverlay.opacity,
+            zIndex: 0,
+            rotationDegrees: 0,
+            visible: textOverlay.visible,
+          },
+          kind: 'text',
+        };
+      }
+
+      const imgOverlay = imageOverlaysRef.current.find((o) => o.id === layerId);
+      if (imgOverlay) {
+        return {
+          state: {
+            id: imgOverlay.id,
+            x: imgOverlay.x,
+            y: imgOverlay.y,
+            width: imgOverlay.width,
+            height: imgOverlay.height,
+            opacity: imgOverlay.opacity,
+            zIndex: 0,
+            rotationDegrees: 0,
+            visible: imgOverlay.visible,
+          },
+          kind: 'image',
+        };
+      }
+
+      return null;
+    },
+    []
+  );
+
   // Throttled config change
   const throttledConfigChange = useMemo(() => {
     if (!onConfigChange && !onParamChange) return null;
@@ -326,7 +388,7 @@ export const useCompositorLayers = (
                 width: Math.max(1, Math.round(layer.width)),
                 height: Math.max(1, Math.round(layer.height)),
               },
-              opacity: Math.round(layer.opacity * 100) / 100,
+              opacity: layer.visible ? Math.round(layer.opacity * 100) / 100 : 0,
               z_index: layer.zIndex,
               rotation_degrees: Math.round(layer.rotationDegrees * 10) / 10,
             };
@@ -430,14 +492,37 @@ export const useCompositorLayers = (
       }
 
       const updated = computeUpdatedLayer(state, e.clientX, e.clientY);
-
-      // Commit to React state
-      setLayers((prev) => prev.map((l) => (l.id === updated.id ? updated : l)));
       setIsDragging(false);
 
-      // Send to server
-      const newLayers = layersRef.current.map((l) => (l.id === updated.id ? updated : l));
-      throttledConfigChange?.(newLayers);
+      if (state.layerKind === 'video') {
+        // Commit video layer to React state
+        setLayers((prev) => prev.map((l) => (l.id === updated.id ? updated : l)));
+        // Send to server
+        const newLayers = layersRef.current.map((l) => (l.id === updated.id ? updated : l));
+        throttledConfigChange?.(newLayers);
+      } else if (state.layerKind === 'text') {
+        // Commit text overlay position/size
+        setTextOverlays((prev) => {
+          const next = prev.map((o) =>
+            o.id === updated.id
+              ? { ...o, x: updated.x, y: updated.y, width: updated.width, height: updated.height }
+              : o
+          );
+          commitOverlaysRef.current(next, imageOverlaysRef.current);
+          return next;
+        });
+      } else if (state.layerKind === 'image') {
+        // Commit image overlay position/size
+        setImageOverlays((prev) => {
+          const next = prev.map((o) =>
+            o.id === updated.id
+              ? { ...o, x: updated.x, y: updated.y, width: updated.width, height: updated.height }
+              : o
+          );
+          commitOverlaysRef.current(textOverlaysRef.current, next);
+          return next;
+        });
+      }
 
       dragStateRef.current = null;
       document.removeEventListener('pointermove', handlePointerMove);
@@ -446,14 +531,14 @@ export const useCompositorLayers = (
     [computeUpdatedLayer, throttledConfigChange, handlePointerMove]
   );
 
-  /** Start dragging a layer */
+  /** Start dragging a layer (video, text overlay, or image overlay) */
   const handleLayerPointerDown = useCallback(
     (layerId: string, e: React.PointerEvent) => {
       e.stopPropagation();
       e.preventDefault();
 
-      const layer = layersRef.current.find((l) => l.id === layerId);
-      if (!layer) return;
+      const found = findAnyLayer(layerId);
+      if (!found) return;
 
       setSelectedLayerId(layerId);
 
@@ -468,9 +553,10 @@ export const useCompositorLayers = (
       dragStateRef.current = {
         type: 'drag',
         layerId,
+        layerKind: found.kind,
         startX: e.clientX,
         startY: e.clientY,
-        origLayer: { ...layer },
+        origLayer: { ...found.state },
         scale,
         rafId: null,
         currentX: e.clientX,
@@ -481,17 +567,17 @@ export const useCompositorLayers = (
       document.addEventListener('pointermove', handlePointerMove);
       document.addEventListener('pointerup', handlePointerUp);
     },
-    [canvasWidth, handlePointerMove, handlePointerUp]
+    [canvasWidth, findAnyLayer, handlePointerMove, handlePointerUp]
   );
 
-  /** Start resizing a layer */
+  /** Start resizing a layer (video, text overlay, or image overlay) */
   const handleResizePointerDown = useCallback(
     (layerId: string, handle: ResizeHandle, e: React.PointerEvent) => {
       e.stopPropagation();
       e.preventDefault();
 
-      const layer = layersRef.current.find((l) => l.id === layerId);
-      if (!layer) return;
+      const found = findAnyLayer(layerId);
+      if (!found) return;
 
       const el = layerRefs.current.get(layerId);
       const container = el?.parentElement;
@@ -503,10 +589,11 @@ export const useCompositorLayers = (
       dragStateRef.current = {
         type: 'resize',
         layerId,
+        layerKind: found.kind,
         handle,
         startX: e.clientX,
         startY: e.clientY,
-        origLayer: { ...layer },
+        origLayer: { ...found.state },
         scale,
         rafId: null,
         currentX: e.clientX,
@@ -517,7 +604,7 @@ export const useCompositorLayers = (
       document.addEventListener('pointermove', handlePointerMove);
       document.addEventListener('pointerup', handlePointerUp);
     },
-    [canvasWidth, handlePointerMove, handlePointerUp]
+    [canvasWidth, findAnyLayer, handlePointerMove, handlePointerUp]
   );
 
   const selectLayer = useCallback((id: string | null) => {
@@ -561,6 +648,45 @@ export const useCompositorLayers = (
     [throttledConfigChange]
   );
 
+  // ── Visibility toggle ──────────────────────────────────────────────────────
+
+  const toggleLayerVisibility = useCallback(
+    (layerId: string) => {
+      // Check video layers
+      const isVideoLayer = layersRef.current.some((l) => l.id === layerId);
+      if (isVideoLayer) {
+        setLayers((prev) => {
+          const next = prev.map((l) => (l.id === layerId ? { ...l, visible: !l.visible } : l));
+          throttledConfigChange?.(next);
+          return next;
+        });
+        return;
+      }
+
+      // Check text overlays
+      const isTextOverlay = textOverlaysRef.current.some((o) => o.id === layerId);
+      if (isTextOverlay) {
+        setTextOverlays((prev) => {
+          const next = prev.map((o) => (o.id === layerId ? { ...o, visible: !o.visible } : o));
+          commitOverlaysRef.current(next, imageOverlaysRef.current);
+          return next;
+        });
+        return;
+      }
+
+      // Check image overlays
+      const isImgOverlay = imageOverlaysRef.current.some((o) => o.id === layerId);
+      if (isImgOverlay) {
+        setImageOverlays((prev) => {
+          const next = prev.map((o) => (o.id === layerId ? { ...o, visible: !o.visible } : o));
+          commitOverlaysRef.current(textOverlaysRef.current, next);
+          return next;
+        });
+      }
+    },
+    [throttledConfigChange]
+  );
+
   // ── Overlay commit helper ─────────────────────────────────────────────────
 
   const commitOverlays = useCallback(
@@ -575,6 +701,13 @@ export const useCompositorLayers = (
     },
     [nodeId, onConfigChange, onParamChange, params]
   );
+
+  // Keep a stable ref so pointer-up can call the latest commitOverlays without
+  // adding it to its dependency array (which would re-create event listeners).
+  const commitOverlaysRef = useRef(commitOverlays);
+  useEffect(() => {
+    commitOverlaysRef.current = commitOverlays;
+  }, [commitOverlays]);
 
   // ── Text overlay CRUD ─────────────────────────────────────────────────────
 
@@ -593,6 +726,7 @@ export const useCompositorLayers = (
             color: [255, 255, 255, 255],
             fontSize: 24,
             opacity: 1.0,
+            visible: true,
           },
         ];
         commitOverlays(next, imageOverlaysRef.current);
@@ -639,6 +773,7 @@ export const useCompositorLayers = (
             width: 200,
             height: 200,
             opacity: 1.0,
+            visible: true,
           },
         ];
         commitOverlays(textOverlaysRef.current, next);
@@ -679,6 +814,7 @@ export const useCompositorLayers = (
     updateLayerOpacity,
     updateLayerRotation,
     updateLayerZIndex,
+    toggleLayerVisibility,
     layerRefs,
     isDragging,
     textOverlays,
