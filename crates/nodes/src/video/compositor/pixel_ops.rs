@@ -873,6 +873,10 @@ pub fn scale_blit_rgba_rotated(
                             // existing SSE2 blend helpers.
                             let mut src_pixels = [0u32; 4];
                             let mut all_valid = true;
+                            // Save stepper state so we can restore on early
+                            // break from the gather loop.
+                            let snap_local_x = local_x;
+                            let snap_local_y = local_y;
                             for sp in &mut src_pixels {
                                 local_x += cos_a;
                                 local_y -= sin_a;
@@ -890,32 +894,46 @@ pub fn scale_blit_rgba_rotated(
                                 }
                             }
 
-                            if all_valid {
-                                let dst_off = (px as usize + done + 1) * 4;
-                                if dst_off + 15 < row_slice.len() {
-                                    // SAFETY: blend helpers require 16 writable
-                                    // bytes at dst_ptr; bounds checked above.
-                                    // SSE2 is always available on x86_64.
-                                    unsafe {
-                                        let dst_ptr = row_slice.as_mut_ptr().add(dst_off);
-                                        if opacity_u16 >= 256 {
-                                            blend_4px_over_sse2(dst_ptr, src_pixels);
-                                        } else {
-                                            blend_4px_over_alpha_sse2(
-                                                dst_ptr,
-                                                src_pixels,
-                                                opacity_u16,
-                                            );
-                                        }
+                            if !all_valid {
+                                // Restore stepper; fall through to scalar
+                                // remainder which handles partial pixels.
+                                local_x = snap_local_x;
+                                local_y = snap_local_y;
+                                break;
+                            }
+
+                            // `done` tracks offset from the current `px`;
+                            // `px` is NOT incremented inside this loop to
+                            // avoid double-counting.
+                            let dst_off = (px as usize + 1 + done) * 4;
+                            if dst_off + 15 < row_slice.len() {
+                                // SAFETY: blend helpers require 16 writable
+                                // bytes at dst_ptr; bounds checked above.
+                                // SSE2 is always available on x86_64.
+                                unsafe {
+                                    let dst_ptr = row_slice.as_mut_ptr().add(dst_off);
+                                    if opacity_u16 >= 256 {
+                                        blend_4px_over_sse2(dst_ptr, src_pixels);
+                                    } else {
+                                        blend_4px_over_alpha_sse2(
+                                            dst_ptr,
+                                            src_pixels,
+                                            opacity_u16,
+                                        );
                                     }
                                 }
                             }
 
-                            px += 4;
                             done += 4;
                         }
 
-                        // Scalar remainder for leftover pixels (0..3).
+                        // Advance px by the number of pixels handled above.
+                        #[allow(clippy::cast_possible_wrap)]
+                        {
+                            px += done as i32;
+                        }
+
+                        // Scalar remainder for leftover pixels.
                         for _ in done..skip_u {
                             local_x += cos_a;
                             local_y -= sin_a;
