@@ -278,6 +278,7 @@ const TextOverlayLayer: React.FC<{
   const [editText, setEditText] = useState(overlay.text);
   const inputRef = useRef<HTMLInputElement>(null);
   const cancelledRef = useRef(false);
+  const committedRef = useRef(false);
 
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
@@ -294,6 +295,7 @@ const TextOverlayLayer: React.FC<{
       if (!onTextEdit) return;
       setEditText(overlay.text);
       cancelledRef.current = false;
+      committedRef.current = false;
       setEditing(true);
       // Focus the input after React renders it
       requestAnimationFrame(() => inputRef.current?.focus());
@@ -303,12 +305,13 @@ const TextOverlayLayer: React.FC<{
 
   const commitEdit = useCallback(() => {
     if (cancelledRef.current) return;
-    if (!editing) return; // guard against double-fire (Enter + blur)
+    if (committedRef.current) return; // guard against double-fire (Enter + blur)
+    committedRef.current = true;
     setEditing(false);
     if (editText.trim() && editText !== overlay.text && onTextEdit) {
       onTextEdit(overlay.id, { text: editText.trim() });
     }
-  }, [editing, editText, overlay.id, overlay.text, onTextEdit]);
+  }, [editText, overlay.id, overlay.text, onTextEdit]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
