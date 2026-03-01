@@ -280,142 +280,140 @@ const TextOverlayLayer: React.FC<{
   onPointerDown: (layerId: string, e: React.PointerEvent) => void;
   onTextEdit?: (id: string, updates: Partial<Omit<TextOverlayState, 'id'>>) => void;
   layerRef: (el: HTMLDivElement | null) => void;
-}> = React.memo(
-  ({ overlay, index, isSelected, scale, onPointerDown, onTextEdit, layerRef }) => {
-    const [editing, setEditing] = useState(false);
-    const [editText, setEditText] = useState(overlay.text);
-    const inputRef = useRef<HTMLTextAreaElement>(null);
-    const cancelledRef = useRef(false);
-    const committedRef = useRef(false);
+}> = React.memo(({ overlay, index, isSelected, scale, onPointerDown, onTextEdit, layerRef }) => {
+  const [editing, setEditing] = useState(false);
+  const [editText, setEditText] = useState(overlay.text);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const cancelledRef = useRef(false);
+  const committedRef = useRef(false);
 
-    // Issue #1 fix: when the layer is deselected while editing, commit the edit.
-    const prevSelectedRef = useRef(isSelected);
-    useEffect(() => {
-      if (prevSelectedRef.current && !isSelected && editing) {
-        // Layer was deselected while editing – commit
-        if (!cancelledRef.current && !committedRef.current) {
-          committedRef.current = true;
-          if (editText.trim() && editText !== overlay.text && onTextEdit) {
-            onTextEdit(overlay.id, { text: editText.trim() });
-          }
+  // Issue #1 fix: when the layer is deselected while editing, commit the edit.
+  const prevSelectedRef = useRef(isSelected);
+  useEffect(() => {
+    if (prevSelectedRef.current && !isSelected && editing) {
+      // Layer was deselected while editing – commit
+      if (!cancelledRef.current && !committedRef.current) {
+        committedRef.current = true;
+        if (editText.trim() && editText !== overlay.text && onTextEdit) {
+          onTextEdit(overlay.id, { text: editText.trim() });
         }
+      }
+      setEditing(false);
+    }
+    prevSelectedRef.current = isSelected;
+  }, [isSelected, editing, editText, overlay.id, overlay.text, onTextEdit]);
+
+  const handlePointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      if (editing) return; // don't start drag while editing
+      onPointerDown(overlay.id, e);
+    },
+    [overlay.id, onPointerDown, editing]
+  );
+
+  const handleDoubleClick = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      e.preventDefault();
+      if (!onTextEdit) return;
+      setEditText(overlay.text);
+      cancelledRef.current = false;
+      committedRef.current = false;
+      setEditing(true);
+      // Focus the textarea after React renders it
+      requestAnimationFrame(() => inputRef.current?.focus());
+    },
+    [onTextEdit, overlay.text]
+  );
+
+  const commitEdit = useCallback(() => {
+    if (cancelledRef.current) return;
+    if (committedRef.current) return; // guard against double-fire
+    committedRef.current = true;
+    setEditing(false);
+    if (editText.trim() && editText !== overlay.text && onTextEdit) {
+      onTextEdit(overlay.id, { text: editText.trim() });
+    }
+  }, [editText, overlay.id, overlay.text, onTextEdit]);
+
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      e.stopPropagation();
+      // Ctrl/Cmd+Enter commits; plain Enter inserts newline (textarea default)
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        commitEdit();
+      }
+      if (e.key === 'Escape') {
+        cancelledRef.current = true;
         setEditing(false);
       }
-      prevSelectedRef.current = isSelected;
-    }, [isSelected, editing, editText, overlay.id, overlay.text, onTextEdit]);
+    },
+    [commitEdit]
+  );
 
-    const handlePointerDown = useCallback(
-      (e: React.PointerEvent) => {
-        if (editing) return; // don't start drag while editing
-        onPointerDown(overlay.id, e);
-      },
-      [overlay.id, onPointerDown, editing]
-    );
+  const hue = layerHue(index + 100); // offset from video layers
+  const borderColor = isSelected ? 'var(--sk-primary)' : `hsla(${hue}, 70%, 65%, 0.8)`;
+  const bgColor = isSelected ? `hsla(${hue}, 60%, 50%, 0.25)` : `hsla(${hue}, 60%, 50%, 0.12)`;
 
-    const handleDoubleClick = useCallback(
-      (e: React.MouseEvent) => {
-        e.stopPropagation();
-        e.preventDefault();
-        if (!onTextEdit) return;
-        setEditText(overlay.text);
-        cancelledRef.current = false;
-        committedRef.current = false;
-        setEditing(true);
-        // Focus the textarea after React renders it
-        requestAnimationFrame(() => inputRef.current?.focus());
-      },
-      [onTextEdit, overlay.text]
-    );
+  const [r, g, b, a] = overlay.color;
+  const textColor = `rgba(${r}, ${g}, ${b}, ${(a ?? 255) / 255})`;
 
-    const commitEdit = useCallback(() => {
-      if (cancelledRef.current) return;
-      if (committedRef.current) return; // guard against double-fire
-      committedRef.current = true;
-      setEditing(false);
-      if (editText.trim() && editText !== overlay.text && onTextEdit) {
-        onTextEdit(overlay.id, { text: editText.trim() });
-      }
-    }, [editText, overlay.id, overlay.text, onTextEdit]);
-
-    const handleKeyDown = useCallback(
-      (e: React.KeyboardEvent) => {
-        e.stopPropagation();
-        // Ctrl/Cmd+Enter commits; plain Enter inserts newline (textarea default)
-        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-          e.preventDefault();
-          commitEdit();
-        }
-        if (e.key === 'Escape') {
-          cancelledRef.current = true;
-          setEditing(false);
-        }
-      },
-      [commitEdit]
-    );
-
-    const hue = layerHue(index + 100); // offset from video layers
-    const borderColor = isSelected ? 'var(--sk-primary)' : `hsla(${hue}, 70%, 65%, 0.8)`;
-    const bgColor = isSelected ? `hsla(${hue}, 60%, 50%, 0.25)` : `hsla(${hue}, 60%, 50%, 0.12)`;
-
-    const [r, g, b, a] = overlay.color;
-    const textColor = `rgba(${r}, ${g}, ${b}, ${(a ?? 255) / 255})`;
-
-    return (
-      <LayerBox
-        ref={layerRef}
-        className="nodrag nopan"
-        style={{
-          left: overlay.x,
-          top: overlay.y,
-          width: overlay.width,
-          height: overlay.height,
-          opacity: overlay.visible ? overlay.opacity : 0.2,
-          zIndex: 100 + index,
-          border: `2px dashed ${borderColor}`,
-          background: bgColor,
-          filter: overlay.visible ? undefined : 'grayscale(0.6)',
-          transform:
-            overlay.rotationDegrees !== 0 ? `rotate(${overlay.rotationDegrees}deg)` : undefined,
-        }}
-        onPointerDown={handlePointerDown}
-        onDoubleClick={handleDoubleClick}
-      >
-        <LayerLabel>text_{index}</LayerLabel>
-        {editing ? (
-          <InlineTextInput
-            ref={inputRef}
-            className="nodrag nopan"
-            value={editText}
-            onChange={(e) => setEditText(e.target.value)}
-            onBlur={commitEdit}
-            onKeyDown={handleKeyDown}
-            style={{ fontSize: Math.max(10, overlay.fontSize * scale * 0.6) }}
-          />
-        ) : (
-          <TextContent>
-            <span
-              style={{
-                fontSize: Math.max(8, overlay.fontSize * scale),
-                color: textColor,
-                fontWeight: 600,
-                textShadow: '0 1px 3px rgba(0,0,0,0.7)',
-                lineHeight: 1.2,
-                textAlign: 'center',
-                wordBreak: 'break-word',
-                whiteSpace: 'pre-wrap',
-                maxWidth: '100%',
-                padding: '2px 4px',
-                boxSizing: 'border-box',
-              }}
-            >
-              {overlay.text}
-            </span>
-          </TextContent>
-        )}
-      </LayerBox>
-    );
-  }
-);
+  return (
+    <LayerBox
+      ref={layerRef}
+      className="nodrag nopan"
+      style={{
+        left: overlay.x,
+        top: overlay.y,
+        width: overlay.width,
+        height: overlay.height,
+        opacity: overlay.visible ? overlay.opacity : 0.2,
+        zIndex: 100 + index,
+        border: `2px dashed ${borderColor}`,
+        background: bgColor,
+        filter: overlay.visible ? undefined : 'grayscale(0.6)',
+        transform:
+          overlay.rotationDegrees !== 0 ? `rotate(${overlay.rotationDegrees}deg)` : undefined,
+      }}
+      onPointerDown={handlePointerDown}
+      onDoubleClick={handleDoubleClick}
+    >
+      <LayerLabel>text_{index}</LayerLabel>
+      {editing ? (
+        <InlineTextInput
+          ref={inputRef}
+          className="nodrag nopan"
+          value={editText}
+          onChange={(e) => setEditText(e.target.value)}
+          onBlur={commitEdit}
+          onKeyDown={handleKeyDown}
+          style={{ fontSize: Math.max(10, overlay.fontSize * scale * 0.6) }}
+        />
+      ) : (
+        <TextContent>
+          <span
+            style={{
+              fontSize: Math.max(8, overlay.fontSize * scale),
+              color: textColor,
+              fontWeight: 600,
+              textShadow: '0 1px 3px rgba(0,0,0,0.7)',
+              lineHeight: 1.2,
+              textAlign: 'center',
+              wordBreak: 'break-word',
+              whiteSpace: 'pre-wrap',
+              maxWidth: '100%',
+              padding: '2px 4px',
+              boxSizing: 'border-box',
+            }}
+          >
+            {overlay.text}
+          </span>
+        </TextContent>
+      )}
+    </LayerBox>
+  );
+});
 TextOverlayLayer.displayName = 'TextOverlayLayer';
 
 // ── Image overlay layer ─────────────────────────────────────────────────────
