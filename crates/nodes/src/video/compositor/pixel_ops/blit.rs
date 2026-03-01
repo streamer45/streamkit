@@ -15,7 +15,10 @@ use super::{blend_u8, rayon_chunk_rows, RAYON_ROW_THRESHOLD};
 use crate::video::compositor::config::Rect;
 
 #[cfg(target_arch = "x86_64")]
-use super::simd::{blend_4px_alpha_sse2, blend_4px_opaque_sse2, read_rgba_u32};
+use super::simd::{
+    all_alpha_opaque_avx2, all_alpha_opaque_sse2, blend_4px_alpha_sse2, blend_4px_opaque_sse2,
+    blend_8px_alpha_avx2, blend_8px_opaque_avx2, read_rgba_u32,
+};
 
 // ── Scalar blend helper ─────────────────────────────────────────────────────
 
@@ -131,48 +134,83 @@ pub fn scale_blit_rgba(
     // When source dimensions exactly match the destination rect and opacity
     // is fully opaque, we can avoid per-pixel scaling entirely and use
     // direct row copies (memcpy) for fully-opaque source rows.
+    //
+    // Rows are processed in parallel via `rayon` when the blit region is
+    // large enough to benefit from multi-core dispatch.
     if rw == sw && rh == sh && opacity >= 1.0 && src_col_skip == 0 && src_row_skip == 0 {
         let src_row_bytes = sw * 4;
         let copy_bytes = effective_rect_w * 4;
-        for (dy, row_slice) in dst_rows.chunks_mut(row_stride).take(effective_rh).enumerate() {
-            let src_start = dy * src_row_bytes;
-            let src_end = src_start + copy_bytes;
-            if src_end > src.len() {
-                break;
-            }
+        // Pre-validate that the source buffer can satisfy all rows,
+        // so the inner closure doesn't need per-row bounds checks.
+        let max_src_end = (effective_rh.saturating_sub(1)) * src_row_bytes + copy_bytes;
+        if max_src_end > src.len() {
+            // Fall through to the scaled path for safety.
+        } else {
             let dst_start = rx * 4;
-            let dst_end = dst_start + copy_bytes;
-            if dst_end > row_slice.len() {
-                break;
-            }
-            // Check if the source row has any semi-transparent pixels.
-            // For fully-opaque rows, use bulk memcpy.  For rows with alpha,
-            // fall back to per-pixel blending.
-            let src_row = &src[src_start..src_end];
-            let all_opaque = src_row.chunks_exact(4).all(|px| px[3] == 255);
-            if all_opaque {
-                row_slice[dst_start..dst_end].copy_from_slice(src_row);
-            } else {
-                // Per-pixel alpha blend (identity scale, so sx == dx).
-                for dx in 0..effective_rect_w {
-                    let si = dx * 4;
-                    let sa = src_row[si + 3];
-                    if sa == 255 {
-                        row_slice[dst_start + dx * 4..dst_start + dx * 4 + 4]
-                            .copy_from_slice(&src_row[si..si + 4]);
-                    } else if sa > 0 {
-                        let di = dst_start + dx * 4;
-                        let a16 = u16::from(sa);
-                        row_slice[di] = blend_u8(src_row[si], row_slice[di], a16);
-                        row_slice[di + 1] = blend_u8(src_row[si + 1], row_slice[di + 1], a16);
-                        row_slice[di + 2] = blend_u8(src_row[si + 2], row_slice[di + 2], a16);
-                        let da = u16::from(row_slice[di + 3]);
-                        row_slice[di + 3] = (a16 + ((da * (255 - a16) + 128) >> 8)).min(255) as u8;
+
+            let blit_identity_row = |dy: usize, row_slice: &mut [u8]| {
+                let src_start = dy * src_row_bytes;
+                let src_row = &src[src_start..src_start + copy_bytes];
+                let dst_end = dst_start + copy_bytes;
+                if dst_end > row_slice.len() {
+                    return;
+                }
+                // Check if the source row has any semi-transparent pixels.
+                // For fully-opaque rows, use bulk memcpy.  For rows with alpha,
+                // fall back to per-pixel blending.
+                let all_opaque;
+                #[cfg(target_arch = "x86_64")]
+                {
+                    all_opaque = if is_x86_feature_detected!("avx2") {
+                        unsafe { all_alpha_opaque_avx2(src_row) }
+                    } else {
+                        unsafe { all_alpha_opaque_sse2(src_row) }
+                    };
+                }
+                #[cfg(not(target_arch = "x86_64"))]
+                {
+                    all_opaque = src_row.chunks_exact(4).all(|px| px[3] == 255);
+                }
+
+                if all_opaque {
+                    row_slice[dst_start..dst_end].copy_from_slice(src_row);
+                } else {
+                    // Per-pixel alpha blend (identity scale, so sx == dx).
+                    for dx in 0..effective_rect_w {
+                        let si = dx * 4;
+                        let sa = src_row[si + 3];
+                        if sa == 255 {
+                            row_slice[dst_start + dx * 4..dst_start + dx * 4 + 4]
+                                .copy_from_slice(&src_row[si..si + 4]);
+                        } else if sa > 0 {
+                            let di = dst_start + dx * 4;
+                            let a16 = u16::from(sa);
+                            row_slice[di] = blend_u8(src_row[si], row_slice[di], a16);
+                            row_slice[di + 1] = blend_u8(src_row[si + 1], row_slice[di + 1], a16);
+                            row_slice[di + 2] = blend_u8(src_row[si + 2], row_slice[di + 2], a16);
+                            let da = u16::from(row_slice[di + 3]);
+                            row_slice[di + 3] =
+                                (a16 + ((da * (255 - a16) + 128) >> 8)).min(255) as u8;
+                        }
                     }
                 }
+            };
+
+            if effective_rh >= RAYON_ROW_THRESHOLD {
+                dst_rows.par_chunks_mut(row_stride).take(effective_rh).enumerate().for_each(
+                    |(dy, row_slice)| {
+                        blit_identity_row(dy, row_slice);
+                    },
+                );
+            } else {
+                for (dy, row_slice) in
+                    dst_rows.chunks_mut(row_stride).take(effective_rh).enumerate()
+                {
+                    blit_identity_row(dy, row_slice);
+                }
             }
+            return;
         }
-        return;
     }
 
     // ── Scaled blit path ───────────────────────────────────────────────
@@ -246,7 +284,9 @@ fn blit_row(
     clippy::suboptimal_flops,
     clippy::inline_always,
     // dx is used as both x_map index and dst offset, so an iterator is non-trivial.
-    clippy::needless_range_loop
+    clippy::needless_range_loop,
+    // AVX2 block has side-effects (SIMD writes) before assigning dx_start.
+    clippy::useless_let_if_seq
 )]
 #[inline(always)]
 fn blit_row_opaque(
@@ -260,18 +300,41 @@ fn blit_row_opaque(
 ) {
     let src_row_base = sy * sw * 4;
 
-    // ── SSE2 fast path: process 4 pixels at a time ─────────────────────
+    // ── SIMD fast path: AVX2 (8px) → SSE2 (4px) → scalar tail ─────────
     #[cfg(target_arch = "x86_64")]
     {
         // Pre-validate bounds so the inner SIMD loop is branch-free.
         let src_row_end = src_row_base + sw * 4;
         let dst_end = (rx + effective_rw) * 4;
         if src_row_end <= src.len() && dst_end <= row_slice.len() {
-            let chunks = effective_rw / 4;
-            for c in 0..chunks {
-                let dx = c * 4;
-                // SAFETY: bounds pre-validated above; x_map values < sw;
-                // dst range (rx+dx)*4..(rx+dx+4)*4 < dst_end <= row_slice.len().
+            let mut dx_start = 0usize;
+
+            // AVX2: process 8 pixels at a time.
+            if is_x86_feature_detected!("avx2") {
+                let chunks8 = effective_rw / 8;
+                for c in 0..chunks8 {
+                    let dx = c * 8;
+                    unsafe {
+                        let pixels = [
+                            read_rgba_u32(src, src_row_base + x_map[dx] * 4),
+                            read_rgba_u32(src, src_row_base + x_map[dx + 1] * 4),
+                            read_rgba_u32(src, src_row_base + x_map[dx + 2] * 4),
+                            read_rgba_u32(src, src_row_base + x_map[dx + 3] * 4),
+                            read_rgba_u32(src, src_row_base + x_map[dx + 4] * 4),
+                            read_rgba_u32(src, src_row_base + x_map[dx + 5] * 4),
+                            read_rgba_u32(src, src_row_base + x_map[dx + 6] * 4),
+                            read_rgba_u32(src, src_row_base + x_map[dx + 7] * 4),
+                        ];
+                        blend_8px_opaque_avx2(row_slice.as_mut_ptr().add((rx + dx) * 4), pixels);
+                    }
+                }
+                dx_start = chunks8 * 8;
+            }
+
+            // SSE2: process remaining pixels in 4-pixel chunks.
+            let chunks4 = (effective_rw - dx_start) / 4;
+            for c in 0..chunks4 {
+                let dx = dx_start + c * 4;
                 unsafe {
                     let pixels = [
                         read_rgba_u32(src, src_row_base + x_map[dx] * 4),
@@ -284,7 +347,7 @@ fn blit_row_opaque(
             }
 
             // Scalar tail for remaining 0-3 pixels.
-            let tail_start = chunks * 4;
+            let tail_start = dx_start + chunks4 * 4;
             for dx in tail_start..effective_rw {
                 let sx = x_map[dx];
                 let src_idx = src_row_base + sx * 4;
@@ -360,7 +423,9 @@ fn blit_row_opaque(
     clippy::suboptimal_flops,
     clippy::inline_always,
     // dx is used as both x_map index and dst offset, so an iterator is non-trivial.
-    clippy::needless_range_loop
+    clippy::needless_range_loop,
+    // AVX2 block has side-effects (SIMD writes) before assigning dx_start.
+    clippy::useless_let_if_seq
 )]
 #[inline(always)]
 fn blit_row_alpha(
@@ -377,15 +442,44 @@ fn blit_row_alpha(
     let opacity_u16 = (opacity * 255.0 + 0.5) as u16;
     let src_row_base = sy * sw * 4;
 
-    // ── SSE2 fast path ─────────────────────────────────────────────────
+    // ── SIMD fast path: AVX2 (8px) → SSE2 (4px) → scalar tail ─────────
     #[cfg(target_arch = "x86_64")]
     {
         let src_row_end = src_row_base + sw * 4;
         let dst_end = (rx + effective_rw) * 4;
         if src_row_end <= src.len() && dst_end <= row_slice.len() {
-            let chunks = effective_rw / 4;
-            for c in 0..chunks {
-                let dx = c * 4;
+            let mut dx_start = 0usize;
+
+            // AVX2: process 8 pixels at a time.
+            if is_x86_feature_detected!("avx2") {
+                let chunks8 = effective_rw / 8;
+                for c in 0..chunks8 {
+                    let dx = c * 8;
+                    unsafe {
+                        let pixels = [
+                            read_rgba_u32(src, src_row_base + x_map[dx] * 4),
+                            read_rgba_u32(src, src_row_base + x_map[dx + 1] * 4),
+                            read_rgba_u32(src, src_row_base + x_map[dx + 2] * 4),
+                            read_rgba_u32(src, src_row_base + x_map[dx + 3] * 4),
+                            read_rgba_u32(src, src_row_base + x_map[dx + 4] * 4),
+                            read_rgba_u32(src, src_row_base + x_map[dx + 5] * 4),
+                            read_rgba_u32(src, src_row_base + x_map[dx + 6] * 4),
+                            read_rgba_u32(src, src_row_base + x_map[dx + 7] * 4),
+                        ];
+                        blend_8px_alpha_avx2(
+                            row_slice.as_mut_ptr().add((rx + dx) * 4),
+                            pixels,
+                            opacity_u16,
+                        );
+                    }
+                }
+                dx_start = chunks8 * 8;
+            }
+
+            // SSE2: process remaining pixels in 4-pixel chunks.
+            let chunks4 = (effective_rw - dx_start) / 4;
+            for c in 0..chunks4 {
+                let dx = dx_start + c * 4;
                 unsafe {
                     let pixels = [
                         read_rgba_u32(src, src_row_base + x_map[dx] * 4),
@@ -402,7 +496,7 @@ fn blit_row_alpha(
             }
 
             // Scalar tail.
-            let tail_start = chunks * 4;
+            let tail_start = dx_start + chunks4 * 4;
             for dx in tail_start..effective_rw {
                 let sx = x_map[dx];
                 let src_idx = src_row_base + sx * 4;

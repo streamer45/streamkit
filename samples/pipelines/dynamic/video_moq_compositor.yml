@@ -13,6 +13,7 @@ nodes:
       width: 640
       height: 480
       fps: 30
+      draw_time: true
 
   colorbars_pip:
     kind: video::colorbars
@@ -21,6 +22,7 @@ nodes:
       height: 240
       fps: 30
       pixel_format: rgba8
+      draw_time: true
 
   compositor:
     kind: video::compositor

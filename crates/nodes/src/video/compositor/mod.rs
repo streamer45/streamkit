@@ -1341,4 +1341,343 @@ mod tests {
             );
         }
     }
+
+    /// Test that `scale_blit_rgba` with opacity < 1.0 writes all rows correctly
+    /// on a buffer wide enough to exercise the AVX2 blend path (32 pixels).
+    /// This verifies the AVX2 → SSE2 → scalar cascade in `blit_row_alpha`.
+    #[test]
+    fn test_scale_blit_opacity_all_rows_written() {
+        let w = 32usize;
+        let h = 32usize;
+        // Fully opaque red source.
+        let src: Vec<u8> = [200, 50, 30, 255].repeat(w * h);
+        // All-black destination (simulates cleared canvas).
+        let mut dst = vec![0u8; w * h * 4];
+
+        scale_blit_rgba(
+            &mut dst,
+            w as u32,
+            h as u32,
+            &src,
+            w as u32,
+            h as u32,
+            &Rect { x: 0, y: 0, width: w as u32, height: h as u32 },
+            0.9,
+        );
+
+        // Every single row should have been written to (non-zero pixels).
+        for row in 0..h {
+            let row_start = row * w * 4;
+            let row_slice = &dst[row_start..row_start + w * 4];
+            let any_written = row_slice.iter().any(|&b| b != 0);
+            assert!(any_written, "Row {row} was not written to (all zeros)");
+
+            // Verify each pixel matches the expected scalar blend.
+            // opacity_u16 = (0.9 * 255 + 0.5) as u16 = 230
+            // sa_eff = (255 * 230 + 128) >> 8 = 229
+            // Dst is black (0), so blended = src * sa_eff / 255.
+            let opacity_u16: u16 = 230;
+            let sa_eff = ((255u16 * opacity_u16 + 128) >> 8).min(255);
+            let expected_r = {
+                let blend = 200u16 * sa_eff + 128;
+                ((blend + (blend >> 8)) >> 8) as u8
+            };
+            let expected_g = {
+                let blend = 50u16 * sa_eff + 128;
+                ((blend + (blend >> 8)) >> 8) as u8
+            };
+            let expected_b = {
+                let blend = 30u16 * sa_eff + 128;
+                ((blend + (blend >> 8)) >> 8) as u8
+            };
+            for col in 0..w {
+                let idx = row_start + col * 4;
+                let got_r = dst[idx];
+                let got_g = dst[idx + 1];
+                let got_b = dst[idx + 2];
+                let got_a = dst[idx + 3];
+
+                // Allow ±1 for rounding differences between SIMD and scalar paths.
+                assert!(
+                    (i16::from(got_r) - i16::from(expected_r)).abs() <= 1,
+                    "Row {row}, Col {col}: R={got_r}, expected ~{expected_r}"
+                );
+                assert!(
+                    (i16::from(got_g) - i16::from(expected_g)).abs() <= 1,
+                    "Row {row}, Col {col}: G={got_g}, expected ~{expected_g}"
+                );
+                assert!(
+                    (i16::from(got_b) - i16::from(expected_b)).abs() <= 1,
+                    "Row {row}, Col {col}: B={got_b}, expected ~{expected_b}"
+                );
+                assert!(got_a > 200, "Row {row}, Col {col}: A={got_a}, expected >200");
+            }
+        }
+    }
+
+    /// Test I420→RGBA8 AVX2 kernel correctness with a multi-row buffer wide
+    /// enough to exercise the 8-pixel AVX2 path plus scalar remainder.
+    /// Verifies the OOB-safe scalar chroma reads produce identical output to
+    /// the scalar reference for every pixel.
+    #[test]
+    fn test_i420_to_rgba8_avx2_wide_multirow() {
+        // 24 pixels wide = 3 AVX2 iterations (8px each) with 0 remainder.
+        // 4 rows to exercise multi-row chroma subsampling.
+        let width: u32 = 24;
+        let height: u32 = 4;
+        let w = width as usize;
+        let h = height as usize;
+        let chroma_w = w / 2;
+
+        // Build a varied I420 test pattern.
+        let mut i420_data = vec![0u8; w * h + 2 * chroma_w * (h / 2)];
+        // Y plane: gradient across rows and columns.
+        for row in 0..h {
+            for col in 0..w {
+                i420_data[row * w + col] = (16 + ((row * w + col) * 219) / (w * h)) as u8;
+            }
+        }
+        // U/V planes: varying chroma values.
+        let u_offset = w * h;
+        let v_offset = u_offset + chroma_w * (h / 2);
+        for i in 0..chroma_w * (h / 2) {
+            i420_data[u_offset + i] = (64 + (i * 3) % 192) as u8;
+            i420_data[v_offset + i] = (32 + (i * 7) % 224) as u8;
+        }
+
+        // Convert using the public function (dispatches to AVX2 on this machine).
+        let mut simd_out = vec![0u8; w * h * 4];
+        pixel_ops::i420_to_rgba8_buf(&i420_data, width, height, &mut simd_out);
+
+        // Compare every pixel against the scalar reference.
+        for row in 0..h {
+            for col in 0..w {
+                let luma = i420_data[row * w + col];
+                let chroma_r = row / 2;
+                let chroma_c = col / 2;
+                let u_val = i420_data[u_offset + chroma_r * chroma_w + chroma_c];
+                let v_val = i420_data[v_offset + chroma_r * chroma_w + chroma_c];
+                let expected = scalar_i420_to_rgba8(luma, u_val, v_val);
+                let got_idx = (row * w + col) * 4;
+                let got = &simd_out[got_idx..got_idx + 4];
+                assert_eq!(
+                    got, &expected,
+                    "row={row} col={col}: Y={luma} U={u_val} V={v_val} → expected {expected:?}, got {got:?}"
+                );
+            }
+        }
+    }
+
+    /// Test that opacity < 1.0 through `composite_frame` produces correct
+    /// output with no black borders when source matches canvas dimensions.
+    #[test]
+    fn test_composite_frame_opacity_no_black_borders() {
+        let w = 32u32;
+        let h = 32u32;
+        let frame = make_rgba_frame(w, h, 200, 100, 50, 255);
+
+        let layer = LayerSnapshot {
+            data: frame.data,
+            width: w,
+            height: h,
+            pixel_format: PixelFormat::Rgba8,
+            rect: Some(Rect { x: 0, y: 0, width: w, height: h }),
+            opacity: 0.8,
+            z_index: 0,
+            rotation_degrees: 0.0,
+        };
+
+        let mut cache = ConversionCache::new();
+        let result = composite_frame(w, h, &[Some(layer)], &[], &[], None, &mut cache);
+        let buf = result.as_slice();
+
+        // Every row should have non-zero content (no black borders).
+        for row in 0..h as usize {
+            let row_start = row * w as usize * 4;
+            let row_end = row_start + w as usize * 4;
+            let any_nonzero = buf[row_start..row_end].iter().any(|&b| b != 0);
+            assert!(any_nonzero, "Row {row} is all zeros — black border detected");
+        }
+    }
+
+    /// Full-pipeline test at real dimensions (640×480): compositor blit with
+    /// opacity < 1.0, then RGBA→NV12→RGBA roundtrip, checking for black bands.
+    /// This exercises the exact pipeline the VP9 encoder sees.
+    #[test]
+    fn test_full_pipeline_opacity_nv12_roundtrip_no_black_bands() {
+        let w = 640u32;
+        let h = 480u32;
+        let wu = w as usize;
+        let hu = h as usize;
+
+        // Create a colorbars-like pattern: 7 vertical bars of different colors.
+        let colors: [(u8, u8, u8); 7] = [
+            (255, 255, 255), // white
+            (255, 255, 0),   // yellow
+            (0, 255, 255),   // cyan
+            (0, 255, 0),     // green
+            (255, 0, 255),   // magenta
+            (255, 0, 0),     // red
+            (0, 0, 255),     // blue
+        ];
+        let mut src_rgba = vec![0u8; wu * hu * 4];
+        for row in 0..hu {
+            for col in 0..wu {
+                let bar_idx = (col * 7) / wu;
+                let (r, g, b) = colors[bar_idx];
+                let off = (row * wu + col) * 4;
+                src_rgba[off] = r;
+                src_rgba[off + 1] = g;
+                src_rgba[off + 2] = b;
+                src_rgba[off + 3] = 255;
+            }
+        }
+
+        // Step 1: Blit onto canvas with opacity 0.9 (through scale_blit_rgba_rotated,
+        // exactly as the compositor does).
+        let mut canvas = vec![0u8; wu * hu * 4];
+        pixel_ops::scale_blit_rgba_rotated(
+            &mut canvas,
+            w,
+            h,
+            &src_rgba,
+            w,
+            h,
+            &Rect { x: 0, y: 0, width: w, height: h },
+            0.9,
+            0.0,
+        );
+
+        // Verify compositor output: every row should have non-zero pixels.
+        for row in 0..hu {
+            let row_start = row * wu * 4;
+            let any_nonzero = canvas[row_start..row_start + wu * 4].iter().any(|&b| b != 0);
+            assert!(any_nonzero, "Compositor output row {row} is all zeros (black band)");
+        }
+
+        // Step 2: Convert RGBA → NV12 (exactly as the VP9 encoder does).
+        let chroma_w = wu.div_ceil(2);
+        let chroma_h = hu.div_ceil(2);
+        let nv12_size = wu * hu + chroma_w * 2 * chroma_h;
+        let mut nv12 = vec![0u8; nv12_size];
+        pixel_ops::rgba8_to_nv12_buf(&canvas, w, h, &mut nv12);
+
+        // Verify Y plane: no rows should be all-zero (Y=0 is below black level).
+        // With opacity 0.9 on colored bars, Y values should be well above 0.
+        for row in 0..hu {
+            let y_row = &nv12[row * wu..(row + 1) * wu];
+            let max_y = *y_row.iter().max().unwrap();
+            assert!(max_y > 16, "NV12 Y-plane row {row}: max Y={max_y}, expected >16 (not black)");
+        }
+
+        // Step 3: Convert NV12 → RGBA (simulates decoder display).
+        let mut decoded_rgba = vec![0u8; wu * hu * 4];
+        pixel_ops::nv12_to_rgba8_buf(&nv12, w, h, &mut decoded_rgba);
+
+        // Verify decoded output: every row should have non-black pixels.
+        for row in 0..hu {
+            let row_start = row * wu * 4;
+            let row_slice = &decoded_rgba[row_start..row_start + wu * 4];
+            // Check that at least some pixels have R, G, or B > 10 (not near-black).
+            let has_visible =
+                row_slice.chunks_exact(4).any(|px| px[0] > 10 || px[1] > 10 || px[2] > 10);
+            assert!(has_visible, "Decoded row {row} has no visible pixels (all near-black)");
+        }
+    }
+
+    /// Test RGBA→NV12 AVX2 chroma conversion matches scalar reference.
+    /// Uses a 640-wide frame to fully exercise the AVX2 path (8 chroma samples/iter).
+    #[test]
+    fn test_rgba8_to_nv12_avx2_chroma_matches_scalar() {
+        let w = 640u32;
+        let h = 4u32;
+        let wu = w as usize;
+        let hu = h as usize;
+        let chroma_w = wu / 2;
+        let chroma_h = hu / 2;
+
+        // Create a varied RGBA pattern.
+        let mut rgba = vec![0u8; wu * hu * 4];
+        for row in 0..hu {
+            for col in 0..wu {
+                let off = (row * wu + col) * 4;
+                rgba[off] = ((col * 3 + row * 7) % 256) as u8; // R
+                rgba[off + 1] = ((col * 5 + row * 11) % 256) as u8; // G
+                rgba[off + 2] = ((col * 7 + row * 13) % 256) as u8; // B
+                rgba[off + 3] = 255; // A
+            }
+        }
+
+        // Convert using the public function (dispatches to AVX2).
+        let nv12_size = wu * hu + chroma_w * 2 * chroma_h;
+        let mut nv12_simd = vec![0u8; nv12_size];
+        pixel_ops::rgba8_to_nv12_buf(&rgba, w, h, &mut nv12_simd);
+
+        // Compute scalar reference for the chroma plane.
+        let y_size = wu * hu;
+        for crow in 0..chroma_h {
+            let r0 = crow * 2;
+            for ccol in 0..chroma_w {
+                let c0 = ccol * 2;
+                let mut sr = 0i32;
+                let mut sg = 0i32;
+                let mut sb = 0i32;
+                let mut count = 0i32;
+                for dr in 0..2u32 {
+                    let rr = r0 + dr as usize;
+                    if rr >= hu {
+                        continue;
+                    }
+                    for dc in 0..2u32 {
+                        let cc = c0 + dc as usize;
+                        if cc < wu {
+                            let off = (rr * wu + cc) * 4;
+                            sr += i32::from(rgba[off]);
+                            sg += i32::from(rgba[off + 1]);
+                            sb += i32::from(rgba[off + 2]);
+                            count += 1;
+                        }
+                    }
+                }
+                let r_avg = sr / count;
+                let g_avg = sg / count;
+                let b_avg = sb / count;
+                let expected_u = ((-38 * r_avg - 74 * g_avg + 112 * b_avg + 128) >> 8) + 128;
+                let expected_v = ((112 * r_avg - 94 * g_avg - 18 * b_avg + 128) >> 8) + 128;
+                let expected_u = expected_u.clamp(0, 255) as u8;
+                let expected_v = expected_v.clamp(0, 255) as u8;
+
+                let uv_off = y_size + crow * chroma_w * 2 + ccol * 2;
+                let got_u = nv12_simd[uv_off];
+                let got_v = nv12_simd[uv_off + 1];
+
+                // Allow ±2 for rounding differences between SIMD and scalar.
+                assert!(
+                    (i16::from(got_u) - i16::from(expected_u)).abs() <= 2,
+                    "crow={crow} ccol={ccol}: U got={got_u}, expected={expected_u}"
+                );
+                assert!(
+                    (i16::from(got_v) - i16::from(expected_v)).abs() <= 2,
+                    "crow={crow} ccol={ccol}: V got={got_v}, expected={expected_v}"
+                );
+            }
+        }
+
+        // Also verify Y plane matches scalar reference.
+        for row in 0..hu {
+            for col in 0..wu {
+                let off = (row * wu + col) * 4;
+                let r = i32::from(rgba[off]);
+                let g = i32::from(rgba[off + 1]);
+                let b = i32::from(rgba[off + 2]);
+                let expected_y =
+                    (((66 * r + 129 * g + 25 * b + 128) >> 8) + 16).clamp(0, 255) as u8;
+                let got_y = nv12_simd[row * wu + col];
+                assert!(
+                    (i16::from(got_y) - i16::from(expected_y)).abs() <= 1,
+                    "row={row} col={col}: Y got={got_y}, expected={expected_y}"
+                );
+            }
+        }
+    }
 }

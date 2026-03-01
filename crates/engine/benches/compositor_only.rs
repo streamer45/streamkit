@@ -18,6 +18,10 @@
 //! - 2 layers mixed NV12 + RGBA
 //! - 2 layers RGBA with rotation
 //! - 2 layers RGBA, static (same data each frame — for future cache-hit measurement)
+//! - 1 layer RGBA + text overlay (lower-third banner)
+//! - 1 layer RGBA + image overlay (logo watermark)
+//! - 2 layers PiP + both overlays (realistic broadcast layout)
+//! - I420 bg + PiP + both overlays (realistic codec→compositor pipeline)
 //!
 //! ## Usage
 //!
@@ -174,6 +178,53 @@ fn generate_nv12_frame(width: u32, height: u32) -> Vec<u8> {
     nv12
 }
 
+/// Generate a semi-transparent RGBA overlay simulating rendered text.
+///
+/// Produces a strip with alternating opaque "glyph" blocks and transparent
+/// gaps, similar to real rasterised text bitmaps.
+fn generate_text_overlay(width: u32, height: u32) -> Vec<u8> {
+    let w = width as usize;
+    let h = height as usize;
+    let mut data = vec![0u8; w * h * 4];
+    for row in 0..h {
+        for col in 0..w {
+            let off = (row * w + col) * 4;
+            // Simulate glyph blocks: 60% of columns are "ink", rest transparent.
+            let in_glyph = (col * 5 / w).is_multiple_of(2);
+            if in_glyph {
+                data[off] = 255; // white text
+                data[off + 1] = 255;
+                data[off + 2] = 255;
+                data[off + 3] = 220; // slightly translucent
+            }
+            // else: stays rgba(0,0,0,0) — fully transparent gap
+        }
+    }
+    data
+}
+
+/// Generate a semi-transparent RGBA overlay simulating an image/logo.
+///
+/// Produces a filled rectangle with partial alpha, exercising the alpha-blend
+/// code path in the compositor.
+fn generate_image_overlay(width: u32, height: u32) -> Vec<u8> {
+    let w = width as usize;
+    let h = height as usize;
+    let mut data = vec![0u8; w * h * 4];
+    for row in 0..h {
+        for col in 0..w {
+            let off = (row * w + col) * 4;
+            // Gradient alpha from top to bottom for realistic compositing.
+            let alpha = (row * 200 / h + 55).min(255) as u8;
+            data[off] = 60;
+            data[off + 1] = 120;
+            data[off + 2] = 200;
+            data[off + 3] = alpha;
+        }
+    }
+    data
+}
+
 // ── Compositing harness ─────────────────────────────────────────────────────
 
 /// Call the real `composite_frame` kernel for `frame_count` iterations,
@@ -188,9 +239,10 @@ fn bench_composite(
     canvas_w: u32,
     canvas_h: u32,
     layers: &[Option<LayerSnapshot>],
+    image_overlays: &[Arc<DecodedOverlay>],
+    text_overlays: &[Arc<DecodedOverlay>],
     frame_count: u32,
 ) -> BenchResult {
-    let empty_overlays: Vec<Arc<DecodedOverlay>> = Vec::new();
     let mut conversion_cache = ConversionCache::new();
     let pool = VideoFramePool::video_default();
 
@@ -201,8 +253,8 @@ fn bench_composite(
             canvas_w,
             canvas_h,
             layers,
-            &empty_overlays,
-            &empty_overlays,
+            image_overlays,
+            text_overlays,
             Some(&pool),
             &mut conversion_cache,
         );
@@ -232,6 +284,8 @@ impl BenchResult {
 struct Scenario {
     label: String,
     layers: Vec<Option<LayerSnapshot>>,
+    image_overlays: Vec<Arc<DecodedOverlay>>,
+    text_overlays: Vec<Arc<DecodedOverlay>>,
 }
 
 #[allow(clippy::too_many_arguments, clippy::unnecessary_wraps)]
@@ -257,11 +311,44 @@ fn make_layer(
     })
 }
 
+#[allow(clippy::too_many_lines)]
 fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
     let pip_w = canvas_w / 3;
     let pip_h = canvas_h / 3;
     let pip_x = (canvas_w - pip_w - 20).cast_signed();
     let pip_y = (canvas_h - pip_h - 20).cast_signed();
+
+    // ── Overlay data (reused across scenarios) ──────────────────────
+    // Text overlay: a bottom-third banner (typical lower-third title).
+    let text_ov_w = canvas_w * 2 / 3;
+    let text_ov_h = canvas_h / 8;
+    let text_overlay = Arc::new(DecodedOverlay {
+        rgba_data: generate_text_overlay(text_ov_w, text_ov_h),
+        width: text_ov_w,
+        height: text_ov_h,
+        rect: Rect {
+            x: ((canvas_w - text_ov_w) / 2).cast_signed(),
+            y: (canvas_h - text_ov_h - 40).cast_signed(),
+            width: text_ov_w,
+            height: text_ov_h,
+        },
+        opacity: 0.95,
+        rotation_degrees: 0.0,
+        z_index: 10,
+    });
+
+    // Image overlay: a corner logo watermark.
+    let logo_w = canvas_w / 6;
+    let logo_h = canvas_h / 8;
+    let image_overlay = Arc::new(DecodedOverlay {
+        rgba_data: generate_image_overlay(logo_w, logo_h),
+        width: logo_w,
+        height: logo_h,
+        rect: Rect { x: 20, y: 20, width: logo_w, height: logo_h },
+        opacity: 0.8,
+        rotation_degrees: 0.0,
+        z_index: 11,
+    });
 
     vec![
         // 1 layer RGBA — baseline
@@ -277,6 +364,8 @@ fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
                 0,
                 0.0,
             )],
+            image_overlays: Vec::new(),
+            text_overlays: Vec::new(),
         },
         // 2 layers RGBA (PiP)
         Scenario {
@@ -303,6 +392,8 @@ fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
                     0.0,
                 ),
             ],
+            image_overlays: Vec::new(),
+            text_overlays: Vec::new(),
         },
         // 4 layers RGBA
         Scenario {
@@ -349,6 +440,8 @@ fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
                     0.0,
                 ),
             ],
+            image_overlays: Vec::new(),
+            text_overlays: Vec::new(),
         },
         // 2 layers: I420 bg + RGBA PiP (measures conversion overhead)
         Scenario {
@@ -375,6 +468,8 @@ fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
                     0.0,
                 ),
             ],
+            image_overlays: Vec::new(),
+            text_overlays: Vec::new(),
         },
         // 2 layers: NV12 bg + RGBA PiP
         Scenario {
@@ -401,6 +496,8 @@ fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
                     0.0,
                 ),
             ],
+            image_overlays: Vec::new(),
+            text_overlays: Vec::new(),
         },
         // 2 layers RGBA with rotation on PiP
         Scenario {
@@ -427,6 +524,8 @@ fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
                     15.0, // 15° rotation
                 ),
             ],
+            image_overlays: Vec::new(),
+            text_overlays: Vec::new(),
         },
         // 2 layers RGBA, static (same Arc — for future cache-hit measurement)
         Scenario {
@@ -458,6 +557,97 @@ fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
                     }),
                 ]
             },
+            image_overlays: Vec::new(),
+            text_overlays: Vec::new(),
+        },
+        // ── Overlay scenarios ──────────────────────────────────────────
+        // 1 layer RGBA + text overlay (lower-third banner)
+        Scenario {
+            label: "1-layer+text-overlay".to_string(),
+            layers: vec![make_layer(
+                generate_rgba_frame(canvas_w, canvas_h),
+                canvas_w,
+                canvas_h,
+                PixelFormat::Rgba8,
+                None,
+                1.0,
+                0,
+                0.0,
+            )],
+            image_overlays: Vec::new(),
+            text_overlays: vec![Arc::clone(&text_overlay)],
+        },
+        // 1 layer RGBA + image overlay (logo watermark)
+        Scenario {
+            label: "1-layer+img-overlay".to_string(),
+            layers: vec![make_layer(
+                generate_rgba_frame(canvas_w, canvas_h),
+                canvas_w,
+                canvas_h,
+                PixelFormat::Rgba8,
+                None,
+                1.0,
+                0,
+                0.0,
+            )],
+            image_overlays: vec![Arc::clone(&image_overlay)],
+            text_overlays: Vec::new(),
+        },
+        // 2 layers PiP + both overlays (realistic broadcast layout)
+        Scenario {
+            label: "2-layer-pip+overlays".to_string(),
+            layers: vec![
+                make_layer(
+                    generate_rgba_frame(canvas_w, canvas_h),
+                    canvas_w,
+                    canvas_h,
+                    PixelFormat::Rgba8,
+                    None,
+                    1.0,
+                    0,
+                    0.0,
+                ),
+                make_layer(
+                    generate_rgba_frame(pip_w, pip_h),
+                    pip_w,
+                    pip_h,
+                    PixelFormat::Rgba8,
+                    Some(Rect { x: pip_x, y: pip_y, width: pip_w, height: pip_h }),
+                    0.9,
+                    1,
+                    0.0,
+                ),
+            ],
+            image_overlays: vec![Arc::clone(&image_overlay)],
+            text_overlays: vec![Arc::clone(&text_overlay)],
+        },
+        // I420 bg + PiP + both overlays (realistic codec→compositor pipeline)
+        Scenario {
+            label: "i420+pip+overlays".to_string(),
+            layers: vec![
+                make_layer(
+                    generate_i420_frame(canvas_w, canvas_h),
+                    canvas_w,
+                    canvas_h,
+                    PixelFormat::I420,
+                    None,
+                    1.0,
+                    0,
+                    0.0,
+                ),
+                make_layer(
+                    generate_rgba_frame(pip_w, pip_h),
+                    pip_w,
+                    pip_h,
+                    PixelFormat::Rgba8,
+                    Some(Rect { x: pip_x, y: pip_y, width: pip_w, height: pip_h }),
+                    0.9,
+                    1,
+                    0.0,
+                ),
+            ],
+            image_overlays: vec![Arc::clone(&image_overlay)],
+            text_overlays: vec![Arc::clone(&text_overlay)],
         },
     ]
 }
@@ -510,8 +700,15 @@ fn main() {
             let mut iter_results = Vec::with_capacity(args.iterations as usize);
 
             for iter in 1..=args.iterations {
-                let result =
-                    bench_composite(&scenario.label, w, h, &scenario.layers, args.frame_count);
+                let result = bench_composite(
+                    &scenario.label,
+                    w,
+                    h,
+                    &scenario.layers,
+                    &scenario.image_overlays,
+                    &scenario.text_overlays,
+                    args.frame_count,
+                );
                 eprintln!(
                     "  {:<28} iter {iter}/{}: {:>8.1} fps  ({:.2} ms/frame)",
                     scenario.label,
