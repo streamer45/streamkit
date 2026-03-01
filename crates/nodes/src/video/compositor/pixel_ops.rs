@@ -1636,9 +1636,9 @@ mod simd {
         use std::arch::x86_64::{
             _mm256_add_epi16, _mm256_add_epi32, _mm256_and_si256, _mm256_castsi256_si128,
             _mm256_extracti128_si256, _mm256_loadu_si256, _mm256_mullo_epi16, _mm256_packs_epi32,
-            _mm256_packus_epi16, _mm256_set1_epi16, _mm256_set1_epi32, _mm256_set_epi16,
-            _mm256_setzero_si256, _mm256_srai_epi16, _mm256_srli_epi32, _mm_storeu_si128,
-            _mm_unpacklo_epi32, _mm_unpacklo_epi8,
+            _mm256_packus_epi16, _mm256_permute4x64_epi64, _mm256_set1_epi16, _mm256_set1_epi32,
+            _mm256_set_epi16, _mm256_setzero_si256, _mm256_srai_epi16, _mm256_srli_epi32,
+            _mm_storeu_si128, _mm_unpacklo_epi32, _mm_unpacklo_epi8,
         };
 
         let simd_width = chroma_width & !7; // 8 chroma pairs per iteration
@@ -1680,7 +1680,10 @@ mod simd {
             let r1_b = _mm256_and_si256(px1_b, channel_mask);
             let r_v_a = _mm256_add_epi32(r0_a, r1_a);
             let r_v_b = _mm256_add_epi32(r0_b, r1_b);
-            let r_v = _mm256_packs_epi32(r_v_a, r_v_b); // 16× i16
+            // _mm256_packs_epi32 operates per 128-bit lane, scrambling
+            // elements across the two source registers.  vpermq with
+            // control 0xD8 swaps qwords 1 and 2 to restore sequential order.
+            let r_v = _mm256_permute4x64_epi64(_mm256_packs_epi32(r_v_a, r_v_b), 0xD8);
             let r_even = _mm256_and_si256(r_v, even_mask);
             let r_odd = _mm256_srli_epi32(r_v, 16);
             let r_sum = _mm256_add_epi16(r_even, r_odd);
@@ -1696,7 +1699,7 @@ mod simd {
             let g1_b = _mm256_and_si256(_mm256_srli_epi32(px1_b, 8), channel_mask);
             let g_v_a = _mm256_add_epi32(g0_a, g1_a);
             let g_v_b = _mm256_add_epi32(g0_b, g1_b);
-            let g_v = _mm256_packs_epi32(g_v_a, g_v_b);
+            let g_v = _mm256_permute4x64_epi64(_mm256_packs_epi32(g_v_a, g_v_b), 0xD8);
             let g_even = _mm256_and_si256(g_v, even_mask);
             let g_odd = _mm256_srli_epi32(g_v, 16);
             let g_sum = _mm256_add_epi16(g_even, g_odd);
@@ -1712,7 +1715,7 @@ mod simd {
             let b1_b = _mm256_and_si256(_mm256_srli_epi32(px1_b, 16), channel_mask);
             let b_v_a = _mm256_add_epi32(b0_a, b1_a);
             let b_v_b = _mm256_add_epi32(b0_b, b1_b);
-            let b_v = _mm256_packs_epi32(b_v_a, b_v_b);
+            let b_v = _mm256_permute4x64_epi64(_mm256_packs_epi32(b_v_a, b_v_b), 0xD8);
             let b_even = _mm256_and_si256(b_v, even_mask);
             let b_odd = _mm256_srli_epi32(b_v, 16);
             let b_sum = _mm256_add_epi16(b_even, b_odd);
@@ -1802,9 +1805,9 @@ mod simd {
         use std::arch::x86_64::{
             _mm256_add_epi16, _mm256_add_epi32, _mm256_and_si256, _mm256_castsi256_si128,
             _mm256_extracti128_si256, _mm256_loadu_si256, _mm256_mullo_epi16, _mm256_packs_epi32,
-            _mm256_packus_epi16, _mm256_set1_epi16, _mm256_set1_epi32, _mm256_set_epi16,
-            _mm256_setzero_si256, _mm256_srai_epi16, _mm256_srli_epi32, _mm_storel_epi64,
-            _mm_unpacklo_epi32,
+            _mm256_packus_epi16, _mm256_permute4x64_epi64, _mm256_set1_epi16, _mm256_set1_epi32,
+            _mm256_set_epi16, _mm256_setzero_si256, _mm256_srai_epi16, _mm256_srli_epi32,
+            _mm_storel_epi64, _mm_unpacklo_epi32,
         };
 
         let simd_width = chroma_width & !7; // 8 chroma samples per iteration
@@ -1845,7 +1848,8 @@ mod simd {
             let r1_b = _mm256_and_si256(px1_b, channel_mask);
             let r_v_a = _mm256_add_epi32(r0_a, r1_a);
             let r_v_b = _mm256_add_epi32(r0_b, r1_b);
-            let r_v = _mm256_packs_epi32(r_v_a, r_v_b);
+            // Fix AVX2 lane-crossing: vpermq 0xD8 after cross-source pack.
+            let r_v = _mm256_permute4x64_epi64(_mm256_packs_epi32(r_v_a, r_v_b), 0xD8);
             let r_even = _mm256_and_si256(r_v, even_mask);
             let r_odd = _mm256_srli_epi32(r_v, 16);
             let r_sum = _mm256_add_epi16(r_even, r_odd);
@@ -1861,7 +1865,7 @@ mod simd {
             let g1_b = _mm256_and_si256(_mm256_srli_epi32(px1_b, 8), channel_mask);
             let g_v_a = _mm256_add_epi32(g0_a, g1_a);
             let g_v_b = _mm256_add_epi32(g0_b, g1_b);
-            let g_v = _mm256_packs_epi32(g_v_a, g_v_b);
+            let g_v = _mm256_permute4x64_epi64(_mm256_packs_epi32(g_v_a, g_v_b), 0xD8);
             let g_even = _mm256_and_si256(g_v, even_mask);
             let g_odd = _mm256_srli_epi32(g_v, 16);
             let g_sum = _mm256_add_epi16(g_even, g_odd);
@@ -1877,7 +1881,7 @@ mod simd {
             let b1_b = _mm256_and_si256(_mm256_srli_epi32(px1_b, 16), channel_mask);
             let b_v_a = _mm256_add_epi32(b0_a, b1_a);
             let b_v_b = _mm256_add_epi32(b0_b, b1_b);
-            let b_v = _mm256_packs_epi32(b_v_a, b_v_b);
+            let b_v = _mm256_permute4x64_epi64(_mm256_packs_epi32(b_v_a, b_v_b), 0xD8);
             let b_even = _mm256_and_si256(b_v, even_mask);
             let b_odd = _mm256_srli_epi32(b_v, 16);
             let b_sum = _mm256_add_epi16(b_even, b_odd);
