@@ -639,11 +639,11 @@ pub fn blit_overlay(canvas: &mut [u8], canvas_w: u32, canvas_h: u32, overlay: &D
 /// Scale and blit a source RGBA8 buffer onto a destination RGBA8 buffer at the
 /// given destination rectangle with clockwise rotation around the rect centre.
 ///
-/// The source image is uniformly scaled to fit inside the destination rect
-/// while preserving its aspect ratio (like CSS `object-fit: contain`).  When
-/// the aspect ratios differ the image is centred and any padding is left
-/// transparent.  This avoids the visual distortion that a naive stretch
-/// would cause on rotated layers.
+/// The source image is uniformly scaled so that, after rotation, its
+/// axis-aligned bounding box fits inside the destination rect (like CSS
+/// `object-fit: contain` applied to the *rotated* image).  The result is
+/// centred and any padding is left transparent.  This avoids the visual
+/// distortion that a naive stretch-to-fill would cause on rotated layers.
 ///
 /// Uses inverse-affine mapping with nearest-neighbor sampling.  Edge pixels
 /// receive fractional alpha coverage computed from the signed distance to each
@@ -686,29 +686,35 @@ pub fn scale_blit_rgba_rotated(
     let rw = dst_rect.width as f32;
     let rh = dst_rect.height as f32;
 
-    // ── Aspect-ratio-preserving fit ─────────────────────────────────────
-    // Instead of stretching the source to fill the destination rect (which
-    // distorts the image when rotated), compute a uniform scale that fits
-    // the source within the rect (like CSS `object-fit: contain`) and
-    // centre the result.  Pixels in the letterbox / pillarbox padding are
-    // transparent.
+    // Pre-compute sin/cos for the rotation (needed both for the fit-scale
+    // computation and for the per-pixel inverse mapping).
+    let angle_rad = rotation_deg.to_radians();
+    let cos_a = angle_rad.cos();
+    let sin_a = angle_rad.sin();
+
+    // ── Rotation-aware aspect-ratio-preserving fit ────────────────────
+    // When rotating the source by θ its axis-aligned bounding box grows:
+    //   bb_w = src_w·|cos θ| + src_h·|sin θ|
+    //   bb_h = src_w·|sin θ| + src_h·|cos θ|
+    // We compute a uniform scale that fits this *rotated* bounding box
+    // inside the destination rect (like CSS `object-fit: contain` applied
+    // *after* rotation).  The content is centred, with transparent padding
+    // in the letterbox / pillarbox area.
     let sw_f = src_width as f32;
     let sh_f = src_height as f32;
-    let fit_scale = (rw / sw_f).min(rh / sh_f);
-    let content_w = sw_f * fit_scale; // actual content width  inside the rect
-    let content_h = sh_f * fit_scale; // actual content height inside the rect
+    let cos_abs = cos_a.abs();
+    let sin_abs = sin_a.abs();
+    let rotated_bb_w = sw_f.mul_add(cos_abs, sh_f * sin_abs);
+    let rotated_bb_h = sw_f.mul_add(sin_abs, sh_f * cos_abs);
+    let fit_scale = (rw / rotated_bb_w).min(rh / rotated_bb_h);
+    let content_w = sw_f * fit_scale; // un-rotated content width
+    let content_h = sh_f * fit_scale; // un-rotated content height
     let half_cw = content_w * 0.5;
     let half_ch = content_h * 0.5;
 
     // Rotation centre = centre of the destination rect.
     let cx = rw.mul_add(0.5, dst_rect.x as f32);
     let cy = rh.mul_add(0.5, dst_rect.y as f32);
-
-    // Pre-compute sin/cos for the *inverse* rotation (clockwise rotation
-    // means we apply counter-clockwise to map destination → source).
-    let angle_rad = rotation_deg.to_radians();
-    let cos_a = angle_rad.cos();
-    let sin_a = angle_rad.sin();
 
     // Compute the axis-aligned bounding box of the rotated *content* area
     // (not the full rect) so we only iterate over pixels that could

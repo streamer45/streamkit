@@ -893,15 +893,17 @@ mod tests {
     #[test]
     fn test_rotated_blit_preserves_aspect_ratio() {
         // A wide 4×2 red source blitted into a square 20×20 rect with 45°
-        // rotation on a 40×40 canvas.  Because the source aspect ratio
-        // (2:1) differs from the rect (1:1), aspect-ratio-preserving
-        // rotation should *not* stretch — the content should be fitted
-        // uniformly (object-fit: contain).
+        // rotation on a 40×40 canvas.
         //
-        // With a 4×2 source into a 20×20 rect the fit scale is
-        // min(20/4, 20/2) = 5.0, giving a 20×10 content area centred in
-        // the rect.  After 45° rotation the canvas centre (20,20) should
-        // still be covered by source pixels.
+        // The rotation-aware fit scale accounts for the rotated bounding box:
+        //   cos(45°) = sin(45°) ≈ 0.7071
+        //   rotated_bb_w = 4·0.7071 + 2·0.7071 ≈ 4.243
+        //   rotated_bb_h = 4·0.7071 + 2·0.7071 ≈ 4.243
+        //   fit_scale = min(20/4.243, 20/4.243) ≈ 4.714
+        //   content ≈ 18.9×9.4, centred and rotated within the 20×20 rect
+        //
+        // The canvas centre (20,20) should still be covered by red source
+        // pixels, while the rect corner (10,10) should remain transparent.
         let src = vec![255u8, 0, 0, 255].repeat(4 * 2); // 4×2 solid red
         let mut dst = vec![0u8; 40 * 40 * 4];
 
@@ -927,12 +929,8 @@ mod tests {
         assert_eq!(dst[idx + 2], 0, "Centre B");
         assert!(dst[idx + 3] > 200, "Centre A should be mostly opaque");
 
-        // A corner of the rect that lies *outside* the fitted content
-        // should remain transparent.  For a 20×10 content area (half_cw=10,
-        // half_ch=5) rotated 45°, the AABB corners of the full rect are
-        // well outside the content boundary.  Check a pixel near the rect
-        // corner (10,10) — this is at the top-left of the 20×20 rect, well
-        // outside the 20×10 fitted content.
+        // The rect corner (10,10) is well outside the fitted+rotated
+        // content area and should remain transparent.
         let corner_idx = (10usize * 40 + 10) * 4;
         assert_eq!(dst[corner_idx + 3], 0, "Rect corner should be transparent (padding)");
     }
