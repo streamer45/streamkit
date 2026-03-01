@@ -234,7 +234,8 @@ const fn blend_u8(src: u8, dst: u8, alpha: u16) -> u8 {
     clippy::cast_sign_loss,
     clippy::too_many_arguments,
     clippy::suboptimal_flops,
-    clippy::inline_always
+    clippy::inline_always,
+    clippy::needless_range_loop
 )]
 #[inline(always)]
 fn blit_row_opaque(
@@ -291,7 +292,8 @@ fn blit_row_opaque(
     clippy::cast_sign_loss,
     clippy::too_many_arguments,
     clippy::suboptimal_flops,
-    clippy::inline_always
+    clippy::inline_always,
+    clippy::needless_range_loop
 )]
 #[inline(always)]
 fn blit_row_alpha(

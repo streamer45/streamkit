@@ -57,14 +57,11 @@ impl ConversionCache {
         }
 
         // Check if the cached entry is still valid.
-        let needs_convert = match &self.entries[slot_idx] {
-            Some(cached) => {
-                cached.data_identity != identity
-                    || cached.width != layer.width
-                    || cached.height != layer.height
-            },
-            None => true,
-        };
+        let needs_convert = self.entries[slot_idx].as_ref().map_or(true, |cached| {
+            cached.data_identity != identity
+                || cached.width != layer.width
+                || cached.height != layer.height
+        });
 
         if needs_convert {
             let needed = layer.width as usize * layer.height as usize * 4;
@@ -95,6 +92,9 @@ impl ConversionCache {
             });
         }
 
+        // SAFETY: we just inserted into this slot above when `needs_convert` was true,
+        // and the slot was already `Some` when `needs_convert` was false.
+        #[allow(clippy::expect_used)]
         let cached = self.entries[slot_idx].as_ref().expect("just inserted");
         let needed = layer.width as usize * layer.height as usize * 4;
         &cached.rgba[..needed]
@@ -118,15 +118,12 @@ fn first_layer_covers_canvas(
 
     // Check if the layer fully covers the canvas.
     // A layer with no rect fills the entire canvas by default.
-    match &first.rect {
-        None => true,
-        Some(r) => {
-            r.x <= 0
-                && r.y <= 0
-                && i64::from(r.width) + i64::from(r.x) >= i64::from(canvas_w)
-                && i64::from(r.height) + i64::from(r.y) >= i64::from(canvas_h)
-        },
-    }
+    first.rect.as_ref().map_or(true, |r| {
+        r.x <= 0
+            && r.y <= 0
+            && i64::from(r.width) + i64::from(r.x) >= i64::from(canvas_w)
+            && i64::from(r.height) + i64::from(r.y) >= i64::from(canvas_h)
+    })
 }
 
 /// Snapshot of one input layer's data for the blocking compositor thread.
@@ -137,8 +134,10 @@ pub struct LayerSnapshot {
     pub pixel_format: PixelFormat,
     pub rect: Option<Rect>,
     pub opacity: f32,
-    /// Visual stacking order.  Lower values are drawn first (bottom).
-    /// Used to sort layers before compositing; ties broken by slot index.
+    /// Visual stacking order.  Retained in the snapshot for diagnostic /
+    /// logging purposes even though sorting now happens before snapshot
+    /// construction.
+    #[allow(dead_code)]
     pub z_index: i32,
     /// Clockwise rotation in degrees around the destination rect centre.
     /// Default `0.0` means no rotation.

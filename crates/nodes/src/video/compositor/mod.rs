@@ -96,7 +96,7 @@ fn rebuild_layer_cache(
             let pip_x = (config.width - pip_w - 20) as i32;
             #[allow(clippy::cast_possible_wrap)]
             let pip_y = (config.height - pip_h - 20) as i32;
-            #[allow(clippy::cast_possible_wrap)]
+            #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
             (
                 Some(config::Rect { x: pip_x, y: pip_y, width: pip_w, height: pip_h }),
                 0.9,
