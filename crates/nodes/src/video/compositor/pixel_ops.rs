@@ -639,9 +639,15 @@ pub fn blit_overlay(canvas: &mut [u8], canvas_w: u32, canvas_h: u32, overlay: &D
 /// Scale and blit a source RGBA8 buffer onto a destination RGBA8 buffer at the
 /// given destination rectangle with clockwise rotation around the rect centre.
 ///
+/// The source image is uniformly scaled to fit inside the destination rect
+/// while preserving its aspect ratio (like CSS `object-fit: contain`).  When
+/// the aspect ratios differ the image is centred and any padding is left
+/// transparent.  This avoids the visual distortion that a naive stretch
+/// would cause on rotated layers.
+///
 /// Uses inverse-affine mapping with nearest-neighbor sampling.  Edge pixels
 /// receive fractional alpha coverage computed from the signed distance to each
-/// of the four rect edges in the un-rotated local coordinate system.  This
+/// of the four content edges in the un-rotated local coordinate system.  This
 /// eliminates the staircase aliasing that a hard binary inside/outside test
 /// would produce.
 ///
@@ -680,9 +686,23 @@ pub fn scale_blit_rgba_rotated(
     let rw = dst_rect.width as f32;
     let rh = dst_rect.height as f32;
 
+    // ── Aspect-ratio-preserving fit ─────────────────────────────────────
+    // Instead of stretching the source to fill the destination rect (which
+    // distorts the image when rotated), compute a uniform scale that fits
+    // the source within the rect (like CSS `object-fit: contain`) and
+    // centre the result.  Pixels in the letterbox / pillarbox padding are
+    // transparent.
+    let sw_f = src_width as f32;
+    let sh_f = src_height as f32;
+    let fit_scale = (rw / sw_f).min(rh / sh_f);
+    let content_w = sw_f * fit_scale; // actual content width  inside the rect
+    let content_h = sh_f * fit_scale; // actual content height inside the rect
+    let half_cw = content_w * 0.5;
+    let half_ch = content_h * 0.5;
+
     // Rotation centre = centre of the destination rect.
-    let cx = dst_rect.x as f32 + rw * 0.5;
-    let cy = dst_rect.y as f32 + rh * 0.5;
+    let cx = rw.mul_add(0.5, dst_rect.x as f32);
+    let cy = rh.mul_add(0.5, dst_rect.y as f32);
 
     // Pre-compute sin/cos for the *inverse* rotation (clockwise rotation
     // means we apply counter-clockwise to map destination → source).
@@ -690,11 +710,11 @@ pub fn scale_blit_rgba_rotated(
     let cos_a = angle_rad.cos();
     let sin_a = angle_rad.sin();
 
-    // Compute the axis-aligned bounding box of the rotated rect so we only
-    // iterate over pixels that could possibly be covered.
-    let half_w = rw * 0.5;
-    let half_h = rh * 0.5;
-    let corners = [(-half_w, -half_h), (half_w, -half_h), (half_w, half_h), (-half_w, half_h)];
+    // Compute the axis-aligned bounding box of the rotated *content* area
+    // (not the full rect) so we only iterate over pixels that could
+    // possibly be covered by actual source content.
+    let corners =
+        [(-half_cw, -half_ch), (half_cw, -half_ch), (half_cw, half_ch), (-half_cw, half_ch)];
     let mut min_x = f32::MAX;
     let mut max_x = f32::MIN;
     let mut min_y = f32::MAX;
@@ -723,10 +743,19 @@ pub fn scale_blit_rgba_rotated(
         256 // sentinel: means "fully opaque, skip per-pixel multiply"
     };
 
+    // Reciprocal of the fit scale for mapping content-local coords back to
+    // source pixel coords.  Pre-computed to replace per-pixel divisions
+    // with multiplies.
+    let inv_fit_scale = 1.0 / fit_scale;
+
     // Per-row closure that processes all columns in a single row of the
     // bounding box.  Uses an incremental stepper: since `dx_f` increments
     // by 1.0 each column, `local_x` and `local_y` change by `+cos_a` and
     // `-sin_a` respectively — replacing 2 multiplies with 2 adds per pixel.
+    //
+    // Edge anti-aliasing distances are computed against the *content*
+    // boundary (`half_cw` × `half_ch`), not the full rect, so the visible
+    // edge matches the actual image boundary.
     //
     // For interior pixels where `min_dist >= 1.0` the edge-coverage clamp
     // is a no-op, so we skip the coverage math entirely for the bulk of
@@ -739,33 +768,34 @@ pub fn scale_blit_rgba_rotated(
         let mut local_x = dx_f0 * cos_a + dy * sin_a;
         let mut local_y = (-dx_f0).mul_add(sin_a, dy * cos_a);
 
-        // Per-row constants for edge distances (top/bottom depend only on
-        // local_y, which also steps — but the step is `-sin_a`, so we
-        // compute d_top/d_bottom inline together with the stepper).
-
         let mut px = bb_x0;
         while px < bb_x1 {
             // ── Edge anti-aliasing via signed distance ──────────────
-            let d_left = local_x + half_w;
-            let d_right = half_w - local_x;
-            let d_top = local_y + half_h;
-            let d_bottom = half_h - local_y;
+            // Distances are relative to the content boundary, not the
+            // full destination rect.
+            let d_left = local_x + half_cw;
+            let d_right = half_cw - local_x;
+            let d_top = local_y + half_ch;
+            let d_bottom = half_ch - local_y;
             let min_dist = d_left.min(d_right).min(d_top).min(d_bottom);
 
             if min_dist <= 0.0 {
-                // Fully outside — step and continue.
+                // Fully outside content area — step and continue.
                 local_x += cos_a;
                 local_y -= sin_a;
                 px += 1;
                 continue;
             }
 
-            // Map from local rect coords to source pixel coords.
-            let norm_x = ((local_x + half_w) / rw).clamp(0.0, 1.0 - f32::EPSILON);
-            let norm_y = ((local_y + half_h) / rh).clamp(0.0, 1.0 - f32::EPSILON);
+            // Map from content-local coords to source pixel coords.
+            // `local_x/y` ∈ [-half_cw, half_cw] × [-half_ch, half_ch]
+            // for points inside the content area.  Convert to source
+            // pixel space via the inverse of the uniform fit scale.
+            let src_fx = (local_x + half_cw) * inv_fit_scale;
+            let src_fy = (local_y + half_ch) * inv_fit_scale;
 
-            let sx = ((norm_x * sw as f32) as usize).min(sw - 1);
-            let sy = ((norm_y * sh as f32) as usize).min(sh - 1);
+            let sx = (src_fx as usize).min(sw - 1);
+            let sy = (src_fy as usize).min(sh - 1);
 
             let src_idx = (sy * sw + sx) * 4;
             if src_idx + 3 >= src.len() {
@@ -810,10 +840,9 @@ pub fn scale_blit_rgba_rotated(
                 }
             }
 
-            // Interior fast-forward: if we are well inside the rect
-            // (min_dist >= 1.0 + some margin), we know subsequent pixels
-            // will also be interior until we approach an edge.  Compute
-            // how many columns we can skip the coverage math for.
+            // Interior fast-forward: if we are well inside the content
+            // area (min_dist >= 2.0), subsequent pixels will also be
+            // interior until we approach an edge.
             //
             // The minimum distance decreases by at most 1.0 per column
             // step (the directional derivative of each edge distance w.r.t.
@@ -834,10 +863,8 @@ pub fn scale_blit_rgba_rotated(
                         px += 1;
 
                         // Source lookup (incremental local coords).
-                        let nx = ((local_x + half_w) / rw).clamp(0.0, 1.0 - f32::EPSILON);
-                        let ny = ((local_y + half_h) / rh).clamp(0.0, 1.0 - f32::EPSILON);
-                        let isx = ((nx * sw as f32) as usize).min(sw - 1);
-                        let isy = ((ny * sh as f32) as usize).min(sh - 1);
+                        let isx = (((local_x + half_cw) * inv_fit_scale) as usize).min(sw - 1);
+                        let isy = (((local_y + half_ch) * inv_fit_scale) as usize).min(sh - 1);
                         let si = (isy * sw + isx) * 4;
                         if si + 3 >= src.len() {
                             continue;

@@ -816,7 +816,7 @@ mod tests {
         assert_state_initializing, assert_state_running, assert_state_stopped, create_test_context,
     };
     use config::{LayerConfig, Rect};
-    use pixel_ops::scale_blit_rgba;
+    use pixel_ops::{scale_blit_rgba, scale_blit_rgba_rotated};
     use std::collections::HashMap;
     use tokio::sync::mpsc;
 
@@ -888,6 +888,53 @@ mod tests {
         }
         // Outside should remain black.
         assert_eq!(dst[0], 0);
+    }
+
+    #[test]
+    fn test_rotated_blit_preserves_aspect_ratio() {
+        // A wide 4×2 red source blitted into a square 20×20 rect with 45°
+        // rotation on a 40×40 canvas.  Because the source aspect ratio
+        // (2:1) differs from the rect (1:1), aspect-ratio-preserving
+        // rotation should *not* stretch — the content should be fitted
+        // uniformly (object-fit: contain).
+        //
+        // With a 4×2 source into a 20×20 rect the fit scale is
+        // min(20/4, 20/2) = 5.0, giving a 20×10 content area centred in
+        // the rect.  After 45° rotation the canvas centre (20,20) should
+        // still be covered by source pixels.
+        let src = vec![255u8, 0, 0, 255].repeat(4 * 2); // 4×2 solid red
+        let mut dst = vec![0u8; 40 * 40 * 4];
+
+        scale_blit_rgba_rotated(
+            &mut dst,
+            40,
+            40,
+            &src,
+            4,
+            2,
+            &Rect { x: 10, y: 10, width: 20, height: 20 },
+            1.0,
+            45.0,
+        );
+
+        // The centre of the rect (canvas pixel 20,20) should be covered
+        // by source content (red).
+        let cx = 20usize;
+        let cy = 20usize;
+        let idx = (cy * 40 + cx) * 4;
+        assert_eq!(dst[idx], 255, "Centre R");
+        assert_eq!(dst[idx + 1], 0, "Centre G");
+        assert_eq!(dst[idx + 2], 0, "Centre B");
+        assert!(dst[idx + 3] > 200, "Centre A should be mostly opaque");
+
+        // A corner of the rect that lies *outside* the fitted content
+        // should remain transparent.  For a 20×10 content area (half_cw=10,
+        // half_ch=5) rotated 45°, the AABB corners of the full rect are
+        // well outside the content boundary.  Check a pixel near the rect
+        // corner (10,10) — this is at the top-left of the 20×20 rect, well
+        // outside the 20×10 fitted content.
+        let corner_idx = (10usize * 40 + 10) * 4;
+        assert_eq!(dst[corner_idx + 3], 0, "Rect corner should be transparent (padding)");
     }
 
     #[test]
