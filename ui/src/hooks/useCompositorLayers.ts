@@ -573,23 +573,27 @@ export const useCompositorLayers = (
         let nx = orig.x + rawDx;
         let ny = orig.y + rawDy;
 
-        // Snap to grid: round position to nearest SNAP_GRID step
-        nx = Math.round(nx / SNAP_GRID) * SNAP_GRID;
-        ny = Math.round(ny / SNAP_GRID) * SNAP_GRID;
+        // Only apply snapping when the pointer actually moved (avoid
+        // quantizing the position on a click-only selection).
+        if (rawDx !== 0 || rawDy !== 0) {
+          // Snap to grid: round position to nearest SNAP_GRID step
+          nx = Math.round(nx / SNAP_GRID) * SNAP_GRID;
+          ny = Math.round(ny / SNAP_GRID) * SNAP_GRID;
 
-        // Snap to canvas centre guidelines
-        const cw = canvasWidth;
-        const ch = canvasHeight;
-        const midX = nx + orig.width / 2;
-        const midY = ny + orig.height / 2;
+          // Snap to canvas centre guidelines
+          const cw = canvasWidth;
+          const ch = canvasHeight;
+          const midX = nx + orig.width / 2;
+          const midY = ny + orig.height / 2;
 
-        // Horizontal centre
-        if (Math.abs(midX - cw / 2) < SNAP_THRESHOLD) {
-          nx = (cw - orig.width) / 2;
-        }
-        // Vertical centre
-        if (Math.abs(midY - ch / 2) < SNAP_THRESHOLD) {
-          ny = (ch - orig.height) / 2;
+          // Horizontal centre
+          if (Math.abs(midX - cw / 2) < SNAP_THRESHOLD) {
+            nx = (cw - orig.width) / 2;
+          }
+          // Vertical centre
+          if (Math.abs(midY - ch / 2) < SNAP_THRESHOLD) {
+            ny = (ch - orig.height) / 2;
+          }
         }
 
         return { ...orig, x: nx, y: ny };
