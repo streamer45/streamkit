@@ -14,6 +14,7 @@ import styled from '@emotion/styled';
 import React, { useCallback, useRef, useState } from 'react';
 import { useShallow } from 'zustand/shallow';
 
+import { useCanvasAspectRatio } from '@/hooks/useCanvasAspectRatio';
 import { useStreamStore } from '@/stores/streamStore';
 import type { WatchStatus } from '@/stores/streamStore';
 
@@ -142,6 +143,8 @@ const DEFAULT_WIDTH = 320;
 
 const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(({ hasSession }) => {
   const [collapsed, setCollapsed] = useState(false);
+  const [canvasEl, setCanvasEl] = useState<HTMLCanvasElement | null>(null);
+  const canvasAspectRatio = useCanvasAspectRatio(canvasEl);
   // Position relative to bottom-right of the container
   const [pos, setPos] = useState({ x: 16, y: 16 });
   const dragRef = useRef<{
@@ -169,6 +172,7 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(({ hasS
 
   const canvasRef = useCallback(
     (el: HTMLCanvasElement | null) => {
+      setCanvasEl(el);
       if (el && videoRenderer) {
         videoRenderer.canvas.set(el);
       }
@@ -251,7 +255,7 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(({ hasS
       <PreviewCanvas
         ref={canvasRef}
         style={{
-          aspectRatio: '16 / 9',
+          aspectRatio: canvasAspectRatio,
         }}
       />
     );
