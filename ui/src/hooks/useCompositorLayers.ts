@@ -326,7 +326,13 @@ export const useCompositorLayers = (
     const current = layersRef.current;
     const merged = parsed.map((p) => {
       const existing = current.find((l) => l.id === p.id);
-      return existing ? { ...p, visible: existing.visible } : p;
+      return existing
+        ? {
+            ...p,
+            visible: existing.visible,
+            opacity: existing.visible ? p.opacity : existing.opacity,
+          }
+        : p;
     });
     setLayers(merged);
 
