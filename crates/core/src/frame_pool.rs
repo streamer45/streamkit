@@ -327,7 +327,10 @@ pub const DEFAULT_VIDEO_MAX_BUFFERS_PER_BUCKET: usize = 16;
 
 impl FramePool<u8> {
     pub fn video_default() -> Self {
-        Self::with_buckets(DEFAULT_VIDEO_BUCKET_SIZES.to_vec(), DEFAULT_VIDEO_MAX_BUFFERS_PER_BUCKET)
+        Self::with_buckets(
+            DEFAULT_VIDEO_BUCKET_SIZES.to_vec(),
+            DEFAULT_VIDEO_MAX_BUFFERS_PER_BUCKET,
+        )
     }
 }
 

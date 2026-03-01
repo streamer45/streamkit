@@ -56,9 +56,8 @@ impl ConversionCache {
     /// layer has been converted.
     fn get_cached(&self, slot_idx: usize, layer: &LayerSnapshot) -> &[u8] {
         #[allow(clippy::expect_used)]
-        let cached = self.entries[slot_idx]
-            .as_ref()
-            .expect("get_cached called before get_or_convert");
+        let cached =
+            self.entries[slot_idx].as_ref().expect("get_cached called before get_or_convert");
         let needed = layer.width as usize * layer.height as usize * 4;
         &cached.rgba[..needed]
     }
