@@ -25,8 +25,8 @@
 //! - Bilinear / Lanczos scaling (MVP uses nearest-neighbor).
 
 pub mod config;
-mod kernel;
-mod overlay;
+pub mod kernel;
+pub mod overlay;
 pub mod pixel_ops;
 
 use async_trait::async_trait;

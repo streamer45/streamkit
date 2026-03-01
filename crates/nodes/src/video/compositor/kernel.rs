@@ -46,6 +46,23 @@ impl ConversionCache {
         Self { entries: Vec::new() }
     }
 
+    /// Return a previously-cached RGBA slice for `slot_idx`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the slot has not been populated by a prior `get_or_convert`
+    /// call for the same `layer`.  This is only called in the second pass of
+    /// `composite_frame` after the first pass has ensured every non-RGBA
+    /// layer has been converted.
+    fn get_cached(&self, slot_idx: usize, layer: &LayerSnapshot) -> &[u8] {
+        #[allow(clippy::expect_used)]
+        let cached = self.entries[slot_idx]
+            .as_ref()
+            .expect("get_cached called before get_or_convert");
+        let needed = layer.width as usize * layer.height as usize * 4;
+        &cached.rgba[..needed]
+    }
+
     /// Look up or perform a YUV→RGBA conversion for layer at `slot_idx`.
     /// Returns a slice of RGBA8 data.
     fn get_or_convert(&mut self, slot_idx: usize, layer: &LayerSnapshot) -> &[u8] {
@@ -101,12 +118,20 @@ impl ConversionCache {
     }
 }
 
-/// Returns `true` if the first visible layer is fully opaque, unrotated, and
-/// covers the entire canvas — meaning the canvas clear can be skipped.
+/// Returns `true` if the first visible layer is fully opaque (both layer
+/// opacity *and* source pixel alpha), unrotated, and covers the entire
+/// canvas — meaning the canvas clear can be skipped.
+///
+/// `first_src_data` is the RGBA8 source buffer for the first layer (after
+/// any YUV→RGBA conversion).  We check that every pixel in the region that
+/// will be blitted has `alpha == 255`; if any pixel is semi-transparent the
+/// clear cannot be skipped because the blit would blend with uninitialised
+/// (or stale pooled) canvas bytes.
 fn first_layer_covers_canvas(
     layers: &[Option<LayerSnapshot>],
     canvas_w: u32,
     canvas_h: u32,
+    first_src_data: Option<&[u8]>,
 ) -> bool {
     let Some(first) = layers.iter().flatten().next() else {
         return false;
@@ -118,12 +143,23 @@ fn first_layer_covers_canvas(
 
     // Check if the layer fully covers the canvas.
     // A layer with no rect fills the entire canvas by default.
-    first.rect.as_ref().map_or(true, |r| {
+    let covers = first.rect.as_ref().map_or(true, |r| {
         r.x <= 0
             && r.y <= 0
             && i64::from(r.width) + i64::from(r.x) >= i64::from(canvas_w)
             && i64::from(r.height) + i64::from(r.y) >= i64::from(canvas_h)
-    })
+    });
+    if !covers {
+        return false;
+    }
+
+    // Verify that *all* source pixels are fully opaque (alpha == 255).
+    // Without this check, semi-transparent source pixels would blend with
+    // uninitialised canvas bytes when the clear is skipped.
+    let Some(src) = first_src_data else {
+        return false;
+    };
+    src.chunks_exact(4).all(|px| px[3] == 255)
 }
 
 /// Snapshot of one input layer's data for the blocking compositor thread.
@@ -185,25 +221,52 @@ pub fn composite_frame(
 
     let buf = pooled.as_mut_slice();
 
-    // Skip the canvas clear when the first layer is opaque, unrotated, and
-    // covers the entire canvas — the blit will fully overwrite every pixel.
-    if !first_layer_covers_canvas(layers, canvas_w, canvas_h) {
+    // Two-pass source resolution.
+    //
+    // Pass 1: populate the conversion cache for every non-RGBA layer.
+    // `slot_idx` uses the position in the `layers` slice (which preserves
+    // `None` holes) so that cache indices stay stable even when some slots
+    // have no frame.
+    for (slot_idx, entry) in layers.iter().enumerate() {
+        if let Some(layer) = entry {
+            if layer.pixel_format != PixelFormat::Rgba8 {
+                conversion_cache.get_or_convert(slot_idx, layer);
+            }
+        }
+    }
+
+    // Pass 2: build resolved references.  The mutable borrow of
+    // `conversion_cache` from pass 1 is released, so we can now take
+    // shared references into the cache alongside references into `layers`.
+    let resolved: Vec<Option<(&LayerSnapshot, &[u8])>> = layers
+        .iter()
+        .enumerate()
+        .map(|(slot_idx, entry)| {
+            entry.as_ref().map(|layer| {
+                let src_data: &[u8] = match layer.pixel_format {
+                    PixelFormat::Rgba8 => layer.data.as_slice(),
+                    PixelFormat::I420 | PixelFormat::Nv12 => {
+                        // Cache was populated in pass 1; this is a shared
+                        // read that cannot fail.
+                        conversion_cache.get_cached(slot_idx, layer)
+                    },
+                };
+                (layer, src_data)
+            })
+        })
+        .collect();
+
+    // Now that we have the first layer's resolved RGBA data, check whether
+    // the canvas clear can be skipped.
+    let first_src = resolved.iter().flatten().next().map(|(_, d)| *d);
+    if !first_layer_covers_canvas(layers, canvas_w, canvas_h, first_src) {
         buf[..total_bytes].fill(0);
     }
 
     // Blit each layer (in order — first layer is bottom, last is top).
-    // Non-RGBA layers use the conversion cache to avoid redundant per-frame
-    // YUV→RGBA8 conversion when the source data hasn't changed.
-    for (slot_idx, layer) in layers.iter().flatten().enumerate() {
+    for (layer, src_data) in resolved.iter().flatten() {
         let dst_rect =
             layer.rect.clone().unwrap_or(Rect { x: 0, y: 0, width: canvas_w, height: canvas_h });
-
-        let src_data: &[u8] = match layer.pixel_format {
-            PixelFormat::Rgba8 => layer.data.as_slice(),
-            PixelFormat::I420 | PixelFormat::Nv12 => {
-                conversion_cache.get_or_convert(slot_idx, layer)
-            },
-        };
 
         scale_blit_rgba_rotated(
             buf,

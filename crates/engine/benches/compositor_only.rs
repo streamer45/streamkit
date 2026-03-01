@@ -41,20 +41,9 @@ use streamkit_core::types::PixelFormat;
 
 // Re-use the compositor kernel and pixel_ops directly.
 use streamkit_nodes::video::compositor::config::Rect;
+use streamkit_nodes::video::compositor::kernel::{composite_frame, ConversionCache, LayerSnapshot};
+use streamkit_nodes::video::compositor::overlay::DecodedOverlay;
 use streamkit_nodes::video::compositor::pixel_ops::rgba8_to_i420;
-
-/// Inline copy of `LayerSnapshot` to avoid depending on the private `kernel` module.
-/// Must stay in sync with `kernel::LayerSnapshot`.
-struct LayerSnapshot {
-    data: Arc<PooledVideoData>,
-    width: u32,
-    height: u32,
-    pixel_format: PixelFormat,
-    rect: Option<Rect>,
-    opacity: f32,
-    z_index: i32,
-    rotation_degrees: f32,
-}
 
 // ── Default benchmark parameters ────────────────────────────────────────────
 
@@ -178,8 +167,10 @@ fn generate_nv12_frame(width: u32, height: u32) -> Vec<u8> {
 
 // ── Compositing harness ─────────────────────────────────────────────────────
 
-/// Directly call the compositing kernel for `frame_count` iterations,
-/// returning per-frame timing statistics.
+/// Call the real `composite_frame` kernel for `frame_count` iterations,
+/// returning per-frame timing statistics.  This exercises all kernel
+/// optimizations: conversion cache, skip-canvas-clear, identity-scale
+/// fast-path, precomputed x-map, etc.
 fn bench_composite(
     _label: &str,
     canvas_w: u32,
@@ -187,69 +178,21 @@ fn bench_composite(
     layers: &[Option<LayerSnapshot>],
     frame_count: u32,
 ) -> BenchResult {
-    // Re-create the kernel's compositing logic inline since `composite_frame`
-    // is pub(crate). We call the public pixel_ops functions directly.
-    let total_bytes = (canvas_w as usize) * (canvas_h as usize) * 4;
-    let mut canvas = vec![0u8; total_bytes];
-    let mut i420_scratch: Vec<u8> = Vec::new();
+    let empty_overlays: Vec<Arc<DecodedOverlay>> = Vec::new();
+    let mut conversion_cache = ConversionCache::new();
 
     let start = Instant::now();
 
     for _ in 0..frame_count {
-        // Zero the canvas.
-        canvas.fill(0);
-
-        // Blit each layer.
-        for layer in layers.iter().flatten() {
-            let dst_rect = layer.rect.clone().unwrap_or(Rect {
-                x: 0,
-                y: 0,
-                width: canvas_w,
-                height: canvas_h,
-            });
-
-            let src_data: &[u8] = match layer.pixel_format {
-                PixelFormat::Rgba8 => layer.data.as_slice(),
-                PixelFormat::I420 => {
-                    let needed = layer.width as usize * layer.height as usize * 4;
-                    if i420_scratch.len() < needed {
-                        i420_scratch.resize(needed, 0);
-                    }
-                    streamkit_nodes::video::compositor::pixel_ops::i420_to_rgba8_buf(
-                        layer.data.as_slice(),
-                        layer.width,
-                        layer.height,
-                        &mut i420_scratch,
-                    );
-                    &i420_scratch[..needed]
-                },
-                PixelFormat::Nv12 => {
-                    let needed = layer.width as usize * layer.height as usize * 4;
-                    if i420_scratch.len() < needed {
-                        i420_scratch.resize(needed, 0);
-                    }
-                    streamkit_nodes::video::compositor::pixel_ops::nv12_to_rgba8_buf(
-                        layer.data.as_slice(),
-                        layer.width,
-                        layer.height,
-                        &mut i420_scratch,
-                    );
-                    &i420_scratch[..needed]
-                },
-            };
-
-            streamkit_nodes::video::compositor::pixel_ops::scale_blit_rgba_rotated(
-                &mut canvas,
-                canvas_w,
-                canvas_h,
-                src_data,
-                layer.width,
-                layer.height,
-                &dst_rect,
-                layer.opacity,
-                layer.rotation_degrees,
-            );
-        }
+        let _result = composite_frame(
+            canvas_w,
+            canvas_h,
+            layers,
+            &empty_overlays,
+            &empty_overlays,
+            None,
+            &mut conversion_cache,
+        );
     }
 
     let elapsed = start.elapsed();
