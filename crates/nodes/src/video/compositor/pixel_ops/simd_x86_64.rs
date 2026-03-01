@@ -207,9 +207,9 @@ pub(super) unsafe fn blend_8px_opaque_avx2(dst_ptr: *mut u8, src_pixels: [u32; 8
     use std::arch::x86_64::{
         __m256i, _mm256_add_epi16, _mm256_and_si256, _mm256_cmpeq_epi8, _mm256_loadu_si256,
         _mm256_movemask_epi8, _mm256_mullo_epi16, _mm256_or_si256, _mm256_packus_epi16,
-        _mm256_permute4x64_epi64, _mm256_set1_epi16, _mm256_set1_epi32, _mm256_set_epi32,
-        _mm256_setzero_si256, _mm256_shufflehi_epi16, _mm256_shufflelo_epi16, _mm256_srli_epi16,
-        _mm256_storeu_si256, _mm256_sub_epi16, _mm256_unpackhi_epi8, _mm256_unpacklo_epi8,
+        _mm256_set1_epi16, _mm256_set1_epi32, _mm256_set_epi32, _mm256_setzero_si256,
+        _mm256_shufflehi_epi16, _mm256_shufflelo_epi16, _mm256_srli_epi16, _mm256_storeu_si256,
+        _mm256_sub_epi16, _mm256_unpackhi_epi8, _mm256_unpacklo_epi8,
     };
 
     let zero = _mm256_setzero_si256();
@@ -277,12 +277,12 @@ pub(super) unsafe fn blend_8px_opaque_avx2(dst_ptr: *mut u8, src_pixels: [u32; 8
     );
     let result_hi = _mm256_srli_epi16(_mm256_add_epi16(val_hi, _mm256_srli_epi16(val_hi, 8)), 8);
 
-    // Pack back to u8.  _mm256_packus_epi16 packs within 128-bit lanes, so
-    // the result is [px0 px1 px4 px5 | px2 px3 px6 px7].  We need a
-    // cross-lane permute to restore the correct pixel order.
+    // Pack back to u8.  Since result_lo and result_hi both come from
+    // unpacking the same 256-bit register (src8/dst8), _mm256_packus_epi16
+    // already produces correct pixel order [px0..px3 | px4..px7] — no
+    // cross-lane permute needed.
     let packed = _mm256_packus_epi16(result_lo, result_hi);
-    let ordered = _mm256_permute4x64_epi64(packed, 0b11_01_10_00);
-    _mm256_storeu_si256(dst_ptr.cast::<__m256i>(), ordered);
+    _mm256_storeu_si256(dst_ptr.cast::<__m256i>(), packed);
 }
 
 /// Blend 8 gathered source RGBA pixels onto 8 contiguous destination pixels
@@ -298,10 +298,9 @@ pub(super) unsafe fn blend_8px_opaque_avx2(dst_ptr: *mut u8, src_pixels: [u32; 8
 pub(super) unsafe fn blend_8px_alpha_avx2(dst_ptr: *mut u8, src_pixels: [u32; 8], opacity: u16) {
     use std::arch::x86_64::{
         __m256i, _mm256_add_epi16, _mm256_loadu_si256, _mm256_mullo_epi16, _mm256_or_si256,
-        _mm256_packus_epi16, _mm256_permute4x64_epi64, _mm256_set1_epi16, _mm256_set1_epi32,
-        _mm256_set_epi32, _mm256_setzero_si256, _mm256_shufflehi_epi16, _mm256_shufflelo_epi16,
-        _mm256_srli_epi16, _mm256_storeu_si256, _mm256_sub_epi16, _mm256_unpackhi_epi8,
-        _mm256_unpacklo_epi8,
+        _mm256_packus_epi16, _mm256_set1_epi16, _mm256_set1_epi32, _mm256_set_epi32,
+        _mm256_setzero_si256, _mm256_shufflehi_epi16, _mm256_shufflelo_epi16, _mm256_srli_epi16,
+        _mm256_storeu_si256, _mm256_sub_epi16, _mm256_unpackhi_epi8, _mm256_unpacklo_epi8,
     };
 
     let zero = _mm256_setzero_si256();
@@ -360,9 +359,9 @@ pub(super) unsafe fn blend_8px_alpha_avx2(dst_ptr: *mut u8, src_pixels: [u32; 8]
     );
     let result_hi = _mm256_srli_epi16(_mm256_add_epi16(val_hi, _mm256_srli_epi16(val_hi, 8)), 8);
 
+    // Same as opaque variant: pack already yields correct order, no permute.
     let packed = _mm256_packus_epi16(result_lo, result_hi);
-    let ordered = _mm256_permute4x64_epi64(packed, 0b11_01_10_00);
-    _mm256_storeu_si256(dst_ptr.cast::<__m256i>(), ordered);
+    _mm256_storeu_si256(dst_ptr.cast::<__m256i>(), packed);
 }
 
 // ── SIMD alpha-opaqueness check ─────────────────────────────────────────────
