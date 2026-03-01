@@ -807,6 +807,8 @@ export const useCompositorLayers = (
         commitOverlays(next, imageOverlaysRef.current);
         return next;
       });
+      // Clear selection — re-indexing makes the old selectedLayerId stale
+      setSelectedLayerId(null);
     },
     [commitOverlays]
   );
@@ -854,6 +856,8 @@ export const useCompositorLayers = (
         commitOverlays(textOverlaysRef.current, next);
         return next;
       });
+      // Clear selection — re-indexing makes the old selectedLayerId stale
+      setSelectedLayerId(null);
     },
     [commitOverlays]
   );
