@@ -180,6 +180,17 @@ const PreviewCanvas = styled.canvas`
   display: block;
 `;
 
+/** In fullscreen the canvas must fit inside the viewport without clipping.
+ *  max-width + max-height + object-fit: contain gives us letterboxing. */
+const FullscreenCanvas = styled.canvas`
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 0;
+  background: #000;
+  display: block;
+  object-fit: contain;
+`;
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -401,6 +412,17 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
         );
       }
 
+      if (isFullscreen) {
+        return (
+          <FullscreenCanvas
+            ref={canvasRef}
+            style={{
+              aspectRatio: canvasAspectRatio,
+            }}
+          />
+        );
+      }
+
       return (
         <PreviewCanvas
           ref={canvasRef}
@@ -461,7 +483,20 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
           </span>
         </DragHeader>
         {!collapsed && (
-          <PanelBody onPointerDown={handleDragStart} style={isFullscreen ? { flex: 1 } : undefined}>
+          <PanelBody
+            onPointerDown={isFullscreen ? undefined : handleDragStart}
+            style={
+              isFullscreen
+                ? {
+                    flex: 1,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    background: '#000',
+                  }
+                : undefined
+            }
+          >
             {renderBody()}
           </PanelBody>
         )}

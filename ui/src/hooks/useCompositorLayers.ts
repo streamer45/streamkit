@@ -66,6 +66,11 @@ export interface ImageOverlayState {
 /** Which edge/corner is being resized */
 export type ResizeHandle = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
 
+/** Grid step used when snap-to-grid is active (pixels in canvas space). */
+const SNAP_GRID = 10;
+/** Distance threshold for snapping to centre guidelines (pixels). */
+const SNAP_THRESHOLD = 8;
+
 export interface UseCompositorLayersOptions {
   nodeId: string;
   sessionId?: string;
@@ -491,7 +496,15 @@ export const useCompositorLayers = (
     return throttle(
       (currentLayers: LayerState[]) => {
         if (onConfigChange) {
-          const config = buildConfig(params, currentLayers);
+          // Always include the latest local overlay state so we never
+          // send stale overlay positions from params when committing a
+          // video layer change.
+          const config = buildConfig(
+            params,
+            currentLayers,
+            textOverlaysRef.current,
+            imageOverlaysRef.current
+          );
           onConfigChange(nodeId, config);
         } else if (onParamChange) {
           // Design View path: update the layers param directly
@@ -557,7 +570,29 @@ export const useCompositorLayers = (
       const orig = state.origLayer;
 
       if (state.type === 'drag') {
-        return { ...orig, x: orig.x + rawDx, y: orig.y + rawDy };
+        let nx = orig.x + rawDx;
+        let ny = orig.y + rawDy;
+
+        // Snap to grid: round position to nearest SNAP_GRID step
+        nx = Math.round(nx / SNAP_GRID) * SNAP_GRID;
+        ny = Math.round(ny / SNAP_GRID) * SNAP_GRID;
+
+        // Snap to canvas centre guidelines
+        const cw = canvasWidth;
+        const ch = canvasHeight;
+        const midX = nx + orig.width / 2;
+        const midY = ny + orig.height / 2;
+
+        // Horizontal centre
+        if (Math.abs(midX - cw / 2) < SNAP_THRESHOLD) {
+          nx = (cw - orig.width) / 2;
+        }
+        // Vertical centre
+        if (Math.abs(midY - ch / 2) < SNAP_THRESHOLD) {
+          ny = (ch - orig.height) / 2;
+        }
+
+        return { ...orig, x: nx, y: ny };
       }
 
       // Issue #5 fix: transform mouse delta into the layer's local coordinate
@@ -633,7 +668,7 @@ export const useCompositorLayers = (
 
       return { ...orig, x: newX, y: newY, width: newW, height: newH };
     },
-    []
+    [canvasWidth, canvasHeight]
   );
 
   /** Apply visual update to DOM element (no React state) */

@@ -19,7 +19,7 @@ import { nodesLogger } from '@/utils/logger';
 
 const CompositorWrapper = styled.div`
   border-top: 1px solid var(--sk-border);
-  padding-top: 4px;
+  padding: 8px 6px 4px;
   display: flex;
   flex-direction: column;
   gap: 6px;
