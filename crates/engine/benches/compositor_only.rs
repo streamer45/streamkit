@@ -44,7 +44,7 @@ use streamkit_core::VideoFramePool;
 use streamkit_nodes::video::compositor::config::Rect;
 use streamkit_nodes::video::compositor::kernel::{composite_frame, ConversionCache, LayerSnapshot};
 use streamkit_nodes::video::compositor::overlay::DecodedOverlay;
-use streamkit_nodes::video::compositor::pixel_ops::rgba8_to_i420;
+use streamkit_nodes::video::compositor::pixel_ops::rgba8_to_i420_buf;
 
 // ── Default benchmark parameters ────────────────────────────────────────────
 
@@ -149,7 +149,14 @@ fn generate_rgba_frame(width: u32, height: u32) -> Vec<u8> {
 /// Generate an I420 frame by converting an RGBA frame.
 fn generate_i420_frame(width: u32, height: u32) -> Vec<u8> {
     let rgba = generate_rgba_frame(width, height);
-    rgba8_to_i420(&rgba, width, height)
+    let w = width as usize;
+    let h = height as usize;
+    let chroma_w = w.div_ceil(2);
+    let chroma_h = h.div_ceil(2);
+    let i420_size = w * h + 2 * chroma_w * chroma_h;
+    let mut i420 = vec![0u8; i420_size];
+    rgba8_to_i420_buf(&rgba, width, height, &mut i420);
+    i420
 }
 
 /// Generate an NV12 frame by converting an RGBA frame.

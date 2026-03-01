@@ -265,7 +265,6 @@ function buildConfig(
   return {
     width: params.width ?? 1280,
     height: params.height ?? 720,
-    output_pixel_format: params.output_pixel_format ?? 'rgba8',
     layers: layersMap,
     image_overlays: imageOverlays
       ? serializeImageOverlays(imageOverlays)

@@ -275,10 +275,6 @@ function inferCompositorOutputType(sourceNode: Node, sourceOutput: OutputPin): P
   if (outVariant.kind !== 'RawVideo') return null;
 
   const payload = (outVariant.payload as Record<string, unknown> | undefined) ?? {};
-  const format =
-    typeof params.output_pixel_format === 'string'
-      ? params.output_pixel_format.toLowerCase()
-      : 'rgba8';
 
   // Also reflect configured width/height so downstream nodes see concrete
   // dimensions instead of the definition-time wildcards.
@@ -295,11 +291,12 @@ function inferCompositorOutputType(sourceNode: Node, sourceOutput: OutputPin): P
         ? payload.height
         : null;
 
+  // The compositor always outputs RGBA8.
   return {
     RawVideo: {
       width,
       height,
-      pixel_format: format === 'i420' ? 'I420' : 'Rgba8',
+      pixel_format: 'Rgba8',
     },
   };
 }

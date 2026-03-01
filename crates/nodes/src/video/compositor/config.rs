@@ -162,10 +162,6 @@ pub struct CompositorConfig {
     /// graph building. Optional for dynamic pipelines where pins are created
     /// on-demand. If specified, pins will be named in_0, in_1, ..., in_{N-1}.
     pub num_inputs: Option<usize>,
-    /// Output pixel format (deprecated — the compositor now always outputs
-    /// RGBA8).  Kept for backward-compatible YAML deserialization.
-    #[serde(default = "default_output_pixel_format")]
-    pub output_pixel_format: String,
     /// Per-layer configuration, keyed by pin name (e.g. `"in_0"`).
     /// Layers without an entry here are scaled to fill the canvas.
     #[serde(default)]
@@ -178,17 +174,12 @@ pub struct CompositorConfig {
     pub text_overlays: Vec<TextOverlayConfig>,
 }
 
-fn default_output_pixel_format() -> String {
-    "rgba8".to_string()
-}
-
 impl Default for CompositorConfig {
     fn default() -> Self {
         Self {
             width: default_width(),
             height: default_height(),
             num_inputs: None,
-            output_pixel_format: default_output_pixel_format(),
             layers: HashMap::new(),
             image_overlays: Vec::new(),
             text_overlays: Vec::new(),
