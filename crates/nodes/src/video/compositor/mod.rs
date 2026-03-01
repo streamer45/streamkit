@@ -1499,4 +1499,181 @@ mod tests {
             assert!(any_nonzero, "Row {row} is all zeros — black border detected");
         }
     }
+
+    /// Full-pipeline test at real dimensions (640×480): compositor blit with
+    /// opacity < 1.0, then RGBA→NV12→RGBA roundtrip, checking for black bands.
+    /// This exercises the exact pipeline the VP9 encoder sees.
+    #[test]
+    fn test_full_pipeline_opacity_nv12_roundtrip_no_black_bands() {
+        let w = 640u32;
+        let h = 480u32;
+        let wu = w as usize;
+        let hu = h as usize;
+
+        // Create a colorbars-like pattern: 7 vertical bars of different colors.
+        let colors: [(u8, u8, u8); 7] = [
+            (255, 255, 255), // white
+            (255, 255, 0),   // yellow
+            (0, 255, 255),   // cyan
+            (0, 255, 0),     // green
+            (255, 0, 255),   // magenta
+            (255, 0, 0),     // red
+            (0, 0, 255),     // blue
+        ];
+        let mut src_rgba = vec![0u8; wu * hu * 4];
+        for row in 0..hu {
+            for col in 0..wu {
+                let bar_idx = (col * 7) / wu;
+                let (r, g, b) = colors[bar_idx];
+                let off = (row * wu + col) * 4;
+                src_rgba[off] = r;
+                src_rgba[off + 1] = g;
+                src_rgba[off + 2] = b;
+                src_rgba[off + 3] = 255;
+            }
+        }
+
+        // Step 1: Blit onto canvas with opacity 0.9 (through scale_blit_rgba_rotated,
+        // exactly as the compositor does).
+        let mut canvas = vec![0u8; wu * hu * 4];
+        pixel_ops::scale_blit_rgba_rotated(
+            &mut canvas, w, h, &src_rgba, w, h,
+            &Rect { x: 0, y: 0, width: w, height: h },
+            0.9, 0.0,
+        );
+
+        // Verify compositor output: every row should have non-zero pixels.
+        for row in 0..hu {
+            let row_start = row * wu * 4;
+            let any_nonzero = canvas[row_start..row_start + wu * 4].iter().any(|&b| b != 0);
+            assert!(any_nonzero, "Compositor output row {row} is all zeros (black band)");
+        }
+
+        // Step 2: Convert RGBA → NV12 (exactly as the VP9 encoder does).
+        let chroma_w = wu.div_ceil(2);
+        let chroma_h = hu.div_ceil(2);
+        let nv12_size = wu * hu + chroma_w * 2 * chroma_h;
+        let mut nv12 = vec![0u8; nv12_size];
+        pixel_ops::rgba8_to_nv12_buf(&canvas, w, h, &mut nv12);
+
+        // Verify Y plane: no rows should be all-zero (Y=0 is below black level).
+        // With opacity 0.9 on colored bars, Y values should be well above 0.
+        for row in 0..hu {
+            let y_row = &nv12[row * wu..(row + 1) * wu];
+            let max_y = *y_row.iter().max().unwrap();
+            assert!(
+                max_y > 16,
+                "NV12 Y-plane row {row}: max Y={max_y}, expected >16 (not black)"
+            );
+        }
+
+        // Step 3: Convert NV12 → RGBA (simulates decoder display).
+        let mut decoded_rgba = vec![0u8; wu * hu * 4];
+        pixel_ops::nv12_to_rgba8_buf(&nv12, w, h, &mut decoded_rgba);
+
+        // Verify decoded output: every row should have non-black pixels.
+        for row in 0..hu {
+            let row_start = row * wu * 4;
+            let row_slice = &decoded_rgba[row_start..row_start + wu * 4];
+            // Check that at least some pixels have R, G, or B > 10 (not near-black).
+            let has_visible = row_slice.chunks_exact(4).any(|px| px[0] > 10 || px[1] > 10 || px[2] > 10);
+            assert!(
+                has_visible,
+                "Decoded row {row} has no visible pixels (all near-black)"
+            );
+        }
+    }
+
+    /// Test RGBA→NV12 AVX2 chroma conversion matches scalar reference.
+    /// Uses a 640-wide frame to fully exercise the AVX2 path (8 chroma samples/iter).
+    #[test]
+    fn test_rgba8_to_nv12_avx2_chroma_matches_scalar() {
+        let w = 640u32;
+        let h = 4u32;
+        let wu = w as usize;
+        let hu = h as usize;
+        let chroma_w = wu / 2;
+        let chroma_h = hu / 2;
+
+        // Create a varied RGBA pattern.
+        let mut rgba = vec![0u8; wu * hu * 4];
+        for row in 0..hu {
+            for col in 0..wu {
+                let off = (row * wu + col) * 4;
+                rgba[off] = ((col * 3 + row * 7) % 256) as u8;     // R
+                rgba[off + 1] = ((col * 5 + row * 11) % 256) as u8; // G
+                rgba[off + 2] = ((col * 7 + row * 13) % 256) as u8; // B
+                rgba[off + 3] = 255;                                  // A
+            }
+        }
+
+        // Convert using the public function (dispatches to AVX2).
+        let nv12_size = wu * hu + chroma_w * 2 * chroma_h;
+        let mut nv12_simd = vec![0u8; nv12_size];
+        pixel_ops::rgba8_to_nv12_buf(&rgba, w, h, &mut nv12_simd);
+
+        // Compute scalar reference for the chroma plane.
+        let y_size = wu * hu;
+        for crow in 0..chroma_h {
+            let r0 = crow * 2;
+            for ccol in 0..chroma_w {
+                let c0 = ccol * 2;
+                let mut sr = 0i32;
+                let mut sg = 0i32;
+                let mut sb = 0i32;
+                let mut count = 0i32;
+                for dr in 0..2u32 {
+                    let rr = r0 + dr as usize;
+                    if rr >= hu { continue; }
+                    for dc in 0..2u32 {
+                        let cc = c0 + dc as usize;
+                        if cc < wu {
+                            let off = (rr * wu + cc) * 4;
+                            sr += i32::from(rgba[off]);
+                            sg += i32::from(rgba[off + 1]);
+                            sb += i32::from(rgba[off + 2]);
+                            count += 1;
+                        }
+                    }
+                }
+                let r_avg = sr / count;
+                let g_avg = sg / count;
+                let b_avg = sb / count;
+                let expected_u = ((-38 * r_avg - 74 * g_avg + 112 * b_avg + 128) >> 8) + 128;
+                let expected_v = ((112 * r_avg - 94 * g_avg - 18 * b_avg + 128) >> 8) + 128;
+                let expected_u = expected_u.clamp(0, 255) as u8;
+                let expected_v = expected_v.clamp(0, 255) as u8;
+
+                let uv_off = y_size + crow * chroma_w * 2 + ccol * 2;
+                let got_u = nv12_simd[uv_off];
+                let got_v = nv12_simd[uv_off + 1];
+
+                // Allow ±2 for rounding differences between SIMD and scalar.
+                assert!(
+                    (i16::from(got_u) - i16::from(expected_u)).abs() <= 2,
+                    "crow={crow} ccol={ccol}: U got={got_u}, expected={expected_u}"
+                );
+                assert!(
+                    (i16::from(got_v) - i16::from(expected_v)).abs() <= 2,
+                    "crow={crow} ccol={ccol}: V got={got_v}, expected={expected_v}"
+                );
+            }
+        }
+
+        // Also verify Y plane matches scalar reference.
+        for row in 0..hu {
+            for col in 0..wu {
+                let off = (row * wu + col) * 4;
+                let r = i32::from(rgba[off]);
+                let g = i32::from(rgba[off + 1]);
+                let b = i32::from(rgba[off + 2]);
+                let expected_y = (((66 * r + 129 * g + 25 * b + 128) >> 8) + 16).clamp(0, 255) as u8;
+                let got_y = nv12_simd[row * wu + col];
+                assert!(
+                    (i16::from(got_y) - i16::from(expected_y)).abs() <= 1,
+                    "row={row} col={col}: Y got={got_y}, expected={expected_y}"
+                );
+            }
+        }
+    }
 }
