@@ -157,6 +157,11 @@ const PanelBody = styled.div`
   overflow: hidden;
   padding: 6px;
   background: #0a0a0f;
+  cursor: grab;
+
+  &:active {
+    cursor: grabbing;
+  }
 `;
 
 const EmptyMessage = styled.div`
@@ -456,7 +461,9 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
           </span>
         </DragHeader>
         {!collapsed && (
-          <PanelBody style={isFullscreen ? { flex: 1 } : undefined}>{renderBody()}</PanelBody>
+          <PanelBody onPointerDown={handleDragStart} style={isFullscreen ? { flex: 1 } : undefined}>
+            {renderBody()}
+          </PanelBody>
         )}
       </FloatingPanel>
     );

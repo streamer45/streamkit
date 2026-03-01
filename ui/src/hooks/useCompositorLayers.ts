@@ -296,7 +296,7 @@ export const useCompositorLayers = (
 
   // Guard against sync-from-params overwriting a local overlay mutation.
   // After any local overlay commit we set this to Date.now().  The sync
-  // effect skips overlay parsing while the guard is active (< 1.5 s).
+  // effect skips overlay parsing while the guard is active (< 3 s).
   const overlayCommitGuardRef = useRef<number>(0);
 
   // Refs for zero-render drag/resize
@@ -363,7 +363,7 @@ export const useCompositorLayers = (
     // Skip overlay re-parse if we just committed a local overlay change.
     // This prevents stale params from overwriting the local removal/add.
     const sinceCommit = Date.now() - overlayCommitGuardRef.current;
-    if (sinceCommit < 1500) return;
+    if (sinceCommit < 3000) return;
 
     setTextOverlays((currentText) => {
       const parsed = parseTextOverlays(params);
@@ -505,12 +505,32 @@ export const useCompositorLayers = (
     );
   }, [nodeId, onConfigChange, onParamChange, params, throttleMs]);
 
-  // Cleanup throttle on unmount
+  // Throttled overlay commit for continuous updates (sliders, drag, etc.)
+  // Prevents flooding the server with config changes on every slider tick.
+  const throttledOverlayCommit = useMemo(() => {
+    if (!onConfigChange && !onParamChange) return null;
+    return throttle(
+      (nextText: TextOverlayState[], nextImg: ImageOverlayState[]) => {
+        if (onConfigChange) {
+          const config = buildConfig(params, layersRef.current, nextText, nextImg);
+          onConfigChange(nodeId, config);
+        } else if (onParamChange) {
+          onParamChange(nodeId, 'text_overlays', serializeTextOverlays(nextText));
+          onParamChange(nodeId, 'image_overlays', serializeImageOverlays(nextImg));
+        }
+      },
+      throttleMs,
+      { leading: true, trailing: true }
+    );
+  }, [nodeId, onConfigChange, onParamChange, params, throttleMs]);
+
+  // Cleanup throttles on unmount
   useEffect(
     () => () => {
       throttledConfigChange?.cancel();
+      throttledOverlayCommit?.cancel();
     },
-    [throttledConfigChange]
+    [throttledConfigChange, throttledOverlayCommit]
   );
 
   /** Compute updated layer from current pointer position */
@@ -859,13 +879,20 @@ export const useCompositorLayers = (
 
   const updateTextOverlay = useCallback(
     (id: string, updates: Partial<Omit<TextOverlayState, 'id'>>) => {
+      // Arm the guard immediately so sync effect won't overwrite
+      overlayCommitGuardRef.current = Date.now();
       setTextOverlays((prev) => {
         const next = prev.map((o) => (o.id === id ? { ...o, ...updates } : o));
-        commitOverlays(next, imageOverlaysRef.current);
+        // Use throttled commit to avoid flooding the server on slider drags
+        if (throttledOverlayCommit) {
+          throttledOverlayCommit(next, imageOverlaysRef.current);
+        } else {
+          commitOverlaysRef.current(next, imageOverlaysRef.current);
+        }
         return next;
       });
     },
-    [commitOverlays]
+    [throttledOverlayCommit]
   );
 
   const removeTextOverlay = useCallback(
@@ -908,13 +935,20 @@ export const useCompositorLayers = (
 
   const updateImageOverlay = useCallback(
     (id: string, updates: Partial<Omit<ImageOverlayState, 'id'>>) => {
+      // Arm the guard immediately so sync effect won't overwrite
+      overlayCommitGuardRef.current = Date.now();
       setImageOverlays((prev) => {
         const next = prev.map((o) => (o.id === id ? { ...o, ...updates } : o));
-        commitOverlays(textOverlaysRef.current, next);
+        // Use throttled commit to avoid flooding the server on slider drags
+        if (throttledOverlayCommit) {
+          throttledOverlayCommit(textOverlaysRef.current, next);
+        } else {
+          commitOverlaysRef.current(textOverlaysRef.current, next);
+        }
         return next;
       });
     },
-    [commitOverlays]
+    [throttledOverlayCommit]
   );
 
   const removeImageOverlay = useCallback(

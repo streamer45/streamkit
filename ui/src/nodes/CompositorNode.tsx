@@ -351,7 +351,7 @@ const OverlayEditRow = styled.div`
   font-size: 10px;
 `;
 
-const OverlayTextInput = styled.input`
+const OverlayTextInput = styled.textarea`
   flex: 1;
   padding: 2px 4px;
   font-size: 11px;
@@ -362,6 +362,13 @@ const OverlayTextInput = styled.input`
   outline: none;
   min-width: 0;
   pointer-events: auto;
+  resize: vertical;
+  min-height: 22px;
+  max-height: 80px;
+  font-family: inherit;
+  line-height: 1.3;
+  white-space: pre-wrap;
+  word-break: break-word;
 
   &:focus {
     border-color: var(--sk-primary);
