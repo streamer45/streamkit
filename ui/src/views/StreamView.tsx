@@ -912,8 +912,11 @@ const StreamView: React.FC = () => {
                   }
                 }}
                 style={{
-                  width: '100%',
+                  display: 'block',
+                  width: 'auto',
+                  maxWidth: '100%',
                   maxHeight: 480,
+                  margin: '0 auto',
                   borderRadius: 6,
                   background: '#000',
                   aspectRatio: canvasAspectRatio,
