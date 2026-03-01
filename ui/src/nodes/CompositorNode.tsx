@@ -518,11 +518,11 @@ const OverlayList: React.FC<{
                 <Type size={11} />
               </OverlayIcon>
               <OverlayLabel
-                title={o.text}
+                title={`text_${textOverlays.indexOf(o)}`}
                 style={{ cursor: disabled ? 'default' : 'pointer' }}
                 onClick={() => !disabled && setEditingId(editingId === o.id ? null : o.id)}
               >
-                {o.text}
+                {`text_${textOverlays.indexOf(o)}`}
               </OverlayLabel>
               <SKTooltip content="Remove text overlay">
                 <RemoveButton
@@ -686,7 +686,7 @@ const UnifiedLayerList: React.FC<{
         all.push({
           id: o.id,
           kind: 'text',
-          label: o.text || `Text #${i}`,
+          label: `text_${i}`,
           zIndex: 100 + i,
           visible: o.visible,
         });

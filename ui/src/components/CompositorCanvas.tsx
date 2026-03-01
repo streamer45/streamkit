@@ -84,7 +84,6 @@ const TextContent = styled.div`
   justify-content: center;
   pointer-events: none;
   overflow: hidden;
-  padding: 2px 4px;
   z-index: 1;
 `;
 
@@ -102,7 +101,6 @@ const InlineTextInput = styled.input`
   text-align: center;
   outline: none;
   z-index: 3;
-  padding: 2px 4px;
   box-sizing: border-box;
 `;
 
@@ -342,7 +340,7 @@ const TextOverlayLayer: React.FC<{
       onPointerDown={handlePointerDown}
       onDoubleClick={handleDoubleClick}
     >
-      <LayerLabel>T: {overlay.text.slice(0, 20)}</LayerLabel>
+      <LayerLabel>text_{index}</LayerLabel>
       {editing ? (
         <InlineTextInput
           ref={inputRef}
