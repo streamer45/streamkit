@@ -1585,6 +1585,51 @@ mod tests {
         }
     }
 
+    /// Regression test: a 4:3 source blitted onto a 16:9 canvas with opacity < 1.0
+    /// must cover the entire canvas (stretch-to-fill) with no black bars.
+    /// Previously the near-zero rotation fast path applied an aspect-ratio-preserving
+    /// fit that left letterbox gaps visible as black bands when opacity < 1.0.
+    #[test]
+    fn test_mismatched_aspect_ratio_opacity_no_black_bars() {
+        let src_w = 640u32;
+        let src_h = 480u32; // 4:3
+        let canvas_w = 1280u32;
+        let canvas_h = 720u32; // 16:9
+
+        // Solid green source.
+        let src = [0u8, 255, 0, 255].repeat((src_w * src_h) as usize);
+        let mut canvas = vec![0u8; (canvas_w * canvas_h * 4) as usize];
+
+        pixel_ops::scale_blit_rgba_rotated(
+            &mut canvas,
+            canvas_w,
+            canvas_h,
+            &src,
+            src_w,
+            src_h,
+            &Rect { x: 0, y: 0, width: canvas_w, height: canvas_h },
+            0.9,
+            0.0, // no rotation — exercises the near-zero fast path
+        );
+
+        // Every row should have non-zero pixels (no black bars on left/right).
+        for row in 0..canvas_h as usize {
+            let row_start = row * canvas_w as usize * 4;
+            let row_end = row_start + canvas_w as usize * 4;
+            let any_nonzero = canvas[row_start..row_end].iter().any(|&b| b != 0);
+            assert!(any_nonzero, "Row {row} is all zeros — black bar detected");
+        }
+
+        // Every column should have non-zero pixels (no black bars on top/bottom).
+        for col in 0..canvas_w as usize {
+            let any_nonzero = (0..canvas_h as usize).any(|row| {
+                let idx = (row * canvas_w as usize + col) * 4;
+                canvas[idx] != 0 || canvas[idx + 1] != 0 || canvas[idx + 2] != 0
+            });
+            assert!(any_nonzero, "Column {col} is all zeros — black bar detected");
+        }
+    }
+
     /// Test RGBA→NV12 AVX2 chroma conversion matches scalar reference.
     /// Uses a 640-wide frame to fully exercise the AVX2 path (8 chroma samples/iter).
     #[test]

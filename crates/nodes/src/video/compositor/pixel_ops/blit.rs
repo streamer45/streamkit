@@ -575,10 +575,10 @@ fn blit_row_alpha(
 /// eliminates the staircase aliasing that a hard binary inside/outside test
 /// would produce.
 ///
-/// For near-zero rotation angles (< 0.01°), a fast path computes the same
-/// aspect-ratio-preserving fit rect and delegates to [`scale_blit_rgba`],
-/// so there is no behavioural discontinuity when animating rotation through
-/// 0°.
+/// For near-zero rotation angles (< 0.01°), a fast path delegates directly
+/// to [`scale_blit_rgba`] which stretches the source to fill the destination
+/// rect.  This avoids letterboxing artifacts when the source aspect ratio
+/// differs from the canvas (e.g. 4:3 source on a 16:9 canvas).
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -604,26 +604,16 @@ pub fn scale_blit_rgba_rotated(
 
     let rw = dst_rect.width as f32;
     let rh = dst_rect.height as f32;
-    let sw_f = src_width as f32;
-    let sh_f = src_height as f32;
 
     // ── Near-zero rotation fast path ──────────────────────────────────
-    // Delegate to the optimised non-rotated blit, but first compute an
-    // aspect-ratio-preserving sub-rect so the behaviour is consistent
-    // with the rotated path (no stretch-to-fill).
+    // Delegate to the optimised non-rotated blit which stretches the
+    // source to fill the destination rect (no aspect-ratio fitting).
+    // The rotated path below applies aspect-ratio-preserving fit because
+    // rotation distorts stretched content, but at 0° stretch-to-fill is
+    // the expected behaviour — especially for background layers that
+    // should cover the full canvas regardless of source aspect ratio.
     if rotation_deg.abs() < 0.01 {
-        let fit_scale = (rw / sw_f).min(rh / sh_f);
-        let content_w = (sw_f * fit_scale).round() as u32;
-        let content_h = (sh_f * fit_scale).round() as u32;
-        let offset_x = (dst_rect.width.saturating_sub(content_w) / 2).cast_signed();
-        let offset_y = (dst_rect.height.saturating_sub(content_h) / 2).cast_signed();
-        let fit_rect = Rect {
-            x: dst_rect.x + offset_x,
-            y: dst_rect.y + offset_y,
-            width: content_w,
-            height: content_h,
-        };
-        scale_blit_rgba(dst, dst_width, dst_height, src, src_width, src_height, &fit_rect, opacity);
+        scale_blit_rgba(dst, dst_width, dst_height, src, src_width, src_height, dst_rect, opacity);
         return;
     }
 
