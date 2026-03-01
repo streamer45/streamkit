@@ -19,6 +19,9 @@ export const useCanvasAspectRatio = (
 ): string | undefined => {
   const [ratio, setRatio] = useState<string | undefined>(() => {
     if (!canvas) return undefined;
+    const wAttr = canvas.getAttribute('width');
+    const hAttr = canvas.getAttribute('height');
+    if (wAttr === null || hAttr === null) return undefined;
     const w = canvas.width;
     const h = canvas.height;
     return w > 0 && h > 0 ? `${w} / ${h}` : undefined;
@@ -31,10 +34,14 @@ export const useCanvasAspectRatio = (
     }
 
     const update = () => {
-      const w = canvas.width;
-      const h = canvas.height;
-      if (w > 0 && h > 0) {
-        setRatio(`${w} / ${h}`);
+      const wAttr = canvas.getAttribute('width');
+      const hAttr = canvas.getAttribute('height');
+      if (wAttr !== null && hAttr !== null) {
+        const w = canvas.width;
+        const h = canvas.height;
+        if (w > 0 && h > 0) {
+          setRatio(`${w} / ${h}`);
+        }
       }
     };
 
