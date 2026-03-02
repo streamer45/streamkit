@@ -891,19 +891,15 @@ mod tests {
     }
 
     #[test]
-    fn test_rotated_blit_preserves_aspect_ratio() {
+    fn test_rotated_blit_stretch_to_fill() {
         // A wide 4×2 red source blitted into a square 20×20 rect with 45°
         // rotation on a 40×40 canvas.
         //
-        // Angle-independent fit scale: min(20/4, 20/2) = 5.0
-        //   content = 20×10, centred and rotated within the 20×20 rect.
-        //
-        // The scale does NOT change with the rotation angle — this prevents
-        // a "pulsating" effect when the angle is animated.  Corners of the
-        // rotated content that extend beyond the rect are clipped.
-        //
-        // The canvas centre (20,20) should still be covered by red source
-        // pixels, while the rect corner (10,10) should remain transparent.
+        // The source is stretched to fill the 20×20 rect (no aspect-ratio
+        // fit), then rotated 45°.  The centre of the rect (canvas pixel
+        // 20,20) should be covered by red source pixels, while the rect
+        // corner (10,10) — outside the rotated area — should remain
+        // transparent.
         let src = [255u8, 0, 0, 255].repeat(4 * 2); // 4×2 solid red
         let mut dst = vec![0u8; 40 * 40 * 4];
 
@@ -929,10 +925,10 @@ mod tests {
         assert_eq!(dst[idx + 2], 0, "Centre B");
         assert!(dst[idx + 3] > 200, "Centre A should be mostly opaque");
 
-        // The rect corner (10,10) is well outside the fitted+rotated
-        // content area and should remain transparent.
+        // The rect corner (10,10) is outside the rotated content area
+        // and should remain transparent.
         let corner_idx = (10usize * 40 + 10) * 4;
-        assert_eq!(dst[corner_idx + 3], 0, "Rect corner should be transparent (padding)");
+        assert_eq!(dst[corner_idx + 3], 0, "Rect corner should be transparent");
     }
 
     #[test]
