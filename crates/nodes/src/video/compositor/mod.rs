@@ -666,14 +666,36 @@ impl CompositorNode {
                         "Updating compositor config"
                     );
 
-                    // Always re-decode image overlays (content may have changed
-                    // even if the count is the same).
+                    // Re-decode image overlays only when their content or
+                    // target rect changed.  When only video-layer positions
+                    // are updated (the common case) the existing decoded
+                    // bitmaps are reused via Arc, avoiding redundant base64
+                    // decode + bilinear prescale work.
+                    let old_imgs = image_overlays.clone();
+                    let old_cfgs = &config.image_overlays;
                     let mut new_image_overlays =
                         Vec::with_capacity(new_config.image_overlays.len());
-                    for img_cfg in &new_config.image_overlays {
-                        match decode_image_overlay(img_cfg) {
-                            Ok(ov) => new_image_overlays.push(Arc::new(ov)),
-                            Err(e) => tracing::warn!("Image overlay decode failed: {e}"),
+                    for (i, img_cfg) in new_config.image_overlays.iter().enumerate() {
+                        let reuse = old_cfgs.get(i).is_some_and(|old| {
+                            old.data_base64 == img_cfg.data_base64
+                                && old.transform.rect.width == img_cfg.transform.rect.width
+                                && old.transform.rect.height == img_cfg.transform.rect.height
+                        });
+                        if reuse {
+                            // Content and target dimensions unchanged — reuse
+                            // the decoded bitmap, just update mutable transform
+                            // fields (position, opacity, rotation, z_index).
+                            let mut ov = (*old_imgs[i]).clone();
+                            ov.rect = img_cfg.transform.rect.clone();
+                            ov.opacity = img_cfg.transform.opacity;
+                            ov.rotation_degrees = img_cfg.transform.rotation_degrees;
+                            ov.z_index = img_cfg.transform.z_index;
+                            new_image_overlays.push(Arc::new(ov));
+                        } else {
+                            match decode_image_overlay(img_cfg) {
+                                Ok(ov) => new_image_overlays.push(Arc::new(ov)),
+                                Err(e) => tracing::warn!("Image overlay decode failed: {e}"),
+                            }
                         }
                     }
                     *image_overlays = Arc::from(new_image_overlays);

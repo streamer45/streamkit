@@ -76,24 +76,18 @@ pub fn decode_image_overlay(config: &ImageOverlayConfig) -> Result<DecodedOverla
     }
 }
 
-/// Nearest-neighbor scale an RGBA8 buffer from `(sw, sh)` to `(dw, dh)`.
-/// Used once at config time so the per-frame blit is a 1:1 copy.
+/// Bilinear-filtered scale of an RGBA8 buffer from `(sw, sh)` to `(dw, dh)`.
+/// Uses the `image` crate's `resize` with `Triangle` (bilinear) filter for
+/// high-quality prescaling — much better than nearest-neighbor for images
+/// containing text or fine detail.  Called once at config time so the
+/// per-frame blit is a 1:1 copy.
 fn prescale_rgba(src: &[u8], sw: u32, sh: u32, dw: u32, dh: u32) -> Vec<u8> {
-    let sw = sw as usize;
-    let sh = sh as usize;
-    let dw = dw as usize;
-    let dh = dh as usize;
-    let mut out = vec![0u8; dw * dh * 4];
-    for dy in 0..dh {
-        let sy = dy * sh / dh;
-        for dx in 0..dw {
-            let sx = dx * sw / dw;
-            let si = (sy * sw + sx) * 4;
-            let di = (dy * dw + dx) * 4;
-            out[di..di + 4].copy_from_slice(&src[si..si + 4]);
-        }
-    }
-    out
+    // SAFETY: caller guarantees src.len() == sw * sh * 4.
+    #[allow(clippy::expect_used)]
+    let src_img = image::RgbaImage::from_raw(sw, sh, src.to_vec())
+        .expect("prescale_rgba: source dimensions do not match buffer length");
+    let resized = image::imageops::resize(&src_img, dw, dh, image::imageops::FilterType::Triangle);
+    resized.into_raw()
 }
 
 // ── Bundled default font ────────────────────────────────────────────────────

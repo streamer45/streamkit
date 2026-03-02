@@ -632,11 +632,14 @@ export const useCompositorLayers = (
         newY = orig.y + (orig.height - newH);
       }
 
-      // Constrain video layer resize to maintain aspect ratio.
-      // Text/image overlays (layerKind !== 'video') are not constrained here
-      // because text overlays no longer have resize handles and image overlays
-      // may intentionally use different dimensions.
-      if (state.layerKind === 'video' && orig.width > 0 && orig.height > 0) {
+      // Constrain video and image layer resize to maintain aspect ratio.
+      // Text overlays are not constrained here because they no longer have
+      // resize handles.
+      if (
+        (state.layerKind === 'video' || state.layerKind === 'image') &&
+        orig.width > 0 &&
+        orig.height > 0
+      ) {
         const ar = orig.width / orig.height;
         const isCorner = handle.length === 2; // 'ne', 'nw', 'se', 'sw'
 
