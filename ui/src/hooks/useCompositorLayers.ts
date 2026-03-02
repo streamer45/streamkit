@@ -201,7 +201,7 @@ function parseImageOverlays(params: Record<string, unknown>): ImageOverlayState[
     height: o.rect?.height ?? 200,
     opacity: o.opacity ?? 1.0,
     rotationDegrees: o.rotation_degrees ?? 0,
-    zIndex: o.z_index ?? 0,
+    zIndex: o.z_index ?? (200 + i),
     visible: true,
   }));
 }
@@ -1015,7 +1015,7 @@ export const useCompositorLayers = (
             height: 200,
             opacity: 1.0,
             rotationDegrees: 0,
-            zIndex: 0,
+            zIndex: 200 + prev.length,
             visible: true,
           },
         ];
