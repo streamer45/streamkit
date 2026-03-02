@@ -673,54 +673,73 @@ impl CompositorNode {
                     // bitmaps are reused via Arc, avoiding redundant base64
                     // decode + bilinear prescale work.
                     //
-                    // Build a lookup from the *successfully decoded* old
-                    // overlays so we don't rely on positional index alignment
-                    // (which breaks when a previous decode failed and left
-                    // the decoded slice shorter than the config vec).
+                    // We match cached overlays by content identity rather
+                    // than positional index because failed decodes cause the
+                    // decoded slice to be shorter than the config vec,
+                    // making positional lookups incorrect.
                     let old_imgs = image_overlays.clone();
                     let old_cfgs = &config.image_overlays;
 
-                    // Map each *config* index to the corresponding decoded
-                    // overlay.  Failed decodes leave old_imgs shorter than
-                    // old_cfgs, so we walk them in tandem rather than
-                    // assuming positional alignment.
-                    let mut old_by_cfg_idx: HashMap<usize, Arc<DecodedOverlay>> = HashMap::new();
-                    let mut decoded_idx = 0usize;
-                    for cfg_idx in 0..old_cfgs.len() {
-                        if decoded_idx < old_imgs.len() {
-                            old_by_cfg_idx.insert(cfg_idx, Arc::clone(&old_imgs[decoded_idx]));
-                            decoded_idx += 1;
+                    // Build a content-keyed cache from the successfully
+                    // decoded old overlays.  We match each decoded bitmap
+                    // back to its originating config by walking old_cfgs
+                    // and old_imgs together: for each old config we check
+                    // whether the next decoded overlay's dimensions match
+                    // the config's target rect (a successful decode
+                    // prescales to exactly those dimensions).  On mismatch
+                    // we skip the config (it must have been a failed
+                    // decode) without consuming a decoded entry.
+                    //
+                    // The cache key is (data_base64, width, height) and
+                    // values are Vec to handle duplicate images at the
+                    // same size.
+                    type CacheKey<'a> = (&'a str, u32, u32);
+                    let mut cache: HashMap<CacheKey<'_>, Vec<Arc<DecodedOverlay>>> = HashMap::new();
+                    let mut dec_iter = old_imgs.iter().peekable();
+                    for old_cfg in old_cfgs.iter() {
+                        if let Some(decoded) = dec_iter.peek() {
+                            let tw = old_cfg.transform.rect.width;
+                            let th = old_cfg.transform.rect.height;
+                            // A successfully decoded overlay is prescaled
+                            // to the config's target dimensions.  If the
+                            // next decoded bitmap's size matches we know
+                            // it belongs to this config; otherwise this
+                            // config's decode must have failed.
+                            if decoded.width == tw && decoded.height == th {
+                                let key: CacheKey<'_> = (&old_cfg.data_base64, tw, th);
+                                cache
+                                    .entry(key)
+                                    .or_default()
+                                    .push(Arc::clone(dec_iter.next().expect("peeked")));
+                            }
                         }
                     }
 
                     let mut new_image_overlays: Vec<Arc<DecodedOverlay>> =
                         Vec::with_capacity(new_config.image_overlays.len());
-                    for (i, img_cfg) in new_config.image_overlays.iter().enumerate() {
-                        let cached = old_cfgs.get(i).and_then(|old| {
-                            if old.data_base64 == img_cfg.data_base64
-                                && old.transform.rect.width == img_cfg.transform.rect.width
-                                && old.transform.rect.height == img_cfg.transform.rect.height
-                            {
-                                old_by_cfg_idx.get(&i)
-                            } else {
-                                None
+                    for img_cfg in &new_config.image_overlays {
+                        let key: CacheKey<'_> = (
+                            &img_cfg.data_base64,
+                            img_cfg.transform.rect.width,
+                            img_cfg.transform.rect.height,
+                        );
+                        if let Some(entries) = cache.get_mut(&key) {
+                            if let Some(existing) = entries.pop() {
+                                // Content and target dimensions unchanged —
+                                // reuse the decoded bitmap, just update
+                                // mutable transform fields.
+                                let mut ov = (*existing).clone();
+                                ov.rect = img_cfg.transform.rect.clone();
+                                ov.opacity = img_cfg.transform.opacity;
+                                ov.rotation_degrees = img_cfg.transform.rotation_degrees;
+                                ov.z_index = img_cfg.transform.z_index;
+                                new_image_overlays.push(Arc::new(ov));
+                                continue;
                             }
-                        });
-                        if let Some(existing) = cached {
-                            // Content and target dimensions unchanged — reuse
-                            // the decoded bitmap, just update mutable transform
-                            // fields (position, opacity, rotation, z_index).
-                            let mut ov = (**existing).clone();
-                            ov.rect = img_cfg.transform.rect.clone();
-                            ov.opacity = img_cfg.transform.opacity;
-                            ov.rotation_degrees = img_cfg.transform.rotation_degrees;
-                            ov.z_index = img_cfg.transform.z_index;
-                            new_image_overlays.push(Arc::new(ov));
-                        } else {
-                            match decode_image_overlay(img_cfg) {
-                                Ok(ov) => new_image_overlays.push(Arc::new(ov)),
-                                Err(e) => tracing::warn!("Image overlay decode failed: {e}"),
-                            }
+                        }
+                        match decode_image_overlay(img_cfg) {
+                            Ok(ov) => new_image_overlays.push(Arc::new(ov)),
+                            Err(e) => tracing::warn!("Image overlay decode failed: {e}"),
                         }
                     }
                     *image_overlays = Arc::from(new_image_overlays);
