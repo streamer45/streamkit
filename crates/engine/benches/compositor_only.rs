@@ -48,7 +48,7 @@ use streamkit_core::VideoFramePool;
 use streamkit_nodes::video::compositor::config::Rect;
 use streamkit_nodes::video::compositor::kernel::{composite_frame, ConversionCache, LayerSnapshot};
 use streamkit_nodes::video::compositor::overlay::DecodedOverlay;
-use streamkit_nodes::video::compositor::pixel_ops::rgba8_to_i420_buf;
+use streamkit_nodes::video::compositor::pixel_ops::{rgba8_to_i420_buf, rgba8_to_nv12_buf};
 
 // ── Default benchmark parameters ────────────────────────────────────────────
 
@@ -258,6 +258,32 @@ fn bench_composite(
             Some(&pool),
             &mut conversion_cache,
         );
+    }
+
+    let elapsed = start.elapsed();
+    BenchResult { total_secs: elapsed.as_secs_f64(), frame_count }
+}
+
+/// Benchmark RGBA8 → NV12 output conversion in isolation.
+///
+/// Mirrors the production VP9 encoder path (`vp9.rs:1131`) where `composite_frame`
+/// output feeds directly into `rgba8_to_nv12_buf`.  Pre-composites a single frame,
+/// then times repeated NV12 conversions from the same RGBA buffer.
+fn bench_rgba_to_nv12(canvas_w: u32, canvas_h: u32, frame_count: u32) -> BenchResult {
+    let w = canvas_w as usize;
+    let h = canvas_h as usize;
+    let chroma_w = w.div_ceil(2);
+    let chroma_h = h.div_ceil(2);
+
+    // Pre-generate a realistic RGBA canvas (colorbar pattern, all opaque).
+    let rgba = generate_rgba_frame(canvas_w, canvas_h);
+    let nv12_size = w * h + chroma_w * 2 * chroma_h;
+    let mut nv12 = vec![0u8; nv12_size];
+
+    let start = Instant::now();
+
+    for _ in 0..frame_count {
+        rgba8_to_nv12_buf(&rgba, canvas_w, canvas_h, &mut nv12);
     }
 
     let elapsed = start.elapsed();
@@ -745,6 +771,46 @@ fn main() {
                 "max_ms_per_frame": max_ms,
             }));
         }
+
+        // ── Standalone conversion benchmarks ──────────────────────────
+        let conversion_label = "rgba-to-nv12-output";
+        if args.filter.as_ref().is_none_or(|f| conversion_label.contains(f.as_str())) {
+            let mut iter_results = Vec::with_capacity(args.iterations as usize);
+            for iter in 1..=args.iterations {
+                let result = bench_rgba_to_nv12(w, h, args.frame_count);
+                eprintln!(
+                    "  {:<28} iter {iter}/{}: {:>8.1} fps  ({:.2} ms/frame)",
+                    conversion_label,
+                    args.iterations,
+                    result.fps(),
+                    result.ms_per_frame(),
+                );
+                iter_results.push(result);
+            }
+            let fps_values: Vec<f64> = iter_results.iter().map(BenchResult::fps).collect();
+            let ms_values: Vec<f64> = iter_results.iter().map(BenchResult::ms_per_frame).collect();
+            let mean_fps = fps_values.iter().sum::<f64>() / fps_values.len() as f64;
+            let mean_ms = ms_values.iter().sum::<f64>() / ms_values.len() as f64;
+            let min_ms = ms_values.iter().copied().fold(f64::INFINITY, f64::min);
+            let max_ms = ms_values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            eprintln!(
+                "  {:<28} avg: {:>8.1} fps  ({:.2} ms/frame, min={:.2}, max={:.2})",
+                "", mean_fps, mean_ms, min_ms, max_ms,
+            );
+            json_results.push(serde_json::json!({
+                "benchmark": "compositor_only",
+                "scenario": conversion_label,
+                "width": w,
+                "height": h,
+                "frame_count": args.frame_count,
+                "iterations": args.iterations,
+                "mean_fps": mean_fps,
+                "mean_ms_per_frame": mean_ms,
+                "min_ms_per_frame": min_ms,
+                "max_ms_per_frame": max_ms,
+            }));
+        }
+
         eprintln!();
     }
 
