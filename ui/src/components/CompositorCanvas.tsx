@@ -406,12 +406,14 @@ const ImageOverlayLayer: React.FC<{
   const bgColor = isSelected ? `hsla(${hue}, 60%, 50%, 0.25)` : `hsla(${hue}, 60%, 50%, 0.12)`;
 
   // Build a data-URI for the image thumbnail.  The overlay stores raw
-  // base64 — we guess the MIME type from the first bytes of the decoded
-  // header (PNG magic vs default JPEG).
+  // base64 — we detect the MIME type from the first bytes of the decoded
+  // header (magic-byte prefixes in base64 encoding).
   const imgSrc = useMemo(() => {
     if (!overlay.dataBase64) return undefined;
-    const isLikelyPng = overlay.dataBase64.startsWith('iVBOR');
-    const mime = isLikelyPng ? 'image/png' : 'image/jpeg';
+    let mime = 'image/jpeg'; // default fallback
+    if (overlay.dataBase64.startsWith('iVBOR')) mime = 'image/png';
+    else if (overlay.dataBase64.startsWith('R0lGOD')) mime = 'image/gif';
+    else if (overlay.dataBase64.startsWith('UklGR')) mime = 'image/webp';
     return `data:${mime};base64,${overlay.dataBase64}`;
   }, [overlay.dataBase64]);
 

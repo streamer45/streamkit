@@ -34,6 +34,7 @@ use config::CompositorConfig;
 use kernel::{CompositeResult, CompositeWorkItem, LayerSnapshot};
 use overlay::{decode_image_overlay, rasterize_text_overlay, DecodedOverlay};
 use schemars::schema_for;
+use std::collections::HashMap;
 use std::sync::Arc;
 use streamkit_core::control::NodeControlMessage;
 use streamkit_core::pins::PinManagementMessage;
@@ -671,26 +672,45 @@ impl CompositorNode {
                     // are updated (the common case) the existing decoded
                     // bitmaps are reused via Arc, avoiding redundant base64
                     // decode + bilinear prescale work.
+                    //
+                    // Build a lookup from the *successfully decoded* old
+                    // overlays so we don't rely on positional index alignment
+                    // (which breaks when a previous decode failed and left
+                    // the decoded slice shorter than the config vec).
                     let old_imgs = image_overlays.clone();
                     let old_cfgs = &config.image_overlays;
+                    let mut old_by_cfg_idx: HashMap<usize, &Arc<DecodedOverlay>> =
+                        HashMap::new();
+                    {
+                        // Walk old configs and old decoded overlays in
+                        // tandem: only configs whose decode succeeded have a
+                        // corresponding entry in old_imgs.
+                        let mut decoded_idx = 0usize;
+                        for (cfg_idx, _cfg) in old_cfgs.iter().enumerate() {
+                            if decoded_idx < old_imgs.len() {
+                                old_by_cfg_idx.insert(cfg_idx, &old_imgs[decoded_idx]);
+                                decoded_idx += 1;
+                            }
+                        }
+                    }
                     let mut new_image_overlays =
                         Vec::with_capacity(new_config.image_overlays.len());
                     for (i, img_cfg) in new_config.image_overlays.iter().enumerate() {
-                        // Check whether we can reuse an existing decoded
-                        // bitmap: config content + target dimensions must
-                        // match AND the old decoded overlay must exist at
-                        // this index (it may be absent if a previous decode
-                        // failed).
-                        let reusable = old_cfgs.get(i).is_some_and(|old| {
-                            old.data_base64 == img_cfg.data_base64
+                        let cached = old_cfgs.get(i).and_then(|old| {
+                            if old.data_base64 == img_cfg.data_base64
                                 && old.transform.rect.width == img_cfg.transform.rect.width
                                 && old.transform.rect.height == img_cfg.transform.rect.height
+                            {
+                                old_by_cfg_idx.get(&i)
+                            } else {
+                                None
+                            }
                         });
-                        if let (true, Some(existing)) = (reusable, old_imgs.get(i)) {
+                        if let Some(existing) = cached {
                             // Content and target dimensions unchanged — reuse
                             // the decoded bitmap, just update mutable transform
                             // fields (position, opacity, rotation, z_index).
-                            let mut ov = (*existing).clone();
+                            let mut ov = (**existing).clone();
                             ov.rect = img_cfg.transform.rect.clone();
                             ov.opacity = img_cfg.transform.opacity;
                             ov.rotation_degrees = img_cfg.transform.rotation_degrees;
