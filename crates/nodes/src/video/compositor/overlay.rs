@@ -83,7 +83,8 @@ pub fn decode_image_overlay(config: &ImageOverlayConfig) -> Result<DecodedOverla
 /// per-frame blit is a 1:1 copy.
 fn prescale_rgba(src: &[u8], sw: u32, sh: u32, dw: u32, dh: u32) -> Vec<u8> {
     // SAFETY: caller guarantees src.len() == sw * sh * 4.
-    #[allow(clippy::expect_used)] // from_raw only fails if buffer length != w*h*4; caller guarantees this
+    #[allow(clippy::expect_used)]
+    // from_raw only fails if buffer length != w*h*4; caller guarantees this
     let src_img = image::RgbaImage::from_raw(sw, sh, src.to_vec())
         .expect("prescale_rgba: source dimensions do not match buffer length");
     let resized = image::imageops::resize(&src_img, dw, dh, image::imageops::FilterType::Triangle);
