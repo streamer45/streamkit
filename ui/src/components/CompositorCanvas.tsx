@@ -405,17 +405,36 @@ const ImageOverlayLayer: React.FC<{
   const borderColor = isSelected ? 'var(--sk-primary)' : `hsla(${hue}, 70%, 65%, 0.8)`;
   const bgColor = isSelected ? `hsla(${hue}, 60%, 50%, 0.25)` : `hsla(${hue}, 60%, 50%, 0.12)`;
 
-  // Build a data-URI for the image thumbnail.  The overlay stores raw
-  // base64 — we detect the MIME type from the first bytes of the decoded
-  // header (magic-byte prefixes in base64 encoding).
+  // Build an object URL for the image thumbnail.  Using
+  // URL.createObjectURL avoids keeping a potentially large data-URI
+  // string in the DOM and is more memory-efficient for multi-MB images.
+  //
+  // MIME detection: we inspect the base64-encoded magic bytes at the
+  // start of the string to pick the correct MIME type.  The fallback
+  // is JPEG, which covers the common `/9j/` prefix and variants.
   const imgSrc = useMemo(() => {
     if (!overlay.dataBase64) return undefined;
     let mime = 'image/jpeg'; // default fallback
     if (overlay.dataBase64.startsWith('iVBOR')) mime = 'image/png';
     else if (overlay.dataBase64.startsWith('R0lGOD')) mime = 'image/gif';
     else if (overlay.dataBase64.startsWith('UklGR')) mime = 'image/webp';
-    return `data:${mime};base64,${overlay.dataBase64}`;
+    else if (overlay.dataBase64.startsWith('Qk')) mime = 'image/bmp';
+    const binaryStr = atob(overlay.dataBase64);
+    const bytes = new Uint8Array(binaryStr.length);
+    for (let i = 0; i < binaryStr.length; i++) {
+      bytes[i] = binaryStr.charCodeAt(i);
+    }
+    const blob = new Blob([bytes], { type: mime });
+    return URL.createObjectURL(blob);
   }, [overlay.dataBase64]);
+
+  // Revoke the object URL when the component unmounts or the source
+  // changes to avoid memory leaks.
+  useEffect(() => {
+    return () => {
+      if (imgSrc) URL.revokeObjectURL(imgSrc);
+    };
+  }, [imgSrc]);
 
   return (
     <LayerBox
