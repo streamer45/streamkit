@@ -891,19 +891,15 @@ mod tests {
     }
 
     #[test]
-    fn test_rotated_blit_preserves_aspect_ratio() {
+    fn test_rotated_blit_stretch_to_fill() {
         // A wide 4×2 red source blitted into a square 20×20 rect with 45°
         // rotation on a 40×40 canvas.
         //
-        // Angle-independent fit scale: min(20/4, 20/2) = 5.0
-        //   content = 20×10, centred and rotated within the 20×20 rect.
-        //
-        // The scale does NOT change with the rotation angle — this prevents
-        // a "pulsating" effect when the angle is animated.  Corners of the
-        // rotated content that extend beyond the rect are clipped.
-        //
-        // The canvas centre (20,20) should still be covered by red source
-        // pixels, while the rect corner (10,10) should remain transparent.
+        // The source is stretched to fill the 20×20 rect (no aspect-ratio
+        // fit), then rotated 45°.  The centre of the rect (canvas pixel
+        // 20,20) should be covered by red source pixels, while the rect
+        // corner (10,10) — outside the rotated area — should remain
+        // transparent.
         let src = [255u8, 0, 0, 255].repeat(4 * 2); // 4×2 solid red
         let mut dst = vec![0u8; 40 * 40 * 4];
 
@@ -929,10 +925,10 @@ mod tests {
         assert_eq!(dst[idx + 2], 0, "Centre B");
         assert!(dst[idx + 3] > 200, "Centre A should be mostly opaque");
 
-        // The rect corner (10,10) is well outside the fitted+rotated
-        // content area and should remain transparent.
+        // The rect corner (10,10) is outside the rotated content area
+        // and should remain transparent.
         let corner_idx = (10usize * 40 + 10) * 4;
-        assert_eq!(dst[corner_idx + 3], 0, "Rect corner should be transparent (padding)");
+        assert_eq!(dst[corner_idx + 3], 0, "Rect corner should be transparent");
     }
 
     #[test]
@@ -1583,6 +1579,85 @@ mod tests {
                 row_slice.chunks_exact(4).any(|px| px[0] > 10 || px[1] > 10 || px[2] > 10);
             assert!(has_visible, "Decoded row {row} has no visible pixels (all near-black)");
         }
+    }
+
+    /// Regression test: a 4:3 source blitted onto a 16:9 canvas with opacity < 1.0
+    /// must cover the entire canvas (stretch-to-fill) with no black bars.
+    /// Previously the near-zero rotation fast path applied an aspect-ratio-preserving
+    /// fit that left letterbox gaps visible as black bands when opacity < 1.0.
+    #[test]
+    fn test_mismatched_aspect_ratio_opacity_no_black_bars() {
+        let src_w = 640u32;
+        let src_h = 480u32; // 4:3
+        let canvas_w = 1280u32;
+        let canvas_h = 720u32; // 16:9
+
+        // Solid green source.
+        let src = [0u8, 255, 0, 255].repeat((src_w * src_h) as usize);
+        let mut canvas = vec![0u8; (canvas_w * canvas_h * 4) as usize];
+
+        pixel_ops::scale_blit_rgba_rotated(
+            &mut canvas,
+            canvas_w,
+            canvas_h,
+            &src,
+            src_w,
+            src_h,
+            &Rect { x: 0, y: 0, width: canvas_w, height: canvas_h },
+            0.9,
+            0.0, // no rotation — exercises the near-zero fast path
+        );
+
+        // Every row should have non-zero pixels (no black bars on left/right).
+        for row in 0..canvas_h as usize {
+            let row_start = row * canvas_w as usize * 4;
+            let row_end = row_start + canvas_w as usize * 4;
+            let any_nonzero = canvas[row_start..row_end].iter().any(|&b| b != 0);
+            assert!(any_nonzero, "Row {row} is all zeros — black bar detected");
+        }
+
+        // Every column should have non-zero pixels (no black bars on top/bottom).
+        for col in 0..canvas_w as usize {
+            let any_nonzero = (0..canvas_h as usize).any(|row| {
+                let idx = (row * canvas_w as usize + col) * 4;
+                canvas[idx] != 0 || canvas[idx + 1] != 0 || canvas[idx + 2] != 0
+            });
+            assert!(any_nonzero, "Column {col} is all zeros — black bar detected");
+        }
+    }
+
+    /// Regression test: a 4:3 source blitted into a non-square rect with 15°
+    /// rotation must cover the centre of the rect (stretch-to-fill, not
+    /// aspect-ratio fit).  Exercises the rotated path's per-axis inverse
+    /// scaling (`inv_scale_x` / `inv_scale_y`).
+    #[test]
+    fn test_rotated_blit_mismatched_aspect_ratio_covers_centre() {
+        // 4×2 red source into a 40×20 rect (2:1 aspect mismatch) at 15° on
+        // a 60×40 canvas.  The centre of the rect (canvas pixel 30,20) must
+        // be covered by red source content.
+        let src = [255u8, 0, 0, 255].repeat(4 * 2); // 4×2 solid red
+        let mut dst = vec![0u8; 60 * 40 * 4];
+
+        scale_blit_rgba_rotated(
+            &mut dst,
+            60,
+            40,
+            &src,
+            4,
+            2,
+            &Rect { x: 10, y: 10, width: 40, height: 20 },
+            1.0,
+            15.0,
+        );
+
+        // Centre of the rect (canvas pixel 30, 20) should be red.
+        let cx = 30usize;
+        let cy = 20usize;
+        let idx = (cy * 60 + cx) * 4;
+        assert_eq!(dst[idx], 255, "Centre R");
+        assert_eq!(dst[idx + 1], 0, "Centre G");
+        assert_eq!(dst[idx + 2], 0, "Centre B");
+        assert!(dst[idx + 3] > 200, "Centre A should be mostly opaque");
     }
 
     /// Test RGBA→NV12 AVX2 chroma conversion matches scalar reference.

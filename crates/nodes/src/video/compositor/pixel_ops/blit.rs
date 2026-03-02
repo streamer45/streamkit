@@ -563,22 +563,20 @@ fn blit_row_alpha(
 /// Scale and blit a source RGBA8 buffer onto a destination RGBA8 buffer at the
 /// given destination rectangle with clockwise rotation around the rect centre.
 ///
-/// The source image is uniformly scaled so that, after rotation, its
-/// axis-aligned bounding box fits inside the destination rect (like CSS
-/// `object-fit: contain` applied to the *rotated* image).  The result is
-/// centred and any padding is left transparent.  This avoids the visual
-/// distortion that a naive stretch-to-fill would cause on rotated layers.
+/// The source is stretched to fill the destination rect (no aspect-ratio-
+/// preserving fit).  Aspect ratio handling is the responsibility of the
+/// caller / presentation layer.  The stretched content is then rotated
+/// around the rect centre.
 ///
 /// Uses inverse-affine mapping with nearest-neighbor sampling.  Edge pixels
 /// receive fractional alpha coverage computed from the signed distance to each
-/// of the four content edges in the un-rotated local coordinate system.  This
+/// of the four rect edges in the un-rotated local coordinate system.  This
 /// eliminates the staircase aliasing that a hard binary inside/outside test
 /// would produce.
 ///
-/// For near-zero rotation angles (< 0.01°), a fast path computes the same
-/// aspect-ratio-preserving fit rect and delegates to [`scale_blit_rgba`],
-/// so there is no behavioural discontinuity when animating rotation through
-/// 0°.
+/// For near-zero rotation angles (< 0.01°), a fast path delegates directly
+/// to [`scale_blit_rgba`] which performs the same stretch-to-fill without
+/// the rotation overhead.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -604,26 +602,12 @@ pub fn scale_blit_rgba_rotated(
 
     let rw = dst_rect.width as f32;
     let rh = dst_rect.height as f32;
-    let sw_f = src_width as f32;
-    let sh_f = src_height as f32;
 
     // ── Near-zero rotation fast path ──────────────────────────────────
-    // Delegate to the optimised non-rotated blit, but first compute an
-    // aspect-ratio-preserving sub-rect so the behaviour is consistent
-    // with the rotated path (no stretch-to-fill).
+    // Delegate to the optimised non-rotated blit which stretches the
+    // source to fill the destination rect (no aspect-ratio fitting).
     if rotation_deg.abs() < 0.01 {
-        let fit_scale = (rw / sw_f).min(rh / sh_f);
-        let content_w = (sw_f * fit_scale).round() as u32;
-        let content_h = (sh_f * fit_scale).round() as u32;
-        let offset_x = (dst_rect.width.saturating_sub(content_w) / 2).cast_signed();
-        let offset_y = (dst_rect.height.saturating_sub(content_h) / 2).cast_signed();
-        let fit_rect = Rect {
-            x: dst_rect.x + offset_x,
-            y: dst_rect.y + offset_y,
-            width: content_w,
-            height: content_h,
-        };
-        scale_blit_rgba(dst, dst_width, dst_height, src, src_width, src_height, &fit_rect, opacity);
+        scale_blit_rgba(dst, dst_width, dst_height, src, src_width, src_height, dst_rect, opacity);
         return;
     }
 
@@ -632,26 +616,20 @@ pub fn scale_blit_rgba_rotated(
     let sw = src_width as usize;
     let sh = src_height as usize;
 
-    // Pre-compute sin/cos for the rotation (needed both for the fit-scale
+    // Pre-compute sin/cos for the rotation (needed for the bounding-box
     // computation and for the per-pixel inverse mapping).
     let angle_rad = rotation_deg.to_radians();
     let cos_a = angle_rad.cos();
     let sin_a = angle_rad.sin();
 
-    // ── Aspect-ratio-preserving fit (angle-independent) ───────────────
-    // Uniformly scale the source so it fits inside the destination rect
-    // at 0° rotation.  The scale is intentionally *not* adjusted for the
-    // current rotation angle: this keeps the apparent content size
-    // constant as the layer rotates, avoiding a "pulsating" effect.
-    // Any corners of the rotated content that extend beyond the rect
-    // are naturally clipped by the bounding-box iteration below.
-    let sw_f = src_width as f32;
-    let sh_f = src_height as f32;
-    let fit_scale = (rw / sw_f).min(rh / sh_f);
-    let content_w = sw_f * fit_scale; // un-rotated content width
-    let content_h = sh_f * fit_scale; // un-rotated content height
-    let half_cw = content_w * 0.5;
-    let half_ch = content_h * 0.5;
+    // ── Stretch-to-fill scaling ──────────────────────────────────────
+    // The source is stretched to fill the destination rect (no
+    // aspect-ratio-preserving fit).  Aspect ratio handling is the
+    // responsibility of the client / presentation layer.
+    let half_cw = rw * 0.5;
+    let half_ch = rh * 0.5;
+    let inv_scale_x = src_width as f32 / rw;
+    let inv_scale_y = src_height as f32 / rh;
 
     // Rotation centre = centre of the destination rect.
     let cx = rw.mul_add(0.5, dst_rect.x as f32);
@@ -690,19 +668,13 @@ pub fn scale_blit_rgba_rotated(
         256 // sentinel: means "fully opaque, skip per-pixel multiply"
     };
 
-    // Reciprocal of the fit scale for mapping content-local coords back to
-    // source pixel coords.  Pre-computed to replace per-pixel divisions
-    // with multiplies.
-    let inv_fit_scale = 1.0 / fit_scale;
-
     // Per-row closure that processes all columns in a single row of the
     // bounding box.  Uses an incremental stepper: since `dx_f` increments
     // by 1.0 each column, `local_x` and `local_y` change by `+cos_a` and
     // `-sin_a` respectively — replacing 2 multiplies with 2 adds per pixel.
     //
-    // Edge anti-aliasing distances are computed against the *content*
-    // boundary (`half_cw` × `half_ch`), not the full rect, so the visible
-    // edge matches the actual image boundary.
+    // Edge anti-aliasing distances are computed against the rect boundary
+    // (`half_cw` × `half_ch`), so the visible edge matches the rect.
     //
     // For interior pixels where `min_dist >= 1.0` the edge-coverage clamp
     // is a no-op, so we skip the coverage math entirely for the bulk of
@@ -734,12 +706,12 @@ pub fn scale_blit_rgba_rotated(
                 continue;
             }
 
-            // Map from content-local coords to source pixel coords.
+            // Map from rect-local coords to source pixel coords.
             // `local_x/y` ∈ [-half_cw, half_cw] × [-half_ch, half_ch]
-            // for points inside the content area.  Convert to source
-            // pixel space via the inverse of the uniform fit scale.
-            let src_fx = (local_x + half_cw) * inv_fit_scale;
-            let src_fy = (local_y + half_ch) * inv_fit_scale;
+            // for points inside the rect.  Convert to source pixel
+            // space via the per-axis inverse scale.
+            let src_fx = (local_x + half_cw) * inv_scale_x;
+            let src_fy = (local_y + half_ch) * inv_scale_y;
 
             let sxi = (src_fx as usize).min(sw - 1);
             let syi = (src_fy as usize).min(sh - 1);
@@ -823,9 +795,9 @@ pub fn scale_blit_rgba_rotated(
                                 local_x += cos_a;
                                 local_y -= sin_a;
                                 let isx =
-                                    (((local_x + half_cw) * inv_fit_scale) as usize).min(sw - 1);
+                                    (((local_x + half_cw) * inv_scale_x) as usize).min(sw - 1);
                                 let isy =
-                                    (((local_y + half_ch) * inv_fit_scale) as usize).min(sh - 1);
+                                    (((local_y + half_ch) * inv_scale_y) as usize).min(sh - 1);
                                 let si = (isy * sw + isx) * 4;
                                 if si + 3 < src.len() {
                                     // SAFETY: bounds checked above.
@@ -877,8 +849,8 @@ pub fn scale_blit_rgba_rotated(
                             local_y -= sin_a;
                             px += 1;
 
-                            let isx = (((local_x + half_cw) * inv_fit_scale) as usize).min(sw - 1);
-                            let isy = (((local_y + half_ch) * inv_fit_scale) as usize).min(sh - 1);
+                            let isx = (((local_x + half_cw) * inv_scale_x) as usize).min(sw - 1);
+                            let isy = (((local_y + half_ch) * inv_scale_y) as usize).min(sh - 1);
                             let si = (isy * sw + isx) * 4;
                             if si + 3 >= src.len() {
                                 continue;
@@ -896,8 +868,8 @@ pub fn scale_blit_rgba_rotated(
                             local_y -= sin_a;
                             px += 1;
 
-                            let isx = (((local_x + half_cw) * inv_fit_scale) as usize).min(sw - 1);
-                            let isy = (((local_y + half_ch) * inv_fit_scale) as usize).min(sh - 1);
+                            let isx = (((local_x + half_cw) * inv_scale_x) as usize).min(sw - 1);
+                            let isy = (((local_y + half_ch) * inv_scale_y) as usize).min(sh - 1);
                             let si = (isy * sw + isx) * 4;
                             if si + 3 >= src.len() {
                                 continue;
