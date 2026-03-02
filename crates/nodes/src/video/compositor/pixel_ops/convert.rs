@@ -57,7 +57,8 @@ fn parallel_rows(
 /// [`rgba8_to_nv12_buf`].  It is `#[inline(always)]` so that the CPU feature
 /// flags — which are hoisted out of the per-row loop in each caller — are
 /// propagated as constants and the SIMD branches fold away at compile time.
-#[inline]
+#[inline(always)]
+#[allow(clippy::inline_always)] // Required: CPU feature flags must be constant-folded for SIMD branch elimination
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::many_single_char_names)]
 fn convert_y_row(
     data: &[u8],

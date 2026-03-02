@@ -1500,7 +1500,7 @@ mod tests {
     /// opacity < 1.0, then RGBA→NV12→RGBA roundtrip, checking for black bands.
     /// This exercises the exact pipeline the VP9 encoder sees.
     #[test]
-    #[allow(clippy::many_single_char_names)]
+    #[allow(clippy::many_single_char_names)] // Standard image-processing shorthand (w, h, r, g, b, etc.)
     fn test_full_pipeline_opacity_nv12_roundtrip_no_black_bands() {
         let w = 640u32;
         let h = 480u32;
@@ -1664,7 +1664,7 @@ mod tests {
     /// Test RGBA→NV12 AVX2 chroma conversion matches scalar reference.
     /// Uses a 640-wide frame to fully exercise the AVX2 path (8 chroma samples/iter).
     #[test]
-    #[allow(clippy::many_single_char_names)]
+    #[allow(clippy::many_single_char_names)] // Standard image-processing shorthand (w, h, r, g, b, etc.)
     fn test_rgba8_to_nv12_avx2_chroma_matches_scalar() {
         let w = 640u32;
         let h = 4u32;
