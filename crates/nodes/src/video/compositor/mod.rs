@@ -679,20 +679,21 @@ impl CompositorNode {
                     // the decoded slice shorter than the config vec).
                     let old_imgs = image_overlays.clone();
                     let old_cfgs = &config.image_overlays;
-                    let mut old_by_cfg_idx: HashMap<usize, &Arc<DecodedOverlay>> = HashMap::new();
-                    {
-                        // Walk old configs and old decoded overlays in
-                        // tandem: only configs whose decode succeeded have a
-                        // corresponding entry in old_imgs.
-                        let mut decoded_idx = 0usize;
-                        for (cfg_idx, _cfg) in old_cfgs.iter().enumerate() {
-                            if decoded_idx < old_imgs.len() {
-                                old_by_cfg_idx.insert(cfg_idx, &old_imgs[decoded_idx]);
-                                decoded_idx += 1;
-                            }
+
+                    // Map each *config* index to the corresponding decoded
+                    // overlay.  Failed decodes leave old_imgs shorter than
+                    // old_cfgs, so we walk them in tandem rather than
+                    // assuming positional alignment.
+                    let mut old_by_cfg_idx: HashMap<usize, Arc<DecodedOverlay>> = HashMap::new();
+                    let mut decoded_idx = 0usize;
+                    for cfg_idx in 0..old_cfgs.len() {
+                        if decoded_idx < old_imgs.len() {
+                            old_by_cfg_idx.insert(cfg_idx, Arc::clone(&old_imgs[decoded_idx]));
+                            decoded_idx += 1;
                         }
                     }
-                    let mut new_image_overlays =
+
+                    let mut new_image_overlays: Vec<Arc<DecodedOverlay>> =
                         Vec::with_capacity(new_config.image_overlays.len());
                     for (i, img_cfg) in new_config.image_overlays.iter().enumerate() {
                         let cached = old_cfgs.get(i).and_then(|old| {
