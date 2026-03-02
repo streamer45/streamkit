@@ -48,6 +48,64 @@ fn parallel_rows(
     }
 }
 
+// ── Shared Y-row conversion helper ──────────────────────────────────────────
+
+/// Convert a single luma (Y) row from packed RGBA8 source data using BT.601
+/// coefficients, with a SIMD dispatch cascade (AVX2 → SSE4.1 → SSE2 → scalar).
+///
+/// This is the inner kernel shared by [`rgba8_to_i420_buf`] and
+/// [`rgba8_to_nv12_buf`].  It is `#[inline(always)]` so that the CPU feature
+/// flags — which are hoisted out of the per-row loop in each caller — are
+/// propagated as constants and the SIMD branches fold away at compile time.
+#[inline]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::many_single_char_names)]
+fn convert_y_row(
+    data: &[u8],
+    row: usize,
+    w: usize,
+    y_row: &mut [u8],
+    #[cfg(target_arch = "x86_64")] use_avx2: bool,
+    #[cfg(target_arch = "x86_64")] use_sse41: bool,
+    #[cfg(target_arch = "x86_64")] use_sse2: bool,
+) {
+    let rgba_base = row * w * 4;
+    let mut start_col = 0usize;
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if use_avx2 {
+            start_col =
+                unsafe { simd::rgba8_to_y_row_avx2(&data[rgba_base..rgba_base + w * 4], y_row, w) };
+            if start_col < w && use_sse41 {
+                let tail = unsafe {
+                    simd::rgba8_to_y_row_sse41(
+                        &data[rgba_base + start_col * 4..rgba_base + w * 4],
+                        &mut y_row[start_col..],
+                        w - start_col,
+                    )
+                };
+                start_col += tail;
+            }
+        } else if use_sse41 {
+            start_col = unsafe {
+                simd::rgba8_to_y_row_sse41(&data[rgba_base..rgba_base + w * 4], y_row, w)
+            };
+        } else if use_sse2 {
+            start_col =
+                unsafe { simd::rgba8_to_y_row_sse2(&data[rgba_base..rgba_base + w * 4], y_row, w) };
+        }
+    }
+
+    for (col, y_out) in y_row.iter_mut().enumerate().take(w).skip(start_col) {
+        let off = rgba_base + col * 4;
+        let r = i32::from(data[off]);
+        let g = i32::from(data[off + 1]);
+        let b = i32::from(data[off + 2]);
+        let y = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
+        *y_out = y.clamp(0, 255) as u8;
+    }
+}
+
 // ── I420 → RGBA8 ────────────────────────────────────────────────────────────
 
 /// Convert an I420 (YUV 4:2:0 planar) buffer to RGBA8, writing into `out`.
@@ -293,48 +351,6 @@ pub fn rgba8_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     #[cfg(target_arch = "x86_64")]
     let use_sse2 = is_x86_feature_detected!("sse2");
 
-    // Y-row conversion closure (same logic as `convert_y_plane`).
-    let convert_y_row = |row: usize, y_row: &mut [u8]| {
-        let rgba_base = row * w * 4;
-        let mut start_col = 0usize;
-
-        #[cfg(target_arch = "x86_64")]
-        {
-            if use_avx2 {
-                start_col = unsafe {
-                    simd::rgba8_to_y_row_avx2(&data[rgba_base..rgba_base + w * 4], y_row, w)
-                };
-                if start_col < w && use_sse41 {
-                    let tail = unsafe {
-                        simd::rgba8_to_y_row_sse41(
-                            &data[rgba_base + start_col * 4..rgba_base + w * 4],
-                            &mut y_row[start_col..],
-                            w - start_col,
-                        )
-                    };
-                    start_col += tail;
-                }
-            } else if use_sse41 {
-                start_col = unsafe {
-                    simd::rgba8_to_y_row_sse41(&data[rgba_base..rgba_base + w * 4], y_row, w)
-                };
-            } else if use_sse2 {
-                start_col = unsafe {
-                    simd::rgba8_to_y_row_sse2(&data[rgba_base..rgba_base + w * 4], y_row, w)
-                };
-            }
-        }
-
-        for (col, y_out) in y_row.iter_mut().enumerate().take(w).skip(start_col) {
-            let off = rgba_base + col * 4;
-            let r = i32::from(data[off]);
-            let g = i32::from(data[off + 1]);
-            let b = i32::from(data[off + 2]);
-            let y = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
-            *y_out = y.clamp(0, 255) as u8;
-        }
-    };
-
     // Chroma-row conversion closure.
     let convert_chroma_row = |crow: usize, u_row: &mut [u8], v_row: &mut [u8]| {
         let r0 = crow * 2;
@@ -420,7 +436,18 @@ pub fn rgba8_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
             let y_row_0 = unsafe {
                 std::slice::from_raw_parts_mut((y_base_addr + y_offset_0) as *mut u8, row_len)
             };
-            convert_y_row(r0, y_row_0);
+            convert_y_row(
+                data,
+                r0,
+                w,
+                y_row_0,
+                #[cfg(target_arch = "x86_64")]
+                use_avx2,
+                #[cfg(target_arch = "x86_64")]
+                use_sse41,
+                #[cfg(target_arch = "x86_64")]
+                use_sse2,
+            );
         }
 
         // Convert Y for row r1 (if it exists — handles odd heights).
@@ -431,7 +458,18 @@ pub fn rgba8_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
                 let y_row_1 = unsafe {
                     std::slice::from_raw_parts_mut((y_base_addr + y_offset_1) as *mut u8, row_len)
                 };
-                convert_y_row(r1, y_row_1);
+                convert_y_row(
+                    data,
+                    r1,
+                    w,
+                    y_row_1,
+                    #[cfg(target_arch = "x86_64")]
+                    use_avx2,
+                    #[cfg(target_arch = "x86_64")]
+                    use_sse41,
+                    #[cfg(target_arch = "x86_64")]
+                    use_sse2,
+                );
             }
         }
 
@@ -489,48 +527,6 @@ pub fn rgba8_to_nv12_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     let use_sse41 = is_x86_feature_detected!("sse4.1");
     #[cfg(target_arch = "x86_64")]
     let use_sse2 = is_x86_feature_detected!("sse2");
-
-    // Y-row conversion closure (same logic as `convert_y_plane`).
-    let convert_y_row = |row: usize, y_row: &mut [u8]| {
-        let rgba_base = row * w * 4;
-        let mut start_col = 0usize;
-
-        #[cfg(target_arch = "x86_64")]
-        {
-            if use_avx2 {
-                start_col = unsafe {
-                    simd::rgba8_to_y_row_avx2(&data[rgba_base..rgba_base + w * 4], y_row, w)
-                };
-                if start_col < w && use_sse41 {
-                    let tail = unsafe {
-                        simd::rgba8_to_y_row_sse41(
-                            &data[rgba_base + start_col * 4..rgba_base + w * 4],
-                            &mut y_row[start_col..],
-                            w - start_col,
-                        )
-                    };
-                    start_col += tail;
-                }
-            } else if use_sse41 {
-                start_col = unsafe {
-                    simd::rgba8_to_y_row_sse41(&data[rgba_base..rgba_base + w * 4], y_row, w)
-                };
-            } else if use_sse2 {
-                start_col = unsafe {
-                    simd::rgba8_to_y_row_sse2(&data[rgba_base..rgba_base + w * 4], y_row, w)
-                };
-            }
-        }
-
-        for (col, y_out) in y_row.iter_mut().enumerate().take(w).skip(start_col) {
-            let off = rgba_base + col * 4;
-            let r = i32::from(data[off]);
-            let g = i32::from(data[off + 1]);
-            let b = i32::from(data[off + 2]);
-            let y = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
-            *y_out = y.clamp(0, 255) as u8;
-        }
-    };
 
     // Chroma-row conversion closure.
     let convert_chroma_row = |crow: usize, uv_row: &mut [u8]| {
@@ -625,7 +621,18 @@ pub fn rgba8_to_nv12_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
             let y_row_0 = unsafe {
                 std::slice::from_raw_parts_mut((y_base_addr + y_offset_0) as *mut u8, row_len)
             };
-            convert_y_row(r0, y_row_0);
+            convert_y_row(
+                data,
+                r0,
+                w,
+                y_row_0,
+                #[cfg(target_arch = "x86_64")]
+                use_avx2,
+                #[cfg(target_arch = "x86_64")]
+                use_sse41,
+                #[cfg(target_arch = "x86_64")]
+                use_sse2,
+            );
         }
 
         // Convert Y for row r1 (if it exists — handles odd heights).
@@ -636,7 +643,18 @@ pub fn rgba8_to_nv12_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
                 let y_row_1 = unsafe {
                     std::slice::from_raw_parts_mut((y_base_addr + y_offset_1) as *mut u8, row_len)
                 };
-                convert_y_row(r1, y_row_1);
+                convert_y_row(
+                    data,
+                    r1,
+                    w,
+                    y_row_1,
+                    #[cfg(target_arch = "x86_64")]
+                    use_avx2,
+                    #[cfg(target_arch = "x86_64")]
+                    use_sse41,
+                    #[cfg(target_arch = "x86_64")]
+                    use_sse2,
+                );
             }
         }
 
