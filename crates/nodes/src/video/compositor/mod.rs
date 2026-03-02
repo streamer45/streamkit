@@ -679,8 +679,7 @@ impl CompositorNode {
                     // the decoded slice shorter than the config vec).
                     let old_imgs = image_overlays.clone();
                     let old_cfgs = &config.image_overlays;
-                    let mut old_by_cfg_idx: HashMap<usize, &Arc<DecodedOverlay>> =
-                        HashMap::new();
+                    let mut old_by_cfg_idx: HashMap<usize, &Arc<DecodedOverlay>> = HashMap::new();
                     {
                         // Walk old configs and old decoded overlays in
                         // tandem: only configs whose decode succeeded have a
