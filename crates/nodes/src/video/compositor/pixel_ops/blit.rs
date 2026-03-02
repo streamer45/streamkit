@@ -777,18 +777,60 @@ pub fn scale_blit_rgba_rotated(
                 if skip > 0 {
                     let skip_u = skip as usize;
 
-                    // ── SSE2 batched path: process 4 interior pixels at a time ──
+                    // ── SIMD batched path: AVX2 (8px) → SSE2 (4px) → scalar ──
                     #[cfg(target_arch = "x86_64")]
                     {
                         let mut done = 0usize;
-                        // Process groups of 4 pixels with SIMD blending.
+
+                        // AVX2: process groups of 8 interior pixels.
+                        if is_x86_feature_detected!("avx2") {
+                            while done + 8 <= skip_u {
+                                let mut src_pixels = [0u32; 8];
+                                let mut all_valid = true;
+                                let snap_local_x = local_x;
+                                let snap_local_y = local_y;
+                                for sp in &mut src_pixels {
+                                    local_x += cos_a;
+                                    local_y -= sin_a;
+                                    let isx =
+                                        (((local_x + half_cw) * inv_scale_x) as usize).min(sw - 1);
+                                    let isy =
+                                        (((local_y + half_ch) * inv_scale_y) as usize).min(sh - 1);
+                                    let si = (isy * sw + isx) * 4;
+                                    if si + 3 < src.len() {
+                                        *sp = unsafe { read_rgba_u32(src, si) };
+                                    } else {
+                                        all_valid = false;
+                                        break;
+                                    }
+                                }
+
+                                if !all_valid {
+                                    local_x = snap_local_x;
+                                    local_y = snap_local_y;
+                                    break;
+                                }
+
+                                let dst_off = (px as usize + 1 + done) * 4;
+                                if dst_off + 31 < row_slice.len() {
+                                    unsafe {
+                                        let dst_ptr = row_slice.as_mut_ptr().add(dst_off);
+                                        if opacity_u16 >= 256 {
+                                            blend_8px_opaque_avx2(dst_ptr, src_pixels);
+                                        } else {
+                                            blend_8px_alpha_avx2(dst_ptr, src_pixels, opacity_u16);
+                                        }
+                                    }
+                                }
+
+                                done += 8;
+                            }
+                        }
+
+                        // SSE2: process remaining pixels in groups of 4.
                         while done + 4 <= skip_u {
-                            // Gather 4 source pixels into a u32 array for the
-                            // existing SSE2 blend helpers.
                             let mut src_pixels = [0u32; 4];
                             let mut all_valid = true;
-                            // Save stepper state so we can restore on early
-                            // break from the gather loop.
                             let snap_local_x = local_x;
                             let snap_local_y = local_y;
                             for sp in &mut src_pixels {
@@ -800,7 +842,6 @@ pub fn scale_blit_rgba_rotated(
                                     (((local_y + half_ch) * inv_scale_y) as usize).min(sh - 1);
                                 let si = (isy * sw + isx) * 4;
                                 if si + 3 < src.len() {
-                                    // SAFETY: bounds checked above.
                                     *sp = unsafe { read_rgba_u32(src, si) };
                                 } else {
                                     all_valid = false;
@@ -809,21 +850,13 @@ pub fn scale_blit_rgba_rotated(
                             }
 
                             if !all_valid {
-                                // Restore stepper; fall through to scalar
-                                // remainder which handles partial pixels.
                                 local_x = snap_local_x;
                                 local_y = snap_local_y;
                                 break;
                             }
 
-                            // `done` tracks offset from the current `px`;
-                            // `px` is NOT incremented inside this loop to
-                            // avoid double-counting.
                             let dst_off = (px as usize + 1 + done) * 4;
                             if dst_off + 15 < row_slice.len() {
-                                // SAFETY: blend helpers require 16 writable
-                                // bytes at dst_ptr; bounds checked above.
-                                // SSE2 is always available on x86_64.
                                 unsafe {
                                     let dst_ptr = row_slice.as_mut_ptr().add(dst_off);
                                     if opacity_u16 >= 256 {
