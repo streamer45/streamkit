@@ -676,16 +676,21 @@ impl CompositorNode {
                     let mut new_image_overlays =
                         Vec::with_capacity(new_config.image_overlays.len());
                     for (i, img_cfg) in new_config.image_overlays.iter().enumerate() {
-                        let reuse = old_cfgs.get(i).is_some_and(|old| {
+                        // Check whether we can reuse an existing decoded
+                        // bitmap: config content + target dimensions must
+                        // match AND the old decoded overlay must exist at
+                        // this index (it may be absent if a previous decode
+                        // failed).
+                        let reusable = old_cfgs.get(i).is_some_and(|old| {
                             old.data_base64 == img_cfg.data_base64
                                 && old.transform.rect.width == img_cfg.transform.rect.width
                                 && old.transform.rect.height == img_cfg.transform.rect.height
                         });
-                        if reuse {
+                        if let (true, Some(existing)) = (reusable, old_imgs.get(i)) {
                             // Content and target dimensions unchanged — reuse
                             // the decoded bitmap, just update mutable transform
                             // fields (position, opacity, rotation, z_index).
-                            let mut ov = (*old_imgs[i]).clone();
+                            let mut ov = (*existing).clone();
                             ov.rect = img_cfg.transform.rect.clone();
                             ov.opacity = img_cfg.transform.opacity;
                             ov.rotation_degrees = img_cfg.transform.rotation_degrees;
