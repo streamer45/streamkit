@@ -563,25 +563,20 @@ fn blit_row_alpha(
 /// Scale and blit a source RGBA8 buffer onto a destination RGBA8 buffer at the
 /// given destination rectangle with clockwise rotation around the rect centre.
 ///
-/// The source image is uniformly scaled so that, after rotation, its
-/// axis-aligned bounding box fits inside the destination rect (like CSS
-/// `object-fit: contain` applied to the *rotated* image).  The result is
-/// centred and any padding is left transparent.  This avoids the visual
-/// distortion that a naive stretch-to-fill would cause on rotated layers.
+/// The source is stretched to fill the destination rect (no aspect-ratio-
+/// preserving fit).  Aspect ratio handling is the responsibility of the
+/// caller / presentation layer.  The stretched content is then rotated
+/// around the rect centre.
 ///
 /// Uses inverse-affine mapping with nearest-neighbor sampling.  Edge pixels
 /// receive fractional alpha coverage computed from the signed distance to each
-/// of the four content edges in the un-rotated local coordinate system.  This
+/// of the four rect edges in the un-rotated local coordinate system.  This
 /// eliminates the staircase aliasing that a hard binary inside/outside test
 /// would produce.
 ///
 /// For near-zero rotation angles (< 0.01°), a fast path delegates directly
-/// to [`scale_blit_rgba`] which stretches the source to fill the destination
-/// rect.
-///
-/// The rotated path also stretches the source to fill the destination rect
-/// (no aspect-ratio-preserving fit).  Aspect ratio handling is the
-/// responsibility of the client / presentation layer, not the compositor.
+/// to [`scale_blit_rgba`] which performs the same stretch-to-fill without
+/// the rotation overhead.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -621,7 +616,7 @@ pub fn scale_blit_rgba_rotated(
     let sw = src_width as usize;
     let sh = src_height as usize;
 
-    // Pre-compute sin/cos for the rotation (needed both for the fit-scale
+    // Pre-compute sin/cos for the rotation (needed for the bounding-box
     // computation and for the per-pixel inverse mapping).
     let angle_rad = rotation_deg.to_radians();
     let cos_a = angle_rad.cos();

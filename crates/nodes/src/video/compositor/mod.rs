@@ -1626,6 +1626,40 @@ mod tests {
         }
     }
 
+    /// Regression test: a 4:3 source blitted into a non-square rect with 15°
+    /// rotation must cover the centre of the rect (stretch-to-fill, not
+    /// aspect-ratio fit).  Exercises the rotated path's per-axis inverse
+    /// scaling (`inv_scale_x` / `inv_scale_y`).
+    #[test]
+    fn test_rotated_blit_mismatched_aspect_ratio_covers_centre() {
+        // 4×2 red source into a 40×20 rect (2:1 aspect mismatch) at 15° on
+        // a 60×40 canvas.  The centre of the rect (canvas pixel 30,20) must
+        // be covered by red source content.
+        let src = [255u8, 0, 0, 255].repeat(4 * 2); // 4×2 solid red
+        let mut dst = vec![0u8; 60 * 40 * 4];
+
+        scale_blit_rgba_rotated(
+            &mut dst,
+            60,
+            40,
+            &src,
+            4,
+            2,
+            &Rect { x: 10, y: 10, width: 40, height: 20 },
+            1.0,
+            15.0,
+        );
+
+        // Centre of the rect (canvas pixel 30, 20) should be red.
+        let cx = 30usize;
+        let cy = 20usize;
+        let idx = (cy * 60 + cx) * 4;
+        assert_eq!(dst[idx], 255, "Centre R");
+        assert_eq!(dst[idx + 1], 0, "Centre G");
+        assert_eq!(dst[idx + 2], 0, "Centre B");
+        assert!(dst[idx + 3] > 200, "Centre A should be mostly opaque");
+    }
+
     /// Test RGBA→NV12 AVX2 chroma conversion matches scalar reference.
     /// Uses a 640-wide frame to fully exercise the AVX2 path (8 chroma samples/iter).
     #[test]
