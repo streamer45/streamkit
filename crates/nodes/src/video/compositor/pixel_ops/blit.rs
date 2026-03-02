@@ -792,10 +792,10 @@ pub fn scale_blit_rgba_rotated(
                                 for sp in &mut src_pixels {
                                     local_x += cos_a;
                                     local_y -= sin_a;
-                                    let isx = (((local_x + half_cw) * inv_fit_scale) as usize)
-                                        .min(sw - 1);
-                                    let isy = (((local_y + half_ch) * inv_fit_scale) as usize)
-                                        .min(sh - 1);
+                                    let isx =
+                                        (((local_x + half_cw) * inv_scale_x) as usize).min(sw - 1);
+                                    let isy =
+                                        (((local_y + half_ch) * inv_scale_y) as usize).min(sh - 1);
                                     let si = (isy * sw + isx) * 4;
                                     if si + 3 < src.len() {
                                         *sp = unsafe { read_rgba_u32(src, si) };
