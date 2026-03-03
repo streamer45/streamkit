@@ -560,7 +560,6 @@ const UnifiedLayerList: React.FC<{
   onSelectLayer: (id: string | null) => void;
   onOpacityChange: (layerId: string, opacity: number) => void;
   onRotationChange: (layerId: string, degrees: number) => void;
-  onZIndexChange: (layerId: string, zIndex: number) => void;
   onToggleVisibility: (layerId: string) => void;
   onAddText: (text: string) => void;
   onUpdateText: (id: string, updates: Partial<Omit<TextOverlayState, 'id'>>) => void;
@@ -568,6 +567,7 @@ const UnifiedLayerList: React.FC<{
   onAddImage: (dataBase64: string, naturalWidth?: number, naturalHeight?: number) => void;
   onUpdateImage: (id: string, updates: Partial<Omit<ImageOverlayState, 'id'>>) => void;
   onRemoveImage: (id: string) => void;
+  onReorderLayers: (entries: Array<{ id: string; kind: LayerKind; zIndex: number }>) => void;
   disabled: boolean;
 }> = React.memo(
   ({
@@ -578,7 +578,6 @@ const UnifiedLayerList: React.FC<{
     onSelectLayer,
     onOpacityChange,
     onRotationChange,
-    onZIndexChange,
     onToggleVisibility,
     onAddText,
     onUpdateText,
@@ -586,6 +585,7 @@ const UnifiedLayerList: React.FC<{
     onAddImage,
     onUpdateImage,
     onRemoveImage,
+    onReorderLayers,
     disabled,
   }) => {
     // Build a unified list of all layers sorted by z-index (highest first for
@@ -681,16 +681,17 @@ const UnifiedLayerList: React.FC<{
     const handleReorder = useCallback(
       (reordered: UnifiedLayerEntry[]) => {
         const maxZ = reordered.length - 1;
+        const updates: Array<{ id: string; kind: LayerKind; zIndex: number }> = [];
         for (let i = 0; i < reordered.length; i++) {
           const entry = reordered[i];
           const newZ = maxZ - i;
-          if (entry.zIndex === newZ) continue; // already correct
-          if (entry.kind === 'video') onZIndexChange(entry.id, newZ);
-          else if (entry.kind === 'text') onUpdateText(entry.id, { zIndex: newZ });
-          else if (entry.kind === 'image') onUpdateImage(entry.id, { zIndex: newZ });
+          if (entry.zIndex !== newZ) {
+            updates.push({ id: entry.id, kind: entry.kind, zIndex: newZ });
+          }
         }
+        if (updates.length > 0) onReorderLayers(updates);
       },
-      [onZIndexChange, onUpdateText, onUpdateImage]
+      [onReorderLayers]
     );
 
     return (
@@ -929,7 +930,6 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
     handleResizePointerDown,
     updateLayerOpacity,
     updateLayerRotation,
-    updateLayerZIndex,
     toggleLayerVisibility,
     layerRefs,
     textOverlays,
@@ -940,6 +940,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
     addImageOverlay,
     updateImageOverlay,
     removeImageOverlay,
+    reorderLayers,
   } = useCompositorLayers({
     nodeId: id,
     sessionId: data.sessionId,
@@ -1018,7 +1019,6 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
           onSelectLayer={selectLayer}
           onOpacityChange={updateLayerOpacity}
           onRotationChange={updateLayerRotation}
-          onZIndexChange={updateLayerZIndex}
           onToggleVisibility={toggleLayerVisibility}
           onAddText={addTextOverlay}
           onUpdateText={updateTextOverlay}
@@ -1026,6 +1026,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
           onAddImage={addImageOverlay}
           onUpdateImage={updateImageOverlay}
           onRemoveImage={removeImageOverlay}
+          onReorderLayers={reorderLayers}
           disabled={disabled}
         />
       </CompositorWrapper>

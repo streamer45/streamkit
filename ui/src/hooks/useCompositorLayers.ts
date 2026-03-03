@@ -112,6 +112,9 @@ export interface UseCompositorLayersResult {
   addImageOverlay: (dataBase64: string, naturalWidth?: number, naturalHeight?: number) => void;
   updateImageOverlay: (id: string, updates: Partial<Omit<ImageOverlayState, 'id'>>) => void;
   removeImageOverlay: (id: string) => void;
+  /** Atomically reassign z-index values for all layer types in one commit.
+   *  Each entry maps a layer id + kind to its new z-index. */
+  reorderLayers: (entries: Array<{ id: string; kind: LayerKind; zIndex: number }>) => void;
 }
 
 interface Rect {
@@ -418,7 +421,11 @@ export const useCompositorLayers = (
       mergeOverlayState(
         currentText,
         parseTextOverlays(params),
-        (a, b) => a.text !== b.text || a.fontSize !== b.fontSize || a.fontName !== b.fontName
+        (a, b) =>
+          a.text !== b.text ||
+          a.fontSize !== b.fontSize ||
+          a.fontName !== b.fontName ||
+          a.color.some((v, i) => v !== b.color[i])
       )
     );
     setImageOverlays((currentImg) => mergeOverlayState(currentImg, parseImageOverlays(params)));
@@ -1092,6 +1099,84 @@ export const useCompositorLayers = (
     [removeOverlay]
   );
 
+  // ── Batch reorder ─────────────────────────────────────────────────────────
+  //
+  // Atomically update z-index for every layer in a single commit so that
+  // drag-to-reorder doesn't fire N individual updates that race against
+  // each other via stale refs.
+
+  const reorderLayers = useCallback(
+    (entries: Array<{ id: string; kind: LayerKind; zIndex: number }>) => {
+      // Build lookup: id → new z-index
+      const zMap = new Map<string, number>();
+      for (const e of entries) zMap.set(e.id, e.zIndex);
+
+      // Update video layers
+      let nextLayers = layersRef.current;
+      const hasVideoChanges = nextLayers.some((l) => {
+        const z = zMap.get(l.id);
+        return z !== undefined && z !== l.zIndex;
+      });
+      if (hasVideoChanges) {
+        nextLayers = nextLayers
+          .map((l) => {
+            const z = zMap.get(l.id);
+            return z !== undefined && z !== l.zIndex ? { ...l, zIndex: z } : l;
+          })
+          .sort((a, b) => a.zIndex - b.zIndex);
+        setLayers(nextLayers);
+      }
+
+      // Update text overlays
+      let nextText = textOverlaysRef.current;
+      const hasTextChanges = nextText.some((o) => {
+        const z = zMap.get(o.id);
+        return z !== undefined && z !== o.zIndex;
+      });
+      if (hasTextChanges) {
+        nextText = nextText.map((o) => {
+          const z = zMap.get(o.id);
+          return z !== undefined && z !== o.zIndex ? { ...o, zIndex: z } : o;
+        });
+        setTextOverlays(nextText);
+      }
+
+      // Update image overlays
+      let nextImg = imageOverlaysRef.current;
+      const hasImgChanges = nextImg.some((o) => {
+        const z = zMap.get(o.id);
+        return z !== undefined && z !== o.zIndex;
+      });
+      if (hasImgChanges) {
+        nextImg = nextImg.map((o) => {
+          const z = zMap.get(o.id);
+          return z !== undefined && z !== o.zIndex ? { ...o, zIndex: z } : o;
+        });
+        setImageOverlays(nextImg);
+      }
+
+      // Single commit with all three updated arrays
+      if (hasVideoChanges || hasTextChanges || hasImgChanges) {
+        overlayCommitGuardRef.current = Date.now();
+        if (onConfigChange) {
+          const config = buildConfig(params, nextLayers, nextText, nextImg);
+          onConfigChange(nodeId, config);
+        } else if (onParamChange) {
+          // Video layers
+          if (hasVideoChanges) {
+            throttledConfigChange?.(nextLayers);
+          }
+          // Overlays
+          if (hasTextChanges || hasImgChanges) {
+            onParamChange(nodeId, 'text_overlays', serializeTextOverlays(nextText));
+            onParamChange(nodeId, 'image_overlays', serializeImageOverlays(nextImg));
+          }
+        }
+      }
+    },
+    [nodeId, onConfigChange, onParamChange, params, throttledConfigChange]
+  );
+
   return {
     layers,
     selectedLayerId,
@@ -1112,5 +1197,6 @@ export const useCompositorLayers = (
     addImageOverlay,
     updateImageOverlay,
     removeImageOverlay,
+    reorderLayers,
   };
 };
