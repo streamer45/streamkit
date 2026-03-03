@@ -408,6 +408,7 @@ export const useCompositorLayers = (
             m.height !== currentText[i].height ||
             m.opacity !== currentText[i].opacity ||
             m.rotationDegrees !== currentText[i].rotationDegrees ||
+            m.zIndex !== currentText[i].zIndex ||
             m.text !== currentText[i].text ||
             m.fontSize !== currentText[i].fontSize ||
             m.visible !== currentText[i].visible
@@ -438,6 +439,8 @@ export const useCompositorLayers = (
             m.width !== currentImg[i].width ||
             m.height !== currentImg[i].height ||
             m.opacity !== currentImg[i].opacity ||
+            m.rotationDegrees !== currentImg[i].rotationDegrees ||
+            m.zIndex !== currentImg[i].zIndex ||
             m.visible !== currentImg[i].visible
         );
       return changed ? merged : currentImg;
