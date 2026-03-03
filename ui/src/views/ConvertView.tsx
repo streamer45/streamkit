@@ -16,6 +16,19 @@ import { TranscriptionDisplay } from '@/components/converter/TranscriptionDispla
 import { CustomAudioPlayer } from '@/components/CustomAudioPlayer';
 import { MSEPlayer } from '@/components/MSEPlayer';
 import { RadioGroupRoot, RadioWithLabel } from '@/components/ui/RadioGroup';
+import {
+  ViewContainer,
+  ContentArea,
+  ContentWrapper,
+  BottomSpacer,
+  Section,
+  SectionTitle,
+  InfoBox,
+  InfoContent,
+  InfoTitle,
+  TechnicalDetailsToggle,
+  TechnicalDetails,
+} from '@/components/ui/ViewLayout';
 import { useConvertViewState } from '@/hooks/useConvertViewState';
 import { useAudioAssets } from '@/services/assets';
 import {
@@ -114,52 +127,6 @@ const deriveHttpInputFields = (
   }
 };
 
-const ViewContainer = styled.div`
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  background: var(--sk-bg);
-`;
-
-const ContentArea = styled.div`
-  flex: 1;
-  overflow-y: auto;
-  display: flex;
-  justify-content: center;
-  padding: 40px;
-`;
-
-const ContentWrapper = styled.div`
-  width: 100%;
-  max-width: 1200px;
-  display: flex;
-  flex-direction: column;
-  gap: 32px;
-`;
-
-const BottomSpacer = styled.div`
-  height: 8px;
-  flex-shrink: 0;
-  /* With gap: 32px from ContentWrapper, this gives us 40px total bottom spacing */
-`;
-
-const Section = styled.div`
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding: 24px;
-  background: var(--sk-panel-bg);
-  border: 1px solid var(--sk-border);
-  border-radius: 12px;
-`;
-
-const SectionTitle = styled.h2`
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--sk-text);
-  margin: 0;
-`;
-
 const EditorSection = styled.div`
   display: flex;
   flex-direction: column;
@@ -225,65 +192,6 @@ const ButtonSpinner = styled.div`
   border-top-color: white;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
-`;
-
-const InfoBox = styled.div`
-  padding: 20px;
-  background: var(--sk-panel-bg);
-  border: 1px solid var(--sk-border);
-  border-left: 4px solid var(--sk-primary);
-  border-radius: 8px;
-  color: var(--sk-text);
-  font-size: 14px;
-  line-height: 1.6;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-`;
-
-const InfoContent = styled.div`
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-`;
-
-const InfoTitle = styled.h2`
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--sk-text);
-  margin: 0;
-`;
-
-const TechnicalDetailsToggle = styled.button`
-  padding: 8px 12px;
-  background: transparent;
-  color: var(--sk-text-muted);
-  border: 1px solid var(--sk-border);
-  border-radius: 6px;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  align-self: flex-start;
-
-  &:hover {
-    background: var(--sk-hover-bg);
-    color: var(--sk-text);
-    border-color: var(--sk-border-strong);
-  }
-`;
-
-const TechnicalDetails = styled.div`
-  padding-top: 12px;
-  border-top: 1px solid var(--sk-border);
-  color: var(--sk-text-muted);
-  font-size: 13px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
 `;
 
 const CliSnippetContainer = styled.div`
@@ -1386,59 +1294,46 @@ const ConvertView: React.FC = () => {
     }
   };
 
-  const handleTranscriptionComplete = useCallback(() => {
-    viewsLogger.info('Transcription stream complete');
-    setConversionStatus('success');
-    setAbortController(null);
-    setConversionMessage('Transcription complete!');
-    setTimeout(() => {
-      setConversionStatus('idle');
-      setConversionMessage('');
-    }, 5000);
-  }, [setConversionStatus, setAbortController, setConversionMessage]);
-
-  const handleTranscriptionCancel = useCallback(() => {
-    viewsLogger.debug('Transcription cancelled callback');
-    // Only update if we still have an abort controller (not already handled by handleCancel)
-    setAbortController((currentController) => {
-      if (currentController) {
-        setConversionStatus('idle');
-        setConversionMessage('Transcription cancelled');
+  /** Build onComplete / onCancel callbacks for a streaming result (transcription or audio). */
+  const makeStreamCallbacks = useCallback(
+    (label: string) => ({
+      onComplete: () => {
+        viewsLogger.info(`${label} stream complete`);
+        setConversionStatus('success');
+        setAbortController(null);
+        setConversionMessage(`${label} complete!`);
         setTimeout(() => {
+          setConversionStatus('idle');
           setConversionMessage('');
-        }, 3000);
-        return null;
-      }
-      return currentController;
-    });
-  }, [setAbortController, setConversionStatus, setConversionMessage]);
+        }, 5000);
+      },
+      onCancel: () => {
+        viewsLogger.debug(`${label} cancelled callback`);
+        // Only update if we still have an abort controller (not already handled by handleCancel)
+        setAbortController((currentController) => {
+          if (currentController) {
+            setConversionStatus('idle');
+            setConversionMessage(`${label} cancelled`);
+            setTimeout(() => {
+              setConversionMessage('');
+            }, 3000);
+            return null;
+          }
+          return currentController;
+        });
+      },
+    }),
+    [setConversionStatus, setAbortController, setConversionMessage]
+  );
 
-  const handleAudioStreamComplete = useCallback(() => {
-    viewsLogger.info('Audio stream complete');
-    setConversionStatus('success');
-    setAbortController(null);
-    setConversionMessage('Streaming complete!');
-    setTimeout(() => {
-      setConversionStatus('idle');
-      setConversionMessage('');
-    }, 5000);
-  }, [setConversionStatus, setAbortController, setConversionMessage]);
-
-  const handleAudioStreamCancel = useCallback(() => {
-    viewsLogger.debug('Audio stream cancelled callback');
-    // Only update if we still have an abort controller (not already handled by handleCancel)
-    setAbortController((currentController) => {
-      if (currentController) {
-        setConversionStatus('idle');
-        setConversionMessage('Streaming cancelled');
-        setTimeout(() => {
-          setConversionMessage('');
-        }, 3000);
-        return null;
-      }
-      return currentController;
-    });
-  }, [setAbortController, setConversionStatus, setConversionMessage]);
+  const transcriptionCallbacks = useMemo(
+    () => makeStreamCallbacks('Transcription'),
+    [makeStreamCallbacks]
+  );
+  const audioStreamCallbacks = useMemo(
+    () => makeStreamCallbacks('Streaming'),
+    [makeStreamCallbacks]
+  );
 
   const handleMsePlaybackError = useCallback(
     (message: string) => {
@@ -1870,15 +1765,15 @@ const ConvertView: React.FC = () => {
                   <TranscriptionDisplay
                     key={streamKey}
                     stream={audioStream}
-                    onComplete={handleTranscriptionComplete}
-                    onCancel={handleTranscriptionCancel}
+                    onComplete={transcriptionCallbacks.onComplete}
+                    onCancel={transcriptionCallbacks.onCancel}
                   />
                 ) : (
                   <JsonStreamDisplay
                     key={streamKey}
                     stream={audioStream}
-                    onComplete={handleTranscriptionComplete}
-                    onCancel={handleTranscriptionCancel}
+                    onComplete={transcriptionCallbacks.onComplete}
+                    onCancel={transcriptionCallbacks.onCancel}
                   />
                 )
               ) : (
@@ -1891,8 +1786,8 @@ const ConvertView: React.FC = () => {
                     <MSEPlayer
                       stream={audioStream}
                       contentType={audioContentType}
-                      onComplete={handleAudioStreamComplete}
-                      onCancel={handleAudioStreamCancel}
+                      onComplete={audioStreamCallbacks.onComplete}
+                      onCancel={audioStreamCallbacks.onCancel}
                       onError={handleMsePlaybackError}
                     />
                   ) : audioUrl ? (

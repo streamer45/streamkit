@@ -15,7 +15,7 @@ import { Maximize2, Minimize2 } from 'lucide-react';
 import React, { useCallback, useRef, useState } from 'react';
 import { useShallow } from 'zustand/shallow';
 
-import { useCanvasAspectRatio } from '@/hooks/useCanvasAspectRatio';
+import { useVideoCanvas } from '@/hooks/useVideoCanvas';
 import { useStreamStore } from '@/stores/streamStore';
 import type { WatchStatus } from '@/stores/streamStore';
 
@@ -211,8 +211,6 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
   ({ hasSession, conditionalRender = false }) => {
     const [collapsed, setCollapsed] = useState(false);
     const [isFullscreen, setIsFullscreen] = useState(false);
-    const [canvasEl, setCanvasEl] = useState<HTMLCanvasElement | null>(null);
-    const canvasAspectRatio = useCanvasAspectRatio(canvasEl);
     // Position relative to bottom-right of the container
     const [pos, setPos] = useState({ x: 16, y: 16 });
     const [panelWidth, setPanelWidth] = useState(DEFAULT_WIDTH);
@@ -238,6 +236,8 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
         activeSessionId: s.activeSessionId,
       }))
     );
+
+    const { canvasRef, aspectRatio: canvasAspectRatio } = useVideoCanvas(videoRenderer);
 
     const isConnected = status === 'connected';
     const isLive = watchStatus === 'live';
@@ -269,16 +269,6 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
       document.addEventListener('fullscreenchange', handler);
       return () => document.removeEventListener('fullscreenchange', handler);
     }, []);
-
-    const canvasRef = useCallback(
-      (el: HTMLCanvasElement | null) => {
-        setCanvasEl(el);
-        if (el && videoRenderer) {
-          videoRenderer.canvas.set(el);
-        }
-      },
-      [videoRenderer]
-    );
 
     // ── Resize handling ─────────────────────────────────────────────────────
     // Issue #2 fix: support resizing from all four edges

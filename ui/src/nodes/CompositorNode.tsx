@@ -10,6 +10,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { CompositorCanvas } from '@/components/CompositorCanvas';
 import { NodeFrame } from '@/components/node/NodeFrame';
 import { SKTooltip } from '@/components/Tooltip';
+import { LiveBadge, LiveDot } from '@/components/ui/LiveIndicator';
 import { useCompositorLayers } from '@/hooks/useCompositorLayers';
 import type { TextOverlayState, ImageOverlayState, LayerKind } from '@/hooks/useCompositorLayers';
 import { setCompositorSelection } from '@/hooks/useCompositorSelection';
@@ -47,41 +48,6 @@ const ResolutionLabel = styled.span`
   font-variant-numeric: tabular-nums;
   color: var(--sk-text-muted);
   font-size: 10px;
-`;
-
-const LiveIndicator = styled.span`
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 2px 5px;
-  background: rgba(239, 68, 68, 0.15);
-  color: rgb(239, 68, 68);
-  border: 1px solid rgba(239, 68, 68, 0.3);
-  border-radius: 3px;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.2px;
-  flex-shrink: 0;
-  user-select: none;
-`;
-
-const LiveDot = styled.div`
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: rgb(239, 68, 68);
-  animation: pulse 2s ease-in-out infinite;
-  flex-shrink: 0;
-
-  @keyframes pulse {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.5;
-    }
-  }
 `;
 
 const LayerControls = styled.div`
@@ -968,10 +934,10 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
               Compositor
               {showLiveIndicator && (
                 <SKTooltip content="Layer changes apply immediately to the running pipeline">
-                  <LiveIndicator style={{ marginLeft: 6 }}>
-                    <LiveDot />
+                  <LiveBadge size="small" style={{ marginLeft: 6 }}>
+                    <LiveDot size="small" />
                     LIVE
-                  </LiveIndicator>
+                  </LiveBadge>
                 </SKTooltip>
               )}
             </CanvasLabel>
