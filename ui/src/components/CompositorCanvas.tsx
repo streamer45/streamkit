@@ -455,6 +455,8 @@ const ImageOverlayLayer: React.FC<{
         width: overlay.width,
         height: overlay.height,
         opacity: overlay.visible ? overlay.opacity : 0.2,
+        transform:
+          overlay.rotationDegrees !== 0 ? `rotate(${overlay.rotationDegrees}deg)` : undefined,
         zIndex: overlay.zIndex ?? 200 + index,
         border: `2px solid ${borderColor}`,
         background: bgColor,
