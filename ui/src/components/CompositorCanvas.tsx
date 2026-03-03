@@ -36,20 +36,22 @@ function layerHue(index: number): number {
 
 // ── Font mapping ────────────────────────────────────────────────────────────
 
-/** Map backend font names to CSS font-family values for canvas preview. */
+/** Map backend font names to CSS font-family values for canvas preview.
+ *  These use web-safe fallback stacks so the preview is visually
+ *  representative even when the exact system font is not installed. */
 const FONT_FAMILY_MAP: Record<string, string> = {
-  'dejavu-sans': '"DejaVu Sans", sans-serif',
-  'dejavu-serif': '"DejaVu Serif", serif',
-  'dejavu-sans-mono': '"DejaVu Sans Mono", monospace',
-  'dejavu-sans-bold': '"DejaVu Sans", sans-serif',
-  'dejavu-serif-bold': '"DejaVu Serif", serif',
-  'dejavu-sans-mono-bold': '"DejaVu Sans Mono", monospace',
+  'dejavu-sans': '"DejaVu Sans", "Verdana", sans-serif',
+  'dejavu-serif': '"DejaVu Serif", "Georgia", serif',
+  'dejavu-sans-mono': '"DejaVu Sans Mono", "Courier New", monospace',
+  'dejavu-sans-bold': '"DejaVu Sans", "Verdana", sans-serif',
+  'dejavu-serif-bold': '"DejaVu Serif", "Georgia", serif',
+  'dejavu-sans-mono-bold': '"DejaVu Sans Mono", "Courier New", monospace',
   'liberation-sans': '"Liberation Sans", "Arial", sans-serif',
   'liberation-serif': '"Liberation Serif", "Times New Roman", serif',
   'liberation-mono': '"Liberation Mono", "Courier New", monospace',
-  freesans: '"FreeSans", sans-serif',
-  freeserif: '"FreeSerif", serif',
-  freemono: '"FreeMono", monospace',
+  freesans: '"FreeSans", "Arial", sans-serif',
+  freeserif: '"FreeSerif", "Times New Roman", serif',
+  freemono: '"FreeMono", "Courier New", monospace',
 };
 
 /** Return true when the backend font name maps to a bold variant. */

@@ -870,33 +870,12 @@ const UnifiedLayerList: React.FC<{
                 value={rgbaToHex(selectedTextOverlay.color)}
                 onChange={(e) =>
                   onUpdateText(selectedTextOverlay.id, {
-                    color: hexToRgba(e.target.value, selectedTextOverlay.color[3]),
+                    color: hexToRgba(e.target.value, 255),
                   })
                 }
                 disabled={disabled}
                 className="nodrag nopan"
               />
-              <SliderInput
-                type="range"
-                min="0"
-                max="255"
-                step="1"
-                value={selectedTextOverlay.color[3]}
-                onChange={(e) =>
-                  onUpdateText(selectedTextOverlay.id, {
-                    color: [
-                      selectedTextOverlay.color[0],
-                      selectedTextOverlay.color[1],
-                      selectedTextOverlay.color[2],
-                      Number.parseInt(e.target.value, 10),
-                    ],
-                  })
-                }
-                disabled={disabled}
-                className="nodrag nopan"
-                title="Alpha"
-              />
-              <ControlValue>{selectedTextOverlay.color[3]}</ControlValue>
             </OverlayEditRow>
           </LayerPropertyControls>
         )}
