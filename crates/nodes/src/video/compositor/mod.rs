@@ -727,12 +727,17 @@ impl CompositorNode {
                         if let Some(entries) = cache.get_mut(&key) {
                             if let Some(existing) = entries.pop() {
                                 // Content and target dimensions unchanged —
-                                // reuse the decoded bitmap.  The cache key
-                                // already guarantees width/height match, so
-                                // only position and visual fields can differ.
+                                // reuse the decoded bitmap.  The overlay's
+                                // rect may be smaller than the config rect
+                                // due to aspect-ratio-preserving prescale,
+                                // so re-centre within the new config rect.
                                 let mut ov = (*existing).clone();
-                                ov.rect.x = img_cfg.transform.rect.x;
-                                ov.rect.y = img_cfg.transform.rect.y;
+                                let cfg_w = img_cfg.transform.rect.width.cast_signed();
+                                let cfg_h = img_cfg.transform.rect.height.cast_signed();
+                                let ov_w = ov.rect.width.cast_signed();
+                                let ov_h = ov.rect.height.cast_signed();
+                                ov.rect.x = img_cfg.transform.rect.x + (cfg_w - ov_w) / 2;
+                                ov.rect.y = img_cfg.transform.rect.y + (cfg_h - ov_h) / 2;
                                 ov.opacity = img_cfg.transform.opacity;
                                 ov.rotation_degrees = img_cfg.transform.rotation_degrees;
                                 ov.z_index = img_cfg.transform.z_index;

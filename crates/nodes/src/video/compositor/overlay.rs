@@ -47,18 +47,49 @@ pub fn decode_image_overlay(config: &ImageOverlayConfig) -> Result<DecodedOverla
     let target_w = config.transform.rect.width;
     let target_h = config.transform.rect.height;
 
-    // Pre-scale the decoded image to the target rect dimensions so that
-    // the per-frame `scale_blit_rgba_rotated` call hits the identity-scale
-    // fast path (direct memcpy) instead of doing nearest-neighbor scaling
-    // every frame.
+    // Pre-scale the decoded image to fit within the target rect while
+    // preserving the source aspect ratio.  This ensures the per-frame
+    // `scale_blit_rgba_rotated` call hits the identity-scale fast path
+    // (direct memcpy) and the image is never stretched.
     if target_w > 0 && target_h > 0 && (w != target_w || h != target_h) {
+        // Aspect-ratio-preserving fit: scale so the image fits inside
+        // the target box without distortion.
+        #[allow(clippy::cast_precision_loss)]
+        let scale = {
+            let sw = w as f32;
+            let sh = h as f32;
+            (target_w as f32 / sw).min(target_h as f32 / sh)
+        };
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            clippy::cast_precision_loss
+        )]
+        let fit_w = ((w as f32 * scale).round() as u32).max(1);
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            clippy::cast_precision_loss
+        )]
+        let fit_h = ((h as f32 * scale).round() as u32).max(1);
+
         let raw = rgba.into_raw();
-        let scaled = prescale_rgba(&raw, w, h, target_w, target_h);
+        let scaled = prescale_rgba(&raw, w, h, fit_w, fit_h);
+
+        // Adjust the rect to match the fitted dimensions so the blit
+        // stays on the identity-scale path and the image is centred
+        // within the originally requested area.
+        let mut rect = config.transform.rect.clone();
+        rect.x += (target_w.cast_signed() - fit_w.cast_signed()) / 2;
+        rect.y += (target_h.cast_signed() - fit_h.cast_signed()) / 2;
+        rect.width = fit_w;
+        rect.height = fit_h;
+
         Ok(DecodedOverlay {
             rgba_data: scaled,
-            width: target_w,
-            height: target_h,
-            rect: config.transform.rect.clone(),
+            width: fit_w,
+            height: fit_h,
+            rect,
             opacity: config.transform.opacity,
             rotation_degrees: config.transform.rotation_degrees,
             z_index: config.transform.z_index,

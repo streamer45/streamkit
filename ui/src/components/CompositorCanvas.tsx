@@ -18,7 +18,7 @@
  */
 
 import styled from '@emotion/styled';
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 import type {
   LayerState,
@@ -405,36 +405,45 @@ const ImageOverlayLayer: React.FC<{
   const borderColor = isSelected ? 'var(--sk-primary)' : `hsla(${hue}, 70%, 65%, 0.8)`;
   const bgColor = isSelected ? `hsla(${hue}, 60%, 50%, 0.25)` : `hsla(${hue}, 60%, 50%, 0.12)`;
 
-  // Build an object URL for the image thumbnail.  Using
-  // URL.createObjectURL avoids keeping a potentially large data-URI
-  // string in the DOM and is more memory-efficient for multi-MB images.
+  // Build a blob URL for the image thumbnail.  Using fetch() with a
+  // data-URI lets the browser decode the base64 natively, which is
+  // more efficient than the manual atob() + byte-by-byte Uint8Array
+  // copy for large images.
   //
   // MIME detection: we inspect the base64-encoded magic bytes at the
   // start of the string to pick the correct MIME type.  The fallback
   // is JPEG, which covers the common `/9j/` prefix and variants.
-  const imgSrc = useMemo(() => {
-    if (!overlay.dataBase64) return undefined;
+  const [imgSrc, setImgSrc] = useState<string | undefined>();
+
+  useEffect(() => {
+    if (!overlay.dataBase64) {
+      setImgSrc(undefined);
+      return;
+    }
     let mime = 'image/jpeg'; // default fallback
     if (overlay.dataBase64.startsWith('iVBOR')) mime = 'image/png';
     else if (overlay.dataBase64.startsWith('R0lGOD')) mime = 'image/gif';
     else if (overlay.dataBase64.startsWith('UklGR')) mime = 'image/webp';
-    else if (overlay.dataBase64.startsWith('Qk')) mime = 'image/bmp';
-    const binaryStr = atob(overlay.dataBase64);
-    const bytes = new Uint8Array(binaryStr.length);
-    for (let i = 0; i < binaryStr.length; i++) {
-      bytes[i] = binaryStr.charCodeAt(i);
-    }
-    const blob = new Blob([bytes], { type: mime });
-    return URL.createObjectURL(blob);
-  }, [overlay.dataBase64]);
 
-  // Revoke the object URL when the component unmounts or the source
-  // changes to avoid memory leaks.
-  useEffect(() => {
+    let cancelled = false;
+    let url: string | undefined;
+
+    fetch(`data:${mime};base64,${overlay.dataBase64}`)
+      .then((r) => r.blob())
+      .then((blob) => {
+        if (cancelled) return;
+        url = URL.createObjectURL(blob);
+        setImgSrc(url);
+      })
+      .catch(() => {
+        // Ignore decode failures — no thumbnail shown.
+      });
+
     return () => {
-      if (imgSrc) URL.revokeObjectURL(imgSrc);
+      cancelled = true;
+      if (url) URL.revokeObjectURL(url);
     };
-  }, [imgSrc]);
+  }, [overlay.dataBase64]);
 
   return (
     <LayerBox
