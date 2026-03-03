@@ -378,12 +378,18 @@ const FontSelect = styled.select`
   font-size: 10px;
   border: 1px solid var(--sk-border);
   border-radius: 3px;
-  background: var(--sk-input-bg);
+  background: var(--sk-panel-bg);
   color: var(--sk-text);
+  color-scheme: dark light;
   outline: none;
   min-width: 0;
   pointer-events: auto;
   cursor: pointer;
+
+  option {
+    background: var(--sk-panel-bg);
+    color: var(--sk-text);
+  }
 
   &:focus {
     border-color: var(--sk-primary);
