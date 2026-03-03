@@ -1106,10 +1106,13 @@ mod tests {
             font_size: 24,
             font_path: None,
             font_data_base64: None,
+            font_name: None,
         };
         let overlay = rasterize_text_overlay(&cfg);
         assert_eq!(overlay.width, 64);
-        assert_eq!(overlay.height, 32);
+        // Height is expanded to at least ceil(font_size * 1.4) = 34
+        // to avoid clipping descenders.
+        assert_eq!(overlay.height, 34);
         // Should have some non-zero pixels (text was drawn).
         assert!(overlay.rgba_data.iter().any(|&b| b > 0));
     }

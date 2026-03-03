@@ -127,16 +127,46 @@ fn prescale_rgba(src: &[u8], sw: u32, sh: u32, dw: u32, dh: u32) -> Vec<u8> {
 /// Path to the system DejaVu Sans font (commonly available on Linux).
 const DEJAVU_SANS_PATH: &str = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
 
+/// Map of named fonts to their filesystem paths.
+/// All fonts listed here are open-source and royalty-free, commonly installed
+/// on Debian/Ubuntu systems via the `fonts-dejavu-core`, `fonts-liberation`,
+/// and `fonts-freefont-ttf` packages.
+const KNOWN_FONTS: &[(&str, &str)] = &[
+    ("dejavu-sans", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+    ("dejavu-serif", "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"),
+    ("dejavu-sans-mono", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"),
+    ("dejavu-sans-bold", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+    ("dejavu-serif-bold", "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"),
+    ("dejavu-sans-mono-bold", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf"),
+    ("liberation-sans", "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"),
+    ("liberation-serif", "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf"),
+    ("liberation-mono", "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf"),
+    ("freesans", "/usr/share/fonts/truetype/freefont/FreeSans.ttf"),
+    ("freeserif", "/usr/share/fonts/truetype/freefont/FreeSerif.ttf"),
+    ("freemono", "/usr/share/fonts/truetype/freefont/FreeMono.ttf"),
+];
+
 /// Load font data, trying (in order):
 /// 1. `font_data_base64` (inline base64-encoded TTF/OTF)
-/// 2. `font_path` (filesystem path)
-/// 3. Bundled system default (`DejaVuSans.ttf`)
+/// 2. `font_name` (named font from [`KNOWN_FONTS`] map)
+/// 3. `font_path` (filesystem path)
+/// 4. Bundled system default (`DejaVuSans.ttf`)
 fn load_font(config: &TextOverlayConfig) -> Result<fontdue::Font, String> {
     let font_bytes: Vec<u8> = if let Some(ref b64) = config.font_data_base64 {
         use base64::Engine;
         base64::engine::general_purpose::STANDARD
             .decode(b64)
             .map_err(|e| format!("Invalid base64 in font_data_base64: {e}"))?
+    } else if let Some(ref name) = config.font_name {
+        let path = KNOWN_FONTS
+            .iter()
+            .find(|(n, _)| *n == name.as_str())
+            .map(|(_, p)| *p)
+            .ok_or_else(|| format!("Unknown font name '{name}'. Available: {}", known_font_names()))?;
+        std::fs::read(path).map_err(|e| {
+            tracing::warn!("Named font '{name}' not found at '{path}': {e}. Is the font package installed?");
+            format!("Failed to read named font '{name}' at '{path}': {e}")
+        })?
     } else if let Some(ref path) = config.font_path {
         std::fs::read(path).map_err(|e| format!("Failed to read font file '{path}': {e}"))?
     } else {
@@ -148,13 +178,26 @@ fn load_font(config: &TextOverlayConfig) -> Result<fontdue::Font, String> {
         .map_err(|e| format!("Failed to parse font: {e}"))
 }
 
+/// Comma-separated list of available font names for error messages.
+fn known_font_names() -> String {
+    KNOWN_FONTS.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(", ")
+}
+
 /// Rasterize a text overlay into an RGBA8 bitmap using `fontdue` for real
 /// font glyph rendering.  Falls back to solid-rectangle placeholders when
 /// font loading fails so the node keeps running.
+///
+/// The bitmap height is clamped to at least `font_size * 1.4` so that text
+/// (including descenders) is never clipped, even when the client sends a
+/// stale/small rect height.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
 pub fn rasterize_text_overlay(config: &TextOverlayConfig) -> DecodedOverlay {
     let w = config.transform.rect.width.max(1);
-    let h = config.transform.rect.height.max(1);
+    // Ensure the bitmap is tall enough to contain the rendered text.
+    // A factor of 1.4× the font size accounts for ascenders, descenders,
+    // and a small amount of padding.
+    let min_h = ((config.font_size.max(1) as f32) * 1.4).ceil() as u32;
+    let h = config.transform.rect.height.max(min_h).max(1);
 
     // Attempt to load the font; fall back to rectangle placeholders on error.
     let font = match load_font(config) {
@@ -209,7 +252,13 @@ pub fn rasterize_text_overlay(config: &TextOverlayConfig) -> DecodedOverlay {
         rgba_data,
         width: w,
         height: h,
-        rect: config.transform.rect.clone(),
+        rect: {
+            // Use the expanded height so the blit renders the full bitmap
+            // (including descenders that may extend below the original rect).
+            let mut r = config.transform.rect.clone();
+            r.height = h;
+            r
+        },
         opacity: config.transform.opacity,
         rotation_degrees: config.transform.rotation_degrees,
         z_index: config.transform.z_index,

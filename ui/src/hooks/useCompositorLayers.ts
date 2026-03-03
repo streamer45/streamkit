@@ -39,6 +39,8 @@ export interface TextOverlayState {
   height: number;
   color: [number, number, number, number];
   fontSize: number;
+  /** Named font from the server's curated set (e.g. "dejavu-sans"). */
+  fontName: string;
   opacity: number;
   rotationDegrees: number;
   zIndex: number;
@@ -131,6 +133,7 @@ interface TextOverlayConfig {
   rect: Rect;
   color?: [number, number, number, number];
   font_size?: number;
+  font_name?: string;
   opacity?: number;
   rotation_degrees?: number;
   z_index?: number;
@@ -181,6 +184,7 @@ function parseTextOverlays(params: Record<string, unknown>): TextOverlayState[] 
     height: o.rect?.height ?? 40,
     color: o.color ?? [255, 255, 255, 255],
     fontSize: o.font_size ?? 24,
+    fontName: o.font_name ?? 'dejavu-sans',
     opacity: o.opacity ?? 1.0,
     rotationDegrees: o.rotation_degrees ?? 0,
     zIndex: o.z_index ?? 100 + i,
@@ -220,6 +224,7 @@ function serializeTextOverlays(overlays: TextOverlayState[]): TextOverlayConfig[
     },
     color: o.color,
     font_size: o.fontSize,
+    font_name: o.fontName,
     opacity: o.visible ? Math.round(o.opacity * 100) / 100 : 0,
     rotation_degrees: Math.round(o.rotationDegrees * 10) / 10,
     z_index: o.zIndex,
@@ -413,7 +418,7 @@ export const useCompositorLayers = (
       mergeOverlayState(
         currentText,
         parseTextOverlays(params),
-        (a, b) => a.text !== b.text || a.fontSize !== b.fontSize
+        (a, b) => a.text !== b.text || a.fontSize !== b.fontSize || a.fontName !== b.fontName
       )
     );
     setImageOverlays((currentImg) => mergeOverlayState(currentImg, parseImageOverlays(params)));
@@ -987,6 +992,7 @@ export const useCompositorLayers = (
             height: 40,
             color: [255, 255, 255, 255],
             fontSize: 24,
+            fontName: 'dejavu-sans',
             opacity: 1.0,
             rotationDegrees: 0,
             zIndex: 100 + prev.length,
@@ -1003,8 +1009,21 @@ export const useCompositorLayers = (
   );
 
   const updateTextOverlay = useCallback(
-    (id: string, updates: Partial<Omit<TextOverlayState, 'id'>>) =>
-      updateOverlay(id, updates, setTextOverlays, (next) => [next, imageOverlaysRef.current]),
+    (id: string, updates: Partial<Omit<TextOverlayState, 'id'>>) => {
+      // Auto-expand rect height when font size increases beyond the
+      // current box height.  Uses the same 1.4× factor as the backend
+      // to ensure the rendered text is never clipped.
+      if (updates.fontSize !== undefined) {
+        const existing = textOverlaysRef.current.find((o) => o.id === id);
+        if (existing) {
+          const minHeight = Math.ceil(updates.fontSize * 1.4);
+          if (existing.height < minHeight && !('height' in updates)) {
+            updates = { ...updates, height: minHeight };
+          }
+        }
+      }
+      updateOverlay(id, updates, setTextOverlays, (next) => [next, imageOverlaysRef.current]);
+    },
     [updateOverlay]
   );
 

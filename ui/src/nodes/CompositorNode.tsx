@@ -3,7 +3,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import styled from '@emotion/styled';
-import { Eye, EyeOff, Image, Plus, Type, X } from 'lucide-react';
+import { Eye, EyeOff, GripVertical, Image, Plus, Type, X } from 'lucide-react';
+import { Reorder } from 'motion/react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 import { CompositorCanvas } from '@/components/CompositorCanvas';
@@ -124,13 +125,6 @@ const SliderInput = styled.input`
   }
 `;
 
-const ZIndexRow = styled.div`
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 11px;
-`;
-
 const NumericInput = styled.input`
   width: 44px;
   padding: 3px 4px;
@@ -162,35 +156,6 @@ const NumericInput = styled.input`
     margin: 0;
   }
   -moz-appearance: textfield;
-`;
-
-const StackButton = styled.button`
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: 1px solid var(--sk-border);
-  border-radius: 3px;
-  background: var(--sk-input-bg);
-  color: var(--sk-text-muted);
-  cursor: pointer;
-  font-size: 12px;
-  line-height: 1;
-  pointer-events: auto;
-  flex-shrink: 0;
-
-  &:hover:not(:disabled) {
-    background: var(--sk-overlay-medium);
-    color: var(--sk-text);
-    border-color: var(--sk-primary);
-  }
-
-  &:disabled {
-    cursor: not-allowed;
-    opacity: 0.4;
-  }
 `;
 
 const LayerInfoRow = styled.div`
@@ -357,6 +322,79 @@ const OverlayNumInput = styled(NumericInput)`
   font-size: 10px;
 `;
 
+const ColorInput = styled.input`
+  width: 28px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--sk-border);
+  border-radius: 3px;
+  background: none;
+  cursor: pointer;
+  pointer-events: auto;
+  flex-shrink: 0;
+
+  &::-webkit-color-swatch-wrapper {
+    padding: 1px;
+  }
+  &::-webkit-color-swatch {
+    border: none;
+    border-radius: 2px;
+  }
+`;
+
+/** Convert [R, G, B, A] to a hex color string (#rrggbb) for <input type="color"> */
+function rgbaToHex(color: [number, number, number, number]): string {
+  const [r, g, b] = color;
+  return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+}
+
+/** Convert a hex color string (#rrggbb) + alpha byte → [R, G, B, A] */
+function hexToRgba(hex: string, alpha: number): [number, number, number, number] {
+  const r = Number.parseInt(hex.slice(1, 3), 16);
+  const g = Number.parseInt(hex.slice(3, 5), 16);
+  const b = Number.parseInt(hex.slice(5, 7), 16);
+  return [r, g, b, alpha];
+}
+
+/** Available named fonts matching the server's KNOWN_FONTS map. */
+const FONT_OPTIONS = [
+  { value: 'dejavu-sans', label: 'DejaVu Sans' },
+  { value: 'dejavu-serif', label: 'DejaVu Serif' },
+  { value: 'dejavu-sans-mono', label: 'DejaVu Sans Mono' },
+  { value: 'dejavu-sans-bold', label: 'DejaVu Sans Bold' },
+  { value: 'dejavu-serif-bold', label: 'DejaVu Serif Bold' },
+  { value: 'dejavu-sans-mono-bold', label: 'DejaVu Mono Bold' },
+  { value: 'liberation-sans', label: 'Liberation Sans' },
+  { value: 'liberation-serif', label: 'Liberation Serif' },
+  { value: 'liberation-mono', label: 'Liberation Mono' },
+  { value: 'freesans', label: 'FreeSans' },
+  { value: 'freeserif', label: 'FreeSerif' },
+  { value: 'freemono', label: 'FreeMono' },
+] as const;
+
+const FontSelect = styled.select`
+  flex: 1;
+  padding: 2px 4px;
+  font-size: 10px;
+  border: 1px solid var(--sk-border);
+  border-radius: 3px;
+  background: var(--sk-input-bg);
+  color: var(--sk-text);
+  outline: none;
+  min-width: 0;
+  pointer-events: auto;
+  cursor: pointer;
+
+  &:focus {
+    border-color: var(--sk-primary);
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+`;
+
 const VisibilityButton = styled.button`
   display: inline-flex;
   align-items: center;
@@ -433,7 +471,7 @@ interface CompositorNodeProps {
 /** Shared per-layer property controls: header (name + position), opacity
  *  slider, rotation slider.  Layer-type-specific controls can be injected
  *  in two positions via `children` (between header and sliders, e.g. text
- *  input / font size) and `footer` (after sliders, e.g. z-index order). */
+ *  input / font size). */
 const LayerPropertyControls: React.FC<{
   name: string;
   x: number;
@@ -444,7 +482,6 @@ const LayerPropertyControls: React.FC<{
   onRotationChange: (value: number) => void;
   disabled: boolean;
   children?: React.ReactNode;
-  footer?: React.ReactNode;
 }> = React.memo(
   ({
     name,
@@ -456,7 +493,6 @@ const LayerPropertyControls: React.FC<{
     onRotationChange,
     disabled,
     children,
-    footer,
   }) => (
     <>
       <LayerInfoRow
@@ -499,8 +535,6 @@ const LayerPropertyControls: React.FC<{
         />
         <ControlValue>{rotationDegrees.toFixed(0)}&deg;</ControlValue>
       </ControlRow>
-
-      {footer}
     </>
   )
 );
@@ -588,15 +622,6 @@ const UnifiedLayerList: React.FC<{
 
     const selectedLayer = layers.find((l) => l.id === selectedLayerId);
 
-    // Compute unified stack navigation across all layer types
-    const sortedAllByZ = React.useMemo(
-      () => [...entries].sort((a, b) => a.zIndex - b.zIndex),
-      [entries]
-    );
-    const unifiedStackIndex = sortedAllByZ.findIndex((e) => e.id === selectedLayerId);
-    const isBottommost = unifiedStackIndex === 0;
-    const isTopmost = unifiedStackIndex === sortedAllByZ.length - 1;
-
     // Add overlay menu state
     const [menuOpen, setMenuOpen] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -650,49 +675,22 @@ const UnifiedLayerList: React.FC<{
       }
     };
 
-    /** Render z-index order controls for any layer type.  Uses the unified
-     *  stack to find neighbors regardless of whether the selected layer is
-     *  a video input, text overlay, or image overlay. */
-    const renderZIndexFooter = (currentZIndex: number, onZChange: (z: number) => void) => (
-      <ZIndexRow>
-        <ControlLabel>Order</ControlLabel>
-        <SKTooltip content="Send backward">
-          <StackButton
-            disabled={disabled || isBottommost}
-            className="nodrag nopan"
-            onClick={() => {
-              if (isBottommost) return;
-              const below = sortedAllByZ[unifiedStackIndex - 1];
-              onZChange(below.zIndex - 1);
-            }}
-          >
-            ▼
-          </StackButton>
-        </SKTooltip>
-        <NumericInput
-          type="number"
-          value={currentZIndex}
-          onChange={(e) => {
-            const val = Number.parseInt(e.target.value, 10);
-            if (!Number.isNaN(val)) onZChange(val);
-          }}
-          disabled={disabled}
-          className="nodrag nopan"
-        />
-        <SKTooltip content="Bring forward">
-          <StackButton
-            disabled={disabled || isTopmost}
-            className="nodrag nopan"
-            onClick={() => {
-              if (isTopmost) return;
-              const above = sortedAllByZ[unifiedStackIndex + 1];
-              onZChange(above.zIndex + 1);
-            }}
-          >
-            ▲
-          </StackButton>
-        </SKTooltip>
-      </ZIndexRow>
+    /** Reassign z-index values after a drag-to-reorder in the layer list.
+     *  The list is rendered top-to-bottom = highest z first, so position 0
+     *  in the reordered array gets the highest z-index. */
+    const handleReorder = useCallback(
+      (reordered: UnifiedLayerEntry[]) => {
+        const maxZ = reordered.length - 1;
+        for (let i = 0; i < reordered.length; i++) {
+          const entry = reordered[i];
+          const newZ = maxZ - i;
+          if (entry.zIndex === newZ) continue; // already correct
+          if (entry.kind === 'video') onZIndexChange(entry.id, newZ);
+          else if (entry.kind === 'text') onUpdateText(entry.id, { zIndex: newZ });
+          else if (entry.kind === 'image') onUpdateImage(entry.id, { zIndex: newZ });
+        }
+      },
+      [onZIndexChange, onUpdateText, onUpdateImage]
     );
 
     return (
@@ -729,56 +727,70 @@ const UnifiedLayerList: React.FC<{
 
         {entries.length === 0 && <NoSelectionText>No layers configured</NoSelectionText>}
 
-        {entries.map((entry) => (
-          <LayerListItem
-            key={entry.id}
-            isSelected={entry.id === selectedLayerId}
-            isHidden={!entry.visible}
-            className="nodrag nopan"
-            onClick={() => onSelectLayer(entry.id === selectedLayerId ? null : entry.id)}
-          >
-            <OverlayIcon>{iconForKind(entry.kind)}</OverlayIcon>
-            <OverlayLabel style={{ fontWeight: entry.id === selectedLayerId ? 600 : 400 }}>
-              {entry.label}
-            </OverlayLabel>
-            <span
-              style={{
-                fontSize: 9,
-                color: 'var(--sk-text-muted)',
-                fontVariantNumeric: 'tabular-nums',
-                flexShrink: 0,
-              }}
+        <Reorder.Group
+          axis="y"
+          values={entries}
+          onReorder={handleReorder}
+          as="div"
+          style={{ listStyle: 'none', padding: 0, margin: 0 }}
+        >
+          {entries.map((entry) => (
+            <Reorder.Item
+              key={entry.id}
+              value={entry}
+              as="div"
+              style={{ listStyle: 'none' }}
+              dragListener={!disabled}
             >
-              z:{entry.zIndex}
-            </span>
-            <SKTooltip content={entry.visible ? 'Hide layer' : 'Show layer'}>
-              <VisibilityButton
+              <LayerListItem
+                isSelected={entry.id === selectedLayerId}
+                isHidden={!entry.visible}
                 className="nodrag nopan"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onToggleVisibility(entry.id);
-                }}
+                onClick={() => onSelectLayer(entry.id === selectedLayerId ? null : entry.id)}
               >
-                {entry.visible ? <Eye size={12} /> : <EyeOff size={12} />}
-              </VisibilityButton>
-            </SKTooltip>
-            {(entry.kind === 'text' || entry.kind === 'image') && (
-              <SKTooltip content="Remove layer">
-                <RemoveButton
-                  disabled={disabled}
-                  className="nodrag nopan"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (entry.kind === 'text') onRemoveText(entry.id);
-                    else onRemoveImage(entry.id);
+                <GripVertical
+                  size={11}
+                  style={{
+                    color: 'var(--sk-text-muted)',
+                    cursor: disabled ? 'not-allowed' : 'grab',
+                    flexShrink: 0,
+                    opacity: 0.5,
                   }}
-                >
-                  <X size={12} />
-                </RemoveButton>
-              </SKTooltip>
-            )}
-          </LayerListItem>
-        ))}
+                />
+                <OverlayIcon>{iconForKind(entry.kind)}</OverlayIcon>
+                <OverlayLabel style={{ fontWeight: entry.id === selectedLayerId ? 600 : 400 }}>
+                  {entry.label}
+                </OverlayLabel>
+                <SKTooltip content={entry.visible ? 'Hide layer' : 'Show layer'}>
+                  <VisibilityButton
+                    className="nodrag nopan"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onToggleVisibility(entry.id);
+                    }}
+                  >
+                    {entry.visible ? <Eye size={12} /> : <EyeOff size={12} />}
+                  </VisibilityButton>
+                </SKTooltip>
+                {(entry.kind === 'text' || entry.kind === 'image') && (
+                  <SKTooltip content="Remove layer">
+                    <RemoveButton
+                      disabled={disabled}
+                      className="nodrag nopan"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (entry.kind === 'text') onRemoveText(entry.id);
+                        else onRemoveImage(entry.id);
+                      }}
+                    >
+                      <X size={12} />
+                    </RemoveButton>
+                  </SKTooltip>
+                )}
+              </LayerListItem>
+            </Reorder.Item>
+          ))}
+        </Reorder.Group>
 
         {/* Controls for the selected video layer */}
         {selectedLayer && (
@@ -791,9 +803,6 @@ const UnifiedLayerList: React.FC<{
             onOpacityChange={(v) => onOpacityChange(selectedLayer.id, v)}
             onRotationChange={(v) => onRotationChange(selectedLayer.id, v)}
             disabled={disabled}
-            footer={renderZIndexFooter(selectedLayer.zIndex, (z) =>
-              onZIndexChange(selectedLayer.id, z)
-            )}
           />
         )}
 
@@ -808,9 +817,6 @@ const UnifiedLayerList: React.FC<{
             onOpacityChange={(v) => onUpdateText(selectedTextOverlay.id, { opacity: v })}
             onRotationChange={(v) => onUpdateText(selectedTextOverlay.id, { rotationDegrees: v })}
             disabled={disabled}
-            footer={renderZIndexFooter(selectedTextOverlay.zIndex, (z) =>
-              onUpdateText(selectedTextOverlay.id, { zIndex: z })
-            )}
           >
             <OverlayEditRow style={{ paddingLeft: 0 }}>
               <OverlayTextInput
@@ -835,6 +841,56 @@ const UnifiedLayerList: React.FC<{
                 className="nodrag nopan"
               />
             </OverlayEditRow>
+            <OverlayEditRow style={{ paddingLeft: 0 }}>
+              <span style={{ color: 'var(--sk-text-muted)' }}>Font</span>
+              <FontSelect
+                value={selectedTextOverlay.fontName}
+                onChange={(e) => onUpdateText(selectedTextOverlay.id, { fontName: e.target.value })}
+                disabled={disabled}
+                className="nodrag nopan"
+              >
+                {FONT_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </FontSelect>
+            </OverlayEditRow>
+            <OverlayEditRow style={{ paddingLeft: 0 }}>
+              <span style={{ color: 'var(--sk-text-muted)' }}>Color</span>
+              <ColorInput
+                type="color"
+                value={rgbaToHex(selectedTextOverlay.color)}
+                onChange={(e) =>
+                  onUpdateText(selectedTextOverlay.id, {
+                    color: hexToRgba(e.target.value, selectedTextOverlay.color[3]),
+                  })
+                }
+                disabled={disabled}
+                className="nodrag nopan"
+              />
+              <SliderInput
+                type="range"
+                min="0"
+                max="255"
+                step="1"
+                value={selectedTextOverlay.color[3]}
+                onChange={(e) =>
+                  onUpdateText(selectedTextOverlay.id, {
+                    color: [
+                      selectedTextOverlay.color[0],
+                      selectedTextOverlay.color[1],
+                      selectedTextOverlay.color[2],
+                      Number.parseInt(e.target.value, 10),
+                    ],
+                  })
+                }
+                disabled={disabled}
+                className="nodrag nopan"
+                title="Alpha"
+              />
+              <ControlValue>{selectedTextOverlay.color[3]}</ControlValue>
+            </OverlayEditRow>
           </LayerPropertyControls>
         )}
 
@@ -849,9 +905,6 @@ const UnifiedLayerList: React.FC<{
             onOpacityChange={(v) => onUpdateImage(selectedImageOverlay.id, { opacity: v })}
             onRotationChange={(v) => onUpdateImage(selectedImageOverlay.id, { rotationDegrees: v })}
             disabled={disabled}
-            footer={renderZIndexFooter(selectedImageOverlay.zIndex, (z) =>
-              onUpdateImage(selectedImageOverlay.id, { zIndex: z })
-            )}
           />
         )}
       </LayerControls>
