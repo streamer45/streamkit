@@ -42,6 +42,52 @@ pub mod vp9;
 
 // ── Shared font-rendering helpers ────────────────────────────────────────────
 
+/// Measure the pixel dimensions a single-line text string would occupy when
+/// rendered at `font_size`.  Returns `(width, height)`.
+///
+/// The width is the sum of advance widths.  The height uses the same baseline
+/// logic as [`blit_text_rgba`] and adds enough room for descenders.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
+pub fn measure_text(font: &fontdue::Font, font_size: f32, text: &str) -> (u32, u32) {
+    if text.is_empty() {
+        return (0, 0);
+    }
+
+    let (ref_metrics, _) = font.rasterize('A', font_size);
+    let baseline_y = ref_metrics.height as f32;
+
+    let mut total_width: f32 = 0.0;
+    let mut max_top: i32 = 0; // highest pixel above origin_y (always >= 0)
+    let mut max_bottom: i32 = 0; // lowest pixel below origin_y
+
+    for ch in text.chars() {
+        let (metrics, _) = font.rasterize(ch, font_size);
+
+        let gy = (baseline_y - metrics.ymin as f32) as i32 - metrics.height as i32;
+        let glyph_bottom = gy + metrics.height as i32;
+
+        if gy < max_top {
+            max_top = gy;
+        }
+        if glyph_bottom > max_bottom {
+            max_bottom = glyph_bottom;
+        }
+
+        total_width += metrics.advance_width;
+    }
+
+    let w = total_width.ceil() as u32;
+    let h =
+        if max_bottom > max_top { (max_bottom - max_top) as u32 } else { font_size.ceil() as u32 };
+
+    (w, h)
+}
+
 /// Alpha-blend a single text string into a packed RGBA8 buffer.
 ///
 /// `origin_x` / `origin_y` are the top-left pixel coordinates where the first

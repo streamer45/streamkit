@@ -1106,10 +1106,15 @@ mod tests {
             font_size: 24,
             font_path: None,
             font_data_base64: None,
+            font_name: None,
         };
         let overlay = rasterize_text_overlay(&cfg);
-        assert_eq!(overlay.width, 64);
-        assert_eq!(overlay.height, 32);
+        // Width and height should be at least the original rect dimensions.
+        assert!(overlay.width >= 64);
+        assert!(overlay.height >= 32);
+        // The rect in the returned overlay should match the bitmap dimensions.
+        assert_eq!(overlay.rect.width, overlay.width);
+        assert_eq!(overlay.rect.height, overlay.height);
         // Should have some non-zero pixels (text was drawn).
         assert!(overlay.rgba_data.iter().any(|&b| b > 0));
     }

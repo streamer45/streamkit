@@ -39,6 +39,8 @@ export interface TextOverlayState {
   height: number;
   color: [number, number, number, number];
   fontSize: number;
+  /** Named font from the server's curated set (e.g. "dejavu-sans"). */
+  fontName: string;
   opacity: number;
   rotationDegrees: number;
   zIndex: number;
@@ -110,6 +112,9 @@ export interface UseCompositorLayersResult {
   addImageOverlay: (dataBase64: string, naturalWidth?: number, naturalHeight?: number) => void;
   updateImageOverlay: (id: string, updates: Partial<Omit<ImageOverlayState, 'id'>>) => void;
   removeImageOverlay: (id: string) => void;
+  /** Atomically reassign z-index values for all layer types in one commit.
+   *  Each entry maps a layer id + kind to its new z-index. */
+  reorderLayers: (entries: Array<{ id: string; kind: LayerKind; zIndex: number }>) => void;
 }
 
 interface Rect {
@@ -131,6 +136,7 @@ interface TextOverlayConfig {
   rect: Rect;
   color?: [number, number, number, number];
   font_size?: number;
+  font_name?: string;
   opacity?: number;
   rotation_degrees?: number;
   z_index?: number;
@@ -181,6 +187,7 @@ function parseTextOverlays(params: Record<string, unknown>): TextOverlayState[] 
     height: o.rect?.height ?? 40,
     color: o.color ?? [255, 255, 255, 255],
     fontSize: o.font_size ?? 24,
+    fontName: o.font_name ?? 'dejavu-sans',
     opacity: o.opacity ?? 1.0,
     rotationDegrees: o.rotation_degrees ?? 0,
     zIndex: o.z_index ?? 100 + i,
@@ -220,6 +227,7 @@ function serializeTextOverlays(overlays: TextOverlayState[]): TextOverlayConfig[
     },
     color: o.color,
     font_size: o.fontSize,
+    font_name: o.fontName,
     opacity: o.visible ? Math.round(o.opacity * 100) / 100 : 0,
     rotation_degrees: Math.round(o.rotationDegrees * 10) / 10,
     z_index: o.zIndex,
@@ -293,13 +301,8 @@ function mergeOverlayState<T extends OverlayBase>(
   return changed ? merged : current;
 }
 
-/** Build the full compositor config from current params + updated layers */
-function buildConfig(
-  params: Record<string, unknown>,
-  layers: LayerState[],
-  textOverlays?: TextOverlayState[],
-  imageOverlays?: ImageOverlayState[]
-): Record<string, unknown> {
+/** Serialize video layers to the wire format used by the backend. */
+function serializeLayers(layers: LayerState[]): Record<string, LayerConfig> {
   const layersMap: Record<string, LayerConfig> = {};
   for (const layer of layers) {
     layersMap[layer.id] = {
@@ -314,11 +317,20 @@ function buildConfig(
       rotation_degrees: Math.round(layer.rotationDegrees * 10) / 10,
     };
   }
+  return layersMap;
+}
 
+/** Build the full compositor config from current params + updated layers */
+function buildConfig(
+  params: Record<string, unknown>,
+  layers: LayerState[],
+  textOverlays?: TextOverlayState[],
+  imageOverlays?: ImageOverlayState[]
+): Record<string, unknown> {
   return {
     width: params.width ?? 1280,
     height: params.height ?? 720,
-    layers: layersMap,
+    layers: serializeLayers(layers),
     image_overlays: imageOverlays
       ? serializeImageOverlays(imageOverlays)
       : (params.image_overlays ?? []),
@@ -413,7 +425,11 @@ export const useCompositorLayers = (
       mergeOverlayState(
         currentText,
         parseTextOverlays(params),
-        (a, b) => a.text !== b.text || a.fontSize !== b.fontSize
+        (a, b) =>
+          a.text !== b.text ||
+          a.fontSize !== b.fontSize ||
+          a.fontName !== b.fontName ||
+          a.color.some((v, i) => v !== b.color[i])
       )
     );
     setImageOverlays((currentImg) => mergeOverlayState(currentImg, parseImageOverlays(params)));
@@ -970,6 +986,18 @@ export const useCompositorLayers = (
     [commitOverlays]
   );
 
+  // ── Z-index helpers ──────────────────────────────────────────────────────
+
+  /** Return the highest z-index currently in use across all layer types.
+   *  Returns -1 when there are no layers so the first overlay gets z 0. */
+  const maxZIndex = useCallback((): number => {
+    let max = -1;
+    for (const l of layersRef.current) if (l.zIndex > max) max = l.zIndex;
+    for (const o of textOverlaysRef.current) if (o.zIndex > max) max = o.zIndex;
+    for (const o of imageOverlaysRef.current) if (o.zIndex > max) max = o.zIndex;
+    return max;
+  }, []);
+
   // ── Text overlay CRUD ─────────────────────────────────────────────────────
 
   const addTextOverlay = useCallback(
@@ -987,9 +1015,10 @@ export const useCompositorLayers = (
             height: 40,
             color: [255, 255, 255, 255],
             fontSize: 24,
+            fontName: 'dejavu-sans',
             opacity: 1.0,
             rotationDegrees: 0,
-            zIndex: 100 + prev.length,
+            zIndex: maxZIndex() + 1,
             visible: true,
           },
         ];
@@ -999,12 +1028,34 @@ export const useCompositorLayers = (
         return next;
       });
     },
-    [commitOverlays]
+    [commitOverlays, maxZIndex]
   );
 
   const updateTextOverlay = useCallback(
-    (id: string, updates: Partial<Omit<TextOverlayState, 'id'>>) =>
-      updateOverlay(id, updates, setTextOverlays, (next) => [next, imageOverlaysRef.current]),
+    (id: string, updates: Partial<Omit<TextOverlayState, 'id'>>) => {
+      // Auto-expand the rect so the rendered text is never clipped.
+      // The backend expands the bitmap to fit, but the UI should keep
+      // the interactive rect in sync.
+      const existing = textOverlaysRef.current.find((o) => o.id === id);
+      if (existing) {
+        const fontSize = updates.fontSize ?? existing.fontSize;
+        const text = updates.text ?? existing.text;
+
+        // Height: ~1.4× font size covers ascenders + descenders.
+        const minHeight = Math.ceil(fontSize * 1.4);
+        if (existing.height < minHeight && !('height' in updates)) {
+          updates = { ...updates, height: minHeight };
+        }
+
+        // Width: ~0.6× font size per character is a reasonable estimate
+        // for proportional fonts.  The backend will expand if still short.
+        const minWidth = Math.ceil(text.length * fontSize * 0.6);
+        if (existing.width < minWidth && !('width' in updates)) {
+          updates = { ...updates, width: minWidth };
+        }
+      }
+      updateOverlay(id, updates, setTextOverlays, (next) => [next, imageOverlaysRef.current]);
+    },
     [updateOverlay]
   );
 
@@ -1044,8 +1095,7 @@ export const useCompositorLayers = (
             height: h,
             opacity: 1.0,
             rotationDegrees: 0,
-            // Z-index band: image overlays use 200+ (video: 0–99, text: 100–199)
-            zIndex: 200 + prev.length,
+            zIndex: maxZIndex() + 1,
             visible: true,
           },
         ];
@@ -1055,7 +1105,7 @@ export const useCompositorLayers = (
         return next;
       });
     },
-    [commitOverlays]
+    [commitOverlays, maxZIndex]
   );
 
   const updateImageOverlay = useCallback(
@@ -1071,6 +1121,85 @@ export const useCompositorLayers = (
         next as unknown as ImageOverlayState[],
       ]),
     [removeOverlay]
+  );
+
+  // ── Batch reorder ─────────────────────────────────────────────────────────
+  //
+  // Atomically update z-index for every layer in a single commit so that
+  // drag-to-reorder doesn't fire N individual updates that race against
+  // each other via stale refs.
+
+  const reorderLayers = useCallback(
+    (entries: Array<{ id: string; kind: LayerKind; zIndex: number }>) => {
+      // Build lookup: id → new z-index
+      const zMap = new Map<string, number>();
+      for (const e of entries) zMap.set(e.id, e.zIndex);
+
+      // Update video layers
+      let nextLayers = layersRef.current;
+      const hasVideoChanges = nextLayers.some((l) => {
+        const z = zMap.get(l.id);
+        return z !== undefined && z !== l.zIndex;
+      });
+      if (hasVideoChanges) {
+        nextLayers = nextLayers
+          .map((l) => {
+            const z = zMap.get(l.id);
+            return z !== undefined && z !== l.zIndex ? { ...l, zIndex: z } : l;
+          })
+          .sort((a, b) => a.zIndex - b.zIndex);
+        setLayers(nextLayers);
+      }
+
+      // Update text overlays
+      let nextText = textOverlaysRef.current;
+      const hasTextChanges = nextText.some((o) => {
+        const z = zMap.get(o.id);
+        return z !== undefined && z !== o.zIndex;
+      });
+      if (hasTextChanges) {
+        nextText = nextText.map((o) => {
+          const z = zMap.get(o.id);
+          return z !== undefined && z !== o.zIndex ? { ...o, zIndex: z } : o;
+        });
+        setTextOverlays(nextText);
+      }
+
+      // Update image overlays
+      let nextImg = imageOverlaysRef.current;
+      const hasImgChanges = nextImg.some((o) => {
+        const z = zMap.get(o.id);
+        return z !== undefined && z !== o.zIndex;
+      });
+      if (hasImgChanges) {
+        nextImg = nextImg.map((o) => {
+          const z = zMap.get(o.id);
+          return z !== undefined && z !== o.zIndex ? { ...o, zIndex: z } : o;
+        });
+        setImageOverlays(nextImg);
+      }
+
+      // Single commit with all three updated arrays
+      if (hasVideoChanges || hasTextChanges || hasImgChanges) {
+        overlayCommitGuardRef.current = Date.now();
+        if (onConfigChange) {
+          const config = buildConfig(params, nextLayers, nextText, nextImg);
+          onConfigChange(nodeId, config);
+        } else if (onParamChange) {
+          // Video layers — use immediate onParamChange (not throttled) so
+          // all layer types commit atomically in the same tick.
+          if (hasVideoChanges) {
+            onParamChange(nodeId, 'layers', serializeLayers(nextLayers));
+          }
+          // Overlays
+          if (hasTextChanges || hasImgChanges) {
+            onParamChange(nodeId, 'text_overlays', serializeTextOverlays(nextText));
+            onParamChange(nodeId, 'image_overlays', serializeImageOverlays(nextImg));
+          }
+        }
+      }
+    },
+    [nodeId, onConfigChange, onParamChange, params]
   );
 
   return {
@@ -1093,5 +1222,6 @@ export const useCompositorLayers = (
     addImageOverlay,
     updateImageOverlay,
     removeImageOverlay,
+    reorderLayers,
   };
 };

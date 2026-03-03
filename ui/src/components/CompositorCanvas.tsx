@@ -34,6 +34,35 @@ function layerHue(index: number): number {
   return (index * 137.508) % 360;
 }
 
+// ── Font mapping ────────────────────────────────────────────────────────────
+
+/** Map backend font names to CSS font-family values for canvas preview.
+ *  These use web-safe fallback stacks so the preview is visually
+ *  representative even when the exact system font is not installed. */
+const FONT_FAMILY_MAP: Record<string, string> = {
+  'dejavu-sans': '"DejaVu Sans", "Verdana", sans-serif',
+  'dejavu-serif': '"DejaVu Serif", "Georgia", serif',
+  'dejavu-sans-mono': '"DejaVu Sans Mono", "Courier New", monospace',
+  'dejavu-sans-bold': '"DejaVu Sans", "Verdana", sans-serif',
+  'dejavu-serif-bold': '"DejaVu Serif", "Georgia", serif',
+  'dejavu-sans-mono-bold': '"DejaVu Sans Mono", "Courier New", monospace',
+  'liberation-sans': '"Liberation Sans", "Arial", sans-serif',
+  'liberation-serif': '"Liberation Serif", "Times New Roman", serif',
+  'liberation-mono': '"Liberation Mono", "Courier New", monospace',
+  freesans: '"FreeSans", "Arial", sans-serif',
+  freeserif: '"FreeSerif", "Times New Roman", serif',
+  freemono: '"FreeMono", "Courier New", monospace',
+};
+
+/** Return true when the backend font name maps to a bold variant. */
+function isBoldFont(fontName: string): boolean {
+  return fontName.endsWith('-bold');
+}
+
+function cssFontFamily(fontName: string): string {
+  return FONT_FAMILY_MAP[fontName] ?? 'sans-serif';
+}
+
 // ── Styled components ───────────────────────────────────────────────────────
 
 const CanvasOuter = styled.div`
@@ -356,7 +385,10 @@ const TextOverlayLayer: React.FC<{
           onChange={(e) => setEditText(e.target.value)}
           onBlur={commitEdit}
           onKeyDown={handleKeyDown}
-          style={{ fontSize: Math.max(10, overlay.fontSize * scale * 0.6) }}
+          style={{
+            fontSize: Math.max(10, overlay.fontSize * scale * 0.6),
+            fontFamily: cssFontFamily(overlay.fontName),
+          }}
         />
       ) : (
         <TextContent>
@@ -364,7 +396,8 @@ const TextOverlayLayer: React.FC<{
             style={{
               fontSize: Math.max(8, overlay.fontSize * scale),
               color: textColor,
-              fontWeight: 600,
+              fontFamily: cssFontFamily(overlay.fontName),
+              fontWeight: isBoldFont(overlay.fontName) ? 700 : 600,
               textShadow: '0 1px 3px rgba(0,0,0,0.7)',
               lineHeight: 1.2,
               textAlign: 'center',
