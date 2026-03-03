@@ -158,13 +158,14 @@ fn load_font(config: &TextOverlayConfig) -> Result<fontdue::Font, String> {
             .decode(b64)
             .map_err(|e| format!("Invalid base64 in font_data_base64: {e}"))?
     } else if let Some(ref name) = config.font_name {
-        let path = KNOWN_FONTS
-            .iter()
-            .find(|(n, _)| *n == name.as_str())
-            .map(|(_, p)| *p)
-            .ok_or_else(|| format!("Unknown font name '{name}'. Available: {}", known_font_names()))?;
+        let path =
+            KNOWN_FONTS.iter().find(|(n, _)| *n == name.as_str()).map(|(_, p)| *p).ok_or_else(
+                || format!("Unknown font name '{name}'. Available: {}", known_font_names()),
+            )?;
         std::fs::read(path).map_err(|e| {
-            tracing::warn!("Named font '{name}' not found at '{path}': {e}. Is the font package installed?");
+            tracing::warn!(
+                "Named font '{name}' not found at '{path}': {e}. Is the font package installed?"
+            );
             format!("Failed to read named font '{name}' at '{path}': {e}")
         })?
     } else if let Some(ref path) = config.font_path {
