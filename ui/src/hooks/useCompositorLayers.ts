@@ -982,6 +982,18 @@ export const useCompositorLayers = (
     [commitOverlays]
   );
 
+  // ── Z-index helpers ──────────────────────────────────────────────────────
+
+  /** Return the highest z-index currently in use across all layer types.
+   *  Returns -1 when there are no layers so the first overlay gets z 0. */
+  const maxZIndex = useCallback((): number => {
+    let max = -1;
+    for (const l of layersRef.current) if (l.zIndex > max) max = l.zIndex;
+    for (const o of textOverlaysRef.current) if (o.zIndex > max) max = o.zIndex;
+    for (const o of imageOverlaysRef.current) if (o.zIndex > max) max = o.zIndex;
+    return max;
+  }, []);
+
   // ── Text overlay CRUD ─────────────────────────────────────────────────────
 
   const addTextOverlay = useCallback(
@@ -1002,7 +1014,7 @@ export const useCompositorLayers = (
             fontName: 'dejavu-sans',
             opacity: 1.0,
             rotationDegrees: 0,
-            zIndex: 100 + prev.length,
+            zIndex: maxZIndex() + 1,
             visible: true,
           },
         ];
@@ -1012,7 +1024,7 @@ export const useCompositorLayers = (
         return next;
       });
     },
-    [commitOverlays]
+    [commitOverlays, maxZIndex]
   );
 
   const updateTextOverlay = useCallback(
@@ -1070,8 +1082,7 @@ export const useCompositorLayers = (
             height: h,
             opacity: 1.0,
             rotationDegrees: 0,
-            // Z-index band: image overlays use 200+ (video: 0–99, text: 100–199)
-            zIndex: 200 + prev.length,
+            zIndex: maxZIndex() + 1,
             visible: true,
           },
         ];
@@ -1081,7 +1092,7 @@ export const useCompositorLayers = (
         return next;
       });
     },
-    [commitOverlays]
+    [commitOverlays, maxZIndex]
   );
 
   const updateImageOverlay = useCallback(
