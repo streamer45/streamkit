@@ -555,8 +555,7 @@ const UnifiedLayerList: React.FC<{
     disabled,
   }) => {
     // Build a unified list of all layers sorted by z-index (highest first for
-    // a "top-to-bottom" visual stack). Text overlays get implicit z-index
-    // 100+n, image overlays 200+n.
+    // a "top-to-bottom" visual stack).
     const entries: UnifiedLayerEntry[] = React.useMemo(() => {
       const all: UnifiedLayerEntry[] = [];
 
@@ -568,7 +567,7 @@ const UnifiedLayerList: React.FC<{
           id: o.id,
           kind: 'text',
           label: `text_${i}`,
-          zIndex: 100 + i,
+          zIndex: o.zIndex,
           visible: o.visible,
         });
       });
@@ -577,7 +576,7 @@ const UnifiedLayerList: React.FC<{
           id: o.id,
           kind: 'image',
           label: `Image #${i}`,
-          zIndex: 200 + i,
+          zIndex: o.zIndex,
           visible: o.visible,
         });
       });
@@ -589,13 +588,14 @@ const UnifiedLayerList: React.FC<{
 
     const selectedLayer = layers.find((l) => l.id === selectedLayerId);
 
-    // Compute stack navigation for video layers
-    const sortedVideoByZ = [...layers].sort((a, b) => a.zIndex - b.zIndex);
-    const stackIndex = selectedLayer
-      ? sortedVideoByZ.findIndex((l) => l.id === selectedLayer.id)
-      : -1;
-    const isBottommost = stackIndex === 0;
-    const isTopmost = stackIndex === sortedVideoByZ.length - 1;
+    // Compute unified stack navigation across all layer types
+    const sortedAllByZ = React.useMemo(
+      () => [...entries].sort((a, b) => a.zIndex - b.zIndex),
+      [entries]
+    );
+    const unifiedStackIndex = sortedAllByZ.findIndex((e) => e.id === selectedLayerId);
+    const isBottommost = unifiedStackIndex === 0;
+    const isTopmost = unifiedStackIndex === sortedAllByZ.length - 1;
 
     // Add overlay menu state
     const [menuOpen, setMenuOpen] = useState(false);
@@ -649,6 +649,51 @@ const UnifiedLayerList: React.FC<{
           return null;
       }
     };
+
+    /** Render z-index order controls for any layer type.  Uses the unified
+     *  stack to find neighbors regardless of whether the selected layer is
+     *  a video input, text overlay, or image overlay. */
+    const renderZIndexFooter = (currentZIndex: number, onZChange: (z: number) => void) => (
+      <ZIndexRow>
+        <ControlLabel>Order</ControlLabel>
+        <SKTooltip content="Send backward">
+          <StackButton
+            disabled={disabled || isBottommost}
+            className="nodrag nopan"
+            onClick={() => {
+              if (isBottommost) return;
+              const below = sortedAllByZ[unifiedStackIndex - 1];
+              onZChange(below.zIndex - 1);
+            }}
+          >
+            ▼
+          </StackButton>
+        </SKTooltip>
+        <NumericInput
+          type="number"
+          value={currentZIndex}
+          onChange={(e) => {
+            const val = Number.parseInt(e.target.value, 10);
+            if (!Number.isNaN(val)) onZChange(val);
+          }}
+          disabled={disabled}
+          className="nodrag nopan"
+        />
+        <SKTooltip content="Bring forward">
+          <StackButton
+            disabled={disabled || isTopmost}
+            className="nodrag nopan"
+            onClick={() => {
+              if (isTopmost) return;
+              const above = sortedAllByZ[unifiedStackIndex + 1];
+              onZChange(above.zIndex + 1);
+            }}
+          >
+            ▲
+          </StackButton>
+        </SKTooltip>
+      </ZIndexRow>
+    );
 
     return (
       <LayerControls>
@@ -735,7 +780,6 @@ const UnifiedLayerList: React.FC<{
           </LayerListItem>
         ))}
 
-        {/* Issue #6: visual separator between layer list and per-layer controls */}
         {/* Controls for the selected video layer */}
         {selectedLayer && (
           <LayerPropertyControls
@@ -747,47 +791,9 @@ const UnifiedLayerList: React.FC<{
             onOpacityChange={(v) => onOpacityChange(selectedLayer.id, v)}
             onRotationChange={(v) => onRotationChange(selectedLayer.id, v)}
             disabled={disabled}
-            footer={
-              <ZIndexRow>
-                <ControlLabel>Order</ControlLabel>
-                <SKTooltip content="Send backward">
-                  <StackButton
-                    disabled={disabled || isBottommost}
-                    className="nodrag nopan"
-                    onClick={() => {
-                      if (isBottommost) return;
-                      const below = sortedVideoByZ[stackIndex - 1];
-                      onZIndexChange(selectedLayer.id, below.zIndex - 1);
-                    }}
-                  >
-                    ▼
-                  </StackButton>
-                </SKTooltip>
-                <NumericInput
-                  type="number"
-                  value={selectedLayer.zIndex}
-                  onChange={(e) => {
-                    const val = Number.parseInt(e.target.value, 10);
-                    if (!Number.isNaN(val)) onZIndexChange(selectedLayer.id, val);
-                  }}
-                  disabled={disabled}
-                  className="nodrag nopan"
-                />
-                <SKTooltip content="Bring forward">
-                  <StackButton
-                    disabled={disabled || isTopmost}
-                    className="nodrag nopan"
-                    onClick={() => {
-                      if (isTopmost) return;
-                      const above = sortedVideoByZ[stackIndex + 1];
-                      onZIndexChange(selectedLayer.id, above.zIndex + 1);
-                    }}
-                  >
-                    ▲
-                  </StackButton>
-                </SKTooltip>
-              </ZIndexRow>
-            }
+            footer={renderZIndexFooter(selectedLayer.zIndex, (z) =>
+              onZIndexChange(selectedLayer.id, z)
+            )}
           />
         )}
 
@@ -802,6 +808,9 @@ const UnifiedLayerList: React.FC<{
             onOpacityChange={(v) => onUpdateText(selectedTextOverlay.id, { opacity: v })}
             onRotationChange={(v) => onUpdateText(selectedTextOverlay.id, { rotationDegrees: v })}
             disabled={disabled}
+            footer={renderZIndexFooter(selectedTextOverlay.zIndex, (z) =>
+              onUpdateText(selectedTextOverlay.id, { zIndex: z })
+            )}
           >
             <OverlayEditRow style={{ paddingLeft: 0 }}>
               <OverlayTextInput
@@ -840,6 +849,9 @@ const UnifiedLayerList: React.FC<{
             onOpacityChange={(v) => onUpdateImage(selectedImageOverlay.id, { opacity: v })}
             onRotationChange={(v) => onUpdateImage(selectedImageOverlay.id, { rotationDegrees: v })}
             disabled={disabled}
+            footer={renderZIndexFooter(selectedImageOverlay.zIndex, (z) =>
+              onUpdateImage(selectedImageOverlay.id, { zIndex: z })
+            )}
           />
         )}
       </LayerControls>

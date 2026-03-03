@@ -975,10 +975,11 @@ export const useCompositorLayers = (
   const addTextOverlay = useCallback(
     (text: string) => {
       setTextOverlays((prev) => {
+        const newId = `text_${prev.length}`;
         const next: TextOverlayState[] = [
           ...prev,
           {
-            id: `text_${prev.length}`,
+            id: newId,
             text,
             x: 40,
             y: 40 + prev.length * 50,
@@ -988,11 +989,13 @@ export const useCompositorLayers = (
             fontSize: 24,
             opacity: 1.0,
             rotationDegrees: 0,
-            zIndex: 0,
+            zIndex: 100 + prev.length,
             visible: true,
           },
         ];
         commitOverlays(next, imageOverlaysRef.current);
+        // Auto-select the newly added overlay so it's immediately interactive
+        setSelectedLayerId(newId);
         return next;
       });
     },
@@ -1029,10 +1032,11 @@ export const useCompositorLayers = (
           w = Math.max(1, Math.round(naturalWidth * scale));
           h = Math.max(1, Math.round(naturalHeight * scale));
         }
+        const newId = `img_${prev.length}`;
         const next: ImageOverlayState[] = [
           ...prev,
           {
-            id: `img_${prev.length}`,
+            id: newId,
             dataBase64,
             x: 40,
             y: 40 + prev.length * 60,
@@ -1046,6 +1050,8 @@ export const useCompositorLayers = (
           },
         ];
         commitOverlays(textOverlaysRef.current, next);
+        // Auto-select the newly added overlay so it's immediately interactive
+        setSelectedLayerId(newId);
         return next;
       });
     },
