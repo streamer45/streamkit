@@ -97,8 +97,9 @@ pub struct TextOverlayConfig {
     /// Named font from a curated set of system fonts.
     /// Takes precedence over `font_path` but not `font_data_base64`.
     /// Available names: "dejavu-sans", "dejavu-serif", "dejavu-sans-mono",
-    /// "dejavu-sans-bold", "liberation-sans", "liberation-serif",
-    /// "liberation-mono", "freesans", "freeserif", "freemono".
+    /// "dejavu-sans-bold", "dejavu-serif-bold", "dejavu-sans-mono-bold",
+    /// "liberation-sans", "liberation-serif", "liberation-mono",
+    /// "freesans", "freeserif", "freemono".
     #[serde(default)]
     pub font_name: Option<String>,
 }

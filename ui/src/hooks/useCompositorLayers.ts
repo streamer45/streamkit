@@ -301,13 +301,8 @@ function mergeOverlayState<T extends OverlayBase>(
   return changed ? merged : current;
 }
 
-/** Build the full compositor config from current params + updated layers */
-function buildConfig(
-  params: Record<string, unknown>,
-  layers: LayerState[],
-  textOverlays?: TextOverlayState[],
-  imageOverlays?: ImageOverlayState[]
-): Record<string, unknown> {
+/** Serialize video layers to the wire format used by the backend. */
+function serializeLayers(layers: LayerState[]): Record<string, LayerConfig> {
   const layersMap: Record<string, LayerConfig> = {};
   for (const layer of layers) {
     layersMap[layer.id] = {
@@ -322,11 +317,20 @@ function buildConfig(
       rotation_degrees: Math.round(layer.rotationDegrees * 10) / 10,
     };
   }
+  return layersMap;
+}
 
+/** Build the full compositor config from current params + updated layers */
+function buildConfig(
+  params: Record<string, unknown>,
+  layers: LayerState[],
+  textOverlays?: TextOverlayState[],
+  imageOverlays?: ImageOverlayState[]
+): Record<string, unknown> {
   return {
     width: params.width ?? 1280,
     height: params.height ?? 720,
-    layers: layersMap,
+    layers: serializeLayers(layers),
     image_overlays: imageOverlays
       ? serializeImageOverlays(imageOverlays)
       : (params.image_overlays ?? []),
@@ -1182,9 +1186,10 @@ export const useCompositorLayers = (
           const config = buildConfig(params, nextLayers, nextText, nextImg);
           onConfigChange(nodeId, config);
         } else if (onParamChange) {
-          // Video layers
+          // Video layers — use immediate onParamChange (not throttled) so
+          // all layer types commit atomically in the same tick.
           if (hasVideoChanges) {
-            throttledConfigChange?.(nextLayers);
+            onParamChange(nodeId, 'layers', serializeLayers(nextLayers));
           }
           // Overlays
           if (hasTextChanges || hasImgChanges) {
@@ -1194,7 +1199,7 @@ export const useCompositorLayers = (
         }
       }
     },
-    [nodeId, onConfigChange, onParamChange, params, throttledConfigChange]
+    [nodeId, onConfigChange, onParamChange, params]
   );
 
   return {
