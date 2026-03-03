@@ -183,7 +183,7 @@ function parseTextOverlays(params: Record<string, unknown>): TextOverlayState[] 
     fontSize: o.font_size ?? 24,
     opacity: o.opacity ?? 1.0,
     rotationDegrees: o.rotation_degrees ?? 0,
-    zIndex: o.z_index ?? 0,
+    zIndex: o.z_index ?? 100 + i,
     visible: true,
   }));
 }
@@ -240,6 +240,57 @@ function serializeImageOverlays(overlays: ImageOverlayState[]): ImageOverlayConf
     rotation_degrees: Math.round(o.rotationDegrees * 10) / 10,
     z_index: o.zIndex,
   }));
+}
+
+/** Common spatial fields shared by all overlay state types (text and image). */
+interface OverlayBase {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  opacity: number;
+  rotationDegrees: number;
+  zIndex: number;
+  visible: boolean;
+}
+
+/** Merge parsed overlays with existing state, preserving client-side visibility.
+ *  Returns the same array reference if nothing changed (avoiding re-renders).
+ *  An optional `hasExtraChanges` comparator can detect changes in type-specific
+ *  fields (e.g. `text`, `fontSize` for text overlays). */
+function mergeOverlayState<T extends OverlayBase>(
+  current: T[],
+  parsed: T[],
+  hasExtraChanges?: (a: T, b: T) => boolean
+): T[] {
+  const merged = parsed.map((p) => {
+    const existing = current.find((o) => o.id === p.id);
+    if (existing) {
+      return {
+        ...p,
+        visible: existing.visible,
+        opacity: existing.visible ? p.opacity : existing.opacity,
+      };
+    }
+    return p;
+  });
+  const changed =
+    merged.length !== current.length ||
+    merged.some(
+      (m, i) =>
+        m.id !== current[i].id ||
+        m.x !== current[i].x ||
+        m.y !== current[i].y ||
+        m.width !== current[i].width ||
+        m.height !== current[i].height ||
+        m.opacity !== current[i].opacity ||
+        m.rotationDegrees !== current[i].rotationDegrees ||
+        m.zIndex !== current[i].zIndex ||
+        m.visible !== current[i].visible ||
+        (hasExtraChanges ? hasExtraChanges(m, current[i]) : false)
+    );
+  return changed ? merged : current;
 }
 
 /** Build the full compositor config from current params + updated layers */
@@ -344,37 +395,12 @@ export const useCompositorLayers = (
   useEffect(() => {
     if (dragStateRef.current) return;
     const parsed = parseLayers(params, canvasWidth, canvasHeight);
-    // Preserve client-side `visible` state from existing layers
-    const current = layersRef.current;
-    const merged = parsed.map((p) => {
-      const existing = current.find((l) => l.id === p.id);
-      return existing
-        ? {
-            ...p,
-            visible: existing.visible,
-            opacity: existing.visible ? p.opacity : existing.opacity,
-          }
-        : p;
-    });
 
     // Issue #4 fix: only update layers state if the merged result actually
     // differs from current state.  This prevents unnecessary re-renders that
     // cause positions to briefly revert when switching selected layers.
-    const layersChanged =
-      merged.length !== current.length ||
-      merged.some(
-        (m, i) =>
-          m.id !== current[i].id ||
-          m.x !== current[i].x ||
-          m.y !== current[i].y ||
-          m.width !== current[i].width ||
-          m.height !== current[i].height ||
-          m.opacity !== current[i].opacity ||
-          m.zIndex !== current[i].zIndex ||
-          m.rotationDegrees !== current[i].rotationDegrees ||
-          m.visible !== current[i].visible
-      );
-    if (layersChanged) {
+    const merged = mergeOverlayState(layersRef.current, parsed);
+    if (merged !== layersRef.current) {
       setLayers(merged);
     }
 
@@ -383,68 +409,14 @@ export const useCompositorLayers = (
     const sinceCommit = Date.now() - overlayCommitGuardRef.current;
     if (sinceCommit < 3000) return;
 
-    setTextOverlays((currentText) => {
-      const parsed = parseTextOverlays(params);
-      const merged = parsed.map((p) => {
-        const existing = currentText.find((o) => o.id === p.id);
-        if (existing) {
-          return {
-            ...p,
-            visible: existing.visible,
-            opacity: existing.visible ? p.opacity : existing.opacity,
-          };
-        }
-        return p;
-      });
-      // Skip update if nothing changed
-      const changed =
-        merged.length !== currentText.length ||
-        merged.some(
-          (m, i) =>
-            m.id !== currentText[i].id ||
-            m.x !== currentText[i].x ||
-            m.y !== currentText[i].y ||
-            m.width !== currentText[i].width ||
-            m.height !== currentText[i].height ||
-            m.opacity !== currentText[i].opacity ||
-            m.rotationDegrees !== currentText[i].rotationDegrees ||
-            m.zIndex !== currentText[i].zIndex ||
-            m.text !== currentText[i].text ||
-            m.fontSize !== currentText[i].fontSize ||
-            m.visible !== currentText[i].visible
-        );
-      return changed ? merged : currentText;
-    });
-    setImageOverlays((currentImg) => {
-      const parsed = parseImageOverlays(params);
-      const merged = parsed.map((p) => {
-        const existing = currentImg.find((o) => o.id === p.id);
-        if (existing) {
-          return {
-            ...p,
-            visible: existing.visible,
-            opacity: existing.visible ? p.opacity : existing.opacity,
-          };
-        }
-        return p;
-      });
-      // Skip update if nothing changed
-      const changed =
-        merged.length !== currentImg.length ||
-        merged.some(
-          (m, i) =>
-            m.id !== currentImg[i].id ||
-            m.x !== currentImg[i].x ||
-            m.y !== currentImg[i].y ||
-            m.width !== currentImg[i].width ||
-            m.height !== currentImg[i].height ||
-            m.opacity !== currentImg[i].opacity ||
-            m.rotationDegrees !== currentImg[i].rotationDegrees ||
-            m.zIndex !== currentImg[i].zIndex ||
-            m.visible !== currentImg[i].visible
-        );
-      return changed ? merged : currentImg;
-    });
+    setTextOverlays((currentText) =>
+      mergeOverlayState(
+        currentText,
+        parseTextOverlays(params),
+        (a, b) => a.text !== b.text || a.fontSize !== b.fontSize
+      )
+    );
+    setImageOverlays((currentImg) => mergeOverlayState(currentImg, parseImageOverlays(params)));
   }, [params, canvasWidth, canvasHeight]);
 
   /** Resolve a layer ID to its state and kind across all layer types */
@@ -463,7 +435,7 @@ export const useCompositorLayers = (
             width: textOverlay.width,
             height: textOverlay.height,
             opacity: textOverlay.opacity,
-            zIndex: 0,
+            zIndex: textOverlay.zIndex,
             rotationDegrees: textOverlay.rotationDegrees,
             visible: textOverlay.visible,
           },
@@ -944,15 +916,70 @@ export const useCompositorLayers = (
     commitOverlaysRef.current = commitOverlays;
   }, [commitOverlays]);
 
+  // ── Generic overlay CRUD helpers ───────────────────────────────────────────
+  //
+  // updateOverlay / removeOverlay eliminate the duplicated logic that was
+  // previously copy-pasted between the text and image overlay callbacks.
+
+  /** Update an overlay by id, apply partial updates, and commit.
+   *  Shared by updateTextOverlay and updateImageOverlay. */
+  const updateOverlay = useCallback(
+    <T extends { id: string }>(
+      id: string,
+      updates: Partial<Omit<T, 'id'>>,
+      setter: React.Dispatch<React.SetStateAction<T[]>>,
+      buildCommitArgs: (next: T[]) => [TextOverlayState[], ImageOverlayState[]]
+    ) => {
+      // Arm the guard immediately so sync effect won't overwrite
+      overlayCommitGuardRef.current = Date.now();
+      setter((prev) => {
+        const next = prev.map((o) => (o.id === id ? { ...o, ...updates } : o));
+        const [text, img] = buildCommitArgs(next);
+        // Use throttled commit to avoid flooding the server on slider drags
+        if (throttledOverlayCommit) {
+          throttledOverlayCommit(text, img);
+        } else {
+          commitOverlaysRef.current(text, img);
+        }
+        return next;
+      });
+    },
+    [throttledOverlayCommit]
+  );
+
+  /** Remove an overlay by id, re-index remaining items, and commit.
+   *  Shared by removeTextOverlay and removeImageOverlay. */
+  const removeOverlay = useCallback(
+    <T extends { id: string }>(
+      id: string,
+      idPrefix: string,
+      setter: React.Dispatch<React.SetStateAction<T[]>>,
+      buildCommitArgs: (next: T[]) => [TextOverlayState[], ImageOverlayState[]]
+    ) => {
+      setter((prev) => {
+        const next = prev
+          .filter((o) => o.id !== id)
+          .map((o, i) => ({ ...o, id: `${idPrefix}_${i}` }));
+        const [text, img] = buildCommitArgs(next);
+        commitOverlays(text, img);
+        return next;
+      });
+      // Clear selection — re-indexing makes the old selectedLayerId stale
+      setSelectedLayerId(null);
+    },
+    [commitOverlays]
+  );
+
   // ── Text overlay CRUD ─────────────────────────────────────────────────────
 
   const addTextOverlay = useCallback(
     (text: string) => {
       setTextOverlays((prev) => {
+        const newId = `text_${prev.length}`;
         const next: TextOverlayState[] = [
           ...prev,
           {
-            id: `text_${prev.length}`,
+            id: newId,
             text,
             x: 40,
             y: 40 + prev.length * 50,
@@ -962,11 +989,13 @@ export const useCompositorLayers = (
             fontSize: 24,
             opacity: 1.0,
             rotationDegrees: 0,
-            zIndex: 0,
+            zIndex: 100 + prev.length,
             visible: true,
           },
         ];
         commitOverlays(next, imageOverlaysRef.current);
+        // Auto-select the newly added overlay so it's immediately interactive
+        setSelectedLayerId(newId);
         return next;
       });
     },
@@ -974,34 +1003,18 @@ export const useCompositorLayers = (
   );
 
   const updateTextOverlay = useCallback(
-    (id: string, updates: Partial<Omit<TextOverlayState, 'id'>>) => {
-      // Arm the guard immediately so sync effect won't overwrite
-      overlayCommitGuardRef.current = Date.now();
-      setTextOverlays((prev) => {
-        const next = prev.map((o) => (o.id === id ? { ...o, ...updates } : o));
-        // Use throttled commit to avoid flooding the server on slider drags
-        if (throttledOverlayCommit) {
-          throttledOverlayCommit(next, imageOverlaysRef.current);
-        } else {
-          commitOverlaysRef.current(next, imageOverlaysRef.current);
-        }
-        return next;
-      });
-    },
-    [throttledOverlayCommit]
+    (id: string, updates: Partial<Omit<TextOverlayState, 'id'>>) =>
+      updateOverlay(id, updates, setTextOverlays, (next) => [next, imageOverlaysRef.current]),
+    [updateOverlay]
   );
 
   const removeTextOverlay = useCallback(
-    (id: string) => {
-      setTextOverlays((prev) => {
-        const next = prev.filter((o) => o.id !== id).map((o, i) => ({ ...o, id: `text_${i}` }));
-        commitOverlays(next, imageOverlaysRef.current);
-        return next;
-      });
-      // Clear selection — re-indexing makes the old selectedLayerId stale
-      setSelectedLayerId(null);
-    },
-    [commitOverlays]
+    (id: string) =>
+      removeOverlay(id, 'text', setTextOverlays, (next) => [
+        next as unknown as TextOverlayState[],
+        imageOverlaysRef.current,
+      ]),
+    [removeOverlay]
   );
 
   // ── Image overlay CRUD ────────────────────────────────────────────────────
@@ -1019,10 +1032,11 @@ export const useCompositorLayers = (
           w = Math.max(1, Math.round(naturalWidth * scale));
           h = Math.max(1, Math.round(naturalHeight * scale));
         }
+        const newId = `img_${prev.length}`;
         const next: ImageOverlayState[] = [
           ...prev,
           {
-            id: `img_${prev.length}`,
+            id: newId,
             dataBase64,
             x: 40,
             y: 40 + prev.length * 60,
@@ -1036,6 +1050,8 @@ export const useCompositorLayers = (
           },
         ];
         commitOverlays(textOverlaysRef.current, next);
+        // Auto-select the newly added overlay so it's immediately interactive
+        setSelectedLayerId(newId);
         return next;
       });
     },
@@ -1043,34 +1059,18 @@ export const useCompositorLayers = (
   );
 
   const updateImageOverlay = useCallback(
-    (id: string, updates: Partial<Omit<ImageOverlayState, 'id'>>) => {
-      // Arm the guard immediately so sync effect won't overwrite
-      overlayCommitGuardRef.current = Date.now();
-      setImageOverlays((prev) => {
-        const next = prev.map((o) => (o.id === id ? { ...o, ...updates } : o));
-        // Use throttled commit to avoid flooding the server on slider drags
-        if (throttledOverlayCommit) {
-          throttledOverlayCommit(textOverlaysRef.current, next);
-        } else {
-          commitOverlaysRef.current(textOverlaysRef.current, next);
-        }
-        return next;
-      });
-    },
-    [throttledOverlayCommit]
+    (id: string, updates: Partial<Omit<ImageOverlayState, 'id'>>) =>
+      updateOverlay(id, updates, setImageOverlays, (next) => [textOverlaysRef.current, next]),
+    [updateOverlay]
   );
 
   const removeImageOverlay = useCallback(
-    (id: string) => {
-      setImageOverlays((prev) => {
-        const next = prev.filter((o) => o.id !== id).map((o, i) => ({ ...o, id: `img_${i}` }));
-        commitOverlays(textOverlaysRef.current, next);
-        return next;
-      });
-      // Clear selection — re-indexing makes the old selectedLayerId stale
-      setSelectedLayerId(null);
-    },
-    [commitOverlays]
+    (id: string) =>
+      removeOverlay(id, 'img', setImageOverlays, (next) => [
+        textOverlaysRef.current,
+        next as unknown as ImageOverlayState[],
+      ]),
+    [removeOverlay]
   );
 
   return {
