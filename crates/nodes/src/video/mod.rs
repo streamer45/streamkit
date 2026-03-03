@@ -82,11 +82,8 @@ pub fn measure_text(font: &fontdue::Font, font_size: f32, text: &str) -> (u32, u
     }
 
     let w = total_width.ceil() as u32;
-    let h = if max_bottom > max_top {
-        (max_bottom - max_top) as u32
-    } else {
-        font_size.ceil() as u32
-    };
+    let h =
+        if max_bottom > max_top { (max_bottom - max_top) as u32 } else { font_size.ceil() as u32 };
 
     (w, h)
 }
