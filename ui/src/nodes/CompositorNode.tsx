@@ -431,9 +431,9 @@ interface CompositorNodeProps {
 // ── Shared per-layer property controls ──────────────────────────────────────
 
 /** Shared per-layer property controls: header (name + position), opacity
- *  slider, rotation slider.  Layer-type-specific controls (text input, font
- *  size, z-index order buttons, etc.) are rendered via `children` between
- *  the header and the common sliders. */
+ *  slider, rotation slider.  Layer-type-specific controls can be injected
+ *  in two positions via `children` (between header and sliders, e.g. text
+ *  input / font size) and `footer` (after sliders, e.g. z-index order). */
 const LayerPropertyControls: React.FC<{
   name: string;
   x: number;
@@ -444,6 +444,7 @@ const LayerPropertyControls: React.FC<{
   onRotationChange: (value: number) => void;
   disabled: boolean;
   children?: React.ReactNode;
+  footer?: React.ReactNode;
 }> = React.memo(
   ({
     name,
@@ -455,6 +456,7 @@ const LayerPropertyControls: React.FC<{
     onRotationChange,
     disabled,
     children,
+    footer,
   }) => (
     <>
       <LayerInfoRow
@@ -497,6 +499,8 @@ const LayerPropertyControls: React.FC<{
         />
         <ControlValue>{rotationDegrees.toFixed(0)}&deg;</ControlValue>
       </ControlRow>
+
+      {footer}
     </>
   )
 );
@@ -743,47 +747,48 @@ const UnifiedLayerList: React.FC<{
             onOpacityChange={(v) => onOpacityChange(selectedLayer.id, v)}
             onRotationChange={(v) => onRotationChange(selectedLayer.id, v)}
             disabled={disabled}
-          >
-            <ZIndexRow>
-              <ControlLabel>Order</ControlLabel>
-              <SKTooltip content="Send backward">
-                <StackButton
-                  disabled={disabled || isBottommost}
-                  className="nodrag nopan"
-                  onClick={() => {
-                    if (isBottommost) return;
-                    const below = sortedVideoByZ[stackIndex - 1];
-                    onZIndexChange(selectedLayer.id, below.zIndex - 1);
+            footer={
+              <ZIndexRow>
+                <ControlLabel>Order</ControlLabel>
+                <SKTooltip content="Send backward">
+                  <StackButton
+                    disabled={disabled || isBottommost}
+                    className="nodrag nopan"
+                    onClick={() => {
+                      if (isBottommost) return;
+                      const below = sortedVideoByZ[stackIndex - 1];
+                      onZIndexChange(selectedLayer.id, below.zIndex - 1);
+                    }}
+                  >
+                    ▼
+                  </StackButton>
+                </SKTooltip>
+                <NumericInput
+                  type="number"
+                  value={selectedLayer.zIndex}
+                  onChange={(e) => {
+                    const val = Number.parseInt(e.target.value, 10);
+                    if (!Number.isNaN(val)) onZIndexChange(selectedLayer.id, val);
                   }}
-                >
-                  ▼
-                </StackButton>
-              </SKTooltip>
-              <NumericInput
-                type="number"
-                value={selectedLayer.zIndex}
-                onChange={(e) => {
-                  const val = Number.parseInt(e.target.value, 10);
-                  if (!Number.isNaN(val)) onZIndexChange(selectedLayer.id, val);
-                }}
-                disabled={disabled}
-                className="nodrag nopan"
-              />
-              <SKTooltip content="Bring forward">
-                <StackButton
-                  disabled={disabled || isTopmost}
+                  disabled={disabled}
                   className="nodrag nopan"
-                  onClick={() => {
-                    if (isTopmost) return;
-                    const above = sortedVideoByZ[stackIndex + 1];
-                    onZIndexChange(selectedLayer.id, above.zIndex + 1);
-                  }}
-                >
-                  ▲
-                </StackButton>
-              </SKTooltip>
-            </ZIndexRow>
-          </LayerPropertyControls>
+                />
+                <SKTooltip content="Bring forward">
+                  <StackButton
+                    disabled={disabled || isTopmost}
+                    className="nodrag nopan"
+                    onClick={() => {
+                      if (isTopmost) return;
+                      const above = sortedVideoByZ[stackIndex + 1];
+                      onZIndexChange(selectedLayer.id, above.zIndex + 1);
+                    }}
+                  >
+                    ▲
+                  </StackButton>
+                </SKTooltip>
+              </ZIndexRow>
+            }
+          />
         )}
 
         {/* Controls for the selected text overlay */}
