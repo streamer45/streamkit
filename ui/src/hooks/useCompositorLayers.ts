@@ -183,7 +183,7 @@ function parseTextOverlays(params: Record<string, unknown>): TextOverlayState[] 
     fontSize: o.font_size ?? 24,
     opacity: o.opacity ?? 1.0,
     rotationDegrees: o.rotation_degrees ?? 0,
-    zIndex: o.z_index ?? 0,
+    zIndex: o.z_index ?? 100 + i,
     visible: true,
   }));
 }
