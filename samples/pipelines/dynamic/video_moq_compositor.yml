@@ -10,8 +10,8 @@ nodes:
   colorbars_bg:
     kind: video::colorbars
     params:
-      width: 640
-      height: 480
+      width: 1280
+      height: 720
       fps: 30
       draw_time: true
 
@@ -27,8 +27,8 @@ nodes:
   compositor:
     kind: video::compositor
     params:
-      width: 640
-      height: 480
+      width: 1280
+      height: 720
       num_inputs: 2
       layers:
         in_0:

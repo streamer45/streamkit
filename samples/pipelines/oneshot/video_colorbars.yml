@@ -10,8 +10,8 @@ nodes:
   colorbars:
     kind: video::colorbars
     params:
-      width: 640
-      height: 480
+      width: 1280
+      height: 720
       fps: 30
       frame_count: 150  # 5 seconds at 30fps
       pixel_format: nv12
@@ -24,8 +24,8 @@ nodes:
   webm_muxer:
     kind: containers::webm::muxer
     params:
-      video_width: 640
-      video_height: 480
+      video_width: 1280
+      video_height: 720
       streaming_mode: live
     needs: vp9_encoder
 

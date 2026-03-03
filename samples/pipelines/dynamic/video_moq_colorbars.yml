@@ -10,8 +10,8 @@ nodes:
   colorbars:
     kind: video::colorbars
     params:
-      width: 640
-      height: 480
+      width: 1280
+      height: 720
       fps: 30
       pixel_format: nv12
       draw_time: true

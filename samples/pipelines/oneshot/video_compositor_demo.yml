@@ -21,8 +21,8 @@ nodes:
   colorbars_bg:
     kind: video::colorbars
     params:
-      width: 640
-      height: 480
+      width: 1280
+      height: 720
       fps: 30
       frame_count: 90
       # Draw the current wall-clock time (HH:MM:SS.mmm) in the bottom-left
@@ -43,8 +43,8 @@ nodes:
   compositor:
     kind: video::compositor
     params:
-      width: 640
-      height: 480
+      width: 1280
+      height: 720
       num_inputs: 2
       layers:
         # Background fills the canvas (default when no rect is specified).
@@ -93,8 +93,8 @@ nodes:
   webm_muxer:
     kind: containers::webm::muxer
     params:
-      video_width: 640
-      video_height: 480
+      video_width: 1280
+      video_height: 720
       streaming_mode: live
     needs: vp9_encoder
 
