@@ -870,7 +870,7 @@ const UnifiedLayerList: React.FC<{
                 value={rgbaToHex(selectedTextOverlay.color)}
                 onChange={(e) =>
                   onUpdateText(selectedTextOverlay.id, {
-                    color: hexToRgba(e.target.value, 255),
+                    color: hexToRgba(e.target.value, selectedTextOverlay.color[3]),
                   })
                 }
                 disabled={disabled}
