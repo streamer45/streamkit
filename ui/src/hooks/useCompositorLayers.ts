@@ -435,7 +435,7 @@ export const useCompositorLayers = (
             width: textOverlay.width,
             height: textOverlay.height,
             opacity: textOverlay.opacity,
-            zIndex: 0,
+            zIndex: textOverlay.zIndex,
             rotationDegrees: textOverlay.rotationDegrees,
             visible: textOverlay.visible,
           },
