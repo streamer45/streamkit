@@ -111,18 +111,6 @@ const InlineTextInput = styled.textarea`
   font-family: inherit;
 `;
 
-/** Icon badge for image overlay layers */
-const ImageBadge = styled.div`
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: none;
-  z-index: 1;
-  opacity: 0.5;
-`;
-
 const LayerDimensions = styled.div`
   position: absolute;
   bottom: 2px;
@@ -200,26 +188,6 @@ const ResizeHandles: React.FC<{
   </>
 ));
 ResizeHandles.displayName = 'ResizeHandles';
-
-// ── Image icon SVG ──────────────────────────────────────────────────────────
-
-const ImageIcon: React.FC<{ size?: number }> = ({ size = 24 }) => (
-  <svg
-    width={size}
-    height={size}
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="1.5"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    style={{ color: 'rgba(255,255,255,0.5)' }}
-  >
-    <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-    <circle cx="8.5" cy="8.5" r="1.5" />
-    <polyline points="21 15 16 10 5 21" />
-  </svg>
-);
 
 // ── Video input layer ───────────────────────────────────────────────────────
 
@@ -437,6 +405,46 @@ const ImageOverlayLayer: React.FC<{
   const borderColor = isSelected ? 'var(--sk-primary)' : `hsla(${hue}, 70%, 65%, 0.8)`;
   const bgColor = isSelected ? `hsla(${hue}, 60%, 50%, 0.25)` : `hsla(${hue}, 60%, 50%, 0.12)`;
 
+  // Build a blob URL for the image thumbnail.  Using fetch() with a
+  // data-URI lets the browser decode the base64 natively, which is
+  // more efficient than the manual atob() + byte-by-byte Uint8Array
+  // copy for large images.
+  //
+  // MIME detection: we inspect the base64-encoded magic bytes at the
+  // start of the string to pick the correct MIME type.  The fallback
+  // is JPEG, which covers the common `/9j/` prefix and variants.
+  const [imgSrc, setImgSrc] = useState<string | undefined>();
+
+  useEffect(() => {
+    if (!overlay.dataBase64) {
+      setImgSrc(undefined);
+      return;
+    }
+    let mime = 'image/jpeg'; // default fallback
+    if (overlay.dataBase64.startsWith('iVBOR')) mime = 'image/png';
+    else if (overlay.dataBase64.startsWith('R0lGOD')) mime = 'image/gif';
+    else if (overlay.dataBase64.startsWith('UklGR')) mime = 'image/webp';
+
+    let cancelled = false;
+    let url: string | undefined;
+
+    fetch(`data:${mime};base64,${overlay.dataBase64}`)
+      .then((r) => r.blob())
+      .then((blob) => {
+        if (cancelled) return;
+        url = URL.createObjectURL(blob);
+        setImgSrc(url);
+      })
+      .catch(() => {
+        // Ignore decode failures — no thumbnail shown.
+      });
+
+    return () => {
+      cancelled = true;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [overlay.dataBase64]);
+
   return (
     <LayerBox
       ref={layerRef}
@@ -447,19 +455,31 @@ const ImageOverlayLayer: React.FC<{
         width: overlay.width,
         height: overlay.height,
         opacity: overlay.visible ? overlay.opacity : 0.2,
+        transform:
+          overlay.rotationDegrees !== 0 ? `rotate(${overlay.rotationDegrees}deg)` : undefined,
         zIndex: overlay.zIndex ?? 200 + index,
-        border: `2px dotted ${borderColor}`,
+        border: `2px solid ${borderColor}`,
         background: bgColor,
         filter: overlay.visible ? undefined : 'grayscale(0.6)',
-        backgroundImage:
-          'repeating-linear-gradient(45deg, transparent, transparent 6px, rgba(255,255,255,0.04) 6px, rgba(255,255,255,0.04) 12px)',
       }}
       onPointerDown={handlePointerDown}
     >
+      {imgSrc && (
+        <img
+          src={imgSrc}
+          alt={`Image overlay ${index}`}
+          style={{
+            position: 'absolute',
+            inset: 0,
+            width: '100%',
+            height: '100%',
+            objectFit: 'contain',
+            pointerEvents: 'none',
+            opacity: 0.85,
+          }}
+        />
+      )}
       <LayerLabel>IMG #{index}</LayerLabel>
-      <ImageBadge>
-        <ImageIcon size={24} />
-      </ImageBadge>
       {isSelected && <ResizeHandles layerId={overlay.id} onResizeStart={onResizeStart} />}
     </LayerBox>
   );

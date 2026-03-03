@@ -107,7 +107,7 @@ export interface UseCompositorLayersResult {
   addTextOverlay: (text: string) => void;
   updateTextOverlay: (id: string, updates: Partial<Omit<TextOverlayState, 'id'>>) => void;
   removeTextOverlay: (id: string) => void;
-  addImageOverlay: (dataBase64: string) => void;
+  addImageOverlay: (dataBase64: string, naturalWidth?: number, naturalHeight?: number) => void;
   updateImageOverlay: (id: string, updates: Partial<Omit<ImageOverlayState, 'id'>>) => void;
   removeImageOverlay: (id: string) => void;
 }
@@ -188,7 +188,9 @@ function parseTextOverlays(params: Record<string, unknown>): TextOverlayState[] 
   }));
 }
 
-/** Parse image overlays from compositor params */
+/** Parse image overlays from compositor params.
+ *  Z-index band: image overlays default to 200+i (video: 0–99, text: 100–199,
+ *  image: 200+). */
 function parseImageOverlays(params: Record<string, unknown>): ImageOverlayState[] {
   const overlays = params.image_overlays as ImageOverlayConfig[] | undefined;
   if (!Array.isArray(overlays)) return [];
@@ -201,7 +203,7 @@ function parseImageOverlays(params: Record<string, unknown>): ImageOverlayState[
     height: o.rect?.height ?? 200,
     opacity: o.opacity ?? 1.0,
     rotationDegrees: o.rotation_degrees ?? 0,
-    zIndex: o.z_index ?? 0,
+    zIndex: o.z_index ?? 200 + i,
     visible: true,
   }));
 }
@@ -406,6 +408,7 @@ export const useCompositorLayers = (
             m.height !== currentText[i].height ||
             m.opacity !== currentText[i].opacity ||
             m.rotationDegrees !== currentText[i].rotationDegrees ||
+            m.zIndex !== currentText[i].zIndex ||
             m.text !== currentText[i].text ||
             m.fontSize !== currentText[i].fontSize ||
             m.visible !== currentText[i].visible
@@ -436,6 +439,8 @@ export const useCompositorLayers = (
             m.width !== currentImg[i].width ||
             m.height !== currentImg[i].height ||
             m.opacity !== currentImg[i].opacity ||
+            m.rotationDegrees !== currentImg[i].rotationDegrees ||
+            m.zIndex !== currentImg[i].zIndex ||
             m.visible !== currentImg[i].visible
         );
       return changed ? merged : currentImg;
@@ -476,8 +481,8 @@ export const useCompositorLayers = (
             width: imgOverlay.width,
             height: imgOverlay.height,
             opacity: imgOverlay.opacity,
-            zIndex: 0,
-            rotationDegrees: 0,
+            zIndex: imgOverlay.zIndex,
+            rotationDegrees: imgOverlay.rotationDegrees,
             visible: imgOverlay.visible,
           },
           kind: 'image',
@@ -632,11 +637,14 @@ export const useCompositorLayers = (
         newY = orig.y + (orig.height - newH);
       }
 
-      // Constrain video layer resize to maintain aspect ratio.
-      // Text/image overlays (layerKind !== 'video') are not constrained here
-      // because text overlays no longer have resize handles and image overlays
-      // may intentionally use different dimensions.
-      if (state.layerKind === 'video' && orig.width > 0 && orig.height > 0) {
+      // Constrain video and image layer resize to maintain aspect ratio.
+      // Text overlays are not constrained here because they no longer have
+      // resize handles.
+      if (
+        (state.layerKind === 'video' || state.layerKind === 'image') &&
+        orig.width > 0 &&
+        orig.height > 0
+      ) {
         const ar = orig.width / orig.height;
         const isCorner = handle.length === 2; // 'ne', 'nw', 'se', 'sw'
 
@@ -999,8 +1007,18 @@ export const useCompositorLayers = (
   // ── Image overlay CRUD ────────────────────────────────────────────────────
 
   const addImageOverlay = useCallback(
-    (dataBase64: string) => {
+    (dataBase64: string, naturalWidth?: number, naturalHeight?: number) => {
       setImageOverlays((prev) => {
+        // Compute initial rect that preserves source aspect ratio.
+        // Fit the image within a 200px box on its largest side.
+        const maxDim = 200;
+        let w = maxDim;
+        let h = maxDim;
+        if (naturalWidth && naturalHeight && naturalWidth > 0 && naturalHeight > 0) {
+          const scale = Math.min(maxDim / naturalWidth, maxDim / naturalHeight, 1);
+          w = Math.max(1, Math.round(naturalWidth * scale));
+          h = Math.max(1, Math.round(naturalHeight * scale));
+        }
         const next: ImageOverlayState[] = [
           ...prev,
           {
@@ -1008,11 +1026,12 @@ export const useCompositorLayers = (
             dataBase64,
             x: 40,
             y: 40 + prev.length * 60,
-            width: 200,
-            height: 200,
+            width: w,
+            height: h,
             opacity: 1.0,
             rotationDegrees: 0,
-            zIndex: 0,
+            // Z-index band: image overlays use 200+ (video: 0–99, text: 100–199)
+            zIndex: 200 + prev.length,
             visible: true,
           },
         ];

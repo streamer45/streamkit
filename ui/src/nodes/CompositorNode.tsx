@@ -435,7 +435,7 @@ const OverlayList: React.FC<{
   onAddText: (text: string) => void;
   onUpdateText: (id: string, updates: Partial<Omit<TextOverlayState, 'id'>>) => void;
   onRemoveText: (id: string) => void;
-  onAddImage: (dataBase64: string) => void;
+  onAddImage: (dataBase64: string, naturalWidth?: number, naturalHeight?: number) => void;
   onRemoveImage: (id: string) => void;
   disabled: boolean;
 }> = React.memo(
@@ -476,7 +476,13 @@ const OverlayList: React.FC<{
           const result = reader.result as string;
           // Strip the data:image/...;base64, prefix
           const base64 = result.split(',')[1];
-          if (base64) onAddImage(base64);
+          if (!base64) return;
+          // Detect natural dimensions so the initial rect preserves
+          // the source aspect ratio.
+          const img = new window.Image();
+          img.onload = () => onAddImage(base64, img.naturalWidth, img.naturalHeight);
+          img.onerror = () => onAddImage(base64);
+          img.src = result;
         };
         reader.readAsDataURL(file);
         e.target.value = '';
@@ -659,7 +665,8 @@ const UnifiedLayerList: React.FC<{
   onAddText: (text: string) => void;
   onUpdateText: (id: string, updates: Partial<Omit<TextOverlayState, 'id'>>) => void;
   onRemoveText: (id: string) => void;
-  onAddImage: (dataBase64: string) => void;
+  onAddImage: (dataBase64: string, naturalWidth?: number, naturalHeight?: number) => void;
+  onUpdateImage: (id: string, updates: Partial<Omit<ImageOverlayState, 'id'>>) => void;
   onRemoveImage: (id: string) => void;
   disabled: boolean;
 }> = React.memo(
@@ -677,6 +684,7 @@ const UnifiedLayerList: React.FC<{
     onUpdateText,
     onRemoveText,
     onAddImage,
+    onUpdateImage,
     onRemoveImage,
     disabled,
   }) => {
@@ -727,8 +735,9 @@ const UnifiedLayerList: React.FC<{
     const [menuOpen, setMenuOpen] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
-    // Find selected text overlay for inline editing controls
+    // Find selected text/image overlay for inline editing controls
     const selectedTextOverlay = textOverlays.find((o) => o.id === selectedLayerId);
+    const selectedImageOverlay = imageOverlays.find((o) => o.id === selectedLayerId);
 
     const handleAddText = useCallback(() => {
       onAddText('Text');
@@ -750,7 +759,13 @@ const UnifiedLayerList: React.FC<{
         reader.onload = () => {
           const result = reader.result as string;
           const base64 = result.split(',')[1];
-          if (base64) onAddImage(base64);
+          if (!base64) return;
+          // Detect natural dimensions so the initial rect preserves
+          // the source aspect ratio.
+          const img = new window.Image();
+          img.onload = () => onAddImage(base64, img.naturalWidth, img.naturalHeight);
+          img.onerror = () => onAddImage(base64);
+          img.src = result;
         };
         reader.readAsDataURL(file);
         e.target.value = '';
@@ -1020,6 +1035,58 @@ const UnifiedLayerList: React.FC<{
             </ControlRow>
           </>
         )}
+
+        {/* Controls for the selected image overlay */}
+        {selectedImageOverlay && (
+          <>
+            <LayerInfoRow
+              style={{ marginTop: 4, paddingTop: 6, borderTop: '1px solid var(--sk-border)' }}
+            >
+              <LayerName>Image #{imageOverlays.indexOf(selectedImageOverlay)}</LayerName>
+              <LayerPosition>
+                ({Math.round(selectedImageOverlay.x)}, {Math.round(selectedImageOverlay.y)})
+              </LayerPosition>
+            </LayerInfoRow>
+
+            <ControlRow>
+              <ControlLabel>Opacity</ControlLabel>
+              <SliderInput
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                value={selectedImageOverlay.opacity}
+                onChange={(e) =>
+                  onUpdateImage(selectedImageOverlay.id, {
+                    opacity: Number.parseFloat(e.target.value),
+                  })
+                }
+                disabled={disabled}
+                className="nodrag nopan"
+              />
+              <ControlValue>{(selectedImageOverlay.opacity * 100).toFixed(0)}%</ControlValue>
+            </ControlRow>
+
+            <ControlRow>
+              <ControlLabel>Rotation</ControlLabel>
+              <SliderInput
+                type="range"
+                min="-180"
+                max="180"
+                step="1"
+                value={selectedImageOverlay.rotationDegrees}
+                onChange={(e) =>
+                  onUpdateImage(selectedImageOverlay.id, {
+                    rotationDegrees: Number.parseFloat(e.target.value),
+                  })
+                }
+                disabled={disabled}
+                className="nodrag nopan"
+              />
+              <ControlValue>{selectedImageOverlay.rotationDegrees.toFixed(0)}&deg;</ControlValue>
+            </ControlRow>
+          </>
+        )}
       </LayerControls>
     );
   }
@@ -1051,6 +1118,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
     updateTextOverlay,
     removeTextOverlay,
     addImageOverlay,
+    updateImageOverlay,
     removeImageOverlay,
   } = useCompositorLayers({
     nodeId: id,
@@ -1136,6 +1204,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
           onUpdateText={updateTextOverlay}
           onRemoveText={removeTextOverlay}
           onAddImage={addImageOverlay}
+          onUpdateImage={updateImageOverlay}
           onRemoveImage={removeImageOverlay}
           disabled={disabled}
         />
