@@ -221,21 +221,6 @@ const NoSelectionText = styled.div`
 
 // ── Overlay management styled components ────────────────────────────────────
 
-const OverlaySection = styled.div`
-  border-top: 1px solid var(--sk-border);
-  padding: 4px 0;
-`;
-
-const OverlaySectionHeader = styled.div`
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 2px 0;
-  font-size: 11px;
-  color: var(--sk-text-muted);
-  font-weight: 600;
-`;
-
 const AddOverlayButton = styled.button`
   display: inline-flex;
   align-items: center;
@@ -292,14 +277,6 @@ const AddMenuItem = styled.button`
   &:hover {
     background: var(--sk-overlay-medium);
   }
-`;
-
-const OverlayItem = styled.div`
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 0;
-  font-size: 11px;
 `;
 
 const OverlayLabel = styled.span`
@@ -427,195 +404,6 @@ interface UnifiedLayerEntry {
   visible: boolean;
 }
 
-// ── Overlay management components ───────────────────────────────────────────
-
-const OverlayList: React.FC<{
-  textOverlays: TextOverlayState[];
-  imageOverlays: ImageOverlayState[];
-  onAddText: (text: string) => void;
-  onUpdateText: (id: string, updates: Partial<Omit<TextOverlayState, 'id'>>) => void;
-  onRemoveText: (id: string) => void;
-  onAddImage: (dataBase64: string, naturalWidth?: number, naturalHeight?: number) => void;
-  onRemoveImage: (id: string) => void;
-  disabled: boolean;
-}> = React.memo(
-  ({
-    textOverlays,
-    imageOverlays,
-    onAddText,
-    onUpdateText,
-    onRemoveText,
-    onAddImage,
-    onRemoveImage,
-    disabled,
-  }) => {
-    const [menuOpen, setMenuOpen] = useState(false);
-    const [editingId, setEditingId] = useState<string | null>(null);
-    const fileInputRef = useRef<HTMLInputElement>(null);
-
-    const handleAddText = useCallback(() => {
-      onAddText('Text');
-      setMenuOpen(false);
-    }, [onAddText]);
-
-    const handleAddImage = useCallback(() => {
-      setMenuOpen(false);
-      fileInputRef.current?.click();
-    }, []);
-
-    const handleImageFileChange = useCallback(
-      (e: React.ChangeEvent<HTMLInputElement>) => {
-        const file = e.target.files?.[0];
-        if (!file) return;
-
-        // Validate image type
-        if (!file.type.startsWith('image/')) return;
-
-        const reader = new FileReader();
-        reader.onload = () => {
-          const result = reader.result as string;
-          // Strip the data:image/...;base64, prefix
-          const base64 = result.split(',')[1];
-          if (!base64) return;
-          // Detect natural dimensions so the initial rect preserves
-          // the source aspect ratio.
-          const img = new window.Image();
-          img.onload = () => onAddImage(base64, img.naturalWidth, img.naturalHeight);
-          img.onerror = () => onAddImage(base64);
-          img.src = result;
-        };
-        reader.readAsDataURL(file);
-        e.target.value = '';
-      },
-      [onAddImage]
-    );
-
-    const totalOverlays = textOverlays.length + imageOverlays.length;
-
-    return (
-      <OverlaySection>
-        <OverlaySectionHeader>
-          <span>Overlays ({totalOverlays})</span>
-          <div style={{ position: 'relative' }}>
-            <AddOverlayButton
-              disabled={disabled}
-              className="nodrag nopan"
-              onClick={() => setMenuOpen((p) => !p)}
-            >
-              <Plus size={10} /> Add
-            </AddOverlayButton>
-            {menuOpen && (
-              <AddMenu className="nodrag nopan">
-                <AddMenuItem onClick={handleAddText}>
-                  <Type size={12} /> Text
-                </AddMenuItem>
-                <AddMenuItem onClick={handleAddImage}>
-                  <Image size={12} /> Image
-                </AddMenuItem>
-              </AddMenu>
-            )}
-          </div>
-        </OverlaySectionHeader>
-
-        <HiddenFileInput
-          ref={fileInputRef}
-          type="file"
-          accept="image/png,image/jpeg,image/webp,image/gif"
-          onChange={handleImageFileChange}
-        />
-
-        {textOverlays.map((o) => (
-          <React.Fragment key={o.id}>
-            <OverlayItem>
-              <OverlayIcon>
-                <Type size={11} />
-              </OverlayIcon>
-              <OverlayLabel
-                title={`text_${textOverlays.indexOf(o)}`}
-                style={{ cursor: disabled ? 'default' : 'pointer' }}
-                onClick={() => !disabled && setEditingId(editingId === o.id ? null : o.id)}
-              >
-                {`text_${textOverlays.indexOf(o)}`}
-              </OverlayLabel>
-              <SKTooltip content="Remove text overlay">
-                <RemoveButton
-                  disabled={disabled}
-                  className="nodrag nopan"
-                  onClick={() => onRemoveText(o.id)}
-                >
-                  <X size={12} />
-                </RemoveButton>
-              </SKTooltip>
-            </OverlayItem>
-            {editingId === o.id && (
-              <>
-                <OverlayEditRow>
-                  <OverlayTextInput
-                    value={o.text}
-                    onChange={(e) => onUpdateText(o.id, { text: e.target.value })}
-                    placeholder="Text content"
-                    disabled={disabled}
-                    className="nodrag nopan"
-                  />
-                </OverlayEditRow>
-                <OverlayEditRow>
-                  <span style={{ color: 'var(--sk-text-muted)' }}>Size</span>
-                  <OverlayNumInput
-                    type="number"
-                    value={o.fontSize}
-                    onChange={(e) => {
-                      const v = Number.parseInt(e.target.value, 10);
-                      if (!Number.isNaN(v) && v > 0) onUpdateText(o.id, { fontSize: v });
-                    }}
-                    disabled={disabled}
-                    className="nodrag nopan"
-                  />
-                  <span style={{ color: 'var(--sk-text-muted)' }}>Opacity</span>
-                  <OverlayNumInput
-                    type="number"
-                    min="0"
-                    max="1"
-                    step="0.1"
-                    value={o.opacity}
-                    onChange={(e) => {
-                      const v = Number.parseFloat(e.target.value);
-                      if (!Number.isNaN(v))
-                        onUpdateText(o.id, { opacity: Math.max(0, Math.min(1, v)) });
-                    }}
-                    disabled={disabled}
-                    className="nodrag nopan"
-                  />
-                </OverlayEditRow>
-              </>
-            )}
-          </React.Fragment>
-        ))}
-
-        {imageOverlays.map((o) => (
-          <OverlayItem key={o.id}>
-            <OverlayIcon>
-              <Image size={11} />
-            </OverlayIcon>
-            <OverlayLabel>Image {o.id.replace('img_', '#')}</OverlayLabel>
-            <SKTooltip content="Remove image overlay">
-              <RemoveButton
-                disabled={disabled}
-                className="nodrag nopan"
-                onClick={() => onRemoveImage(o.id)}
-              >
-                <X size={12} />
-              </RemoveButton>
-            </SKTooltip>
-          </OverlayItem>
-        ))}
-
-        {totalOverlays === 0 && <NoSelectionText>No overlays added</NoSelectionText>}
-      </OverlaySection>
-    );
-  }
-);
-OverlayList.displayName = 'OverlayList';
-
 // ── Node data interface ─────────────────────────────────────────────────────
 
 interface CompositorNodeData {
@@ -639,6 +427,80 @@ interface CompositorNodeProps {
   data: CompositorNodeData;
   selected?: boolean;
 }
+
+// ── Shared per-layer property controls ──────────────────────────────────────
+
+/** Shared per-layer property controls: header (name + position), opacity
+ *  slider, rotation slider.  Layer-type-specific controls (text input, font
+ *  size, z-index order buttons, etc.) are rendered via `children` between
+ *  the header and the common sliders. */
+const LayerPropertyControls: React.FC<{
+  name: string;
+  x: number;
+  y: number;
+  opacity: number;
+  rotationDegrees: number;
+  onOpacityChange: (value: number) => void;
+  onRotationChange: (value: number) => void;
+  disabled: boolean;
+  children?: React.ReactNode;
+}> = React.memo(
+  ({
+    name,
+    x,
+    y,
+    opacity,
+    rotationDegrees,
+    onOpacityChange,
+    onRotationChange,
+    disabled,
+    children,
+  }) => (
+    <>
+      <LayerInfoRow
+        style={{ marginTop: 4, paddingTop: 6, borderTop: '1px solid var(--sk-border)' }}
+      >
+        <LayerName>{name}</LayerName>
+        <LayerPosition>
+          ({Math.round(x)}, {Math.round(y)})
+        </LayerPosition>
+      </LayerInfoRow>
+
+      {children}
+
+      <ControlRow>
+        <ControlLabel>Opacity</ControlLabel>
+        <SliderInput
+          type="range"
+          min="0"
+          max="1"
+          step="0.01"
+          value={opacity}
+          onChange={(e) => onOpacityChange(Number.parseFloat(e.target.value))}
+          disabled={disabled}
+          className="nodrag nopan"
+        />
+        <ControlValue>{(opacity * 100).toFixed(0)}%</ControlValue>
+      </ControlRow>
+
+      <ControlRow>
+        <ControlLabel>Rotation</ControlLabel>
+        <SliderInput
+          type="range"
+          min="-180"
+          max="180"
+          step="1"
+          value={rotationDegrees}
+          onChange={(e) => onRotationChange(Number.parseFloat(e.target.value))}
+          disabled={disabled}
+          className="nodrag nopan"
+        />
+        <ControlValue>{rotationDegrees.toFixed(0)}&deg;</ControlValue>
+      </ControlRow>
+    </>
+  )
+);
+LayerPropertyControls.displayName = 'LayerPropertyControls';
 
 // ── Unified layer list ──────────────────────────────────────────────────────
 
@@ -872,50 +734,16 @@ const UnifiedLayerList: React.FC<{
         {/* Issue #6: visual separator between layer list and per-layer controls */}
         {/* Controls for the selected video layer */}
         {selectedLayer && (
-          <>
-            <LayerInfoRow
-              style={{ marginTop: 4, paddingTop: 6, borderTop: '1px solid var(--sk-border)' }}
-            >
-              <LayerName>{selectedLayer.id}</LayerName>
-              <LayerPosition>
-                ({Math.round(selectedLayer.x)}, {Math.round(selectedLayer.y)})
-              </LayerPosition>
-            </LayerInfoRow>
-
-            <ControlRow>
-              <ControlLabel>Opacity</ControlLabel>
-              <SliderInput
-                type="range"
-                min="0"
-                max="1"
-                step="0.01"
-                value={selectedLayer.opacity}
-                onChange={(e) =>
-                  onOpacityChange(selectedLayer.id, Number.parseFloat(e.target.value))
-                }
-                disabled={disabled}
-                className="nodrag nopan"
-              />
-              <ControlValue>{(selectedLayer.opacity * 100).toFixed(0)}%</ControlValue>
-            </ControlRow>
-
-            <ControlRow>
-              <ControlLabel>Rotation</ControlLabel>
-              <SliderInput
-                type="range"
-                min="-180"
-                max="180"
-                step="1"
-                value={selectedLayer.rotationDegrees}
-                onChange={(e) =>
-                  onRotationChange(selectedLayer.id, Number.parseFloat(e.target.value))
-                }
-                disabled={disabled}
-                className="nodrag nopan"
-              />
-              <ControlValue>{selectedLayer.rotationDegrees.toFixed(0)}&deg;</ControlValue>
-            </ControlRow>
-
+          <LayerPropertyControls
+            name={selectedLayer.id}
+            x={selectedLayer.x}
+            y={selectedLayer.y}
+            opacity={selectedLayer.opacity}
+            rotationDegrees={selectedLayer.rotationDegrees}
+            onOpacityChange={(v) => onOpacityChange(selectedLayer.id, v)}
+            onRotationChange={(v) => onRotationChange(selectedLayer.id, v)}
+            disabled={disabled}
+          >
             <ZIndexRow>
               <ControlLabel>Order</ControlLabel>
               <SKTooltip content="Send backward">
@@ -955,21 +783,21 @@ const UnifiedLayerList: React.FC<{
                 </StackButton>
               </SKTooltip>
             </ZIndexRow>
-          </>
+          </LayerPropertyControls>
         )}
 
         {/* Controls for the selected text overlay */}
-        {/* Issue #6: visual separator + Issue #7: opacity/rotation sliders for text */}
         {selectedTextOverlay && (
-          <>
-            <LayerInfoRow
-              style={{ marginTop: 4, paddingTop: 6, borderTop: '1px solid var(--sk-border)' }}
-            >
-              <LayerName>Text</LayerName>
-              <LayerPosition>
-                ({Math.round(selectedTextOverlay.x)}, {Math.round(selectedTextOverlay.y)})
-              </LayerPosition>
-            </LayerInfoRow>
+          <LayerPropertyControls
+            name="Text"
+            x={selectedTextOverlay.x}
+            y={selectedTextOverlay.y}
+            opacity={selectedTextOverlay.opacity}
+            rotationDegrees={selectedTextOverlay.rotationDegrees}
+            onOpacityChange={(v) => onUpdateText(selectedTextOverlay.id, { opacity: v })}
+            onRotationChange={(v) => onUpdateText(selectedTextOverlay.id, { rotationDegrees: v })}
+            disabled={disabled}
+          >
             <OverlayEditRow style={{ paddingLeft: 0 }}>
               <OverlayTextInput
                 value={selectedTextOverlay.text}
@@ -993,99 +821,21 @@ const UnifiedLayerList: React.FC<{
                 className="nodrag nopan"
               />
             </OverlayEditRow>
-
-            {/* Issue #7: opacity slider for text layers (same as video layers) */}
-            <ControlRow>
-              <ControlLabel>Opacity</ControlLabel>
-              <SliderInput
-                type="range"
-                min="0"
-                max="1"
-                step="0.01"
-                value={selectedTextOverlay.opacity}
-                onChange={(e) =>
-                  onUpdateText(selectedTextOverlay.id, {
-                    opacity: Number.parseFloat(e.target.value),
-                  })
-                }
-                disabled={disabled}
-                className="nodrag nopan"
-              />
-              <ControlValue>{(selectedTextOverlay.opacity * 100).toFixed(0)}%</ControlValue>
-            </ControlRow>
-
-            {/* Issue #7: rotation slider for text layers (same as video layers) */}
-            <ControlRow>
-              <ControlLabel>Rotation</ControlLabel>
-              <SliderInput
-                type="range"
-                min="-180"
-                max="180"
-                step="1"
-                value={selectedTextOverlay.rotationDegrees}
-                onChange={(e) =>
-                  onUpdateText(selectedTextOverlay.id, {
-                    rotationDegrees: Number.parseFloat(e.target.value),
-                  })
-                }
-                disabled={disabled}
-                className="nodrag nopan"
-              />
-              <ControlValue>{selectedTextOverlay.rotationDegrees.toFixed(0)}&deg;</ControlValue>
-            </ControlRow>
-          </>
+          </LayerPropertyControls>
         )}
 
         {/* Controls for the selected image overlay */}
         {selectedImageOverlay && (
-          <>
-            <LayerInfoRow
-              style={{ marginTop: 4, paddingTop: 6, borderTop: '1px solid var(--sk-border)' }}
-            >
-              <LayerName>Image #{imageOverlays.indexOf(selectedImageOverlay)}</LayerName>
-              <LayerPosition>
-                ({Math.round(selectedImageOverlay.x)}, {Math.round(selectedImageOverlay.y)})
-              </LayerPosition>
-            </LayerInfoRow>
-
-            <ControlRow>
-              <ControlLabel>Opacity</ControlLabel>
-              <SliderInput
-                type="range"
-                min="0"
-                max="1"
-                step="0.01"
-                value={selectedImageOverlay.opacity}
-                onChange={(e) =>
-                  onUpdateImage(selectedImageOverlay.id, {
-                    opacity: Number.parseFloat(e.target.value),
-                  })
-                }
-                disabled={disabled}
-                className="nodrag nopan"
-              />
-              <ControlValue>{(selectedImageOverlay.opacity * 100).toFixed(0)}%</ControlValue>
-            </ControlRow>
-
-            <ControlRow>
-              <ControlLabel>Rotation</ControlLabel>
-              <SliderInput
-                type="range"
-                min="-180"
-                max="180"
-                step="1"
-                value={selectedImageOverlay.rotationDegrees}
-                onChange={(e) =>
-                  onUpdateImage(selectedImageOverlay.id, {
-                    rotationDegrees: Number.parseFloat(e.target.value),
-                  })
-                }
-                disabled={disabled}
-                className="nodrag nopan"
-              />
-              <ControlValue>{selectedImageOverlay.rotationDegrees.toFixed(0)}&deg;</ControlValue>
-            </ControlRow>
-          </>
+          <LayerPropertyControls
+            name={`Image #${imageOverlays.indexOf(selectedImageOverlay)}`}
+            x={selectedImageOverlay.x}
+            y={selectedImageOverlay.y}
+            opacity={selectedImageOverlay.opacity}
+            rotationDegrees={selectedImageOverlay.rotationDegrees}
+            onOpacityChange={(v) => onUpdateImage(selectedImageOverlay.id, { opacity: v })}
+            onRotationChange={(v) => onUpdateImage(selectedImageOverlay.id, { rotationDegrees: v })}
+            disabled={disabled}
+          />
         )}
       </LayerControls>
     );
