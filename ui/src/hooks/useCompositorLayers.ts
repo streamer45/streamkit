@@ -1029,16 +1029,25 @@ export const useCompositorLayers = (
 
   const updateTextOverlay = useCallback(
     (id: string, updates: Partial<Omit<TextOverlayState, 'id'>>) => {
-      // Auto-expand rect height when font size increases beyond the
-      // current box height.  Uses the same 1.4× factor as the backend
-      // to ensure the rendered text is never clipped.
-      if (updates.fontSize !== undefined) {
-        const existing = textOverlaysRef.current.find((o) => o.id === id);
-        if (existing) {
-          const minHeight = Math.ceil(updates.fontSize * 1.4);
-          if (existing.height < minHeight && !('height' in updates)) {
-            updates = { ...updates, height: minHeight };
-          }
+      // Auto-expand the rect so the rendered text is never clipped.
+      // The backend expands the bitmap to fit, but the UI should keep
+      // the interactive rect in sync.
+      const existing = textOverlaysRef.current.find((o) => o.id === id);
+      if (existing) {
+        const fontSize = updates.fontSize ?? existing.fontSize;
+        const text = updates.text ?? existing.text;
+
+        // Height: ~1.4× font size covers ascenders + descenders.
+        const minHeight = Math.ceil(fontSize * 1.4);
+        if (existing.height < minHeight && !('height' in updates)) {
+          updates = { ...updates, height: minHeight };
+        }
+
+        // Width: ~0.6× font size per character is a reasonable estimate
+        // for proportional fonts.  The backend will expand if still short.
+        const minWidth = Math.ceil(text.length * fontSize * 0.6);
+        if (existing.width < minWidth && !('width' in updates)) {
+          updates = { ...updates, width: minWidth };
         }
       }
       updateOverlay(id, updates, setTextOverlays, (next) => [next, imageOverlaysRef.current]);

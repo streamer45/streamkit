@@ -188,18 +188,10 @@ fn known_font_names() -> String {
 /// font glyph rendering.  Falls back to solid-rectangle placeholders when
 /// font loading fails so the node keeps running.
 ///
-/// The bitmap height is clamped to at least `font_size * 1.4` so that text
-/// (including descenders) is never clipped, even when the client sends a
-/// stale/small rect height.
+/// The bitmap dimensions are expanded to fit the measured text size so that
+/// neither the width nor the height clips the rendered string.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
 pub fn rasterize_text_overlay(config: &TextOverlayConfig) -> DecodedOverlay {
-    let w = config.transform.rect.width.max(1);
-    // Ensure the bitmap is tall enough to contain the rendered text.
-    // A factor of 1.4× the font size accounts for ascenders, descenders,
-    // and a small amount of padding.
-    let min_h = ((config.font_size.max(1) as f32) * 1.4).ceil() as u32;
-    let h = config.transform.rect.height.max(min_h).max(1);
-
     // Attempt to load the font; fall back to rectangle placeholders on error.
     let font = match load_font(config) {
         Ok(f) => Some(f),
@@ -208,6 +200,24 @@ pub fn rasterize_text_overlay(config: &TextOverlayConfig) -> DecodedOverlay {
             None
         },
     };
+
+    let font_size = config.font_size.max(1) as f32;
+
+    // Measure actual text dimensions so the bitmap is large enough to hold
+    // the full rendered string without clipping.
+    let (measured_w, measured_h) = font.as_ref().map_or_else(
+        || {
+            // Fallback estimate for placeholder rectangles.
+            let glyph_w = config.font_size.max(1) * 3 / 5;
+            let est_w = glyph_w * config.text.chars().count() as u32;
+            let est_h = (font_size * 1.4).ceil() as u32;
+            (est_w, est_h)
+        },
+        |f| crate::video::measure_text(f, font_size, &config.text),
+    );
+
+    let w = config.transform.rect.width.max(measured_w).max(1);
+    let h = config.transform.rect.height.max(measured_h).max(1);
 
     let total_bytes = (w as usize) * (h as usize) * 4;
     let mut rgba_data = vec![0u8; total_bytes];
@@ -254,9 +264,10 @@ pub fn rasterize_text_overlay(config: &TextOverlayConfig) -> DecodedOverlay {
         width: w,
         height: h,
         rect: {
-            // Use the expanded height so the blit renders the full bitmap
-            // (including descenders that may extend below the original rect).
+            // Use the expanded dimensions so the blit renders the full bitmap
+            // without clipping text that exceeds the original rect.
             let mut r = config.transform.rect.clone();
+            r.width = w;
             r.height = h;
             r
         },
