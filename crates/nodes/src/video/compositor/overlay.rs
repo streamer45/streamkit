@@ -177,9 +177,7 @@ type FontBytesLoader<'a> = Box<dyn FnOnce() -> Result<Vec<u8>, String> + 'a>;
 ///
 /// Returning a boxed closure lets the caller skip base64 decode / file I/O
 /// entirely on a cache hit.
-fn resolve_font_source(
-    config: &TextOverlayConfig,
-) -> Result<(FontKey, FontBytesLoader<'_>), String> {
+fn resolve_font_source(config: &TextOverlayConfig) -> (FontKey, FontBytesLoader<'_>) {
     if let Some(ref b64) = config.font_data_base64 {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         b64.hash(&mut h);
@@ -190,20 +188,30 @@ fn resolve_font_source(
                 .decode(b64)
                 .map_err(|e| format!("Invalid base64 in font_data_base64: {e}"))
         };
-        return Ok((key, Box::new(loader)));
+        return (key, Box::new(loader));
     }
 
     if let Some(ref name) = config.font_name {
-        let data = fonts::bundled_font_by_name(name).ok_or_else(|| {
-            format!("Unknown font name '{name}'. Available: {}", fonts::bundled_font_names())
-        })?;
-        let bundled = fonts::BUNDLED_FONTS
-            .iter()
-            .find(|f| f.name == name.as_str())
-            .map_or("dejavu-sans", |f| f.name);
-        let key = FontKey::Bundled(bundled);
-        let loader = move || Ok(data.to_vec());
-        return Ok((key, Box::new(loader)));
+        if let Some(data) = fonts::bundled_font_by_name(name) {
+            let bundled = fonts::BUNDLED_FONTS
+                .iter()
+                .find(|f| f.name == name.as_str())
+                .map_or("dejavu-sans", |f| f.name);
+            let key = FontKey::Bundled(bundled);
+            let loader = move || Ok(data.to_vec());
+            return (key, Box::new(loader));
+        }
+        // Unknown font name — fall back to the default with a warning rather
+        // than erroring out, so overlays remain readable when legacy or
+        // unrecognised names are passed (e.g. after removing Liberation/FreeFont).
+        tracing::warn!(
+            "Unknown font name '{name}', falling back to default (dejavu-sans). \
+             Available: {}",
+            fonts::bundled_font_names()
+        );
+        let key = FontKey::Bundled("dejavu-sans");
+        let loader = || Ok(fonts::DEFAULT_FONT_DATA.to_vec());
+        return (key, Box::new(loader));
     }
 
     if let Some(ref path) = config.font_path {
@@ -212,13 +220,13 @@ fn resolve_font_source(
         let loader = move || {
             std::fs::read(&path).map_err(|e| format!("Failed to read font file '{path}': {e}"))
         };
-        return Ok((key, Box::new(loader)));
+        return (key, Box::new(loader));
     }
 
     // Default: embedded DejaVu Sans.
     let key = FontKey::Bundled("dejavu-sans");
     let loader = || Ok(fonts::DEFAULT_FONT_DATA.to_vec());
-    Ok((key, Box::new(loader)))
+    (key, Box::new(loader))
 }
 
 /// Load font data, trying (in order):
@@ -231,7 +239,7 @@ fn resolve_font_source(
 /// identity, so repeated calls for the same font are an `Arc::clone` rather
 /// than a fresh parse.
 fn load_font(config: &TextOverlayConfig) -> Result<Arc<fontdue::Font>, String> {
-    let (key, load_bytes) = resolve_font_source(config)?;
+    let (key, load_bytes) = resolve_font_source(config);
 
     // Fast path: cache hit.  Lock scope limited to the lookup.
     if let Ok(cache) = FONT_CACHE.lock() {
