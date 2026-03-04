@@ -277,6 +277,39 @@ fn blit_row(
 ///
 /// On x86-64, processes 4 pixels at a time using SSE2 SIMD when the row is
 /// wide enough and bounds can be pre-validated.
+/// AVX2 inner loop for opaque blitting — processes 8 pixels at a time.
+///
+/// Extracted into its own `#[target_feature]` function so LLVM can inline the
+/// per-8px SIMD helpers without the target-feature mismatch barrier that would
+/// exist if they were called from a non-AVX2 caller.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn blit_row_opaque_avx2_loop(
+    row_slice: &mut [u8],
+    rx: usize,
+    effective_rw: usize,
+    src: &[u8],
+    src_row_base: usize,
+    x_map: &[usize],
+) -> usize {
+    let chunks8 = effective_rw / 8;
+    for c in 0..chunks8 {
+        let dx = c * 8;
+        let pixels = [
+            read_rgba_u32(src, src_row_base + x_map[dx] * 4),
+            read_rgba_u32(src, src_row_base + x_map[dx + 1] * 4),
+            read_rgba_u32(src, src_row_base + x_map[dx + 2] * 4),
+            read_rgba_u32(src, src_row_base + x_map[dx + 3] * 4),
+            read_rgba_u32(src, src_row_base + x_map[dx + 4] * 4),
+            read_rgba_u32(src, src_row_base + x_map[dx + 5] * 4),
+            read_rgba_u32(src, src_row_base + x_map[dx + 6] * 4),
+            read_rgba_u32(src, src_row_base + x_map[dx + 7] * 4),
+        ];
+        blend_8px_opaque_avx2(row_slice.as_mut_ptr().add((rx + dx) * 4), pixels);
+    }
+    chunks8 * 8
+}
+
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -311,24 +344,9 @@ fn blit_row_opaque(
 
             // AVX2: process 8 pixels at a time.
             if is_x86_feature_detected!("avx2") {
-                let chunks8 = effective_rw / 8;
-                for c in 0..chunks8 {
-                    let dx = c * 8;
-                    unsafe {
-                        let pixels = [
-                            read_rgba_u32(src, src_row_base + x_map[dx] * 4),
-                            read_rgba_u32(src, src_row_base + x_map[dx + 1] * 4),
-                            read_rgba_u32(src, src_row_base + x_map[dx + 2] * 4),
-                            read_rgba_u32(src, src_row_base + x_map[dx + 3] * 4),
-                            read_rgba_u32(src, src_row_base + x_map[dx + 4] * 4),
-                            read_rgba_u32(src, src_row_base + x_map[dx + 5] * 4),
-                            read_rgba_u32(src, src_row_base + x_map[dx + 6] * 4),
-                            read_rgba_u32(src, src_row_base + x_map[dx + 7] * 4),
-                        ];
-                        blend_8px_opaque_avx2(row_slice.as_mut_ptr().add((rx + dx) * 4), pixels);
-                    }
-                }
-                dx_start = chunks8 * 8;
+                dx_start = unsafe {
+                    blit_row_opaque_avx2_loop(row_slice, rx, effective_rw, src, src_row_base, x_map)
+                };
             }
 
             // SSE2: process remaining pixels in 4-pixel chunks.
@@ -416,6 +434,40 @@ fn blit_row_opaque(
 ///
 /// On x86-64, processes 4 pixels at a time using SSE2 SIMD when the row is
 /// wide enough and bounds can be pre-validated.
+/// AVX2 inner loop for alpha blitting — processes 8 pixels at a time.
+///
+/// Same rationale as [`blit_row_opaque_avx2_loop`]: keeps the entire loop inside
+/// a `#[target_feature(enable = "avx2")]` scope so LLVM can inline the SIMD
+/// helpers without a target-feature mismatch barrier.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn blit_row_alpha_avx2_loop(
+    row_slice: &mut [u8],
+    rx: usize,
+    effective_rw: usize,
+    src: &[u8],
+    src_row_base: usize,
+    x_map: &[usize],
+    opacity_u16: u16,
+) -> usize {
+    let chunks8 = effective_rw / 8;
+    for c in 0..chunks8 {
+        let dx = c * 8;
+        let pixels = [
+            read_rgba_u32(src, src_row_base + x_map[dx] * 4),
+            read_rgba_u32(src, src_row_base + x_map[dx + 1] * 4),
+            read_rgba_u32(src, src_row_base + x_map[dx + 2] * 4),
+            read_rgba_u32(src, src_row_base + x_map[dx + 3] * 4),
+            read_rgba_u32(src, src_row_base + x_map[dx + 4] * 4),
+            read_rgba_u32(src, src_row_base + x_map[dx + 5] * 4),
+            read_rgba_u32(src, src_row_base + x_map[dx + 6] * 4),
+            read_rgba_u32(src, src_row_base + x_map[dx + 7] * 4),
+        ];
+        blend_8px_alpha_avx2(row_slice.as_mut_ptr().add((rx + dx) * 4), pixels, opacity_u16);
+    }
+    chunks8 * 8
+}
+
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -452,28 +504,17 @@ fn blit_row_alpha(
 
             // AVX2: process 8 pixels at a time.
             if is_x86_feature_detected!("avx2") {
-                let chunks8 = effective_rw / 8;
-                for c in 0..chunks8 {
-                    let dx = c * 8;
-                    unsafe {
-                        let pixels = [
-                            read_rgba_u32(src, src_row_base + x_map[dx] * 4),
-                            read_rgba_u32(src, src_row_base + x_map[dx + 1] * 4),
-                            read_rgba_u32(src, src_row_base + x_map[dx + 2] * 4),
-                            read_rgba_u32(src, src_row_base + x_map[dx + 3] * 4),
-                            read_rgba_u32(src, src_row_base + x_map[dx + 4] * 4),
-                            read_rgba_u32(src, src_row_base + x_map[dx + 5] * 4),
-                            read_rgba_u32(src, src_row_base + x_map[dx + 6] * 4),
-                            read_rgba_u32(src, src_row_base + x_map[dx + 7] * 4),
-                        ];
-                        blend_8px_alpha_avx2(
-                            row_slice.as_mut_ptr().add((rx + dx) * 4),
-                            pixels,
-                            opacity_u16,
-                        );
-                    }
-                }
-                dx_start = chunks8 * 8;
+                dx_start = unsafe {
+                    blit_row_alpha_avx2_loop(
+                        row_slice,
+                        rx,
+                        effective_rw,
+                        src,
+                        src_row_base,
+                        x_map,
+                        opacity_u16,
+                    )
+                };
             }
 
             // SSE2: process remaining pixels in 4-pixel chunks.
@@ -574,6 +615,77 @@ fn blit_row_alpha(
 /// eliminates the staircase aliasing that a hard binary inside/outside test
 /// would produce.
 ///
+/// AVX2 inner loop for rotated blitting — processes 8 interior pixels at a time.
+///
+/// Gathers source pixels by stepping through rotated coordinates, then blends
+/// with the appropriate opaque/alpha SIMD path.  Returns the number of pixels
+/// processed; `local_x`/`local_y` are updated in-place via `&mut`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::similar_names
+)]
+unsafe fn rotated_blit_avx2_loop(
+    row_slice: &mut [u8],
+    src: &[u8],
+    px: i32,
+    skip_u: usize,
+    local_x: &mut f32,
+    local_y: &mut f32,
+    cos_a: f32,
+    sin_a: f32,
+    half_cw: f32,
+    half_ch: f32,
+    inv_scale_x: f32,
+    inv_scale_y: f32,
+    sw: usize,
+    sh: usize,
+    opacity_u16: u16,
+) -> usize {
+    let mut done = 0usize;
+    while done + 8 <= skip_u {
+        let mut src_pixels = [0u32; 8];
+        let mut all_valid = true;
+        let snap_local_x = *local_x;
+        let snap_local_y = *local_y;
+        for sp in &mut src_pixels {
+            *local_x += cos_a;
+            *local_y -= sin_a;
+            let isx = (((*local_x + half_cw) * inv_scale_x) as usize).min(sw - 1);
+            let isy = (((*local_y + half_ch) * inv_scale_y) as usize).min(sh - 1);
+            let si = (isy * sw + isx) * 4;
+            if si + 3 < src.len() {
+                *sp = read_rgba_u32(src, si);
+            } else {
+                all_valid = false;
+                break;
+            }
+        }
+
+        if !all_valid {
+            *local_x = snap_local_x;
+            *local_y = snap_local_y;
+            break;
+        }
+
+        let dst_off = (px as usize + 1 + done) * 4;
+        if dst_off + 31 < row_slice.len() {
+            let dst_ptr = row_slice.as_mut_ptr().add(dst_off);
+            if opacity_u16 >= 256 {
+                blend_8px_opaque_avx2(dst_ptr, src_pixels);
+            } else {
+                blend_8px_alpha_avx2(dst_ptr, src_pixels, opacity_u16);
+            }
+        }
+
+        done += 8;
+    }
+    done
+}
+
 /// For near-zero rotation angles (< 0.01°), a fast path delegates directly
 /// to [`scale_blit_rgba`] which performs the same stretch-to-fill without
 /// the rotation overhead.
@@ -583,7 +695,9 @@ fn blit_row_alpha(
     clippy::too_many_arguments,
     clippy::cast_precision_loss,
     clippy::similar_names,
-    clippy::cast_possible_wrap
+    clippy::cast_possible_wrap,
+    // AVX2 block has side-effects (SIMD writes) before assigning done.
+    clippy::useless_let_if_seq
 )]
 pub fn scale_blit_rgba_rotated(
     dst: &mut [u8],
@@ -784,47 +898,25 @@ pub fn scale_blit_rgba_rotated(
 
                         // AVX2: process groups of 8 interior pixels.
                         if is_x86_feature_detected!("avx2") {
-                            while done + 8 <= skip_u {
-                                let mut src_pixels = [0u32; 8];
-                                let mut all_valid = true;
-                                let snap_local_x = local_x;
-                                let snap_local_y = local_y;
-                                for sp in &mut src_pixels {
-                                    local_x += cos_a;
-                                    local_y -= sin_a;
-                                    let isx =
-                                        (((local_x + half_cw) * inv_scale_x) as usize).min(sw - 1);
-                                    let isy =
-                                        (((local_y + half_ch) * inv_scale_y) as usize).min(sh - 1);
-                                    let si = (isy * sw + isx) * 4;
-                                    if si + 3 < src.len() {
-                                        *sp = unsafe { read_rgba_u32(src, si) };
-                                    } else {
-                                        all_valid = false;
-                                        break;
-                                    }
-                                }
-
-                                if !all_valid {
-                                    local_x = snap_local_x;
-                                    local_y = snap_local_y;
-                                    break;
-                                }
-
-                                let dst_off = (px as usize + 1 + done) * 4;
-                                if dst_off + 31 < row_slice.len() {
-                                    unsafe {
-                                        let dst_ptr = row_slice.as_mut_ptr().add(dst_off);
-                                        if opacity_u16 >= 256 {
-                                            blend_8px_opaque_avx2(dst_ptr, src_pixels);
-                                        } else {
-                                            blend_8px_alpha_avx2(dst_ptr, src_pixels, opacity_u16);
-                                        }
-                                    }
-                                }
-
-                                done += 8;
-                            }
+                            done = unsafe {
+                                rotated_blit_avx2_loop(
+                                    row_slice,
+                                    src,
+                                    px,
+                                    skip_u,
+                                    &mut local_x,
+                                    &mut local_y,
+                                    cos_a,
+                                    sin_a,
+                                    half_cw,
+                                    half_ch,
+                                    inv_scale_x,
+                                    inv_scale_y,
+                                    sw,
+                                    sh,
+                                    opacity_u16,
+                                )
+                            };
                         }
 
                         // SSE2: process remaining pixels in groups of 4.

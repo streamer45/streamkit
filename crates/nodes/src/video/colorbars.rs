@@ -44,6 +44,8 @@ fn default_draw_time_font_path() -> String {
     "assets/fonts/DejaVuSansMono.ttf".to_string()
 }
 
+const SYSTEM_DEJAVU_MONO: &str = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf";
+
 /// Configuration for the SMPTE color bars generator.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(default)]
@@ -160,8 +162,31 @@ impl ProcessorNode for ColorBarsNode {
                     }
                 },
                 Err(e) => {
-                    tracing::warn!("draw_time: failed to read font '{path}': {e}");
-                    None
+                    tracing::debug!("draw_time: failed to read font '{path}': {e}");
+                    // Fallback to system-installed DejaVu Sans Mono.
+                    match std::fs::read(SYSTEM_DEJAVU_MONO) {
+                        Ok(bytes) => {
+                            match fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default())
+                            {
+                                Ok(f) => {
+                                    tracing::info!(
+                                        "draw_time: loaded fallback font from {SYSTEM_DEJAVU_MONO}"
+                                    );
+                                    Some(f)
+                                },
+                                Err(e2) => {
+                                    tracing::warn!("draw_time: failed to parse fallback font '{SYSTEM_DEJAVU_MONO}': {e2}");
+                                    None
+                                },
+                            }
+                        },
+                        Err(e2) => {
+                            tracing::warn!(
+                                "draw_time: no font available (primary: {e}, fallback: {e2})"
+                            );
+                            None
+                        },
+                    }
                 },
             }
         } else {
