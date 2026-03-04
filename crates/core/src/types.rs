@@ -12,6 +12,7 @@
 //! - Transcription types for speech processing
 //! - Extensible custom packet types for plugins
 
+use crate::error::StreamKitError;
 use crate::frame_pool::{PooledSamples, PooledVideoData};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -619,7 +620,7 @@ impl VideoFrame {
         pixel_format: PixelFormat,
         data: PooledVideoData,
         metadata: Option<PacketMetadata>,
-    ) -> Self {
+    ) -> Result<Self, StreamKitError> {
         let layout = VideoLayout::packed(width, height, pixel_format);
         Self::from_pooled_with_layout(width, height, pixel_format, layout, data, metadata)
     }
@@ -631,24 +632,31 @@ impl VideoFrame {
         layout: VideoLayout,
         mut data: PooledVideoData,
         metadata: Option<PacketMetadata>,
-    ) -> Self {
+    ) -> Result<Self, StreamKitError> {
         let expected_layout =
             VideoLayout::aligned(width, height, pixel_format, layout.stride_align());
         if layout != expected_layout {
-            panic!("VideoFrame layout mismatch: expected {expected_layout:?}, got {layout:?}");
+            return Err(StreamKitError::Runtime(format!(
+                "VideoFrame layout mismatch: expected {expected_layout:?}, got {layout:?}"
+            )));
         }
         if data.len() < layout.total_bytes() {
-            panic!(
+            return Err(StreamKitError::Runtime(format!(
                 "VideoFrame data buffer too small: need {} bytes, have {}",
                 layout.total_bytes(),
                 data.len()
-            );
+            )));
         }
         data.truncate(layout.total_bytes());
-        Self { width, height, pixel_format, layout, data: Arc::new(data), metadata }
+        Ok(Self { width, height, pixel_format, layout, data: Arc::new(data), metadata })
     }
 
-    pub fn new(width: u32, height: u32, pixel_format: PixelFormat, data: Vec<u8>) -> Self {
+    pub fn new(
+        width: u32,
+        height: u32,
+        pixel_format: PixelFormat,
+        data: Vec<u8>,
+    ) -> Result<Self, StreamKitError> {
         Self::from_pooled(width, height, pixel_format, PooledVideoData::from_vec(data), None)
     }
 
@@ -658,7 +666,7 @@ impl VideoFrame {
         pixel_format: PixelFormat,
         data: Vec<u8>,
         metadata: Option<PacketMetadata>,
-    ) -> Self {
+    ) -> Result<Self, StreamKitError> {
         Self::from_pooled(width, height, pixel_format, PooledVideoData::from_vec(data), metadata)
     }
 
@@ -668,7 +676,7 @@ impl VideoFrame {
         pixel_format: PixelFormat,
         data: Arc<PooledVideoData>,
         metadata: Option<PacketMetadata>,
-    ) -> Self {
+    ) -> Result<Self, StreamKitError> {
         let layout = VideoLayout::packed(width, height, pixel_format);
         Self::from_arc_with_layout(width, height, pixel_format, layout, data, metadata)
     }
@@ -680,20 +688,22 @@ impl VideoFrame {
         layout: VideoLayout,
         data: Arc<PooledVideoData>,
         metadata: Option<PacketMetadata>,
-    ) -> Self {
+    ) -> Result<Self, StreamKitError> {
         let expected_layout =
             VideoLayout::aligned(width, height, pixel_format, layout.stride_align());
         if layout != expected_layout {
-            panic!("VideoFrame layout mismatch: expected {expected_layout:?}, got {layout:?}");
+            return Err(StreamKitError::Runtime(format!(
+                "VideoFrame layout mismatch: expected {expected_layout:?}, got {layout:?}"
+            )));
         }
         if data.len() < layout.total_bytes() {
-            panic!(
+            return Err(StreamKitError::Runtime(format!(
                 "VideoFrame data buffer too small: need {} bytes, have {}",
                 layout.total_bytes(),
                 data.len()
-            );
+            )));
         }
-        Self { width, height, pixel_format, layout, data, metadata }
+        Ok(Self { width, height, pixel_format, layout, data, metadata })
     }
 
     pub fn data(&self) -> &[u8] {
@@ -764,7 +774,7 @@ mod tests {
 
     #[test]
     fn video_frame_copy_on_write() {
-        let frame_a = VideoFrame::new(2, 1, PixelFormat::Rgba8, vec![0u8; 8]);
+        let frame_a = VideoFrame::new(2, 1, PixelFormat::Rgba8, vec![0u8; 8]).unwrap();
         let mut frame_b = frame_a.clone();
 
         assert!(!frame_a.has_unique_data());
@@ -785,7 +795,7 @@ mod tests {
 
         {
             let data = pool.get(8);
-            let frame = VideoFrame::from_pooled(2, 1, PixelFormat::Rgba8, data, None);
+            let frame = VideoFrame::from_pooled(2, 1, PixelFormat::Rgba8, data, None).unwrap();
             assert_eq!(frame.data_len(), 8);
             assert_eq!(pool.stats().buckets[0].available, 0);
             drop(frame);

@@ -631,7 +631,7 @@ impl ProcessorNode for CompositorNode {
                 PixelFormat::Rgba8,
                 composite_result.rgba_data,
                 metadata,
-            );
+            )?;
 
             if context.output_sender.send("out", Packet::Video(out_frame)).await.is_err() {
                 tracing::debug!("Output channel closed, stopping CompositorNode");
@@ -909,7 +909,7 @@ mod tests {
             pixel[2] = b;
             pixel[3] = a;
         }
-        VideoFrame::new(width, height, PixelFormat::Rgba8, data)
+        VideoFrame::new(width, height, PixelFormat::Rgba8, data).unwrap()
     }
 
     // ── Unit tests for compositing helpers ───────────────────────────────

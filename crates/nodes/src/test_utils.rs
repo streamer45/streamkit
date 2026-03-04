@@ -156,7 +156,7 @@ pub fn create_test_video_frame(
         }
     }
 
-    VideoFrame::new(width, height, pixel_format, data)
+    VideoFrame::new(width, height, pixel_format, data).unwrap()
 }
 
 /// Helper to create a simple video packet for testing.

@@ -8,7 +8,7 @@ export type SampleFormat = "F32" | "S16Le";
 
 export type AudioFormat = { sample_rate: number, channels: number, sample_format: SampleFormat, };
 
-export type PixelFormat = "Rgba8" | "I420";
+export type PixelFormat = "Rgba8" | "I420" | "Nv12";
 
 export type VideoFormat = { width: number | null, height: number | null, pixel_format: PixelFormat, };
 
