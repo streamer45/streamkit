@@ -8,6 +8,7 @@ import { animate } from 'motion';
 import React, { useEffect, useRef } from 'react';
 
 import { NodeFrame } from '@/components/node/NodeFrame';
+import { LiveBadge, LiveDot } from '@/components/ui/LiveIndicator';
 import { useNumericSlider } from '@/hooks/useNumericSlider';
 import type { InputPin, OutputPin, NodeState, NodeStats } from '@/types/types';
 import { nodesLogger } from '@/utils/logger';
@@ -26,41 +27,6 @@ const GainLabel = styled.label`
   display: flex;
   align-items: center;
   gap: 6px;
-`;
-
-const LiveIndicator = styled.span`
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 2px 5px;
-  background: rgba(239, 68, 68, 0.15);
-  color: rgb(239, 68, 68);
-  border: 1px solid rgba(239, 68, 68, 0.3);
-  border-radius: 3px;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.2px;
-  flex-shrink: 0;
-  user-select: none;
-`;
-
-const LiveDot = styled.div`
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: rgb(239, 68, 68);
-  animation: pulse 2s ease-in-out infinite;
-  flex-shrink: 0;
-
-  @keyframes pulse {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.5;
-    }
-  }
 `;
 
 const LabelContent = styled.span`
@@ -195,10 +161,10 @@ const AudioGainNode: React.FC<AudioGainNodeProps> = React.memo(({ id, data, sele
             <Tooltip.Provider delayDuration={300}>
               <Tooltip.Root>
                 <Tooltip.Trigger asChild>
-                  <LiveIndicator>
-                    <LiveDot />
+                  <LiveBadge size="small">
+                    <LiveDot size="small" />
                     LIVE
-                  </LiveIndicator>
+                  </LiveBadge>
                 </Tooltip.Trigger>
                 <Tooltip.Portal>
                   <TooltipContent side="top" sideOffset={5}>

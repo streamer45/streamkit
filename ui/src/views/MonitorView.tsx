@@ -31,6 +31,7 @@ import { PipelineRightPane } from '@/components/PipelineRightPane';
 import { ResizableLayout } from '@/components/ResizableLayout';
 import { SKTooltip } from '@/components/Tooltip';
 import { Button } from '@/components/ui/Button';
+import { LiveBadge, LiveDot } from '@/components/ui/LiveIndicator';
 import { TabsContent, TabsList, TabsRoot, TabsTrigger } from '@/components/ui/Tabs';
 import { ViewTitle } from '@/components/ui/ViewTitle';
 import { DnDProvider, useDnD } from '@/context/DnDContext';
@@ -874,41 +875,6 @@ const SessionItem: React.FC<SessionItemProps> = React.memo(
     );
   }
 );
-
-const LiveBadge = styled.span`
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 6px 10px;
-  background: rgba(239, 68, 68, 0.15);
-  color: rgb(239, 68, 68);
-  border: 1px solid rgba(239, 68, 68, 0.3);
-  border-radius: 4px;
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.3px;
-  line-height: 1;
-  user-select: none;
-`;
-
-const LiveDot = styled.div`
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: rgb(239, 68, 68);
-  animation: pulse 2s ease-in-out infinite;
-  flex-shrink: 0;
-
-  @keyframes pulse {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.5;
-    }
-  }
-`;
 
 // Type for TopControls props
 interface TopControlsProps {

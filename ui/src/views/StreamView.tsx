@@ -3,15 +3,28 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import styled from '@emotion/styled';
-import React, { useEffect, useCallback, useState } from 'react';
+import React, { useEffect, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useShallow } from 'zustand/shallow';
 
 import ConfirmModal from '@/components/ConfirmModal';
 import { PipelineSelectionSection } from '@/components/stream/PipelineSelectionSection';
 import TelemetryTimelineComponent from '@/components/TelemetryTimeline';
-import { useCanvasAspectRatio } from '@/hooks/useCanvasAspectRatio';
+import {
+  ViewContainer,
+  ContentArea,
+  ContentWrapper,
+  BottomSpacer,
+  Section,
+  SectionTitle,
+  InfoBox,
+  InfoContent,
+  InfoTitle,
+  TechnicalDetailsToggle,
+  TechnicalDetails,
+} from '@/components/ui/ViewLayout';
 import { useStreamViewState } from '@/hooks/useStreamViewState';
+import { useVideoCanvas } from '@/hooks/useVideoCanvas';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { listDynamicSamples } from '@/services/samples';
 import { createSession } from '@/services/sessions';
@@ -24,52 +37,6 @@ import { orderSamplePipelinesSystemFirst } from '@/utils/samplePipelineOrdering'
 import { useStreamStore } from '../stores/streamStore';
 
 const logger = getLogger('StreamView');
-
-const ViewContainer = styled.div`
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  background: var(--sk-bg);
-`;
-
-const ContentArea = styled.div`
-  flex: 1;
-  overflow-y: auto;
-  display: flex;
-  justify-content: center;
-  padding: 40px;
-`;
-
-const ContentWrapper = styled.div`
-  width: 100%;
-  max-width: 1200px;
-  display: flex;
-  flex-direction: column;
-  gap: 32px;
-`;
-
-const BottomSpacer = styled.div`
-  height: 8px;
-  flex-shrink: 0;
-  /* With gap: 32px from ContentWrapper, this gives us 40px total bottom spacing */
-`;
-
-const Section = styled.div`
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding: 24px;
-  background: var(--sk-panel-bg);
-  border: 1px solid var(--sk-border);
-  border-radius: 12px;
-`;
-
-const SectionTitle = styled.h2`
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--sk-text);
-  margin: 0;
-`;
 
 const ConnectionControlsRow = styled.div`
   display: flex;
@@ -89,65 +56,6 @@ const ConnectionHint = styled.div`
   @media (max-width: 900px) {
     flex-basis: 100%;
   }
-`;
-
-const InfoBox = styled.div`
-  padding: 20px;
-  background: var(--sk-panel-bg);
-  border: 1px solid var(--sk-border);
-  border-left: 4px solid var(--sk-primary);
-  border-radius: 8px;
-  color: var(--sk-text);
-  font-size: 14px;
-  line-height: 1.6;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-`;
-
-const InfoContent = styled.div`
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-`;
-
-const InfoTitle = styled.h2`
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--sk-text);
-  margin: 0;
-`;
-
-const TechnicalDetailsToggle = styled.button`
-  padding: 8px 12px;
-  background: transparent;
-  color: var(--sk-text-muted);
-  border: 1px solid var(--sk-border);
-  border-radius: 6px;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  align-self: flex-start;
-
-  &:hover {
-    background: var(--sk-hover-bg);
-    color: var(--sk-text);
-    border-color: var(--sk-border-strong);
-  }
-`;
-
-const TechnicalDetails = styled.div`
-  padding-top: 12px;
-  border-top: 1px solid var(--sk-border);
-  color: var(--sk-text-muted);
-  font-size: 13px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
 `;
 
 const InputGroup = styled.div`
@@ -335,8 +243,6 @@ const StreamView: React.FC = () => {
   const [showTechnicalDetails, setShowTechnicalDetails] = React.useState<boolean>(false);
   const [destroyConfirmOpen, setDestroyConfirmOpen] = React.useState<boolean>(false);
   const [destroyConfirmLoading, setDestroyConfirmLoading] = React.useState<boolean>(false);
-  const [canvasEl, setCanvasEl] = useState<HTMLCanvasElement | null>(null);
-  const canvasAspectRatio = useCanvasAspectRatio(canvasEl);
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -417,6 +323,9 @@ const StreamView: React.FC = () => {
 
   // Get node definitions for YAML autocomplete
   const nodeDefinitions = useSchemaStore((s) => s.nodeDefinitions);
+
+  const { canvasRef: videoCanvasRef, aspectRatio: canvasAspectRatio } =
+    useVideoCanvas(videoRenderer);
 
   // Ensure schemas are loaded for autocomplete
   useEffect(() => {
@@ -905,12 +814,7 @@ const StreamView: React.FC = () => {
             <Section>
               <SectionTitle>Video</SectionTitle>
               <canvas
-                ref={(el) => {
-                  setCanvasEl(el);
-                  if (el && videoRenderer) {
-                    videoRenderer.canvas.set(el);
-                  }
-                }}
+                ref={videoCanvasRef}
                 style={{
                   display: 'block',
                   width: 'auto',
