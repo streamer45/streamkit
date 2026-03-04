@@ -13,7 +13,9 @@ use streamkit_core::types::PixelFormat;
 
 use super::config::Rect;
 use super::overlay::DecodedOverlay;
-use super::pixel_ops::{i420_to_rgba8_buf, nv12_to_rgba8_buf, scale_blit_rgba_rotated};
+use super::pixel_ops::{
+    all_alpha_opaque, i420_to_rgba8_buf, nv12_to_rgba8_buf, scale_blit_rgba_rotated,
+};
 
 // ── Compositing kernel (runs on a persistent blocking thread) ────────────────
 
@@ -74,7 +76,7 @@ impl ConversionCache {
             }
         }
 
-        let all_opaque = rgba_data.chunks_exact(4).all(|px| px[3] == 255);
+        let all_opaque = all_alpha_opaque(rgba_data);
         self.first_layer_alpha_cache = Some((identity, all_opaque));
         all_opaque
     }

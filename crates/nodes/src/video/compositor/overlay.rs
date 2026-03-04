@@ -5,6 +5,9 @@
 //! Overlay decoding and rasterization for the video compositor.
 
 use super::config::{ImageOverlayConfig, Rect, TextOverlayConfig};
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::sync::{Arc, LazyLock, Mutex};
 use streamkit_core::StreamKitError;
 
 // ── Decoded overlay bitmap ──────────────────────────────────────────────────
@@ -146,37 +149,130 @@ const KNOWN_FONTS: &[(&str, &str)] = &[
     ("freemono", "/usr/share/fonts/truetype/freefont/FreeMono.ttf"),
 ];
 
+// ── Parsed-font cache ───────────────────────────────────────────────────────
+
+/// Cache key identifying a font source.
+///
+/// Path-based sources (`font_name`, `font_path`, and the bundled default) all
+/// resolve to a filesystem path string.  Inline base64 data is keyed by a hash
+/// of the base64 string so the cache map does not retain what may be a
+/// several-hundred-KiB string per font.
+#[derive(Hash, Eq, PartialEq)]
+enum FontKey {
+    Path(String),
+    InlineHash(u64),
+}
+
+/// Process-wide cache of parsed `fontdue::Font` objects.
+///
+/// `fontdue::Font::from_bytes` parses the full TTF/OTF table set and is
+/// expensive (~3.5 s cumulative in profiling when overlay parameters update
+/// frequently).  Caching the parsed result keyed by font identity means the
+/// parse happens once per distinct font for the lifetime of the process;
+/// subsequent `load_font` calls for the same source are an `Arc::clone`.
+///
+/// The set of distinct fonts in any reasonable pipeline is tiny (bounded by
+/// [`KNOWN_FONTS`] + whatever the user injects), so unbounded growth is not a
+/// concern.  The lock is held only for the map lookup / insert, never across
+/// the parse itself.
+static FONT_CACHE: LazyLock<Mutex<HashMap<FontKey, Arc<fontdue::Font>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Lazy loader for raw font bytes.  Constructed cheaply by
+/// [`resolve_font_source`] so that file I/O and base64 decoding are deferred
+/// until after a cache miss is confirmed.
+type FontBytesLoader<'a> = Box<dyn FnOnce() -> Result<Vec<u8>, String> + 'a>;
+
+/// Resolve a [`TextOverlayConfig`]'s font-source fields to a [`FontKey`] and a
+/// lazy byte loader, following the same precedence as [`load_font`]:
+/// `font_data_base64` > `font_name` > `font_path` > bundled default.
+///
+/// Returning a boxed closure lets the caller skip file I/O / base64 decode
+/// entirely on a cache hit.
+fn resolve_font_source(
+    config: &TextOverlayConfig,
+) -> Result<(FontKey, FontBytesLoader<'_>), String> {
+    if let Some(ref b64) = config.font_data_base64 {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        b64.hash(&mut h);
+        let key = FontKey::InlineHash(h.finish());
+        let loader = move || {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD
+                .decode(b64)
+                .map_err(|e| format!("Invalid base64 in font_data_base64: {e}"))
+        };
+        return Ok((key, Box::new(loader)));
+    }
+
+    if let Some(ref name) = config.font_name {
+        let path =
+            KNOWN_FONTS.iter().find(|(n, _)| *n == name.as_str()).map(|(_, p)| *p).ok_or_else(
+                || format!("Unknown font name '{name}'. Available: {}", known_font_names()),
+            )?;
+        let key = FontKey::Path(path.to_owned());
+        let name = name.clone();
+        let loader = move || {
+            std::fs::read(path).map_err(|e| {
+                tracing::warn!(
+                    "Named font '{name}' not found at '{path}': {e}. Is the font package installed?"
+                );
+                format!("Failed to read named font '{name}' at '{path}': {e}")
+            })
+        };
+        return Ok((key, Box::new(loader)));
+    }
+
+    if let Some(ref path) = config.font_path {
+        let key = FontKey::Path(path.clone());
+        let path = path.clone();
+        let loader = move || {
+            std::fs::read(&path).map_err(|e| format!("Failed to read font file '{path}': {e}"))
+        };
+        return Ok((key, Box::new(loader)));
+    }
+
+    let key = FontKey::Path(DEJAVU_SANS_PATH.to_owned());
+    let loader = || {
+        std::fs::read(DEJAVU_SANS_PATH)
+            .map_err(|e| format!("Failed to read default font '{DEJAVU_SANS_PATH}': {e}"))
+    };
+    Ok((key, Box::new(loader)))
+}
+
 /// Load font data, trying (in order):
 /// 1. `font_data_base64` (inline base64-encoded TTF/OTF)
 /// 2. `font_name` (named font from [`KNOWN_FONTS`] map)
 /// 3. `font_path` (filesystem path)
 /// 4. Bundled system default (`DejaVuSans.ttf`)
-fn load_font(config: &TextOverlayConfig) -> Result<fontdue::Font, String> {
-    let font_bytes: Vec<u8> = if let Some(ref b64) = config.font_data_base64 {
-        use base64::Engine;
-        base64::engine::general_purpose::STANDARD
-            .decode(b64)
-            .map_err(|e| format!("Invalid base64 in font_data_base64: {e}"))?
-    } else if let Some(ref name) = config.font_name {
-        let path =
-            KNOWN_FONTS.iter().find(|(n, _)| *n == name.as_str()).map(|(_, p)| *p).ok_or_else(
-                || format!("Unknown font name '{name}'. Available: {}", known_font_names()),
-            )?;
-        std::fs::read(path).map_err(|e| {
-            tracing::warn!(
-                "Named font '{name}' not found at '{path}': {e}. Is the font package installed?"
-            );
-            format!("Failed to read named font '{name}' at '{path}': {e}")
-        })?
-    } else if let Some(ref path) = config.font_path {
-        std::fs::read(path).map_err(|e| format!("Failed to read font file '{path}': {e}"))?
-    } else {
-        std::fs::read(DEJAVU_SANS_PATH)
-            .map_err(|e| format!("Failed to read default font '{DEJAVU_SANS_PATH}': {e}"))?
-    };
+///
+/// Parsed fonts are cached in [`FONT_CACHE`] keyed by the resolved source
+/// identity, so repeated calls for the same font are an `Arc::clone` rather
+/// than a fresh file read + TTF parse.
+fn load_font(config: &TextOverlayConfig) -> Result<Arc<fontdue::Font>, String> {
+    let (key, load_bytes) = resolve_font_source(config)?;
 
-    fontdue::Font::from_bytes(font_bytes, fontdue::FontSettings::default())
-        .map_err(|e| format!("Failed to parse font: {e}"))
+    // Fast path: cache hit.  Lock scope limited to the lookup.
+    if let Ok(cache) = FONT_CACHE.lock() {
+        if let Some(font) = cache.get(&key) {
+            return Ok(Arc::clone(font));
+        }
+    }
+
+    // Miss: do the expensive work (I/O + parse) *outside* the lock.
+    let font_bytes = load_bytes()?;
+    let font = Arc::new(
+        fontdue::Font::from_bytes(font_bytes, fontdue::FontSettings::default())
+            .map_err(|e| format!("Failed to parse font: {e}"))?,
+    );
+
+    // Insert.  If the mutex is poisoned we simply skip caching — the caller
+    // still gets a valid font, just without the memoisation benefit.
+    if let Ok(mut cache) = FONT_CACHE.lock() {
+        cache.entry(key).or_insert_with(|| Arc::clone(&font));
+    }
+
+    Ok(font)
 }
 
 /// Comma-separated list of available font names for error messages.

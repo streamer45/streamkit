@@ -48,7 +48,7 @@ opentelemetry = "0.31.0"
 # Profile settings for better profiling experience
 [profile.release]
 debug = 1          # Include line tables for better stack traces in profiling
-lto = "thin"       # Cross-crate inlining (significant for multi-crate workspace)
+lto = "fat"        # Full cross-crate LTO — eliminates core::ub_checks precondition overhead observed in profiling (vs. "thin")
 codegen-units = 1  # Maximum LLVM optimisation visibility
 
 [profile.dev]
