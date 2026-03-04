@@ -334,10 +334,7 @@ impl ProcessorNode for Vp9EncoderNode {
                 // NV12 and I420 pass through directly — the encoder handles
                 // both formats natively via VPX_IMG_FMT_NV12 / VPX_IMG_FMT_I420.
                 let encode_frame = if frame.pixel_format == PixelFormat::Rgba8 {
-                    match convert_rgba8_to_nv12_frame(
-                        &frame,
-                        video_pool_clone.as_deref(),
-                    ) {
+                    match convert_rgba8_to_nv12_frame(&frame, video_pool_clone.as_deref()) {
                         Ok(f) => f,
                         Err(err) => {
                             let _ = result_tx.blocking_send(Err(err.to_string()));
