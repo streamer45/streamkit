@@ -279,7 +279,7 @@ impl ProcessorNode for ColorBarsNode {
                     pixel_format,
                     pooled,
                     metadata,
-                )
+                )?
             } else {
                 let mut data = template.clone();
                 if let Some(ref font) = draw_time_font {
@@ -291,7 +291,7 @@ impl ProcessorNode for ColorBarsNode {
                     pixel_format,
                     data,
                     metadata,
-                )
+                )?
             };
 
             if context.output_sender.send("out", Packet::Video(frame)).await.is_err() {

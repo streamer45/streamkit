@@ -326,10 +326,6 @@ impl ProcessorNode for Vp9EncoderNode {
         let encode_task = tokio::task::spawn_blocking(move || {
             let mut encoder: Option<Vp9Encoder> = None;
             let mut current_dimensions: Option<(u32, u32)> = None;
-            // Reusable scratch buffer for RGBA8→NV12 conversion, avoids
-            // per-frame allocation when the encoder receives RGBA8 input
-            // (e.g. from the compositor).
-            let mut rgba_to_nv12_scratch: Vec<u8> = Vec::new();
 
             while let Some((frame, metadata)) = encode_rx.blocking_recv() {
                 // Convert RGBA8 to NV12 on this blocking thread so the
@@ -338,11 +334,13 @@ impl ProcessorNode for Vp9EncoderNode {
                 // NV12 and I420 pass through directly — the encoder handles
                 // both formats natively via VPX_IMG_FMT_NV12 / VPX_IMG_FMT_I420.
                 let encode_frame = if frame.pixel_format == PixelFormat::Rgba8 {
-                    convert_rgba8_to_nv12_frame(
-                        &frame,
-                        video_pool_clone.as_deref(),
-                        &mut rgba_to_nv12_scratch,
-                    )
+                    match convert_rgba8_to_nv12_frame(&frame, video_pool_clone.as_deref()) {
+                        Ok(f) => f,
+                        Err(err) => {
+                            let _ = result_tx.blocking_send(Err(err.to_string()));
+                            continue;
+                        },
+                    }
                 } else {
                     frame
                 };
@@ -1067,7 +1065,8 @@ fn copy_vpx_image(
         }
     }
 
-    Ok(VideoFrame::from_pooled(width, height, PixelFormat::Nv12, data, metadata))
+    VideoFrame::from_pooled(width, height, PixelFormat::Nv12, data, metadata)
+        .map_err(|e| e.to_string())
 }
 
 fn copy_plane(
@@ -1102,10 +1101,6 @@ fn copy_plane(
 
 /// Convert an RGBA8 `VideoFrame` to NV12 for VP9 encoding.
 ///
-/// Uses a caller-supplied scratch buffer to avoid per-frame heap allocation.
-/// The scratch is only used as intermediate storage when no video pool is
-/// available; with a pool the NV12 data is allocated from there directly.
-///
 /// NV12 is preferred over I420 here because the VP9 encoder accepts NV12
 /// natively (`VPX_IMG_FMT_NV12`) and NV12's interleaved UV plane has
 /// better cache locality during encoding.
@@ -1113,8 +1108,7 @@ fn copy_plane(
 fn convert_rgba8_to_nv12_frame(
     frame: &VideoFrame,
     video_pool: Option<&VideoFramePool>,
-    _scratch: &mut Vec<u8>,
-) -> VideoFrame {
+) -> Result<VideoFrame, StreamKitError> {
     use crate::video::compositor::pixel_ops::rgba8_to_nv12_buf;
 
     let w = frame.width as usize;

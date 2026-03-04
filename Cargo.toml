@@ -45,9 +45,14 @@ indexmap = { version = "2.13", features = ["serde"] }
 
 opentelemetry = "0.31.0"
 
-# Profile settings for better profiling experience
+# Profile settings
 [profile.release]
-debug = 1          # Include line tables for better stack traces in profiling
+debug = 1 # Include line tables for better stack traces in profiling
+
+# Maximally-optimised release build — use `cargo build --profile release-lto`.
+# CI sticks with the default `release` profile for faster builds.
+[profile.release-lto]
+inherits = "release"
 lto = "fat"        # Full cross-crate LTO — eliminates core::ub_checks precondition overhead observed in profiling (vs. "thin")
 codegen-units = 1  # Maximum LLVM optimisation visibility
 
