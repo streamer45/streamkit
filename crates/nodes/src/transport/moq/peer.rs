@@ -887,8 +887,7 @@ impl MoqPeerNode {
         };
 
         // Wait for catalog with audio/video track info
-        let Some(catalog_tracks) =
-            Self::wait_for_catalog(&broadcast_consumer, shutdown_rx).await?
+        let Some(catalog_tracks) = Self::wait_for_catalog(&broadcast_consumer, shutdown_rx).await?
         else {
             return Ok(()); // Shutdown requested
         };
@@ -1071,17 +1070,31 @@ impl MoqPeerNode {
                 audio_result?;
                 video_result?;
                 Ok(())
-            }
+            },
             (Some(audio), None) => {
-                Self::process_publisher_frames(audio, output_sender, "out", shutdown_rx, stats_delta_tx).await
-            }
+                Self::process_publisher_frames(
+                    audio,
+                    output_sender,
+                    "out",
+                    shutdown_rx,
+                    stats_delta_tx,
+                )
+                .await
+            },
             (None, Some(video)) => {
-                Self::process_publisher_frames(video, output_sender, "video_out", shutdown_rx, stats_delta_tx).await
-            }
+                Self::process_publisher_frames(
+                    video,
+                    output_sender,
+                    "video_out",
+                    shutdown_rx,
+                    stats_delta_tx,
+                )
+                .await
+            },
             (None, None) => {
                 tracing::warn!("Publisher catalog has no audio or video tracks");
                 Ok(())
-            }
+            },
         }
     }
 
