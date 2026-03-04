@@ -40,6 +40,8 @@ pub mod compositor;
 #[cfg(feature = "vp9")]
 pub mod vp9;
 
+pub(crate) mod fonts;
+
 // ── Shared font-rendering helpers ────────────────────────────────────────────
 
 /// Measure the pixel dimensions a single-line text string would occupy when

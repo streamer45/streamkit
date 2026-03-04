@@ -46,12 +46,6 @@ const FONT_FAMILY_MAP: Record<string, string> = {
   'dejavu-sans-bold': '"DejaVu Sans", "Verdana", sans-serif',
   'dejavu-serif-bold': '"DejaVu Serif", "Georgia", serif',
   'dejavu-sans-mono-bold': '"DejaVu Sans Mono", "Courier New", monospace',
-  'liberation-sans': '"Liberation Sans", "Arial", sans-serif',
-  'liberation-serif': '"Liberation Serif", "Times New Roman", serif',
-  'liberation-mono': '"Liberation Mono", "Courier New", monospace',
-  freesans: '"FreeSans", "Arial", sans-serif',
-  freeserif: '"FreeSerif", "Times New Roman", serif',
-  freemono: '"FreeMono", "Courier New", monospace',
 };
 
 /** Return true when the backend font name maps to a bold variant. */
