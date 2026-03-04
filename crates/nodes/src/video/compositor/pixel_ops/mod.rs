@@ -69,6 +69,34 @@ const fn blend_u8(src: u8, dst: u8, alpha: u16) -> u8 {
     ((val + (val >> 8)) >> 8) as u8
 }
 
+/// Check whether every pixel's alpha byte in an RGBA8 buffer is `0xFF`.
+///
+/// Dispatches to AVX2 / SSE2 kernels on x86-64 (8 / 4 pixels per iteration)
+/// and falls back to a scalar scan on other architectures.  Safe wrapper
+/// around the `target_feature`-gated SIMD helpers so callers outside this
+/// module don't need their own `unsafe` + `cfg` scaffolding.
+///
+/// Assumes `rgba.len()` is a multiple of 4 — always true for valid RGBA8 data.
+pub fn all_alpha_opaque(rgba: &[u8]) -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // SAFETY: `all_alpha_opaque_{avx2,sse2}` require the input length to be
+        // a multiple of 4 bytes, which holds for any valid RGBA8 buffer.  Both
+        // helpers handle arbitrary tails internally (scalar fall-through for
+        // trailing bytes past the last full SIMD chunk).  Feature availability
+        // is checked at runtime via `is_x86_feature_detected!`.
+        if is_x86_feature_detected!("avx2") {
+            unsafe { simd::all_alpha_opaque_avx2(rgba) }
+        } else {
+            unsafe { simd::all_alpha_opaque_sse2(rgba) }
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        rgba.chunks_exact(4).all(|px| px[3] == 255)
+    }
+}
+
 // ── Public API re-exports ───────────────────────────────────────────────────
 
 pub use blit::{scale_blit_rgba, scale_blit_rgba_rotated};
