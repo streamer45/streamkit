@@ -40,12 +40,6 @@ const fn default_frame_count() -> u32 {
     0
 }
 
-fn default_draw_time_font_path() -> String {
-    "assets/fonts/DejaVuSansMono.ttf".to_string()
-}
-
-const SYSTEM_DEJAVU_MONO: &str = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf";
-
 /// Configuration for the SMPTE color bars generator.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(default)]
@@ -69,10 +63,11 @@ pub struct ColorBarsConfig {
     /// onto each generated frame using a monospace font.
     #[serde(default)]
     pub draw_time: bool,
-    /// Filesystem path to a monospace TTF/OTF font used for the
-    /// `draw_time` overlay.  Defaults to `assets/fonts/DejaVuSansMono.ttf`.
-    #[serde(default = "default_draw_time_font_path")]
-    pub draw_time_font_path: String,
+    /// Optional filesystem path to a custom TTF/OTF font used for the
+    /// `draw_time` overlay.  When omitted the bundled DejaVu Sans Mono
+    /// font (embedded in the binary) is used.
+    #[serde(default)]
+    pub draw_time_font_path: Option<String>,
 }
 
 fn default_pixel_format() -> String {
@@ -91,7 +86,7 @@ impl Default for ColorBarsConfig {
             frame_count: default_frame_count(),
             pixel_format: default_pixel_format(),
             draw_time: false,
-            draw_time_font_path: default_draw_time_font_path(),
+            draw_time_font_path: None,
         }
     }
 }
@@ -147,46 +142,33 @@ impl ProcessorNode for ColorBarsNode {
 
         // Pre-load the monospace font for draw_time (once, if enabled).
         let draw_time_font = if self.config.draw_time {
-            let path = &self.config.draw_time_font_path;
-            match std::fs::read(path) {
-                Ok(bytes) => {
-                    match fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()) {
-                        Ok(f) => {
-                            tracing::info!("draw_time enabled: loaded font from {path}");
-                            Some(f)
-                        },
-                        Err(e) => {
-                            tracing::warn!("draw_time: failed to parse font '{path}': {e}");
-                            None
-                        },
-                    }
+            // If the user specified a custom font path, try that first;
+            // otherwise use the compile-time embedded DejaVu Sans Mono.
+            let font_bytes = self.config.draw_time_font_path.as_ref().map_or_else(
+                || crate::video::fonts::DEFAULT_MONO_FONT_DATA.to_vec(),
+                |path| match std::fs::read(path) {
+                    Ok(bytes) => {
+                        tracing::info!("draw_time: loaded custom font from {path}");
+                        bytes
+                    },
+                    Err(e) => {
+                        tracing::warn!(
+                            "draw_time: failed to read custom font '{path}': {e}, \
+                             falling back to bundled DejaVu Sans Mono"
+                        );
+                        crate::video::fonts::DEFAULT_MONO_FONT_DATA.to_vec()
+                    },
+                },
+            );
+
+            match fontdue::Font::from_bytes(font_bytes, fontdue::FontSettings::default()) {
+                Ok(f) => {
+                    tracing::info!("draw_time enabled: font ready");
+                    Some(f)
                 },
                 Err(e) => {
-                    tracing::debug!("draw_time: failed to read font '{path}': {e}");
-                    // Fallback to system-installed DejaVu Sans Mono.
-                    match std::fs::read(SYSTEM_DEJAVU_MONO) {
-                        Ok(bytes) => {
-                            match fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default())
-                            {
-                                Ok(f) => {
-                                    tracing::info!(
-                                        "draw_time: loaded fallback font from {SYSTEM_DEJAVU_MONO}"
-                                    );
-                                    Some(f)
-                                },
-                                Err(e2) => {
-                                    tracing::warn!("draw_time: failed to parse fallback font '{SYSTEM_DEJAVU_MONO}': {e2}");
-                                    None
-                                },
-                            }
-                        },
-                        Err(e2) => {
-                            tracing::warn!(
-                                "draw_time: no font available (primary: {e}, fallback: {e2})"
-                            );
-                            None
-                        },
-                    }
+                    tracing::warn!("draw_time: failed to parse font: {e}");
+                    None
                 },
             }
         } else {

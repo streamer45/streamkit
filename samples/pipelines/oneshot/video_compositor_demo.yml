@@ -6,8 +6,8 @@
 #   1. A full-size 640x480 background colorbars (I420)
 #   2. A smaller 320x240 PiP colorbars overlay (RGBA8) with explicit
 #      positioning and 15° clockwise rotation
-#   3. A text overlay ("StreamKit Demo") rendered with a real font
-#      (DejaVu Sans, bundled in assets/fonts/)
+#   3. A text overlay ("StreamKit Demo") rendered with the bundled
+#      DejaVu Sans font (embedded in the binary)
 #
 # Per-layer rect, opacity, rotation_degrees, and text overlays can be
 # updated at runtime via UpdateParams (JSON) — changes take effect on
@@ -26,9 +26,8 @@ nodes:
       fps: 30
       frame_count: 90
       # Draw the current wall-clock time (HH:MM:SS.mmm) in the bottom-left
-      # corner using a monospace font.
+      # corner using the bundled DejaVu Sans Mono font.
       draw_time: true
-      draw_time_font_path: assets/fonts/DejaVuSansMono.ttf
 
   colorbars_pip:
     kind: video::colorbars
@@ -81,7 +80,7 @@ nodes:
           opacity: 1.0
           rotation_degrees: 0.0
           z_index: 2
-          font_path: assets/fonts/DejaVuSans.ttf
+          font_name: dejavu-sans
     needs:
       - colorbars_bg
       - colorbars_pip

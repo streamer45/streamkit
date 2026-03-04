@@ -322,7 +322,7 @@ function hexToRgba(hex: string, alpha: number): [number, number, number, number]
   return [r, g, b, alpha];
 }
 
-/** Available named fonts matching the server's KNOWN_FONTS map. */
+/** Available named fonts matching the server's bundled font set. */
 const FONT_OPTIONS = [
   { value: 'dejavu-sans', label: 'DejaVu Sans' },
   { value: 'dejavu-serif', label: 'DejaVu Serif' },
@@ -330,12 +330,6 @@ const FONT_OPTIONS = [
   { value: 'dejavu-sans-bold', label: 'DejaVu Sans Bold' },
   { value: 'dejavu-serif-bold', label: 'DejaVu Serif Bold' },
   { value: 'dejavu-sans-mono-bold', label: 'DejaVu Mono Bold' },
-  { value: 'liberation-sans', label: 'Liberation Sans' },
-  { value: 'liberation-serif', label: 'Liberation Serif' },
-  { value: 'liberation-mono', label: 'Liberation Mono' },
-  { value: 'freesans', label: 'FreeSans' },
-  { value: 'freeserif', label: 'FreeSerif' },
-  { value: 'freemono', label: 'FreeMono' },
 ] as const;
 
 const FontSelect = styled.select`

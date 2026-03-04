@@ -87,6 +87,7 @@ pub struct TextOverlayConfig {
     #[serde(default = "default_font_size")]
     pub font_size: u32,
     /// Optional filesystem path to a TTF/OTF font file.
+    /// Use this for external or system-installed fonts not in the bundled set.
     /// When omitted, a bundled default font (DejaVu Sans) is used.
     #[serde(default)]
     pub font_path: Option<String>,
@@ -94,12 +95,12 @@ pub struct TextOverlayConfig {
     /// Takes precedence over `font_path` when both are provided.
     #[serde(default)]
     pub font_data_base64: Option<String>,
-    /// Named font from a curated set of system fonts.
+    /// Named font from the bundled set (embedded in the binary at compile
+    /// time — guaranteed to work without system font packages).
     /// Takes precedence over `font_path` but not `font_data_base64`.
-    /// Available names: "dejavu-sans", "dejavu-serif", "dejavu-sans-mono",
-    /// "dejavu-sans-bold", "dejavu-serif-bold", "dejavu-sans-mono-bold",
-    /// "liberation-sans", "liberation-serif", "liberation-mono",
-    /// "freesans", "freeserif", "freemono".
+    /// Available names: "dejavu-sans", "dejavu-sans-bold",
+    /// "dejavu-sans-mono", "dejavu-sans-mono-bold",
+    /// "dejavu-serif", "dejavu-serif-bold".
     #[serde(default)]
     pub font_name: Option<String>,
 }

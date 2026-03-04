@@ -125,41 +125,25 @@ fn prescale_rgba(src: &[u8], sw: u32, sh: u32, dw: u32, dh: u32) -> Vec<u8> {
     resized.into_raw()
 }
 
-// ── Bundled default font ────────────────────────────────────────────────────
+// ── Bundled font data ────────────────────────────────────────────────────────
 
-/// Path to the system DejaVu Sans font (commonly available on Linux).
-const DEJAVU_SANS_PATH: &str = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
-
-/// Map of named fonts to their filesystem paths.
-/// All fonts listed here are open-source and royalty-free, commonly installed
-/// on Debian/Ubuntu systems via the `fonts-dejavu-core`, `fonts-liberation`,
-/// and `fonts-freefont-ttf` packages.
-const KNOWN_FONTS: &[(&str, &str)] = &[
-    ("dejavu-sans", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
-    ("dejavu-serif", "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"),
-    ("dejavu-sans-mono", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"),
-    ("dejavu-sans-bold", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
-    ("dejavu-serif-bold", "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"),
-    ("dejavu-sans-mono-bold", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf"),
-    ("liberation-sans", "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"),
-    ("liberation-serif", "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf"),
-    ("liberation-mono", "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf"),
-    ("freesans", "/usr/share/fonts/truetype/freefont/FreeSans.ttf"),
-    ("freeserif", "/usr/share/fonts/truetype/freefont/FreeSerif.ttf"),
-    ("freemono", "/usr/share/fonts/truetype/freefont/FreeMono.ttf"),
-];
+use crate::video::fonts;
 
 // ── Parsed-font cache ───────────────────────────────────────────────────────
 
 /// Cache key identifying a font source.
 ///
-/// Path-based sources (`font_name`, `font_path`, and the bundled default) all
-/// resolve to a filesystem path string.  Inline base64 data is keyed by a hash
-/// of the base64 string so the cache map does not retain what may be a
-/// several-hundred-KiB string per font.
+/// Bundled fonts are keyed by their static name.  User-provided `font_path`
+/// sources use the filesystem path string.  Inline base64 data is keyed by
+/// a hash of the base64 string so the cache map does not retain what may be
+/// a several-hundred-KiB string per font.
 #[derive(Hash, Eq, PartialEq)]
 enum FontKey {
+    /// A font from the compile-time bundled set (keyed by name).
+    Bundled(&'static str),
+    /// A user-provided font loaded from a filesystem path.
     Path(String),
+    /// Inline base64-encoded font data (keyed by content hash).
     InlineHash(u64),
 }
 
@@ -172,7 +156,7 @@ enum FontKey {
 /// subsequent `load_font` calls for the same source are an `Arc::clone`.
 ///
 /// The set of distinct fonts in any reasonable pipeline is tiny (bounded by
-/// [`KNOWN_FONTS`] + whatever the user injects), so unbounded growth is not a
+/// the bundled set + whatever the user injects), so unbounded growth is not a
 /// concern.  The lock is held only for the map lookup / insert, never across
 /// the parse itself.
 static FONT_CACHE: LazyLock<Mutex<HashMap<FontKey, Arc<fontdue::Font>>>> =
@@ -187,11 +171,13 @@ type FontBytesLoader<'a> = Box<dyn FnOnce() -> Result<Vec<u8>, String> + 'a>;
 /// lazy byte loader, following the same precedence as [`load_font`]:
 /// `font_data_base64` > `font_name` > `font_path` > bundled default.
 ///
-/// Returning a boxed closure lets the caller skip file I/O / base64 decode
+/// Bundled fonts (via `font_name` or the default) are compiled into the binary
+/// and always available — no filesystem dependency.  `font_path` still supports
+/// loading arbitrary external fonts from the filesystem.
+///
+/// Returning a boxed closure lets the caller skip base64 decode / file I/O
 /// entirely on a cache hit.
-fn resolve_font_source(
-    config: &TextOverlayConfig,
-) -> Result<(FontKey, FontBytesLoader<'_>), String> {
+fn resolve_font_source(config: &TextOverlayConfig) -> (FontKey, FontBytesLoader<'_>) {
     if let Some(ref b64) = config.font_data_base64 {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         b64.hash(&mut h);
@@ -202,25 +188,30 @@ fn resolve_font_source(
                 .decode(b64)
                 .map_err(|e| format!("Invalid base64 in font_data_base64: {e}"))
         };
-        return Ok((key, Box::new(loader)));
+        return (key, Box::new(loader));
     }
 
     if let Some(ref name) = config.font_name {
-        let path =
-            KNOWN_FONTS.iter().find(|(n, _)| *n == name.as_str()).map(|(_, p)| *p).ok_or_else(
-                || format!("Unknown font name '{name}'. Available: {}", known_font_names()),
-            )?;
-        let key = FontKey::Path(path.to_owned());
-        let name = name.clone();
-        let loader = move || {
-            std::fs::read(path).map_err(|e| {
-                tracing::warn!(
-                    "Named font '{name}' not found at '{path}': {e}. Is the font package installed?"
-                );
-                format!("Failed to read named font '{name}' at '{path}': {e}")
-            })
-        };
-        return Ok((key, Box::new(loader)));
+        if let Some(data) = fonts::bundled_font_by_name(name) {
+            let bundled = fonts::BUNDLED_FONTS
+                .iter()
+                .find(|f| f.name == name.as_str())
+                .map_or("dejavu-sans", |f| f.name);
+            let key = FontKey::Bundled(bundled);
+            let loader = move || Ok(data.to_vec());
+            return (key, Box::new(loader));
+        }
+        // Unknown font name — fall back to the default with a warning rather
+        // than erroring out, so overlays remain readable when legacy or
+        // unrecognised names are passed (e.g. after removing Liberation/FreeFont).
+        tracing::warn!(
+            "Unknown font name '{name}', falling back to default (dejavu-sans). \
+             Available: {}",
+            fonts::bundled_font_names()
+        );
+        let key = FontKey::Bundled("dejavu-sans");
+        let loader = || Ok(fonts::DEFAULT_FONT_DATA.to_vec());
+        return (key, Box::new(loader));
     }
 
     if let Some(ref path) = config.font_path {
@@ -229,28 +220,26 @@ fn resolve_font_source(
         let loader = move || {
             std::fs::read(&path).map_err(|e| format!("Failed to read font file '{path}': {e}"))
         };
-        return Ok((key, Box::new(loader)));
+        return (key, Box::new(loader));
     }
 
-    let key = FontKey::Path(DEJAVU_SANS_PATH.to_owned());
-    let loader = || {
-        std::fs::read(DEJAVU_SANS_PATH)
-            .map_err(|e| format!("Failed to read default font '{DEJAVU_SANS_PATH}': {e}"))
-    };
-    Ok((key, Box::new(loader)))
+    // Default: embedded DejaVu Sans.
+    let key = FontKey::Bundled("dejavu-sans");
+    let loader = || Ok(fonts::DEFAULT_FONT_DATA.to_vec());
+    (key, Box::new(loader))
 }
 
 /// Load font data, trying (in order):
 /// 1. `font_data_base64` (inline base64-encoded TTF/OTF)
-/// 2. `font_name` (named font from [`KNOWN_FONTS`] map)
-/// 3. `font_path` (filesystem path)
-/// 4. Bundled system default (`DejaVuSans.ttf`)
+/// 2. `font_name` (named font from the bundled set)
+/// 3. `font_path` (filesystem path for external/custom fonts)
+/// 4. Bundled default (DejaVu Sans, embedded at compile time)
 ///
 /// Parsed fonts are cached in [`FONT_CACHE`] keyed by the resolved source
 /// identity, so repeated calls for the same font are an `Arc::clone` rather
-/// than a fresh file read + TTF parse.
+/// than a fresh parse.
 fn load_font(config: &TextOverlayConfig) -> Result<Arc<fontdue::Font>, String> {
-    let (key, load_bytes) = resolve_font_source(config)?;
+    let (key, load_bytes) = resolve_font_source(config);
 
     // Fast path: cache hit.  Lock scope limited to the lookup.
     if let Ok(cache) = FONT_CACHE.lock() {
@@ -273,11 +262,6 @@ fn load_font(config: &TextOverlayConfig) -> Result<Arc<fontdue::Font>, String> {
     }
 
     Ok(font)
-}
-
-/// Comma-separated list of available font names for error messages.
-fn known_font_names() -> String {
-    KNOWN_FONTS.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(", ")
 }
 
 /// Rasterize a text overlay into an RGBA8 bitmap using `fontdue` for real
