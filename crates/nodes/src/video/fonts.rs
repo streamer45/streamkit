@@ -51,8 +51,7 @@ pub static BUNDLED_FONTS: &[BundledFont] = &[
 
 /// Default proportional font bytes (DejaVu Sans) — used when no font is
 /// specified in compositor text overlays.
-pub static DEFAULT_FONT_DATA: &[u8] =
-    include_bytes!("../../../../assets/fonts/DejaVuSans.ttf");
+pub static DEFAULT_FONT_DATA: &[u8] = include_bytes!("../../../../assets/fonts/DejaVuSans.ttf");
 
 /// Default monospace font bytes (DejaVu Sans Mono) — used by the colorbars
 /// `draw_time` overlay.

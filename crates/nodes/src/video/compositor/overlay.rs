@@ -195,10 +195,7 @@ fn resolve_font_source(
 
     if let Some(ref name) = config.font_name {
         let data = fonts::bundled_font_by_name(name).ok_or_else(|| {
-            format!(
-                "Unknown font name '{name}'. Available: {}",
-                fonts::bundled_font_names()
-            )
+            format!("Unknown font name '{name}'. Available: {}", fonts::bundled_font_names())
         })?;
         let bundled = fonts::BUNDLED_FONTS
             .iter()
