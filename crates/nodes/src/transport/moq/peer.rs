@@ -51,6 +51,12 @@ struct BroadcastFrame {
     keyframe: bool,
 }
 
+/// Tracks discovered in a publisher's catalog.
+struct CatalogTracks {
+    audio: Option<(String, u8)>,
+    video: Option<(String, u8)>,
+}
+
 /// Result of processing a single frame
 enum FrameResult {
     /// Continue processing more frames
@@ -207,14 +213,27 @@ impl ProcessorNode for MoqPeerNode {
     }
 
     fn output_pins(&self) -> Vec<OutputPin> {
-        vec![OutputPin {
-            name: "out".to_string(),
-            produces_type: PacketType::EncodedAudio(EncodedAudioFormat {
-                codec: AudioCodec::Opus,
-                codec_private: None,
-            }),
-            cardinality: PinCardinality::Broadcast,
-        }]
+        vec![
+            OutputPin {
+                name: "out".to_string(),
+                produces_type: PacketType::EncodedAudio(EncodedAudioFormat {
+                    codec: AudioCodec::Opus,
+                    codec_private: None,
+                }),
+                cardinality: PinCardinality::Broadcast,
+            },
+            OutputPin {
+                name: "video_out".to_string(),
+                produces_type: PacketType::EncodedVideo(EncodedVideoFormat {
+                    codec: VideoCodec::Vp9,
+                    bitstream_format: None,
+                    codec_private: None,
+                    profile: None,
+                    level: None,
+                }),
+                cardinality: PinCardinality::Broadcast,
+            },
+        ]
     }
 
     async fn run(self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
@@ -805,25 +824,34 @@ impl MoqPeerNode {
             .send(PublisherEvent::Connected { path: config.publisher_path.clone() });
 
         let result = async {
-            let Some((audio_track_name, audio_priority)) =
-                Self::wait_for_catalog_with_audio(&broadcast_consumer, shutdown_rx).await?
+            let Some(catalog_tracks) =
+                Self::wait_for_catalog(&broadcast_consumer, shutdown_rx).await?
             else {
                 return Ok(());
             };
 
-            tracing::info!(
-                path = %config.publisher_path,
-                "Subscribing to peer publisher audio track: {}",
-                audio_track_name
-            );
-
-            let track_consumer = broadcast_consumer.subscribe_track(&moq_lite::Track {
-                name: audio_track_name,
-                priority: audio_priority,
+            // Subscribe to discovered tracks
+            let audio_consumer = catalog_tracks.audio.map(|(name, priority)| {
+                tracing::info!(
+                    path = %config.publisher_path,
+                    "Subscribing to peer publisher audio track: {}",
+                    name
+                );
+                broadcast_consumer.subscribe_track(&moq_lite::Track { name, priority })
             });
 
-            Self::process_publisher_frames(
-                track_consumer,
+            let video_consumer = catalog_tracks.video.map(|(name, priority)| {
+                tracing::info!(
+                    path = %config.publisher_path,
+                    "Subscribing to peer publisher video track: {}",
+                    name
+                );
+                broadcast_consumer.subscribe_track(&moq_lite::Track { name, priority })
+            });
+
+            Self::process_publisher_tracks(
+                audio_consumer,
+                video_consumer,
                 config.output_sender,
                 shutdown_rx,
                 &config.stats_delta_tx,
@@ -841,7 +869,7 @@ impl MoqPeerNode {
         result
     }
 
-    /// Publisher receive loop - receives audio from client and sends to pipeline
+    /// Publisher receive loop - receives audio/video from client and sends to pipeline
     async fn publisher_receive_loop(
         subscribe: moq_lite::OriginConsumer,
         broadcast_name: String,
@@ -858,21 +886,33 @@ impl MoqPeerNode {
             return Ok(()); // Shutdown requested
         };
 
-        // Wait for catalog with audio track info
-        let Some((audio_track_name, audio_priority)) =
-            Self::wait_for_catalog_with_audio(&broadcast_consumer, shutdown_rx).await?
+        // Wait for catalog with audio/video track info
+        let Some(catalog_tracks) =
+            Self::wait_for_catalog(&broadcast_consumer, shutdown_rx).await?
         else {
             return Ok(()); // Shutdown requested
         };
 
-        tracing::info!("Subscribing to publisher audio track: {}", audio_track_name);
+        // Subscribe to discovered tracks
+        let audio_consumer = catalog_tracks.audio.map(|(name, priority)| {
+            tracing::info!("Subscribing to publisher audio track: {}", name);
+            broadcast_consumer.subscribe_track(&moq_lite::Track { name, priority })
+        });
 
-        let track_consumer = broadcast_consumer
-            .subscribe_track(&moq_lite::Track { name: audio_track_name, priority: audio_priority });
+        let video_consumer = catalog_tracks.video.map(|(name, priority)| {
+            tracing::info!("Subscribing to publisher video track: {}", name);
+            broadcast_consumer.subscribe_track(&moq_lite::Track { name, priority })
+        });
 
-        // Process incoming frames
-        Self::process_publisher_frames(track_consumer, output_sender, shutdown_rx, &stats_delta_tx)
-            .await
+        // Process incoming frames from all tracks
+        Self::process_publisher_tracks(
+            audio_consumer,
+            video_consumer,
+            output_sender,
+            shutdown_rx,
+            &stats_delta_tx,
+        )
+        .await
     }
 
     /// Wait for the publisher to announce the expected broadcast
@@ -907,11 +947,11 @@ impl MoqPeerNode {
         }
     }
 
-    /// Wait for the catalog to contain audio track information
-    async fn wait_for_catalog_with_audio(
+    /// Wait for the catalog and extract audio and/or video track information
+    async fn wait_for_catalog(
         broadcast_consumer: &moq_lite::BroadcastConsumer,
         shutdown_rx: &mut broadcast::Receiver<()>,
-    ) -> Result<Option<(String, u8)>, StreamKitError> {
+    ) -> Result<Option<CatalogTracks>, StreamKitError> {
         let catalog_track =
             broadcast_consumer.subscribe_track(&hang::catalog::Catalog::default_track());
         let mut catalog_consumer = hang::catalog::CatalogConsumer::new(catalog_track);
@@ -924,16 +964,23 @@ impl MoqPeerNode {
                         .map_err(|e| StreamKitError::Runtime(format!("Failed to read catalog: {e}")))?
                         .ok_or_else(|| StreamKitError::Runtime("Catalog track closed".to_string()))?;
 
-                    tracing::info!("Received catalog from publisher: audio={:?}", catalog.audio);
+                    tracing::info!("Received catalog from publisher: audio={:?}, video renditions={}", catalog.audio, catalog.video.renditions.len());
 
-                    {
-                        let audio = &catalog.audio;
-                        if let Some(track_name) = audio.renditions.keys().next() {
-                            tracing::info!("Found audio track in catalog: {}", track_name);
-                            return Ok(Some((track_name.clone(), 2)));
-                        }
+                    let audio = catalog.audio.renditions.keys().next().map(|name| {
+                        tracing::info!("Found audio track in catalog: {}", name);
+                        (name.clone(), 2)
+                    });
+
+                    let video = catalog.video.renditions.keys().next().map(|name| {
+                        tracing::info!("Found video track in catalog: {}", name);
+                        (name.clone(), 2)
+                    });
+
+                    if audio.is_some() || video.is_some() {
+                        return Ok(Some(CatalogTracks { audio, video }));
                     }
-                    tracing::debug!("Catalog has no audio yet, waiting for update...");
+
+                    tracing::debug!("Catalog has no tracks yet, waiting for update...");
                 }
                 _ = shutdown_rx.recv() => {
                     return Ok(None);
@@ -946,6 +993,7 @@ impl MoqPeerNode {
     async fn process_publisher_frames(
         mut track_consumer: moq_lite::TrackConsumer,
         mut output_sender: streamkit_core::OutputSender,
+        output_pin: &str,
         shutdown_rx: &mut broadcast::Receiver<()>,
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
     ) -> Result<(), StreamKitError> {
@@ -967,6 +1015,7 @@ impl MoqPeerNode {
                 match Self::process_frame_from_group(
                     group,
                     &mut output_sender,
+                    output_pin,
                     &mut frame_count,
                     &mut last_log,
                     shutdown_rx,
@@ -978,6 +1027,60 @@ impl MoqPeerNode {
                     FrameResult::GroupExhausted => current_group = None,
                     FrameResult::Shutdown => return Ok(()),
                 }
+            }
+        }
+    }
+
+    /// Process incoming frames from multiple publisher tracks concurrently.
+    ///
+    /// Audio frames are forwarded to the `"out"` output pin and video frames
+    /// to `"video_out"`.
+    async fn process_publisher_tracks(
+        audio_consumer: Option<moq_lite::TrackConsumer>,
+        video_consumer: Option<moq_lite::TrackConsumer>,
+        output_sender: streamkit_core::OutputSender,
+        shutdown_rx: &mut broadcast::Receiver<()>,
+        stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
+    ) -> Result<(), StreamKitError> {
+        match (audio_consumer, video_consumer) {
+            (Some(audio), Some(video)) => {
+                let mut audio_shutdown = shutdown_rx.resubscribe();
+                let mut video_shutdown = shutdown_rx.resubscribe();
+                let audio_sender = output_sender.clone();
+                let video_sender = output_sender;
+                let audio_stats = stats_delta_tx.clone();
+                let video_stats = stats_delta_tx.clone();
+
+                let audio_fut = Self::process_publisher_frames(
+                    audio,
+                    audio_sender,
+                    "out",
+                    &mut audio_shutdown,
+                    &audio_stats,
+                );
+                let video_fut = Self::process_publisher_frames(
+                    video,
+                    video_sender,
+                    "video_out",
+                    &mut video_shutdown,
+                    &video_stats,
+                );
+
+                // Run both concurrently; finish when both complete or either errors
+                let (audio_result, video_result) = tokio::join!(audio_fut, video_fut);
+                audio_result?;
+                video_result?;
+                Ok(())
+            }
+            (Some(audio), None) => {
+                Self::process_publisher_frames(audio, output_sender, "out", shutdown_rx, stats_delta_tx).await
+            }
+            (None, Some(video)) => {
+                Self::process_publisher_frames(video, output_sender, "video_out", shutdown_rx, stats_delta_tx).await
+            }
+            (None, None) => {
+                tracing::warn!("Publisher catalog has no audio or video tracks");
+                Ok(())
             }
         }
     }
@@ -1010,6 +1113,7 @@ impl MoqPeerNode {
     async fn process_frame_from_group(
         group: &mut moq_lite::GroupConsumer,
         output_sender: &mut streamkit_core::OutputSender,
+        output_pin: &str,
         frame_count: &mut u64,
         last_log: &mut std::time::Instant,
         shutdown_rx: &mut broadcast::Receiver<()>,
@@ -1044,7 +1148,7 @@ impl MoqPeerNode {
                             metadata: None,
                         };
 
-                        if output_sender.send("out", packet).await.is_err() {
+                        if output_sender.send(output_pin, packet).await.is_err() {
                             tracing::debug!("Output channel closed");
                             let _ = stats_delta_tx
                                 .try_send(NodeStatsDelta { received: 1, ..Default::default() });
