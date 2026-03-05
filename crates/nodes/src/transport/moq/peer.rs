@@ -1016,10 +1016,10 @@ impl MoqPeerNode {
             .await;
             match &result {
                 Ok(()) => {
-                    tracing::info!(output_pin = pin_name, "Track processor task finished normally")
+                    tracing::info!(output_pin = pin_name, "Track processor task finished normally");
                 },
                 Err(e) => {
-                    tracing::warn!(output_pin = pin_name, error = %e, "Track processor task finished with error")
+                    tracing::warn!(output_pin = pin_name, error = %e, "Track processor task finished with error");
                 },
             }
             result
@@ -1040,6 +1040,9 @@ impl MoqPeerNode {
             tracing::warn!("Publisher catalog had no audio or video tracks");
             return Ok(());
         }
+
+        let mut audio_done = audio_handle.is_none();
+        let mut video_done = video_handle.is_none();
 
         // Wrap the handles so we can select! over them concurrently
         let audio_fut = async {
@@ -1069,8 +1072,6 @@ impl MoqPeerNode {
         tokio::pin!(audio_fut);
         tokio::pin!(video_fut);
 
-        let mut audio_done = false;
-        let mut video_done = false;
         let mut first_error: Option<StreamKitError> = None;
 
         while !audio_done || !video_done {
