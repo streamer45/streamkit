@@ -61,6 +61,27 @@ enum FrameResult {
     Shutdown,
 }
 
+/// Outcome of a publisher track processing loop.
+///
+/// Distinguishes a transient publisher-side cancellation (which the caller may
+/// recover from by re-subscribing) from clean completion and fatal errors.
+enum TrackExit {
+    /// Track closed cleanly, stream ended, or shutdown was requested.
+    /// The caller should not retry.
+    Finished,
+    /// The publisher cancelled the subscription (`moq_lite::Error::Cancel`).
+    ///
+    /// This typically happens when the browser's `@moq/hang` publish pipeline
+    /// transiently tears down the track producer — e.g. when `camera.source`
+    /// flaps to `undefined` during the permission-grant → device-enumeration
+    /// cascade. The catalog still advertises the track and the browser's
+    /// `Broadcast#runBroadcast` loop will happily accept a fresh subscription,
+    /// so the caller may re-subscribe after a short backoff.
+    Cancelled,
+    /// A non-recoverable error occurred. Propagate up.
+    Error(StreamKitError),
+}
+
 #[derive(Debug)]
 enum PublisherEvent {
     Connected { path: String },
@@ -990,6 +1011,14 @@ impl MoqPeerNode {
     }
 
     /// Spawn a task that processes frames from a single publisher track.
+    ///
+    /// The subscription is created *inside* the spawned task and wrapped in a
+    /// bounded retry loop. If the publisher transiently cancels the track
+    /// (see [`TrackExit::Cancelled`]), we back off briefly and re-subscribe
+    /// via `BroadcastConsumer::subscribe_track`, which creates a fresh
+    /// `TrackProducer`/`TrackConsumer` pair (the old producer is evicted from
+    /// moq-lite's dedup map once unused). This makes the pipeline resilient
+    /// to brief client-side track flaps regardless of `@moq/hang` version.
     fn spawn_track_processor(
         broadcast_consumer: &moq_lite::BroadcastConsumer,
         track_name: &str,
@@ -998,31 +1027,88 @@ impl MoqPeerNode {
         shutdown_rx: &broadcast::Receiver<()>,
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
     ) -> tokio::task::JoinHandle<Result<(), StreamKitError>> {
-        let consumer = broadcast_consumer
-            .subscribe_track(&moq_lite::Track { name: track_name.to_string(), priority: 2 });
+        // How many times to re-subscribe after a publisher-side cancellation
+        // before giving up. The browser's camera-source flap that motivates
+        // this typically resolves within a few milliseconds, so a small cap
+        // with a short backoff is plenty.
+        const MAX_RESUBSCRIBE_ATTEMPTS: u32 = 3;
+        const RESUBSCRIBE_BACKOFF_MS: u64 = 100;
+        const RESUBSCRIBE_BACKOFF: Duration = Duration::from_millis(RESUBSCRIBE_BACKOFF_MS);
+
+        // BroadcastConsumer is Clone (Arc-like state + watch::Receiver +
+        // async_channel::Sender). Cloning into the task lets us re-subscribe
+        // after a cancellation without holding a reference across the spawn.
+        let broadcast = broadcast_consumer.clone();
+        let track = moq_lite::Track { name: track_name.to_string(), priority: 2 };
         let sender = output_sender.clone();
         let mut task_shutdown = shutdown_rx.resubscribe();
         let stats = stats_delta_tx.clone();
         let pin_name = output_pin;
+
         tokio::spawn(async move {
-            tracing::info!(output_pin = pin_name, "Track processor task started");
-            let result = Self::process_publisher_frames(
-                consumer,
-                sender,
-                pin_name,
-                &mut task_shutdown,
-                &stats,
-            )
-            .await;
-            match &result {
-                Ok(()) => {
-                    tracing::info!(output_pin = pin_name, "Track processor task finished normally");
-                },
-                Err(e) => {
-                    tracing::warn!(output_pin = pin_name, error = %e, "Track processor task finished with error");
-                },
+            tracing::info!(output_pin = pin_name, track = %track.name, "Track processor task started");
+
+            let mut attempt: u32 = 0;
+            loop {
+                let consumer = broadcast.subscribe_track(&track);
+                let exit = Self::process_publisher_frames(
+                    consumer,
+                    sender.clone(),
+                    pin_name,
+                    &mut task_shutdown,
+                    &stats,
+                )
+                .await;
+
+                match exit {
+                    TrackExit::Finished => {
+                        tracing::info!(
+                            output_pin = pin_name,
+                            "Track processor task finished normally"
+                        );
+                        return Ok(());
+                    },
+                    TrackExit::Error(e) => {
+                        tracing::warn!(
+                            output_pin = pin_name,
+                            error = %e,
+                            "Track processor task finished with error"
+                        );
+                        return Err(e);
+                    },
+                    TrackExit::Cancelled => {
+                        attempt += 1;
+                        if attempt > MAX_RESUBSCRIBE_ATTEMPTS {
+                            tracing::warn!(
+                                output_pin = pin_name,
+                                attempts = attempt,
+                                "Publisher track cancelled; retry budget exhausted"
+                            );
+                            return Err(StreamKitError::Runtime(format!(
+                                "publisher track '{}' cancelled {} times; giving up",
+                                track.name, attempt
+                            )));
+                        }
+                        tracing::info!(
+                            output_pin = pin_name,
+                            attempt,
+                            max = MAX_RESUBSCRIBE_ATTEMPTS,
+                            backoff_ms = RESUBSCRIBE_BACKOFF_MS,
+                            "Publisher track cancelled; re-subscribing after backoff"
+                        );
+                        // Yield to shutdown during backoff so we don't delay
+                        // teardown if the pipeline is stopping.
+                        tokio::select! {
+                            biased;
+                            _ = task_shutdown.recv() => {
+                                tracing::info!(output_pin = pin_name, "Shutdown during re-subscribe backoff");
+                                return Ok(());
+                            }
+                            () = tokio::time::sleep(RESUBSCRIBE_BACKOFF) => {}
+                        }
+                    },
+                }
             }
-            result
         })
     }
 
@@ -1122,14 +1208,18 @@ impl MoqPeerNode {
         first_error.map_or(Ok(()), Err)
     }
 
-    /// Process incoming frames from the publisher and forward to the pipeline
+    /// Process incoming frames from the publisher and forward to the pipeline.
+    ///
+    /// Returns [`TrackExit`] so the caller can distinguish a transient
+    /// publisher-side cancellation (retryable via re-subscribe) from clean
+    /// completion and fatal errors.
     async fn process_publisher_frames(
         mut track_consumer: moq_lite::TrackConsumer,
         mut output_sender: streamkit_core::OutputSender,
         output_pin: &str,
         shutdown_rx: &mut broadcast::Receiver<()>,
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
-    ) -> Result<(), StreamKitError> {
+    ) -> TrackExit {
         let mut frame_count = 0u64;
         let mut last_log = std::time::Instant::now();
         let mut current_group: Option<moq_lite::GroupConsumer> = None;
@@ -1137,9 +1227,15 @@ impl MoqPeerNode {
         loop {
             // Get a group if we don't have one
             if current_group.is_none() {
-                match Self::get_next_group(&mut track_consumer, shutdown_rx, output_pin).await? {
-                    Some(group) => current_group = Some(group),
-                    None => return Ok(()), // Stream ended or shutdown
+                match Self::get_next_group(&mut track_consumer, shutdown_rx, output_pin).await {
+                    Ok(Some(group)) => current_group = Some(group),
+                    Ok(None) => return TrackExit::Finished, // Stream ended or shutdown
+                    Err(moq_lite::Error::Cancel) => return TrackExit::Cancelled,
+                    Err(e) => {
+                        return TrackExit::Error(StreamKitError::Runtime(format!(
+                            "Error getting group: {e}"
+                        )));
+                    },
                 }
             }
 
@@ -1154,22 +1250,29 @@ impl MoqPeerNode {
                     shutdown_rx,
                     stats_delta_tx,
                 )
-                .await?
+                .await
                 {
-                    FrameResult::Continue => {},
-                    FrameResult::GroupExhausted => current_group = None,
-                    FrameResult::Shutdown => return Ok(()),
+                    Ok(FrameResult::Continue) => {},
+                    Ok(FrameResult::GroupExhausted) => current_group = None,
+                    Ok(FrameResult::Shutdown) => return TrackExit::Finished,
+                    Err(e) => return TrackExit::Error(e),
                 }
             }
         }
     }
 
-    /// Get the next group from the track consumer
+    /// Get the next group from the track consumer.
+    ///
+    /// Surfaces the raw [`moq_lite::Error`] so the caller can distinguish
+    /// [`moq_lite::Error::Cancel`] (publisher dropped the track producer —
+    /// retryable) from other failures. The `tracing::warn!` here will still
+    /// fire for cancellations; that's intentional since they're unexpected
+    /// in steady state even if we recover.
     async fn get_next_group(
         track_consumer: &mut moq_lite::TrackConsumer,
         shutdown_rx: &mut broadcast::Receiver<()>,
         output_pin: &str,
-    ) -> Result<Option<moq_lite::GroupConsumer>, StreamKitError> {
+    ) -> Result<Option<moq_lite::GroupConsumer>, moq_lite::Error> {
         tokio::select! {
             biased;
             group_result = track_consumer.next_group() => {
@@ -1184,7 +1287,7 @@ impl MoqPeerNode {
                     }
                     Err(e) => {
                         tracing::warn!(output_pin, error = %e, "Error getting group from publisher");
-                        Err(StreamKitError::Runtime(format!("Error getting group: {e}")))
+                        Err(e)
                     }
                 }
             }
