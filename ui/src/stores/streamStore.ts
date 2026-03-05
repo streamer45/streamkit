@@ -226,6 +226,7 @@ function setupPublishPath(
     },
     video: {
       source: camera.source,
+      hd: { enabled: true },
     },
   });
 
