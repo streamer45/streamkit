@@ -142,12 +142,7 @@ fn fit_rect_preserving_aspect(src_w: u32, src_h: u32, bounds: &config::Rect) -> 
     let offset_x = (bounds.width.saturating_sub(fit_w) / 2) as i32;
     #[allow(clippy::cast_possible_wrap)]
     let offset_y = (bounds.height.saturating_sub(fit_h) / 2) as i32;
-    config::Rect {
-        x: bounds.x + offset_x,
-        y: bounds.y + offset_y,
-        width: fit_w,
-        height: fit_h,
-    }
+    config::Rect { x: bounds.x + offset_x, y: bounds.y + offset_y, width: fit_w, height: fit_h }
 }
 
 // ── Node ────────────────────────────────────────────────────────────────────
@@ -644,11 +639,9 @@ impl ProcessorNode for CompositorNode {
                         let rect = if cfg.aspect_fit {
                             // Fit the source within the destination rect
                             // while preserving its aspect ratio.
-                            cfg.rect.as_ref().map(|r| {
-                                fit_rect_preserving_aspect(
-                                    f.width, f.height, r,
-                                )
-                            })
+                            cfg.rect
+                                .as_ref()
+                                .map(|r| fit_rect_preserving_aspect(f.width, f.height, r))
                         } else {
                             cfg.rect.clone()
                         };
@@ -729,14 +722,20 @@ impl ProcessorNode for CompositorNode {
 
             // Non-blocking output send — if downstream (VP9 encoder) is
             // backed up, drop the frame rather than stalling the
-            // compositor loop.
+            // compositor loop.  ChannelClosed is permanent (downstream
+            // gone), so we stop the node.
             match context.output_sender.try_send("out", Packet::Video(out_frame)) {
                 Ok(()) => {},
-                Err(_) => {
+                Err(streamkit_core::node::OutputSendError::ChannelFull { .. }) => {
                     frames_dropped_counter.add(1, &otel_attrs);
                     stats_tracker.discarded();
                     output_seq += 1;
                     continue;
+                },
+                Err(_) => {
+                    tracing::debug!("Output channel closed, stopping CompositorNode");
+                    stop_reason = "output_closed";
+                    break;
                 },
             }
 

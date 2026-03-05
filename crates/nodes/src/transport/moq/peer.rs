@@ -1088,7 +1088,8 @@ impl MoqPeerNode {
                                 track.name, attempt
                             )));
                         }
-                        let backoff = RESUBSCRIBE_INITIAL_BACKOFF * 2u32.saturating_pow(attempt - 1);
+                        let backoff =
+                            RESUBSCRIBE_INITIAL_BACKOFF * 2u32.saturating_pow(attempt - 1);
                         tracing::info!(
                             output_pin = pin_name,
                             attempt,
