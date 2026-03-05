@@ -412,28 +412,74 @@ impl ProcessorNode for CompositorNode {
             .build();
         let otel_attrs = [KeyValue::new("node", node_name.clone())];
 
+        // ── Fixed-rate tick ──────────────────────────────────────────────
+        // The compositor runs at a fixed fps regardless of input rates,
+        // like the audio clocked mixer.  On each tick it drains all inputs
+        // to their latest frame and composites.  Inputs that haven't
+        // delivered a new frame since the last tick reuse their previous
+        // frame.  This guarantees a constant output rate and decouples
+        // the compositor from input timing.
+        let tick_duration =
+            std::time::Duration::from_nanos(1_000_000_000u64 / u64::from(self.config.fps.max(1)));
+        let mut tick = tokio::time::interval(tick_duration);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
         // ── Cached layer config + draw order ────────────────────────────
-        // Rebuilt only when config or pin set changes (UpdateParams,
-        // pin add/remove, channel close).  Avoids per-frame HashMap
-        // lookups and sort_by calls.
         let mut layer_configs_dirty = true;
         let mut resolved_configs: Vec<ResolvedSlotConfig> = Vec::new();
         let mut sorted_draw_order: Vec<usize> = Vec::new();
 
         loop {
-            // ── Drain each slot to its latest frame (non-blocking) ────────
-            // We drain all pending frames and keep only the newest one per
-            // slot.  This prevents unbounded latency drift when the
-            // compositing step is slower than the input frame rate — the
-            // compositor always works on the most recent data instead of
-            // processing a growing backlog of stale frames.
-            //
-            // Only the primary input (slot 0) drives the compositing rate.
-            // Secondary inputs (PiP, overlays) update their latest_frame
-            // but don't trigger a composite on their own.  This prevents
-            // the compositor from running at N×fps with N inputs.
-            let mut primary_has_frame = false;
-            for (idx, slot) in slots.iter_mut().enumerate() {
+            // ── Wait for the next tick, or handle control / pin msgs ────
+            tokio::select! {
+                biased;
+
+                // Control messages (highest priority).
+                Some(ctrl_msg) = context.control_rx.recv() => {
+                    match ctrl_msg {
+                        NodeControlMessage::Shutdown => {
+                            tracing::info!("CompositorNode received shutdown");
+                            stop_reason = "shutdown";
+                            break;
+                        },
+                        NodeControlMessage::UpdateParams(params) => {
+                            Self::apply_update_params(
+                                &mut self.config,
+                                &mut image_overlays,
+                                &mut image_overlay_cfg_indices,
+                                &mut text_overlays,
+                                params,
+                                &mut stats_tracker,
+                            );
+                            layer_configs_dirty = true;
+                        },
+                        NodeControlMessage::Start => {},
+                    }
+                    continue;
+                }
+
+                // Pin management.
+                Some(msg) = async {
+                    match &mut pin_mgmt_rx {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    Self::handle_pin_management(
+                        &mut self,
+                        msg,
+                        &mut slots,
+                    );
+                    layer_configs_dirty = true;
+                    continue;
+                }
+
+                // Fixed-rate tick — time to composite.
+                _ = tick.tick() => {}
+            }
+
+            // ── Drain each slot to its latest frame (non-blocking) ──────
+            for slot in &mut slots {
                 let mut latest: Option<VideoFrame> = None;
                 let mut dropped: u64 = 0;
                 while let Ok(Packet::Video(frame)) = slot.rx.try_recv() {
@@ -448,176 +494,32 @@ impl ProcessorNode for CompositorNode {
                 }
                 if let Some(frame) = latest {
                     slot.latest_frame = Some(frame);
-                    if idx == 0 {
-                        primary_has_frame = true;
-                    }
                 }
             }
 
-            // ── Wait for the primary input if it hasn't arrived yet ──────
-            if !primary_has_frame && !slots.is_empty() {
-                // Use select! to wait for any input, control, or pin management.
-                // If a secondary input arrives, we store it and loop back to
-                // check for the primary again (without compositing).
-                let mut received_frame = false;
-                let mut should_break = false;
-
-                tokio::select! {
-                    biased;
-
-                    // Control messages (highest priority).
-                    Some(ctrl_msg) = context.control_rx.recv() => {
-                        match ctrl_msg {
-                            NodeControlMessage::Shutdown => {
-                                tracing::info!("CompositorNode received shutdown");
-                                should_break = true;
-                            },
-                            NodeControlMessage::UpdateParams(params) => {
-                                Self::apply_update_params(
-                                    &mut self.config,
-                                    &mut image_overlays,
-                                    &mut image_overlay_cfg_indices,
-                                    &mut text_overlays,
-                                    params,
-                                    &mut stats_tracker,
-                                );
-                                layer_configs_dirty = true;
-                            },
-                            NodeControlMessage::Start => {},
-                        }
-                    }
-
-                    // Pin management.
-                    Some(msg) = async {
-                        match &mut pin_mgmt_rx {
-                            Some(rx) => rx.recv().await,
-                            None => std::future::pending().await,
-                        }
-                    } => {
-                        Self::handle_pin_management(
-                            &mut self,
-                            msg,
-                            &mut slots,
-                        );
-                        layer_configs_dirty = true;
-                    }
-
-                    // Wait for a frame from any connected input.
-                    result = recv_from_any_slot(&mut slots) => {
-                        match result {
-                            SlotRecvResult::Frame(slot_idx, frame) => {
-                                slots[slot_idx].latest_frame = Some(frame);
-                                // Only the primary input (slot 0) triggers compositing.
-                                received_frame = slot_idx == 0;
-                            }
-                            SlotRecvResult::ChannelClosed(slot_idx) => {
-                                tracing::info!(
-                                    "CompositorNode: input '{}' closed",
-                                    slots[slot_idx].name
-                                );
-                                slots.remove(slot_idx);
-                                layer_configs_dirty = true;
-                                if slots.is_empty() {
-                                    stop_reason = "all_inputs_closed";
-                                    should_break = true;
-                                }
-                                // Otherwise continue — remaining slots are still active.
-                            }
-                            SlotRecvResult::NonVideo(slot_idx) => {
-                                tracing::debug!(
-                                    "CompositorNode: ignoring non-video packet on '{}'",
-                                    slots[slot_idx].name
-                                );
-                                // Skip and continue waiting.
-                            }
-                            SlotRecvResult::Empty => {
-                                stop_reason = "all_inputs_closed";
-                                should_break = true;
-                            }
-                        }
-                    }
-                }
-
-                if should_break {
-                    break;
-                }
-                if !received_frame {
-                    continue;
-                }
-            }
-
-            if slots.is_empty() {
-                // No inputs at all — wait for pin management or control.
-                tokio::select! {
-                    Some(ctrl_msg) = context.control_rx.recv() => {
-                        match ctrl_msg {
-                            NodeControlMessage::Shutdown => {
-                                tracing::info!("CompositorNode received shutdown (no inputs)");
-                                break;
-                            },
-                            NodeControlMessage::UpdateParams(params) => {
-                                Self::apply_update_params(
-                                    &mut self.config,
-                                    &mut image_overlays,
-                                    &mut image_overlay_cfg_indices,
-                                    &mut text_overlays,
-                                    params,
-                                    &mut stats_tracker,
-                                );
-                                layer_configs_dirty = true;
-                            },
-                            NodeControlMessage::Start => {},
-                        }
-                    }
-                    Some(msg) = async {
-                        match &mut pin_mgmt_rx {
-                            Some(rx) => rx.recv().await,
-                            None => std::future::pending().await,
-                        }
-                    } => {
-                        Self::handle_pin_management(
-                            &mut self,
-                            msg,
-                            &mut slots,
-                        );
-                        layer_configs_dirty = true;
-                    }
-                }
+            // Nothing to composite if no slot has ever received a frame.
+            if !slots.iter().any(|s| s.latest_frame.is_some()) {
                 continue;
             }
 
-            // ── Check for non-blocking control / pin management ──────────
-            let mut should_stop = false;
-            while let Ok(ctrl_msg) = context.control_rx.try_recv() {
-                match ctrl_msg {
-                    NodeControlMessage::Shutdown => {
-                        tracing::info!("CompositorNode received shutdown during compositing");
-                        stop_reason = "shutdown";
-                        should_stop = true;
-                        break;
-                    },
-                    NodeControlMessage::UpdateParams(params) => {
-                        Self::apply_update_params(
-                            &mut self.config,
-                            &mut image_overlays,
-                            &mut image_overlay_cfg_indices,
-                            &mut text_overlays,
-                            params,
-                            &mut stats_tracker,
-                        );
-                        layer_configs_dirty = true;
-                    },
-                    NodeControlMessage::Start => {},
-                }
-            }
-            if should_stop {
-                break;
-            }
-            if let Some(ref mut pmrx) = pin_mgmt_rx {
-                while let Ok(msg) = pmrx.try_recv() {
-                    Self::handle_pin_management(&mut self, msg, &mut slots);
+            // Check for closed input channels.
+            let mut i = 0;
+            while i < slots.len() {
+                // A slot whose channel is closed AND has no buffered frame
+                // can be removed.  We detect closure by a failed try_recv
+                // returning Disconnected — but try_recv above already
+                // drained.  Use a zero-capacity poll instead:
+                if slots[i].rx.is_closed() {
+                    tracing::info!("CompositorNode: input '{}' closed", slots[i].name);
+                    slots.remove(i);
                     layer_configs_dirty = true;
+                } else {
+                    i += 1;
                 }
+            }
+            if slots.is_empty() {
+                stop_reason = "all_inputs_closed";
+                break;
             }
 
             // ── Rebuild layer config cache if needed ─────────────────────
@@ -907,51 +809,6 @@ impl CompositorNode {
             _ => {},
         }
     }
-}
-
-// ── Frame receive helper ────────────────────────────────────────────────────
-
-/// Result of waiting for a frame from input slots.
-enum SlotRecvResult {
-    /// A video frame was received from the slot at the given index.
-    Frame(usize, VideoFrame),
-    /// The channel at the given index was closed.
-    ChannelClosed(usize),
-    /// A non-video packet was received (and discarded) from the given index.
-    NonVideo(usize),
-    /// All slots are empty (should not happen if caller checks).
-    Empty,
-}
-
-/// Wait for a packet from any of the input slots.  Returns a typed result so
-/// the caller can distinguish between a received video frame, a closed channel,
-/// and a non-video packet (which should be skipped, not treated as closure).
-///
-/// Uses `poll_recv` directly to avoid per-call allocations from boxing
-/// futures and collecting them into a `Vec` for `select_all`.
-async fn recv_from_any_slot(slots: &mut [InputSlot]) -> SlotRecvResult {
-    if slots.is_empty() {
-        return SlotRecvResult::Empty;
-    }
-
-    std::future::poll_fn(|cx| {
-        for (i, slot) in slots.iter_mut().enumerate() {
-            match slot.rx.poll_recv(cx) {
-                std::task::Poll::Ready(Some(Packet::Video(frame))) => {
-                    return std::task::Poll::Ready(SlotRecvResult::Frame(i, frame));
-                },
-                std::task::Poll::Ready(Some(_)) => {
-                    return std::task::Poll::Ready(SlotRecvResult::NonVideo(i));
-                },
-                std::task::Poll::Ready(None) => {
-                    return std::task::Poll::Ready(SlotRecvResult::ChannelClosed(i));
-                },
-                std::task::Poll::Pending => {},
-            }
-        }
-        std::task::Poll::Pending
-    })
-    .await
 }
 
 // ── Registration ────────────────────────────────────────────────────────────
