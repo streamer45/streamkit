@@ -420,7 +420,7 @@ impl ProcessorNode for CompositorNode {
         // frame.  This guarantees a constant output rate and decouples
         // the compositor from input timing.
         let tick_duration =
-            std::time::Duration::from_nanos(1_000_000_000u64 / u64::from(self.config.fps.max(1)));
+            std::time::Duration::from_nanos(1_000_000_000u64 / u64::from(self.config.fps));
         let mut tick = tokio::time::interval(tick_duration);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -443,6 +443,7 @@ impl ProcessorNode for CompositorNode {
                             break;
                         },
                         NodeControlMessage::UpdateParams(params) => {
+                            let old_fps = self.config.fps;
                             Self::apply_update_params(
                                 &mut self.config,
                                 &mut image_overlays,
@@ -452,6 +453,16 @@ impl ProcessorNode for CompositorNode {
                                 &mut stats_tracker,
                             );
                             layer_configs_dirty = true;
+                            if self.config.fps != old_fps {
+                                let new_duration = std::time::Duration::from_nanos(
+                                    1_000_000_000u64 / u64::from(self.config.fps),
+                                );
+                                tick = tokio::time::interval(new_duration);
+                                tick.set_missed_tick_behavior(
+                                    tokio::time::MissedTickBehavior::Skip,
+                                );
+                                tracing::info!("Compositor fps changed: {} → {}", old_fps, self.config.fps);
+                            }
                         },
                         NodeControlMessage::Start => {},
                     }

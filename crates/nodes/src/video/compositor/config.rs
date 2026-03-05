@@ -217,6 +217,9 @@ impl CompositorConfig {
         if self.width == 0 || self.height == 0 {
             return Err("Canvas width and height must be > 0".to_string());
         }
+        if self.fps == 0 {
+            return Err("Output fps must be > 0".to_string());
+        }
         for (name, layer) in &self.layers {
             if !layer.opacity.is_finite() || layer.opacity < 0.0 || layer.opacity > 1.0 {
                 return Err(format!("Layer '{name}' opacity must be in [0.0, 1.0]"));
