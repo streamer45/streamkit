@@ -1003,46 +1003,108 @@ impl MoqPeerNode {
         let sender = output_sender.clone();
         let mut task_shutdown = shutdown_rx.resubscribe();
         let stats = stats_delta_tx.clone();
+        let pin_name = output_pin;
         tokio::spawn(async move {
-            Self::process_publisher_frames(consumer, sender, output_pin, &mut task_shutdown, &stats)
-                .await
+            tracing::info!(output_pin = pin_name, "Track processor task started");
+            let result = Self::process_publisher_frames(
+                consumer, sender, pin_name, &mut task_shutdown, &stats,
+            )
+            .await;
+            match &result {
+                Ok(()) => tracing::info!(output_pin = pin_name, "Track processor task finished normally"),
+                Err(e) => tracing::warn!(output_pin = pin_name, error = %e, "Track processor task finished with error"),
+            }
+            result
         })
     }
 
     /// Wait for spawned track processing tasks to complete.
+    ///
+    /// Uses `tokio::select!` so that if either task exits early (e.g. the video
+    /// track is closed by the publisher), the remaining task can continue
+    /// running independently while the overall function waits for it.
+    #[allow(clippy::cognitive_complexity)]
     async fn await_track_tasks(
         audio_handle: Option<tokio::task::JoinHandle<Result<(), StreamKitError>>>,
         video_handle: Option<tokio::task::JoinHandle<Result<(), StreamKitError>>>,
     ) -> Result<(), StreamKitError> {
-        let audio_result = match audio_handle {
-            Some(handle) => Some(
-                handle
-                    .await
-                    .map_err(|e| StreamKitError::Runtime(format!("Audio task panicked: {e}")))?,
-            ),
-            None => None,
-        };
-        let video_result = match video_handle {
-            Some(handle) => Some(
-                handle
-                    .await
-                    .map_err(|e| StreamKitError::Runtime(format!("Video task panicked: {e}")))?,
-            ),
-            None => None,
-        };
-
-        if audio_result.is_none() && video_result.is_none() {
+        if audio_handle.is_none() && video_handle.is_none() {
             tracing::warn!("Publisher catalog had no audio or video tracks");
+            return Ok(());
         }
 
-        if let Some(Err(e)) = audio_result {
-            return Err(e);
-        }
-        if let Some(Err(e)) = video_result {
-            return Err(e);
+        // Wrap the handles so we can select! over them concurrently
+        let audio_fut = async {
+            match audio_handle {
+                Some(h) => Some(h.await),
+                None => {
+                    // No audio task — pend forever so only video is selected
+                    std::future::pending::<Option<Result<Result<(), StreamKitError>, tokio::task::JoinError>>>().await
+                }
+            }
+        };
+        let video_fut = async {
+            match video_handle {
+                Some(h) => Some(h.await),
+                None => {
+                    std::future::pending::<Option<Result<Result<(), StreamKitError>, tokio::task::JoinError>>>().await
+                }
+            }
+        };
+
+        tokio::pin!(audio_fut);
+        tokio::pin!(video_fut);
+
+        let mut audio_done = false;
+        let mut video_done = false;
+        let mut first_error: Option<StreamKitError> = None;
+
+        while !audio_done || !video_done {
+            tokio::select! {
+                result = &mut audio_fut, if !audio_done => {
+                    audio_done = true;
+                    if let Some(join_result) = result {
+                        match join_result {
+                            Err(e) => {
+                                tracing::warn!("Audio task panicked: {e}");
+                                if first_error.is_none() {
+                                    first_error = Some(StreamKitError::Runtime(format!("Audio task panicked: {e}")));
+                                }
+                            }
+                            Ok(Err(e)) => {
+                                tracing::warn!("Audio task error: {e}");
+                                if first_error.is_none() {
+                                    first_error = Some(e);
+                                }
+                            }
+                            Ok(Ok(())) => tracing::info!("Audio processing task completed"),
+                        }
+                    }
+                }
+                result = &mut video_fut, if !video_done => {
+                    video_done = true;
+                    if let Some(join_result) = result {
+                        match join_result {
+                            Err(e) => {
+                                tracing::warn!("Video task panicked: {e}");
+                                if first_error.is_none() {
+                                    first_error = Some(StreamKitError::Runtime(format!("Video task panicked: {e}")));
+                                }
+                            }
+                            Ok(Err(e)) => {
+                                tracing::warn!("Video task error: {e}");
+                                if first_error.is_none() {
+                                    first_error = Some(e);
+                                }
+                            }
+                            Ok(Ok(())) => tracing::info!("Video processing task completed"),
+                        }
+                    }
+                }
+            }
         }
 
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
 
     /// Process incoming frames from the publisher and forward to the pipeline
@@ -1060,7 +1122,7 @@ impl MoqPeerNode {
         loop {
             // Get a group if we don't have one
             if current_group.is_none() {
-                match Self::get_next_group(&mut track_consumer, shutdown_rx).await? {
+                match Self::get_next_group(&mut track_consumer, shutdown_rx, output_pin).await? {
                     Some(group) => current_group = Some(group),
                     None => return Ok(()), // Stream ended or shutdown
                 }
@@ -1091,21 +1153,28 @@ impl MoqPeerNode {
     async fn get_next_group(
         track_consumer: &mut moq_lite::TrackConsumer,
         shutdown_rx: &mut broadcast::Receiver<()>,
+        output_pin: &str,
     ) -> Result<Option<moq_lite::GroupConsumer>, StreamKitError> {
         tokio::select! {
             biased;
             group_result = track_consumer.next_group() => {
                 match group_result {
-                    Ok(Some(group)) => Ok(Some(group)),
+                    Ok(Some(group)) => {
+                        tracing::debug!(output_pin, "Got next group from publisher");
+                        Ok(Some(group))
+                    }
                     Ok(None) => {
-                        tracing::info!("Publisher stream ended");
+                        tracing::info!(output_pin, "Publisher stream ended (next_group returned None)");
                         Ok(None)
                     }
-                    Err(e) => Err(StreamKitError::Runtime(format!("Error getting group: {e}"))),
+                    Err(e) => {
+                        tracing::warn!(output_pin, error = %e, "Error getting group from publisher");
+                        Err(StreamKitError::Runtime(format!("Error getting group: {e}")))
+                    }
                 }
             }
             _ = shutdown_rx.recv() => {
-                tracing::info!("Publisher receive loop shutting down");
+                tracing::info!(output_pin, "Publisher receive loop shutting down (shutdown signal)");
                 Ok(None)
             }
         }
@@ -1151,7 +1220,7 @@ impl MoqPeerNode {
                         };
 
                         if output_sender.send(output_pin, packet).await.is_err() {
-                            tracing::debug!("Output channel closed");
+                            tracing::info!(output_pin, "Output channel closed for pin");
                             let _ = stats_delta_tx
                                 .try_send(NodeStatsDelta { received: 1, ..Default::default() });
                             return Ok(FrameResult::Shutdown);
@@ -1161,14 +1230,14 @@ impl MoqPeerNode {
                     }
                     Ok(None) => Ok(FrameResult::GroupExhausted),
                     Err(e) => {
-                        tracing::warn!("Error reading frame: {e}");
+                        tracing::warn!(output_pin, "Error reading frame: {e}");
                         let _ = stats_delta_tx.try_send(NodeStatsDelta { errored: 1, ..Default::default() });
                         Ok(FrameResult::GroupExhausted)
                     }
                 }
             }
             _ = shutdown_rx.recv() => {
-                tracing::info!("Publisher receive loop shutting down");
+                tracing::info!(output_pin, "Publisher receive loop shutting down (frame read)");
                 Ok(FrameResult::Shutdown)
             }
         }
