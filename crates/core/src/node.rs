@@ -88,17 +88,13 @@ impl OutputSender {
         }
     }
 
-    /// Sends a packet from a specific output pin of this node.
-    /// Returns `Ok(())` if sent successfully.
+    /// Non-blocking send from a specific output pin.
     ///
-    /// Nodes should stop processing when this returns an error, as it indicates
-    /// either a programming mistake (unknown pin) or that the pipeline is shutting down.
+    /// Returns [`OutputSendError::ChannelFull`] when the downstream channel
+    /// has no capacity — callers may drop the packet and continue.
+    /// Returns [`OutputSendError::ChannelClosed`] or [`OutputSendError::PinNotFound`]
+    /// for permanent errors — callers should stop processing.
     ///
-    /// # Errors
-    ///
-    /// Returns [`OutputSendError::PinNotFound`] if the pin doesn't exist, or
-    /// [`OutputSendError::ChannelClosed`] if the receiving channel is closed.
-    /// Non-blocking send.  Returns `Err` if the channel is full or closed.
     /// Used by real-time nodes (e.g. compositor) that prefer dropping a frame
     /// over stalling and accumulating latency.
     pub fn try_send(&mut self, pin_name: &str, packet: Packet) -> Result<(), OutputSendError> {
@@ -153,6 +149,16 @@ impl OutputSender {
         Ok(())
     }
 
+    /// Sends a packet from a specific output pin of this node.
+    /// Returns `Ok(())` if sent successfully.
+    ///
+    /// Nodes should stop processing when this returns an error, as it indicates
+    /// either a programming mistake (unknown pin) or that the pipeline is shutting down.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OutputSendError::PinNotFound`] if the pin doesn't exist, or
+    /// [`OutputSendError::ChannelClosed`] if the receiving channel is closed.
     pub async fn send(&mut self, pin_name: &str, packet: Packet) -> Result<(), OutputSendError> {
         use tokio::sync::mpsc::error::TrySendError;
 
