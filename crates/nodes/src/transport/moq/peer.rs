@@ -51,12 +51,6 @@ struct BroadcastFrame {
     keyframe: bool,
 }
 
-/// Tracks discovered in a publisher's catalog.
-struct CatalogTracks {
-    audio: Option<(String, u8)>,
-    video: Option<(String, u8)>,
-}
-
 /// Result of processing a single frame
 enum FrameResult {
     /// Continue processing more frames
@@ -823,41 +817,12 @@ impl MoqPeerNode {
             .publisher_events
             .send(PublisherEvent::Connected { path: config.publisher_path.clone() });
 
-        let result = async {
-            let Some(catalog_tracks) =
-                Self::wait_for_catalog(&broadcast_consumer, shutdown_rx).await?
-            else {
-                return Ok(());
-            };
-
-            // Subscribe to discovered tracks
-            let audio_consumer = catalog_tracks.audio.map(|(name, priority)| {
-                tracing::info!(
-                    path = %config.publisher_path,
-                    "Subscribing to peer publisher audio track: {}",
-                    name
-                );
-                broadcast_consumer.subscribe_track(&moq_lite::Track { name, priority })
-            });
-
-            let video_consumer = catalog_tracks.video.map(|(name, priority)| {
-                tracing::info!(
-                    path = %config.publisher_path,
-                    "Subscribing to peer publisher video track: {}",
-                    name
-                );
-                broadcast_consumer.subscribe_track(&moq_lite::Track { name, priority })
-            });
-
-            Self::process_publisher_tracks(
-                audio_consumer,
-                video_consumer,
-                config.output_sender,
-                shutdown_rx,
-                &config.stats_delta_tx,
-            )
-            .await
-        }
+        let result = Self::watch_catalog_and_process(
+            &broadcast_consumer,
+            config.output_sender,
+            shutdown_rx,
+            &config.stats_delta_tx,
+        )
         .await;
 
         drop(permit);
@@ -886,27 +851,10 @@ impl MoqPeerNode {
             return Ok(()); // Shutdown requested
         };
 
-        // Wait for catalog with audio/video track info
-        let Some(catalog_tracks) = Self::wait_for_catalog(&broadcast_consumer, shutdown_rx).await?
-        else {
-            return Ok(()); // Shutdown requested
-        };
-
-        // Subscribe to discovered tracks
-        let audio_consumer = catalog_tracks.audio.map(|(name, priority)| {
-            tracing::info!("Subscribing to publisher audio track: {}", name);
-            broadcast_consumer.subscribe_track(&moq_lite::Track { name, priority })
-        });
-
-        let video_consumer = catalog_tracks.video.map(|(name, priority)| {
-            tracing::info!("Subscribing to publisher video track: {}", name);
-            broadcast_consumer.subscribe_track(&moq_lite::Track { name, priority })
-        });
-
-        // Process incoming frames from all tracks
-        Self::process_publisher_tracks(
-            audio_consumer,
-            video_consumer,
+        // Watch catalog and process tracks as they appear (handles incremental
+        // permission grants where mic/camera become available at different times)
+        Self::watch_catalog_and_process(
+            &broadcast_consumer,
             output_sender,
             shutdown_rx,
             &stats_delta_tx,
@@ -946,46 +894,155 @@ impl MoqPeerNode {
         }
     }
 
-    /// Wait for the catalog and extract audio and/or video track information
-    async fn wait_for_catalog(
+    /// Unwrap a catalog read result, returning `Some(catalog)` on success,
+    /// or `None` when the caller should break (closed / timeout / error).
+    fn unwrap_catalog_result<E: std::fmt::Display>(
+        result: Result<Result<Option<hang::catalog::Catalog>, E>, tokio::time::error::Elapsed>,
+    ) -> Option<hang::catalog::Catalog> {
+        match result {
+            Ok(Ok(Some(catalog))) => Some(catalog),
+            Ok(Ok(None)) => {
+                tracing::info!("Catalog track closed");
+                None
+            },
+            Ok(Err(e)) => {
+                tracing::warn!("Error reading catalog: {}", e);
+                None
+            },
+            Err(_) => {
+                tracing::info!("Catalog timeout — proceeding with discovered tracks");
+                None
+            },
+        }
+    }
+
+    /// Watch the catalog continuously and process publisher tracks as they appear.
+    ///
+    /// Instead of waiting for all tracks upfront, this subscribes to and starts
+    /// processing each track as soon as it appears in the catalog. This handles
+    /// the common case where the browser grants mic and camera permissions at
+    /// different times, causing the hang library to publish incremental catalog
+    /// updates (e.g., audio-only first, then audio+video).
+    async fn watch_catalog_and_process(
         broadcast_consumer: &moq_lite::BroadcastConsumer,
+        output_sender: streamkit_core::OutputSender,
         shutdown_rx: &mut broadcast::Receiver<()>,
-    ) -> Result<Option<CatalogTracks>, StreamKitError> {
+        stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
+    ) -> Result<(), StreamKitError> {
         let catalog_track =
             broadcast_consumer.subscribe_track(&hang::catalog::Catalog::default_track());
         let mut catalog_consumer = hang::catalog::CatalogConsumer::new(catalog_track);
 
+        let mut audio_handle: Option<tokio::task::JoinHandle<Result<(), StreamKitError>>> = None;
+        let mut video_handle: Option<tokio::task::JoinHandle<Result<(), StreamKitError>>> = None;
+
+        // Monitor the catalog for new tracks, subscribing to each as it appears
         loop {
             tokio::select! {
-                catalog_result = tokio::time::timeout(Duration::from_secs(10), catalog_consumer.next()) => {
-                    let catalog = catalog_result
-                        .map_err(|_| StreamKitError::Runtime("Timeout waiting for catalog".to_string()))?
-                        .map_err(|e| StreamKitError::Runtime(format!("Failed to read catalog: {e}")))?
-                        .ok_or_else(|| StreamKitError::Runtime("Catalog track closed".to_string()))?;
+                biased;
+                _ = shutdown_rx.recv() => {
+                    tracing::info!("Catalog watch shutting down");
+                    break;
+                }
+                catalog_result = tokio::time::timeout(Duration::from_secs(30), catalog_consumer.next()) => {
+                    let Some(catalog) = Self::unwrap_catalog_result(catalog_result) else {
+                        break;
+                    };
 
-                    tracing::info!("Received catalog from publisher: audio={:?}, video renditions={}", catalog.audio, catalog.video.renditions.len());
+                    tracing::info!(
+                        "Received catalog from publisher: audio={:?}, video renditions={}",
+                        catalog.audio, catalog.video.renditions.len()
+                    );
 
-                    let audio = catalog.audio.renditions.keys().next().map(|name| {
-                        tracing::info!("Found audio track in catalog: {}", name);
-                        (name.clone(), 2)
-                    });
-
-                    let video = catalog.video.renditions.keys().next().map(|name| {
-                        tracing::info!("Found video track in catalog: {}", name);
-                        (name.clone(), 2)
-                    });
-
-                    if audio.is_some() || video.is_some() {
-                        return Ok(Some(CatalogTracks { audio, video }));
+                    // Start audio processing if a new audio track appeared
+                    if audio_handle.is_none() {
+                        if let Some(track_name) = catalog.audio.renditions.keys().next() {
+                            tracing::info!("Found audio track in catalog: {}", track_name);
+                            audio_handle = Some(Self::spawn_track_processor(
+                                broadcast_consumer, track_name, "out",
+                                &output_sender, shutdown_rx, stats_delta_tx,
+                            ));
+                        }
                     }
 
-                    tracing::debug!("Catalog has no tracks yet, waiting for update...");
-                }
-                _ = shutdown_rx.recv() => {
-                    return Ok(None);
+                    // Start video processing if a new video track appeared
+                    if video_handle.is_none() {
+                        if let Some(track_name) = catalog.video.renditions.keys().next() {
+                            tracing::info!("Found video track in catalog: {}", track_name);
+                            video_handle = Some(Self::spawn_track_processor(
+                                broadcast_consumer, track_name, "video_out",
+                                &output_sender, shutdown_rx, stats_delta_tx,
+                            ));
+                        }
+                    }
+
+                    // Stop watching catalog once both tracks are subscribed
+                    if audio_handle.is_some() && video_handle.is_some() {
+                        tracing::info!("All tracks discovered, stopping catalog watch");
+                        break;
+                    }
                 }
             }
         }
+
+        // Wait for all active processing tasks to finish
+        Self::await_track_tasks(audio_handle, video_handle).await
+    }
+
+    /// Spawn a task that processes frames from a single publisher track.
+    fn spawn_track_processor(
+        broadcast_consumer: &moq_lite::BroadcastConsumer,
+        track_name: &str,
+        output_pin: &'static str,
+        output_sender: &streamkit_core::OutputSender,
+        shutdown_rx: &broadcast::Receiver<()>,
+        stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
+    ) -> tokio::task::JoinHandle<Result<(), StreamKitError>> {
+        let consumer = broadcast_consumer
+            .subscribe_track(&moq_lite::Track { name: track_name.to_string(), priority: 2 });
+        let sender = output_sender.clone();
+        let mut task_shutdown = shutdown_rx.resubscribe();
+        let stats = stats_delta_tx.clone();
+        tokio::spawn(async move {
+            Self::process_publisher_frames(consumer, sender, output_pin, &mut task_shutdown, &stats)
+                .await
+        })
+    }
+
+    /// Wait for spawned track processing tasks to complete.
+    async fn await_track_tasks(
+        audio_handle: Option<tokio::task::JoinHandle<Result<(), StreamKitError>>>,
+        video_handle: Option<tokio::task::JoinHandle<Result<(), StreamKitError>>>,
+    ) -> Result<(), StreamKitError> {
+        let audio_result = match audio_handle {
+            Some(handle) => Some(
+                handle
+                    .await
+                    .map_err(|e| StreamKitError::Runtime(format!("Audio task panicked: {e}")))?,
+            ),
+            None => None,
+        };
+        let video_result = match video_handle {
+            Some(handle) => Some(
+                handle
+                    .await
+                    .map_err(|e| StreamKitError::Runtime(format!("Video task panicked: {e}")))?,
+            ),
+            None => None,
+        };
+
+        if audio_result.is_none() && video_result.is_none() {
+            tracing::warn!("Publisher catalog had no audio or video tracks");
+        }
+
+        if let Some(Err(e)) = audio_result {
+            return Err(e);
+        }
+        if let Some(Err(e)) = video_result {
+            return Err(e);
+        }
+
+        Ok(())
     }
 
     /// Process incoming frames from the publisher and forward to the pipeline
@@ -1027,74 +1084,6 @@ impl MoqPeerNode {
                     FrameResult::Shutdown => return Ok(()),
                 }
             }
-        }
-    }
-
-    /// Process incoming frames from multiple publisher tracks concurrently.
-    ///
-    /// Audio frames are forwarded to the `"out"` output pin and video frames
-    /// to `"video_out"`.
-    async fn process_publisher_tracks(
-        audio_consumer: Option<moq_lite::TrackConsumer>,
-        video_consumer: Option<moq_lite::TrackConsumer>,
-        output_sender: streamkit_core::OutputSender,
-        shutdown_rx: &mut broadcast::Receiver<()>,
-        stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
-    ) -> Result<(), StreamKitError> {
-        match (audio_consumer, video_consumer) {
-            (Some(audio), Some(video)) => {
-                let mut audio_shutdown = shutdown_rx.resubscribe();
-                let mut video_shutdown = shutdown_rx.resubscribe();
-                let audio_sender = output_sender.clone();
-                let video_sender = output_sender;
-                let audio_stats = stats_delta_tx.clone();
-                let video_stats = stats_delta_tx.clone();
-
-                let audio_fut = Self::process_publisher_frames(
-                    audio,
-                    audio_sender,
-                    "out",
-                    &mut audio_shutdown,
-                    &audio_stats,
-                );
-                let video_fut = Self::process_publisher_frames(
-                    video,
-                    video_sender,
-                    "video_out",
-                    &mut video_shutdown,
-                    &video_stats,
-                );
-
-                // Run both concurrently; finish when both complete or either errors
-                let (audio_result, video_result) = tokio::join!(audio_fut, video_fut);
-                audio_result?;
-                video_result?;
-                Ok(())
-            },
-            (Some(audio), None) => {
-                Self::process_publisher_frames(
-                    audio,
-                    output_sender,
-                    "out",
-                    shutdown_rx,
-                    stats_delta_tx,
-                )
-                .await
-            },
-            (None, Some(video)) => {
-                Self::process_publisher_frames(
-                    video,
-                    output_sender,
-                    "video_out",
-                    shutdown_rx,
-                    stats_delta_tx,
-                )
-                .await
-            },
-            (None, None) => {
-                tracing::warn!("Publisher catalog has no audio or video tracks");
-                Ok(())
-            },
         }
     }
 
