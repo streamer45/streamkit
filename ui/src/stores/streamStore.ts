@@ -274,6 +274,25 @@ function schedulePostConnectWarnings(
       });
     }, 10_000);
   }
+
+  if (decision.shouldPublish && attempt.camera) {
+    const cameraRef = attempt.camera;
+
+    let wasEverReady = Boolean(cameraRef.source.peek()) || get().cameraStatus === 'ready';
+    attempt.healthEffect.subscribe(cameraRef.source, (value) => {
+      if (value) wasEverReady = true;
+    });
+
+    setTimeout(() => {
+      if (get().status !== 'connected') return;
+      if (wasEverReady) return;
+      set({
+        cameraStatus: 'error',
+        errorMessage:
+          'Connected to relay, but camera is not available. Check browser permissions and selected input device.',
+      });
+    }, 10_000);
+  }
 }
 
 interface StreamState {
@@ -347,6 +366,7 @@ interface StreamState {
     videoRenderer: Hang.Watch.Video.Renderer;
     connection: Hang.Moq.Connection.Reload;
     microphone: Hang.Publish.Source.Microphone;
+    camera: Hang.Publish.Source.Camera;
   }) => void;
 }
 
@@ -435,6 +455,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       videoRenderer: refs.videoRenderer,
       connection: refs.connection,
       microphone: refs.microphone,
+      camera: refs.camera,
     }),
 
   connect: async () => {
