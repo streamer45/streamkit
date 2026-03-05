@@ -18,6 +18,10 @@ const fn default_height() -> u32 {
     720
 }
 
+const fn default_fps() -> u32 {
+    30
+}
+
 /// Pixel-space rectangle for positioning a layer on the output canvas.
 ///
 /// `x` and `y` are signed to allow off-screen positioning (e.g. for
@@ -166,6 +170,11 @@ pub struct CompositorConfig {
     /// Output canvas height in pixels.
     #[serde(default = "default_height")]
     pub height: u32,
+    /// Output frame rate.  The compositor ticks at this fixed rate
+    /// regardless of input frame rates, compositing with the latest
+    /// available frame from each input.
+    #[serde(default = "default_fps")]
+    pub fps: u32,
     /// Number of input pins to pre-create.
     /// Required for stateless/oneshot pipelines where pins must exist before
     /// graph building. Optional for dynamic pipelines where pins are created
@@ -188,6 +197,7 @@ impl Default for CompositorConfig {
         Self {
             width: default_width(),
             height: default_height(),
+            fps: default_fps(),
             num_inputs: None,
             layers: HashMap::new(),
             image_overlays: Vec::new(),
@@ -206,6 +216,9 @@ impl CompositorConfig {
     pub fn validate(&self) -> Result<(), String> {
         if self.width == 0 || self.height == 0 {
             return Err("Canvas width and height must be > 0".to_string());
+        }
+        if self.fps == 0 {
+            return Err("Output fps must be > 0".to_string());
         }
         for (name, layer) in &self.layers {
             if !layer.opacity.is_finite() || layer.opacity < 0.0 || layer.opacity > 1.0 {

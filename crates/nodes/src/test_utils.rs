@@ -136,6 +136,14 @@ pub fn create_test_binary_packet(data: Vec<u8>) -> Packet {
 }
 
 /// Helper to create a simple video frame for testing.
+///
+/// # Panics
+///
+/// Panics if the width/height/pixel-format combination is not accepted by
+/// [`VideoFrame::new`] (e.g. zero dimensions or a mismatch between the computed
+/// layout size and the allocated buffer). Callers in tests pick these values
+/// deliberately, so a panic indicates a bug in the test itself.
+#[allow(clippy::expect_used)]
 pub fn create_test_video_frame(
     width: u32,
     height: u32,
@@ -156,7 +164,8 @@ pub fn create_test_video_frame(
         }
     }
 
-    VideoFrame::new(width, height, pixel_format, data).unwrap()
+    VideoFrame::new(width, height, pixel_format, data)
+        .expect("test video frame dimensions/format should be valid")
 }
 
 /// Helper to create a simple video packet for testing.

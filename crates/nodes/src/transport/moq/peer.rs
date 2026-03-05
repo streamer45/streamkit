@@ -61,6 +61,27 @@ enum FrameResult {
     Shutdown,
 }
 
+/// Outcome of a publisher track processing loop.
+///
+/// Distinguishes a transient publisher-side cancellation (which the caller may
+/// recover from by re-subscribing) from clean completion and fatal errors.
+enum TrackExit {
+    /// Track closed cleanly, stream ended, or shutdown was requested.
+    /// The caller should not retry.
+    Finished,
+    /// The publisher cancelled the subscription (`moq_lite::Error::Cancel`).
+    ///
+    /// This typically happens when the browser's `@moq/hang` publish pipeline
+    /// transiently tears down the track producer — e.g. when `camera.source`
+    /// flaps to `undefined` during the permission-grant → device-enumeration
+    /// cascade. The catalog still advertises the track and the browser's
+    /// `Broadcast#runBroadcast` loop will happily accept a fresh subscription,
+    /// so the caller may re-subscribe after a short backoff.
+    Cancelled,
+    /// A non-recoverable error occurred. Propagate up.
+    Error(StreamKitError),
+}
+
 #[derive(Debug)]
 enum PublisherEvent {
     Connected { path: String },
@@ -207,14 +228,27 @@ impl ProcessorNode for MoqPeerNode {
     }
 
     fn output_pins(&self) -> Vec<OutputPin> {
-        vec![OutputPin {
-            name: "out".to_string(),
-            produces_type: PacketType::EncodedAudio(EncodedAudioFormat {
-                codec: AudioCodec::Opus,
-                codec_private: None,
-            }),
-            cardinality: PinCardinality::Broadcast,
-        }]
+        vec![
+            OutputPin {
+                name: "out".to_string(),
+                produces_type: PacketType::EncodedAudio(EncodedAudioFormat {
+                    codec: AudioCodec::Opus,
+                    codec_private: None,
+                }),
+                cardinality: PinCardinality::Broadcast,
+            },
+            OutputPin {
+                name: "video_out".to_string(),
+                produces_type: PacketType::EncodedVideo(EncodedVideoFormat {
+                    codec: VideoCodec::Vp9,
+                    bitstream_format: None,
+                    codec_private: None,
+                    profile: None,
+                    level: None,
+                }),
+                cardinality: PinCardinality::Broadcast,
+            },
+        ]
     }
 
     async fn run(self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
@@ -804,32 +838,12 @@ impl MoqPeerNode {
             .publisher_events
             .send(PublisherEvent::Connected { path: config.publisher_path.clone() });
 
-        let result = async {
-            let Some((audio_track_name, audio_priority)) =
-                Self::wait_for_catalog_with_audio(&broadcast_consumer, shutdown_rx).await?
-            else {
-                return Ok(());
-            };
-
-            tracing::info!(
-                path = %config.publisher_path,
-                "Subscribing to peer publisher audio track: {}",
-                audio_track_name
-            );
-
-            let track_consumer = broadcast_consumer.subscribe_track(&moq_lite::Track {
-                name: audio_track_name,
-                priority: audio_priority,
-            });
-
-            Self::process_publisher_frames(
-                track_consumer,
-                config.output_sender,
-                shutdown_rx,
-                &config.stats_delta_tx,
-            )
-            .await
-        }
+        let result = Self::watch_catalog_and_process(
+            &broadcast_consumer,
+            config.output_sender,
+            shutdown_rx,
+            &config.stats_delta_tx,
+        )
         .await;
 
         drop(permit);
@@ -841,7 +855,7 @@ impl MoqPeerNode {
         result
     }
 
-    /// Publisher receive loop - receives audio from client and sends to pipeline
+    /// Publisher receive loop - receives audio/video from client and sends to pipeline
     async fn publisher_receive_loop(
         subscribe: moq_lite::OriginConsumer,
         broadcast_name: String,
@@ -858,21 +872,15 @@ impl MoqPeerNode {
             return Ok(()); // Shutdown requested
         };
 
-        // Wait for catalog with audio track info
-        let Some((audio_track_name, audio_priority)) =
-            Self::wait_for_catalog_with_audio(&broadcast_consumer, shutdown_rx).await?
-        else {
-            return Ok(()); // Shutdown requested
-        };
-
-        tracing::info!("Subscribing to publisher audio track: {}", audio_track_name);
-
-        let track_consumer = broadcast_consumer
-            .subscribe_track(&moq_lite::Track { name: audio_track_name, priority: audio_priority });
-
-        // Process incoming frames
-        Self::process_publisher_frames(track_consumer, output_sender, shutdown_rx, &stats_delta_tx)
-            .await
+        // Watch catalog and process tracks as they appear (handles incremental
+        // permission grants where mic/camera become available at different times)
+        Self::watch_catalog_and_process(
+            &broadcast_consumer,
+            output_sender,
+            shutdown_rx,
+            &stats_delta_tx,
+        )
+        .await
     }
 
     /// Wait for the publisher to announce the expected broadcast
@@ -907,48 +915,312 @@ impl MoqPeerNode {
         }
     }
 
-    /// Wait for the catalog to contain audio track information
-    async fn wait_for_catalog_with_audio(
+    /// Unwrap a catalog read result, returning `Some(catalog)` on success,
+    /// or `None` when the caller should break (closed / timeout / error).
+    fn unwrap_catalog_result<E: std::fmt::Display>(
+        result: Result<Result<Option<hang::catalog::Catalog>, E>, tokio::time::error::Elapsed>,
+    ) -> Option<hang::catalog::Catalog> {
+        match result {
+            Ok(Ok(Some(catalog))) => Some(catalog),
+            Ok(Ok(None)) => {
+                tracing::info!("Catalog track closed");
+                None
+            },
+            Ok(Err(e)) => {
+                tracing::warn!("Error reading catalog: {}", e);
+                None
+            },
+            Err(_) => {
+                tracing::info!("Catalog timeout — proceeding with discovered tracks");
+                None
+            },
+        }
+    }
+
+    /// Watch the catalog continuously and process publisher tracks as they appear.
+    ///
+    /// Instead of waiting for all tracks upfront, this subscribes to and starts
+    /// processing each track as soon as it appears in the catalog. This handles
+    /// the common case where the browser grants mic and camera permissions at
+    /// different times, causing the hang library to publish incremental catalog
+    /// updates (e.g., audio-only first, then audio+video).
+    async fn watch_catalog_and_process(
         broadcast_consumer: &moq_lite::BroadcastConsumer,
+        output_sender: streamkit_core::OutputSender,
         shutdown_rx: &mut broadcast::Receiver<()>,
-    ) -> Result<Option<(String, u8)>, StreamKitError> {
+        stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
+    ) -> Result<(), StreamKitError> {
         let catalog_track =
             broadcast_consumer.subscribe_track(&hang::catalog::Catalog::default_track());
         let mut catalog_consumer = hang::catalog::CatalogConsumer::new(catalog_track);
 
+        let mut audio_handle: Option<tokio::task::JoinHandle<Result<(), StreamKitError>>> = None;
+        let mut video_handle: Option<tokio::task::JoinHandle<Result<(), StreamKitError>>> = None;
+
+        // Monitor the catalog for new tracks, subscribing to each as it appears
         loop {
             tokio::select! {
-                catalog_result = tokio::time::timeout(Duration::from_secs(10), catalog_consumer.next()) => {
-                    let catalog = catalog_result
-                        .map_err(|_| StreamKitError::Runtime("Timeout waiting for catalog".to_string()))?
-                        .map_err(|e| StreamKitError::Runtime(format!("Failed to read catalog: {e}")))?
-                        .ok_or_else(|| StreamKitError::Runtime("Catalog track closed".to_string()))?;
+                biased;
+                _ = shutdown_rx.recv() => {
+                    tracing::info!("Catalog watch shutting down");
+                    break;
+                }
+                catalog_result = tokio::time::timeout(Duration::from_secs(30), catalog_consumer.next()) => {
+                    let Some(catalog) = Self::unwrap_catalog_result(catalog_result) else {
+                        break;
+                    };
 
-                    tracing::info!("Received catalog from publisher: audio={:?}", catalog.audio);
+                    tracing::info!(
+                        "Received catalog from publisher: audio={:?}, video renditions={}",
+                        catalog.audio, catalog.video.renditions.len()
+                    );
 
-                    {
-                        let audio = &catalog.audio;
-                        if let Some(track_name) = audio.renditions.keys().next() {
+                    // Start audio processing if a new audio track appeared
+                    if audio_handle.is_none() {
+                        if let Some(track_name) = catalog.audio.renditions.keys().next() {
                             tracing::info!("Found audio track in catalog: {}", track_name);
-                            return Ok(Some((track_name.clone(), 2)));
+                            audio_handle = Some(Self::spawn_track_processor(
+                                broadcast_consumer, track_name, "out",
+                                &output_sender, shutdown_rx, stats_delta_tx,
+                            ));
                         }
                     }
-                    tracing::debug!("Catalog has no audio yet, waiting for update...");
-                }
-                _ = shutdown_rx.recv() => {
-                    return Ok(None);
+
+                    // Start video processing if a new video track appeared
+                    if video_handle.is_none() {
+                        if let Some(track_name) = catalog.video.renditions.keys().next() {
+                            tracing::info!("Found video track in catalog: {}", track_name);
+                            video_handle = Some(Self::spawn_track_processor(
+                                broadcast_consumer, track_name, "video_out",
+                                &output_sender, shutdown_rx, stats_delta_tx,
+                            ));
+                        }
+                    }
+
+                    // Stop watching catalog once both tracks are subscribed
+                    if audio_handle.is_some() && video_handle.is_some() {
+                        tracing::info!("All tracks discovered, stopping catalog watch");
+                        break;
+                    }
                 }
             }
         }
+
+        // Wait for all active processing tasks to finish
+        Self::await_track_tasks(audio_handle, video_handle).await
     }
 
-    /// Process incoming frames from the publisher and forward to the pipeline
+    /// Spawn a task that processes frames from a single publisher track.
+    ///
+    /// The subscription is created *inside* the spawned task and wrapped in a
+    /// bounded retry loop. If the publisher transiently cancels the track
+    /// (see [`TrackExit::Cancelled`]), we back off briefly and re-subscribe
+    /// via `BroadcastConsumer::subscribe_track`, which creates a fresh
+    /// `TrackProducer`/`TrackConsumer` pair (the old producer is evicted from
+    /// moq-lite's dedup map once unused). This makes the pipeline resilient
+    /// to brief client-side track flaps regardless of `@moq/hang` version.
+    fn spawn_track_processor(
+        broadcast_consumer: &moq_lite::BroadcastConsumer,
+        track_name: &str,
+        output_pin: &'static str,
+        output_sender: &streamkit_core::OutputSender,
+        shutdown_rx: &broadcast::Receiver<()>,
+        stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
+    ) -> tokio::task::JoinHandle<Result<(), StreamKitError>> {
+        // How many times to re-subscribe after a publisher-side cancellation
+        // before giving up. The browser's camera-source flap during the
+        // permission-grant → device-enumeration cascade can span ~300ms+,
+        // so we use exponential backoff (100, 200, 400, 800…) to cover it.
+        const MAX_RESUBSCRIBE_ATTEMPTS: u32 = 10;
+        const RESUBSCRIBE_INITIAL_BACKOFF: Duration = Duration::from_millis(100);
+
+        // BroadcastConsumer is Clone (Arc-like state + watch::Receiver +
+        // async_channel::Sender). Cloning into the task lets us re-subscribe
+        // after a cancellation without holding a reference across the spawn.
+        let broadcast = broadcast_consumer.clone();
+        let track = moq_lite::Track { name: track_name.to_string(), priority: 2 };
+        let sender = output_sender.clone();
+        let mut task_shutdown = shutdown_rx.resubscribe();
+        let stats = stats_delta_tx.clone();
+        let pin_name = output_pin;
+
+        tokio::spawn(async move {
+            tracing::info!(output_pin = pin_name, track = %track.name, "Track processor task started");
+
+            let mut attempt: u32 = 0;
+            loop {
+                let consumer = broadcast.subscribe_track(&track);
+                let exit = Self::process_publisher_frames(
+                    consumer,
+                    sender.clone(),
+                    pin_name,
+                    &mut task_shutdown,
+                    &stats,
+                )
+                .await;
+
+                match exit {
+                    TrackExit::Finished => {
+                        tracing::info!(
+                            output_pin = pin_name,
+                            "Track processor task finished normally"
+                        );
+                        return Ok(());
+                    },
+                    TrackExit::Error(e) => {
+                        tracing::warn!(
+                            output_pin = pin_name,
+                            error = %e,
+                            "Track processor task finished with error"
+                        );
+                        return Err(e);
+                    },
+                    TrackExit::Cancelled => {
+                        attempt += 1;
+                        if attempt > MAX_RESUBSCRIBE_ATTEMPTS {
+                            tracing::warn!(
+                                output_pin = pin_name,
+                                attempts = attempt,
+                                "Publisher track cancelled; retry budget exhausted"
+                            );
+                            return Err(StreamKitError::Runtime(format!(
+                                "publisher track '{}' cancelled {} times; giving up",
+                                track.name, attempt
+                            )));
+                        }
+                        let backoff =
+                            RESUBSCRIBE_INITIAL_BACKOFF * 2u32.saturating_pow(attempt - 1);
+                        tracing::info!(
+                            output_pin = pin_name,
+                            attempt,
+                            max = MAX_RESUBSCRIBE_ATTEMPTS,
+                            backoff_ms = backoff.as_millis() as u64,
+                            "Publisher track cancelled; re-subscribing after backoff"
+                        );
+                        // Yield to shutdown during backoff so we don't delay
+                        // teardown if the pipeline is stopping.
+                        tokio::select! {
+                            biased;
+                            _ = task_shutdown.recv() => {
+                                tracing::info!(output_pin = pin_name, "Shutdown during re-subscribe backoff");
+                                return Ok(());
+                            }
+                            () = tokio::time::sleep(backoff) => {}
+                        }
+                    },
+                }
+            }
+        })
+    }
+
+    /// Wait for spawned track processing tasks to complete.
+    ///
+    /// Uses `tokio::select!` so that if either task exits early (e.g. the video
+    /// track is closed by the publisher), the remaining task can continue
+    /// running independently while the overall function waits for it.
+    #[allow(clippy::cognitive_complexity)]
+    async fn await_track_tasks(
+        audio_handle: Option<tokio::task::JoinHandle<Result<(), StreamKitError>>>,
+        video_handle: Option<tokio::task::JoinHandle<Result<(), StreamKitError>>>,
+    ) -> Result<(), StreamKitError> {
+        if audio_handle.is_none() && video_handle.is_none() {
+            tracing::warn!("Publisher catalog had no audio or video tracks");
+            return Ok(());
+        }
+
+        let mut audio_done = audio_handle.is_none();
+        let mut video_done = video_handle.is_none();
+
+        // Wrap the handles so we can select! over them concurrently
+        let audio_fut = async {
+            match audio_handle {
+                Some(h) => Some(h.await),
+                None => {
+                    // No audio task — pend forever so only video is selected
+                    std::future::pending::<
+                        Option<Result<Result<(), StreamKitError>, tokio::task::JoinError>>,
+                    >()
+                    .await
+                },
+            }
+        };
+        let video_fut = async {
+            match video_handle {
+                Some(h) => Some(h.await),
+                None => {
+                    std::future::pending::<
+                        Option<Result<Result<(), StreamKitError>, tokio::task::JoinError>>,
+                    >()
+                    .await
+                },
+            }
+        };
+
+        tokio::pin!(audio_fut);
+        tokio::pin!(video_fut);
+
+        let mut first_error: Option<StreamKitError> = None;
+
+        while !audio_done || !video_done {
+            tokio::select! {
+                result = &mut audio_fut, if !audio_done => {
+                    audio_done = true;
+                    if let Some(join_result) = result {
+                        match join_result {
+                            Err(e) => {
+                                tracing::warn!("Audio task panicked: {e}");
+                                if first_error.is_none() {
+                                    first_error = Some(StreamKitError::Runtime(format!("Audio task panicked: {e}")));
+                                }
+                            }
+                            Ok(Err(e)) => {
+                                tracing::warn!("Audio task error: {e}");
+                                if first_error.is_none() {
+                                    first_error = Some(e);
+                                }
+                            }
+                            Ok(Ok(())) => tracing::info!("Audio processing task completed"),
+                        }
+                    }
+                }
+                result = &mut video_fut, if !video_done => {
+                    video_done = true;
+                    if let Some(join_result) = result {
+                        match join_result {
+                            Err(e) => {
+                                tracing::warn!("Video task panicked: {e}");
+                                if first_error.is_none() {
+                                    first_error = Some(StreamKitError::Runtime(format!("Video task panicked: {e}")));
+                                }
+                            }
+                            Ok(Err(e)) => {
+                                tracing::warn!("Video task error: {e}");
+                                if first_error.is_none() {
+                                    first_error = Some(e);
+                                }
+                            }
+                            Ok(Ok(())) => tracing::info!("Video processing task completed"),
+                        }
+                    }
+                }
+            }
+        }
+
+        first_error.map_or(Ok(()), Err)
+    }
+
+    /// Process incoming frames from the publisher and forward to the pipeline.
+    ///
+    /// Returns [`TrackExit`] so the caller can distinguish a transient
+    /// publisher-side cancellation (retryable via re-subscribe) from clean
+    /// completion and fatal errors.
     async fn process_publisher_frames(
         mut track_consumer: moq_lite::TrackConsumer,
         mut output_sender: streamkit_core::OutputSender,
+        output_pin: &str,
         shutdown_rx: &mut broadcast::Receiver<()>,
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
-    ) -> Result<(), StreamKitError> {
+    ) -> TrackExit {
         let mut frame_count = 0u64;
         let mut last_log = std::time::Instant::now();
         let mut current_group: Option<moq_lite::GroupConsumer> = None;
@@ -956,9 +1228,15 @@ impl MoqPeerNode {
         loop {
             // Get a group if we don't have one
             if current_group.is_none() {
-                match Self::get_next_group(&mut track_consumer, shutdown_rx).await? {
-                    Some(group) => current_group = Some(group),
-                    None => return Ok(()), // Stream ended or shutdown
+                match Self::get_next_group(&mut track_consumer, shutdown_rx, output_pin).await {
+                    Ok(Some(group)) => current_group = Some(group),
+                    Ok(None) => return TrackExit::Finished, // Stream ended or shutdown
+                    Err(moq_lite::Error::Cancel) => return TrackExit::Cancelled,
+                    Err(e) => {
+                        return TrackExit::Error(StreamKitError::Runtime(format!(
+                            "Error getting group: {e}"
+                        )));
+                    },
                 }
             }
 
@@ -967,40 +1245,55 @@ impl MoqPeerNode {
                 match Self::process_frame_from_group(
                     group,
                     &mut output_sender,
+                    output_pin,
                     &mut frame_count,
                     &mut last_log,
                     shutdown_rx,
                     stats_delta_tx,
                 )
-                .await?
+                .await
                 {
-                    FrameResult::Continue => {},
-                    FrameResult::GroupExhausted => current_group = None,
-                    FrameResult::Shutdown => return Ok(()),
+                    Ok(FrameResult::Continue) => {},
+                    Ok(FrameResult::GroupExhausted) => current_group = None,
+                    Ok(FrameResult::Shutdown) => return TrackExit::Finished,
+                    Err(e) => return TrackExit::Error(e),
                 }
             }
         }
     }
 
-    /// Get the next group from the track consumer
+    /// Get the next group from the track consumer.
+    ///
+    /// Surfaces the raw [`moq_lite::Error`] so the caller can distinguish
+    /// [`moq_lite::Error::Cancel`] (publisher dropped the track producer —
+    /// retryable) from other failures. The `tracing::warn!` here will still
+    /// fire for cancellations; that's intentional since they're unexpected
+    /// in steady state even if we recover.
     async fn get_next_group(
         track_consumer: &mut moq_lite::TrackConsumer,
         shutdown_rx: &mut broadcast::Receiver<()>,
-    ) -> Result<Option<moq_lite::GroupConsumer>, StreamKitError> {
+        output_pin: &str,
+    ) -> Result<Option<moq_lite::GroupConsumer>, moq_lite::Error> {
         tokio::select! {
             biased;
             group_result = track_consumer.next_group() => {
                 match group_result {
-                    Ok(Some(group)) => Ok(Some(group)),
+                    Ok(Some(group)) => {
+                        tracing::debug!(output_pin, "Got next group from publisher");
+                        Ok(Some(group))
+                    }
                     Ok(None) => {
-                        tracing::info!("Publisher stream ended");
+                        tracing::info!(output_pin, "Publisher stream ended (next_group returned None)");
                         Ok(None)
                     }
-                    Err(e) => Err(StreamKitError::Runtime(format!("Error getting group: {e}"))),
+                    Err(e) => {
+                        tracing::warn!(output_pin, error = %e, "Error getting group from publisher");
+                        Err(e)
+                    }
                 }
             }
             _ = shutdown_rx.recv() => {
-                tracing::info!("Publisher receive loop shutting down");
+                tracing::info!(output_pin, "Publisher receive loop shutting down (shutdown signal)");
                 Ok(None)
             }
         }
@@ -1010,6 +1303,7 @@ impl MoqPeerNode {
     async fn process_frame_from_group(
         group: &mut moq_lite::GroupConsumer,
         output_sender: &mut streamkit_core::OutputSender,
+        output_pin: &str,
         frame_count: &mut u64,
         last_log: &mut std::time::Instant,
         shutdown_rx: &mut broadcast::Receiver<()>,
@@ -1044,8 +1338,8 @@ impl MoqPeerNode {
                             metadata: None,
                         };
 
-                        if output_sender.send("out", packet).await.is_err() {
-                            tracing::debug!("Output channel closed");
+                        if output_sender.send(output_pin, packet).await.is_err() {
+                            tracing::info!(output_pin, "Output channel closed for pin");
                             let _ = stats_delta_tx
                                 .try_send(NodeStatsDelta { received: 1, ..Default::default() });
                             return Ok(FrameResult::Shutdown);
@@ -1055,14 +1349,14 @@ impl MoqPeerNode {
                     }
                     Ok(None) => Ok(FrameResult::GroupExhausted),
                     Err(e) => {
-                        tracing::warn!("Error reading frame: {e}");
+                        tracing::warn!(output_pin, "Error reading frame: {e}");
                         let _ = stats_delta_tx.try_send(NodeStatsDelta { errored: 1, ..Default::default() });
                         Ok(FrameResult::GroupExhausted)
                     }
                 }
             }
             _ = shutdown_rx.recv() => {
-                tracing::info!("Publisher receive loop shutting down");
+                tracing::info!(output_pin, "Publisher receive loop shutting down (frame read)");
                 Ok(FrameResult::Shutdown)
             }
         }

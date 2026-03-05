@@ -32,6 +32,7 @@ pub mod pixel_ops;
 use async_trait::async_trait;
 use config::CompositorConfig;
 use kernel::{CompositeResult, CompositeWorkItem, LayerSnapshot};
+use opentelemetry::{global, KeyValue};
 use overlay::{decode_image_overlay, rasterize_text_overlay, DecodedOverlay};
 use schemars::schema_for;
 use std::collections::HashMap;
@@ -71,6 +72,10 @@ struct ResolvedSlotConfig {
     opacity: f32,
     z_index: i32,
     rotation_degrees: f32,
+    /// When `true`, the source is fitted within the destination rect
+    /// while preserving its aspect ratio (letterbox / pillarbox).
+    /// Used by auto-PiP layers to avoid stretching.
+    aspect_fit: bool,
 }
 
 /// Rebuild the per-slot resolved configs and the z-sorted draw order.
@@ -87,8 +92,8 @@ fn rebuild_layer_cache(
     for (idx, slot) in slots.iter().enumerate() {
         let layer_cfg = config.layers.get(&slot.name);
         #[allow(clippy::option_if_let_else)]
-        let (rect, opacity, z_index, rotation_degrees) = if let Some(lc) = layer_cfg {
-            (lc.rect.clone(), lc.opacity, lc.z_index, lc.rotation_degrees)
+        let (rect, opacity, z_index, rotation_degrees, aspect_fit) = if let Some(lc) = layer_cfg {
+            (lc.rect.clone(), lc.opacity, lc.z_index, lc.rotation_degrees, false)
         } else if idx > 0 && num_slots > 1 {
             // Auto-PiP: non-first layers without explicit config.
             let pip_w = config.width / 3;
@@ -100,14 +105,15 @@ fn rebuild_layer_cache(
             #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
             (
                 Some(config::Rect { x: pip_x, y: pip_y, width: pip_w, height: pip_h }),
-                0.9,
+                1.0,
                 idx as i32,
                 0.0,
+                true, // preserve source aspect ratio within PiP bounds
             )
         } else {
-            (None, 1.0, 0, 0.0)
+            (None, 1.0, 0, 0.0, false)
         };
-        configs.push(ResolvedSlotConfig { rect, opacity, z_index, rotation_degrees });
+        configs.push(ResolvedSlotConfig { rect, opacity, z_index, rotation_degrees, aspect_fit });
     }
 
     // Pre-sort by (z_index, slot_index).
@@ -115,6 +121,28 @@ fn rebuild_layer_cache(
     draw_order.sort_by(|&a, &b| configs[a].z_index.cmp(&configs[b].z_index).then(a.cmp(&b)));
 
     (configs, draw_order)
+}
+
+/// Compute a destination rect that fits `src_w × src_h` within `bounds`
+/// while preserving the source aspect ratio.  The fitted rect is centred
+/// within the bounds.
+fn fit_rect_preserving_aspect(src_w: u32, src_h: u32, bounds: &config::Rect) -> config::Rect {
+    if src_w == 0 || src_h == 0 || bounds.width == 0 || bounds.height == 0 {
+        return bounds.clone();
+    }
+    let scale_w = bounds.width as f64 / src_w as f64;
+    let scale_h = bounds.height as f64 / src_h as f64;
+    let scale = scale_w.min(scale_h);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let fit_w = (src_w as f64 * scale).round() as u32;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let fit_h = (src_h as f64 * scale).round() as u32;
+    // Centre within the bounding rect.
+    #[allow(clippy::cast_possible_wrap)]
+    let offset_x = (bounds.width.saturating_sub(fit_w) / 2) as i32;
+    #[allow(clippy::cast_possible_wrap)]
+    let offset_y = (bounds.height.saturating_sub(fit_h) / 2) as i32;
+    config::Rect { x: bounds.x + offset_x, y: bounds.y + offset_y, width: fit_w, height: fit_h }
 }
 
 // ── Node ────────────────────────────────────────────────────────────────────
@@ -376,189 +404,133 @@ impl ProcessorNode for CompositorNode {
         let mut output_seq: u64 = 0;
         let mut stop_reason: &str = "shutdown";
 
+        // ── OpenTelemetry metrics ───────────────────────────────────────
+        let meter = global::meter("skit_nodes");
+        let frames_dropped_counter = meter
+            .u64_counter("compositor.frames_dropped")
+            .with_description("Frames dropped by the compositor to keep up with real-time input")
+            .build();
+        let otel_attrs = [KeyValue::new("node", node_name.clone())];
+
+        // ── Fixed-rate tick ──────────────────────────────────────────────
+        // The compositor runs at a fixed fps regardless of input rates,
+        // like the audio clocked mixer.  On each tick it drains all inputs
+        // to their latest frame and composites.  Inputs that haven't
+        // delivered a new frame since the last tick reuse their previous
+        // frame.  This guarantees a constant output rate and decouples
+        // the compositor from input timing.
+        let tick_duration =
+            std::time::Duration::from_nanos(1_000_000_000u64 / u64::from(self.config.fps));
+        let mut tick = tokio::time::interval(tick_duration);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
         // ── Cached layer config + draw order ────────────────────────────
-        // Rebuilt only when config or pin set changes (UpdateParams,
-        // pin add/remove, channel close).  Avoids per-frame HashMap
-        // lookups and sort_by calls.
         let mut layer_configs_dirty = true;
         let mut resolved_configs: Vec<ResolvedSlotConfig> = Vec::new();
         let mut sorted_draw_order: Vec<usize> = Vec::new();
 
         loop {
-            // ── Take at most one frame from every slot (non-blocking) ───
-            // We intentionally take only one frame per slot per iteration so
-            // that every produced frame is composited and forwarded.  The old
-            // "drain-to-latest" approach dropped intermediate frames when the
-            // compositing step was slower than the producer.
-            let mut got_any_frame = false;
-            for slot in &mut slots {
-                if let Ok(Packet::Video(frame)) = slot.rx.try_recv() {
-                    slot.latest_frame = Some(frame);
-                    got_any_frame = true;
-                }
-            }
+            // ── Wait for the next tick, or handle control / pin msgs ────
+            tokio::select! {
+                biased;
 
-            // ── Wait for at least one frame if none are available yet ────
-            if !got_any_frame && !slots.is_empty() {
-                // Use select! to wait for any input, control, or pin management.
-                let mut received_frame = false;
-                let mut should_break = false;
-
-                tokio::select! {
-                    biased;
-
-                    // Control messages (highest priority).
-                    Some(ctrl_msg) = context.control_rx.recv() => {
-                        match ctrl_msg {
-                            NodeControlMessage::Shutdown => {
-                                tracing::info!("CompositorNode received shutdown");
-                                should_break = true;
-                            },
-                            NodeControlMessage::UpdateParams(params) => {
-                                Self::apply_update_params(
-                                    &mut self.config,
-                                    &mut image_overlays,
-                                    &mut image_overlay_cfg_indices,
-                                    &mut text_overlays,
-                                    params,
-                                    &mut stats_tracker,
+                // Control messages (highest priority).
+                Some(ctrl_msg) = context.control_rx.recv() => {
+                    match ctrl_msg {
+                        NodeControlMessage::Shutdown => {
+                            tracing::info!("CompositorNode received shutdown");
+                            stop_reason = "shutdown";
+                            break;
+                        },
+                        NodeControlMessage::UpdateParams(params) => {
+                            let old_fps = self.config.fps;
+                            Self::apply_update_params(
+                                &mut self.config,
+                                &mut image_overlays,
+                                &mut image_overlay_cfg_indices,
+                                &mut text_overlays,
+                                params,
+                                &mut stats_tracker,
+                            );
+                            layer_configs_dirty = true;
+                            if self.config.fps != old_fps {
+                                let new_duration = std::time::Duration::from_nanos(
+                                    1_000_000_000u64 / u64::from(self.config.fps),
                                 );
-                                layer_configs_dirty = true;
-                            },
-                            NodeControlMessage::Start => {},
-                        }
-                    }
-
-                    // Pin management.
-                    Some(msg) = async {
-                        match &mut pin_mgmt_rx {
-                            Some(rx) => rx.recv().await,
-                            None => std::future::pending().await,
-                        }
-                    } => {
-                        Self::handle_pin_management(
-                            &mut self,
-                            msg,
-                            &mut slots,
-                        );
-                        layer_configs_dirty = true;
-                    }
-
-                    // Wait for a frame from any connected input.
-                    result = recv_from_any_slot(&mut slots) => {
-                        match result {
-                            SlotRecvResult::Frame(slot_idx, frame) => {
-                                slots[slot_idx].latest_frame = Some(frame);
-                                received_frame = true;
-                            }
-                            SlotRecvResult::ChannelClosed(slot_idx) => {
-                                tracing::info!(
-                                    "CompositorNode: input '{}' closed",
-                                    slots[slot_idx].name
+                                tick = tokio::time::interval(new_duration);
+                                tick.set_missed_tick_behavior(
+                                    tokio::time::MissedTickBehavior::Skip,
                                 );
-                                slots.remove(slot_idx);
-                                layer_configs_dirty = true;
-                                if slots.is_empty() {
-                                    stop_reason = "all_inputs_closed";
-                                    should_break = true;
-                                }
-                                // Otherwise continue — remaining slots are still active.
+                                tracing::info!("Compositor fps changed: {} → {}", old_fps, self.config.fps);
                             }
-                            SlotRecvResult::NonVideo(slot_idx) => {
-                                tracing::debug!(
-                                    "CompositorNode: ignoring non-video packet on '{}'",
-                                    slots[slot_idx].name
-                                );
-                                // Skip and continue waiting.
-                            }
-                            SlotRecvResult::Empty => {
-                                stop_reason = "all_inputs_closed";
-                                should_break = true;
-                            }
-                        }
+                        },
+                        NodeControlMessage::Start => {},
                     }
-                }
-
-                if should_break {
-                    break;
-                }
-                if !received_frame {
                     continue;
                 }
+
+                // Pin management.
+                Some(msg) = async {
+                    match &mut pin_mgmt_rx {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    Self::handle_pin_management(
+                        &mut self,
+                        msg,
+                        &mut slots,
+                    );
+                    layer_configs_dirty = true;
+                    continue;
+                }
+
+                // Fixed-rate tick — time to composite.
+                _ = tick.tick() => {}
             }
 
-            if slots.is_empty() {
-                // No inputs at all — wait for pin management or control.
-                tokio::select! {
-                    Some(ctrl_msg) = context.control_rx.recv() => {
-                        match ctrl_msg {
-                            NodeControlMessage::Shutdown => {
-                                tracing::info!("CompositorNode received shutdown (no inputs)");
-                                break;
-                            },
-                            NodeControlMessage::UpdateParams(params) => {
-                                Self::apply_update_params(
-                                    &mut self.config,
-                                    &mut image_overlays,
-                                    &mut image_overlay_cfg_indices,
-                                    &mut text_overlays,
-                                    params,
-                                    &mut stats_tracker,
-                                );
-                                layer_configs_dirty = true;
-                            },
-                            NodeControlMessage::Start => {},
-                        }
+            // ── Drain each slot to its latest frame (non-blocking) ──────
+            for slot in &mut slots {
+                let mut latest: Option<VideoFrame> = None;
+                let mut dropped: u64 = 0;
+                while let Ok(Packet::Video(frame)) = slot.rx.try_recv() {
+                    if latest.is_some() {
+                        dropped += 1;
                     }
-                    Some(msg) = async {
-                        match &mut pin_mgmt_rx {
-                            Some(rx) => rx.recv().await,
-                            None => std::future::pending().await,
-                        }
-                    } => {
-                        Self::handle_pin_management(
-                            &mut self,
-                            msg,
-                            &mut slots,
-                        );
-                        layer_configs_dirty = true;
-                    }
+                    latest = Some(frame);
                 }
+                if dropped > 0 {
+                    frames_dropped_counter.add(dropped, &otel_attrs);
+                    stats_tracker.discarded_n(dropped);
+                }
+                if let Some(frame) = latest {
+                    slot.latest_frame = Some(frame);
+                }
+            }
+
+            // Nothing to composite if no slot has ever received a frame.
+            if !slots.iter().any(|s| s.latest_frame.is_some()) {
                 continue;
             }
 
-            // ── Check for non-blocking control / pin management ──────────
-            let mut should_stop = false;
-            while let Ok(ctrl_msg) = context.control_rx.try_recv() {
-                match ctrl_msg {
-                    NodeControlMessage::Shutdown => {
-                        tracing::info!("CompositorNode received shutdown during compositing");
-                        stop_reason = "shutdown";
-                        should_stop = true;
-                        break;
-                    },
-                    NodeControlMessage::UpdateParams(params) => {
-                        Self::apply_update_params(
-                            &mut self.config,
-                            &mut image_overlays,
-                            &mut image_overlay_cfg_indices,
-                            &mut text_overlays,
-                            params,
-                            &mut stats_tracker,
-                        );
-                        layer_configs_dirty = true;
-                    },
-                    NodeControlMessage::Start => {},
-                }
-            }
-            if should_stop {
-                break;
-            }
-            if let Some(ref mut pmrx) = pin_mgmt_rx {
-                while let Ok(msg) = pmrx.try_recv() {
-                    Self::handle_pin_management(&mut self, msg, &mut slots);
+            // Check for closed input channels.
+            let mut i = 0;
+            while i < slots.len() {
+                // A slot whose channel is closed AND has no buffered frame
+                // can be removed.  We detect closure by a failed try_recv
+                // returning Disconnected — but try_recv above already
+                // drained.  Use a zero-capacity poll instead:
+                if slots[i].rx.is_closed() {
+                    tracing::info!("CompositorNode: input '{}' closed", slots[i].name);
+                    slots.remove(i);
                     layer_configs_dirty = true;
+                } else {
+                    i += 1;
                 }
+            }
+            if slots.is_empty() {
+                stop_reason = "all_inputs_closed";
+                break;
             }
 
             // ── Rebuild layer config cache if needed ─────────────────────
@@ -577,12 +549,21 @@ impl ProcessorNode for CompositorNode {
                 .map(|&idx| {
                     slots[idx].latest_frame.as_ref().map(|f| {
                         let cfg = &resolved_configs[idx];
+                        let rect = if cfg.aspect_fit {
+                            // Fit the source within the destination rect
+                            // while preserving its aspect ratio.
+                            cfg.rect
+                                .as_ref()
+                                .map(|r| fit_rect_preserving_aspect(f.width, f.height, r))
+                        } else {
+                            cfg.rect.clone()
+                        };
                         LayerSnapshot {
                             data: f.data.clone(),
                             width: f.width,
                             height: f.height,
                             pixel_format: f.pixel_format,
-                            rect: cfg.rect.clone(),
+                            rect,
                             opacity: cfg.opacity,
                             z_index: cfg.z_index,
                             rotation_degrees: cfg.rotation_degrees,
@@ -602,10 +583,24 @@ impl ProcessorNode for CompositorNode {
                 video_pool: video_pool.clone(),
             };
 
-            if work_tx.send(work_item).await.is_err() {
-                tracing::debug!("Compositing thread gone, stopping CompositorNode");
-                stop_reason = "compositor_thread_gone";
-                break;
+            // Send work to the compositing thread.  The work channel has
+            // capacity 2, so at most one item can be in-flight while we
+            // submit the next.  Use try_send to avoid blocking — if the
+            // compositing thread hasn't finished the previous frame yet,
+            // drop this one to stay real-time.
+            match work_tx.try_send(work_item) {
+                Ok(()) => {},
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    // Compositing thread is still busy — skip this frame.
+                    frames_dropped_counter.add(1, &otel_attrs);
+                    stats_tracker.discarded();
+                    continue;
+                },
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                    tracing::debug!("Compositing thread gone, stopping CompositorNode");
+                    stop_reason = "compositor_thread_gone";
+                    break;
+                },
             }
 
             let Some(composite_result) = result_rx.recv().await else {
@@ -622,7 +617,12 @@ impl ProcessorNode for CompositorNode {
                 timestamp_us: src_metadata.as_ref().and_then(|m| m.timestamp_us),
                 duration_us: src_metadata.as_ref().and_then(|m| m.duration_us),
                 sequence: Some(output_seq),
-                keyframe: Some(true),
+                // Don't set keyframe — the compositor outputs raw RGBA, not
+                // encoded video.  Downstream encoders (VP9) decide their own
+                // keyframe placement via kf_max_dist.  Setting this to true
+                // caused every frame to be force-keyframed via VPX_EFLAG_FORCE_KF,
+                // creating one MoQ group per frame and overwhelming the browser.
+                keyframe: None,
             });
 
             let out_frame = VideoFrame::from_pooled(
@@ -633,10 +633,23 @@ impl ProcessorNode for CompositorNode {
                 metadata,
             )?;
 
-            if context.output_sender.send("out", Packet::Video(out_frame)).await.is_err() {
-                tracing::debug!("Output channel closed, stopping CompositorNode");
-                stop_reason = "output_closed";
-                break;
+            // Non-blocking output send — if downstream (VP9 encoder) is
+            // backed up, drop the frame rather than stalling the
+            // compositor loop.  ChannelClosed is permanent (downstream
+            // gone), so we stop the node.
+            match context.output_sender.try_send("out", Packet::Video(out_frame)) {
+                Ok(()) => {},
+                Err(streamkit_core::node::OutputSendError::ChannelFull { .. }) => {
+                    frames_dropped_counter.add(1, &otel_attrs);
+                    stats_tracker.discarded();
+                    output_seq += 1;
+                    continue;
+                },
+                Err(_) => {
+                    tracing::debug!("Output channel closed, stopping CompositorNode");
+                    stop_reason = "output_closed";
+                    break;
+                },
             }
 
             stats_tracker.sent();
@@ -807,51 +820,6 @@ impl CompositorNode {
             _ => {},
         }
     }
-}
-
-// ── Frame receive helper ────────────────────────────────────────────────────
-
-/// Result of waiting for a frame from input slots.
-enum SlotRecvResult {
-    /// A video frame was received from the slot at the given index.
-    Frame(usize, VideoFrame),
-    /// The channel at the given index was closed.
-    ChannelClosed(usize),
-    /// A non-video packet was received (and discarded) from the given index.
-    NonVideo(usize),
-    /// All slots are empty (should not happen if caller checks).
-    Empty,
-}
-
-/// Wait for a packet from any of the input slots.  Returns a typed result so
-/// the caller can distinguish between a received video frame, a closed channel,
-/// and a non-video packet (which should be skipped, not treated as closure).
-///
-/// Uses `poll_recv` directly to avoid per-call allocations from boxing
-/// futures and collecting them into a `Vec` for `select_all`.
-async fn recv_from_any_slot(slots: &mut [InputSlot]) -> SlotRecvResult {
-    if slots.is_empty() {
-        return SlotRecvResult::Empty;
-    }
-
-    std::future::poll_fn(|cx| {
-        for (i, slot) in slots.iter_mut().enumerate() {
-            match slot.rx.poll_recv(cx) {
-                std::task::Poll::Ready(Some(Packet::Video(frame))) => {
-                    return std::task::Poll::Ready(SlotRecvResult::Frame(i, frame));
-                },
-                std::task::Poll::Ready(Some(_)) => {
-                    return std::task::Poll::Ready(SlotRecvResult::NonVideo(i));
-                },
-                std::task::Poll::Ready(None) => {
-                    return std::task::Poll::Ready(SlotRecvResult::ChannelClosed(i));
-                },
-                std::task::Poll::Pending => {},
-            }
-        }
-        std::task::Poll::Pending
-    })
-    .await
 }
 
 // ── Registration ────────────────────────────────────────────────────────────
@@ -1117,6 +1085,37 @@ mod tests {
         assert_eq!(overlay.rect.height, overlay.height);
         // Should have some non-zero pixels (text was drawn).
         assert!(overlay.rgba_data.iter().any(|&b| b > 0));
+    }
+
+    #[test]
+    fn test_fit_rect_preserving_aspect() {
+        // 4:3 source into 16:9 bounds → pillarboxed (width-limited)
+        let bounds = Rect { x: 100, y: 50, width: 426, height: 240 };
+        let fitted = fit_rect_preserving_aspect(640, 480, &bounds);
+        // Scale = min(426/640, 240/480) = min(0.666, 0.5) = 0.5
+        // Fitted: 320×240, centred within 426×240
+        assert_eq!(fitted.width, 320);
+        assert_eq!(fitted.height, 240);
+        assert_eq!(fitted.x, 100 + (426 - 320) / 2);
+        assert_eq!(fitted.y, 50);
+
+        // 16:9 source into 4:3 bounds → letterboxed (height-limited)
+        let bounds = Rect { x: 0, y: 0, width: 400, height: 400 };
+        let fitted = fit_rect_preserving_aspect(1280, 720, &bounds);
+        // Scale = min(400/1280, 400/720) = min(0.3125, 0.555) = 0.3125
+        // Fitted: 400×225, centred within 400×400
+        assert_eq!(fitted.width, 400);
+        assert_eq!(fitted.height, 225);
+        assert_eq!(fitted.x, 0);
+        assert_eq!(fitted.y, (400 - 225) / 2);
+
+        // Exact match → no change
+        let bounds = Rect { x: 10, y: 20, width: 640, height: 480 };
+        let fitted = fit_rect_preserving_aspect(640, 480, &bounds);
+        assert_eq!(fitted.width, 640);
+        assert_eq!(fitted.height, 480);
+        assert_eq!(fitted.x, 10);
+        assert_eq!(fitted.y, 20);
     }
 
     #[test]

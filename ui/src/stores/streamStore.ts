@@ -16,6 +16,7 @@ export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected';
 export type ConnectionMode = 'session' | 'direct';
 export type WatchStatus = 'disabled' | 'offline' | 'loading' | 'live';
 export type MicStatus = 'disabled' | 'requesting' | 'ready' | 'error';
+export type CameraStatus = 'disabled' | 'requesting' | 'ready' | 'error';
 
 type ConnectDecision =
   | {
@@ -33,6 +34,7 @@ type ConnectAttempt = {
   audioEmitter: Hang.Watch.Audio.Emitter | null;
   videoRenderer: Hang.Watch.Video.Renderer | null;
   microphone: Hang.Publish.Source.Microphone | null;
+  camera: Hang.Publish.Source.Camera | null;
   publish: Hang.Publish.Broadcast | null;
 };
 
@@ -103,6 +105,13 @@ function cleanupConnectAttempt(attempt: ConnectAttempt): void {
       attempt.microphone.close();
     } else if (attempt.microphone.enabled) {
       attempt.microphone.enabled.set(false);
+    }
+  }
+  if (attempt.camera) {
+    if (typeof attempt.camera.close === 'function') {
+      attempt.camera.close();
+    } else if (attempt.camera.enabled) {
+      attempt.camera.enabled.set(false);
     }
   }
 }
@@ -185,13 +194,25 @@ function setupPublishPath(
   connection: Hang.Moq.Connection.Reload,
   inputBroadcast: string,
   set: (partial: Partial<StreamState>) => void
-): { microphone: Hang.Publish.Source.Microphone; publish: Hang.Publish.Broadcast } {
+): {
+  microphone: Hang.Publish.Source.Microphone;
+  camera: Hang.Publish.Source.Camera;
+  publish: Hang.Publish.Broadcast;
+} {
   logger.info('Step 4: Creating microphone source');
   const microphone = new Hang.Publish.Source.Microphone({ enabled: true });
 
   set({ micStatus: microphone.source.peek() ? 'ready' : 'requesting' });
   healthEffect.subscribe(microphone.source, (value) => {
     set({ micStatus: value ? 'ready' : 'requesting' });
+  });
+
+  logger.info('Step 4b: Creating camera source');
+  const camera = new Hang.Publish.Source.Camera({ enabled: true });
+
+  set({ cameraStatus: camera.source.peek() ? 'ready' : 'requesting' });
+  healthEffect.subscribe(camera.source, (value) => {
+    set({ cameraStatus: value ? 'ready' : 'requesting' });
   });
 
   logger.info('Step 5: Creating publish broadcast');
@@ -203,9 +224,13 @@ function setupPublishPath(
       enabled: true,
       source: microphone.source,
     },
+    video: {
+      source: camera.source,
+      hd: { enabled: true, config: { codec: 'vp09' } },
+    },
   });
 
-  return { microphone, publish };
+  return { microphone, camera, publish };
 }
 
 function schedulePostConnectWarnings(
@@ -250,6 +275,25 @@ function schedulePostConnectWarnings(
       });
     }, 10_000);
   }
+
+  if (decision.shouldPublish && attempt.camera) {
+    const cameraRef = attempt.camera;
+
+    let wasEverReady = Boolean(cameraRef.source.peek()) || get().cameraStatus === 'ready';
+    attempt.healthEffect.subscribe(cameraRef.source, (value) => {
+      if (value) wasEverReady = true;
+    });
+
+    setTimeout(() => {
+      if (get().status !== 'connected') return;
+      if (wasEverReady) return;
+      set({
+        cameraStatus: 'error',
+        errorMessage:
+          'Connected to relay, but camera is not available. Check browser permissions and selected input device.',
+      });
+    }, 10_000);
+  }
 }
 
 interface StreamState {
@@ -268,6 +312,8 @@ interface StreamState {
   // Media state
   isMicEnabled: boolean;
   micStatus: MicStatus;
+  isCameraEnabled: boolean;
+  cameraStatus: CameraStatus;
   watchStatus: WatchStatus;
 
   // Error state
@@ -288,6 +334,7 @@ interface StreamState {
   videoRenderer: Hang.Watch.Video.Renderer | null;
   connection: Hang.Moq.Connection.Reload | null;
   microphone: Hang.Publish.Source.Microphone | null;
+  camera: Hang.Publish.Source.Camera | null;
   healthEffect: Effect | null;
 
   // Actions
@@ -310,6 +357,7 @@ interface StreamState {
   connect: () => Promise<boolean>;
   disconnect: () => void;
   toggleMicrophone: () => void;
+  toggleCamera: () => void;
 
   // Store references to MoQ objects
   setMoqRefs: (refs: {
@@ -319,6 +367,7 @@ interface StreamState {
     videoRenderer: Hang.Watch.Video.Renderer;
     connection: Hang.Moq.Connection.Reload;
     microphone: Hang.Publish.Source.Microphone;
+    camera: Hang.Publish.Source.Camera;
   }) => void;
 }
 
@@ -334,6 +383,8 @@ export const useStreamStore = create<StreamState>((set, get) => ({
   enableWatch: true,
   isMicEnabled: false,
   micStatus: 'disabled',
+  isCameraEnabled: false,
+  cameraStatus: 'disabled',
   watchStatus: 'disabled',
   errorMessage: '',
   configLoaded: false,
@@ -350,6 +401,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
   videoRenderer: null,
   connection: null,
   microphone: null,
+  camera: null,
   healthEffect: null,
 
   // Simple setters
@@ -404,6 +456,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       videoRenderer: refs.videoRenderer,
       connection: refs.connection,
       microphone: refs.microphone,
+      camera: refs.camera,
     }),
 
   connect: async () => {
@@ -424,6 +477,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       errorMessage: '',
       watchStatus: decision.shouldWatch ? 'loading' : 'disabled',
       micStatus: decision.shouldPublish ? 'requesting' : 'disabled',
+      cameraStatus: decision.shouldPublish ? 'requesting' : 'disabled',
     });
 
     const attempt: ConnectAttempt = {
@@ -433,6 +487,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       audioEmitter: null,
       videoRenderer: null,
       microphone: null,
+      camera: null,
       publish: null,
     };
 
@@ -473,6 +528,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
           set
         );
         attempt.microphone = publishSetup.microphone;
+        attempt.camera = publishSetup.camera;
         attempt.publish = publishSetup.publish;
       }
 
@@ -495,9 +551,11 @@ export const useStreamStore = create<StreamState>((set, get) => ({
         videoRenderer: attempt.videoRenderer,
         connection: attempt.connection,
         microphone: attempt.microphone,
+        camera: attempt.camera,
         healthEffect: attempt.healthEffect,
         status: 'connected',
         isMicEnabled: decision.shouldPublish,
+        isCameraEnabled: decision.shouldPublish,
       });
 
       const modes = [];
@@ -513,6 +571,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
         status: 'disconnected',
         watchStatus: 'disabled',
         micStatus: 'disabled',
+        cameraStatus: 'disabled',
         errorMessage: formatConnectError(error),
         publish: null,
         watch: null,
@@ -520,6 +579,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
         videoRenderer: null,
         connection: null,
         microphone: null,
+        camera: null,
         healthEffect: null,
       });
       return false;
@@ -562,10 +622,21 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       }
     }
 
+    // Clean up camera/media resources
+    if (state.camera) {
+      if (typeof state.camera.close === 'function') {
+        state.camera.close();
+      } else if (state.camera.enabled) {
+        state.camera.enabled.set(false);
+      }
+    }
+
     set({
       status: 'disconnected',
       isMicEnabled: false,
       micStatus: 'disabled',
+      isCameraEnabled: false,
+      cameraStatus: 'disabled',
       watchStatus: 'disabled',
       errorMessage: '',
       publish: null,
@@ -574,6 +645,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       videoRenderer: null,
       connection: null,
       microphone: null,
+      camera: null,
       healthEffect: null,
     });
   },
@@ -585,6 +657,16 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       const newState = !state.isMicEnabled;
       state.publish.audio.enabled.set(newState);
       set({ isMicEnabled: newState });
+    }
+  },
+
+  toggleCamera: () => {
+    const state = get();
+
+    if (state.camera) {
+      const newState = !state.isCameraEnabled;
+      state.camera.enabled.set(newState);
+      set({ isCameraEnabled: newState });
     }
   },
 }));

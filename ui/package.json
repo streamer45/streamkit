@@ -85,5 +85,8 @@
     "tslog": "^4.10.2",
     "uuid": "^13.0.0",
     "zustand": "^5.0.10"
+  },
+  "patchedDependencies": {
+    "@moq/hang@0.1.2": "patches/@moq%2Fhang@0.1.2.patch"
   }
 }

@@ -58,6 +58,10 @@ pub enum OutputSendError {
     /// The downstream channel (direct) or engine channel (routed) is closed.
     #[error("output channel closed for pin '{pin_name}' on node '{node_name}'")]
     ChannelClosed { node_name: String, pin_name: String },
+
+    /// The downstream channel is full (non-blocking send).
+    #[error("output channel full for pin '{pin_name}' on node '{node_name}'")]
+    ChannelFull { node_name: String, pin_name: String },
 }
 
 impl OutputSender {
@@ -82,6 +86,67 @@ impl OutputSender {
             self.pin_name_cache.insert(pin_name.to_string(), arc_name.clone());
             arc_name
         }
+    }
+
+    /// Non-blocking send from a specific output pin.
+    ///
+    /// Returns [`OutputSendError::ChannelFull`] when the downstream channel
+    /// has no capacity — callers may drop the packet and continue.
+    /// Returns [`OutputSendError::ChannelClosed`] or [`OutputSendError::PinNotFound`]
+    /// for permanent errors — callers should stop processing.
+    ///
+    /// Used by real-time nodes (e.g. compositor) that prefer dropping a frame
+    /// over stalling and accumulating latency.
+    pub fn try_send(&mut self, pin_name: &str, packet: Packet) -> Result<(), OutputSendError> {
+        use tokio::sync::mpsc::error::TrySendError;
+
+        match &self.routing {
+            OutputRouting::Direct(senders) => {
+                if let Some(sender) = senders.get(pin_name) {
+                    match sender.try_send(packet) {
+                        Ok(()) => {},
+                        Err(TrySendError::Full(_)) => {
+                            return Err(OutputSendError::ChannelFull {
+                                node_name: self.node_name.to_string(),
+                                pin_name: pin_name.to_string(),
+                            });
+                        },
+                        Err(TrySendError::Closed(_)) => {
+                            return Err(OutputSendError::ChannelClosed {
+                                node_name: self.node_name.to_string(),
+                                pin_name: pin_name.to_string(),
+                            });
+                        },
+                    }
+                } else {
+                    return Err(OutputSendError::PinNotFound {
+                        node_name: self.node_name.to_string(),
+                        pin_name: pin_name.to_string(),
+                    });
+                }
+            },
+            OutputRouting::Routed(engine_tx) => {
+                let engine_tx = engine_tx.clone();
+                let cached_pin = self.get_cached_pin_name(pin_name);
+                let message = (self.node_name.clone(), cached_pin, packet);
+                match engine_tx.try_send(message) {
+                    Ok(()) => {},
+                    Err(TrySendError::Full(_)) => {
+                        return Err(OutputSendError::ChannelFull {
+                            node_name: self.node_name.to_string(),
+                            pin_name: pin_name.to_string(),
+                        });
+                    },
+                    Err(TrySendError::Closed(_)) => {
+                        return Err(OutputSendError::ChannelClosed {
+                            node_name: self.node_name.to_string(),
+                            pin_name: pin_name.to_string(),
+                        });
+                    },
+                }
+            },
+        }
+        Ok(())
     }
 
     /// Sends a packet from a specific output pin of this node.

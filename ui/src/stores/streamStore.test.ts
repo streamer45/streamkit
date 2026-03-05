@@ -318,6 +318,7 @@ describe('streamStore', () => {
         videoRenderer: { close: vi.fn() } as never,
         connection: { close: vi.fn() } as never,
         microphone: { close: vi.fn() } as never,
+        camera: { close: vi.fn() } as never,
       };
 
       const { setMoqRefs } = useStreamStore.getState();
@@ -329,6 +330,7 @@ describe('streamStore', () => {
       expect(state.audioEmitter).toBe(mockRefs.audioEmitter);
       expect(state.connection).toBe(mockRefs.connection);
       expect(state.microphone).toBe(mockRefs.microphone);
+      expect(state.camera).toBe(mockRefs.camera);
     });
   });
 

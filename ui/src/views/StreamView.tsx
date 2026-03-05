@@ -264,6 +264,8 @@ const StreamView: React.FC = () => {
     enableWatch,
     isMicEnabled,
     micStatus,
+    isCameraEnabled,
+    cameraStatus,
     watchStatus,
     errorMessage,
     configLoaded,
@@ -284,6 +286,7 @@ const StreamView: React.FC = () => {
     connect,
     disconnect,
     toggleMicrophone,
+    toggleCamera,
   } = useStreamStore(
     useShallow((s) => ({
       status: s.status,
@@ -296,6 +299,8 @@ const StreamView: React.FC = () => {
       enableWatch: s.enableWatch,
       isMicEnabled: s.isMicEnabled,
       micStatus: s.micStatus,
+      isCameraEnabled: s.isCameraEnabled,
+      cameraStatus: s.cameraStatus,
       watchStatus: s.watchStatus,
       errorMessage: s.errorMessage,
       configLoaded: s.configLoaded,
@@ -316,6 +321,7 @@ const StreamView: React.FC = () => {
       connect: s.connect,
       disconnect: s.disconnect,
       toggleMicrophone: s.toggleMicrophone,
+      toggleCamera: s.toggleCamera,
     }))
   );
 
@@ -555,6 +561,13 @@ const StreamView: React.FC = () => {
     error: 'Mic: error',
   };
 
+  const cameraStatusText: Record<string, string> = {
+    disabled: 'Camera: disabled',
+    requesting: 'Camera: requesting permission…',
+    ready: 'Camera: ready',
+    error: 'Camera: error',
+  };
+
   const watchStatusText = {
     disabled: 'Watch: disabled',
     offline: 'Watch: offline',
@@ -703,9 +716,14 @@ const StreamView: React.FC = () => {
                 </ConnectionHint>
               )}
               {isStreaming && enablePublish && (
-                <ControlButton active={isMicEnabled} onClick={toggleMicrophone}>
-                  {isMicEnabled ? '🎤 Microphone On' : '🔇 Microphone Off'}
-                </ControlButton>
+                <>
+                  <ControlButton active={isMicEnabled} onClick={toggleMicrophone}>
+                    {isMicEnabled ? '🎤 Microphone On' : '🔇 Microphone Off'}
+                  </ControlButton>
+                  <ControlButton active={isCameraEnabled} onClick={toggleCamera}>
+                    {isCameraEnabled ? '📷 Camera On' : '📷 Camera Off'}
+                  </ControlButton>
+                </>
               )}
             </ConnectionControlsRow>
 
@@ -745,7 +763,8 @@ const StreamView: React.FC = () => {
             {(status === 'connecting' || status === 'connected') && (
               <div style={{ color: 'var(--sk-text-muted)', fontSize: '13px', padding: '4px 0' }}>
                 {status === 'connected' ? 'Relay: connected' : 'Relay: connecting…'} •{' '}
-                {watchStatusText[watchStatus]} • {micStatusText[micStatus]}
+                {watchStatusText[watchStatus]} • {micStatusText[micStatus]} •{' '}
+                {cameraStatusText[cameraStatus]}
               </div>
             )}
 
