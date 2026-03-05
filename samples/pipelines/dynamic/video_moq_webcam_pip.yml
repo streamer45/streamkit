@@ -67,4 +67,6 @@ nodes:
 
   vp9_encoder:
     kind: video::vp9::encoder
+    params:
+      keyframe_interval: 30
     needs: compositor

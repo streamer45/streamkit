@@ -1028,12 +1028,11 @@ impl MoqPeerNode {
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
     ) -> tokio::task::JoinHandle<Result<(), StreamKitError>> {
         // How many times to re-subscribe after a publisher-side cancellation
-        // before giving up. The browser's camera-source flap that motivates
-        // this typically resolves within a few milliseconds, so a small cap
-        // with a short backoff is plenty.
-        const MAX_RESUBSCRIBE_ATTEMPTS: u32 = 3;
-        const RESUBSCRIBE_BACKOFF_MS: u64 = 100;
-        const RESUBSCRIBE_BACKOFF: Duration = Duration::from_millis(RESUBSCRIBE_BACKOFF_MS);
+        // before giving up. The browser's camera-source flap during the
+        // permission-grant → device-enumeration cascade can span ~300ms+,
+        // so we use exponential backoff (100, 200, 400, 800…) to cover it.
+        const MAX_RESUBSCRIBE_ATTEMPTS: u32 = 10;
+        const RESUBSCRIBE_INITIAL_BACKOFF: Duration = Duration::from_millis(100);
 
         // BroadcastConsumer is Clone (Arc-like state + watch::Receiver +
         // async_channel::Sender). Cloning into the task lets us re-subscribe
@@ -1089,11 +1088,12 @@ impl MoqPeerNode {
                                 track.name, attempt
                             )));
                         }
+                        let backoff = RESUBSCRIBE_INITIAL_BACKOFF * 2u32.saturating_pow(attempt - 1);
                         tracing::info!(
                             output_pin = pin_name,
                             attempt,
                             max = MAX_RESUBSCRIBE_ATTEMPTS,
-                            backoff_ms = RESUBSCRIBE_BACKOFF_MS,
+                            backoff_ms = backoff.as_millis() as u64,
                             "Publisher track cancelled; re-subscribing after backoff"
                         );
                         // Yield to shutdown during backoff so we don't delay
@@ -1104,7 +1104,7 @@ impl MoqPeerNode {
                                 tracing::info!(output_pin = pin_name, "Shutdown during re-subscribe backoff");
                                 return Ok(());
                             }
-                            () = tokio::time::sleep(RESUBSCRIBE_BACKOFF) => {}
+                            () = tokio::time::sleep(backoff) => {}
                         }
                     },
                 }

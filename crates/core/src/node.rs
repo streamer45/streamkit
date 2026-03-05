@@ -58,6 +58,10 @@ pub enum OutputSendError {
     /// The downstream channel (direct) or engine channel (routed) is closed.
     #[error("output channel closed for pin '{pin_name}' on node '{node_name}'")]
     ChannelClosed { node_name: String, pin_name: String },
+
+    /// The downstream channel is full (non-blocking send).
+    #[error("output channel full for pin '{pin_name}' on node '{node_name}'")]
+    ChannelFull { node_name: String, pin_name: String },
 }
 
 impl OutputSender {
@@ -94,6 +98,61 @@ impl OutputSender {
     ///
     /// Returns [`OutputSendError::PinNotFound`] if the pin doesn't exist, or
     /// [`OutputSendError::ChannelClosed`] if the receiving channel is closed.
+    /// Non-blocking send.  Returns `Err` if the channel is full or closed.
+    /// Used by real-time nodes (e.g. compositor) that prefer dropping a frame
+    /// over stalling and accumulating latency.
+    pub fn try_send(&mut self, pin_name: &str, packet: Packet) -> Result<(), OutputSendError> {
+        use tokio::sync::mpsc::error::TrySendError;
+
+        match &self.routing {
+            OutputRouting::Direct(senders) => {
+                if let Some(sender) = senders.get(pin_name) {
+                    match sender.try_send(packet) {
+                        Ok(()) => {},
+                        Err(TrySendError::Full(_)) => {
+                            return Err(OutputSendError::ChannelFull {
+                                node_name: self.node_name.to_string(),
+                                pin_name: pin_name.to_string(),
+                            });
+                        },
+                        Err(TrySendError::Closed(_)) => {
+                            return Err(OutputSendError::ChannelClosed {
+                                node_name: self.node_name.to_string(),
+                                pin_name: pin_name.to_string(),
+                            });
+                        },
+                    }
+                } else {
+                    return Err(OutputSendError::PinNotFound {
+                        node_name: self.node_name.to_string(),
+                        pin_name: pin_name.to_string(),
+                    });
+                }
+            },
+            OutputRouting::Routed(engine_tx) => {
+                let engine_tx = engine_tx.clone();
+                let cached_pin = self.get_cached_pin_name(pin_name);
+                let message = (self.node_name.clone(), cached_pin, packet);
+                match engine_tx.try_send(message) {
+                    Ok(()) => {},
+                    Err(TrySendError::Full(_)) => {
+                        return Err(OutputSendError::ChannelFull {
+                            node_name: self.node_name.to_string(),
+                            pin_name: pin_name.to_string(),
+                        });
+                    },
+                    Err(TrySendError::Closed(_)) => {
+                        return Err(OutputSendError::ChannelClosed {
+                            node_name: self.node_name.to_string(),
+                            pin_name: pin_name.to_string(),
+                        });
+                    },
+                }
+            },
+        }
+        Ok(())
+    }
+
     pub async fn send(&mut self, pin_name: &str, packet: Packet) -> Result<(), OutputSendError> {
         use tokio::sync::mpsc::error::TrySendError;
 

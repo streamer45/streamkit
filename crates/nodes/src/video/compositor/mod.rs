@@ -32,6 +32,7 @@ pub mod pixel_ops;
 use async_trait::async_trait;
 use config::CompositorConfig;
 use kernel::{CompositeResult, CompositeWorkItem, LayerSnapshot};
+use opentelemetry::{global, KeyValue};
 use overlay::{decode_image_overlay, rasterize_text_overlay, DecodedOverlay};
 use schemars::schema_for;
 use std::collections::HashMap;
@@ -71,6 +72,10 @@ struct ResolvedSlotConfig {
     opacity: f32,
     z_index: i32,
     rotation_degrees: f32,
+    /// When `true`, the source is fitted within the destination rect
+    /// while preserving its aspect ratio (letterbox / pillarbox).
+    /// Used by auto-PiP layers to avoid stretching.
+    aspect_fit: bool,
 }
 
 /// Rebuild the per-slot resolved configs and the z-sorted draw order.
@@ -87,8 +92,8 @@ fn rebuild_layer_cache(
     for (idx, slot) in slots.iter().enumerate() {
         let layer_cfg = config.layers.get(&slot.name);
         #[allow(clippy::option_if_let_else)]
-        let (rect, opacity, z_index, rotation_degrees) = if let Some(lc) = layer_cfg {
-            (lc.rect.clone(), lc.opacity, lc.z_index, lc.rotation_degrees)
+        let (rect, opacity, z_index, rotation_degrees, aspect_fit) = if let Some(lc) = layer_cfg {
+            (lc.rect.clone(), lc.opacity, lc.z_index, lc.rotation_degrees, false)
         } else if idx > 0 && num_slots > 1 {
             // Auto-PiP: non-first layers without explicit config.
             let pip_w = config.width / 3;
@@ -100,14 +105,15 @@ fn rebuild_layer_cache(
             #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
             (
                 Some(config::Rect { x: pip_x, y: pip_y, width: pip_w, height: pip_h }),
-                0.9,
+                1.0,
                 idx as i32,
                 0.0,
+                true, // preserve source aspect ratio within PiP bounds
             )
         } else {
-            (None, 1.0, 0, 0.0)
+            (None, 1.0, 0, 0.0, false)
         };
-        configs.push(ResolvedSlotConfig { rect, opacity, z_index, rotation_degrees });
+        configs.push(ResolvedSlotConfig { rect, opacity, z_index, rotation_degrees, aspect_fit });
     }
 
     // Pre-sort by (z_index, slot_index).
@@ -115,6 +121,33 @@ fn rebuild_layer_cache(
     draw_order.sort_by(|&a, &b| configs[a].z_index.cmp(&configs[b].z_index).then(a.cmp(&b)));
 
     (configs, draw_order)
+}
+
+/// Compute a destination rect that fits `src_w × src_h` within `bounds`
+/// while preserving the source aspect ratio.  The fitted rect is centred
+/// within the bounds.
+fn fit_rect_preserving_aspect(src_w: u32, src_h: u32, bounds: &config::Rect) -> config::Rect {
+    if src_w == 0 || src_h == 0 || bounds.width == 0 || bounds.height == 0 {
+        return bounds.clone();
+    }
+    let scale_w = bounds.width as f64 / src_w as f64;
+    let scale_h = bounds.height as f64 / src_h as f64;
+    let scale = scale_w.min(scale_h);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let fit_w = (src_w as f64 * scale).round() as u32;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let fit_h = (src_h as f64 * scale).round() as u32;
+    // Centre within the bounding rect.
+    #[allow(clippy::cast_possible_wrap)]
+    let offset_x = (bounds.width.saturating_sub(fit_w) / 2) as i32;
+    #[allow(clippy::cast_possible_wrap)]
+    let offset_y = (bounds.height.saturating_sub(fit_h) / 2) as i32;
+    config::Rect {
+        x: bounds.x + offset_x,
+        y: bounds.y + offset_y,
+        width: fit_w,
+        height: fit_h,
+    }
 }
 
 // ── Node ────────────────────────────────────────────────────────────────────
@@ -376,6 +409,14 @@ impl ProcessorNode for CompositorNode {
         let mut output_seq: u64 = 0;
         let mut stop_reason: &str = "shutdown";
 
+        // ── OpenTelemetry metrics ───────────────────────────────────────
+        let meter = global::meter("skit_nodes");
+        let frames_dropped_counter = meter
+            .u64_counter("compositor.frames_dropped")
+            .with_description("Frames dropped by the compositor to keep up with real-time input")
+            .build();
+        let otel_attrs = [KeyValue::new("node", node_name.clone())];
+
         // ── Cached layer config + draw order ────────────────────────────
         // Rebuilt only when config or pin set changes (UpdateParams,
         // pin add/remove, channel close).  Avoids per-frame HashMap
@@ -385,22 +426,44 @@ impl ProcessorNode for CompositorNode {
         let mut sorted_draw_order: Vec<usize> = Vec::new();
 
         loop {
-            // ── Take at most one frame from every slot (non-blocking) ───
-            // We intentionally take only one frame per slot per iteration so
-            // that every produced frame is composited and forwarded.  The old
-            // "drain-to-latest" approach dropped intermediate frames when the
-            // compositing step was slower than the producer.
-            let mut got_any_frame = false;
-            for slot in &mut slots {
-                if let Ok(Packet::Video(frame)) = slot.rx.try_recv() {
+            // ── Drain each slot to its latest frame (non-blocking) ────────
+            // We drain all pending frames and keep only the newest one per
+            // slot.  This prevents unbounded latency drift when the
+            // compositing step is slower than the input frame rate — the
+            // compositor always works on the most recent data instead of
+            // processing a growing backlog of stale frames.
+            //
+            // Only the primary input (slot 0) drives the compositing rate.
+            // Secondary inputs (PiP, overlays) update their latest_frame
+            // but don't trigger a composite on their own.  This prevents
+            // the compositor from running at N×fps with N inputs.
+            let mut primary_has_frame = false;
+            for (idx, slot) in slots.iter_mut().enumerate() {
+                let mut latest: Option<VideoFrame> = None;
+                let mut dropped: u64 = 0;
+                while let Ok(Packet::Video(frame)) = slot.rx.try_recv() {
+                    if latest.is_some() {
+                        dropped += 1;
+                    }
+                    latest = Some(frame);
+                }
+                if dropped > 0 {
+                    frames_dropped_counter.add(dropped, &otel_attrs);
+                    stats_tracker.discarded_n(dropped);
+                }
+                if let Some(frame) = latest {
                     slot.latest_frame = Some(frame);
-                    got_any_frame = true;
+                    if idx == 0 {
+                        primary_has_frame = true;
+                    }
                 }
             }
 
-            // ── Wait for at least one frame if none are available yet ────
-            if !got_any_frame && !slots.is_empty() {
+            // ── Wait for the primary input if it hasn't arrived yet ──────
+            if !primary_has_frame && !slots.is_empty() {
                 // Use select! to wait for any input, control, or pin management.
+                // If a secondary input arrives, we store it and loop back to
+                // check for the primary again (without compositing).
                 let mut received_frame = false;
                 let mut should_break = false;
 
@@ -449,7 +512,8 @@ impl ProcessorNode for CompositorNode {
                         match result {
                             SlotRecvResult::Frame(slot_idx, frame) => {
                                 slots[slot_idx].latest_frame = Some(frame);
-                                received_frame = true;
+                                // Only the primary input (slot 0) triggers compositing.
+                                received_frame = slot_idx == 0;
                             }
                             SlotRecvResult::ChannelClosed(slot_idx) => {
                                 tracing::info!(
@@ -577,12 +641,23 @@ impl ProcessorNode for CompositorNode {
                 .map(|&idx| {
                     slots[idx].latest_frame.as_ref().map(|f| {
                         let cfg = &resolved_configs[idx];
+                        let rect = if cfg.aspect_fit {
+                            // Fit the source within the destination rect
+                            // while preserving its aspect ratio.
+                            cfg.rect.as_ref().map(|r| {
+                                fit_rect_preserving_aspect(
+                                    f.width, f.height, r,
+                                )
+                            })
+                        } else {
+                            cfg.rect.clone()
+                        };
                         LayerSnapshot {
                             data: f.data.clone(),
                             width: f.width,
                             height: f.height,
                             pixel_format: f.pixel_format,
-                            rect: cfg.rect.clone(),
+                            rect,
                             opacity: cfg.opacity,
                             z_index: cfg.z_index,
                             rotation_degrees: cfg.rotation_degrees,
@@ -602,10 +677,24 @@ impl ProcessorNode for CompositorNode {
                 video_pool: video_pool.clone(),
             };
 
-            if work_tx.send(work_item).await.is_err() {
-                tracing::debug!("Compositing thread gone, stopping CompositorNode");
-                stop_reason = "compositor_thread_gone";
-                break;
+            // Send work to the compositing thread.  The work channel has
+            // capacity 2, so at most one item can be in-flight while we
+            // submit the next.  Use try_send to avoid blocking — if the
+            // compositing thread hasn't finished the previous frame yet,
+            // drop this one to stay real-time.
+            match work_tx.try_send(work_item) {
+                Ok(()) => {},
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    // Compositing thread is still busy — skip this frame.
+                    frames_dropped_counter.add(1, &otel_attrs);
+                    stats_tracker.discarded();
+                    continue;
+                },
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                    tracing::debug!("Compositing thread gone, stopping CompositorNode");
+                    stop_reason = "compositor_thread_gone";
+                    break;
+                },
             }
 
             let Some(composite_result) = result_rx.recv().await else {
@@ -622,7 +711,12 @@ impl ProcessorNode for CompositorNode {
                 timestamp_us: src_metadata.as_ref().and_then(|m| m.timestamp_us),
                 duration_us: src_metadata.as_ref().and_then(|m| m.duration_us),
                 sequence: Some(output_seq),
-                keyframe: Some(true),
+                // Don't set keyframe — the compositor outputs raw RGBA, not
+                // encoded video.  Downstream encoders (VP9) decide their own
+                // keyframe placement via kf_max_dist.  Setting this to true
+                // caused every frame to be force-keyframed via VPX_EFLAG_FORCE_KF,
+                // creating one MoQ group per frame and overwhelming the browser.
+                keyframe: None,
             });
 
             let out_frame = VideoFrame::from_pooled(
@@ -633,10 +727,17 @@ impl ProcessorNode for CompositorNode {
                 metadata,
             )?;
 
-            if context.output_sender.send("out", Packet::Video(out_frame)).await.is_err() {
-                tracing::debug!("Output channel closed, stopping CompositorNode");
-                stop_reason = "output_closed";
-                break;
+            // Non-blocking output send — if downstream (VP9 encoder) is
+            // backed up, drop the frame rather than stalling the
+            // compositor loop.
+            match context.output_sender.try_send("out", Packet::Video(out_frame)) {
+                Ok(()) => {},
+                Err(_) => {
+                    frames_dropped_counter.add(1, &otel_attrs);
+                    stats_tracker.discarded();
+                    output_seq += 1;
+                    continue;
+                },
             }
 
             stats_tracker.sent();
@@ -1117,6 +1218,37 @@ mod tests {
         assert_eq!(overlay.rect.height, overlay.height);
         // Should have some non-zero pixels (text was drawn).
         assert!(overlay.rgba_data.iter().any(|&b| b > 0));
+    }
+
+    #[test]
+    fn test_fit_rect_preserving_aspect() {
+        // 4:3 source into 16:9 bounds → pillarboxed (width-limited)
+        let bounds = Rect { x: 100, y: 50, width: 426, height: 240 };
+        let fitted = fit_rect_preserving_aspect(640, 480, &bounds);
+        // Scale = min(426/640, 240/480) = min(0.666, 0.5) = 0.5
+        // Fitted: 320×240, centred within 426×240
+        assert_eq!(fitted.width, 320);
+        assert_eq!(fitted.height, 240);
+        assert_eq!(fitted.x, 100 + (426 - 320) / 2);
+        assert_eq!(fitted.y, 50);
+
+        // 16:9 source into 4:3 bounds → letterboxed (height-limited)
+        let bounds = Rect { x: 0, y: 0, width: 400, height: 400 };
+        let fitted = fit_rect_preserving_aspect(1280, 720, &bounds);
+        // Scale = min(400/1280, 400/720) = min(0.3125, 0.555) = 0.3125
+        // Fitted: 400×225, centred within 400×400
+        assert_eq!(fitted.width, 400);
+        assert_eq!(fitted.height, 225);
+        assert_eq!(fitted.x, 0);
+        assert_eq!(fitted.y, (400 - 225) / 2);
+
+        // Exact match → no change
+        let bounds = Rect { x: 10, y: 20, width: 640, height: 480 };
+        let fitted = fit_rect_preserving_aspect(640, 480, &bounds);
+        assert_eq!(fitted.width, 640);
+        assert_eq!(fitted.height, 480);
+        assert_eq!(fitted.x, 10);
+        assert_eq!(fitted.y, 20);
     }
 
     #[test]

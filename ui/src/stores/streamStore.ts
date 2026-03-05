@@ -226,7 +226,7 @@ function setupPublishPath(
     },
     video: {
       source: camera.source,
-      hd: { enabled: true },
+      hd: { enabled: true, config: { codec: 'vp09' } },
     },
   });
 

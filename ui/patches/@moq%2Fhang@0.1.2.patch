@@ -1,8 +1,7 @@
 diff --git a/publish/video/encoder.js b/publish/video/encoder.js
-index 91d6fe0d12d507b92cff9f2644ca3e31b59b688b..21aaa5daa2b991d8ca868e2501d680c54c326d7d 100644
 --- a/publish/video/encoder.js
 +++ b/publish/video/encoder.js
-@@ -49,8 +49,26 @@ export class Encoder {
+@@ -49,8 +49,26 @@
                      producer.close(err);
                  },
              });
@@ -31,3 +30,16 @@ index 91d6fe0d12d507b92cff9f2644ca3e31b59b688b..21aaa5daa2b991d8ca868e2501d680c5
                  const config = effect.get(this.#config);
                  if (!config)
                      return;
+@@ -163,7 +181,11 @@
+                 // @ts-expect-error Typescript needs to be updated.
+                 hevc: codec.startsWith("hev1") ? { format: "annexb" } : undefined,
+                 latencyMode: "realtime",
+-                hardwareAcceleration: "prefer-hardware",
++                // PATCH(streamkit): use "no-preference" instead of "prefer-hardware"
++                // because isConfigSupported can return false positives for hardware
++                // encoding on Linux (VA-API/GPU driver issues), causing configure()
++                // to throw "Encoder creation error".
++                hardwareAcceleration: "no-preference",
+             };
+             effect.set(this.#config, config);
+         });
