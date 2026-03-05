@@ -1007,12 +1007,20 @@ impl MoqPeerNode {
         tokio::spawn(async move {
             tracing::info!(output_pin = pin_name, "Track processor task started");
             let result = Self::process_publisher_frames(
-                consumer, sender, pin_name, &mut task_shutdown, &stats,
+                consumer,
+                sender,
+                pin_name,
+                &mut task_shutdown,
+                &stats,
             )
             .await;
             match &result {
-                Ok(()) => tracing::info!(output_pin = pin_name, "Track processor task finished normally"),
-                Err(e) => tracing::warn!(output_pin = pin_name, error = %e, "Track processor task finished with error"),
+                Ok(()) => {
+                    tracing::info!(output_pin = pin_name, "Track processor task finished normally")
+                },
+                Err(e) => {
+                    tracing::warn!(output_pin = pin_name, error = %e, "Track processor task finished with error")
+                },
             }
             result
         })
@@ -1039,16 +1047,22 @@ impl MoqPeerNode {
                 Some(h) => Some(h.await),
                 None => {
                     // No audio task — pend forever so only video is selected
-                    std::future::pending::<Option<Result<Result<(), StreamKitError>, tokio::task::JoinError>>>().await
-                }
+                    std::future::pending::<
+                        Option<Result<Result<(), StreamKitError>, tokio::task::JoinError>>,
+                    >()
+                    .await
+                },
             }
         };
         let video_fut = async {
             match video_handle {
                 Some(h) => Some(h.await),
                 None => {
-                    std::future::pending::<Option<Result<Result<(), StreamKitError>, tokio::task::JoinError>>>().await
-                }
+                    std::future::pending::<
+                        Option<Result<Result<(), StreamKitError>, tokio::task::JoinError>>,
+                    >()
+                    .await
+                },
             }
         };
 
