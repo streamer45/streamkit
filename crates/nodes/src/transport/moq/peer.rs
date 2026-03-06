@@ -411,9 +411,8 @@ impl ProcessorNode for MoqPeerNode {
         // frames on them.  This avoids a race where the browser subscribes to
         // `catalog.json` before the catalog track has been created (which would
         // return "not found" and prevent the watch path from going live).
-        let dynamic_mode = context.input_types.is_empty()
-            && pin_0_kind.is_none()
-            && pin_1_kind.is_none();
+        let dynamic_mode =
+            context.input_types.is_empty() && pin_0_kind.is_none() && pin_1_kind.is_none();
         if dynamic_mode {
             has_audio = true;
             has_video = true;
@@ -424,8 +423,7 @@ impl ProcessorNode for MoqPeerNode {
         } else {
             let pin_0_connected = pin_0_rx.is_some();
             let pin_1_connected = pin_1_rx.is_some();
-            (pin_0_kind.is_some() || !pin_0_connected)
-                && (pin_1_kind.is_some() || !pin_1_connected)
+            (pin_0_kind.is_some() || !pin_0_connected) && (pin_1_kind.is_some() || !pin_1_connected)
         };
 
         let (media_state_tx, media_state_rx) =
