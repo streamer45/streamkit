@@ -24,7 +24,7 @@ nodes:
       allow_reconnect: true
     needs:
       video: vp9_encoder
-      audio: opus_encoder
+      in: opus_encoder
 
   # --- Video path: decode webcam → composite over colorbars → encode ---
 
