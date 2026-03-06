@@ -130,13 +130,13 @@ fn fit_rect_preserving_aspect(src_w: u32, src_h: u32, bounds: &config::Rect) -> 
     if src_w == 0 || src_h == 0 || bounds.width == 0 || bounds.height == 0 {
         return bounds.clone();
     }
-    let scale_w = bounds.width as f64 / src_w as f64;
-    let scale_h = bounds.height as f64 / src_h as f64;
+    let scale_w = f64::from(bounds.width) / f64::from(src_w);
+    let scale_h = f64::from(bounds.height) / f64::from(src_h);
     let scale = scale_w.min(scale_h);
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let fit_w = (src_w as f64 * scale).round() as u32;
+    let fit_w = (f64::from(src_w) * scale).round() as u32;
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let fit_h = (src_h as f64 * scale).round() as u32;
+    let fit_h = (f64::from(src_h) * scale).round() as u32;
     // Centre within the bounding rect.
     #[allow(clippy::cast_possible_wrap)]
     let offset_x = (bounds.width.saturating_sub(fit_w) / 2) as i32;
@@ -439,7 +439,6 @@ impl ProcessorNode for CompositorNode {
                     match ctrl_msg {
                         NodeControlMessage::Shutdown => {
                             tracing::info!("CompositorNode received shutdown");
-                            stop_reason = "shutdown";
                             break;
                         },
                         NodeControlMessage::UpdateParams(params) => {

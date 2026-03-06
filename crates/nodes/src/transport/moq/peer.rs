@@ -1094,7 +1094,7 @@ impl MoqPeerNode {
                             output_pin = pin_name,
                             attempt,
                             max = MAX_RESUBSCRIBE_ATTEMPTS,
-                            backoff_ms = backoff.as_millis() as u64,
+                            backoff_ms = backoff.as_millis(),
                             "Publisher track cancelled; re-subscribing after backoff"
                         );
                         // Yield to shutdown during backoff so we don't delay
