@@ -408,6 +408,125 @@ interface UnifiedLayerEntry {
   visible: boolean;
 }
 
+// ── Reorder section (memoised to avoid cascade during opacity/rotation drags) ─
+
+const LayerReorderSection: React.FC<{
+  entries: UnifiedLayerEntry[];
+  selectedLayerId: string | null;
+  onSelectLayer: (id: string | null) => void;
+  onToggleVisibility: (id: string) => void;
+  onRemoveText: (id: string) => void;
+  onRemoveImage: (id: string) => void;
+  onReorderLayers: (entries: Array<{ id: string; kind: LayerKind; zIndex: number }>) => void;
+  disabled: boolean;
+}> = React.memo(
+  ({
+    entries,
+    selectedLayerId,
+    onSelectLayer,
+    onToggleVisibility,
+    onRemoveText,
+    onRemoveImage,
+    onReorderLayers,
+    disabled,
+  }) => {
+    const iconForKind = (kind: LayerKind) => {
+      switch (kind) {
+        case 'text':
+          return <Type size={11} />;
+        case 'image':
+          return <Image size={11} />;
+        default:
+          return null;
+      }
+    };
+
+    const handleReorder = useCallback(
+      (reordered: UnifiedLayerEntry[]) => {
+        const maxZ = reordered.length - 1;
+        const updates: Array<{ id: string; kind: LayerKind; zIndex: number }> = [];
+        for (let i = 0; i < reordered.length; i++) {
+          const entry = reordered[i];
+          const newZ = maxZ - i;
+          if (entry.zIndex !== newZ) {
+            updates.push({ id: entry.id, kind: entry.kind, zIndex: newZ });
+          }
+        }
+        if (updates.length > 0) onReorderLayers(updates);
+      },
+      [onReorderLayers]
+    );
+
+    return (
+      <Reorder.Group
+        axis="y"
+        values={entries}
+        onReorder={handleReorder}
+        as="div"
+        style={{ listStyle: 'none', padding: 0, margin: 0 }}
+      >
+        {entries.map((entry) => (
+          <Reorder.Item
+            key={entry.id}
+            value={entry}
+            as="div"
+            style={{ listStyle: 'none' }}
+            dragListener={!disabled}
+          >
+            <LayerListItem
+              isSelected={entry.id === selectedLayerId}
+              isHidden={!entry.visible}
+              className="nodrag nopan"
+              onClick={() => onSelectLayer(entry.id === selectedLayerId ? null : entry.id)}
+            >
+              <GripVertical
+                size={11}
+                style={{
+                  color: 'var(--sk-text-muted)',
+                  cursor: disabled ? 'not-allowed' : 'grab',
+                  flexShrink: 0,
+                  opacity: 0.5,
+                }}
+              />
+              <OverlayIcon>{iconForKind(entry.kind)}</OverlayIcon>
+              <OverlayLabel style={{ fontWeight: entry.id === selectedLayerId ? 600 : 400 }}>
+                {entry.label}
+              </OverlayLabel>
+              <SKTooltip content={entry.visible ? 'Hide layer' : 'Show layer'}>
+                <VisibilityButton
+                  className="nodrag nopan"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onToggleVisibility(entry.id);
+                  }}
+                >
+                  {entry.visible ? <Eye size={12} /> : <EyeOff size={12} />}
+                </VisibilityButton>
+              </SKTooltip>
+              {(entry.kind === 'text' || entry.kind === 'image') && (
+                <SKTooltip content="Remove layer">
+                  <RemoveButton
+                    disabled={disabled}
+                    className="nodrag nopan"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (entry.kind === 'text') onRemoveText(entry.id);
+                      else onRemoveImage(entry.id);
+                    }}
+                  >
+                    <X size={12} />
+                  </RemoveButton>
+                </SKTooltip>
+              )}
+            </LayerListItem>
+          </Reorder.Item>
+        ))}
+      </Reorder.Group>
+    );
+  }
+);
+LayerReorderSection.displayName = 'LayerReorderSection';
+
 // ── Node data interface ─────────────────────────────────────────────────────
 
 interface CompositorNodeData {
@@ -666,36 +785,6 @@ const UnifiedLayerList: React.FC<{
       [onAddImage]
     );
 
-    const iconForKind = (kind: LayerKind) => {
-      switch (kind) {
-        case 'text':
-          return <Type size={11} />;
-        case 'image':
-          return <Image size={11} />;
-        default:
-          return null;
-      }
-    };
-
-    /** Reassign z-index values after a drag-to-reorder in the layer list.
-     *  The list is rendered top-to-bottom = highest z first, so position 0
-     *  in the reordered array gets the highest z-index. */
-    const handleReorder = useCallback(
-      (reordered: UnifiedLayerEntry[]) => {
-        const maxZ = reordered.length - 1;
-        const updates: Array<{ id: string; kind: LayerKind; zIndex: number }> = [];
-        for (let i = 0; i < reordered.length; i++) {
-          const entry = reordered[i];
-          const newZ = maxZ - i;
-          if (entry.zIndex !== newZ) {
-            updates.push({ id: entry.id, kind: entry.kind, zIndex: newZ });
-          }
-        }
-        if (updates.length > 0) onReorderLayers(updates);
-      },
-      [onReorderLayers]
-    );
-
     return (
       <LayerControls>
         <HiddenFileInput
@@ -730,70 +819,16 @@ const UnifiedLayerList: React.FC<{
 
         {entries.length === 0 && <NoSelectionText>No layers configured</NoSelectionText>}
 
-        <Reorder.Group
-          axis="y"
-          values={entries}
-          onReorder={handleReorder}
-          as="div"
-          style={{ listStyle: 'none', padding: 0, margin: 0 }}
-        >
-          {entries.map((entry) => (
-            <Reorder.Item
-              key={entry.id}
-              value={entry}
-              as="div"
-              style={{ listStyle: 'none' }}
-              dragListener={!disabled}
-            >
-              <LayerListItem
-                isSelected={entry.id === selectedLayerId}
-                isHidden={!entry.visible}
-                className="nodrag nopan"
-                onClick={() => onSelectLayer(entry.id === selectedLayerId ? null : entry.id)}
-              >
-                <GripVertical
-                  size={11}
-                  style={{
-                    color: 'var(--sk-text-muted)',
-                    cursor: disabled ? 'not-allowed' : 'grab',
-                    flexShrink: 0,
-                    opacity: 0.5,
-                  }}
-                />
-                <OverlayIcon>{iconForKind(entry.kind)}</OverlayIcon>
-                <OverlayLabel style={{ fontWeight: entry.id === selectedLayerId ? 600 : 400 }}>
-                  {entry.label}
-                </OverlayLabel>
-                <SKTooltip content={entry.visible ? 'Hide layer' : 'Show layer'}>
-                  <VisibilityButton
-                    className="nodrag nopan"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onToggleVisibility(entry.id);
-                    }}
-                  >
-                    {entry.visible ? <Eye size={12} /> : <EyeOff size={12} />}
-                  </VisibilityButton>
-                </SKTooltip>
-                {(entry.kind === 'text' || entry.kind === 'image') && (
-                  <SKTooltip content="Remove layer">
-                    <RemoveButton
-                      disabled={disabled}
-                      className="nodrag nopan"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (entry.kind === 'text') onRemoveText(entry.id);
-                        else onRemoveImage(entry.id);
-                      }}
-                    >
-                      <X size={12} />
-                    </RemoveButton>
-                  </SKTooltip>
-                )}
-              </LayerListItem>
-            </Reorder.Item>
-          ))}
-        </Reorder.Group>
+        <LayerReorderSection
+          entries={entries}
+          selectedLayerId={selectedLayerId}
+          onSelectLayer={onSelectLayer}
+          onToggleVisibility={onToggleVisibility}
+          onRemoveText={onRemoveText}
+          onRemoveImage={onRemoveImage}
+          onReorderLayers={onReorderLayers}
+          disabled={disabled}
+        />
 
         {/* Controls for the selected video layer */}
         {selectedLayer && (
