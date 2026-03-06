@@ -626,130 +626,39 @@ const LayerPropertyControls: React.FC<{
 LayerPropertyControls.displayName = 'LayerPropertyControls';
 
 // ── Unified layer list ──────────────────────────────────────────────────────
+//
+// Receives only stable props (entries + callbacks) so React.memo bails out
+// during opacity / rotation slider drags.  The property-controls section
+// that actually needs the changing values is rendered by CompositorNode
+// directly (outside this component).
 
 const UnifiedLayerList: React.FC<{
-  layers: {
-    id: string;
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-    opacity: number;
-    zIndex: number;
-    rotationDegrees: number;
-    visible: boolean;
-  }[];
-  textOverlays: TextOverlayState[];
-  imageOverlays: ImageOverlayState[];
+  entries: UnifiedLayerEntry[];
   selectedLayerId: string | null;
   onSelectLayer: (id: string | null) => void;
-  onOpacityChange: (layerId: string, opacity: number) => void;
-  onRotationChange: (layerId: string, degrees: number) => void;
   onToggleVisibility: (layerId: string) => void;
   onAddText: (text: string) => void;
-  onUpdateText: (id: string, updates: Partial<Omit<TextOverlayState, 'id'>>) => void;
   onRemoveText: (id: string) => void;
   onAddImage: (dataBase64: string, naturalWidth?: number, naturalHeight?: number) => void;
-  onUpdateImage: (id: string, updates: Partial<Omit<ImageOverlayState, 'id'>>) => void;
   onRemoveImage: (id: string) => void;
   onReorderLayers: (entries: Array<{ id: string; kind: LayerKind; zIndex: number }>) => void;
   disabled: boolean;
 }> = React.memo(
   ({
-    layers,
-    textOverlays,
-    imageOverlays,
+    entries,
     selectedLayerId,
     onSelectLayer,
-    onOpacityChange,
-    onRotationChange,
     onToggleVisibility,
     onAddText,
-    onUpdateText,
     onRemoveText,
     onAddImage,
-    onUpdateImage,
     onRemoveImage,
     onReorderLayers,
     disabled,
   }) => {
-    // Build a unified list of all layers sorted by z-index (highest first for
-    // a "top-to-bottom" visual stack).
-    // We stabilise the output reference so that Reorder.Group's context does
-    // not change on opacity / rotation drags (entries only carry id, kind,
-    // label, zIndex, visible — none of which change during those interactions).
-    const prevEntriesRef = useRef<UnifiedLayerEntry[]>([]);
-    const entries: UnifiedLayerEntry[] = useMemo(() => {
-      const all: UnifiedLayerEntry[] = [];
-
-      for (const l of layers) {
-        all.push({ id: l.id, kind: 'video', label: l.id, zIndex: l.zIndex, visible: l.visible });
-      }
-      textOverlays.forEach((o, i) => {
-        all.push({
-          id: o.id,
-          kind: 'text',
-          label: `text_${i}`,
-          zIndex: o.zIndex,
-          visible: o.visible,
-        });
-      });
-      imageOverlays.forEach((o, i) => {
-        all.push({
-          id: o.id,
-          kind: 'image',
-          label: `Image #${i}`,
-          zIndex: o.zIndex,
-          visible: o.visible,
-        });
-      });
-
-      // Sort highest z-index first (top of visual stack at the top of the list)
-      all.sort((a, b) => b.zIndex - a.zIndex);
-
-      // Return previous reference when entries are structurally equal to
-      // prevent Reorder.Group context from invalidating all ReorderItems.
-      const prev = prevEntriesRef.current;
-      if (
-        prev.length === all.length &&
-        prev.every(
-          (p, i) =>
-            p.id === all[i].id &&
-            p.kind === all[i].kind &&
-            p.zIndex === all[i].zIndex &&
-            p.visible === all[i].visible
-        )
-      ) {
-        return prev;
-      }
-      prevEntriesRef.current = all;
-      return all;
-    }, [layers, textOverlays, imageOverlays]);
-
-    const selectedLayer = layers.find((l) => l.id === selectedLayerId);
-
-    // Memoize callbacks for LayerPropertyControls so React.memo is not
-    // defeated by inline closures that capture selectedLayer (new ref every render).
-    const handleSelectedOpacityChange = useCallback(
-      (v: number) => {
-        if (selectedLayerId) onOpacityChange(selectedLayerId, v);
-      },
-      [selectedLayerId, onOpacityChange]
-    );
-    const handleSelectedRotationChange = useCallback(
-      (v: number) => {
-        if (selectedLayerId) onRotationChange(selectedLayerId, v);
-      },
-      [selectedLayerId, onRotationChange]
-    );
-
     // Add overlay menu state
     const [menuOpen, setMenuOpen] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
-
-    // Find selected text/image overlay for inline editing controls
-    const selectedTextOverlay = textOverlays.find((o) => o.id === selectedLayerId);
-    const selectedImageOverlay = imageOverlays.find((o) => o.id === selectedLayerId);
 
     const handleAddText = useCallback(() => {
       onAddText('Text');
@@ -829,101 +738,6 @@ const UnifiedLayerList: React.FC<{
           onReorderLayers={onReorderLayers}
           disabled={disabled}
         />
-
-        {/* Controls for the selected video layer */}
-        {selectedLayer && (
-          <LayerPropertyControls
-            name={selectedLayer.id}
-            x={selectedLayer.x}
-            y={selectedLayer.y}
-            opacity={selectedLayer.opacity}
-            rotationDegrees={selectedLayer.rotationDegrees}
-            onOpacityChange={handleSelectedOpacityChange}
-            onRotationChange={handleSelectedRotationChange}
-            disabled={disabled}
-          />
-        )}
-
-        {/* Controls for the selected text overlay */}
-        {selectedTextOverlay && (
-          <LayerPropertyControls
-            name="Text"
-            x={selectedTextOverlay.x}
-            y={selectedTextOverlay.y}
-            opacity={selectedTextOverlay.opacity}
-            rotationDegrees={selectedTextOverlay.rotationDegrees}
-            onOpacityChange={(v) => onUpdateText(selectedTextOverlay.id, { opacity: v })}
-            onRotationChange={(v) => onUpdateText(selectedTextOverlay.id, { rotationDegrees: v })}
-            disabled={disabled}
-          >
-            <OverlayEditRow style={{ paddingLeft: 0 }}>
-              <OverlayTextInput
-                value={selectedTextOverlay.text}
-                onChange={(e) => onUpdateText(selectedTextOverlay.id, { text: e.target.value })}
-                placeholder="Text content"
-                disabled={disabled}
-                className="nodrag nopan"
-              />
-            </OverlayEditRow>
-            <OverlayEditRow style={{ paddingLeft: 0 }}>
-              <span style={{ color: 'var(--sk-text-muted)' }}>Size</span>
-              <OverlayNumInput
-                type="number"
-                value={selectedTextOverlay.fontSize}
-                onChange={(e) => {
-                  const v = Number.parseInt(e.target.value, 10);
-                  if (!Number.isNaN(v) && v > 0)
-                    onUpdateText(selectedTextOverlay.id, { fontSize: v });
-                }}
-                disabled={disabled}
-                className="nodrag nopan"
-              />
-            </OverlayEditRow>
-            <OverlayEditRow style={{ paddingLeft: 0 }}>
-              <span style={{ color: 'var(--sk-text-muted)' }}>Font</span>
-              <FontSelect
-                value={selectedTextOverlay.fontName}
-                onChange={(e) => onUpdateText(selectedTextOverlay.id, { fontName: e.target.value })}
-                disabled={disabled}
-                className="nodrag nopan"
-              >
-                {FONT_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </FontSelect>
-            </OverlayEditRow>
-            <OverlayEditRow style={{ paddingLeft: 0 }}>
-              <span style={{ color: 'var(--sk-text-muted)' }}>Color</span>
-              <ColorInput
-                type="color"
-                value={rgbaToHex(selectedTextOverlay.color)}
-                onChange={(e) =>
-                  onUpdateText(selectedTextOverlay.id, {
-                    color: hexToRgba(e.target.value, selectedTextOverlay.color[3]),
-                  })
-                }
-                disabled={disabled}
-                className="nodrag nopan"
-              />
-            </OverlayEditRow>
-          </LayerPropertyControls>
-        )}
-
-        {/* Controls for the selected image overlay */}
-        {selectedImageOverlay && (
-          <LayerPropertyControls
-            name={`Image #${imageOverlays.indexOf(selectedImageOverlay)}`}
-            x={selectedImageOverlay.x}
-            y={selectedImageOverlay.y}
-            opacity={selectedImageOverlay.opacity}
-            rotationDegrees={selectedImageOverlay.rotationDegrees}
-            onOpacityChange={(v) => onUpdateImage(selectedImageOverlay.id, { opacity: v })}
-            onRotationChange={(v) => onUpdateImage(selectedImageOverlay.id, { rotationDegrees: v })}
-            disabled={disabled}
-          />
-        )}
       </LayerControls>
     );
   }
@@ -931,6 +745,59 @@ const UnifiedLayerList: React.FC<{
 UnifiedLayerList.displayName = 'UnifiedLayerList';
 
 // ── Main compositor node ────────────────────────────────────────────────────
+
+/** Build a structurally-stable unified entry list from the three layer
+ *  sources.  Returns the previous array reference when the derived entries
+ *  haven't changed, which lets downstream React.memo components bail out
+ *  during opacity / rotation drags (those fields are not in entries). */
+function useStableEntries(
+  layers: { id: string; zIndex: number; visible: boolean }[],
+  textOverlays: TextOverlayState[],
+  imageOverlays: ImageOverlayState[]
+): UnifiedLayerEntry[] {
+  const prevRef = useRef<UnifiedLayerEntry[]>([]);
+  return useMemo(() => {
+    const all: UnifiedLayerEntry[] = [];
+    for (const l of layers) {
+      all.push({ id: l.id, kind: 'video', label: l.id, zIndex: l.zIndex, visible: l.visible });
+    }
+    textOverlays.forEach((o, i) => {
+      all.push({
+        id: o.id,
+        kind: 'text',
+        label: `text_${i}`,
+        zIndex: o.zIndex,
+        visible: o.visible,
+      });
+    });
+    imageOverlays.forEach((o, i) => {
+      all.push({
+        id: o.id,
+        kind: 'image',
+        label: `Image #${i}`,
+        zIndex: o.zIndex,
+        visible: o.visible,
+      });
+    });
+    all.sort((a, b) => b.zIndex - a.zIndex);
+
+    const prev = prevRef.current;
+    if (
+      prev.length === all.length &&
+      prev.every(
+        (p, i) =>
+          p.id === all[i].id &&
+          p.kind === all[i].kind &&
+          p.zIndex === all[i].zIndex &&
+          p.visible === all[i].visible
+      )
+    ) {
+      return prev;
+    }
+    prevRef.current = all;
+    return all;
+  }, [layers, textOverlays, imageOverlays]);
+}
 
 const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, selected }) => {
   nodesLogger.debug('CompositorNode Render:', id);
@@ -970,6 +837,10 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
 
   const disabled = !data.onConfigChange && !data.onParamChange;
 
+  // Structurally-stable entries list — same reference during opacity/rotation
+  // drags so UnifiedLayerList's React.memo bails out.
+  const entries = useStableEntries(layers, textOverlays, imageOverlays);
+
   // Broadcast compositor layer selection for YAML highlighting
   useEffect(() => {
     setCompositorSelection(selected ? data.label : null, selectedLayerId);
@@ -978,6 +849,25 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
 
   // Show live indicator when node is in an active session and is not staged
   const showLiveIndicator = !data.isStaged && !!data.onConfigChange && !!data.sessionId;
+
+  // Selected layer data for property controls
+  const selectedLayer = layers.find((l) => l.id === selectedLayerId);
+  const selectedTextOverlay = textOverlays.find((o) => o.id === selectedLayerId);
+  const selectedImageOverlay = imageOverlays.find((o) => o.id === selectedLayerId);
+
+  // Memoize callbacks for LayerPropertyControls
+  const handleSelectedOpacityChange = useCallback(
+    (v: number) => {
+      if (selectedLayerId) updateLayerOpacity(selectedLayerId, v);
+    },
+    [selectedLayerId, updateLayerOpacity]
+  );
+  const handleSelectedRotationChange = useCallback(
+    (v: number) => {
+      if (selectedLayerId) updateLayerRotation(selectedLayerId, v);
+    },
+    [selectedLayerId, updateLayerRotation]
+  );
 
   return (
     <NodeFrame
@@ -1028,23 +918,119 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
         </CanvasSection>
 
         <UnifiedLayerList
-          layers={layers}
-          textOverlays={textOverlays}
-          imageOverlays={imageOverlays}
+          entries={entries}
           selectedLayerId={selectedLayerId}
           onSelectLayer={selectLayer}
-          onOpacityChange={updateLayerOpacity}
-          onRotationChange={updateLayerRotation}
           onToggleVisibility={toggleLayerVisibility}
           onAddText={addTextOverlay}
-          onUpdateText={updateTextOverlay}
           onRemoveText={removeTextOverlay}
           onAddImage={addImageOverlay}
-          onUpdateImage={updateImageOverlay}
           onRemoveImage={removeImageOverlay}
           onReorderLayers={reorderLayers}
           disabled={disabled}
         />
+
+        {/* Property controls rendered outside UnifiedLayerList so the list
+            stays fully stable during opacity / rotation slider drags. */}
+        {selectedLayer && (
+          <LayerPropertyControls
+            name={selectedLayer.id}
+            x={selectedLayer.x}
+            y={selectedLayer.y}
+            opacity={selectedLayer.opacity}
+            rotationDegrees={selectedLayer.rotationDegrees}
+            onOpacityChange={handleSelectedOpacityChange}
+            onRotationChange={handleSelectedRotationChange}
+            disabled={disabled}
+          />
+        )}
+
+        {selectedTextOverlay && (
+          <LayerPropertyControls
+            name="Text"
+            x={selectedTextOverlay.x}
+            y={selectedTextOverlay.y}
+            opacity={selectedTextOverlay.opacity}
+            rotationDegrees={selectedTextOverlay.rotationDegrees}
+            onOpacityChange={(v) => updateTextOverlay(selectedTextOverlay.id, { opacity: v })}
+            onRotationChange={(v) =>
+              updateTextOverlay(selectedTextOverlay.id, { rotationDegrees: v })
+            }
+            disabled={disabled}
+          >
+            <OverlayEditRow style={{ paddingLeft: 0 }}>
+              <OverlayTextInput
+                value={selectedTextOverlay.text}
+                onChange={(e) =>
+                  updateTextOverlay(selectedTextOverlay.id, { text: e.target.value })
+                }
+                placeholder="Text content"
+                disabled={disabled}
+                className="nodrag nopan"
+              />
+            </OverlayEditRow>
+            <OverlayEditRow style={{ paddingLeft: 0 }}>
+              <span style={{ color: 'var(--sk-text-muted)' }}>Size</span>
+              <OverlayNumInput
+                type="number"
+                value={selectedTextOverlay.fontSize}
+                onChange={(e) => {
+                  const v = Number.parseInt(e.target.value, 10);
+                  if (!Number.isNaN(v) && v > 0)
+                    updateTextOverlay(selectedTextOverlay.id, { fontSize: v });
+                }}
+                disabled={disabled}
+                className="nodrag nopan"
+              />
+            </OverlayEditRow>
+            <OverlayEditRow style={{ paddingLeft: 0 }}>
+              <span style={{ color: 'var(--sk-text-muted)' }}>Font</span>
+              <FontSelect
+                value={selectedTextOverlay.fontName}
+                onChange={(e) =>
+                  updateTextOverlay(selectedTextOverlay.id, { fontName: e.target.value })
+                }
+                disabled={disabled}
+                className="nodrag nopan"
+              >
+                {FONT_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </FontSelect>
+            </OverlayEditRow>
+            <OverlayEditRow style={{ paddingLeft: 0 }}>
+              <span style={{ color: 'var(--sk-text-muted)' }}>Color</span>
+              <ColorInput
+                type="color"
+                value={rgbaToHex(selectedTextOverlay.color)}
+                onChange={(e) =>
+                  updateTextOverlay(selectedTextOverlay.id, {
+                    color: hexToRgba(e.target.value, selectedTextOverlay.color[3]),
+                  })
+                }
+                disabled={disabled}
+                className="nodrag nopan"
+              />
+            </OverlayEditRow>
+          </LayerPropertyControls>
+        )}
+
+        {selectedImageOverlay && (
+          <LayerPropertyControls
+            name={`Image #${imageOverlays.indexOf(selectedImageOverlay)}`}
+            x={selectedImageOverlay.x}
+            y={selectedImageOverlay.y}
+            opacity={selectedImageOverlay.opacity}
+            rotationDegrees={selectedImageOverlay.rotationDegrees}
+            onOpacityChange={(v) => updateImageOverlay(selectedImageOverlay.id, { opacity: v })}
+            onRotationChange={(v) =>
+              updateImageOverlay(selectedImageOverlay.id, { rotationDegrees: v })
+            }
+            disabled={disabled}
+          />
+        )}
       </CompositorWrapper>
     </NodeFrame>
   );
