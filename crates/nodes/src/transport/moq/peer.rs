@@ -27,7 +27,7 @@ use streamkit_core::{
     state_helpers, stats::NodeStatsTracker, InputPin, NodeContext, OutputPin, PinCardinality,
     ProcessorNode, StreamKitError,
 };
-use tokio::sync::{broadcast, mpsc, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{broadcast, mpsc, watch, OwnedSemaphorePermit, Semaphore};
 
 /// Capacity for the broadcast channel (subscribers)
 const SUBSCRIBER_BROADCAST_CAPACITY: usize = 256;
@@ -52,6 +52,20 @@ struct BroadcastFrame {
     duration_us: Option<u64>,
     kind: MediaKind,
     keyframe: bool,
+}
+
+/// Media type state shared from the main select loop to subscriber tasks via a
+/// [`watch`] channel.  Subscribers wait for `resolved == true` before building
+/// the MoQ catalog so that dynamic pipelines (where `input_types` is empty)
+/// don't advertise an empty catalog.
+#[derive(Clone, Debug)]
+struct MediaTypeState {
+    has_audio: bool,
+    has_video: bool,
+    /// `true` once the media kind of every connected input pin has been
+    /// determined — either from `NodeContext::input_types` (static pipelines)
+    /// or from the first packet on each pin (dynamic pipelines).
+    resolved: bool,
 }
 
 /// Result of processing a single frame
@@ -113,6 +127,7 @@ struct BidirectionalTaskConfig {
     subscriber_count: Arc<AtomicU64>,
     stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
     media: SubscriberMediaConfig,
+    media_state_rx: watch::Receiver<MediaTypeState>,
     audio_output_pin: &'static str,
     video_output_pin: &'static str,
 }
@@ -387,9 +402,18 @@ impl ProcessorNode for MoqPeerNode {
 
         // Dynamic pipelines don't populate `input_types`, so pin kinds may
         // be unknown.  We leave `has_audio`/`has_video` false and update them
-        // lazily the first time we infer a packet's kind on each pin.  By the
-        // time a subscriber connects the first packets will have arrived and
-        // the catalog will advertise only the media types that actually flow.
+        // lazily the first time we infer a packet's kind on each pin.
+        //
+        // A watch channel communicates the resolved media state to subscriber
+        // tasks so they can wait for the types to be determined before
+        // building the MoQ catalog.
+        let pin_0_connected = pin_0_rx.is_some();
+        let pin_1_connected = pin_1_rx.is_some();
+        let types_resolved = (pin_0_kind.is_some() || !pin_0_connected)
+            && (pin_1_kind.is_some() || !pin_1_connected);
+
+        let (media_state_tx, media_state_rx) =
+            watch::channel(MediaTypeState { has_audio, has_video, resolved: types_resolved });
 
         // Symmetric output pin mapping: in ↔ out, in_1 ↔ out_1.
         // When pin types are known the mapping is exact; otherwise we fall
@@ -492,6 +516,7 @@ impl ProcessorNode for MoqPeerNode {
                         output_group_duration_ms: self.config.output_group_duration_ms,
                         output_initial_delay_ms: self.config.output_initial_delay_ms,
                     },
+                    media_state_rx: media_state_rx.clone(),
                     audio_output_pin,
                     video_output_pin,
                 },
@@ -601,6 +626,7 @@ impl ProcessorNode for MoqPeerNode {
                             output_group_duration_ms: self.config.output_group_duration_ms,
                             output_initial_delay_ms: self.config.output_initial_delay_ms,
                         },
+                        media_state_rx.clone(),
                     ).await {
                         Ok(_handle) => {
                             let count = subscriber_count.fetch_add(1, Ordering::SeqCst) + 1;
@@ -626,7 +652,13 @@ impl ProcessorNode for MoqPeerNode {
                                 MediaKind::Audio => has_audio = true,
                                 MediaKind::Video => has_video = true,
                             }
-                            tracing::info!(?k, "pin \"in\": media kind inferred from first packet");
+                            let resolved = pin_1_kind.is_some() || !pin_1_connected;
+                            let _ = media_state_tx.send(MediaTypeState {
+                                has_audio,
+                                has_video,
+                                resolved,
+                            });
+                            tracing::info!(?k, resolved, "pin \"in\": media kind inferred from first packet");
                             k
                         });
                         if let Some(frame) = make_broadcast_frame(packet, kind) {
@@ -657,7 +689,13 @@ impl ProcessorNode for MoqPeerNode {
                                 MediaKind::Audio => has_audio = true,
                                 MediaKind::Video => has_video = true,
                             }
-                            tracing::info!(?k, "pin \"in_1\": media kind inferred from first packet");
+                            let resolved = pin_0_kind.is_some() || !pin_0_connected;
+                            let _ = media_state_tx.send(MediaTypeState {
+                                has_audio,
+                                has_video,
+                                resolved,
+                            });
+                            tracing::info!(?k, resolved, "pin \"in_1\": media kind inferred from first packet");
                             k
                         });
                         if let Some(frame) = make_broadcast_frame(packet, kind) {
@@ -890,6 +928,7 @@ impl MoqPeerNode {
                     &mut subscriber_shutdown_rx,
                     subscriber_stats_delta_tx,
                     config.media,
+                    config.media_state_rx,
                 )
                 .await
             };
@@ -1494,6 +1533,7 @@ impl MoqPeerNode {
         subscriber_count: Arc<AtomicU64>,
         stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
         media: SubscriberMediaConfig,
+        media_state_rx: watch::Receiver<MediaTypeState>,
     ) -> Result<tokio::task::JoinHandle<()>, StreamKitError> {
         // Extract the moq-native Request
         let request = *moq_connection
@@ -1526,6 +1566,7 @@ impl MoqPeerNode {
                 &mut shutdown_rx,
                 stats_delta_tx,
                 media,
+                media_state_rx,
             )
             .await;
 
@@ -1545,6 +1586,7 @@ impl MoqPeerNode {
     }
 
     /// Subscriber send loop - receives from broadcast channel and sends to client
+    #[allow(clippy::too_many_arguments)]
     async fn subscriber_send_loop(
         publish: moq_lite::OriginProducer,
         broadcast_name: String,
@@ -1552,8 +1594,41 @@ impl MoqPeerNode {
         broadcast_rx: broadcast::Receiver<BroadcastFrame>,
         shutdown_rx: &mut broadcast::Receiver<()>,
         stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
-        media: SubscriberMediaConfig,
+        mut media: SubscriberMediaConfig,
+        mut media_state_rx: watch::Receiver<MediaTypeState>,
     ) -> Result<(), StreamKitError> {
+        // Wait for media types to be resolved before building the catalog.
+        // For static pipelines `resolved` is true immediately.  For dynamic
+        // pipelines we wait until the first packet on each connected input
+        // pin has been processed so we know which media types actually flow.
+        if !media_state_rx.borrow().resolved {
+            tracing::info!("Waiting for input pin media types to be resolved...");
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                tokio::select! {
+                    result = media_state_rx.changed() => {
+                        if result.is_err() { break; }
+                        if media_state_rx.borrow().resolved { break; }
+                    }
+                    () = tokio::time::sleep_until(deadline) => {
+                        tracing::warn!("Timed out waiting for media type resolution");
+                        break;
+                    }
+                    _recv = shutdown_rx.recv() => {
+                        tracing::info!("Shutdown while waiting for media type resolution");
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        // Apply the resolved media state.
+        {
+            let state = media_state_rx.borrow();
+            media.has_audio = state.has_audio;
+            media.has_video = state.has_video;
+        }
+
         // Setup broadcast and tracks
         let (
             _broadcast_producer,
