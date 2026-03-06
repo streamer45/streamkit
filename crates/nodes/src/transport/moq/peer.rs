@@ -386,13 +386,10 @@ impl ProcessorNode for MoqPeerNode {
             pin_0_kind == Some(MediaKind::Video) || pin_1_kind == Some(MediaKind::Video);
 
         // Dynamic pipelines don't populate `input_types`, so pin kinds may
-        // be unknown.  In that case we optimistically advertise both media
-        // types in the subscriber catalog (unused tracks stay idle) and defer
-        // per-packet kind classification to `infer_kind_from_packet`.
-        if !has_audio && !has_video {
-            has_audio = pin_0_rx.is_some() || pin_1_rx.is_some();
-            has_video = has_audio;
-        }
+        // be unknown.  We leave `has_audio`/`has_video` false and update them
+        // lazily the first time we infer a packet's kind on each pin.  By the
+        // time a subscriber connects the first packets will have arrived and
+        // the catalog will advertise only the media types that actually flow.
 
         // Symmetric output pin mapping: in ↔ out, in_1 ↔ out_1.
         // When pin types are known the mapping is exact; otherwise we fall
@@ -625,6 +622,10 @@ impl ProcessorNode for MoqPeerNode {
                         let kind = pin_0_kind.unwrap_or_else(|| {
                             let k = infer_kind_from_packet(&packet);
                             pin_0_kind = Some(k);
+                            match k {
+                                MediaKind::Audio => has_audio = true,
+                                MediaKind::Video => has_video = true,
+                            }
                             tracing::info!(?k, "pin \"in\": media kind inferred from first packet");
                             k
                         });
@@ -652,6 +653,10 @@ impl ProcessorNode for MoqPeerNode {
                         let kind = pin_1_kind.unwrap_or_else(|| {
                             let k = infer_kind_from_packet(&packet);
                             pin_1_kind = Some(k);
+                            match k {
+                                MediaKind::Audio => has_audio = true,
+                                MediaKind::Video => has_video = true,
+                            }
                             tracing::info!(?k, "pin \"in_1\": media kind inferred from first packet");
                             k
                         });

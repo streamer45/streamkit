@@ -283,6 +283,7 @@ const StreamView: React.FC = () => {
     setEnablePublish,
     setEnableWatch,
     setPipelineMediaTypes,
+    setPipelineOutputTypes,
     setActiveSession,
     clearActiveSession,
     loadConfig,
@@ -321,6 +322,7 @@ const StreamView: React.FC = () => {
       setEnablePublish: s.setEnablePublish,
       setEnableWatch: s.setEnableWatch,
       setPipelineMediaTypes: s.setPipelineMediaTypes,
+      setPipelineOutputTypes: s.setPipelineOutputTypes,
       setActiveSession: s.setActiveSession,
       clearActiveSession: s.clearActiveSession,
       loadConfig: s.loadConfig,
@@ -458,6 +460,10 @@ const StreamView: React.FC = () => {
           // Tell the store which devices the pipeline actually needs so that
           // connect() only requests the relevant browser permissions.
           setPipelineMediaTypes(moqSettings.needsAudioInput, moqSettings.needsVideoInput);
+
+          // Tell the store which media types the pipeline outputs to subscribers
+          // so that connect() only creates the relevant watch-side components.
+          setPipelineOutputTypes(moqSettings.outputsAudio, moqSettings.outputsVideo);
         }
       }
     },
@@ -469,6 +475,7 @@ const StreamView: React.FC = () => {
       setOutputBroadcast,
       setEnablePublish,
       setPipelineMediaTypes,
+      setPipelineOutputTypes,
     ]
   );
 
@@ -677,6 +684,7 @@ const StreamView: React.FC = () => {
                   setConnectionMode('direct');
                   // Direct mode has no pipeline YAML, so default to both media types
                   setPipelineMediaTypes(true, true);
+                  setPipelineOutputTypes(true, true);
                 }}
                 disabled={status !== 'disconnected'}
               >

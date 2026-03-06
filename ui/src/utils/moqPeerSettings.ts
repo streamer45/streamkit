@@ -14,6 +14,10 @@ export interface MoqPeerSettings {
   needsAudioInput: boolean;
   /** Whether the pipeline consumes video from the client's input broadcast. */
   needsVideoInput: boolean;
+  /** Whether the pipeline outputs audio to subscribers via the moq_peer. */
+  outputsAudio: boolean;
+  /** Whether the pipeline outputs video to subscribers via the moq_peer. */
+  outputsVideo: boolean;
 }
 
 type NeedsValue = string | string[] | Record<string, string>;
@@ -72,6 +76,36 @@ function detectPeerInputMediaTypes(
 }
 
 /**
+ * Detects what media types the moq_peer outputs to subscribers by looking at
+ * which upstream nodes are connected to its inputs.  The node `kind` prefix
+ * (`audio::` or `video::`) determines the media type.
+ */
+function detectPeerOutputMediaTypes(
+  peerName: string,
+  nodes: Record<string, ParsedNode>
+): { outputsAudio: boolean; outputsVideo: boolean } {
+  const peerNode = nodes[peerName];
+  if (!peerNode) return { outputsAudio: false, outputsVideo: false };
+
+  let outputsAudio = false;
+  let outputsVideo = false;
+
+  for (const ref of collectNeedsRefs(peerNode.needs)) {
+    const nodeName = ref.split('.')[0];
+    const sourceNode = nodes[nodeName];
+    if (!sourceNode?.kind) continue;
+
+    if (sourceNode.kind.startsWith('audio::')) {
+      outputsAudio = true;
+    } else if (sourceNode.kind.startsWith('video::')) {
+      outputsVideo = true;
+    }
+  }
+
+  return { outputsAudio, outputsVideo };
+}
+
+/**
  * Extracts moq_peer settings from a pipeline YAML string.
  * Looks for any node with kind 'transport::moq::peer' and returns its
  * gateway_path, input_broadcast, and output_broadcast parameters.
@@ -107,6 +141,10 @@ export function extractMoqPeerSettings(yamlContent: string): MoqPeerSettings | n
     // references to "<peer>.out_1" indicate video.
     const { needsAudio, needsVideo } = detectPeerInputMediaTypes(peerNodeName, parsed.nodes);
 
+    // Determine which media types the moq_peer outputs to subscribers
+    // by examining the kinds of nodes wired into its input pins.
+    const { outputsAudio, outputsVideo } = detectPeerOutputMediaTypes(peerNodeName, parsed.nodes);
+
     return {
       gatewayPath: peerNodeConfig.params.gateway_path,
       inputBroadcast: peerNodeConfig.params.input_broadcast,
@@ -114,6 +152,8 @@ export function extractMoqPeerSettings(yamlContent: string): MoqPeerSettings | n
       hasInputBroadcast: Boolean(peerNodeConfig.params.input_broadcast),
       needsAudioInput: needsAudio,
       needsVideoInput: needsVideo,
+      outputsAudio,
+      outputsVideo,
     };
   } catch {
     return null;

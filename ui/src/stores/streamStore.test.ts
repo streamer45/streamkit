@@ -94,6 +94,8 @@ describe('streamStore', () => {
       watchStatus: 'disabled',
       pipelineNeedsAudio: true,
       pipelineNeedsVideo: true,
+      pipelineOutputsAudio: true,
+      pipelineOutputsVideo: true,
       errorMessage: '',
       configLoaded: false,
       activeSessionId: null,
