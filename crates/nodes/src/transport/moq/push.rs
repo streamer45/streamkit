@@ -149,7 +149,9 @@ impl ProcessorNode for MoqPushNode {
         // Match @moq/hang defaults for interoperability.
         let audio_track = moq_lite::Track { name: "audio/data".to_string(), priority: 80 };
 
-        let track_producer = broadcast.create_track(audio_track.clone());
+        let track_producer = broadcast
+            .create_track(audio_track.clone())
+            .map_err(|e| StreamKitError::Runtime(format!("Failed to create audio track: {e}")))?;
         let mut track_producer: hang::container::OrderedProducer = track_producer.into();
 
         // Create and publish a catalog describing our audio track
@@ -173,12 +175,15 @@ impl ProcessorNode for MoqPushNode {
         };
 
         // Create catalog track and publish the catalog data
-        let mut catalog_producer = broadcast.create_track(hang::catalog::Catalog::default_track());
-        let catalog_json = match super::catalog_to_json(&catalog) {
+        let mut catalog_producer = broadcast
+            .create_track(hang::catalog::Catalog::default_track())
+            .map_err(|e| StreamKitError::Runtime(format!("Failed to create catalog track: {e}")))?;
+        let catalog_json = match catalog.to_string() {
             Ok(json) => json,
             Err(e) => {
-                state_helpers::emit_failed(&context.state_tx, &node_name, e.to_string());
-                return Err(e);
+                let err = StreamKitError::Runtime(format!("Failed to serialize catalog: {e}"));
+                state_helpers::emit_failed(&context.state_tx, &node_name, err.to_string());
+                return Err(err);
             },
         };
         let catalog_data = catalog_json.into_bytes(); // Avoid intermediate Vec allocation
@@ -189,7 +194,9 @@ impl ProcessorNode for MoqPushNode {
         );
 
         // Write the catalog frame
-        catalog_producer.write_frame(catalog_data);
+        catalog_producer
+            .write_frame(catalog_data)
+            .map_err(|e| StreamKitError::Runtime(format!("Failed to write catalog frame: {e}")))?;
         // Keep the catalog track producer alive for the lifetime of the broadcast.
         // If dropped, the underlying moq-lite track gets cancelled and watchers will go "offline".
         let _catalog_producer = catalog_producer;
@@ -264,7 +271,18 @@ impl ProcessorNode for MoqPushNode {
                             let mut payload = hang::container::BufList::new();
                             payload.push_chunk(data);
 
-                            let frame = hang::container::Frame { timestamp, keyframe, payload };
+                            if keyframe {
+                                if let Err(e) = track_producer.keyframe() {
+                                    let err_msg = format!("Failed to signal keyframe: {e}");
+                                    tracing::warn!("{err_msg}");
+                                    stats_tracker.errored();
+                                    stats_tracker.force_send();
+                                    state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
+                                    return Err(StreamKitError::Runtime(err_msg));
+                                }
+                            }
+
+                            let frame = hang::container::Frame { timestamp, payload };
 
                             if let Err(e) = track_producer.write(frame) {
                                 let err_msg = format!("Failed to write MoQ frame: {e}");
@@ -315,7 +333,7 @@ impl ProcessorNode for MoqPushNode {
         state_helpers::emit_stopped(&context.state_tx, &node_name, "input_closed");
 
         // Close the track when done (best-effort)
-        track_producer.track.clone().close();
+        let _ = track_producer.track.finish();
 
         tracing::info!("MoqPushNode finished after sending {} packets", packet_count);
         Ok(())

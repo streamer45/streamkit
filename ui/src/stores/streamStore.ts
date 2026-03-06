@@ -3,8 +3,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import * as Hang from '@moq/hang';
+import * as Publish from '@moq/publish';
 import type { Signal } from '@moq/signals';
 import { Effect } from '@moq/signals';
+import * as Watch from '@moq/watch';
 import { create } from 'zustand';
 
 import { fetchConfig } from '../services/config';
@@ -30,12 +32,17 @@ type ConnectDecision =
 type ConnectAttempt = {
   connection: Hang.Moq.Connection.Reload | null;
   healthEffect: Effect | null;
-  watch: Hang.Watch.Broadcast | null;
-  audioEmitter: Hang.Watch.Audio.Emitter | null;
-  videoRenderer: Hang.Watch.Video.Renderer | null;
-  microphone: Hang.Publish.Source.Microphone | null;
-  camera: Hang.Publish.Source.Camera | null;
-  publish: Hang.Publish.Broadcast | null;
+  watch: Watch.Broadcast | null;
+  watchSync: Watch.Sync | null;
+  audioSource: Watch.Audio.Source | null;
+  audioDecoder: Watch.Audio.Decoder | null;
+  audioEmitter: Watch.Audio.Emitter | null;
+  videoSource: Watch.Video.Source | null;
+  videoDecoder: Watch.Video.Decoder | null;
+  videoRenderer: Watch.Video.Renderer | null;
+  microphone: Publish.Source.Microphone | null;
+  camera: Publish.Source.Camera | null;
+  publish: Publish.Broadcast | null;
 };
 
 function waitForSignalValue<T>(
@@ -97,7 +104,12 @@ function cleanupConnectAttempt(attempt: ConnectAttempt): void {
   attempt.healthEffect?.close();
   attempt.publish?.close();
   attempt.videoRenderer?.close();
+  attempt.videoDecoder?.close();
+  attempt.videoSource?.close();
   attempt.audioEmitter?.close();
+  attempt.audioDecoder?.close();
+  attempt.audioSource?.close();
+  attempt.watchSync?.close();
   attempt.watch?.close();
   attempt.connection?.close();
   if (attempt.microphone) {
@@ -154,39 +166,52 @@ function setupWatchPath(
   outputBroadcast: string,
   set: (partial: Partial<StreamState>) => void
 ): {
-  watch: Hang.Watch.Broadcast;
-  audioEmitter: Hang.Watch.Audio.Emitter;
-  videoRenderer: Hang.Watch.Video.Renderer;
+  watch: Watch.Broadcast;
+  watchSync: Watch.Sync;
+  audioSource: Watch.Audio.Source;
+  audioDecoder: Watch.Audio.Decoder;
+  audioEmitter: Watch.Audio.Emitter;
+  videoSource: Watch.Video.Source;
+  videoDecoder: Watch.Video.Decoder;
+  videoRenderer: Watch.Video.Renderer;
 } {
   logger.info('Step 2: Creating watch broadcast (subscribe FIRST)');
-  const watch = new Hang.Watch.Broadcast({
+  const watch = new Watch.Broadcast({
     connection: connection.established,
     enabled: true,
-    path: Hang.Moq.Path.from(outputBroadcast),
-    audio: {
-      enabled: true,
-      // latency: 250 as Hang.Time.Milli,
-    },
-    video: {
-      enabled: true,
-    },
+    name: Watch.Lite.Path.from(outputBroadcast),
   });
 
-  logger.info('Step 3: Creating audio emitter');
-  const audioEmitter = new Hang.Watch.Audio.Emitter(watch.audio, {
+  const watchSync = new Watch.Sync();
+
+  logger.info('Step 3: Creating audio source/decoder/emitter');
+  const audioSource = new Watch.Audio.Source(watchSync, { broadcast: watch });
+  const audioDecoder = new Watch.Audio.Decoder(audioSource);
+  const audioEmitter = new Watch.Audio.Emitter(audioDecoder, {
     muted: false,
     volume: 0.5,
   });
 
-  logger.info('Step 3b: Creating video renderer');
-  const videoRenderer = new Hang.Watch.Video.Renderer(watch.video);
+  logger.info('Step 3b: Creating video source/decoder/renderer');
+  const videoSource = new Watch.Video.Source(watchSync, { broadcast: watch });
+  const videoDecoder = new Watch.Video.Decoder(videoSource);
+  const videoRenderer = new Watch.Video.Renderer(videoDecoder);
 
   set({ watchStatus: watch.status.peek() });
   healthEffect.subscribe(watch.status, (value) => {
     set({ watchStatus: value });
   });
 
-  return { watch, audioEmitter, videoRenderer };
+  return {
+    watch,
+    watchSync,
+    audioSource,
+    audioDecoder,
+    audioEmitter,
+    videoSource,
+    videoDecoder,
+    videoRenderer,
+  };
 }
 
 function setupPublishPath(
@@ -195,12 +220,12 @@ function setupPublishPath(
   inputBroadcast: string,
   set: (partial: Partial<StreamState>) => void
 ): {
-  microphone: Hang.Publish.Source.Microphone;
-  camera: Hang.Publish.Source.Camera;
-  publish: Hang.Publish.Broadcast;
+  microphone: Publish.Source.Microphone;
+  camera: Publish.Source.Camera;
+  publish: Publish.Broadcast;
 } {
   logger.info('Step 4: Creating microphone source');
-  const microphone = new Hang.Publish.Source.Microphone({ enabled: true });
+  const microphone = new Publish.Source.Microphone({ enabled: true });
 
   set({ micStatus: microphone.source.peek() ? 'ready' : 'requesting' });
   healthEffect.subscribe(microphone.source, (value) => {
@@ -208,7 +233,7 @@ function setupPublishPath(
   });
 
   logger.info('Step 4b: Creating camera source');
-  const camera = new Hang.Publish.Source.Camera({ enabled: true });
+  const camera = new Publish.Source.Camera({ enabled: true });
 
   set({ cameraStatus: camera.source.peek() ? 'ready' : 'requesting' });
   healthEffect.subscribe(camera.source, (value) => {
@@ -216,10 +241,10 @@ function setupPublishPath(
   });
 
   logger.info('Step 5: Creating publish broadcast');
-  const publish = new Hang.Publish.Broadcast({
+  const publish = new Publish.Broadcast({
     connection: connection.established,
     enabled: true,
-    path: Hang.Moq.Path.from(inputBroadcast),
+    name: Publish.Lite.Path.from(inputBroadcast),
     audio: {
       enabled: true,
       source: microphone.source,
@@ -328,13 +353,18 @@ interface StreamState {
   activePipelineName: string | null;
 
   // MoQ references (stored but not serialized)
-  publish: Hang.Publish.Broadcast | null;
-  watch: Hang.Watch.Broadcast | null;
-  audioEmitter: Hang.Watch.Audio.Emitter | null;
-  videoRenderer: Hang.Watch.Video.Renderer | null;
+  publish: Publish.Broadcast | null;
+  watch: Watch.Broadcast | null;
+  watchSync: Watch.Sync | null;
+  audioSource: Watch.Audio.Source | null;
+  audioDecoder: Watch.Audio.Decoder | null;
+  audioEmitter: Watch.Audio.Emitter | null;
+  videoSource: Watch.Video.Source | null;
+  videoDecoder: Watch.Video.Decoder | null;
+  videoRenderer: Watch.Video.Renderer | null;
   connection: Hang.Moq.Connection.Reload | null;
-  microphone: Hang.Publish.Source.Microphone | null;
-  camera: Hang.Publish.Source.Camera | null;
+  microphone: Publish.Source.Microphone | null;
+  camera: Publish.Source.Camera | null;
   healthEffect: Effect | null;
 
   // Actions
@@ -361,13 +391,18 @@ interface StreamState {
 
   // Store references to MoQ objects
   setMoqRefs: (refs: {
-    publish: Hang.Publish.Broadcast;
-    watch: Hang.Watch.Broadcast;
-    audioEmitter: Hang.Watch.Audio.Emitter;
-    videoRenderer: Hang.Watch.Video.Renderer;
+    publish: Publish.Broadcast;
+    watch: Watch.Broadcast;
+    watchSync: Watch.Sync;
+    audioSource: Watch.Audio.Source;
+    audioDecoder: Watch.Audio.Decoder;
+    audioEmitter: Watch.Audio.Emitter;
+    videoSource: Watch.Video.Source;
+    videoDecoder: Watch.Video.Decoder;
+    videoRenderer: Watch.Video.Renderer;
     connection: Hang.Moq.Connection.Reload;
-    microphone: Hang.Publish.Source.Microphone;
-    camera: Hang.Publish.Source.Camera;
+    microphone: Publish.Source.Microphone;
+    camera: Publish.Source.Camera;
   }) => void;
 }
 
@@ -397,7 +432,12 @@ export const useStreamStore = create<StreamState>((set, get) => ({
   // MoQ references
   publish: null,
   watch: null,
+  watchSync: null,
+  audioSource: null,
+  audioDecoder: null,
   audioEmitter: null,
+  videoSource: null,
+  videoDecoder: null,
   videoRenderer: null,
   connection: null,
   microphone: null,
@@ -452,7 +492,12 @@ export const useStreamStore = create<StreamState>((set, get) => ({
     set({
       publish: refs.publish,
       watch: refs.watch,
+      watchSync: refs.watchSync,
+      audioSource: refs.audioSource,
+      audioDecoder: refs.audioDecoder,
       audioEmitter: refs.audioEmitter,
+      videoSource: refs.videoSource,
+      videoDecoder: refs.videoDecoder,
       videoRenderer: refs.videoRenderer,
       connection: refs.connection,
       microphone: refs.microphone,
@@ -484,7 +529,12 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       connection: null,
       healthEffect: null,
       watch: null,
+      watchSync: null,
+      audioSource: null,
+      audioDecoder: null,
       audioEmitter: null,
+      videoSource: null,
+      videoDecoder: null,
       videoRenderer: null,
       microphone: null,
       camera: null,
@@ -516,7 +566,12 @@ export const useStreamStore = create<StreamState>((set, get) => ({
           set
         );
         attempt.watch = watchSetup.watch;
+        attempt.watchSync = watchSetup.watchSync;
+        attempt.audioSource = watchSetup.audioSource;
+        attempt.audioDecoder = watchSetup.audioDecoder;
         attempt.audioEmitter = watchSetup.audioEmitter;
+        attempt.videoSource = watchSetup.videoSource;
+        attempt.videoDecoder = watchSetup.videoDecoder;
         attempt.videoRenderer = watchSetup.videoRenderer;
       }
 
@@ -547,7 +602,12 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       set({
         publish: attempt.publish,
         watch: attempt.watch,
+        watchSync: attempt.watchSync,
+        audioSource: attempt.audioSource,
+        audioDecoder: attempt.audioDecoder,
         audioEmitter: attempt.audioEmitter,
+        videoSource: attempt.videoSource,
+        videoDecoder: attempt.videoDecoder,
         videoRenderer: attempt.videoRenderer,
         connection: attempt.connection,
         microphone: attempt.microphone,
@@ -575,7 +635,12 @@ export const useStreamStore = create<StreamState>((set, get) => ({
         errorMessage: formatConnectError(error),
         publish: null,
         watch: null,
+        watchSync: null,
+        audioSource: null,
+        audioDecoder: null,
         audioEmitter: null,
+        videoSource: null,
+        videoDecoder: null,
         videoRenderer: null,
         connection: null,
         microphone: null,
@@ -600,8 +665,23 @@ export const useStreamStore = create<StreamState>((set, get) => ({
     if (state.videoRenderer) {
       state.videoRenderer.close();
     }
+    if (state.videoDecoder) {
+      state.videoDecoder.close();
+    }
+    if (state.videoSource) {
+      state.videoSource.close();
+    }
     if (state.audioEmitter) {
       state.audioEmitter.close();
+    }
+    if (state.audioDecoder) {
+      state.audioDecoder.close();
+    }
+    if (state.audioSource) {
+      state.audioSource.close();
+    }
+    if (state.watchSync) {
+      state.watchSync.close();
     }
     if (state.watch) {
       state.watch.close();
@@ -641,7 +721,12 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       errorMessage: '',
       publish: null,
       watch: null,
+      watchSync: null,
+      audioSource: null,
+      audioDecoder: null,
       audioEmitter: null,
+      videoSource: null,
+      videoDecoder: null,
       videoRenderer: null,
       connection: null,
       microphone: null,

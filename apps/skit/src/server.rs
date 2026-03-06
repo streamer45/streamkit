@@ -3282,7 +3282,7 @@ fn start_moq_webtransport_acceptor(
                             match validate_moq_auth(&auth_state, &path, jwt_param).await {
                                 Ok(ctx) => Some(ctx),
                                 Err(status) => {
-                                    let _ = request.reject(status).await;
+                                    let _ = request.close(status.as_u16()).await;
                                     return;
                                 },
                             }

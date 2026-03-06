@@ -46,13 +46,11 @@ url = { version = "2.5.8", optional = true, features = ["serde"] }
 rquickjs = { version = "0.11", features = ["array-buffer", "futures", "loader", "parallel"], optional = true }
 wildmatch = { version = "2.6", optional = true }
 
-moq-transport = { version = "0.12.2", optional = true }
-moq-native = { version = "0.12.1", optional = true }
-moq-lite = { version = "0.13.0", optional = true }
-hang = { version = "0.13.0", optional = true }
+moq-native = { version = "0.13.2", optional = true }
+moq-lite = { version = "0.15.0", optional = true }
+hang = { version = "0.15.1", optional = true }
 
 # For local dev, debugging moq stuff
-# moq-transport = { version = "0.11.0", optional = true }
 # moq-native = { path = "../../moq/rs/moq-native", optional = true }
 # moq-lite = { path = "../../moq/rs/moq", optional = true }
 # hang = { path = "../../moq/rs/hang", optional = true }
@@ -114,7 +112,6 @@ http = ["dep:schemars", "dep:reqwest", "dep:tempfile"]
 script = ["dep:rquickjs", "dep:reqwest", "dep:wildmatch", "dep:schemars", "dep:serde_json", "dep:url", "dep:uuid"]
 moq = [
   "dep:schemars",
-  "dep:moq-transport",
   "dep:url",
   "dep:moq-native",
   "dep:moq-lite",

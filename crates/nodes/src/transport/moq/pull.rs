@@ -7,7 +7,6 @@
 use super::constants::DEFAULT_AUDIO_FRAME_DURATION_US;
 use async_trait::async_trait;
 use bytes::Buf;
-use moq_lite::coding::Decode;
 use moq_lite::AsPath;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -253,10 +252,12 @@ impl MoqPullNode {
     fn strip_hang_timestamp_header(
         mut payload: bytes::Bytes,
     ) -> Result<(u64, bytes::Bytes), moq_lite::Error> {
-        // hang protocol: frame payload is prefixed with a varint u64 timestamp in microseconds.
+        // hang protocol: frame payload is prefixed with a varint timestamp in microseconds.
         // We parse it and forward the remaining bytes (Opus frame data).
-        let timestamp_micros = u64::decode(&mut payload, moq_lite::lite::Version::Draft02)?;
-        Ok((timestamp_micros, payload.copy_to_bytes(payload.remaining())))
+        let timestamp = hang::container::Timestamp::decode(&mut payload)?;
+        #[allow(clippy::cast_possible_truncation)] // MoQ timestamps fit in u64
+        let timestamp_us = timestamp.as_micros() as u64;
+        Ok((timestamp_us, payload.copy_to_bytes(payload.remaining())))
     }
 
     async fn read_next_raw_moq(
@@ -325,7 +326,10 @@ impl MoqPullNode {
         };
 
         // Subscribe to the catalog track
-        let raw_catalog_track = broadcast.subscribe_track(&hang::catalog::Catalog::default_track());
+        let raw_catalog_track =
+            broadcast.subscribe_track(&hang::catalog::Catalog::default_track()).map_err(|e| {
+                StreamKitError::Runtime(format!("Failed to subscribe to catalog track: {e}"))
+            })?;
         let mut catalog_consumer = hang::catalog::CatalogConsumer::new(raw_catalog_track);
 
         // Parse the catalog to discover tracks
@@ -502,7 +506,10 @@ impl MoqPullNode {
         tracing::info!("Subscribed to broadcast '{}'", self.config.broadcast);
 
         // First, get the catalog to find audio tracks
-        let raw_catalog_track = broadcast.subscribe_track(&hang::catalog::Catalog::default_track());
+        let raw_catalog_track =
+            broadcast.subscribe_track(&hang::catalog::Catalog::default_track()).map_err(|e| {
+                StreamKitError::Runtime(format!("Failed to subscribe to catalog track: {e}"))
+            })?;
         let mut catalog_consumer = hang::catalog::CatalogConsumer::new(raw_catalog_track);
 
         tracing::debug!(
@@ -535,7 +542,9 @@ impl MoqPullNode {
         //
         // For audio we prefer low-latency, "latest group" semantics: we always read the latest
         // announced group and drain it, letting moq_lite drop old groups if we're slow.
-        let mut track_consumer = broadcast.subscribe_track(audio_track);
+        let mut track_consumer = broadcast.subscribe_track(audio_track).map_err(|e| {
+            StreamKitError::Runtime(format!("Failed to subscribe to audio track: {e}"))
+        })?;
         let mut current_group: Option<moq_lite::GroupConsumer> = None;
 
         let mut session_packet_count: u32 = 0;
@@ -800,10 +809,10 @@ impl MoqPullNode {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use bytes::BytesMut;
-    use moq_lite::coding::Encode;
 
     #[test]
     fn test_output_pins_for_tracks_includes_stable_out() {
@@ -823,7 +832,10 @@ mod tests {
     #[test]
     fn test_strip_hang_timestamp_header() {
         let mut buf = BytesMut::new();
-        123_u64.encode(&mut buf, moq_lite::lite::Version::Draft02);
+        hang::container::Timestamp::from_micros(123)
+            .expect("valid timestamp")
+            .encode(&mut buf)
+            .expect("encode succeeds");
         buf.extend_from_slice(b"opus-frame-bytes");
         let payload = buf.freeze();
 
