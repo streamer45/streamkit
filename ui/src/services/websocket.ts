@@ -225,11 +225,12 @@ export class WebSocketService {
     //
     // useSessionStore.getState().updateNodeParams(session_id, node_id, params as Record<string, unknown>);
 
-    // Also update the params store used by individual node UIs
+    // Batch all param updates into a single store update to avoid
+    // N intermediate states and N selector re-evaluations.
     if (params && typeof params === 'object' && !Array.isArray(params)) {
-      for (const [key, value] of Object.entries(params)) {
-        useNodeParamsStore.getState().setParam(node_id, key, value, session_id);
-      }
+      useNodeParamsStore
+        .getState()
+        .setParams(node_id, params as Record<string, unknown>, session_id);
     }
   }
 
