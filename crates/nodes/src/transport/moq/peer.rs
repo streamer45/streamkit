@@ -224,13 +224,26 @@ const fn media_kind_for_packet_type(pt: &PacketType) -> Option<MediaKind> {
 /// Infer [`MediaKind`] from a packet's `content_type` field.
 ///
 /// VP9-encoded packets carry `content_type: Some("video/vp9")`, so any
-/// content type starting with `"video/"` is classified as video.  Everything
-/// else (including the common `content_type: None` case for Opus packets)
-/// defaults to audio.
+/// content type starting with `"video/"` is classified as video.
+/// Audio packets (Opus) typically have `content_type: None`.
+///
+/// # Panics (debug only)
+///
+/// Debug-asserts that the `content_type` is either `None` (audio) or starts
+/// with `"audio/"` or `"video/"`.  This catches future encoders that forget
+/// to set the field.
 fn infer_kind_from_packet(packet: &Packet) -> MediaKind {
     if let Packet::Binary { content_type, .. } = packet {
-        if content_type.as_deref().is_some_and(|ct| ct.starts_with("video/")) {
-            return MediaKind::Video;
+        if let Some(ct) = content_type.as_deref() {
+            if ct.starts_with("video/") {
+                return MediaKind::Video;
+            }
+            debug_assert!(
+                ct.starts_with("audio/"),
+                "unexpected content_type {ct:?} — expected \"audio/…\" or \"video/…\""
+            );
+        } else {
+            tracing::trace!("packet has no content_type, assuming audio");
         }
     }
     MediaKind::Audio
@@ -434,7 +447,7 @@ impl ProcessorNode for MoqPeerNode {
         // back to the convention audio → "out", video → "out_1".
         let audio_output_pin: &str = match (pin_0_kind, pin_1_kind) {
             (Some(MediaKind::Audio), _) => "out",
-            (_, Some(MediaKind::Audio)) => "out_1",
+            (_, Some(MediaKind::Audio)) | (Some(MediaKind::Video), _) => "out_1",
             _ => "out",
         };
         let video_output_pin: &str = match (pin_0_kind, pin_1_kind) {
