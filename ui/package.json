@@ -88,7 +88,6 @@
     "uuid": "^13.0.0",
     "zustand": "^5.0.10"
   },
-  "patchedDependencies": {
-  "@moq/publish@0.2.2": "patches/@moq%2Fpublish@0.2.2.patch"
-}
+  "patchedDependencies": {}
+
 }
