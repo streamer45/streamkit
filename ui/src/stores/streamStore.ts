@@ -218,42 +218,59 @@ function setupPublishPath(
   healthEffect: Effect,
   connection: Hang.Moq.Connection.Reload,
   inputBroadcast: string,
+  needsAudio: boolean,
+  needsVideo: boolean,
   set: (partial: Partial<StreamState>) => void
 ): {
-  microphone: Publish.Source.Microphone;
-  camera: Publish.Source.Camera;
+  microphone: Publish.Source.Microphone | null;
+  camera: Publish.Source.Camera | null;
   publish: Publish.Broadcast;
 } {
-  logger.info('Step 4: Creating microphone source');
-  const microphone = new Publish.Source.Microphone({ enabled: true });
+  let microphone: Publish.Source.Microphone | null = null;
+  let camera: Publish.Source.Camera | null = null;
 
-  set({ micStatus: microphone.source.peek() ? 'ready' : 'requesting' });
-  healthEffect.subscribe(microphone.source, (value) => {
-    set({ micStatus: value ? 'ready' : 'requesting' });
-  });
+  if (needsAudio) {
+    logger.info('Step 4: Creating microphone source');
+    microphone = new Publish.Source.Microphone({ enabled: true });
 
-  logger.info('Step 4b: Creating camera source');
-  const camera = new Publish.Source.Camera({ enabled: true });
+    set({ micStatus: microphone.source.peek() ? 'ready' : 'requesting' });
+    healthEffect.subscribe(microphone.source, (value) => {
+      set({ micStatus: value ? 'ready' : 'requesting' });
+    });
+  }
 
-  set({ cameraStatus: camera.source.peek() ? 'ready' : 'requesting' });
-  healthEffect.subscribe(camera.source, (value) => {
-    set({ cameraStatus: value ? 'ready' : 'requesting' });
-  });
+  if (needsVideo) {
+    logger.info('Step 4b: Creating camera source');
+    camera = new Publish.Source.Camera({ enabled: true });
+
+    set({ cameraStatus: camera.source.peek() ? 'ready' : 'requesting' });
+    healthEffect.subscribe(camera.source, (value) => {
+      set({ cameraStatus: value ? 'ready' : 'requesting' });
+    });
+  }
 
   logger.info('Step 5: Creating publish broadcast');
-  const publish = new Publish.Broadcast({
+
+  // Build broadcast config with only the media types the pipeline needs
+  const broadcastConfig: ConstructorParameters<typeof Publish.Broadcast>[0] = {
     connection: connection.established,
     enabled: true,
     name: Publish.Lite.Path.from(inputBroadcast),
-    audio: {
+  };
+  if (needsAudio && microphone) {
+    broadcastConfig.audio = {
       enabled: true,
       source: microphone.source,
-    },
-    video: {
+    };
+  }
+  if (needsVideo && camera) {
+    broadcastConfig.video = {
       source: camera.source,
       hd: { enabled: true, config: { codec: 'vp09' } },
-    },
-  });
+    };
+  }
+
+  const publish = new Publish.Broadcast(broadcastConfig);
 
   return { microphone, camera, publish };
 }
@@ -341,6 +358,10 @@ interface StreamState {
   cameraStatus: CameraStatus;
   watchStatus: WatchStatus;
 
+  // Pipeline media-type flags (which devices the pipeline expects from the client)
+  pipelineNeedsAudio: boolean;
+  pipelineNeedsVideo: boolean;
+
   // Error state
   errorMessage: string;
 
@@ -378,6 +399,7 @@ interface StreamState {
   setConnectionMode: (mode: ConnectionMode) => void;
   setEnablePublish: (enabled: boolean) => void;
   setEnableWatch: (enabled: boolean) => void;
+  setPipelineMediaTypes: (audio: boolean, video: boolean) => void;
   loadConfig: () => Promise<void>;
 
   // Session actions
@@ -421,6 +443,8 @@ export const useStreamStore = create<StreamState>((set, get) => ({
   isCameraEnabled: false,
   cameraStatus: 'disabled',
   watchStatus: 'disabled',
+  pipelineNeedsAudio: true,
+  pipelineNeedsVideo: true,
   errorMessage: '',
   configLoaded: false,
 
@@ -455,6 +479,8 @@ export const useStreamStore = create<StreamState>((set, get) => ({
   setConnectionMode: (mode) => set({ connectionMode: mode }),
   setEnablePublish: (enabled) => set({ enablePublish: enabled }),
   setEnableWatch: (enabled) => set({ enableWatch: enabled }),
+  setPipelineMediaTypes: (audio, video) =>
+    set({ pipelineNeedsAudio: audio, pipelineNeedsVideo: video }),
 
   // Session setters
   setActiveSession: (sessionId, sessionName, pipelineName) =>
@@ -521,8 +547,8 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       status: 'connecting',
       errorMessage: '',
       watchStatus: decision.shouldWatch ? 'loading' : 'disabled',
-      micStatus: decision.shouldPublish ? 'requesting' : 'disabled',
-      cameraStatus: decision.shouldPublish ? 'requesting' : 'disabled',
+      micStatus: decision.shouldPublish && state.pipelineNeedsAudio ? 'requesting' : 'disabled',
+      cameraStatus: decision.shouldPublish && state.pipelineNeedsVideo ? 'requesting' : 'disabled',
     });
 
     const attempt: ConnectAttempt = {
@@ -580,6 +606,8 @@ export const useStreamStore = create<StreamState>((set, get) => ({
           attempt.healthEffect,
           attempt.connection,
           state.inputBroadcast,
+          state.pipelineNeedsAudio,
+          state.pipelineNeedsVideo,
           set
         );
         attempt.microphone = publishSetup.microphone;
@@ -614,8 +642,8 @@ export const useStreamStore = create<StreamState>((set, get) => ({
         camera: attempt.camera,
         healthEffect: attempt.healthEffect,
         status: 'connected',
-        isMicEnabled: decision.shouldPublish,
-        isCameraEnabled: decision.shouldPublish,
+        isMicEnabled: decision.shouldPublish && state.pipelineNeedsAudio,
+        isCameraEnabled: decision.shouldPublish && state.pipelineNeedsVideo,
       });
 
       const modes = [];

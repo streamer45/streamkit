@@ -92,6 +92,8 @@ describe('streamStore', () => {
       isMicEnabled: false,
       micStatus: 'disabled',
       watchStatus: 'disabled',
+      pipelineNeedsAudio: true,
+      pipelineNeedsVideo: true,
       errorMessage: '',
       configLoaded: false,
       activeSessionId: null,

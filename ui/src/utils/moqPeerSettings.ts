@@ -10,7 +10,13 @@ export interface MoqPeerSettings {
   outputBroadcast?: string;
   /** Whether the pipeline declares an input_broadcast (i.e. expects a publisher). */
   hasInputBroadcast: boolean;
+  /** Whether the pipeline consumes audio from the client's input broadcast. */
+  needsAudioInput: boolean;
+  /** Whether the pipeline consumes video from the client's input broadcast. */
+  needsVideoInput: boolean;
 }
+
+type NeedsValue = string | string[] | Record<string, string>;
 
 type ParsedNode = {
   kind?: string;
@@ -19,11 +25,51 @@ type ParsedNode = {
     input_broadcast?: string;
     output_broadcast?: string;
   };
+  needs?: NeedsValue;
 };
 
 type ParsedYaml = {
   nodes?: Record<string, ParsedNode>;
 };
+
+/**
+ * Collects all dependency references from a node's `needs` field as flat strings.
+ */
+function collectNeedsRefs(needs: NeedsValue | undefined): string[] {
+  if (!needs) return [];
+  if (typeof needs === 'string') return [needs];
+  if (Array.isArray(needs)) return needs.filter((v): v is string => typeof v === 'string');
+  // Record<string, string> (map variant) — values are the dependency refs
+  return Object.values(needs).filter((v): v is string => typeof v === 'string');
+}
+
+/**
+ * Scans all nodes in the pipeline to detect which media types downstream nodes
+ * consume from the moq_peer's output pins.
+ *
+ * - A reference to `<peerName>` (bare) or `<peerName>.out` → audio
+ * - A reference to `<peerName>.video_out` → video
+ */
+function detectPeerInputMediaTypes(
+  peerName: string,
+  nodes: Record<string, ParsedNode>
+): { needsAudio: boolean; needsVideo: boolean } {
+  let needsAudio = false;
+  let needsVideo = false;
+
+  for (const [nodeName, nodeConfig] of Object.entries(nodes)) {
+    if (nodeName === peerName) continue;
+    for (const ref of collectNeedsRefs(nodeConfig.needs)) {
+      if (ref === peerName || ref === `${peerName}.out`) {
+        needsAudio = true;
+      } else if (ref === `${peerName}.video_out`) {
+        needsVideo = true;
+      }
+    }
+  }
+
+  return { needsAudio, needsVideo };
+}
 
 /**
  * Extracts moq_peer settings from a pipeline YAML string.
@@ -42,18 +88,33 @@ export function extractMoqPeerSettings(yamlContent: string): MoqPeerSettings | n
     }
 
     // Find the first node with kind 'transport::moq::peer'
-    for (const nodeConfig of Object.values(parsed.nodes)) {
-      if (nodeConfig.kind === 'transport::moq::peer' && nodeConfig.params) {
-        return {
-          gatewayPath: nodeConfig.params.gateway_path,
-          inputBroadcast: nodeConfig.params.input_broadcast,
-          outputBroadcast: nodeConfig.params.output_broadcast,
-          hasInputBroadcast: Boolean(nodeConfig.params.input_broadcast),
-        };
+    let peerNodeName: string | null = null;
+    let peerNodeConfig: ParsedNode | null = null;
+    for (const [name, nodeConfig] of Object.entries(parsed.nodes)) {
+      if (nodeConfig.kind === 'transport::moq::peer') {
+        peerNodeName = name;
+        peerNodeConfig = nodeConfig;
+        break;
       }
     }
 
-    return null;
+    if (!peerNodeName || !peerNodeConfig?.params) {
+      return null;
+    }
+
+    // Determine which media types downstream nodes consume from the moq_peer.
+    // References to "<peer>" or "<peer>.out" indicate audio;
+    // references to "<peer>.video_out" indicate video.
+    const { needsAudio, needsVideo } = detectPeerInputMediaTypes(peerNodeName, parsed.nodes);
+
+    return {
+      gatewayPath: peerNodeConfig.params.gateway_path,
+      inputBroadcast: peerNodeConfig.params.input_broadcast,
+      outputBroadcast: peerNodeConfig.params.output_broadcast,
+      hasInputBroadcast: Boolean(peerNodeConfig.params.input_broadcast),
+      needsAudioInput: needsAudio,
+      needsVideoInput: needsVideo,
+    };
   } catch {
     return null;
   }
