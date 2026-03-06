@@ -48,7 +48,7 @@ function collectNeedsRefs(needs: NeedsValue | undefined): string[] {
  * consume from the moq_peer's output pins.
  *
  * - A reference to `<peerName>` (bare) or `<peerName>.out` → audio
- * - A reference to `<peerName>.video_out` → video
+ * - A reference to `<peerName>.out_1` → video
  */
 function detectPeerInputMediaTypes(
   peerName: string,
@@ -62,7 +62,7 @@ function detectPeerInputMediaTypes(
     for (const ref of collectNeedsRefs(nodeConfig.needs)) {
       if (ref === peerName || ref === `${peerName}.out`) {
         needsAudio = true;
-      } else if (ref === `${peerName}.video_out`) {
+      } else if (ref === `${peerName}.out_1`) {
         needsVideo = true;
       }
     }
@@ -104,7 +104,7 @@ export function extractMoqPeerSettings(yamlContent: string): MoqPeerSettings | n
 
     // Determine which media types downstream nodes consume from the moq_peer.
     // References to "<peer>" or "<peer>.out" indicate audio;
-    // references to "<peer>.video_out" indicate video.
+    // references to "<peer>.out_1" indicate video.
     const { needsAudio, needsVideo } = detectPeerInputMediaTypes(peerNodeName, parsed.nodes);
 
     return {
