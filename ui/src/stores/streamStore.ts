@@ -791,7 +791,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
   toggleMicrophone: () => {
     const state = get();
 
-    if (state.publish) {
+    if (state.publish?.audio) {
       const newState = !state.isMicEnabled;
       state.publish.audio.enabled.set(newState);
       set({ isMicEnabled: newState });
