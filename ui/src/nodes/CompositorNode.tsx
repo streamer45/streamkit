@@ -5,7 +5,7 @@
 import styled from '@emotion/styled';
 import { Eye, EyeOff, GripVertical, Image, Plus, Type, X } from 'lucide-react';
 import { Reorder } from 'motion/react';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { CompositorCanvas } from '@/components/CompositorCanvas';
 import { NodeFrame } from '@/components/node/NodeFrame';
@@ -556,7 +556,11 @@ const UnifiedLayerList: React.FC<{
   }) => {
     // Build a unified list of all layers sorted by z-index (highest first for
     // a "top-to-bottom" visual stack).
-    const entries: UnifiedLayerEntry[] = React.useMemo(() => {
+    // We stabilise the output reference so that Reorder.Group's context does
+    // not change on opacity / rotation drags (entries only carry id, kind,
+    // label, zIndex, visible — none of which change during those interactions).
+    const prevEntriesRef = useRef<UnifiedLayerEntry[]>([]);
+    const entries: UnifiedLayerEntry[] = useMemo(() => {
       const all: UnifiedLayerEntry[] = [];
 
       for (const l of layers) {
@@ -583,10 +587,42 @@ const UnifiedLayerList: React.FC<{
 
       // Sort highest z-index first (top of visual stack at the top of the list)
       all.sort((a, b) => b.zIndex - a.zIndex);
+
+      // Return previous reference when entries are structurally equal to
+      // prevent Reorder.Group context from invalidating all ReorderItems.
+      const prev = prevEntriesRef.current;
+      if (
+        prev.length === all.length &&
+        prev.every(
+          (p, i) =>
+            p.id === all[i].id &&
+            p.kind === all[i].kind &&
+            p.zIndex === all[i].zIndex &&
+            p.visible === all[i].visible
+        )
+      ) {
+        return prev;
+      }
+      prevEntriesRef.current = all;
       return all;
     }, [layers, textOverlays, imageOverlays]);
 
     const selectedLayer = layers.find((l) => l.id === selectedLayerId);
+
+    // Memoize callbacks for LayerPropertyControls so React.memo is not
+    // defeated by inline closures that capture selectedLayer (new ref every render).
+    const handleSelectedOpacityChange = useCallback(
+      (v: number) => {
+        if (selectedLayerId) onOpacityChange(selectedLayerId, v);
+      },
+      [selectedLayerId, onOpacityChange]
+    );
+    const handleSelectedRotationChange = useCallback(
+      (v: number) => {
+        if (selectedLayerId) onRotationChange(selectedLayerId, v);
+      },
+      [selectedLayerId, onRotationChange]
+    );
 
     // Add overlay menu state
     const [menuOpen, setMenuOpen] = useState(false);
@@ -767,8 +803,8 @@ const UnifiedLayerList: React.FC<{
             y={selectedLayer.y}
             opacity={selectedLayer.opacity}
             rotationDegrees={selectedLayer.rotationDegrees}
-            onOpacityChange={(v) => onOpacityChange(selectedLayer.id, v)}
-            onRotationChange={(v) => onRotationChange(selectedLayer.id, v)}
+            onOpacityChange={handleSelectedOpacityChange}
+            onRotationChange={handleSelectedRotationChange}
             disabled={disabled}
           />
         )}
