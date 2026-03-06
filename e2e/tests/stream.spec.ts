@@ -276,6 +276,12 @@ test.describe('Stream View - Video MoQ Color Bars Pipeline', () => {
         timeout: 15_000,
       });
 
+      // Scroll the canvas into view so the IntersectionObserver fires and
+      // the video decoder subscribes to the video/data track.
+      const canvas = page.locator('canvas');
+      await expect(canvas).toBeVisible({ timeout: 5_000 });
+      await canvas.scrollIntoViewIfNeeded();
+
       // Give the video decoder time to render a few frames onto the canvas.
       await page.waitForTimeout(3_000);
 
@@ -412,6 +418,12 @@ test.describe('Stream View - Webcam PiP Pipeline', () => {
       await expect(page.getByText(/Watch: live/)).toBeVisible({
         timeout: 15_000,
       });
+
+      // Scroll the canvas into view so the IntersectionObserver fires and
+      // the video decoder subscribes to the video/data track.
+      const canvas = page.locator('canvas');
+      await expect(canvas).toBeVisible({ timeout: 5_000 });
+      await canvas.scrollIntoViewIfNeeded();
 
       // Give the pipeline time to process audio+video and render output.
       await page.waitForTimeout(4_000);

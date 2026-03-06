@@ -400,17 +400,33 @@ impl ProcessorNode for MoqPeerNode {
         let mut has_video =
             pin_0_kind == Some(MediaKind::Video) || pin_1_kind == Some(MediaKind::Video);
 
-        // Dynamic pipelines don't populate `input_types`, so pin kinds may
-        // be unknown.  We leave `has_audio`/`has_video` false and update them
-        // lazily the first time we infer a packet's kind on each pin.
+        // NOTE: In dynamic pipelines the engine creates receivers for ALL
+        // declared input pins, even those that are never wired to an upstream
+        // node.  We therefore cannot use `pin_rx.is_some()` to decide
+        // connectivity, and `input_types` is empty so pin kinds are unknown.
         //
-        // A watch channel communicates the resolved media state to subscriber
-        // tasks so they can wait for the types to be determined before
-        // building the MoQ catalog.
-        let pin_0_connected = pin_0_rx.is_some();
-        let pin_1_connected = pin_1_rx.is_some();
-        let types_resolved = (pin_0_kind.is_some() || !pin_0_connected)
-            && (pin_1_kind.is_some() || !pin_1_connected);
+        // We optimistically advertise both audio and video so that the MoQ
+        // catalog is published immediately when a subscriber connects.  Tracks
+        // that never receive data are harmless — the subscriber simply gets no
+        // frames on them.  This avoids a race where the browser subscribes to
+        // `catalog.json` before the catalog track has been created (which would
+        // return "not found" and prevent the watch path from going live).
+        let dynamic_mode = context.input_types.is_empty()
+            && pin_0_kind.is_none()
+            && pin_1_kind.is_none();
+        if dynamic_mode {
+            has_audio = true;
+            has_video = true;
+        }
+        let types_resolved = if dynamic_mode {
+            // Optimistically resolved — both types are advertised.
+            true
+        } else {
+            let pin_0_connected = pin_0_rx.is_some();
+            let pin_1_connected = pin_1_rx.is_some();
+            (pin_0_kind.is_some() || !pin_0_connected)
+                && (pin_1_kind.is_some() || !pin_1_connected)
+        };
 
         let (media_state_tx, media_state_rx) =
             watch::channel(MediaTypeState { has_audio, has_video, resolved: types_resolved });
@@ -652,7 +668,14 @@ impl ProcessorNode for MoqPeerNode {
                                 MediaKind::Audio => has_audio = true,
                                 MediaKind::Video => has_video = true,
                             }
-                            let resolved = pin_1_kind.is_some() || !pin_1_connected;
+                            // In dynamic mode, resolve immediately on first
+                            // packet — the subscriber applies a grace period.
+                            let resolved = if dynamic_mode {
+                                true
+                            } else {
+                                let pin_1_connected = pin_1_rx.is_some();
+                                pin_1_kind.is_some() || !pin_1_connected
+                            };
                             let _ = media_state_tx.send(MediaTypeState {
                                 has_audio,
                                 has_video,
@@ -689,7 +712,12 @@ impl ProcessorNode for MoqPeerNode {
                                 MediaKind::Audio => has_audio = true,
                                 MediaKind::Video => has_video = true,
                             }
-                            let resolved = pin_0_kind.is_some() || !pin_0_connected;
+                            let resolved = if dynamic_mode {
+                                true
+                            } else {
+                                let pin_0_connected = pin_0_rx.is_some();
+                                pin_0_kind.is_some() || !pin_0_connected
+                            };
                             let _ = media_state_tx.send(MediaTypeState {
                                 has_audio,
                                 has_video,
@@ -1599,8 +1627,8 @@ impl MoqPeerNode {
     ) -> Result<(), StreamKitError> {
         // Wait for media types to be resolved before building the catalog.
         // For static pipelines `resolved` is true immediately.  For dynamic
-        // pipelines we wait until the first packet on each connected input
-        // pin has been processed so we know which media types actually flow.
+        // pipelines we wait until the first packet on any connected input pin
+        // has been processed so we know at least one media type.
         if !media_state_rx.borrow().resolved {
             tracing::info!("Waiting for input pin media types to be resolved...");
             let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
@@ -1616,6 +1644,35 @@ impl MoqPeerNode {
                     }
                     _recv = shutdown_rx.recv() => {
                         tracing::info!("Shutdown while waiting for media type resolution");
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        // After resolution, if only partial media types are known, wait a
+        // brief grace period for additional types.  In dynamic pipelines a
+        // second input pin may receive its first packet shortly after the
+        // first pin resolved the state.
+        let needs_grace = {
+            let state = media_state_rx.borrow();
+            state.resolved && !(state.has_audio && state.has_video)
+        };
+        if needs_grace {
+            let grace = tokio::time::Instant::now() + Duration::from_millis(500);
+            loop {
+                tokio::select! {
+                    result = media_state_rx.changed() => {
+                        if result.is_err() { break; }
+                        let both = {
+                            let s = media_state_rx.borrow();
+                            s.has_audio && s.has_video
+                        };
+                        if both { break; }
+                    }
+                    () = tokio::time::sleep_until(grace) => { break; }
+                    _recv = shutdown_rx.recv() => {
+                        tracing::info!("Shutdown during media type grace period");
                         return Ok(());
                     }
                 }
