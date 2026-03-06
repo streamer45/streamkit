@@ -365,6 +365,15 @@ export const useCompositorLayers = (
   const [selectedLayerId, setSelectedLayerId] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
 
+  // Keep a stable ref to params so throttled/memoised callbacks can read
+  // the latest value at call-time without listing it as a dependency.
+  // This prevents cascading callback recreations when only the params
+  // object reference changes (e.g. server echo-back after a config update).
+  const paramsRef = useRef(params);
+  useEffect(() => {
+    paramsRef.current = params;
+  }, [params]);
+
   // Keep overlay refs in sync for config building
   const textOverlaysRef = useRef(textOverlays);
   const imageOverlaysRef = useRef(imageOverlays);
@@ -492,7 +501,7 @@ export const useCompositorLayers = (
           // send stale overlay positions from params when committing a
           // video layer change.
           const config = buildConfig(
-            params,
+            paramsRef.current,
             currentLayers,
             textOverlaysRef.current,
             imageOverlaysRef.current
@@ -520,7 +529,7 @@ export const useCompositorLayers = (
       throttleMs,
       { leading: true, trailing: true }
     );
-  }, [nodeId, onConfigChange, onParamChange, params, throttleMs]);
+  }, [nodeId, onConfigChange, onParamChange, throttleMs]);
 
   // Throttled overlay commit for continuous updates (sliders, drag, etc.)
   // Prevents flooding the server with config changes on every slider tick.
@@ -529,7 +538,7 @@ export const useCompositorLayers = (
     return throttle(
       (nextText: TextOverlayState[], nextImg: ImageOverlayState[]) => {
         if (onConfigChange) {
-          const config = buildConfig(params, layersRef.current, nextText, nextImg);
+          const config = buildConfig(paramsRef.current, layersRef.current, nextText, nextImg);
           onConfigChange(nodeId, config);
         } else if (onParamChange) {
           onParamChange(nodeId, 'text_overlays', serializeTextOverlays(nextText));
@@ -539,7 +548,7 @@ export const useCompositorLayers = (
       throttleMs,
       { leading: true, trailing: true }
     );
-  }, [nodeId, onConfigChange, onParamChange, params, throttleMs]);
+  }, [nodeId, onConfigChange, onParamChange, throttleMs]);
 
   // Cleanup throttles on unmount
   useEffect(
@@ -915,14 +924,14 @@ export const useCompositorLayers = (
       overlayCommitGuardRef.current = Date.now();
 
       if (onConfigChange) {
-        const config = buildConfig(params, layersRef.current, nextText, nextImg);
+        const config = buildConfig(paramsRef.current, layersRef.current, nextText, nextImg);
         onConfigChange(nodeId, config);
       } else if (onParamChange) {
         onParamChange(nodeId, 'text_overlays', serializeTextOverlays(nextText));
         onParamChange(nodeId, 'image_overlays', serializeImageOverlays(nextImg));
       }
     },
-    [nodeId, onConfigChange, onParamChange, params]
+    [nodeId, onConfigChange, onParamChange]
   );
 
   // Keep a stable ref so pointer-up can call the latest commitOverlays without
@@ -1183,7 +1192,7 @@ export const useCompositorLayers = (
       if (hasVideoChanges || hasTextChanges || hasImgChanges) {
         overlayCommitGuardRef.current = Date.now();
         if (onConfigChange) {
-          const config = buildConfig(params, nextLayers, nextText, nextImg);
+          const config = buildConfig(paramsRef.current, nextLayers, nextText, nextImg);
           onConfigChange(nodeId, config);
         } else if (onParamChange) {
           // Video layers — use immediate onParamChange (not throttled) so
@@ -1199,7 +1208,7 @@ export const useCompositorLayers = (
         }
       }
     },
-    [nodeId, onConfigChange, onParamChange, params]
+    [nodeId, onConfigChange, onParamChange]
   );
 
   return {
