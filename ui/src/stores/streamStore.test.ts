@@ -18,17 +18,40 @@ vi.mock('@moq/hang', () => ({
       from: vi.fn(),
     },
   },
-  Watch: {
-    Broadcast: vi.fn(),
-    Audio: {
-      Emitter: vi.fn(),
+}));
+
+vi.mock('@moq/watch', () => ({
+  default: {},
+  Broadcast: vi.fn(),
+  Sync: vi.fn(),
+  Lite: {
+    Path: {
+      from: vi.fn(),
     },
   },
-  Publish: {
-    Broadcast: vi.fn(),
-    Source: {
-      Microphone: vi.fn(),
+  Audio: {
+    Source: vi.fn(),
+    Decoder: vi.fn(),
+    Emitter: vi.fn(),
+  },
+  Video: {
+    Source: vi.fn(),
+    Decoder: vi.fn(),
+    Renderer: vi.fn(),
+  },
+}));
+
+vi.mock('@moq/publish', () => ({
+  default: {},
+  Broadcast: vi.fn(),
+  Lite: {
+    Path: {
+      from: vi.fn(),
     },
+  },
+  Source: {
+    Microphone: vi.fn(),
+    Camera: vi.fn(),
   },
 }));
 
@@ -76,9 +99,16 @@ describe('streamStore', () => {
       activePipelineName: null,
       publish: null,
       watch: null,
+      watchSync: null,
+      audioSource: null,
+      audioDecoder: null,
       audioEmitter: null,
+      videoSource: null,
+      videoDecoder: null,
+      videoRenderer: null,
       connection: null,
       microphone: null,
+      camera: null,
       healthEffect: null,
     });
 
@@ -119,9 +149,16 @@ describe('streamStore', () => {
       const state = useStreamStore.getState();
       expect(state.publish).toBeNull();
       expect(state.watch).toBeNull();
+      expect(state.watchSync).toBeNull();
+      expect(state.audioSource).toBeNull();
+      expect(state.audioDecoder).toBeNull();
       expect(state.audioEmitter).toBeNull();
+      expect(state.videoSource).toBeNull();
+      expect(state.videoDecoder).toBeNull();
+      expect(state.videoRenderer).toBeNull();
       expect(state.connection).toBeNull();
       expect(state.microphone).toBeNull();
+      expect(state.camera).toBeNull();
       expect(state.healthEffect).toBeNull();
       expect(state.watchStatus).toBe('disabled');
     });
@@ -314,7 +351,12 @@ describe('streamStore', () => {
       const mockRefs = {
         publish: { close: vi.fn() } as never,
         watch: { close: vi.fn() } as never,
+        watchSync: { close: vi.fn() } as never,
+        audioSource: { close: vi.fn() } as never,
+        audioDecoder: { close: vi.fn() } as never,
         audioEmitter: { close: vi.fn() } as never,
+        videoSource: { close: vi.fn() } as never,
+        videoDecoder: { close: vi.fn() } as never,
         videoRenderer: { close: vi.fn() } as never,
         connection: { close: vi.fn() } as never,
         microphone: { close: vi.fn() } as never,
@@ -327,7 +369,13 @@ describe('streamStore', () => {
       const state = useStreamStore.getState();
       expect(state.publish).toBe(mockRefs.publish);
       expect(state.watch).toBe(mockRefs.watch);
+      expect(state.watchSync).toBe(mockRefs.watchSync);
+      expect(state.audioSource).toBe(mockRefs.audioSource);
+      expect(state.audioDecoder).toBe(mockRefs.audioDecoder);
       expect(state.audioEmitter).toBe(mockRefs.audioEmitter);
+      expect(state.videoSource).toBe(mockRefs.videoSource);
+      expect(state.videoDecoder).toBe(mockRefs.videoDecoder);
+      expect(state.videoRenderer).toBe(mockRefs.videoRenderer);
       expect(state.connection).toBe(mockRefs.connection);
       expect(state.microphone).toBe(mockRefs.microphone);
       expect(state.camera).toBe(mockRefs.camera);
@@ -338,7 +386,13 @@ describe('streamStore', () => {
     it('should clean up all MoQ resources and reset state', () => {
       const mockPublish: MockCloseable = { close: vi.fn() };
       const mockWatch: MockCloseable = { close: vi.fn() };
+      const mockWatchSync: MockCloseable = { close: vi.fn() };
+      const mockAudioSource: MockCloseable = { close: vi.fn() };
+      const mockAudioDecoder: MockCloseable = { close: vi.fn() };
       const mockAudioEmitter: MockCloseable = { close: vi.fn() };
+      const mockVideoSource: MockCloseable = { close: vi.fn() };
+      const mockVideoDecoder: MockCloseable = { close: vi.fn() };
+      const mockVideoRenderer: MockCloseable = { close: vi.fn() };
       const mockConnection: MockCloseable = { close: vi.fn() };
       const mockMicrophone: MockCloseable = { close: vi.fn() };
 
@@ -349,7 +403,13 @@ describe('streamStore', () => {
         errorMessage: 'some error',
         publish: mockPublish as never,
         watch: mockWatch as never,
+        watchSync: mockWatchSync as never,
+        audioSource: mockAudioSource as never,
+        audioDecoder: mockAudioDecoder as never,
         audioEmitter: mockAudioEmitter as never,
+        videoSource: mockVideoSource as never,
+        videoDecoder: mockVideoDecoder as never,
+        videoRenderer: mockVideoRenderer as never,
         connection: mockConnection as never,
         microphone: mockMicrophone as never,
       });
@@ -360,7 +420,13 @@ describe('streamStore', () => {
       // All close methods should be called
       expect(mockPublish.close).toHaveBeenCalled();
       expect(mockWatch.close).toHaveBeenCalled();
+      expect(mockWatchSync.close).toHaveBeenCalled();
+      expect(mockAudioSource.close).toHaveBeenCalled();
+      expect(mockAudioDecoder.close).toHaveBeenCalled();
       expect(mockAudioEmitter.close).toHaveBeenCalled();
+      expect(mockVideoSource.close).toHaveBeenCalled();
+      expect(mockVideoDecoder.close).toHaveBeenCalled();
+      expect(mockVideoRenderer.close).toHaveBeenCalled();
       expect(mockConnection.close).toHaveBeenCalled();
       expect(mockMicrophone.close).toHaveBeenCalled();
 
@@ -374,7 +440,13 @@ describe('streamStore', () => {
       expect(state.errorMessage).toBe('');
       expect(state.publish).toBeNull();
       expect(state.watch).toBeNull();
+      expect(state.watchSync).toBeNull();
+      expect(state.audioSource).toBeNull();
+      expect(state.audioDecoder).toBeNull();
       expect(state.audioEmitter).toBeNull();
+      expect(state.videoSource).toBeNull();
+      expect(state.videoDecoder).toBeNull();
+      expect(state.videoRenderer).toBeNull();
       expect(state.connection).toBeNull();
       expect(state.microphone).toBeNull();
     });
@@ -403,9 +475,16 @@ describe('streamStore', () => {
       useStreamStore.setState({
         publish: null,
         watch: null,
+        watchSync: null,
+        audioSource: null,
+        audioDecoder: null,
         audioEmitter: null,
+        videoSource: null,
+        videoDecoder: null,
+        videoRenderer: null,
         connection: null,
         microphone: null,
+        camera: null,
       });
 
       const { disconnect } = useStreamStore.getState();

@@ -10,7 +10,6 @@
 
 use async_trait::async_trait;
 use bytes::Buf;
-use moq_lite::coding::Decode;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -690,7 +689,7 @@ impl MoqPeerNode {
         // Accept MoQ session (publisher only sends, no server publish needed)
         let session = request
             .with_consume(client_publish_origin)
-            .accept()
+            .ok()
             .await
             .map_err(|e| StreamKitError::Runtime(format!("Failed to accept session: {e}")))?;
 
@@ -747,7 +746,7 @@ impl MoqPeerNode {
         let session = request
             .with_publish(server_publish_origin.consume())
             .with_consume(client_publish_origin)
-            .accept()
+            .ok()
             .await
             .map_err(|e| StreamKitError::Runtime(format!("Failed to accept session: {e}")))?;
 
@@ -951,7 +950,9 @@ impl MoqPeerNode {
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
     ) -> Result<(), StreamKitError> {
         let catalog_track =
-            broadcast_consumer.subscribe_track(&hang::catalog::Catalog::default_track());
+            broadcast_consumer.subscribe_track(&hang::catalog::Catalog::default_track()).map_err(
+                |e| StreamKitError::Runtime(format!("Failed to subscribe to catalog track: {e}")),
+            )?;
         let mut catalog_consumer = hang::catalog::CatalogConsumer::new(catalog_track);
 
         let mut audio_handle: Option<tokio::task::JoinHandle<Result<(), StreamKitError>>> = None;
@@ -1049,7 +1050,12 @@ impl MoqPeerNode {
 
             let mut attempt: u32 = 0;
             loop {
-                let consumer = broadcast.subscribe_track(&track);
+                let consumer = broadcast.subscribe_track(&track).map_err(|e| {
+                    StreamKitError::Runtime(format!(
+                        "Failed to subscribe to track '{}': {e}",
+                        track.name
+                    ))
+                })?;
                 let exit = Self::process_publisher_frames(
                     consumer,
                     sender.clone(),
@@ -1322,9 +1328,9 @@ impl MoqPeerNode {
                             *last_log = std::time::Instant::now();
                         }
 
-                        // Skip timestamp header (varint encoded u64 microseconds)
+                        // Skip timestamp header (varint encoded timestamp in microseconds)
                         // The hang protocol encodes timestamp at the start of each frame
-                        if let Err(e) = u64::decode(&mut payload, moq_lite::lite::Version::Draft02) {
+                        if let Err(e) = hang::container::Timestamp::decode(&mut payload) {
                             tracing::warn!("Failed to decode frame timestamp: {e}");
                             let _ = stats_delta_tx
                                 .try_send(NodeStatsDelta { received: 1, discarded: 1, ..Default::default() });
@@ -1392,7 +1398,7 @@ impl MoqPeerNode {
         // Accept MoQ session (subscriber only receives, no client publish needed)
         let session = request
             .with_publish(server_publish_origin.consume())
-            .accept()
+            .ok()
             .await
             .map_err(|e| StreamKitError::Runtime(format!("Failed to accept session: {e}")))?;
 
@@ -1461,11 +1467,11 @@ impl MoqPeerNode {
         )
         .await?;
 
-        if let Some(ref p) = audio_track_producer {
-            p.track.clone().close();
+        if let Some(ref mut p) = audio_track_producer {
+            let _ = p.track.finish();
         }
-        if let Some(ref p) = video_track_producer {
-            p.track.clone().close();
+        if let Some(ref mut p) = video_track_producer {
+            let _ = p.track.finish();
         }
         tracing::info!("Subscriber task finished after {} packets", packet_count);
         Ok(())
@@ -1493,7 +1499,9 @@ impl MoqPeerNode {
         // Create audio track (if audio input connected)
         let audio_track = if media.has_audio {
             let track = moq_lite::Track { name: "audio/data".to_string(), priority: 80 };
-            let producer = broadcast_producer.create_track(track.clone());
+            let producer = broadcast_producer.create_track(track.clone()).map_err(|e| {
+                StreamKitError::Runtime(format!("Failed to create audio track: {e}"))
+            })?;
             Some((track, hang::container::OrderedProducer::from(producer)))
         } else {
             None
@@ -1502,7 +1510,9 @@ impl MoqPeerNode {
         // Create video track (if video input connected)
         let video_track = if media.has_video {
             let track = moq_lite::Track { name: "video/data".to_string(), priority: 60 };
-            let producer = broadcast_producer.create_track(track.clone());
+            let producer = broadcast_producer.create_track(track.clone()).map_err(|e| {
+                StreamKitError::Runtime(format!("Failed to create video track: {e}"))
+            })?;
             Some((track, hang::container::OrderedProducer::from(producer)))
         } else {
             None
@@ -1585,10 +1595,15 @@ impl MoqPeerNode {
             ..Default::default()
         };
 
-        let mut catalog_producer =
-            broadcast_producer.create_track(hang::catalog::Catalog::default_track());
-        let catalog_json = super::catalog_to_json(&catalog)?;
-        catalog_producer.write_frame(catalog_json.into_bytes());
+        let mut catalog_producer = broadcast_producer
+            .create_track(hang::catalog::Catalog::default_track())
+            .map_err(|e| StreamKitError::Runtime(format!("Failed to create catalog track: {e}")))?;
+        let catalog_json = catalog
+            .to_string()
+            .map_err(|e| StreamKitError::Runtime(format!("Failed to serialize catalog: {e}")))?;
+        catalog_producer
+            .write_frame(catalog_json.into_bytes())
+            .map_err(|e| StreamKitError::Runtime(format!("Failed to write catalog frame: {e}")))?;
 
         Ok(catalog_producer)
     }
@@ -1721,7 +1736,16 @@ impl MoqPeerNode {
                 let mut payload = hang::container::BufList::new();
                 payload.push_chunk(broadcast_frame.data);
 
-                let frame = hang::container::Frame { timestamp, keyframe, payload };
+                if keyframe {
+                    if let Err(e) = track_producer.keyframe() {
+                        tracing::warn!(kind = ?broadcast_frame.kind, "Failed to signal keyframe: {e}");
+                        let _ = stats_delta_tx
+                            .try_send(NodeStatsDelta { errored: 1, ..Default::default() });
+                        return Ok(SendResult::Stop);
+                    }
+                }
+
+                let frame = hang::container::Frame { timestamp, payload };
 
                 if let Err(e) = track_producer.write(frame) {
                     tracing::warn!(kind = ?broadcast_frame.kind, "Failed to write MoQ frame to subscriber: {e}");
