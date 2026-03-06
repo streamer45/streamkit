@@ -206,6 +206,21 @@ const fn media_kind_for_packet_type(pt: &PacketType) -> Option<MediaKind> {
     }
 }
 
+/// Infer [`MediaKind`] from a packet's `content_type` field.
+///
+/// VP9-encoded packets carry `content_type: Some("video/vp9")`, so any
+/// content type starting with `"video/"` is classified as video.  Everything
+/// else (including the common `content_type: None` case for Opus packets)
+/// defaults to audio.
+fn infer_kind_from_packet(packet: &Packet) -> MediaKind {
+    if let Packet::Binary { content_type, .. } = packet {
+        if content_type.as_deref().is_some_and(|ct| ct.starts_with("video/")) {
+            return MediaKind::Video;
+        }
+    }
+    MediaKind::Audio
+}
+
 /// Build a [`BroadcastFrame`] from a pipeline [`Packet`] and the inferred
 /// [`MediaKind`] for the pin it arrived on.
 fn make_broadcast_frame(packet: Packet, kind: MediaKind) -> Option<BroadcastFrame> {
@@ -353,8 +368,11 @@ impl ProcessorNode for MoqPeerNode {
         // determined at runtime from `input_types`.
         let mut pin_0_rx = context.take_input("in").ok();
         let mut pin_1_rx = context.take_input("in_1").ok();
-        let pin_0_kind = context.input_types.get("in").and_then(media_kind_for_packet_type);
-        let pin_1_kind = context.input_types.get("in_1").and_then(media_kind_for_packet_type);
+
+        // Try to get type info from the graph builder (static pipelines).
+        // For dynamic pipelines `input_types` is empty — we handle that below.
+        let mut pin_0_kind = context.input_types.get("in").and_then(media_kind_for_packet_type);
+        let mut pin_1_kind = context.input_types.get("in_1").and_then(media_kind_for_packet_type);
 
         if pin_0_rx.is_none() && pin_1_rx.is_none() {
             return Err(StreamKitError::Configuration(
@@ -362,18 +380,32 @@ impl ProcessorNode for MoqPeerNode {
             ));
         }
 
-        let has_audio =
+        let mut has_audio =
             pin_0_kind == Some(MediaKind::Audio) || pin_1_kind == Some(MediaKind::Audio);
-        let has_video =
+        let mut has_video =
             pin_0_kind == Some(MediaKind::Video) || pin_1_kind == Some(MediaKind::Video);
 
+        // Dynamic pipelines don't populate `input_types`, so pin kinds may
+        // be unknown.  In that case we optimistically advertise both media
+        // types in the subscriber catalog (unused tracks stay idle) and defer
+        // per-packet kind classification to `infer_kind_from_packet`.
+        if !has_audio && !has_video {
+            has_audio = pin_0_rx.is_some() || pin_1_rx.is_some();
+            has_video = has_audio;
+        }
+
         // Symmetric output pin mapping: in ↔ out, in_1 ↔ out_1.
-        // Audio/video catalog tracks from the publisher are routed to whichever
-        // output pin's paired input carries that media type.
-        let audio_output_pin: &str =
-            if pin_0_kind == Some(MediaKind::Audio) { "out" } else { "out_1" };
-        let video_output_pin: &str =
-            if pin_0_kind == Some(MediaKind::Video) { "out" } else { "out_1" };
+        // When pin types are known the mapping is exact; otherwise we fall
+        // back to the convention audio → "out", video → "out_1".
+        let audio_output_pin: &str = match (pin_0_kind, pin_1_kind) {
+            (Some(MediaKind::Audio), _) => "out",
+            (_, Some(MediaKind::Audio)) => "out_1",
+            _ => "out",
+        };
+        let video_output_pin: &str = match (pin_0_kind, pin_1_kind) {
+            (Some(MediaKind::Video), _) => "out",
+            _ => "out_1",
+        };
 
         tracing::info!(
             has_audio,
@@ -588,13 +620,19 @@ impl ProcessorNode for MoqPeerNode {
                     if let Some(ref mut rx) = pin_0_rx { rx.recv().await } else { std::future::pending().await }
                 } => {
                     if let Some(packet) = result {
-                        if let Some(kind) = pin_0_kind {
-                            if let Some(frame) = make_broadcast_frame(packet, kind) {
-                                stats_tracker.received();
-                                let _ = subscriber_broadcast_tx.send(frame);
-                                stats_tracker.sent();
-                                stats_tracker.maybe_send();
-                            }
+                        // Lazily determine kind on first packet when input_types
+                        // is unavailable (dynamic pipelines).
+                        let kind = pin_0_kind.unwrap_or_else(|| {
+                            let k = infer_kind_from_packet(&packet);
+                            pin_0_kind = Some(k);
+                            tracing::info!(?k, "pin \"in\": media kind inferred from first packet");
+                            k
+                        });
+                        if let Some(frame) = make_broadcast_frame(packet, kind) {
+                            stats_tracker.received();
+                            let _ = subscriber_broadcast_tx.send(frame);
+                            stats_tracker.sent();
+                            stats_tracker.maybe_send();
                         }
                     } else {
                         tracing::info!("Pipeline input pin \"in\" closed");
@@ -611,13 +649,17 @@ impl ProcessorNode for MoqPeerNode {
                     if let Some(ref mut rx) = pin_1_rx { rx.recv().await } else { std::future::pending().await }
                 } => {
                     if let Some(packet) = result {
-                        if let Some(kind) = pin_1_kind {
-                            if let Some(frame) = make_broadcast_frame(packet, kind) {
-                                stats_tracker.received();
-                                let _ = subscriber_broadcast_tx.send(frame);
-                                stats_tracker.sent();
-                                stats_tracker.maybe_send();
-                            }
+                        let kind = pin_1_kind.unwrap_or_else(|| {
+                            let k = infer_kind_from_packet(&packet);
+                            pin_1_kind = Some(k);
+                            tracing::info!(?k, "pin \"in_1\": media kind inferred from first packet");
+                            k
+                        });
+                        if let Some(frame) = make_broadcast_frame(packet, kind) {
+                            stats_tracker.received();
+                            let _ = subscriber_broadcast_tx.send(frame);
+                            stats_tracker.sent();
+                            stats_tracker.maybe_send();
                         }
                     } else {
                         tracing::info!("Pipeline input pin \"in_1\" closed");
