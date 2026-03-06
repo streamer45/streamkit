@@ -1775,6 +1775,7 @@ const MonitorViewContent: React.FC = () => {
   const previewConfigLoaded = useStreamStore((s) => s.configLoaded);
   const previewSetServerUrl = useStreamStore((s) => s.setServerUrl);
   const previewSetOutputBroadcast = useStreamStore((s) => s.setOutputBroadcast);
+  const previewSetPipelineOutputTypes = useStreamStore((s) => s.setPipelineOutputTypes);
   const isPreviewConnected = previewStatus === 'connected';
 
   // Issue #3 fix: extract MoQ peer settings from the selected session's pipeline
@@ -1788,11 +1789,15 @@ const MonitorViewContent: React.FC = () => {
     }
 
     // Extract gateway_path and output_broadcast from the pipeline's moq_peer node
+    let moqNodeName: string | undefined;
     const moqNode = pipeline
-      ? Object.values(pipeline.nodes).find((n) => n.kind === 'transport::moq::peer' && n.params)
+      ? Object.entries(pipeline.nodes).find(
+          ([, n]) => n.kind === 'transport::moq::peer' && n.params
+        )
       : undefined;
-    if (moqNode?.params) {
-      const params = moqNode.params as Record<string, unknown>;
+    if (moqNode) {
+      moqNodeName = moqNode[0];
+      const params = moqNode[1].params as Record<string, unknown>;
       const gatewayPath = params.gateway_path as string | undefined;
       const outputBroadcast = params.output_broadcast as string | undefined;
       const currentUrl = useStreamStore.getState().serverUrl;
@@ -1804,6 +1809,23 @@ const MonitorViewContent: React.FC = () => {
       }
     }
 
+    // Detect which media types the pipeline outputs by checking the kinds of
+    // nodes connected to the moq_peer's input pins.
+    let outputsAudio = true;
+    let outputsVideo = true;
+    if (pipeline && moqNodeName) {
+      outputsAudio = false;
+      outputsVideo = false;
+      for (const conn of pipeline.connections) {
+        if (conn.to_node !== moqNodeName) continue;
+        const sourceNode = pipeline.nodes[conn.from_node];
+        if (!sourceNode?.kind) continue;
+        if (sourceNode.kind.startsWith('audio::')) outputsAudio = true;
+        else if (sourceNode.kind.startsWith('video::')) outputsVideo = true;
+      }
+    }
+    previewSetPipelineOutputTypes(outputsAudio, outputsVideo);
+
     await previewConnect();
   }, [
     previewSetEnablePublish,
@@ -1814,6 +1836,7 @@ const MonitorViewContent: React.FC = () => {
     pipeline,
     previewSetServerUrl,
     previewSetOutputBroadcast,
+    previewSetPipelineOutputTypes,
   ]);
 
   // Handle entering staging mode

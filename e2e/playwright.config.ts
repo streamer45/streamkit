@@ -50,7 +50,7 @@ export default defineConfig({
             `--use-file-for-fake-audio-capture=${fakeAudioPath}`,
           ],
         },
-        permissions: ['microphone'],
+        permissions: ['microphone', 'camera'],
       },
     },
   ],

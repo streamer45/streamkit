@@ -267,6 +267,8 @@ const StreamView: React.FC = () => {
     isCameraEnabled,
     cameraStatus,
     watchStatus,
+    pipelineNeedsAudio,
+    pipelineNeedsVideo,
     errorMessage,
     configLoaded,
     activeSessionId,
@@ -280,6 +282,8 @@ const StreamView: React.FC = () => {
     setConnectionMode,
     setEnablePublish,
     setEnableWatch,
+    setPipelineMediaTypes,
+    setPipelineOutputTypes,
     setActiveSession,
     clearActiveSession,
     loadConfig,
@@ -302,6 +306,8 @@ const StreamView: React.FC = () => {
       isCameraEnabled: s.isCameraEnabled,
       cameraStatus: s.cameraStatus,
       watchStatus: s.watchStatus,
+      pipelineNeedsAudio: s.pipelineNeedsAudio,
+      pipelineNeedsVideo: s.pipelineNeedsVideo,
       errorMessage: s.errorMessage,
       configLoaded: s.configLoaded,
       activeSessionId: s.activeSessionId,
@@ -315,6 +321,8 @@ const StreamView: React.FC = () => {
       setConnectionMode: s.setConnectionMode,
       setEnablePublish: s.setEnablePublish,
       setEnableWatch: s.setEnableWatch,
+      setPipelineMediaTypes: s.setPipelineMediaTypes,
+      setPipelineOutputTypes: s.setPipelineOutputTypes,
       setActiveSession: s.setActiveSession,
       clearActiveSession: s.clearActiveSession,
       loadConfig: s.loadConfig,
@@ -448,10 +456,27 @@ const StreamView: React.FC = () => {
           // Auto-toggle publish based on whether pipeline expects a publisher.
           // Receive-only pipelines (no input_broadcast) skip microphone access.
           setEnablePublish(moqSettings.hasInputBroadcast);
+
+          // Tell the store which devices the pipeline actually needs so that
+          // connect() only requests the relevant browser permissions.
+          setPipelineMediaTypes(moqSettings.needsAudioInput, moqSettings.needsVideoInput);
+
+          // Tell the store which media types the pipeline outputs to subscribers
+          // so that connect() only creates the relevant watch-side components.
+          setPipelineOutputTypes(moqSettings.outputsAudio, moqSettings.outputsVideo);
         }
       }
     },
-    [viewState, serverUrl, setServerUrl, setInputBroadcast, setOutputBroadcast, setEnablePublish]
+    [
+      viewState,
+      serverUrl,
+      setServerUrl,
+      setInputBroadcast,
+      setOutputBroadcast,
+      setEnablePublish,
+      setPipelineMediaTypes,
+      setPipelineOutputTypes,
+    ]
   );
 
   // Handle session creation
@@ -655,7 +680,12 @@ const StreamView: React.FC = () => {
               </ModeButton>
               <ModeButton
                 active={connectionMode === 'direct'}
-                onClick={() => setConnectionMode('direct')}
+                onClick={() => {
+                  setConnectionMode('direct');
+                  // Direct mode has no pipeline YAML, so default to both media types
+                  setPipelineMediaTypes(true, true);
+                  setPipelineOutputTypes(true, true);
+                }}
                 disabled={status !== 'disconnected'}
               >
                 Direct Connect
@@ -717,12 +747,16 @@ const StreamView: React.FC = () => {
               )}
               {isStreaming && enablePublish && (
                 <>
-                  <ControlButton active={isMicEnabled} onClick={toggleMicrophone}>
-                    {isMicEnabled ? '🎤 Microphone On' : '🔇 Microphone Off'}
-                  </ControlButton>
-                  <ControlButton active={isCameraEnabled} onClick={toggleCamera}>
-                    {isCameraEnabled ? '📷 Camera On' : '📷 Camera Off'}
-                  </ControlButton>
+                  {pipelineNeedsAudio && (
+                    <ControlButton active={isMicEnabled} onClick={toggleMicrophone}>
+                      {isMicEnabled ? '🎤 Microphone On' : '🔇 Microphone Off'}
+                    </ControlButton>
+                  )}
+                  {pipelineNeedsVideo && (
+                    <ControlButton active={isCameraEnabled} onClick={toggleCamera}>
+                      {isCameraEnabled ? '📷 Camera On' : '📷 Camera Off'}
+                    </ControlButton>
+                  )}
                 </>
               )}
             </ConnectionControlsRow>
@@ -763,8 +797,9 @@ const StreamView: React.FC = () => {
             {(status === 'connecting' || status === 'connected') && (
               <div style={{ color: 'var(--sk-text-muted)', fontSize: '13px', padding: '4px 0' }}>
                 {status === 'connected' ? 'Relay: connected' : 'Relay: connecting…'} •{' '}
-                {watchStatusText[watchStatus]} • {micStatusText[micStatus]} •{' '}
-                {cameraStatusText[cameraStatus]}
+                {watchStatusText[watchStatus]}
+                {pipelineNeedsAudio && <> • {micStatusText[micStatus]}</>}
+                {pipelineNeedsVideo && <> • {cameraStatusText[cameraStatus]}</>}
               </div>
             )}
 
