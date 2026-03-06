@@ -837,6 +837,7 @@ impl ProcessorNode for MoqPeerNode {
 
 impl MoqPeerNode {
     /// Start a task to handle publisher connection (receives media from client)
+    // Pin-specific output routing requires per-pin parameters; bundling into a config struct is a future cleanup.
     #[allow(clippy::too_many_arguments)]
     async fn start_publisher_task_with_permit(
         moq_connection: streamkit_core::moq_gateway::MoqConnection,
@@ -1625,6 +1626,7 @@ impl MoqPeerNode {
     }
 
     /// Subscriber send loop - receives from broadcast channel and sends to client
+    // media_state_rx adds a necessary parameter for dynamic media-type resolution.
     #[allow(clippy::too_many_arguments)]
     async fn subscriber_send_loop(
         publish: moq_lite::OriginProducer,
