@@ -398,10 +398,8 @@ export const useStagingStore = create<StagingStore>()(
 
       updateStagedNodeParams: (sessionId, nodeId, params) => {
         // Immediately update nodeParams store for instant UI feedback
-        const paramsStore = useNodeParamsStore.getState();
-        Object.entries(params).forEach(([key, value]) => {
-          paramsStore.setParam(nodeId, key, value, sessionId);
-        });
+        // Batch into a single store update to avoid N intermediate states.
+        useNodeParamsStore.getState().setParams(nodeId, params, sessionId);
 
         // Debounce the staging store update to avoid excessive re-renders
         const updateStaging = () => {
@@ -410,7 +408,8 @@ export const useStagingStore = create<StagingStore>()(
             if (!data || !data.stagedPipeline) return state;
 
             // Update the staged pipeline with accumulated params
-            const currentNodeParams = paramsStore.getParamsForNode(nodeId, sessionId) || {};
+            const currentNodeParams =
+              useNodeParamsStore.getState().getParamsForNode(nodeId, sessionId) || {};
             const existingParams = data.stagedPipeline.nodes[nodeId].params;
 
             // Type guard: merge params only if existing params is an object

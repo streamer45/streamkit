@@ -98,10 +98,9 @@ export function useSession(sessionId: string | null) {
     (nodeId: string, config: Record<string, unknown>) => {
       if (!sessionId) return;
 
-      const paramsStore = useNodeParamsStore.getState();
-      for (const [key, value] of Object.entries(config)) {
-        paramsStore.setParam(nodeId, key, value, sessionId);
-      }
+      // Batch all param updates into a single store update to avoid
+      // N intermediate states that would trigger N selector re-evaluations.
+      useNodeParamsStore.getState().setParams(nodeId, config, sessionId);
 
       const request: Request = {
         type: 'request' as MessageType,

@@ -575,13 +575,23 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
       onSelectLayer(null);
     }, [onSelectLayer]);
 
-    const setLayerRef = useCallback(
-      (layerId: string) => (el: HTMLDivElement | null) => {
-        if (el) {
-          layerRefs.current.set(layerId, el);
-        } else {
-          layerRefs.current.delete(layerId);
+    // Cache ref-callbacks per layer id so React.memo on VideoLayer/TextOverlayLayer/
+    // ImageOverlayLayer sees a stable function reference across renders.
+    const layerRefCacheRef = useRef(new Map<string, (el: HTMLDivElement | null) => void>());
+    const getLayerRef = useCallback(
+      (layerId: string) => {
+        let fn = layerRefCacheRef.current.get(layerId);
+        if (!fn) {
+          fn = (el: HTMLDivElement | null) => {
+            if (el) {
+              layerRefs.current.set(layerId, el);
+            } else {
+              layerRefs.current.delete(layerId);
+            }
+          };
+          layerRefCacheRef.current.set(layerId, fn);
         }
+        return fn;
       },
       [layerRefs]
     );
@@ -620,7 +630,7 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
                   isSelected={selectedLayerId === layer.id}
                   onPointerDown={disabled ? noopPointerDown : onLayerPointerDown}
                   onResizeStart={disabled ? noopResizeStart : onResizePointerDown}
-                  layerRef={setLayerRef(layer.id)}
+                  layerRef={getLayerRef(layer.id)}
                 />
               ))}
               {textOverlays.map((overlay, i) => (
@@ -632,7 +642,7 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
                   scale={scale}
                   onPointerDown={disabled ? noopPointerDown : onLayerPointerDown}
                   onTextEdit={disabled ? undefined : onTextEdit}
-                  layerRef={setLayerRef(overlay.id)}
+                  layerRef={getLayerRef(overlay.id)}
                 />
               ))}
               {imageOverlays.map((overlay, i) => (
@@ -643,7 +653,7 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
                   isSelected={selectedLayerId === overlay.id}
                   onPointerDown={disabled ? noopPointerDown : onLayerPointerDown}
                   onResizeStart={disabled ? noopResizeStart : onResizePointerDown}
-                  layerRef={setLayerRef(overlay.id)}
+                  layerRef={getLayerRef(overlay.id)}
                 />
               ))}
             </>
