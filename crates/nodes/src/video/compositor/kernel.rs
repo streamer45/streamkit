@@ -168,6 +168,10 @@ pub struct LayerSnapshot {
     /// Clockwise rotation in degrees around the destination rect centre.
     /// Default `0.0` means no rotation.
     pub rotation_degrees: f32,
+    /// Mirror horizontally (flip left ↔ right).
+    pub mirror_horizontal: bool,
+    /// Mirror vertically (flip top ↔ bottom).
+    pub mirror_vertical: bool,
 }
 
 /// Work item sent from the async loop to the persistent compositing thread.
@@ -202,6 +206,8 @@ struct BlitItem<'a> {
     src_opaque: bool,
     /// `(z_index, insertion_order)` for stable sorting.
     sort_key: (i32, usize),
+    mirror_horizontal: bool,
+    mirror_vertical: bool,
 }
 
 /// Composite all layers + overlays onto a fresh RGBA8 canvas buffer.
@@ -321,6 +327,8 @@ pub fn composite_frame(
             rotation_degrees: layer.rotation_degrees,
             src_opaque,
             sort_key: (layer.z_index, insertion_order),
+            mirror_horizontal: layer.mirror_horizontal,
+            mirror_vertical: layer.mirror_vertical,
         });
         insertion_order += 1;
     }
@@ -336,6 +344,8 @@ pub fn composite_frame(
             rotation_degrees: ov.rotation_degrees,
             src_opaque: false,
             sort_key: (ov.z_index, insertion_order),
+            mirror_horizontal: ov.mirror_horizontal,
+            mirror_vertical: ov.mirror_vertical,
         });
         insertion_order += 1;
     }
@@ -351,6 +361,8 @@ pub fn composite_frame(
             rotation_degrees: ov.rotation_degrees,
             src_opaque: false,
             sort_key: (ov.z_index, insertion_order),
+            mirror_horizontal: ov.mirror_horizontal,
+            mirror_vertical: ov.mirror_vertical,
         });
         insertion_order += 1;
     }
@@ -371,6 +383,8 @@ pub fn composite_frame(
             item.opacity,
             item.rotation_degrees,
             item.src_opaque,
+            item.mirror_horizontal,
+            item.mirror_vertical,
         );
     }
 

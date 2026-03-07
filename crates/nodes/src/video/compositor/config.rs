@@ -53,6 +53,12 @@ pub struct OverlayTransform {
     /// higher values are drawn on top.  Default 0.
     #[serde(default = "default_z_index")]
     pub z_index: i32,
+    /// Mirror the layer horizontally (flip left ↔ right).  Default `false`.
+    #[serde(default)]
+    pub mirror_horizontal: bool,
+    /// Mirror the layer vertically (flip top ↔ bottom).  Default `false`.
+    #[serde(default)]
+    pub mirror_vertical: bool,
 }
 
 impl Default for OverlayTransform {
@@ -62,6 +68,8 @@ impl Default for OverlayTransform {
             opacity: default_opacity(),
             rotation_degrees: 0.0,
             z_index: default_z_index(),
+            mirror_horizontal: false,
+            mirror_vertical: false,
         }
     }
 }
@@ -144,6 +152,12 @@ pub struct LayerConfig {
     /// The layer is rotated around its destination rect centre.
     #[serde(default)]
     pub rotation_degrees: f32,
+    /// Mirror the layer horizontally (flip left ↔ right).  Default `false`.
+    #[serde(default)]
+    pub mirror_horizontal: bool,
+    /// Mirror the layer vertically (flip top ↔ bottom).  Default `false`.
+    #[serde(default)]
+    pub mirror_vertical: bool,
 }
 
 impl Default for LayerConfig {
@@ -153,6 +167,8 @@ impl Default for LayerConfig {
             opacity: default_opacity(),
             z_index: default_z_index(),
             rotation_degrees: 0.0,
+            mirror_horizontal: false,
+            mirror_vertical: false,
         }
     }
 }
@@ -224,6 +240,8 @@ pub struct ResolvedLayer {
     pub opacity: f32,
     pub z_index: i32,
     pub rotation_degrees: f32,
+    pub mirror_horizontal: bool,
+    pub mirror_vertical: bool,
 }
 
 /// Server-computed layout for a single overlay (text or image).
@@ -239,6 +257,8 @@ pub struct ResolvedOverlay {
     pub opacity: f32,
     pub z_index: i32,
     pub rotation_degrees: f32,
+    pub mirror_horizontal: bool,
+    pub mirror_vertical: bool,
 }
 
 /// The complete server-computed compositor layout, serialized as view data.

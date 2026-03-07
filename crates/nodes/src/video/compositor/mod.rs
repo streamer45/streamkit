@@ -77,6 +77,8 @@ struct ResolvedSlotConfig {
     /// while preserving its aspect ratio (letterbox / pillarbox).
     /// Used by auto-PiP layers to avoid stretching.
     aspect_fit: bool,
+    mirror_horizontal: bool,
+    mirror_vertical: bool,
 }
 
 /// Rebuild the per-slot resolved configs and the z-sorted draw order.
@@ -93,8 +95,8 @@ fn rebuild_layer_cache(
     for (idx, slot) in slots.iter().enumerate() {
         let layer_cfg = config.layers.get(&slot.name);
         #[allow(clippy::option_if_let_else)]
-        let (rect, opacity, z_index, rotation_degrees, aspect_fit) = if let Some(lc) = layer_cfg {
-            (lc.rect.clone(), lc.opacity, lc.z_index, lc.rotation_degrees, false)
+        let (rect, opacity, z_index, rotation_degrees, aspect_fit, mirror_h, mirror_v) = if let Some(lc) = layer_cfg {
+            (lc.rect.clone(), lc.opacity, lc.z_index, lc.rotation_degrees, false, lc.mirror_horizontal, lc.mirror_vertical)
         } else if idx > 0 && num_slots > 1 {
             // Auto-PiP: non-first layers without explicit config.
             let pip_w = config.width / 3;
@@ -110,11 +112,13 @@ fn rebuild_layer_cache(
                 idx as i32,
                 0.0,
                 true, // preserve source aspect ratio within PiP bounds
+                false,
+                false,
             )
         } else {
-            (None, 1.0, 0, 0.0, false)
+            (None, 1.0, 0, 0.0, false, false, false)
         };
-        configs.push(ResolvedSlotConfig { rect, opacity, z_index, rotation_degrees, aspect_fit });
+        configs.push(ResolvedSlotConfig { rect, opacity, z_index, rotation_degrees, aspect_fit, mirror_horizontal: mirror_h, mirror_vertical: mirror_v });
     }
 
     // Pre-sort by (z_index, slot_index).
@@ -586,6 +590,8 @@ impl ProcessorNode for CompositorNode {
                             opacity: cfg.opacity,
                             z_index: cfg.z_index,
                             rotation_degrees: cfg.rotation_degrees,
+                            mirror_horizontal: cfg.mirror_horizontal,
+                            mirror_vertical: cfg.mirror_vertical,
                         }
                     })
                 })
@@ -736,6 +742,8 @@ impl CompositorNode {
                     opacity: cfg.opacity,
                     z_index: cfg.z_index,
                     rotation_degrees: cfg.rotation_degrees,
+                    mirror_horizontal: cfg.mirror_horizontal,
+                    mirror_vertical: cfg.mirror_vertical,
                 });
             }
         }
@@ -751,6 +759,8 @@ impl CompositorNode {
                 opacity: ov.opacity,
                 z_index: ov.z_index,
                 rotation_degrees: ov.rotation_degrees,
+                mirror_horizontal: ov.mirror_horizontal,
+                mirror_vertical: ov.mirror_vertical,
             });
         }
 
@@ -765,6 +775,8 @@ impl CompositorNode {
                 opacity: ov.opacity,
                 z_index: ov.z_index,
                 rotation_degrees: ov.rotation_degrees,
+                mirror_horizontal: ov.mirror_horizontal,
+                mirror_vertical: ov.mirror_vertical,
             });
         }
 
@@ -857,6 +869,8 @@ impl CompositorNode {
                                 ov.opacity = img_cfg.transform.opacity;
                                 ov.rotation_degrees = img_cfg.transform.rotation_degrees;
                                 ov.z_index = img_cfg.transform.z_index;
+                                ov.mirror_horizontal = img_cfg.transform.mirror_horizontal;
+                                ov.mirror_vertical = img_cfg.transform.mirror_vertical;
                                 new_image_overlays.push(Arc::new(ov));
                                 new_cfg_indices.push(new_idx);
                                 continue;
@@ -1001,6 +1015,8 @@ mod tests {
             &Rect { x: 1, y: 1, width: 2, height: 2 },
             1.0,
             false,
+            false,
+            false,
         );
 
         // Pixel at (1,1) should be red.
@@ -1033,6 +1049,8 @@ mod tests {
             &Rect { x: 0, y: 0, width: 1, height: 1 },
             0.5,
             false,
+            false,
+            false,
         );
 
         // Pixel (0,0): white at 50% over opaque black -> ~128 grey.
@@ -1055,6 +1073,8 @@ mod tests {
             1,
             &Rect { x: 2, y: 2, width: 4, height: 4 },
             1.0,
+            false,
+            false,
             false,
         );
 
@@ -1093,6 +1113,8 @@ mod tests {
             &Rect { x: 10, y: 10, width: 20, height: 20 },
             1.0,
             45.0,
+            false,
+            false,
             false,
         );
 
@@ -1134,6 +1156,8 @@ mod tests {
             opacity: 1.0,
             z_index: 0,
             rotation_degrees: 0.0,
+            mirror_horizontal: false,
+            mirror_vertical: false,
         };
 
         let mut cache = ConversionCache::new();
@@ -1164,6 +1188,8 @@ mod tests {
             opacity: 1.0,
             z_index: 0,
             rotation_degrees: 0.0,
+            mirror_horizontal: false,
+            mirror_vertical: false,
         };
         let layer1 = LayerSnapshot {
             data: green.data,
@@ -1174,6 +1200,8 @@ mod tests {
             opacity: 1.0,
             z_index: 1,
             rotation_degrees: 0.0,
+            mirror_horizontal: false,
+            mirror_vertical: false,
         };
 
         let mut cache = ConversionCache::new();
@@ -1577,6 +1605,8 @@ mod tests {
             &Rect { x: 0, y: 0, width: w as u32, height: h as u32 },
             0.9,
             false,
+            false,
+            false,
         );
 
         // Every single row should have been written to (non-zero pixels).
@@ -1699,6 +1729,8 @@ mod tests {
             opacity: 0.8,
             z_index: 0,
             rotation_degrees: 0.0,
+            mirror_horizontal: false,
+            mirror_vertical: false,
         };
 
         let mut cache = ConversionCache::new();
@@ -1761,6 +1793,8 @@ mod tests {
             &Rect { x: 0, y: 0, width: w, height: h },
             0.9,
             0.0,
+            false,
+            false,
             false,
         );
 
@@ -1827,6 +1861,8 @@ mod tests {
             0.9,
             0.0, // no rotation — exercises the near-zero fast path
             false,
+            false,
+            false,
         );
 
         // Every row should have non-zero pixels (no black bars on left/right).
@@ -1869,6 +1905,8 @@ mod tests {
             &Rect { x: 10, y: 10, width: 40, height: 20 },
             1.0,
             15.0,
+            false,
+            false,
             false,
         );
 

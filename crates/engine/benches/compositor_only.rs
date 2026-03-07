@@ -334,6 +334,8 @@ fn make_layer(
         opacity,
         z_index,
         rotation_degrees,
+        mirror_horizontal: false,
+        mirror_vertical: false,
     })
 }
 
@@ -570,6 +572,8 @@ fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
                         opacity: 1.0,
                         z_index: 0,
                         rotation_degrees: 0.0,
+                        mirror_horizontal: false,
+                        mirror_vertical: false,
                     }),
                     Some(LayerSnapshot {
                         data: pip,
@@ -580,6 +584,8 @@ fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
                         opacity: 0.9,
                         z_index: 1,
                         rotation_degrees: 0.0,
+                        mirror_horizontal: false,
+                        mirror_vertical: false,
                     }),
                 ]
             },
