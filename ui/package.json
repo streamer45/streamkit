@@ -14,7 +14,7 @@
     "test:run": "vitest run",
     "test:ui": "vitest --ui",
     "test:coverage": "vitest --coverage",
-    "test:perf": "vitest run --reporter=verbose 'render-perf\\.test|perf\\.test'",
+    "test:perf": "vitest run --reporter=verbose perf.test",
     "prepare": "cd .. && husky .husky"
   },
   "devDependencies": {
