@@ -229,6 +229,12 @@ test-ui: install-ui
     @echo "Testing UI..."
     @bun run test:run
 
+# Run UI render-performance tests (Layer 1)
+[working-directory: 'ui']
+perf-ui: install-ui
+    @echo "Running UI render-performance tests..."
+    @bun run test:perf
+
 # Lint and type-check the UI code
 [working-directory: 'ui']
 lint-ui: install-ui
