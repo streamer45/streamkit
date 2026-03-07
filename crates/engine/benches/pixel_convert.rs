@@ -223,6 +223,10 @@ fn bench_conversion_cold(
         .collect();
     let mut output = vec![0u8; output_size];
 
+    if frame_count == 0 {
+        return BenchResult { total_secs: 0.0, frame_count };
+    }
+
     // Warm-up: prime rayon thread pool only (not data cache).
     convert_fn(&inputs[0], width, height, &mut output);
 
