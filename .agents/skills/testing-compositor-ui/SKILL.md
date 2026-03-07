@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+
+SPDX-License-Identifier: MPL-2.0
+-->
+
 # Testing the Video Compositor UI
 
 ## Overview

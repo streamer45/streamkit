@@ -627,9 +627,9 @@ mod tests {
         for y in 0..h {
             for x in 0..w {
                 let off = (y * w + x) * 4;
-                let dr = (decoded[off] as i32 - 200).unsigned_abs();
-                let dg = (decoded[off + 1] as i32 - 100).unsigned_abs();
-                let db = (decoded[off + 2] as i32 - 50).unsigned_abs();
+                let dr = (i32::from(decoded[off]) - 200).unsigned_abs();
+                let dg = (i32::from(decoded[off + 1]) - 100).unsigned_abs();
+                let db = (i32::from(decoded[off + 2]) - 50).unsigned_abs();
                 assert!(dr <= 3, "R channel diff too large at ({x},{y}): {dr}");
                 assert!(dg <= 3, "G channel diff too large at ({x},{y}): {dg}");
                 assert!(db <= 3, "B channel diff too large at ({x},{y}): {db}");
