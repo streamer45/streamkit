@@ -114,7 +114,7 @@ Key files:
 | File | Purpose |
 |------|---------|
 | `ui/src/perf/profiler.ts` | Dev-only `PerfProfiler` wrapper + `window.__PERF_DATA__` store |
-| `e2e/tests/perf-helpers.ts` | `collectPerfData()` / `clearPerfData()` Playwright utilities |
+| `e2e/tests/perf-helpers.ts` | `capturePerfData()` / `resetPerfData()` Playwright utilities |
 
 Use Layer 2 when you need real paint/layout timing or want to profile
 interactions end-to-end with actual browser rendering.
@@ -122,8 +122,10 @@ interactions end-to-end with actual browser rendering.
 ### Updating the baseline
 
 Run `just perf-ui` — the last test in the render-perf suite writes a fresh
-`perf-baselines.json`. Commit the updated baseline alongside your changes so
-future runs compare against the new numbers.
+`perf-baselines.json` (gated behind `UPDATE_PERF_BASELINE=1`, which the
+`test:perf` script sets automatically). Regular `just test-ui` runs compare
+against the baseline but never overwrite it. Commit the updated baseline
+alongside your changes so future runs compare against the new numbers.
 
 ## Docker notes
 
