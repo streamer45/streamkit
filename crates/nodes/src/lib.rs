@@ -12,6 +12,7 @@ pub mod transport;
 pub mod video;
 
 // Shared utilities
+pub mod codec_utils;
 pub mod streaming_utils;
 
 #[cfg(test)]

@@ -25,7 +25,6 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Instant;
-use streamkit_core::control::NodeControlMessage;
 use streamkit_core::stats::NodeStatsTracker;
 use streamkit_core::types::{Packet, PacketType, PixelFormat, VideoFormat, VideoFrame};
 use streamkit_core::{
@@ -126,6 +125,9 @@ impl ProcessorNode for PixelConvertNode {
         let mut input_rx = context.take_input("in")?;
 
         tracing::info!("PixelConvertNode starting: target_format={:?}", self.target_format);
+
+        let meter = global::meter("skit_nodes");
+        let packets_processed_counter = meter.u64_counter("pixel_convert_packets_processed").build();
 
         // ── Blocking conversion thread ──────────────────────────────────
         let target_format = self.target_format;
@@ -263,89 +265,18 @@ impl ProcessorNode for PixelConvertNode {
             tracing::info!("PixelConvertNode input stream closed");
         });
 
-        // ── Forward loop (mirrors codec_forward_loop pattern) ───────────
-        loop {
-            tokio::select! {
-                maybe_result = result_rx.recv() => {
-                    match maybe_result {
-                        Some(Ok(out_frame)) => {
-                            // Determine if this was a passthrough or conversion.
-                            // We check the pixel format: if it matches AND the frame
-                            // wasn't converted, it's a passthrough.
-                            // Since the blocking thread only sends Ok when it
-                            // succeeded, we count based on whether conversion happened.
-                            // The simplest reliable signal: check if the output format
-                            // differs from what we'd expect on passthrough... but
-                            // actually both paths produce target_format. We'll count
-                            // in the blocking thread instead by sending a flag.
-                            // For simplicity, count all successful outputs here and
-                            // rely on the metrics from the blocking thread.
-
-                            stats_tracker.received();
-                            if context
-                                .output_sender
-                                .send("out", Packet::Video(out_frame))
-                                .await
-                                .is_err()
-                            {
-                                tracing::debug!("Output channel closed, stopping node");
-                                break;
-                            }
-                            stats_tracker.sent();
-                            stats_tracker.maybe_send();
-                        },
-                        Some(Err(err)) => {
-                            stats_tracker.received();
-                            stats_tracker.errored();
-                            stats_tracker.maybe_send();
-                            tracing::warn!("PixelConvertNode conversion error: {err}");
-                        },
-                        None => break,
-                    }
-                }
-                Some(control_msg) = context.control_rx.recv() => {
-                    if matches!(control_msg, NodeControlMessage::Shutdown) {
-                        tracing::info!("PixelConvertNode received shutdown signal");
-                        input_task.abort();
-                        convert_task.abort();
-                        drop(convert_tx);
-                        break;
-                    }
-                }
-                _ = &mut input_task => {
-                    // Input finished — drop sender to signal blocking thread,
-                    // then drain remaining results.
-                    drop(convert_tx);
-                    while let Some(maybe_result) = result_rx.recv().await {
-                        match maybe_result {
-                            Ok(out_frame) => {
-                                stats_tracker.received();
-                                if context
-                                    .output_sender
-                                    .send("out", Packet::Video(out_frame))
-                                    .await
-                                    .is_err()
-                                {
-                                    break;
-                                }
-                                stats_tracker.sent();
-                                stats_tracker.maybe_send();
-                            },
-                            Err(err) => {
-                                stats_tracker.received();
-                                stats_tracker.errored();
-                                stats_tracker.maybe_send();
-                                tracing::warn!("PixelConvertNode conversion error: {err}");
-                            },
-                        }
-                    }
-                    break;
-                }
-            }
-        }
-
-        convert_task.abort();
-        let _ = convert_task.await;
+        crate::codec_utils::codec_forward_loop(
+            &mut context,
+            &mut result_rx,
+            &mut input_task,
+            convert_task,
+            convert_tx,
+            &packets_processed_counter,
+            &mut stats_tracker,
+            Packet::Video,
+            "PixelConvertNode",
+        )
+        .await;
 
         state_helpers::emit_stopped(&context.state_tx, &node_name, "input_closed");
         tracing::info!("PixelConvertNode shutting down.");
