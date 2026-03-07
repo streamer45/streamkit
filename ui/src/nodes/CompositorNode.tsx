@@ -79,7 +79,6 @@ const ResolutionLabel = styled.span`
   font-size: 10px;
 `;
 
-
 const ControlRow = styled.div`
   display: flex;
   align-items: center;
@@ -1119,7 +1118,14 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
         updateImageOverlay(selectedLayerId, { opacity: v });
       }
     },
-    [selectedLayerId, layers, textOverlays, updateLayerOpacity, updateTextOverlay, updateImageOverlay]
+    [
+      selectedLayerId,
+      layers,
+      textOverlays,
+      updateLayerOpacity,
+      updateTextOverlay,
+      updateImageOverlay,
+    ]
   );
   const handleSelectedRotationChange = useCallback(
     (v: number) => {
@@ -1133,7 +1139,14 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
         updateImageOverlay(selectedLayerId, { rotationDegrees: v });
       }
     },
-    [selectedLayerId, layers, textOverlays, updateLayerRotation, updateTextOverlay, updateImageOverlay]
+    [
+      selectedLayerId,
+      layers,
+      textOverlays,
+      updateLayerRotation,
+      updateTextOverlay,
+      updateImageOverlay,
+    ]
   );
 
   // Derive friendly name for selected layer in inspector
@@ -1161,9 +1174,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
           <OverlayEditRow>
             <OverlayTextInput
               value={selectedTextOverlay.text}
-              onChange={(e) =>
-                updateTextOverlay(selectedTextOverlay.id, { text: e.target.value })
-              }
+              onChange={(e) => updateTextOverlay(selectedTextOverlay.id, { text: e.target.value })}
               placeholder="Text content"
               disabled={disabled}
               className="nodrag nopan"
@@ -1225,11 +1236,26 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
   // Selected layer props for the inspector (stable object during same selection)
   const inspectorProps = useMemo(() => {
     if (selectedLayer)
-      return { x: selectedLayer.x, y: selectedLayer.y, opacity: selectedLayer.opacity, rotationDegrees: selectedLayer.rotationDegrees };
+      return {
+        x: selectedLayer.x,
+        y: selectedLayer.y,
+        opacity: selectedLayer.opacity,
+        rotationDegrees: selectedLayer.rotationDegrees,
+      };
     if (selectedTextOverlay)
-      return { x: selectedTextOverlay.x, y: selectedTextOverlay.y, opacity: selectedTextOverlay.opacity, rotationDegrees: selectedTextOverlay.rotationDegrees };
+      return {
+        x: selectedTextOverlay.x,
+        y: selectedTextOverlay.y,
+        opacity: selectedTextOverlay.opacity,
+        rotationDegrees: selectedTextOverlay.rotationDegrees,
+      };
     if (selectedImageOverlay)
-      return { x: selectedImageOverlay.x, y: selectedImageOverlay.y, opacity: selectedImageOverlay.opacity, rotationDegrees: selectedImageOverlay.rotationDegrees };
+      return {
+        x: selectedImageOverlay.x,
+        y: selectedImageOverlay.y,
+        opacity: selectedImageOverlay.opacity,
+        rotationDegrees: selectedImageOverlay.rotationDegrees,
+      };
     return null;
   }, [selectedLayer, selectedTextOverlay, selectedImageOverlay]);
 
