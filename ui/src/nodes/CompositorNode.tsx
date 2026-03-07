@@ -1104,49 +1104,44 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
   const selectedLayer = layers.find((l) => l.id === selectedLayerId);
   const selectedTextOverlay = textOverlays.find((o) => o.id === selectedLayerId);
   const selectedImageOverlay = imageOverlays.find((o) => o.id === selectedLayerId);
+  // Determine the kind of the selected layer once — this only changes when
+  // selection changes or layers are added/removed, NOT on every slider tick.
+  const selectedLayerKind = useMemo(() => {
+    if (layers.some((l) => l.id === selectedLayerId)) return 'video' as const;
+    if (textOverlays.some((o) => o.id === selectedLayerId)) return 'text' as const;
+    if (imageOverlays.some((o) => o.id === selectedLayerId)) return 'image' as const;
+    return null;
+  }, [selectedLayerId, layers, textOverlays, imageOverlays]);
+
   // Memoize callbacks for LayerInspector — stable references prevent
   // React.memo on LayerInspector from being defeated during slider drags.
+  // These depend on selectedLayerKind (a string) instead of the full arrays,
+  // so they stay stable during opacity/rotation changes.
   const handleSelectedOpacityChange = useCallback(
     (v: number) => {
-      if (!selectedLayerId) return;
-      const selLayer = layers.find((l) => l.id === selectedLayerId);
-      if (selLayer) {
+      if (!selectedLayerId || !selectedLayerKind) return;
+      if (selectedLayerKind === 'video') {
         updateLayerOpacity(selectedLayerId, v);
-      } else if (textOverlays.some((o) => o.id === selectedLayerId)) {
+      } else if (selectedLayerKind === 'text') {
         updateTextOverlay(selectedLayerId, { opacity: v });
       } else {
         updateImageOverlay(selectedLayerId, { opacity: v });
       }
     },
-    [
-      selectedLayerId,
-      layers,
-      textOverlays,
-      updateLayerOpacity,
-      updateTextOverlay,
-      updateImageOverlay,
-    ]
+    [selectedLayerId, selectedLayerKind, updateLayerOpacity, updateTextOverlay, updateImageOverlay]
   );
   const handleSelectedRotationChange = useCallback(
     (v: number) => {
-      if (!selectedLayerId) return;
-      const selLayer = layers.find((l) => l.id === selectedLayerId);
-      if (selLayer) {
+      if (!selectedLayerId || !selectedLayerKind) return;
+      if (selectedLayerKind === 'video') {
         updateLayerRotation(selectedLayerId, v);
-      } else if (textOverlays.some((o) => o.id === selectedLayerId)) {
+      } else if (selectedLayerKind === 'text') {
         updateTextOverlay(selectedLayerId, { rotationDegrees: v });
       } else {
         updateImageOverlay(selectedLayerId, { rotationDegrees: v });
       }
     },
-    [
-      selectedLayerId,
-      layers,
-      textOverlays,
-      updateLayerRotation,
-      updateTextOverlay,
-      updateImageOverlay,
-    ]
+    [selectedLayerId, selectedLayerKind, updateLayerRotation, updateTextOverlay, updateImageOverlay]
   );
 
   // Derive friendly name for selected layer in inspector
