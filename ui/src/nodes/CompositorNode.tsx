@@ -1220,6 +1220,31 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
     );
   }, [selectedTextOverlay, updateTextOverlay, disabled]);
 
+  // Memoize the canvas header so the SKTooltip / LIVE badge subtree doesn't
+  // re-render on every slider tick.  showLiveIndicator, canvasWidth and
+  // canvasHeight are all stable during opacity/rotation drags.
+  const canvasHeaderContent = useMemo(
+    () => (
+      <CanvasHeader>
+        <CanvasLabel>
+          Compositor
+          {showLiveIndicator && (
+            <SKTooltip content="Layer changes apply immediately to the running pipeline">
+              <LiveBadge size="small" style={{ marginLeft: 6 }}>
+                <LiveDot size="small" />
+                LIVE
+              </LiveBadge>
+            </SKTooltip>
+          )}
+        </CanvasLabel>
+        <ResolutionLabel>
+          {canvasWidth}&times;{canvasHeight}
+        </ResolutionLabel>
+      </CanvasHeader>
+    ),
+    [showLiveIndicator, canvasWidth, canvasHeight]
+  );
+
   // Selected layer props for the inspector (stable object during same selection)
   const inspectorProps = useMemo(() => {
     if (selectedLayer)
@@ -1262,22 +1287,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
       <CompositorOuterWrapper>
         <CompositorWrapper>
           <CanvasSection>
-            <CanvasHeader>
-              <CanvasLabel>
-                Compositor
-                {showLiveIndicator && (
-                  <SKTooltip content="Layer changes apply immediately to the running pipeline">
-                    <LiveBadge size="small" style={{ marginLeft: 6 }}>
-                      <LiveDot size="small" />
-                      LIVE
-                    </LiveBadge>
-                  </SKTooltip>
-                )}
-              </CanvasLabel>
-              <ResolutionLabel>
-                {canvasWidth}&times;{canvasHeight}
-              </ResolutionLabel>
-            </CanvasHeader>
+            {canvasHeaderContent}
 
             <CompositorCanvas
               canvasWidth={canvasWidth}
