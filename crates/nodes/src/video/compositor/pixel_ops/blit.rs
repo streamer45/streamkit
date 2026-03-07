@@ -226,7 +226,11 @@ pub fn scale_blit_rgba(
     let x_map: Vec<usize> = (0..effective_rect_w)
         .map(|dx| {
             let sx = (dx + src_col_skip) * sw / rw;
-            if mirror_h { sw.saturating_sub(1).saturating_sub(sx) } else { sx }
+            if mirror_h {
+                sw.saturating_sub(1).saturating_sub(sx)
+            } else {
+                sx
+            }
         })
         .collect();
 
@@ -234,7 +238,8 @@ pub fn scale_blit_rgba(
         dst_rows.par_chunks_mut(row_stride).take(effective_rh).enumerate().for_each(
             |(dy, row_slice)| {
                 let sy_raw = (dy + src_row_skip) * sh / rh;
-                let sy = if mirror_v { sh.saturating_sub(1).saturating_sub(sy_raw) } else { sy_raw };
+                let sy =
+                    if mirror_v { sh.saturating_sub(1).saturating_sub(sy_raw) } else { sy_raw };
                 blit_row(row_slice, rx, effective_rect_w, src, sw, sy, opacity, &x_map);
             },
         );
@@ -1003,8 +1008,10 @@ pub fn scale_blit_rgba_rotated(
                             local_y -= sin_a;
                             px += 1;
 
-                            let isx_raw = (((local_x + half_cw) * inv_scale_x) as usize).min(sw - 1);
-                            let isy_raw = (((local_y + half_ch) * inv_scale_y) as usize).min(sh - 1);
+                            let isx_raw =
+                                (((local_x + half_cw) * inv_scale_x) as usize).min(sw - 1);
+                            let isy_raw =
+                                (((local_y + half_ch) * inv_scale_y) as usize).min(sh - 1);
                             let isx = if mirror_h { sw - 1 - isx_raw } else { isx_raw };
                             let isy = if mirror_v { sh - 1 - isy_raw } else { isy_raw };
                             let si = (isy * sw + isx) * 4;
@@ -1024,8 +1031,10 @@ pub fn scale_blit_rgba_rotated(
                             local_y -= sin_a;
                             px += 1;
 
-                            let isx_raw = (((local_x + half_cw) * inv_scale_x) as usize).min(sw - 1);
-                            let isy_raw = (((local_y + half_ch) * inv_scale_y) as usize).min(sh - 1);
+                            let isx_raw =
+                                (((local_x + half_cw) * inv_scale_x) as usize).min(sw - 1);
+                            let isy_raw =
+                                (((local_y + half_ch) * inv_scale_y) as usize).min(sh - 1);
                             let isx = if mirror_h { sw - 1 - isx_raw } else { isx_raw };
                             let isy = if mirror_v { sh - 1 - isy_raw } else { isy_raw };
                             let si = (isy * sw + isx) * 4;
