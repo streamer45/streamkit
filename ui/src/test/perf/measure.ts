@@ -24,7 +24,13 @@
  *   });
  */
 
-import { render, cleanup, type RenderResult } from '@testing-library/react';
+import {
+  render,
+  cleanup,
+  renderHook,
+  type RenderResult,
+  type RenderHookResult,
+} from '@testing-library/react';
 import React from 'react';
 
 import type { MeasureResult, RenderMeasurement } from './types';
@@ -46,6 +52,30 @@ export interface MeasureRendersOptions {
    * component under test.
    */
   wrapper?: React.ComponentType<{ children: React.ReactNode }>;
+}
+
+/** Options for {@link measureHookRenders}. */
+export interface MeasureHookRendersOptions<TProps, TResult> {
+  /** Number of measurement runs (default: 7). */
+  runs?: number;
+  /** Number of warm-up runs discarded before measurement (default: 1). */
+  warmupRuns?: number;
+  /** Initial props passed to the hook. */
+  initialProps: TProps;
+  /**
+   * Scenario executed after hook mount.  Receives the RTL `renderHook` result
+   * so you can call hook methods, rerender, etc.
+   */
+  scenario: (hook: RenderHookResult<TResult, TProps>) => void;
+}
+
+function createOnRender(measurement: RenderMeasurement): React.ProfilerOnRenderCallback {
+  return (_id, _phase, actualDuration) => {
+    measurement.renderCount += 1;
+    measurement.totalDuration += actualDuration;
+    measurement.maxCommitDuration = Math.max(measurement.maxCommitDuration, actualDuration);
+    measurement.commitDurations.push(actualDuration);
+  };
 }
 
 function stats(values: number[]): { mean: number; stdev: number } {
@@ -76,12 +106,7 @@ export async function measureRenders(
       commitDurations: [],
     };
 
-    const onRender: React.ProfilerOnRenderCallback = (_id, _phase, actualDuration) => {
-      measurement.renderCount += 1;
-      measurement.totalDuration += actualDuration;
-      measurement.maxCommitDuration = Math.max(measurement.maxCommitDuration, actualDuration);
-      measurement.commitDurations.push(actualDuration);
-    };
+    const onRender = createOnRender(measurement);
 
     const profiled = React.createElement(React.Profiler, { id: 'measure', onRender }, ui);
 
@@ -99,6 +124,79 @@ export async function measureRenders(
     cleanup();
 
     // Only record after warm-up runs.
+    if (i >= warmupRuns) {
+      allMeasurements.push(measurement);
+    }
+  }
+
+  const renderCounts = allMeasurements.map((m) => m.renderCount);
+  const durations = allMeasurements.map((m) => m.totalDuration);
+  const rcStats = stats(renderCounts);
+  const durStats = stats(durations);
+
+  return {
+    name: '',
+    runs,
+    meanRenderCount: rcStats.mean,
+    stdevRenderCount: rcStats.stdev,
+    meanDuration: durStats.mean,
+    stdevDuration: durStats.stdev,
+    measurements: allMeasurements,
+  };
+}
+
+/**
+ * Measure render performance of a React hook across multiple runs.
+ *
+ * Similar to {@link measureRenders} but for hooks tested via `renderHook`.
+ * A thin wrapper component with React.Profiler is used internally to count
+ * renders triggered by the hook.
+ *
+ * @example
+ * ```ts
+ * const result = measureHookRenders(
+ *   (props) => useMyHook(props),
+ *   {
+ *     initialProps: { value: 0 },
+ *     scenario: ({ result }) => {
+ *       act(() => result.current.increment());
+ *     },
+ *   },
+ * );
+ * expect(result.meanRenderCount).toBeLessThanOrEqual(5);
+ * ```
+ */
+export function measureHookRenders<TProps, TResult>(
+  hook: (props: TProps) => TResult,
+  options: MeasureHookRendersOptions<TProps, TResult>
+): MeasureResult {
+  const { runs = 7, warmupRuns = 1, initialProps, scenario } = options;
+
+  const totalRuns = warmupRuns + runs;
+  const allMeasurements: RenderMeasurement[] = [];
+
+  for (let i = 0; i < totalRuns; i++) {
+    const measurement: RenderMeasurement = {
+      renderCount: 0,
+      totalDuration: 0,
+      maxCommitDuration: 0,
+      commitDurations: [],
+    };
+
+    const onRender = createOnRender(measurement);
+
+    // Wrap the hook in a Profiler-instrumented component
+    const hookResult = renderHook((props: TProps) => hook(props), {
+      initialProps,
+      wrapper: ({ children }: { children: React.ReactNode }) =>
+        React.createElement(React.Profiler, { id: 'hook-measure', onRender }, children),
+    });
+
+    scenario(hookResult);
+
+    hookResult.unmount();
+    cleanup();
+
     if (i >= warmupRuns) {
       allMeasurements.push(measurement);
     }

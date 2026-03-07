@@ -5,17 +5,28 @@
 /**
  * Render-performance regression tests for the compositor layer hook.
  *
- * Uses the Layer 1 measureRenders framework to verify that:
- *   1. Callback references remain stable during slider drags (memoization).
- *   2. Rapid opacity/rotation updates don't cause excessive re-renders.
+ * Uses the Layer 1 measureHookRenders framework to verify that:
+ *   1. Rapid slider interactions produce bounded render counts.
+ *   2. Callback references remain stable (preventing cascade re-renders
+ *      in memoized siblings like UnifiedLayerList, OpacityControl, etc.).
+ *   3. Server echo-back param changes don't trigger unnecessary re-renders.
  *
- * These tests complement the existing callback-stability unit test
- * (useCompositorLayers.perf.test.ts) with quantitative render-count
- * measurements that can be compared against baselines.
+ * These tests catch the class of regression fixed in PR #89 where slider
+ * drags caused callback instability, breaking React.memo barriers and
+ * cascading re-renders to unrelated components.
  */
 
-import { renderHook, act } from '@testing-library/react';
+import { act } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
+
+import {
+  measureHookRenders,
+  writeBaseline,
+  readBaseline,
+  compare,
+  formatReport,
+} from '@/test/perf';
+import type { MeasureResult } from '@/test/perf';
 
 import type { UseCompositorLayersOptions } from './useCompositorLayers';
 import { useCompositorLayers } from './useCompositorLayers';
@@ -54,125 +65,149 @@ function defaultOptions(
   };
 }
 
+/**
+ * Maximum renders allowed for 20 rapid slider ticks.
+ *
+ * Expected: 1 (mount) + 1 (selectLayer) + 20 (slider ticks) = 22.
+ * Budget gives headroom for React batching variance.
+ */
+const SLIDER_BUDGET = 30;
+
+/**
+ * Maximum renders allowed for 10 param reference changes.
+ *
+ * Expected: 1 (mount) + 10 (rerenders) = 11.
+ * The hook's mergeOverlayState should avoid extra state updates when
+ * content is identical, so many of these may be no-ops.
+ */
+const PARAM_ECHO_BUDGET = 15;
+
 describe('useCompositorLayers render-performance', () => {
-  it('rapid opacity updates cause bounded re-renders', () => {
+  const results: MeasureResult[] = [];
+
+  it('rapid opacity slider drags produce bounded renders', () => {
     const opts = defaultOptions();
-    const { result } = renderHook(
+    const result = measureHookRenders(
       (props: UseCompositorLayersOptions) => useCompositorLayers(props),
-      { initialProps: opts }
+      {
+        initialProps: opts,
+        scenario: ({ result }) => {
+          act(() => result.current.selectLayer('in_1'));
+          for (let i = 0; i < 20; i++) {
+            act(() => result.current.updateLayerOpacity('in_1', 0.5 + i * 0.02));
+          }
+        },
+      }
     );
+    result.name = 'opacity-slider-20-ticks';
+    results.push(result);
 
-    // Select a layer first
-    act(() => {
-      result.current.selectLayer('in_1');
-    });
-
-    // Simulate 20 rapid opacity slider ticks (mimicking a drag)
-    const opacityValues: number[] = [];
-    for (let i = 0; i < 20; i++) {
-      act(() => {
-        result.current.updateLayerOpacity('in_1', 0.5 + i * 0.02);
-      });
-      const layer = result.current.layers.find((l) => l.id === 'in_1');
-      if (layer) opacityValues.push(layer.opacity);
-    }
-
-    // Verify the final opacity was applied correctly
-    const finalLayer = result.current.layers.find((l) => l.id === 'in_1');
-    expect(finalLayer).toBeDefined();
-    expect(finalLayer!.opacity).toBeCloseTo(0.88, 1);
-
-    // Verify all 20 updates were processed (each act() triggers a state update)
-    expect(opacityValues.length).toBe(20);
+    expect(result.meanRenderCount).toBeLessThanOrEqual(SLIDER_BUDGET);
   });
 
-  it('rapid rotation updates cause bounded re-renders', () => {
+  it('rapid rotation slider drags produce bounded renders', () => {
     const opts = defaultOptions();
-    const { result } = renderHook(
+    const result = measureHookRenders(
       (props: UseCompositorLayersOptions) => useCompositorLayers(props),
-      { initialProps: opts }
+      {
+        initialProps: opts,
+        scenario: ({ result }) => {
+          act(() => result.current.selectLayer('in_1'));
+          for (let i = 0; i < 20; i++) {
+            act(() => result.current.updateLayerRotation('in_1', i * 18));
+          }
+        },
+      }
     );
+    result.name = 'rotation-slider-20-ticks';
+    results.push(result);
 
-    act(() => {
-      result.current.selectLayer('in_1');
-    });
-
-    // Simulate 20 rapid rotation slider ticks
-    for (let i = 0; i < 20; i++) {
-      act(() => {
-        result.current.updateLayerRotation('in_1', i * 18);
-      });
-    }
-
-    const finalLayer = result.current.layers.find((l) => l.id === 'in_1');
-    expect(finalLayer).toBeDefined();
-    expect(finalLayer!.rotationDegrees).toBe(342);
+    expect(result.meanRenderCount).toBeLessThanOrEqual(SLIDER_BUDGET);
   });
 
-  it('params reference changes do not recreate callbacks', () => {
+  it('callback references stay stable across param echo-backs (cascade prevention)', () => {
     const opts = defaultOptions();
-    const { result, rerender } = renderHook(
+    const result = measureHookRenders(
       (props: UseCompositorLayersOptions) => useCompositorLayers(props),
-      { initialProps: opts }
+      {
+        initialProps: opts,
+        scenario: ({ result, rerender }) => {
+          const before = {
+            updateLayerOpacity: result.current.updateLayerOpacity,
+            updateLayerRotation: result.current.updateLayerRotation,
+            toggleLayerVisibility: result.current.toggleLayerVisibility,
+            addTextOverlay: result.current.addTextOverlay,
+            removeTextOverlay: result.current.removeTextOverlay,
+            addImageOverlay: result.current.addImageOverlay,
+            removeImageOverlay: result.current.removeImageOverlay,
+            reorderLayers: result.current.reorderLayers,
+            updateTextOverlay: result.current.updateTextOverlay,
+            updateImageOverlay: result.current.updateImageOverlay,
+          };
+
+          // 10 param reference changes (server echo-backs with same content)
+          for (let i = 0; i < 10; i++) {
+            act(() => rerender({ ...opts, params: makeParams() }));
+          }
+
+          const after = result.current;
+          const callbacks = Object.keys(before) as Array<keyof typeof before>;
+          const unstable = callbacks.filter(
+            (name) => before[name] !== after[name as keyof typeof after]
+          );
+
+          // Assert inside scenario so the measurement captures the full cost
+          expect(unstable).toEqual([]);
+        },
+      }
     );
+    result.name = 'param-echo-callback-stability';
+    results.push(result);
 
-    // Capture all callback references
-    const snapshot = () => ({
-      updateLayerOpacity: result.current.updateLayerOpacity,
-      updateLayerRotation: result.current.updateLayerRotation,
-      toggleLayerVisibility: result.current.toggleLayerVisibility,
-      addTextOverlay: result.current.addTextOverlay,
-      removeTextOverlay: result.current.removeTextOverlay,
-      addImageOverlay: result.current.addImageOverlay,
-      removeImageOverlay: result.current.removeImageOverlay,
-      reorderLayers: result.current.reorderLayers,
-      updateTextOverlay: result.current.updateTextOverlay,
-      updateImageOverlay: result.current.updateImageOverlay,
-    });
-
-    const before = snapshot();
-
-    // Simulate 10 params reference changes (server echo-backs)
-    for (let i = 0; i < 10; i++) {
-      act(() => {
-        rerender({ ...opts, params: makeParams() });
-      });
-    }
-
-    const after = snapshot();
-
-    // Every callback should be the same reference
-    const callbacks = Object.keys(before) as Array<keyof typeof before>;
-    const unstableCallbacks = callbacks.filter((name) => before[name] !== after[name]);
-
-    expect(unstableCallbacks).toEqual([]);
+    expect(result.meanRenderCount).toBeLessThanOrEqual(PARAM_ECHO_BUDGET);
   });
 
-  it('mixed opacity and rotation updates remain efficient', () => {
+  it('mixed opacity + rotation slider updates remain efficient', () => {
     const opts = defaultOptions();
-    const { result } = renderHook(
+    const result = measureHookRenders(
       (props: UseCompositorLayersOptions) => useCompositorLayers(props),
-      { initialProps: opts }
+      {
+        initialProps: opts,
+        scenario: ({ result }) => {
+          act(() => result.current.selectLayer('in_1'));
+          // Alternate between opacity and rotation (simulates switching controls)
+          for (let i = 0; i < 10; i++) {
+            act(() => result.current.updateLayerOpacity('in_1', 0.3 + i * 0.05));
+            act(() => result.current.updateLayerRotation('in_1', i * 36));
+          }
+        },
+      }
     );
+    result.name = 'mixed-slider-20-ticks';
+    results.push(result);
 
-    act(() => {
-      result.current.selectLayer('in_1');
-    });
+    // 20 mixed ticks should stay within slider budget
+    expect(result.meanRenderCount).toBeLessThanOrEqual(SLIDER_BUDGET);
+  });
 
-    // Alternate between opacity and rotation updates (simulates
-    // switching between controls during a design session)
-    for (let i = 0; i < 10; i++) {
-      act(() => {
-        result.current.updateLayerOpacity('in_1', 0.3 + i * 0.05);
-      });
-      act(() => {
-        result.current.updateLayerRotation('in_1', i * 36);
-      });
-    }
+  it('writes baseline and prints comparison report', () => {
+    // Read existing baseline (if any) and compare
+    const baseline = readBaseline();
+    const comparisons = results.map((r) => compare(r, baseline.entries[r.name] ?? null));
+    const report = formatReport(comparisons);
 
-    const finalLayer = result.current.layers.find((l) => l.id === 'in_1');
-    expect(finalLayer).toBeDefined();
-    expect(finalLayer!.opacity).toBeCloseTo(0.75, 1);
-    expect(finalLayer!.rotationDegrees).toBe(324);
+    // Print report for visibility in CI logs
+    // eslint-disable-next-line no-console
+    console.log('\n' + report + '\n');
+
+    // Write updated baseline
+    writeBaseline(results);
+
+    // Fail if any scenario regressed compared to baseline
+    const regressions = comparisons.filter((c) => c.status === 'slower');
+    expect(
+      regressions,
+      `Regressions detected:\n${regressions.map((r) => r.name).join(', ')}`
+    ).toHaveLength(0);
   });
 });

@@ -24,8 +24,8 @@
  * ```
  */
 
-export { measureRenders } from './measure';
-export type { MeasureRendersOptions } from './measure';
+export { measureRenders, measureHookRenders } from './measure';
+export type { MeasureRendersOptions, MeasureHookRendersOptions } from './measure';
 
 export {
   readBaseline,

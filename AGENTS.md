@@ -61,6 +61,70 @@ End-to-end tests live in `e2e/` and use Playwright (Chromium, headless).
   intersecting. Forgetting to scroll will result in a permanently black
   canvas.
 
+## Render performance profiling
+
+StreamKit ships a two-layer profiling infrastructure for detecting render
+regressions — particularly **cascade re-renders** where a slider interaction
+(opacity, rotation) triggers expensive re-renders in unrelated memoized
+components (`UnifiedLayerList`, `OpacityControl`, `RotationControl`, etc.).
+
+### When to use this
+
+- **After touching compositor hooks or components** (`useCompositorLayers`,
+  `CompositorNode`, or any `React.memo`'d sub-component): run the perf tests
+  to verify you haven't broken memoization barriers.
+- **When optimising render performance**: use the baseline comparison to
+  measure before/after render counts and durations.
+- **In CI**: Layer 1 tests run automatically via `just perf-ui` and will fail
+  if render counts regress beyond the 2σ threshold stored in the baseline.
+
+### Layer 1 — Component-level regression tests (Vitest)
+
+Fast, deterministic tests that measure hook/component render counts in
+happy-dom. No browser required.
+
+```bash
+just perf-ui          # runs all *.perf.test.* files
+```
+
+Key files:
+
+| File | Purpose |
+|------|---------|
+| `ui/src/test/perf/measure.ts` | `measureRenders()` (components) and `measureHookRenders()` (hooks) |
+| `ui/src/test/perf/compare.ts` | Baseline read/write, 2σ comparison, report formatting |
+| `ui/src/hooks/useCompositorLayers.render-perf.test.ts` | Cascade re-render regression tests |
+| `perf-baselines.json` (repo root) | Baseline snapshot — committed to track regressions over time |
+
+**Cascade detection pattern**: the render-perf tests simulate rapid slider
+drags (20 ticks of opacity/rotation) and assert that total render count stays
+within a budget (currently ≤ 30). If callback references become unstable
+(e.g. `layers` array in deps instead of `selectedLayerKind`), React.memo
+barriers break and the render count will blow past the budget, failing the
+test.
+
+### Layer 2 — Interaction-level profiling (Playwright + React.Profiler)
+
+Real-browser profiling for dev builds. Components wrapped with
+`React.Profiler` push metrics to `window.__PERF_DATA__` which Playwright
+tests can read via `page.evaluate()`.
+
+Key files:
+
+| File | Purpose |
+|------|---------|
+| `ui/src/perf/profiler.ts` | Dev-only `PerfProfiler` wrapper + `window.__PERF_DATA__` store |
+| `e2e/tests/perf-helpers.ts` | `collectPerfData()` / `clearPerfData()` Playwright utilities |
+
+Use Layer 2 when you need real paint/layout timing or want to profile
+interactions end-to-end with actual browser rendering.
+
+### Updating the baseline
+
+Run `just perf-ui` — the last test in the render-perf suite writes a fresh
+`perf-baselines.json`. Commit the updated baseline alongside your changes so
+future runs compare against the new numbers.
+
 ## Docker notes
 
 - Official images are built from `Dockerfile` (CPU) and `Dockerfile.gpu` (GPU-tagged) via `.github/workflows/docker.yml`.
