@@ -32,6 +32,7 @@ interface SessionStore {
   addConnection: (sessionId: string, connection: Connection) => void;
   removeConnection: (sessionId: string, connection: Connection) => void;
   setConnected: (sessionId: string, connected: boolean) => void;
+  initSession: (sessionId: string, connected: boolean) => void;
   clearSession: (sessionId: string) => void;
   getSession: (sessionId: string) => SessionData | undefined;
 }
@@ -42,18 +43,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   updateNodeState: (sessionId, nodeId, state) =>
     set((prev) => {
       const session = prev.sessions.get(sessionId);
-      if (!session) {
-        // Initialize session if it doesn't exist
-        const newSessions = new Map(prev.sessions);
-        newSessions.set(sessionId, {
-          pipeline: null,
-          nodeStates: { [nodeId]: state },
-          nodeStats: {},
-          nodeViewData: {},
-          isConnected: false,
-        });
-        return { sessions: newSessions };
-      }
+      if (!session) return prev; // Ignore updates for unknown/destroyed sessions
 
       const newSessions = new Map(prev.sessions);
       newSessions.set(sessionId, {
@@ -66,18 +56,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   updateNodeStats: (sessionId, nodeId, stats) =>
     set((prev) => {
       const session = prev.sessions.get(sessionId);
-      if (!session) {
-        // Initialize session if it doesn't exist
-        const newSessions = new Map(prev.sessions);
-        newSessions.set(sessionId, {
-          pipeline: null,
-          nodeStates: {},
-          nodeStats: { [nodeId]: stats },
-          nodeViewData: {},
-          isConnected: false,
-        });
-        return { sessions: newSessions };
-      }
+      if (!session) return prev; // Ignore updates for unknown/destroyed sessions
 
       const newSessions = new Map(prev.sessions);
       newSessions.set(sessionId, {
@@ -90,17 +69,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   updateNodeViewData: (sessionId, nodeId, data) =>
     set((prev) => {
       const session = prev.sessions.get(sessionId);
-      if (!session) {
-        const newSessions = new Map(prev.sessions);
-        newSessions.set(sessionId, {
-          pipeline: null,
-          nodeStates: {},
-          nodeStats: {},
-          nodeViewData: { [nodeId]: data },
-          isConnected: false,
-        });
-        return { sessions: newSessions };
-      }
+      if (!session) return prev; // Ignore updates for unknown/destroyed sessions
 
       const newSessions = new Map(prev.sessions);
       newSessions.set(sessionId, {
@@ -260,22 +229,31 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   setConnected: (sessionId, connected) =>
     set((prev) => {
       const session = prev.sessions.get(sessionId);
-      if (!session) {
-        // Initialize session if it doesn't exist
-        const newSessions = new Map(prev.sessions);
-        newSessions.set(sessionId, {
-          pipeline: null,
-          nodeStates: {},
-          nodeStats: {},
-          nodeViewData: {},
-          isConnected: connected,
-        });
-        return { sessions: newSessions };
-      }
+      if (!session) return prev; // Don't re-create destroyed/unknown sessions
 
       const newSessions = new Map(prev.sessions);
       newSessions.set(sessionId, {
         ...session,
+        isConnected: connected,
+      });
+      return { sessions: newSessions };
+    }),
+
+  initSession: (sessionId, connected) =>
+    set((prev) => {
+      const session = prev.sessions.get(sessionId);
+      if (session) {
+        // Session already exists, just update connection status
+        const newSessions = new Map(prev.sessions);
+        newSessions.set(sessionId, { ...session, isConnected: connected });
+        return { sessions: newSessions };
+      }
+      const newSessions = new Map(prev.sessions);
+      newSessions.set(sessionId, {
+        pipeline: null,
+        nodeStates: {},
+        nodeStats: {},
+        nodeViewData: {},
         isConnected: connected,
       });
       return { sessions: newSessions };

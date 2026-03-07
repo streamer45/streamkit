@@ -708,10 +708,25 @@ impl CompositorNode {
         let mut layers: SmallVec<[ResolvedLayer; 8]> = SmallVec::new();
         for (idx, slot) in slots.iter().enumerate() {
             if let Some(cfg) = resolved_configs.get(idx) {
-                let (x, y, width, height) =
+                let (x, y, width, height) = if cfg.aspect_fit {
+                    // When aspect_fit is enabled (e.g. auto-PiP), emit the
+                    // fitted rect that matches what the compositor actually
+                    // renders, not the raw bounding box.  This prevents the
+                    // frontend from displaying a stretched layer rectangle.
+                    match (cfg.rect.as_ref(), slot.latest_frame.as_ref()) {
+                        (Some(rect), Some(frame)) => {
+                            let fitted =
+                                fit_rect_preserving_aspect(frame.width, frame.height, rect);
+                            (fitted.x, fitted.y, fitted.width, fitted.height)
+                        },
+                        (Some(rect), None) => (rect.x, rect.y, rect.width, rect.height),
+                        _ => (0, 0, config.width, config.height),
+                    }
+                } else {
                     cfg.rect.as_ref().map_or((0, 0, config.width, config.height), |rect| {
                         (rect.x, rect.y, rect.width, rect.height)
-                    });
+                    })
+                };
                 layers.push(ResolvedLayer {
                     id: slot.name.clone(),
                     x,

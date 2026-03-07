@@ -348,7 +348,9 @@ export class WebSocketService {
 
   subscribeToSession(sessionId: string): void {
     this.subscribedSessions.add(sessionId);
-    // Set the connection status based on CURRENT WebSocket state
+    // Set the connection status based on CURRENT WebSocket state.
+    // Ensure the session entry exists in the store so that setConnected
+    // (which no longer auto-creates entries) has something to update.
     const isConnected = this.ws?.readyState === WebSocket.OPEN;
     logger.debug(
       'Subscribing to session',
@@ -358,7 +360,7 @@ export class WebSocketService {
       'connected:',
       isConnected
     );
-    useSessionStore.getState().setConnected(sessionId, isConnected);
+    useSessionStore.getState().initSession(sessionId, isConnected);
   }
 
   unsubscribeFromSession(sessionId: string): void {

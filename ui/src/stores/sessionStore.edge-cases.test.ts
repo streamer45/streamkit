@@ -25,6 +25,10 @@ describe('sessionStore edge cases', () => {
       const session1 = 'session-1';
       const session2 = 'session-2';
 
+      // Initialize sessions first
+      useSessionStore.getState().initSession(session1, false);
+      useSessionStore.getState().initSession(session2, false);
+
       // Update both sessions concurrently
       useSessionStore.getState().updateNodeState(session1, 'node-1', 'Running');
       useSessionStore.getState().updateNodeState(session2, 'node-2', 'Initializing');
@@ -78,6 +82,7 @@ describe('sessionStore edge cases', () => {
         'Running',
       ];
 
+      useSessionStore.getState().initSession(TEST_SESSION_ID, false);
       states.forEach((state) => {
         useSessionStore.getState().updateNodeState(TEST_SESSION_ID, nodeId, state);
       });
@@ -160,8 +165,8 @@ describe('sessionStore edge cases', () => {
     });
 
     it('should no-op when session has no pipeline', () => {
-      // Create session without pipeline
-      useSessionStore.getState().updateNodeState('empty-session', 'node-1', 'Running');
+      // Create session without pipeline via initSession
+      useSessionStore.getState().initSession('empty-session', false);
 
       useSessionStore.getState().updateNodeParams('empty-session', 'node-1', { value: 1 });
 
