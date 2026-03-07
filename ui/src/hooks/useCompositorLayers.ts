@@ -202,23 +202,29 @@ function parseLayers(
 function parseTextOverlays(params: Record<string, unknown>): TextOverlayState[] {
   const overlays = params.text_overlays as TextOverlayConfig[] | undefined;
   if (!Array.isArray(overlays)) return [];
-  return overlays.map((o, i) => ({
-    id: `text_${i}`,
-    text: o.text ?? '',
-    x: o.rect?.x ?? 0,
-    y: o.rect?.y ?? 0,
-    width: o.rect?.width ?? 200,
-    height: o.rect?.height ?? 40,
-    color: o.color ?? [255, 255, 255, 255],
-    fontSize: o.font_size ?? 24,
-    fontName: o.font_name ?? 'dejavu-sans',
-    opacity: o.opacity ?? 1.0,
-    rotationDegrees: o.rotation_degrees ?? 0,
-    zIndex: o.z_index ?? 100 + i,
-    mirrorHorizontal: o.mirror_horizontal ?? false,
-    mirrorVertical: o.mirror_vertical ?? false,
-    visible: true,
-  }));
+  return overlays.map((o, i) => {
+    // Support both flat format (rect/opacity/z_index at top level, matching
+    // #[serde(flatten)]) and legacy nested format (under "transform:").
+    const t = (o as Record<string, unknown>).transform as Record<string, unknown> | undefined;
+    const rect = o.rect ?? (t?.rect as TextOverlayConfig['rect'] | undefined);
+    return {
+      id: `text_${i}`,
+      text: o.text ?? '',
+      x: rect?.x ?? 0,
+      y: rect?.y ?? 0,
+      width: rect?.width ?? 200,
+      height: rect?.height ?? 40,
+      color: o.color ?? [255, 255, 255, 255],
+      fontSize: o.font_size ?? 24,
+      fontName: o.font_name ?? 'dejavu-sans',
+      opacity: o.opacity ?? (t?.opacity as number | undefined) ?? 1.0,
+      rotationDegrees: o.rotation_degrees ?? (t?.rotation_degrees as number | undefined) ?? 0,
+      zIndex: o.z_index ?? (t?.z_index as number | undefined) ?? 100 + i,
+      mirrorHorizontal: o.mirror_horizontal ?? (t?.mirror_horizontal as boolean | undefined) ?? false,
+      mirrorVertical: o.mirror_vertical ?? (t?.mirror_vertical as boolean | undefined) ?? false,
+      visible: true,
+    };
+  });
 }
 
 /** Parse image overlays from compositor params.
@@ -227,20 +233,25 @@ function parseTextOverlays(params: Record<string, unknown>): TextOverlayState[] 
 function parseImageOverlays(params: Record<string, unknown>): ImageOverlayState[] {
   const overlays = params.image_overlays as ImageOverlayConfig[] | undefined;
   if (!Array.isArray(overlays)) return [];
-  return overlays.map((o, i) => ({
-    id: `img_${i}`,
-    dataBase64: o.data_base64 ?? '',
-    x: o.rect?.x ?? 0,
-    y: o.rect?.y ?? 0,
-    width: o.rect?.width ?? 200,
-    height: o.rect?.height ?? 200,
-    opacity: o.opacity ?? 1.0,
-    rotationDegrees: o.rotation_degrees ?? 0,
-    zIndex: o.z_index ?? 200 + i,
-    mirrorHorizontal: o.mirror_horizontal ?? false,
-    mirrorVertical: o.mirror_vertical ?? false,
-    visible: true,
-  }));
+  return overlays.map((o, i) => {
+    // Support both flat format and legacy nested "transform:" format.
+    const t = (o as Record<string, unknown>).transform as Record<string, unknown> | undefined;
+    const rect = o.rect ?? (t?.rect as ImageOverlayConfig['rect'] | undefined);
+    return {
+      id: `img_${i}`,
+      dataBase64: o.data_base64 ?? '',
+      x: rect?.x ?? 0,
+      y: rect?.y ?? 0,
+      width: rect?.width ?? 200,
+      height: rect?.height ?? 200,
+      opacity: o.opacity ?? (t?.opacity as number | undefined) ?? 1.0,
+      rotationDegrees: o.rotation_degrees ?? (t?.rotation_degrees as number | undefined) ?? 0,
+      zIndex: o.z_index ?? (t?.z_index as number | undefined) ?? 200 + i,
+      mirrorHorizontal: o.mirror_horizontal ?? (t?.mirror_horizontal as boolean | undefined) ?? false,
+      mirrorVertical: o.mirror_vertical ?? (t?.mirror_vertical as boolean | undefined) ?? false,
+      visible: true,
+    };
+  });
 }
 
 /** Serialize text overlays back to config format */
