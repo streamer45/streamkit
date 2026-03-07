@@ -407,7 +407,7 @@ const LayerListItem = styled.div<{ isSelected?: boolean; isHidden?: boolean }>`
   }
 
   /* Show remove button on hover */
-  &:hover ${RemoveButton} {
+  &:hover .layer-remove-btn {
     opacity: 1;
   }
 `;
@@ -697,7 +697,7 @@ const LayerReorderSection: React.FC<{
                 <SKTooltip content="Remove layer">
                   <RemoveButton
                     disabled={disabled}
-                    className="nodrag nopan"
+                    className="nodrag nopan layer-remove-btn"
                     onClick={(e) => {
                       e.stopPropagation();
                       if (entry.kind === 'text') onRemoveText(entry.id);
