@@ -274,11 +274,6 @@ impl ProcessorNode for Vp9EncoderNode {
                     height: None,
                     pixel_format: PixelFormat::Nv12,
                 }),
-                PacketType::RawVideo(VideoFormat {
-                    width: None,
-                    height: None,
-                    pixel_format: PixelFormat::Rgba8,
-                }),
             ],
             cardinality: PinCardinality::One,
         }]
@@ -322,28 +317,19 @@ impl ProcessorNode for Vp9EncoderNode {
             mpsc::channel::<Result<EncodedPacket, String>>(get_codec_channel_capacity());
 
         let encoder_config = self.config;
-        let video_pool_clone = context.video_pool.clone();
         let encode_task = tokio::task::spawn_blocking(move || {
             let mut encoder: Option<Vp9Encoder> = None;
             let mut current_dimensions: Option<(u32, u32)> = None;
 
             while let Some((frame, metadata)) = encode_rx.blocking_recv() {
-                // Convert RGBA8 to NV12 on this blocking thread so the
-                // compositor can output RGBA8 and move on to the next frame
-                // while the encoder converts + encodes in parallel.
-                // NV12 and I420 pass through directly — the encoder handles
-                // both formats natively via VPX_IMG_FMT_NV12 / VPX_IMG_FMT_I420.
-                let encode_frame = if frame.pixel_format == PixelFormat::Rgba8 {
-                    match convert_rgba8_to_nv12_frame(&frame, video_pool_clone.as_deref()) {
-                        Ok(f) => f,
-                        Err(err) => {
-                            let _ = result_tx.blocking_send(Err(err.to_string()));
-                            continue;
-                        },
-                    }
-                } else {
-                    frame
-                };
+                if frame.pixel_format == PixelFormat::Rgba8 {
+                    let _ =
+                        result_tx.blocking_send(Err("VP9 encoder requires NV12 or I420 input; \
+                         insert a video::pixel_convert node upstream"
+                            .to_string()));
+                    continue;
+                }
+                let encode_frame = frame;
 
                 let frame_dimensions = (encode_frame.width, encode_frame.height);
                 if current_dimensions != Some(frame_dimensions) {
@@ -1099,40 +1085,6 @@ fn copy_plane(
     Ok(())
 }
 
-/// Convert an RGBA8 `VideoFrame` to NV12 for VP9 encoding.
-///
-/// NV12 is preferred over I420 here because the VP9 encoder accepts NV12
-/// natively (`VPX_IMG_FMT_NV12`) and NV12's interleaved UV plane has
-/// better cache locality during encoding.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-fn convert_rgba8_to_nv12_frame(
-    frame: &VideoFrame,
-    video_pool: Option<&VideoFramePool>,
-) -> Result<VideoFrame, StreamKitError> {
-    use crate::video::compositor::pixel_ops::rgba8_to_nv12_buf;
-
-    let w = frame.width as usize;
-    let h = frame.height as usize;
-    let chroma_w = w.div_ceil(2);
-    let chroma_h = h.div_ceil(2);
-    let nv12_size = w * h + chroma_w * 2 * chroma_h;
-
-    let mut nv12_data = video_pool.map_or_else(
-        || PooledVideoData::from_vec(vec![0u8; nv12_size]),
-        |pool| pool.get(nv12_size),
-    );
-
-    rgba8_to_nv12_buf(frame.data(), frame.width, frame.height, nv12_data.as_mut_slice());
-
-    VideoFrame::from_pooled(
-        frame.width,
-        frame.height,
-        PixelFormat::Nv12,
-        nv12_data,
-        frame.metadata.clone(),
-    )
-}
-
 const fn merge_keyframe_metadata(
     metadata: Option<PacketMetadata>,
     keyframe: bool,
@@ -1198,9 +1150,8 @@ pub fn register_vp9_nodes(registry: &mut NodeRegistry) {
         StaticPins { inputs: default_encoder.input_pins(), outputs: default_encoder.output_pins() },
         vec!["video".to_string(), "codecs".to_string(), "vp9".to_string()],
         false,
-        "Encodes raw video frames (NV12, I420, or RGBA8) into VP9 packets for transport or container muxing. \
-         NV12 and I420 are accepted natively; RGBA8 input is converted to I420 on the encoder thread, \
-         enabling pipelined compositing.",
+        "Encodes raw video frames (NV12 or I420) into VP9 packets for transport or container muxing. \
+         Insert a video::pixel_convert node upstream if the source outputs RGBA8.",
     );
 }
 
