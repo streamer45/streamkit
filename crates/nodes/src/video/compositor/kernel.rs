@@ -160,10 +160,8 @@ pub struct LayerSnapshot {
     pub pixel_format: PixelFormat,
     pub rect: Option<Rect>,
     pub opacity: f32,
-    /// Visual stacking order.  Retained in the snapshot for diagnostic /
-    /// logging purposes even though sorting now happens before snapshot
-    /// construction.
-    #[allow(dead_code)]
+    /// Visual stacking order.  Used by `composite_frame` to interleave
+    /// video layers with overlays in a single z-sorted compositing pass.
     pub z_index: i32,
     /// Clockwise rotation in degrees around the destination rect centre.
     /// Default `0.0` means no rotation.
@@ -192,9 +190,9 @@ pub struct CompositeResult {
     pub rgba_data: streamkit_core::frame_pool::PooledVideoData,
 }
 
-/// A resolved, ready-to-blit item.  Unifies video layers and decoded
+/// A resolved, ready-to-composite item.  Unifies video layers and decoded
 /// overlays into a single type for the z-sorted compositing loop.
-struct BlitItem<'a> {
+struct CompositeItem<'a> {
     src_data: &'a [u8],
     src_width: u32,
     src_height: u32,
@@ -309,7 +307,7 @@ pub fn composite_frame(
     // This replaces the former three separate loops and allows overlays to
     // be interleaved with video layers via z_index.
 
-    let mut items: Vec<BlitItem<'_>> = Vec::new();
+    let mut items: Vec<CompositeItem<'_>> = Vec::new();
     let mut insertion_order: usize = 0;
 
     // Video layers.
@@ -318,7 +316,7 @@ pub fn composite_frame(
             layer.rect.clone().unwrap_or(Rect { x: 0, y: 0, width: canvas_w, height: canvas_h });
         // NV12/I420 → RGBA8 conversion always writes alpha = 255.
         let src_opaque = layer.pixel_format != PixelFormat::Rgba8;
-        items.push(BlitItem {
+        items.push(CompositeItem {
             src_data,
             src_width: layer.width,
             src_height: layer.height,
@@ -335,7 +333,7 @@ pub fn composite_frame(
 
     // Image overlays.
     for ov in image_overlays {
-        items.push(BlitItem {
+        items.push(CompositeItem {
             src_data: &ov.rgba_data,
             src_width: ov.width,
             src_height: ov.height,
@@ -352,7 +350,7 @@ pub fn composite_frame(
 
     // Text overlays.
     for ov in text_overlays {
-        items.push(BlitItem {
+        items.push(CompositeItem {
             src_data: &ov.rgba_data,
             src_width: ov.width,
             src_height: ov.height,

@@ -337,7 +337,7 @@ const TextOverlayLayer: React.FC<{
       serverHeight,
     ]);
 
-    // Issue #1 fix: when the layer is deselected while editing, commit the edit.
+    // When the layer is deselected while editing, commit the pending edit.
     const prevSelectedRef = useRef(isSelected);
     useEffect(() => {
       if (prevSelectedRef.current && !isSelected && editing) {
@@ -664,8 +664,8 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
       return () => observer.disconnect();
     }, [canvasWidth]);
 
-    // Issue #1 fix: blur any active element (e.g. inline text input) before
-    // deselecting so that the input's onBlur → commitEdit fires reliably.
+    // Blur any active element (e.g. inline text input) before deselecting
+    // so that the input's onBlur → commitEdit fires reliably.
     const handlePaneClick = useCallback(() => {
       if (document.activeElement instanceof HTMLElement) {
         document.activeElement.blur();

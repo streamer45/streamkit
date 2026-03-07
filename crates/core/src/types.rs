@@ -68,7 +68,9 @@ pub enum AudioCodec {
 #[ts(export)]
 pub enum VideoCodec {
     Vp9,
+    /// Forward-looking placeholder — not yet wired into any encoder/decoder.
     H264,
+    /// Forward-looking placeholder — not yet wired into any encoder/decoder.
     Av1,
 }
 

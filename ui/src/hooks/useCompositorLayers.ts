@@ -87,6 +87,15 @@ const SNAP_GRID = 10;
 /** Distance threshold for snapping to centre guidelines (pixels). */
 const SNAP_THRESHOLD = 8;
 
+/**
+ * Duration (ms) after a local overlay commit during which server-echoed
+ * params are ignored for overlays.  This prevents stale params from
+ * overwriting a local add/remove before the server round-trip completes.
+ * A sequence-number protocol would be more robust but this guard is
+ * sufficient for typical network latencies.
+ */
+const OVERLAY_COMMIT_GUARD_MS = 3000;
+
 export interface UseCompositorLayersOptions {
   nodeId: string;
   sessionId?: string;
@@ -198,34 +207,54 @@ function parseLayers(
     .sort((a, b) => a.zIndex - b.zIndex);
 }
 
+/** Parse spatial transform fields shared by both overlay types.
+ *  Supports the flat serde(flatten) format and the legacy nested "transform:" format. */
+function parseTransformFields(
+  raw: Record<string, unknown>,
+  defaults: { width: number; height: number; zIndex: number }
+): Omit<OverlayBase, 'id' | 'visible'> {
+  const t = raw.transform as Record<string, unknown> | undefined;
+  const rect = (raw.rect ?? t?.rect) as Rect | undefined;
+  return {
+    x: rect?.x ?? 0,
+    y: rect?.y ?? 0,
+    width: rect?.width ?? defaults.width,
+    height: rect?.height ?? defaults.height,
+    opacity: (raw.opacity as number | undefined) ?? (t?.opacity as number | undefined) ?? 1.0,
+    rotationDegrees:
+      (raw.rotation_degrees as number | undefined) ??
+      (t?.rotation_degrees as number | undefined) ??
+      0,
+    zIndex:
+      (raw.z_index as number | undefined) ?? (t?.z_index as number | undefined) ?? defaults.zIndex,
+    mirrorHorizontal:
+      (raw.mirror_horizontal as boolean | undefined) ??
+      (t?.mirror_horizontal as boolean | undefined) ??
+      false,
+    mirrorVertical:
+      (raw.mirror_vertical as boolean | undefined) ??
+      (t?.mirror_vertical as boolean | undefined) ??
+      false,
+  };
+}
+
 /** Parse text overlays from compositor params */
 function parseTextOverlays(params: Record<string, unknown>): TextOverlayState[] {
   const overlays = params.text_overlays as TextOverlayConfig[] | undefined;
   if (!Array.isArray(overlays)) return [];
-  return overlays.map((o, i) => {
-    // Support both flat format (rect/opacity/z_index at top level, matching
-    // #[serde(flatten)]) and legacy nested format (under "transform:").
-    const t = (o as Record<string, unknown>).transform as Record<string, unknown> | undefined;
-    const rect = o.rect ?? (t?.rect as TextOverlayConfig['rect'] | undefined);
-    return {
-      id: `text_${i}`,
-      text: o.text ?? '',
-      x: rect?.x ?? 0,
-      y: rect?.y ?? 0,
-      width: rect?.width ?? 200,
-      height: rect?.height ?? 40,
-      color: o.color ?? [255, 255, 255, 255],
-      fontSize: o.font_size ?? 24,
-      fontName: o.font_name ?? 'dejavu-sans',
-      opacity: o.opacity ?? (t?.opacity as number | undefined) ?? 1.0,
-      rotationDegrees: o.rotation_degrees ?? (t?.rotation_degrees as number | undefined) ?? 0,
-      zIndex: o.z_index ?? (t?.z_index as number | undefined) ?? 100 + i,
-      mirrorHorizontal:
-        o.mirror_horizontal ?? (t?.mirror_horizontal as boolean | undefined) ?? false,
-      mirrorVertical: o.mirror_vertical ?? (t?.mirror_vertical as boolean | undefined) ?? false,
-      visible: true,
-    };
-  });
+  return overlays.map((o, i) => ({
+    id: `text_${i}`,
+    text: o.text ?? '',
+    color: o.color ?? [255, 255, 255, 255],
+    fontSize: o.font_size ?? 24,
+    fontName: o.font_name ?? 'dejavu-sans',
+    ...parseTransformFields(o as Record<string, unknown>, {
+      width: 200,
+      height: 40,
+      zIndex: 100 + i,
+    }),
+    visible: true,
+  }));
 }
 
 /** Parse image overlays from compositor params.
@@ -234,46 +263,48 @@ function parseTextOverlays(params: Record<string, unknown>): TextOverlayState[] 
 function parseImageOverlays(params: Record<string, unknown>): ImageOverlayState[] {
   const overlays = params.image_overlays as ImageOverlayConfig[] | undefined;
   if (!Array.isArray(overlays)) return [];
-  return overlays.map((o, i) => {
-    // Support both flat format and legacy nested "transform:" format.
-    const t = (o as Record<string, unknown>).transform as Record<string, unknown> | undefined;
-    const rect = o.rect ?? (t?.rect as ImageOverlayConfig['rect'] | undefined);
-    return {
-      id: `img_${i}`,
-      dataBase64: o.data_base64 ?? '',
-      x: rect?.x ?? 0,
-      y: rect?.y ?? 0,
-      width: rect?.width ?? 200,
-      height: rect?.height ?? 200,
-      opacity: o.opacity ?? (t?.opacity as number | undefined) ?? 1.0,
-      rotationDegrees: o.rotation_degrees ?? (t?.rotation_degrees as number | undefined) ?? 0,
-      zIndex: o.z_index ?? (t?.z_index as number | undefined) ?? 200 + i,
-      mirrorHorizontal:
-        o.mirror_horizontal ?? (t?.mirror_horizontal as boolean | undefined) ?? false,
-      mirrorVertical: o.mirror_vertical ?? (t?.mirror_vertical as boolean | undefined) ?? false,
-      visible: true,
-    };
-  });
+  return overlays.map((o, i) => ({
+    id: `img_${i}`,
+    dataBase64: o.data_base64 ?? '',
+    ...parseTransformFields(o as Record<string, unknown>, {
+      width: 200,
+      height: 200,
+      zIndex: 200 + i,
+    }),
+    visible: true,
+  }));
+}
+
+/** Round and clamp a layer's rect for the wire format. */
+function serializeRect(o: OverlayBase): Rect {
+  return {
+    x: Math.round(o.x),
+    y: Math.round(o.y),
+    width: Math.max(1, Math.round(o.width)),
+    height: Math.max(1, Math.round(o.height)),
+  };
+}
+
+/** Serialize the spatial fields shared by all layer/overlay types. */
+function serializeSpatialFields(o: OverlayBase) {
+  return {
+    opacity: o.visible ? Math.round(o.opacity * 100) / 100 : 0,
+    rotation_degrees: Math.round(o.rotationDegrees * 10) / 10,
+    z_index: o.zIndex,
+    mirror_horizontal: o.mirrorHorizontal,
+    mirror_vertical: o.mirrorVertical,
+  };
 }
 
 /** Serialize text overlays back to config format */
 function serializeTextOverlays(overlays: TextOverlayState[]): TextOverlayConfig[] {
   return overlays.map((o) => ({
     text: o.text,
-    rect: {
-      x: Math.round(o.x),
-      y: Math.round(o.y),
-      width: Math.max(1, Math.round(o.width)),
-      height: Math.max(1, Math.round(o.height)),
-    },
+    rect: serializeRect(o),
     color: o.color,
     font_size: o.fontSize,
     font_name: o.fontName,
-    opacity: o.visible ? Math.round(o.opacity * 100) / 100 : 0,
-    rotation_degrees: Math.round(o.rotationDegrees * 10) / 10,
-    z_index: o.zIndex,
-    mirror_horizontal: o.mirrorHorizontal,
-    mirror_vertical: o.mirrorVertical,
+    ...serializeSpatialFields(o),
   }));
 }
 
@@ -281,17 +312,8 @@ function serializeTextOverlays(overlays: TextOverlayState[]): TextOverlayConfig[
 function serializeImageOverlays(overlays: ImageOverlayState[]): ImageOverlayConfig[] {
   return overlays.map((o) => ({
     data_base64: o.dataBase64,
-    rect: {
-      x: Math.round(o.x),
-      y: Math.round(o.y),
-      width: Math.max(1, Math.round(o.width)),
-      height: Math.max(1, Math.round(o.height)),
-    },
-    opacity: o.visible ? Math.round(o.opacity * 100) / 100 : 0,
-    rotation_degrees: Math.round(o.rotationDegrees * 10) / 10,
-    z_index: o.zIndex,
-    mirror_horizontal: o.mirrorHorizontal,
-    mirror_vertical: o.mirrorVertical,
+    rect: serializeRect(o),
+    ...serializeSpatialFields(o),
   }));
 }
 
@@ -355,17 +377,8 @@ function serializeLayers(layers: LayerState[]): Record<string, LayerConfig> {
   const layersMap: Record<string, LayerConfig> = {};
   for (const layer of layers) {
     layersMap[layer.id] = {
-      rect: {
-        x: Math.round(layer.x),
-        y: Math.round(layer.y),
-        width: Math.max(1, Math.round(layer.width)),
-        height: Math.max(1, Math.round(layer.height)),
-      },
-      opacity: layer.visible ? Math.round(layer.opacity * 100) / 100 : 0,
-      z_index: layer.zIndex,
-      rotation_degrees: Math.round(layer.rotationDegrees * 10) / 10,
-      mirror_horizontal: layer.mirrorHorizontal,
-      mirror_vertical: layer.mirrorVertical,
+      rect: serializeRect(layer),
+      ...serializeSpatialFields(layer),
     };
   }
   return layersMap;
@@ -472,9 +485,9 @@ export const useCompositorLayers = (
     if (dragStateRef.current) return;
     const parsed = parseLayers(params, canvasWidth, canvasHeight);
 
-    // Issue #4 fix: only update layers state if the merged result actually
-    // differs from current state.  This prevents unnecessary re-renders that
-    // cause positions to briefly revert when switching selected layers.
+    // Only update layers state if the merged result actually differs from
+    // current state.  This prevents unnecessary re-renders that cause
+    // positions to briefly revert when switching selected layers.
     const merged = mergeOverlayState(layersRef.current, parsed);
     if (merged !== layersRef.current) {
       setLayers(merged);
@@ -483,7 +496,7 @@ export const useCompositorLayers = (
     // Skip overlay re-parse if we just committed a local overlay change.
     // This prevents stale params from overwriting the local removal/add.
     const sinceCommit = Date.now() - overlayCommitGuardRef.current;
-    if (sinceCommit < 3000) return;
+    if (sinceCommit < OVERLAY_COMMIT_GUARD_MS) return;
 
     setTextOverlays((currentText) =>
       mergeOverlayState(
@@ -516,45 +529,25 @@ export const useCompositorLayers = (
       if (!viewData) return;
       if (dragStateRef.current) return; // ignore server updates while dragging
 
+      /** Spatial fields shared by all server-side resolved items. */
+      interface ServerSpatial {
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+        opacity: number;
+        z_index: number;
+        rotation_degrees: number;
+        mirror_horizontal?: boolean;
+        mirror_vertical?: boolean;
+      }
+
       const layout = viewData as {
         canvas_width: number;
         canvas_height: number;
-        layers: Array<{
-          id: string;
-          x: number;
-          y: number;
-          width: number;
-          height: number;
-          opacity: number;
-          z_index: number;
-          rotation_degrees: number;
-          mirror_horizontal?: boolean;
-          mirror_vertical?: boolean;
-        }>;
-        text_overlays: Array<{
-          index: number;
-          x: number;
-          y: number;
-          width: number;
-          height: number;
-          opacity: number;
-          z_index: number;
-          rotation_degrees: number;
-          mirror_horizontal?: boolean;
-          mirror_vertical?: boolean;
-        }>;
-        image_overlays: Array<{
-          index: number;
-          x: number;
-          y: number;
-          width: number;
-          height: number;
-          opacity: number;
-          z_index: number;
-          rotation_degrees: number;
-          mirror_horizontal?: boolean;
-          mirror_vertical?: boolean;
-        }>;
+        layers: Array<ServerSpatial & { id: string }>;
+        text_overlays: Array<ServerSpatial & { index: number }>;
+        image_overlays: Array<ServerSpatial & { index: number }>;
       };
 
       if (!layout.layers) return;
@@ -599,80 +592,54 @@ export const useCompositorLayers = (
         return changed ? serverLayers : prev;
       });
 
+      /** Apply server-resolved overlay positions to local state.
+       *  Preserves original opacity for hidden overlays and performs
+       *  shallow equality to avoid unnecessary re-renders. */
+      function applyServerOverlays<T extends OverlayBase>(
+        prev: T[],
+        serverItems: Array<ServerSpatial & { index: number }>
+      ): T[] {
+        const next = prev.map((o, i) => {
+          const so = serverItems.find((s) => s.index === i);
+          if (!so) return o;
+          const opacity = !o.visible ? o.opacity : so.opacity;
+          if (
+            o.x === so.x &&
+            o.y === so.y &&
+            o.width === so.width &&
+            o.height === so.height &&
+            o.opacity === opacity &&
+            o.zIndex === so.z_index &&
+            o.rotationDegrees === so.rotation_degrees &&
+            o.mirrorHorizontal === (so.mirror_horizontal ?? o.mirrorHorizontal) &&
+            o.mirrorVertical === (so.mirror_vertical ?? o.mirrorVertical)
+          ) {
+            return o;
+          }
+          return {
+            ...o,
+            x: so.x,
+            y: so.y,
+            width: so.width,
+            height: so.height,
+            opacity,
+            zIndex: so.z_index,
+            rotationDegrees: so.rotation_degrees,
+            mirrorHorizontal: so.mirror_horizontal ?? o.mirrorHorizontal,
+            mirrorVertical: so.mirror_vertical ?? o.mirrorVertical,
+          };
+        });
+        return next.some((n, i) => n !== prev[i]) ? next : prev;
+      }
+
       // Apply server text overlay dimensions
       if (layout.text_overlays) {
-        setTextOverlays((prev) => {
-          const next = prev.map((o, i) => {
-            const so = layout.text_overlays.find((s) => s.index === i);
-            if (!so) return o;
-            // Preserve original opacity for hidden overlays (same guard as layers)
-            const opacity = !o.visible ? o.opacity : so.opacity;
-            if (
-              o.x === so.x &&
-              o.y === so.y &&
-              o.width === so.width &&
-              o.height === so.height &&
-              o.opacity === opacity &&
-              o.zIndex === so.z_index &&
-              o.rotationDegrees === so.rotation_degrees &&
-              o.mirrorHorizontal === (so.mirror_horizontal ?? o.mirrorHorizontal) &&
-              o.mirrorVertical === (so.mirror_vertical ?? o.mirrorVertical)
-            ) {
-              return o;
-            }
-            return {
-              ...o,
-              x: so.x,
-              y: so.y,
-              width: so.width,
-              height: so.height,
-              opacity,
-              zIndex: so.z_index,
-              rotationDegrees: so.rotation_degrees,
-              mirrorHorizontal: so.mirror_horizontal ?? o.mirrorHorizontal,
-              mirrorVertical: so.mirror_vertical ?? o.mirrorVertical,
-            };
-          });
-          return next.some((n, i) => n !== prev[i]) ? next : prev;
-        });
+        setTextOverlays((prev) => applyServerOverlays(prev, layout.text_overlays));
       }
 
       // Apply server image overlay dimensions
       if (layout.image_overlays) {
-        setImageOverlays((prev) => {
-          const next = prev.map((o, i) => {
-            const so = layout.image_overlays.find((s) => s.index === i);
-            if (!so) return o;
-            // Preserve original opacity for hidden overlays (same guard as layers)
-            const opacity = !o.visible ? o.opacity : so.opacity;
-            if (
-              o.x === so.x &&
-              o.y === so.y &&
-              o.width === so.width &&
-              o.height === so.height &&
-              o.opacity === opacity &&
-              o.zIndex === so.z_index &&
-              o.rotationDegrees === so.rotation_degrees &&
-              o.mirrorHorizontal === (so.mirror_horizontal ?? o.mirrorHorizontal) &&
-              o.mirrorVertical === (so.mirror_vertical ?? o.mirrorVertical)
-            ) {
-              return o;
-            }
-            return {
-              ...o,
-              x: so.x,
-              y: so.y,
-              width: so.width,
-              height: so.height,
-              opacity,
-              zIndex: so.z_index,
-              rotationDegrees: so.rotation_degrees,
-              mirrorHorizontal: so.mirror_horizontal ?? o.mirrorHorizontal,
-              mirrorVertical: so.mirror_vertical ?? o.mirrorVertical,
-            };
-          });
-          return next.some((n, i) => n !== prev[i]) ? next : prev;
-        });
+        setImageOverlays((prev) => applyServerOverlays(prev, layout.image_overlays));
       }
     };
 
@@ -688,51 +655,19 @@ export const useCompositorLayers = (
     return unsubscribe;
   }, [sessionId, nodeId]);
 
-  /** Resolve a layer ID to its state and kind across all layer types */
+  /** Resolve a layer ID to its state and kind across all layer types.
+   *  Overlay types structurally satisfy LayerState (same OverlayBase fields),
+   *  so no manual field-by-field mapping is needed. */
   const findAnyLayer = useCallback(
     (layerId: string): { state: LayerState; kind: LayerKind } | null => {
       const videoLayer = layersRef.current.find((l) => l.id === layerId);
       if (videoLayer) return { state: videoLayer, kind: 'video' };
 
       const textOverlay = textOverlaysRef.current.find((o) => o.id === layerId);
-      if (textOverlay) {
-        return {
-          state: {
-            id: textOverlay.id,
-            x: textOverlay.x,
-            y: textOverlay.y,
-            width: textOverlay.width,
-            height: textOverlay.height,
-            opacity: textOverlay.opacity,
-            zIndex: textOverlay.zIndex,
-            rotationDegrees: textOverlay.rotationDegrees,
-            mirrorHorizontal: textOverlay.mirrorHorizontal,
-            mirrorVertical: textOverlay.mirrorVertical,
-            visible: textOverlay.visible,
-          },
-          kind: 'text',
-        };
-      }
+      if (textOverlay) return { state: textOverlay, kind: 'text' };
 
       const imgOverlay = imageOverlaysRef.current.find((o) => o.id === layerId);
-      if (imgOverlay) {
-        return {
-          state: {
-            id: imgOverlay.id,
-            x: imgOverlay.x,
-            y: imgOverlay.y,
-            width: imgOverlay.width,
-            height: imgOverlay.height,
-            opacity: imgOverlay.opacity,
-            zIndex: imgOverlay.zIndex,
-            rotationDegrees: imgOverlay.rotationDegrees,
-            mirrorHorizontal: imgOverlay.mirrorHorizontal,
-            mirrorVertical: imgOverlay.mirrorVertical,
-            visible: imgOverlay.visible,
-          },
-          kind: 'image',
-        };
-      }
+      if (imgOverlay) return { state: imgOverlay, kind: 'image' };
 
       return null;
     },
@@ -757,23 +692,7 @@ export const useCompositorLayers = (
           onConfigChange(nodeId, config);
         } else if (onParamChange) {
           // Design View path: update the layers param directly
-          const layersMap: Record<string, LayerConfig> = {};
-          for (const layer of currentLayers) {
-            layersMap[layer.id] = {
-              rect: {
-                x: Math.round(layer.x),
-                y: Math.round(layer.y),
-                width: Math.max(1, Math.round(layer.width)),
-                height: Math.max(1, Math.round(layer.height)),
-              },
-              opacity: layer.visible ? Math.round(layer.opacity * 100) / 100 : 0,
-              z_index: layer.zIndex,
-              rotation_degrees: Math.round(layer.rotationDegrees * 10) / 10,
-              mirror_horizontal: layer.mirrorHorizontal,
-              mirror_vertical: layer.mirrorVertical,
-            };
-          }
-          onParamChange(nodeId, 'layers', layersMap);
+          onParamChange(nodeId, 'layers', serializeLayers(currentLayers));
         }
       },
       throttleMs,
@@ -850,8 +769,8 @@ export const useCompositorLayers = (
         return { ...orig, x: nx, y: ny };
       }
 
-      // Issue #5 fix: transform mouse delta into the layer's local coordinate
-      // system so resize handles behave naturally on rotated layers.
+      // Transform mouse delta into the layer's local coordinate system so
+      // resize handles behave naturally on rotated layers.
       let dx = rawDx;
       let dy = rawDy;
       if (orig.rotationDegrees !== 0) {
