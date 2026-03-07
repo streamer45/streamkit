@@ -833,7 +833,7 @@ const LayerInspector: React.FC<{
               value={[normalisedRotation]}
               onValueChange={([v]) => onRotationChange(v)}
               min={0}
-              max={360}
+              max={359}
               step={1}
               disabled={disabled}
               className="nodrag nopan"
