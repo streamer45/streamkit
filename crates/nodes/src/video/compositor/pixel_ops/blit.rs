@@ -82,6 +82,7 @@ pub fn scale_blit_rgba(
     src_height: u32,
     dst_rect: &Rect,
     opacity: f32,
+    #[allow(unused_variables)] src_opaque: bool,
 ) {
     use rayon::prelude::*;
 
@@ -155,22 +156,25 @@ pub fn scale_blit_rgba(
                 if dst_end > row_slice.len() {
                     return;
                 }
-                // Check if the source row has any semi-transparent pixels.
-                // For fully-opaque rows, use bulk memcpy.  For rows with alpha,
-                // fall back to per-pixel blending.
-                let all_opaque;
-                #[cfg(target_arch = "x86_64")]
-                {
-                    all_opaque = if is_x86_feature_detected!("avx2") {
-                        unsafe { all_alpha_opaque_avx2(src_row) }
-                    } else {
-                        unsafe { all_alpha_opaque_sse2(src_row) }
-                    };
-                }
-                #[cfg(not(target_arch = "x86_64"))]
-                {
-                    all_opaque = src_row.chunks_exact(4).all(|px| px[3] == 255);
-                }
+                // When the caller guarantees all source pixels are opaque
+                // (e.g. YUV→RGBA conversion always writes alpha = 255),
+                // skip the per-row alpha scan entirely.
+                let all_opaque = if src_opaque {
+                    true
+                } else {
+                    #[cfg(target_arch = "x86_64")]
+                    {
+                        if is_x86_feature_detected!("avx2") {
+                            unsafe { all_alpha_opaque_avx2(src_row) }
+                        } else {
+                            unsafe { all_alpha_opaque_sse2(src_row) }
+                        }
+                    }
+                    #[cfg(not(target_arch = "x86_64"))]
+                    {
+                        src_row.chunks_exact(4).all(|px| px[3] == 255)
+                    }
+                };
 
                 if all_opaque {
                     row_slice[dst_start..dst_end].copy_from_slice(src_row);
@@ -709,6 +713,7 @@ pub fn scale_blit_rgba_rotated(
     dst_rect: &Rect,
     opacity: f32,
     rotation_deg: f32,
+    src_opaque: bool,
 ) {
     if src_width == 0 || src_height == 0 || dst_rect.width == 0 || dst_rect.height == 0 {
         return;
@@ -721,7 +726,9 @@ pub fn scale_blit_rgba_rotated(
     // Delegate to the optimised non-rotated blit which stretches the
     // source to fill the destination rect (no aspect-ratio fitting).
     if rotation_deg.abs() < 0.01 {
-        scale_blit_rgba(dst, dst_width, dst_height, src, src_width, src_height, dst_rect, opacity);
+        scale_blit_rgba(
+            dst, dst_width, dst_height, src, src_width, src_height, dst_rect, opacity, src_opaque,
+        );
         return;
     }
 

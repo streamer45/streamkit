@@ -197,6 +197,9 @@ struct BlitItem<'a> {
     dst_rect: Rect,
     opacity: f32,
     rotation_degrees: f32,
+    /// When `true`, all source pixels have alpha == 255.  Allows the blit
+    /// function to skip per-row alpha scanning and always use the memcpy path.
+    src_opaque: bool,
     /// `(z_index, insertion_order)` for stable sorting.
     sort_key: (i32, usize),
 }
@@ -307,6 +310,8 @@ pub fn composite_frame(
     for (layer, src_data) in resolved.iter().flatten() {
         let dst_rect =
             layer.rect.clone().unwrap_or(Rect { x: 0, y: 0, width: canvas_w, height: canvas_h });
+        // NV12/I420 → RGBA8 conversion always writes alpha = 255.
+        let src_opaque = layer.pixel_format != PixelFormat::Rgba8;
         items.push(BlitItem {
             src_data,
             src_width: layer.width,
@@ -314,6 +319,7 @@ pub fn composite_frame(
             dst_rect,
             opacity: layer.opacity,
             rotation_degrees: layer.rotation_degrees,
+            src_opaque,
             sort_key: (layer.z_index, insertion_order),
         });
         insertion_order += 1;
@@ -328,6 +334,7 @@ pub fn composite_frame(
             dst_rect: ov.rect.clone(),
             opacity: ov.opacity,
             rotation_degrees: ov.rotation_degrees,
+            src_opaque: false,
             sort_key: (ov.z_index, insertion_order),
         });
         insertion_order += 1;
@@ -342,6 +349,7 @@ pub fn composite_frame(
             dst_rect: ov.rect.clone(),
             opacity: ov.opacity,
             rotation_degrees: ov.rotation_degrees,
+            src_opaque: false,
             sort_key: (ov.z_index, insertion_order),
         });
         insertion_order += 1;
@@ -362,6 +370,7 @@ pub fn composite_frame(
             &item.dst_rect,
             item.opacity,
             item.rotation_degrees,
+            item.src_opaque,
         );
     }
 

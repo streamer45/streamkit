@@ -114,7 +114,9 @@ fn build_pipeline(width: u32, height: u32, fps: u32, frame_count: u32) -> stream
 
     let mut nodes = indexmap::IndexMap::new();
 
-    // --- colorbars_bg (RGBA8, full-size) ---
+    // --- colorbars_bg (NV12, full-size) ---
+    // Uses NV12 to exercise the NV12→RGBA8 conversion path in the compositor,
+    // matching real pipelines where camera inputs are typically NV12.
     nodes.insert(
         "colorbars_bg".to_string(),
         Node {
@@ -124,13 +126,15 @@ fn build_pipeline(width: u32, height: u32, fps: u32, frame_count: u32) -> stream
                 "height": height,
                 "fps": fps,
                 "frame_count": frame_count,
+                "pixel_format": "nv12",
                 "draw_time": true,
+                "animate": true,
             })),
             state: None,
         },
     );
 
-    // --- colorbars_pip (RGBA8, half-size PiP) ---
+    // --- colorbars_pip (NV12, half-size PiP) ---
     nodes.insert(
         "colorbars_pip".to_string(),
         Node {
@@ -140,8 +144,9 @@ fn build_pipeline(width: u32, height: u32, fps: u32, frame_count: u32) -> stream
                 "height": height / 2,
                 "fps": fps,
                 "frame_count": frame_count,
-                "pixel_format": "rgba8",
+                "pixel_format": "nv12",
                 "draw_time": true,
+                "animate": true,
             })),
             state: None,
         },
@@ -251,14 +256,26 @@ fn build_pipeline(width: u32, height: u32, fps: u32, frame_count: u32) -> stream
     }
 }
 
-/// Run one iteration of the benchmark pipeline and return (elapsed, output_bytes).
+/// Result of a single benchmark iteration.
+struct IterResult {
+    elapsed: std::time::Duration,
+    total_bytes: usize,
+    chunk_count: usize,
+    /// First few bytes of output for header validation.
+    header_bytes: Vec<u8>,
+}
+
+/// WebM/EBML magic bytes: Element ID 0x1A45DFA3.
+const EBML_MAGIC: [u8; 4] = [0x1A, 0x45, 0xDF, 0xA3];
+
+/// Run one iteration of the benchmark pipeline and return detailed results.
 async fn run_once(
     engine: &Engine,
     width: u32,
     height: u32,
     fps: u32,
     frame_count: u32,
-) -> (std::time::Duration, usize) {
+) -> IterResult {
     let definition = build_pipeline(width, height, fps, frame_count);
 
     let start = Instant::now();
@@ -273,15 +290,22 @@ async fn run_once(
         .await
         .expect("Pipeline should start successfully");
 
-    // Drain all output bytes.
+    // Drain all output bytes, capturing header and counting chunks.
     let mut total_bytes: usize = 0;
+    let mut chunk_count: usize = 0;
+    let mut header_bytes: Vec<u8> = Vec::new();
     let mut data_stream = result.data_stream;
     while let Some(chunk) = data_stream.recv().await {
+        if header_bytes.len() < 4 {
+            let need = (4 - header_bytes.len()).min(chunk.len());
+            header_bytes.extend_from_slice(&chunk[..need]);
+        }
         total_bytes += chunk.len();
+        chunk_count += 1;
     }
 
     let elapsed = start.elapsed();
-    (elapsed, total_bytes)
+    IterResult { elapsed, total_bytes, chunk_count, header_bytes }
 }
 
 fn main() {
@@ -314,23 +338,51 @@ fn main() {
 
     let mut durations = Vec::with_capacity(args.iterations as usize);
     let mut output_bytes_all = Vec::with_capacity(args.iterations as usize);
+    let mut valid_header = true;
+    let mut valid_size = true;
+
+    // Minimum expected output: at least 100 bytes per frame for animated 720p VP9.
+    // Static colorbars compressed to ~35 bytes/frame; animated content should be
+    // much larger.  This threshold is deliberately conservative.
+    let min_expected_bytes = args.frame_count as usize * 100;
 
     for iter in 1..=args.iterations {
-        let (elapsed, output_bytes) =
-            rt.block_on(run_once(&engine, args.width, args.height, args.fps, args.frame_count));
+        let r = rt.block_on(run_once(&engine, args.width, args.height, args.fps, args.frame_count));
 
-        let fps_actual = f64::from(args.frame_count) / elapsed.as_secs_f64();
+        let fps_actual = f64::from(args.frame_count) / r.elapsed.as_secs_f64();
 
         eprintln!(
-            "  iter {iter}/{}: {:.3}s  ({:.1} fps)  output={} bytes",
+            "  iter {iter}/{}: {:.3}s  ({:.1} fps)  output={} bytes  chunks={}",
             args.iterations,
-            elapsed.as_secs_f64(),
+            r.elapsed.as_secs_f64(),
             fps_actual,
-            output_bytes,
+            r.total_bytes,
+            r.chunk_count,
         );
 
-        durations.push(elapsed);
-        output_bytes_all.push(output_bytes);
+        // Validate EBML header.
+        if r.header_bytes.len() < 4 || r.header_bytes[..4] != EBML_MAGIC {
+            valid_header = false;
+            eprintln!(
+                "  ⚠ EBML header mismatch: got {:?}, expected {:?}",
+                &r.header_bytes[..r.header_bytes.len().min(4)],
+                EBML_MAGIC,
+            );
+        }
+
+        // Validate output size is reasonable.
+        if r.total_bytes < min_expected_bytes {
+            valid_size = false;
+            eprintln!(
+                "  ⚠ Output too small: {} bytes < {} expected minimum ({} bytes/frame)",
+                r.total_bytes,
+                min_expected_bytes,
+                r.total_bytes / args.frame_count.max(1) as usize,
+            );
+        }
+
+        durations.push(r.elapsed);
+        output_bytes_all.push(r.total_bytes);
     }
 
     // --- Summary ---
@@ -352,13 +404,25 @@ fn main() {
     let mean_fps = f64::from(args.frame_count) / mean;
     let mean_frame_ms = mean * 1000.0 / f64::from(args.frame_count);
     let avg_output = output_bytes_all.iter().sum::<usize>() / output_bytes_all.len();
+    let avg_bytes_per_frame = avg_output / args.frame_count.max(1) as usize;
 
     eprintln!("── Summary ({} iterations) ──────────────────────────────", args.iterations);
     eprintln!("  wall-clock   : {mean:.3}s  (min={min:.3}s  max={max:.3}s  σ={stddev:.4}s)");
     eprintln!("  throughput   : {mean_fps:.1} fps");
     eprintln!("  per-frame    : {mean_frame_ms:.2} ms/frame");
-    eprintln!("  output size  : {avg_output} bytes (avg)");
+    eprintln!("  output size  : {avg_output} bytes (avg, {avg_bytes_per_frame} bytes/frame)");
+    eprintln!(
+        "  validation   : header={} size={}",
+        if valid_header { "OK" } else { "FAIL" },
+        if valid_size { "OK" } else { "FAIL" },
+    );
     eprintln!();
+
+    if !valid_header || !valid_size {
+        eprintln!("ERROR: Output validation failed — benchmark results may be unreliable.");
+        eprintln!();
+        std::process::exit(1);
+    }
 
     // Also print a machine-readable JSON line for CI / automated collection.
     let json = serde_json::json!({
@@ -375,6 +439,9 @@ fn main() {
         "mean_fps": mean_fps,
         "mean_frame_ms": mean_frame_ms,
         "avg_output_bytes": avg_output,
+        "avg_bytes_per_frame": avg_bytes_per_frame,
+        "valid_header": valid_header,
+        "valid_size": valid_size,
     });
     println!("{json}");
 }

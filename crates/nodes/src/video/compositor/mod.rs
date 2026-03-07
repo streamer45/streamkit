@@ -991,7 +991,17 @@ mod tests {
         let src = vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 128, 128, 128, 255];
         let mut dst = vec![0u8; 4 * 4 * 4]; // 4x4 RGBA, all transparent black
 
-        scale_blit_rgba(&mut dst, 4, 4, &src, 2, 2, &Rect { x: 1, y: 1, width: 2, height: 2 }, 1.0);
+        scale_blit_rgba(
+            &mut dst,
+            4,
+            4,
+            &src,
+            2,
+            2,
+            &Rect { x: 1, y: 1, width: 2, height: 2 },
+            1.0,
+            false,
+        );
 
         // Pixel at (1,1) should be red.
         let x = 1usize;
@@ -1013,7 +1023,17 @@ mod tests {
         let src = vec![255, 255, 255, 255]; // 1x1 white
         let mut dst = vec![0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255]; // 2x2 black
 
-        scale_blit_rgba(&mut dst, 2, 2, &src, 1, 1, &Rect { x: 0, y: 0, width: 1, height: 1 }, 0.5);
+        scale_blit_rgba(
+            &mut dst,
+            2,
+            2,
+            &src,
+            1,
+            1,
+            &Rect { x: 0, y: 0, width: 1, height: 1 },
+            0.5,
+            false,
+        );
 
         // Pixel (0,0): white at 50% over opaque black -> ~128 grey.
         let r = dst[0];
@@ -1026,7 +1046,17 @@ mod tests {
         let src = vec![255, 0, 0, 255];
         let mut dst = vec![0u8; 8 * 8 * 4];
 
-        scale_blit_rgba(&mut dst, 8, 8, &src, 1, 1, &Rect { x: 2, y: 2, width: 4, height: 4 }, 1.0);
+        scale_blit_rgba(
+            &mut dst,
+            8,
+            8,
+            &src,
+            1,
+            1,
+            &Rect { x: 2, y: 2, width: 4, height: 4 },
+            1.0,
+            false,
+        );
 
         // All pixels in the 4x4 destination rect should be red.
         for y in 2..6u32 {
@@ -1063,6 +1093,7 @@ mod tests {
             &Rect { x: 10, y: 10, width: 20, height: 20 },
             1.0,
             45.0,
+            false,
         );
 
         // The centre of the rect (canvas pixel 20,20) should be covered
@@ -1545,6 +1576,7 @@ mod tests {
             h as u32,
             &Rect { x: 0, y: 0, width: w as u32, height: h as u32 },
             0.9,
+            false,
         );
 
         // Every single row should have been written to (non-zero pixels).
@@ -1729,6 +1761,7 @@ mod tests {
             &Rect { x: 0, y: 0, width: w, height: h },
             0.9,
             0.0,
+            false,
         );
 
         // Verify compositor output: every row should have non-zero pixels.
@@ -1793,6 +1826,7 @@ mod tests {
             &Rect { x: 0, y: 0, width: canvas_w, height: canvas_h },
             0.9,
             0.0, // no rotation — exercises the near-zero fast path
+            false,
         );
 
         // Every row should have non-zero pixels (no black bars on left/right).
@@ -1835,6 +1869,7 @@ mod tests {
             &Rect { x: 10, y: 10, width: 40, height: 20 },
             1.0,
             15.0,
+            false,
         );
 
         // Centre of the rect (canvas pixel 30, 20) should be red.
