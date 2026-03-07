@@ -1,6 +1,6 @@
 use super::*;
 use crate::test_utils::{
-assert_state_initializing, assert_state_running, assert_state_stopped, create_test_context,
+    assert_state_initializing, assert_state_running, assert_state_stopped, create_test_context,
 };
 use config::{LayerConfig, Rect};
 use pixel_ops::{scale_blit_rgba, scale_blit_rgba_rotated, BlitRect};
@@ -228,8 +228,7 @@ fn test_composite_frame_two_layers() {
     };
 
     let mut cache = ConversionCache::new();
-    let result =
-        composite_frame(4, 4, &[Some(layer0), Some(layer1)], &[], &[], None, &mut cache);
+    let result = composite_frame(4, 4, &[Some(layer0), Some(layer1)], &[], &[], None, &mut cache);
     let buf = result.as_slice();
 
     // (0,0) should be red.
@@ -1031,8 +1030,7 @@ fn test_rgba8_to_nv12_avx2_chroma_matches_scalar() {
             let r = i32::from(rgba[off]);
             let g = i32::from(rgba[off + 1]);
             let b = i32::from(rgba[off + 2]);
-            let expected_y =
-                (((66 * r + 129 * g + 25 * b + 128) >> 8) + 16).clamp(0, 255) as u8;
+            let expected_y = (((66 * r + 129 * g + 25 * b + 128) >> 8) + 16).clamp(0, 255) as u8;
             let got_y = nv12_simd[row * wu + col];
             assert!(
                 (i16::from(got_y) - i16::from(expected_y)).abs() <= 1,
