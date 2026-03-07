@@ -235,6 +235,13 @@ perf-ui: install-ui
     @echo "Running UI render-performance tests..."
     @bun run test:perf
 
+# Run e2e compositor perf test (Layer 2)
+# Requires: just skit (backend) + just ui (Vite dev server at :3045)
+[working-directory: 'e2e']
+perf-e2e:
+    @echo "Running e2e compositor perf test against dev server..."
+    @E2E_BASE_URL=http://localhost:3045 npx playwright test tests/compositor-perf.spec.ts
+
 # Lint and type-check the UI code
 [working-directory: 'ui']
 lint-ui: install-ui

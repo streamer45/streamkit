@@ -200,18 +200,20 @@ describe('useCompositorLayers render-performance', () => {
     // eslint-disable-next-line no-console
     console.log('\n' + report + '\n');
 
-    // Only overwrite the baseline when running via `just perf-ui` (sets
-    // UPDATE_PERF_BASELINE=1).  Regular `just test-ui` runs compare but
-    // never silently clobber the committed baseline.
-    if (process.env.UPDATE_PERF_BASELINE === '1') {
-      writeBaseline(results);
-    }
-
     // Fail if any scenario regressed compared to baseline
     const regressions = comparisons.filter((c) => c.status === 'slower');
     expect(
       regressions,
       `Regressions detected:\n${regressions.map((r) => r.name).join(', ')}`
     ).toHaveLength(0);
+
+    // Only overwrite the baseline when running via `just perf-ui` (sets
+    // UPDATE_PERF_BASELINE=1).  Regular `just test-ui` runs compare but
+    // never silently clobber the committed baseline.
+    // Written after the regression check so a failure doesn't silently
+    // launder regressed values into the baseline.
+    if (process.env.UPDATE_PERF_BASELINE === '1') {
+      writeBaseline(results);
+    }
   });
 });

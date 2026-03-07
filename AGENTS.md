@@ -109,12 +109,17 @@ Real-browser profiling for dev builds. Components wrapped with
 `React.Profiler` push metrics to `window.__PERF_DATA__` which Playwright
 tests can read via `page.evaluate()`.
 
+```bash
+just perf-e2e         # requires: just skit + just ui (dev server at :3045)
+```
+
 Key files:
 
 | File | Purpose |
 |------|---------|
 | `ui/src/perf/profiler.ts` | Dev-only `PerfProfiler` wrapper + `window.__PERF_DATA__` store |
 | `e2e/tests/perf-helpers.ts` | `capturePerfData()` / `resetPerfData()` Playwright utilities |
+| `e2e/tests/compositor-perf.spec.ts` | E2E test: creates PiP session, drags all sliders, asserts render budget |
 
 Use Layer 2 when you need real paint/layout timing or want to profile
 interactions end-to-end with actual browser rendering.
