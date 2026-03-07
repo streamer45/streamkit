@@ -79,13 +79,6 @@ const ResolutionLabel = styled.span`
   font-size: 10px;
 `;
 
-const LayerControls = styled.div`
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 4px 0;
-  border-top: 1px solid var(--sk-border);
-`;
 
 const ControlRow = styled.div`
   display: flex;
@@ -546,7 +539,7 @@ const ResetButton = styled.button`
 
 // ── Side Inspector Panel ────────────────────────────────────────────────────
 
-const InspectorPanel = styled.div`
+const SidePanel = styled.div`
   position: absolute;
   left: 100%;
   top: 0;
@@ -558,10 +551,22 @@ const InspectorPanel = styled.div`
   padding: 8px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 0;
   box-shadow: 0 2px 8px var(--sk-shadow, rgba(0, 0, 0, 0.15));
   pointer-events: auto;
   z-index: 5;
+`;
+
+const SidePanelDivider = styled.div`
+  height: 1px;
+  background: var(--sk-border);
+  margin: 8px 0;
+`;
+
+const InspectorControls = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 `;
 
 const InspectorHeader = styled.div`
@@ -743,8 +748,8 @@ interface CompositorNodeProps {
 
 // ── Side inspector property controls ────────────────────────────────────────
 
-/** Side inspector panel for the selected layer's properties.
- *  Renders as an absolutely-positioned panel to the right of the node. */
+/** Inspector controls for the selected layer's properties.
+ *  Rendered inside the SidePanel below the layer list. */
 const LayerInspector: React.FC<{
   name: string;
   x: number;
@@ -772,7 +777,7 @@ const LayerInspector: React.FC<{
     const normalisedRotation = ((Math.round(rotationDegrees) % 360) + 360) % 360;
 
     return (
-      <InspectorPanel className="nodrag nopan">
+      <InspectorControls>
         <InspectorHeader>
           <InspectorTitle>{name}</InspectorTitle>
           <InspectorPosition>
@@ -846,7 +851,7 @@ const LayerInspector: React.FC<{
             <ControlValue>{normalisedRotation}&deg;</ControlValue>
           </ControlRow>
         </InspectorSection>
-      </InspectorPanel>
+      </InspectorControls>
     );
   }
 );
@@ -935,7 +940,7 @@ const UnifiedLayerList: React.FC<{
     );
 
     return (
-      <LayerControls>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
         <HiddenFileInput
           ref={fileInputRef}
           type="file"
@@ -978,7 +983,7 @@ const UnifiedLayerList: React.FC<{
           onReorderLayers={onReorderLayers}
           disabled={disabled}
         />
-      </LayerControls>
+      </div>
     );
   }
 );
@@ -1100,20 +1105,35 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
   const selectedLayer = layers.find((l) => l.id === selectedLayerId);
   const selectedTextOverlay = textOverlays.find((o) => o.id === selectedLayerId);
   const selectedImageOverlay = imageOverlays.find((o) => o.id === selectedLayerId);
-  const hasSelection = !!(selectedLayer || selectedTextOverlay || selectedImageOverlay);
-
-  // Memoize callbacks for LayerInspector
+  // Memoize callbacks for LayerInspector — stable references prevent
+  // React.memo on LayerInspector from being defeated during slider drags.
   const handleSelectedOpacityChange = useCallback(
     (v: number) => {
-      if (selectedLayerId) updateLayerOpacity(selectedLayerId, v);
+      if (!selectedLayerId) return;
+      const selLayer = layers.find((l) => l.id === selectedLayerId);
+      if (selLayer) {
+        updateLayerOpacity(selectedLayerId, v);
+      } else if (textOverlays.some((o) => o.id === selectedLayerId)) {
+        updateTextOverlay(selectedLayerId, { opacity: v });
+      } else {
+        updateImageOverlay(selectedLayerId, { opacity: v });
+      }
     },
-    [selectedLayerId, updateLayerOpacity]
+    [selectedLayerId, layers, textOverlays, updateLayerOpacity, updateTextOverlay, updateImageOverlay]
   );
   const handleSelectedRotationChange = useCallback(
     (v: number) => {
-      if (selectedLayerId) updateLayerRotation(selectedLayerId, v);
+      if (!selectedLayerId) return;
+      const selLayer = layers.find((l) => l.id === selectedLayerId);
+      if (selLayer) {
+        updateLayerRotation(selectedLayerId, v);
+      } else if (textOverlays.some((o) => o.id === selectedLayerId)) {
+        updateTextOverlay(selectedLayerId, { rotationDegrees: v });
+      } else {
+        updateImageOverlay(selectedLayerId, { rotationDegrees: v });
+      }
     },
-    [selectedLayerId, updateLayerRotation]
+    [selectedLayerId, layers, textOverlays, updateLayerRotation, updateTextOverlay, updateImageOverlay]
   );
 
   // Derive friendly name for selected layer in inspector
@@ -1129,6 +1149,89 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
     }
     return '';
   }, [selectedLayer, selectedTextOverlay, selectedImageOverlay, textOverlays, imageOverlays]);
+
+  // Memoize text overlay children so the children prop doesn't defeat
+  // React.memo on LayerInspector during opacity/rotation slider drags.
+  const textInspectorChildren = useMemo(() => {
+    if (!selectedTextOverlay) return null;
+    return (
+      <>
+        <InspectorSection>
+          <InspectorSectionLabel>Content</InspectorSectionLabel>
+          <OverlayEditRow>
+            <OverlayTextInput
+              value={selectedTextOverlay.text}
+              onChange={(e) =>
+                updateTextOverlay(selectedTextOverlay.id, { text: e.target.value })
+              }
+              placeholder="Text content"
+              disabled={disabled}
+              className="nodrag nopan"
+            />
+          </OverlayEditRow>
+        </InspectorSection>
+        <InspectorSection>
+          <InspectorSectionLabel>Style</InspectorSectionLabel>
+          <OverlayEditRow>
+            <span style={{ color: 'var(--sk-text-muted)', fontSize: 10 }}>Size</span>
+            <OverlayNumInput
+              type="number"
+              value={selectedTextOverlay.fontSize}
+              onChange={(e) => {
+                const v = Number.parseInt(e.target.value, 10);
+                if (!Number.isNaN(v) && v > 0)
+                  updateTextOverlay(selectedTextOverlay.id, { fontSize: v });
+              }}
+              disabled={disabled}
+              className="nodrag nopan"
+            />
+          </OverlayEditRow>
+          <OverlayEditRow>
+            <span style={{ color: 'var(--sk-text-muted)', fontSize: 10 }}>Font</span>
+            <FontSelect
+              value={selectedTextOverlay.fontName}
+              onChange={(e) =>
+                updateTextOverlay(selectedTextOverlay.id, { fontName: e.target.value })
+              }
+              disabled={disabled}
+              className="nodrag nopan"
+            >
+              {FONT_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </FontSelect>
+          </OverlayEditRow>
+          <OverlayEditRow>
+            <span style={{ color: 'var(--sk-text-muted)', fontSize: 10 }}>Color</span>
+            <ColorInput
+              type="color"
+              value={rgbaToHex(selectedTextOverlay.color)}
+              onChange={(e) =>
+                updateTextOverlay(selectedTextOverlay.id, {
+                  color: hexToRgba(e.target.value, selectedTextOverlay.color[3]),
+                })
+              }
+              disabled={disabled}
+              className="nodrag nopan"
+            />
+          </OverlayEditRow>
+        </InspectorSection>
+      </>
+    );
+  }, [selectedTextOverlay, updateTextOverlay, disabled]);
+
+  // Selected layer props for the inspector (stable object during same selection)
+  const inspectorProps = useMemo(() => {
+    if (selectedLayer)
+      return { x: selectedLayer.x, y: selectedLayer.y, opacity: selectedLayer.opacity, rotationDegrees: selectedLayer.rotationDegrees };
+    if (selectedTextOverlay)
+      return { x: selectedTextOverlay.x, y: selectedTextOverlay.y, opacity: selectedTextOverlay.opacity, rotationDegrees: selectedTextOverlay.rotationDegrees };
+    if (selectedImageOverlay)
+      return { x: selectedImageOverlay.x, y: selectedImageOverlay.y, opacity: selectedImageOverlay.opacity, rotationDegrees: selectedImageOverlay.rotationDegrees };
+    return null;
+  }, [selectedLayer, selectedTextOverlay, selectedImageOverlay]);
 
   return (
     <NodeFrame
@@ -1178,7 +1281,10 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
               disabled={disabled}
             />
           </CanvasSection>
+        </CompositorWrapper>
 
+        {/* Side panel: layer list (always) + inspector controls (when selected) */}
+        <SidePanel className="nodrag nopan">
           <UnifiedLayerList
             entries={entries}
             selectedLayerId={selectedLayerId}
@@ -1191,118 +1297,25 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
             onReorderLayers={reorderLayers}
             disabled={disabled}
           />
-        </CompositorWrapper>
 
-        {/* Side inspector panel -- appears right of the node when a layer is selected */}
-        {hasSelection && (
-          <>
-            {selectedLayer && (
+          {inspectorProps && (
+            <>
+              <SidePanelDivider />
               <LayerInspector
                 name={selectedLayerName}
-                x={selectedLayer.x}
-                y={selectedLayer.y}
-                opacity={selectedLayer.opacity}
-                rotationDegrees={selectedLayer.rotationDegrees}
+                x={inspectorProps.x}
+                y={inspectorProps.y}
+                opacity={inspectorProps.opacity}
+                rotationDegrees={inspectorProps.rotationDegrees}
                 onOpacityChange={handleSelectedOpacityChange}
                 onRotationChange={handleSelectedRotationChange}
                 disabled={disabled}
-              />
-            )}
-
-            {selectedTextOverlay && (
-              <LayerInspector
-                name={selectedLayerName}
-                x={selectedTextOverlay.x}
-                y={selectedTextOverlay.y}
-                opacity={selectedTextOverlay.opacity}
-                rotationDegrees={selectedTextOverlay.rotationDegrees}
-                onOpacityChange={(v) => updateTextOverlay(selectedTextOverlay.id, { opacity: v })}
-                onRotationChange={(v) =>
-                  updateTextOverlay(selectedTextOverlay.id, { rotationDegrees: v })
-                }
-                disabled={disabled}
               >
-                <InspectorSection>
-                  <InspectorSectionLabel>Content</InspectorSectionLabel>
-                  <OverlayEditRow>
-                    <OverlayTextInput
-                      value={selectedTextOverlay.text}
-                      onChange={(e) =>
-                        updateTextOverlay(selectedTextOverlay.id, { text: e.target.value })
-                      }
-                      placeholder="Text content"
-                      disabled={disabled}
-                      className="nodrag nopan"
-                    />
-                  </OverlayEditRow>
-                </InspectorSection>
-                <InspectorSection>
-                  <InspectorSectionLabel>Style</InspectorSectionLabel>
-                  <OverlayEditRow>
-                    <span style={{ color: 'var(--sk-text-muted)', fontSize: 10 }}>Size</span>
-                    <OverlayNumInput
-                      type="number"
-                      value={selectedTextOverlay.fontSize}
-                      onChange={(e) => {
-                        const v = Number.parseInt(e.target.value, 10);
-                        if (!Number.isNaN(v) && v > 0)
-                          updateTextOverlay(selectedTextOverlay.id, { fontSize: v });
-                      }}
-                      disabled={disabled}
-                      className="nodrag nopan"
-                    />
-                  </OverlayEditRow>
-                  <OverlayEditRow>
-                    <span style={{ color: 'var(--sk-text-muted)', fontSize: 10 }}>Font</span>
-                    <FontSelect
-                      value={selectedTextOverlay.fontName}
-                      onChange={(e) =>
-                        updateTextOverlay(selectedTextOverlay.id, { fontName: e.target.value })
-                      }
-                      disabled={disabled}
-                      className="nodrag nopan"
-                    >
-                      {FONT_OPTIONS.map((opt) => (
-                        <option key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </FontSelect>
-                  </OverlayEditRow>
-                  <OverlayEditRow>
-                    <span style={{ color: 'var(--sk-text-muted)', fontSize: 10 }}>Color</span>
-                    <ColorInput
-                      type="color"
-                      value={rgbaToHex(selectedTextOverlay.color)}
-                      onChange={(e) =>
-                        updateTextOverlay(selectedTextOverlay.id, {
-                          color: hexToRgba(e.target.value, selectedTextOverlay.color[3]),
-                        })
-                      }
-                      disabled={disabled}
-                      className="nodrag nopan"
-                    />
-                  </OverlayEditRow>
-                </InspectorSection>
+                {textInspectorChildren}
               </LayerInspector>
-            )}
-
-            {selectedImageOverlay && (
-              <LayerInspector
-                name={selectedLayerName}
-                x={selectedImageOverlay.x}
-                y={selectedImageOverlay.y}
-                opacity={selectedImageOverlay.opacity}
-                rotationDegrees={selectedImageOverlay.rotationDegrees}
-                onOpacityChange={(v) => updateImageOverlay(selectedImageOverlay.id, { opacity: v })}
-                onRotationChange={(v) =>
-                  updateImageOverlay(selectedImageOverlay.id, { rotationDegrees: v })
-                }
-                disabled={disabled}
-              />
-            )}
-          </>
-        )}
+            </>
+          )}
+        </SidePanel>
       </CompositorOuterWrapper>
     </NodeFrame>
   );
