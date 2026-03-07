@@ -39,6 +39,17 @@ pub struct NodePinMetadata {
     pub output_pins: Vec<streamkit_core::OutputPin>,
 }
 
+/// Bundle of broadcast channel senders shared by the engine actor loop.
+///
+/// Grouped into a struct to keep function signatures concise (avoids
+/// clippy::too_many_arguments on helpers like `initialize_node`).
+struct NodeChannels {
+    state: mpsc::Sender<NodeStateUpdate>,
+    stats: mpsc::Sender<NodeStatsUpdate>,
+    telemetry: mpsc::Sender<TelemetryEvent>,
+    view_data: mpsc::Sender<NodeViewDataUpdate>,
+}
+
 /// The state for the long-running, dynamic engine actor (Control Plane).
 pub struct DynamicEngine {
     pub(super) registry: Arc<RwLock<NodeRegistry>>,
@@ -467,22 +478,20 @@ impl DynamicEngine {
 
     /// Helper function to initialize a node and its I/O actors (Pin Distributors).
     ///
-    /// Takes node_id, kind, state_tx, stats_tx, telemetry_tx, and view_data_tx by reference since
-    /// they're cloned multiple times internally (for channels, metrics, etc.)
+    /// Channel senders are bundled in `NodeChannels` to keep the signature
+    /// under the clippy::too_many_arguments threshold.
     async fn initialize_node(
         &mut self,
         node: Box<dyn streamkit_core::ProcessorNode>,
         node_id: &str,
         kind: &str,
-        state_tx: &mpsc::Sender<NodeStateUpdate>,
-        stats_tx: &mpsc::Sender<NodeStatsUpdate>,
-        telemetry_tx: &mpsc::Sender<TelemetryEvent>,
-        view_data_tx: &mpsc::Sender<NodeViewDataUpdate>,
+        channels: &NodeChannels,
     ) -> Result<(), StreamKitError> {
         let mut node = node;
 
         // Tier 1: Initialization-time discovery (dynamic pins, probing external resources, etc.)
-        let init_ctx = InitContext { node_id: node_id.to_string(), state_tx: state_tx.clone() };
+        let init_ctx =
+            InitContext { node_id: node_id.to_string(), state_tx: channels.state.clone() };
         match node.initialize(&init_ctx).await {
             Ok(PinUpdate::NoChange | PinUpdate::Updated { .. }) => {},
             Err(e) => {
@@ -555,15 +564,15 @@ impl DynamicEngine {
                 OutputRouting::Direct(node_outputs_map),
             ),
             batch_size: self.batch_size,
-            state_tx: state_tx.clone(),
-            stats_tx: Some(stats_tx.clone()),
-            telemetry_tx: Some(telemetry_tx.clone()),
+            state_tx: channels.state.clone(),
+            stats_tx: Some(channels.stats.clone()),
+            telemetry_tx: Some(channels.telemetry.clone()),
             session_id: self.session_id.clone(),
             cancellation_token: None, // Dynamic pipelines don't use cancellation tokens
             pin_management_rx,
             audio_pool: Some(self.audio_pool.clone()),
             video_pool: Some(self.video_pool.clone()),
-            view_data_tx: Some(view_data_tx.clone()),
+            view_data_tx: Some(channels.view_data.clone()),
         };
 
         // 5. Spawn Node
@@ -983,17 +992,13 @@ impl DynamicEngine {
                         self.node_kinds.insert(node_id.clone(), kind.clone());
                         // Delegate initialization to helper function
                         // Pass by reference to avoid unnecessary clones
-                        if let Err(e) = self
-                            .initialize_node(
-                                node,
-                                &node_id,
-                                &kind,
-                                state_tx,
-                                stats_tx,
-                                telemetry_tx,
-                                view_data_tx,
-                            )
-                            .await
+                        let channels = NodeChannels {
+                            state: state_tx.clone(),
+                            stats: stats_tx.clone(),
+                            telemetry: telemetry_tx.clone(),
+                            view_data: view_data_tx.clone(),
+                        };
+                        if let Err(e) = self.initialize_node(node, &node_id, &kind, &channels).await
                         {
                             tracing::error!(
                                 node_id = %node_id,

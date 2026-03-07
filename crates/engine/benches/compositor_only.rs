@@ -363,6 +363,8 @@ fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
         opacity: 0.95,
         rotation_degrees: 0.0,
         z_index: 10,
+        mirror_horizontal: false,
+        mirror_vertical: false,
     });
 
     // Image overlay: a corner logo watermark.
@@ -376,6 +378,8 @@ fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
         opacity: 0.8,
         rotation_degrees: 0.0,
         z_index: 11,
+        mirror_horizontal: false,
+        mirror_vertical: false,
     });
 
     vec![

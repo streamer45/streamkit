@@ -248,7 +248,7 @@ function parseTextOverlays(params: Record<string, unknown>): TextOverlayState[] 
     color: o.color ?? [255, 255, 255, 255],
     fontSize: o.font_size ?? 24,
     fontName: o.font_name ?? 'dejavu-sans',
-    ...parseTransformFields(o as Record<string, unknown>, {
+    ...parseTransformFields(o as unknown as Record<string, unknown>, {
       width: 200,
       height: 40,
       zIndex: 100 + i,
@@ -266,7 +266,7 @@ function parseImageOverlays(params: Record<string, unknown>): ImageOverlayState[
   return overlays.map((o, i) => ({
     id: `img_${i}`,
     dataBase64: o.data_base64 ?? '',
-    ...parseTransformFields(o as Record<string, unknown>, {
+    ...parseTransformFields(o as unknown as Record<string, unknown>, {
       width: 200,
       height: 200,
       zIndex: 200 + i,
@@ -647,11 +647,17 @@ export const useCompositorLayers = (
     const current = selectNodeViewData(sessionId, nodeId)(useSessionStore.getState());
     applyServerLayout(current);
 
-    // Subscribe externally — does NOT cause React re-renders
-    const unsubscribe = useSessionStore.subscribe(
-      selectNodeViewData(sessionId, nodeId),
-      applyServerLayout
-    );
+    // Subscribe externally — does NOT cause React re-renders.
+    // Zustand v5 subscribe takes a single listener; we manually select
+    // and compare to only fire when the relevant view data changes.
+    const selector = selectNodeViewData(sessionId, nodeId);
+    const unsubscribe = useSessionStore.subscribe((state, prevState) => {
+      const viewData = selector(state);
+      const prevViewData = selector(prevState);
+      if (viewData !== prevViewData) {
+        applyServerLayout(viewData);
+      }
+    });
     return unsubscribe;
   }, [sessionId, nodeId]);
 

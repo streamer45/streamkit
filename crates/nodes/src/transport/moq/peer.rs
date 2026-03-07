@@ -1625,19 +1625,16 @@ impl MoqPeerNode {
         Ok(handle)
     }
 
-    /// Subscriber send loop - receives from broadcast channel and sends to client
-    // media_state_rx adds a necessary parameter for dynamic media-type resolution.
-    #[allow(clippy::too_many_arguments)]
-    async fn subscriber_send_loop(
-        publish: moq_lite::OriginProducer,
-        broadcast_name: String,
-        node_id: String,
-        broadcast_rx: broadcast::Receiver<BroadcastFrame>,
+    /// Wait for media type resolution and an optional grace period for
+    /// additional media types, then apply the resolved state to `media`.
+    ///
+    /// Returns `Ok(true)` when resolution succeeded and the caller should
+    /// continue, or `Ok(false)` when a shutdown was received.
+    async fn resolve_media_types(
+        media: &mut SubscriberMediaConfig,
+        media_state_rx: &mut watch::Receiver<MediaTypeState>,
         shutdown_rx: &mut broadcast::Receiver<()>,
-        stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
-        mut media: SubscriberMediaConfig,
-        mut media_state_rx: watch::Receiver<MediaTypeState>,
-    ) -> Result<(), StreamKitError> {
+    ) -> Result<bool, StreamKitError> {
         // Wait for media types to be resolved before building the catalog.
         // For static pipelines `resolved` is true immediately.  For dynamic
         // pipelines we wait until the first packet on any connected input pin
@@ -1657,7 +1654,7 @@ impl MoqPeerNode {
                     }
                     _recv = shutdown_rx.recv() => {
                         tracing::info!("Shutdown while waiting for media type resolution");
-                        return Ok(());
+                        return Ok(false);
                     }
                 }
             }
@@ -1686,7 +1683,7 @@ impl MoqPeerNode {
                     () = tokio::time::sleep_until(grace) => { break; }
                     _recv = shutdown_rx.recv() => {
                         tracing::info!("Shutdown during media type grace period");
-                        return Ok(());
+                        return Ok(false);
                     }
                 }
             }
@@ -1697,6 +1694,26 @@ impl MoqPeerNode {
             let state = media_state_rx.borrow();
             media.has_audio = state.has_audio;
             media.has_video = state.has_video;
+        }
+
+        Ok(true)
+    }
+
+    /// Subscriber send loop - receives from broadcast channel and sends to client
+    // media_state_rx adds a necessary parameter for dynamic media-type resolution.
+    #[allow(clippy::too_many_arguments)]
+    async fn subscriber_send_loop(
+        publish: moq_lite::OriginProducer,
+        broadcast_name: String,
+        node_id: String,
+        broadcast_rx: broadcast::Receiver<BroadcastFrame>,
+        shutdown_rx: &mut broadcast::Receiver<()>,
+        stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
+        mut media: SubscriberMediaConfig,
+        mut media_state_rx: watch::Receiver<MediaTypeState>,
+    ) -> Result<(), StreamKitError> {
+        if !Self::resolve_media_types(&mut media, &mut media_state_rx, shutdown_rx).await? {
+            return Ok(());
         }
 
         // Setup broadcast and tracks

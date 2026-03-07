@@ -109,9 +109,9 @@ impl BenchArgs {
 
 /// Generate an RGBA8 color-bar frame (opaque, all alpha = 255).
 fn generate_rgba_frame(width: u32, height: u32) -> Vec<u8> {
-    let w = width as usize;
-    let h = height as usize;
-    let mut data = vec![0u8; w * h * 4];
+    let frame_w = width as usize;
+    let frame_h = height as usize;
+    let mut data = vec![0u8; frame_w * frame_h * 4];
     let bar_colors: &[(u8, u8, u8)] = &[
         (191, 191, 191), // white
         (191, 191, 0),   // yellow
@@ -121,14 +121,14 @@ fn generate_rgba_frame(width: u32, height: u32) -> Vec<u8> {
         (191, 0, 0),     // red
         (0, 0, 191),     // blue
     ];
-    for row in 0..h {
-        for col in 0..w {
-            let bar_idx = col * bar_colors.len() / w;
-            let (r, g, b) = bar_colors[bar_idx];
-            let off = (row * w + col) * 4;
-            data[off] = r;
-            data[off + 1] = g;
-            data[off + 2] = b;
+    for row in 0..frame_h {
+        for col in 0..frame_w {
+            let bar_idx = col * bar_colors.len() / frame_w;
+            let (red, green, blue) = bar_colors[bar_idx];
+            let off = (row * frame_w + col) * 4;
+            data[off] = red;
+            data[off + 1] = green;
+            data[off + 2] = blue;
             data[off + 3] = 255;
         }
     }
@@ -237,8 +237,8 @@ fn bench_conversion_cold(
     drop(flush);
 
     let start = Instant::now();
-    for i in 0..frame_count as usize {
-        convert_fn(&inputs[i], width, height, &mut output);
+    for input in inputs.iter().take(frame_count as usize) {
+        convert_fn(input, width, height, &mut output);
     }
     let elapsed = start.elapsed();
 
