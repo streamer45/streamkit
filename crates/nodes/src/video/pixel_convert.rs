@@ -36,7 +36,7 @@ use streamkit_core::{
 use tokio::sync::mpsc;
 
 use super::parse_pixel_format;
-use crate::video::compositor::pixel_ops::{
+use crate::video::pixel_ops::{
     i420_to_rgba8_buf, nv12_to_rgba8_buf, rgba8_to_i420_buf, rgba8_to_nv12_buf,
 };
 

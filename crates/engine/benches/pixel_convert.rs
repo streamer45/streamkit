@@ -33,7 +33,7 @@
 
 use std::time::Instant;
 
-use streamkit_nodes::video::compositor::pixel_ops::{
+use streamkit_nodes::video::pixel_ops::{
     i420_to_rgba8_buf, nv12_to_rgba8_buf, rgba8_to_i420_buf, rgba8_to_nv12_buf,
 };
 

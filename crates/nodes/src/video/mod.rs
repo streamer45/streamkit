@@ -38,6 +38,9 @@ pub mod colorbars;
 pub mod compositor;
 
 #[cfg(feature = "compositor")]
+pub mod pixel_ops;
+
+#[cfg(feature = "compositor")]
 pub mod pixel_convert;
 
 #[cfg(feature = "vp9")]

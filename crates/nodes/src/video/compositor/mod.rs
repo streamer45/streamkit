@@ -997,7 +997,7 @@ mod tests {
         assert_state_initializing, assert_state_running, assert_state_stopped, create_test_context,
     };
     use config::{LayerConfig, Rect};
-    use pixel_ops::{scale_blit_rgba, scale_blit_rgba_rotated};
+    use pixel_ops::{scale_blit_rgba, scale_blit_rgba_rotated, BlitRect};
     use std::collections::HashMap;
     use tokio::sync::mpsc;
 
@@ -1029,7 +1029,7 @@ mod tests {
             &src,
             2,
             2,
-            &Rect { x: 1, y: 1, width: 2, height: 2 },
+            &BlitRect { x: 1, y: 1, width: 2, height: 2 },
             1.0,
             false,
             false,
@@ -1063,7 +1063,7 @@ mod tests {
             &src,
             1,
             1,
-            &Rect { x: 0, y: 0, width: 1, height: 1 },
+            &BlitRect { x: 0, y: 0, width: 1, height: 1 },
             0.5,
             false,
             false,
@@ -1088,7 +1088,7 @@ mod tests {
             &src,
             1,
             1,
-            &Rect { x: 2, y: 2, width: 4, height: 4 },
+            &BlitRect { x: 2, y: 2, width: 4, height: 4 },
             1.0,
             false,
             false,
@@ -1127,7 +1127,7 @@ mod tests {
             &src,
             4,
             2,
-            &Rect { x: 10, y: 10, width: 20, height: 20 },
+            &BlitRect { x: 10, y: 10, width: 20, height: 20 },
             1.0,
             45.0,
             false,
@@ -1621,7 +1621,7 @@ mod tests {
             &src,
             w as u32,
             h as u32,
-            &Rect { x: 0, y: 0, width: w as u32, height: h as u32 },
+            &BlitRect { x: 0, y: 0, width: w as u32, height: h as u32 },
             0.9,
             false,
             false,
@@ -1809,7 +1809,7 @@ mod tests {
             &src_rgba,
             w,
             h,
-            &Rect { x: 0, y: 0, width: w, height: h },
+            &BlitRect { x: 0, y: 0, width: w, height: h },
             0.9,
             0.0,
             false,
@@ -1876,7 +1876,7 @@ mod tests {
             &src,
             src_w,
             src_h,
-            &Rect { x: 0, y: 0, width: canvas_w, height: canvas_h },
+            &BlitRect { x: 0, y: 0, width: canvas_w, height: canvas_h },
             0.9,
             0.0, // no rotation — exercises the near-zero fast path
             false,
@@ -1921,7 +1921,7 @@ mod tests {
             &src,
             4,
             2,
-            &Rect { x: 10, y: 10, width: 40, height: 20 },
+            &BlitRect { x: 10, y: 10, width: 40, height: 20 },
             1.0,
             15.0,
             false,
