@@ -68,6 +68,12 @@ pub struct ColorBarsConfig {
     /// font (embedded in the binary) is used.
     #[serde(default)]
     pub draw_time_font_path: Option<String>,
+    /// When `true`, horizontally scrolls the color bars each frame so that
+    /// every frame differs substantially from the previous one.  Useful for
+    /// encoding benchmarks where static content would compress to nearly
+    /// nothing.
+    #[serde(default)]
+    pub animate: bool,
 }
 
 fn default_pixel_format() -> String {
@@ -87,6 +93,7 @@ impl Default for ColorBarsConfig {
             pixel_format: default_pixel_format(),
             draw_time: false,
             draw_time_font_path: None,
+            animate: false,
         }
     }
 }
@@ -267,9 +274,22 @@ impl ProcessorNode for ColorBarsNode {
             });
 
             // Allocate frame from pool if available, otherwise from vec.
+            let animate = self.config.animate;
             let frame = if let Some(pool) = &context.video_pool {
                 let mut pooled = pool.get(total_bytes);
-                pooled.as_mut_slice()[..total_bytes].copy_from_slice(&template);
+                #[allow(clippy::cast_possible_truncation)]
+                if animate {
+                    let offset_px = seq as usize * ANIMATE_SCROLL_PX;
+                    scroll_frame(
+                        &template,
+                        pooled.as_mut_slice(),
+                        pixel_format,
+                        &layout,
+                        offset_px,
+                    );
+                } else {
+                    pooled.as_mut_slice()[..total_bytes].copy_from_slice(&template);
+                }
                 if let Some(ref font) = draw_time_font {
                     stamp_time(pooled.as_mut_slice(), width, height, pixel_format, &layout, font);
                 }
@@ -281,7 +301,15 @@ impl ProcessorNode for ColorBarsNode {
                     metadata,
                 )?
             } else {
-                let mut data = template.clone();
+                #[allow(clippy::cast_possible_truncation)]
+                let mut data = if animate {
+                    let offset_px = seq as usize * ANIMATE_SCROLL_PX;
+                    let mut buf = vec![0u8; total_bytes];
+                    scroll_frame(&template, &mut buf, pixel_format, &layout, offset_px);
+                    buf
+                } else {
+                    template.clone()
+                };
                 if let Some(ref font) = draw_time_font {
                     stamp_time(&mut data, width, height, pixel_format, &layout, font);
                 }
@@ -441,6 +469,122 @@ fn generate_smpte_colorbars_i420(
             data[u_plane.offset + row * u_plane.stride + col] = u;
             data[v_plane.offset + row * v_plane.stride + col] = v;
         }
+    }
+}
+
+// ── Animation (horizontal scroll) ───────────────────────────────────────────
+
+/// Pixels scrolled per frame when `animate` is enabled.
+const ANIMATE_SCROLL_PX: usize = 4;
+
+/// Horizontally rotate a single plane by `offset_bytes`, writing into `dst`.
+#[allow(clippy::cast_possible_truncation)]
+fn rotate_plane_rows(
+    src: &[u8],
+    dst: &mut [u8],
+    plane_offset: usize,
+    stride: usize,
+    data_width: usize,
+    height: usize,
+    offset_bytes: usize,
+) {
+    let off = offset_bytes % data_width;
+    if off == 0 {
+        let len = stride * height;
+        dst[plane_offset..plane_offset + len]
+            .copy_from_slice(&src[plane_offset..plane_offset + len]);
+        return;
+    }
+    for row in 0..height {
+        let base = plane_offset + row * stride;
+        dst[base..base + data_width - off].copy_from_slice(&src[base + off..base + data_width]);
+        dst[base + data_width - off..base + data_width].copy_from_slice(&src[base..base + off]);
+    }
+}
+
+/// Scroll the entire frame (all planes) by `offset_px` luma pixels.
+#[allow(clippy::cast_possible_truncation)]
+fn scroll_frame(
+    template: &[u8],
+    dst: &mut [u8],
+    pixel_format: PixelFormat,
+    layout: &streamkit_core::types::VideoLayout,
+    offset_px: usize,
+) {
+    // Round down to even so chroma stays aligned with 4:2:0 subsampling.
+    let offset_px = offset_px & !1;
+    let planes = layout.planes();
+
+    match pixel_format {
+        PixelFormat::Rgba8 => {
+            let p = planes[0];
+            rotate_plane_rows(
+                template,
+                dst,
+                p.offset,
+                p.stride,
+                p.stride,
+                p.height as usize,
+                offset_px * 4,
+            );
+        },
+        PixelFormat::I420 => {
+            let y = planes[0];
+            rotate_plane_rows(
+                template,
+                dst,
+                y.offset,
+                y.stride,
+                y.stride,
+                y.height as usize,
+                offset_px,
+            );
+            let chroma_off = offset_px / 2;
+            let u = planes[1];
+            rotate_plane_rows(
+                template,
+                dst,
+                u.offset,
+                u.stride,
+                u.stride,
+                u.height as usize,
+                chroma_off,
+            );
+            let v = planes[2];
+            rotate_plane_rows(
+                template,
+                dst,
+                v.offset,
+                v.stride,
+                v.stride,
+                v.height as usize,
+                chroma_off,
+            );
+        },
+        PixelFormat::Nv12 => {
+            let y = planes[0];
+            rotate_plane_rows(
+                template,
+                dst,
+                y.offset,
+                y.stride,
+                y.stride,
+                y.height as usize,
+                offset_px,
+            );
+            // UV plane: each chroma position is 2 bytes (U+V interleaved).
+            let uv = planes[1];
+            let chroma_off_bytes = (offset_px / 2) * 2;
+            rotate_plane_rows(
+                template,
+                dst,
+                uv.offset,
+                uv.stride,
+                uv.stride,
+                uv.height as usize,
+                chroma_off_bytes,
+            );
+        },
     }
 }
 

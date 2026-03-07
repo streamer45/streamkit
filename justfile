@@ -88,11 +88,12 @@ build-skit-native:
     @RUSTFLAGS="-C target-cpu=native" cargo build --release {{moq_features}} -p streamkit-server --bin skit
 
 # Build the skit with profiling support
-# Uses frame pointers for fast stack unwinding (required by pprof frame-pointer feature)
-# Enables target-cpu=native so profiles reflect host-tuned codegen.
+# Uses release-lto profile for full LTO (eliminates UB-check overhead and enables
+# cross-crate SIMD inlining), frame pointers for fast stack unwinding (required by
+# pprof frame-pointer feature), and target-cpu=native so profiles reflect host-tuned codegen.
 build-skit-profiling:
-    @echo "Building skit with profiling support (frame pointers + native CPU enabled)..."
-    @RUSTFLAGS="-C force-frame-pointers=yes -C target-cpu=native" cargo build --release {{moq_features}} {{profiling_features}} -p streamkit-server --bin skit
+    @echo "Building skit with profiling support (release-lto + frame pointers + native CPU)..."
+    @RUSTFLAGS="-C force-frame-pointers=yes -C target-cpu=native" cargo build --profile release-lto {{moq_features}} {{profiling_features}} -p streamkit-server --bin skit
 
 # Start the skit server
 skit *args='': check-ui-dist
@@ -100,12 +101,13 @@ skit *args='': check-ui-dist
     @cargo run {{moq_features}} -p streamkit-server --bin skit -- {{args}}
 
 # Start the skit server with profiling support (CPU + heap)
-# Uses frame pointers for fast stack unwinding (required by pprof frame-pointer feature)
-# Enables target-cpu=native so profiles reflect host-tuned codegen.
+# Uses release-lto profile for full LTO (eliminates UB-check overhead and enables
+# cross-crate SIMD inlining), frame pointers for fast stack unwinding (required by
+# pprof frame-pointer feature), and target-cpu=native so profiles reflect host-tuned codegen.
 skit-profiling *args='':
-    @echo "Starting skit with profiling support (CPU + heap, frame pointers + native CPU enabled)..."
+    @echo "Starting skit with profiling support (release-lto + CPU + heap, frame pointers + native CPU)..."
     @echo "Note: Heap profiling configuration is embedded in the binary"
-    @RUSTFLAGS="-C force-frame-pointers=yes -C target-cpu=native" cargo run {{moq_features}} {{profiling_features}} -p streamkit-server --bin skit -- {{args}}
+    @RUSTFLAGS="-C force-frame-pointers=yes -C target-cpu=native" cargo run --profile release-lto {{moq_features}} {{profiling_features}} -p streamkit-server --bin skit -- {{args}}
 
 # Start the skit server with tokio-console support
 skit-console *args='':
