@@ -175,11 +175,10 @@ pub struct CompositeWorkItem {
     pub canvas_w: u32,
     pub canvas_h: u32,
     pub layers: Vec<Option<LayerSnapshot>>,
-    /// Shared, immutable overlay lists.  Using `Arc<[…]>` means cloning
-    /// into the work item each frame is a single ref-count bump instead
-    /// of cloning the entire `Vec`.
-    pub image_overlays: Arc<[Arc<DecodedOverlay>]>,
-    pub text_overlays: Arc<[Arc<DecodedOverlay>]>,
+    /// All decoded overlays (image + text), pre-merged.  Using `Arc<[…]>`
+    /// means cloning into the work item each frame is a single ref-count
+    /// bump instead of cloning the entire `Vec`.
+    pub overlays: Arc<[Arc<DecodedOverlay>]>,
     pub video_pool: Option<Arc<streamkit_core::VideoFramePool>>,
 }
 
@@ -210,8 +209,7 @@ pub fn composite_frame(
     canvas_w: u32,
     canvas_h: u32,
     layers: &[Option<LayerSnapshot>],
-    image_overlays: &[Arc<DecodedOverlay>],
-    text_overlays: &[Arc<DecodedOverlay>],
+    overlays: &[Arc<DecodedOverlay>],
     video_pool: Option<&streamkit_core::VideoFramePool>,
     conversion_cache: &mut ConversionCache,
 ) -> streamkit_core::frame_pool::PooledVideoData {
@@ -232,6 +230,10 @@ pub fn composite_frame(
     // have no frame.
     for (slot_idx, entry) in layers.iter().enumerate() {
         if let Some(layer) = entry {
+            // Skip conversion for fully transparent layers (e.g. visibility off).
+            if layer.opacity <= 0.0 {
+                continue;
+            }
             if layer.pixel_format != PixelFormat::Rgba8 {
                 conversion_cache.get_or_convert(slot_idx, layer);
             }
@@ -242,32 +244,33 @@ pub fn composite_frame(
     // skipping the canvas clear.  We do the alpha-opaqueness check here
     // while `conversion_cache` is still mutably available.  The result
     // is a simple bool so no borrows leak into pass 2.
-    let skip_clear =
-        layers.iter().enumerate().find_map(|(i, e)| e.as_ref().map(|l| (i, l))).is_some_and(
-            |(_slot_idx, layer)| {
-                // Quick checks that don't need the pixel data.
-                if layer.opacity < 1.0 || layer.rotation_degrees.abs() >= 0.01 {
-                    return false;
-                }
-                let covers = layer.rect.as_ref().is_none_or(|r| {
-                    r.x <= 0
-                        && r.y <= 0
-                        && i64::from(r.width) + i64::from(r.x) >= i64::from(canvas_w)
-                        && i64::from(r.height) + i64::from(r.y) >= i64::from(canvas_h)
-                });
-                if !covers {
-                    return false;
-                }
-                // Alpha check — needs mutable access to conversion_cache.
-                match layer.pixel_format {
-                    // I420/NV12 → RGBA conversion always writes alpha = 255.
-                    PixelFormat::I420 | PixelFormat::Nv12 => true,
-                    PixelFormat::Rgba8 => {
-                        conversion_cache.first_layer_all_opaque(layer, layer.data.as_slice())
-                    },
-                }
-            },
-        );
+    let skip_clear = layers
+        .iter()
+        .enumerate()
+        .find_map(|(i, e)| e.as_ref().filter(|l| l.opacity > 0.0).map(|l| (i, l)))
+        .is_some_and(|(_slot_idx, layer)| {
+            // Quick checks that don't need the pixel data.
+            if layer.opacity < 1.0 || layer.rotation_degrees.abs() >= 0.01 {
+                return false;
+            }
+            let covers = layer.rect.as_ref().is_none_or(|r| {
+                r.x <= 0
+                    && r.y <= 0
+                    && i64::from(r.width) + i64::from(r.x) >= i64::from(canvas_w)
+                    && i64::from(r.height) + i64::from(r.y) >= i64::from(canvas_h)
+            });
+            if !covers {
+                return false;
+            }
+            // Alpha check — needs mutable access to conversion_cache.
+            match layer.pixel_format {
+                // I420/NV12 → RGBA conversion always writes alpha = 255.
+                PixelFormat::I420 | PixelFormat::Nv12 => true,
+                PixelFormat::Rgba8 => {
+                    conversion_cache.first_layer_all_opaque(layer, layer.data.as_slice())
+                },
+            }
+        });
     if !skip_clear {
         buf[..total_bytes].fill(0);
     }
@@ -295,16 +298,17 @@ pub fn composite_frame(
 
     // ── Unified z-sorted blit ─────────────────────────────────────────────
     //
-    // Collect all blittable items (video layers + image/text overlays) into
-    // a single list, sort by (z_index, insertion_order), then blit in order.
-    // This replaces the former three separate loops and allows overlays to
-    // be interleaved with video layers via z_index.
+    // Collect all blittable items (video layers + decoded overlays) into a
+    // single list, sort by (z_index, insertion_order), then blit in order.
 
     let mut items: Vec<BlitItem<'_>> = Vec::new();
     let mut insertion_order: usize = 0;
 
-    // Video layers.
+    // Video layers (may need the canvas-size default rect).
     for (layer, src_data) in resolved.iter().flatten() {
+        if layer.opacity <= 0.0 {
+            continue;
+        }
         let dst_rect =
             layer.rect.clone().unwrap_or(Rect { x: 0, y: 0, width: canvas_w, height: canvas_h });
         items.push(BlitItem {
@@ -319,22 +323,11 @@ pub fn composite_frame(
         insertion_order += 1;
     }
 
-    // Image overlays.
-    for ov in image_overlays {
-        items.push(BlitItem {
-            src_data: &ov.rgba_data,
-            src_width: ov.width,
-            src_height: ov.height,
-            dst_rect: ov.rect.clone(),
-            opacity: ov.opacity,
-            rotation_degrees: ov.rotation_degrees,
-            sort_key: (ov.z_index, insertion_order),
-        });
-        insertion_order += 1;
-    }
-
-    // Text overlays.
-    for ov in text_overlays {
+    // Overlays (image + text) — all pre-decoded RGBA bitmaps.
+    for ov in overlays {
+        if ov.opacity <= 0.0 {
+            continue;
+        }
         items.push(BlitItem {
             src_data: &ov.rgba_data,
             src_width: ov.width,
@@ -348,7 +341,7 @@ pub fn composite_frame(
     }
 
     // Stable sort: lower z_index drawn first (bottom), ties broken by
-    // insertion order (video layers first, then image, then text).
+    // insertion order (video layers first, then overlays).
     items.sort_by_key(|item| item.sort_key);
 
     for item in &items {

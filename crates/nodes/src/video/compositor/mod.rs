@@ -389,8 +389,7 @@ impl ProcessorNode for CompositorNode {
                     work.canvas_w,
                     work.canvas_h,
                     &work.layers,
-                    &work.image_overlays,
-                    &work.text_overlays,
+                    &work.overlays,
                     work.video_pool.as_deref(),
                     &mut conversion_cache,
                 );
@@ -573,12 +572,28 @@ impl ProcessorNode for CompositorNode {
 
             stats_tracker.received();
 
+            // Merge image + text overlays into a single list for the
+            // compositing thread.  Both are Arc<[…]> so this is cheap
+            // (just Arc bumps + a small Vec allocation).
+            let merged_overlays: Arc<[Arc<DecodedOverlay>]> = Arc::from(
+                image_overlays.iter().chain(text_overlays.iter()).cloned().collect::<Vec<_>>(),
+            );
+
+            // If everything is invisible (all layers + overlays at opacity 0),
+            // skip compositing entirely.  This avoids the expensive RGBA→NV12
+            // conversion downstream when there's nothing to draw.
+            let any_visible_layer =
+                layers.iter().any(|l| l.as_ref().is_some_and(|s| s.opacity > 0.0));
+            let any_visible_overlay = merged_overlays.iter().any(|ov| ov.opacity > 0.0);
+            if !any_visible_layer && !any_visible_overlay {
+                continue;
+            }
+
             let work_item = CompositeWorkItem {
                 canvas_w: self.config.width,
                 canvas_h: self.config.height,
                 layers,
-                image_overlays: image_overlays.clone(),
-                text_overlays: text_overlays.clone(),
+                overlays: merged_overlays,
                 video_pool: video_pool.clone(),
             };
 
@@ -981,7 +996,7 @@ mod tests {
     fn test_composite_frame_empty_layers() {
         // No layers, no overlays -> transparent black canvas.
         let mut cache = ConversionCache::new();
-        let result = composite_frame(4, 4, &[], &[], &[], None, &mut cache);
+        let result = composite_frame(4, 4, &[], &[], None, &mut cache);
         let buf = result.as_slice();
         assert_eq!(buf.len(), 4 * 4 * 4);
         assert!(buf.iter().all(|&b| b == 0));
@@ -1002,7 +1017,7 @@ mod tests {
         };
 
         let mut cache = ConversionCache::new();
-        let result = composite_frame(4, 4, &[Some(layer)], &[], &[], None, &mut cache);
+        let result = composite_frame(4, 4, &[Some(layer)], &[], None, &mut cache);
         let buf = result.as_slice();
 
         // Entire canvas should be red (scaled from 2x2 to 4x4).
@@ -1042,8 +1057,7 @@ mod tests {
         };
 
         let mut cache = ConversionCache::new();
-        let result =
-            composite_frame(4, 4, &[Some(layer0), Some(layer1)], &[], &[], None, &mut cache);
+        let result = composite_frame(4, 4, &[Some(layer0), Some(layer1)], &[], None, &mut cache);
         let buf = result.as_slice();
 
         // (0,0) should be red.
@@ -1249,7 +1263,7 @@ mod tests {
         assert_eq!(pool.stats().buckets[0].available, 2);
 
         let mut cache = ConversionCache::new();
-        let result = composite_frame(canvas_w, canvas_h, &[], &[], &[], Some(&pool), &mut cache);
+        let result = composite_frame(canvas_w, canvas_h, &[], &[], Some(&pool), &mut cache);
         assert_eq!(result.as_slice().len(), total);
         // One buffer was taken from the pool.
         assert_eq!(pool.stats().buckets[0].available, 1);
@@ -1566,7 +1580,7 @@ mod tests {
         };
 
         let mut cache = ConversionCache::new();
-        let result = composite_frame(w, h, &[Some(layer)], &[], &[], None, &mut cache);
+        let result = composite_frame(w, h, &[Some(layer)], &[], None, &mut cache);
         let buf = result.as_slice();
 
         // Every row should have non-zero content (no black borders).
