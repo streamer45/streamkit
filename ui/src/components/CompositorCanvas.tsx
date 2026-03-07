@@ -289,7 +289,15 @@ const TextOverlayLayer: React.FC<{
     } else {
       setDisplayHeight(overlay.height);
     }
-  }, [overlay.text, overlay.fontSize, overlay.width, overlay.height, overlay.fontName, scale, editing]);
+  }, [
+    overlay.text,
+    overlay.fontSize,
+    overlay.width,
+    overlay.height,
+    overlay.fontName,
+    scale,
+    editing,
+  ]);
 
   // Issue #1 fix: when the layer is deselected while editing, commit the edit.
   const prevSelectedRef = useRef(isSelected);
