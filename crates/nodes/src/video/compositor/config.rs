@@ -273,7 +273,7 @@ pub struct CompositorLayout {
 
 /// Check that an opacity value is a finite number in `[0.0, 1.0]`.
 fn validate_opacity(value: f32, label: &str) -> Result<(), String> {
-    if !value.is_finite() || value < 0.0 || value > 1.0 {
+    if !value.is_finite() || !(0.0..=1.0).contains(&value) {
         return Err(format!("{label} opacity must be in [0.0, 1.0]"));
     }
     Ok(())
