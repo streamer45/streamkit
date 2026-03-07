@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+//
+// SPDX-License-Identifier: MPL-2.0
+
 use super::*;
 use crate::test_utils::{
     assert_state_initializing, assert_state_running, assert_state_stopped, create_test_context,
