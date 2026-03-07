@@ -749,112 +749,104 @@ interface CompositorNodeProps {
 
 /** Inspector controls for the selected layer's properties.
  *  Rendered inside the SidePanel below the layer list. */
-const LayerInspector: React.FC<{
+// ── Memoized inspector sub-sections ─────────────────────────────────────────
+//
+// Each section is individually memoized so that during slider drags only the
+// section whose value is changing re-renders.  The inactive section, preset
+// buttons, tooltips, and children all bail out via React.memo.
+
+const InspectorHeaderSection: React.FC<{
   name: string;
   x: number;
   y: number;
+}> = React.memo(({ name, x, y }) => (
+  <InspectorHeader>
+    <InspectorTitle>{name}</InspectorTitle>
+    <InspectorPosition>
+      ({Math.round(x)}, {Math.round(y)})
+    </InspectorPosition>
+  </InspectorHeader>
+));
+InspectorHeaderSection.displayName = 'InspectorHeaderSection';
+
+const OpacityControl: React.FC<{
   opacity: number;
-  rotationDegrees: number;
-  onOpacityChange: (value: number) => void;
-  onRotationChange: (value: number) => void;
+  onChange: (value: number) => void;
   disabled: boolean;
-  children?: React.ReactNode;
-}> = React.memo(
-  ({
-    name,
-    x,
-    y,
-    opacity,
-    rotationDegrees,
-    onOpacityChange,
-    onRotationChange,
-    disabled,
-    children,
-  }) => {
-    /** Normalise rotation to the 0..359 range so preset matching works
-     *  regardless of whether the backend stores -180..180 or 0..360. */
-    const normalisedRotation = ((Math.round(rotationDegrees) % 360) + 360) % 360;
+}> = React.memo(({ opacity, onChange, disabled }) => (
+  <InspectorSection>
+    <InspectorSectionLabel>Opacity</InspectorSectionLabel>
+    <ControlRow>
+      <CompactSliderRoot
+        value={[opacity]}
+        onValueChange={([v]) => onChange(v)}
+        min={0}
+        max={1}
+        step={0.01}
+        disabled={disabled}
+        className="nodrag nopan"
+      >
+        <CompactSliderTrack>
+          <CompactSliderRange />
+        </CompactSliderTrack>
+        <CompactSliderThumb />
+      </CompactSliderRoot>
+      <ControlValue>{(opacity * 100).toFixed(0)}%</ControlValue>
+    </ControlRow>
+  </InspectorSection>
+));
+OpacityControl.displayName = 'OpacityControl';
 
-    return (
-      <InspectorControls>
-        <InspectorHeader>
-          <InspectorTitle>{name}</InspectorTitle>
-          <InspectorPosition>
-            ({Math.round(x)}, {Math.round(y)})
-          </InspectorPosition>
-        </InspectorHeader>
+const RotationControl: React.FC<{
+  rotationDegrees: number;
+  onChange: (value: number) => void;
+  disabled: boolean;
+}> = React.memo(({ rotationDegrees, onChange, disabled }) => {
+  /** Normalise rotation to the 0..359 range so preset matching works
+   *  regardless of whether the backend stores -180..180 or 0..360. */
+  const normalisedRotation = ((Math.round(rotationDegrees) % 360) + 360) % 360;
 
-        {children}
-
-        {/* Opacity */}
-        <InspectorSection>
-          <InspectorSectionLabel>Opacity</InspectorSectionLabel>
-          <ControlRow>
-            <CompactSliderRoot
-              value={[opacity]}
-              onValueChange={([v]) => onOpacityChange(v)}
-              min={0}
-              max={1}
-              step={0.01}
-              disabled={disabled}
-              className="nodrag nopan"
-            >
-              <CompactSliderTrack>
-                <CompactSliderRange />
-              </CompactSliderTrack>
-              <CompactSliderThumb />
-            </CompactSliderRoot>
-            <ControlValue>{(opacity * 100).toFixed(0)}%</ControlValue>
-          </ControlRow>
-        </InspectorSection>
-
-        {/* Rotation */}
-        <InspectorSection>
-          <InspectorSectionLabel>Rotation</InspectorSectionLabel>
-          <RotationPresetsRow className="nodrag nopan">
-            {ROTATION_PRESETS.map((deg) => (
-              <PresetButton
-                key={deg}
-                isActive={normalisedRotation === deg}
-                disabled={disabled}
-                onClick={() => onRotationChange(deg)}
-              >
-                {deg}&deg;
-              </PresetButton>
-            ))}
-            <SKTooltip content="Reset to 0&deg;">
-              <ResetButton
-                disabled={disabled}
-                onClick={() => onRotationChange(0)}
-                className="nodrag nopan"
-              >
-                <RotateCcw size={10} />
-              </ResetButton>
-            </SKTooltip>
-          </RotationPresetsRow>
-          <ControlRow>
-            <CompactSliderRoot
-              value={[normalisedRotation]}
-              onValueChange={([v]) => onRotationChange(v)}
-              min={0}
-              max={359}
-              step={1}
-              disabled={disabled}
-              className="nodrag nopan"
-            >
-              <CompactSliderTrack>
-                <CompactSliderRange />
-              </CompactSliderTrack>
-              <CompactSliderThumb />
-            </CompactSliderRoot>
-            <ControlValue>{normalisedRotation}&deg;</ControlValue>
-          </ControlRow>
-        </InspectorSection>
-      </InspectorControls>
-    );
-  }
-);
-LayerInspector.displayName = 'LayerInspector';
+  return (
+    <InspectorSection>
+      <InspectorSectionLabel>Rotation</InspectorSectionLabel>
+      <RotationPresetsRow className="nodrag nopan">
+        {ROTATION_PRESETS.map((deg) => (
+          <PresetButton
+            key={deg}
+            isActive={normalisedRotation === deg}
+            disabled={disabled}
+            onClick={() => onChange(deg)}
+          >
+            {deg}&deg;
+          </PresetButton>
+        ))}
+        <SKTooltip content="Reset to 0&deg;">
+          <ResetButton disabled={disabled} onClick={() => onChange(0)} className="nodrag nopan">
+            <RotateCcw size={10} />
+          </ResetButton>
+        </SKTooltip>
+      </RotationPresetsRow>
+      <ControlRow>
+        <CompactSliderRoot
+          value={[normalisedRotation]}
+          onValueChange={([v]) => onChange(v)}
+          min={0}
+          max={359}
+          step={1}
+          disabled={disabled}
+          className="nodrag nopan"
+        >
+          <CompactSliderTrack>
+            <CompactSliderRange />
+          </CompactSliderTrack>
+          <CompactSliderThumb />
+        </CompactSliderRoot>
+        <ControlValue>{normalisedRotation}&deg;</ControlValue>
+      </ControlRow>
+    </InspectorSection>
+  );
+});
+RotationControl.displayName = 'RotationControl';
 
 // ── Unified layer list ──────────────────────────────────────────────────────
 //
@@ -1322,18 +1314,24 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
           {inspectorProps && (
             <>
               <SidePanelDivider />
-              <LayerInspector
-                name={selectedLayerName}
-                x={inspectorProps.x}
-                y={inspectorProps.y}
-                opacity={inspectorProps.opacity}
-                rotationDegrees={inspectorProps.rotationDegrees}
-                onOpacityChange={handleSelectedOpacityChange}
-                onRotationChange={handleSelectedRotationChange}
-                disabled={disabled}
-              >
+              <InspectorControls>
+                <InspectorHeaderSection
+                  name={selectedLayerName}
+                  x={inspectorProps.x}
+                  y={inspectorProps.y}
+                />
                 {textInspectorChildren}
-              </LayerInspector>
+                <OpacityControl
+                  opacity={inspectorProps.opacity}
+                  onChange={handleSelectedOpacityChange}
+                  disabled={disabled}
+                />
+                <RotationControl
+                  rotationDegrees={inspectorProps.rotationDegrees}
+                  onChange={handleSelectedRotationChange}
+                  disabled={disabled}
+                />
+              </InspectorControls>
             </>
           )}
         </SidePanel>
