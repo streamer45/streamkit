@@ -425,8 +425,10 @@ impl ProcessorNode for CompositorNode {
 
         // ── Cached layer config + draw order ────────────────────────────
         let mut layer_configs_dirty = true;
+        let mut overlays_dirty = true;
         let mut resolved_configs: Vec<ResolvedSlotConfig> = Vec::new();
         let mut sorted_draw_order: Vec<usize> = Vec::new();
+        let mut cached_overlays: Arc<[Arc<DecodedOverlay>]> = Arc::from(Vec::new());
 
         loop {
             // ── Wait for the next tick, or handle control / pin msgs ────
@@ -451,6 +453,7 @@ impl ProcessorNode for CompositorNode {
                                 &mut stats_tracker,
                             );
                             layer_configs_dirty = true;
+                            overlays_dirty = true;
                             if self.config.fps != old_fps {
                                 let new_duration = std::time::Duration::from_nanos(
                                     1_000_000_000u64 / u64::from(self.config.fps),
@@ -572,19 +575,20 @@ impl ProcessorNode for CompositorNode {
 
             stats_tracker.received();
 
-            // Merge image + text overlays into a single list for the
-            // compositing thread.  Both are Arc<[…]> so this is cheap
-            // (just Arc bumps + a small Vec allocation).
-            let merged_overlays: Arc<[Arc<DecodedOverlay>]> = Arc::from(
-                image_overlays.iter().chain(text_overlays.iter()).cloned().collect::<Vec<_>>(),
-            );
+            // Rebuild merged overlay list only when overlays changed.
+            if overlays_dirty {
+                cached_overlays = Arc::from(
+                    image_overlays.iter().chain(text_overlays.iter()).cloned().collect::<Vec<_>>(),
+                );
+                overlays_dirty = false;
+            }
 
             // If everything is invisible (all layers + overlays at opacity 0),
             // skip compositing entirely.  This avoids the expensive RGBA→NV12
             // conversion downstream when there's nothing to draw.
             let any_visible_layer =
                 layers.iter().any(|l| l.as_ref().is_some_and(|s| s.opacity > 0.0));
-            let any_visible_overlay = merged_overlays.iter().any(|ov| ov.opacity > 0.0);
+            let any_visible_overlay = cached_overlays.iter().any(|ov| ov.opacity > 0.0);
             if !any_visible_layer && !any_visible_overlay {
                 continue;
             }
@@ -593,7 +597,7 @@ impl ProcessorNode for CompositorNode {
                 canvas_w: self.config.width,
                 canvas_h: self.config.height,
                 layers,
-                overlays: merged_overlays,
+                overlays: cached_overlays.clone(),
                 video_pool: video_pool.clone(),
             };
 

@@ -282,7 +282,11 @@ pub fn composite_frame(
         .iter()
         .enumerate()
         .map(|(slot_idx, entry)| {
-            entry.as_ref().map(|layer| {
+            entry.as_ref().and_then(|layer| {
+                // Skip invisible layers — pass 1 didn't convert them.
+                if layer.opacity <= 0.0 {
+                    return None;
+                }
                 let src_data: &[u8] = match layer.pixel_format {
                     PixelFormat::Rgba8 => layer.data.as_slice(),
                     PixelFormat::I420 | PixelFormat::Nv12 => {
@@ -291,7 +295,7 @@ pub fn composite_frame(
                         conversion_cache.get_cached(slot_idx, layer)
                     },
                 };
-                (layer, src_data)
+                Some((layer, src_data))
             })
         })
         .collect();
