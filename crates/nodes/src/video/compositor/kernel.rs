@@ -318,8 +318,11 @@ pub fn composite_frame(
 
     // Video layers.
     for (layer, src_data) in resolved.iter().flatten() {
-        let dst_rect: BlitRect =
-            layer.rect.clone().unwrap_or(Rect { x: 0, y: 0, width: canvas_w, height: canvas_h }).into();
+        let dst_rect: BlitRect = layer
+            .rect
+            .clone()
+            .unwrap_or(Rect { x: 0, y: 0, width: canvas_w, height: canvas_h })
+            .into();
         // NV12/I420 → RGBA8 conversion always writes alpha = 255.
         let src_opaque = layer.pixel_format != PixelFormat::Rgba8;
         items.push(CompositeItem {
