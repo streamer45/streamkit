@@ -1778,8 +1778,8 @@ const MonitorViewContent: React.FC = () => {
   const previewSetPipelineOutputTypes = useStreamStore((s) => s.setPipelineOutputTypes);
   const isPreviewConnected = previewStatus === 'connected';
 
-  // Issue #3 fix: extract MoQ peer settings from the selected session's pipeline
-  // so preview connects to the correct gateway path and output broadcast.
+  // Extract MoQ peer settings from the selected session's pipeline so the
+  // preview connects to the correct gateway path and output broadcast.
   const handleStartPreview = useCallback(async () => {
     // Configure for watch-only mode (no publish/mic)
     previewSetEnablePublish(false);

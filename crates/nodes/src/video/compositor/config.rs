@@ -271,6 +271,14 @@ pub struct CompositorLayout {
     pub image_overlays: SmallVec<[ResolvedOverlay; 8]>,
 }
 
+/// Check that an opacity value is a finite number in `[0.0, 1.0]`.
+fn validate_opacity(value: f32, label: &str) -> Result<(), String> {
+    if !value.is_finite() || value < 0.0 || value > 1.0 {
+        return Err(format!("{label} opacity must be in [0.0, 1.0]"));
+    }
+    Ok(())
+}
+
 impl CompositorConfig {
     /// Validate compositor parameters.
     ///
@@ -286,25 +294,13 @@ impl CompositorConfig {
             return Err("Output fps must be > 0".to_string());
         }
         for (name, layer) in &self.layers {
-            if !layer.opacity.is_finite() || layer.opacity < 0.0 || layer.opacity > 1.0 {
-                return Err(format!("Layer '{name}' opacity must be in [0.0, 1.0]"));
-            }
+            validate_opacity(layer.opacity, &format!("Layer '{name}'"))?;
         }
         for (i, img) in self.image_overlays.iter().enumerate() {
-            if !img.transform.opacity.is_finite()
-                || img.transform.opacity < 0.0
-                || img.transform.opacity > 1.0
-            {
-                return Err(format!("Image overlay {i} opacity must be in [0.0, 1.0]"));
-            }
+            validate_opacity(img.transform.opacity, &format!("Image overlay {i}"))?;
         }
         for (i, txt) in self.text_overlays.iter().enumerate() {
-            if !txt.transform.opacity.is_finite()
-                || txt.transform.opacity < 0.0
-                || txt.transform.opacity > 1.0
-            {
-                return Err(format!("Text overlay {i} opacity must be in [0.0, 1.0]"));
-            }
+            validate_opacity(txt.transform.opacity, &format!("Text overlay {i}"))?;
         }
         Ok(())
     }

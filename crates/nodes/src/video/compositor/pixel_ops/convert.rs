@@ -13,6 +13,24 @@ use super::{rayon_chunk_rows, RAYON_ROW_THRESHOLD};
 #[cfg(target_arch = "x86_64")]
 use super::simd;
 
+// ── Cached SIMD feature detection ───────────────────────────────────────────
+
+/// Return `(avx2, sse4.1, sse2)` capability flags, cached after the first call.
+/// The underlying `is_x86_feature_detected!` already uses an internal atomic
+/// cache, so this is purely a readability win — it replaces the 6-line
+/// detection block that was duplicated in every conversion function.
+#[cfg(target_arch = "x86_64")]
+fn simd_caps() -> (bool, bool, bool) {
+    static CAPS: std::sync::LazyLock<(bool, bool, bool)> = std::sync::LazyLock::new(|| {
+        (
+            is_x86_feature_detected!("avx2"),
+            is_x86_feature_detected!("sse4.1"),
+            is_x86_feature_detected!("sse2"),
+        )
+    });
+    *CAPS
+}
+
 // ── Shared rayon parallelization helper ─────────────────────────────────────
 
 /// Process `total_rows` of a buffer in parallel (or sequentially for small
@@ -132,11 +150,7 @@ pub fn i420_to_rgba8_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     let rgba_row_stride = w * 4;
 
     #[cfg(target_arch = "x86_64")]
-    let use_avx2 = is_x86_feature_detected!("avx2");
-    #[cfg(target_arch = "x86_64")]
-    let use_sse41 = is_x86_feature_detected!("sse4.1");
-    #[cfg(target_arch = "x86_64")]
-    let use_sse2 = is_x86_feature_detected!("sse2");
+    let (use_avx2, use_sse41, use_sse2) = simd_caps();
 
     let convert_row = |row: usize, rgba_row: &mut [u8]| {
         let y_base = row * y_stride;
@@ -237,11 +251,7 @@ pub fn nv12_to_rgba8_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     let rgba_row_stride = w * 4;
 
     #[cfg(target_arch = "x86_64")]
-    let use_avx2 = is_x86_feature_detected!("avx2");
-    #[cfg(target_arch = "x86_64")]
-    let use_sse41 = is_x86_feature_detected!("sse4.1");
-    #[cfg(target_arch = "x86_64")]
-    let use_sse2 = is_x86_feature_detected!("sse2");
+    let (use_avx2, use_sse41, use_sse2) = simd_caps();
 
     let convert_row = |row: usize, rgba_row: &mut [u8]| {
         let y_base = row * y_stride;
@@ -344,13 +354,8 @@ pub fn rgba8_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     let (y_plane, chroma_planes) = out[..y_size + 2 * chroma_size].split_at_mut(y_size);
     let (u_plane, v_plane) = chroma_planes.split_at_mut(chroma_size);
 
-    // Hoist CPU feature detection once, outside the per-row closures.
     #[cfg(target_arch = "x86_64")]
-    let use_avx2 = is_x86_feature_detected!("avx2");
-    #[cfg(target_arch = "x86_64")]
-    let use_sse41 = is_x86_feature_detected!("sse4.1");
-    #[cfg(target_arch = "x86_64")]
-    let use_sse2 = is_x86_feature_detected!("sse2");
+    let (use_avx2, use_sse41, use_sse2) = simd_caps();
 
     // Chroma-row conversion closure.
     let convert_chroma_row = |crow: usize, u_row: &mut [u8], v_row: &mut [u8]| {
@@ -521,13 +526,8 @@ pub fn rgba8_to_nv12_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
     // Split output into Y plane and UV plane.
     let (y_plane, uv_plane) = out[..y_size + uv_stride * chroma_h].split_at_mut(y_size);
 
-    // Hoist CPU feature detection once, outside the per-row closures.
     #[cfg(target_arch = "x86_64")]
-    let use_avx2 = is_x86_feature_detected!("avx2");
-    #[cfg(target_arch = "x86_64")]
-    let use_sse41 = is_x86_feature_detected!("sse4.1");
-    #[cfg(target_arch = "x86_64")]
-    let use_sse2 = is_x86_feature_detected!("sse2");
+    let (use_avx2, use_sse41, use_sse2) = simd_caps();
 
     // Chroma-row conversion closure.
     let convert_chroma_row = |crow: usize, uv_row: &mut [u8]| {

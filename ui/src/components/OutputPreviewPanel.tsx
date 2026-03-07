@@ -60,7 +60,7 @@ const ResizeEdgeTop = styled.div`
   z-index: 25;
 `;
 
-/** Issue #2: Invisible resize handle on the right edge */
+/** Invisible resize handle on the right edge of the preview panel. */
 const ResizeEdgeRight = styled.div`
   position: absolute;
   top: 0;
@@ -71,7 +71,7 @@ const ResizeEdgeRight = styled.div`
   z-index: 25;
 `;
 
-/** Issue #2: Invisible resize handle on the bottom edge */
+/** Invisible resize handle on the bottom edge of the preview panel. */
 const ResizeEdgeBottom = styled.div`
   position: absolute;
   bottom: -3px;
@@ -271,7 +271,7 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
     }, []);
 
     // ── Resize handling ─────────────────────────────────────────────────────
-    // Issue #2 fix: support resizing from all four edges
+    // Support resizing from all four edges of the preview panel.
     const handleResizeStart = useCallback(
       (edge: 'left' | 'top' | 'right' | 'bottom', e: React.PointerEvent) => {
         e.preventDefault();
