@@ -1248,6 +1248,8 @@ mod tests {
                 opacity: 1.0,
                 rotation_degrees: 0.0,
                 z_index: 0,
+                mirror_horizontal: false,
+                mirror_vertical: false,
             },
             color: [255, 255, 0, 255],
             font_size: 24,
