@@ -363,6 +363,15 @@ impl DynamicEngine {
     ///
     /// View data is best-effort (like stats): dropped updates are acceptable.
     fn handle_view_data_update(&mut self, update: &NodeViewDataUpdate) {
+        // Ignore view data updates for nodes that have been removed
+        if !self.live_nodes.contains_key(&update.node_id) {
+            tracing::trace!(
+                node = %update.node_id,
+                "Ignoring view data update for removed node"
+            );
+            return;
+        }
+
         // Store latest value
         self.node_view_data.insert(update.node_id.clone(), update.data.clone());
 
