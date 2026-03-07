@@ -140,7 +140,14 @@ pub fn scale_blit_rgba(
     //
     // Rows are processed in parallel via `rayon` when the blit region is
     // large enough to benefit from multi-core dispatch.
-    if rw == sw && rh == sh && opacity >= 1.0 && src_col_skip == 0 && src_row_skip == 0 {
+    if rw == sw
+        && rh == sh
+        && opacity >= 1.0
+        && src_col_skip == 0
+        && src_row_skip == 0
+        && !mirror_h
+        && !mirror_v
+    {
         let src_row_bytes = sw * 4;
         let copy_bytes = effective_rect_w * 4;
         // Pre-validate that the source buffer can satisfy all rows,
