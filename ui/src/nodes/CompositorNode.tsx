@@ -830,10 +830,10 @@ const LayerInspector: React.FC<{
           </RotationPresetsRow>
           <ControlRow>
             <CompactSliderRoot
-              value={[rotationDegrees]}
+              value={[normalisedRotation]}
               onValueChange={([v]) => onRotationChange(v)}
-              min={-180}
-              max={180}
+              min={0}
+              max={360}
               step={1}
               disabled={disabled}
               className="nodrag nopan"
@@ -843,7 +843,7 @@ const LayerInspector: React.FC<{
               </CompactSliderTrack>
               <CompactSliderThumb />
             </CompactSliderRoot>
-            <ControlValue>{rotationDegrees.toFixed(0)}&deg;</ControlValue>
+            <ControlValue>{normalisedRotation}&deg;</ControlValue>
           </ControlRow>
         </InspectorSection>
       </InspectorPanel>
