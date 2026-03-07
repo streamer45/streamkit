@@ -15,6 +15,7 @@ import { LiveBadge, LiveDot } from '@/components/ui/LiveIndicator';
 import { useCompositorLayers } from '@/hooks/useCompositorLayers';
 import type { TextOverlayState, ImageOverlayState, LayerKind } from '@/hooks/useCompositorLayers';
 import { setCompositorSelection } from '@/hooks/useCompositorSelection';
+import { perfOnRender } from '@/perf';
 import type { InputPin, OutputPin, NodeState, NodeStats, NodeDefinition } from '@/types/types';
 import { nodesLogger } from '@/utils/logger';
 
@@ -1271,7 +1272,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
     return null;
   }, [selectedLayer, selectedTextOverlay, selectedImageOverlay]);
 
-  return (
+  const nodeContent = (
     <NodeFrame
       id={id}
       label={data.label}
@@ -1348,6 +1349,18 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
       </CompositorOuterWrapper>
     </NodeFrame>
   );
+
+  // Wrap in React.Profiler in dev builds so that Layer 2 (Playwright) can
+  // capture render metrics via window.__PERF_DATA__.
+  if (import.meta.env.DEV) {
+    return (
+      <React.Profiler id="CompositorNode" onRender={perfOnRender}>
+        {nodeContent}
+      </React.Profiler>
+    );
+  }
+
+  return nodeContent;
 });
 
 CompositorNode.displayName = 'CompositorNode';
