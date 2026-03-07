@@ -37,6 +37,9 @@ pub mod colorbars;
 #[cfg(feature = "compositor")]
 pub mod compositor;
 
+#[cfg(feature = "compositor")]
+pub mod pixel_convert;
+
 #[cfg(feature = "vp9")]
 pub mod vp9;
 
@@ -346,6 +349,9 @@ pub fn register_video_nodes(registry: &mut NodeRegistry) {
 
     #[cfg(feature = "compositor")]
     compositor::register_compositor_nodes(registry);
+
+    #[cfg(feature = "compositor")]
+    pixel_convert::register_pixel_convert_nodes(registry);
 
     #[cfg(feature = "vp9")]
     vp9::register_vp9_nodes(registry);

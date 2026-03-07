@@ -85,9 +85,15 @@ nodes:
       - colorbars_bg
       - colorbars_pip
 
+  pixel_convert:
+    kind: video::pixel_convert
+    params:
+      output_format: nv12
+    needs: compositor
+
   vp9_encoder:
     kind: video::vp9::encoder
-    needs: compositor
+    needs: pixel_convert
 
   webm_muxer:
     kind: containers::webm::muxer
