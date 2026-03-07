@@ -507,8 +507,7 @@ export const useCompositorLayers = (
           const existing = prev.find((l) => l.id === sl.id);
           // When a layer is hidden client-side, the backend receives opacity=0.
           // Preserve the original opacity so toggling visibility back ON restores it.
-          const opacity =
-            existing && !existing.visible ? existing.opacity : sl.opacity;
+          const opacity = existing && !existing.visible ? existing.opacity : sl.opacity;
           return {
             id: sl.id,
             x: sl.x,
