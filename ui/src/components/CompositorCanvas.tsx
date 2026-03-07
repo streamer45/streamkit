@@ -274,203 +274,205 @@ const TextOverlayLayer: React.FC<{
   /** When provided (Monitor view), skip client-side hidden-span measurement
    *  and use the server-computed height directly. */
   serverHeight?: number;
-}> = React.memo(({ overlay, index, isSelected, scale, onPointerDown, onTextEdit, layerRef, serverHeight }) => {
-  const [editing, setEditing] = useState(false);
-  const [editText, setEditText] = useState(overlay.text);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
-  const cancelledRef = useRef(false);
-  const committedRef = useRef(false);
+}> = React.memo(
+  ({ overlay, index, isSelected, scale, onPointerDown, onTextEdit, layerRef, serverHeight }) => {
+    const [editing, setEditing] = useState(false);
+    const [editText, setEditText] = useState(overlay.text);
+    const inputRef = useRef<HTMLTextAreaElement>(null);
+    const cancelledRef = useRef(false);
+    const committedRef = useRef(false);
 
-  // Auto-expand box height to fit wrapped / multi-line text, matching the
-  // backend compositor which expands the overlay bitmap in the same way.
-  // When serverHeight is provided (Monitor view), skip client-side measurement
-  // and use the server-computed height directly (server is source of truth).
-  const measureRef = useRef<HTMLSpanElement>(null);
-  const [displayHeight, setDisplayHeight] = useState(serverHeight ?? overlay.height);
-  useLayoutEffect(() => {
-    if (serverHeight != null) {
-      setDisplayHeight(serverHeight);
-      return;
-    }
-    if (measureRef.current) {
-      const measured = measureRef.current.scrollHeight;
-      setDisplayHeight(Math.max(overlay.height, measured));
-    } else {
-      setDisplayHeight(overlay.height);
-    }
-  }, [
-    overlay.text,
-    overlay.fontSize,
-    overlay.width,
-    overlay.height,
-    overlay.fontName,
-    scale,
-    editing,
-    serverHeight,
-  ]);
+    // Auto-expand box height to fit wrapped / multi-line text, matching the
+    // backend compositor which expands the overlay bitmap in the same way.
+    // When serverHeight is provided (Monitor view), skip client-side measurement
+    // and use the server-computed height directly (server is source of truth).
+    const measureRef = useRef<HTMLSpanElement>(null);
+    const [displayHeight, setDisplayHeight] = useState(serverHeight ?? overlay.height);
+    useLayoutEffect(() => {
+      if (serverHeight != null) {
+        setDisplayHeight(serverHeight);
+        return;
+      }
+      if (measureRef.current) {
+        const measured = measureRef.current.scrollHeight;
+        setDisplayHeight(Math.max(overlay.height, measured));
+      } else {
+        setDisplayHeight(overlay.height);
+      }
+    }, [
+      overlay.text,
+      overlay.fontSize,
+      overlay.width,
+      overlay.height,
+      overlay.fontName,
+      scale,
+      editing,
+      serverHeight,
+    ]);
 
-  // Issue #1 fix: when the layer is deselected while editing, commit the edit.
-  const prevSelectedRef = useRef(isSelected);
-  useEffect(() => {
-    if (prevSelectedRef.current && !isSelected && editing) {
-      // Layer was deselected while editing – commit
-      if (!cancelledRef.current && !committedRef.current) {
-        committedRef.current = true;
-        if (editText.trim() && editText !== overlay.text && onTextEdit) {
-          onTextEdit(overlay.id, { text: editText.trim() });
+    // Issue #1 fix: when the layer is deselected while editing, commit the edit.
+    const prevSelectedRef = useRef(isSelected);
+    useEffect(() => {
+      if (prevSelectedRef.current && !isSelected && editing) {
+        // Layer was deselected while editing – commit
+        if (!cancelledRef.current && !committedRef.current) {
+          committedRef.current = true;
+          if (editText.trim() && editText !== overlay.text && onTextEdit) {
+            onTextEdit(overlay.id, { text: editText.trim() });
+          }
         }
-      }
-      setEditing(false);
-    }
-    prevSelectedRef.current = isSelected;
-  }, [isSelected, editing, editText, overlay.id, overlay.text, onTextEdit]);
-
-  const handlePointerDown = useCallback(
-    (e: React.PointerEvent) => {
-      if (editing) return; // don't start drag while editing
-      onPointerDown(overlay.id, e);
-    },
-    [overlay.id, onPointerDown, editing]
-  );
-
-  const handleDoubleClick = useCallback(
-    (e: React.MouseEvent) => {
-      e.stopPropagation();
-      e.preventDefault();
-      if (!onTextEdit) return;
-      setEditText(overlay.text);
-      cancelledRef.current = false;
-      committedRef.current = false;
-      setEditing(true);
-      // Focus the textarea after React renders it
-      requestAnimationFrame(() => inputRef.current?.focus());
-    },
-    [onTextEdit, overlay.text]
-  );
-
-  const commitEdit = useCallback(() => {
-    if (cancelledRef.current) return;
-    if (committedRef.current) return; // guard against double-fire
-    committedRef.current = true;
-    setEditing(false);
-    if (editText.trim() && editText !== overlay.text && onTextEdit) {
-      onTextEdit(overlay.id, { text: editText.trim() });
-    }
-  }, [editText, overlay.id, overlay.text, onTextEdit]);
-
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      e.stopPropagation();
-      // Ctrl/Cmd+Enter commits; plain Enter inserts newline (textarea default)
-      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-        e.preventDefault();
-        commitEdit();
-      }
-      if (e.key === 'Escape') {
-        cancelledRef.current = true;
         setEditing(false);
       }
-    },
-    [commitEdit]
-  );
+      prevSelectedRef.current = isSelected;
+    }, [isSelected, editing, editText, overlay.id, overlay.text, onTextEdit]);
 
-  const hue = layerHue(index + 100); // offset from video layers
-  const borderColor = isSelected ? 'var(--sk-primary)' : `hsla(${hue}, 70%, 65%, 0.8)`;
-  const bgColor = isSelected ? `hsla(${hue}, 60%, 50%, 0.25)` : `hsla(${hue}, 60%, 50%, 0.12)`;
+    const handlePointerDown = useCallback(
+      (e: React.PointerEvent) => {
+        if (editing) return; // don't start drag while editing
+        onPointerDown(overlay.id, e);
+      },
+      [overlay.id, onPointerDown, editing]
+    );
 
-  const [r, g, b, a] = overlay.color;
-  const textColor = `rgba(${r}, ${g}, ${b}, ${(a ?? 255) / 255})`;
+    const handleDoubleClick = useCallback(
+      (e: React.MouseEvent) => {
+        e.stopPropagation();
+        e.preventDefault();
+        if (!onTextEdit) return;
+        setEditText(overlay.text);
+        cancelledRef.current = false;
+        committedRef.current = false;
+        setEditing(true);
+        // Focus the textarea after React renders it
+        requestAnimationFrame(() => inputRef.current?.focus());
+      },
+      [onTextEdit, overlay.text]
+    );
 
-  return (
-    <LayerBox
-      ref={layerRef}
-      className="nodrag nopan"
-      style={{
-        left: overlay.x,
-        top: overlay.y,
-        width: overlay.width,
-        height: displayHeight,
-        opacity: overlay.visible ? overlay.opacity : 0.2,
-        zIndex: overlay.zIndex ?? 100 + index,
-        border: `2px dashed ${borderColor}`,
-        background: bgColor,
-        filter: overlay.visible ? undefined : 'grayscale(0.6)',
-        transform:
-          overlay.rotationDegrees !== 0 ? `rotate(${overlay.rotationDegrees}deg)` : undefined,
-      }}
-      onPointerDown={handlePointerDown}
-      onDoubleClick={handleDoubleClick}
-    >
-      <LayerLabel>text_{index}</LayerLabel>
-      <LayerDimensions>
-        {Math.round(overlay.width)}&times;{Math.round(displayHeight)}
-      </LayerDimensions>
-      {/* Hidden measurement span — same styling as the visible text but
+    const commitEdit = useCallback(() => {
+      if (cancelledRef.current) return;
+      if (committedRef.current) return; // guard against double-fire
+      committedRef.current = true;
+      setEditing(false);
+      if (editText.trim() && editText !== overlay.text && onTextEdit) {
+        onTextEdit(overlay.id, { text: editText.trim() });
+      }
+    }, [editText, overlay.id, overlay.text, onTextEdit]);
+
+    const handleKeyDown = useCallback(
+      (e: React.KeyboardEvent) => {
+        e.stopPropagation();
+        // Ctrl/Cmd+Enter commits; plain Enter inserts newline (textarea default)
+        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+          e.preventDefault();
+          commitEdit();
+        }
+        if (e.key === 'Escape') {
+          cancelledRef.current = true;
+          setEditing(false);
+        }
+      },
+      [commitEdit]
+    );
+
+    const hue = layerHue(index + 100); // offset from video layers
+    const borderColor = isSelected ? 'var(--sk-primary)' : `hsla(${hue}, 70%, 65%, 0.8)`;
+    const bgColor = isSelected ? `hsla(${hue}, 60%, 50%, 0.25)` : `hsla(${hue}, 60%, 50%, 0.12)`;
+
+    const [r, g, b, a] = overlay.color;
+    const textColor = `rgba(${r}, ${g}, ${b}, ${(a ?? 255) / 255})`;
+
+    return (
+      <LayerBox
+        ref={layerRef}
+        className="nodrag nopan"
+        style={{
+          left: overlay.x,
+          top: overlay.y,
+          width: overlay.width,
+          height: displayHeight,
+          opacity: overlay.visible ? overlay.opacity : 0.2,
+          zIndex: overlay.zIndex ?? 100 + index,
+          border: `2px dashed ${borderColor}`,
+          background: bgColor,
+          filter: overlay.visible ? undefined : 'grayscale(0.6)',
+          transform:
+            overlay.rotationDegrees !== 0 ? `rotate(${overlay.rotationDegrees}deg)` : undefined,
+        }}
+        onPointerDown={handlePointerDown}
+        onDoubleClick={handleDoubleClick}
+      >
+        <LayerLabel>text_{index}</LayerLabel>
+        <LayerDimensions>
+          {Math.round(overlay.width)}&times;{Math.round(displayHeight)}
+        </LayerDimensions>
+        {/* Hidden measurement span — same styling as the visible text but
           positioned absolutely with auto height so we can read its
           natural scrollHeight to auto-expand the overlay box.
           Skipped in Monitor view when serverHeight is provided. */}
-      {!editing && serverHeight == null && (
-        <span
-          ref={measureRef}
-          aria-hidden
-          style={{
-            position: 'absolute',
-            visibility: 'hidden',
-            top: 0,
-            left: 0,
-            width: overlay.width,
-            height: 'auto',
-            fontSize: Math.max(8, overlay.fontSize * scale),
-            fontFamily: cssFontFamily(overlay.fontName),
-            fontWeight: isBoldFont(overlay.fontName) ? 700 : 600,
-            lineHeight: 1.2,
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
-            padding: '2px 4px',
-            boxSizing: 'border-box',
-          }}
-        >
-          {overlay.text}
-        </span>
-      )}
-      {editing ? (
-        <InlineTextInput
-          ref={inputRef}
-          className="nodrag nopan"
-          value={editText}
-          onChange={(e) => setEditText(e.target.value)}
-          onBlur={commitEdit}
-          onKeyDown={handleKeyDown}
-          style={{
-            fontSize: Math.max(10, overlay.fontSize * scale * 0.6),
-            fontFamily: cssFontFamily(overlay.fontName),
-          }}
-        />
-      ) : (
-        <TextContent>
+        {!editing && serverHeight == null && (
           <span
+            ref={measureRef}
+            aria-hidden
             style={{
+              position: 'absolute',
+              visibility: 'hidden',
+              top: 0,
+              left: 0,
+              width: overlay.width,
+              height: 'auto',
               fontSize: Math.max(8, overlay.fontSize * scale),
-              color: textColor,
               fontFamily: cssFontFamily(overlay.fontName),
               fontWeight: isBoldFont(overlay.fontName) ? 700 : 600,
-              textShadow: '0 1px 3px rgba(0,0,0,0.7)',
               lineHeight: 1.2,
-              textAlign: 'center',
-              wordBreak: 'break-word',
               whiteSpace: 'pre-wrap',
-              maxWidth: '100%',
+              wordBreak: 'break-word',
               padding: '2px 4px',
               boxSizing: 'border-box',
             }}
           >
             {overlay.text}
           </span>
-        </TextContent>
-      )}
-    </LayerBox>
-  );
-});
+        )}
+        {editing ? (
+          <InlineTextInput
+            ref={inputRef}
+            className="nodrag nopan"
+            value={editText}
+            onChange={(e) => setEditText(e.target.value)}
+            onBlur={commitEdit}
+            onKeyDown={handleKeyDown}
+            style={{
+              fontSize: Math.max(10, overlay.fontSize * scale * 0.6),
+              fontFamily: cssFontFamily(overlay.fontName),
+            }}
+          />
+        ) : (
+          <TextContent>
+            <span
+              style={{
+                fontSize: Math.max(8, overlay.fontSize * scale),
+                color: textColor,
+                fontFamily: cssFontFamily(overlay.fontName),
+                fontWeight: isBoldFont(overlay.fontName) ? 700 : 600,
+                textShadow: '0 1px 3px rgba(0,0,0,0.7)',
+                lineHeight: 1.2,
+                textAlign: 'center',
+                wordBreak: 'break-word',
+                whiteSpace: 'pre-wrap',
+                maxWidth: '100%',
+                padding: '2px 4px',
+                boxSizing: 'border-box',
+              }}
+            >
+              {overlay.text}
+            </span>
+          </TextContent>
+        )}
+      </LayerBox>
+    );
+  }
+);
 TextOverlayLayer.displayName = 'TextOverlayLayer';
 
 // ── Image overlay layer ─────────────────────────────────────────────────────

@@ -708,10 +708,10 @@ impl CompositorNode {
         let mut layers: SmallVec<[ResolvedLayer; 8]> = SmallVec::new();
         for (idx, slot) in slots.iter().enumerate() {
             if let Some(cfg) = resolved_configs.get(idx) {
-                let (x, y, width, height) = cfg.rect.as_ref().map_or(
-                    (0, 0, config.width, config.height),
-                    |rect| (rect.x, rect.y, rect.width, rect.height),
-                );
+                let (x, y, width, height) =
+                    cfg.rect.as_ref().map_or((0, 0, config.width, config.height), |rect| {
+                        (rect.x, rect.y, rect.width, rect.height)
+                    });
                 layers.push(ResolvedLayer {
                     id: slot.name.clone(),
                     x,
