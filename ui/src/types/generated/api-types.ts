@@ -299,7 +299,11 @@ timestamp: string, } | { "event": "nodeparamschanged", session_id: string, node_
 /**
  * ISO 8601 formatted timestamp when the session was created
  */
-created_at: string, } | { "event": "sessiondestroyed", session_id: string, } | { "event": "nodeadded", session_id: string, node_id: string, kind: string, params: JsonValue, } | { "event": "noderemoved", session_id: string, node_id: string, } | { "event": "connectionadded", session_id: string, from_node: string, from_pin: string, to_node: string, to_pin: string, } | { "event": "connectionremoved", session_id: string, from_node: string, from_pin: string, to_node: string, to_pin: string, } | { "event": "nodetelemetry", 
+created_at: string, } | { "event": "sessiondestroyed", session_id: string, } | { "event": "nodeadded", session_id: string, node_id: string, kind: string, params: JsonValue, } | { "event": "noderemoved", session_id: string, node_id: string, } | { "event": "connectionadded", session_id: string, from_node: string, from_pin: string, to_node: string, to_pin: string, } | { "event": "connectionremoved", session_id: string, from_node: string, from_pin: string, to_node: string, to_pin: string, } | { "event": "nodeviewdataupdated", session_id: string, node_id: string, data: JsonValue, 
+/**
+ * ISO 8601 formatted timestamp
+ */
+timestamp: string, } | { "event": "nodetelemetry", 
 /**
  * The session this event belongs to
  */

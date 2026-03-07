@@ -262,6 +262,35 @@ impl Session {
             );
         });
 
+        // Subscribe to view data updates from the engine
+        let mut view_data_rx = engine_handle
+            .subscribe_view_data()
+            .await
+            .map_err(|e| format!("Failed to subscribe to view data updates: {e}"))?;
+
+        // Spawn task to forward view data updates to WebSocket clients
+        let session_id_for_view_data = session_id.clone();
+        let event_tx_for_view_data = event_tx.clone();
+        tokio::spawn(async move {
+            while let Some(update) = view_data_rx.recv().await {
+                let event = ApiEvent {
+                    message_type: MessageType::Event,
+                    correlation_id: None,
+                    payload: EventPayload::NodeViewDataUpdated {
+                        session_id: session_id_for_view_data.clone(),
+                        node_id: update.node_id,
+                        data: update.data,
+                        timestamp: system_time_to_rfc3339(update.timestamp),
+                    },
+                };
+                let _ = event_tx_for_view_data.send(event);
+            }
+            tracing::debug!(
+                session_id = %session_id_for_view_data,
+                "View data forwarding task ended"
+            );
+        });
+
         // Subscribe to telemetry events from the engine
         let mut telemetry_rx = engine_handle
             .subscribe_telemetry()

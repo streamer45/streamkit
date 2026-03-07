@@ -196,6 +196,9 @@ describe('WebSocketService', () => {
     });
 
     it('should handle nodestatechanged event', () => {
+      // Session must exist before state updates are applied
+      useSessionStore.getState().initSession('session-1', true);
+
       const event: WsEvent = {
         type: 'event' as const,
         payload: {
@@ -215,6 +218,9 @@ describe('WebSocketService', () => {
     });
 
     it('should handle nodestatsupdated event', () => {
+      // Session must exist before stats updates are applied
+      useSessionStore.getState().initSession('session-1', true);
+
       const stats = {
         received: '100', // Stats are sent as strings over WebSocket
         sent: '95',

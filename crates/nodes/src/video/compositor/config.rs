@@ -5,7 +5,8 @@
 //! Configuration types for the video compositor node.
 
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use smallvec::SmallVec;
 use std::collections::HashMap;
 
 // ── Configuration ───────────────────────────────────────────────────────────
@@ -204,6 +205,50 @@ impl Default for CompositorConfig {
             text_overlays: Vec::new(),
         }
     }
+}
+
+// ── Server-computed layout types ─────────────────────────────────────────
+// These are emitted via the view data channel so the frontend can render
+// overlays / layers at server-computed positions (server is source of truth
+// in Monitor view).
+
+/// Server-computed layout for a single video layer.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct ResolvedLayer {
+    /// Pin name (e.g. "in_0").
+    pub id: String,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub opacity: f32,
+    pub z_index: i32,
+    pub rotation_degrees: f32,
+}
+
+/// Server-computed layout for a single overlay (text or image).
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct ResolvedOverlay {
+    pub index: usize,
+    pub x: i32,
+    pub y: i32,
+    /// Resolved width after text wrapping / image aspect-fit.
+    pub width: u32,
+    /// Resolved height after text wrapping / image aspect-fit.
+    pub height: u32,
+    pub opacity: f32,
+    pub z_index: i32,
+    pub rotation_degrees: f32,
+}
+
+/// The complete server-computed compositor layout, serialized as view data.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct CompositorLayout {
+    pub canvas_width: u32,
+    pub canvas_height: u32,
+    pub layers: SmallVec<[ResolvedLayer; 8]>,
+    pub text_overlays: SmallVec<[ResolvedOverlay; 8]>,
+    pub image_overlays: SmallVec<[ResolvedOverlay; 8]>,
 }
 
 impl CompositorConfig {

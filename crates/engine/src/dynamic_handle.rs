@@ -11,6 +11,7 @@ use streamkit_core::control::EngineControlMessage;
 use streamkit_core::state::{NodeState, NodeStateUpdate};
 use streamkit_core::stats::{NodeStats, NodeStatsUpdate};
 use streamkit_core::telemetry::TelemetryEvent;
+use streamkit_core::view_data::NodeViewDataUpdate;
 use tokio::sync::mpsc;
 
 /// A handle to communicate with a running dynamic engine actor.
@@ -115,6 +116,37 @@ impl DynamicEngineHandle {
         let (response_tx, mut response_rx) = mpsc::channel(1);
         self.query_tx
             .send(QueryMessage::SubscribeTelemetry { response_tx })
+            .await
+            .map_err(|_| "Engine actor has shut down".to_string())?;
+
+        response_rx.recv().await.ok_or_else(|| "Failed to receive response from engine".to_string())
+    }
+
+    /// Subscribes to node view data updates.
+    /// Returns a receiver that will receive all subsequent view data updates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the engine actor has shut down or fails to respond.
+    pub async fn subscribe_view_data(&self) -> Result<mpsc::Receiver<NodeViewDataUpdate>, String> {
+        let (response_tx, mut response_rx) = mpsc::channel(1);
+        self.query_tx
+            .send(QueryMessage::SubscribeViewData { response_tx })
+            .await
+            .map_err(|_| "Engine actor has shut down".to_string())?;
+
+        response_rx.recv().await.ok_or_else(|| "Failed to receive response from engine".to_string())
+    }
+
+    /// Gets the current view data for all nodes in the pipeline.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the engine actor has shut down or fails to respond.
+    pub async fn get_node_view_data(&self) -> Result<HashMap<String, serde_json::Value>, String> {
+        let (response_tx, mut response_rx) = mpsc::channel(1);
+        self.query_tx
+            .send(QueryMessage::GetNodeViewData { response_tx })
             .await
             .map_err(|_| "Engine actor has shut down".to_string())?;
 

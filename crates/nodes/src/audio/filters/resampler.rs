@@ -773,6 +773,7 @@ mod tests {
             pin_management_rx: None, // Test contexts don't support dynamic pins
             audio_pool: None,
             video_pool: None,
+            view_data_tx: None,
         };
 
         // Create node that downsamples from 48kHz to 24kHz
@@ -851,6 +852,7 @@ mod tests {
             pin_management_rx: None, // Test contexts don't support dynamic pins
             audio_pool: None,
             video_pool: None,
+            view_data_tx: None,
         };
 
         let config = AudioResamplerConfig {
