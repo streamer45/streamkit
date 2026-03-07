@@ -1868,13 +1868,10 @@ async fn destroy_session_handler(
     };
 
     let destroyed_id = session.id.clone();
-    if let Err(e) = session.shutdown_and_wait().await {
-        warn!(session_id = %destroyed_id, error = %e, "Error during engine shutdown");
-    }
 
-    info!(session_id = %destroyed_id, "Session destroyed successfully via HTTP");
-
-    // Broadcast event to all WebSocket clients
+    // Broadcast event to all WebSocket clients BEFORE starting shutdown
+    // so clients are notified immediately.  The session has already been
+    // removed from the manager so ListSessions will no longer include it.
     let event = ApiEvent {
         message_type: MessageType::Event,
         correlation_id: None,
@@ -1883,6 +1880,17 @@ async fn destroy_session_handler(
     if let Err(e) = app_state.event_tx.send(event) {
         error!("Failed to broadcast SessionDestroyed event: {}", e);
     }
+
+    // Run engine shutdown in a background task so the HTTP response
+    // returns immediately (shutdown_and_wait has a 10-second timeout).
+    let shutdown_id = destroyed_id.clone();
+    tokio::spawn(async move {
+        if let Err(e) = session.shutdown_and_wait().await {
+            warn!(session_id = %shutdown_id, error = %e, "Error during engine shutdown");
+        } else {
+            info!(session_id = %shutdown_id, "Session destroyed successfully via HTTP");
+        }
+    });
 
     (StatusCode::OK, Json(serde_json::json!({ "session_id": destroyed_id }))).into_response()
 }
