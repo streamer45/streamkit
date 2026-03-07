@@ -98,15 +98,18 @@ const LayerLabel = styled.div`
   z-index: 2;
 `;
 
-/** Text content rendered inside text overlay layers */
+/** Text content rendered inside text overlay layers.
+ *  `overflow: visible` lets wrapped / multi-line text extend beyond the
+ *  config rect, matching the backend compositor which auto-expands the
+ *  overlay bitmap to fit the full text. */
 const TextContent = styled.div`
   position: absolute;
   inset: 0;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
   pointer-events: none;
-  overflow: hidden;
+  overflow: visible;
   z-index: 1;
 `;
 
