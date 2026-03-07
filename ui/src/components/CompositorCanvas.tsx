@@ -111,13 +111,15 @@ const LayerLabel = styled.div`
   z-index: 2;
 `;
 
-/** Text content rendered inside text overlay layers. */
+/** Text content rendered inside text overlay layers.
+ *  Aligned top-left to match the backend compositor which renders text
+ *  from origin (0, 0) within the overlay bitmap. */
 const TextContent = styled.div`
   position: absolute;
   inset: 0;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  align-items: flex-start;
+  justify-content: flex-start;
   pointer-events: none;
   overflow: hidden;
   z-index: 1;
@@ -134,7 +136,7 @@ const InlineTextInput = styled.textarea`
   border-radius: 2px;
   color: #fff;
   font-weight: 600;
-  text-align: center;
+  text-align: left;
   outline: none;
   z-index: 3;
   box-sizing: border-box;
@@ -284,7 +286,6 @@ const TextOverlayLayer: React.FC<{
   overlay: TextOverlayState;
   index: number;
   isSelected: boolean;
-  scale: number;
   onPointerDown: (layerId: string, e: React.PointerEvent) => void;
   onResizeStart: (layerId: string, handle: ResizeHandle, e: React.PointerEvent) => void;
   onTextEdit?: (id: string, updates: Partial<Omit<TextOverlayState, 'id'>>) => void;
@@ -297,7 +298,6 @@ const TextOverlayLayer: React.FC<{
     overlay,
     index,
     isSelected,
-    scale,
     onPointerDown,
     onResizeStart,
     onTextEdit,
@@ -333,7 +333,6 @@ const TextOverlayLayer: React.FC<{
       overlay.width,
       overlay.height,
       overlay.fontName,
-      scale,
       editing,
       serverHeight,
     ]);
@@ -453,7 +452,7 @@ const TextOverlayLayer: React.FC<{
               left: 0,
               width: overlay.width,
               height: 'auto',
-              fontSize: Math.max(8, overlay.fontSize * scale),
+              fontSize: overlay.fontSize,
               fontFamily: cssFontFamily(overlay.fontName),
               fontWeight: isBoldFont(overlay.fontName) ? 700 : 600,
               lineHeight: 1.2,
@@ -475,7 +474,7 @@ const TextOverlayLayer: React.FC<{
             onBlur={commitEdit}
             onKeyDown={handleKeyDown}
             style={{
-              fontSize: Math.max(10, overlay.fontSize * scale * 0.6),
+              fontSize: Math.max(10, overlay.fontSize * 0.6),
               fontFamily: cssFontFamily(overlay.fontName),
             }}
           />
@@ -483,13 +482,13 @@ const TextOverlayLayer: React.FC<{
           <TextContent>
             <span
               style={{
-                fontSize: Math.max(8, overlay.fontSize * scale),
+                fontSize: overlay.fontSize,
                 color: textColor,
                 fontFamily: cssFontFamily(overlay.fontName),
                 fontWeight: isBoldFont(overlay.fontName) ? 700 : 600,
                 textShadow: '0 1px 3px rgba(0,0,0,0.7)',
                 lineHeight: 1.2,
-                textAlign: 'center',
+                textAlign: 'left',
                 wordBreak: 'break-word',
                 whiteSpace: 'pre-wrap',
                 maxWidth: '100%',
@@ -738,7 +737,6 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
                   overlay={overlay}
                   index={i}
                   isSelected={selectedLayerId === overlay.id}
-                  scale={scale}
                   onPointerDown={disabled ? noopPointerDown : onLayerPointerDown}
                   onResizeStart={disabled ? noopResizeStart : onResizePointerDown}
                   onTextEdit={disabled ? undefined : onTextEdit}
