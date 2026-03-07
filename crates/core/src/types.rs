@@ -616,6 +616,31 @@ pub struct VideoFrame {
 }
 
 impl VideoFrame {
+    /// Validate that `layout` is consistent with the given dimensions/format
+    /// and that `data_len` is large enough.
+    fn validate_layout(
+        width: u32,
+        height: u32,
+        pixel_format: PixelFormat,
+        layout: &VideoLayout,
+        data_len: usize,
+    ) -> Result<(), StreamKitError> {
+        let expected_layout =
+            VideoLayout::aligned(width, height, pixel_format, layout.stride_align());
+        if *layout != expected_layout {
+            return Err(StreamKitError::Runtime(format!(
+                "VideoFrame layout mismatch: expected {expected_layout:?}, got {layout:?}"
+            )));
+        }
+        if data_len < layout.total_bytes() {
+            return Err(StreamKitError::Runtime(format!(
+                "VideoFrame data buffer too small: need {} bytes, have {data_len}",
+                layout.total_bytes(),
+            )));
+        }
+        Ok(())
+    }
+
     pub fn from_pooled(
         width: u32,
         height: u32,
@@ -635,20 +660,7 @@ impl VideoFrame {
         mut data: PooledVideoData,
         metadata: Option<PacketMetadata>,
     ) -> Result<Self, StreamKitError> {
-        let expected_layout =
-            VideoLayout::aligned(width, height, pixel_format, layout.stride_align());
-        if layout != expected_layout {
-            return Err(StreamKitError::Runtime(format!(
-                "VideoFrame layout mismatch: expected {expected_layout:?}, got {layout:?}"
-            )));
-        }
-        if data.len() < layout.total_bytes() {
-            return Err(StreamKitError::Runtime(format!(
-                "VideoFrame data buffer too small: need {} bytes, have {}",
-                layout.total_bytes(),
-                data.len()
-            )));
-        }
+        Self::validate_layout(width, height, pixel_format, &layout, data.len())?;
         data.truncate(layout.total_bytes());
         Ok(Self { width, height, pixel_format, layout, data: Arc::new(data), metadata })
     }
@@ -691,20 +703,7 @@ impl VideoFrame {
         data: Arc<PooledVideoData>,
         metadata: Option<PacketMetadata>,
     ) -> Result<Self, StreamKitError> {
-        let expected_layout =
-            VideoLayout::aligned(width, height, pixel_format, layout.stride_align());
-        if layout != expected_layout {
-            return Err(StreamKitError::Runtime(format!(
-                "VideoFrame layout mismatch: expected {expected_layout:?}, got {layout:?}"
-            )));
-        }
-        if data.len() < layout.total_bytes() {
-            return Err(StreamKitError::Runtime(format!(
-                "VideoFrame data buffer too small: need {} bytes, have {}",
-                layout.total_bytes(),
-                data.len()
-            )));
-        }
+        Self::validate_layout(width, height, pixel_format, &layout, data.len())?;
         Ok(Self { width, height, pixel_format, layout, data, metadata })
     }
 
