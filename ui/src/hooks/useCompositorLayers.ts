@@ -528,6 +528,8 @@ export const useCompositorLayers = (
           opacity: number;
           z_index: number;
           rotation_degrees: number;
+          mirror_horizontal?: boolean;
+          mirror_vertical?: boolean;
         }>;
         text_overlays: Array<{
           index: number;
@@ -538,6 +540,8 @@ export const useCompositorLayers = (
           opacity: number;
           z_index: number;
           rotation_degrees: number;
+          mirror_horizontal?: boolean;
+          mirror_vertical?: boolean;
         }>;
         image_overlays: Array<{
           index: number;
@@ -548,6 +552,8 @@ export const useCompositorLayers = (
           opacity: number;
           z_index: number;
           rotation_degrees: number;
+          mirror_horizontal?: boolean;
+          mirror_vertical?: boolean;
         }>;
       };
 
@@ -569,8 +575,8 @@ export const useCompositorLayers = (
             opacity,
             zIndex: sl.z_index,
             rotationDegrees: sl.rotation_degrees,
-            mirrorHorizontal: existing?.mirrorHorizontal ?? false,
-            mirrorVertical: existing?.mirrorVertical ?? false,
+            mirrorHorizontal: sl.mirror_horizontal ?? existing?.mirrorHorizontal ?? false,
+            mirrorVertical: sl.mirror_vertical ?? existing?.mirrorVertical ?? false,
             visible: existing?.visible ?? true,
           };
         });
@@ -586,6 +592,8 @@ export const useCompositorLayers = (
               s.opacity !== prev[i].opacity ||
               s.zIndex !== prev[i].zIndex ||
               s.rotationDegrees !== prev[i].rotationDegrees ||
+              s.mirrorHorizontal !== prev[i].mirrorHorizontal ||
+              s.mirrorVertical !== prev[i].mirrorVertical ||
               s.visible !== prev[i].visible
           );
         return changed ? serverLayers : prev;
@@ -606,7 +614,9 @@ export const useCompositorLayers = (
               o.height === so.height &&
               o.opacity === opacity &&
               o.zIndex === so.z_index &&
-              o.rotationDegrees === so.rotation_degrees
+              o.rotationDegrees === so.rotation_degrees &&
+              o.mirrorHorizontal === (so.mirror_horizontal ?? o.mirrorHorizontal) &&
+              o.mirrorVertical === (so.mirror_vertical ?? o.mirrorVertical)
             ) {
               return o;
             }
@@ -619,6 +629,8 @@ export const useCompositorLayers = (
               opacity,
               zIndex: so.z_index,
               rotationDegrees: so.rotation_degrees,
+              mirrorHorizontal: so.mirror_horizontal ?? o.mirrorHorizontal,
+              mirrorVertical: so.mirror_vertical ?? o.mirrorVertical,
             };
           });
           return next.some((n, i) => n !== prev[i]) ? next : prev;
@@ -640,7 +652,9 @@ export const useCompositorLayers = (
               o.height === so.height &&
               o.opacity === opacity &&
               o.zIndex === so.z_index &&
-              o.rotationDegrees === so.rotation_degrees
+              o.rotationDegrees === so.rotation_degrees &&
+              o.mirrorHorizontal === (so.mirror_horizontal ?? o.mirrorHorizontal) &&
+              o.mirrorVertical === (so.mirror_vertical ?? o.mirrorVertical)
             ) {
               return o;
             }
@@ -653,6 +667,8 @@ export const useCompositorLayers = (
               opacity,
               zIndex: so.z_index,
               rotationDegrees: so.rotation_degrees,
+              mirrorHorizontal: so.mirror_horizontal ?? o.mirrorHorizontal,
+              mirrorVertical: so.mirror_vertical ?? o.mirrorVertical,
             };
           });
           return next.some((n, i) => n !== prev[i]) ? next : prev;
