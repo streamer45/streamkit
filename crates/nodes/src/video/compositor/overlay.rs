@@ -24,6 +24,10 @@ pub struct DecodedOverlay {
     pub rotation_degrees: f32,
     /// Visual stacking order for unified z-sorting with video layers.
     pub z_index: i32,
+    /// Mirror horizontally (flip left ↔ right).
+    pub mirror_horizontal: bool,
+    /// Mirror vertically (flip top ↔ bottom).
+    pub mirror_vertical: bool,
 }
 
 /// Decode a base64-encoded image (PNG/JPEG) into an RGBA8 bitmap.
@@ -96,6 +100,8 @@ pub fn decode_image_overlay(config: &ImageOverlayConfig) -> Result<DecodedOverla
             opacity: config.transform.opacity,
             rotation_degrees: config.transform.rotation_degrees,
             z_index: config.transform.z_index,
+            mirror_horizontal: config.transform.mirror_horizontal,
+            mirror_vertical: config.transform.mirror_vertical,
         })
     } else {
         Ok(DecodedOverlay {
@@ -106,6 +112,8 @@ pub fn decode_image_overlay(config: &ImageOverlayConfig) -> Result<DecodedOverla
             opacity: config.transform.opacity,
             rotation_degrees: config.transform.rotation_degrees,
             z_index: config.transform.z_index,
+            mirror_horizontal: config.transform.mirror_horizontal,
+            mirror_vertical: config.transform.mirror_vertical,
         })
     }
 }
@@ -359,5 +367,7 @@ pub fn rasterize_text_overlay(config: &TextOverlayConfig) -> DecodedOverlay {
         opacity: config.transform.opacity,
         rotation_degrees: config.transform.rotation_degrees,
         z_index: config.transform.z_index,
+        mirror_horizontal: config.transform.mirror_horizontal,
+        mirror_vertical: config.transform.mirror_vertical,
     }
 }

@@ -83,6 +83,8 @@ pub fn scale_blit_rgba(
     dst_rect: &Rect,
     opacity: f32,
     #[allow(unused_variables)] src_opaque: bool,
+    mirror_h: bool,
+    mirror_v: bool,
 ) {
     use rayon::prelude::*;
 
@@ -221,18 +223,25 @@ pub fn scale_blit_rgba(
     // Precompute the source-X lookup table once.  This replaces the per-pixel
     // `(dx + src_col_skip) * sw / rw` integer division with a single table
     // lookup in the inner blit loops.
-    let x_map: Vec<usize> = (0..effective_rect_w).map(|dx| (dx + src_col_skip) * sw / rw).collect();
+    let x_map: Vec<usize> = (0..effective_rect_w)
+        .map(|dx| {
+            let sx = (dx + src_col_skip) * sw / rw;
+            if mirror_h { sw.saturating_sub(1).saturating_sub(sx) } else { sx }
+        })
+        .collect();
 
     if effective_rh >= RAYON_ROW_THRESHOLD {
         dst_rows.par_chunks_mut(row_stride).take(effective_rh).enumerate().for_each(
             |(dy, row_slice)| {
-                let sy = (dy + src_row_skip) * sh / rh;
+                let sy_raw = (dy + src_row_skip) * sh / rh;
+                let sy = if mirror_v { sh.saturating_sub(1).saturating_sub(sy_raw) } else { sy_raw };
                 blit_row(row_slice, rx, effective_rect_w, src, sw, sy, opacity, &x_map);
             },
         );
     } else {
         for (dy, row_slice) in dst_rows.chunks_mut(row_stride).take(effective_rh).enumerate() {
-            let sy = (dy + src_row_skip) * sh / rh;
+            let sy_raw = (dy + src_row_skip) * sh / rh;
+            let sy = if mirror_v { sh.saturating_sub(1).saturating_sub(sy_raw) } else { sy_raw };
             blit_row(row_slice, rx, effective_rect_w, src, sw, sy, opacity, &x_map);
         }
     }
@@ -648,6 +657,8 @@ unsafe fn rotated_blit_avx2_loop(
     sw: usize,
     sh: usize,
     opacity_u16: u16,
+    mirror_h: bool,
+    mirror_v: bool,
 ) -> usize {
     let mut done = 0usize;
     while done + 8 <= skip_u {
@@ -658,8 +669,10 @@ unsafe fn rotated_blit_avx2_loop(
         for sp in &mut src_pixels {
             *local_x += cos_a;
             *local_y -= sin_a;
-            let isx = (((*local_x + half_cw) * inv_scale_x) as usize).min(sw - 1);
-            let isy = (((*local_y + half_ch) * inv_scale_y) as usize).min(sh - 1);
+            let isx_raw = (((*local_x + half_cw) * inv_scale_x) as usize).min(sw - 1);
+            let isy_raw = (((*local_y + half_ch) * inv_scale_y) as usize).min(sh - 1);
+            let isx = if mirror_h { sw - 1 - isx_raw } else { isx_raw };
+            let isy = if mirror_v { sh - 1 - isy_raw } else { isy_raw };
             let si = (isy * sw + isx) * 4;
             if si + 3 < src.len() {
                 *sp = read_rgba_u32(src, si);
@@ -714,6 +727,8 @@ pub fn scale_blit_rgba_rotated(
     opacity: f32,
     rotation_deg: f32,
     src_opaque: bool,
+    mirror_h: bool,
+    mirror_v: bool,
 ) {
     if src_width == 0 || src_height == 0 || dst_rect.width == 0 || dst_rect.height == 0 {
         return;
@@ -728,6 +743,7 @@ pub fn scale_blit_rgba_rotated(
     if rotation_deg.abs() < 0.01 {
         scale_blit_rgba(
             dst, dst_width, dst_height, src, src_width, src_height, dst_rect, opacity, src_opaque,
+            mirror_h, mirror_v,
         );
         return;
     }
@@ -834,8 +850,10 @@ pub fn scale_blit_rgba_rotated(
             let src_fx = (local_x + half_cw) * inv_scale_x;
             let src_fy = (local_y + half_ch) * inv_scale_y;
 
-            let sxi = (src_fx as usize).min(sw - 1);
-            let syi = (src_fy as usize).min(sh - 1);
+            let sxi_raw = (src_fx as usize).min(sw - 1);
+            let syi_raw = (src_fy as usize).min(sh - 1);
+            let sxi = if mirror_h { sw - 1 - sxi_raw } else { sxi_raw };
+            let syi = if mirror_v { sh - 1 - syi_raw } else { syi_raw };
 
             let src_idx = (syi * sw + sxi) * 4;
             if src_idx + 3 >= src.len() {
@@ -922,6 +940,8 @@ pub fn scale_blit_rgba_rotated(
                                     sw,
                                     sh,
                                     opacity_u16,
+                                    mirror_h,
+                                    mirror_v,
                                 )
                             };
                         }
@@ -935,10 +955,12 @@ pub fn scale_blit_rgba_rotated(
                             for sp in &mut src_pixels {
                                 local_x += cos_a;
                                 local_y -= sin_a;
-                                let isx =
+                                let isx_raw =
                                     (((local_x + half_cw) * inv_scale_x) as usize).min(sw - 1);
-                                let isy =
+                                let isy_raw =
                                     (((local_y + half_ch) * inv_scale_y) as usize).min(sh - 1);
+                                let isx = if mirror_h { sw - 1 - isx_raw } else { isx_raw };
+                                let isy = if mirror_v { sh - 1 - isy_raw } else { isy_raw };
                                 let si = (isy * sw + isx) * 4;
                                 if si + 3 < src.len() {
                                     *sp = unsafe { read_rgba_u32(src, si) };
@@ -981,8 +1003,10 @@ pub fn scale_blit_rgba_rotated(
                             local_y -= sin_a;
                             px += 1;
 
-                            let isx = (((local_x + half_cw) * inv_scale_x) as usize).min(sw - 1);
-                            let isy = (((local_y + half_ch) * inv_scale_y) as usize).min(sh - 1);
+                            let isx_raw = (((local_x + half_cw) * inv_scale_x) as usize).min(sw - 1);
+                            let isy_raw = (((local_y + half_ch) * inv_scale_y) as usize).min(sh - 1);
+                            let isx = if mirror_h { sw - 1 - isx_raw } else { isx_raw };
+                            let isy = if mirror_v { sh - 1 - isy_raw } else { isy_raw };
                             let si = (isy * sw + isx) * 4;
                             if si + 3 >= src.len() {
                                 continue;
@@ -1000,8 +1024,10 @@ pub fn scale_blit_rgba_rotated(
                             local_y -= sin_a;
                             px += 1;
 
-                            let isx = (((local_x + half_cw) * inv_scale_x) as usize).min(sw - 1);
-                            let isy = (((local_y + half_ch) * inv_scale_y) as usize).min(sh - 1);
+                            let isx_raw = (((local_x + half_cw) * inv_scale_x) as usize).min(sw - 1);
+                            let isy_raw = (((local_y + half_ch) * inv_scale_y) as usize).min(sh - 1);
+                            let isx = if mirror_h { sw - 1 - isx_raw } else { isx_raw };
+                            let isy = if mirror_v { sh - 1 - isy_raw } else { isy_raw };
                             let si = (isy * sw + isx) * 4;
                             if si + 3 >= src.len() {
                                 continue;
