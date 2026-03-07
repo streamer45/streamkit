@@ -57,6 +57,19 @@ function cssFontFamily(fontName: string): string {
   return FONT_FAMILY_MAP[fontName] ?? 'sans-serif';
 }
 
+/** Build a CSS transform string combining rotation and mirror flips. */
+function layerTransform(
+  rotationDegrees: number,
+  mirrorHorizontal: boolean,
+  mirrorVertical: boolean
+): string | undefined {
+  const parts: string[] = [];
+  if (rotationDegrees !== 0) parts.push(`rotate(${rotationDegrees}deg)`);
+  if (mirrorHorizontal) parts.push('scaleX(-1)');
+  if (mirrorVertical) parts.push('scaleY(-1)');
+  return parts.length > 0 ? parts.join(' ') : undefined;
+}
+
 // ── Styled components ───────────────────────────────────────────────────────
 
 const CanvasOuter = styled.div`
@@ -243,7 +256,11 @@ const VideoLayer: React.FC<{
         width: layer.width,
         height: layer.height,
         opacity: layer.visible ? layer.opacity : 0.2,
-        transform: layer.rotationDegrees !== 0 ? `rotate(${layer.rotationDegrees}deg)` : undefined,
+        transform: layerTransform(
+          layer.rotationDegrees,
+          layer.mirrorHorizontal,
+          layer.mirrorVertical
+        ),
         zIndex: layer.zIndex + 1,
         border: `2px ${layer.visible ? 'solid' : 'dashed'} ${borderColor}`,
         background: bgColor,
@@ -269,13 +286,24 @@ const TextOverlayLayer: React.FC<{
   isSelected: boolean;
   scale: number;
   onPointerDown: (layerId: string, e: React.PointerEvent) => void;
+  onResizeStart: (layerId: string, handle: ResizeHandle, e: React.PointerEvent) => void;
   onTextEdit?: (id: string, updates: Partial<Omit<TextOverlayState, 'id'>>) => void;
   layerRef: (el: HTMLDivElement | null) => void;
   /** When provided (Monitor view), skip client-side hidden-span measurement
    *  and use the server-computed height directly. */
   serverHeight?: number;
 }> = React.memo(
-  ({ overlay, index, isSelected, scale, onPointerDown, onTextEdit, layerRef, serverHeight }) => {
+  ({
+    overlay,
+    index,
+    isSelected,
+    scale,
+    onPointerDown,
+    onResizeStart,
+    onTextEdit,
+    layerRef,
+    serverHeight,
+  }) => {
     const [editing, setEditing] = useState(false);
     const [editText, setEditText] = useState(overlay.text);
     const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -396,8 +424,11 @@ const TextOverlayLayer: React.FC<{
           border: `2px dashed ${borderColor}`,
           background: bgColor,
           filter: overlay.visible ? undefined : 'grayscale(0.6)',
-          transform:
-            overlay.rotationDegrees !== 0 ? `rotate(${overlay.rotationDegrees}deg)` : undefined,
+          transform: layerTransform(
+            overlay.rotationDegrees,
+            overlay.mirrorHorizontal,
+            overlay.mirrorVertical
+          ),
         }}
         onPointerDown={handlePointerDown}
         onDoubleClick={handleDoubleClick}
@@ -406,6 +437,7 @@ const TextOverlayLayer: React.FC<{
         <LayerDimensions>
           {Math.round(overlay.width)}&times;{Math.round(displayHeight)}
         </LayerDimensions>
+        {isSelected && <ResizeHandles layerId={overlay.id} onResizeStart={onResizeStart} />}
         {/* Hidden measurement span — same styling as the visible text but
           positioned absolutely with auto height so we can read its
           natural scrollHeight to auto-expand the overlay box.
@@ -546,8 +578,11 @@ const ImageOverlayLayer: React.FC<{
         width: overlay.width,
         height: overlay.height,
         opacity: overlay.visible ? overlay.opacity : 0.2,
-        transform:
-          overlay.rotationDegrees !== 0 ? `rotate(${overlay.rotationDegrees}deg)` : undefined,
+        transform: layerTransform(
+          overlay.rotationDegrees,
+          overlay.mirrorHorizontal,
+          overlay.mirrorVertical
+        ),
         zIndex: overlay.zIndex ?? 200 + index,
         border: `2px solid ${borderColor}`,
         background: bgColor,
@@ -705,6 +740,7 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
                   isSelected={selectedLayerId === overlay.id}
                   scale={scale}
                   onPointerDown={disabled ? noopPointerDown : onLayerPointerDown}
+                  onResizeStart={disabled ? noopResizeStart : onResizePointerDown}
                   onTextEdit={disabled ? undefined : onTextEdit}
                   layerRef={getLayerRef(overlay.id)}
                 />

@@ -4,7 +4,18 @@
 
 import styled from '@emotion/styled';
 import * as RadixSlider from '@radix-ui/react-slider';
-import { Eye, EyeOff, GripVertical, Image, Plus, RotateCcw, Type, X } from 'lucide-react';
+import {
+  Eye,
+  EyeOff,
+  FlipHorizontal2,
+  FlipVertical2,
+  GripVertical,
+  Image,
+  Plus,
+  RotateCcw,
+  Type,
+  X,
+} from 'lucide-react';
 import { Reorder } from 'motion/react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
@@ -849,6 +860,62 @@ const RotationControl: React.FC<{
 });
 RotationControl.displayName = 'RotationControl';
 
+const MirrorToggleRow = styled.div`
+  display: flex;
+  gap: 4px;
+`;
+
+const MirrorButton = styled.button<{ isActive?: boolean }>`
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 1px solid ${(p) => (p.isActive ? 'var(--sk-primary)' : 'var(--sk-border)')};
+  border-radius: 4px;
+  background: ${(p) =>
+    p.isActive ? 'rgba(var(--sk-primary-rgb, 99,102,241), 0.15)' : 'transparent'};
+  color: ${(p) => (p.isActive ? 'var(--sk-primary)' : 'var(--sk-text-muted)')};
+  font-size: 10px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  &:hover:not(:disabled) {
+    border-color: var(--sk-primary);
+    color: var(--sk-text);
+  }
+  &:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+`;
+
+const MirrorControl: React.FC<{
+  mirrorHorizontal: boolean;
+  mirrorVertical: boolean;
+  onToggle: (axis: 'horizontal' | 'vertical') => void;
+  disabled: boolean;
+}> = React.memo(({ mirrorHorizontal, mirrorVertical, onToggle, disabled }) => (
+  <InspectorSection>
+    <InspectorSectionLabel>Mirror</InspectorSectionLabel>
+    <MirrorToggleRow className="nodrag nopan">
+      <MirrorButton
+        isActive={mirrorHorizontal}
+        disabled={disabled}
+        onClick={() => onToggle('horizontal')}
+      >
+        <FlipHorizontal2 size={12} /> Horizontal
+      </MirrorButton>
+      <MirrorButton
+        isActive={mirrorVertical}
+        disabled={disabled}
+        onClick={() => onToggle('vertical')}
+      >
+        <FlipVertical2 size={12} /> Vertical
+      </MirrorButton>
+    </MirrorToggleRow>
+  </InspectorSection>
+));
+MirrorControl.displayName = 'MirrorControl';
+
 // ── Unified layer list ──────────────────────────────────────────────────────
 //
 // Receives only stable props (entries + callbacks) so React.memo bails out
@@ -1057,6 +1124,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
     updateLayerOpacity,
     updateLayerRotation,
     toggleLayerVisibility,
+    updateLayerMirror,
     layerRefs,
     textOverlays,
     imageOverlays,
@@ -1135,6 +1203,13 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
       }
     },
     [selectedLayerId, selectedLayerKind, updateLayerRotation, updateTextOverlay, updateImageOverlay]
+  );
+  const handleSelectedMirrorToggle = useCallback(
+    (axis: 'horizontal' | 'vertical') => {
+      if (!selectedLayerId) return;
+      updateLayerMirror(selectedLayerId, axis);
+    },
+    [selectedLayerId, updateLayerMirror]
   );
 
   // Derive friendly name for selected layer in inspector
@@ -1254,6 +1329,8 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
         y: selectedLayer.y,
         opacity: selectedLayer.opacity,
         rotationDegrees: selectedLayer.rotationDegrees,
+        mirrorHorizontal: selectedLayer.mirrorHorizontal,
+        mirrorVertical: selectedLayer.mirrorVertical,
       };
     if (selectedTextOverlay)
       return {
@@ -1261,6 +1338,8 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
         y: selectedTextOverlay.y,
         opacity: selectedTextOverlay.opacity,
         rotationDegrees: selectedTextOverlay.rotationDegrees,
+        mirrorHorizontal: selectedTextOverlay.mirrorHorizontal,
+        mirrorVertical: selectedTextOverlay.mirrorVertical,
       };
     if (selectedImageOverlay)
       return {
@@ -1268,6 +1347,8 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
         y: selectedImageOverlay.y,
         opacity: selectedImageOverlay.opacity,
         rotationDegrees: selectedImageOverlay.rotationDegrees,
+        mirrorHorizontal: selectedImageOverlay.mirrorHorizontal,
+        mirrorVertical: selectedImageOverlay.mirrorVertical,
       };
     return null;
   }, [selectedLayer, selectedTextOverlay, selectedImageOverlay]);
@@ -1340,6 +1421,12 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
                 <RotationControl
                   rotationDegrees={inspectorProps.rotationDegrees}
                   onChange={handleSelectedRotationChange}
+                  disabled={disabled}
+                />
+                <MirrorControl
+                  mirrorHorizontal={inspectorProps.mirrorHorizontal}
+                  mirrorVertical={inspectorProps.mirrorVertical}
+                  onToggle={handleSelectedMirrorToggle}
                   disabled={disabled}
                 />
               </InspectorControls>
