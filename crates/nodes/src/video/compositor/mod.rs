@@ -30,11 +30,12 @@ pub mod overlay;
 pub mod pixel_ops;
 
 use async_trait::async_trait;
-use config::CompositorConfig;
+use config::{CompositorConfig, CompositorLayout, ResolvedLayer, ResolvedOverlay};
 use kernel::{CompositeResult, CompositeWorkItem, LayerSnapshot};
 use opentelemetry::{global, KeyValue};
 use overlay::{decode_image_overlay, rasterize_text_overlay, DecodedOverlay};
 use schemars::schema_for;
+use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::sync::Arc;
 use streamkit_core::control::NodeControlMessage;
@@ -45,8 +46,8 @@ use streamkit_core::types::{
     Packet, PacketMetadata, PacketType, PixelFormat, VideoFormat, VideoFrame,
 };
 use streamkit_core::{
-    config_helpers, state_helpers, InputPin, NodeContext, NodeRegistry, OutputPin, PinCardinality,
-    ProcessorNode, StreamKitError,
+    config_helpers, state_helpers, view_data_helpers, InputPin, NodeContext, NodeRegistry,
+    OutputPin, PinCardinality, ProcessorNode, StreamKitError,
 };
 use tokio::sync::mpsc;
 
@@ -429,6 +430,10 @@ impl ProcessorNode for CompositorNode {
         let mut resolved_configs: Vec<ResolvedSlotConfig> = Vec::new();
         let mut sorted_draw_order: Vec<usize> = Vec::new();
 
+        // ── View data (server-driven layout) ────────────────────────────
+        let view_data_tx = context.view_data_tx.clone();
+        let mut last_layout: Option<CompositorLayout> = None;
+
         loop {
             // ── Wait for the next tick, or handle control / pin msgs ────
             tokio::select! {
@@ -538,6 +543,21 @@ impl ProcessorNode for CompositorNode {
                 resolved_configs = cfgs;
                 sorted_draw_order = order;
                 layer_configs_dirty = false;
+
+                // Emit layout via view data if it changed.
+                let layout = Self::build_layout(
+                    &self.config,
+                    &slots,
+                    &resolved_configs,
+                    &image_overlays,
+                    &text_overlays,
+                );
+                if last_layout.as_ref() != Some(&layout) {
+                    if let Ok(json) = serde_json::to_value(&layout) {
+                        view_data_helpers::emit_view_data(&view_data_tx, &node_name, json);
+                    }
+                    last_layout = Some(layout);
+                }
             }
 
             // ── Send work to persistent compositing thread ─────────────
@@ -673,6 +693,75 @@ impl ProcessorNode for CompositorNode {
 // ── Private helpers on CompositorNode ───────────────────────────────────────
 
 impl CompositorNode {
+    /// Build a `CompositorLayout` from the current resolved state.
+    ///
+    /// This captures the server-computed positions and dimensions for all
+    /// layers and overlays, which the frontend uses as the source of truth
+    /// in Monitor view.
+    fn build_layout(
+        config: &CompositorConfig,
+        slots: &[InputSlot],
+        resolved_configs: &[ResolvedSlotConfig],
+        image_overlays: &Arc<[Arc<DecodedOverlay>]>,
+        text_overlays: &Arc<[Arc<DecodedOverlay>]>,
+    ) -> CompositorLayout {
+        let mut layers: SmallVec<[ResolvedLayer; 8]> = SmallVec::new();
+        for (idx, slot) in slots.iter().enumerate() {
+            if let Some(cfg) = resolved_configs.get(idx) {
+                let (x, y, width, height) = cfg.rect.as_ref().map_or(
+                    (0, 0, config.width, config.height),
+                    |rect| (rect.x, rect.y, rect.width, rect.height),
+                );
+                layers.push(ResolvedLayer {
+                    id: slot.name.clone(),
+                    x,
+                    y,
+                    width,
+                    height,
+                    opacity: cfg.opacity,
+                    z_index: cfg.z_index,
+                    rotation_degrees: cfg.rotation_degrees,
+                });
+            }
+        }
+
+        let mut resolved_image_overlays: SmallVec<[ResolvedOverlay; 8]> = SmallVec::new();
+        for (i, ov) in image_overlays.iter().enumerate() {
+            resolved_image_overlays.push(ResolvedOverlay {
+                index: i,
+                x: ov.rect.x,
+                y: ov.rect.y,
+                width: ov.rect.width,
+                height: ov.rect.height,
+                opacity: ov.opacity,
+                z_index: ov.z_index,
+                rotation_degrees: ov.rotation_degrees,
+            });
+        }
+
+        let mut resolved_text_overlays: SmallVec<[ResolvedOverlay; 8]> = SmallVec::new();
+        for (i, ov) in text_overlays.iter().enumerate() {
+            resolved_text_overlays.push(ResolvedOverlay {
+                index: i,
+                x: ov.rect.x,
+                y: ov.rect.y,
+                width: ov.rect.width,
+                height: ov.rect.height,
+                opacity: ov.opacity,
+                z_index: ov.z_index,
+                rotation_degrees: ov.rotation_degrees,
+            });
+        }
+
+        CompositorLayout {
+            canvas_width: config.width,
+            canvas_height: config.height,
+            layers,
+            text_overlays: resolved_text_overlays,
+            image_overlays: resolved_image_overlays,
+        }
+    }
+
     fn apply_update_params(
         config: &mut CompositorConfig,
         image_overlays: &mut Arc<[Arc<DecodedOverlay>]>,

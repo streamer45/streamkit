@@ -239,6 +239,8 @@ impl Engine {
             node_stats: HashMap::new(),
             stats_subscribers: Vec::new(),
             telemetry_subscribers: Vec::new(),
+            node_view_data: HashMap::new(),
+            view_data_subscribers: Vec::new(),
             nodes_active_gauge: meter
                 .u64_gauge("engine.nodes.active")
                 .with_description("Number of active nodes in the pipeline")

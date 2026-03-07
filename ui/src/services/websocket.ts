@@ -25,6 +25,7 @@ type NodeRemovedPayload = Extract<WsEventPayload, { event: 'noderemoved' }>;
 type ConnectionAddedPayload = Extract<WsEventPayload, { event: 'connectionadded' }>;
 type ConnectionRemovedPayload = Extract<WsEventPayload, { event: 'connectionremoved' }>;
 type NodeTelemetryPayload = Extract<WsEventPayload, { event: 'nodetelemetry' }>;
+type NodeViewDataUpdatedPayload = Extract<WsEventPayload, { event: 'nodeviewdataupdated' }>;
 
 interface PendingRequest {
   resolve: (response: Response) => void;
@@ -195,6 +196,9 @@ export class WebSocketService {
       case 'nodetelemetry':
         this.handleNodeTelemetry(payload);
         break;
+      case 'nodeviewdataupdated':
+        this.handleNodeViewDataUpdated(payload);
+        break;
       default:
         break;
     }
@@ -256,6 +260,11 @@ export class WebSocketService {
     useSessionStore
       .getState()
       .removeConnection(session_id, { from_node, from_pin, to_node, to_pin });
+  }
+
+  private handleNodeViewDataUpdated(payload: NodeViewDataUpdatedPayload): void {
+    const { session_id, node_id, data } = payload;
+    useSessionStore.getState().updateNodeViewData(session_id, node_id, data);
   }
 
   private handleNodeTelemetry(payload: NodeTelemetryPayload): void {

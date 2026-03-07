@@ -271,7 +271,10 @@ const TextOverlayLayer: React.FC<{
   onPointerDown: (layerId: string, e: React.PointerEvent) => void;
   onTextEdit?: (id: string, updates: Partial<Omit<TextOverlayState, 'id'>>) => void;
   layerRef: (el: HTMLDivElement | null) => void;
-}> = React.memo(({ overlay, index, isSelected, scale, onPointerDown, onTextEdit, layerRef }) => {
+  /** When provided (Monitor view), skip client-side hidden-span measurement
+   *  and use the server-computed height directly. */
+  serverHeight?: number;
+}> = React.memo(({ overlay, index, isSelected, scale, onPointerDown, onTextEdit, layerRef, serverHeight }) => {
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(overlay.text);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -280,9 +283,15 @@ const TextOverlayLayer: React.FC<{
 
   // Auto-expand box height to fit wrapped / multi-line text, matching the
   // backend compositor which expands the overlay bitmap in the same way.
+  // When serverHeight is provided (Monitor view), skip client-side measurement
+  // and use the server-computed height directly (server is source of truth).
   const measureRef = useRef<HTMLSpanElement>(null);
-  const [displayHeight, setDisplayHeight] = useState(overlay.height);
+  const [displayHeight, setDisplayHeight] = useState(serverHeight ?? overlay.height);
   useLayoutEffect(() => {
+    if (serverHeight != null) {
+      setDisplayHeight(serverHeight);
+      return;
+    }
     if (measureRef.current) {
       const measured = measureRef.current.scrollHeight;
       setDisplayHeight(Math.max(overlay.height, measured));
@@ -297,6 +306,7 @@ const TextOverlayLayer: React.FC<{
     overlay.fontName,
     scale,
     editing,
+    serverHeight,
   ]);
 
   // Issue #1 fix: when the layer is deselected while editing, commit the edit.
@@ -397,8 +407,9 @@ const TextOverlayLayer: React.FC<{
       </LayerDimensions>
       {/* Hidden measurement span — same styling as the visible text but
           positioned absolutely with auto height so we can read its
-          natural scrollHeight to auto-expand the overlay box. */}
-      {!editing && (
+          natural scrollHeight to auto-expand the overlay box.
+          Skipped in Monitor view when serverHeight is provided. */}
+      {!editing && serverHeight == null && (
         <span
           ref={measureRef}
           aria-hidden

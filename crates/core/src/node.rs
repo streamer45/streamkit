@@ -17,6 +17,7 @@ use crate::state::NodeStateUpdate;
 use crate::stats::NodeStatsUpdate;
 use crate::telemetry::TelemetryEvent;
 use crate::types::{Packet, PacketType};
+use crate::view_data::NodeViewDataUpdate;
 use crate::{AudioFramePool, VideoFramePool};
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -302,6 +303,9 @@ pub struct NodeContext {
     /// Nodes that produce video frames (decoders, scalers, compositors) may use this to
     /// amortize `Vec<u8>` allocations. If `None`, nodes should fall back to allocating.
     pub video_pool: Option<Arc<VideoFramePool>>,
+    /// Channel for the node to emit structured view data for frontend consumption.
+    /// Like stats_tx, this is optional and best-effort.
+    pub view_data_tx: Option<mpsc::Sender<NodeViewDataUpdate>>,
 }
 
 impl NodeContext {

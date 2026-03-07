@@ -27,6 +27,7 @@ use streamkit_core::registry::NodeRegistry;
 use streamkit_core::state::{NodeState, NodeStateUpdate};
 use streamkit_core::stats::{NodeStats, NodeStatsUpdate};
 use streamkit_core::telemetry::TelemetryEvent;
+use streamkit_core::view_data::NodeViewDataUpdate;
 use streamkit_core::PinCardinality;
 use tokio::sync::mpsc;
 use tracing::Instrument;
@@ -76,6 +77,10 @@ pub struct DynamicEngine {
     pub(super) stats_subscribers: Vec<mpsc::Sender<NodeStatsUpdate>>,
     /// Subscribers that want to receive telemetry events
     pub(super) telemetry_subscribers: Vec<mpsc::Sender<TelemetryEvent>>,
+    /// Latest view data per node (e.g., compositor resolved layout)
+    pub(super) node_view_data: HashMap<String, serde_json::Value>,
+    /// Subscribers that want to receive node view data updates
+    pub(super) view_data_subscribers: Vec<mpsc::Sender<NodeViewDataUpdate>>,
     // Metrics
     pub(super) nodes_active_gauge: opentelemetry::metrics::Gauge<u64>,
     pub(super) node_state_transitions_counter: opentelemetry::metrics::Counter<u64>,
@@ -107,11 +112,12 @@ impl DynamicEngine {
         let (state_tx, mut state_rx) = mpsc::channel(DEFAULT_SUBSCRIBER_CHANNEL_CAPACITY);
         let (stats_tx, mut stats_rx) = mpsc::channel(DEFAULT_SUBSCRIBER_CHANNEL_CAPACITY);
         let (telemetry_tx, mut telemetry_rx) = mpsc::channel(DEFAULT_SUBSCRIBER_CHANNEL_CAPACITY);
+        let (view_data_tx, mut view_data_rx) = mpsc::channel(DEFAULT_SUBSCRIBER_CHANNEL_CAPACITY);
 
         loop {
             tokio::select! {
                 Some(control_msg) = self.control_rx.recv() => {
-                    if !self.handle_engine_control(control_msg, &state_tx, &stats_tx, &telemetry_tx).await {
+                    if !self.handle_engine_control(control_msg, &state_tx, &stats_tx, &telemetry_tx, &view_data_tx).await {
                         break; // Shutdown requested
                     }
                 },
@@ -127,6 +133,9 @@ impl DynamicEngine {
                 },
                 Some(telemetry_event) = telemetry_rx.recv() => {
                     self.handle_telemetry_event(&telemetry_event);
+                },
+                Some(view_data_update) = view_data_rx.recv() => {
+                    self.handle_view_data_update(&view_data_update);
                 },
                 else => break,
             }
@@ -157,6 +166,14 @@ impl DynamicEngine {
                 let (tx, rx) = mpsc::channel(DEFAULT_SUBSCRIBER_CHANNEL_CAPACITY);
                 self.telemetry_subscribers.push(tx);
                 let _ = response_tx.send(rx).await;
+            },
+            QueryMessage::SubscribeViewData { response_tx } => {
+                let (tx, rx) = mpsc::channel(DEFAULT_SUBSCRIBER_CHANNEL_CAPACITY);
+                self.view_data_subscribers.push(tx);
+                let _ = response_tx.send(rx).await;
+            },
+            QueryMessage::GetNodeViewData { response_tx } => {
+                let _ = response_tx.send(self.node_view_data.clone()).await;
             },
         }
     }
@@ -342,6 +359,20 @@ impl DynamicEngine {
         });
     }
 
+    /// Handles a node view data update by storing it and broadcasting to subscribers.
+    ///
+    /// View data is best-effort (like stats): dropped updates are acceptable.
+    fn handle_view_data_update(&mut self, update: &NodeViewDataUpdate) {
+        // Store latest value
+        self.node_view_data.insert(update.node_id.clone(), update.data.clone());
+
+        // Broadcast to all subscribers
+        self.view_data_subscribers.retain(|subscriber| match subscriber.try_send(update.clone()) {
+            Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => true,
+            Err(mpsc::error::TrySendError::Closed(_)) => false,
+        });
+    }
+
     /// Handles a node statistics update by storing it and broadcasting to subscribers
     ///
     /// Not async because all operations are synchronous (no .await calls)
@@ -427,8 +458,8 @@ impl DynamicEngine {
 
     /// Helper function to initialize a node and its I/O actors (Pin Distributors).
     ///
-    /// Takes node_id, kind, state_tx, stats_tx, and telemetry_tx by reference since they're cloned
-    /// multiple times internally (for channels, metrics, etc.)
+    /// Takes node_id, kind, state_tx, stats_tx, telemetry_tx, and view_data_tx by reference since
+    /// they're cloned multiple times internally (for channels, metrics, etc.)
     async fn initialize_node(
         &mut self,
         node: Box<dyn streamkit_core::ProcessorNode>,
@@ -437,6 +468,7 @@ impl DynamicEngine {
         state_tx: &mpsc::Sender<NodeStateUpdate>,
         stats_tx: &mpsc::Sender<NodeStatsUpdate>,
         telemetry_tx: &mpsc::Sender<TelemetryEvent>,
+        view_data_tx: &mpsc::Sender<NodeViewDataUpdate>,
     ) -> Result<(), StreamKitError> {
         let mut node = node;
 
@@ -522,6 +554,7 @@ impl DynamicEngine {
             pin_management_rx,
             audio_pool: Some(self.audio_pool.clone()),
             video_pool: Some(self.video_pool.clone()),
+            view_data_tx: Some(view_data_tx.clone()),
         };
 
         // 5. Spawn Node
@@ -903,6 +936,7 @@ impl DynamicEngine {
         // 4. Clean up Control Plane state
         self.node_states.remove(node_id);
         self.node_stats.remove(node_id);
+        self.node_view_data.remove(node_id);
         self.node_pin_metadata.remove(node_id);
         self.pin_management_txs.remove(node_id);
         self.node_kinds.remove(node_id);
@@ -918,6 +952,7 @@ impl DynamicEngine {
         state_tx: &mpsc::Sender<NodeStateUpdate>,
         stats_tx: &mpsc::Sender<NodeStatsUpdate>,
         telemetry_tx: &mpsc::Sender<TelemetryEvent>,
+        view_data_tx: &mpsc::Sender<NodeViewDataUpdate>,
     ) -> bool {
         match msg {
             EngineControlMessage::AddNode { node_id, kind, params } => {
@@ -947,6 +982,7 @@ impl DynamicEngine {
                                 state_tx,
                                 stats_tx,
                                 telemetry_tx,
+                                view_data_tx,
                             )
                             .await
                         {
@@ -1077,6 +1113,7 @@ impl DynamicEngine {
                 }
                 self.node_states.clear();
                 self.node_stats.clear();
+                self.node_view_data.clear();
                 self.nodes_active_gauge.record(0, &[]);
 
                 tracing::info!("All nodes shut down successfully");

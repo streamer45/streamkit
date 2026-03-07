@@ -40,6 +40,7 @@ pub fn create_test_context(
         pin_management_rx: Some(pin_mgmt_rx), // Provide channel for dynamic pins support
         audio_pool: None,
         video_pool: None,
+        view_data_tx: None,
     };
 
     (context, mock_sender, state_rx)

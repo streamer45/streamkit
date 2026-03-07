@@ -9,6 +9,7 @@ use std::sync::Arc;
 use streamkit_core::state::{NodeState, NodeStateUpdate};
 use streamkit_core::stats::{NodeStats, NodeStatsUpdate};
 use streamkit_core::telemetry::TelemetryEvent;
+use streamkit_core::view_data::NodeViewDataUpdate;
 use tokio::sync::mpsc;
 
 /// Unique identifier for a connection (FromNode, FromPin, ToNode, ToPin).
@@ -51,6 +52,8 @@ pub enum QueryMessage {
     SubscribeState { response_tx: mpsc::Sender<mpsc::Receiver<NodeStateUpdate>> },
     SubscribeStats { response_tx: mpsc::Sender<mpsc::Receiver<NodeStatsUpdate>> },
     SubscribeTelemetry { response_tx: mpsc::Sender<mpsc::Receiver<TelemetryEvent>> },
+    SubscribeViewData { response_tx: mpsc::Sender<mpsc::Receiver<NodeViewDataUpdate>> },
+    GetNodeViewData { response_tx: mpsc::Sender<HashMap<String, serde_json::Value>> },
 }
 
 // Re-export ConnectionMode from core for use by pin distributor

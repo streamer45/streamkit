@@ -433,6 +433,17 @@ pub enum EventPayload {
         to_node: String,
         to_pin: String,
     },
+    // --- View Data Events ---
+    /// A node's view data has been updated (e.g., compositor resolved layout).
+    /// View data carries structured JSON that the frontend interprets per-node-type.
+    NodeViewDataUpdated {
+        session_id: String,
+        node_id: String,
+        #[ts(type = "JsonValue")]
+        data: serde_json::Value,
+        /// ISO 8601 formatted timestamp
+        timestamp: String,
+    },
     // --- Telemetry Events ---
     /// Telemetry event from a node (transcription results, VAD events, LLM responses, etc.).
     /// The data payload contains event-specific fields including event_type for filtering.

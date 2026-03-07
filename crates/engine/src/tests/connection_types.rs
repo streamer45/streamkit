@@ -43,6 +43,8 @@ fn create_test_engine() -> DynamicEngine {
         node_stats: HashMap::new(),
         stats_subscribers: Vec::new(),
         telemetry_subscribers: Vec::new(),
+        node_view_data: HashMap::new(),
+        view_data_subscribers: Vec::new(),
         nodes_active_gauge: meter.u64_gauge("test.nodes").build(),
         node_state_transitions_counter: meter.u64_counter("test.transitions").build(),
         engine_operations_counter: meter.u64_counter("test.operations").build(),

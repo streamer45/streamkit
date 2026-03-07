@@ -14,6 +14,8 @@
 import { throttle } from 'lodash-es';
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 
+import { useSessionStore, selectNodeViewData } from '@/stores/sessionStore';
+
 export interface LayerState {
   /** Pin name, e.g. "in_0" */
   id: string;
@@ -345,6 +347,7 @@ export const useCompositorLayers = (
 ): UseCompositorLayersResult => {
   const {
     nodeId,
+    sessionId,
     canvasWidth,
     canvasHeight,
     params,
@@ -443,6 +446,153 @@ export const useCompositorLayers = (
     );
     setImageOverlays((currentImg) => mergeOverlayState(currentImg, parseImageOverlays(params)));
   }, [params, canvasWidth, canvasHeight]);
+
+  // ── Server-driven layout (Monitor view only) ────────────────────────────
+  // When a live pipeline is running (sessionId is set), subscribe to the
+  // compositor's view data and apply server-computed positions/dimensions.
+  // Server is the source of truth in Monitor view; client drives Design view.
+  const serverViewData = useSessionStore(
+    useMemo(() => selectNodeViewData(sessionId ?? null, nodeId), [sessionId, nodeId])
+  );
+
+  useEffect(() => {
+    if (!sessionId || !serverViewData) return;
+    if (dragStateRef.current) return; // ignore server updates while dragging
+
+    const layout = serverViewData as {
+      canvas_width: number;
+      canvas_height: number;
+      layers: Array<{
+        id: string;
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+        opacity: number;
+        z_index: number;
+        rotation_degrees: number;
+      }>;
+      text_overlays: Array<{
+        index: number;
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+        opacity: number;
+        z_index: number;
+        rotation_degrees: number;
+      }>;
+      image_overlays: Array<{
+        index: number;
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+        opacity: number;
+        z_index: number;
+        rotation_degrees: number;
+      }>;
+    };
+
+    if (!layout.layers) return;
+
+    // Apply server layers
+    setLayers((prev) => {
+      const serverLayers: LayerState[] = layout.layers.map((sl) => {
+        const existing = prev.find((l) => l.id === sl.id);
+        return {
+          id: sl.id,
+          x: sl.x,
+          y: sl.y,
+          width: sl.width,
+          height: sl.height,
+          opacity: sl.opacity,
+          zIndex: sl.z_index,
+          rotationDegrees: sl.rotation_degrees,
+          visible: existing?.visible ?? true,
+        };
+      });
+      const changed =
+        serverLayers.length !== prev.length ||
+        serverLayers.some(
+          (s, i) =>
+            s.id !== prev[i].id ||
+            s.x !== prev[i].x ||
+            s.y !== prev[i].y ||
+            s.width !== prev[i].width ||
+            s.height !== prev[i].height ||
+            s.opacity !== prev[i].opacity ||
+            s.zIndex !== prev[i].zIndex ||
+            s.rotationDegrees !== prev[i].rotationDegrees ||
+            s.visible !== prev[i].visible
+        );
+      return changed ? serverLayers : prev;
+    });
+
+    // Apply server text overlay dimensions
+    if (layout.text_overlays) {
+      setTextOverlays((prev) => {
+        const next = prev.map((o, i) => {
+          const so = layout.text_overlays.find((s) => s.index === i);
+          if (!so) return o;
+          if (
+            o.x === so.x &&
+            o.y === so.y &&
+            o.width === so.width &&
+            o.height === so.height &&
+            o.opacity === so.opacity &&
+            o.zIndex === so.z_index &&
+            o.rotationDegrees === so.rotation_degrees
+          ) {
+            return o;
+          }
+          return {
+            ...o,
+            x: so.x,
+            y: so.y,
+            width: so.width,
+            height: so.height,
+            opacity: so.opacity,
+            zIndex: so.z_index,
+            rotationDegrees: so.rotation_degrees,
+          };
+        });
+        return next.some((n, i) => n !== prev[i]) ? next : prev;
+      });
+    }
+
+    // Apply server image overlay dimensions
+    if (layout.image_overlays) {
+      setImageOverlays((prev) => {
+        const next = prev.map((o, i) => {
+          const so = layout.image_overlays.find((s) => s.index === i);
+          if (!so) return o;
+          if (
+            o.x === so.x &&
+            o.y === so.y &&
+            o.width === so.width &&
+            o.height === so.height &&
+            o.opacity === so.opacity &&
+            o.zIndex === so.z_index &&
+            o.rotationDegrees === so.rotation_degrees
+          ) {
+            return o;
+          }
+          return {
+            ...o,
+            x: so.x,
+            y: so.y,
+            width: so.width,
+            height: so.height,
+            opacity: so.opacity,
+            zIndex: so.z_index,
+            rotationDegrees: so.rotation_degrees,
+          };
+        });
+        return next.some((n, i) => n !== prev[i]) ? next : prev;
+      });
+    }
+  }, [sessionId, serverViewData]);
 
   /** Resolve a layer ID to its state and kind across all layer types */
   const findAnyLayer = useCallback(

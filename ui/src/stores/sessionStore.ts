@@ -10,6 +10,7 @@ interface SessionData {
   pipeline: Pipeline | null;
   nodeStates: Record<string, NodeState>;
   nodeStats: Record<string, NodeStats>;
+  nodeViewData: Record<string, unknown>;
   isConnected: boolean;
 }
 
@@ -19,6 +20,7 @@ interface SessionStore {
   // Actions
   updateNodeState: (sessionId: string, nodeId: string, state: NodeState) => void;
   updateNodeStats: (sessionId: string, nodeId: string, stats: NodeStats) => void;
+  updateNodeViewData: (sessionId: string, nodeId: string, data: unknown) => void;
   setPipeline: (sessionId: string, pipeline: Pipeline) => void;
   updateNodeParams: (sessionId: string, nodeId: string, params: Record<string, unknown>) => void;
   addNode: (
@@ -47,6 +49,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
           pipeline: null,
           nodeStates: { [nodeId]: state },
           nodeStats: {},
+          nodeViewData: {},
           isConnected: false,
         });
         return { sessions: newSessions };
@@ -70,6 +73,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
           pipeline: null,
           nodeStates: {},
           nodeStats: { [nodeId]: stats },
+          nodeViewData: {},
           isConnected: false,
         });
         return { sessions: newSessions };
@@ -79,6 +83,29 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       newSessions.set(sessionId, {
         ...session,
         nodeStats: { ...session.nodeStats, [nodeId]: stats },
+      });
+      return { sessions: newSessions };
+    }),
+
+  updateNodeViewData: (sessionId, nodeId, data) =>
+    set((prev) => {
+      const session = prev.sessions.get(sessionId);
+      if (!session) {
+        const newSessions = new Map(prev.sessions);
+        newSessions.set(sessionId, {
+          pipeline: null,
+          nodeStates: {},
+          nodeStats: {},
+          nodeViewData: { [nodeId]: data },
+          isConnected: false,
+        });
+        return { sessions: newSessions };
+      }
+
+      const newSessions = new Map(prev.sessions);
+      newSessions.set(sessionId, {
+        ...session,
+        nodeViewData: { ...session.nodeViewData, [nodeId]: data },
       });
       return { sessions: newSessions };
     }),
@@ -102,6 +129,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
         pipeline,
         nodeStates: session ? { ...session.nodeStates, ...nodeStates } : nodeStates,
         nodeStats: session?.nodeStats ?? {},
+        nodeViewData: session?.nodeViewData ?? {},
         isConnected: session?.isConnected ?? false,
       });
       return { sessions: newSessions };
@@ -239,6 +267,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
           pipeline: null,
           nodeStates: {},
           nodeStats: {},
+          nodeViewData: {},
           isConnected: connected,
         });
         return { sessions: newSessions };
@@ -283,6 +312,10 @@ export const selectNodeStats = (sessionId: string | null) => (state: SessionStor
 export const selectNodeStat =
   (sessionId: string | null, nodeId: string) => (state: SessionStore) =>
     sessionId ? state.sessions.get(sessionId)?.nodeStats[nodeId] : undefined;
+
+export const selectNodeViewData =
+  (sessionId: string | null, nodeId: string) => (state: SessionStore) =>
+    sessionId ? state.sessions.get(sessionId)?.nodeViewData[nodeId] : undefined;
 
 export const selectSessionIsConnected = (sessionId: string | null) => (state: SessionStore) =>
   sessionId ? (state.sessions.get(sessionId)?.isConnected ?? false) : false;
