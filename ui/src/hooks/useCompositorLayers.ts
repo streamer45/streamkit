@@ -220,7 +220,8 @@ function parseTextOverlays(params: Record<string, unknown>): TextOverlayState[] 
       opacity: o.opacity ?? (t?.opacity as number | undefined) ?? 1.0,
       rotationDegrees: o.rotation_degrees ?? (t?.rotation_degrees as number | undefined) ?? 0,
       zIndex: o.z_index ?? (t?.z_index as number | undefined) ?? 100 + i,
-      mirrorHorizontal: o.mirror_horizontal ?? (t?.mirror_horizontal as boolean | undefined) ?? false,
+      mirrorHorizontal:
+        o.mirror_horizontal ?? (t?.mirror_horizontal as boolean | undefined) ?? false,
       mirrorVertical: o.mirror_vertical ?? (t?.mirror_vertical as boolean | undefined) ?? false,
       visible: true,
     };
@@ -247,7 +248,8 @@ function parseImageOverlays(params: Record<string, unknown>): ImageOverlayState[
       opacity: o.opacity ?? (t?.opacity as number | undefined) ?? 1.0,
       rotationDegrees: o.rotation_degrees ?? (t?.rotation_degrees as number | undefined) ?? 0,
       zIndex: o.z_index ?? (t?.z_index as number | undefined) ?? 200 + i,
-      mirrorHorizontal: o.mirror_horizontal ?? (t?.mirror_horizontal as boolean | undefined) ?? false,
+      mirrorHorizontal:
+        o.mirror_horizontal ?? (t?.mirror_horizontal as boolean | undefined) ?? false,
       mirrorVertical: o.mirror_vertical ?? (t?.mirror_vertical as boolean | undefined) ?? false,
       visible: true,
     };
