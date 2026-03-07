@@ -26,6 +26,10 @@ export interface LayerState {
   opacity: number;
   zIndex: number;
   rotationDegrees: number;
+  /** Mirror horizontally (flip left ↔ right) */
+  mirrorHorizontal: boolean;
+  /** Mirror vertically (flip top ↔ bottom) */
+  mirrorVertical: boolean;
   /** Client-side visibility toggle (hidden layers send opacity=0 to backend) */
   visible: boolean;
 }
@@ -46,6 +50,10 @@ export interface TextOverlayState {
   opacity: number;
   rotationDegrees: number;
   zIndex: number;
+  /** Mirror horizontally (flip left ↔ right) */
+  mirrorHorizontal: boolean;
+  /** Mirror vertically (flip top ↔ bottom) */
+  mirrorVertical: boolean;
   /** Client-side visibility toggle (hidden overlays send opacity=0 to backend) */
   visible: boolean;
 }
@@ -63,6 +71,10 @@ export interface ImageOverlayState {
   opacity: number;
   rotationDegrees: number;
   zIndex: number;
+  /** Mirror horizontally (flip left ↔ right) */
+  mirrorHorizontal: boolean;
+  /** Mirror vertically (flip top ↔ bottom) */
+  mirrorVertical: boolean;
   /** Client-side visibility toggle (hidden overlays send opacity=0 to backend) */
   visible: boolean;
 }
@@ -100,6 +112,8 @@ export interface UseCompositorLayersResult {
   updateLayerRotation: (layerId: string, degrees: number) => void;
   updateLayerZIndex: (layerId: string, zIndex: number) => void;
   toggleLayerVisibility: (layerId: string) => void;
+  /** Toggle horizontal or vertical mirroring for a layer (video, text, or image). */
+  updateLayerMirror: (layerId: string, axis: 'horizontal' | 'vertical') => void;
   /** Ref map: layer elements register here for direct DOM manipulation during drag */
   layerRefs: React.MutableRefObject<Map<string, HTMLDivElement>>;
   /** Whether a drag/resize is currently in progress */
@@ -131,6 +145,8 @@ interface LayerConfig {
   opacity?: number;
   z_index?: number;
   rotation_degrees?: number;
+  mirror_horizontal?: boolean;
+  mirror_vertical?: boolean;
 }
 
 interface TextOverlayConfig {
@@ -142,6 +158,8 @@ interface TextOverlayConfig {
   opacity?: number;
   rotation_degrees?: number;
   z_index?: number;
+  mirror_horizontal?: boolean;
+  mirror_vertical?: boolean;
 }
 
 interface ImageOverlayConfig {
@@ -150,6 +168,8 @@ interface ImageOverlayConfig {
   opacity?: number;
   rotation_degrees?: number;
   z_index?: number;
+  mirror_horizontal?: boolean;
+  mirror_vertical?: boolean;
 }
 
 /** Parse layers from compositor params into LayerState array */
@@ -171,6 +191,8 @@ function parseLayers(
       opacity: cfg.opacity ?? 1.0,
       zIndex: cfg.z_index ?? 0,
       rotationDegrees: cfg.rotation_degrees ?? 0,
+      mirrorHorizontal: cfg.mirror_horizontal ?? false,
+      mirrorVertical: cfg.mirror_vertical ?? false,
       visible: true,
     }))
     .sort((a, b) => a.zIndex - b.zIndex);
@@ -193,6 +215,8 @@ function parseTextOverlays(params: Record<string, unknown>): TextOverlayState[] 
     opacity: o.opacity ?? 1.0,
     rotationDegrees: o.rotation_degrees ?? 0,
     zIndex: o.z_index ?? 100 + i,
+    mirrorHorizontal: o.mirror_horizontal ?? false,
+    mirrorVertical: o.mirror_vertical ?? false,
     visible: true,
   }));
 }
@@ -213,6 +237,8 @@ function parseImageOverlays(params: Record<string, unknown>): ImageOverlayState[
     opacity: o.opacity ?? 1.0,
     rotationDegrees: o.rotation_degrees ?? 0,
     zIndex: o.z_index ?? 200 + i,
+    mirrorHorizontal: o.mirror_horizontal ?? false,
+    mirrorVertical: o.mirror_vertical ?? false,
     visible: true,
   }));
 }
@@ -233,6 +259,8 @@ function serializeTextOverlays(overlays: TextOverlayState[]): TextOverlayConfig[
     opacity: o.visible ? Math.round(o.opacity * 100) / 100 : 0,
     rotation_degrees: Math.round(o.rotationDegrees * 10) / 10,
     z_index: o.zIndex,
+    mirror_horizontal: o.mirrorHorizontal,
+    mirror_vertical: o.mirrorVertical,
   }));
 }
 
@@ -249,6 +277,8 @@ function serializeImageOverlays(overlays: ImageOverlayState[]): ImageOverlayConf
     opacity: o.visible ? Math.round(o.opacity * 100) / 100 : 0,
     rotation_degrees: Math.round(o.rotationDegrees * 10) / 10,
     z_index: o.zIndex,
+    mirror_horizontal: o.mirrorHorizontal,
+    mirror_vertical: o.mirrorVertical,
   }));
 }
 
@@ -262,6 +292,8 @@ interface OverlayBase {
   opacity: number;
   rotationDegrees: number;
   zIndex: number;
+  mirrorHorizontal: boolean;
+  mirrorVertical: boolean;
   visible: boolean;
 }
 
@@ -297,6 +329,8 @@ function mergeOverlayState<T extends OverlayBase>(
         m.opacity !== current[i].opacity ||
         m.rotationDegrees !== current[i].rotationDegrees ||
         m.zIndex !== current[i].zIndex ||
+        m.mirrorHorizontal !== current[i].mirrorHorizontal ||
+        m.mirrorVertical !== current[i].mirrorVertical ||
         m.visible !== current[i].visible ||
         (hasExtraChanges ? hasExtraChanges(m, current[i]) : false)
     );
@@ -317,6 +351,8 @@ function serializeLayers(layers: LayerState[]): Record<string, LayerConfig> {
       opacity: layer.visible ? Math.round(layer.opacity * 100) / 100 : 0,
       z_index: layer.zIndex,
       rotation_degrees: Math.round(layer.rotationDegrees * 10) / 10,
+      mirror_horizontal: layer.mirrorHorizontal,
+      mirror_vertical: layer.mirrorVertical,
     };
   }
   return layersMap;
@@ -407,6 +443,9 @@ export const useCompositorLayers = (
     rafId: number | null;
     currentX: number;
     currentY: number;
+    /** Original font size stashed at resize-start for text overlays so we
+     *  can scale fontSize proportionally to the width change. */
+    origFontSize?: number;
   } | null>(null);
   const layersRef = useRef(layers);
 
@@ -517,6 +556,8 @@ export const useCompositorLayers = (
             opacity,
             zIndex: sl.z_index,
             rotationDegrees: sl.rotation_degrees,
+            mirrorHorizontal: existing?.mirrorHorizontal ?? false,
+            mirrorVertical: existing?.mirrorVertical ?? false,
             visible: existing?.visible ?? true,
           };
         });
@@ -636,6 +677,8 @@ export const useCompositorLayers = (
             opacity: textOverlay.opacity,
             zIndex: textOverlay.zIndex,
             rotationDegrees: textOverlay.rotationDegrees,
+            mirrorHorizontal: textOverlay.mirrorHorizontal,
+            mirrorVertical: textOverlay.mirrorVertical,
             visible: textOverlay.visible,
           },
           kind: 'text',
@@ -654,6 +697,8 @@ export const useCompositorLayers = (
             opacity: imgOverlay.opacity,
             zIndex: imgOverlay.zIndex,
             rotationDegrees: imgOverlay.rotationDegrees,
+            mirrorHorizontal: imgOverlay.mirrorHorizontal,
+            mirrorVertical: imgOverlay.mirrorVertical,
             visible: imgOverlay.visible,
           },
           kind: 'image',
@@ -695,6 +740,8 @@ export const useCompositorLayers = (
               opacity: layer.visible ? Math.round(layer.opacity * 100) / 100 : 0,
               z_index: layer.zIndex,
               rotation_degrees: Math.round(layer.rotationDegrees * 10) / 10,
+              mirror_horizontal: layer.mirrorHorizontal,
+              mirror_vertical: layer.mirrorVertical,
             };
           }
           onParamChange(nodeId, 'layers', layersMap);
@@ -808,14 +855,8 @@ export const useCompositorLayers = (
         newY = orig.y + (orig.height - newH);
       }
 
-      // Constrain video and image layer resize to maintain aspect ratio.
-      // Text overlays are not constrained here because they no longer have
-      // resize handles.
-      if (
-        (state.layerKind === 'video' || state.layerKind === 'image') &&
-        orig.width > 0 &&
-        orig.height > 0
-      ) {
+      // Constrain resize to maintain aspect ratio for all layer types.
+      if (orig.width > 0 && orig.height > 0) {
         const ar = orig.width / orig.height;
         const isCorner = handle.length === 2; // 'ne', 'nw', 'se', 'sw'
 
@@ -907,13 +948,27 @@ export const useCompositorLayers = (
         const newLayers = layersRef.current.map((l) => (l.id === updated.id ? updated : l));
         throttledConfigChange?.(newLayers);
       } else if (state.layerKind === 'text') {
-        // Commit text overlay position/size
+        // Commit text overlay position/size (and scaled fontSize for resizes)
+        const isResize = state.type === 'resize';
+        const origFontSize = state.origFontSize;
         setTextOverlays((prev) => {
-          const next = prev.map((o) =>
-            o.id === updated.id
-              ? { ...o, x: updated.x, y: updated.y, width: updated.width, height: updated.height }
-              : o
-          );
+          const next = prev.map((o) => {
+            if (o.id !== updated.id) return o;
+            const patch: Partial<TextOverlayState> = {
+              x: updated.x,
+              y: updated.y,
+              width: updated.width,
+              height: updated.height,
+            };
+            // Scale fontSize proportionally to width change on resize
+            if (isResize && origFontSize != null && state.origLayer.width > 0) {
+              patch.fontSize = Math.max(
+                8,
+                Math.round(origFontSize * (updated.width / state.origLayer.width))
+              );
+            }
+            return { ...o, ...patch };
+          });
           commitOverlaysRef.current(next, imageOverlaysRef.current);
           return next;
         });
@@ -992,6 +1047,13 @@ export const useCompositorLayers = (
           (Number(container.dataset.canvasWidth) || canvasWidth)
         : 1;
 
+      // Stash origFontSize for text overlays so we can scale font
+      // proportionally during resize.
+      const origFontSize =
+        found.kind === 'text'
+          ? textOverlaysRef.current.find((o) => o.id === layerId)?.fontSize
+          : undefined;
+
       dragStateRef.current = {
         type: 'resize',
         layerId,
@@ -1004,6 +1066,7 @@ export const useCompositorLayers = (
         rafId: null,
         currentX: e.clientX,
         currentY: e.clientY,
+        origFontSize,
       };
 
       setIsDragging(true);
@@ -1085,6 +1148,47 @@ export const useCompositorLayers = (
       if (isImgOverlay) {
         setImageOverlays((prev) => {
           const next = prev.map((o) => (o.id === layerId ? { ...o, visible: !o.visible } : o));
+          commitOverlaysRef.current(textOverlaysRef.current, next);
+          return next;
+        });
+      }
+    },
+    [throttledConfigChange]
+  );
+
+  // ── Mirror toggle ───────────────────────────────────────────────────────
+
+  const updateLayerMirror = useCallback(
+    (layerId: string, axis: 'horizontal' | 'vertical') => {
+      const field = axis === 'horizontal' ? 'mirrorHorizontal' : 'mirrorVertical';
+
+      // Check video layers
+      const isVideoLayer = layersRef.current.some((l) => l.id === layerId);
+      if (isVideoLayer) {
+        setLayers((prev) => {
+          const next = prev.map((l) => (l.id === layerId ? { ...l, [field]: !l[field] } : l));
+          throttledConfigChange?.(next);
+          return next;
+        });
+        return;
+      }
+
+      // Check text overlays
+      const isTextOverlay = textOverlaysRef.current.some((o) => o.id === layerId);
+      if (isTextOverlay) {
+        setTextOverlays((prev) => {
+          const next = prev.map((o) => (o.id === layerId ? { ...o, [field]: !o[field] } : o));
+          commitOverlaysRef.current(next, imageOverlaysRef.current);
+          return next;
+        });
+        return;
+      }
+
+      // Check image overlays
+      const isImgOverlay = imageOverlaysRef.current.some((o) => o.id === layerId);
+      if (isImgOverlay) {
+        setImageOverlays((prev) => {
+          const next = prev.map((o) => (o.id === layerId ? { ...o, [field]: !o[field] } : o));
           commitOverlaysRef.current(textOverlaysRef.current, next);
           return next;
         });
@@ -1206,6 +1310,8 @@ export const useCompositorLayers = (
             opacity: 1.0,
             rotationDegrees: 0,
             zIndex: maxZIndex() + 1,
+            mirrorHorizontal: false,
+            mirrorVertical: false,
             visible: true,
           },
         ];
@@ -1283,6 +1389,8 @@ export const useCompositorLayers = (
             opacity: 1.0,
             rotationDegrees: 0,
             zIndex: maxZIndex() + 1,
+            mirrorHorizontal: false,
+            mirrorVertical: false,
             visible: true,
           },
         ];
@@ -1399,6 +1507,7 @@ export const useCompositorLayers = (
     updateLayerRotation,
     updateLayerZIndex,
     toggleLayerVisibility,
+    updateLayerMirror,
     layerRefs,
     isDragging,
     textOverlays,
