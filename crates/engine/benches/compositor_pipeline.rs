@@ -161,6 +161,16 @@ fn build_pipeline(width: u32, height: u32, fps: u32, frame_count: u32) -> stream
         },
     );
 
+    // --- pixel_convert (RGBA8 → NV12) ---
+    nodes.insert(
+        "pixel_convert".to_string(),
+        Node {
+            kind: "video::pixel_convert".to_string(),
+            params: Some(serde_json::json!({ "output_format": "nv12" })),
+            state: None,
+        },
+    );
+
     // --- VP9 encoder ---
     nodes.insert(
         "vp9_encoder".to_string(),
@@ -204,6 +214,13 @@ fn build_pipeline(width: u32, height: u32, fps: u32, frame_count: u32) -> stream
         },
         Connection {
             from_node: "compositor".to_string(),
+            from_pin: "out".to_string(),
+            to_node: "pixel_convert".to_string(),
+            to_pin: "in".to_string(),
+            mode: streamkit_api::ConnectionMode::Reliable,
+        },
+        Connection {
+            from_node: "pixel_convert".to_string(),
             from_pin: "out".to_string(),
             to_node: "vp9_encoder".to_string(),
             to_pin: "in".to_string(),
