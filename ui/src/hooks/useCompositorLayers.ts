@@ -248,7 +248,11 @@ function parseTextOverlays(params: Record<string, unknown>): TextOverlayState[] 
     color: o.color ?? [255, 255, 255, 255],
     fontSize: o.font_size ?? 24,
     fontName: o.font_name ?? 'dejavu-sans',
-    ...parseTransformFields(o as Record<string, unknown>, { width: 200, height: 40, zIndex: 100 + i }),
+    ...parseTransformFields(o as Record<string, unknown>, {
+      width: 200,
+      height: 40,
+      zIndex: 100 + i,
+    }),
     visible: true,
   }));
 }
@@ -262,7 +266,11 @@ function parseImageOverlays(params: Record<string, unknown>): ImageOverlayState[
   return overlays.map((o, i) => ({
     id: `img_${i}`,
     dataBase64: o.data_base64 ?? '',
-    ...parseTransformFields(o as Record<string, unknown>, { width: 200, height: 200, zIndex: 200 + i }),
+    ...parseTransformFields(o as Record<string, unknown>, {
+      width: 200,
+      height: 200,
+      zIndex: 200 + i,
+    }),
     visible: true,
   }));
 }
