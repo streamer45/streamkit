@@ -550,7 +550,7 @@ const InspectorPanel = styled.div`
   position: absolute;
   left: 100%;
   top: 0;
-  width: 200px;
+  width: 280px;
   margin-left: 8px;
   background: var(--sk-panel-bg);
   border: 1px solid var(--sk-border);
