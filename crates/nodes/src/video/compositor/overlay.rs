@@ -268,8 +268,10 @@ fn load_font(config: &TextOverlayConfig) -> Result<Arc<fontdue::Font>, String> {
 /// font glyph rendering.  Falls back to solid-rectangle placeholders when
 /// font loading fails so the node keeps running.
 ///
-/// The bitmap dimensions are expanded to fit the measured text size so that
-/// neither the width nor the height clips the rendered string.
+/// Supports explicit newlines (`\n`) and automatic word-wrapping when the
+/// overlay rect has a non-zero width.  The bitmap dimensions are expanded
+/// to fit the measured (possibly multi-line) text so that nothing is
+/// clipped.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
 pub fn rasterize_text_overlay(config: &TextOverlayConfig) -> DecodedOverlay {
     // Attempt to load the font; fall back to rectangle placeholders on error.
@@ -282,9 +284,11 @@ pub fn rasterize_text_overlay(config: &TextOverlayConfig) -> DecodedOverlay {
     };
 
     let font_size = config.font_size.max(1) as f32;
+    let wrap_width = config.transform.rect.width;
 
     // Measure actual text dimensions so the bitmap is large enough to hold
-    // the full rendered string without clipping.
+    // the full rendered string without clipping.  When a wrap width is set
+    // the text is word-wrapped and may span multiple lines.
     let (measured_w, measured_h) = font.as_ref().map_or_else(
         || {
             // Fallback estimate for placeholder rectangles.
@@ -293,7 +297,7 @@ pub fn rasterize_text_overlay(config: &TextOverlayConfig) -> DecodedOverlay {
             let est_h = (font_size * 1.4).ceil() as u32;
             (est_w, est_h)
         },
-        |f| crate::video::measure_text(f, font_size, &config.text),
+        |f| crate::video::measure_text_wrapped(f, font_size, &config.text, wrap_width),
     );
 
     let w = config.transform.rect.width.max(measured_w).max(1);
@@ -303,8 +307,8 @@ pub fn rasterize_text_overlay(config: &TextOverlayConfig) -> DecodedOverlay {
     let mut rgba_data = vec![0u8; total_bytes];
 
     if let Some(font) = font {
-        // ── Real font rendering via shared utility ───────────────────────
-        crate::video::blit_text_rgba(
+        // ── Real font rendering via shared utility (multi-line aware) ────
+        crate::video::blit_text_wrapped(
             &mut rgba_data,
             w,
             h,
@@ -314,6 +318,7 @@ pub fn rasterize_text_overlay(config: &TextOverlayConfig) -> DecodedOverlay {
             0,
             0,
             config.color,
+            wrap_width,
         );
     } else {
         // ── Fallback: filled rectangle per glyph (placeholder) ──────────

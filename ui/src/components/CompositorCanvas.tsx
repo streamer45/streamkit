@@ -18,7 +18,7 @@
  */
 
 import styled from '@emotion/styled';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import type {
   LayerState,
@@ -98,7 +98,7 @@ const LayerLabel = styled.div`
   z-index: 2;
 `;
 
-/** Text content rendered inside text overlay layers */
+/** Text content rendered inside text overlay layers. */
 const TextContent = styled.div`
   position: absolute;
   inset: 0;
@@ -278,6 +278,27 @@ const TextOverlayLayer: React.FC<{
   const cancelledRef = useRef(false);
   const committedRef = useRef(false);
 
+  // Auto-expand box height to fit wrapped / multi-line text, matching the
+  // backend compositor which expands the overlay bitmap in the same way.
+  const measureRef = useRef<HTMLSpanElement>(null);
+  const [displayHeight, setDisplayHeight] = useState(overlay.height);
+  useLayoutEffect(() => {
+    if (measureRef.current) {
+      const measured = measureRef.current.scrollHeight;
+      setDisplayHeight(Math.max(overlay.height, measured));
+    } else {
+      setDisplayHeight(overlay.height);
+    }
+  }, [
+    overlay.text,
+    overlay.fontSize,
+    overlay.width,
+    overlay.height,
+    overlay.fontName,
+    scale,
+    editing,
+  ]);
+
   // Issue #1 fix: when the layer is deselected while editing, commit the edit.
   const prevSelectedRef = useRef(isSelected);
   useEffect(() => {
@@ -358,7 +379,7 @@ const TextOverlayLayer: React.FC<{
         left: overlay.x,
         top: overlay.y,
         width: overlay.width,
-        height: overlay.height,
+        height: displayHeight,
         opacity: overlay.visible ? overlay.opacity : 0.2,
         zIndex: overlay.zIndex ?? 100 + index,
         border: `2px dashed ${borderColor}`,
@@ -371,6 +392,36 @@ const TextOverlayLayer: React.FC<{
       onDoubleClick={handleDoubleClick}
     >
       <LayerLabel>text_{index}</LayerLabel>
+      <LayerDimensions>
+        {Math.round(overlay.width)}&times;{Math.round(displayHeight)}
+      </LayerDimensions>
+      {/* Hidden measurement span — same styling as the visible text but
+          positioned absolutely with auto height so we can read its
+          natural scrollHeight to auto-expand the overlay box. */}
+      {!editing && (
+        <span
+          ref={measureRef}
+          aria-hidden
+          style={{
+            position: 'absolute',
+            visibility: 'hidden',
+            top: 0,
+            left: 0,
+            width: overlay.width,
+            height: 'auto',
+            fontSize: Math.max(8, overlay.fontSize * scale),
+            fontFamily: cssFontFamily(overlay.fontName),
+            fontWeight: isBoldFont(overlay.fontName) ? 700 : 600,
+            lineHeight: 1.2,
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+            padding: '2px 4px',
+            boxSizing: 'border-box',
+          }}
+        >
+          {overlay.text}
+        </span>
+      )}
       {editing ? (
         <InlineTextInput
           ref={inputRef}

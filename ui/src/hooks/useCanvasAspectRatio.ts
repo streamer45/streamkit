@@ -41,6 +41,10 @@ export const useCanvasAspectRatio = (
         const h = canvas.height;
         if (w > 0 && h > 0) {
           setRatio(`${w} / ${h}`);
+        } else {
+          // Dimensions were reset (e.g. renderer removed) — clear the ratio
+          // so layout doesn't keep the stale aspect ratio.
+          setRatio(undefined);
         }
       }
     };

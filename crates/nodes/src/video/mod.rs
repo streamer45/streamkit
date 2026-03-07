@@ -179,6 +179,165 @@ pub fn blit_text_rgba(
     }
 }
 
+// ── Multi-line / word-wrap helpers ────────────────────────────────────────
+
+/// Split `text` into wrapped lines that fit within `max_width` pixels.
+///
+/// Explicit `\n` characters always produce a line break.  Within each
+/// paragraph the text is word-wrapped (split on ASCII whitespace) so that
+/// no line exceeds `max_width`.  When a single word is wider than
+/// `max_width` it is placed on its own line without further splitting.
+///
+/// If `max_width` is 0 the text is only split on explicit newlines (no
+/// word-wrapping).
+#[allow(clippy::cast_precision_loss)]
+fn wrap_text_lines(
+    font: &fontdue::Font,
+    font_size: f32,
+    text: &str,
+    max_width: u32,
+) -> Vec<String> {
+    let paragraphs: Vec<&str> = text.split('\n').collect();
+
+    if max_width == 0 {
+        return paragraphs.iter().map(|s| (*s).to_string()).collect();
+    }
+
+    let max_w = max_width as f32;
+    let space_advance = {
+        let (m, _) = font.rasterize(' ', font_size);
+        m.advance_width
+    };
+
+    let mut lines = Vec::new();
+
+    for paragraph in paragraphs {
+        if paragraph.is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+
+        let words: Vec<&str> = paragraph.split_whitespace().collect();
+        if words.is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+
+        let mut current_line = String::new();
+        let mut current_width: f32 = 0.0;
+
+        for word in &words {
+            let (word_w, _) = measure_text(font, font_size, word);
+            let word_w_f = word_w as f32;
+
+            if current_line.is_empty() {
+                // First word on the line — always accept it.
+                current_line.push_str(word);
+                current_width = word_w_f;
+            } else if current_width + space_advance + word_w_f <= max_w {
+                // Fits on the current line.
+                current_line.push(' ');
+                current_line.push_str(word);
+                current_width += space_advance + word_w_f;
+            } else {
+                // Doesn't fit — flush current line and start a new one.
+                lines.push(std::mem::take(&mut current_line));
+                current_line.push_str(word);
+                current_width = word_w_f;
+            }
+        }
+
+        if !current_line.is_empty() {
+            lines.push(current_line);
+        }
+    }
+
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+
+    lines
+}
+
+/// Measure the pixel dimensions of multi-line wrapped text.
+///
+/// Splits the input on explicit newlines and word-wraps each paragraph to
+/// fit within `max_width` pixels (see [`wrap_text_lines`]).  Returns the
+/// bounding `(width, height)` of the full block of text.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+pub fn measure_text_wrapped(
+    font: &fontdue::Font,
+    font_size: f32,
+    text: &str,
+    max_width: u32,
+) -> (u32, u32) {
+    if text.is_empty() {
+        return (0, 0);
+    }
+
+    let lines = wrap_text_lines(font, font_size, text, max_width);
+    let line_height = line_height_px(font, font_size);
+
+    let mut widest: u32 = 0;
+    for line in &lines {
+        if line.is_empty() {
+            continue;
+        }
+        let (w, _) = measure_text(font, font_size, line);
+        if w > widest {
+            widest = w;
+        }
+    }
+
+    let total_h = (lines.len() as f32 * line_height).ceil() as u32;
+    (widest, total_h)
+}
+
+/// Blit multi-line wrapped text into a packed RGBA8 buffer.
+///
+/// The text is split on explicit `\n` and word-wrapped to `max_width`
+/// pixels (see [`wrap_text_lines`]).  Each resulting line is rendered via
+/// [`blit_text_rgba`] at successive vertical offsets.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::too_many_arguments
+)]
+pub fn blit_text_wrapped(
+    buf: &mut [u8],
+    buf_width: u32,
+    buf_height: u32,
+    font: &fontdue::Font,
+    font_size: f32,
+    text: &str,
+    origin_x: i32,
+    origin_y: i32,
+    color: [u8; 4],
+    max_width: u32,
+) {
+    let lines = wrap_text_lines(font, font_size, text, max_width);
+    let line_height = line_height_px(font, font_size);
+
+    for (i, line) in lines.iter().enumerate() {
+        if line.is_empty() {
+            continue;
+        }
+        let y = origin_y + (i as f32 * line_height).round() as i32;
+        blit_text_rgba(buf, buf_width, buf_height, font, font_size, line, origin_x, y, color);
+    }
+}
+
+/// Compute the line height (in pixels) for a font at the given size.
+///
+/// Uses a 1.2× multiplier on the reference glyph height, matching the
+/// `line-height: 1.2` used in the UI's `CompositorCanvas`.
+#[allow(clippy::cast_precision_loss)]
+fn line_height_px(font: &fontdue::Font, font_size: f32) -> f32 {
+    let (ref_metrics, _) = font.rasterize('A', font_size);
+    ref_metrics.height as f32 * 1.2
+}
+
 /// Registers all available video nodes with the engine's registry.
 #[allow(clippy::missing_const_for_fn)]
 pub fn register_video_nodes(registry: &mut NodeRegistry) {

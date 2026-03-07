@@ -10,7 +10,8 @@ import { Decoration, EditorView, keymap } from '@codemirror/view';
 import styled from '@emotion/styled';
 import { solarizedDark, solarizedLight } from '@uiw/codemirror-theme-solarized';
 import CodeMirror from '@uiw/react-codemirror';
-import React, { useMemo, useRef, useEffect } from 'react';
+import { debounce } from 'lodash-es';
+import React, { useCallback, useMemo, useRef, useEffect } from 'react';
 
 import { CopyButton } from '@/components/CopyButton';
 import { useCompositorSelection } from '@/hooks/useCompositorSelection';
@@ -294,6 +295,9 @@ function findLayerLineRange(
   return null;
 }
 
+/** Debounce delay (ms) for YAML edits in staging mode. */
+const YAML_EDIT_DEBOUNCE_MS = 500;
+
 const YamlPane: React.FC<YamlPaneProps> = ({
   yaml,
   onChange,
@@ -305,6 +309,29 @@ const YamlPane: React.FC<YamlPaneProps> = ({
   const colorMode = useResolvedColorMode();
   const isDarkMode = colorMode === 'dark';
   const editorViewRef = useRef<EditorView | null>(null);
+
+  // Debounce the upstream onChange so intermediate (invalid) YAML states
+  // produced while typing don't trigger a flood of parse-error toasts.
+  // CodeMirror manages its own internal buffer, so the editor stays
+  // responsive — only the parent's parse/validate cycle is deferred.
+  const debouncedOnChange = useMemo(() => {
+    if (!onChange) return undefined;
+    return debounce(onChange, YAML_EDIT_DEBOUNCE_MS, { leading: false, trailing: true });
+  }, [onChange]);
+
+  // Cancel any pending debounced call on unmount or when onChange changes.
+  useEffect(() => {
+    return () => {
+      debouncedOnChange?.cancel();
+    };
+  }, [debouncedOnChange]);
+
+  const handleChange = useCallback(
+    (value: string) => {
+      debouncedOnChange?.(value);
+    },
+    [debouncedOnChange]
+  );
 
   // Create highlighting extension for selected node
   const highlightExtension = useMemo(() => {
@@ -493,7 +520,7 @@ const YamlPane: React.FC<YamlPaneProps> = ({
           <CopyButton text={yaml} />
           <CodeMirror
             value={yaml}
-            onChange={onChange}
+            onChange={handleChange}
             extensions={editorExtensions}
             theme={isDarkMode ? solarizedDark : solarizedLight}
             basicSetup={basicSetupOptions}

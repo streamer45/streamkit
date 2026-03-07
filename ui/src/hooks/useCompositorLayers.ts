@@ -679,14 +679,18 @@ export const useCompositorLayers = (
     [canvasWidth, canvasHeight]
   );
 
-  /** Apply visual update to DOM element (no React state) */
-  const applyVisualUpdate = useCallback((layer: LayerState) => {
+  /** Apply visual update to DOM element (no React state).
+   *  When `sizeChanged` is false (pure drag) we skip width/height so that
+   *  component-level height expansions (e.g. text wrapping) are preserved. */
+  const applyVisualUpdate = useCallback((layer: LayerState, sizeChanged: boolean) => {
     const el = layerRefs.current.get(layer.id);
     if (!el) return;
     el.style.left = `${layer.x}px`;
     el.style.top = `${layer.y}px`;
-    el.style.width = `${layer.width}px`;
-    el.style.height = `${layer.height}px`;
+    if (sizeChanged) {
+      el.style.width = `${layer.width}px`;
+      el.style.height = `${layer.height}px`;
+    }
   }, []);
 
   // Global pointer move/up handlers (attached on drag start, removed on end)
@@ -704,7 +708,7 @@ export const useCompositorLayers = (
         if (!s) return;
         s.rafId = null;
         const updated = computeUpdatedLayer(s, s.currentX, s.currentY);
-        applyVisualUpdate(updated);
+        applyVisualUpdate(updated, s.type === 'resize');
       });
     },
     [computeUpdatedLayer, applyVisualUpdate]
