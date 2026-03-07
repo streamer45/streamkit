@@ -127,7 +127,8 @@ impl ProcessorNode for PixelConvertNode {
         tracing::info!("PixelConvertNode starting: target_format={:?}", self.target_format);
 
         let meter = global::meter("skit_nodes");
-        let packets_processed_counter = meter.u64_counter("pixel_convert_packets_processed").build();
+        let packets_processed_counter =
+            meter.u64_counter("pixel_convert_packets_processed").build();
 
         // ── Blocking conversion thread ──────────────────────────────────
         let target_format = self.target_format;

@@ -133,8 +133,7 @@ impl ProcessorNode for OpusDecoderNode {
                             || PooledSamples::from_vec(decode_buffer[..decoded_len].to_vec()),
                             |pool| {
                                 let mut s = pool.get(decoded_len);
-                                s.as_mut_slice()
-                                    .copy_from_slice(&decode_buffer[..decoded_len]);
+                                s.as_mut_slice().copy_from_slice(&decode_buffer[..decoded_len]);
                                 s
                             },
                         );

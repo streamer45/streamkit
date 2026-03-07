@@ -7,13 +7,13 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use opentelemetry::global;
-use streamkit_core::stats::NodeStatsTracker;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::ffi::CStr;
 use std::sync::Arc;
 use std::time::Instant;
+use streamkit_core::stats::NodeStatsTracker;
 use streamkit_core::types::{
     EncodedVideoFormat, Packet, PacketMetadata, PacketType, PixelFormat, VideoCodec, VideoFormat,
     VideoFrame, VideoLayout,
@@ -437,7 +437,6 @@ impl ProcessorNode for Vp9EncoderNode {
         Ok(())
     }
 }
-
 
 struct EncodedPacket {
     data: Bytes,
