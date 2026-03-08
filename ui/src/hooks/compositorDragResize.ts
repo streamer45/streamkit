@@ -318,7 +318,7 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
       dragStateRef.current = null;
       setIsDragging(false);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only: all deps are stable refs or React setters that never change
   }, []);
 
   return {
