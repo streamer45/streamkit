@@ -1,0 +1,225 @@
+// This file is auto-generated. Do not edit it manually.
+
+export type Rect = { x: number, y: number, width: number, height: number, };
+
+export type OverlayTransform = { 
+/**
+ * Destination rectangle on the output canvas.
+ */
+rect: Rect, 
+/**
+ * Opacity multiplier (0.0 = fully transparent, 1.0 = fully opaque).
+ */
+opacity: number, 
+/**
+ * Clockwise rotation in degrees around the rect centre.  Default 0.0.
+ */
+rotation_degrees: number, 
+/**
+ * Visual stacking order.  Lower values are drawn first (bottom);
+ * higher values are drawn on top.  Default 0.
+ */
+z_index: number, 
+/**
+ * Mirror the layer horizontally (flip left ↔ right).  Default `false`.
+ */
+mirror_horizontal: boolean, 
+/**
+ * Mirror the layer vertically (flip top ↔ bottom).  Default `false`.
+ */
+mirror_vertical: boolean, };
+
+export type ImageOverlayConfig = { 
+/**
+ * Stable unique identifier.  Auto-generated (UUID v4) when omitted.
+ */
+id: string, 
+/**
+ * Base64-encoded image data (PNG or JPEG). Decoded once during
+ * initialization, not per-frame.
+ */
+data_base64: string, 
+/**
+ * Destination rectangle on the output canvas.
+ */
+rect: Rect, 
+/**
+ * Opacity multiplier (0.0 = fully transparent, 1.0 = fully opaque).
+ */
+opacity: number, 
+/**
+ * Clockwise rotation in degrees around the rect centre.  Default 0.0.
+ */
+rotation_degrees: number, 
+/**
+ * Visual stacking order.  Lower values are drawn first (bottom);
+ * higher values are drawn on top.  Default 0.
+ */
+z_index: number, 
+/**
+ * Mirror the layer horizontally (flip left ↔ right).  Default `false`.
+ */
+mirror_horizontal: boolean, 
+/**
+ * Mirror the layer vertically (flip top ↔ bottom).  Default `false`.
+ */
+mirror_vertical: boolean, };
+
+export type TextOverlayConfig = { 
+/**
+ * Stable unique identifier.  Auto-generated (UUID v4) when omitted.
+ */
+id: string, 
+/**
+ * The text string to render.
+ */
+text: string, 
+/**
+ * RGBA colour, e.g. `[255, 255, 255, 255]`.
+ */
+color: [number, number, number, number], 
+/**
+ * Font size in pixels.
+ */
+font_size: number, 
+/**
+ * Optional filesystem path to a TTF/OTF font file.
+ * Use this for external or system-installed fonts not in the bundled set.
+ * When omitted, a bundled default font (DejaVu Sans) is used.
+ */
+font_path: string | null, 
+/**
+ * Optional base64-encoded TTF/OTF font data.
+ * Takes precedence over `font_path` when both are provided.
+ */
+font_data_base64: string | null, 
+/**
+ * Named font from the bundled set (embedded in the binary at compile
+ * time — guaranteed to work without system font packages).
+ * Takes precedence over `font_path` but not `font_data_base64`.
+ * Available names: "dejavu-sans", "dejavu-sans-bold",
+ * "dejavu-sans-mono", "dejavu-sans-mono-bold",
+ * "dejavu-serif", "dejavu-serif-bold".
+ */
+font_name: string | null, 
+/**
+ * Destination rectangle on the output canvas.
+ */
+rect: Rect, 
+/**
+ * Opacity multiplier (0.0 = fully transparent, 1.0 = fully opaque).
+ */
+opacity: number, 
+/**
+ * Clockwise rotation in degrees around the rect centre.  Default 0.0.
+ */
+rotation_degrees: number, 
+/**
+ * Visual stacking order.  Lower values are drawn first (bottom);
+ * higher values are drawn on top.  Default 0.
+ */
+z_index: number, 
+/**
+ * Mirror the layer horizontally (flip left ↔ right).  Default `false`.
+ */
+mirror_horizontal: boolean, 
+/**
+ * Mirror the layer vertically (flip top ↔ bottom).  Default `false`.
+ */
+mirror_vertical: boolean, };
+
+export type LayerConfig = { 
+/**
+ * Destination rectangle on the output canvas. If `None`, the input is
+ * scaled to fill the entire canvas.
+ */
+rect: Rect | null, 
+/**
+ * Opacity (0.0 .. 1.0). Default 1.0.
+ */
+opacity: number, 
+/**
+ * Visual stacking order.  Lower values are drawn first (bottom);
+ * higher values are drawn on top.  Ties are broken by slot index
+ * (pin insertion order).  Default 0.
+ */
+z_index: number, 
+/**
+ * Clockwise rotation in degrees.  Default 0.0 (no rotation).
+ * The layer is rotated around its destination rect centre.
+ */
+rotation_degrees: number, 
+/**
+ * Mirror the layer horizontally (flip left ↔ right).  Default `false`.
+ */
+mirror_horizontal: boolean, 
+/**
+ * Mirror the layer vertically (flip top ↔ bottom).  Default `false`.
+ */
+mirror_vertical: boolean, };
+
+export type CompositorConfig = { 
+/**
+ * Output canvas width in pixels.
+ */
+width: number, 
+/**
+ * Output canvas height in pixels.
+ */
+height: number, 
+/**
+ * Output frame rate.  The compositor ticks at this fixed rate
+ * regardless of input frame rates, compositing with the latest
+ * available frame from each input.
+ */
+fps: number, 
+/**
+ * Number of input pins to pre-create.
+ * Required for stateless/oneshot pipelines where pins must exist before
+ * graph building. Optional for dynamic pipelines where pins are created
+ * on-demand. If specified, pins will be named in_0, in_1, ..., in_{N-1}.
+ */
+num_inputs: number | null, 
+/**
+ * Per-layer configuration, keyed by pin name (e.g. `"in_0"`).
+ * Layers without an entry here are scaled to fill the canvas.
+ */
+layers: { [key in string]?: LayerConfig }, 
+/**
+ * Static image overlays (decoded once during init).
+ */
+image_overlays: Array<ImageOverlayConfig>, 
+/**
+ * Text overlays (rasterized once per `UpdateParams`).
+ */
+text_overlays: Array<TextOverlayConfig>, };
+
+export type ResolvedLayer = { 
+/**
+ * Pin name (e.g. "in_0").
+ */
+id: string, x: number, y: number, width: number, height: number, opacity: number, z_index: number, rotation_degrees: number, mirror_horizontal: boolean, mirror_vertical: boolean, };
+
+export type ResolvedOverlay = { 
+/**
+ * Stable overlay identifier (matches the config `id` field).
+ */
+id: string, x: number, y: number, 
+/**
+ * Resolved width after text wrapping / image aspect-fit.
+ */
+width: number, 
+/**
+ * Resolved height after text wrapping / image aspect-fit.
+ */
+height: number, opacity: number, z_index: number, rotation_degrees: number, mirror_horizontal: boolean, mirror_vertical: boolean, 
+/**
+ * Actual text width measured by the font engine (text overlays only).
+ */
+measured_text_width: number | null, 
+/**
+ * Actual text height measured by the font engine (text overlays only).
+ */
+measured_text_height: number | null, };
+
+export type CompositorLayout = { canvas_width: number, canvas_height: number, layers: Array<ResolvedLayer>, text_overlays: Array<ResolvedOverlay>, image_overlays: Array<ResolvedOverlay>, };

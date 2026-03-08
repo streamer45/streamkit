@@ -28,6 +28,7 @@ const fn default_fps() -> u32 {
 /// `x` and `y` are signed to allow off-screen positioning (e.g. for
 /// slide-in effects or rotation around the rect centre).
 #[derive(Deserialize, Debug, Clone, JsonSchema)]
+#[cfg_attr(feature = "codegen", derive(ts_rs::TS))]
 pub struct Rect {
     pub x: i32,
     pub y: i32,
@@ -40,6 +41,7 @@ pub struct Rect {
 /// Flattened into each overlay config via `#[serde(flatten)]` so the JSON
 /// shape stays identical (fields remain at the top level).
 #[derive(Deserialize, Debug, Clone, JsonSchema)]
+#[cfg_attr(feature = "codegen", derive(ts_rs::TS))]
 pub struct OverlayTransform {
     /// Destination rectangle on the output canvas.
     pub rect: Rect,
@@ -76,6 +78,7 @@ impl Default for OverlayTransform {
 
 /// Configuration for a static image overlay (decoded once at init).
 #[derive(Deserialize, Debug, Clone, JsonSchema)]
+#[cfg_attr(feature = "codegen", derive(ts_rs::TS))]
 pub struct ImageOverlayConfig {
     /// Stable unique identifier.  Auto-generated (UUID v4) when omitted.
     #[serde(default = "generate_overlay_id")]
@@ -90,6 +93,7 @@ pub struct ImageOverlayConfig {
 
 /// Configuration for a text overlay (rasterized once per `UpdateParams`).
 #[derive(Deserialize, Debug, Clone, JsonSchema)]
+#[cfg_attr(feature = "codegen", derive(ts_rs::TS))]
 pub struct TextOverlayConfig {
     /// Stable unique identifier.  Auto-generated (UUID v4) when omitted.
     #[serde(default = "generate_overlay_id")]
@@ -153,6 +157,7 @@ fn generate_overlay_id() -> String {
 
 /// Layer configuration for a single compositing input.
 #[derive(Deserialize, Debug, Clone, JsonSchema)]
+#[cfg_attr(feature = "codegen", derive(ts_rs::TS))]
 pub struct LayerConfig {
     /// Destination rectangle on the output canvas. If `None`, the input is
     /// scaled to fill the entire canvas.
@@ -196,6 +201,7 @@ impl Default for LayerConfig {
 /// (created at runtime via `PinManagementMessage`) plus static image/text
 /// overlays configured here.
 #[derive(Deserialize, Debug, Clone, JsonSchema)]
+#[cfg_attr(feature = "codegen", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct CompositorConfig {
     /// Output canvas width in pixels.
@@ -247,6 +253,7 @@ impl Default for CompositorConfig {
 
 /// Server-computed layout for a single video layer.
 #[derive(Serialize, Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "codegen", derive(ts_rs::TS))]
 pub struct ResolvedLayer {
     /// Pin name (e.g. "in_0").
     pub id: String,
@@ -263,6 +270,7 @@ pub struct ResolvedLayer {
 
 /// Server-computed layout for a single overlay (text or image).
 #[derive(Serialize, Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "codegen", derive(ts_rs::TS))]
 pub struct ResolvedOverlay {
     /// Stable overlay identifier (matches the config `id` field).
     pub id: String,
@@ -287,11 +295,15 @@ pub struct ResolvedOverlay {
 
 /// The complete server-computed compositor layout, serialized as view data.
 #[derive(Serialize, Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "codegen", derive(ts_rs::TS))]
 pub struct CompositorLayout {
     pub canvas_width: u32,
     pub canvas_height: u32,
+    #[cfg_attr(feature = "codegen", ts(as = "Vec<ResolvedLayer>"))]
     pub layers: SmallVec<[ResolvedLayer; 8]>,
+    #[cfg_attr(feature = "codegen", ts(as = "Vec<ResolvedOverlay>"))]
     pub text_overlays: SmallVec<[ResolvedOverlay; 8]>,
+    #[cfg_attr(feature = "codegen", ts(as = "Vec<ResolvedOverlay>"))]
     pub image_overlays: SmallVec<[ResolvedOverlay; 8]>,
 }
 

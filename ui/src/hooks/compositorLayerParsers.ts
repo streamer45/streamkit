@@ -9,6 +9,13 @@
  * React state management and pointer interaction.
  */
 
+import type {
+  ImageOverlayConfig,
+  LayerConfig,
+  Rect,
+  TextOverlayConfig,
+} from '@/types/generated/compositor-types';
+
 import {
   DEFAULT_OPACITY,
   DEFAULT_ROTATION_DEGREES,
@@ -104,48 +111,8 @@ export const SNAP_GRID = 10;
 /** Distance threshold for snapping to centre guidelines (pixels). */
 export const SNAP_THRESHOLD = 8;
 
-// ── Wire-format interfaces (internal) ───────────────────────────────────────
-
-interface Rect {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-interface LayerConfig {
-  rect?: Rect;
-  opacity?: number;
-  z_index?: number;
-  rotation_degrees?: number;
-  mirror_horizontal?: boolean;
-  mirror_vertical?: boolean;
-}
-
-interface TextOverlayConfig {
-  id: string;
-  text: string;
-  rect: Rect;
-  color?: [number, number, number, number];
-  font_size?: number;
-  font_name?: string;
-  opacity?: number;
-  rotation_degrees?: number;
-  z_index?: number;
-  mirror_horizontal?: boolean;
-  mirror_vertical?: boolean;
-}
-
-interface ImageOverlayConfig {
-  id: string;
-  data_base64: string;
-  rect: Rect;
-  opacity?: number;
-  rotation_degrees?: number;
-  z_index?: number;
-  mirror_horizontal?: boolean;
-  mirror_vertical?: boolean;
-}
+// Wire-format types are generated from Rust via ts-rs.
+// See: ui/src/types/generated/compositor-types.ts
 
 /** Common spatial fields shared by all overlay state types (text and image). */
 export interface OverlayBase {
@@ -282,7 +249,9 @@ function serializeSpatialFields(o: OverlayBase) {
 }
 
 /** Serialize text overlays back to config format */
-export function serializeTextOverlays(overlays: TextOverlayState[]): TextOverlayConfig[] {
+export function serializeTextOverlays(
+  overlays: TextOverlayState[]
+): Omit<TextOverlayConfig, 'font_path' | 'font_data_base64'>[] {
   return overlays.map((o) => ({
     id: o.id,
     text: o.text,
