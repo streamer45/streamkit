@@ -50,7 +50,7 @@ import {
   ResetButton,
   RotationPresetsRow,
   VisibilityButton,
-  type UnifiedLayerEntry,
+  type CompositorEntry,
   InspectorHeader,
   InspectorPosition,
   InspectorTitle,
@@ -123,7 +123,7 @@ const CompactSliderThumb = styled(RadixSlider.Thumb)`
 // ── Reorder section (memoised to avoid cascade during opacity/rotation drags) ─
 
 const LayerReorderSection: React.FC<{
-  entries: UnifiedLayerEntry[];
+  entries: CompositorEntry[];
   selectedLayerId: string | null;
   onSelectLayer: (id: string | null) => void;
   onToggleVisibility: (id: string) => void;
@@ -154,7 +154,7 @@ const LayerReorderSection: React.FC<{
     };
 
     const handleReorder = useCallback(
-      (reordered: UnifiedLayerEntry[]) => {
+      (reordered: CompositorEntry[]) => {
         const maxZ = reordered.length - 1;
         const updates: Array<{ id: string; kind: LayerKind; zIndex: number }> = [];
         for (let i = 0; i < reordered.length; i++) {
@@ -362,8 +362,8 @@ MirrorControl.displayName = 'MirrorControl';
 
 // ── Unified layer list ──────────────────────────────────────────────────────
 
-export const UnifiedLayerList: React.FC<{
-  entries: UnifiedLayerEntry[];
+export const CompositorEntryList: React.FC<{
+  entries: CompositorEntry[];
   selectedLayerId: string | null;
   onSelectLayer: (id: string | null) => void;
   onToggleVisibility: (layerId: string) => void;
@@ -481,4 +481,4 @@ export const UnifiedLayerList: React.FC<{
     );
   }
 );
-UnifiedLayerList.displayName = 'UnifiedLayerList';
+CompositorEntryList.displayName = 'CompositorEntryList';

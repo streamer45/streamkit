@@ -34,7 +34,7 @@ import {
   ResolutionLabel,
   SidePanel,
 } from './compositorNodeParts';
-import { UnifiedLayerList } from './compositorNodeWidgets';
+import { CompositorEntryList } from './compositorNodeWidgets';
 
 // ── Node data interface ─────────────────────────────────────────────────────────────
 
@@ -121,7 +121,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
   );
 
   // Structurally-stable entries list -- same reference during opacity/rotation
-  // drags so UnifiedLayerList's React.memo bails out.
+  // drags so CompositorEntryList's React.memo bails out.
   const entries = useStableEntries(layers, textOverlays, imageOverlays);
 
   // Broadcast compositor layer selection for YAML highlighting
@@ -238,7 +238,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
 
         {/* Side panel: layer list (always) + inspector controls (when selected) */}
         <SidePanel className="nodrag nopan">
-          <UnifiedLayerList
+          <CompositorEntryList
             entries={entries}
             selectedLayerId={selectedLayerId}
             onSelectLayer={selectLayer}

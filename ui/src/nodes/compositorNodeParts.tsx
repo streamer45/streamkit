@@ -401,7 +401,7 @@ export const LayerListItem = styled.div<{ isSelected?: boolean; isHidden?: boole
 `;
 
 /** Unified entry representing any layer kind for sorting / display */
-export interface UnifiedLayerEntry {
+export interface CompositorEntry {
   id: string;
   kind: LayerKind;
   label: string;

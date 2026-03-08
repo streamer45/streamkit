@@ -15,7 +15,7 @@ import { useMemo, useRef } from 'react';
 import type { TextOverlayState, ImageOverlayState } from '@/hooks/useCompositorLayers';
 
 import { friendlyLabel } from './compositorNodeParts';
-import type { UnifiedLayerEntry } from './compositorNodeParts';
+import type { CompositorEntry } from './compositorNodeParts';
 
 /** Build a structurally-stable unified entry list from the three layer
  *  sources.  Returns the previous array reference when the derived entries
@@ -25,10 +25,10 @@ export function useStableEntries(
   layers: { id: string; zIndex: number; visible: boolean }[],
   textOverlays: TextOverlayState[],
   imageOverlays: ImageOverlayState[]
-): UnifiedLayerEntry[] {
-  const prevRef = useRef<UnifiedLayerEntry[]>([]);
+): CompositorEntry[] {
+  const prevRef = useRef<CompositorEntry[]>([]);
   return useMemo(() => {
-    const all: UnifiedLayerEntry[] = [];
+    const all: CompositorEntry[] = [];
     for (const l of layers) {
       all.push({
         id: l.id,
