@@ -273,7 +273,7 @@ const OverlayEditRow = styled.div`
 
 const OverlayTextInput = styled.textarea`
   flex: 1;
-  padding: 2px 4px;
+  padding: 4px 6px;
   font-size: 11px;
   border: 1px solid var(--sk-border);
   border-radius: 3px;
@@ -283,15 +283,16 @@ const OverlayTextInput = styled.textarea`
   min-width: 0;
   pointer-events: auto;
   resize: vertical;
-  min-height: 22px;
-  max-height: 80px;
+  min-height: 48px;
+  max-height: 200px;
   font-family: inherit;
-  line-height: 1.3;
+  line-height: 1.4;
   white-space: pre-wrap;
   word-break: break-word;
 
   &:focus {
     border-color: var(--sk-primary);
+    box-shadow: 0 0 0 1px var(--sk-primary);
   }
 `;
 
@@ -1148,6 +1149,22 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
 
   const disabled = !data.onConfigChange && !data.onParamChange;
 
+  // Ref to the side-panel text textarea — double-clicking a text overlay
+  // on the canvas selects it and focuses this input for comfortable editing.
+  const textInputRef = useRef<HTMLTextAreaElement>(null);
+  const handleTextFocusRequest = useCallback(
+    (layerId: string) => {
+      selectLayer(layerId);
+      requestAnimationFrame(() => {
+        textInputRef.current?.focus();
+        // Place cursor at the end so the user can immediately start typing
+        const el = textInputRef.current;
+        if (el) el.selectionStart = el.selectionEnd = el.value.length;
+      });
+    },
+    [selectLayer]
+  );
+
   // Structurally-stable entries list -- same reference during opacity/rotation
   // drags so UnifiedLayerList's React.memo bails out.
   const entries = useStableEntries(layers, textOverlays, imageOverlays);
@@ -1236,6 +1253,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
           <InspectorSectionLabel>Content</InspectorSectionLabel>
           <OverlayEditRow>
             <OverlayTextInput
+              ref={textInputRef}
               value={selectedTextOverlay.text}
               onChange={(e) => updateTextOverlay(selectedTextOverlay.id, { text: e.target.value })}
               placeholder="Text content"
@@ -1381,7 +1399,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
               onSelectLayer={selectLayer}
               onLayerPointerDown={handleLayerPointerDown}
               onResizePointerDown={handleResizePointerDown}
-              onTextEdit={disabled ? undefined : updateTextOverlay}
+              onTextFocusRequest={disabled ? undefined : handleTextFocusRequest}
               layerRefs={layerRefs}
               disabled={disabled}
             />

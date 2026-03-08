@@ -336,12 +336,13 @@ pub fn blit_text_wrapped(
 
 /// Compute the line height (in pixels) for a font at the given size.
 ///
-/// Uses a 1.2× multiplier on the reference glyph height, matching the
-/// `line-height: 1.2` used in the UI's `CompositorCanvas`.
+/// Uses `font_size * 1.2`, matching CSS `line-height: 1.2` used in the
+/// UI's `CompositorCanvas`.  The previous implementation used the
+/// rasterised glyph height of 'A' (which is smaller than font_size),
+/// producing tighter spacing than the CSS preview showed.
 #[allow(clippy::cast_precision_loss)]
-fn line_height_px(font: &fontdue::Font, font_size: f32) -> f32 {
-    let (ref_metrics, _) = font.rasterize('A', font_size);
-    ref_metrics.height as f32 * 1.2
+fn line_height_px(_font: &fontdue::Font, font_size: f32) -> f32 {
+    font_size * 1.2
 }
 
 /// Registers all available video nodes with the engine's registry.

@@ -90,7 +90,6 @@ const CanvasInner = styled.div`
 
 const LayerBox = styled.div`
   position: absolute;
-  box-sizing: border-box;
   cursor: move;
   user-select: none;
   will-change: transform, left, top, width, height;
@@ -113,7 +112,9 @@ const LayerLabel = styled.div`
 
 /** Text content rendered inside text overlay layers.
  *  Aligned top-left to match the backend compositor which renders text
- *  from origin (0, 0) within the overlay bitmap. */
+ *  from origin (0, 0) within the overlay bitmap.
+ *  No overflow clipping — the bounding box auto-sizes to fit the text,
+ *  and any slight measurement rounding is preferable to clipping. */
 const TextContent = styled.div`
   position: absolute;
   inset: 0;
@@ -121,32 +122,7 @@ const TextContent = styled.div`
   align-items: flex-start;
   justify-content: flex-start;
   pointer-events: none;
-  overflow: hidden;
   z-index: 1;
-`;
-
-/** Inline text editing textarea shown on double-click (supports multiline) */
-const InlineTextInput = styled.textarea`
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  background: rgba(0, 0, 0, 0.6);
-  border: 2px solid var(--sk-primary);
-  border-radius: 2px;
-  color: #fff;
-  font-weight: 600;
-  text-align: left;
-  outline: none;
-  z-index: 3;
-  box-sizing: border-box;
-  resize: none;
-  overflow: hidden;
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 1.2;
-  padding: 4px;
-  font-family: inherit;
 `;
 
 const LayerDimensions = styled.div`
@@ -264,7 +240,8 @@ const VideoLayer: React.FC<{
           layer.mirrorVertical
         ),
         zIndex: layer.zIndex + 1,
-        border: `2px ${layer.visible ? 'solid' : 'dashed'} ${borderColor}`,
+        outline: `2px ${layer.visible ? 'solid' : 'dashed'} ${borderColor}`,
+        outlineOffset: '-2px',
         background: bgColor,
         filter: layer.visible ? undefined : 'grayscale(0.6)',
       }}
@@ -288,118 +265,42 @@ const TextOverlayLayer: React.FC<{
   isSelected: boolean;
   onPointerDown: (layerId: string, e: React.PointerEvent) => void;
   onResizeStart: (layerId: string, handle: ResizeHandle, e: React.PointerEvent) => void;
-  onTextEdit?: (id: string, updates: Partial<Omit<TextOverlayState, 'id'>>) => void;
+  onTextFocusRequest?: (id: string) => void;
   layerRef: (el: HTMLDivElement | null) => void;
-  /** When provided (Monitor view), skip client-side hidden-span measurement
-   *  and use the server-computed height directly. */
-  serverHeight?: number;
 }> = React.memo(
-  ({
-    overlay,
-    index,
-    isSelected,
-    onPointerDown,
-    onResizeStart,
-    onTextEdit,
-    layerRef,
-    serverHeight,
-  }) => {
-    const [editing, setEditing] = useState(false);
-    const [editText, setEditText] = useState(overlay.text);
-    const inputRef = useRef<HTMLTextAreaElement>(null);
-    const cancelledRef = useRef(false);
-    const committedRef = useRef(false);
-
-    // Auto-expand box height to fit wrapped / multi-line text, matching the
-    // backend compositor which expands the overlay bitmap in the same way.
-    // When serverHeight is provided (Monitor view), skip client-side measurement
-    // and use the server-computed height directly (server is source of truth).
+  ({ overlay, index, isSelected, onPointerDown, onResizeStart, onTextFocusRequest, layerRef }) => {
+    // Measure the browser-rendered text dimensions with a hidden span.
+    // No word wrapping — only explicit newlines break lines, so the
+    // natural text width is deterministic and the box auto-sizes to fit.
     const measureRef = useRef<HTMLSpanElement>(null);
-    const [displayHeight, setDisplayHeight] = useState(serverHeight ?? overlay.height);
+    const [browserTextSize, setBrowserTextSize] = useState({ w: 0, h: 0 });
     useLayoutEffect(() => {
-      if (serverHeight != null) {
-        setDisplayHeight(serverHeight);
-        return;
-      }
       if (measureRef.current) {
-        const measured = measureRef.current.scrollHeight;
-        setDisplayHeight(Math.max(overlay.height, measured));
-      } else {
-        setDisplayHeight(overlay.height);
+        // offsetWidth / offsetHeight are in the element's own CSS-pixel
+        // coordinate space, unaffected by ancestor transforms (the canvas
+        // scale).  getBoundingClientRect() would return viewport-scaled
+        // values and cause the box to be too small.
+        setBrowserTextSize({
+          w: measureRef.current.offsetWidth,
+          h: measureRef.current.offsetHeight,
+        });
       }
-    }, [
-      overlay.text,
-      overlay.fontSize,
-      overlay.width,
-      overlay.height,
-      overlay.fontName,
-      editing,
-      serverHeight,
-    ]);
-
-    // When the layer is deselected while editing, commit the pending edit.
-    const prevSelectedRef = useRef(isSelected);
-    useEffect(() => {
-      if (prevSelectedRef.current && !isSelected && editing) {
-        // Layer was deselected while editing – commit
-        if (!cancelledRef.current && !committedRef.current) {
-          committedRef.current = true;
-          if (editText.trim() && editText !== overlay.text && onTextEdit) {
-            onTextEdit(overlay.id, { text: editText.trim() });
-          }
-        }
-        setEditing(false);
-      }
-      prevSelectedRef.current = isSelected;
-    }, [isSelected, editing, editText, overlay.id, overlay.text, onTextEdit]);
+    }, [overlay.text, overlay.fontSize, overlay.fontName]);
 
     const handlePointerDown = useCallback(
       (e: React.PointerEvent) => {
-        if (editing) return; // don't start drag while editing
         onPointerDown(overlay.id, e);
       },
-      [overlay.id, onPointerDown, editing]
+      [overlay.id, onPointerDown]
     );
 
     const handleDoubleClick = useCallback(
       (e: React.MouseEvent) => {
         e.stopPropagation();
         e.preventDefault();
-        if (!onTextEdit) return;
-        setEditText(overlay.text);
-        cancelledRef.current = false;
-        committedRef.current = false;
-        setEditing(true);
-        // Focus the textarea after React renders it
-        requestAnimationFrame(() => inputRef.current?.focus());
+        onTextFocusRequest?.(overlay.id);
       },
-      [onTextEdit, overlay.text]
-    );
-
-    const commitEdit = useCallback(() => {
-      if (cancelledRef.current) return;
-      if (committedRef.current) return; // guard against double-fire
-      committedRef.current = true;
-      setEditing(false);
-      if (editText.trim() && editText !== overlay.text && onTextEdit) {
-        onTextEdit(overlay.id, { text: editText.trim() });
-      }
-    }, [editText, overlay.id, overlay.text, onTextEdit]);
-
-    const handleKeyDown = useCallback(
-      (e: React.KeyboardEvent) => {
-        e.stopPropagation();
-        // Ctrl/Cmd+Enter commits; plain Enter inserts newline (textarea default)
-        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-          e.preventDefault();
-          commitEdit();
-        }
-        if (e.key === 'Escape') {
-          cancelledRef.current = true;
-          setEditing(false);
-        }
-      },
-      [commitEdit]
+      [onTextFocusRequest, overlay.id]
     );
 
     const hue = layerHue(index + 100); // offset from video layers
@@ -409,6 +310,11 @@ const TextOverlayLayer: React.FC<{
     const [r, g, b, a] = overlay.color;
     const textColor = `rgba(${r}, ${g}, ${b}, ${(a ?? 255) / 255})`;
 
+    // Auto-size to the natural text dimensions.  Server measurement takes
+    // priority; browser measurement is the fallback.
+    const displayWidth = overlay.measuredTextWidth || browserTextSize.w || overlay.width;
+    const displayHeight = overlay.measuredTextHeight || browserTextSize.h || overlay.height;
+
     return (
       <LayerBox
         ref={layerRef}
@@ -416,11 +322,12 @@ const TextOverlayLayer: React.FC<{
         style={{
           left: overlay.x,
           top: overlay.y,
-          width: overlay.width,
+          width: displayWidth,
           height: displayHeight,
           opacity: overlay.visible ? overlay.opacity : 0.2,
           zIndex: overlay.zIndex ?? 100 + index,
-          border: `2px dashed ${borderColor}`,
+          outline: `2px dashed ${borderColor}`,
+          outlineOffset: '-2px',
           background: bgColor,
           filter: overlay.visible ? undefined : 'grayscale(0.6)',
           transform: layerTransform(
@@ -434,72 +341,57 @@ const TextOverlayLayer: React.FC<{
       >
         <LayerLabel>text_{index}</LayerLabel>
         <LayerDimensions>
-          {Math.round(overlay.width)}&times;{Math.round(displayHeight)}
+          {Math.round(displayWidth)}&times;{Math.round(displayHeight)}
         </LayerDimensions>
         {isSelected && <ResizeHandles layerId={overlay.id} onResizeStart={onResizeStart} />}
-        {/* Hidden measurement span — same styling as the visible text but
-          positioned absolutely with auto height so we can read its
-          natural scrollHeight to auto-expand the overlay box.
-          Skipped in Monitor view when serverHeight is provided. */}
-        {!editing && serverHeight == null && (
+        {/* Hidden measurement span — no wrapping (white-space: pre) so
+          offsetWidth / offsetHeight reflect the natural text extent.
+          Text only breaks on explicit newlines. */}
+        <span
+          ref={measureRef}
+          aria-hidden
+          style={{
+            position: 'absolute',
+            visibility: 'hidden',
+            top: 0,
+            left: 0,
+            fontSize: overlay.fontSize,
+            fontFamily: cssFontFamily(overlay.fontName),
+            fontWeight: isBoldFont(overlay.fontName) ? 700 : 600,
+            lineHeight: 1.2,
+            whiteSpace: 'pre',
+            marginTop: -overlay.fontSize * 0.1,
+          }}
+        >
+          {overlay.text}
+        </span>
+        <TextContent>
           <span
-            ref={measureRef}
-            aria-hidden
             style={{
-              position: 'absolute',
-              visibility: 'hidden',
-              top: 0,
-              left: 0,
-              width: overlay.width,
-              height: 'auto',
               fontSize: overlay.fontSize,
+              color: textColor,
               fontFamily: cssFontFamily(overlay.fontName),
               fontWeight: isBoldFont(overlay.fontName) ? 700 : 600,
+              textShadow: '0 1px 3px rgba(0,0,0,0.7)',
               lineHeight: 1.2,
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
-              padding: '2px 4px',
-              boxSizing: 'border-box',
+              whiteSpace: 'pre',
+              // CSS line-height: 1.2 adds (1.2-1)/2 = 0.1em of half-leading
+              // above the first line.  The server renders glyphs from origin
+              // y=0 with no leading, so pull the text up to match.
+              marginTop: -overlay.fontSize * 0.1,
+              // When the server provides measured text dimensions, apply a
+              // CSS transform so the browser-rendered text matches the
+              // server's fontdue measurements pixel-precisely.
+              transform:
+                overlay.measuredTextWidth && browserTextSize.w > 0
+                  ? `scaleX(${overlay.measuredTextWidth / browserTextSize.w})`
+                  : undefined,
+              transformOrigin: 'top left',
             }}
           >
             {overlay.text}
           </span>
-        )}
-        {editing ? (
-          <InlineTextInput
-            ref={inputRef}
-            className="nodrag nopan"
-            value={editText}
-            onChange={(e) => setEditText(e.target.value)}
-            onBlur={commitEdit}
-            onKeyDown={handleKeyDown}
-            style={{
-              fontSize: Math.max(10, overlay.fontSize * 0.6),
-              fontFamily: cssFontFamily(overlay.fontName),
-            }}
-          />
-        ) : (
-          <TextContent>
-            <span
-              style={{
-                fontSize: overlay.fontSize,
-                color: textColor,
-                fontFamily: cssFontFamily(overlay.fontName),
-                fontWeight: isBoldFont(overlay.fontName) ? 700 : 600,
-                textShadow: '0 1px 3px rgba(0,0,0,0.7)',
-                lineHeight: 1.2,
-                textAlign: 'left',
-                wordBreak: 'break-word',
-                whiteSpace: 'pre-wrap',
-                maxWidth: '100%',
-                padding: '2px 4px',
-                boxSizing: 'border-box',
-              }}
-            >
-              {overlay.text}
-            </span>
-          </TextContent>
-        )}
+        </TextContent>
       </LayerBox>
     );
   }
@@ -583,7 +475,8 @@ const ImageOverlayLayer: React.FC<{
           overlay.mirrorVertical
         ),
         zIndex: overlay.zIndex ?? 200 + index,
-        border: `2px solid ${borderColor}`,
+        outline: `2px solid ${borderColor}`,
+        outlineOffset: '-2px',
         background: bgColor,
         filter: overlay.visible ? undefined : 'grayscale(0.6)',
       }}
@@ -623,7 +516,7 @@ export interface CompositorCanvasProps {
   onSelectLayer: (id: string | null) => void;
   onLayerPointerDown: (layerId: string, e: React.PointerEvent) => void;
   onResizePointerDown: (layerId: string, handle: ResizeHandle, e: React.PointerEvent) => void;
-  onTextEdit?: (id: string, updates: Partial<Omit<TextOverlayState, 'id'>>) => void;
+  onTextFocusRequest?: (id: string) => void;
   layerRefs: React.MutableRefObject<Map<string, HTMLDivElement>>;
   disabled?: boolean;
 }
@@ -639,7 +532,7 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
     onSelectLayer,
     onLayerPointerDown,
     onResizePointerDown,
-    onTextEdit,
+    onTextFocusRequest,
     layerRefs,
     disabled,
   }) => {
@@ -739,7 +632,7 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
                   isSelected={selectedLayerId === overlay.id}
                   onPointerDown={disabled ? noopPointerDown : onLayerPointerDown}
                   onResizeStart={disabled ? noopResizeStart : onResizePointerDown}
-                  onTextEdit={disabled ? undefined : onTextEdit}
+                  onTextFocusRequest={disabled ? undefined : onTextFocusRequest}
                   layerRef={getLayerRef(overlay.id)}
                 />
               ))}

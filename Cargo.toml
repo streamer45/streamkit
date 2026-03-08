@@ -53,8 +53,8 @@ debug = 1 # Include line tables for better stack traces in profiling
 # CI sticks with the default `release` profile for faster builds.
 [profile.release-lto]
 inherits = "release"
-lto = "fat"        # Full cross-crate LTO — eliminates core::ub_checks precondition overhead observed in profiling (vs. "thin")
-codegen-units = 1  # Maximum LLVM optimisation visibility
+lto = "thin"       # Parallel cross-crate LTO — nearly as effective as "fat" but links much faster
+codegen-units = 16 # Allow parallel LLVM codegen/LTO (thin LTO handles cross-unit optimisation)
 
 [profile.dev]
 debug = 2 # Full debug info for development profiling

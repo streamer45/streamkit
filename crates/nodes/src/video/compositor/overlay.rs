@@ -28,6 +28,10 @@ pub struct DecodedOverlay {
     pub mirror_horizontal: bool,
     /// Mirror vertically (flip top ↔ bottom).
     pub mirror_vertical: bool,
+    /// Actual text width measured by the font engine (text overlays only).
+    pub measured_text_width: Option<u32>,
+    /// Actual text height measured by the font engine (text overlays only).
+    pub measured_text_height: Option<u32>,
 }
 
 /// Decode a base64-encoded image (PNG/JPEG) into an RGBA8 bitmap.
@@ -102,6 +106,8 @@ pub fn decode_image_overlay(config: &ImageOverlayConfig) -> Result<DecodedOverla
             z_index: config.transform.z_index,
             mirror_horizontal: config.transform.mirror_horizontal,
             mirror_vertical: config.transform.mirror_vertical,
+            measured_text_width: None,
+            measured_text_height: None,
         })
     } else {
         Ok(DecodedOverlay {
@@ -114,6 +120,8 @@ pub fn decode_image_overlay(config: &ImageOverlayConfig) -> Result<DecodedOverla
             z_index: config.transform.z_index,
             mirror_horizontal: config.transform.mirror_horizontal,
             mirror_vertical: config.transform.mirror_vertical,
+            measured_text_width: None,
+            measured_text_height: None,
         })
     }
 }
@@ -292,7 +300,9 @@ pub fn rasterize_text_overlay(config: &TextOverlayConfig) -> DecodedOverlay {
     };
 
     let font_size = config.font_size.max(1) as f32;
-    let wrap_width = config.transform.rect.width;
+    // No word wrapping — text only breaks on explicit newlines.
+    // Passing 0 tells wrap_text_lines to split on '\n' only.
+    let wrap_width = 0;
 
     // Measure actual text dimensions so the bitmap is large enough to hold
     // the full rendered string without clipping.  When a wrap width is set
@@ -308,8 +318,12 @@ pub fn rasterize_text_overlay(config: &TextOverlayConfig) -> DecodedOverlay {
         |f| crate::video::measure_text_wrapped(f, font_size, &config.text, wrap_width),
     );
 
-    let w = config.transform.rect.width.max(measured_w).max(1);
-    let h = config.transform.rect.height.max(measured_h).max(1);
+    // Use the measured text dimensions directly for the bitmap size.
+    // The wrap width (rect.width) governs word-wrapping but doesn't pad
+    // the bitmap — this eliminates the confusing transparent space on the
+    // right that the UI would otherwise show as an oversized bounding box.
+    let w = measured_w.max(1);
+    let h = measured_h.max(1);
 
     let total_bytes = (w as usize) * (h as usize) * 4;
     let mut rgba_data = vec![0u8; total_bytes];
@@ -369,5 +383,7 @@ pub fn rasterize_text_overlay(config: &TextOverlayConfig) -> DecodedOverlay {
         z_index: config.transform.z_index,
         mirror_horizontal: config.transform.mirror_horizontal,
         mirror_vertical: config.transform.mirror_vertical,
+        measured_text_width: Some(measured_w),
+        measured_text_height: Some(measured_h),
     }
 }
