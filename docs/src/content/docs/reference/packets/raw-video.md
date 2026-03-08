@@ -28,7 +28,7 @@ Use `null` for `width` or `height` when you want wildcard/unknown dimensions.
 | --- | --- | --- | --- | --- |
 | `width` | `null | integer (uint32)` | no | — | Frame width in pixels. `null` acts as a wildcard. |
 | `height` | `null | integer (uint32)` | no | — | Frame height in pixels. `null` acts as a wildcard. |
-| `pixel_format` | `string enum[Rgba8, I420]` | yes | — | Pixel format for raw frames. |
+| `pixel_format` | `string enum[Rgba8, I420, Nv12]` | yes | — | Pixel format for raw frames. |
 
 <details>
 <summary>Raw JSON Schema</summary>
@@ -40,7 +40,8 @@ Use `null` for `width` or `height` when you want wildcard/unknown dimensions.
       "description": "Describes the pixel format of raw video frames.",
       "enum": [
         "Rgba8",
-        "I420"
+        "I420",
+        "Nv12"
       ],
       "type": "string"
     }

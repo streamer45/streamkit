@@ -51,8 +51,13 @@ function collectNeedsRefs(needs: NeedsValue | undefined): string[] {
  * Scans all nodes in the pipeline to detect which media types downstream nodes
  * consume from the moq_peer's output pins.
  *
- * - A reference to `<peerName>` (bare) or `<peerName>.out` → audio
- * - A reference to `<peerName>.out_1` → video
+ * The `transport::moq::peer` node exposes two fixed output pins:
+ *   - `out`   → audio (Opus-encoded)
+ *   - `out_1` → video (VP9-encoded)
+ *
+ * This is a stable naming convention enforced by the backend node
+ * definition (see `MoqPeerNode::output_pins` in `crates/nodes/src/transport/moq/peer.rs`).
+ * A bare reference to the peer name (e.g. `moq_peer`) is equivalent to `moq_peer.out`.
  */
 function detectPeerInputMediaTypes(
   peerName: string,
@@ -136,9 +141,8 @@ export function extractMoqPeerSettings(yamlContent: string): MoqPeerSettings | n
       return null;
     }
 
-    // Determine which media types downstream nodes consume from the moq_peer.
-    // References to "<peer>" or "<peer>.out" indicate audio;
-    // references to "<peer>.out_1" indicate video.
+    // Determine which media types downstream nodes consume from the moq_peer
+    // using the stable pin naming convention (see detectPeerInputMediaTypes).
     const { needsAudio, needsVideo } = detectPeerInputMediaTypes(peerNodeName, parsed.nodes);
 
     // Determine which media types the moq_peer outputs to subscribers

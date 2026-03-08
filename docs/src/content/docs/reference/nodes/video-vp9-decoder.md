@@ -2,12 +2,12 @@
 # SPDX-FileCopyrightText: © 2025 StreamKit Contributors
 # SPDX-License-Identifier: MPL-2.0
 title: "video::vp9::decoder"
-description: "Decodes VP9-compressed packets into raw I420 video frames for CPU processing."
+description: "Decodes VP9-compressed packets into raw NV12 video frames for CPU processing."
 ---
 
 `kind`: `video::vp9::decoder`
 
-Decodes VP9-compressed packets into raw I420 video frames for CPU processing.
+Decodes VP9-compressed packets into raw NV12 video frames for CPU processing.
 
 ## Requirements
 - Build with `--features video` and have `libvpx` available via `pkg-config`.
@@ -22,7 +22,7 @@ Decodes VP9-compressed packets into raw I420 video frames for CPU processing.
 - `in` accepts `EncodedVideo(EncodedVideoFormat { codec: Vp9 })` (one)
 
 ### Outputs
-- `out` produces `RawVideo(VideoFormat { width: *, height: *, pixel_format: I420 })` (broadcast)
+- `out` produces `RawVideo(VideoFormat { width: *, height: *, pixel_format: Nv12 })` (broadcast)
 
 ## Parameters
 | Name | Type | Required | Default | Description |
