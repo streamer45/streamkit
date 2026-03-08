@@ -307,11 +307,6 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
             setPanelWidth(
               Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, resizeRef.current.origWidth + dy * 1.78))
             );
-            // Shift bottom anchor up so the panel grows upward naturally
-            setPos((prev) => ({
-              ...prev,
-              y: Math.max(0, resizeRef.current!.origY + dy),
-            }));
           } else if (curEdge === 'bottom') {
             // Dragging bottom edge: moving down increases height → increase width proportionally
             const dy = ev.clientY - resizeRef.current.startY;
