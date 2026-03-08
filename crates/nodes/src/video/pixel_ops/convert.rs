@@ -414,9 +414,10 @@ pub fn rgba8_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
                     }
                 }
             }
-            let r = sr / count;
-            let g = sg / count;
-            let b = sb / count;
+            let half = count / 2;
+            let r = (sr + half) / count;
+            let g = (sg + half) / count;
+            let b = (sb + half) / count;
             let u = ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
             let v = ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
             u_row[ccol] = u.clamp(0, 255) as u8;
@@ -585,9 +586,10 @@ pub fn rgba8_to_nv12_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
                     }
                 }
             }
-            let r = sr / count;
-            let g = sg / count;
-            let b = sb / count;
+            let half = count / 2;
+            let r = (sr + half) / count;
+            let g = (sg + half) / count;
+            let b = (sb + half) / count;
             let u = ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
             let v = ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
             uv_row[ccol * 2] = u.clamp(0, 255) as u8;
