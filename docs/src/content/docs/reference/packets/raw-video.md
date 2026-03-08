@@ -7,7 +7,7 @@ description: "PacketType RawVideo structure"
 
 `PacketType` id: `RawVideo`
 
-Type system: `PacketType::RawVideo(VideoFormat)`
+Type system: `PacketType::RawVideo(RawVideoFormat)`
 
 Runtime: `Packet::Video(VideoFrame)`
 
@@ -18,11 +18,11 @@ Runtime: `Packet::Video(VideoFrame)`
 - `compat: wildcard fields (width, height), color: `#1abc9c``
 
 ## Structure
-Raw video is defined by a `VideoFormat` in the type system and carried as `Packet::Video(VideoFrame)` at runtime.
+Raw video is defined by a `RawVideoFormat` in the type system and carried as `Packet::Video(VideoFrame)` at runtime.
 
 Use `null` for `width` or `height` when you want wildcard/unknown dimensions.
 
-### PacketType payload (`VideoFormat`)
+### PacketType payload (`RawVideoFormat`)
 
 | Name | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
@@ -71,7 +71,7 @@ Use `null` for `width` or `height` when you want wildcard/unknown dimensions.
   "required": [
     "pixel_format"
   ],
-  "title": "VideoFormat",
+  "title": "RawVideoFormat",
   "type": "object"
 }
 ```
