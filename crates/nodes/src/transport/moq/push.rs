@@ -68,9 +68,9 @@ impl Default for MoqPushConfig {
 
 /// A node that receives encoded media and publishes it to a MoQ broadcast.
 ///
-/// Supports both audio (Opus) and video (VP9) inputs. Audio is accepted on
-/// the `in` pin, and video on the optional `in_1` pin. When only audio is
-/// connected the node behaves identically to its previous audio-only mode.
+/// Supports arbitrary combinations of audio (Opus) and video (VP9) inputs.
+/// Audio is accepted on the `in` pin, and video on the `in_1` pin.
+/// Either or both may be connected; at least one must be present.
 pub struct MoqPushNode {
     config: MoqPushConfig,
 }
@@ -82,6 +82,7 @@ impl MoqPushNode {
 }
 
 #[async_trait]
+#[allow(clippy::too_many_lines)]
 impl ProcessorNode for MoqPushNode {
     fn input_pins(&self) -> Vec<InputPin> {
         vec![
@@ -170,16 +171,33 @@ impl ProcessorNode for MoqPushNode {
 
         tracing::info!("Publishing to broadcast '{}'", self.config.broadcast);
 
-        // Detect whether video input is connected
+        // Detect which inputs are connected
+        let has_audio =
+            context.input_types.iter().any(|(_, pt)| matches!(pt, PacketType::EncodedAudio(_)));
         let has_video =
             context.input_types.iter().any(|(_, pt)| matches!(pt, PacketType::EncodedVideo(_)));
 
-        // Create audio track
-        let audio_track = moq_lite::Track { name: "audio/data".to_string(), priority: 80 };
-        let audio_producer = broadcast
-            .create_track(audio_track.clone())
-            .map_err(|e| StreamKitError::Runtime(format!("Failed to create audio track: {e}")))?;
-        let mut audio_producer: hang::container::OrderedProducer = audio_producer.into();
+        if !has_audio && !has_video {
+            let err_msg = "MoqPushNode requires at least one audio or video input";
+            state_helpers::emit_failed(&context.state_tx, &node_name, err_msg);
+            return Err(StreamKitError::Configuration(err_msg.to_string()));
+        }
+
+        // Create audio track if audio input is connected
+        let audio_track = if has_audio {
+            Some(moq_lite::Track { name: "audio/data".to_string(), priority: 80 })
+        } else {
+            None
+        };
+        let mut audio_producer: Option<hang::container::OrderedProducer> =
+            if let Some(ref at) = audio_track {
+                let producer = broadcast.create_track(at.clone()).map_err(|e| {
+                    StreamKitError::Runtime(format!("Failed to create audio track: {e}"))
+                })?;
+                Some(producer.into())
+            } else {
+                None
+            };
 
         // Create video track if video input is connected
         let video_track = if has_video {
@@ -197,20 +215,22 @@ impl ProcessorNode for MoqPushNode {
                 None
             };
 
-        // Build catalog with both audio and (optionally) video renditions
+        // Build catalog with connected renditions
         let mut audio_renditions = std::collections::BTreeMap::new();
-        audio_renditions.insert(
-            audio_track.name.clone(),
-            hang::catalog::AudioConfig {
-                codec: hang::catalog::AudioCodec::Opus,
-                sample_rate: 48000,
-                channel_count: self.config.channels,
-                bitrate: Some(128_000),
-                description: None,
-                container: hang::catalog::Container::default(),
-                jitter: None,
-            },
-        );
+        if let Some(ref at) = audio_track {
+            audio_renditions.insert(
+                at.name.clone(),
+                hang::catalog::AudioConfig {
+                    codec: hang::catalog::AudioCodec::Opus,
+                    sample_rate: 48000,
+                    channel_count: self.config.channels,
+                    bitrate: Some(128_000),
+                    description: None,
+                    container: hang::catalog::Container::default(),
+                    jitter: None,
+                },
+            );
+        }
 
         let mut video_renditions = std::collections::BTreeMap::new();
         if let Some(ref vt) = video_track {
@@ -276,7 +296,7 @@ impl ProcessorNode for MoqPushNode {
 
         state_helpers::emit_running(&context.state_tx, &node_name);
 
-        let mut audio_rx = context.take_input("in")?;
+        let mut audio_rx = if has_audio { Some(context.take_input("in")?) } else { None };
         let mut video_rx = if has_video { Some(context.take_input("in_1")?) } else { None };
         let mut packet_count: u64 = 0;
         let mut audio_clock = MediaClock::new(self.config.initial_delay_ms);
@@ -302,7 +322,12 @@ impl ProcessorNode for MoqPushNode {
 
         loop {
             let (input_source, packet) = tokio::select! {
-                Some(pkt) = audio_rx.recv() => {
+                Some(pkt) = async {
+                    match audio_rx.as_mut() {
+                        Some(rx) => rx.recv().await,
+                        _ => std::future::pending().await,
+                    }
+                } => {
                     (InputSource::Audio, pkt)
                 },
                 Some(pkt) = async {
@@ -333,12 +358,14 @@ impl ProcessorNode for MoqPushNode {
                 }
 
                 let (clock, seeded, default_dur, producer) = match input_source {
-                    InputSource::Audio => (
-                        &mut audio_clock,
-                        &mut audio_seeded,
-                        DEFAULT_AUDIO_FRAME_DURATION_US,
-                        &mut audio_producer,
-                    ),
+                    InputSource::Audio => {
+                        let Some(ap) = audio_producer.as_mut() else {
+                            tracing::warn!("audio producer missing for audio packet");
+                            stats_tracker.discarded();
+                            continue;
+                        };
+                        (&mut audio_clock, &mut audio_seeded, DEFAULT_AUDIO_FRAME_DURATION_US, ap)
+                    },
                     InputSource::Video => {
                         let Some(vp) = video_producer.as_mut() else {
                             tracing::warn!("video producer missing for video packet");
@@ -435,7 +462,9 @@ impl ProcessorNode for MoqPushNode {
         state_helpers::emit_stopped(&context.state_tx, &node_name, "input_closed");
 
         // Close tracks when done (best-effort)
-        let _ = audio_producer.track.finish();
+        if let Some(mut ap) = audio_producer {
+            let _ = ap.track.finish();
+        }
         if let Some(mut vp) = video_producer {
             let _ = vp.track.finish();
         }

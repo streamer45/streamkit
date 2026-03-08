@@ -30,11 +30,6 @@ pub struct MoqPullConfig {
     /// This is compatible with moq-relay and StreamKit's built-in MoQ auth.
     pub jwt: Option<String>,
     pub broadcast: String,
-    /// Batch window in milliseconds. If > 0, after receiving a frame the node will
-    /// wait up to this duration to collect additional frames before forwarding.
-    /// Default: 0 (no batching) - recommended because moq_lite's TrackConsumer::read()
-    /// has internal allocation overhead that makes batching counterproductive.
-    pub batch_ms: u64,
 }
 
 /// A node that connects to a MoQ server, subscribes to a broadcast,
