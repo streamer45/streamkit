@@ -309,17 +309,6 @@ const FULLSCREEN_BODY_STYLE: React.CSSProperties = {
 
 const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
   ({ hasSession, conditionalRender = false }) => {
-    const {
-      panelRef,
-      collapsed,
-      isFullscreen,
-      toggleCollapsed,
-      toggleFullscreen,
-      panelStyle,
-      handleResizeStart,
-      handleDragStart,
-    } = usePreviewPanelInteraction();
-
     const { status, watchStatus, videoRenderer, activeSessionId } = useStreamStore(
       useShallow((s) => ({
         status: s.status,
@@ -330,6 +319,17 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
     );
 
     const { canvasRef, aspectRatio: canvasAspectRatio } = useVideoCanvas(videoRenderer);
+
+    const {
+      panelRef,
+      collapsed,
+      isFullscreen,
+      toggleCollapsed,
+      toggleFullscreen,
+      panelStyle,
+      handleResizeStart,
+      handleDragStart,
+    } = usePreviewPanelInteraction(canvasAspectRatio);
 
     const isConnected = status === 'connected';
     const isLive = watchStatus === 'live';
