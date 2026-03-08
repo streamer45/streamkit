@@ -268,9 +268,9 @@ fn test_rasterize_text_overlay_produces_pixels() {
         font_name: None,
     };
     let overlay = rasterize_text_overlay(&cfg);
-    // Width and height should be at least the original rect dimensions.
-    assert!(overlay.width >= 64);
-    assert!(overlay.height >= 32);
+    // Bitmap is sized to the measured text extent, not the config rect.
+    assert!(overlay.width > 0, "rasterized width must be positive");
+    assert!(overlay.height > 0, "rasterized height must be positive");
     // The rect in the returned overlay should match the bitmap dimensions.
     assert_eq!(overlay.rect.width, overlay.width);
     assert_eq!(overlay.rect.height, overlay.height);

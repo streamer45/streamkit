@@ -59,6 +59,17 @@ const ContentWrapper = styled.div`
   gap: 10px;
 `;
 
+const ErrorBanner = styled.div`
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: var(--sk-error-bg, rgba(239, 68, 68, 0.1));
+  border: 1px solid var(--sk-error-border, rgba(239, 68, 68, 0.3));
+  border-radius: 4px;
+  color: var(--sk-error-text, #ef4444);
+  font-size: 12px;
+  font-family: var(--sk-font-code);
+`;
+
 const CodeMirrorWrapper = styled.div`
   position: relative;
   border: 1px solid var(--sk-border);
@@ -599,22 +610,7 @@ const YamlPane: React.FC<YamlPaneProps> = ({
             onCreateEditor={onCreateEditor}
           />
         </CodeMirrorWrapper>
-        {error && (
-          <div
-            style={{
-              marginTop: '8px',
-              padding: '8px 12px',
-              background: 'var(--sk-error-bg, rgba(239, 68, 68, 0.1))',
-              border: '1px solid var(--sk-error-border, rgba(239, 68, 68, 0.3))',
-              borderRadius: '4px',
-              color: 'var(--sk-error-text, #ef4444)',
-              fontSize: '12px',
-              fontFamily: 'var(--sk-font-code)',
-            }}
-          >
-            {error}
-          </div>
-        )}
+        {error && <ErrorBanner>{error}</ErrorBanner>}
       </ContentWrapper>
     </PaneWrapper>
   );
