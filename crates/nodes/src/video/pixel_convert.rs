@@ -161,6 +161,11 @@ impl ProcessorNode for PixelConvertNode {
                 .build();
             let otel_attrs = [KeyValue::new("node", otel_node_name)];
 
+            // Arc-pointer cache: if the input `Arc<PooledVideoData>` pointer is
+            // identical to the previous frame we re-send the cached conversion
+            // result (ref-count bump only, no CPU work).  This relies on the
+            // project-wide invariant that `PooledVideoData` is immutable once
+            // shared via `Arc` — nodes must never mutate pooled data in-place.
             let mut last_input_ptr: usize = 0;
             let mut cached_output: Option<Arc<PooledVideoData>> = None;
             let mut cached_output_format: Option<PixelFormat> = None;
