@@ -424,14 +424,20 @@ impl ProcessorNode for CompositorNode {
         let mut text_overlays: Arc<[Arc<DecodedOverlay>]> = Arc::from(text_overlays_vec);
 
         // Collect initial input slots from pre-connected pins.
+        // Only create InputPin entries for pre-connected inputs when
+        // `num_inputs` was not set — otherwise `new()` already created
+        // them and we'd end up with duplicates (matching the audio mixer
+        // pattern).
         let mut slots: Vec<InputSlot> = Vec::new();
-        for pin_name in context.inputs.keys() {
-            let pin = Self::make_input_pin(pin_name.clone());
-            self.input_pins.push(pin);
-            // Track next_input_id for dynamically named pins.
-            if let Some(num_str) = pin_name.strip_prefix("in_") {
-                if let Ok(n) = num_str.parse::<usize>() {
-                    self.next_input_id = self.next_input_id.max(n + 1);
+        if self.config.num_inputs.is_none() {
+            for pin_name in context.inputs.keys() {
+                let pin = Self::make_input_pin(pin_name.clone());
+                self.input_pins.push(pin);
+                // Track next_input_id for dynamically named pins.
+                if let Some(num_str) = pin_name.strip_prefix("in_") {
+                    if let Ok(n) = num_str.parse::<usize>() {
+                        self.next_input_id = self.next_input_id.max(n + 1);
+                    }
                 }
             }
         }
@@ -483,6 +489,12 @@ impl ProcessorNode for CompositorNode {
             let mut conversion_cache = ConversionCache::new();
 
             while let Some(work) = work_rx.blocking_recv() {
+                // Free conversion cache entries for removed slots so
+                // that potentially large RGBA buffers don't linger.
+                for slot_idx in &work.evict_cache_slots {
+                    conversion_cache.evict(*slot_idx);
+                }
+
                 let rgba_buf = composite_frame(
                     work.canvas_w,
                     work.canvas_h,
@@ -501,6 +513,10 @@ impl ProcessorNode for CompositorNode {
 
         let mut output_seq: u64 = 0;
         let mut stop_reason: &str = "shutdown";
+
+        // Slot indices whose conversion cache entries should be evicted
+        // on the next work item sent to the compositing thread.
+        let mut pending_cache_evictions: Vec<usize> = Vec::new();
 
         // ── OpenTelemetry metrics ───────────────────────────────────────
         let meter = global::meter("skit_nodes");
@@ -589,6 +605,7 @@ impl ProcessorNode for CompositorNode {
                         &mut self,
                         msg,
                         &mut slots,
+                        &mut pending_cache_evictions,
                     );
                     layer_configs_dirty = true;
                     continue;
@@ -631,6 +648,7 @@ impl ProcessorNode for CompositorNode {
                 // drained.  Use a zero-capacity poll instead:
                 if slots[i].rx.is_closed() {
                     tracing::info!("CompositorNode: input '{}' closed", slots[i].name);
+                    pending_cache_evictions.push(i);
                     slots.remove(i);
                     layer_configs_dirty = true;
                 } else {
@@ -700,6 +718,7 @@ impl ProcessorNode for CompositorNode {
                 image_overlays: image_overlays.clone(),
                 text_overlays: text_overlays.clone(),
                 video_pool: video_pool.clone(),
+                evict_cache_slots: std::mem::take(&mut pending_cache_evictions),
             };
 
             // Send work to the compositing thread.  The work channel has
@@ -895,6 +914,7 @@ impl CompositorNode {
         node: &mut Box<Self>,
         msg: PinManagementMessage,
         slots: &mut Vec<InputSlot>,
+        pending_cache_evictions: &mut Vec<usize>,
     ) {
         match msg {
             PinManagementMessage::RequestAddInputPin { suggested_name, response_tx } => {
@@ -913,7 +933,10 @@ impl CompositorNode {
             },
             PinManagementMessage::RemoveInputPin { pin_name } => {
                 tracing::info!("CompositorNode: removed input pin '{}'", pin_name);
-                slots.retain(|s| s.name != pin_name);
+                if let Some(idx) = slots.iter().position(|s| s.name == pin_name) {
+                    pending_cache_evictions.push(idx);
+                    slots.remove(idx);
+                }
                 node.input_pins.retain(|p| p.name != pin_name);
             },
             _ => {},

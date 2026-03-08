@@ -316,6 +316,20 @@ fn validate_opacity(value: f32, label: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Check that a rotation value is finite.
+fn validate_rotation(value: f32, label: &str) -> Result<(), String> {
+    if !value.is_finite() {
+        return Err(format!("{label} rotation_degrees must be a finite number"));
+    }
+    Ok(())
+}
+
+/// Maximum canvas dimension (8K UHD).
+const MAX_CANVAS_DIMENSION: u32 = 7680;
+
+/// Maximum font size in pixels.
+const MAX_FONT_SIZE: u32 = 4096;
+
 impl CompositorConfig {
     /// Validate compositor parameters.
     ///
@@ -327,17 +341,34 @@ impl CompositorConfig {
         if self.width == 0 || self.height == 0 {
             return Err("Canvas width and height must be > 0".to_string());
         }
+        if self.width > MAX_CANVAS_DIMENSION || self.height > MAX_CANVAS_DIMENSION {
+            return Err(format!(
+                "Canvas dimensions {}x{} exceed maximum {}x{}",
+                self.width, self.height, MAX_CANVAS_DIMENSION, MAX_CANVAS_DIMENSION
+            ));
+        }
         if self.fps == 0 {
             return Err("Output fps must be > 0".to_string());
         }
         for (name, layer) in &self.layers {
             validate_opacity(layer.opacity, &format!("Layer '{name}'"))?;
+            validate_rotation(layer.rotation_degrees, &format!("Layer '{name}'"))?;
         }
         for img in &self.image_overlays {
-            validate_opacity(img.transform.opacity, &format!("Image overlay '{}'", img.id))?;
+            let label = format!("Image overlay '{}'", img.id);
+            validate_opacity(img.transform.opacity, &label)?;
+            validate_rotation(img.transform.rotation_degrees, &label)?;
         }
         for txt in &self.text_overlays {
-            validate_opacity(txt.transform.opacity, &format!("Text overlay '{}'", txt.id))?;
+            let label = format!("Text overlay '{}'", txt.id);
+            validate_opacity(txt.transform.opacity, &label)?;
+            validate_rotation(txt.transform.rotation_degrees, &label)?;
+            if txt.font_size > MAX_FONT_SIZE {
+                return Err(format!(
+                    "{label} font_size {} exceeds maximum {MAX_FONT_SIZE}",
+                    txt.font_size
+                ));
+            }
         }
         Ok(())
     }

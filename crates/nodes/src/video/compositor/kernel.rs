@@ -76,6 +76,17 @@ impl ConversionCache {
         Self { entries: Vec::new(), first_layer_alpha_cache: None }
     }
 
+    /// Evict a cached conversion entry for the given slot index.
+    ///
+    /// Called when a slot is removed (input disconnected or pin removed)
+    /// so that the potentially large RGBA buffer is freed rather than
+    /// persisting for the lifetime of the compositor.
+    pub fn evict(&mut self, slot_idx: usize) {
+        if slot_idx < self.entries.len() {
+            self.entries[slot_idx] = None;
+        }
+    }
+
     /// Check whether the first visible layer's source data is fully opaque.
     ///
     /// For I420/NV12 layers, the converted RGBA always has alpha == 255, so
@@ -206,6 +217,9 @@ pub struct CompositeWorkItem {
     pub image_overlays: Arc<[Arc<DecodedOverlay>]>,
     pub text_overlays: Arc<[Arc<DecodedOverlay>]>,
     pub video_pool: Option<Arc<streamkit_core::VideoFramePool>>,
+    /// Slot indices whose conversion cache entries should be evicted
+    /// before compositing this frame (freed when inputs disconnect).
+    pub evict_cache_slots: Vec<usize>,
 }
 
 /// Result sent back from the compositing thread to the async loop.
@@ -337,7 +351,8 @@ pub fn composite_frame(
     // This replaces the former three separate loops and allows overlays to
     // be interleaved with video layers via z_index.
 
-    let mut items: Vec<CompositeItem<'_>> = Vec::new();
+    let mut items: Vec<CompositeItem<'_>> =
+        Vec::with_capacity(layers.len() + image_overlays.len() + text_overlays.len());
     let mut insertion_order: usize = 0;
 
     // Video layers.
