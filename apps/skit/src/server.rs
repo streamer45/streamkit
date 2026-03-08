@@ -1890,7 +1890,7 @@ async fn destroy_session_handler(
             global::meter("skit_server")
                 .u64_counter("session.shutdown.errors")
                 .build()
-                .add(1, &[KeyValue::new("session_id", shutdown_id.clone())]);
+                .add(1, &[]);
         } else {
             info!(session_id = %shutdown_id, "Session destroyed successfully via HTTP");
         }

@@ -11,7 +11,7 @@ use crate::file_security;
 use crate::permissions::Permissions;
 use crate::session::Session;
 use crate::state::AppState;
-use opentelemetry::{global, KeyValue};
+use opentelemetry::global;
 use streamkit_api::{
     Event as ApiEvent, EventPayload, MessageType, RequestPayload, ResponsePayload,
 };
@@ -248,7 +248,7 @@ async fn handle_destroy_session(
             global::meter("skit_server")
                 .u64_counter("session.shutdown.errors")
                 .build()
-                .add(1, &[KeyValue::new("session_id", shutdown_id.clone())]);
+                .add(1, &[]);
         } else {
             info!(session_id = %shutdown_id, "Session destroyed successfully");
         }
