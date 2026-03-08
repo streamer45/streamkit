@@ -17,7 +17,7 @@ const MIN_WIDTH = 180;
 const MAX_WIDTH = 800;
 
 interface PanelInteraction {
-  pos: { x: number; y: number };
+  pos: { right: number; bottom: number };
   panelWidth: number;
   panelRef: React.RefObject<HTMLDivElement | null>;
   collapsed: boolean;
@@ -30,7 +30,7 @@ interface PanelInteraction {
 }
 
 export function usePreviewPanelInteraction(): PanelInteraction {
-  const [pos, setPos] = useState({ x: 16, y: 16 });
+  const [pos, setPos] = useState({ right: 16, bottom: 16 });
   const [panelWidth, setPanelWidth] = useState(DEFAULT_WIDTH);
   const [collapsed, setCollapsed] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -51,6 +51,12 @@ export function usePreviewPanelInteraction(): PanelInteraction {
     edge: 'left' | 'top' | 'right' | 'bottom';
   } | null>(null);
 
+  // Track active document listeners so the cleanup effect can remove them on unmount.
+  const activeListenersRef = useRef<{
+    move: (e: PointerEvent) => void;
+    up: (e: PointerEvent) => void;
+  } | null>(null);
+
   const handleResizeStart = useCallback(
     (edge: 'left' | 'top' | 'right' | 'bottom', e: React.PointerEvent) => {
       e.preventDefault();
@@ -59,7 +65,7 @@ export function usePreviewPanelInteraction(): PanelInteraction {
         startX: e.clientX,
         startY: e.clientY,
         origWidth: panelWidth,
-        origY: pos.y,
+        origY: pos.bottom,
         edge,
       };
 
@@ -77,7 +83,7 @@ export function usePreviewPanelInteraction(): PanelInteraction {
 
         if (curEdge === 'bottom') {
           const widthDelta = newWidth - origWidth;
-          setPos((prev) => ({ ...prev, y: Math.max(0, origY - widthDelta / 1.78) }));
+          setPos((prev) => ({ ...prev, bottom: Math.max(0, origY - widthDelta / 1.78) }));
         }
       };
 
@@ -85,10 +91,12 @@ export function usePreviewPanelInteraction(): PanelInteraction {
         resizeRef.current = null;
         document.removeEventListener('pointermove', handleResizeMove);
         document.removeEventListener('pointerup', handleResizeUp);
+        activeListenersRef.current = null;
       };
 
       document.addEventListener('pointermove', handleResizeMove);
       document.addEventListener('pointerup', handleResizeUp);
+      activeListenersRef.current = { move: handleResizeMove, up: handleResizeUp };
     },
     [panelWidth, pos]
   );
@@ -98,13 +106,18 @@ export function usePreviewPanelInteraction(): PanelInteraction {
       if ((e.target as HTMLElement).closest('button')) return;
       e.preventDefault();
       e.stopPropagation();
-      dragRef.current = { startX: e.clientX, startY: e.clientY, origX: pos.x, origY: pos.y };
+      dragRef.current = {
+        startX: e.clientX,
+        startY: e.clientY,
+        origX: pos.right,
+        origY: pos.bottom,
+      };
 
       const handleMove = (ev: PointerEvent) => {
         if (!dragRef.current) return;
         setPos({
-          x: Math.max(0, dragRef.current.origX - (ev.clientX - dragRef.current.startX)),
-          y: Math.max(0, dragRef.current.origY - (ev.clientY - dragRef.current.startY)),
+          right: Math.max(0, dragRef.current.origX - (ev.clientX - dragRef.current.startX)),
+          bottom: Math.max(0, dragRef.current.origY - (ev.clientY - dragRef.current.startY)),
         });
       };
 
@@ -112,10 +125,12 @@ export function usePreviewPanelInteraction(): PanelInteraction {
         dragRef.current = null;
         document.removeEventListener('pointermove', handleMove);
         document.removeEventListener('pointerup', handleUp);
+        activeListenersRef.current = null;
       };
 
       document.addEventListener('pointermove', handleMove);
       document.addEventListener('pointerup', handleUp);
+      activeListenersRef.current = { move: handleMove, up: handleUp };
     },
     [pos]
   );
@@ -137,6 +152,16 @@ export function usePreviewPanelInteraction(): PanelInteraction {
     }
   }, []);
 
+  // Clean up document listeners if the component unmounts mid-drag/resize.
+  useEffect(() => {
+    return () => {
+      if (activeListenersRef.current) {
+        document.removeEventListener('pointermove', activeListenersRef.current.move);
+        document.removeEventListener('pointerup', activeListenersRef.current.up);
+      }
+    };
+  }, []);
+
   useEffect(() => {
     const handler = () => {
       if (!document.fullscreenElement) setIsFullscreen(false);
@@ -147,7 +172,7 @@ export function usePreviewPanelInteraction(): PanelInteraction {
 
   const panelStyle: React.CSSProperties = isFullscreen
     ? { right: 0, bottom: 0, width: '100%', height: '100%', borderRadius: 0 }
-    : { right: pos.x, bottom: pos.y, width: collapsed ? undefined : panelWidth };
+    : { right: pos.right, bottom: pos.bottom, width: collapsed ? undefined : panelWidth };
 
   return {
     pos,

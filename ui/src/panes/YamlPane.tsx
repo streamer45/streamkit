@@ -482,8 +482,8 @@ const YamlPane: React.FC<YamlPaneProps> = ({
 
     if (
       compositorSelection.layerId &&
-      compositorSelection.nodeId &&
-      compositorSelection.nodeId === nodeLabel
+      compositorSelection.nodeLabel &&
+      compositorSelection.nodeLabel === nodeLabel
     ) {
       const nodeRange = findNodeLineRange(yaml, nodeLabel);
       if (nodeRange) {

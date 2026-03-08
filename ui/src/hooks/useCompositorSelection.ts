@@ -12,13 +12,13 @@
 import { useSyncExternalStore } from 'react';
 
 interface CompositorSelection {
-  /** ReactFlow node ID of the compositor (e.g. "compositor_0") */
-  nodeId: string | null;
+  /** Display label of the compositor node (e.g. "compositor_0") */
+  nodeLabel: string | null;
   /** Selected layer/overlay ID within that compositor (e.g. "in_0", "text_0") */
   layerId: string | null;
 }
 
-let snapshot: CompositorSelection = { nodeId: null, layerId: null };
+let snapshot: CompositorSelection = { nodeLabel: null, layerId: null };
 const listeners = new Set<() => void>();
 
 function subscribe(listener: () => void) {
@@ -33,10 +33,10 @@ function getSnapshot() {
 }
 
 /** Called by CompositorNode when layer selection changes */
-export function setCompositorSelection(nodeId: string | null, layerId: string | null) {
+export function setCompositorSelection(nodeLabel: string | null, layerId: string | null) {
   // Avoid unnecessary notifications
-  if (snapshot.nodeId === nodeId && snapshot.layerId === layerId) return;
-  snapshot = { nodeId, layerId };
+  if (snapshot.nodeLabel === nodeLabel && snapshot.layerId === layerId) return;
+  snapshot = { nodeLabel, layerId };
   for (const fn of listeners) fn();
 }
 

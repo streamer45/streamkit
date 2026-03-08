@@ -10,7 +10,7 @@
  * committed on pointer-up, keeping the experience butter-smooth.
  */
 
-import { useCallback } from 'react';
+import { useCallback, useEffect } from 'react';
 
 import { computeUpdatedLayer } from './compositorLayerParsers';
 import type {
@@ -295,6 +295,18 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
       handlePointerUp,
     ]
   );
+
+  // Clean up document listeners if the component unmounts mid-drag.
+  useEffect(() => {
+    return () => {
+      document.removeEventListener('pointermove', handlePointerMove);
+      document.removeEventListener('pointerup', handlePointerUp);
+      if (dragStateRef.current?.rafId != null) {
+        cancelAnimationFrame(dragStateRef.current.rafId);
+      }
+      dragStateRef.current = null;
+    };
+  }, [handlePointerMove, handlePointerUp, dragStateRef]);
 
   return {
     handleLayerPointerDown,

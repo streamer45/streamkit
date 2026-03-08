@@ -327,7 +327,9 @@ export function mergeOverlayState<T extends OverlayBase>(
   return changed ? merged : current;
 }
 
-/** Build the full compositor config from current params + updated layers */
+/** Build the full compositor config from current params + updated layers.
+ *  Spreads existing params first so fields the UI doesn't manage
+ *  (fps, num_inputs, etc.) are preserved across round-trips. */
 export function buildConfig(
   params: Record<string, unknown>,
   layers: LayerState[],
@@ -335,6 +337,7 @@ export function buildConfig(
   imageOverlays?: ImageOverlayState[]
 ): Record<string, unknown> {
   return {
+    ...params,
     width: params.width ?? 1280,
     height: params.height ?? 720,
     layers: serializeLayers(layers),

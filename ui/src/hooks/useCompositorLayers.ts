@@ -55,7 +55,6 @@ export interface UseCompositorLayersOptions {
   params: Record<string, unknown>;
   onConfigChange?: (nodeId: string, config: Record<string, unknown>) => void;
   onParamChange?: (nodeId: string, paramName: string, value: unknown) => void;
-  isStaged?: boolean;
   throttleMs?: number;
 }
 
