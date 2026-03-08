@@ -43,6 +43,9 @@ const DEFAULT_WIDTH: u32 = 1280;
 const DEFAULT_HEIGHT: u32 = 720;
 const DEFAULT_FRAME_COUNT: u32 = 200;
 
+/// Warn when cold-cache pre-allocation exceeds this threshold.
+const COLD_CACHE_MEM_WARN_BYTES: u64 = 1_024 * 1_024 * 1_024; // 1 GiB
+
 // ── Arg parser ──────────────────────────────────────────────────────────────
 
 struct BenchArgs {
@@ -213,6 +216,16 @@ fn bench_conversion_cold(
 ) -> BenchResult {
     // Pre-allocate unique input buffers with slightly different data to
     // prevent OS page dedup. Each buffer is ~3.5 MB at 720p RGBA8.
+    let total_bytes = template.len() as u64 * u64::from(frame_count);
+    if total_bytes > COLD_CACHE_MEM_WARN_BYTES {
+        eprintln!(
+            "  WARNING: cold-cache benchmark will allocate ~{} MiB ({} frames x {} bytes). \
+             Reduce --frames to lower memory usage.",
+            total_bytes / (1_024 * 1_024),
+            frame_count,
+            template.len(),
+        );
+    }
     let inputs: Vec<Vec<u8>> = (0..frame_count)
         .map(|i| {
             let mut buf = template.to_vec();

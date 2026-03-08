@@ -2,6 +2,11 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+// Video submodules use unsafe for SIMD intrinsics (pixel_ops) and libvpx FFI (vp9).
+// All unsafe blocks carry safety comments. The crate-level lint is `deny`; this
+// module-level `allow` limits the exemption to video code only.
+#![allow(unsafe_code)]
+
 //! Video nodes and registration.
 
 use streamkit_core::types::PixelFormat;

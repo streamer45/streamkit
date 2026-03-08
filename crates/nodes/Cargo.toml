@@ -144,24 +144,21 @@ axum = "0.8"
 tower = "0.5.3"
 
 [lints.rust]
-# Override workspace lint: VP9 nodes require unsafe for libvpx FFI.
-# All unsafe blocks are documented with safety comments.
-unsafe_code = "allow"
+# Override workspace `forbid` → `deny` so the video module can `#![allow(unsafe_code)]`
+# for SIMD intrinsics and libvpx FFI. All other code in this crate remains deny.
+unsafe_code = "deny"
 
 [lints.clippy]
-# Categories (from workspace)
+# Kept in sync with [workspace.lints.clippy] — cannot use `workspace = true`
+# here because [lints.rust] already overrides the workspace rust lints.
 pedantic = { level = "warn", priority = -1 }
 nursery = { level = "warn", priority = -1 }
-# Safety
 unwrap_used = "warn"
 expect_used = "warn"
-# Complexity
 cognitive_complexity = "warn"
-# Math
 cast_possible_truncation = "warn"
 cast_precision_loss = "warn"
 cast_sign_loss = "warn"
-# Allow-list (Noise reduction)
 module_name_repetitions = "allow"
 must_use_candidate = "allow"
 doc_markdown = "allow"

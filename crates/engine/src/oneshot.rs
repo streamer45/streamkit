@@ -338,6 +338,13 @@ impl Engine {
         // the first node that declares a content_type.  This allows passthrough-style
         // nodes (pacer, passthrough, telemetry_tap, etc.) to be inserted before
         // http_output without losing the upstream content type.
+        //
+        // NOTE: This walk follows a single path — at each step it picks the first
+        // connection whose `to_node` matches `cursor`.  For fan-in nodes (e.g. a
+        // compositor with multiple inputs) only one arbitrary upstream branch is
+        // traversed.  This is correct for content-type discovery because the
+        // content-producing node (encoder / muxer) sits downstream of any fan-in
+        // point, not upstream of it.
         let static_content_type = {
             let mut cursor = final_node_id.as_str();
             let mut found: Option<String> = None;

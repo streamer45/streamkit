@@ -11,6 +11,7 @@ use crate::file_security;
 use crate::permissions::Permissions;
 use crate::session::Session;
 use crate::state::AppState;
+use opentelemetry::{global, KeyValue};
 use streamkit_api::{
     Event as ApiEvent, EventPayload, MessageType, RequestPayload, ResponsePayload,
 };
@@ -244,6 +245,10 @@ async fn handle_destroy_session(
     tokio::spawn(async move {
         if let Err(e) = session.shutdown_and_wait().await {
             warn!(session_id = %shutdown_id, error = %e, "Error during engine shutdown");
+            global::meter("skit_server")
+                .u64_counter("session.shutdown.errors")
+                .build()
+                .add(1, &[KeyValue::new("session_id", shutdown_id.clone())]);
         } else {
             info!(session_id = %shutdown_id, "Session destroyed successfully");
         }
