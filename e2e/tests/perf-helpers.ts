@@ -58,9 +58,7 @@ export async function resetPerfData(page: Page): Promise<void> {
     if (w.__PERF_RESET__) {
       w.__PERF_RESET__();
     } else {
-      throw new Error(
-        'window.__PERF_RESET__ not found — is the app running in dev mode?'
-      );
+      throw new Error('window.__PERF_RESET__ not found — is the app running in dev mode?');
     }
   });
 }
@@ -72,9 +70,7 @@ export async function capturePerfData(page: Page): Promise<PerfSnapshot> {
   return page.evaluate(() => {
     const w = window as Window & { __PERF_DATA__?: PerfSnapshot };
     if (!w.__PERF_DATA__) {
-      throw new Error(
-        'window.__PERF_DATA__ not found — is the app running in dev mode?'
-      );
+      throw new Error('window.__PERF_DATA__ not found — is the app running in dev mode?');
     }
     // Deep clone to avoid stale references.
     return JSON.parse(JSON.stringify(w.__PERF_DATA__)) as PerfSnapshot;
@@ -109,8 +105,7 @@ export function assertRenderBudget(
 
   if (budget.max !== undefined && data.renderCount > budget.max) {
     throw new Error(
-      `"${componentId}" rendered ${data.renderCount} times, ` +
-        `exceeding budget of ${budget.max}.`
+      `"${componentId}" rendered ${data.renderCount} times, ` + `exceeding budget of ${budget.max}.`
     );
   }
 
