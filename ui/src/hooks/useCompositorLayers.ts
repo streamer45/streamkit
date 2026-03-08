@@ -480,9 +480,16 @@ export const useCompositorLayers = (
     layersRef.current = layers;
   }, [layers]);
 
-  // Sync from props when params change (and not mid-drag)
+  // Sync from props when params change (and not mid-drag).
+  // In Monitor view (sessionId is set), skip this entirely – the
+  // server-driven layout subscription (applyServerLayout) is the sole
+  // source of truth for layer/overlay positions.  Re-parsing from
+  // params would overwrite server-applied positions with stale
+  // pipeline config values.
   useEffect(() => {
     if (dragStateRef.current) return;
+    if (sessionId) return;
+
     const parsed = parseLayers(params, canvasWidth, canvasHeight);
 
     // Only update layers state if the merged result actually differs from
@@ -510,7 +517,7 @@ export const useCompositorLayers = (
       )
     );
     setImageOverlays((currentImg) => mergeOverlayState(currentImg, parseImageOverlays(params)));
-  }, [params, canvasWidth, canvasHeight]);
+  }, [params, canvasWidth, canvasHeight, sessionId]);
 
   // ── Server-driven layout (Monitor view only) ────────────────────────────
   // When a live pipeline is running (sessionId is set), subscribe to the

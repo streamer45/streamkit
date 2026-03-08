@@ -461,7 +461,14 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
             />
           </>
         )}
-        <DragHeader onPointerDown={handleDragStart} onDoubleClick={toggleFullscreen}>
+        <DragHeader
+          onPointerDown={handleDragStart}
+          onDoubleClick={(e) => {
+            // Don't toggle fullscreen when double-clicking header buttons
+            if ((e.target as HTMLElement).closest('button')) return;
+            toggleFullscreen();
+          }}
+        >
           <HeaderLeft>
             <StatusDot status={watchStatus} />
             Preview
