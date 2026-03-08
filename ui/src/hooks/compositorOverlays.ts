@@ -37,7 +37,6 @@ export interface OverlayDeps {
   textOverlaysRef: React.MutableRefObject<TextOverlayState[]>;
   imageOverlaysRef: React.MutableRefObject<ImageOverlayState[]>;
   paramsRef: React.MutableRefObject<Record<string, unknown>>;
-  overlayCommitGuardRef: React.MutableRefObject<number>;
   throttledConfigChange: ((layers: LayerState[]) => void) | null;
   throttledOverlayCommit: ((text: TextOverlayState[], img: ImageOverlayState[]) => void) | null;
 }
@@ -57,7 +56,6 @@ export function useCompositorOverlays(deps: OverlayDeps) {
     textOverlaysRef,
     imageOverlaysRef,
     paramsRef,
-    overlayCommitGuardRef,
     throttledConfigChange,
     throttledOverlayCommit,
   } = deps;
@@ -192,7 +190,6 @@ export function useCompositorOverlays(deps: OverlayDeps) {
 
   const commitOverlays = useCallback(
     (nextText: TextOverlayState[], nextImg: ImageOverlayState[]) => {
-      overlayCommitGuardRef.current = Date.now();
       if (onConfigChange) {
         const config = buildConfig(paramsRef.current, layersRef.current, nextText, nextImg);
         onConfigChange(nodeId, config);
@@ -201,7 +198,7 @@ export function useCompositorOverlays(deps: OverlayDeps) {
         onParamChange(nodeId, 'image_overlays', serializeImageOverlays(nextImg));
       }
     },
-    [nodeId, onConfigChange, onParamChange, overlayCommitGuardRef, paramsRef, layersRef]
+    [nodeId, onConfigChange, onParamChange, paramsRef, layersRef]
   );
 
   // Stable ref so pointer-up / visibility / mirror can call latest commit.
@@ -219,7 +216,6 @@ export function useCompositorOverlays(deps: OverlayDeps) {
       setter: React.Dispatch<React.SetStateAction<T[]>>,
       buildCommitArgs: (next: T[]) => [TextOverlayState[], ImageOverlayState[]]
     ) => {
-      overlayCommitGuardRef.current = Date.now();
       setter((prev) => {
         const next = prev.map((o) => (o.id === id ? { ...o, ...updates } : o));
         const [text, img] = buildCommitArgs(next);
@@ -231,20 +227,17 @@ export function useCompositorOverlays(deps: OverlayDeps) {
         return next;
       });
     },
-    [overlayCommitGuardRef, throttledOverlayCommit]
+    [throttledOverlayCommit]
   );
 
   const removeOverlay = useCallback(
     <T extends { id: string }>(
       id: string,
-      idPrefix: string,
       setter: React.Dispatch<React.SetStateAction<T[]>>,
       buildCommitArgs: (next: T[]) => [TextOverlayState[], ImageOverlayState[]]
     ) => {
       setter((prev) => {
-        const next = prev
-          .filter((o) => o.id !== id)
-          .map((o, i) => ({ ...o, id: `${idPrefix}_${i}` }));
+        const next = prev.filter((o) => o.id !== id);
         const [text, img] = buildCommitArgs(next);
         commitOverlays(text, img);
         return next;
@@ -269,7 +262,7 @@ export function useCompositorOverlays(deps: OverlayDeps) {
   const addTextOverlay = useCallback(
     (text: string) => {
       setTextOverlays((prev) => {
-        const newId = `text_${prev.length}`;
+        const newId = crypto.randomUUID();
         const next: TextOverlayState[] = [
           ...prev,
           {
@@ -320,7 +313,7 @@ export function useCompositorOverlays(deps: OverlayDeps) {
 
   const removeTextOverlay = useCallback(
     (id: string) =>
-      removeOverlay(id, 'text', setTextOverlays, (next) => [
+      removeOverlay(id, setTextOverlays, (next) => [
         next as unknown as TextOverlayState[],
         imageOverlaysRef.current,
       ]),
@@ -340,7 +333,7 @@ export function useCompositorOverlays(deps: OverlayDeps) {
           w = Math.max(1, Math.round(naturalWidth * scale));
           h = Math.max(1, Math.round(naturalHeight * scale));
         }
-        const newId = `img_${prev.length}`;
+        const newId = crypto.randomUUID();
         const next: ImageOverlayState[] = [
           ...prev,
           {
@@ -374,7 +367,7 @@ export function useCompositorOverlays(deps: OverlayDeps) {
 
   const removeImageOverlay = useCallback(
     (id: string) =>
-      removeOverlay(id, 'img', setImageOverlays, (next) => [
+      removeOverlay(id, setImageOverlays, (next) => [
         textOverlaysRef.current,
         next as unknown as ImageOverlayState[],
       ]),
@@ -430,7 +423,6 @@ export function useCompositorOverlays(deps: OverlayDeps) {
       }
 
       if (hasVideoChanges || hasTextChanges || hasImgChanges) {
-        overlayCommitGuardRef.current = Date.now();
         if (onConfigChange) {
           const config = buildConfig(paramsRef.current, nextLayers, nextText, nextImg);
           onConfigChange(nodeId, config);
@@ -452,7 +444,6 @@ export function useCompositorOverlays(deps: OverlayDeps) {
       layersRef,
       textOverlaysRef,
       imageOverlaysRef,
-      overlayCommitGuardRef,
       paramsRef,
       setLayers,
       setTextOverlays,

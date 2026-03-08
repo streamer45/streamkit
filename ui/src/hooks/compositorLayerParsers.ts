@@ -31,7 +31,7 @@ export interface LayerState {
 
 /** A text overlay stored in compositor config */
 export interface TextOverlayState {
-  /** Unique client-side id (index-based) */
+  /** Stable unique identifier (UUID, assigned by backend or frontend). */
   id: string;
   text: string;
   x: number;
@@ -59,7 +59,7 @@ export interface TextOverlayState {
 
 /** An image overlay stored in compositor config */
 export interface ImageOverlayState {
-  /** Unique client-side id (index-based) */
+  /** Stable unique identifier (UUID, assigned by backend or frontend). */
   id: string;
   /** Base64-encoded image data */
   dataBase64: string;
@@ -91,13 +91,6 @@ export const SNAP_GRID = 10;
 /** Distance threshold for snapping to centre guidelines (pixels). */
 export const SNAP_THRESHOLD = 8;
 
-/**
- * Duration (ms) after a local overlay commit during which server-echoed
- * params are ignored for overlays.  This prevents stale params from
- * overwriting a local add/remove before the server round-trip completes.
- */
-export const OVERLAY_COMMIT_GUARD_MS = 3000;
-
 // ── Wire-format interfaces (internal) ───────────────────────────────────────
 
 interface Rect {
@@ -117,6 +110,7 @@ interface LayerConfig {
 }
 
 interface TextOverlayConfig {
+  id: string;
   text: string;
   rect: Rect;
   color?: [number, number, number, number];
@@ -130,6 +124,7 @@ interface TextOverlayConfig {
 }
 
 interface ImageOverlayConfig {
+  id: string;
   data_base64: string;
   rect: Rect;
   opacity?: number;
@@ -218,7 +213,7 @@ export function parseTextOverlays(params: Record<string, unknown>): TextOverlayS
   const overlays = params.text_overlays as TextOverlayConfig[] | undefined;
   if (!Array.isArray(overlays)) return [];
   return overlays.map((o, i) => ({
-    id: `text_${i}`,
+    id: o.id,
     text: o.text ?? '',
     color: o.color ?? [255, 255, 255, 255],
     fontSize: o.font_size ?? 24,
@@ -239,7 +234,7 @@ export function parseImageOverlays(params: Record<string, unknown>): ImageOverla
   const overlays = params.image_overlays as ImageOverlayConfig[] | undefined;
   if (!Array.isArray(overlays)) return [];
   return overlays.map((o, i) => ({
-    id: `img_${i}`,
+    id: o.id,
     dataBase64: o.data_base64 ?? '',
     ...parseTransformFields(o as unknown as Record<string, unknown>, {
       width: 200,
@@ -276,6 +271,7 @@ function serializeSpatialFields(o: OverlayBase) {
 /** Serialize text overlays back to config format */
 export function serializeTextOverlays(overlays: TextOverlayState[]): TextOverlayConfig[] {
   return overlays.map((o) => ({
+    id: o.id,
     text: o.text,
     rect: serializeRect(o),
     color: o.color,
@@ -288,6 +284,7 @@ export function serializeTextOverlays(overlays: TextOverlayState[]): TextOverlay
 /** Serialize image overlays back to config format */
 export function serializeImageOverlays(overlays: ImageOverlayState[]): ImageOverlayConfig[] {
   return overlays.map((o) => ({
+    id: o.id,
     data_base64: o.dataBase64,
     rect: serializeRect(o),
     ...serializeSpatialFields(o),

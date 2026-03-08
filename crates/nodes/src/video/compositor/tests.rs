@@ -251,6 +251,7 @@ fn test_composite_frame_two_layers() {
 #[test]
 fn test_rasterize_text_overlay_produces_pixels() {
     let cfg = config::TextOverlayConfig {
+        id: "test-text".to_string(),
         text: "Hi".to_string(),
         transform: config::OverlayTransform {
             rect: Rect { x: 0, y: 0, width: 64, height: 32 },

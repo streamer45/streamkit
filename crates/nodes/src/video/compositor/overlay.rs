@@ -15,6 +15,8 @@ use streamkit_core::StreamKitError;
 /// A pre-decoded RGBA bitmap overlay ready for per-frame blitting.
 #[derive(Clone)]
 pub struct DecodedOverlay {
+    /// Stable identifier carried through from the config.
+    pub id: String,
     pub rgba_data: Vec<u8>,
     pub width: u32,
     pub height: u32,
@@ -97,6 +99,7 @@ pub fn decode_image_overlay(config: &ImageOverlayConfig) -> Result<DecodedOverla
         rect.height = fit_h;
 
         Ok(DecodedOverlay {
+            id: config.id.clone(),
             rgba_data: scaled,
             width: fit_w,
             height: fit_h,
@@ -111,6 +114,7 @@ pub fn decode_image_overlay(config: &ImageOverlayConfig) -> Result<DecodedOverla
         })
     } else {
         Ok(DecodedOverlay {
+            id: config.id.clone(),
             rgba_data: rgba.into_raw(),
             width: w,
             height: h,
@@ -367,6 +371,7 @@ pub fn rasterize_text_overlay(config: &TextOverlayConfig) -> DecodedOverlay {
     }
 
     DecodedOverlay {
+        id: config.id.clone(),
         rgba_data,
         width: w,
         height: h,

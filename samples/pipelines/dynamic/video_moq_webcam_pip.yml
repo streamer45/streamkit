@@ -52,7 +52,8 @@ nodes:
           opacity: 0.95
           z_index: 1
       text_overlays:
-        - text: "Hello from StreamKit"
+        - id: "greeting"
+          text: "Hello from StreamKit"
           rect:
             x: 40
             y: 660
