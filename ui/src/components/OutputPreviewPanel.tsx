@@ -310,13 +310,18 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
           } else if (curEdge === 'bottom') {
             // Dragging bottom edge: moving down increases height → increase width proportionally
             const dy = ev.clientY - resizeRef.current.startY;
-            setPanelWidth(
-              Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, resizeRef.current.origWidth + dy * 1.78))
+            const clampedWidth = Math.max(
+              MIN_WIDTH,
+              Math.min(MAX_WIDTH, resizeRef.current.origWidth + dy * 1.78)
             );
-            // Shift bottom anchor down so the panel grows downward naturally
+            setPanelWidth(clampedWidth);
+            // Shift bottom anchor down so the panel grows downward naturally.
+            // Use the effective delta (based on clamped width) so position stops
+            // moving once the panel hits min/max width.
+            const effectiveDy = (clampedWidth - resizeRef.current.origWidth) / 1.78;
             setPos((prev) => ({
               ...prev,
-              y: Math.max(0, resizeRef.current!.origY - dy),
+              y: Math.max(0, resizeRef.current!.origY - effectiveDy),
             }));
           }
         };
