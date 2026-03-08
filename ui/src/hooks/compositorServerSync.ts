@@ -174,7 +174,7 @@ export function mergeTextMeasurements(
 export function useServerLayoutSync(
   sessionId: string | undefined,
   nodeId: string,
-  isDragging: React.MutableRefObject<boolean>,
+  dragStateRef: React.MutableRefObject<unknown>,
   setLayers: React.Dispatch<React.SetStateAction<LayerState[]>>,
   setTextOverlays: React.Dispatch<React.SetStateAction<TextOverlayState[]>>,
   setImageOverlays: React.Dispatch<React.SetStateAction<ImageOverlayState[]>>
@@ -184,7 +184,7 @@ export function useServerLayoutSync(
 
     const applyServerLayout = (viewData: unknown) => {
       if (!viewData) return;
-      if (isDragging.current) return;
+      if (dragStateRef.current) return;
 
       const layout = viewData as ServerLayout;
       if (!layout.layers) return;
@@ -217,5 +217,5 @@ export function useServerLayoutSync(
       }
     });
     return unsubscribe;
-  }, [sessionId, nodeId, isDragging, setLayers, setTextOverlays, setImageOverlays]);
+  }, [sessionId, nodeId, dragStateRef, setLayers, setTextOverlays, setImageOverlays]);
 }

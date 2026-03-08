@@ -55,6 +55,8 @@ export interface ConnectableState {
   pipelineOutputsVideo: boolean;
   status: ConnectionStatus;
   errorMessage: string;
+  isMicEnabled: boolean;
+  isCameraEnabled: boolean;
   micStatus: MicStatus;
   cameraStatus: CameraStatus;
   watchStatus: WatchStatus;
@@ -464,6 +466,8 @@ export async function performConnect(
     set({
       ...attempt,
       status: 'connected',
+      isMicEnabled: decision.shouldPublish && state.pipelineNeedsAudio,
+      isCameraEnabled: decision.shouldPublish && state.pipelineNeedsVideo,
     });
 
     const modes = [];

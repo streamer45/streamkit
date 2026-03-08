@@ -171,14 +171,10 @@ export const useCompositorLayers = (
   }, [params, canvasWidth, canvasHeight]);
 
   // ── Server-driven layout (Monitor view only) ───────────────────────────
-  const isDraggingRef = useRef(false);
-  useEffect(() => {
-    isDraggingRef.current = !!dragStateRef.current;
-  });
   useServerLayoutSync(
     sessionId,
     nodeId,
-    isDraggingRef,
+    dragStateRef,
     setLayers,
     setTextOverlays,
     setImageOverlays

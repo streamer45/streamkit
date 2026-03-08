@@ -209,6 +209,7 @@ const PreviewBody: React.FC<{
   hasSession: boolean;
   isConnected: boolean;
   isLive: boolean;
+  hasVideoRenderer: boolean;
   watchStatus: WatchStatus;
   activeSessionId: string | null;
   isFullscreen: boolean;
@@ -219,6 +220,7 @@ const PreviewBody: React.FC<{
     hasSession,
     isConnected,
     isLive,
+    hasVideoRenderer,
     watchStatus: ws,
     activeSessionId,
     isFullscreen,
@@ -234,6 +236,9 @@ const PreviewBody: React.FC<{
           Connect to the MoQ gateway in the <strong>Stream</strong> view to preview.
         </EmptyMessage>
       );
+    }
+    if (!hasVideoRenderer) {
+      return <EmptyMessage>No video renderer. Enable Watch mode.</EmptyMessage>;
     }
     if (!isLive && ws !== 'loading') {
       return (
@@ -359,6 +364,7 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
               hasSession={hasSession}
               isConnected={isConnected}
               isLive={isLive}
+              hasVideoRenderer={!!videoRenderer}
               watchStatus={watchStatus}
               activeSessionId={activeSessionId}
               isFullscreen={isFullscreen}
