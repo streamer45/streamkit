@@ -664,6 +664,9 @@ impl Vp9Encoder {
         let mut image = std::mem::MaybeUninit::<vpx::vpx_image_t>::uninit();
         let image_ptr = unsafe {
             // SAFETY: frame data is valid for the duration of this call.
+            // `cast_mut()` is required by the C API signature, but libvpx only
+            // reads from the image buffer during `vpx_codec_encode` — it never
+            // writes back through this pointer.
             vpx::vpx_img_wrap(
                 image.as_mut_ptr(),
                 vpx_fmt,
@@ -707,7 +710,11 @@ impl Vp9Encoder {
 
     fn flush(&mut self) -> Result<Vec<EncodedPacket>, String> {
         let mut output = Vec::new();
-        for _ in 0..16 {
+        // With g_lag_in_frames = 0 and auto-alt-ref disabled, libvpx has no
+        // buffered frames, so a single flush call suffices.  We still loop
+        // as a defensive measure, but cap at 2 iterations (the first drains
+        // any residual packet, the second confirms the pipeline is empty).
+        for _ in 0..2 {
             let res = unsafe {
                 // SAFETY: Passing a null image flushes delayed frames.
                 vpx::vpx_codec_encode(&raw mut self.ctx, std::ptr::null(), 0, 0, 0, self.deadline)

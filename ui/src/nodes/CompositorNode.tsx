@@ -10,7 +10,7 @@ import { SKTooltip } from '@/components/Tooltip';
 import { LiveBadge, LiveDot } from '@/components/ui/LiveIndicator';
 import { useCompositorLayers } from '@/hooks/useCompositorLayers';
 import type { TextOverlayState } from '@/hooks/useCompositorLayers';
-import { setCompositorSelection } from '@/hooks/useCompositorSelection';
+import { clearCompositorSelection, setCompositorSelection } from '@/hooks/useCompositorSelection';
 import { perfOnRender } from '@/perf';
 import type { InputPin, OutputPin, NodeState, NodeStats, NodeDefinition } from '@/types/types';
 import { nodesLogger } from '@/utils/logger';
@@ -125,8 +125,8 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
 
   // Broadcast compositor layer selection for YAML highlighting
   useEffect(() => {
-    setCompositorSelection(selected ? data.label : null, selectedLayerId);
-    return () => setCompositorSelection(null, null);
+    setCompositorSelection(data.label, selected ? selectedLayerId : null);
+    return () => clearCompositorSelection(data.label);
   }, [selected, data.label, selectedLayerId]);
 
   // Show live indicator when node is in an active session and is not staged

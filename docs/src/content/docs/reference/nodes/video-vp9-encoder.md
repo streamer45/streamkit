@@ -2,12 +2,12 @@
 # SPDX-FileCopyrightText: © 2025 StreamKit Contributors
 # SPDX-License-Identifier: MPL-2.0
 title: "video::vp9::encoder"
-description: "Encodes raw I420 video frames into VP9 packets for transport or container muxing."
+description: "Encodes raw NV12 or I420 video frames into VP9 packets for transport or container muxing."
 ---
 
 `kind`: `video::vp9::encoder`
 
-Encodes raw I420 video frames into VP9 packets for transport or container muxing.
+Encodes raw NV12 or I420 video frames into VP9 packets for transport or container muxing.
 
 ## Requirements
 - Build with `--features video` and have `libvpx` available via `pkg-config`.
@@ -19,7 +19,7 @@ Encodes raw I420 video frames into VP9 packets for transport or container muxing
 
 ## Pins
 ### Inputs
-- `in` accepts `RawVideo(RawVideoFormat { width: *, height: *, pixel_format: I420 })` or `RawVideo(RawVideoFormat { width: *, height: *, pixel_format: Nv12 })` (one)
+- `in` accepts `RawVideo(RawVideoFormat { width: *, height: *, pixel_format: I420 | Nv12 })` (one)
 
 ### Outputs
 - `out` produces `EncodedVideo(EncodedVideoFormat { codec: Vp9 })` (broadcast)
