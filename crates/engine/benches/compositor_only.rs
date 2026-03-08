@@ -365,6 +365,8 @@ fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
         z_index: 10,
         mirror_horizontal: false,
         mirror_vertical: false,
+        measured_text_width: None,
+        measured_text_height: None,
     });
 
     // Image overlay: a corner logo watermark.
@@ -380,6 +382,8 @@ fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
         z_index: 11,
         mirror_horizontal: false,
         mirror_vertical: false,
+        measured_text_width: None,
+        measured_text_height: None,
     });
 
     vec![

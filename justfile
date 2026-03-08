@@ -88,7 +88,7 @@ build-skit-native:
     @RUSTFLAGS="-C target-cpu=native" cargo build --release {{moq_features}} -p streamkit-server --bin skit
 
 # Build the skit with profiling support
-# Uses release-lto profile for full LTO (eliminates UB-check overhead and enables
+# Uses release-lto profile for thin LTO (eliminates UB-check overhead and enables
 # cross-crate SIMD inlining), frame pointers for fast stack unwinding (required by
 # pprof frame-pointer feature), and target-cpu=native so profiles reflect host-tuned codegen.
 build-skit-profiling:
@@ -101,7 +101,7 @@ skit *args='': check-ui-dist
     @cargo run {{moq_features}} -p streamkit-server --bin skit -- {{args}}
 
 # Start the skit server with profiling support (CPU + heap)
-# Uses release-lto profile for full LTO (eliminates UB-check overhead and enables
+# Uses release-lto profile for thin LTO (eliminates UB-check overhead and enables
 # cross-crate SIMD inlining), frame pointers for fast stack unwinding (required by
 # pprof frame-pointer feature), and target-cpu=native so profiles reflect host-tuned codegen.
 skit-profiling *args='':

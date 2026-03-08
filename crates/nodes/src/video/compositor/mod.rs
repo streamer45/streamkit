@@ -778,6 +778,8 @@ impl CompositorNode {
                 rotation_degrees: ov.rotation_degrees,
                 mirror_horizontal: ov.mirror_horizontal,
                 mirror_vertical: ov.mirror_vertical,
+                measured_text_width: None,
+                measured_text_height: None,
             });
         }
 
@@ -794,6 +796,8 @@ impl CompositorNode {
                 rotation_degrees: ov.rotation_degrees,
                 mirror_horizontal: ov.mirror_horizontal,
                 mirror_vertical: ov.mirror_vertical,
+                measured_text_width: ov.measured_text_width,
+                measured_text_height: ov.measured_text_height,
             });
         }
 

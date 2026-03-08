@@ -56,6 +56,10 @@ export interface TextOverlayState {
   mirrorVertical: boolean;
   /** Client-side visibility toggle (hidden overlays send opacity=0 to backend) */
   visible: boolean;
+  /** Actual text width measured by the server's font engine. */
+  measuredTextWidth?: number;
+  /** Actual text height measured by the server's font engine. */
+  measuredTextHeight?: number;
 }
 
 /** An image overlay stored in compositor config */
@@ -542,11 +546,18 @@ export const useCompositorLayers = (
         mirror_vertical?: boolean;
       }
 
+      /** Text overlay additionally carries font-engine text measurements. */
+      interface ServerTextOverlay extends ServerSpatial {
+        index: number;
+        measured_text_width?: number;
+        measured_text_height?: number;
+      }
+
       const layout = viewData as {
         canvas_width: number;
         canvas_height: number;
         layers: Array<ServerSpatial & { id: string }>;
-        text_overlays: Array<ServerSpatial & { index: number }>;
+        text_overlays: Array<ServerTextOverlay>;
         image_overlays: Array<ServerSpatial & { index: number }>;
       };
 
@@ -632,9 +643,22 @@ export const useCompositorLayers = (
         return next.some((n, i) => n !== prev[i]) ? next : prev;
       }
 
-      // Apply server text overlay dimensions
+      // Apply server text overlay dimensions (including font-engine measurements)
       if (layout.text_overlays) {
-        setTextOverlays((prev) => applyServerOverlays(prev, layout.text_overlays));
+        setTextOverlays((prev) => {
+          const base = applyServerOverlays(prev, layout.text_overlays);
+          let changed = false;
+          const next = base.map((o, i) => {
+            const so = layout.text_overlays.find((s) => s.index === i);
+            if (!so) return o;
+            const mtw = so.measured_text_width;
+            const mth = so.measured_text_height;
+            if (o.measuredTextWidth === mtw && o.measuredTextHeight === mth) return o;
+            changed = true;
+            return { ...o, measuredTextWidth: mtw, measuredTextHeight: mth };
+          });
+          return changed ? next : base;
+        });
       }
 
       // Apply server image overlay dimensions

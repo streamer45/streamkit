@@ -259,6 +259,12 @@ pub struct ResolvedOverlay {
     pub rotation_degrees: f32,
     pub mirror_horizontal: bool,
     pub mirror_vertical: bool,
+    /// Actual text width measured by the font engine (text overlays only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub measured_text_width: Option<u32>,
+    /// Actual text height measured by the font engine (text overlays only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub measured_text_height: Option<u32>,
 }
 
 /// The complete server-computed compositor layout, serialized as view data.

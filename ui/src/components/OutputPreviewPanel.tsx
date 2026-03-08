@@ -225,6 +225,7 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
       startX: number;
       startY: number;
       origWidth: number;
+      origY: number;
       edge: 'left' | 'top' | 'right' | 'bottom';
     } | null>(null);
 
@@ -280,6 +281,7 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
           startX: e.clientX,
           startY: e.clientY,
           origWidth: panelWidth,
+          origY: pos.y,
           edge,
         };
 
@@ -306,11 +308,19 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
               Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, resizeRef.current.origWidth + dy * 1.78))
             );
           } else if (curEdge === 'bottom') {
-            // Dragging bottom edge: moving down increases height → increase width proportionally
+            // Dragging bottom edge: moving down increases height → increase width proportionally.
+            // Adjust bottom position so the top edge stays in place (panel grows downward).
             const dy = ev.clientY - resizeRef.current.startY;
-            setPanelWidth(
-              Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, resizeRef.current.origWidth + dy * 1.78))
+            const newWidth = Math.max(
+              MIN_WIDTH,
+              Math.min(MAX_WIDTH, resizeRef.current.origWidth + dy * 1.78)
             );
+            setPanelWidth(newWidth);
+            const widthDelta = newWidth - resizeRef.current.origWidth;
+            setPos((prev) => ({
+              ...prev,
+              y: Math.max(0, resizeRef.current!.origY - widthDelta / 1.78),
+            }));
           }
         };
 
@@ -323,7 +333,7 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
         document.addEventListener('pointermove', handleResizeMove);
         document.addEventListener('pointerup', handleResizeUp);
       },
-      [panelWidth]
+      [panelWidth, pos]
     );
 
     // ── Drag handling ────────────────────────────────────────────────────────
@@ -454,7 +464,7 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
             />
           </>
         )}
-        <DragHeader onPointerDown={handleDragStart}>
+        <DragHeader onPointerDown={handleDragStart} onDoubleClick={toggleFullscreen}>
           <HeaderLeft>
             <StatusDot status={watchStatus} />
             Preview
@@ -475,6 +485,7 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
         {!collapsed && (
           <PanelBody
             onPointerDown={isFullscreen ? undefined : handleDragStart}
+            onDoubleClick={toggleFullscreen}
             style={
               isFullscreen
                 ? {
