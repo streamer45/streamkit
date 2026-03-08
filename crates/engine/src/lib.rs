@@ -123,6 +123,25 @@ impl Engine {
         )
     }
 
+    /// Creates a new engine with resource management and compositor limits
+    /// but without script configuration.  Used by the server when the
+    /// `script` feature is disabled.
+    #[cfg(not(feature = "script"))]
+    pub fn with_resource_manager_and_compositor_config(
+        resource_manager: Arc<streamkit_core::ResourceManager>,
+        #[cfg(feature = "compositor")] global_compositor_config: Option<
+            streamkit_nodes::video::compositor::config::GlobalCompositorConfig,
+        >,
+    ) -> Self {
+        Self::build(
+            false,
+            None,
+            Some(resource_manager),
+            #[cfg(feature = "compositor")]
+            global_compositor_config,
+        )
+    }
+
     /// Creates a new engine with resource management, script configuration, and
     /// compositor limits.  This is the full-featured constructor used by the server.
     #[cfg(feature = "script")]

@@ -3003,7 +3003,14 @@ pub fn create_app(
     };
 
     #[cfg(not(feature = "script"))]
-    let engine = Arc::new(Engine::with_resource_manager(resource_manager.clone()));
+    let engine = Arc::new(Engine::with_resource_manager_and_compositor_config(
+        resource_manager.clone(),
+        #[cfg(feature = "compositor")]
+        Some(streamkit_nodes::video::compositor::config::GlobalCompositorConfig {
+            max_canvas_dimension: config.compositor.default_max_canvas_dimension,
+            max_font_size: config.compositor.default_max_font_size,
+        }),
+    ));
 
     // Initialize plugin manager - panic on failure since we can't proceed without it
     // This expect is justified and documented in the function's # Panics section
