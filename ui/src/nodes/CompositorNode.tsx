@@ -125,7 +125,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
 
   // Broadcast compositor layer selection for YAML highlighting
   useEffect(() => {
-    setCompositorSelection(selected ? data.label : null, selectedLayerId);
+    setCompositorSelection(data.label, selected ? selectedLayerId : null);
     return () => clearCompositorSelection(data.label);
   }, [selected, data.label, selectedLayerId]);
 
