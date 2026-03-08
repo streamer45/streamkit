@@ -36,7 +36,7 @@ opentelemetry = { workspace = true, features = ["metrics", "trace"] }
 serde-saphyr = { workspace = true }
 
 [features]
-default = ["oneshot", "dynamic", "plugins", "script"]
+default = ["oneshot", "dynamic", "plugins", "script", "compositor"]
 
 # Enables the self-contained pipeline runner for stateless,
 # start-to-finish processing. Ideal for oneshot file transcoding (e.g. HTTP request).
@@ -51,6 +51,9 @@ plugins = ["dep:streamkit-plugin-wasm"]
 
 # Enables script node support (JavaScript execution)
 script = ["streamkit-nodes/script"]
+
+# Enables compositor node support (video compositing)
+compositor = ["streamkit-nodes/compositor"]
 
 [dev-dependencies]
 serde_json = { workspace = true }

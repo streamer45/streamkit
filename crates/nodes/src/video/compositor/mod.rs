@@ -31,7 +31,9 @@ pub mod overlay;
 pub mod pixel_ops;
 
 use async_trait::async_trait;
-use config::{CompositorConfig, CompositorLayout, ResolvedLayer, ResolvedOverlay};
+use config::{
+    CompositorConfig, CompositorLayout, GlobalCompositorConfig, ResolvedLayer, ResolvedOverlay,
+};
 use kernel::{CompositeResult, CompositeWorkItem, LayerSnapshot};
 use opentelemetry::{global, KeyValue};
 use overlay::{decode_image_overlay, rasterize_text_overlay, DecodedOverlay};
@@ -266,6 +268,8 @@ fn fit_rect_preserving_aspect(src_w: u32, src_h: u32, bounds: &config::Rect) -> 
 /// further format conversion.
 pub struct CompositorNode {
     config: CompositorConfig,
+    /// Server-level resource limits (from `skit.toml`).
+    limits: GlobalCompositorConfig,
     /// Current input pins (may grow dynamically).
     input_pins: Vec<InputPin>,
     /// Next input ID for dynamic pin naming.
@@ -274,7 +278,7 @@ pub struct CompositorNode {
 
 impl CompositorNode {
     #[must_use]
-    pub fn new(config: CompositorConfig) -> Self {
+    pub fn new(config: CompositorConfig, limits: GlobalCompositorConfig) -> Self {
         let (input_pins, next_input_id) = config.num_inputs.map_or_else(
             || {
                 // Dynamic mode - start with no pins
@@ -296,7 +300,7 @@ impl CompositorNode {
             },
         );
 
-        Self { config, input_pins, next_input_id }
+        Self { config, limits, input_pins, next_input_id }
     }
 
     /// The set of video packet types accepted by compositor input pins.
@@ -573,6 +577,7 @@ impl ProcessorNode for CompositorNode {
                             let old_fps = self.config.fps;
                             Self::apply_update_params(
                                 &mut self.config,
+                                &self.limits,
                                 &mut image_overlays,
                                 &mut text_overlays,
                                 params,
@@ -825,19 +830,18 @@ impl CompositorNode {
     /// because font rendering parameters may have changed.
     fn apply_update_params(
         config: &mut CompositorConfig,
+        limits: &GlobalCompositorConfig,
         image_overlays: &mut Arc<[Arc<DecodedOverlay>]>,
         text_overlays: &mut Arc<[Arc<DecodedOverlay>]>,
         params: serde_json::Value,
         stats_tracker: &mut NodeStatsTracker,
     ) {
         match serde_json::from_value::<CompositorConfig>(params) {
-            Ok(mut new_config) => {
-                // Pin resource limits to values set at node creation time so
-                // that an UpdateParams payload cannot escalate them.
-                new_config.max_canvas_dimension = config.max_canvas_dimension;
-                new_config.max_font_size = config.max_font_size;
-
-                match new_config.validate() {
+            Ok(new_config) => {
+                // Resource limits are enforced by the server-level
+                // GlobalCompositorConfig and cannot be overridden by
+                // per-node config or UpdateParams payloads.
+                match new_config.validate(limits) {
                     Ok(()) => {
                         tracing::info!(
                             old_w = config.width,
@@ -959,17 +963,21 @@ impl CompositorNode {
 // ── Registration ────────────────────────────────────────────────────────────
 
 #[allow(clippy::expect_used, clippy::missing_panics_doc)]
-pub fn register_compositor_nodes(registry: &mut NodeRegistry) {
+pub fn register_compositor_nodes(
+    registry: &mut NodeRegistry,
+    global_config: Option<GlobalCompositorConfig>,
+) {
+    let limits = global_config.unwrap_or_default();
     let (def_inputs, def_outputs) = CompositorNode::definition_pins();
 
     registry.register_static_with_description(
         "video::compositor",
-        |params| {
+        move |params| {
             let config: CompositorConfig = config_helpers::parse_config_optional(params)?;
-            if let Err(e) = config.validate() {
+            if let Err(e) = config.validate(&limits) {
                 return Err(StreamKitError::Configuration(e));
             }
-            Ok(Box::new(CompositorNode::new(config)))
+            Ok(Box::new(CompositorNode::new(config, limits.clone())))
         },
         serde_json::to_value(schema_for!(CompositorConfig))
             .expect("CompositorConfig schema should serialize to JSON"),

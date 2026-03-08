@@ -606,6 +606,48 @@ impl Default for ScriptConfig {
     }
 }
 
+// ── Compositor server config ─────────────────────────────────────────────
+
+const fn default_compositor_max_canvas_dimension() -> u32 {
+    7680
+}
+
+const fn default_compositor_max_font_size() -> u32 {
+    4096
+}
+
+/// Server-level defaults for the video compositor node.
+///
+/// These limits apply to every compositor node created by the engine.
+/// Individual nodes cannot exceed these values, even via `UpdateParams`.
+///
+/// ```toml
+/// [compositor]
+/// default_max_canvas_dimension = 4096
+/// default_max_font_size = 2048
+/// ```
+#[derive(Deserialize, Serialize, Debug, Clone, JsonSchema)]
+pub struct CompositorServerConfig {
+    /// Maximum allowed canvas dimension (width or height) in pixels.
+    /// Default: 7680 (8K UHD).
+    #[serde(default = "default_compositor_max_canvas_dimension")]
+    pub default_max_canvas_dimension: u32,
+
+    /// Maximum allowed font size for text overlays in pixels.
+    /// Default: 4096.
+    #[serde(default = "default_compositor_max_font_size")]
+    pub default_max_font_size: u32,
+}
+
+impl Default for CompositorServerConfig {
+    fn default() -> Self {
+        Self {
+            default_max_canvas_dimension: default_compositor_max_canvas_dimension(),
+            default_max_font_size: default_compositor_max_font_size(),
+        }
+    }
+}
+
 /// Authentication mode for the server.
 #[derive(Deserialize, Serialize, Debug, Clone, Copy, Default, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -757,6 +799,9 @@ pub struct Config {
 
     #[serde(default)]
     pub script: ScriptConfig,
+
+    #[serde(default)]
+    pub compositor: CompositorServerConfig,
 
     #[serde(default)]
     pub auth: AuthConfig,

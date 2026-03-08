@@ -347,12 +347,17 @@ fn line_height_px(_font: &fontdue::Font, font_size: f32) -> f32 {
 
 /// Registers all available video nodes with the engine's registry.
 #[allow(clippy::missing_const_for_fn)]
-pub fn register_video_nodes(registry: &mut NodeRegistry) {
+pub fn register_video_nodes(
+    registry: &mut NodeRegistry,
+    #[cfg(feature = "compositor")] global_compositor_config: Option<
+        compositor::config::GlobalCompositorConfig,
+    >,
+) {
     #[cfg(feature = "colorbars")]
     colorbars::register_colorbars_nodes(registry);
 
     #[cfg(feature = "compositor")]
-    compositor::register_compositor_nodes(registry);
+    compositor::register_compositor_nodes(registry, global_compositor_config);
 
     #[cfg(feature = "compositor")]
     pixel_convert::register_pixel_convert_nodes(registry);

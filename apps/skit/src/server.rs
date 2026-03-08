@@ -2990,10 +2990,15 @@ pub fn create_app(
         // Load secrets from environment variables
         let secrets = load_script_secrets(&config.script.secrets);
 
-        Arc::new(Engine::with_resource_manager_and_script_config(
+        Arc::new(Engine::with_resource_manager_and_global_config(
             resource_manager.clone(),
             global_script_allowlist,
             secrets,
+            #[cfg(feature = "compositor")]
+            Some(streamkit_nodes::video::compositor::config::GlobalCompositorConfig {
+                max_canvas_dimension: config.compositor.default_max_canvas_dimension,
+                max_font_size: config.compositor.default_max_font_size,
+            }),
         ))
     };
 
