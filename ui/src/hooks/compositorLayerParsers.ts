@@ -213,7 +213,7 @@ export function parseTextOverlays(params: Record<string, unknown>): TextOverlayS
   const overlays = params.text_overlays as TextOverlayConfig[] | undefined;
   if (!Array.isArray(overlays)) return [];
   return overlays.map((o, i) => ({
-    id: o.id ?? crypto.randomUUID(),
+    id: o.id ?? `text_${i}`,
     text: o.text ?? '',
     color: o.color ?? [255, 255, 255, 255],
     fontSize: o.font_size ?? 24,
@@ -234,7 +234,7 @@ export function parseImageOverlays(params: Record<string, unknown>): ImageOverla
   const overlays = params.image_overlays as ImageOverlayConfig[] | undefined;
   if (!Array.isArray(overlays)) return [];
   return overlays.map((o, i) => ({
-    id: o.id ?? crypto.randomUUID(),
+    id: o.id ?? `img_${i}`,
     dataBase64: o.data_base64 ?? '',
     ...parseTransformFields(o as unknown as Record<string, unknown>, {
       width: 200,
