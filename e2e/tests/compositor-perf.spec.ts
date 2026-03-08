@@ -90,14 +90,13 @@ nodes:
           z_index: 1
       text_overlays:
         - text: "Hello from StreamKit"
-          transform:
-            rect:
-              x: 40
-              y: 660
-              width: 400
-              height: 40
-            opacity: 1.0
-            z_index: 2
+          rect:
+            x: 40
+            y: 660
+            width: 400
+            height: 40
+          opacity: 1.0
+          z_index: 2
           color: [255, 255, 255, 220]
           font_size: 28
           font_name: dejavu-sans-bold
