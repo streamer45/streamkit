@@ -225,10 +225,8 @@ export const TextOverlayLayer: React.FC<{
     // priority; browser measurement is the fallback.  Guard against zero
     // values from the initial render (before useLayoutEffect has measured)
     // to prevent a visible flash at 0×0 size.
-    const displayWidth =
-      overlay.measuredTextWidth || browserTextSize.w || overlay.width;
-    const displayHeight =
-      overlay.measuredTextHeight || browserTextSize.h || overlay.height;
+    const displayWidth = overlay.measuredTextWidth || browserTextSize.w || overlay.width;
+    const displayHeight = overlay.measuredTextHeight || browserTextSize.h || overlay.height;
 
     return (
       <LayerBox
