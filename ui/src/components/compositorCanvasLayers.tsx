@@ -244,7 +244,7 @@ export const TextOverlayLayer: React.FC<{
         onPointerDown={handlePointerDown}
         onDoubleClick={handleDoubleClick}
       >
-        <LayerLabel>{friendlyLabel(overlay.id, 'text')}</LayerLabel>
+        <LayerLabel>{friendlyLabel(overlay.id, 'text', index)}</LayerLabel>
         <LayerDimensions>
           {Math.round(displayWidth)}&times;{Math.round(displayHeight)}
         </LayerDimensions>
@@ -395,7 +395,7 @@ export const ImageOverlayLayer: React.FC<{
           }}
         />
       )}
-      <LayerLabel>{friendlyLabel(overlay.id, 'image')}</LayerLabel>
+      <LayerLabel>{friendlyLabel(overlay.id, 'image', index)}</LayerLabel>
       {isSelected && <ResizeHandles layerId={overlay.id} onResizeStart={onResizeStart} />}
     </LayerBox>
   );
