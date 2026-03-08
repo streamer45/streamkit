@@ -19,7 +19,7 @@ Encodes raw I420 video frames into VP9 packets for transport or container muxing
 
 ## Pins
 ### Inputs
-- `in` accepts `RawVideo(RawVideoFormat { width: *, height: *, pixel_format: I420 })` (one)
+- `in` accepts `RawVideo(RawVideoFormat { width: *, height: *, pixel_format: I420 })` or `RawVideo(RawVideoFormat { width: *, height: *, pixel_format: Nv12 })` (one)
 
 ### Outputs
 - `out` produces `EncodedVideo(EncodedVideoFormat { codec: Vp9 })` (broadcast)
