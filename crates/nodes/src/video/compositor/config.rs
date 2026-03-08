@@ -230,6 +230,16 @@ pub struct CompositorConfig {
     /// Text overlays (rasterized once per `UpdateParams`).
     #[serde(default)]
     pub text_overlays: Vec<TextOverlayConfig>,
+    /// Maximum allowed canvas dimension (width or height) in pixels.
+    /// Defaults to 7680 (8K UHD).  Override to allow larger canvases
+    /// or tighten the limit for resource-constrained environments.
+    #[serde(default = "default_max_canvas_dimension")]
+    pub max_canvas_dimension: u32,
+    /// Maximum allowed font size for text overlays in pixels.
+    /// Defaults to 4096.  Excessive values cause large rasterization
+    /// allocations.
+    #[serde(default = "default_max_font_size")]
+    pub max_font_size: u32,
 }
 
 impl Default for CompositorConfig {
@@ -242,6 +252,8 @@ impl Default for CompositorConfig {
             layers: HashMap::new(),
             image_overlays: Vec::new(),
             text_overlays: Vec::new(),
+            max_canvas_dimension: DEFAULT_MAX_CANVAS_DIMENSION,
+            max_font_size: DEFAULT_MAX_FONT_SIZE,
         }
     }
 }
@@ -324,11 +336,19 @@ fn validate_rotation(value: f32, label: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Maximum canvas dimension (8K UHD).
-const MAX_CANVAS_DIMENSION: u32 = 7680;
+/// Default maximum canvas dimension (8K UHD).
+const DEFAULT_MAX_CANVAS_DIMENSION: u32 = 7680;
 
-/// Maximum font size in pixels.
-const MAX_FONT_SIZE: u32 = 4096;
+/// Default maximum font size in pixels.
+const DEFAULT_MAX_FONT_SIZE: u32 = 4096;
+
+const fn default_max_canvas_dimension() -> u32 {
+    DEFAULT_MAX_CANVAS_DIMENSION
+}
+
+const fn default_max_font_size() -> u32 {
+    DEFAULT_MAX_FONT_SIZE
+}
 
 impl CompositorConfig {
     /// Validate compositor parameters.
@@ -341,10 +361,10 @@ impl CompositorConfig {
         if self.width == 0 || self.height == 0 {
             return Err("Canvas width and height must be > 0".to_string());
         }
-        if self.width > MAX_CANVAS_DIMENSION || self.height > MAX_CANVAS_DIMENSION {
+        if self.width > self.max_canvas_dimension || self.height > self.max_canvas_dimension {
             return Err(format!(
                 "Canvas dimensions {}x{} exceed maximum {}x{}",
-                self.width, self.height, MAX_CANVAS_DIMENSION, MAX_CANVAS_DIMENSION
+                self.width, self.height, self.max_canvas_dimension, self.max_canvas_dimension
             ));
         }
         if self.fps == 0 {
@@ -363,10 +383,10 @@ impl CompositorConfig {
             let label = format!("Text overlay '{}'", txt.id);
             validate_opacity(txt.transform.opacity, &label)?;
             validate_rotation(txt.transform.rotation_degrees, &label)?;
-            if txt.font_size > MAX_FONT_SIZE {
+            if txt.font_size > self.max_font_size {
                 return Err(format!(
-                    "{label} font_size {} exceeds maximum {MAX_FONT_SIZE}",
-                    txt.font_size
+                    "{label} font_size {} exceeds maximum {}",
+                    txt.font_size, self.max_font_size
                 ));
             }
         }

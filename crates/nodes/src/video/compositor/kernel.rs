@@ -76,15 +76,18 @@ impl ConversionCache {
         Self { entries: Vec::new(), first_layer_alpha_cache: None }
     }
 
-    /// Evict a cached conversion entry for the given slot index.
+    /// Drop all cached conversion entries.
     ///
-    /// Called when a slot is removed (input disconnected or pin removed)
-    /// so that the potentially large RGBA buffer is freed rather than
-    /// persisting for the lifetime of the compositor.
-    pub fn evict(&mut self, slot_idx: usize) {
-        if slot_idx < self.entries.len() {
-            self.entries[slot_idx] = None;
-        }
+    /// Called when the slot layout changes (input disconnected or pin
+    /// removed) so that potentially large RGBA buffers (~8 MB per 1080p
+    /// frame) are freed.  A full clear is used instead of positional
+    /// eviction because the cache is indexed by draw-order position,
+    /// which is invalidated whenever the slot set changes.  Slot
+    /// changes are infrequent, so the one-time re-conversion cost on
+    /// the next frame is negligible.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.first_layer_alpha_cache = None;
     }
 
     /// Check whether the first visible layer's source data is fully opaque.
@@ -217,9 +220,10 @@ pub struct CompositeWorkItem {
     pub image_overlays: Arc<[Arc<DecodedOverlay>]>,
     pub text_overlays: Arc<[Arc<DecodedOverlay>]>,
     pub video_pool: Option<Arc<streamkit_core::VideoFramePool>>,
-    /// Slot indices whose conversion cache entries should be evicted
-    /// before compositing this frame (freed when inputs disconnect).
-    pub evict_cache_slots: Vec<usize>,
+    /// When `true`, the compositing thread should clear the entire
+    /// conversion cache before compositing this frame.  Set when
+    /// slots are added or removed.
+    pub clear_conversion_cache: bool,
 }
 
 /// Result sent back from the compositing thread to the async loop.

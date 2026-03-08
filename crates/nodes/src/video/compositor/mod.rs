@@ -489,10 +489,10 @@ impl ProcessorNode for CompositorNode {
             let mut conversion_cache = ConversionCache::new();
 
             while let Some(work) = work_rx.blocking_recv() {
-                // Free conversion cache entries for removed slots so
-                // that potentially large RGBA buffers don't linger.
-                for slot_idx in &work.evict_cache_slots {
-                    conversion_cache.evict(*slot_idx);
+                // Clear the entire conversion cache when the slot
+                // layout changed so that stale RGBA buffers are freed.
+                if work.clear_conversion_cache {
+                    conversion_cache.clear();
                 }
 
                 let rgba_buf = composite_frame(
@@ -514,9 +514,10 @@ impl ProcessorNode for CompositorNode {
         let mut output_seq: u64 = 0;
         let mut stop_reason: &str = "shutdown";
 
-        // Slot indices whose conversion cache entries should be evicted
-        // on the next work item sent to the compositing thread.
-        let mut pending_cache_evictions: Vec<usize> = Vec::new();
+        // Set to `true` when the slot layout changes (input added,
+        // removed, or disconnected) so the compositing thread clears
+        // its conversion cache on the next frame.
+        let mut clear_conversion_cache = false;
 
         // ── OpenTelemetry metrics ───────────────────────────────────────
         let meter = global::meter("skit_nodes");
@@ -605,7 +606,7 @@ impl ProcessorNode for CompositorNode {
                         &mut self,
                         msg,
                         &mut slots,
-                        &mut pending_cache_evictions,
+                        &mut clear_conversion_cache,
                     );
                     layer_configs_dirty = true;
                     continue;
@@ -648,7 +649,7 @@ impl ProcessorNode for CompositorNode {
                 // drained.  Use a zero-capacity poll instead:
                 if slots[i].rx.is_closed() {
                     tracing::info!("CompositorNode: input '{}' closed", slots[i].name);
-                    pending_cache_evictions.push(i);
+                    clear_conversion_cache = true;
                     slots.remove(i);
                     layer_configs_dirty = true;
                 } else {
@@ -718,7 +719,7 @@ impl ProcessorNode for CompositorNode {
                 image_overlays: image_overlays.clone(),
                 text_overlays: text_overlays.clone(),
                 video_pool: video_pool.clone(),
-                evict_cache_slots: std::mem::take(&mut pending_cache_evictions),
+                clear_conversion_cache,
             };
 
             // Send work to the compositing thread.  The work channel has
@@ -727,7 +728,10 @@ impl ProcessorNode for CompositorNode {
             // compositing thread hasn't finished the previous frame yet,
             // drop this one to stay real-time.
             match work_tx.try_send(work_item) {
-                Ok(()) => {},
+                Ok(()) => {
+                    // Cache clear was successfully delivered — reset the flag.
+                    clear_conversion_cache = false;
+                },
                 Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                     // Compositing thread is still busy — skip this frame.
                     frames_dropped_counter.add(1, &otel_attrs);
@@ -914,7 +918,7 @@ impl CompositorNode {
         node: &mut Box<Self>,
         msg: PinManagementMessage,
         slots: &mut Vec<InputSlot>,
-        pending_cache_evictions: &mut Vec<usize>,
+        clear_conversion_cache: &mut bool,
     ) {
         match msg {
             PinManagementMessage::RequestAddInputPin { suggested_name, response_tx } => {
@@ -934,7 +938,7 @@ impl CompositorNode {
             PinManagementMessage::RemoveInputPin { pin_name } => {
                 tracing::info!("CompositorNode: removed input pin '{}'", pin_name);
                 if let Some(idx) = slots.iter().position(|s| s.name == pin_name) {
-                    pending_cache_evictions.push(idx);
+                    *clear_conversion_cache = true;
                     slots.remove(idx);
                 }
                 node.input_pins.retain(|p| p.name != pin_name);
