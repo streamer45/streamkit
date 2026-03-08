@@ -312,8 +312,8 @@ const TextOverlayLayer: React.FC<{
 
     // Auto-size to the natural text dimensions.  Server measurement takes
     // priority; browser measurement is the fallback.
-    const displayWidth = overlay.measuredTextWidth || browserTextSize.w || overlay.width;
-    const displayHeight = overlay.measuredTextHeight || browserTextSize.h || overlay.height;
+    const displayWidth = overlay.measuredTextWidth ?? browserTextSize.w ?? overlay.width;
+    const displayHeight = overlay.measuredTextHeight ?? browserTextSize.h ?? overlay.height;
 
     return (
       <LayerBox

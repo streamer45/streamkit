@@ -647,14 +647,17 @@ export const useCompositorLayers = (
       if (layout.text_overlays) {
         setTextOverlays((prev) => {
           const base = applyServerOverlays(prev, layout.text_overlays);
-          return base.map((o, i) => {
+          let changed = false;
+          const next = base.map((o, i) => {
             const so = layout.text_overlays.find((s) => s.index === i);
             if (!so) return o;
             const mtw = so.measured_text_width;
             const mth = so.measured_text_height;
             if (o.measuredTextWidth === mtw && o.measuredTextHeight === mth) return o;
+            changed = true;
             return { ...o, measuredTextWidth: mtw, measuredTextHeight: mth };
           });
+          return changed ? next : base;
         });
       }
 
