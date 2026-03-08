@@ -412,7 +412,7 @@ impl MoqPullNode {
                 match config.codec {
                     hang::catalog::AudioCodec::Opus => {
                         tracing::info!(track = %track_name, "found opus audio track");
-                        let track = moq_lite::Track { name: track_name, priority: 60 };
+                        let track = moq_lite::Track { name: track_name, priority: 80 };
                         tracks.push(track);
                     },
                     codec => {
@@ -429,7 +429,7 @@ impl MoqPullNode {
                 match config.codec {
                     hang::catalog::VideoCodec::VP9(_) => {
                         tracing::info!(track = %track_name, "found VP9 video track");
-                        let track = moq_lite::Track { name: track_name, priority: 80 };
+                        let track = moq_lite::Track { name: track_name, priority: 60 };
                         tracks.push(track);
                     },
                     codec => {

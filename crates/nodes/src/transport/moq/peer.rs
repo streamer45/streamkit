@@ -1775,7 +1775,7 @@ impl MoqPeerNode {
 
         // Create audio track (if audio input connected)
         let audio_track = if media.has_audio {
-            let track = moq_lite::Track { name: "audio/data".to_string(), priority: 60 };
+            let track = moq_lite::Track { name: "audio/data".to_string(), priority: 80 };
             let producer = broadcast_producer.create_track(track.clone()).map_err(|e| {
                 StreamKitError::Runtime(format!("Failed to create audio track: {e}"))
             })?;
@@ -1786,7 +1786,7 @@ impl MoqPeerNode {
 
         // Create video track (if video input connected)
         let video_track = if media.has_video {
-            let track = moq_lite::Track { name: "video/data".to_string(), priority: 80 };
+            let track = moq_lite::Track { name: "video/data".to_string(), priority: 60 };
             let producer = broadcast_producer.create_track(track.clone()).map_err(|e| {
                 StreamKitError::Runtime(format!("Failed to create video track: {e}"))
             })?;

@@ -175,7 +175,7 @@ impl ProcessorNode for MoqPushNode {
             context.input_types.iter().any(|(_, pt)| matches!(pt, PacketType::EncodedVideo(_)));
 
         // Create audio track
-        let audio_track = moq_lite::Track { name: "audio/data".to_string(), priority: 60 };
+        let audio_track = moq_lite::Track { name: "audio/data".to_string(), priority: 80 };
         let audio_producer = broadcast
             .create_track(audio_track.clone())
             .map_err(|e| StreamKitError::Runtime(format!("Failed to create audio track: {e}")))?;
@@ -183,7 +183,7 @@ impl ProcessorNode for MoqPushNode {
 
         // Create video track if video input is connected
         let video_track = if has_video {
-            Some(moq_lite::Track { name: "video/data".to_string(), priority: 80 })
+            Some(moq_lite::Track { name: "video/data".to_string(), priority: 60 })
         } else {
             None
         };
