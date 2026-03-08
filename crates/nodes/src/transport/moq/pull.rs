@@ -12,7 +12,10 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use std::time::Duration;
 use streamkit_core::timing::MediaClock;
-use streamkit_core::types::{AudioCodec, EncodedAudioFormat, Packet, PacketMetadata, PacketType};
+use streamkit_core::types::{
+    AudioCodec, EncodedAudioFormat, EncodedVideoFormat, Packet, PacketMetadata, PacketType,
+    VideoCodec,
+};
 use streamkit_core::{
     state_helpers, stats::NodeStatsTracker, InputPin, NodeContext, OutputPin, PinCardinality,
     ProcessorNode, StreamKitError,
@@ -35,15 +38,17 @@ pub struct MoqPullConfig {
 }
 
 /// A node that connects to a MoQ server, subscribes to a broadcast,
-/// and outputs the received media as encoded Opus packets.
+/// and outputs the received media as encoded packets.
 ///
-/// This node performs catalog discovery during initialization.
+/// This node performs catalog discovery during initialization and supports
+/// both audio (Opus) and video (VP9) tracks.
 ///
 /// **Output pins**
-/// - Always exposes a stable `out` pin for backward-compatible pipelines.
-/// - Also exposes one output pin per discovered Opus track (by track name).
-/// - At runtime, the node currently subscribes to the first discovered Opus track and emits
+/// - Always exposes a stable `out` pin (audio) for backward-compatible pipelines.
+/// - Also exposes one output pin per discovered track (by track name).
+/// - At runtime, the node subscribes to the first discovered audio track and emits
 ///   its packets to both `out` and the track-named pin.
+/// - Video tracks are output on their track-named pin (e.g. `video/data`).
 pub struct MoqPullNode {
     config: MoqPullConfig,
     /// Dynamically discovered output pins (one per track)
@@ -84,12 +89,23 @@ impl MoqPullNode {
             if track.name == "out" {
                 continue;
             }
-            pins.push(OutputPin {
-                name: track.name.clone(),
-                produces_type: PacketType::EncodedAudio(EncodedAudioFormat {
+            let produces_type = if track.name.starts_with("video/") {
+                PacketType::EncodedVideo(EncodedVideoFormat {
+                    codec: VideoCodec::Vp9,
+                    bitstream_format: None,
+                    codec_private: None,
+                    profile: None,
+                    level: None,
+                })
+            } else {
+                PacketType::EncodedAudio(EncodedAudioFormat {
                     codec: AudioCodec::Opus,
                     codec_private: None,
-                }),
+                })
+            };
+            pins.push(OutputPin {
+                name: track.name.clone(),
+                produces_type,
                 cardinality: PinCardinality::Broadcast,
             });
         }
@@ -396,12 +412,29 @@ impl MoqPullNode {
                 match config.codec {
                     hang::catalog::AudioCodec::Opus => {
                         tracing::info!(track = %track_name, "found opus audio track");
-                        let track = moq_lite::Track { name: track_name, priority: 2 };
+                        let track = moq_lite::Track { name: track_name, priority: 60 };
                         tracks.push(track);
                     },
                     codec => {
                         tracing::debug!(
                             "skipping non-opus audio track: {} (codec: {})",
+                            track_name,
+                            codec
+                        );
+                    },
+                }
+            }
+
+            for (track_name, config) in catalog.video.renditions {
+                match config.codec {
+                    hang::catalog::VideoCodec::VP9(_) => {
+                        tracing::info!(track = %track_name, "found VP9 video track");
+                        let track = moq_lite::Track { name: track_name, priority: 80 };
+                        tracks.push(track);
+                    },
+                    codec => {
+                        tracing::debug!(
+                            "skipping non-VP9 video track: {} (codec: {:?})",
                             track_name,
                             codec
                         );
@@ -416,13 +449,13 @@ impl MoqPullNode {
             // Check if we've exceeded the overall timeout
             if start.elapsed() >= CATALOG_TIMEOUT {
                 return Err(StreamKitError::Runtime(format!(
-                    "No opus audio tracks found in catalog after {} seconds",
+                    "No supported tracks found in catalog after {} seconds",
                     CATALOG_TIMEOUT.as_secs()
                 )));
             }
 
             // Catalog is empty, wait a bit before checking for the next update
-            tracing::trace!("Catalog has no opus tracks yet, waiting for next update...");
+            tracing::trace!("Catalog has no supported tracks yet, waiting for next update...");
             tokio::time::sleep(RETRY_DELAY).await;
         }
     }
@@ -435,6 +468,12 @@ impl MoqPullNode {
         context: &mut NodeContext,
         total_packet_count: &mut u32,
     ) -> Result<StreamEndReason, StreamKitError> {
+        /// Which media kind produced a frame in the multiplexed select loop.
+        enum ReadSource {
+            Audio,
+            Video,
+        }
+
         let url = super::parse_moq_url(&self.config.url, self.config.jwt.as_deref())?;
 
         let client = super::shared_insecure_client()?;
@@ -505,7 +544,7 @@ impl MoqPullNode {
 
         tracing::info!("Subscribed to broadcast '{}'", self.config.broadcast);
 
-        // First, get the catalog to find audio tracks
+        // Get the catalog to find available tracks
         let raw_catalog_track =
             broadcast.subscribe_track(&hang::catalog::Catalog::default_track()).map_err(|e| {
                 StreamKitError::Runtime(format!("Failed to subscribe to catalog track: {e}"))
@@ -518,37 +557,58 @@ impl MoqPullNode {
         );
 
         // Wait for catalog data with timeout
-        let audio_tracks = self.parse_catalog(&mut catalog_consumer).await?;
+        let discovered_tracks = self.parse_catalog(&mut catalog_consumer).await?;
 
-        if audio_tracks.is_empty() {
+        if discovered_tracks.is_empty() {
             return Err(StreamKitError::Runtime(
-                "No opus audio tracks found in broadcast".to_string(),
+                "No supported tracks found in broadcast".to_string(),
             ));
         }
 
-        // Subscribe to the first opus audio track
-        let audio_track = &audio_tracks[0];
-        tracing::info!("subscribing to audio track: {}", audio_track.name);
-        let track_pin_name = audio_track.name.as_str();
+        // Find the first audio track (required for backward compatibility with "out" pin)
+        let audio_track = discovered_tracks.iter().find(|t| !t.name.starts_with("video/"));
+        let video_track = discovered_tracks.iter().find(|t| t.name.starts_with("video/"));
 
-        // Determine once if track pin is registered (stable for the connection)
-        let track_pin_registered = self.output_pins.iter().any(|p| p.name == track_pin_name);
+        if audio_track.is_none() && video_track.is_none() {
+            return Err(StreamKitError::Runtime(
+                "No audio or video tracks found in broadcast".to_string(),
+            ));
+        }
 
-        // Use moq_lite's TrackConsumer directly.
-        //
-        // hang::TrackConsumer (hang v0.9.1) can enter a tight CPU loop when monitoring pending
-        // groups (see hang::model::group::GroupConsumer::buffer_until rotating buffered frames).
-        // In practice this can stall audio after some time and prevent clean shutdown.
-        //
-        // For audio we prefer low-latency, "latest group" semantics: we always read the latest
-        // announced group and drain it, letting moq_lite drop old groups if we're slow.
-        let mut track_consumer = broadcast.subscribe_track(audio_track).map_err(|e| {
-            StreamKitError::Runtime(format!("Failed to subscribe to audio track: {e}"))
-        })?;
-        let mut current_group: Option<moq_lite::GroupConsumer> = None;
+        // Subscribe to audio track
+        let (mut audio_track_consumer, audio_track_pin_name, audio_track_pin_registered) =
+            if let Some(track) = audio_track {
+                tracing::info!("subscribing to audio track: {}", track.name);
+                let pin_name = track.name.clone();
+                let pin_registered = self.output_pins.iter().any(|p| p.name == pin_name);
+                let consumer = broadcast.subscribe_track(track).map_err(|e| {
+                    StreamKitError::Runtime(format!("Failed to subscribe to audio track: {e}"))
+                })?;
+                (Some(consumer), Some(pin_name), pin_registered)
+            } else {
+                (None, None, false)
+            };
+
+        // Subscribe to video track
+        let (mut video_track_consumer, video_track_pin_name, video_track_pin_registered) =
+            if let Some(track) = video_track {
+                tracing::info!("subscribing to video track: {}", track.name);
+                let pin_name = track.name.clone();
+                let pin_registered = self.output_pins.iter().any(|p| p.name == pin_name);
+                let consumer = broadcast.subscribe_track(track).map_err(|e| {
+                    StreamKitError::Runtime(format!("Failed to subscribe to video track: {e}"))
+                })?;
+                (Some(consumer), Some(pin_name), pin_registered)
+            } else {
+                (None, None, false)
+            };
+
+        let mut audio_current_group: Option<moq_lite::GroupConsumer> = None;
+        let mut video_current_group: Option<moq_lite::GroupConsumer> = None;
 
         let mut session_packet_count: u32 = 0;
-        let mut last_timestamp_us: Option<u64> = None;
+        let mut last_audio_timestamp_us: Option<u64> = None;
+        let mut last_video_timestamp_us: Option<u64> = None;
         let mut clock = MediaClock::new(0);
         let mut consecutive_cancels: u32 = 0;
         let mut last_payload_at = tokio::time::Instant::now();
@@ -557,219 +617,179 @@ impl MoqPullNode {
         let node_name = context.output_sender.node_name().to_string();
         let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
 
-        // Read audio frames directly using async calls
-        tracing::info!("starting to read audio frames from track: {}", audio_track.name);
+        tracing::info!(
+            audio = audio_track.is_some(),
+            video = video_track.is_some(),
+            "starting to read frames from tracks"
+        );
 
         loop {
-            // Block waiting for the first frame of a potential batch, with cancellation and control message support.
-            let read_result: Result<Option<bytes::Bytes>, moq_lite::Error> = if let Some(token) =
-                &context.cancellation_token
-            {
-                tokio::select! {
-                    () = token.cancelled() => {
-                        tracing::info!("MoQ pull cancelled after {} packets", session_packet_count);
-                        return Ok(StreamEndReason::Natural);
-                    }
-                    msg = context.control_rx.recv() => {
-                        match msg {
-                            Some(streamkit_core::control::NodeControlMessage::Shutdown) => {
-                                tracing::info!("MoQ pull received shutdown signal after {} packets", session_packet_count);
-                                return Ok(StreamEndReason::Natural);
-                            }
-                            Some(control_msg) => {
-                                tracing::debug!("MoQ pull received control message: {:?}", control_msg);
-                                continue;
-                            }
-                            None => {
-                                tracing::info!("MoQ pull control channel closed, shutting down after {} packets", session_packet_count);
-                                return Ok(StreamEndReason::Natural);
-                            }
-                        }
-                    }
-                    result = Self::read_next_raw_moq(&mut track_consumer, &mut current_group) => result,
+            // Build per-kind read futures inline so tokio::select! can borrow
+            // the track consumers without lifetime issues from closures.
+            let audio_read = async {
+                match audio_track_consumer.as_mut() {
+                    Some(c) => Self::read_next_raw_moq(c, &mut audio_current_group).await,
+                    None => std::future::pending().await,
                 }
-            } else {
-                tokio::select! {
-                    msg = context.control_rx.recv() => {
-                        match msg {
-                            Some(streamkit_core::control::NodeControlMessage::Shutdown) => {
-                                tracing::info!("MoQ pull received shutdown signal after {} packets", session_packet_count);
-                                return Ok(StreamEndReason::Natural);
-                            }
-                            Some(control_msg) => {
-                                tracing::debug!("MoQ pull received control message: {:?}", control_msg);
-                                continue;
-                            }
-                            None => {
-                                tracing::info!("MoQ pull control channel closed, shutting down after {} packets", session_packet_count);
-                                return Ok(StreamEndReason::Natural);
-                            }
-                        }
-                    }
-                    result = Self::read_next_raw_moq(&mut track_consumer, &mut current_group) => result,
+            };
+            let video_read = async {
+                match video_track_consumer.as_mut() {
+                    Some(c) => Self::read_next_raw_moq(c, &mut video_current_group).await,
+                    None => std::future::pending().await,
                 }
             };
 
-            match read_result {
-                Ok(Some(first_payload)) => {
-                    consecutive_cancels = 0;
-                    last_payload_at = tokio::time::Instant::now();
-                    // Batching is disabled by default (batch_ms=0).
-                    if self.config.batch_ms > 0 {
-                        let mut batch = Vec::with_capacity(context.batch_size);
-                        batch.push(first_payload);
-
-                        let batch_deadline = tokio::time::Instant::now()
-                            + std::time::Duration::from_millis(self.config.batch_ms);
-
-                        while batch.len() < context.batch_size {
-                            let time_remaining = batch_deadline
-                                .saturating_duration_since(tokio::time::Instant::now());
-                            if time_remaining.is_zero() {
-                                break;
-                            }
-
-                            match tokio::time::timeout(
-                                time_remaining,
-                                Self::read_next_raw_moq(&mut track_consumer, &mut current_group),
-                            )
-                            .await
-                            {
-                                Ok(Ok(Some(payload))) => batch.push(payload),
-                                _ => break,
+            let (read_result, source): (Result<Option<bytes::Bytes>, moq_lite::Error>, ReadSource) =
+                if let Some(token) = &context.cancellation_token {
+                    tokio::select! {
+                        () = token.cancelled() => {
+                            tracing::info!("MoQ pull cancelled after {} packets", session_packet_count);
+                            return Ok(StreamEndReason::Natural);
+                        }
+                        msg = context.control_rx.recv() => {
+                            match msg {
+                                Some(streamkit_core::control::NodeControlMessage::Shutdown) => {
+                                    tracing::info!("MoQ pull received shutdown signal after {} packets", session_packet_count);
+                                    return Ok(StreamEndReason::Natural);
+                                }
+                                Some(control_msg) => {
+                                    tracing::debug!("MoQ pull received control message: {:?}", control_msg);
+                                    continue;
+                                }
+                                None => {
+                                    tracing::info!("MoQ pull control channel closed, shutting down after {} packets", session_packet_count);
+                                    return Ok(StreamEndReason::Natural);
+                                }
                             }
                         }
-
-                        for payload in batch {
-                            session_packet_count += 1;
-                            *total_packet_count += 1;
-                            stats_tracker.received();
-
-                            if session_packet_count.is_multiple_of(100) {
-                                tracing::debug!(
-                                    "processed {} frames (total: {})",
-                                    session_packet_count,
-                                    *total_packet_count
-                                );
+                        result = audio_read => (result, ReadSource::Audio),
+                        result = video_read => (result, ReadSource::Video),
+                    }
+                } else {
+                    tokio::select! {
+                        msg = context.control_rx.recv() => {
+                            match msg {
+                                Some(streamkit_core::control::NodeControlMessage::Shutdown) => {
+                                    tracing::info!("MoQ pull received shutdown signal after {} packets", session_packet_count);
+                                    return Ok(StreamEndReason::Natural);
+                                }
+                                Some(control_msg) => {
+                                    tracing::debug!("MoQ pull received control message: {:?}", control_msg);
+                                    continue;
+                                }
+                                None => {
+                                    tracing::info!("MoQ pull control channel closed, shutting down after {} packets", session_packet_count);
+                                    return Ok(StreamEndReason::Natural);
+                                }
                             }
+                        }
+                        result = audio_read => (result, ReadSource::Audio),
+                        result = video_read => (result, ReadSource::Video),
+                    }
+                };
 
-                            let (timestamp_us, data) =
-                                match Self::strip_hang_timestamp_header(payload) {
-                                    Ok(result) => result,
-                                    Err(e) => {
-                                        tracing::warn!("Failed to decode frame timestamp: {e}");
-                                        stats_tracker.discarded();
-                                        continue;
-                                    },
-                                };
-                            if last_timestamp_us.is_none() {
-                                clock.seed_from_timestamp_us(timestamp_us);
-                            }
-                            let duration_us = last_timestamp_us
-                                .and_then(|prev| timestamp_us.checked_sub(prev))
-                                .filter(|d| *d > 0)
-                                .or(Some(DEFAULT_AUDIO_FRAME_DURATION_US));
-                            let metadata = Some(PacketMetadata {
-                                timestamp_us: Some(timestamp_us),
-                                duration_us,
-                                sequence: None,
-                                keyframe: None,
-                            });
-                            last_timestamp_us = Some(timestamp_us);
+            match read_result {
+                Ok(Some(payload)) => {
+                    consecutive_cancels = 0;
+                    last_payload_at = tokio::time::Instant::now();
 
-                            let packet = Packet::Binary {
-                                data,
-                                content_type: None,
-                                metadata: metadata.clone(),
-                            };
+                    session_packet_count += 1;
+                    *total_packet_count += 1;
+                    stats_tracker.received();
 
-                            if track_pin_registered
-                                && track_pin_name != "out"
+                    if session_packet_count.is_multiple_of(100) {
+                        tracing::debug!(
+                            "processed {} frames (total: {})",
+                            session_packet_count,
+                            *total_packet_count
+                        );
+                    }
+
+                    let (timestamp_us, data) = match Self::strip_hang_timestamp_header(payload) {
+                        Ok(result) => result,
+                        Err(e) => {
+                            tracing::warn!("Failed to decode frame timestamp: {e}");
+                            stats_tracker.discarded();
+                            continue;
+                        },
+                    };
+
+                    let (last_ts, default_dur) = match source {
+                        ReadSource::Audio => {
+                            (&mut last_audio_timestamp_us, DEFAULT_AUDIO_FRAME_DURATION_US)
+                        },
+                        ReadSource::Video => (
+                            &mut last_video_timestamp_us,
+                            crate::video::DEFAULT_VIDEO_FRAME_DURATION_US,
+                        ),
+                    };
+
+                    if last_ts.is_none() {
+                        clock.seed_from_timestamp_us(timestamp_us);
+                    }
+                    let duration_us = last_ts
+                        .and_then(|prev| timestamp_us.checked_sub(prev))
+                        .filter(|d| *d > 0)
+                        .or(Some(default_dur));
+                    let metadata = Some(PacketMetadata {
+                        timestamp_us: Some(timestamp_us),
+                        duration_us,
+                        sequence: None,
+                        keyframe: None,
+                    });
+                    *last_ts = Some(timestamp_us);
+
+                    let packet =
+                        Packet::Binary { data, content_type: None, metadata: metadata.clone() };
+
+                    // Route packet to the correct output pin(s)
+                    match source {
+                        ReadSource::Audio => {
+                            let pin_name = audio_track_pin_name.as_deref().unwrap_or("out");
+                            if audio_track_pin_registered
+                                && pin_name != "out"
                                 && context
                                     .output_sender
-                                    .send(track_pin_name, packet.clone())
+                                    .send(pin_name, packet.clone())
                                     .await
                                     .is_err()
                             {
-                                tracing::debug!("Output channel closed, stopping node");
+                                tracing::debug!("Audio output channel closed, stopping node");
                                 return Ok(StreamEndReason::Natural);
                             }
+                            // Always send audio to the stable "out" pin
                             if context.output_sender.send("out", packet).await.is_err() {
                                 tracing::debug!("Output channel closed, stopping node");
                                 return Ok(StreamEndReason::Natural);
                             }
-                            stats_tracker.sent();
-                        }
-                    } else {
-                        session_packet_count += 1;
-                        *total_packet_count += 1;
-                        stats_tracker.received();
-
-                        if session_packet_count.is_multiple_of(100) {
-                            tracing::debug!(
-                                "processed {} frames (total: {})",
-                                session_packet_count,
-                                *total_packet_count
-                            );
-                        }
-
-                        let (timestamp_us, data) =
-                            match Self::strip_hang_timestamp_header(first_payload) {
-                                Ok(result) => result,
-                                Err(e) => {
-                                    tracing::warn!("Failed to decode frame timestamp: {e}");
-                                    stats_tracker.discarded();
-                                    continue;
-                                },
-                            };
-                        if last_timestamp_us.is_none() {
-                            clock.seed_from_timestamp_us(timestamp_us);
-                        }
-                        let duration_us = last_timestamp_us
-                            .and_then(|prev| timestamp_us.checked_sub(prev))
-                            .filter(|d| *d > 0)
-                            .or(Some(DEFAULT_AUDIO_FRAME_DURATION_US));
-                        let metadata = Some(PacketMetadata {
-                            timestamp_us: Some(timestamp_us),
-                            duration_us,
-                            sequence: None,
-                            keyframe: None,
-                        });
-                        last_timestamp_us = Some(timestamp_us);
-
-                        let packet =
-                            Packet::Binary { data, content_type: None, metadata: metadata.clone() };
-                        if track_pin_registered
-                            && track_pin_name != "out"
-                            && context
-                                .output_sender
-                                .send(track_pin_name, packet.clone())
-                                .await
-                                .is_err()
-                        {
-                            tracing::debug!("Output channel closed, stopping node");
-                            return Ok(StreamEndReason::Natural);
-                        }
-                        if context.output_sender.send("out", packet).await.is_err() {
-                            tracing::debug!("Output channel closed, stopping node");
-                            return Ok(StreamEndReason::Natural);
-                        }
-                        stats_tracker.sent();
+                        },
+                        ReadSource::Video => {
+                            if let Some(pin_name) = video_track_pin_name.as_deref() {
+                                if video_track_pin_registered
+                                    && context.output_sender.send(pin_name, packet).await.is_err()
+                                {
+                                    tracing::debug!("Video output channel closed, stopping node");
+                                    return Ok(StreamEndReason::Natural);
+                                }
+                            }
+                        },
                     }
-
+                    stats_tracker.sent();
                     stats_tracker.maybe_send();
                 },
                 Ok(None) => {
+                    let kind = match source {
+                        ReadSource::Audio => "audio",
+                        ReadSource::Video => "video",
+                    };
                     tracing::info!(
-                        "Track stream ended naturally after {} packets",
+                        "{} track stream ended naturally after {} packets",
+                        kind,
                         session_packet_count
                     );
                     return Ok(StreamEndReason::Natural);
                 },
                 Err(moq_lite::Error::Cancel) => {
-                    // moq_lite cancels groups when the producer advances and drops old groups.
-                    // This is expected with our "latest group" semantics under load: skip to the
-                    // next group rather than tearing down the entire WebTransport connection.
                     consecutive_cancels = consecutive_cancels.saturating_add(1);
                     tracing::debug!(
                         session_packet_count,
@@ -778,7 +798,6 @@ impl MoqPullNode {
                         "Track read cancelled (skipping to next group)"
                     );
 
-                    // Safety valve: if we see cancels for too long with no payloads, reconnect.
                     if last_payload_at.elapsed() > Duration::from_secs(5)
                         && consecutive_cancels >= 50
                     {

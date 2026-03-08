@@ -130,6 +130,38 @@ fn parse_vp9_keyframe_dimensions(data: &[u8]) -> Option<(u32, u32)> {
     let h = r.read(16)? + 1;
     Some((w, h))
 }
+/// Build a VP9 CodecPrivate (VPCodecConfigurationRecord) for WebM/Matroska.
+///
+/// Layout follows the VP Codec ISO Media File Format Binding specification:
+/// <https://www.webmproject.org/vp9/mp4/>
+///
+/// | Byte | Field                         |
+/// |------|-------------------------------|
+/// |  0   | Profile (8 bits)              |
+/// |  1   | Level (8 bits)                |
+/// |  2   | bitDepth(4) | chromaSub(3) | fullRange(1) |
+/// |  3   | colourPrimaries (8 bits)      |
+/// |  4   | transferCharacteristics       |
+/// |  5   | matrixCoefficients            |
+/// |  6-7 | codecInitializationDataSize   |
+const fn vp9_codec_private(
+    profile: u8,
+    level: u8,
+    bit_depth: u8,
+    chroma_subsampling: u8,
+) -> [u8; 8] {
+    [
+        profile,
+        level,
+        (bit_depth << 4) | ((chroma_subsampling & 0x07) << 1), // fullRange = 0
+        1,                                                     // colourPrimaries: BT.709
+        1,                                                     // transferCharacteristics: BT.709
+        1,                                                     // matrixCoefficients: BT.709
+        0,
+        0, // codecInitializationDataSize = 0
+    ]
+}
+
 /// Opus codec lookahead at 48kHz in samples (typical libopus default).
 ///
 /// This is written to the OpusHead `pre_skip` field so decoders can trim encoder delay.
@@ -732,6 +764,8 @@ impl ProcessorNode for WebMMuxerNode {
         // Video track is added first so that the segment header lists it prominently
         // for players that inspect the first track.
         let builder = if has_video {
+            let vp9_private = vp9_codec_private(0, 10, 8, 1);
+
             let (builder, vt) = builder
                 .add_video_track(video_width, video_height, VideoCodecId::VP9, None)
                 .map_err(|e| {
@@ -739,8 +773,19 @@ impl ProcessorNode for WebMMuxerNode {
                     state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
                     StreamKitError::Runtime(err_msg)
                 })?;
+
+            let builder = builder.set_codec_private(vt, &vp9_private).map_err(|e| {
+                let err_msg = format!("Failed to set VP9 codec private: {e}");
+                state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
+                StreamKitError::Runtime(err_msg)
+            })?;
+
             tracks.video = Some(vt);
-            tracing::info!("Added VP9 video track ({}x{})", video_width, video_height);
+            tracing::info!(
+                "Added VP9 video track ({}x{}) with codec private",
+                video_width,
+                video_height
+            );
             builder
         } else {
             builder
