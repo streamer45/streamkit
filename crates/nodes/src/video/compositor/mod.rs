@@ -4,25 +4,26 @@
 
 //! Video compositor node.
 //!
-//! Composites multiple raw video inputs onto a single RGBA8 output canvas with
-//! optional image and text overlays. Supports dynamic pin creation for
-//! attaching arbitrary inputs at runtime.
+//! Composites multiple RGBA8 video inputs plus image/text overlays onto a
+//! single output canvas at a fixed frame rate.
 //!
-//! - Inputs accept `RawVideo(RGBA8)` with wildcard dimensions.
-//! - Output produces `RawVideo(RGBA8)` at the configured canvas size.
-//! - Heavy compositing work runs on a persistent blocking thread (via
-//!   `spawn_blocking`) to avoid blocking the async runtime and to keep CPU
-//!   caches warm across frames.
-//! - Row-level parallelism via `rayon` for blitting and pixel-format
-//!   conversion.
-//! - Image overlays are decoded once during initialization (PNG/JPEG via the
-//!   `image` crate).
-//! - Text overlays are rasterized via `fontdue` once per `UpdateParams`, not
-//!   per frame.
+//! ## Inputs / Outputs
+//! - Inputs: dynamic `in_*` pins (raw video, RGBA8/I420/NV12 auto-converted)
+//! - Output: `out` (composited RGBA8 frame)
 //!
-//! # Future work
-//! - GPU-accelerated compositing via `wgpu`.
-//! - Bilinear / Lanczos scaling (MVP uses nearest-neighbor).
+//! ## Key config fields
+//! - `width`, `height`, `fps`: output canvas dimensions and frame rate
+//! - `layers`: per-input positioning (rect, opacity, z_index, rotation, mirror)
+//! - `text_overlays`, `image_overlays`: static overlays with stable UUID IDs
+//!
+//! ## Architecture
+//! - [`resolve_scene()`] unifies layer cache rebuilding and layout computation
+//!   into a single pass, producing a [`ResolvedScene`] with both render-ready
+//!   slot configs and the [`CompositorLayout`](config::CompositorLayout) for
+//!   view-data emission.
+//! - Compositing runs on a dedicated blocking thread via [`kernel::composite_frame`].
+//! - Text overlays are re-rasterized on config update; image overlays are
+//!   cached by (id, content) to avoid redundant decoding.
 
 pub mod config;
 pub mod kernel;
@@ -97,9 +98,9 @@ struct ResolvedScene {
     layout: CompositorLayout,
 }
 
-/// Convert a [`DecodedOverlay`] into a [`ResolvedOverlay`] for view-data
-/// emission.  Eliminates the duplicated field-by-field mapping that was
-/// previously inlined in two nearly-identical loops.
+/// Convert a [`DecodedOverlay`] (the rasterized bitmap representation used
+/// internally for compositing) into a [`ResolvedOverlay`] (the serializable
+/// layout struct emitted as view-data to the frontend).
 fn decoded_to_resolved(ov: &DecodedOverlay) -> ResolvedOverlay {
     ResolvedOverlay {
         id: ov.id.clone(),
@@ -792,6 +793,13 @@ impl ProcessorNode for CompositorNode {
 // ── Private helpers on CompositorNode ───────────────────────────────────────
 
 impl CompositorNode {
+    /// Apply an incoming `UpdateParams` message to the compositor config.
+    ///
+    /// Image overlays are cached by stable overlay ID: when the base64
+    /// content and target dimensions are unchanged, the previously decoded
+    /// bitmap is reused (only transform fields like position, opacity, and
+    /// rotation are updated).  Text overlays are always re-rasterized
+    /// because font rendering parameters may have changed.
     fn apply_update_params(
         config: &mut CompositorConfig,
         image_overlays: &mut Arc<[Arc<DecodedOverlay>]>,
@@ -882,6 +890,7 @@ impl CompositorNode {
         }
     }
 
+    /// Handle a dynamic pin management message (add / remove input pins).
     fn handle_pin_management(
         node: &mut Box<Self>,
         msg: PinManagementMessage,

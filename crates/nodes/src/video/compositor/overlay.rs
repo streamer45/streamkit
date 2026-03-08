@@ -12,7 +12,11 @@ use streamkit_core::StreamKitError;
 
 // ── Decoded overlay bitmap ──────────────────────────────────────────────────
 
-/// A pre-decoded RGBA bitmap overlay ready for per-frame blitting.
+/// A pre-decoded RGBA8 bitmap overlay ready for per-frame blitting.
+///
+/// Created once at init time (image overlays) or on each `UpdateParams`
+/// (text overlays).  Carried in `Arc` so cloning into per-frame work items
+/// is a reference-count bump.
 #[derive(Clone)]
 pub struct DecodedOverlay {
     /// Stable identifier carried through from the config.
@@ -38,9 +42,16 @@ pub struct DecodedOverlay {
 
 /// Decode a base64-encoded image (PNG/JPEG) into an RGBA8 bitmap.
 ///
+/// The decoded image is pre-scaled (bilinear filter) to fit within the
+/// config's target rect while preserving aspect ratio, so the per-frame
+/// blit hits the identity-scale fast path (direct memcpy).  The returned
+/// [`DecodedOverlay::rect`] is adjusted to centre the fitted image within
+/// the originally requested area.
+///
 /// # Errors
 ///
-/// Returns an error if the base64 data is invalid or the image cannot be decoded.
+/// Returns an error if the base64 data is invalid or the image cannot be
+/// decoded.
 pub fn decode_image_overlay(config: &ImageOverlayConfig) -> Result<DecodedOverlay, StreamKitError> {
     use image::GenericImageView;
 
@@ -284,14 +295,16 @@ fn load_font(config: &TextOverlayConfig) -> Result<Arc<fontdue::Font>, String> {
     Ok(font)
 }
 
-/// Rasterize a text overlay into an RGBA8 bitmap using `fontdue` for real
-/// font glyph rendering.  Falls back to solid-rectangle placeholders when
-/// font loading fails so the node keeps running.
+/// Rasterize a text string into an RGBA8 bitmap at the exact measured
+/// text dimensions.
 ///
-/// Supports explicit newlines (`\n`) and automatic word-wrapping when the
-/// overlay rect has a non-zero width.  The bitmap dimensions are expanded
-/// to fit the measured (possibly multi-line) text so that nothing is
-/// clipped.
+/// Uses `fontdue` for real font glyph rendering with support for explicit
+/// newlines (`\n`).  Falls back to solid-rectangle placeholders when font
+/// loading fails so the node keeps running.
+///
+/// The returned bitmap is sized to the measured text extent (not the
+/// config rect), so downstream blitting renders the full string without
+/// clipping or excess transparent padding.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
 pub fn rasterize_text_overlay(config: &TextOverlayConfig) -> DecodedOverlay {
     // Attempt to load the font; fall back to rectangle placeholders on error.

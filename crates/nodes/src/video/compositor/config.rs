@@ -255,7 +255,7 @@ impl Default for CompositorConfig {
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "codegen", derive(ts_rs::TS))]
 pub struct ResolvedLayer {
-    /// Pin name (e.g. "in_0").
+    /// Pin name (e.g. `"in_0"`).
     pub id: String,
     pub x: i32,
     pub y: i32,
@@ -276,9 +276,10 @@ pub struct ResolvedOverlay {
     pub id: String,
     pub x: i32,
     pub y: i32,
-    /// Resolved width after text wrapping / image aspect-fit.
+    /// Width after text measurement / image aspect-fit (may differ from
+    /// the config rect when content doesn't fill it exactly).
     pub width: u32,
-    /// Resolved height after text wrapping / image aspect-fit.
+    /// Height after text measurement / image aspect-fit.
     pub height: u32,
     pub opacity: f32,
     pub z_index: i32,
