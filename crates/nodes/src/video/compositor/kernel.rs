@@ -2,11 +2,23 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-//! Compositing kernel — runs on a persistent blocking thread.
+//! Compositing kernel — CPU-based frame compositing.
 //!
-//! Contains the data types exchanged between the async node loop and the
-//! blocking compositing thread, plus the core `composite_frame` function
-//! that blits layers and overlays onto an RGBA8 canvas.
+//! This module defines the data types exchanged between the async node
+//! loop (in `mod.rs`) and the persistent blocking compositing thread,
+//! plus the core [`composite_frame`] function.
+//!
+//! ## Threading model
+//! The async run-loop sends a [`CompositeWorkItem`] per tick to a
+//! long-lived `spawn_blocking` thread.  The thread composites layers and
+//! overlays onto an RGBA8 canvas and returns a [`CompositeResult`].
+//! Keeping a single persistent thread avoids per-frame thread-pool
+//! scheduling overhead and keeps CPU caches warm.
+//!
+//! ## Pixel-format conversion
+//! Input layers may arrive as I420 or NV12.  [`ConversionCache`] caches
+//! the per-slot YUV → RGBA8 conversion keyed by `Arc` pointer identity,
+//! so unchanged frames skip the conversion entirely.
 
 use std::sync::Arc;
 use streamkit_core::types::PixelFormat;
@@ -158,7 +170,8 @@ impl ConversionCache {
     }
 }
 
-/// Snapshot of one input layer's data for the blocking compositor thread.
+/// Snapshot of one input layer's video data, sent from the async loop to
+/// the blocking compositor thread as part of a [`CompositeWorkItem`].
 pub struct LayerSnapshot {
     pub data: Arc<streamkit_core::frame_pool::PooledVideoData>,
     pub width: u32,
@@ -179,6 +192,10 @@ pub struct LayerSnapshot {
 }
 
 /// Work item sent from the async loop to the persistent compositing thread.
+///
+/// Contains the canvas dimensions, per-slot layer snapshots (in draw
+/// order), and shared overlay lists.  One item is sent per compositor
+/// tick.
 pub struct CompositeWorkItem {
     pub canvas_w: u32,
     pub canvas_h: u32,
@@ -192,6 +209,10 @@ pub struct CompositeWorkItem {
 }
 
 /// Result sent back from the compositing thread to the async loop.
+///
+/// Contains the fully-composited RGBA8 canvas buffer, ready to be
+/// wrapped in a [`VideoFrame`](streamkit_core::types::VideoFrame) and
+/// forwarded downstream.
 pub struct CompositeResult {
     pub rgba_data: streamkit_core::frame_pool::PooledVideoData,
 }
@@ -214,11 +235,14 @@ struct CompositeItem<'a> {
     mirror_vertical: bool,
 }
 
-/// Composite all layers + overlays onto a fresh RGBA8 canvas buffer.
-/// Allocates from the video pool if available.
+/// Composite all layers and overlays onto a fresh RGBA8 canvas buffer.
 ///
-/// `conversion_cache` caches YUV→RGBA8 conversions across frames so that
-/// unchanged layers skip the conversion entirely.
+/// Layers and overlays are unified into a single z-sorted list and
+/// blitted in order (lowest `z_index` first).  The canvas is allocated
+/// from `video_pool` when available, falling back to a heap allocation.
+///
+/// `conversion_cache` persists across frames so that unchanged
+/// I420/NV12 layers skip the YUV → RGBA8 conversion entirely.
 pub fn composite_frame(
     canvas_w: u32,
     canvas_h: u32,
