@@ -831,80 +831,88 @@ impl CompositorNode {
         stats_tracker: &mut NodeStatsTracker,
     ) {
         match serde_json::from_value::<CompositorConfig>(params) {
-            Ok(new_config) => match new_config.validate() {
-                Ok(()) => {
-                    tracing::info!(
-                        old_w = config.width,
-                        old_h = config.height,
-                        new_w = new_config.width,
-                        new_h = new_config.height,
-                        "Updating compositor config"
-                    );
+            Ok(mut new_config) => {
+                // Pin resource limits to values set at node creation time so
+                // that an UpdateParams payload cannot escalate them.
+                new_config.max_canvas_dimension = config.max_canvas_dimension;
+                new_config.max_font_size = config.max_font_size;
 
-                    // Re-decode image overlays only when their content or
-                    // target rect changed.  Cache keyed by stable overlay
-                    // ID — each decoded overlay carries its config id.
-                    let old_imgs = image_overlays.clone();
+                match new_config.validate() {
+                    Ok(()) => {
+                        tracing::info!(
+                            old_w = config.width,
+                            old_h = config.height,
+                            new_w = new_config.width,
+                            new_h = new_config.height,
+                            "Updating compositor config"
+                        );
 
-                    let mut cache: HashMap<&str, Arc<DecodedOverlay>> = HashMap::new();
-                    for decoded in old_imgs.iter() {
-                        cache.insert(decoded.id.as_str(), Arc::clone(decoded));
-                    }
+                        // Re-decode image overlays only when their content or
+                        // target rect changed.  Cache keyed by stable overlay
+                        // ID — each decoded overlay carries its config id.
+                        let old_imgs = image_overlays.clone();
 
-                    let mut new_image_overlays: Vec<Arc<DecodedOverlay>> =
-                        Vec::with_capacity(new_config.image_overlays.len());
-                    for img_cfg in &new_config.image_overlays {
-                        if let Some(existing) = cache.get(img_cfg.id.as_str()) {
-                            // Check if content and target rect are unchanged.
-                            let old_cfg = config.image_overlays.iter().find(|c| c.id == img_cfg.id);
-                            let content_same = old_cfg.is_some_and(|oc| {
-                                oc.data_base64 == img_cfg.data_base64
-                                    && oc.transform.rect.width == img_cfg.transform.rect.width
-                                    && oc.transform.rect.height == img_cfg.transform.rect.height
-                            });
-                            if content_same {
-                                // Content and target dimensions unchanged —
-                                // reuse the decoded bitmap.  Re-centre within
-                                // the new config rect and update transform.
-                                let mut ov = (**existing).clone();
-                                let cfg_w = img_cfg.transform.rect.width.cast_signed();
-                                let cfg_h = img_cfg.transform.rect.height.cast_signed();
-                                let ov_w = ov.rect.width.cast_signed();
-                                let ov_h = ov.rect.height.cast_signed();
-                                ov.rect.x = img_cfg.transform.rect.x + (cfg_w - ov_w) / 2;
-                                ov.rect.y = img_cfg.transform.rect.y + (cfg_h - ov_h) / 2;
-                                ov.opacity = img_cfg.transform.opacity;
-                                ov.rotation_degrees = img_cfg.transform.rotation_degrees;
-                                ov.z_index = img_cfg.transform.z_index;
-                                ov.mirror_horizontal = img_cfg.transform.mirror_horizontal;
-                                ov.mirror_vertical = img_cfg.transform.mirror_vertical;
-                                new_image_overlays.push(Arc::new(ov));
-                                continue;
+                        let mut cache: HashMap<&str, Arc<DecodedOverlay>> = HashMap::new();
+                        for decoded in old_imgs.iter() {
+                            cache.insert(decoded.id.as_str(), Arc::clone(decoded));
+                        }
+
+                        let mut new_image_overlays: Vec<Arc<DecodedOverlay>> =
+                            Vec::with_capacity(new_config.image_overlays.len());
+                        for img_cfg in &new_config.image_overlays {
+                            if let Some(existing) = cache.get(img_cfg.id.as_str()) {
+                                // Check if content and target rect are unchanged.
+                                let old_cfg =
+                                    config.image_overlays.iter().find(|c| c.id == img_cfg.id);
+                                let content_same = old_cfg.is_some_and(|oc| {
+                                    oc.data_base64 == img_cfg.data_base64
+                                        && oc.transform.rect.width == img_cfg.transform.rect.width
+                                        && oc.transform.rect.height == img_cfg.transform.rect.height
+                                });
+                                if content_same {
+                                    // Content and target dimensions unchanged —
+                                    // reuse the decoded bitmap.  Re-centre within
+                                    // the new config rect and update transform.
+                                    let mut ov = (**existing).clone();
+                                    let cfg_w = img_cfg.transform.rect.width.cast_signed();
+                                    let cfg_h = img_cfg.transform.rect.height.cast_signed();
+                                    let ov_w = ov.rect.width.cast_signed();
+                                    let ov_h = ov.rect.height.cast_signed();
+                                    ov.rect.x = img_cfg.transform.rect.x + (cfg_w - ov_w) / 2;
+                                    ov.rect.y = img_cfg.transform.rect.y + (cfg_h - ov_h) / 2;
+                                    ov.opacity = img_cfg.transform.opacity;
+                                    ov.rotation_degrees = img_cfg.transform.rotation_degrees;
+                                    ov.z_index = img_cfg.transform.z_index;
+                                    ov.mirror_horizontal = img_cfg.transform.mirror_horizontal;
+                                    ov.mirror_vertical = img_cfg.transform.mirror_vertical;
+                                    new_image_overlays.push(Arc::new(ov));
+                                    continue;
+                                }
+                            }
+                            match decode_image_overlay(img_cfg) {
+                                Ok(ov) => {
+                                    new_image_overlays.push(Arc::new(ov));
+                                },
+                                Err(e) => tracing::warn!("Image overlay decode failed: {e}"),
                             }
                         }
-                        match decode_image_overlay(img_cfg) {
-                            Ok(ov) => {
-                                new_image_overlays.push(Arc::new(ov));
-                            },
-                            Err(e) => tracing::warn!("Image overlay decode failed: {e}"),
-                        }
-                    }
-                    *image_overlays = Arc::from(new_image_overlays);
+                        *image_overlays = Arc::from(new_image_overlays);
 
-                    // Re-rasterize text overlays.
-                    let new_text_overlays: Vec<Arc<DecodedOverlay>> = new_config
-                        .text_overlays
-                        .iter()
-                        .map(|txt_cfg| Arc::new(rasterize_text_overlay(txt_cfg)))
-                        .collect();
-                    *text_overlays = Arc::from(new_text_overlays);
+                        // Re-rasterize text overlays.
+                        let new_text_overlays: Vec<Arc<DecodedOverlay>> = new_config
+                            .text_overlays
+                            .iter()
+                            .map(|txt_cfg| Arc::new(rasterize_text_overlay(txt_cfg)))
+                            .collect();
+                        *text_overlays = Arc::from(new_text_overlays);
 
-                    *config = new_config;
-                },
-                Err(e) => {
-                    tracing::warn!("Rejected invalid compositor config: {e}");
-                    stats_tracker.errored();
-                },
+                        *config = new_config;
+                    },
+                    Err(e) => {
+                        tracing::warn!("Rejected invalid compositor config: {e}");
+                        stats_tracker.errored();
+                    },
+                }
             },
             Err(e) => {
                 tracing::warn!("Failed to deserialize compositor UpdateParams: {e}");
