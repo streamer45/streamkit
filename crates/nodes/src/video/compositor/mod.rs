@@ -81,17 +81,58 @@ struct ResolvedSlotConfig {
     mirror_vertical: bool,
 }
 
-/// Rebuild the per-slot resolved configs and the z-sorted draw order.
+/// Fully-resolved compositor scene for one configuration epoch.
 ///
-/// Called once at startup and whenever `UpdateParams` or pin management
-/// changes the layer set.  The returned draw order is a list of slot
-/// indices sorted by `(z_index, slot_index)`.
-fn rebuild_layer_cache(
+/// Rebuilt whenever `layer_configs_dirty` is `true` (i.e. on
+/// `UpdateParams` or pin management changes).  Combines the per-slot
+/// resolved configs, the z-sorted draw order, and the `CompositorLayout`
+/// view-data into a single representation so there is no parallel logic
+/// that computes similar geometry.
+struct ResolvedScene {
+    /// Per-slot resolved layer configuration.
+    configs: Vec<ResolvedSlotConfig>,
+    /// Slot indices sorted by `(z_index, slot_index)` for draw order.
+    draw_order: Vec<usize>,
+    /// Server-computed layout emitted as view-data to the frontend.
+    layout: CompositorLayout,
+}
+
+/// Convert a [`DecodedOverlay`] into a [`ResolvedOverlay`] for view-data
+/// emission.  Eliminates the duplicated field-by-field mapping that was
+/// previously inlined in two nearly-identical loops.
+fn decoded_to_resolved(ov: &DecodedOverlay) -> ResolvedOverlay {
+    ResolvedOverlay {
+        id: ov.id.clone(),
+        x: ov.rect.x,
+        y: ov.rect.y,
+        width: ov.rect.width,
+        height: ov.rect.height,
+        opacity: ov.opacity,
+        z_index: ov.z_index,
+        rotation_degrees: ov.rotation_degrees,
+        mirror_horizontal: ov.mirror_horizontal,
+        mirror_vertical: ov.mirror_vertical,
+        measured_text_width: ov.measured_text_width,
+        measured_text_height: ov.measured_text_height,
+    }
+}
+
+/// Resolve the full compositor scene from the current configuration, slots,
+/// and overlays.
+///
+/// Replaces the former `rebuild_layer_cache` + `build_layout` pair with a
+/// single pass that produces per-slot configs, draw order, **and** the
+/// `CompositorLayout` view-data in one go.
+fn resolve_scene(
     slots: &[InputSlot],
     config: &CompositorConfig,
-) -> (Vec<ResolvedSlotConfig>, Vec<usize>) {
+    image_overlays: &Arc<[Arc<DecodedOverlay>]>,
+    text_overlays: &Arc<[Arc<DecodedOverlay>]>,
+) -> ResolvedScene {
     let num_slots = slots.len();
     let mut configs: Vec<ResolvedSlotConfig> = Vec::with_capacity(num_slots);
+    let mut layers: SmallVec<[ResolvedLayer; 8]> = SmallVec::new();
+
     for (idx, slot) in slots.iter().enumerate() {
         let layer_cfg = config.layers.get(&slot.name);
         #[allow(clippy::option_if_let_else)]
@@ -127,6 +168,35 @@ fn rebuild_layer_cache(
             } else {
                 (None, 1.0, 0, 0.0, false, false, false)
             };
+
+        // Build the view-data layer using the current latest_frame for
+        // aspect-fit computation (same dimensions the render path will use).
+        let (lx, ly, lw, lh) = if aspect_fit {
+            match (rect.as_ref(), slot.latest_frame.as_ref()) {
+                (Some(r), Some(frame)) => {
+                    let fitted = fit_rect_preserving_aspect(frame.width, frame.height, r);
+                    (fitted.x, fitted.y, fitted.width, fitted.height)
+                },
+                (Some(r), None) => (r.x, r.y, r.width, r.height),
+                _ => (0, 0, config.width, config.height),
+            }
+        } else {
+            rect.as_ref()
+                .map_or((0, 0, config.width, config.height), |r| (r.x, r.y, r.width, r.height))
+        };
+        layers.push(ResolvedLayer {
+            id: slot.name.clone(),
+            x: lx,
+            y: ly,
+            width: lw,
+            height: lh,
+            opacity,
+            z_index,
+            rotation_degrees,
+            mirror_horizontal: mirror_h,
+            mirror_vertical: mirror_v,
+        });
+
         configs.push(ResolvedSlotConfig {
             rect,
             opacity,
@@ -142,7 +212,21 @@ fn rebuild_layer_cache(
     let mut draw_order: Vec<usize> = (0..num_slots).collect();
     draw_order.sort_by(|&a, &b| configs[a].z_index.cmp(&configs[b].z_index).then(a.cmp(&b)));
 
-    (configs, draw_order)
+    // Build overlay view-data using the shared helper.
+    let resolved_image_overlays: SmallVec<[ResolvedOverlay; 8]> =
+        image_overlays.iter().map(|ov| decoded_to_resolved(ov)).collect();
+    let resolved_text_overlays: SmallVec<[ResolvedOverlay; 8]> =
+        text_overlays.iter().map(|ov| decoded_to_resolved(ov)).collect();
+
+    let layout = CompositorLayout {
+        canvas_width: config.width,
+        canvas_height: config.height,
+        layers,
+        image_overlays: resolved_image_overlays,
+        text_overlays: resolved_text_overlays,
+    };
+
+    ResolvedScene { configs, draw_order, layout }
 }
 
 /// Compute a destination rect that fits `src_w × src_h` within `bounds`
@@ -437,10 +521,19 @@ impl ProcessorNode for CompositorNode {
         let mut tick = tokio::time::interval(tick_duration);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-        // ── Cached layer config + draw order ────────────────────────────
+        // ── Cached resolved scene ────────────────────────────────────────
         let mut layer_configs_dirty = true;
-        let mut resolved_configs: Vec<ResolvedSlotConfig> = Vec::new();
-        let mut sorted_draw_order: Vec<usize> = Vec::new();
+        let mut scene = ResolvedScene {
+            configs: Vec::new(),
+            draw_order: Vec::new(),
+            layout: CompositorLayout {
+                canvas_width: self.config.width,
+                canvas_height: self.config.height,
+                layers: SmallVec::new(),
+                image_overlays: SmallVec::new(),
+                text_overlays: SmallVec::new(),
+            },
+        };
 
         // ── View data (server-driven layout) ────────────────────────────
         let view_data_tx = context.view_data_tx.clone();
@@ -548,40 +641,33 @@ impl ProcessorNode for CompositorNode {
                 break;
             }
 
-            // ── Rebuild layer config cache if needed ─────────────────────
+            // ── Rebuild resolved scene if needed ──────────────────────────
             if layer_configs_dirty {
-                let (cfgs, order) = rebuild_layer_cache(&slots, &self.config);
-                resolved_configs = cfgs;
-                sorted_draw_order = order;
+                scene = resolve_scene(&slots, &self.config, &image_overlays, &text_overlays);
                 layer_configs_dirty = false;
 
                 // Emit layout via view data if it changed.
-                let layout = Self::build_layout(
-                    &self.config,
-                    &slots,
-                    &resolved_configs,
-                    &image_overlays,
-                    &text_overlays,
-                );
-                if last_layout.as_ref() != Some(&layout) {
-                    if let Ok(json) = serde_json::to_value(&layout) {
+                if last_layout.as_ref() != Some(&scene.layout) {
+                    if let Ok(json) = serde_json::to_value(&scene.layout) {
                         view_data_helpers::emit_view_data(&view_data_tx, &node_name, json);
                     }
-                    last_layout = Some(layout);
+                    last_layout = Some(scene.layout.clone());
                 }
             }
 
             // ── Send work to persistent compositing thread ─────────────
             // Build layer snapshots in pre-sorted draw order using the
             // cached per-slot configs (no HashMap lookup, no sort).
-            let layers: Vec<Option<LayerSnapshot>> = sorted_draw_order
+            let layers: Vec<Option<LayerSnapshot>> = scene
+                .draw_order
                 .iter()
                 .map(|&idx| {
                     slots[idx].latest_frame.as_ref().map(|f| {
-                        let cfg = &resolved_configs[idx];
+                        let cfg = &scene.configs[idx];
+                        // Aspect-fit layers recompute per-frame because
+                        // source dimensions may change between ticks.
+                        // Non-aspect-fit layers use the pre-resolved rect.
                         let rect = if cfg.aspect_fit {
-                            // Fit the source within the destination rect
-                            // while preserving its aspect ratio.
                             cfg.rect
                                 .as_ref()
                                 .map(|r| fit_rect_preserving_aspect(f.width, f.height, r))
@@ -706,100 +792,6 @@ impl ProcessorNode for CompositorNode {
 // ── Private helpers on CompositorNode ───────────────────────────────────────
 
 impl CompositorNode {
-    /// Build a `CompositorLayout` from the current resolved state.
-    ///
-    /// This captures the server-computed positions and dimensions for all
-    /// layers and overlays, which the frontend uses as the source of truth
-    /// in Monitor view.
-    fn build_layout(
-        config: &CompositorConfig,
-        slots: &[InputSlot],
-        resolved_configs: &[ResolvedSlotConfig],
-        image_overlays: &Arc<[Arc<DecodedOverlay>]>,
-        text_overlays: &Arc<[Arc<DecodedOverlay>]>,
-    ) -> CompositorLayout {
-        let mut layers: SmallVec<[ResolvedLayer; 8]> = SmallVec::new();
-        for (idx, slot) in slots.iter().enumerate() {
-            if let Some(cfg) = resolved_configs.get(idx) {
-                let (x, y, width, height) = if cfg.aspect_fit {
-                    // When aspect_fit is enabled (e.g. auto-PiP), emit the
-                    // fitted rect that matches what the compositor actually
-                    // renders, not the raw bounding box.  This prevents the
-                    // frontend from displaying a stretched layer rectangle.
-                    match (cfg.rect.as_ref(), slot.latest_frame.as_ref()) {
-                        (Some(rect), Some(frame)) => {
-                            let fitted =
-                                fit_rect_preserving_aspect(frame.width, frame.height, rect);
-                            (fitted.x, fitted.y, fitted.width, fitted.height)
-                        },
-                        (Some(rect), None) => (rect.x, rect.y, rect.width, rect.height),
-                        _ => (0, 0, config.width, config.height),
-                    }
-                } else {
-                    cfg.rect.as_ref().map_or((0, 0, config.width, config.height), |rect| {
-                        (rect.x, rect.y, rect.width, rect.height)
-                    })
-                };
-                layers.push(ResolvedLayer {
-                    id: slot.name.clone(),
-                    x,
-                    y,
-                    width,
-                    height,
-                    opacity: cfg.opacity,
-                    z_index: cfg.z_index,
-                    rotation_degrees: cfg.rotation_degrees,
-                    mirror_horizontal: cfg.mirror_horizontal,
-                    mirror_vertical: cfg.mirror_vertical,
-                });
-            }
-        }
-
-        let mut resolved_image_overlays: SmallVec<[ResolvedOverlay; 8]> = SmallVec::new();
-        for ov in image_overlays.iter() {
-            resolved_image_overlays.push(ResolvedOverlay {
-                id: ov.id.clone(),
-                x: ov.rect.x,
-                y: ov.rect.y,
-                width: ov.rect.width,
-                height: ov.rect.height,
-                opacity: ov.opacity,
-                z_index: ov.z_index,
-                rotation_degrees: ov.rotation_degrees,
-                mirror_horizontal: ov.mirror_horizontal,
-                mirror_vertical: ov.mirror_vertical,
-                measured_text_width: None,
-                measured_text_height: None,
-            });
-        }
-
-        let mut resolved_text_overlays: SmallVec<[ResolvedOverlay; 8]> = SmallVec::new();
-        for ov in text_overlays.iter() {
-            resolved_text_overlays.push(ResolvedOverlay {
-                id: ov.id.clone(),
-                x: ov.rect.x,
-                y: ov.rect.y,
-                width: ov.rect.width,
-                height: ov.rect.height,
-                opacity: ov.opacity,
-                z_index: ov.z_index,
-                rotation_degrees: ov.rotation_degrees,
-                mirror_horizontal: ov.mirror_horizontal,
-                mirror_vertical: ov.mirror_vertical,
-                measured_text_width: ov.measured_text_width,
-                measured_text_height: ov.measured_text_height,
-            });
-        }
-
-        CompositorLayout {
-            canvas_width: config.width,
-            canvas_height: config.height,
-            layers,
-            text_overlays: resolved_text_overlays,
-            image_overlays: resolved_image_overlays,
-        }
-    }
-
     fn apply_update_params(
         config: &mut CompositorConfig,
         image_overlays: &mut Arc<[Arc<DecodedOverlay>]>,
