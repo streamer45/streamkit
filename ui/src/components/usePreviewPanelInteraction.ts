@@ -15,6 +15,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 const DEFAULT_WIDTH = 320;
 const MIN_WIDTH = 180;
 const MAX_WIDTH = 800;
+const DEFAULT_ASPECT_RATIO = 16 / 9;
 
 interface PanelInteraction {
   pos: { right: number; bottom: number };
@@ -29,7 +30,9 @@ interface PanelInteraction {
   handleDragStart: (e: React.PointerEvent) => void;
 }
 
-export function usePreviewPanelInteraction(): PanelInteraction {
+/** @param aspectRatio  CSS aspect-ratio string from the video stream (e.g. "640 / 480").
+ *  Used to scale vertical resizes proportionally.  Falls back to 16:9 when unknown. */
+export function usePreviewPanelInteraction(aspectRatio?: string): PanelInteraction {
   const [pos, setPos] = useState({ right: 16, bottom: 16 });
   const [panelWidth, setPanelWidth] = useState(DEFAULT_WIDTH);
   const [collapsed, setCollapsed] = useState(false);
@@ -42,6 +45,15 @@ export function usePreviewPanelInteraction(): PanelInteraction {
     origX: number;
     origY: number;
   } | null>(null);
+
+  // Parse the CSS aspect-ratio string ("W / H") into a numeric ratio.
+  // Falls back to 16:9 when the stream dimensions are not yet known.
+  const numericRatio = React.useMemo(() => {
+    if (!aspectRatio) return DEFAULT_ASPECT_RATIO;
+    const parts = aspectRatio.split('/').map((s) => Number(s.trim()));
+    if (parts.length === 2 && parts[0] > 0 && parts[1] > 0) return parts[0] / parts[1];
+    return DEFAULT_ASPECT_RATIO;
+  }, [aspectRatio]);
 
   const resizeRef = useRef<{
     startX: number;
@@ -76,14 +88,14 @@ export function usePreviewPanelInteraction(): PanelInteraction {
         const sign = curEdge === 'left' || curEdge === 'top' ? -1 : 1;
         const rawDelta = isHorizontal
           ? sign * (ev.clientX - startX)
-          : sign * (ev.clientY - startY) * 1.78;
+          : sign * (ev.clientY - startY) * numericRatio;
 
         const newWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, origWidth + rawDelta));
         setPanelWidth(newWidth);
 
         if (curEdge === 'bottom') {
           const widthDelta = newWidth - origWidth;
-          setPos((prev) => ({ ...prev, bottom: Math.max(0, origY - widthDelta / 1.78) }));
+          setPos((prev) => ({ ...prev, bottom: Math.max(0, origY - widthDelta / numericRatio) }));
         }
       };
 
@@ -98,7 +110,7 @@ export function usePreviewPanelInteraction(): PanelInteraction {
       document.addEventListener('pointerup', handleResizeUp);
       activeListenersRef.current = { move: handleResizeMove, up: handleResizeUp };
     },
-    [panelWidth, pos]
+    [panelWidth, pos, numericRatio]
   );
 
   const handleDragStart = useCallback(
