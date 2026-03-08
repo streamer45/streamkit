@@ -387,54 +387,53 @@ describe('streamStore', () => {
   });
 
   describe('disconnect', () => {
-    it('should clean up all MoQ resources and reset state', () => {
-      const mockPublish: MockCloseable = { close: vi.fn() };
-      const mockWatch: MockCloseable = { close: vi.fn() };
-      const mockWatchSync: MockCloseable = { close: vi.fn() };
-      const mockAudioSource: MockCloseable = { close: vi.fn() };
-      const mockAudioDecoder: MockCloseable = { close: vi.fn() };
-      const mockAudioEmitter: MockCloseable = { close: vi.fn() };
-      const mockVideoSource: MockCloseable = { close: vi.fn() };
-      const mockVideoDecoder: MockCloseable = { close: vi.fn() };
-      const mockVideoRenderer: MockCloseable = { close: vi.fn() };
-      const mockConnection: MockCloseable = { close: vi.fn() };
-      const mockMicrophone: MockCloseable = { close: vi.fn() };
-
-      // Set up store with mock objects
+    /** Create a connected store populated with mock closeables. */
+    function setupConnectedStore() {
+      const mocks = {
+        publish: { close: vi.fn() } as MockCloseable,
+        watch: { close: vi.fn() } as MockCloseable,
+        watchSync: { close: vi.fn() } as MockCloseable,
+        audioSource: { close: vi.fn() } as MockCloseable,
+        audioDecoder: { close: vi.fn() } as MockCloseable,
+        audioEmitter: { close: vi.fn() } as MockCloseable,
+        videoSource: { close: vi.fn() } as MockCloseable,
+        videoDecoder: { close: vi.fn() } as MockCloseable,
+        videoRenderer: { close: vi.fn() } as MockCloseable,
+        connection: { close: vi.fn() } as MockCloseable,
+        microphone: { close: vi.fn() } as MockCloseable,
+      };
       useStreamStore.setState({
         status: 'connected',
         isMicEnabled: true,
         errorMessage: 'some error',
-        publish: mockPublish as never,
-        watch: mockWatch as never,
-        watchSync: mockWatchSync as never,
-        audioSource: mockAudioSource as never,
-        audioDecoder: mockAudioDecoder as never,
-        audioEmitter: mockAudioEmitter as never,
-        videoSource: mockVideoSource as never,
-        videoDecoder: mockVideoDecoder as never,
-        videoRenderer: mockVideoRenderer as never,
-        connection: mockConnection as never,
-        microphone: mockMicrophone as never,
+        publish: mocks.publish as never,
+        watch: mocks.watch as never,
+        watchSync: mocks.watchSync as never,
+        audioSource: mocks.audioSource as never,
+        audioDecoder: mocks.audioDecoder as never,
+        audioEmitter: mocks.audioEmitter as never,
+        videoSource: mocks.videoSource as never,
+        videoDecoder: mocks.videoDecoder as never,
+        videoRenderer: mocks.videoRenderer as never,
+        connection: mocks.connection as never,
+        microphone: mocks.microphone as never,
       });
+      return mocks;
+    }
 
-      const { disconnect } = useStreamStore.getState();
-      disconnect();
+    it('should close all MoQ resources', () => {
+      const mocks = setupConnectedStore();
+      useStreamStore.getState().disconnect();
 
-      // All close methods should be called
-      expect(mockPublish.close).toHaveBeenCalled();
-      expect(mockWatch.close).toHaveBeenCalled();
-      expect(mockWatchSync.close).toHaveBeenCalled();
-      expect(mockAudioSource.close).toHaveBeenCalled();
-      expect(mockAudioDecoder.close).toHaveBeenCalled();
-      expect(mockAudioEmitter.close).toHaveBeenCalled();
-      expect(mockVideoSource.close).toHaveBeenCalled();
-      expect(mockVideoDecoder.close).toHaveBeenCalled();
-      expect(mockVideoRenderer.close).toHaveBeenCalled();
-      expect(mockConnection.close).toHaveBeenCalled();
-      expect(mockMicrophone.close).toHaveBeenCalled();
+      for (const mock of Object.values(mocks)) {
+        expect(mock.close).toHaveBeenCalled();
+      }
+    });
 
-      // State should be reset
+    it('should reset state after disconnect', () => {
+      setupConnectedStore();
+      useStreamStore.getState().disconnect();
+
       const state = useStreamStore.getState();
       expect(state.status).toBe('disconnected');
       expect(state.isMicEnabled).toBe(false);

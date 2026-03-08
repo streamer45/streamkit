@@ -17,7 +17,6 @@
  * use direct DOM manipulation (refs) so React never re-renders mid-interaction.
  */
 
-import styled from '@emotion/styled';
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import type {
@@ -26,6 +25,17 @@ import type {
   ImageOverlayState,
   ResizeHandle,
 } from '@/hooks/useCompositorLayers';
+
+import {
+  CanvasInner,
+  CanvasOuter,
+  EmptyState,
+  LayerBox,
+  LayerDimensions,
+  LayerLabel,
+  ResizeHandleDiv,
+  TextContent,
+} from './compositorCanvasStyles';
 
 // ── Hue generation ──────────────────────────────────────────────────────────
 
@@ -36,9 +46,6 @@ function layerHue(index: number): number {
 
 // ── Font mapping ────────────────────────────────────────────────────────────
 
-/** Map backend font names to CSS font-family values for canvas preview.
- *  These use web-safe fallback stacks so the preview is visually
- *  representative even when the exact system font is not installed. */
 const FONT_FAMILY_MAP: Record<string, string> = {
   'dejavu-sans': '"DejaVu Sans", "Verdana", sans-serif',
   'dejavu-serif': '"DejaVu Serif", "Georgia", serif',
@@ -48,7 +55,6 @@ const FONT_FAMILY_MAP: Record<string, string> = {
   'dejavu-sans-mono-bold': '"DejaVu Sans Mono", "Courier New", monospace',
 };
 
-/** Return true when the backend font name maps to a bold variant. */
 function isBoldFont(fontName: string): boolean {
   return fontName.endsWith('-bold');
 }
@@ -70,117 +76,38 @@ function layerTransform(
   return parts.length > 0 ? parts.join(' ') : undefined;
 }
 
-// ── Styled components ───────────────────────────────────────────────────────
-
-const CanvasOuter = styled.div`
-  width: 100%;
-  position: relative;
-  overflow: hidden;
-  border: 1px solid var(--sk-border);
-  border-radius: 4px;
-  background: var(--sk-sidebar-bg);
-`;
-
-const CanvasInner = styled.div`
-  position: relative;
-  transform-origin: top left;
-  background: #1a1a2e;
-  overflow: hidden;
-`;
-
-const LayerBox = styled.div`
-  position: absolute;
-  cursor: move;
-  user-select: none;
-  will-change: transform, left, top, width, height;
-  touch-action: none;
-  transform-origin: center center;
-`;
-
-const LayerLabel = styled.div`
-  position: absolute;
-  top: 2px;
-  left: 4px;
-  font-size: 10px;
-  font-weight: 600;
-  color: rgba(255, 255, 255, 0.95);
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
-  pointer-events: none;
-  white-space: nowrap;
-  z-index: 2;
-`;
-
-/** Text content rendered inside text overlay layers.
- *  Aligned top-left to match the backend compositor which renders text
- *  from origin (0, 0) within the overlay bitmap.
- *  No overflow clipping — the bounding box auto-sizes to fit the text,
- *  and any slight measurement rounding is preferable to clipping. */
-const TextContent = styled.div`
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: flex-start;
-  justify-content: flex-start;
-  pointer-events: none;
-  z-index: 1;
-`;
-
-const LayerDimensions = styled.div`
-  position: absolute;
-  bottom: 2px;
-  right: 4px;
-  font-size: 9px;
-  color: rgba(255, 255, 255, 0.6);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
-  pointer-events: none;
-  font-variant-numeric: tabular-nums;
-  z-index: 2;
-`;
-
-const HANDLE_SIZE = 8;
-
-const ResizeHandleDiv = styled.div<{ position: ResizeHandle }>`
-  position: absolute;
-  width: ${HANDLE_SIZE}px;
-  height: ${HANDLE_SIZE}px;
-  background: var(--sk-primary);
-  border: 1px solid rgba(255, 255, 255, 0.8);
-  border-radius: 2px;
-  z-index: 10;
-  touch-action: none;
-
-  ${(props) => {
-    const half = -HANDLE_SIZE / 2;
-    switch (props.position) {
-      case 'nw':
-        return `top: ${half}px; left: ${half}px; cursor: nw-resize;`;
-      case 'n':
-        return `top: ${half}px; left: 50%; margin-left: ${half}px; cursor: n-resize;`;
-      case 'ne':
-        return `top: ${half}px; right: ${half}px; cursor: ne-resize;`;
-      case 'e':
-        return `top: 50%; margin-top: ${half}px; right: ${half}px; cursor: e-resize;`;
-      case 'se':
-        return `bottom: ${half}px; right: ${half}px; cursor: se-resize;`;
-      case 's':
-        return `bottom: ${half}px; left: 50%; margin-left: ${half}px; cursor: s-resize;`;
-      case 'sw':
-        return `bottom: ${half}px; left: ${half}px; cursor: sw-resize;`;
-      case 'w':
-        return `top: 50%; margin-top: ${half}px; left: ${half}px; cursor: w-resize;`;
-    }
-  }}
-`;
-
-const EmptyState = styled.div`
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  min-height: 80px;
-  color: var(--sk-text-muted);
-  font-size: 11px;
-`;
+/** Compute the common style properties for a layer box. */
+function layerBoxStyle(
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  opts: {
+    visible: boolean;
+    opacity: number;
+    zIndex: number;
+    rotationDegrees: number;
+    mirrorHorizontal: boolean;
+    mirrorVertical: boolean;
+    borderColor: string;
+    bgColor: string;
+    outlineStyle?: 'solid' | 'dashed';
+  }
+): React.CSSProperties {
+  return {
+    left: x,
+    top: y,
+    width,
+    height,
+    opacity: opts.visible ? opts.opacity : 0.2,
+    transform: layerTransform(opts.rotationDegrees, opts.mirrorHorizontal, opts.mirrorVertical),
+    zIndex: opts.zIndex,
+    outline: `2px ${opts.outlineStyle ?? 'solid'} ${opts.borderColor}`,
+    outlineOffset: '-2px',
+    background: opts.bgColor,
+    filter: opts.visible ? undefined : 'grayscale(0.6)',
+  };
+}
 
 // ── Resize handles ──────────────────────────────────────────────────────────
 
@@ -228,23 +155,17 @@ const VideoLayer: React.FC<{
     <LayerBox
       ref={layerRef}
       className="nodrag nopan"
-      style={{
-        left: layer.x,
-        top: layer.y,
-        width: layer.width,
-        height: layer.height,
-        opacity: layer.visible ? layer.opacity : 0.2,
-        transform: layerTransform(
-          layer.rotationDegrees,
-          layer.mirrorHorizontal,
-          layer.mirrorVertical
-        ),
+      style={layerBoxStyle(layer.x, layer.y, layer.width, layer.height, {
+        visible: layer.visible,
+        opacity: layer.opacity,
         zIndex: layer.zIndex + 1,
-        outline: `2px ${layer.visible ? 'solid' : 'dashed'} ${borderColor}`,
-        outlineOffset: '-2px',
-        background: bgColor,
-        filter: layer.visible ? undefined : 'grayscale(0.6)',
-      }}
+        rotationDegrees: layer.rotationDegrees,
+        mirrorHorizontal: layer.mirrorHorizontal,
+        mirrorVertical: layer.mirrorVertical,
+        borderColor,
+        bgColor,
+        outlineStyle: layer.visible ? 'solid' : 'dashed',
+      })}
       onPointerDown={handlePointerDown}
     >
       <LayerLabel>{layer.id}</LayerLabel>
@@ -319,23 +240,17 @@ const TextOverlayLayer: React.FC<{
       <LayerBox
         ref={layerRef}
         className="nodrag nopan"
-        style={{
-          left: overlay.x,
-          top: overlay.y,
-          width: displayWidth,
-          height: displayHeight,
-          opacity: overlay.visible ? overlay.opacity : 0.2,
+        style={layerBoxStyle(overlay.x, overlay.y, displayWidth, displayHeight, {
+          visible: overlay.visible,
+          opacity: overlay.opacity,
           zIndex: overlay.zIndex ?? 100 + index,
-          outline: `2px dashed ${borderColor}`,
-          outlineOffset: '-2px',
-          background: bgColor,
-          filter: overlay.visible ? undefined : 'grayscale(0.6)',
-          transform: layerTransform(
-            overlay.rotationDegrees,
-            overlay.mirrorHorizontal,
-            overlay.mirrorVertical
-          ),
-        }}
+          rotationDegrees: overlay.rotationDegrees,
+          mirrorHorizontal: overlay.mirrorHorizontal,
+          mirrorVertical: overlay.mirrorVertical,
+          borderColor,
+          bgColor,
+          outlineStyle: 'dashed',
+        })}
         onPointerDown={handlePointerDown}
         onDoubleClick={handleDoubleClick}
       >
@@ -463,23 +378,16 @@ const ImageOverlayLayer: React.FC<{
     <LayerBox
       ref={layerRef}
       className="nodrag nopan"
-      style={{
-        left: overlay.x,
-        top: overlay.y,
-        width: overlay.width,
-        height: overlay.height,
-        opacity: overlay.visible ? overlay.opacity : 0.2,
-        transform: layerTransform(
-          overlay.rotationDegrees,
-          overlay.mirrorHorizontal,
-          overlay.mirrorVertical
-        ),
+      style={layerBoxStyle(overlay.x, overlay.y, overlay.width, overlay.height, {
+        visible: overlay.visible,
+        opacity: overlay.opacity,
         zIndex: overlay.zIndex ?? 200 + index,
-        outline: `2px solid ${borderColor}`,
-        outlineOffset: '-2px',
-        background: bgColor,
-        filter: overlay.visible ? undefined : 'grayscale(0.6)',
-      }}
+        rotationDegrees: overlay.rotationDegrees,
+        mirrorHorizontal: overlay.mirrorHorizontal,
+        mirrorVertical: overlay.mirrorVertical,
+        borderColor,
+        bgColor,
+      })}
       onPointerDown={handlePointerDown}
     >
       {imgSrc && (
