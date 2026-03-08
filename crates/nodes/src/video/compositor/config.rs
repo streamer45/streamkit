@@ -141,6 +141,12 @@ const fn default_font_size() -> u32 {
 }
 
 /// Generate a random UUID v4 string for overlay identity.
+///
+/// Used as the serde default for `TextOverlayConfig::id` and
+/// `ImageOverlayConfig::id`.  Callers that send repeated `UpdateParams`
+/// should include an explicit `id` to ensure the image-overlay decode
+/// cache can match across updates; omitting it causes a fresh UUID on
+/// every deserialization, defeating the cache.
 fn generate_overlay_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
