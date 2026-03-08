@@ -17,6 +17,7 @@ import type {
   ImageOverlayState,
   ResizeHandle,
 } from '@/hooks/useCompositorLayers';
+import { friendlyLabel } from '@/nodes/compositorNodeParts';
 
 import {
   LayerBox,
@@ -50,13 +51,6 @@ export function isBoldFont(fontName: string): boolean {
 
 export function cssFontFamily(fontName: string): string {
   return FONT_FAMILY_MAP[fontName] ?? 'sans-serif';
-}
-
-/** Build a short display label from a stable overlay id.
- *  E.g. "text · a3f2" or "img · 91cb" */
-export function overlayLabel(id: string, kind: 'text' | 'img'): string {
-  const short = id.length > 8 ? id.slice(0, 4) : id;
-  return `${kind} · ${short}`;
 }
 
 /** Build a CSS transform string combining rotation and mirror flips. */
@@ -250,7 +244,7 @@ export const TextOverlayLayer: React.FC<{
         onPointerDown={handlePointerDown}
         onDoubleClick={handleDoubleClick}
       >
-        <LayerLabel>{overlayLabel(overlay.id, 'text')}</LayerLabel>
+        <LayerLabel>{friendlyLabel(overlay.id, 'text', index)}</LayerLabel>
         <LayerDimensions>
           {Math.round(displayWidth)}&times;{Math.round(displayHeight)}
         </LayerDimensions>
@@ -401,7 +395,7 @@ export const ImageOverlayLayer: React.FC<{
           }}
         />
       )}
-      <LayerLabel>{overlayLabel(overlay.id, 'img')}</LayerLabel>
+      <LayerLabel>{friendlyLabel(overlay.id, 'image', index)}</LayerLabel>
       {isSelected && <ResizeHandles layerId={overlay.id} onResizeStart={onResizeStart} />}
     </LayerBox>
   );

@@ -8,7 +8,7 @@
  * Uses the Layer 1 measureHookRenders framework to verify that:
  *   1. Rapid slider interactions produce bounded render counts.
  *   2. Callback references remain stable (preventing cascade re-renders
- *      in memoized siblings like UnifiedLayerList, OpacityControl, etc.).
+ *      in memoized siblings like CompositorEntryList, OpacityControl, etc.).
  *   3. Server echo-back param changes don't trigger unnecessary re-renders.
  *
  * These tests catch the class of regression fixed in PR #89 where slider
