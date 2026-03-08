@@ -151,6 +151,9 @@ pub fn packet_type_to_c(pt: &PacketType) -> (CPacketTypeInfo, Option<CAudioForma
             },
             None,
         ),
+        // TODO: extend C ABI with CPacketType::RawVideo / EncodedVideo for structured video support.
+        // Currently video types are mapped to opaque Binary, so native plugins cannot
+        // inspect width/height/pixel_format.
         PacketType::RawVideo(_) | PacketType::EncodedVideo(_) | PacketType::Binary => (
             CPacketTypeInfo {
                 type_discriminant: CPacketType::Binary,
@@ -317,6 +320,7 @@ pub fn packet_to_c(packet: &Packet) -> CPacketRepr {
             },
             _owned: CPacketOwned::None,
         },
+        // TODO: extend C ABI for structured video frame support (width, height, pixel_format, layout).
         Packet::Video(frame) => CPacketRepr {
             packet: CPacket {
                 packet_type: CPacketType::Binary,

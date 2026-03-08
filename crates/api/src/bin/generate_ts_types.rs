@@ -11,8 +11,8 @@ use std::path::Path;
 use streamkit_core::control::NodeControlMessage;
 use streamkit_core::types::{
     AudioCodec, AudioFormat, EncodedAudioFormat, EncodedVideoFormat, PacketMetadata, PacketType,
-    PixelFormat, SampleFormat, TranscriptionData, TranscriptionSegment, VideoBitstreamFormat,
-    VideoCodec, VideoFormat,
+    PixelFormat, RawVideoFormat, SampleFormat, TranscriptionData, TranscriptionSegment,
+    VideoBitstreamFormat, VideoCodec,
 };
 use ts_rs::TS;
 
@@ -22,7 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         format!("// streamkit-core\nexport {}", SampleFormat::decl()),
         format!("export {}", AudioFormat::decl()),
         format!("export {}", PixelFormat::decl()),
-        format!("export {}", VideoFormat::decl()),
+        format!("export {}", RawVideoFormat::decl()),
         format!("export {}", AudioCodec::decl()),
         format!("export {}", VideoCodec::decl()),
         format!("export {}", VideoBitstreamFormat::decl()),

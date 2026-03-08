@@ -44,7 +44,7 @@ use streamkit_core::pins::PinManagementMessage;
 use streamkit_core::registry::StaticPins;
 use streamkit_core::stats::NodeStatsTracker;
 use streamkit_core::types::{
-    Packet, PacketMetadata, PacketType, PixelFormat, VideoFormat, VideoFrame,
+    Packet, PacketMetadata, PacketType, PixelFormat, RawVideoFormat, VideoFrame,
 };
 use streamkit_core::{
     config_helpers, state_helpers, view_data_helpers, InputPin, NodeContext, NodeRegistry,
@@ -302,17 +302,17 @@ impl CompositorNode {
     /// The set of video packet types accepted by compositor input pins.
     fn accepted_video_types() -> Vec<PacketType> {
         vec![
-            PacketType::RawVideo(VideoFormat {
+            PacketType::RawVideo(RawVideoFormat {
                 width: None,
                 height: None,
                 pixel_format: PixelFormat::Rgba8,
             }),
-            PacketType::RawVideo(VideoFormat {
+            PacketType::RawVideo(RawVideoFormat {
                 width: None,
                 height: None,
                 pixel_format: PixelFormat::I420,
             }),
-            PacketType::RawVideo(VideoFormat {
+            PacketType::RawVideo(RawVideoFormat {
                 width: None,
                 height: None,
                 pixel_format: PixelFormat::Nv12,
@@ -330,7 +330,7 @@ impl CompositorNode {
 
         let outputs = vec![OutputPin {
             name: "out".to_string(),
-            produces_type: PacketType::RawVideo(VideoFormat {
+            produces_type: PacketType::RawVideo(RawVideoFormat {
                 width: None,
                 height: None,
                 pixel_format: PixelFormat::Rgba8,
@@ -360,7 +360,7 @@ impl ProcessorNode for CompositorNode {
     fn output_pins(&self) -> Vec<OutputPin> {
         vec![OutputPin {
             name: "out".to_string(),
-            produces_type: PacketType::RawVideo(VideoFormat {
+            produces_type: PacketType::RawVideo(RawVideoFormat {
                 width: Some(self.config.width),
                 height: Some(self.config.height),
                 pixel_format: PixelFormat::Rgba8,

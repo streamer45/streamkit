@@ -10,7 +10,7 @@ export type AudioFormat = { sample_rate: number, channels: number, sample_format
 
 export type PixelFormat = "Rgba8" | "I420" | "Nv12";
 
-export type VideoFormat = { width: number | null, height: number | null, pixel_format: PixelFormat, };
+export type RawVideoFormat = { width: number | null, height: number | null, pixel_format: PixelFormat, };
 
 export type AudioCodec = "Opus";
 
@@ -76,7 +76,7 @@ language: string | null,
  */
 metadata: PacketMetadata | null, };
 
-export type PacketType = { "RawAudio": AudioFormat } | { "RawVideo": VideoFormat } | { "EncodedAudio": EncodedAudioFormat } | { "EncodedVideo": EncodedVideoFormat } | "Text" | "Transcription" | { "Custom": { type_id: string, } } | "Binary" | "Any" | "Passthrough";
+export type PacketType = { "RawAudio": AudioFormat } | { "RawVideo": RawVideoFormat } | { "EncodedAudio": EncodedAudioFormat } | { "EncodedVideo": EncodedVideoFormat } | "Text" | "Transcription" | { "Custom": { type_id: string, } } | "Binary" | "Any" | "Passthrough";
 
 export type PinCardinality = "One" | "Broadcast" | { "Dynamic": { prefix: string, } };
 

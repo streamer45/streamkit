@@ -330,6 +330,22 @@ impl FramePool<f32> {
 pub type VideoFramePool = FramePool<u8>;
 pub type PooledVideoData = PooledFrameData<u8>;
 
+/// Pre-computed buffer sizes for common video resolutions and pixel formats.
+///
+/// Each entry targets a specific resolution × format combination (packed, stride-align = 1):
+///
+/// | Bytes       | Resolution | Format | Notes                         |
+/// |-------------|------------|--------|-------------------------------|
+/// | 86,400      | 240×120    | I420   | tiny test / thumbnail         |
+/// | 230,400     | 320×240    | I420   | QVGA                          |
+/// | 345,600     | 320×240    | RGBA8  | QVGA (4 bpp)                  |
+/// | 921,600     | 640×480    | I420   | VGA                           |
+/// | 1,382,400   | 640×480    | RGBA8  | (partial) — also 960×480 I420 |
+/// | 3,110,400   | 1920×1080  | I420   | 1080p (1.5 bpp)               |
+/// | 3,686,400   | 1280×720   | RGBA8  | 720p (4 bpp)                  |
+/// | 8,294,400   | 1920×1080  | RGBA8  | 1080p (4 bpp)                 |
+/// | 12,441,600  | 3840×2160  | I420   | 4K (1.5 bpp)                  |
+/// | 33,177,600  | 3840×2160  | RGBA8  | 4K (4 bpp)                    |
 pub const DEFAULT_VIDEO_BUCKET_SIZES: &[usize] = &[
     86_400, 230_400, 345_600, 921_600, 1_382_400, 3_110_400, 3_686_400, 8_294_400, 12_441_600,
     33_177_600,
