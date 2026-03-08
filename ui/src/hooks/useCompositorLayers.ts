@@ -11,26 +11,23 @@
  * keeping the experience butter-smooth with no mid-drag re-renders.
  *
  * Heavy subsystems are extracted into companion modules:
+ *  - compositorCommit       – commit adapter, throttled persistence
  *  - compositorServerSync   – server-driven layout subscription
  *  - compositorOverlays     – overlay CRUD, layer property updates, reorder
  *  - compositorDragResize   – pointer drag / resize handlers
  *  - compositorLayerParsers – parsing, serialisation, pure helpers
  */
 
-import { throttle } from 'lodash-es';
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 
+import { useCompositorCommit } from './compositorCommit';
 import { useCompositorDragResize } from './compositorDragResize';
 import type { DragState } from './compositorDragResize';
 import {
-  buildConfig,
   mergeOverlayState,
   parseLayers,
   parseImageOverlays,
   parseTextOverlays,
-  serializeImageOverlays,
-  serializeLayers,
-  serializeTextOverlays,
 } from './compositorLayerParsers';
 import type {
   LayerState,
@@ -188,58 +185,21 @@ export const useCompositorLayers = (
     []
   );
 
-  // ── Throttled commit helpers ────────────────────────────────────────────
-  const throttledConfigChange = useMemo(() => {
-    if (!onConfigChange && !onParamChange) return null;
-    return throttle(
-      (currentLayers: LayerState[]) => {
-        if (onConfigChange) {
-          const config = buildConfig(
-            paramsRef.current,
-            currentLayers,
-            textOverlaysRef.current,
-            imageOverlaysRef.current
-          );
-          onConfigChange(nodeId, config);
-        } else if (onParamChange) {
-          onParamChange(nodeId, 'layers', serializeLayers(currentLayers));
-        }
-      },
-      throttleMs,
-      { leading: true, trailing: true }
-    );
-  }, [nodeId, onConfigChange, onParamChange, throttleMs]);
-
-  const throttledOverlayCommit = useMemo(() => {
-    if (!onConfigChange && !onParamChange) return null;
-    return throttle(
-      (nextText: TextOverlayState[], nextImg: ImageOverlayState[]) => {
-        if (onConfigChange) {
-          const config = buildConfig(paramsRef.current, layersRef.current, nextText, nextImg);
-          onConfigChange(nodeId, config);
-        } else if (onParamChange) {
-          onParamChange(nodeId, 'text_overlays', serializeTextOverlays(nextText));
-          onParamChange(nodeId, 'image_overlays', serializeImageOverlays(nextImg));
-        }
-      },
-      throttleMs,
-      { leading: true, trailing: true }
-    );
-  }, [nodeId, onConfigChange, onParamChange, throttleMs]);
-
-  useEffect(
-    () => () => {
-      throttledConfigChange?.cancel();
-      throttledOverlayCommit?.cancel();
-    },
-    [throttledConfigChange, throttledOverlayCommit]
-  );
-
-  // ── Overlay CRUD, property updates, reorder ─────────────────────────────
-  const overlayOps = useCompositorOverlays({
+  // ── Commit / persistence ───────────────────────────────────────────────────
+  const { commitAdapter, throttledConfigChange, throttledOverlayCommit } = useCompositorCommit({
     nodeId,
     onConfigChange,
     onParamChange,
+    throttleMs,
+    paramsRef,
+    layersRef,
+    textOverlaysRef,
+    imageOverlaysRef,
+  });
+
+  // ── Overlay CRUD, property updates, reorder ─────────────────────────────
+  const overlayOps = useCompositorOverlays({
+    commitAdapter,
     setLayers,
     setTextOverlays,
     setImageOverlays,
@@ -247,7 +207,6 @@ export const useCompositorLayers = (
     layersRef,
     textOverlaysRef,
     imageOverlaysRef,
-    paramsRef,
     throttledConfigChange,
     throttledOverlayCommit,
   });

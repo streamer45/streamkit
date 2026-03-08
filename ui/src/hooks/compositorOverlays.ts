@@ -10,12 +10,7 @@
 
 import { useCallback, useEffect, useRef } from 'react';
 
-import {
-  buildConfig,
-  serializeImageOverlays,
-  serializeLayers,
-  serializeTextOverlays,
-} from './compositorLayerParsers';
+import type { CommitAdapter } from './compositorCommit';
 import type {
   LayerState,
   TextOverlayState,
@@ -26,9 +21,7 @@ import type {
 // ── Shared dependency bag ────────────────────────────────────────────────
 
 export interface OverlayDeps {
-  nodeId: string;
-  onConfigChange?: (nodeId: string, config: Record<string, unknown>) => void;
-  onParamChange?: (nodeId: string, key: string, value: unknown) => void;
+  commitAdapter: CommitAdapter | null;
   setLayers: React.Dispatch<React.SetStateAction<LayerState[]>>;
   setTextOverlays: React.Dispatch<React.SetStateAction<TextOverlayState[]>>;
   setImageOverlays: React.Dispatch<React.SetStateAction<ImageOverlayState[]>>;
@@ -36,7 +29,6 @@ export interface OverlayDeps {
   layersRef: React.MutableRefObject<LayerState[]>;
   textOverlaysRef: React.MutableRefObject<TextOverlayState[]>;
   imageOverlaysRef: React.MutableRefObject<ImageOverlayState[]>;
-  paramsRef: React.MutableRefObject<Record<string, unknown>>;
   throttledConfigChange: ((layers: LayerState[]) => void) | null;
   throttledOverlayCommit: ((text: TextOverlayState[], img: ImageOverlayState[]) => void) | null;
 }
@@ -45,9 +37,7 @@ export interface OverlayDeps {
 
 export function useCompositorOverlays(deps: OverlayDeps) {
   const {
-    nodeId,
-    onConfigChange,
-    onParamChange,
+    commitAdapter,
     setLayers,
     setTextOverlays,
     setImageOverlays,
@@ -55,7 +45,6 @@ export function useCompositorOverlays(deps: OverlayDeps) {
     layersRef,
     textOverlaysRef,
     imageOverlaysRef,
-    paramsRef,
     throttledConfigChange,
     throttledOverlayCommit,
   } = deps;
@@ -190,15 +179,9 @@ export function useCompositorOverlays(deps: OverlayDeps) {
 
   const commitOverlays = useCallback(
     (nextText: TextOverlayState[], nextImg: ImageOverlayState[]) => {
-      if (onConfigChange) {
-        const config = buildConfig(paramsRef.current, layersRef.current, nextText, nextImg);
-        onConfigChange(nodeId, config);
-      } else if (onParamChange) {
-        onParamChange(nodeId, 'text_overlays', serializeTextOverlays(nextText));
-        onParamChange(nodeId, 'image_overlays', serializeImageOverlays(nextImg));
-      }
+      commitAdapter?.commitOverlays(nextText, nextImg);
     },
-    [nodeId, onConfigChange, onParamChange, paramsRef, layersRef]
+    [commitAdapter]
   );
 
   // Stable ref so pointer-up / visibility / mirror can call latest commit.
@@ -423,28 +406,17 @@ export function useCompositorOverlays(deps: OverlayDeps) {
       }
 
       if (hasVideoChanges || hasTextChanges || hasImgChanges) {
-        if (onConfigChange) {
-          const config = buildConfig(paramsRef.current, nextLayers, nextText, nextImg);
-          onConfigChange(nodeId, config);
-        } else if (onParamChange) {
-          if (hasVideoChanges) {
-            onParamChange(nodeId, 'layers', serializeLayers(nextLayers));
-          }
-          if (hasTextChanges || hasImgChanges) {
-            onParamChange(nodeId, 'text_overlays', serializeTextOverlays(nextText));
-            onParamChange(nodeId, 'image_overlays', serializeImageOverlays(nextImg));
-          }
-        }
+        commitAdapter?.commitAll(nextLayers, nextText, nextImg, {
+          layers: hasVideoChanges,
+          overlays: hasTextChanges || hasImgChanges,
+        });
       }
     },
     [
-      nodeId,
-      onConfigChange,
-      onParamChange,
+      commitAdapter,
       layersRef,
       textOverlaysRef,
       imageOverlaysRef,
-      paramsRef,
       setLayers,
       setTextOverlays,
       setImageOverlays,
