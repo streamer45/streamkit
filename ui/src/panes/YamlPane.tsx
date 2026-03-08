@@ -211,10 +211,12 @@ function findOverlayIndexById(
       itemIndex++;
     }
     const trimmed = line.trim();
+    // Strip leading "- " so we also match "- id: foo" (id on array-item line)
+    const stripped = trimmed.startsWith('- ') ? trimmed.slice(2) : trimmed;
     if (
-      (trimmed === `id: ${targetId}` ||
-        trimmed === `id: "${targetId}"` ||
-        trimmed === `id: '${targetId}'`) &&
+      (stripped === `id: ${targetId}` ||
+        stripped === `id: "${targetId}"` ||
+        stripped === `id: '${targetId}'`) &&
       itemIndex >= 0
     ) {
       return itemIndex;
