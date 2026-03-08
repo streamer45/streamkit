@@ -191,6 +191,108 @@ function findNodeLineRange(
   return null;
 }
 
+/** Classify a compositor layer ID into its YAML section and lookup strategy. */
+function parseLayerIdType(layerId: string): {
+  sectionKey: string;
+  subKey: string | null;
+  arrayIndex: number;
+} {
+  if (layerId.startsWith('text_')) {
+    return {
+      sectionKey: 'text_overlays',
+      subKey: null,
+      arrayIndex: parseInt(layerId.replace('text_', ''), 10),
+    };
+  }
+  if (layerId.startsWith('img_')) {
+    return {
+      sectionKey: 'image_overlays',
+      subKey: null,
+      arrayIndex: parseInt(layerId.replace('img_', ''), 10),
+    };
+  }
+  return { sectionKey: 'layers', subKey: layerId, arrayIndex: -1 };
+}
+
+/** Locate the start line and indent of a YAML section key within a range. */
+function findSectionStart(
+  lines: string[],
+  nodeRange: { startLine: number; endLine: number },
+  sectionKey: string
+): { start: number; indent: number } | null {
+  for (let i = nodeRange.startLine; i <= nodeRange.endLine; i++) {
+    if (lines[i].trim() === `${sectionKey}:`) {
+      return { start: i, indent: lines[i].length - lines[i].trimStart().length };
+    }
+  }
+  return null;
+}
+
+/** Find a map-style video layer key (e.g. "in_0:") under a section. */
+function findMapKeyRange(
+  lines: string[],
+  endLine: number,
+  sectionStart: number,
+  sectionIndent: number,
+  subKey: string
+): { startLine: number; endLine: number } | null {
+  let keyStart = -1;
+  let keyIndent = -1;
+  for (let i = sectionStart + 1; i <= endLine; i++) {
+    const line = lines[i];
+    const indent = line.length - line.trimStart().length;
+    if (indent <= sectionIndent && line.trim().length > 0) break;
+    const m = line.match(/^(\s+)([a-zA-Z0-9_:.-]+):\s*$/);
+    if (m && m[2] === subKey && indent > sectionIndent) {
+      keyStart = i;
+      keyIndent = indent;
+      continue;
+    }
+    if (keyStart !== -1 && indent <= keyIndent && line.trim().length > 0) {
+      return { startLine: keyStart, endLine: i - 1 };
+    }
+  }
+  return keyStart !== -1 ? { startLine: keyStart, endLine } : null;
+}
+
+/** Find the Nth array item ("- " prefix) under a section. */
+function findArrayItemRange(
+  lines: string[],
+  endLine: number,
+  sectionStart: number,
+  sectionIndent: number,
+  arrayIndex: number
+): { startLine: number; endLine: number } | null {
+  let itemCount = -1;
+  let itemStart = -1;
+  let itemIndent = -1;
+  for (let i = sectionStart + 1; i <= endLine; i++) {
+    const line = lines[i];
+    const indent = line.length - line.trimStart().length;
+    if (indent <= sectionIndent && line.trim().length > 0) break;
+    if (line.trimStart().startsWith('- ') && indent > sectionIndent) {
+      if (itemStart !== -1 && itemCount === arrayIndex) {
+        return { startLine: itemStart, endLine: i - 1 };
+      }
+      itemCount++;
+      itemStart = i;
+      itemIndent = indent;
+    }
+  }
+  if (itemStart !== -1 && itemCount === arrayIndex) {
+    for (let i = itemStart + 1; i <= endLine; i++) {
+      const line = lines[i];
+      const indent = line.length - line.trimStart().length;
+      if (indent <= sectionIndent && line.trim().length > 0)
+        return { startLine: itemStart, endLine: i - 1 };
+      if (line.trimStart().startsWith('- ') && indent <= itemIndent)
+        return { startLine: itemStart, endLine: i - 1 };
+    }
+    return { startLine: itemStart, endLine };
+  }
+  return null;
+}
+
 /**
  * Find a compositor layer/overlay sub-key within a node's YAML range.
  * Supports video layers (e.g. "in_0" under "layers:"), text overlays
@@ -203,96 +305,14 @@ function findLayerLineRange(
   layerId: string
 ): { startLine: number; endLine: number } | null {
   const lines = yaml.split('\n');
-
-  // Determine whether this is a video layer, text overlay, or image overlay
-  let sectionKey: string;
-  let subKey: string | null = null;
-  let arrayIndex = -1;
-
-  if (layerId.startsWith('text_')) {
-    sectionKey = 'text_overlays';
-    arrayIndex = parseInt(layerId.replace('text_', ''), 10);
-  } else if (layerId.startsWith('img_')) {
-    sectionKey = 'image_overlays';
-    arrayIndex = parseInt(layerId.replace('img_', ''), 10);
-  } else {
-    // Video layer — key lives directly under "layers:"
-    sectionKey = 'layers';
-    subKey = layerId;
-  }
-
-  // Find the section key (e.g. "layers:", "text_overlays:") within the node range
-  let sectionStart = -1;
-  let sectionIndent = -1;
-
-  for (let i = nodeRange.startLine; i <= nodeRange.endLine; i++) {
-    const trimmed = lines[i].trim();
-    if (trimmed === `${sectionKey}:`) {
-      sectionStart = i;
-      sectionIndent = lines[i].length - lines[i].trimStart().length;
-      break;
-    }
-  }
-  if (sectionStart === -1) return null;
+  const { sectionKey, subKey, arrayIndex } = parseLayerIdType(layerId);
+  const section = findSectionStart(lines, nodeRange, sectionKey);
+  if (!section) return null;
 
   if (subKey !== null) {
-    // Map-style lookup (video layers): find "in_0:" under "layers:"
-    let keyStart = -1;
-    let keyIndent = -1;
-    for (let i = sectionStart + 1; i <= nodeRange.endLine; i++) {
-      const line = lines[i];
-      const indent = line.length - line.trimStart().length;
-      if (indent <= sectionIndent && line.trim().length > 0) break; // left the section
-      const m = line.match(/^(\s+)([a-zA-Z0-9_:.-]+):\s*$/);
-      if (m && m[2] === subKey && indent > sectionIndent) {
-        keyStart = i;
-        keyIndent = indent;
-        continue;
-      }
-      if (keyStart !== -1 && indent <= keyIndent && line.trim().length > 0) {
-        return { startLine: keyStart, endLine: i - 1 };
-      }
-    }
-    if (keyStart !== -1) {
-      return { startLine: keyStart, endLine: nodeRange.endLine };
-    }
-  } else {
-    // Array-style lookup (text/image overlays): find the Nth "- " item
-    let itemCount = -1;
-    let itemStart = -1;
-    let itemIndent = -1;
-    for (let i = sectionStart + 1; i <= nodeRange.endLine; i++) {
-      const line = lines[i];
-      const indent = line.length - line.trimStart().length;
-      if (indent <= sectionIndent && line.trim().length > 0) break;
-      if (line.trimStart().startsWith('- ') && indent > sectionIndent) {
-        // Close previous item if we had one
-        if (itemStart !== -1 && itemCount === arrayIndex) {
-          return { startLine: itemStart, endLine: i - 1 };
-        }
-        itemCount++;
-        itemStart = i;
-        itemIndent = indent;
-      }
-    }
-    // Check if last item is the one we want
-    if (itemStart !== -1 && itemCount === arrayIndex) {
-      // Find the end of this item
-      for (let i = itemStart + 1; i <= nodeRange.endLine; i++) {
-        const line = lines[i];
-        const indent = line.length - line.trimStart().length;
-        if (indent <= sectionIndent && line.trim().length > 0) {
-          return { startLine: itemStart, endLine: i - 1 };
-        }
-        if (line.trimStart().startsWith('- ') && indent <= itemIndent) {
-          return { startLine: itemStart, endLine: i - 1 };
-        }
-      }
-      return { startLine: itemStart, endLine: nodeRange.endLine };
-    }
+    return findMapKeyRange(lines, nodeRange.endLine, section.start, section.indent, subKey);
   }
-
-  return null;
+  return findArrayItemRange(lines, nodeRange.endLine, section.start, section.indent, arrayIndex);
 }
 
 /** Debounce delay (ms) for YAML edits in staging mode. */

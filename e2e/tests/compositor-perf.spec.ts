@@ -204,10 +204,7 @@ test.describe('Compositor Slider Perf — Cascade Re-render Budget', () => {
     });
 
     const responseText = await createResponse.text();
-    expect(
-      createResponse.ok(),
-      `Failed to create session: ${responseText}`
-    ).toBeTruthy();
+    expect(createResponse.ok(), `Failed to create session: ${responseText}`).toBeTruthy();
 
     const createData = JSON.parse(responseText) as { session_id: string };
     sessionId = createData.session_id;
@@ -276,21 +273,21 @@ test.describe('Compositor Slider Perf — Cascade Re-render Budget', () => {
 
     for (const name of layerNames) {
       const layerDiv = compositorNode.getByText(name, { exact: true });
-      if (await layerDiv.first().isVisible().catch(() => false)) {
+      if (
+        await layerDiv
+          .first()
+          .isVisible()
+          .catch(() => false)
+      ) {
         availableLayers.push(name);
       }
     }
 
     if (availableLayers.length === 0) {
-      test.skip(
-        true,
-        'No compositor layers found — pipeline may not have initialised'
-      );
+      test.skip(true, 'No compositor layers found — pipeline may not have initialised');
     }
 
-    console.log(
-      `Found ${availableLayers.length} layer(s): ${availableLayers.join(', ')}`
-    );
+    console.log(`Found ${availableLayers.length} layer(s): ${availableLayers.join(', ')}`);
 
     // ── 5. Measure slider interactions per layer ────────────────────────
 
