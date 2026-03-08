@@ -63,6 +63,13 @@ function cssFontFamily(fontName: string): string {
   return FONT_FAMILY_MAP[fontName] ?? 'sans-serif';
 }
 
+/** Build a short display label from a stable overlay id.
+ *  E.g. "text · a3f2" or "img · 91cb" */
+function overlayLabel(id: string, kind: 'text' | 'img'): string {
+  const short = id.length > 8 ? id.slice(0, 4) : id;
+  return `${kind} · ${short}`;
+}
+
 /** Build a CSS transform string combining rotation and mirror flips. */
 function layerTransform(
   rotationDegrees: number,
@@ -254,7 +261,7 @@ const TextOverlayLayer: React.FC<{
         onPointerDown={handlePointerDown}
         onDoubleClick={handleDoubleClick}
       >
-        <LayerLabel>text_{index}</LayerLabel>
+        <LayerLabel>{overlayLabel(overlay.id, 'text')}</LayerLabel>
         <LayerDimensions>
           {Math.round(displayWidth)}&times;{Math.round(displayHeight)}
         </LayerDimensions>
@@ -405,7 +412,7 @@ const ImageOverlayLayer: React.FC<{
           }}
         />
       )}
-      <LayerLabel>IMG #{index}</LayerLabel>
+      <LayerLabel>{overlayLabel(overlay.id, 'img')}</LayerLabel>
       {isSelected && <ResizeHandles layerId={overlay.id} onResizeStart={onResizeStart} />}
     </LayerBox>
   );

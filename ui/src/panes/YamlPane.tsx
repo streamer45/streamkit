@@ -191,27 +191,38 @@ function findNodeLineRange(
   return null;
 }
 
-/** Classify a compositor layer ID into its YAML section and lookup strategy. */
-function parseLayerIdType(layerId: string): {
-  sectionKey: string;
-  subKey: string | null;
-  arrayIndex: number;
-} {
-  if (layerId.startsWith('text_')) {
-    return {
-      sectionKey: 'text_overlays',
-      subKey: null,
-      arrayIndex: parseInt(layerId.replace('text_', ''), 10),
-    };
+/** Find the array index of an overlay whose YAML `id:` field matches `targetId`
+ *  within a given section (e.g. `text_overlays:` or `image_overlays:`).
+ *  Returns -1 if not found. */
+function findOverlayIndexById(
+  lines: string[],
+  nodeRange: { startLine: number; endLine: number },
+  sectionKey: string,
+  targetId: string
+): number {
+  const section = findSectionStart(lines, nodeRange, sectionKey);
+  if (!section) return -1;
+  let itemIndex = -1;
+  for (let i = section.start + 1; i <= nodeRange.endLine; i++) {
+    const line = lines[i];
+    const indent = line.length - line.trimStart().length;
+    if (indent <= section.indent && line.trim().length > 0) break;
+    if (line.trimStart().startsWith('- ') && indent > section.indent) {
+      itemIndex++;
+    }
+    const trimmed = line.trim();
+    // Strip leading "- " so we also match "- id: foo" (id on array-item line)
+    const stripped = trimmed.startsWith('- ') ? trimmed.slice(2) : trimmed;
+    if (
+      (stripped === `id: ${targetId}` ||
+        stripped === `id: "${targetId}"` ||
+        stripped === `id: '${targetId}'`) &&
+      itemIndex >= 0
+    ) {
+      return itemIndex;
+    }
   }
-  if (layerId.startsWith('img_')) {
-    return {
-      sectionKey: 'image_overlays',
-      subKey: null,
-      arrayIndex: parseInt(layerId.replace('img_', ''), 10),
-    };
-  }
-  return { sectionKey: 'layers', subKey: layerId, arrayIndex: -1 };
+  return -1;
 }
 
 /** Locate the start line and indent of a YAML section key within a range. */
@@ -295,9 +306,9 @@ function findArrayItemRange(
 
 /**
  * Find a compositor layer/overlay sub-key within a node's YAML range.
- * Supports video layers (e.g. "in_0" under "layers:"), text overlays
- * ("text_0" → array index 0 under "text_overlays:"), and image overlays
- * ("img_0" → array index 0 under "image_overlays:").
+ * Supports video layers (e.g. "in_0" under "layers:") by map-key lookup,
+ * and text/image overlays by scanning for a matching `id:` field within
+ * the `text_overlays:` / `image_overlays:` YAML arrays.
  */
 function findLayerLineRange(
   yaml: string,
@@ -305,14 +316,51 @@ function findLayerLineRange(
   layerId: string
 ): { startLine: number; endLine: number } | null {
   const lines = yaml.split('\n');
-  const { sectionKey, subKey, arrayIndex } = parseLayerIdType(layerId);
-  const section = findSectionStart(lines, nodeRange, sectionKey);
-  if (!section) return null;
 
-  if (subKey !== null) {
-    return findMapKeyRange(lines, nodeRange.endLine, section.start, section.indent, subKey);
+  // Try video layers first (map key under "layers:")
+  const layersSection = findSectionStart(lines, nodeRange, 'layers');
+  if (layersSection) {
+    const mapRange = findMapKeyRange(
+      lines,
+      nodeRange.endLine,
+      layersSection.start,
+      layersSection.indent,
+      layerId
+    );
+    if (mapRange) return mapRange;
   }
-  return findArrayItemRange(lines, nodeRange.endLine, section.start, section.indent, arrayIndex);
+
+  // Try text overlays (search by id field)
+  const textIdx = findOverlayIndexById(lines, nodeRange, 'text_overlays', layerId);
+  if (textIdx >= 0) {
+    const textSection = findSectionStart(lines, nodeRange, 'text_overlays');
+    if (textSection) {
+      return findArrayItemRange(
+        lines,
+        nodeRange.endLine,
+        textSection.start,
+        textSection.indent,
+        textIdx
+      );
+    }
+  }
+
+  // Try image overlays (search by id field)
+  const imgIdx = findOverlayIndexById(lines, nodeRange, 'image_overlays', layerId);
+  if (imgIdx >= 0) {
+    const imgSection = findSectionStart(lines, nodeRange, 'image_overlays');
+    if (imgSection) {
+      return findArrayItemRange(
+        lines,
+        nodeRange.endLine,
+        imgSection.start,
+        imgSection.indent,
+        imgIdx
+      );
+    }
+  }
+
+  return null;
 }
 
 /** Debounce delay (ms) for YAML edits in staging mode. */

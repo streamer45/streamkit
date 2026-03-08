@@ -25,7 +25,6 @@ import type { DragState } from './compositorDragResize';
 import {
   buildConfig,
   mergeOverlayState,
-  OVERLAY_COMMIT_GUARD_MS,
   parseLayers,
   parseImageOverlays,
   parseTextOverlays,
@@ -136,8 +135,6 @@ export const useCompositorLayers = (
     imageOverlaysRef.current = imageOverlays;
   }, [imageOverlays]);
 
-  const overlayCommitGuardRef = useRef<number>(0);
-
   const layerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const dragStateRef = useRef<DragState | null>(null);
   const layersRef = useRef(layers);
@@ -152,9 +149,6 @@ export const useCompositorLayers = (
 
     const merged = mergeOverlayState(layersRef.current, parsed);
     if (merged !== layersRef.current) setLayers(merged);
-
-    const sinceCommit = Date.now() - overlayCommitGuardRef.current;
-    if (sinceCommit < OVERLAY_COMMIT_GUARD_MS) return;
 
     setTextOverlays((cur) =>
       mergeOverlayState(
@@ -254,7 +248,6 @@ export const useCompositorLayers = (
     textOverlaysRef,
     imageOverlaysRef,
     paramsRef,
-    overlayCommitGuardRef,
     throttledConfigChange,
     throttledOverlayCommit,
   });

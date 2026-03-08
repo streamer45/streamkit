@@ -69,7 +69,8 @@ nodes:
       # All overlay types now support rotation_degrees and z_index via the
       # unified OverlayTransform consolidation.
       text_overlays:
-        - text: "StreamKit Demo"
+        - id: "title"
+          text: "StreamKit Demo"
           rect:
             x: 20
             y: 20

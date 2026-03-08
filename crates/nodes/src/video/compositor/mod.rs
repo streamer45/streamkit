@@ -303,22 +303,14 @@ impl ProcessorNode for CompositorNode {
 
         // Decode image overlays (once).  Wrap in Arc so per-frame clones
         // into the work item are cheap reference-count bumps.
-        //
-        // `image_overlay_cfg_indices` records, for each successfully decoded
-        // overlay, the index of the originating `ImageOverlayConfig` in
-        // `config.image_overlays`.  This allows the cache in
-        // `apply_update_params` to map decoded bitmaps back to their configs
-        // without relying on dimension-matching heuristics.
         let mut image_overlays_vec: Vec<Arc<DecodedOverlay>> =
             Vec::with_capacity(self.config.image_overlays.len());
-        let mut image_overlay_cfg_indices: Vec<usize> =
-            Vec::with_capacity(self.config.image_overlays.len());
-        for (i, img_cfg) in self.config.image_overlays.iter().enumerate() {
+        for img_cfg in &self.config.image_overlays {
             match decode_image_overlay(img_cfg) {
                 Ok(overlay) => {
                     tracing::info!(
-                        "Decoded image overlay {}: {}x{} -> rect ({},{} {}x{})",
-                        i,
+                        "Decoded image overlay '{}': {}x{} -> rect ({},{} {}x{})",
+                        overlay.id,
                         overlay.width,
                         overlay.height,
                         overlay.rect.x,
@@ -327,10 +319,9 @@ impl ProcessorNode for CompositorNode {
                         overlay.rect.height,
                     );
                     image_overlays_vec.push(Arc::new(overlay));
-                    image_overlay_cfg_indices.push(i);
                 },
                 Err(e) => {
-                    tracing::warn!("Failed to decode image overlay {}: {}", i, e);
+                    tracing::warn!("Failed to decode image overlay '{}': {}", img_cfg.id, e);
                 },
             }
         }
@@ -472,7 +463,6 @@ impl ProcessorNode for CompositorNode {
                             Self::apply_update_params(
                                 &mut self.config,
                                 &mut image_overlays,
-                                &mut image_overlay_cfg_indices,
                                 &mut text_overlays,
                                 params,
                                 &mut stats_tracker,
@@ -766,9 +756,9 @@ impl CompositorNode {
         }
 
         let mut resolved_image_overlays: SmallVec<[ResolvedOverlay; 8]> = SmallVec::new();
-        for (i, ov) in image_overlays.iter().enumerate() {
+        for ov in image_overlays.iter() {
             resolved_image_overlays.push(ResolvedOverlay {
-                index: i,
+                id: ov.id.clone(),
                 x: ov.rect.x,
                 y: ov.rect.y,
                 width: ov.rect.width,
@@ -784,9 +774,9 @@ impl CompositorNode {
         }
 
         let mut resolved_text_overlays: SmallVec<[ResolvedOverlay; 8]> = SmallVec::new();
-        for (i, ov) in text_overlays.iter().enumerate() {
+        for ov in text_overlays.iter() {
             resolved_text_overlays.push(ResolvedOverlay {
-                index: i,
+                id: ov.id.clone(),
                 x: ov.rect.x,
                 y: ov.rect.y,
                 width: ov.rect.width,
@@ -813,7 +803,6 @@ impl CompositorNode {
     fn apply_update_params(
         config: &mut CompositorConfig,
         image_overlays: &mut Arc<[Arc<DecodedOverlay>]>,
-        image_overlay_cfg_indices: &mut Vec<usize>,
         text_overlays: &mut Arc<[Arc<DecodedOverlay>]>,
         params: serde_json::Value,
         stats_tracker: &mut NodeStatsTracker,
@@ -830,57 +819,31 @@ impl CompositorNode {
                     );
 
                     // Re-decode image overlays only when their content or
-                    // target rect changed.  When only video-layer positions
-                    // are updated (the common case) the existing decoded
-                    // bitmaps are reused via Arc, avoiding redundant base64
-                    // decode + bilinear prescale work.
-                    //
-                    // The cache is keyed by (data_base64, width, height).
-                    // `image_overlay_cfg_indices` provides an exact mapping
-                    // from each decoded overlay back to its originating
-                    // config index, eliminating any heuristic guessing
-                    // about which decoded bitmap belongs to which config.
+                    // target rect changed.  Cache keyed by stable overlay
+                    // ID — each decoded overlay carries its config id.
                     let old_imgs = image_overlays.clone();
-                    let old_cfgs = &config.image_overlays;
 
-                    let mut cache: HashMap<(&str, u32, u32), Vec<Arc<DecodedOverlay>>> =
-                        HashMap::new();
-
-                    // Each decoded overlay has a recorded config index in
-                    // `image_overlay_cfg_indices`.  Use this to look up
-                    // the originating config directly — no dimension
-                    // matching needed.
-                    for (dec_idx, decoded) in old_imgs.iter().enumerate() {
-                        if let Some(&cfg_idx) = image_overlay_cfg_indices.get(dec_idx) {
-                            if let Some(old_cfg) = old_cfgs.get(cfg_idx) {
-                                let key = (
-                                    old_cfg.data_base64.as_str(),
-                                    old_cfg.transform.rect.width,
-                                    old_cfg.transform.rect.height,
-                                );
-                                cache.entry(key).or_default().push(Arc::clone(decoded));
-                            }
-                        }
+                    let mut cache: HashMap<&str, Arc<DecodedOverlay>> = HashMap::new();
+                    for decoded in old_imgs.iter() {
+                        cache.insert(decoded.id.as_str(), Arc::clone(decoded));
                     }
 
                     let mut new_image_overlays: Vec<Arc<DecodedOverlay>> =
                         Vec::with_capacity(new_config.image_overlays.len());
-                    let mut new_cfg_indices: Vec<usize> =
-                        Vec::with_capacity(new_config.image_overlays.len());
-                    for (new_idx, img_cfg) in new_config.image_overlays.iter().enumerate() {
-                        let key = (
-                            img_cfg.data_base64.as_str(),
-                            img_cfg.transform.rect.width,
-                            img_cfg.transform.rect.height,
-                        );
-                        if let Some(entries) = cache.get_mut(&key) {
-                            if let Some(existing) = entries.pop() {
+                    for img_cfg in &new_config.image_overlays {
+                        if let Some(existing) = cache.get(img_cfg.id.as_str()) {
+                            // Check if content and target rect are unchanged.
+                            let old_cfg = config.image_overlays.iter().find(|c| c.id == img_cfg.id);
+                            let content_same = old_cfg.is_some_and(|oc| {
+                                oc.data_base64 == img_cfg.data_base64
+                                    && oc.transform.rect.width == img_cfg.transform.rect.width
+                                    && oc.transform.rect.height == img_cfg.transform.rect.height
+                            });
+                            if content_same {
                                 // Content and target dimensions unchanged —
-                                // reuse the decoded bitmap.  The overlay's
-                                // rect may be smaller than the config rect
-                                // due to aspect-ratio-preserving prescale,
-                                // so re-centre within the new config rect.
-                                let mut ov = (*existing).clone();
+                                // reuse the decoded bitmap.  Re-centre within
+                                // the new config rect and update transform.
+                                let mut ov = (**existing).clone();
                                 let cfg_w = img_cfg.transform.rect.width.cast_signed();
                                 let cfg_h = img_cfg.transform.rect.height.cast_signed();
                                 let ov_w = ov.rect.width.cast_signed();
@@ -893,20 +856,17 @@ impl CompositorNode {
                                 ov.mirror_horizontal = img_cfg.transform.mirror_horizontal;
                                 ov.mirror_vertical = img_cfg.transform.mirror_vertical;
                                 new_image_overlays.push(Arc::new(ov));
-                                new_cfg_indices.push(new_idx);
                                 continue;
                             }
                         }
                         match decode_image_overlay(img_cfg) {
                             Ok(ov) => {
                                 new_image_overlays.push(Arc::new(ov));
-                                new_cfg_indices.push(new_idx);
                             },
                             Err(e) => tracing::warn!("Image overlay decode failed: {e}"),
                         }
                     }
                     *image_overlays = Arc::from(new_image_overlays);
-                    *image_overlay_cfg_indices = new_cfg_indices;
 
                     // Re-rasterize text overlays.
                     let new_text_overlays: Vec<Arc<DecodedOverlay>> = new_config

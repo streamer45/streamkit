@@ -77,6 +77,9 @@ impl Default for OverlayTransform {
 /// Configuration for a static image overlay (decoded once at init).
 #[derive(Deserialize, Debug, Clone, JsonSchema)]
 pub struct ImageOverlayConfig {
+    /// Stable unique identifier.  Auto-generated (UUID v4) when omitted.
+    #[serde(default = "generate_overlay_id")]
+    pub id: String,
     /// Base64-encoded image data (PNG or JPEG). Decoded once during
     /// initialization, not per-frame.
     pub data_base64: String,
@@ -88,6 +91,9 @@ pub struct ImageOverlayConfig {
 /// Configuration for a text overlay (rasterized once per `UpdateParams`).
 #[derive(Deserialize, Debug, Clone, JsonSchema)]
 pub struct TextOverlayConfig {
+    /// Stable unique identifier.  Auto-generated (UUID v4) when omitted.
+    #[serde(default = "generate_overlay_id")]
+    pub id: String,
     /// The text string to render.
     pub text: String,
     /// Spatial and visual properties (rect, opacity, rotation, z_index).
@@ -132,6 +138,17 @@ const fn default_text_color() -> [u8; 4] {
 
 const fn default_font_size() -> u32 {
     24
+}
+
+/// Generate a random UUID v4 string for overlay identity.
+///
+/// Used as the serde default for `TextOverlayConfig::id` and
+/// `ImageOverlayConfig::id`.  Callers that send repeated `UpdateParams`
+/// should include an explicit `id` to ensure the image-overlay decode
+/// cache can match across updates; omitting it causes a fresh UUID on
+/// every deserialization, defeating the cache.
+fn generate_overlay_id() -> String {
+    uuid::Uuid::new_v4().to_string()
 }
 
 /// Layer configuration for a single compositing input.
@@ -247,7 +264,8 @@ pub struct ResolvedLayer {
 /// Server-computed layout for a single overlay (text or image).
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ResolvedOverlay {
-    pub index: usize,
+    /// Stable overlay identifier (matches the config `id` field).
+    pub id: String,
     pub x: i32,
     pub y: i32,
     /// Resolved width after text wrapping / image aspect-fit.
@@ -302,11 +320,11 @@ impl CompositorConfig {
         for (name, layer) in &self.layers {
             validate_opacity(layer.opacity, &format!("Layer '{name}'"))?;
         }
-        for (i, img) in self.image_overlays.iter().enumerate() {
-            validate_opacity(img.transform.opacity, &format!("Image overlay {i}"))?;
+        for img in &self.image_overlays {
+            validate_opacity(img.transform.opacity, &format!("Image overlay '{}'", img.id))?;
         }
-        for (i, txt) in self.text_overlays.iter().enumerate() {
-            validate_opacity(txt.transform.opacity, &format!("Text overlay {i}"))?;
+        for txt in &self.text_overlays {
+            validate_opacity(txt.transform.opacity, &format!("Text overlay '{}'", txt.id))?;
         }
         Ok(())
     }

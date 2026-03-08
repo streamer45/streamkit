@@ -39,7 +39,7 @@ interface ServerSpatial {
 
 /** Text overlay additionally carries font-engine text measurements. */
 interface ServerTextOverlay extends ServerSpatial {
-  index: number;
+  id: string;
   measured_text_width?: number;
   measured_text_height?: number;
 }
@@ -49,7 +49,7 @@ interface ServerLayout {
   canvas_height: number;
   layers: Array<ServerSpatial & { id: string }>;
   text_overlays: Array<ServerTextOverlay>;
-  image_overlays: Array<ServerSpatial & { index: number }>;
+  image_overlays: Array<ServerSpatial & { id: string }>;
 }
 
 // ── Pure helpers ────────────────────────────────────────────────────────────
@@ -130,14 +130,15 @@ function resolveOverlay<T extends OverlayBase>(o: T, so: ServerSpatial): T {
 }
 
 /** Apply server-resolved overlay positions to local state.
+ *  Matches by stable `id` instead of array index.
  *  Preserves original opacity for hidden overlays and performs
  *  shallow equality to avoid unnecessary re-renders. */
 export function applyServerOverlays<T extends OverlayBase>(
   prev: T[],
-  serverItems: Array<ServerSpatial & { index: number }>
+  serverItems: Array<ServerSpatial & { id: string }>
 ): T[] {
-  const next = prev.map((o, i) => {
-    const so = serverItems.find((s) => s.index === i);
+  const next = prev.map((o) => {
+    const so = serverItems.find((s) => s.id === o.id);
     if (!so) return o;
     return resolveOverlay(o, so);
   });
@@ -150,8 +151,8 @@ export function mergeTextMeasurements(
   serverTextOverlays: ServerTextOverlay[]
 ): TextOverlayState[] {
   let changed = false;
-  const next = base.map((o, i) => {
-    const so = serverTextOverlays.find((s) => s.index === i);
+  const next = base.map((o) => {
+    const so = serverTextOverlays.find((s) => s.id === o.id);
     if (!so) return o;
     const mtw = so.measured_text_width;
     const mth = so.measured_text_height;

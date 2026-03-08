@@ -128,7 +128,7 @@ webm = ["dep:webm", "dep:schemars", "dep:tempfile"]
 symphonia = ["dep:symphonia", "dep:schemars"]
 vp9 = ["dep:env-libvpx-sys", "dep:schemars"]
 colorbars = ["dep:schemars", "dep:serde_json", "dep:fontdue"]
-compositor = ["dep:schemars", "dep:serde_json", "dep:image", "dep:tiny-skia", "dep:base64", "dep:rayon", "dep:fontdue", "dep:smallvec"]
+compositor = ["dep:schemars", "dep:serde_json", "dep:image", "dep:tiny-skia", "dep:base64", "dep:rayon", "dep:fontdue", "dep:smallvec", "dep:uuid"]
 video = ["vp9", "colorbars", "compositor"]
 
 [dev-dependencies]
