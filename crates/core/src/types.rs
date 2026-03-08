@@ -119,7 +119,6 @@ pub struct PacketMetadata {
     /// Sequence number for ordering and detecting loss
     pub sequence: Option<u64>,
     /// Keyframe flag for encoded video packets (and raw frames if applicable)
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub keyframe: Option<bool>,
 }
 
