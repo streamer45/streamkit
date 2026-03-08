@@ -11,12 +11,23 @@
 import { useCallback, useEffect, useRef } from 'react';
 
 import type { CommitAdapter } from './compositorCommit';
-import type {
-  LayerState,
-  TextOverlayState,
-  ImageOverlayState,
-  LayerKind,
-} from './compositorLayerParsers';
+import {
+  DEFAULT_OPACITY,
+  DEFAULT_ROTATION_DEGREES,
+  DEFAULT_MIRROR_HORIZONTAL,
+  DEFAULT_MIRROR_VERTICAL,
+  DEFAULT_VISIBLE,
+  DEFAULT_FONT_SIZE,
+  DEFAULT_FONT_NAME,
+  DEFAULT_TEXT_COLOR,
+  DEFAULT_OVERLAY_X,
+  DEFAULT_OVERLAY_Y_BASE,
+  DEFAULT_OVERLAY_Y_STEP,
+  DEFAULT_TEXT_WIDTH,
+  DEFAULT_TEXT_HEIGHT,
+} from './compositorConstants';
+import type { LayerKind } from './compositorConstants';
+import type { LayerState, TextOverlayState, ImageOverlayState } from './compositorLayerParsers';
 
 // ── Shared dependency bag ────────────────────────────────────────────────
 
@@ -251,19 +262,19 @@ export function useCompositorOverlays(deps: OverlayDeps) {
           {
             id: newId,
             text,
-            x: 40,
-            y: 40 + prev.length * 50,
-            width: 200,
-            height: 40,
-            color: [255, 255, 255, 255],
-            fontSize: 24,
-            fontName: 'dejavu-sans',
-            opacity: 1.0,
-            rotationDegrees: 0,
+            x: DEFAULT_OVERLAY_X,
+            y: DEFAULT_OVERLAY_Y_BASE + prev.length * DEFAULT_OVERLAY_Y_STEP,
+            width: DEFAULT_TEXT_WIDTH,
+            height: DEFAULT_TEXT_HEIGHT,
+            color: DEFAULT_TEXT_COLOR,
+            fontSize: DEFAULT_FONT_SIZE,
+            fontName: DEFAULT_FONT_NAME,
+            opacity: DEFAULT_OPACITY,
+            rotationDegrees: DEFAULT_ROTATION_DEGREES,
             zIndex: maxZIndex() + 1,
-            mirrorHorizontal: false,
-            mirrorVertical: false,
-            visible: true,
+            mirrorHorizontal: DEFAULT_MIRROR_HORIZONTAL,
+            mirrorVertical: DEFAULT_MIRROR_VERTICAL,
+            visible: DEFAULT_VISIBLE,
           },
         ];
         commitOverlays(next, imageOverlaysRef.current);
@@ -322,16 +333,16 @@ export function useCompositorOverlays(deps: OverlayDeps) {
           {
             id: newId,
             dataBase64,
-            x: 40,
-            y: 40 + prev.length * 60,
+            x: DEFAULT_OVERLAY_X,
+            y: DEFAULT_OVERLAY_Y_BASE + prev.length * 60,
             width: w,
             height: h,
-            opacity: 1.0,
-            rotationDegrees: 0,
+            opacity: DEFAULT_OPACITY,
+            rotationDegrees: DEFAULT_ROTATION_DEGREES,
             zIndex: maxZIndex() + 1,
-            mirrorHorizontal: false,
-            mirrorVertical: false,
-            visible: true,
+            mirrorHorizontal: DEFAULT_MIRROR_HORIZONTAL,
+            mirrorVertical: DEFAULT_MIRROR_VERTICAL,
+            visible: DEFAULT_VISIBLE,
           },
         ];
         commitOverlays(textOverlaysRef.current, next);

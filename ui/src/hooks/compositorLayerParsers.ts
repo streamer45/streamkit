@@ -9,6 +9,22 @@
  * React state management and pointer interaction.
  */
 
+import {
+  DEFAULT_OPACITY,
+  DEFAULT_ROTATION_DEGREES,
+  DEFAULT_Z_INDEX,
+  DEFAULT_MIRROR_HORIZONTAL,
+  DEFAULT_MIRROR_VERTICAL,
+  DEFAULT_VISIBLE,
+  DEFAULT_FONT_SIZE,
+  DEFAULT_FONT_NAME,
+  DEFAULT_TEXT_COLOR,
+  DEFAULT_TEXT_WIDTH,
+  DEFAULT_TEXT_HEIGHT,
+} from './compositorConstants';
+
+export type { LayerKind } from './compositorConstants';
+
 // ── Public types ────────────────────────────────────────────────────────────
 
 export interface LayerState {
@@ -80,9 +96,6 @@ export interface ImageOverlayState {
 
 /** Which edge/corner is being resized */
 export type ResizeHandle = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
-
-/** Which category a layer belongs to for drag commit routing */
-export type LayerKind = 'video' | 'text' | 'image';
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -174,11 +187,11 @@ function parseTransformFields(
     y: rect?.y ?? 0,
     width: rect?.width ?? defaults.width,
     height: rect?.height ?? defaults.height,
-    opacity: readField<number>(raw, t, 'opacity', 1.0),
-    rotationDegrees: readField<number>(raw, t, 'rotation_degrees', 0),
+    opacity: readField<number>(raw, t, 'opacity', DEFAULT_OPACITY),
+    rotationDegrees: readField<number>(raw, t, 'rotation_degrees', DEFAULT_ROTATION_DEGREES),
     zIndex: readField<number>(raw, t, 'z_index', defaults.zIndex),
-    mirrorHorizontal: readField<boolean>(raw, t, 'mirror_horizontal', false),
-    mirrorVertical: readField<boolean>(raw, t, 'mirror_vertical', false),
+    mirrorHorizontal: readField<boolean>(raw, t, 'mirror_horizontal', DEFAULT_MIRROR_HORIZONTAL),
+    mirrorVertical: readField<boolean>(raw, t, 'mirror_vertical', DEFAULT_MIRROR_VERTICAL),
   };
 }
 
@@ -198,12 +211,12 @@ export function parseLayers(
       y: cfg.rect?.y ?? 0,
       width: cfg.rect?.width ?? canvasWidth,
       height: cfg.rect?.height ?? canvasHeight,
-      opacity: cfg.opacity ?? 1.0,
-      zIndex: cfg.z_index ?? 0,
-      rotationDegrees: cfg.rotation_degrees ?? 0,
-      mirrorHorizontal: cfg.mirror_horizontal ?? false,
-      mirrorVertical: cfg.mirror_vertical ?? false,
-      visible: true,
+      opacity: cfg.opacity ?? DEFAULT_OPACITY,
+      zIndex: cfg.z_index ?? DEFAULT_Z_INDEX,
+      rotationDegrees: cfg.rotation_degrees ?? DEFAULT_ROTATION_DEGREES,
+      mirrorHorizontal: cfg.mirror_horizontal ?? DEFAULT_MIRROR_HORIZONTAL,
+      mirrorVertical: cfg.mirror_vertical ?? DEFAULT_MIRROR_VERTICAL,
+      visible: DEFAULT_VISIBLE,
     }))
     .sort((a, b) => a.zIndex - b.zIndex);
 }
@@ -215,15 +228,15 @@ export function parseTextOverlays(params: Record<string, unknown>): TextOverlayS
   return overlays.map((o, i) => ({
     id: o.id ?? `text_${i}`,
     text: o.text ?? '',
-    color: o.color ?? [255, 255, 255, 255],
-    fontSize: o.font_size ?? 24,
-    fontName: o.font_name ?? 'dejavu-sans',
+    color: o.color ?? DEFAULT_TEXT_COLOR,
+    fontSize: o.font_size ?? DEFAULT_FONT_SIZE,
+    fontName: o.font_name ?? DEFAULT_FONT_NAME,
     ...parseTransformFields(o as unknown as Record<string, unknown>, {
-      width: 200,
-      height: 40,
+      width: DEFAULT_TEXT_WIDTH,
+      height: DEFAULT_TEXT_HEIGHT,
       zIndex: 100 + i,
     }),
-    visible: true,
+    visible: DEFAULT_VISIBLE,
   }));
 }
 
@@ -241,7 +254,7 @@ export function parseImageOverlays(params: Record<string, unknown>): ImageOverla
       height: 200,
       zIndex: 200 + i,
     }),
-    visible: true,
+    visible: DEFAULT_VISIBLE,
   }));
 }
 
