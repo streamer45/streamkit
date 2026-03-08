@@ -21,6 +21,7 @@ default:
 gen-types:
     @echo "Generating TypeScript types..."
     @cargo run -p streamkit-api --bin generate-ts-types
+    @cargo run -p streamkit-nodes --bin generate-compositor-types --features codegen
 
 # Fetch WIT dependencies (WASI interfaces)
 fetch-wit-deps:
