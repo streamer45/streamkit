@@ -21,6 +21,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 
 import { useCompositorCommit } from './compositorCommit';
+import type { LayerKind } from './compositorConstants';
 import { useCompositorDragResize } from './compositorDragResize';
 import type { DragState } from './compositorDragResize';
 import {
@@ -34,7 +35,6 @@ import type {
   TextOverlayState,
   ImageOverlayState,
   ResizeHandle,
-  LayerKind,
 } from './compositorLayerParsers';
 import { useCompositorOverlays } from './compositorOverlays';
 import { useServerLayoutSync } from './compositorServerSync';
@@ -44,8 +44,8 @@ export type {
   TextOverlayState,
   ImageOverlayState,
   ResizeHandle,
-  LayerKind,
 } from './compositorLayerParsers';
+export type { LayerKind } from './compositorConstants';
 
 export interface UseCompositorLayersOptions {
   nodeId: string;
