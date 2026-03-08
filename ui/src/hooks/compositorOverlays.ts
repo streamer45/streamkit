@@ -406,7 +406,10 @@ export function useCompositorOverlays(deps: OverlayDeps) {
       }
 
       if (hasVideoChanges || hasTextChanges || hasImgChanges) {
-        commitAdapter?.commitAll(nextLayers, nextText, nextImg);
+        commitAdapter?.commitAll(nextLayers, nextText, nextImg, {
+          layers: hasVideoChanges,
+          overlays: hasTextChanges || hasImgChanges,
+        });
       }
     },
     [

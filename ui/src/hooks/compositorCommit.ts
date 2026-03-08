@@ -29,8 +29,15 @@ export interface CommitAdapter {
   commitLayers: (layers: LayerState[]) => void;
   /** Persist overlay (text + image) changes. */
   commitOverlays: (text: TextOverlayState[], img: ImageOverlayState[]) => void;
-  /** Persist all layers and overlays in a single commit. */
-  commitAll: (layers: LayerState[], text: TextOverlayState[], img: ImageOverlayState[]) => void;
+  /** Persist all layers and overlays in a single commit.
+   *  Optional `changed` flags control which params are sent via onParamChange
+   *  (onConfigChange always sends the full config regardless). */
+  commitAll: (
+    layers: LayerState[],
+    text: TextOverlayState[],
+    img: ImageOverlayState[],
+    changed?: { layers?: boolean; overlays?: boolean }
+  ) => void;
 }
 
 /** Create a CommitAdapter that routes commits through the appropriate callback.
@@ -76,14 +83,25 @@ export function createCommitAdapter(
       }
     },
 
-    commitAll(layers: LayerState[], text: TextOverlayState[], img: ImageOverlayState[]) {
+    commitAll(
+      layers: LayerState[],
+      text: TextOverlayState[],
+      img: ImageOverlayState[],
+      changed?: { layers?: boolean; overlays?: boolean }
+    ) {
       if (onConfigChange) {
         const config = buildConfig(paramsRef.current, layers, text, img);
         onConfigChange(nodeId, config);
       } else if (onParamChange) {
-        onParamChange(nodeId, 'layers', serializeLayers(layers));
-        onParamChange(nodeId, 'text_overlays', serializeTextOverlays(text));
-        onParamChange(nodeId, 'image_overlays', serializeImageOverlays(img));
+        const sendLayers = changed?.layers ?? true;
+        const sendOverlays = changed?.overlays ?? true;
+        if (sendLayers) {
+          onParamChange(nodeId, 'layers', serializeLayers(layers));
+        }
+        if (sendOverlays) {
+          onParamChange(nodeId, 'text_overlays', serializeTextOverlays(text));
+          onParamChange(nodeId, 'image_overlays', serializeImageOverlays(img));
+        }
       }
     },
   };
