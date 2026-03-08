@@ -14,6 +14,11 @@
 import { useEffect } from 'react';
 
 import { useSessionStore, selectNodeViewData } from '@/stores/sessionStore';
+import type {
+  CompositorLayout,
+  ResolvedLayer,
+  ResolvedOverlay,
+} from '@/types/generated/compositor-types';
 
 import type {
   LayerState,
@@ -22,43 +27,10 @@ import type {
   OverlayBase,
 } from './compositorLayerParsers';
 
-// ── Server wire-format types ────────────────────────────────────────────────
-
-/** Spatial fields shared by all server-side resolved items. */
-interface ServerSpatial {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  opacity: number;
-  z_index: number;
-  rotation_degrees: number;
-  mirror_horizontal?: boolean;
-  mirror_vertical?: boolean;
-}
-
-/** Text overlay additionally carries font-engine text measurements. */
-interface ServerTextOverlay extends ServerSpatial {
-  id: string;
-  measured_text_width?: number;
-  measured_text_height?: number;
-}
-
-interface ServerLayout {
-  canvas_width: number;
-  canvas_height: number;
-  layers: Array<ServerSpatial & { id: string }>;
-  text_overlays: Array<ServerTextOverlay>;
-  image_overlays: Array<ServerSpatial & { id: string }>;
-}
-
 // ── Pure helpers ────────────────────────────────────────────────────────────
 
 /** Map server layer data to client LayerState[], preserving client-only fields. */
-export function mapServerLayers(
-  prev: LayerState[],
-  serverLayers: Array<ServerSpatial & { id: string }>
-): LayerState[] {
+export function mapServerLayers(prev: LayerState[], serverLayers: ResolvedLayer[]): LayerState[] {
   const next: LayerState[] = serverLayers.map((sl) => {
     const existing = prev.find((l) => l.id === sl.id);
     const opacity = existing && !existing.visible ? existing.opacity : sl.opacity;
@@ -71,8 +43,8 @@ export function mapServerLayers(
       opacity,
       zIndex: sl.z_index,
       rotationDegrees: sl.rotation_degrees,
-      mirrorHorizontal: sl.mirror_horizontal ?? existing?.mirrorHorizontal ?? false,
-      mirrorVertical: sl.mirror_vertical ?? existing?.mirrorVertical ?? false,
+      mirrorHorizontal: sl.mirror_horizontal,
+      mirrorVertical: sl.mirror_vertical,
       visible: existing?.visible ?? true,
     };
   });
@@ -97,10 +69,10 @@ export function mapServerLayers(
 
 /** Resolve a single overlay against its server counterpart.
  *  Returns the original object when nothing changed (referential equality). */
-function resolveOverlay<T extends OverlayBase>(o: T, so: ServerSpatial): T {
+function resolveOverlay<T extends OverlayBase>(o: T, so: ResolvedOverlay): T {
   const opacity = !o.visible ? o.opacity : so.opacity;
-  const mh = so.mirror_horizontal ?? o.mirrorHorizontal;
-  const mv = so.mirror_vertical ?? o.mirrorVertical;
+  const mh = so.mirror_horizontal;
+  const mv = so.mirror_vertical;
 
   if (
     o.x === so.x &&
@@ -135,7 +107,7 @@ function resolveOverlay<T extends OverlayBase>(o: T, so: ServerSpatial): T {
  *  shallow equality to avoid unnecessary re-renders. */
 export function applyServerOverlays<T extends OverlayBase>(
   prev: T[],
-  serverItems: Array<ServerSpatial & { id: string }>
+  serverItems: ResolvedOverlay[]
 ): T[] {
   const next = prev.map((o) => {
     const so = serverItems.find((s) => s.id === o.id);
@@ -148,14 +120,14 @@ export function applyServerOverlays<T extends OverlayBase>(
 /** Merge server text overlay measurements into local state. */
 export function mergeTextMeasurements(
   base: TextOverlayState[],
-  serverTextOverlays: ServerTextOverlay[]
+  serverTextOverlays: ResolvedOverlay[]
 ): TextOverlayState[] {
   let changed = false;
   const next = base.map((o) => {
     const so = serverTextOverlays.find((s) => s.id === o.id);
     if (!so) return o;
-    const mtw = so.measured_text_width;
-    const mth = so.measured_text_height;
+    const mtw = so.measured_text_width ?? undefined;
+    const mth = so.measured_text_height ?? undefined;
     if (o.measuredTextWidth === mtw && o.measuredTextHeight === mth) return o;
     changed = true;
     return { ...o, measuredTextWidth: mtw, measuredTextHeight: mth };
@@ -187,7 +159,7 @@ export function useServerLayoutSync(
       if (!viewData) return;
       if (dragStateRef.current) return;
 
-      const layout = viewData as ServerLayout;
+      const layout = viewData as CompositorLayout;
       if (!layout.layers) return;
 
       setLayers((prev) => mapServerLayers(prev, layout.layers));

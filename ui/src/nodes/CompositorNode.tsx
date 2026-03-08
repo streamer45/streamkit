@@ -96,7 +96,6 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
     params: data.params ?? {},
     onConfigChange: data.onConfigChange,
     onParamChange: data.onParamChange,
-    isStaged: data.isStaged,
   });
 
   const disabled = !data.onConfigChange && !data.onParamChange;

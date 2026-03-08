@@ -10,7 +10,7 @@
  * committed on pointer-up, keeping the experience butter-smooth.
  */
 
-import { useCallback } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 
 import { computeUpdatedLayer } from './compositorLayerParsers';
 import type {
@@ -80,6 +80,12 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
     throttledConfigChange,
     commitOverlaysRef,
   } = deps;
+
+  // Track active document listeners so the cleanup effect can remove them on unmount.
+  const activeListenersRef = useRef<{
+    move: (e: PointerEvent) => void;
+    up: (e: PointerEvent) => void;
+  } | null>(null);
 
   const computeLayerFromPointer = useCallback(
     (state: DragState, clientX: number, clientY: number): LayerState => {
@@ -182,6 +188,7 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
       dragStateRef.current = null;
       document.removeEventListener('pointermove', handlePointerMove);
       document.removeEventListener('pointerup', handlePointerUp);
+      activeListenersRef.current = null;
     },
     [
       dragStateRef,
@@ -232,6 +239,7 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
       setIsDragging(true);
       document.addEventListener('pointermove', handlePointerMove);
       document.addEventListener('pointerup', handlePointerUp);
+      activeListenersRef.current = { move: handlePointerMove, up: handlePointerUp };
     },
     [
       canvasWidth,
@@ -283,6 +291,7 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
       setIsDragging(true);
       document.addEventListener('pointermove', handlePointerMove);
       document.addEventListener('pointerup', handlePointerUp);
+      activeListenersRef.current = { move: handlePointerMove, up: handlePointerUp };
     },
     [
       canvasWidth,
@@ -295,6 +304,22 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
       handlePointerUp,
     ]
   );
+
+  // Clean up document listeners if the component unmounts mid-drag.
+  useEffect(() => {
+    return () => {
+      if (activeListenersRef.current) {
+        document.removeEventListener('pointermove', activeListenersRef.current.move);
+        document.removeEventListener('pointerup', activeListenersRef.current.up);
+      }
+      if (dragStateRef.current?.rafId != null) {
+        cancelAnimationFrame(dragStateRef.current.rafId);
+      }
+      dragStateRef.current = null;
+      setIsDragging(false);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only: all deps are stable refs or React setters that never change
+  }, []);
 
   return {
     handleLayerPointerDown,
