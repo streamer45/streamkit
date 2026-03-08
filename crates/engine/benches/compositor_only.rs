@@ -48,7 +48,7 @@ use streamkit_core::VideoFramePool;
 use streamkit_nodes::video::compositor::config::Rect;
 use streamkit_nodes::video::compositor::kernel::{composite_frame, ConversionCache, LayerSnapshot};
 use streamkit_nodes::video::compositor::overlay::DecodedOverlay;
-use streamkit_nodes::video::compositor::pixel_ops::{rgba8_to_i420_buf, rgba8_to_nv12_buf};
+use streamkit_nodes::video::pixel_ops::{rgba8_to_i420_buf, rgba8_to_nv12_buf};
 
 // ── Default benchmark parameters ────────────────────────────────────────────
 

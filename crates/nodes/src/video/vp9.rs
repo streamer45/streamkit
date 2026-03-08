@@ -6,7 +6,7 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use opentelemetry::{global, KeyValue};
+use opentelemetry::global;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::borrow::Cow;
@@ -228,7 +228,7 @@ impl ProcessorNode for Vp9DecoderNode {
             tracing::info!("Vp9DecoderNode input stream closed");
         });
 
-        codec_forward_loop(
+        crate::codec_utils::codec_forward_loop(
             &mut context,
             &mut result_rx,
             &mut input_task,
@@ -415,7 +415,7 @@ impl ProcessorNode for Vp9EncoderNode {
             tracing::info!("Vp9EncoderNode input stream closed");
         });
 
-        codec_forward_loop(
+        crate::codec_utils::codec_forward_loop(
             &mut context,
             &mut result_rx,
             &mut input_task,
@@ -436,106 +436,6 @@ impl ProcessorNode for Vp9EncoderNode {
         tracing::info!("Vp9EncoderNode finished");
         Ok(())
     }
-}
-
-/// Shared select-loop that forwards codec results to the output sender.
-///
-/// Handles three concurrent events:
-/// 1. Results arriving from the blocking codec task.
-/// 2. Shutdown control messages.
-/// 3. Input task completion (triggers drain of remaining results).
-///
-/// `to_packet` converts a codec-specific result `T` into a [`Packet`].
-#[allow(clippy::too_many_arguments)]
-async fn codec_forward_loop<T: Send + 'static, S: Send>(
-    context: &mut NodeContext,
-    result_rx: &mut mpsc::Receiver<Result<T, String>>,
-    input_task: &mut tokio::task::JoinHandle<()>,
-    codec_task: tokio::task::JoinHandle<()>,
-    codec_tx: mpsc::Sender<S>,
-    counter: &opentelemetry::metrics::Counter<u64>,
-    stats: &mut NodeStatsTracker,
-    to_packet: impl Fn(T) -> Packet,
-    label: &str,
-) {
-    /// Forwards a single successful codec result to the output sender.
-    /// Returns `true` if the output channel is closed (caller should break).
-    async fn forward_one(
-        packet: Packet,
-        context: &mut NodeContext,
-        counter: &opentelemetry::metrics::Counter<u64>,
-        stats: &mut NodeStatsTracker,
-    ) -> bool {
-        counter.add(1, &[KeyValue::new("status", "ok")]);
-        stats.received();
-        if context.output_sender.send("out", packet).await.is_err() {
-            tracing::debug!("Output channel closed, stopping node");
-            return true;
-        }
-        stats.sent();
-        stats.maybe_send();
-        false
-    }
-
-    /// Handles a codec error result by updating counters and logging.
-    fn handle_error(
-        err: &str,
-        counter: &opentelemetry::metrics::Counter<u64>,
-        stats: &mut NodeStatsTracker,
-        label: &str,
-    ) {
-        counter.add(1, &[KeyValue::new("status", "error")]);
-        stats.received();
-        stats.errored();
-        stats.maybe_send();
-        tracing::warn!("{label} codec error: {err}");
-    }
-
-    loop {
-        tokio::select! {
-            maybe_result = result_rx.recv() => {
-                match maybe_result {
-                    Some(Ok(item)) => {
-                        if forward_one(to_packet(item), context, counter, stats).await {
-                            break;
-                        }
-                    }
-                    Some(Err(err)) => handle_error(&err, counter, stats, label),
-                    None => break,
-                }
-            }
-            Some(control_msg) = context.control_rx.recv() => {
-                if matches!(control_msg, streamkit_core::control::NodeControlMessage::Shutdown) {
-                    tracing::info!("{label} received shutdown signal");
-                    // NOTE: Aborting the input task and dropping codec_tx causes
-                    // the codec thread to exit/flush, but because we break out
-                    // here those flushed results are never sent downstream.
-                    // Data loss on explicit shutdown is acceptable.
-                    input_task.abort();
-                    codec_task.abort();
-                    drop(codec_tx);
-                    break;
-                }
-            }
-            _ = &mut *input_task => {
-                drop(codec_tx);
-                while let Some(maybe_result) = result_rx.recv().await {
-                    match maybe_result {
-                        Ok(item) => {
-                            if forward_one(to_packet(item), context, counter, stats).await {
-                                break;
-                            }
-                        }
-                        Err(err) => handle_error(&err, counter, stats, label),
-                    }
-                }
-                break;
-            }
-        }
-    }
-
-    codec_task.abort();
-    let _ = codec_task.await;
 }
 
 struct EncodedPacket {

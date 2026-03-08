@@ -37,6 +37,9 @@ pub mod colorbars;
 #[cfg(feature = "compositor")]
 pub mod compositor;
 
+#[cfg(any(feature = "video", feature = "compositor"))]
+pub mod pixel_ops;
+
 #[cfg(feature = "compositor")]
 pub mod pixel_convert;
 

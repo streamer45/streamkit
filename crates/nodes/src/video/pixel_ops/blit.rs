@@ -12,7 +12,17 @@
 //! is large enough to amortise the thread-pool dispatch overhead.
 
 use super::{blend_u8, rayon_chunk_rows, RAYON_ROW_THRESHOLD};
-use crate::video::compositor::config::Rect;
+/// Pixel-space rectangle for positioning a layer on the output canvas.
+///
+/// `x` and `y` are signed to allow off-screen positioning (e.g. for
+/// slide-in effects or rotation around the rect centre).
+#[derive(Debug, Clone)]
+pub struct BlitRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
 
 #[cfg(target_arch = "x86_64")]
 use super::simd::{
@@ -80,7 +90,7 @@ pub fn scale_blit_rgba(
     src: &[u8],
     src_width: u32,
     src_height: u32,
-    dst_rect: &Rect,
+    dst_rect: &BlitRect,
     opacity: f32,
     #[allow(unused_variables)] src_opaque: bool,
     mirror_h: bool,
@@ -735,7 +745,7 @@ pub fn scale_blit_rgba_rotated(
     src: &[u8],
     src_width: u32,
     src_height: u32,
-    dst_rect: &Rect,
+    dst_rect: &BlitRect,
     opacity: f32,
     rotation_deg: f32,
     src_opaque: bool,

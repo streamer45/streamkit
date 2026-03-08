@@ -13,9 +13,15 @@ use streamkit_core::types::PixelFormat;
 
 use super::config::Rect;
 use super::overlay::DecodedOverlay;
-use super::pixel_ops::{
-    all_alpha_opaque, i420_to_rgba8_buf, nv12_to_rgba8_buf, scale_blit_rgba_rotated,
+use crate::video::pixel_ops::{
+    all_alpha_opaque, i420_to_rgba8_buf, nv12_to_rgba8_buf, scale_blit_rgba_rotated, BlitRect,
 };
+
+impl From<Rect> for BlitRect {
+    fn from(r: Rect) -> Self {
+        Self { x: r.x, y: r.y, width: r.width, height: r.height }
+    }
+}
 
 // ── Compositing kernel (runs on a persistent blocking thread) ────────────────
 
@@ -196,7 +202,7 @@ struct CompositeItem<'a> {
     src_data: &'a [u8],
     src_width: u32,
     src_height: u32,
-    dst_rect: Rect,
+    dst_rect: BlitRect,
     opacity: f32,
     rotation_degrees: f32,
     /// When `true`, all source pixels have alpha == 255.  Allows the blit
@@ -312,8 +318,11 @@ pub fn composite_frame(
 
     // Video layers.
     for (layer, src_data) in resolved.iter().flatten() {
-        let dst_rect =
-            layer.rect.clone().unwrap_or(Rect { x: 0, y: 0, width: canvas_w, height: canvas_h });
+        let dst_rect: BlitRect = layer
+            .rect
+            .clone()
+            .unwrap_or(Rect { x: 0, y: 0, width: canvas_w, height: canvas_h })
+            .into();
         // NV12/I420 → RGBA8 conversion always writes alpha = 255.
         let src_opaque = layer.pixel_format != PixelFormat::Rgba8;
         items.push(CompositeItem {
@@ -337,7 +346,7 @@ pub fn composite_frame(
             src_data: &ov.rgba_data,
             src_width: ov.width,
             src_height: ov.height,
-            dst_rect: ov.rect.clone(),
+            dst_rect: ov.rect.clone().into(),
             opacity: ov.opacity,
             rotation_degrees: ov.rotation_degrees,
             src_opaque: false,
@@ -354,7 +363,7 @@ pub fn composite_frame(
             src_data: &ov.rgba_data,
             src_width: ov.width,
             src_height: ov.height,
-            dst_rect: ov.rect.clone(),
+            dst_rect: ov.rect.clone().into(),
             opacity: ov.opacity,
             rotation_degrees: ov.rotation_degrees,
             src_opaque: false,

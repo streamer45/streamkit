@@ -4,7 +4,7 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use opentelemetry::{global, KeyValue};
+use opentelemetry::global;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -100,13 +100,12 @@ impl ProcessorNode for OpusDecoderNode {
             Bytes,
             Option<streamkit_core::types::PacketMetadata>,
         )>(get_codec_channel_capacity());
-        let (result_tx, mut result_rx) = mpsc::channel::<(
-            Result<PooledSamples, String>,
-            Option<streamkit_core::types::PacketMetadata>,
-        )>(get_codec_channel_capacity());
+        let (result_tx, mut result_rx) =
+            mpsc::channel::<Result<Packet, String>>(get_codec_channel_capacity());
 
-        // Spawn a single blocking task that will handle all decode operations
-        // Uses blocking_recv/blocking_send for efficiency - no need for block_on
+        // Spawn a single blocking task that will handle all decode operations.
+        // Constructs AudioFrame packets directly so the forward loop can use
+        // the generic codec_forward_loop helper.
         let decode_task = tokio::task::spawn_blocking(move || {
             let mut decoder = match opus::Decoder::new(OPUS_SAMPLE_RATE, opus::Channels::Mono) {
                 Ok(d) => d,
@@ -117,43 +116,46 @@ impl ProcessorNode for OpusDecoderNode {
             };
 
             // Reusable decode buffer - avoids allocation per frame (~7.5KB savings per decode)
-            // This buffer lives for the lifetime of the decode task
             let mut decode_buffer = vec![0f32; OPUS_MAX_FRAME_SIZE];
 
-            // Use blocking_recv - efficient for spawn_blocking context
             while let Some((data, metadata)) = decode_rx.blocking_recv() {
                 let decode_start_time = Instant::now();
 
-                let result = {
-                    // Note: No need to zero the buffer - opus writes to it and we only
-                    // copy out decoded_len samples, so stale data is never read.
-                    match decoder.decode_float(&data, &mut decode_buffer, false) {
-                        Ok(decoded_len) => audio_pool.as_ref().map_or_else(
-                            || Ok(PooledSamples::from_vec(decode_buffer[..decoded_len].to_vec())),
+                let result = match decoder.decode_float(&data, &mut decode_buffer, false) {
+                    Ok(decoded_len) => {
+                        // Skip empty decode results
+                        if decoded_len == 0 {
+                            decode_duration_histogram
+                                .record(decode_start_time.elapsed().as_secs_f64(), &[]);
+                            continue;
+                        }
+                        let samples = audio_pool.as_ref().map_or_else(
+                            || PooledSamples::from_vec(decode_buffer[..decoded_len].to_vec()),
                             |pool| {
-                                let mut samples = pool.get(decoded_len);
-                                samples
-                                    .as_mut_slice()
-                                    .copy_from_slice(&decode_buffer[..decoded_len]);
-                                Ok(samples)
+                                let mut s = pool.get(decoded_len);
+                                s.as_mut_slice().copy_from_slice(&decode_buffer[..decoded_len]);
+                                s
                             },
-                        ),
-                        Err(e) => Err(e.to_string()),
-                    }
+                        );
+                        Ok(Packet::Audio(AudioFrame::from_pooled(
+                            OPUS_SAMPLE_RATE,
+                            1,
+                            samples,
+                            metadata,
+                        )))
+                    },
+                    Err(e) => Err(e.to_string()),
                 };
 
                 decode_duration_histogram.record(decode_start_time.elapsed().as_secs_f64(), &[]);
 
-                // Use blocking_send - efficient for spawn_blocking context
-                if result_tx.blocking_send((result, metadata)).is_err() {
-                    break; // Main task has shut down
+                if result_tx.blocking_send(result).is_err() {
+                    break;
                 }
             }
         });
 
         state_helpers::emit_running(&context.state_tx, &node_name);
-
-        let mut audio_packet_count = 0;
 
         // Stats tracking
         let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
@@ -211,153 +213,22 @@ impl ProcessorNode for OpusDecoderNode {
             tracing::info!("OpusDecoderNode input stream closed");
         });
 
-        // Process results from the blocking task
-        loop {
-            tokio::select! {
-                maybe_result = result_rx.recv() => {
-                    match maybe_result {
-                        Some((Ok(decoded_samples), metadata)) => {
-                            packets_processed_counter.add(1, &[KeyValue::new("status", "ok")]);
-                            stats_tracker.received();
-
-                            if !decoded_samples.is_empty() {
-                                audio_packet_count += 1;
-
-                                let output_frame = AudioFrame::from_pooled(
-                                    OPUS_SAMPLE_RATE,
-                                    1,
-                                    decoded_samples,
-                                    metadata, // Propagate metadata from input packet
-                                );
-                                if context
-                                    .output_sender
-                                    .send("out", Packet::Audio(output_frame))
-                                    .await
-                                    .is_err()
-                                {
-                                    tracing::debug!("Output channel closed, stopping node");
-                                    break;
-                                }
-                                stats_tracker.sent();
-                            }
-                            stats_tracker.maybe_send();
-                        }
-                        Some((Err(e), _metadata)) => {
-                            packets_processed_counter.add(1, &[KeyValue::new("status", "error")]);
-                            stats_tracker.received();
-                            stats_tracker.errored();
-                            stats_tracker.maybe_send();
-                            tracing::warn!("Decode error for packet: {}", e);
-                            // Don't fail the entire node for decode errors, just skip the packet
-                        }
-                        None => {
-                            // Result channel closed, blocking task is done
-                            break;
-                        }
-                    }
-                }
-                Some(control_msg) = context.control_rx.recv() => {
-                    if matches!(control_msg, streamkit_core::control::NodeControlMessage::Shutdown) {
-                        tracing::info!("OpusDecoderNode received shutdown signal");
-                        // Abort input task
-                        input_task.abort();
-                        // Abort blocking decode task for immediate shutdown
-                        decode_task.abort();
-                        // Signal blocking task to shut down (in case it's still running)
-                        drop(decode_tx);
-                        // Break out of main loop
-                        break;
-                    }
-                    // Ignore other control messages
-                }
-                _ = &mut input_task => {
-                    // Input task finished, signal blocking task to shut down
-                    drop(decode_tx);
-
-                    // Continue processing any remaining results, but also check for shutdown
-                    loop {
-                        tokio::select! {
-                            maybe_result = result_rx.recv() => {
-                                match maybe_result {
-                                    Some((Ok(decoded_samples), metadata)) => {
-                                        packets_processed_counter.add(1, &[KeyValue::new("status", "ok")]);
-                                        stats_tracker.received();
-
-                                        if !decoded_samples.is_empty() {
-                                            audio_packet_count += 1;
-
-                                            let output_frame = AudioFrame::from_pooled(
-                                                OPUS_SAMPLE_RATE,
-                                                1,
-                                                decoded_samples,
-                                                metadata, // Propagate metadata
-                                            );
-                                            if context
-                                                .output_sender
-                                                .send("out", Packet::Audio(output_frame))
-                                                .await
-                                                .is_err()
-                                            {
-                                                tracing::debug!("Output channel closed, stopping node");
-                                                break;
-                                            }
-                                            stats_tracker.sent();
-                                        }
-                                        stats_tracker.maybe_send();
-                                    }
-                                    Some((Err(e), _metadata)) => {
-                                        packets_processed_counter.add(1, &[KeyValue::new("status", "error")]);
-                                        stats_tracker.received();
-                                        stats_tracker.errored();
-                                        stats_tracker.maybe_send();
-                                        tracing::warn!("Decode error for packet: {}",  e);
-                                    }
-                                    None => {
-                                        // Result channel closed, all results processed
-                                        break;
-                                    }
-                                }
-                            }
-                            Some(ctrl_msg) = context.control_rx.recv() => {
-                                if matches!(ctrl_msg, streamkit_core::control::NodeControlMessage::Shutdown) {
-                                    tracing::info!("OpusDecoderNode received shutdown signal during drain");
-                                    // Abort blocking decode task for immediate shutdown
-                                    decode_task.abort();
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    break;
-                }
-            }
-        }
-
-        // Abort the blocking task if not already aborted (for immediate shutdown)
-        decode_task.abort();
-
-        // Wait for the blocking task to complete with timeout (blocking I/O may not abort immediately)
-        match tokio::time::timeout(std::time::Duration::from_millis(100), decode_task).await {
-            Ok(Ok(())) => {
-                // Task completed successfully
-            },
-            Ok(Err(e)) => {
-                // Task panicked or was aborted
-                if !e.is_cancelled() {
-                    tracing::error!("Decode task panicked: {}", e);
-                }
-            },
-            Err(_) => {
-                // Timeout - blocking task is stuck in I/O, this is expected on abort
-                tracing::debug!(
-                    "Decode task did not respond to abort within 100ms (stuck in blocking I/O)"
-                );
-            },
-        }
+        crate::codec_utils::codec_forward_loop(
+            &mut context,
+            &mut result_rx,
+            &mut input_task,
+            decode_task,
+            decode_tx,
+            &packets_processed_counter,
+            &mut stats_tracker,
+            |packet| packet, // Already a Packet, pass through
+            "OpusDecoderNode",
+        )
+        .await;
 
         state_helpers::emit_stopped(&context.state_tx, &node_name, "input_closed");
 
-        tracing::info!("OpusDecoderNode finished after {} audio packets", audio_packet_count);
+        tracing::info!("OpusDecoderNode finished");
         Ok(())
     }
 }
@@ -586,114 +457,27 @@ impl ProcessorNode for OpusEncoderNode {
             tracing::info!("OpusEncoderNode input stream closed after {} frames", frame_count);
         });
 
-        // Process results from the blocking task
-        loop {
-            tokio::select! {
-                maybe_result = result_rx.recv() => {
-                    match maybe_result {
-                        Some(Ok(encoded_data)) => {
-                            packets_processed_counter.add(1, &[KeyValue::new("status", "ok")]);
-                            stats_tracker.received();
-
-                            // Calculate packet duration: Opus typically uses 20ms frames at 48kHz
-                            // (960 samples per frame). Set duration for pacing nodes downstream.
-                            let duration_us = 20_000u64; // 20ms = 20,000 microseconds
-
-                            let output_packet = Packet::Binary {
-                                data: Bytes::from(encoded_data),
-                                content_type: None, // Opus packets don't have a content-type
-                                metadata: Some(streamkit_core::types::PacketMetadata {
-                                    timestamp_us: None, // No absolute timestamp
-                                    duration_us: Some(duration_us),
-                                    sequence: None, // No sequence tracking yet
-                                    keyframe: None,
-                                }),
-                            };
-                            if context
-                                .output_sender
-                                .send("out", output_packet)
-                                .await
-                                .is_err()
-                            {
-                                tracing::debug!("Output channel closed, stopping node");
-                                break;
-                            }
-                            stats_tracker.sent();
-                            stats_tracker.maybe_send();
-                        }
-                        Some(Err(e)) => {
-                            packets_processed_counter.add(1, &[KeyValue::new("status", "error")]);
-                            stats_tracker.received();
-                            stats_tracker.errored();
-                            stats_tracker.maybe_send();
-                            tracing::error!("Encode error: {}", e);
-                            // Don't fail the entire pipeline for encode errors (e.g., last frame with invalid size)
-                            // Just skip the frame and continue
-                        }
-                        None => {
-                            // Result channel closed, blocking task is done
-                            break;
-                        }
-                    }
-                }
-                Some(control_msg) = context.control_rx.recv() => {
-                    if matches!(control_msg, streamkit_core::control::NodeControlMessage::Shutdown) {
-                        tracing::info!("OpusEncoderNode received shutdown signal");
-                        // Abort input task
-                        input_task.abort();
-                        // Signal blocking task to shut down
-                        drop(encode_tx);
-                        // Break out of main loop
-                        break;
-                    }
-                    // Ignore other control messages
-                }
-                _ = &mut input_task => {
-                    // Input task finished, signal blocking task to shut down
-                    drop(encode_tx);
-
-                    // Continue processing any remaining results
-                    while let Some(maybe_result) = result_rx.recv().await {
-                        match maybe_result {
-                            Ok(encoded_data) => {
-                                packets_processed_counter.add(1, &[KeyValue::new("status", "ok")]);
-                                stats_tracker.received();
-
-                                let output_packet = Packet::Binary {
-                                    data: Bytes::from(encoded_data),
-                                    content_type: None, // Opus packets don't have a content-type
-                                    metadata: None,
-                                };
-                                if context
-                                    .output_sender
-                                    .send("out", output_packet)
-                                    .await
-                                    .is_err()
-                                {
-                                    tracing::debug!("Output channel closed, stopping node");
-                                    break;
-                                }
-                                stats_tracker.sent();
-                                stats_tracker.maybe_send();
-                            }
-                            Err(e) => {
-                                packets_processed_counter.add(1, &[KeyValue::new("status", "error")]);
-                                stats_tracker.received();
-                                stats_tracker.errored();
-                                stats_tracker.maybe_send();
-                                tracing::error!("Encode error: {}", e);
-                                // Don't fail the entire pipeline for encode errors (e.g., last frame with invalid size)
-                                // Just skip the frame and continue processing remaining results
-                            }
-                        }
-                    }
-                    break;
-                }
-            }
-        }
-
-        // Wait for the blocking task to complete
-        let _ = encode_task.await;
+        crate::codec_utils::codec_forward_loop(
+            &mut context,
+            &mut result_rx,
+            &mut input_task,
+            encode_task,
+            encode_tx,
+            &packets_processed_counter,
+            &mut stats_tracker,
+            |encoded_data| Packet::Binary {
+                data: Bytes::from(encoded_data),
+                content_type: None,
+                metadata: Some(streamkit_core::types::PacketMetadata {
+                    timestamp_us: None,
+                    duration_us: Some(20_000), // 20ms Opus frame
+                    sequence: None,
+                    keyframe: None,
+                }),
+            },
+            "OpusEncoderNode",
+        )
+        .await;
 
         state_helpers::emit_stopped(&context.state_tx, &node_name, "input_closed");
 
