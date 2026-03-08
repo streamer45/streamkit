@@ -1887,6 +1887,7 @@ async fn destroy_session_handler(
     tokio::spawn(async move {
         if let Err(e) = session.shutdown_and_wait().await {
             warn!(session_id = %shutdown_id, error = %e, "Error during engine shutdown");
+            global::meter("skit_server").u64_counter("session.shutdown.errors").build().add(1, &[]);
         } else {
             info!(session_id = %shutdown_id, "Session destroyed successfully via HTTP");
         }
