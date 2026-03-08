@@ -458,7 +458,6 @@ const TextOverlayLayer: React.FC<{
               lineHeight: 1.2,
               whiteSpace: 'pre-wrap',
               wordBreak: 'break-word',
-              padding: '2px 4px',
               boxSizing: 'border-box',
             }}
           >
@@ -492,7 +491,6 @@ const TextOverlayLayer: React.FC<{
                 wordBreak: 'break-word',
                 whiteSpace: 'pre-wrap',
                 maxWidth: '100%',
-                padding: '2px 4px',
                 boxSizing: 'border-box',
               }}
             >

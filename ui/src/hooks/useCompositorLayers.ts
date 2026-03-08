@@ -1280,25 +1280,19 @@ export const useCompositorLayers = (
 
   const updateTextOverlay = useCallback(
     (id: string, updates: Partial<Omit<TextOverlayState, 'id'>>) => {
-      // Auto-expand the rect so the rendered text is never clipped.
-      // The backend expands the bitmap to fit, but the UI should keep
-      // the interactive rect in sync.
+      // Auto-expand the height so the rendered text is never clipped.
+      // Width is left to the server (rasterize_text_overlay uses precise
+      // fontdue glyph measurement and expands the bitmap as needed).
+      // The old per-character width estimate over-counted for proportional
+      // fonts, creating visible extra space on the right.
       const existing = textOverlaysRef.current.find((o) => o.id === id);
       if (existing) {
         const fontSize = updates.fontSize ?? existing.fontSize;
-        const text = updates.text ?? existing.text;
 
         // Height: ~1.4× font size covers ascenders + descenders.
         const minHeight = Math.ceil(fontSize * 1.4);
         if (existing.height < minHeight && !('height' in updates)) {
           updates = { ...updates, height: minHeight };
-        }
-
-        // Width: ~0.6× font size per character is a reasonable estimate
-        // for proportional fonts.  The backend will expand if still short.
-        const minWidth = Math.ceil(text.length * fontSize * 0.6);
-        if (existing.width < minWidth && !('width' in updates)) {
-          updates = { ...updates, width: minWidth };
         }
       }
       updateOverlay(id, updates, setTextOverlays, (next) => [next, imageOverlaysRef.current]);
