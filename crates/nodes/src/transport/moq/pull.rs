@@ -765,11 +765,17 @@ impl MoqPullNode {
                         },
                         ReadSource::Video => {
                             if let Some(pin_name) = video_track_pin_name.as_deref() {
-                                if video_track_pin_registered
-                                    && context.output_sender.send(pin_name, packet).await.is_err()
-                                {
-                                    tracing::debug!("Video output channel closed, stopping node");
-                                    return Ok(StreamEndReason::Natural);
+                                if video_track_pin_registered {
+                                    if context.output_sender.send(pin_name, packet).await.is_err() {
+                                        tracing::debug!(
+                                            "Video output channel closed, stopping node"
+                                        );
+                                        return Ok(StreamEndReason::Natural);
+                                    }
+                                } else {
+                                    tracing::trace!("Video pin not registered, discarding packet");
+                                    stats_tracker.discarded();
+                                    continue;
                                 }
                             }
                         },

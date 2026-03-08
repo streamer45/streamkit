@@ -283,6 +283,7 @@ impl ProcessorNode for MoqPushNode {
         let mut video_clock = MediaClock::new(self.config.initial_delay_ms);
         let mut audio_seeded = false;
         let mut video_seeded = false;
+        let mut audio_first_sent = false;
 
         // Stats tracking
         let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
@@ -324,7 +325,6 @@ impl ProcessorNode for MoqPushNode {
             };
 
             if let Packet::Binary { data, metadata, .. } = packet {
-                let is_first = packet_count == 0;
                 packet_count += 1;
                 stats_tracker.received();
 
@@ -369,7 +369,9 @@ impl ProcessorNode for MoqPushNode {
 
                 let keyframe = match input_source {
                     InputSource::Audio => {
-                        is_first || clock.is_group_boundary_ms(self.config.group_duration_ms)
+                        let first = !audio_first_sent;
+                        audio_first_sent = true;
+                        first || clock.is_group_boundary_ms(self.config.group_duration_ms)
                     },
                     InputSource::Video => {
                         metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(false)
