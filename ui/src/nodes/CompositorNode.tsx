@@ -214,28 +214,10 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
       sessionId={data.sessionId}
     >
       <CompositorOuterWrapper>
-        <CompositorWrapper>
-          <CanvasSection>
-            {canvasHeaderContent}
-
-            <CompositorCanvas
-              canvasWidth={canvasWidth}
-              canvasHeight={canvasHeight}
-              layers={layers}
-              textOverlays={textOverlays}
-              imageOverlays={imageOverlays}
-              selectedLayerId={selectedLayerId}
-              onSelectLayer={selectLayer}
-              onLayerPointerDown={handleLayerPointerDown}
-              onResizePointerDown={handleResizePointerDown}
-              onTextFocusRequest={disabled ? undefined : handleTextFocusRequest}
-              layerRefs={layerRefs}
-              disabled={disabled}
-            />
-          </CanvasSection>
-        </CompositorWrapper>
-
-        {/* Side panel: layer list (always) + inspector controls (when selected) */}
+        {/* Side panel rendered first in DOM order so that layer-list text
+            (e.g. "Text 0") is matched before identically-named canvas labels
+            by Playwright's getByText().first(). The panel uses position:absolute
+            so DOM order has no effect on visual layout. */}
         <SidePanel className="nodrag nopan">
           <CompositorEntryList
             entries={entries}
@@ -260,6 +242,27 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
             disabled={disabled}
           />
         </SidePanel>
+
+        <CompositorWrapper>
+          <CanvasSection>
+            {canvasHeaderContent}
+
+            <CompositorCanvas
+              canvasWidth={canvasWidth}
+              canvasHeight={canvasHeight}
+              layers={layers}
+              textOverlays={textOverlays}
+              imageOverlays={imageOverlays}
+              selectedLayerId={selectedLayerId}
+              onSelectLayer={selectLayer}
+              onLayerPointerDown={handleLayerPointerDown}
+              onResizePointerDown={handleResizePointerDown}
+              onTextFocusRequest={disabled ? undefined : handleTextFocusRequest}
+              layerRefs={layerRefs}
+              disabled={disabled}
+            />
+          </CanvasSection>
+        </CompositorWrapper>
       </CompositorOuterWrapper>
     </NodeFrame>
   );

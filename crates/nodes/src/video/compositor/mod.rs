@@ -645,27 +645,6 @@ impl ProcessorNode for CompositorNode {
                 continue;
             }
 
-            // Check for closed input channels.
-            let mut i = 0;
-            while i < slots.len() {
-                // A slot whose channel is closed AND has no buffered frame
-                // can be removed.  We detect closure by a failed try_recv
-                // returning Disconnected — but try_recv above already
-                // drained.  Use a zero-capacity poll instead:
-                if slots[i].rx.is_closed() {
-                    tracing::info!("CompositorNode: input '{}' closed", slots[i].name);
-                    clear_conversion_cache = true;
-                    slots.remove(i);
-                    layer_configs_dirty = true;
-                } else {
-                    i += 1;
-                }
-            }
-            if slots.is_empty() {
-                stop_reason = "all_inputs_closed";
-                break;
-            }
-
             // ── Rebuild resolved scene if needed ──────────────────────────
             if layer_configs_dirty {
                 scene = resolve_scene(&slots, &self.config, &image_overlays, &text_overlays);
@@ -785,12 +764,13 @@ impl ProcessorNode for CompositorNode {
             // compositor loop.  ChannelClosed is permanent (downstream
             // gone), so we stop the node.
             match context.output_sender.try_send("out", Packet::Video(out_frame)) {
-                Ok(()) => {},
+                Ok(()) => {
+                    stats_tracker.sent();
+                    stats_tracker.maybe_send();
+                },
                 Err(streamkit_core::node::OutputSendError::ChannelFull { .. }) => {
                     frames_dropped_counter.add(1, &otel_attrs);
                     stats_tracker.discarded();
-                    output_seq += 1;
-                    continue;
                 },
                 Err(_) => {
                     tracing::debug!("Output channel closed, stopping CompositorNode");
@@ -799,9 +779,30 @@ impl ProcessorNode for CompositorNode {
                 },
             }
 
-            stats_tracker.sent();
-            stats_tracker.maybe_send();
             output_seq += 1;
+
+            // ── Check for closed input channels ─────────────────────────
+            // Done *after* compositing so the compositor always produces
+            // one final frame from each input before removing the slot.
+            // Without this ordering the slot removal races with frame
+            // production: if all input channels close between drain and
+            // the next tick, the already-drained `latest_frame` values
+            // would be discarded without ever being composited.
+            let mut i = 0;
+            while i < slots.len() {
+                if slots[i].rx.is_closed() {
+                    tracing::info!("CompositorNode: input '{}' closed", slots[i].name);
+                    clear_conversion_cache = true;
+                    slots.remove(i);
+                    layer_configs_dirty = true;
+                } else {
+                    i += 1;
+                }
+            }
+            if slots.is_empty() {
+                stop_reason = "all_inputs_closed";
+                break;
+            }
         }
 
         // Drop the work sender to signal the compositing thread to exit.

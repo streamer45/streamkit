@@ -341,10 +341,14 @@ fn main() {
     let mut valid_header = true;
     let mut valid_size = true;
 
-    // Minimum expected output: at least 100 bytes per frame for animated 720p VP9.
-    // Static colorbars compressed to ~35 bytes/frame; animated content should be
-    // much larger.  This threshold is deliberately conservative.
-    let min_expected_bytes = args.frame_count as usize * 100;
+    // Minimum expected output.
+    // In oneshot mode the compositor runs at real-time fps and produces
+    // far fewer composited frames than the input `frame_count` (batch
+    // colorbars emit all frames instantly; the compositor only ticks at
+    // its configured fps).  One VP9 keyframe at 640×480 is typically
+    // 5-10 KB, so 2000 bytes is a very conservative lower bound that
+    // still catches "no output at all" regressions.
+    let min_expected_bytes: usize = 2000;
 
     for iter in 1..=args.iterations {
         let r = rt.block_on(run_once(&engine, args.width, args.height, args.fps, args.frame_count));
