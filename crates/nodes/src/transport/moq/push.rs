@@ -401,7 +401,9 @@ impl ProcessorNode for MoqPushNode {
                         first || clock.is_group_boundary_ms(self.config.group_duration_ms)
                     },
                     InputSource::Video => {
-                        metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(false)
+                        // Default to true when keyframe metadata is missing to ensure
+                        // the OrderedProducer opens an initial MoQ group.
+                        metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(true)
                     },
                 };
 
