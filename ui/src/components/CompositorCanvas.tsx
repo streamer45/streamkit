@@ -121,7 +121,11 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
     const hasContent = layers.length > 0 || textOverlays.length > 0 || imageOverlays.length > 0;
 
     return (
-      <CanvasOuter ref={outerRef} className="nodrag nopan">
+      <CanvasOuter
+        ref={outerRef}
+        className="nodrag nopan"
+        style={disabled ? { pointerEvents: 'none' } : undefined}
+      >
         <CanvasInner
           data-canvas-width={canvasWidth}
           style={{
