@@ -345,7 +345,7 @@ pub struct GlobalCompositorConfig {
 
 impl streamkit_core::NodeConstraint for GlobalCompositorConfig {
     fn constraint_name() -> &'static str {
-        "compositor"
+        "video::compositor"
     }
 }
 

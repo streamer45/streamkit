@@ -104,7 +104,7 @@ pub struct GlobalScriptConfig {
 
 impl streamkit_core::NodeConstraint for GlobalScriptConfig {
     fn constraint_name() -> &'static str {
-        "script"
+        "core::script"
     }
 }
 

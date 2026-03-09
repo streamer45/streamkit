@@ -18,7 +18,7 @@
 //! struct MyNodeLimits { max_size: u32 }
 //!
 //! impl NodeConstraint for MyNodeLimits {
-//!     fn constraint_name() -> &'static str { "my_node" }
+//!     fn constraint_name() -> &'static str { "my_module::my_node" }
 //! }
 //!
 //! let mut constraints = GlobalNodeConstraints::new();
@@ -38,7 +38,9 @@ use std::collections::HashMap;
 /// intentionally marked types can be stored in [`GlobalNodeConstraints`].
 pub trait NodeConstraint: Any + Send + Sync {
     /// Human-readable name used in log messages when a constraint is
-    /// inserted or queried.
+    /// inserted or queried.  Use a namespaced format matching the node
+    /// module path (e.g. `"core::script"`, `"video::compositor"`,
+    /// `"plugin::native::kokoro"`).
     fn constraint_name() -> &'static str;
 }
 
@@ -94,7 +96,7 @@ mod tests {
 
     impl NodeConstraint for TestConstraintA {
         fn constraint_name() -> &'static str {
-            "test_a"
+            "test::constraint_a"
         }
     }
 
@@ -105,7 +107,7 @@ mod tests {
 
     impl NodeConstraint for TestConstraintB {
         fn constraint_name() -> &'static str {
-            "test_b"
+            "test::constraint_b"
         }
     }
 
