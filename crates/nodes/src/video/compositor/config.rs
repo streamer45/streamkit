@@ -343,6 +343,12 @@ pub struct GlobalCompositorConfig {
     pub max_font_size: u32,
 }
 
+impl streamkit_core::NodeConstraint for GlobalCompositorConfig {
+    fn constraint_name() -> &'static str {
+        "compositor"
+    }
+}
+
 impl Default for GlobalCompositorConfig {
     fn default() -> Self {
         Self {

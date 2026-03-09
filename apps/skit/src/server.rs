@@ -2968,49 +2968,40 @@ pub fn create_app(
     let wasm_plugin_dir = plugin_base_dir.join("wasm");
     let native_plugin_dir = plugin_base_dir.join("native");
 
-    // Create engine with script configuration if feature is enabled
-    #[cfg(feature = "script")]
-    let engine = {
-        // Convert server config AllowlistRule to nodes AllowlistRule
-        let global_script_allowlist = if config.script.global_fetch_allowlist.is_empty() {
-            None
-        } else {
-            Some(
-                config
-                    .script
-                    .global_fetch_allowlist
-                    .iter()
-                    .map(|rule| streamkit_nodes::core::script::AllowlistRule {
-                        url: rule.url.clone(),
-                        methods: rule.methods.clone(),
-                    })
-                    .collect(),
-            )
-        };
+    // Build server-level node constraints from config
+    let mut constraints = streamkit_core::GlobalNodeConstraints::new();
 
-        // Load secrets from environment variables
+    #[cfg(feature = "script")]
+    {
+        let global_fetch_allowlist = config
+            .script
+            .global_fetch_allowlist
+            .iter()
+            .map(|rule| streamkit_nodes::core::script::AllowlistRule {
+                url: rule.url.clone(),
+                methods: rule.methods.clone(),
+            })
+            .collect();
+
         let secrets = load_script_secrets(&config.script.secrets);
 
-        Arc::new(Engine::with_resource_manager_and_global_config(
-            resource_manager.clone(),
-            global_script_allowlist,
+        constraints.insert(streamkit_nodes::core::script::GlobalScriptConfig {
+            global_fetch_allowlist,
             secrets,
-            #[cfg(feature = "compositor")]
-            Some(streamkit_nodes::video::compositor::config::GlobalCompositorConfig {
-                max_canvas_dimension: config.compositor.default_max_canvas_dimension,
-                max_font_size: config.compositor.default_max_font_size,
-            }),
-        ))
-    };
+        });
+    }
 
-    #[cfg(not(feature = "script"))]
-    let engine = Arc::new(Engine::with_resource_manager_and_compositor_config(
-        resource_manager.clone(),
-        #[cfg(feature = "compositor")]
-        Some(streamkit_nodes::video::compositor::config::GlobalCompositorConfig {
+    #[cfg(feature = "compositor")]
+    {
+        constraints.insert(streamkit_nodes::video::compositor::config::GlobalCompositorConfig {
             max_canvas_dimension: config.compositor.default_max_canvas_dimension,
             max_font_size: config.compositor.default_max_font_size,
-        }),
+        });
+    }
+
+    let engine = Arc::new(Engine::with_resource_manager_and_constraints(
+        resource_manager.clone(),
+        &constraints,
     ));
 
     // Initialize plugin manager - panic on failure since we can't proceed without it

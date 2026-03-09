@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+use streamkit_core::constraints::GlobalNodeConstraints;
 use streamkit_core::{NodeRegistry, ProcessorNode};
 
 pub mod bytes_input;
@@ -22,6 +23,8 @@ use streamkit_core::registry::StaticPins;
 
 /// Registers all available core nodes with the engine's main registry.
 ///
+/// Node-specific server-level constraints are extracted from `constraints`.
+///
 /// Note: This does not register the special-purpose input/output nodes,
 /// as they are instantiated manually by the stateless runner.
 ///
@@ -29,13 +32,7 @@ use streamkit_core::registry::StaticPins;
 ///
 /// Panics if config schemas cannot be serialized to JSON (should never happen).
 #[allow(clippy::expect_used)] // Schema serialization should never fail for valid types
-#[allow(clippy::implicit_hasher)]
-#[cfg(feature = "script")]
-pub fn register_core_nodes(
-    registry: &mut NodeRegistry,
-    global_script_allowlist: Option<Vec<script::AllowlistRule>>,
-    secrets: std::collections::HashMap<String, script::ScriptSecret>,
-) {
+pub fn register_core_nodes(registry: &mut NodeRegistry, constraints: &GlobalNodeConstraints) {
     // --- Register PassthroughNode ---
     #[cfg(feature = "passthrough")]
     {
@@ -156,11 +153,7 @@ pub fn register_core_nodes(
     {
         use schemars::schema_for;
 
-        // Convert global allowlist and secrets to GlobalScriptConfig
-        let global_config = global_script_allowlist.map(|allowlist| script::GlobalScriptConfig {
-            global_fetch_allowlist: allowlist,
-            secrets,
-        });
+        let global_config = constraints.get::<script::GlobalScriptConfig>().cloned();
 
         let factory = script::ScriptNode::factory(global_config);
         registry.register_dynamic_with_description(
@@ -195,69 +188,4 @@ pub fn register_core_nodes(
 
     // --- Register TelemetryOut Node ---
     telemetry_out::register(registry);
-}
-
-/// Registers all available core nodes with the engine's main registry (without script config).
-///
-/// Note: This does not register the special-purpose input/output nodes,
-/// as they are instantiated manually by the stateless runner.
-///
-/// # Panics
-///
-/// Panics if config schemas cannot be serialized to JSON (should never happen).
-#[allow(clippy::expect_used)] // Schema serialization should never fail for valid types
-#[cfg(not(feature = "script"))]
-pub fn register_core_nodes(registry: &mut NodeRegistry) {
-    // --- Register PassthroughNode ---
-    #[cfg(feature = "passthrough")]
-    {
-        use schemars::{schema_for, JsonSchema};
-        use serde::Deserialize;
-
-        #[derive(Deserialize, Debug, Default, JsonSchema)]
-        #[serde(default)]
-        pub struct PassthroughConfig {}
-
-        registry.register_static_with_description(
-            "core::passthrough",
-            PassthroughNode::new,
-            serde_json::to_value(schema_for!(PassthroughConfig))
-                .expect("PassthroughConfig schema should serialize to JSON"),
-            vec!["core".to_string()],
-            false,
-            "Passes packets through unchanged. Useful for testing or as a no-op placeholder.",
-        );
-    }
-
-    // --- Register Other Core Nodes ---
-    text_chunker::register(registry);
-    bytes_input::register(registry);
-    bytes_output::register(registry);
-    json_serialize::register(registry);
-    pacer::register(registry);
-    file_read::register(registry);
-    file_write::register(registry);
-    sink::register(registry);
-
-    // --- Register TelemetryTap Node ---
-    {
-        use schemars::schema_for;
-
-        registry.register_dynamic_with_description(
-            "core::telemetry_tap",
-            telemetry_tap::create_telemetry_tap,
-            serde_json::to_value(schema_for!(telemetry_tap::TelemetryTapConfig))
-                .expect("TelemetryTapConfig schema should serialize to JSON"),
-            vec!["core".to_string(), "observability".to_string()],
-            false,
-            "Observes packets and emits telemetry events for debugging and timeline visualization. \
-             Packets pass through unchanged while side-effect telemetry is sent to the session bus. \
-             Useful for monitoring Transcription, Custom (VAD), and other packet types.",
-        );
-    }
-
-    // --- Register TelemetryOut Node ---
-    telemetry_out::register(registry);
-
-    tracing::info!("Finished registering core nodes (without script).");
 }

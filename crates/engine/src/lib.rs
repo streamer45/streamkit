@@ -9,6 +9,7 @@ use opentelemetry::global;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 pub use streamkit_api::Connection;
+use streamkit_core::constraints::GlobalNodeConstraints;
 use streamkit_core::registry::NodeRegistry;
 use tokio::sync::mpsc;
 
@@ -64,140 +65,45 @@ impl Default for Engine {
 impl Engine {
     /// Creates a new engine with a populated node registry.
     pub fn new() -> Self {
-        Self::build(
-            true,
-            None,
-            None,
-            #[cfg(feature = "script")]
-            None,
-            #[cfg(feature = "script")]
-            std::collections::HashMap::new(),
-            #[cfg(feature = "compositor")]
-            None,
-        )
+        Self::build(true, None, None, &GlobalNodeConstraints::new())
     }
 
     /// Creates a new engine with a custom plugin directory.
     pub fn with_plugin_dir(plugin_dir: Option<std::path::PathBuf>) -> Self {
-        Self::build(
-            true,
-            plugin_dir,
-            None,
-            #[cfg(feature = "script")]
-            None,
-            #[cfg(feature = "script")]
-            std::collections::HashMap::new(),
-            #[cfg(feature = "compositor")]
-            None,
-        )
+        Self::build(true, plugin_dir, None, &GlobalNodeConstraints::new())
     }
 
     /// Creates a new engine with only built-in nodes registered, skipping plugin loading.
     pub fn without_plugins() -> Self {
-        Self::build(
-            false,
-            None,
-            None,
-            #[cfg(feature = "script")]
-            None,
-            #[cfg(feature = "script")]
-            std::collections::HashMap::new(),
-            #[cfg(feature = "compositor")]
-            None,
-        )
+        Self::build(false, None, None, &GlobalNodeConstraints::new())
     }
 
     /// Creates a new engine with resource management support.
     /// This is typically used by the server to enable shared resource caching (ML models, etc.).
     pub fn with_resource_manager(resource_manager: Arc<streamkit_core::ResourceManager>) -> Self {
-        Self::build(
-            false,
-            None,
-            Some(resource_manager),
-            #[cfg(feature = "script")]
-            None,
-            #[cfg(feature = "script")]
-            std::collections::HashMap::new(),
-            #[cfg(feature = "compositor")]
-            None,
-        )
+        Self::build(false, None, Some(resource_manager), &GlobalNodeConstraints::new())
     }
 
-    /// Creates a new engine with resource management and compositor limits
-    /// but without script configuration.  Used by the server when the
-    /// `script` feature is disabled.
-    #[cfg(not(feature = "script"))]
-    pub fn with_resource_manager_and_compositor_config(
+    /// Creates a new engine with resource management and server-level node
+    /// constraints.  This is the full-featured constructor used by the server.
+    pub fn with_resource_manager_and_constraints(
         resource_manager: Arc<streamkit_core::ResourceManager>,
-        #[cfg(feature = "compositor")] global_compositor_config: Option<
-            streamkit_nodes::video::compositor::config::GlobalCompositorConfig,
-        >,
+        constraints: &GlobalNodeConstraints,
     ) -> Self {
-        Self::build(
-            false,
-            None,
-            Some(resource_manager),
-            #[cfg(feature = "compositor")]
-            global_compositor_config,
-        )
-    }
-
-    /// Creates a new engine with resource management, script configuration, and
-    /// compositor limits.  This is the full-featured constructor used by the server.
-    #[cfg(feature = "script")]
-    pub fn with_resource_manager_and_global_config(
-        resource_manager: Arc<streamkit_core::ResourceManager>,
-        global_script_allowlist: Option<Vec<streamkit_nodes::core::script::AllowlistRule>>,
-        secrets: std::collections::HashMap<String, streamkit_nodes::core::script::ScriptSecret>,
-        #[cfg(feature = "compositor")] global_compositor_config: Option<
-            streamkit_nodes::video::compositor::config::GlobalCompositorConfig,
-        >,
-    ) -> Self {
-        Self::build(
-            false,
-            None,
-            Some(resource_manager),
-            global_script_allowlist,
-            secrets,
-            #[cfg(feature = "compositor")]
-            global_compositor_config,
-        )
+        Self::build(false, None, Some(resource_manager), constraints)
     }
 
     fn build(
         load_plugins: bool,
         plugin_dir: Option<std::path::PathBuf>,
         resource_manager: Option<Arc<streamkit_core::ResourceManager>>,
-        #[cfg(feature = "script")] global_script_allowlist: Option<
-            Vec<streamkit_nodes::core::script::AllowlistRule>,
-        >,
-        #[cfg(feature = "script")] secrets: std::collections::HashMap<
-            String,
-            streamkit_nodes::core::script::ScriptSecret,
-        >,
-        #[cfg(feature = "compositor")] global_compositor_config: Option<
-            streamkit_nodes::video::compositor::config::GlobalCompositorConfig,
-        >,
+        constraints: &GlobalNodeConstraints,
     ) -> Self {
         let mut registry =
             resource_manager.map_or_else(NodeRegistry::new, NodeRegistry::with_resource_manager);
 
         // Register built-in nodes
-        #[cfg(feature = "script")]
-        streamkit_nodes::register_nodes(
-            &mut registry,
-            global_script_allowlist,
-            secrets,
-            #[cfg(feature = "compositor")]
-            global_compositor_config,
-        );
-
-        #[cfg(not(feature = "script"))]
-        streamkit_nodes::register_nodes(
-            &mut registry,
-            #[cfg(feature = "compositor")]
-            global_compositor_config,
-        );
+        streamkit_nodes::register_nodes(&mut registry, constraints);
 
         if load_plugins {
             // Load WASM plugins if feature is enabled
