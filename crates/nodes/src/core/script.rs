@@ -102,6 +102,12 @@ pub struct GlobalScriptConfig {
     pub secrets: std::collections::HashMap<String, ScriptSecret>,
 }
 
+impl streamkit_core::NodeConstraint for GlobalScriptConfig {
+    fn constraint_name() -> &'static str {
+        "core::script"
+    }
+}
+
 /// A server-configured secret value with optional scoping rules.
 ///
 /// Secrets are never exposed directly to JavaScript. They can only be injected into

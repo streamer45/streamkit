@@ -630,3 +630,18 @@ global_fetch_allowlist = []
 # env = "EXTERNAL_API_KEY"
 # type = "apikey"
 # description = "API key for external service integration"
+
+[compositor]
+# Server-level limits for compositor nodes (requires 'compositor' feature).
+#
+# These limits apply to every compositor node created by the engine.
+# Individual nodes cannot exceed these values, even via UpdateParams.
+
+# Maximum allowed canvas dimension (width or height) in pixels.
+# Prevents runaway memory usage from oversized canvases.
+# Default: 7680 (8K UHD)
+default_max_canvas_dimension = 7680
+
+# Maximum allowed font size for text overlays in pixels.
+# Default: 4096
+default_max_font_size = 4096

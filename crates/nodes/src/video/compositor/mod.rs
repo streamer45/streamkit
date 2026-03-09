@@ -966,9 +966,9 @@ impl CompositorNode {
 #[allow(clippy::expect_used, clippy::missing_panics_doc)]
 pub fn register_compositor_nodes(
     registry: &mut NodeRegistry,
-    global_config: Option<GlobalCompositorConfig>,
+    constraints: &streamkit_core::constraints::GlobalNodeConstraints,
 ) {
-    let limits = global_config.unwrap_or_default();
+    let limits = constraints.get::<GlobalCompositorConfig>().cloned().unwrap_or_default();
     let (def_inputs, def_outputs) = CompositorNode::definition_pins();
 
     registry.register_static_with_description(

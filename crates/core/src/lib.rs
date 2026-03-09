@@ -49,6 +49,7 @@
 pub use async_trait::async_trait;
 
 // Module declarations
+pub mod constraints;
 pub mod control;
 pub mod error;
 pub mod frame_pool;
@@ -80,6 +81,7 @@ pub use node::{
 };
 
 // Registry and factory
+pub use constraints::{GlobalNodeConstraints, NodeConstraint};
 pub use registry::{NodeDefinition, NodeRegistry};
 
 // Resource management
