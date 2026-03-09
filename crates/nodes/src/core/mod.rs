@@ -33,6 +33,8 @@ use streamkit_core::registry::StaticPins;
 /// Panics if config schemas cannot be serialized to JSON (should never happen).
 #[allow(clippy::expect_used)] // Schema serialization should never fail for valid types
 pub fn register_core_nodes(registry: &mut NodeRegistry, constraints: &GlobalNodeConstraints) {
+    let _ = constraints;
+
     // --- Register PassthroughNode ---
     #[cfg(feature = "passthrough")]
     {

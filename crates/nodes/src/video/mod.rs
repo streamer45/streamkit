@@ -354,6 +354,8 @@ fn line_height_px(_font: &fontdue::Font, font_size: f32) -> f32 {
 /// Registers all available video nodes with the engine's registry.
 #[allow(clippy::missing_const_for_fn)]
 pub fn register_video_nodes(registry: &mut NodeRegistry, constraints: &GlobalNodeConstraints) {
+    let _ = constraints;
+
     #[cfg(feature = "colorbars")]
     colorbars::register_colorbars_nodes(registry);
 
