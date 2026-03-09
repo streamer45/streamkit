@@ -50,7 +50,7 @@ pub enum PixelFormat {
 /// Contains the detailed metadata for a raw video stream.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
-pub struct VideoFormat {
+pub struct RawVideoFormat {
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub pixel_format: PixelFormat,
@@ -129,7 +129,7 @@ pub enum PacketType {
     /// Raw, uncompressed audio with a specific format.
     RawAudio(AudioFormat),
     /// Raw, uncompressed video with a specific format.
-    RawVideo(VideoFormat),
+    RawVideo(RawVideoFormat),
     /// Encoded audio with codec metadata.
     EncodedAudio(EncodedAudioFormat),
     /// Encoded video with codec metadata.
@@ -274,6 +274,11 @@ impl VideoLayout {
         Self::aligned(width, height, pixel_format, 1)
     }
 
+    /// Compute the layout for the given dimensions, pixel format, and stride alignment.
+    ///
+    /// Zero-width or zero-height dimensions are allowed and produce a zero-byte layout.
+    /// This can be useful as a sentinel but callers should generally validate dimensions
+    /// before constructing frames.
     pub fn aligned(width: u32, height: u32, pixel_format: PixelFormat, stride_align: u32) -> Self {
         const EMPTY_PLANE: VideoPlane = VideoPlane { offset: 0, stride: 0, width: 0, height: 0 };
         let mut planes = [EMPTY_PLANE; 3];
@@ -723,7 +728,6 @@ impl VideoFrame {
         self.data.len()
     }
 
-    #[allow(clippy::len_without_is_empty)] // is_empty provided explicitly
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
@@ -754,17 +758,17 @@ impl VideoFrame {
         let plane = layout.plane(index)?;
         let start = plane.offset;
         let end = start + plane.stride * plane.height as usize;
-        let data = Arc::make_mut(&mut self.data);
-        if end <= data.len() {
-            Some(VideoPlaneMut {
-                data: &mut data.as_mut_slice()[start..end],
-                stride: plane.stride,
-                width: plane.width,
-                height: plane.height,
-            })
-        } else {
-            None
+        // Check bounds before triggering CoW to avoid a wasted copy.
+        if end > self.data.len() {
+            return None;
         }
+        let data = Arc::make_mut(&mut self.data);
+        Some(VideoPlaneMut {
+            data: &mut data.as_mut_slice()[start..end],
+            stride: plane.stride,
+            width: plane.width,
+            height: plane.height,
+        })
     }
 }
 

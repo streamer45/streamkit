@@ -882,4 +882,76 @@ nodes:
         assert_eq!(conn_b.mode, ConnectionMode::BestEffort);
         assert_eq!(conn_b.to_pin, "in_1");
     }
+
+    #[test]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    fn test_needs_map_explicit_pin_targeting() {
+        let yaml = r"
+mode: dynamic
+nodes:
+  vp9_encoder:
+    kind: video::vp9_encoder
+  opus_encoder:
+    kind: audio::opus_encoder
+  muxer:
+    kind: containers::webm_muxer
+    needs:
+      video: vp9_encoder
+      audio: opus_encoder
+";
+
+        let user_pipeline = parse_yaml(yaml).unwrap();
+        let pipeline = compile(user_pipeline).unwrap();
+
+        // Should have 3 nodes
+        assert_eq!(pipeline.nodes.len(), 3);
+
+        // Should have 2 connections
+        assert_eq!(pipeline.connections.len(), 2);
+
+        // Connection from vp9_encoder should target the "video" pin
+        let video_conn = pipeline
+            .connections
+            .iter()
+            .find(|c| c.from_node == "vp9_encoder")
+            .expect("Should have connection from vp9_encoder");
+        assert_eq!(video_conn.to_node, "muxer");
+        assert_eq!(video_conn.to_pin, "video");
+        assert_eq!(video_conn.from_pin, "out");
+
+        // Connection from opus_encoder should target the "audio" pin
+        let audio_conn = pipeline
+            .connections
+            .iter()
+            .find(|c| c.from_node == "opus_encoder")
+            .expect("Should have connection from opus_encoder");
+        assert_eq!(audio_conn.to_node, "muxer");
+        assert_eq!(audio_conn.to_pin, "audio");
+        assert_eq!(audio_conn.from_pin, "out");
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    fn test_needs_map_with_output_pin_specifier() {
+        let yaml = r"
+mode: dynamic
+nodes:
+  source:
+    kind: test_source
+  sink:
+    kind: test_sink
+    needs:
+      my_input: source.alt_out
+";
+
+        let user_pipeline = parse_yaml(yaml).unwrap();
+        let pipeline = compile(user_pipeline).unwrap();
+
+        assert_eq!(pipeline.connections.len(), 1);
+        let conn = &pipeline.connections[0];
+        assert_eq!(conn.from_node, "source");
+        assert_eq!(conn.from_pin, "alt_out");
+        assert_eq!(conn.to_node, "sink");
+        assert_eq!(conn.to_pin, "my_input");
+    }
 }

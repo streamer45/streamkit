@@ -75,6 +75,7 @@ impl From<streamkit_core::types::Packet> for wit_types::Packet {
                     data,
                 })
             },
+            // TODO: extend WIT interface for structured video frame support.
             streamkit_core::types::Packet::Video(frame) => Self::Binary(frame.data.to_vec()),
             streamkit_core::types::Packet::Binary { data, .. } => Self::Binary(data.to_vec()),
         }

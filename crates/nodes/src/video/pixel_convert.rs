@@ -26,7 +26,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Instant;
 use streamkit_core::stats::NodeStatsTracker;
-use streamkit_core::types::{Packet, PacketType, PixelFormat, VideoFormat, VideoFrame};
+use streamkit_core::types::{Packet, PacketType, PixelFormat, RawVideoFormat, VideoFrame};
 use streamkit_core::{
     config_helpers, get_codec_channel_capacity, packet_helpers, state_helpers, InputPin,
     NodeContext, NodeRegistry, OutputPin, PinCardinality, PooledVideoData, ProcessorNode,
@@ -85,17 +85,17 @@ impl ProcessorNode for PixelConvertNode {
         vec![InputPin {
             name: "in".to_string(),
             accepts_types: vec![
-                PacketType::RawVideo(VideoFormat {
+                PacketType::RawVideo(RawVideoFormat {
                     width: None,
                     height: None,
                     pixel_format: PixelFormat::Rgba8,
                 }),
-                PacketType::RawVideo(VideoFormat {
+                PacketType::RawVideo(RawVideoFormat {
                     width: None,
                     height: None,
                     pixel_format: PixelFormat::I420,
                 }),
-                PacketType::RawVideo(VideoFormat {
+                PacketType::RawVideo(RawVideoFormat {
                     width: None,
                     height: None,
                     pixel_format: PixelFormat::Nv12,
@@ -108,7 +108,7 @@ impl ProcessorNode for PixelConvertNode {
     fn output_pins(&self) -> Vec<OutputPin> {
         vec![OutputPin {
             name: "out".to_string(),
-            produces_type: PacketType::RawVideo(VideoFormat {
+            produces_type: PacketType::RawVideo(RawVideoFormat {
                 width: None,
                 height: None,
                 pixel_format: self.target_format,

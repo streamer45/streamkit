@@ -22,7 +22,7 @@ Decodes VP9-compressed packets into raw NV12 video frames for CPU processing.
 - `in` accepts `EncodedVideo(EncodedVideoFormat { codec: Vp9 })` (one)
 
 ### Outputs
-- `out` produces `RawVideo(VideoFormat { width: *, height: *, pixel_format: Nv12 })` (broadcast)
+- `out` produces `RawVideo(RawVideoFormat { width: *, height: *, pixel_format: Nv12 })` (broadcast)
 
 ## Parameters
 | Name | Type | Required | Default | Description |

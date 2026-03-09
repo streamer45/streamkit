@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use streamkit_core::stats::NodeStatsTracker;
-use streamkit_core::types::{Packet, PacketMetadata, PacketType, PixelFormat, VideoFormat};
+use streamkit_core::types::{Packet, PacketMetadata, PacketType, PixelFormat, RawVideoFormat};
 use streamkit_core::{
     config_helpers, state_helpers, InputPin, NodeContext, NodeRegistry, OutputPin, PinCardinality,
     ProcessorNode, StreamKitError,
@@ -118,7 +118,7 @@ impl ProcessorNode for ColorBarsNode {
     fn output_pins(&self) -> Vec<OutputPin> {
         vec![OutputPin {
             name: "out".to_string(),
-            produces_type: PacketType::RawVideo(VideoFormat {
+            produces_type: PacketType::RawVideo(RawVideoFormat {
                 width: None,
                 height: None,
                 pixel_format: self.pixel_format,

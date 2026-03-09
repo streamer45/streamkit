@@ -286,18 +286,28 @@ pub fn can_connect_any(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{AudioCodec, EncodedAudioFormat, PixelFormat, VideoFormat};
+    use crate::types::{AudioCodec, EncodedAudioFormat, PixelFormat, RawVideoFormat};
 
     #[test]
     fn raw_video_wildcard_dimensions() {
         let registry = packet_type_registry();
-        let exact =
-            VideoFormat { width: Some(1920), height: Some(1080), pixel_format: PixelFormat::I420 };
-        let wildcard = VideoFormat { width: None, height: None, pixel_format: PixelFormat::I420 };
-        let mismatched =
-            VideoFormat { width: Some(1280), height: Some(720), pixel_format: PixelFormat::I420 };
-        let different_format =
-            VideoFormat { width: Some(1920), height: Some(1080), pixel_format: PixelFormat::Rgba8 };
+        let exact = RawVideoFormat {
+            width: Some(1920),
+            height: Some(1080),
+            pixel_format: PixelFormat::I420,
+        };
+        let wildcard =
+            RawVideoFormat { width: None, height: None, pixel_format: PixelFormat::I420 };
+        let mismatched = RawVideoFormat {
+            width: Some(1280),
+            height: Some(720),
+            pixel_format: PixelFormat::I420,
+        };
+        let different_format = RawVideoFormat {
+            width: Some(1920),
+            height: Some(1080),
+            pixel_format: PixelFormat::Rgba8,
+        };
 
         assert!(can_connect(
             &PacketType::RawVideo(exact.clone()),

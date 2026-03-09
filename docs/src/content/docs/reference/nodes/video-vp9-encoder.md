@@ -19,7 +19,7 @@ Encodes raw NV12 or I420 video frames into VP9 packets for transport or containe
 
 ## Pins
 ### Inputs
-- `in` accepts `RawVideo(VideoFormat { width: *, height: *, pixel_format: I420 | Nv12 })` (one)
+- `in` accepts `RawVideo(RawVideoFormat { width: *, height: *, pixel_format: I420 | Nv12 })` (one)
 
 ### Outputs
 - `out` produces `EncodedVideo(EncodedVideoFormat { codec: Vp9 })` (broadcast)
