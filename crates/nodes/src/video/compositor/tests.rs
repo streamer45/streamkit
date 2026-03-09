@@ -312,20 +312,20 @@ fn test_fit_rect_preserving_aspect() {
 #[test]
 fn test_config_validate_ok() {
     let cfg = CompositorConfig::default();
-    assert!(cfg.validate().is_ok());
+    assert!(cfg.validate(&GlobalCompositorConfig::default()).is_ok());
 }
 
 #[test]
 fn test_config_validate_zero_dimensions() {
     let cfg = CompositorConfig { width: 0, height: 720, ..Default::default() };
-    assert!(cfg.validate().is_err());
+    assert!(cfg.validate(&GlobalCompositorConfig::default()).is_err());
 }
 
 #[test]
 fn test_config_validate_bad_opacity() {
     let mut cfg = CompositorConfig::default();
     cfg.layers.insert("in_0".to_string(), LayerConfig { opacity: 1.5, ..Default::default() });
-    assert!(cfg.validate().is_err());
+    assert!(cfg.validate(&GlobalCompositorConfig::default()).is_err());
 }
 
 // ── Integration test: node run() with mock context ──────────────────
@@ -339,7 +339,7 @@ async fn test_compositor_node_run_main_only() {
     let (context, mock_sender, mut state_rx) = create_test_context(inputs, 10);
 
     let config = CompositorConfig { width: 4, height: 4, ..Default::default() };
-    let node = CompositorNode::new(config);
+    let node = CompositorNode::new(config, GlobalCompositorConfig::default());
 
     let node_handle = tokio::spawn(async move { Box::new(node).run(context).await });
 
@@ -384,7 +384,7 @@ async fn test_compositor_node_preserves_metadata() {
     let (context, mock_sender, mut state_rx) = create_test_context(inputs, 10);
 
     let config = CompositorConfig { width: 2, height: 2, ..Default::default() };
-    let node = CompositorNode::new(config);
+    let node = CompositorNode::new(config, GlobalCompositorConfig::default());
 
     let node_handle = tokio::spawn(async move { Box::new(node).run(context).await });
 

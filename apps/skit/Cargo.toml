@@ -134,7 +134,7 @@ moq-lite = { version = "0.15.0", optional = true }
 blake2 = "0.10.6"
 
 [features]
-default = ["script"]
+default = ["script", "compositor"]
 tokio-console = ["console-subscriber"]
 profiling = ["dep:pprof", "dep:tikv-jemallocator", "dep:jemalloc_pprof"]
 # DHAT allocation profiling - tracks allocation counts/rates (mutually exclusive with profiling)
@@ -142,6 +142,7 @@ profiling = ["dep:pprof", "dep:tikv-jemallocator", "dep:jemalloc_pprof"]
 dhat-heap = ["dep:dhat"]
 moq = ["dep:moq-native", "dep:moq-lite"]
 script = ["streamkit-nodes/script", "streamkit-engine/script"]
+compositor = ["streamkit-nodes/compositor", "streamkit-engine/compositor"]
 
 [dev-dependencies]
 tokio-test = "0.4.5"

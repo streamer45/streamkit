@@ -72,6 +72,8 @@ impl Engine {
             None,
             #[cfg(feature = "script")]
             std::collections::HashMap::new(),
+            #[cfg(feature = "compositor")]
+            None,
         )
     }
 
@@ -85,6 +87,8 @@ impl Engine {
             None,
             #[cfg(feature = "script")]
             std::collections::HashMap::new(),
+            #[cfg(feature = "compositor")]
+            None,
         )
     }
 
@@ -98,6 +102,8 @@ impl Engine {
             None,
             #[cfg(feature = "script")]
             std::collections::HashMap::new(),
+            #[cfg(feature = "compositor")]
+            None,
         )
     }
 
@@ -112,18 +118,50 @@ impl Engine {
             None,
             #[cfg(feature = "script")]
             std::collections::HashMap::new(),
+            #[cfg(feature = "compositor")]
+            None,
         )
     }
 
-    /// Creates a new engine with resource management and script configuration.
-    /// This is typically used by the server to pass global script allowlists and secrets.
+    /// Creates a new engine with resource management and compositor limits
+    /// but without script configuration.  Used by the server when the
+    /// `script` feature is disabled.
+    #[cfg(not(feature = "script"))]
+    pub fn with_resource_manager_and_compositor_config(
+        resource_manager: Arc<streamkit_core::ResourceManager>,
+        #[cfg(feature = "compositor")] global_compositor_config: Option<
+            streamkit_nodes::video::compositor::config::GlobalCompositorConfig,
+        >,
+    ) -> Self {
+        Self::build(
+            false,
+            None,
+            Some(resource_manager),
+            #[cfg(feature = "compositor")]
+            global_compositor_config,
+        )
+    }
+
+    /// Creates a new engine with resource management, script configuration, and
+    /// compositor limits.  This is the full-featured constructor used by the server.
     #[cfg(feature = "script")]
-    pub fn with_resource_manager_and_script_config(
+    pub fn with_resource_manager_and_global_config(
         resource_manager: Arc<streamkit_core::ResourceManager>,
         global_script_allowlist: Option<Vec<streamkit_nodes::core::script::AllowlistRule>>,
         secrets: std::collections::HashMap<String, streamkit_nodes::core::script::ScriptSecret>,
+        #[cfg(feature = "compositor")] global_compositor_config: Option<
+            streamkit_nodes::video::compositor::config::GlobalCompositorConfig,
+        >,
     ) -> Self {
-        Self::build(false, None, Some(resource_manager), global_script_allowlist, secrets)
+        Self::build(
+            false,
+            None,
+            Some(resource_manager),
+            global_script_allowlist,
+            secrets,
+            #[cfg(feature = "compositor")]
+            global_compositor_config,
+        )
     }
 
     fn build(
@@ -137,16 +175,29 @@ impl Engine {
             String,
             streamkit_nodes::core::script::ScriptSecret,
         >,
+        #[cfg(feature = "compositor")] global_compositor_config: Option<
+            streamkit_nodes::video::compositor::config::GlobalCompositorConfig,
+        >,
     ) -> Self {
         let mut registry =
             resource_manager.map_or_else(NodeRegistry::new, NodeRegistry::with_resource_manager);
 
         // Register built-in nodes
         #[cfg(feature = "script")]
-        streamkit_nodes::register_nodes(&mut registry, global_script_allowlist, secrets);
+        streamkit_nodes::register_nodes(
+            &mut registry,
+            global_script_allowlist,
+            secrets,
+            #[cfg(feature = "compositor")]
+            global_compositor_config,
+        );
 
         #[cfg(not(feature = "script"))]
-        streamkit_nodes::register_nodes(&mut registry, None, Default::default());
+        streamkit_nodes::register_nodes(
+            &mut registry,
+            #[cfg(feature = "compositor")]
+            global_compositor_config,
+        );
 
         if load_plugins {
             // Load WASM plugins if feature is enabled

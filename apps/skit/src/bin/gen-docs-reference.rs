@@ -46,7 +46,13 @@ fn main() -> Result<()> {
 
     // --- Built-in nodes (core runtime nodes) ---
     let mut registry = NodeRegistry::new();
-    streamkit_nodes::register_nodes(&mut registry, None, std::collections::HashMap::default());
+    streamkit_nodes::register_nodes(
+        &mut registry,
+        None,
+        std::collections::HashMap::default(),
+        #[cfg(feature = "compositor")]
+        None,
+    );
 
     let mut built_in_nodes = registry.definitions();
     add_synthetic_oneshot_nodes(&mut built_in_nodes);

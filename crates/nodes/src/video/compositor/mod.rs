@@ -31,7 +31,9 @@ pub mod overlay;
 pub mod pixel_ops;
 
 use async_trait::async_trait;
-use config::{CompositorConfig, CompositorLayout, ResolvedLayer, ResolvedOverlay};
+use config::{
+    CompositorConfig, CompositorLayout, GlobalCompositorConfig, ResolvedLayer, ResolvedOverlay,
+};
 use kernel::{CompositeResult, CompositeWorkItem, LayerSnapshot};
 use opentelemetry::{global, KeyValue};
 use overlay::{decode_image_overlay, rasterize_text_overlay, DecodedOverlay};
@@ -266,6 +268,8 @@ fn fit_rect_preserving_aspect(src_w: u32, src_h: u32, bounds: &config::Rect) -> 
 /// further format conversion.
 pub struct CompositorNode {
     config: CompositorConfig,
+    /// Server-level resource limits (from `skit.toml`).
+    limits: GlobalCompositorConfig,
     /// Current input pins (may grow dynamically).
     input_pins: Vec<InputPin>,
     /// Next input ID for dynamic pin naming.
@@ -274,7 +278,7 @@ pub struct CompositorNode {
 
 impl CompositorNode {
     #[must_use]
-    pub fn new(config: CompositorConfig) -> Self {
+    pub fn new(config: CompositorConfig, limits: GlobalCompositorConfig) -> Self {
         let (input_pins, next_input_id) = config.num_inputs.map_or_else(
             || {
                 // Dynamic mode - start with no pins
@@ -296,7 +300,7 @@ impl CompositorNode {
             },
         );
 
-        Self { config, input_pins, next_input_id }
+        Self { config, limits, input_pins, next_input_id }
     }
 
     /// The set of video packet types accepted by compositor input pins.
@@ -424,14 +428,20 @@ impl ProcessorNode for CompositorNode {
         let mut text_overlays: Arc<[Arc<DecodedOverlay>]> = Arc::from(text_overlays_vec);
 
         // Collect initial input slots from pre-connected pins.
+        // Only create InputPin entries for pre-connected inputs when
+        // `num_inputs` was not set — otherwise `new()` already created
+        // them and we'd end up with duplicates (matching the audio mixer
+        // pattern).
         let mut slots: Vec<InputSlot> = Vec::new();
-        for pin_name in context.inputs.keys() {
-            let pin = Self::make_input_pin(pin_name.clone());
-            self.input_pins.push(pin);
-            // Track next_input_id for dynamically named pins.
-            if let Some(num_str) = pin_name.strip_prefix("in_") {
-                if let Ok(n) = num_str.parse::<usize>() {
-                    self.next_input_id = self.next_input_id.max(n + 1);
+        if self.config.num_inputs.is_none() {
+            for pin_name in context.inputs.keys() {
+                let pin = Self::make_input_pin(pin_name.clone());
+                self.input_pins.push(pin);
+                // Track next_input_id for dynamically named pins.
+                if let Some(num_str) = pin_name.strip_prefix("in_") {
+                    if let Ok(n) = num_str.parse::<usize>() {
+                        self.next_input_id = self.next_input_id.max(n + 1);
+                    }
                 }
             }
         }
@@ -483,6 +493,12 @@ impl ProcessorNode for CompositorNode {
             let mut conversion_cache = ConversionCache::new();
 
             while let Some(work) = work_rx.blocking_recv() {
+                // Clear the entire conversion cache when the slot
+                // layout changed so that stale RGBA buffers are freed.
+                if work.clear_conversion_cache {
+                    conversion_cache.clear();
+                }
+
                 let rgba_buf = composite_frame(
                     work.canvas_w,
                     work.canvas_h,
@@ -501,6 +517,11 @@ impl ProcessorNode for CompositorNode {
 
         let mut output_seq: u64 = 0;
         let mut stop_reason: &str = "shutdown";
+
+        // Set to `true` when the slot layout changes (input added,
+        // removed, or disconnected) so the compositing thread clears
+        // its conversion cache on the next frame.
+        let mut clear_conversion_cache = false;
 
         // ── OpenTelemetry metrics ───────────────────────────────────────
         let meter = global::meter("skit_nodes");
@@ -556,6 +577,7 @@ impl ProcessorNode for CompositorNode {
                             let old_fps = self.config.fps;
                             Self::apply_update_params(
                                 &mut self.config,
+                                &self.limits,
                                 &mut image_overlays,
                                 &mut text_overlays,
                                 params,
@@ -589,6 +611,7 @@ impl ProcessorNode for CompositorNode {
                         &mut self,
                         msg,
                         &mut slots,
+                        &mut clear_conversion_cache,
                     );
                     layer_configs_dirty = true;
                     continue;
@@ -631,6 +654,7 @@ impl ProcessorNode for CompositorNode {
                 // drained.  Use a zero-capacity poll instead:
                 if slots[i].rx.is_closed() {
                     tracing::info!("CompositorNode: input '{}' closed", slots[i].name);
+                    clear_conversion_cache = true;
                     slots.remove(i);
                     layer_configs_dirty = true;
                 } else {
@@ -700,6 +724,7 @@ impl ProcessorNode for CompositorNode {
                 image_overlays: image_overlays.clone(),
                 text_overlays: text_overlays.clone(),
                 video_pool: video_pool.clone(),
+                clear_conversion_cache,
             };
 
             // Send work to the compositing thread.  The work channel has
@@ -708,7 +733,10 @@ impl ProcessorNode for CompositorNode {
             // compositing thread hasn't finished the previous frame yet,
             // drop this one to stay real-time.
             match work_tx.try_send(work_item) {
-                Ok(()) => {},
+                Ok(()) => {
+                    // Cache clear was successfully delivered — reset the flag.
+                    clear_conversion_cache = false;
+                },
                 Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                     // Compositing thread is still busy — skip this frame.
                     frames_dropped_counter.add(1, &otel_attrs);
@@ -802,86 +830,93 @@ impl CompositorNode {
     /// because font rendering parameters may have changed.
     fn apply_update_params(
         config: &mut CompositorConfig,
+        limits: &GlobalCompositorConfig,
         image_overlays: &mut Arc<[Arc<DecodedOverlay>]>,
         text_overlays: &mut Arc<[Arc<DecodedOverlay>]>,
         params: serde_json::Value,
         stats_tracker: &mut NodeStatsTracker,
     ) {
         match serde_json::from_value::<CompositorConfig>(params) {
-            Ok(new_config) => match new_config.validate() {
-                Ok(()) => {
-                    tracing::info!(
-                        old_w = config.width,
-                        old_h = config.height,
-                        new_w = new_config.width,
-                        new_h = new_config.height,
-                        "Updating compositor config"
-                    );
+            Ok(new_config) => {
+                // Resource limits are enforced by the server-level
+                // GlobalCompositorConfig and cannot be overridden by
+                // per-node config or UpdateParams payloads.
+                match new_config.validate(limits) {
+                    Ok(()) => {
+                        tracing::info!(
+                            old_w = config.width,
+                            old_h = config.height,
+                            new_w = new_config.width,
+                            new_h = new_config.height,
+                            "Updating compositor config"
+                        );
 
-                    // Re-decode image overlays only when their content or
-                    // target rect changed.  Cache keyed by stable overlay
-                    // ID — each decoded overlay carries its config id.
-                    let old_imgs = image_overlays.clone();
+                        // Re-decode image overlays only when their content or
+                        // target rect changed.  Cache keyed by stable overlay
+                        // ID — each decoded overlay carries its config id.
+                        let old_imgs = image_overlays.clone();
 
-                    let mut cache: HashMap<&str, Arc<DecodedOverlay>> = HashMap::new();
-                    for decoded in old_imgs.iter() {
-                        cache.insert(decoded.id.as_str(), Arc::clone(decoded));
-                    }
+                        let mut cache: HashMap<&str, Arc<DecodedOverlay>> = HashMap::new();
+                        for decoded in old_imgs.iter() {
+                            cache.insert(decoded.id.as_str(), Arc::clone(decoded));
+                        }
 
-                    let mut new_image_overlays: Vec<Arc<DecodedOverlay>> =
-                        Vec::with_capacity(new_config.image_overlays.len());
-                    for img_cfg in &new_config.image_overlays {
-                        if let Some(existing) = cache.get(img_cfg.id.as_str()) {
-                            // Check if content and target rect are unchanged.
-                            let old_cfg = config.image_overlays.iter().find(|c| c.id == img_cfg.id);
-                            let content_same = old_cfg.is_some_and(|oc| {
-                                oc.data_base64 == img_cfg.data_base64
-                                    && oc.transform.rect.width == img_cfg.transform.rect.width
-                                    && oc.transform.rect.height == img_cfg.transform.rect.height
-                            });
-                            if content_same {
-                                // Content and target dimensions unchanged —
-                                // reuse the decoded bitmap.  Re-centre within
-                                // the new config rect and update transform.
-                                let mut ov = (**existing).clone();
-                                let cfg_w = img_cfg.transform.rect.width.cast_signed();
-                                let cfg_h = img_cfg.transform.rect.height.cast_signed();
-                                let ov_w = ov.rect.width.cast_signed();
-                                let ov_h = ov.rect.height.cast_signed();
-                                ov.rect.x = img_cfg.transform.rect.x + (cfg_w - ov_w) / 2;
-                                ov.rect.y = img_cfg.transform.rect.y + (cfg_h - ov_h) / 2;
-                                ov.opacity = img_cfg.transform.opacity;
-                                ov.rotation_degrees = img_cfg.transform.rotation_degrees;
-                                ov.z_index = img_cfg.transform.z_index;
-                                ov.mirror_horizontal = img_cfg.transform.mirror_horizontal;
-                                ov.mirror_vertical = img_cfg.transform.mirror_vertical;
-                                new_image_overlays.push(Arc::new(ov));
-                                continue;
+                        let mut new_image_overlays: Vec<Arc<DecodedOverlay>> =
+                            Vec::with_capacity(new_config.image_overlays.len());
+                        for img_cfg in &new_config.image_overlays {
+                            if let Some(existing) = cache.get(img_cfg.id.as_str()) {
+                                // Check if content and target rect are unchanged.
+                                let old_cfg =
+                                    config.image_overlays.iter().find(|c| c.id == img_cfg.id);
+                                let content_same = old_cfg.is_some_and(|oc| {
+                                    oc.data_base64 == img_cfg.data_base64
+                                        && oc.transform.rect.width == img_cfg.transform.rect.width
+                                        && oc.transform.rect.height == img_cfg.transform.rect.height
+                                });
+                                if content_same {
+                                    // Content and target dimensions unchanged —
+                                    // reuse the decoded bitmap.  Re-centre within
+                                    // the new config rect and update transform.
+                                    let mut ov = (**existing).clone();
+                                    let cfg_w = img_cfg.transform.rect.width.cast_signed();
+                                    let cfg_h = img_cfg.transform.rect.height.cast_signed();
+                                    let ov_w = ov.rect.width.cast_signed();
+                                    let ov_h = ov.rect.height.cast_signed();
+                                    ov.rect.x = img_cfg.transform.rect.x + (cfg_w - ov_w) / 2;
+                                    ov.rect.y = img_cfg.transform.rect.y + (cfg_h - ov_h) / 2;
+                                    ov.opacity = img_cfg.transform.opacity;
+                                    ov.rotation_degrees = img_cfg.transform.rotation_degrees;
+                                    ov.z_index = img_cfg.transform.z_index;
+                                    ov.mirror_horizontal = img_cfg.transform.mirror_horizontal;
+                                    ov.mirror_vertical = img_cfg.transform.mirror_vertical;
+                                    new_image_overlays.push(Arc::new(ov));
+                                    continue;
+                                }
+                            }
+                            match decode_image_overlay(img_cfg) {
+                                Ok(ov) => {
+                                    new_image_overlays.push(Arc::new(ov));
+                                },
+                                Err(e) => tracing::warn!("Image overlay decode failed: {e}"),
                             }
                         }
-                        match decode_image_overlay(img_cfg) {
-                            Ok(ov) => {
-                                new_image_overlays.push(Arc::new(ov));
-                            },
-                            Err(e) => tracing::warn!("Image overlay decode failed: {e}"),
-                        }
-                    }
-                    *image_overlays = Arc::from(new_image_overlays);
+                        *image_overlays = Arc::from(new_image_overlays);
 
-                    // Re-rasterize text overlays.
-                    let new_text_overlays: Vec<Arc<DecodedOverlay>> = new_config
-                        .text_overlays
-                        .iter()
-                        .map(|txt_cfg| Arc::new(rasterize_text_overlay(txt_cfg)))
-                        .collect();
-                    *text_overlays = Arc::from(new_text_overlays);
+                        // Re-rasterize text overlays.
+                        let new_text_overlays: Vec<Arc<DecodedOverlay>> = new_config
+                            .text_overlays
+                            .iter()
+                            .map(|txt_cfg| Arc::new(rasterize_text_overlay(txt_cfg)))
+                            .collect();
+                        *text_overlays = Arc::from(new_text_overlays);
 
-                    *config = new_config;
-                },
-                Err(e) => {
-                    tracing::warn!("Rejected invalid compositor config: {e}");
-                    stats_tracker.errored();
-                },
+                        *config = new_config;
+                    },
+                    Err(e) => {
+                        tracing::warn!("Rejected invalid compositor config: {e}");
+                        stats_tracker.errored();
+                    },
+                }
             },
             Err(e) => {
                 tracing::warn!("Failed to deserialize compositor UpdateParams: {e}");
@@ -895,6 +930,7 @@ impl CompositorNode {
         node: &mut Box<Self>,
         msg: PinManagementMessage,
         slots: &mut Vec<InputSlot>,
+        clear_conversion_cache: &mut bool,
     ) {
         match msg {
             PinManagementMessage::RequestAddInputPin { suggested_name, response_tx } => {
@@ -913,7 +949,10 @@ impl CompositorNode {
             },
             PinManagementMessage::RemoveInputPin { pin_name } => {
                 tracing::info!("CompositorNode: removed input pin '{}'", pin_name);
-                slots.retain(|s| s.name != pin_name);
+                if let Some(idx) = slots.iter().position(|s| s.name == pin_name) {
+                    *clear_conversion_cache = true;
+                    slots.remove(idx);
+                }
                 node.input_pins.retain(|p| p.name != pin_name);
             },
             _ => {},
@@ -924,17 +963,21 @@ impl CompositorNode {
 // ── Registration ────────────────────────────────────────────────────────────
 
 #[allow(clippy::expect_used, clippy::missing_panics_doc)]
-pub fn register_compositor_nodes(registry: &mut NodeRegistry) {
+pub fn register_compositor_nodes(
+    registry: &mut NodeRegistry,
+    global_config: Option<GlobalCompositorConfig>,
+) {
+    let limits = global_config.unwrap_or_default();
     let (def_inputs, def_outputs) = CompositorNode::definition_pins();
 
     registry.register_static_with_description(
         "video::compositor",
-        |params| {
+        move |params| {
             let config: CompositorConfig = config_helpers::parse_config_optional(params)?;
-            if let Err(e) = config.validate() {
+            if let Err(e) = config.validate(&limits) {
                 return Err(StreamKitError::Configuration(e));
             }
-            Ok(Box::new(CompositorNode::new(config)))
+            Ok(Box::new(CompositorNode::new(config, limits.clone())))
         },
         serde_json::to_value(schema_for!(CompositorConfig))
             .expect("CompositorConfig schema should serialize to JSON"),
