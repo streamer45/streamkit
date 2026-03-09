@@ -19,6 +19,7 @@ export const CanvasOuter = styled.div`
   border: 1px solid var(--sk-border);
   border-radius: 4px;
   background: var(--sk-sidebar-bg);
+  pointer-events: none;
 `;
 
 export const CanvasInner = styled.div`
@@ -26,6 +27,7 @@ export const CanvasInner = styled.div`
   transform-origin: top left;
   background: #1a1a2e;
   overflow: hidden;
+  pointer-events: auto;
 `;
 
 export const LayerBox = styled.div`
