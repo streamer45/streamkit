@@ -134,6 +134,12 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
   // drags so CompositorEntryList's React.memo bails out.
   const entries = useStableEntries(layers, textOverlays, imageOverlays);
 
+  // Dismiss context menu when entries change (e.g. server-synced layout
+  // update removes the layer the menu was targeting).
+  useEffect(() => {
+    setContextMenu(null);
+  }, [entries]);
+
   // Broadcast compositor layer selection for YAML highlighting
   useEffect(() => {
     setCompositorSelection(data.label, selected ? selectedLayerId : null);

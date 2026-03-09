@@ -12,6 +12,7 @@
 
 import styled from '@emotion/styled';
 import React, { useCallback, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 
 import type { LayerKind } from '@/hooks/useCompositorLayers';
 import type { CompositorEntry } from '@/nodes/compositorNodeParts';
@@ -132,7 +133,9 @@ export const CompositorContextMenu: React.FC<CompositorContextMenuProps> = ({
 
   const canDelete = menu.layerKind === 'text' || menu.layerKind === 'image';
 
-  return (
+  // Render via portal so position:fixed works correctly regardless of
+  // ancestor CSS transforms (e.g. React Flow's node wrapper).
+  return createPortal(
     <MenuOverlay onPointerDown={onClose}>
       <MenuContainer
         ref={menuRef}
@@ -148,7 +151,8 @@ export const CompositorContextMenu: React.FC<CompositorContextMenuProps> = ({
           </>
         )}
       </MenuContainer>
-    </MenuOverlay>
+    </MenuOverlay>,
+    document.body
   );
 };
 
