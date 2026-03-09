@@ -320,12 +320,12 @@ export function hexToRgba(hex: string, alpha: number): [number, number, number, 
 
 /** Available named fonts matching the server's bundled font set. */
 export const FONT_OPTIONS = [
-  { value: 'dejavu-sans', label: 'DejaVu Sans' },
-  { value: 'dejavu-serif', label: 'DejaVu Serif' },
-  { value: 'dejavu-sans-mono', label: 'DejaVu Sans Mono' },
-  { value: 'dejavu-sans-bold', label: 'DejaVu Sans Bold' },
-  { value: 'dejavu-serif-bold', label: 'DejaVu Serif Bold' },
-  { value: 'dejavu-sans-mono-bold', label: 'DejaVu Mono Bold' },
+  { value: 'dejavu-sans', label: 'Sans' },
+  { value: 'dejavu-serif', label: 'Serif' },
+  { value: 'dejavu-sans-mono', label: 'Monospace' },
+  { value: 'dejavu-sans-bold', label: 'Sans Bold' },
+  { value: 'dejavu-serif-bold', label: 'Serif Bold' },
+  { value: 'dejavu-sans-mono-bold', label: 'Monospace Bold' },
 ] as const;
 
 export const FontSelect = styled.select`

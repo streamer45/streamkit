@@ -60,7 +60,7 @@ import {
 
 // ── Radix Slider (compact) ──────────────────────────────────────────────────
 
-const CompactSliderRoot = styled(RadixSlider.Root)`
+export const CompactSliderRoot = styled(RadixSlider.Root)`
   position: relative;
   display: flex;
   align-items: center;
@@ -76,7 +76,7 @@ const CompactSliderRoot = styled(RadixSlider.Root)`
   }
 `;
 
-const CompactSliderTrack = styled(RadixSlider.Track)`
+export const CompactSliderTrack = styled(RadixSlider.Track)`
   position: relative;
   flex-grow: 1;
   height: 3px;
@@ -84,14 +84,14 @@ const CompactSliderTrack = styled(RadixSlider.Track)`
   border-radius: 9999px;
 `;
 
-const CompactSliderRange = styled(RadixSlider.Range)`
+export const CompactSliderRange = styled(RadixSlider.Range)`
   position: absolute;
   height: 100%;
   background: var(--sk-primary);
   border-radius: 9999px;
 `;
 
-const CompactSliderThumb = styled(RadixSlider.Thumb)`
+export const CompactSliderThumb = styled(RadixSlider.Thumb)`
   display: block;
   width: 12px;
   height: 12px;

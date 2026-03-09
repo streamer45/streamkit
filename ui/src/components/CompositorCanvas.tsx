@@ -23,6 +23,7 @@ import type {
   LayerState,
   TextOverlayState,
   ImageOverlayState,
+  LayerKind,
   ResizeHandle,
 } from '@/hooks/useCompositorLayers';
 
@@ -42,6 +43,7 @@ export interface CompositorCanvasProps {
   onLayerPointerDown: (layerId: string, e: React.PointerEvent) => void;
   onResizePointerDown: (layerId: string, handle: ResizeHandle, e: React.PointerEvent) => void;
   onTextFocusRequest?: (id: string) => void;
+  onLayerContextMenu?: (layerId: string, layerKind: LayerKind, x: number, y: number) => void;
   layerRefs: React.MutableRefObject<Map<string, HTMLDivElement>>;
   disabled?: boolean;
 }
@@ -58,6 +60,7 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
     onLayerPointerDown,
     onResizePointerDown,
     onTextFocusRequest,
+    onLayerContextMenu,
     layerRefs,
     disabled,
   }) => {
@@ -112,6 +115,30 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
       [layerRefs]
     );
 
+    // Right-click context menu via event delegation: walk layerRefs to
+    // find which layer element contains the event target, then determine
+    // its kind from the layers/textOverlays/imageOverlays arrays.
+    const handleCanvasContextMenu = useCallback(
+      (e: React.MouseEvent) => {
+        if (disabled || !onLayerContextMenu) return;
+        const target = e.target as Node;
+        let hitId: string | null = null;
+        for (const [id, el] of layerRefs.current) {
+          if (el.contains(target)) {
+            hitId = id;
+            break;
+          }
+        }
+        if (!hitId) return;
+        e.preventDefault();
+        let kind: LayerKind = 'video';
+        if (textOverlays.some((o) => o.id === hitId)) kind = 'text';
+        else if (imageOverlays.some((o) => o.id === hitId)) kind = 'image';
+        onLayerContextMenu(hitId, kind, e.clientX, e.clientY);
+      },
+      [disabled, onLayerContextMenu, layerRefs, textOverlays, imageOverlays]
+    );
+
     const noopPointerDown = useCallback(() => {}, []);
     const noopResizeStart = useCallback(
       (() => {}) as (id: string, handle: ResizeHandle, e: React.PointerEvent) => void,
@@ -133,6 +160,7 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
             marginBottom: canvasHeight * (scale - 1),
           }}
           onPointerDown={disabled ? undefined : handlePaneClick}
+          onContextMenu={handleCanvasContextMenu}
         >
           {!hasContent ? (
             <EmptyState>No layers configured</EmptyState>
