@@ -322,21 +322,33 @@ impl ProcessorNode for MoqPushNode {
 
         loop {
             let (input_source, packet) = tokio::select! {
-                Some(pkt) = async {
+                pkt = async {
                     match audio_rx.as_mut() {
                         Some(rx) => rx.recv().await,
                         _ => std::future::pending().await,
                     }
                 } => {
-                    (InputSource::Audio, pkt)
+                    if let Some(p) = pkt {
+                        (InputSource::Audio, p)
+                    } else {
+                        audio_rx = None;
+                        if video_rx.is_none() { break; }
+                        continue;
+                    }
                 },
-                Some(pkt) = async {
+                pkt = async {
                     match video_rx.as_mut() {
                         Some(rx) => rx.recv().await,
                         _ => std::future::pending().await,
                     }
                 } => {
-                    (InputSource::Video, pkt)
+                    if let Some(p) = pkt {
+                        (InputSource::Video, p)
+                    } else {
+                        video_rx = None;
+                        if audio_rx.is_none() { break; }
+                        continue;
+                    }
                 },
                 Some(control_msg) = context.control_rx.recv() => {
                     if matches!(control_msg, streamkit_core::control::NodeControlMessage::Shutdown) {
