@@ -24,6 +24,7 @@ import { useCompositorCommit } from './compositorCommit';
 import type { LayerKind } from './compositorConstants';
 import { useCompositorDragResize } from './compositorDragResize';
 import type { DragState } from './compositorDragResize';
+import type { CompositorKeyboardDeps } from './compositorKeyboard';
 import {
   mergeOverlayState,
   parseLayers,
@@ -72,6 +73,11 @@ export interface UseCompositorLayersResult {
   updateLayerMirror: (layerId: string, axis: 'horizontal' | 'vertical') => void;
   /** Ref map: layer elements register here for direct DOM manipulation during drag */
   layerRefs: React.MutableRefObject<Map<string, HTMLDivElement>>;
+  /** Refs to the snap guide line DOM elements for direct show/hide during drag */
+  snapGuideRefs: React.MutableRefObject<{
+    vertical: HTMLDivElement | null;
+    horizontal: HTMLDivElement | null;
+  }>;
   /** Whether a drag/resize is currently in progress */
   isDragging: boolean;
   /** Text overlays */
@@ -87,6 +93,8 @@ export interface UseCompositorLayersResult {
   /** Atomically reassign z-index values for all layer types in one commit.
    *  Each entry maps a layer id + kind to its new z-index. */
   reorderLayers: (entries: Array<{ id: string; kind: LayerKind; zIndex: number }>) => void;
+  /** Pre-assembled deps bag for useCompositorKeyboard. */
+  keyboardDeps: CompositorKeyboardDeps;
 }
 
 export const useCompositorLayers = (
@@ -132,6 +140,10 @@ export const useCompositorLayers = (
   }, [imageOverlays]);
 
   const layerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const snapGuideRefs = useRef<{
+    vertical: HTMLDivElement | null;
+    horizontal: HTMLDivElement | null;
+  }>({ vertical: null, horizontal: null });
   const dragStateRef = useRef<DragState | null>(null);
   const layersRef = useRef(layers);
   useEffect(() => {
@@ -227,6 +239,7 @@ export const useCompositorLayers = (
     findAnyLayer,
     throttledConfigChange,
     commitOverlaysRef: overlayOps.commitOverlaysRef,
+    snapGuideRefs,
   });
 
   return {
@@ -241,6 +254,7 @@ export const useCompositorLayers = (
     toggleLayerVisibility: overlayOps.toggleLayerVisibility,
     updateLayerMirror: overlayOps.updateLayerMirror,
     layerRefs,
+    snapGuideRefs,
     isDragging,
     textOverlays,
     imageOverlays,
@@ -251,5 +265,18 @@ export const useCompositorLayers = (
     updateImageOverlay: overlayOps.updateImageOverlay,
     removeImageOverlay: overlayOps.removeImageOverlay,
     reorderLayers: overlayOps.reorderLayers,
+    keyboardDeps: {
+      selectedLayerId,
+      selectLayer: overlayOps.selectLayer,
+      removeTextOverlay: overlayOps.removeTextOverlay,
+      removeImageOverlay: overlayOps.removeImageOverlay,
+      layersRef,
+      textOverlaysRef,
+      imageOverlaysRef,
+      setLayers,
+      throttledConfigChange,
+      updateTextOverlay: overlayOps.updateTextOverlay,
+      updateImageOverlay: overlayOps.updateImageOverlay,
+    },
   };
 };

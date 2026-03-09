@@ -12,7 +12,7 @@
 
 import { useCallback, useEffect, useRef } from 'react';
 
-import { computeUpdatedLayer } from './compositorLayerParsers';
+import { computeUpdatedLayer, detectSnapGuides } from './compositorLayerParsers';
 import type {
   LayerState,
   TextOverlayState,
@@ -58,6 +58,10 @@ export interface DragResizeDeps {
   commitOverlaysRef: React.MutableRefObject<
     (text: TextOverlayState[], img: ImageOverlayState[]) => void
   >;
+  snapGuideRefs: React.MutableRefObject<{
+    vertical: HTMLDivElement | null;
+    horizontal: HTMLDivElement | null;
+  }>;
 }
 
 // ── Hook ─────────────────────────────────────────────────────────────────
@@ -79,6 +83,7 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
     findAnyLayer,
     throttledConfigChange,
     commitOverlaysRef,
+    snapGuideRefs,
   } = deps;
 
   // Track active document listeners so the cleanup effect can remove them on unmount.
@@ -131,9 +136,25 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
         s.rafId = null;
         const updated = computeLayerFromPointer(s, s.currentX, s.currentY);
         applyVisualUpdate(updated, s.type === 'resize');
+
+        // Show/hide snap guide lines (ref-only, no React state).
+        if (s.type === 'drag') {
+          const guides = detectSnapGuides(updated, canvasWidth, canvasHeight);
+          const vEl = snapGuideRefs.current.vertical;
+          const hEl = snapGuideRefs.current.horizontal;
+          if (vEl) vEl.style.opacity = guides.verticalCenter ? '0.4' : '0';
+          if (hEl) hEl.style.opacity = guides.horizontalCenter ? '0.4' : '0';
+        }
       });
     },
-    [dragStateRef, computeLayerFromPointer, applyVisualUpdate]
+    [
+      dragStateRef,
+      computeLayerFromPointer,
+      applyVisualUpdate,
+      canvasWidth,
+      canvasHeight,
+      snapGuideRefs,
+    ]
   );
 
   const handlePointerUp = useCallback(
@@ -142,6 +163,12 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
       if (!state) return;
 
       if (state.rafId !== null) cancelAnimationFrame(state.rafId);
+
+      // Hide snap guides on drop.
+      const vEl = snapGuideRefs.current.vertical;
+      const hEl = snapGuideRefs.current.horizontal;
+      if (vEl) vEl.style.opacity = '0';
+      if (hEl) hEl.style.opacity = '0';
 
       const updated = computeLayerFromPointer(state, e.clientX, e.clientY);
       setIsDragging(false);
@@ -203,6 +230,7 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
       throttledConfigChange,
       commitOverlaysRef,
       handlePointerMove,
+      snapGuideRefs,
     ]
   );
 

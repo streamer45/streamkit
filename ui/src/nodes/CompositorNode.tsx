@@ -2,12 +2,13 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import React, { useCallback, useEffect, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 
 import { CompositorCanvas } from '@/components/CompositorCanvas';
 import { NodeFrame } from '@/components/node/NodeFrame';
 import { SKTooltip } from '@/components/Tooltip';
 import { LiveBadge, LiveDot } from '@/components/ui/LiveIndicator';
+import { useCompositorKeyboard } from '@/hooks/compositorKeyboard';
 import { useCompositorLayers } from '@/hooks/useCompositorLayers';
 import type { TextOverlayState } from '@/hooks/useCompositorLayers';
 import { clearCompositorSelection, setCompositorSelection } from '@/hooks/useCompositorSelection';
@@ -79,6 +80,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
     toggleLayerVisibility,
     updateLayerMirror,
     layerRefs,
+    snapGuideRefs,
     textOverlays,
     imageOverlays,
     addTextOverlay,
@@ -88,6 +90,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
     updateImageOverlay,
     removeImageOverlay,
     reorderLayers,
+    keyboardDeps,
   } = useCompositorLayers({
     nodeId: id,
     sessionId: data.sessionId,
@@ -99,6 +102,10 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
   });
 
   const disabled = !data.onConfigChange && !data.onParamChange;
+
+  // ── Keyboard shortcuts ────────────────────────────────────────────────
+  const compositorWrapperRef = useRef<HTMLDivElement>(null);
+  useCompositorKeyboard(compositorWrapperRef, { ...keyboardDeps, disabled });
 
   // Text inspector children (includes the textInputRef for double-click focus)
   const { textInspectorChildren, textInputRef } = useTextInspectorChildren(
@@ -213,7 +220,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
       state={data.state}
       sessionId={data.sessionId}
     >
-      <CompositorOuterWrapper>
+      <CompositorOuterWrapper ref={compositorWrapperRef} tabIndex={-1}>
         {/* Side panel rendered first in DOM order so that layer-list text
             (e.g. "Text 0") is matched before identically-named canvas labels
             by Playwright's getByText().first(). The panel uses position:absolute
@@ -259,6 +266,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
               onResizePointerDown={handleResizePointerDown}
               onTextFocusRequest={disabled ? undefined : handleTextFocusRequest}
               layerRefs={layerRefs}
+              snapGuideRefs={snapGuideRefs}
               disabled={disabled}
             />
           </CanvasSection>
