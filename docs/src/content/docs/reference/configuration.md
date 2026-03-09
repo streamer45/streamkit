@@ -187,6 +187,15 @@ Configuration for the `core::script` node (requires `script` feature).
 - `type` (string): `url` | `token` | `apikey` | `string`
 - `description` (string): optional description
 
+## `[compositor]`
+
+Server-level limits for compositor nodes (requires `compositor` feature). These limits apply to every compositor node; individual nodes cannot exceed them, even via `UpdateParams`.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `default_max_canvas_dimension` | int | `7680` | Maximum canvas dimension (width or height) in pixels. Prevents runaway memory from oversized canvases |
+| `default_max_font_size` | int | `4096` | Maximum font size for text overlays in pixels |
+
 ## `[engine]`
 
 Pipeline execution tuning for **dynamic sessions** (long-running pipelines created via the sessions API).
