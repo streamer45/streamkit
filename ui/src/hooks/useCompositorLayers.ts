@@ -66,6 +66,10 @@ export interface UseCompositorLayersResult {
   handleResizePointerDown: (layerId: string, handle: ResizeHandle, e: React.PointerEvent) => void;
   updateLayerOpacity: (layerId: string, opacity: number) => void;
   updateLayerRotation: (layerId: string, degrees: number) => void;
+  updateLayerPositionSize: (
+    layerId: string,
+    patch: { x?: number; y?: number; width?: number; height?: number }
+  ) => void;
   updateLayerZIndex: (layerId: string, zIndex: number) => void;
   toggleLayerVisibility: (layerId: string) => void;
   /** Toggle horizontal or vertical mirroring for a layer (video, text, or image). */
@@ -237,6 +241,7 @@ export const useCompositorLayers = (
     handleResizePointerDown,
     updateLayerOpacity: overlayOps.updateLayerOpacity,
     updateLayerRotation: overlayOps.updateLayerRotation,
+    updateLayerPositionSize: overlayOps.updateLayerPositionSize,
     updateLayerZIndex: overlayOps.updateLayerZIndex,
     toggleLayerVisibility: overlayOps.toggleLayerVisibility,
     updateLayerMirror: overlayOps.updateLayerMirror,

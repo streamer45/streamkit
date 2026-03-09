@@ -93,6 +93,46 @@ export function useCompositorOverlays(deps: OverlayDeps) {
     [setLayers, throttledConfigChange]
   );
 
+  const updateLayerPositionSize = useCallback(
+    (layerId: string, patch: { x?: number; y?: number; width?: number; height?: number }) => {
+      setLayers((prev) => {
+        const next = prev.map((l) => {
+          if (l.id !== layerId) return l;
+          const updated = { ...l };
+          if (patch.x !== undefined) updated.x = patch.x;
+          if (patch.y !== undefined) updated.y = patch.y;
+          // Preserve aspect ratio for dimension changes on video layers
+          if (
+            patch.width !== undefined &&
+            patch.height === undefined &&
+            l.width > 0 &&
+            l.height > 0
+          ) {
+            const ar = l.width / l.height;
+            updated.width = Math.max(20, patch.width);
+            updated.height = Math.max(20, updated.width / ar);
+          } else if (
+            patch.height !== undefined &&
+            patch.width === undefined &&
+            l.width > 0 &&
+            l.height > 0
+          ) {
+            const ar = l.width / l.height;
+            updated.height = Math.max(20, patch.height);
+            updated.width = Math.max(20, updated.height * ar);
+          } else {
+            if (patch.width !== undefined) updated.width = Math.max(20, patch.width);
+            if (patch.height !== undefined) updated.height = Math.max(20, patch.height);
+          }
+          return updated;
+        });
+        throttledConfigChange?.(next);
+        return next;
+      });
+    },
+    [setLayers, throttledConfigChange]
+  );
+
   const updateLayerZIndex = useCallback(
     (layerId: string, zIndex: number) => {
       setLayers((prev) => {
@@ -438,6 +478,7 @@ export function useCompositorOverlays(deps: OverlayDeps) {
     selectLayer,
     updateLayerOpacity,
     updateLayerRotation,
+    updateLayerPositionSize,
     updateLayerZIndex,
     toggleLayerVisibility,
     updateLayerMirror,

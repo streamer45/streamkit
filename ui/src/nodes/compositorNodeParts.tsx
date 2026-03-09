@@ -398,6 +398,11 @@ export const LayerListItem = styled.div<{ isSelected?: boolean; isHidden?: boole
   &:hover .layer-remove-btn {
     opacity: 1;
   }
+
+  /* Show z-order buttons on hover */
+  &:hover .layer-z-btn {
+    opacity: 1;
+  }
 `;
 
 /** Unified entry representing any layer kind for sorting / display */

@@ -11,19 +11,7 @@
 
 import styled from '@emotion/styled';
 import * as RadixSlider from '@radix-ui/react-slider';
-import {
-  Eye,
-  EyeOff,
-  FlipHorizontal2,
-  FlipVertical2,
-  GripVertical,
-  Image,
-  Plus,
-  RotateCcw,
-  Type,
-  X,
-} from 'lucide-react';
-import { Reorder } from 'motion/react';
+import { FlipHorizontal2, FlipVertical2, Image, Plus, RotateCcw, Type } from 'lucide-react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 import { SKTooltip } from '@/components/Tooltip';
@@ -39,24 +27,20 @@ import {
   HiddenFileInput,
   InspectorSection,
   InspectorSectionLabel,
-  LayerListItem,
   MirrorButton,
   MirrorToggleRow,
   NoSelectionText,
-  OverlayIcon,
-  OverlayLabel,
+  OverlayNumInput,
   PresetButton,
-  RemoveButton,
   ResetButton,
   RotationPresetsRow,
-  VisibilityButton,
   type CompositorEntry,
   InspectorHeader,
-  InspectorPosition,
   InspectorTitle,
   LayerInfoRow,
   ROTATION_PRESETS,
 } from './compositorNodeParts';
+import LayerReorderSection from './compositorNodeReorder';
 
 // ── Radix Slider (compact) ──────────────────────────────────────────────────
 
@@ -120,137 +104,89 @@ const CompactSliderThumb = styled(RadixSlider.Thumb)`
   }
 `;
 
-// ── Reorder section (memoised to avoid cascade during opacity/rotation drags) ─
+// ── Position / size input grid ──────────────────────────────────────────────
 
-const LayerReorderSection: React.FC<{
-  entries: CompositorEntry[];
-  selectedLayerId: string | null;
-  onSelectLayer: (id: string | null) => void;
-  onToggleVisibility: (id: string) => void;
-  onRemoveText: (id: string) => void;
-  onRemoveImage: (id: string) => void;
-  onReorderLayers: (entries: Array<{ id: string; kind: LayerKind; zIndex: number }>) => void;
-  disabled: boolean;
-}> = React.memo(
-  ({
-    entries,
-    selectedLayerId,
-    onSelectLayer,
-    onToggleVisibility,
-    onRemoveText,
-    onRemoveImage,
-    onReorderLayers,
-    disabled,
-  }) => {
-    const iconForKind = (kind: LayerKind) => {
-      switch (kind) {
-        case 'text':
-          return <Type size={11} />;
-        case 'image':
-          return <Image size={11} />;
-        default:
-          return null;
-      }
-    };
+const PositionSizeGrid = styled.div`
+  display: grid;
+  grid-template-columns: auto 1fr auto 1fr;
+  gap: 3px 4px;
+  align-items: center;
+  margin-top: 4px;
+`;
 
-    const handleReorder = useCallback(
-      (reordered: CompositorEntry[]) => {
-        const maxZ = reordered.length - 1;
-        const updates: Array<{ id: string; kind: LayerKind; zIndex: number }> = [];
-        for (let i = 0; i < reordered.length; i++) {
-          const entry = reordered[i];
-          const newZ = maxZ - i;
-          if (entry.zIndex !== newZ) {
-            updates.push({ id: entry.id, kind: entry.kind, zIndex: newZ });
-          }
-        }
-        if (updates.length > 0) onReorderLayers(updates);
-      },
-      [onReorderLayers]
-    );
-
-    return (
-      <Reorder.Group
-        axis="y"
-        values={entries}
-        onReorder={handleReorder}
-        as="div"
-        style={{ listStyle: 'none', padding: 0, margin: 0 }}
-      >
-        {entries.map((entry) => (
-          <Reorder.Item
-            key={entry.id}
-            value={entry}
-            as="div"
-            style={{ listStyle: 'none' }}
-            dragListener={!disabled}
-          >
-            <LayerListItem
-              isSelected={entry.id === selectedLayerId}
-              isHidden={!entry.visible}
-              className="nodrag nopan"
-              onClick={() => onSelectLayer(entry.id === selectedLayerId ? null : entry.id)}
-            >
-              <GripVertical
-                size={11}
-                style={{
-                  color: 'var(--sk-text-muted)',
-                  cursor: disabled ? 'not-allowed' : 'grab',
-                  flexShrink: 0,
-                  opacity: 0.5,
-                }}
-              />
-              <SKTooltip content={entry.visible ? 'Hide layer' : 'Show layer'}>
-                <VisibilityButton
-                  className="nodrag nopan"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onToggleVisibility(entry.id);
-                  }}
-                >
-                  {entry.visible ? <Eye size={12} /> : <EyeOff size={12} />}
-                </VisibilityButton>
-              </SKTooltip>
-              <OverlayIcon>{iconForKind(entry.kind)}</OverlayIcon>
-              <OverlayLabel style={{ fontWeight: entry.id === selectedLayerId ? 600 : 400 }}>
-                {entry.label}
-              </OverlayLabel>
-              {(entry.kind === 'text' || entry.kind === 'image') && (
-                <SKTooltip content="Remove layer">
-                  <RemoveButton
-                    disabled={disabled}
-                    className="nodrag nopan layer-remove-btn"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (entry.kind === 'text') onRemoveText(entry.id);
-                      else onRemoveImage(entry.id);
-                    }}
-                  >
-                    <X size={12} />
-                  </RemoveButton>
-                </SKTooltip>
-              )}
-            </LayerListItem>
-          </Reorder.Item>
-        ))}
-      </Reorder.Group>
-    );
-  }
-);
-LayerReorderSection.displayName = 'LayerReorderSection';
+const FieldLabel = styled.span`
+  font-size: 10px;
+  color: var(--sk-text-muted);
+  font-weight: 500;
+  text-align: right;
+`;
 
 // ── Memoized inspector sub-sections ─────────────────────────────────────────
+
+export type PositionSizePatch = {
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+};
 
 export const InspectorHeaderSection: React.FC<{
   name: string;
   x: number;
   y: number;
-}> = React.memo(({ name, x, y }) => (
-  <InspectorHeader>
+  width: number;
+  height: number;
+  onPositionSizeChange: (patch: PositionSizePatch) => void;
+  disabled?: boolean;
+}> = React.memo(({ name, x, y, width, height, onPositionSizeChange, disabled }) => (
+  <InspectorHeader style={{ flexDirection: 'column', alignItems: 'stretch' }}>
     <InspectorTitle>{name}</InspectorTitle>
-    <InspectorPosition>
-      ({Math.round(x)}, {Math.round(y)})
-    </InspectorPosition>
+    <PositionSizeGrid className="nodrag nopan">
+      <FieldLabel>X</FieldLabel>
+      <OverlayNumInput
+        type="number"
+        value={Math.round(x)}
+        onChange={(e) => {
+          const v = Number.parseInt(e.target.value, 10);
+          if (!Number.isNaN(v)) onPositionSizeChange({ x: v });
+        }}
+        disabled={disabled}
+        className="nodrag nopan"
+      />
+      <FieldLabel>Y</FieldLabel>
+      <OverlayNumInput
+        type="number"
+        value={Math.round(y)}
+        onChange={(e) => {
+          const v = Number.parseInt(e.target.value, 10);
+          if (!Number.isNaN(v)) onPositionSizeChange({ y: v });
+        }}
+        disabled={disabled}
+        className="nodrag nopan"
+      />
+      <FieldLabel>W</FieldLabel>
+      <OverlayNumInput
+        type="number"
+        value={Math.round(width)}
+        onChange={(e) => {
+          const v = Number.parseInt(e.target.value, 10);
+          if (!Number.isNaN(v) && v > 0) onPositionSizeChange({ width: v });
+        }}
+        disabled={disabled}
+        className="nodrag nopan"
+      />
+      <FieldLabel>H</FieldLabel>
+      <OverlayNumInput
+        type="number"
+        value={Math.round(height)}
+        onChange={(e) => {
+          const v = Number.parseInt(e.target.value, 10);
+          if (!Number.isNaN(v) && v > 0) onPositionSizeChange({ height: v });
+        }}
+        disabled={disabled}
+        className="nodrag nopan"
+      />
+    </PositionSizeGrid>
   </InspectorHeader>
 ));
 InspectorHeaderSection.displayName = 'InspectorHeaderSection';
