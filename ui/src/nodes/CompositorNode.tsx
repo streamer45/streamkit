@@ -107,6 +107,16 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
   const compositorWrapperRef = useRef<HTMLDivElement>(null);
   useCompositorKeyboard(compositorWrapperRef, { ...keyboardDeps, disabled });
 
+  // Focus the wrapper when a layer is selected so that subsequent
+  // keyboard events (arrows, Delete, Escape) bubble through the wrapper.
+  // Pointer handlers call preventDefault() which suppresses the browser's
+  // default focus, so we must set it explicitly.
+  useEffect(() => {
+    if (selectedLayerId && compositorWrapperRef.current) {
+      compositorWrapperRef.current.focus({ preventScroll: true });
+    }
+  }, [selectedLayerId]);
+
   // Text inspector children (includes the textInputRef for double-click focus)
   const { textInspectorChildren, textInputRef } = useTextInspectorChildren(
     textOverlays.find((o) => o.id === selectedLayerId),
