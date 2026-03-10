@@ -244,7 +244,11 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
       state={data.state}
       sessionId={data.sessionId}
     >
-      <CompositorOuterWrapper ref={compositorWrapperRef} tabIndex={-1}>
+      <CompositorOuterWrapper
+        ref={compositorWrapperRef}
+        tabIndex={-1}
+        data-testid="compositor-keyboard-target"
+      >
         {/* Side panel rendered first in DOM order so that layer-list text
             (e.g. "Text 0") is matched before identically-named canvas labels
             by Playwright's getByText().first(). The panel uses position:absolute
