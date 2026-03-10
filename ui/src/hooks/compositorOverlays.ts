@@ -110,7 +110,7 @@ export function useCompositorOverlays(deps: OverlayDeps) {
           ) {
             const ar = l.width / l.height;
             updated.width = Math.max(20, patch.width);
-            updated.height = Math.max(20, updated.width / ar);
+            updated.height = Math.max(20, Math.round(updated.width / ar));
           } else if (
             patch.height !== undefined &&
             patch.width === undefined &&
@@ -119,7 +119,7 @@ export function useCompositorOverlays(deps: OverlayDeps) {
           ) {
             const ar = l.width / l.height;
             updated.height = Math.max(20, patch.height);
-            updated.width = Math.max(20, updated.height * ar);
+            updated.width = Math.max(20, Math.round(updated.height * ar));
           } else {
             if (patch.width !== undefined) updated.width = Math.max(20, patch.width);
             if (patch.height !== undefined) updated.height = Math.max(20, patch.height);

@@ -215,8 +215,10 @@ export const OverlayLabel = styled.span`
 export const OverlayIcon = styled.span`
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   color: var(--sk-text-muted);
   flex-shrink: 0;
+  min-width: 14px;
 `;
 
 export const RemoveButton = styled.button`
