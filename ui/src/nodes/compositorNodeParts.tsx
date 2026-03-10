@@ -119,6 +119,18 @@ const NumericInput = styled.input`
     opacity: 0.5;
   }
 
+  &:read-only {
+    cursor: default;
+    opacity: 0.5;
+    border-color: transparent;
+    background: transparent;
+
+    &:focus {
+      border-color: transparent;
+      box-shadow: none;
+    }
+  }
+
   /* Hide spinners */
   &::-webkit-inner-spin-button,
   &::-webkit-outer-spin-button {
