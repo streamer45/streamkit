@@ -127,20 +127,31 @@ const SNAP_GRID = 10;
 // ---------------------------------------------------------------------------
 
 /**
- * Focus the compositor keyboard wrapper and press a key.
+ * Focus the compositor keyboard wrapper and dispatch a keydown event.
  *
- * Uses page.evaluate() to call element.focus() directly — this bypasses
- * Playwright's actionability checks (visibility, viewport, etc.) which can
- * fail when the compositor node is partially off-screen inside ReactFlow.
+ * Both focus and key dispatch happen inside a single page.evaluate() call
+ * so there is no async gap where focus could be lost between the two
+ * operations.  The event is dispatched directly on the wrapper element,
+ * which is where the compositorKeyboard hook's listener is attached.
  */
-async function pressKey(page: Page, key: string) {
-  await page.evaluate(() => {
+async function pressKey(page: Page, combo: string) {
+  await page.evaluate((c) => {
     const el =
       document.querySelector('[data-testid="compositor-keyboard-target"]') ??
       document.querySelector('.react-flow__node [tabindex="-1"]');
-    if (el instanceof HTMLElement) el.focus();
-  });
-  await page.keyboard.press(key);
+    if (!(el instanceof HTMLElement)) return;
+
+    el.focus();
+
+    // Parse combo like "Shift+ArrowDown" → { key: "ArrowDown", shiftKey: true }
+    const parts = c.split('+');
+    const key = parts[parts.length - 1];
+    const shiftKey = parts.includes('Shift');
+
+    el.dispatchEvent(
+      new KeyboardEvent('keydown', { key, shiftKey, bubbles: true, cancelable: true })
+    );
+  }, combo);
   await page.waitForTimeout(300);
 }
 
