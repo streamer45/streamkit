@@ -113,9 +113,14 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
   // keyboard events (arrows, Delete, Escape) bubble through the wrapper.
   // Pointer handlers call preventDefault() which suppresses the browser's
   // default focus, so we must set it explicitly.
+  // Skip if an input/textarea already has focus (e.g. text inspector)
+  // to avoid stealing focus from the user mid-typing.
   useEffect(() => {
     if (selectedLayerId && compositorWrapperRef.current) {
-      compositorWrapperRef.current.focus({ preventScroll: true });
+      const tag = document.activeElement?.tagName;
+      if (tag !== 'INPUT' && tag !== 'TEXTAREA') {
+        compositorWrapperRef.current.focus({ preventScroll: true });
+      }
     }
   }, [selectedLayerId]);
 
