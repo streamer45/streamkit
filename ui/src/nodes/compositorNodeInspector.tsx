@@ -6,8 +6,8 @@
  * Inspector panel for the compositor node.
  *
  * Contains the text-overlay inspector children, stable callback builders
- * for opacity / rotation / mirror changes, and the CompositorInspector
- * component that renders the full inspector section.
+ * for opacity / rotation / mirror / position-size changes, and the
+ * CompositorInspector component that renders the full inspector section.
  */
 
 import React, { useCallback, useMemo, useRef } from 'react';
@@ -41,12 +41,15 @@ import {
   OpacityControl,
   RotationControl,
 } from './compositorNodeWidgets';
+import type { PositionSizePatch } from './compositorNodeWidgets';
 
 // ── Inspector props derivation ──────────────────────────────────────────────
 
 interface InspectorLayerProps {
   x: number;
   y: number;
+  width: number;
+  height: number;
   opacity: number;
   rotationDegrees: number;
   mirrorHorizontal: boolean;
@@ -64,6 +67,8 @@ export function useInspectorProps(
       return {
         x: selectedLayer.x,
         y: selectedLayer.y,
+        width: selectedLayer.width,
+        height: selectedLayer.height,
         opacity: selectedLayer.opacity,
         rotationDegrees: selectedLayer.rotationDegrees,
         mirrorHorizontal: selectedLayer.mirrorHorizontal,
@@ -73,6 +78,8 @@ export function useInspectorProps(
       return {
         x: selectedTextOverlay.x,
         y: selectedTextOverlay.y,
+        width: selectedTextOverlay.width,
+        height: selectedTextOverlay.height,
         opacity: selectedTextOverlay.opacity,
         rotationDegrees: selectedTextOverlay.rotationDegrees,
         mirrorHorizontal: selectedTextOverlay.mirrorHorizontal,
@@ -82,6 +89,8 @@ export function useInspectorProps(
       return {
         x: selectedImageOverlay.x,
         y: selectedImageOverlay.y,
+        width: selectedImageOverlay.width,
+        height: selectedImageOverlay.height,
         opacity: selectedImageOverlay.opacity,
         rotationDegrees: selectedImageOverlay.rotationDegrees,
         mirrorHorizontal: selectedImageOverlay.mirrorHorizontal,
@@ -149,6 +158,34 @@ export function useSelectedMirrorToggle(
       updateLayerMirror(selectedLayerId, axis);
     },
     [selectedLayerId, updateLayerMirror]
+  );
+}
+
+export function useSelectedPositionSizeChange(
+  selectedLayerId: string | null,
+  selectedLayerKind: LayerKindTag | null,
+  updateLayerPositionSize: (id: string, patch: PositionSizePatch) => void,
+  updateTextOverlay: (id: string, patch: Partial<TextOverlayState>) => void,
+  updateImageOverlay: (id: string, patch: Partial<ImageOverlayState>) => void
+): (patch: PositionSizePatch) => void {
+  return useCallback(
+    (patch: PositionSizePatch) => {
+      if (!selectedLayerId || !selectedLayerKind) return;
+      if (selectedLayerKind === 'video') {
+        updateLayerPositionSize(selectedLayerId, patch);
+      } else if (selectedLayerKind === 'text') {
+        updateTextOverlay(selectedLayerId, patch);
+      } else {
+        updateImageOverlay(selectedLayerId, patch);
+      }
+    },
+    [
+      selectedLayerId,
+      selectedLayerKind,
+      updateLayerPositionSize,
+      updateTextOverlay,
+      updateImageOverlay,
+    ]
   );
 }
 
@@ -291,6 +328,8 @@ export interface CompositorInspectorProps {
   handleSelectedOpacityChange: (v: number) => void;
   handleSelectedRotationChange: (v: number) => void;
   handleSelectedMirrorToggle: (axis: 'horizontal' | 'vertical') => void;
+  handleSelectedPositionSizeChange: (patch: PositionSizePatch) => void;
+  dimensionsReadOnly?: boolean;
   disabled: boolean;
 }
 
@@ -302,6 +341,8 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
     handleSelectedOpacityChange,
     handleSelectedRotationChange,
     handleSelectedMirrorToggle,
+    handleSelectedPositionSizeChange,
+    dimensionsReadOnly,
     disabled,
   }) => {
     if (!inspectorProps) return null;
@@ -313,6 +354,11 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
             name={selectedLayerName}
             x={inspectorProps.x}
             y={inspectorProps.y}
+            width={inspectorProps.width}
+            height={inspectorProps.height}
+            onPositionSizeChange={handleSelectedPositionSizeChange}
+            disabled={disabled}
+            dimensionsReadOnly={dimensionsReadOnly}
           />
           {textInspectorChildren}
           <OpacityControl

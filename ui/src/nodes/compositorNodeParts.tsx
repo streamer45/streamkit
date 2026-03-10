@@ -119,6 +119,18 @@ const NumericInput = styled.input`
     opacity: 0.5;
   }
 
+  &:read-only {
+    cursor: default;
+    opacity: 0.5;
+    border-color: transparent;
+    background: transparent;
+
+    &:focus {
+      border-color: transparent;
+      box-shadow: none;
+    }
+  }
+
   /* Hide spinners */
   &::-webkit-inner-spin-button,
   &::-webkit-outer-spin-button {
@@ -215,8 +227,10 @@ export const OverlayLabel = styled.span`
 export const OverlayIcon = styled.span`
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   color: var(--sk-text-muted);
   flex-shrink: 0;
+  min-width: 14px;
 `;
 
 export const RemoveButton = styled.button`
@@ -396,6 +410,11 @@ export const LayerListItem = styled.div<{ isSelected?: boolean; isHidden?: boole
 
   /* Show remove button on hover */
   &:hover .layer-remove-btn {
+    opacity: 1;
+  }
+
+  /* Show z-order buttons on hover */
+  &:hover .layer-z-btn {
     opacity: 1;
   }
 `;
