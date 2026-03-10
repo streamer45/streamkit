@@ -175,9 +175,6 @@ async function setupCompositorView(page: Page) {
   await expect(canvasInner).toBeVisible({ timeout: 5_000 });
 
   // The compositor wrapper (tabIndex={-1}) receives keyboard events.
-  // Using locator.press() on this element is more reliable than
-  // page.keyboard.press() because it explicitly focuses the element
-  // before dispatching — avoiding races with React's useEffect focus.
   const wrapper = compositorNode.locator('[tabindex="-1"]').first();
 
   return { compositorNode, canvasInner, wrapper };
@@ -233,6 +230,16 @@ test.describe('Compositor Keyboard Shortcuts', () => {
     await expect(inputLayer).toBeVisible({ timeout: 5_000 });
     await expect(textLayer).toBeVisible({ timeout: 5_000 });
 
+    // Helper: focus the compositor wrapper then press a key.
+    // We use wrapper.focus() (bypasses actionability checks — the wrapper
+    // may be partially off-screen inside ReactFlow) followed by
+    // page.keyboard.press() which dispatches to the focused element.
+    async function pressKey(key: string) {
+      await wrapper.focus();
+      await page.keyboard.press(key);
+      await page.waitForTimeout(300);
+    }
+
     // ── 3. Arrow key nudge on a video layer ─────────────────────────────
 
     // Select "Input 1" in the layer list.
@@ -244,8 +251,7 @@ test.describe('Compositor Keyboard Shortcuts', () => {
     expect(pos0, 'Video layer "in_1" not found on canvas').not.toBeNull();
 
     // ArrowRight → nudge right by SNAP_GRID.
-    await wrapper.press('ArrowRight');
-    await page.waitForTimeout(300);
+    await pressKey('ArrowRight');
 
     const pos1 = await getCanvasLayerPosition(canvasInner, 'in_1');
     expect(pos1).not.toBeNull();
@@ -253,8 +259,7 @@ test.describe('Compositor Keyboard Shortcuts', () => {
     expect(pos1!.top).toBe(pos0!.top);
 
     // Shift+ArrowDown → fine nudge down by 1 px.
-    await wrapper.press('Shift+ArrowDown');
-    await page.waitForTimeout(300);
+    await pressKey('Shift+ArrowDown');
 
     const pos2 = await getCanvasLayerPosition(canvasInner, 'in_1');
     expect(pos2).not.toBeNull();
@@ -263,8 +268,7 @@ test.describe('Compositor Keyboard Shortcuts', () => {
 
     // ── 4. Delete on a video layer is a no-op ───────────────────────────
 
-    await wrapper.press('Delete');
-    await page.waitForTimeout(300);
+    await pressKey('Delete');
 
     // The video layer must still exist.
     const posAfterDelete = await getCanvasLayerPosition(canvasInner, 'in_1');
@@ -273,12 +277,10 @@ test.describe('Compositor Keyboard Shortcuts', () => {
 
     // ── 5. Escape deselects the current layer ───────────────────────────
 
-    await wrapper.press('Escape');
-    await page.waitForTimeout(300);
+    await pressKey('Escape');
 
     // After Escape, arrow keys should be a no-op (nothing selected).
-    await wrapper.press('ArrowRight');
-    await page.waitForTimeout(300);
+    await pressKey('ArrowRight');
 
     const posAfterEsc = await getCanvasLayerPosition(canvasInner, 'in_1');
     expect(posAfterEsc).not.toBeNull();
@@ -292,8 +294,7 @@ test.describe('Compositor Keyboard Shortcuts', () => {
     const textPos0 = await getCanvasLayerPosition(canvasInner, 'Text 0');
     expect(textPos0, 'Text overlay "Text 0" not found on canvas').not.toBeNull();
 
-    await wrapper.press('ArrowLeft');
-    await page.waitForTimeout(300);
+    await pressKey('ArrowLeft');
 
     const textPos1 = await getCanvasLayerPosition(canvasInner, 'Text 0');
     expect(textPos1).not.toBeNull();
@@ -302,8 +303,8 @@ test.describe('Compositor Keyboard Shortcuts', () => {
 
     // ── 7. Delete removes the text overlay ──────────────────────────────
 
-    await wrapper.press('Delete');
-    await page.waitForTimeout(500);
+    await pressKey('Delete');
+    await page.waitForTimeout(200);
 
     // "Text 0" should no longer appear in the layer list.
     await expect(compositorNode.getByText('Text 0', { exact: true }).first()).not.toBeVisible({
