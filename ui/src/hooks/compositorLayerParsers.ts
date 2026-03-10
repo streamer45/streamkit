@@ -350,6 +350,32 @@ export function buildConfig(
   };
 }
 
+// ── Snap guide detection ────────────────────────────────────────────────────
+
+/** Which centre snap guides are currently active during a drag. */
+export interface SnapGuides {
+  /** Horizontal centre line (layer centred vertically on canvas). */
+  horizontalCenter: boolean;
+  /** Vertical centre line (layer centred horizontally on canvas). */
+  verticalCenter: boolean;
+}
+
+/** Determine which centre snap guides are active for a given layer position.
+ *  Mirrors the snapping logic in `computeDragPosition` — a guide is shown
+ *  whenever the layer's midpoint snaps to a canvas centre axis. */
+export function detectSnapGuides(
+  layer: LayerState,
+  canvasWidth: number,
+  canvasHeight: number
+): SnapGuides {
+  const midX = layer.x + layer.width / 2;
+  const midY = layer.y + layer.height / 2;
+  return {
+    verticalCenter: Math.abs(midX - canvasWidth / 2) < 1,
+    horizontalCenter: Math.abs(midY - canvasHeight / 2) < 1,
+  };
+}
+
 // ── Drag / resize computation ───────────────────────────────────────────────
 
 /** Compute the updated layer position/size from a drag or resize interaction.
