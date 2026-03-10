@@ -39,6 +39,10 @@ export const CompositorOuterWrapper = styled.div`
   position: relative;
   display: flex;
   align-items: flex-start;
+
+  &:focus {
+    outline: none;
+  }
 `;
 
 export const CompositorWrapper = styled.div`

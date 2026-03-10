@@ -28,7 +28,7 @@ import type {
 } from '@/hooks/useCompositorLayers';
 
 import { ImageOverlayLayer, TextOverlayLayer, VideoLayer } from './compositorCanvasLayers';
-import { CanvasInner, CanvasOuter, EmptyState } from './compositorCanvasStyles';
+import { CanvasInner, CanvasOuter, EmptyState, SnapGuideLine } from './compositorCanvasStyles';
 
 // ── Main canvas ─────────────────────────────────────────────────────────────
 
@@ -45,6 +45,10 @@ export interface CompositorCanvasProps {
   onTextFocusRequest?: (id: string) => void;
   onLayerContextMenu?: (layerId: string, layerKind: LayerKind, x: number, y: number) => void;
   layerRefs: React.MutableRefObject<Map<string, HTMLDivElement>>;
+  snapGuideRefs: React.MutableRefObject<{
+    vertical: HTMLDivElement | null;
+    horizontal: HTMLDivElement | null;
+  }>;
   disabled?: boolean;
 }
 
@@ -62,6 +66,7 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
     onTextFocusRequest,
     onLayerContextMenu,
     layerRefs,
+    snapGuideRefs,
     disabled,
   }) => {
     const outerRef = useRef<HTMLDivElement>(null);
@@ -202,6 +207,18 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
               ))}
             </>
           )}
+          <SnapGuideLine
+            data-axis="vertical"
+            ref={(el: HTMLDivElement | null) => {
+              snapGuideRefs.current.vertical = el;
+            }}
+          />
+          <SnapGuideLine
+            data-axis="horizontal"
+            ref={(el: HTMLDivElement | null) => {
+              snapGuideRefs.current.horizontal = el;
+            }}
+          />
         </CanvasInner>
       </CanvasOuter>
     );

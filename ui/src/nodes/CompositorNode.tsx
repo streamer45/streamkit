@@ -2,13 +2,14 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { CompositorCanvas } from '@/components/CompositorCanvas';
 import { CompositorContextMenu, type ContextMenuState } from '@/components/compositorContextMenu';
 import { NodeFrame } from '@/components/node/NodeFrame';
 import { SKTooltip } from '@/components/Tooltip';
 import { LiveBadge, LiveDot } from '@/components/ui/LiveIndicator';
+import { useCompositorKeyboard } from '@/hooks/compositorKeyboard';
 import { useCompositorLayers } from '@/hooks/useCompositorLayers';
 import type { TextOverlayState, LayerKind } from '@/hooks/useCompositorLayers';
 import { clearCompositorSelection, setCompositorSelection } from '@/hooks/useCompositorSelection';
@@ -82,6 +83,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
     updateLayerMirror,
     updateLayerPositionSize,
     layerRefs,
+    snapGuideRefs,
     textOverlays,
     imageOverlays,
     addTextOverlay,
@@ -91,6 +93,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
     updateImageOverlay,
     removeImageOverlay,
     reorderLayers,
+    keyboardDeps,
   } = useCompositorLayers({
     nodeId: id,
     sessionId: data.sessionId,
@@ -103,15 +106,36 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
 
   const disabled = !data.onConfigChange && !data.onParamChange;
 
-  // Context menu state
+  // Context menu state — bundled into a single memo to stay within
+  // the max-statements budget for this component.
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
-  const handleLayerContextMenu = useCallback(
-    (layerId: string, layerKind: LayerKind, x: number, y: number) => {
-      setContextMenu({ layerId, layerKind, x, y });
-    },
+  const contextMenuHandlers = useMemo(
+    () => ({
+      open: (layerId: string, layerKind: LayerKind, x: number, y: number) =>
+        setContextMenu({ layerId, layerKind, x, y }),
+      close: () => setContextMenu(null),
+    }),
     []
   );
-  const closeContextMenu = useCallback(() => setContextMenu(null), []);
+
+  // ── Keyboard shortcuts ────────────────────────────────────────────────
+  const compositorWrapperRef = useRef<HTMLDivElement>(null);
+  useCompositorKeyboard(compositorWrapperRef, { ...keyboardDeps, disabled });
+
+  // Focus the wrapper when a layer is selected so that subsequent
+  // keyboard events (arrows, Delete, Escape) bubble through the wrapper.
+  // Pointer handlers call preventDefault() which suppresses the browser's
+  // default focus, so we must set it explicitly.
+  // Skip if an input/textarea already has focus (e.g. text inspector)
+  // to avoid stealing focus from the user mid-typing.
+  useEffect(() => {
+    if (selectedLayerId && compositorWrapperRef.current) {
+      const tag = document.activeElement?.tagName;
+      if (tag !== 'INPUT' && tag !== 'TEXTAREA') {
+        compositorWrapperRef.current.focus({ preventScroll: true });
+      }
+    }
+  }, [selectedLayerId]);
 
   // Text inspector children (includes the textInputRef for double-click focus)
   const { textInspectorChildren, textInputRef } = useTextInspectorChildren(
@@ -135,12 +159,6 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
   // Structurally-stable entries list -- same reference during opacity/rotation
   // drags so CompositorEntryList's React.memo bails out.
   const entries = useStableEntries(layers, textOverlays, imageOverlays);
-
-  // Dismiss context menu when entries change (e.g. server-synced layout
-  // update removes the layer the menu was targeting).
-  useEffect(() => {
-    setContextMenu(null);
-  }, [entries]);
 
   // Broadcast compositor layer selection for YAML highlighting
   useEffect(() => {
@@ -239,7 +257,11 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
       state={data.state}
       sessionId={data.sessionId}
     >
-      <CompositorOuterWrapper>
+      <CompositorOuterWrapper
+        ref={compositorWrapperRef}
+        tabIndex={-1}
+        data-testid="compositor-keyboard-target"
+      >
         {/* Side panel rendered first in DOM order so that layer-list text
             (e.g. "Text 0") is matched before identically-named canvas labels
             by Playwright's getByText().first(). The panel uses position:absolute
@@ -286,18 +308,19 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
               onLayerPointerDown={handleLayerPointerDown}
               onResizePointerDown={handleResizePointerDown}
               onTextFocusRequest={disabled ? undefined : handleTextFocusRequest}
-              onLayerContextMenu={disabled ? undefined : handleLayerContextMenu}
+              onLayerContextMenu={disabled ? undefined : contextMenuHandlers.open}
               layerRefs={layerRefs}
+              snapGuideRefs={snapGuideRefs}
               disabled={disabled}
             />
-            {contextMenu && (
+            {contextMenu && entries.some((e) => e.id === contextMenu.layerId) && (
               <CompositorContextMenu
                 menu={contextMenu}
                 entries={entries}
                 onReorderLayers={reorderLayers}
                 onRemoveText={removeTextOverlay}
                 onRemoveImage={removeImageOverlay}
-                onClose={closeContextMenu}
+                onClose={contextMenuHandlers.close}
               />
             )}
           </CanvasSection>

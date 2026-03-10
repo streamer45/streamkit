@@ -121,3 +121,26 @@ export const EmptyState = styled.div`
   color: var(--sk-text-muted);
   font-size: 11px;
 `;
+
+/** Thin guide line shown when a layer snaps to the canvas centre axis. */
+export const SnapGuideLine = styled.div`
+  position: absolute;
+  pointer-events: none;
+  background: var(--sk-primary);
+  opacity: 0;
+  z-index: 9999;
+
+  &[data-axis='vertical'] {
+    width: 1px;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+  }
+
+  &[data-axis='horizontal'] {
+    height: 1px;
+    left: 0;
+    right: 0;
+    top: 50%;
+  }
+`;
