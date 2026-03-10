@@ -23,6 +23,7 @@ import {
   useSelectedLayerName,
   useSelectedMirrorToggle,
   useSelectedOpacityChange,
+  useSelectedPositionSizeChange,
   useSelectedRotationChange,
   useTextInspectorChildren,
 } from './compositorNodeInspector';
@@ -79,6 +80,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
     updateLayerRotation,
     toggleLayerVisibility,
     updateLayerMirror,
+    updateLayerPositionSize,
     layerRefs,
     snapGuideRefs,
     textOverlays,
@@ -168,6 +170,13 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
     updateImageOverlay
   );
   const handleSelectedMirrorToggle = useSelectedMirrorToggle(selectedLayerId, updateLayerMirror);
+  const handleSelectedPositionSizeChange = useSelectedPositionSizeChange(
+    selectedLayerId,
+    selectedLayerKind,
+    updateLayerPositionSize,
+    updateTextOverlay,
+    updateImageOverlay
+  );
 
   // Derived inspector data
   const selectedLayerName = useSelectedLayerName(
@@ -246,6 +255,8 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
             handleSelectedOpacityChange={handleSelectedOpacityChange}
             handleSelectedRotationChange={handleSelectedRotationChange}
             handleSelectedMirrorToggle={handleSelectedMirrorToggle}
+            handleSelectedPositionSizeChange={handleSelectedPositionSizeChange}
+            dimensionsReadOnly={selectedLayerKind === 'text'}
             disabled={disabled}
           />
         </SidePanel>
