@@ -300,6 +300,7 @@ export interface CompositorInspectorProps {
   handleSelectedRotationChange: (v: number) => void;
   handleSelectedMirrorToggle: (axis: 'horizontal' | 'vertical') => void;
   handleSelectedPositionSizeChange: (patch: PositionSizePatch) => void;
+  dimensionsReadOnly?: boolean;
   disabled: boolean;
 }
 
@@ -312,6 +313,7 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
     handleSelectedRotationChange,
     handleSelectedMirrorToggle,
     handleSelectedPositionSizeChange,
+    dimensionsReadOnly,
     disabled,
   }) => {
     if (!inspectorProps) return null;
@@ -327,6 +329,7 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
             height={inspectorProps.height}
             onPositionSizeChange={handleSelectedPositionSizeChange}
             disabled={disabled}
+            dimensionsReadOnly={dimensionsReadOnly}
           />
           {textInspectorChildren}
           <OpacityControl

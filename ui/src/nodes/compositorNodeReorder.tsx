@@ -186,10 +186,10 @@ const LayerReorderSection: React.FC<{
                 </VisibilityButton>
               </SKTooltip>
               <OverlayIcon>{iconForKind(entry.kind)}</OverlayIcon>
+              <ZBadge>{entry.zIndex}</ZBadge>
               <OverlayLabel style={{ fontWeight: entry.id === selectedLayerId ? 600 : 400 }}>
                 {entry.label}
               </OverlayLabel>
-              <ZBadge>{entry.zIndex}</ZBadge>
               <SKTooltip content="Move up">
                 <ZOrderButton
                   disabled={disabled || idx === 0}

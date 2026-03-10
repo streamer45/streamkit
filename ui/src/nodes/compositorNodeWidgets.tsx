@@ -130,6 +130,19 @@ export type PositionSizePatch = {
   height?: number;
 };
 
+/** Commit-on-blur numeric input: edits locally, commits on blur / Enter. */
+const useFieldState = (
+  value: number,
+  fieldName: string,
+  focusedRef: React.MutableRefObject<string | null>
+) => {
+  const [local, setLocal] = useState(String(Math.round(value)));
+  useEffect(() => {
+    if (focusedRef.current !== fieldName) setLocal(String(Math.round(value)));
+  }, [value, fieldName, focusedRef]);
+  return [local, setLocal] as const;
+};
+
 export const InspectorHeaderSection: React.FC<{
   name: string;
   x: number;
@@ -138,57 +151,122 @@ export const InspectorHeaderSection: React.FC<{
   height: number;
   onPositionSizeChange: (patch: PositionSizePatch) => void;
   disabled?: boolean;
-}> = React.memo(({ name, x, y, width, height, onPositionSizeChange, disabled }) => (
-  <InspectorHeader style={{ flexDirection: 'column', alignItems: 'stretch' }}>
-    <InspectorTitle>{name}</InspectorTitle>
-    <PositionSizeGrid className="nodrag nopan">
-      <FieldLabel>X</FieldLabel>
-      <OverlayNumInput
-        type="number"
-        value={Math.round(x)}
-        onChange={(e) => {
-          const v = Number.parseInt(e.target.value, 10);
-          if (!Number.isNaN(v)) onPositionSizeChange({ x: v });
-        }}
-        disabled={disabled}
-        className="nodrag nopan"
-      />
-      <FieldLabel>Y</FieldLabel>
-      <OverlayNumInput
-        type="number"
-        value={Math.round(y)}
-        onChange={(e) => {
-          const v = Number.parseInt(e.target.value, 10);
-          if (!Number.isNaN(v)) onPositionSizeChange({ y: v });
-        }}
-        disabled={disabled}
-        className="nodrag nopan"
-      />
-      <FieldLabel>W</FieldLabel>
-      <OverlayNumInput
-        type="number"
-        value={Math.round(width)}
-        onChange={(e) => {
-          const v = Number.parseInt(e.target.value, 10);
-          if (!Number.isNaN(v) && v > 0) onPositionSizeChange({ width: v });
-        }}
-        disabled={disabled}
-        className="nodrag nopan"
-      />
-      <FieldLabel>H</FieldLabel>
-      <OverlayNumInput
-        type="number"
-        value={Math.round(height)}
-        onChange={(e) => {
-          const v = Number.parseInt(e.target.value, 10);
-          if (!Number.isNaN(v) && v > 0) onPositionSizeChange({ height: v });
-        }}
-        disabled={disabled}
-        className="nodrag nopan"
-      />
-    </PositionSizeGrid>
-  </InspectorHeader>
-));
+  dimensionsReadOnly?: boolean;
+}> = React.memo(
+  ({ name, x, y, width, height, onPositionSizeChange, disabled, dimensionsReadOnly }) => {
+    const focusedRef = useRef<string | null>(null);
+    const [localX, setLocalX] = useFieldState(x, 'x', focusedRef);
+    const [localY, setLocalY] = useFieldState(y, 'y', focusedRef);
+    const [localW, setLocalW] = useFieldState(width, 'w', focusedRef);
+    const [localH, setLocalH] = useFieldState(height, 'h', focusedRef);
+
+    const commit = useCallback(
+      (field: string, raw: string) => {
+        const v = Number.parseInt(raw, 10);
+        if (Number.isNaN(v)) return;
+        switch (field) {
+          case 'x':
+            onPositionSizeChange({ x: v });
+            break;
+          case 'y':
+            onPositionSizeChange({ y: v });
+            break;
+          case 'w':
+            if (v > 0) onPositionSizeChange({ width: v });
+            break;
+          case 'h':
+            if (v > 0) onPositionSizeChange({ height: v });
+            break;
+        }
+      },
+      [onPositionSizeChange]
+    );
+
+    const handleKeyDown = useCallback(
+      (e: React.KeyboardEvent, field: string, value: string) => {
+        if (e.key === 'Enter') {
+          commit(field, value);
+          (e.target as HTMLInputElement).blur();
+        }
+      },
+      [commit]
+    );
+
+    return (
+      <InspectorHeader style={{ flexDirection: 'column', alignItems: 'stretch' }}>
+        <InspectorTitle>{name}</InspectorTitle>
+        <PositionSizeGrid className="nodrag nopan">
+          <FieldLabel>X</FieldLabel>
+          <OverlayNumInput
+            type="number"
+            value={localX}
+            onChange={(e) => setLocalX(e.target.value)}
+            onFocus={() => {
+              focusedRef.current = 'x';
+            }}
+            onBlur={(e) => {
+              focusedRef.current = null;
+              commit('x', e.target.value);
+            }}
+            onKeyDown={(e) => handleKeyDown(e, 'x', localX)}
+            disabled={disabled}
+            className="nodrag nopan"
+          />
+          <FieldLabel>Y</FieldLabel>
+          <OverlayNumInput
+            type="number"
+            value={localY}
+            onChange={(e) => setLocalY(e.target.value)}
+            onFocus={() => {
+              focusedRef.current = 'y';
+            }}
+            onBlur={(e) => {
+              focusedRef.current = null;
+              commit('y', e.target.value);
+            }}
+            onKeyDown={(e) => handleKeyDown(e, 'y', localY)}
+            disabled={disabled}
+            className="nodrag nopan"
+          />
+          <FieldLabel>W</FieldLabel>
+          <OverlayNumInput
+            type="number"
+            value={localW}
+            onChange={(e) => !dimensionsReadOnly && setLocalW(e.target.value)}
+            onFocus={() => {
+              focusedRef.current = 'w';
+            }}
+            onBlur={(e) => {
+              focusedRef.current = null;
+              if (!dimensionsReadOnly) commit('w', e.target.value);
+            }}
+            onKeyDown={(e) => !dimensionsReadOnly && handleKeyDown(e, 'w', localW)}
+            disabled={disabled}
+            readOnly={dimensionsReadOnly}
+            className="nodrag nopan"
+          />
+          <FieldLabel>H</FieldLabel>
+          <OverlayNumInput
+            type="number"
+            value={localH}
+            onChange={(e) => !dimensionsReadOnly && setLocalH(e.target.value)}
+            onFocus={() => {
+              focusedRef.current = 'h';
+            }}
+            onBlur={(e) => {
+              focusedRef.current = null;
+              if (!dimensionsReadOnly) commit('h', e.target.value);
+            }}
+            onKeyDown={(e) => !dimensionsReadOnly && handleKeyDown(e, 'h', localH)}
+            disabled={disabled}
+            readOnly={dimensionsReadOnly}
+            className="nodrag nopan"
+          />
+        </PositionSizeGrid>
+      </InspectorHeader>
+    );
+  }
+);
 InspectorHeaderSection.displayName = 'InspectorHeaderSection';
 
 export const OpacityControl: React.FC<{

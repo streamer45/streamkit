@@ -249,6 +249,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
             handleSelectedRotationChange={handleSelectedRotationChange}
             handleSelectedMirrorToggle={handleSelectedMirrorToggle}
             handleSelectedPositionSizeChange={handleSelectedPositionSizeChange}
+            dimensionsReadOnly={selectedLayerKind === 'text'}
             disabled={disabled}
           />
         </SidePanel>
