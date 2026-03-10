@@ -236,6 +236,7 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
 
   const handleLayerPointerDown = useCallback(
     (layerId: string, e: React.PointerEvent) => {
+      if (e.button !== 0) return; // only primary (left) button starts drag
       e.stopPropagation();
       e.preventDefault();
 
@@ -283,6 +284,7 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
 
   const handleResizePointerDown = useCallback(
     (layerId: string, handle: ResizeHandle, e: React.PointerEvent) => {
+      if (e.button !== 0) return; // only primary (left) button starts resize
       e.stopPropagation();
       e.preventDefault();
 

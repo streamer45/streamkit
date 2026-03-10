@@ -123,15 +123,20 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
     // Right-click context menu via event delegation: walk layerRefs to
     // find which layer element contains the event target, then determine
     // its kind from the layers/textOverlays/imageOverlays arrays.
+    // When layers overlap, pick the one with the highest z-index.
     const handleCanvasContextMenu = useCallback(
       (e: React.MouseEvent) => {
         if (disabled || !onLayerContextMenu) return;
         const target = e.target as Node;
         let hitId: string | null = null;
+        let hitZ = -1;
         for (const [id, el] of layerRefs.current) {
           if (el.contains(target)) {
-            hitId = id;
-            break;
+            const z = Number(el.style.zIndex) || 0;
+            if (z > hitZ) {
+              hitId = id;
+              hitZ = z;
+            }
           }
         }
         if (!hitId) return;
