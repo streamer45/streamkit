@@ -141,10 +141,14 @@ export const InspectorHeaderSection: React.FC<{
   dimensionsReadOnly?: boolean;
 }> = React.memo(
   ({ name, x, y, width, height, onPositionSizeChange, disabled, dimensionsReadOnly }) => {
-    // Track which field (if any) the user is actively editing.
+    // Fully uncontrolled inputs — zero useState, zero extra commits.
+    // DOM values are synced imperatively via refs (same zero-render
+    // pattern the compositor's drag/resize system uses).
     const focusedRef = useRef<string | null>(null);
-    // Single editing buffer — only one field is focused at a time.
-    const [editValue, setEditValue] = useState('');
+    const xRef = useRef<HTMLInputElement>(null);
+    const yRef = useRef<HTMLInputElement>(null);
+    const wRef = useRef<HTMLInputElement>(null);
+    const hRef = useRef<HTMLInputElement>(null);
 
     const commit = useCallback(
       (field: string, raw: string) => {
@@ -168,20 +172,32 @@ export const InspectorHeaderSection: React.FC<{
       [onPositionSizeChange]
     );
 
-    // Derive display value without useEffect: show editValue while focused,
-    // otherwise show the rounded prop directly — zero extra commits.
-    const valFor = (field: string, prop: number) =>
-      focusedRef.current === field ? editValue : String(Math.round(prop));
+    // Sync DOM from props — skip the focused field to preserve user editing.
+    const rx = String(Math.round(x));
+    const ry = String(Math.round(y));
+    const rw = String(Math.round(width));
+    const rh = String(Math.round(height));
+    if (xRef.current && focusedRef.current !== 'x') xRef.current.value = rx;
+    if (yRef.current && focusedRef.current !== 'y') yRef.current.value = ry;
+    if (wRef.current && focusedRef.current !== 'w') wRef.current.value = rw;
+    if (hRef.current && focusedRef.current !== 'h') hRef.current.value = rh;
 
-    const focus = (field: string, prop: number) => {
-      focusedRef.current = field;
-      setEditValue(String(Math.round(prop)));
-    };
-
-    const blur = (field: string, raw: string) => {
-      focusedRef.current = null;
-      commit(field, raw);
-    };
+    // Per-field event handlers (no state updates, just refs + commit).
+    const handlers = (field: string, ro?: boolean) => ({
+      onFocus: () => {
+        focusedRef.current = field;
+      },
+      onBlur: (e: React.FocusEvent<HTMLInputElement>) => {
+        focusedRef.current = null;
+        if (!ro) commit(field, e.target.value);
+      },
+      onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => {
+        if (!ro && e.key === 'Enter') {
+          commit(field, e.currentTarget.value);
+          e.currentTarget.blur();
+        }
+      },
+    });
 
     return (
       <InspectorHeader style={{ flexDirection: 'column', alignItems: 'stretch' }}>
@@ -189,72 +205,38 @@ export const InspectorHeaderSection: React.FC<{
         <PositionSizeGrid className="nodrag nopan">
           <FieldLabel>X</FieldLabel>
           <OverlayNumInput
+            ref={xRef}
             type="number"
-            value={valFor('x', x)}
-            onChange={(e) => setEditValue(e.target.value)}
-            onFocus={() => focus('x', x)}
-            onBlur={(e) => blur('x', e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                commit('x', editValue);
-                (e.target as HTMLInputElement).blur();
-              }
-            }}
+            defaultValue={rx}
+            {...handlers('x')}
             disabled={disabled}
             className="nodrag nopan"
           />
           <FieldLabel>Y</FieldLabel>
           <OverlayNumInput
+            ref={yRef}
             type="number"
-            value={valFor('y', y)}
-            onChange={(e) => setEditValue(e.target.value)}
-            onFocus={() => focus('y', y)}
-            onBlur={(e) => blur('y', e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                commit('y', editValue);
-                (e.target as HTMLInputElement).blur();
-              }
-            }}
+            defaultValue={ry}
+            {...handlers('y')}
             disabled={disabled}
             className="nodrag nopan"
           />
           <FieldLabel>W</FieldLabel>
           <OverlayNumInput
+            ref={wRef}
             type="number"
-            value={valFor('w', width)}
-            onChange={(e) => !dimensionsReadOnly && setEditValue(e.target.value)}
-            onFocus={() => focus('w', width)}
-            onBlur={(e) => {
-              focusedRef.current = null;
-              if (!dimensionsReadOnly) commit('w', e.target.value);
-            }}
-            onKeyDown={(e) => {
-              if (!dimensionsReadOnly && e.key === 'Enter') {
-                commit('w', editValue);
-                (e.target as HTMLInputElement).blur();
-              }
-            }}
+            defaultValue={rw}
+            {...handlers('w', dimensionsReadOnly)}
             disabled={disabled}
             readOnly={dimensionsReadOnly}
             className="nodrag nopan"
           />
           <FieldLabel>H</FieldLabel>
           <OverlayNumInput
+            ref={hRef}
             type="number"
-            value={valFor('h', height)}
-            onChange={(e) => !dimensionsReadOnly && setEditValue(e.target.value)}
-            onFocus={() => focus('h', height)}
-            onBlur={(e) => {
-              focusedRef.current = null;
-              if (!dimensionsReadOnly) commit('h', e.target.value);
-            }}
-            onKeyDown={(e) => {
-              if (!dimensionsReadOnly && e.key === 'Enter') {
-                commit('h', editValue);
-                (e.target as HTMLInputElement).blur();
-              }
-            }}
+            defaultValue={rh}
+            {...handlers('h', dimensionsReadOnly)}
             disabled={disabled}
             readOnly={dimensionsReadOnly}
             className="nodrag nopan"
