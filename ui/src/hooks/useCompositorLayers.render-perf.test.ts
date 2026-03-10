@@ -135,6 +135,7 @@ describe('useCompositorLayers render-performance', () => {
           const before = {
             updateLayerOpacity: result.current.updateLayerOpacity,
             updateLayerRotation: result.current.updateLayerRotation,
+            updateLayerPositionSize: result.current.updateLayerPositionSize,
             toggleLayerVisibility: result.current.toggleLayerVisibility,
             addTextOverlay: result.current.addTextOverlay,
             removeTextOverlay: result.current.removeTextOverlay,
