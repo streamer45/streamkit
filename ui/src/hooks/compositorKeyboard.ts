@@ -167,6 +167,7 @@ export function useCompositorKeyboard(
       if (e.key === 'Escape') {
         selectLayer(null);
         e.preventDefault();
+        e.stopPropagation();
         return;
       }
 
@@ -175,12 +176,14 @@ export function useCompositorKeyboard(
       if (e.key === 'Delete' || e.key === 'Backspace') {
         handleDelete(id);
         e.preventDefault();
+        e.stopPropagation();
         return;
       }
 
       if (ARROW_KEYS.has(e.key)) {
         handleArrow(id, e.key, e.shiftKey);
         e.preventDefault();
+        e.stopPropagation();
       }
     };
 
