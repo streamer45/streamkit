@@ -194,6 +194,11 @@ impl ProcessorNode for ColorBarsNode {
                 generate_smpte_colorbars_nv12(width, height, &mut template, &layout);
             },
             PixelFormat::Rgba8 => generate_smpte_colorbars_rgba8(width, height, &mut template),
+            other => {
+                return Err(StreamKitError::Configuration(format!(
+                    "unsupported pixel format for color bars: {other:?}"
+                )));
+            },
         }
 
         // Source nodes emit Ready state and wait for Start signal.
@@ -585,6 +590,7 @@ fn scroll_frame(
                 chroma_off_bytes,
             );
         },
+        _ => {},
     }
 }
 
@@ -711,7 +717,7 @@ fn stamp_time(
                                     data[uv_off + 1] =
                                         ((128 * alpha + old_v * inv + 128) / 255) as u8;
                                 },
-                                PixelFormat::Rgba8 => unreachable!(),
+                                _ => unreachable!(),
                             }
                         }
                     }
@@ -723,6 +729,7 @@ fn stamp_time(
                 }
             }
         },
+        _ => {},
     }
 }
 

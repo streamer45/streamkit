@@ -41,6 +41,7 @@ pub struct AudioFormat {
 /// Describes the pixel format of raw video frames.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
+#[non_exhaustive]
 pub enum PixelFormat {
     Rgba8,
     I420,
@@ -66,6 +67,7 @@ pub enum AudioCodec {
 /// Supported encoded video codecs.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
+#[non_exhaustive]
 pub enum VideoCodec {
     Vp9,
     /// Forward-looking placeholder — not yet wired into any encoder/decoder.
