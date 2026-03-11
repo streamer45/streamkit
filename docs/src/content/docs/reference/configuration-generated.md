@@ -112,7 +112,7 @@ Permission configuration section for skit.toml.
 | `default_role` | string | `admin` | Default role for requests without an authenticated role When built-in auth is disabled, this becomes the effective role for requests that are not assigned a role via a trusted role header or `SK_ROLE`. For production deployments, prefer enabling built-in auth (`[auth].mode`) or running behind an authenticating reverse proxy that sets `[permissions].role_header`. |
 | `role_header` | null | string | `null` | Optional trusted HTTP header used to select a role (e.g. "x-role" or "x-streamkit-role"). If unset, StreamKit ignores role headers entirely and uses `SK_ROLE`/`default_role`. Security note: Only enable this when running behind a trusted reverse proxy or auth layer that (a) authenticates the caller and (b) strips any incoming header with the same name before setting it. |
 | `allow_insecure_no_auth` | boolean | `false` | Allow starting the server on a non-loopback address without built-in auth or a trusted role header. This only applies when built-in auth is disabled. This is unsafe: all requests fall back to `SK_ROLE`/`default_role`. The server refuses to start in this configuration unless this flag is set. |
-| `roles` | object | `{"admin":{"create_sessions"...` | Map of role name -> permissions |
+| `roles` | object | `{"user":{"create_sessions":...` | Map of role name -> permissions |
 | `max_concurrent_sessions` | integer | null (uint) | `null` | Maximum concurrent dynamic sessions (global limit, applies to all users) None = unlimited |
 | `max_concurrent_oneshots` | integer | null (uint) | `null` | Maximum concurrent oneshot pipelines (global limit) None = unlimited |
 
@@ -136,14 +136,14 @@ Individual nodes cannot exceed these values, even via `UpdateParams`.
 
 ```toml
 [compositor]
-default_max_canvas_dimension = 4096
-default_max_font_size = 2048
+max_canvas_dimension = 4096
+max_font_size = 2048
 ```
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `default_max_canvas_dimension` | integer (uint32) | `7680` | Maximum allowed canvas dimension (width or height) in pixels. Default: 7680 (8K UHD). |
-| `default_max_font_size` | integer (uint32) | `4096` | Maximum allowed font size for text overlays in pixels. Default: 4096. |
+| `max_canvas_dimension` | integer (uint32) | `7680` | Maximum allowed canvas dimension (width or height) in pixels. Default: 7680 (8K UHD). |
+| `max_font_size` | integer (uint32) | `4096` | Maximum allowed font size for text overlays in pixels. Default: 4096. |
 
 ## `[auth]`
 
@@ -283,6 +283,35 @@ Authentication configuration for built-in JWT-based auth.
         "role_header": null,
         "allow_insecure_no_auth": false,
         "roles": {
+          "admin": {
+            "create_sessions": true,
+            "destroy_sessions": true,
+            "list_sessions": true,
+            "modify_sessions": true,
+            "tune_nodes": true,
+            "load_plugins": true,
+            "delete_plugins": true,
+            "list_nodes": true,
+            "list_samples": true,
+            "read_samples": true,
+            "write_samples": true,
+            "delete_samples": true,
+            "allowed_samples": [
+              "*"
+            ],
+            "allowed_nodes": [
+              "*"
+            ],
+            "allowed_plugins": [
+              "*"
+            ],
+            "access_all_sessions": true,
+            "upload_assets": true,
+            "delete_assets": true,
+            "allowed_assets": [
+              "*"
+            ]
+          },
           "viewer": {
             "create_sessions": false,
             "destroy_sessions": false,
@@ -315,35 +344,6 @@ Authentication configuration for built-in JWT-based auth.
             "delete_assets": false,
             "allowed_assets": [
               "samples/audio/system/*"
-            ]
-          },
-          "admin": {
-            "create_sessions": true,
-            "destroy_sessions": true,
-            "list_sessions": true,
-            "modify_sessions": true,
-            "tune_nodes": true,
-            "load_plugins": true,
-            "delete_plugins": true,
-            "list_nodes": true,
-            "list_samples": true,
-            "read_samples": true,
-            "write_samples": true,
-            "delete_samples": true,
-            "allowed_samples": [
-              "*"
-            ],
-            "allowed_nodes": [
-              "*"
-            ],
-            "allowed_plugins": [
-              "*"
-            ],
-            "access_all_sessions": true,
-            "upload_assets": true,
-            "delete_assets": true,
-            "allowed_assets": [
-              "*"
             ]
           },
           "user": {
@@ -410,8 +410,8 @@ Authentication configuration for built-in JWT-based auth.
     "compositor": {
       "$ref": "#/$defs/CompositorServerConfig",
       "default": {
-        "default_max_canvas_dimension": 7680,
-        "default_max_font_size": 4096
+        "max_canvas_dimension": 7680,
+        "max_font_size": 4096
       }
     },
     "auth": {
@@ -1033,35 +1033,6 @@ Authentication configuration for built-in JWT-based auth.
                 "samples/audio/user/*"
               ]
             },
-            "admin": {
-              "create_sessions": true,
-              "destroy_sessions": true,
-              "list_sessions": true,
-              "modify_sessions": true,
-              "tune_nodes": true,
-              "load_plugins": true,
-              "delete_plugins": true,
-              "list_nodes": true,
-              "list_samples": true,
-              "read_samples": true,
-              "write_samples": true,
-              "delete_samples": true,
-              "allowed_samples": [
-                "*"
-              ],
-              "allowed_nodes": [
-                "*"
-              ],
-              "allowed_plugins": [
-                "*"
-              ],
-              "access_all_sessions": true,
-              "upload_assets": true,
-              "delete_assets": true,
-              "allowed_assets": [
-                "*"
-              ]
-            },
             "viewer": {
               "create_sessions": false,
               "destroy_sessions": false,
@@ -1094,6 +1065,35 @@ Authentication configuration for built-in JWT-based auth.
               "delete_assets": false,
               "allowed_assets": [
                 "samples/audio/system/*"
+              ]
+            },
+            "admin": {
+              "create_sessions": true,
+              "destroy_sessions": true,
+              "list_sessions": true,
+              "modify_sessions": true,
+              "tune_nodes": true,
+              "load_plugins": true,
+              "delete_plugins": true,
+              "list_nodes": true,
+              "list_samples": true,
+              "read_samples": true,
+              "write_samples": true,
+              "delete_samples": true,
+              "allowed_samples": [
+                "*"
+              ],
+              "allowed_nodes": [
+                "*"
+              ],
+              "allowed_plugins": [
+                "*"
+              ],
+              "access_all_sessions": true,
+              "upload_assets": true,
+              "delete_assets": true,
+              "allowed_assets": [
+                "*"
               ]
             }
           }
@@ -1347,17 +1347,17 @@ Authentication configuration for built-in JWT-based auth.
       ]
     },
     "CompositorServerConfig": {
-      "description": "Server-level defaults for the video compositor node.\n\nThese limits apply to every compositor node created by the engine.\nIndividual nodes cannot exceed these values, even via `UpdateParams`.\n\n```toml\n[compositor]\ndefault_max_canvas_dimension = 4096\ndefault_max_font_size = 2048\n```",
+      "description": "Server-level defaults for the video compositor node.\n\nThese limits apply to every compositor node created by the engine.\nIndividual nodes cannot exceed these values, even via `UpdateParams`.\n\n```toml\n[compositor]\nmax_canvas_dimension = 4096\nmax_font_size = 2048\n```",
       "type": "object",
       "properties": {
-        "default_max_canvas_dimension": {
+        "max_canvas_dimension": {
           "description": "Maximum allowed canvas dimension (width or height) in pixels.\nDefault: 7680 (8K UHD).",
           "type": "integer",
           "format": "uint32",
           "minimum": 0,
           "default": 7680
         },
-        "default_max_font_size": {
+        "max_font_size": {
           "description": "Maximum allowed font size for text overlays in pixels.\nDefault: 4096.",
           "type": "integer",
           "format": "uint32",
