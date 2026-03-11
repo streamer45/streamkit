@@ -1428,12 +1428,18 @@ impl MoqPeerNode {
         let mut frame_count = 0u64;
         let mut last_log = std::time::Instant::now();
         let mut current_group: Option<moq_lite::GroupConsumer> = None;
+        // Tracks whether the next frame is the first in a new MoQ group.
+        // In the hang protocol each group starts with a keyframe.
+        let mut is_first_in_group = false;
 
         loop {
             // Get a group if we don't have one
             if current_group.is_none() {
                 match Self::get_next_group(&mut track_consumer, shutdown_rx, output_pin).await {
-                    Ok(Some(group)) => current_group = Some(group),
+                    Ok(Some(group)) => {
+                        current_group = Some(group);
+                        is_first_in_group = true;
+                    },
                     Ok(None) => return TrackExit::Finished, // Stream ended or shutdown
                     Err(moq_lite::Error::Cancel) => return TrackExit::Cancelled,
                     Err(e) => {
@@ -1446,6 +1452,8 @@ impl MoqPeerNode {
 
             // Process frames from current group
             if let Some(ref mut group) = current_group {
+                let keyframe = is_first_in_group;
+                is_first_in_group = false;
                 match Self::process_frame_from_group(
                     group,
                     &mut output_sender,
@@ -1454,6 +1462,7 @@ impl MoqPeerNode {
                     &mut last_log,
                     shutdown_rx,
                     stats_delta_tx,
+                    keyframe,
                 )
                 .await
                 {
@@ -1503,7 +1512,11 @@ impl MoqPeerNode {
         }
     }
 
-    /// Process a single frame from the current group
+    /// Process a single frame from the current group.
+    ///
+    /// `is_keyframe` indicates whether this is the first frame of a new MoQ
+    /// group, which in the hang protocol corresponds to a keyframe boundary.
+    #[allow(clippy::too_many_arguments)]
     async fn process_frame_from_group(
         group: &mut moq_lite::GroupConsumer,
         output_sender: &mut streamkit_core::OutputSender,
@@ -1512,6 +1525,7 @@ impl MoqPeerNode {
         last_log: &mut std::time::Instant,
         shutdown_rx: &mut broadcast::Receiver<()>,
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
+        is_keyframe: bool,
     ) -> Result<FrameResult, StreamKitError> {
         tokio::select! {
             biased;
@@ -1548,7 +1562,7 @@ impl MoqPeerNode {
                                 timestamp_us: Some(timestamp_us),
                                 duration_us: None,
                                 sequence: None,
-                                keyframe: None,
+                                keyframe: Some(is_keyframe),
                             }),
                         };
 
