@@ -30,11 +30,6 @@ Notes:
 - [`audio::pacer`](./audio-pacer/)
 - [`audio::resampler`](./audio-resampler/)
 
-## `video` (2)
-
-- [`video::vp9::decoder`](./video-vp9-decoder/)
-- [`video::vp9::encoder`](./video-vp9-encoder/)
-
 ## `containers` (4)
 
 - [`containers::ogg::demuxer`](./containers-ogg-demuxer/)
@@ -66,3 +61,11 @@ Notes:
 - [`transport::moq::peer`](./transport-moq-peer/)
 - [`transport::moq::publisher`](./transport-moq-publisher/)
 - [`transport::moq::subscriber`](./transport-moq-subscriber/)
+
+## `video` (5)
+
+- [`video::colorbars`](./video-colorbars/)
+- [`video::compositor`](./video-compositor/)
+- [`video::pixel_convert`](./video-pixel-convert/)
+- [`video::vp9::decoder`](./video-vp9-decoder/)
+- [`video::vp9::encoder`](./video-vp9-encoder/)

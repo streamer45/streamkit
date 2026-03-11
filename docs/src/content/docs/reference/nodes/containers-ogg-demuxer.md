@@ -18,7 +18,7 @@ Demuxes Ogg containers to extract Opus audio packets. Accepts binary Ogg data an
 - `in` accepts `Binary` (one)
 
 ### Outputs
-- `out` produces `EncodedAudio(EncodedAudioFormat { codec: Opus })` (broadcast)
+- `out` produces `EncodedAudio(EncodedAudioFormat { codec: Opus, codec_private: None })` (broadcast)
 
 ## Parameters
 No parameters.

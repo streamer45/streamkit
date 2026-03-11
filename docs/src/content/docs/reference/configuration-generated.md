@@ -127,6 +127,24 @@ Configuration for the core::script node.
 | `global_fetch_allowlist` | array<object> | `[]` | Global fetch allowlist (empty = block all fetch() calls) Applies to all script nodes. Security note: there is no per-pipeline allowlist override; this prevents bypass via user-provided pipelines. |
 | `secrets` | object | `{}` | Available secrets (name → environment variable mapping) Empty map = no secrets available to any script node Secrets are loaded from environment variables at server startup and can be injected into HTTP headers via pipeline configuration |
 
+## `[compositor]`
+
+Server-level defaults for the video compositor node.
+
+These limits apply to every compositor node created by the engine.
+Individual nodes cannot exceed these values, even via `UpdateParams`.
+
+```toml
+[compositor]
+default_max_canvas_dimension = 4096
+default_max_font_size = 2048
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `default_max_canvas_dimension` | integer (uint32) | `7680` | Maximum allowed canvas dimension (width or height) in pixels. Default: 7680 (8K UHD). |
+| `default_max_font_size` | integer (uint32) | `4096` | Maximum allowed font size for text overlays in pixels. Default: 4096. |
+
 ## `[auth]`
 
 Authentication configuration for built-in JWT-based auth.
@@ -265,53 +283,6 @@ Authentication configuration for built-in JWT-based auth.
         "role_header": null,
         "allow_insecure_no_auth": false,
         "roles": {
-          "user": {
-            "create_sessions": true,
-            "destroy_sessions": true,
-            "list_sessions": true,
-            "modify_sessions": true,
-            "tune_nodes": true,
-            "load_plugins": false,
-            "delete_plugins": false,
-            "list_nodes": true,
-            "list_samples": true,
-            "read_samples": true,
-            "write_samples": true,
-            "delete_samples": true,
-            "allowed_samples": [
-              "oneshot/*.yml",
-              "oneshot/*.yaml",
-              "dynamic/*.yml",
-              "dynamic/*.yaml",
-              "user/*.yml",
-              "user/*.yaml"
-            ],
-            "allowed_nodes": [
-              "audio::*",
-              "containers::*",
-              "transport::moq::*",
-              "core::passthrough",
-              "core::file_reader",
-              "core::pacer",
-              "core::json_serialize",
-              "core::text_chunker",
-              "core::script",
-              "core::telemetry_tap",
-              "core::telemetry_out",
-              "core::sink",
-              "plugin::*"
-            ],
-            "allowed_plugins": [
-              "plugin::*"
-            ],
-            "access_all_sessions": false,
-            "upload_assets": true,
-            "delete_assets": true,
-            "allowed_assets": [
-              "samples/audio/system/*",
-              "samples/audio/user/*"
-            ]
-          },
           "viewer": {
             "create_sessions": false,
             "destroy_sessions": false,
@@ -374,6 +345,53 @@ Authentication configuration for built-in JWT-based auth.
             "allowed_assets": [
               "*"
             ]
+          },
+          "user": {
+            "create_sessions": true,
+            "destroy_sessions": true,
+            "list_sessions": true,
+            "modify_sessions": true,
+            "tune_nodes": true,
+            "load_plugins": false,
+            "delete_plugins": false,
+            "list_nodes": true,
+            "list_samples": true,
+            "read_samples": true,
+            "write_samples": true,
+            "delete_samples": true,
+            "allowed_samples": [
+              "oneshot/*.yml",
+              "oneshot/*.yaml",
+              "dynamic/*.yml",
+              "dynamic/*.yaml",
+              "user/*.yml",
+              "user/*.yaml"
+            ],
+            "allowed_nodes": [
+              "audio::*",
+              "containers::*",
+              "transport::moq::*",
+              "core::passthrough",
+              "core::file_reader",
+              "core::pacer",
+              "core::json_serialize",
+              "core::text_chunker",
+              "core::script",
+              "core::telemetry_tap",
+              "core::telemetry_out",
+              "core::sink",
+              "plugin::*"
+            ],
+            "allowed_plugins": [
+              "plugin::*"
+            ],
+            "access_all_sessions": false,
+            "upload_assets": true,
+            "delete_assets": true,
+            "allowed_assets": [
+              "samples/audio/system/*",
+              "samples/audio/user/*"
+            ]
           }
         },
         "max_concurrent_sessions": null,
@@ -387,6 +405,13 @@ Authentication configuration for built-in JWT-based auth.
         "default_memory_limit_mb": 64,
         "global_fetch_allowlist": [],
         "secrets": {}
+      }
+    },
+    "compositor": {
+      "$ref": "#/$defs/CompositorServerConfig",
+      "default": {
+        "default_max_canvas_dimension": 7680,
+        "default_max_font_size": 4096
       }
     },
     "auth": {
@@ -1008,6 +1033,35 @@ Authentication configuration for built-in JWT-based auth.
                 "samples/audio/user/*"
               ]
             },
+            "admin": {
+              "create_sessions": true,
+              "destroy_sessions": true,
+              "list_sessions": true,
+              "modify_sessions": true,
+              "tune_nodes": true,
+              "load_plugins": true,
+              "delete_plugins": true,
+              "list_nodes": true,
+              "list_samples": true,
+              "read_samples": true,
+              "write_samples": true,
+              "delete_samples": true,
+              "allowed_samples": [
+                "*"
+              ],
+              "allowed_nodes": [
+                "*"
+              ],
+              "allowed_plugins": [
+                "*"
+              ],
+              "access_all_sessions": true,
+              "upload_assets": true,
+              "delete_assets": true,
+              "allowed_assets": [
+                "*"
+              ]
+            },
             "viewer": {
               "create_sessions": false,
               "destroy_sessions": false,
@@ -1040,35 +1094,6 @@ Authentication configuration for built-in JWT-based auth.
               "delete_assets": false,
               "allowed_assets": [
                 "samples/audio/system/*"
-              ]
-            },
-            "admin": {
-              "create_sessions": true,
-              "destroy_sessions": true,
-              "list_sessions": true,
-              "modify_sessions": true,
-              "tune_nodes": true,
-              "load_plugins": true,
-              "delete_plugins": true,
-              "list_nodes": true,
-              "list_samples": true,
-              "read_samples": true,
-              "write_samples": true,
-              "delete_samples": true,
-              "allowed_samples": [
-                "*"
-              ],
-              "allowed_nodes": [
-                "*"
-              ],
-              "allowed_plugins": [
-                "*"
-              ],
-              "access_all_sessions": true,
-              "upload_assets": true,
-              "delete_assets": true,
-              "allowed_assets": [
-                "*"
               ]
             }
           }
@@ -1320,6 +1345,26 @@ Authentication configuration for built-in JWT-based auth.
           "const": "string"
         }
       ]
+    },
+    "CompositorServerConfig": {
+      "description": "Server-level defaults for the video compositor node.\n\nThese limits apply to every compositor node created by the engine.\nIndividual nodes cannot exceed these values, even via `UpdateParams`.\n\n```toml\n[compositor]\ndefault_max_canvas_dimension = 4096\ndefault_max_font_size = 2048\n```",
+      "type": "object",
+      "properties": {
+        "default_max_canvas_dimension": {
+          "description": "Maximum allowed canvas dimension (width or height) in pixels.\nDefault: 7680 (8K UHD).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "default": 7680
+        },
+        "default_max_font_size": {
+          "description": "Maximum allowed font size for text overlays in pixels.\nDefault: 4096.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "default": 4096
+        }
+      }
     },
     "AuthConfig": {
       "description": "Authentication configuration for built-in JWT-based auth.",
