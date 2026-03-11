@@ -8,9 +8,9 @@
 //!
 //! Runs the same graph as `samples/pipelines/oneshot/video_compositor_demo.yml`:
 //!
-//!   colorbars_bg (RGBA8) ──┐
-//!                         ├─► compositor ──► vp9_encoder ──► http_output
-//!   colorbars_pip (RGBA8) ┘
+//!   colorbars_bg (NV12) ──┐
+//!                        ├─► compositor ──► vp9_encoder ──► http_output
+//!   colorbars_pip (NV12) ┘
 //!
 //! The benchmark drives the pipeline through [`Engine::run_oneshot_pipeline`]
 //! and reports wall-clock time, throughput (frames/s), and total output bytes.
