@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: © 2025 StreamKit Contributors
 # SPDX-License-Identifier: MPL-2.0
 title: "containers::webm::muxer"
-description: "Muxes Opus audio and/or VP9 video into a WebM container. Produces streamable WebM output compatible with web browsers."
+description: "Muxes Opus audio and/or VP9 video into a WebM container. Produces streamable WebM output compatible with web browsers. Supports audio-only, video-only, or combined audio+video muxing."
 ---
 
 `kind`: `containers::webm::muxer`
@@ -14,27 +14,8 @@ Muxes Opus audio and/or VP9 video into a WebM container. Produces streamable Web
 - `webm`
 
 ## Pins
-
-Input pins use generic names — the media type (audio or video) is determined at
-connection time from the upstream node's output type, not from the pin name.
-
-When `video_width` and `video_height` are **not** configured (default), a single
-`in` pin is exposed, keeping backward compatibility with existing audio-only
-pipelines (`needs: opus_encoder`).
-
-When video dimensions **are** configured, two pins (`in` + `in_1`) are exposed
-so that both an audio and a video encoder can be connected. Use the map syntax
-to target each pin explicitly:
-
-```yaml
-needs:
-  in: opus_encoder
-  in_1: vp9_encoder
-```
-
 ### Inputs
-- `in` accepts `EncodedAudio(Opus)` or `EncodedVideo(VP9)` (one)
-- `in_1` accepts `EncodedAudio(Opus)` or `EncodedVideo(VP9)` (one) — only present when `video_width`/`video_height` > 0
+- `in` accepts `EncodedAudio(EncodedAudioFormat { codec: Opus, codec_private: None }), EncodedVideo(EncodedVideoFormat { codec: Vp9, bitstream_format: None, codec_private: None, profile: None, level: None })` (one)
 
 ### Outputs
 - `out` produces `Binary` (broadcast)
@@ -44,10 +25,10 @@ needs:
 | --- | --- | --- | --- | --- |
 | `channels` | `integer (uint32)` | no | `2` | Number of audio channels (1 for mono, 2 for stereo)<br />min: `0` |
 | `chunk_size` | `integer (uint)` | no | `65536` | The number of bytes to buffer before flushing to the output. Defaults to 65536.<br />min: `0` |
-| `sample_rate` | `integer (uint32)` | no | `48000` | Audio sample rate in Hz<br />min: `0` |
-| `streaming_mode` | `string` | no | — | Streaming mode: `"live"` for real-time streaming (no duration), `"file"` for complete files with duration |
-| `video_width` | `integer (uint32)` | no | `0` | Video frame width in pixels. Set to > 0 together with `video_height` to enable the second input pin for video.<br />min: `0` |
-| `video_height` | `integer (uint32)` | no | `0` | Video frame height in pixels. Set to > 0 together with `video_width` to enable the second input pin for video.<br />min: `0` |
+| `sample_rate` | `integer (uint32)` | no | `48000` | Audio sample rate in Hz (used when an audio input is connected)<br />min: `0` |
+| `streaming_mode` | `string` | no | — | — |
+| `video_height` | `integer (uint32)` | no | `0` | Video height in pixels (required when a video input is connected)<br />min: `0` |
+| `video_width` | `integer (uint32)` | no | `0` | Video width in pixels (required when a video input is connected)<br />min: `0` |
 
 
 <details>
@@ -60,7 +41,7 @@ needs:
   "type": "object",
   "properties": {
     "sample_rate": {
-      "description": "Audio sample rate in Hz",
+      "description": "Audio sample rate in Hz (used when an audio input is connected)",
       "type": "integer",
       "format": "uint32",
       "minimum": 0,
@@ -73,6 +54,20 @@ needs:
       "minimum": 0,
       "default": 2
     },
+    "video_width": {
+      "description": "Video width in pixels (required when a video input is connected)",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0,
+      "default": 0
+    },
+    "video_height": {
+      "description": "Video height in pixels (required when a video input is connected)",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0,
+      "default": 0
+    },
     "chunk_size": {
       "description": "The number of bytes to buffer before flushing to the output. Defaults to 65536.",
       "type": "integer",
@@ -81,7 +76,7 @@ needs:
       "default": 65536
     },
     "streaming_mode": {
-      "description": "Streaming mode: \"live\" for real-time streaming (no duration), \"file\" for complete files with duration (default)",
+      "description": "Streaming mode: \"live\" for real-time streaming (no duration), \"file\" for complete files\nwith duration (default)",
       "$ref": "#/$defs/WebMStreamingMode"
     }
   },
