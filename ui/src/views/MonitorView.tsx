@@ -37,7 +37,6 @@ import { ViewTitle } from '@/components/ui/ViewTitle';
 import { DnDProvider, useDnD } from '@/context/DnDContext';
 import { useToast } from '@/context/ToastContext';
 import { useContextMenu } from '@/hooks/useContextMenu';
-import { useFitViewOnLayoutPresetChange } from '@/hooks/useFitViewOnLayoutPresetChange';
 import { useReactFlowCommon } from '@/hooks/useReactFlowCommon';
 import { useResolvedColorMode } from '@/hooks/useResolvedColorMode';
 import { useSession } from '@/hooks/useSession';
@@ -3301,12 +3300,6 @@ const MonitorViewContent: React.FC = () => {
       return () => clearTimeout(t);
     }
   }, [needsFit, selectedSessionId, nodes.length, needsAutoLayout]);
-
-  // Register fitView callback for layout preset changes
-  useFitViewOnLayoutPresetChange({
-    reactFlowInstance: rf,
-    nodesCount: nodes.length,
-  });
 
   // Memoize left panel to prevent ResizableLayout from re-rendering
   const leftPanel = React.useMemo(

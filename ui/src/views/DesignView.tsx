@@ -34,7 +34,6 @@ import { DnDProvider, useDnD } from '@/context/DnDContext';
 import { useToast } from '@/context/ToastContext';
 import { useContextMenu } from '@/hooks/useContextMenu';
 import { useDesignViewModals } from '@/hooks/useDesignViewModals';
-import { useFitViewOnLayoutPresetChange } from '@/hooks/useFitViewOnLayoutPresetChange';
 import { usePermissions } from '@/hooks/usePermissions';
 import { usePipeline } from '@/hooks/usePipeline';
 import { useReactFlowCommon } from '@/hooks/useReactFlowCommon';
@@ -1196,12 +1195,6 @@ const DesignViewContent: React.FC = () => {
       }
     }
   }, [nodes.length]);
-
-  // Register fitView callback for layout preset changes
-  useFitViewOnLayoutPresetChange({
-    reactFlowInstance: rf,
-    nodesCount: nodes.length,
-  });
 
   const selectedNodeDefinition = (() => {
     if (!selectedNode) return null;

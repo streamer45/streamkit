@@ -35,5 +35,5 @@ export const DEFAULT_TEXT_COLOR: [number, number, number, number] = [255, 255, 2
 export const DEFAULT_OVERLAY_X = 40;
 export const DEFAULT_OVERLAY_Y_BASE = 40;
 export const DEFAULT_OVERLAY_Y_STEP = 50;
-export const DEFAULT_TEXT_WIDTH = 200;
-export const DEFAULT_TEXT_HEIGHT = 40;
+export const DEFAULT_TEXT_WIDTH = 300;
+export const DEFAULT_TEXT_HEIGHT = 60;

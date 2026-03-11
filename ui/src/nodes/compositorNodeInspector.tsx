@@ -16,6 +16,8 @@ import type { TextOverlayState, ImageOverlayState, LayerState } from '@/hooks/us
 
 import {
   ColorInput,
+  ControlRow,
+  ControlValue,
   FONT_OPTIONS,
   FontSelect,
   InspectorControls,
@@ -30,6 +32,10 @@ import {
   rgbaToHex,
 } from './compositorNodeParts';
 import {
+  CompactSliderRange,
+  CompactSliderRoot,
+  CompactSliderThumb,
+  CompactSliderTrack,
   InspectorHeaderSection,
   MirrorControl,
   OpacityControl,
@@ -282,6 +288,29 @@ export function useTextInspectorChildren(
               className="nodrag nopan"
             />
           </OverlayEditRow>
+          <OverlayEditRow>
+            <span style={{ color: 'var(--sk-text-muted)', fontSize: 10 }}>Alpha</span>
+          </OverlayEditRow>
+          <ControlRow>
+            <CompactSliderRoot
+              value={[selectedTextOverlay.color[3]]}
+              onValueChange={([v]) => {
+                const [r, g, b] = selectedTextOverlay.color;
+                updateTextOverlay(selectedTextOverlay.id, { color: [r, g, b, v] });
+              }}
+              min={0}
+              max={255}
+              step={1}
+              disabled={disabled}
+              className="nodrag nopan"
+            >
+              <CompactSliderTrack>
+                <CompactSliderRange />
+              </CompactSliderTrack>
+              <CompactSliderThumb />
+            </CompactSliderRoot>
+            <ControlValue>{Math.round((selectedTextOverlay.color[3] / 255) * 100)}%</ControlValue>
+          </ControlRow>
         </InspectorSection>
       </>
     );

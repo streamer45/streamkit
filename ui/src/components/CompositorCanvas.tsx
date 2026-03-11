@@ -23,6 +23,7 @@ import type {
   LayerState,
   TextOverlayState,
   ImageOverlayState,
+  LayerKind,
   ResizeHandle,
 } from '@/hooks/useCompositorLayers';
 
@@ -42,6 +43,7 @@ export interface CompositorCanvasProps {
   onLayerPointerDown: (layerId: string, e: React.PointerEvent) => void;
   onResizePointerDown: (layerId: string, handle: ResizeHandle, e: React.PointerEvent) => void;
   onTextFocusRequest?: (id: string) => void;
+  onLayerContextMenu?: (layerId: string, layerKind: LayerKind, x: number, y: number) => void;
   layerRefs: React.MutableRefObject<Map<string, HTMLDivElement>>;
   snapGuideRefs: React.MutableRefObject<{
     vertical: HTMLDivElement | null;
@@ -62,6 +64,7 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
     onLayerPointerDown,
     onResizePointerDown,
     onTextFocusRequest,
+    onLayerContextMenu,
     layerRefs,
     snapGuideRefs,
     disabled,
@@ -89,12 +92,16 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
 
     // Blur any active element (e.g. inline text input) before deselecting
     // so that the input's onBlur → commitEdit fires reliably.
-    const handlePaneClick = useCallback(() => {
-      if (document.activeElement instanceof HTMLElement) {
-        document.activeElement.blur();
-      }
-      onSelectLayer(null);
-    }, [onSelectLayer]);
+    const handlePaneClick = useCallback(
+      (e: React.PointerEvent) => {
+        if (e.button !== 0) return; // only primary (left) click deselects
+        if (document.activeElement instanceof HTMLElement) {
+          document.activeElement.blur();
+        }
+        onSelectLayer(null);
+      },
+      [onSelectLayer]
+    );
 
     // Cache ref-callbacks per layer id so React.memo on VideoLayer/TextOverlayLayer/
     // ImageOverlayLayer sees a stable function reference across renders.
@@ -115,6 +122,36 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
         return fn;
       },
       [layerRefs]
+    );
+
+    // Right-click context menu via event delegation: walk layerRefs to
+    // find which layer element contains the event target, then determine
+    // its kind from the layers/textOverlays/imageOverlays arrays.
+    // When layers overlap, pick the one with the highest z-index.
+    const handleCanvasContextMenu = useCallback(
+      (e: React.MouseEvent) => {
+        if (disabled || !onLayerContextMenu) return;
+        const target = e.target as Node;
+        let hitId: string | null = null;
+        let hitZ = -1;
+        for (const [id, el] of layerRefs.current) {
+          if (el.contains(target)) {
+            const z = Number(el.style.zIndex) || 0;
+            if (z >= hitZ) {
+              hitId = id;
+              hitZ = z;
+            }
+          }
+        }
+        if (!hitId) return;
+        e.preventDefault();
+        onSelectLayer(hitId);
+        let kind: LayerKind = 'video';
+        if (textOverlays.some((o) => o.id === hitId)) kind = 'text';
+        else if (imageOverlays.some((o) => o.id === hitId)) kind = 'image';
+        onLayerContextMenu(hitId, kind, e.clientX, e.clientY);
+      },
+      [disabled, onLayerContextMenu, onSelectLayer, layerRefs, textOverlays, imageOverlays]
     );
 
     const noopPointerDown = useCallback(() => {}, []);
@@ -138,6 +175,7 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
             marginBottom: canvasHeight * (scale - 1),
           }}
           onPointerDown={disabled ? undefined : handlePaneClick}
+          onContextMenu={handleCanvasContextMenu}
         >
           {!hasContent ? (
             <EmptyState>No layers configured</EmptyState>

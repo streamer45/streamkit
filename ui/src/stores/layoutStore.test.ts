@@ -4,12 +4,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  LAYOUT_PRESETS,
-  registerFitViewCallback,
-  useLayoutStore,
-  type LayoutPreset,
-} from './layoutStore';
+import { LAYOUT_PRESETS, useLayoutStore, type LayoutPreset } from './layoutStore';
 
 describe('layoutStore', () => {
   beforeEach(() => {
@@ -226,77 +221,6 @@ describe('layoutStore', () => {
       const state = useLayoutStore.getState();
       expect(state.currentPreset).toBe('palette-focus');
       expect(state.leftSize).toBe(35);
-    });
-  });
-
-  describe('fitView callbacks', () => {
-    it('should register and trigger fitView callbacks', () => {
-      vi.useFakeTimers();
-
-      const callback = vi.fn();
-      const unregister = registerFitViewCallback(callback);
-
-      // Trigger layout change
-      const { setPreset } = useLayoutStore.getState();
-      setPreset('focus-canvas');
-
-      // Callback should not fire immediately
-      expect(callback).not.toHaveBeenCalled();
-
-      // Fast-forward 200ms
-      vi.advanceTimersByTime(200);
-
-      // Callback should have fired
-      expect(callback).toHaveBeenCalledTimes(1);
-
-      // Cleanup
-      unregister();
-      vi.useRealTimers();
-    });
-
-    it('should not trigger callback after unregistering', () => {
-      vi.useFakeTimers();
-
-      const callback = vi.fn();
-      const unregister = registerFitViewCallback(callback);
-
-      // Unregister immediately
-      unregister();
-
-      // Trigger layout change
-      const { setPreset } = useLayoutStore.getState();
-      setPreset('focus-canvas');
-
-      // Fast-forward 200ms
-      vi.advanceTimersByTime(200);
-
-      // Callback should not have fired
-      expect(callback).not.toHaveBeenCalled();
-
-      vi.useRealTimers();
-    });
-
-    it('should support multiple callbacks', () => {
-      vi.useFakeTimers();
-
-      const callback1 = vi.fn();
-      const callback2 = vi.fn();
-
-      registerFitViewCallback(callback1);
-      registerFitViewCallback(callback2);
-
-      // Trigger layout change
-      const { setPreset } = useLayoutStore.getState();
-      setPreset('inspector-focus');
-
-      // Fast-forward 200ms
-      vi.advanceTimersByTime(200);
-
-      // Both callbacks should have fired
-      expect(callback1).toHaveBeenCalledTimes(1);
-      expect(callback2).toHaveBeenCalledTimes(1);
-
-      vi.useRealTimers();
     });
   });
 

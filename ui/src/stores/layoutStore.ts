@@ -111,23 +111,6 @@ const findMatchingPreset = (snapshot: LayoutSnapshot): LayoutPreset | undefined 
   return undefined;
 };
 
-// Callback registry for fitView triggers (not persisted)
-type FitViewCallback = () => void;
-const fitViewCallbacks = new Set<FitViewCallback>();
-
-export const registerFitViewCallback = (callback: FitViewCallback): (() => void) => {
-  fitViewCallbacks.add(callback);
-  // Return cleanup function
-  return () => fitViewCallbacks.delete(callback);
-};
-
-const triggerFitView = () => {
-  // Delay to allow panel animations to complete
-  setTimeout(() => {
-    fitViewCallbacks.forEach((callback) => callback());
-  }, 200);
-};
-
 interface LayoutStore {
   // Current preset
   currentPreset: LayoutPreset;
@@ -174,8 +157,6 @@ export const useLayoutStore = create<LayoutStore>()(
           leftSize: presetDef.config.leftSize ?? DEFAULT_LEFT_SIZE,
           rightSize: presetDef.config.rightSize ?? DEFAULT_RIGHT_SIZE,
         });
-        // Trigger fitView after layout changes
-        triggerFitView();
       },
 
       setLeftCollapsed: (collapsed) =>

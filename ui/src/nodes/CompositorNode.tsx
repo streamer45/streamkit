@@ -2,15 +2,16 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import React, { useCallback, useEffect, useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { CompositorCanvas } from '@/components/CompositorCanvas';
+import { CompositorContextMenu, type ContextMenuState } from '@/components/compositorContextMenu';
 import { NodeFrame } from '@/components/node/NodeFrame';
 import { SKTooltip } from '@/components/Tooltip';
 import { LiveBadge, LiveDot } from '@/components/ui/LiveIndicator';
 import { useCompositorKeyboard } from '@/hooks/compositorKeyboard';
 import { useCompositorLayers } from '@/hooks/useCompositorLayers';
-import type { TextOverlayState } from '@/hooks/useCompositorLayers';
+import type { TextOverlayState, LayerKind } from '@/hooks/useCompositorLayers';
 import { clearCompositorSelection, setCompositorSelection } from '@/hooks/useCompositorSelection';
 import { perfOnRender } from '@/perf';
 import type { InputPin, OutputPin, NodeState, NodeStats, NodeDefinition } from '@/types/types';
@@ -104,6 +105,18 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
   });
 
   const disabled = !data.onConfigChange && !data.onParamChange;
+
+  // Context menu state — bundled into a single memo to stay within
+  // the max-statements budget for this component.
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const contextMenuHandlers = useMemo(
+    () => ({
+      open: (layerId: string, layerKind: LayerKind, x: number, y: number) =>
+        setContextMenu({ layerId, layerKind, x, y }),
+      close: () => setContextMenu(null),
+    }),
+    []
+  );
 
   // ── Keyboard shortcuts ────────────────────────────────────────────────
   const compositorWrapperRef = useRef<HTMLDivElement>(null);
@@ -295,10 +308,21 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
               onLayerPointerDown={handleLayerPointerDown}
               onResizePointerDown={handleResizePointerDown}
               onTextFocusRequest={disabled ? undefined : handleTextFocusRequest}
+              onLayerContextMenu={disabled ? undefined : contextMenuHandlers.open}
               layerRefs={layerRefs}
               snapGuideRefs={snapGuideRefs}
               disabled={disabled}
             />
+            {contextMenu && entries.some((e) => e.id === contextMenu.layerId) && (
+              <CompositorContextMenu
+                menu={contextMenu}
+                entries={entries}
+                onReorderLayers={reorderLayers}
+                onRemoveText={removeTextOverlay}
+                onRemoveImage={removeImageOverlay}
+                onClose={contextMenuHandlers.close}
+              />
+            )}
           </CanvasSection>
         </CompositorWrapper>
       </CompositorOuterWrapper>
