@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MPL-2.0
 
 # Demonstrates the video::compositor node with three layers:
-#   1. A full-size 640x480 background colorbars (I420)
+#   1. A full-size 640x480 background colorbars (NV12)
 #   2. A smaller 320x240 PiP colorbars overlay (RGBA8) with explicit
 #      positioning and 15° clockwise rotation
 #   3. A text overlay ("StreamKit Demo") rendered with the bundled

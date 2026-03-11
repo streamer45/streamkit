@@ -625,10 +625,24 @@ impl Vp9Encoder {
             return Err(format!("{err} (cfg: {cfg_summary})"));
         }
 
+        let max_cpu_used = match config.deadline {
+            Vp9EncoderDeadline::Realtime => 9,
+            Vp9EncoderDeadline::GoodQuality | Vp9EncoderDeadline::BestQuality => 5,
+        };
+        let cpu_used = config.cpu_used.clamp(0, max_cpu_used);
+        if cpu_used != config.cpu_used {
+            tracing::warn!(
+                "cpu_used {} clamped to {} for {:?} deadline",
+                config.cpu_used,
+                cpu_used,
+                config.deadline
+            );
+        }
+
         unsafe {
             // SAFETY: Control calls are valid after encoder initialization.
             set_codec_control(&raw mut ctx, VP8E_SET_ENABLEAUTOALTREF as i32, 0)?;
-            set_codec_control(&raw mut ctx, VP8E_SET_CPUUSED as i32, config.cpu_used)?;
+            set_codec_control(&raw mut ctx, VP8E_SET_CPUUSED as i32, cpu_used)?;
         }
 
         Ok(Self { ctx, next_pts: 0, deadline: config.deadline.as_vpx_deadline() })
