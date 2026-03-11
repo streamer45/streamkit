@@ -1924,6 +1924,7 @@ impl MoqPeerNode {
             video_track_producer,
             packet_count: 0,
             frame_count: 0,
+            audio_first_sent: false,
             last_log: std::time::Instant::now(),
             group_duration_ms: output_group_duration_ms.max(1),
             audio_clock: MediaClock::new(output_initial_delay_ms),
@@ -1996,7 +1997,9 @@ impl MoqPeerNode {
                 // For audio, use time-based group boundaries; for video, use keyframe flag
                 let keyframe = match broadcast_frame.kind {
                     MediaKind::Audio => {
-                        ctx.packet_count == 1 || clock.is_group_boundary_ms(ctx.group_duration_ms)
+                        let first = !ctx.audio_first_sent;
+                        ctx.audio_first_sent = true;
+                        first || clock.is_group_boundary_ms(ctx.group_duration_ms)
                     },
                     MediaKind::Video => broadcast_frame.keyframe,
                 };
@@ -2073,6 +2076,9 @@ struct SubscriberSendCtx<'a> {
     video_track_producer: &'a mut Option<hang::container::OrderedProducer>,
     packet_count: u64,
     frame_count: u64,
+    /// Tracks whether the first audio frame has been sent so the initial
+    /// MoQ group is opened independently of video frame ordering.
+    audio_first_sent: bool,
     last_log: std::time::Instant,
     group_duration_ms: u64,
     audio_clock: MediaClock,
