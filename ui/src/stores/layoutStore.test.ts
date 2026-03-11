@@ -4,12 +4,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  LAYOUT_PRESETS,
-  registerFitViewCallback,
-  useLayoutStore,
-  type LayoutPreset,
-} from './layoutStore';
+import { LAYOUT_PRESETS, useLayoutStore, type LayoutPreset } from './layoutStore';
 
 describe('layoutStore', () => {
   beforeEach(() => {
@@ -226,67 +221,6 @@ describe('layoutStore', () => {
       const state = useLayoutStore.getState();
       expect(state.currentPreset).toBe('palette-focus');
       expect(state.leftSize).toBe(35);
-    });
-  });
-
-  describe('fitView callbacks', () => {
-    it('should register and unregister fitView callbacks', () => {
-      const callback = vi.fn();
-      const unregister = registerFitViewCallback(callback);
-
-      // Callback is registered but nothing triggers it now
-      // (setPreset no longer fires fitView so panels hide/show
-      // without resetting the canvas viewport).
-      expect(callback).not.toHaveBeenCalled();
-
-      // Cleanup
-      unregister();
-    });
-
-    it('should not trigger callback after unregistering', () => {
-      vi.useFakeTimers();
-
-      const callback = vi.fn();
-      const unregister = registerFitViewCallback(callback);
-
-      // Unregister immediately
-      unregister();
-
-      // Trigger layout change
-      const { setPreset } = useLayoutStore.getState();
-      setPreset('focus-canvas');
-
-      // Fast-forward 200ms
-      vi.advanceTimersByTime(200);
-
-      // Callback should not have fired
-      expect(callback).not.toHaveBeenCalled();
-
-      vi.useRealTimers();
-    });
-
-    it('should not trigger callbacks on preset change', () => {
-      vi.useFakeTimers();
-
-      const callback1 = vi.fn();
-      const callback2 = vi.fn();
-
-      registerFitViewCallback(callback1);
-      registerFitViewCallback(callback2);
-
-      // Trigger layout change
-      const { setPreset } = useLayoutStore.getState();
-      setPreset('inspector-focus');
-
-      // Fast-forward well past any potential delay
-      vi.advanceTimersByTime(500);
-
-      // Callbacks should NOT fire — preset changes no longer
-      // trigger fitView so the canvas viewport stays stable.
-      expect(callback1).not.toHaveBeenCalled();
-      expect(callback2).not.toHaveBeenCalled();
-
-      vi.useRealTimers();
     });
   });
 

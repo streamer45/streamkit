@@ -111,16 +111,6 @@ const findMatchingPreset = (snapshot: LayoutSnapshot): LayoutPreset | undefined 
   return undefined;
 };
 
-// Callback registry for fitView triggers (not persisted)
-type FitViewCallback = () => void;
-const fitViewCallbacks = new Set<FitViewCallback>();
-
-export const registerFitViewCallback = (callback: FitViewCallback): (() => void) => {
-  fitViewCallbacks.add(callback);
-  // Return cleanup function
-  return () => fitViewCallbacks.delete(callback);
-};
-
 interface LayoutStore {
   // Current preset
   currentPreset: LayoutPreset;

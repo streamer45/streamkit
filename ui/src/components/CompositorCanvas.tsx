@@ -137,7 +137,7 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
         for (const [id, el] of layerRefs.current) {
           if (el.contains(target)) {
             const z = Number(el.style.zIndex) || 0;
-            if (z > hitZ) {
+            if (z >= hitZ) {
               hitId = id;
               hitZ = z;
             }
