@@ -51,6 +51,7 @@ const VPX_CODEC_CAP_ENCODER: u32 = 0x2;
 const VP9_DEFAULT_BITRATE_KBPS: u32 = 2500;
 const VP9_DEFAULT_KF_INTERVAL: u32 = 120;
 const VP9_DEFAULT_THREADS: u32 = 2;
+const VP9_DEFAULT_CPU_USED: i32 = 6;
 
 #[derive(Deserialize, Debug, JsonSchema, Clone)]
 #[serde(default)]
@@ -97,6 +98,11 @@ pub struct Vp9EncoderConfig {
     pub keyframe_interval: u32,
     pub threads: u32,
     pub deadline: Vp9EncoderDeadline,
+    /// libvpx `VP8E_SET_CPUUSED` control value.  Higher values trade quality
+    /// for speed.  Valid range depends on [`deadline`](Vp9EncoderDeadline):
+    ///   - `realtime`: 0–9 (default 6)
+    ///   - `good_quality` / `best_quality`: 0–5
+    pub cpu_used: i32,
 }
 
 impl Default for Vp9EncoderConfig {
@@ -106,6 +112,7 @@ impl Default for Vp9EncoderConfig {
             keyframe_interval: VP9_DEFAULT_KF_INTERVAL,
             threads: VP9_DEFAULT_THREADS,
             deadline: Vp9EncoderDeadline::default(),
+            cpu_used: VP9_DEFAULT_CPU_USED,
         }
     }
 }
@@ -621,7 +628,7 @@ impl Vp9Encoder {
         unsafe {
             // SAFETY: Control calls are valid after encoder initialization.
             set_codec_control(&raw mut ctx, VP8E_SET_ENABLEAUTOALTREF as i32, 0)?;
-            set_codec_control(&raw mut ctx, VP8E_SET_CPUUSED as i32, 6)?;
+            set_codec_control(&raw mut ctx, VP8E_SET_CPUUSED as i32, config.cpu_used)?;
         }
 
         Ok(Self { ctx, next_pts: 0, deadline: config.deadline.as_vpx_deadline() })

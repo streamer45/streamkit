@@ -5,7 +5,7 @@
 //! SMPTE EIA 75% color bars video generator.
 //!
 //! Produces raw video frames with the standard 7-bar test pattern.
-//! Supports RGBA8 (default), NV12, and I420 pixel formats.
+//! Supports NV12 (default), I420, and RGBA8 pixel formats.
 //! Configurable resolution, frame rate, and frame count.
 //!
 //! - `frame_count > 0`: batch mode — emits exactly N frames with synthetic timestamps (oneshot).
@@ -56,7 +56,7 @@ pub struct ColorBarsConfig {
     /// Total frames to generate. 0 = infinite (real-time pacing).
     #[serde(default = "default_frame_count")]
     pub frame_count: u32,
-    /// Output pixel format. Supported: "rgba8" (default), "nv12", and "i420".
+    /// Output pixel format. Supported: "nv12" (default), "i420", and "rgba8".
     #[serde(default = "default_pixel_format")]
     pub pixel_format: String,
     /// When `true`, draws the current wall-clock time (`HH:MM:SS.mmm`)
@@ -77,7 +77,7 @@ pub struct ColorBarsConfig {
 }
 
 fn default_pixel_format() -> String {
-    "rgba8".to_string()
+    "nv12".to_string()
 }
 
 // Re-export the shared parse_pixel_format from the parent module.
@@ -647,6 +647,7 @@ fn stamp_time(
             // utility applies here.
             let (ref_metrics, _) = font.rasterize('A', DRAW_TIME_FONT_SIZE);
             let baseline_y = ref_metrics.height as f32;
+            let planes = layout.planes();
 
             let mut cursor_x: f32 = 0.0;
 
@@ -675,7 +676,6 @@ fn stamp_time(
                         let px = dst_x as usize;
                         let py = dst_y as usize;
 
-                        let planes = layout.planes();
                         let y_plane = planes[0];
 
                         // White in YUV = Y:235, U:128, V:128

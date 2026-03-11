@@ -17,46 +17,37 @@ pub struct BundledFont {
     pub data: &'static [u8],
 }
 
+// ── Raw font data constants (single `include_bytes!` per file) ──────────────
+
+static DEJAVU_SANS: &[u8] = include_bytes!("../../../../assets/fonts/DejaVuSans.ttf");
+static DEJAVU_SANS_BOLD: &[u8] = include_bytes!("../../../../assets/fonts/DejaVuSans-Bold.ttf");
+static DEJAVU_SANS_MONO: &[u8] = include_bytes!("../../../../assets/fonts/DejaVuSansMono.ttf");
+static DEJAVU_SANS_MONO_BOLD: &[u8] =
+    include_bytes!("../../../../assets/fonts/DejaVuSansMono-Bold.ttf");
+static DEJAVU_SERIF: &[u8] = include_bytes!("../../../../assets/fonts/DejaVuSerif.ttf");
+static DEJAVU_SERIF_BOLD: &[u8] = include_bytes!("../../../../assets/fonts/DejaVuSerif-Bold.ttf");
+
 /// Bundled font set — always available, no filesystem dependency.
 ///
 /// Order matters: the first entry is the default proportional font and
-/// the third entry is the default monospace font (see [`DEFAULT_FONT`]
-/// and [`DEFAULT_MONO_FONT`]).
+/// the third entry is the default monospace font (see [`DEFAULT_FONT_DATA`]
+/// and [`DEFAULT_MONO_FONT_DATA`]).
 pub static BUNDLED_FONTS: &[BundledFont] = &[
-    BundledFont {
-        name: "dejavu-sans",
-        data: include_bytes!("../../../../assets/fonts/DejaVuSans.ttf"),
-    },
-    BundledFont {
-        name: "dejavu-sans-bold",
-        data: include_bytes!("../../../../assets/fonts/DejaVuSans-Bold.ttf"),
-    },
-    BundledFont {
-        name: "dejavu-sans-mono",
-        data: include_bytes!("../../../../assets/fonts/DejaVuSansMono.ttf"),
-    },
-    BundledFont {
-        name: "dejavu-sans-mono-bold",
-        data: include_bytes!("../../../../assets/fonts/DejaVuSansMono-Bold.ttf"),
-    },
-    BundledFont {
-        name: "dejavu-serif",
-        data: include_bytes!("../../../../assets/fonts/DejaVuSerif.ttf"),
-    },
-    BundledFont {
-        name: "dejavu-serif-bold",
-        data: include_bytes!("../../../../assets/fonts/DejaVuSerif-Bold.ttf"),
-    },
+    BundledFont { name: "dejavu-sans", data: DEJAVU_SANS },
+    BundledFont { name: "dejavu-sans-bold", data: DEJAVU_SANS_BOLD },
+    BundledFont { name: "dejavu-sans-mono", data: DEJAVU_SANS_MONO },
+    BundledFont { name: "dejavu-sans-mono-bold", data: DEJAVU_SANS_MONO_BOLD },
+    BundledFont { name: "dejavu-serif", data: DEJAVU_SERIF },
+    BundledFont { name: "dejavu-serif-bold", data: DEJAVU_SERIF_BOLD },
 ];
 
 /// Default proportional font bytes (DejaVu Sans) — used when no font is
 /// specified in compositor text overlays.
-pub static DEFAULT_FONT_DATA: &[u8] = include_bytes!("../../../../assets/fonts/DejaVuSans.ttf");
+pub static DEFAULT_FONT_DATA: &[u8] = DEJAVU_SANS;
 
 /// Default monospace font bytes (DejaVu Sans Mono) — used by the colorbars
 /// `draw_time` overlay.
-pub static DEFAULT_MONO_FONT_DATA: &[u8] =
-    include_bytes!("../../../../assets/fonts/DejaVuSansMono.ttf");
+pub static DEFAULT_MONO_FONT_DATA: &[u8] = DEJAVU_SANS_MONO;
 
 /// Look up a bundled font by its user-facing name.
 ///
