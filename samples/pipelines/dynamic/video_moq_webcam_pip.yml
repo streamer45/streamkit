@@ -13,6 +13,7 @@ nodes:
       width: 1280
       height: 720
       fps: 30
+      pixel_format: rgba8
       draw_time: true
 
   moq_peer:

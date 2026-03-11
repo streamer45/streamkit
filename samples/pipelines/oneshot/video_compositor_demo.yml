@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MPL-2.0
 
 # Demonstrates the video::compositor node with three layers:
-#   1. A full-size 640x480 background colorbars (NV12)
+#   1. A full-size 640x480 background colorbars (RGBA8)
 #   2. A smaller 320x240 PiP colorbars overlay (RGBA8) with explicit
 #      positioning and 15° clockwise rotation
 #   3. A text overlay ("StreamKit Demo") rendered with the bundled
@@ -25,6 +25,7 @@ nodes:
       height: 720
       fps: 30
       frame_count: 90
+      pixel_format: rgba8
       # Draw the current wall-clock time (HH:MM:SS.mmm) in the bottom-left
       # corner using the bundled DejaVu Sans Mono font.
       draw_time: true
