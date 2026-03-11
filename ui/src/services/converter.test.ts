@@ -183,7 +183,7 @@ describe('converter service', () => {
 
       expect(result.success).toBe(true);
       expect(result.useStreaming).toBe(false);
-      expect(result.audioUrl).toBe('blob:mock-url');
+      expect(result.mediaUrl).toBe('blob:mock-url');
       expect(result.contentType).toBe('audio/ogg');
     });
   });

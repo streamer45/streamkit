@@ -747,12 +747,12 @@ const ConvertView: React.FC = () => {
     setOutputMode,
     abortController,
     setAbortController,
-    audioUrl,
-    setAudioUrl,
-    audioContentType,
-    setAudioContentType,
-    audioStream,
-    setAudioStream,
+    mediaUrl,
+    setMediaUrl,
+    mediaContentType,
+    setMediaContentType,
+    mediaStream,
+    setMediaStream,
     useStreaming,
     setUseStreaming,
     streamKey,
@@ -811,14 +811,14 @@ const ConvertView: React.FC = () => {
 
   // Auto-scroll to results when they appear
   useEffect(() => {
-    if ((audioUrl || audioStream) && resultsRef.current) {
+    if ((mediaUrl || mediaStream) && resultsRef.current) {
       // Small delay to ensure content has rendered
       const timeoutId = setTimeout(() => {
         resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }, 100);
       return () => clearTimeout(timeoutId);
     }
-  }, [audioUrl, audioStream]);
+  }, [mediaUrl, mediaStream]);
 
   // Fetch audio assets
   const { data: audioAssets = [], isLoading: assetsLoading } = useAudioAssets();
@@ -1111,16 +1111,16 @@ const ConvertView: React.FC = () => {
 
   // Helper: Clean up previous conversion state
   const cleanupPreviousState = useCallback(() => {
-    if (audioUrl && !useStreaming) {
-      URL.revokeObjectURL(audioUrl);
+    if (mediaUrl && !useStreaming) {
+      URL.revokeObjectURL(mediaUrl);
     }
-    setAudioUrl(null);
-    setAudioContentType(null);
-    setAudioStream(null);
+    setMediaUrl(null);
+    setMediaContentType(null);
+    setMediaStream(null);
     setUseStreaming(false);
     setMsePlaybackError(null);
     setMseFallbackLoading(false);
-  }, [audioUrl, setAudioContentType, setAudioStream, setAudioUrl, setUseStreaming, useStreaming]);
+  }, [mediaUrl, setMediaContentType, setMediaStream, setMediaUrl, setUseStreaming, useStreaming]);
 
   // Helper: Handle successful conversion result
   const handleConversionSuccess = useCallback(
@@ -1140,8 +1140,8 @@ const ConvertView: React.FC = () => {
         if (isStreaming && result.responseStream) {
           // Increment stream key to force component remount with new stream
           setStreamKey((prev) => prev + 1);
-          setAudioStream(result.responseStream);
-          setAudioContentType(result.contentType || null);
+          setMediaStream(result.responseStream);
+          setMediaContentType(result.contentType || null);
           setUseStreaming(true);
 
           // Different message for JSON transcription vs audio streaming
@@ -1156,10 +1156,10 @@ const ConvertView: React.FC = () => {
             setConversionMessage(`Streaming ${mediaKind}... Click Cancel to stop.`);
           }
           // Keep processing state for cancellation
-        } else if (result.audioUrl) {
+        } else if (result.mediaUrl) {
           // Use blob URL for other formats
-          setAudioUrl(result.audioUrl);
-          setAudioContentType(result.contentType || null);
+          setMediaUrl(result.mediaUrl);
+          setMediaContentType(result.contentType || null);
           const mediaKind = result.contentType?.startsWith('video/') ? 'video' : 'audio';
           setConversionMessage(`Conversion complete! You can now play the ${mediaKind} below.`);
           setTimeout(() => {
@@ -1179,9 +1179,9 @@ const ConvertView: React.FC = () => {
       isTranscriptionPipeline,
       outputMode,
       setAbortController,
-      setAudioContentType,
-      setAudioStream,
-      setAudioUrl,
+      setMediaContentType,
+      setMediaStream,
+      setMediaUrl,
       setConversionMessage,
       setConversionStatus,
       setStreamKey,
@@ -1272,12 +1272,12 @@ const ConvertView: React.FC = () => {
 
       // Clear ALL audio/stream state immediately
       // This will unmount MSEAudioPlayer/TranscriptionDisplay and trigger their cleanup
-      if (audioUrl && !useStreaming) {
-        URL.revokeObjectURL(audioUrl);
+      if (mediaUrl && !useStreaming) {
+        URL.revokeObjectURL(mediaUrl);
       }
-      setAudioUrl(null);
-      setAudioStream(null);
-      setAudioContentType(null);
+      setMediaUrl(null);
+      setMediaStream(null);
+      setMediaContentType(null);
       setUseStreaming(false);
       setMsePlaybackError(null);
       setMseFallbackLoading(false);
@@ -1330,7 +1330,7 @@ const ConvertView: React.FC = () => {
     () => makeStreamCallbacks('Transcription'),
     [makeStreamCallbacks]
   );
-  const audioStreamCallbacks = useMemo(
+  const mediaStreamCallbacks = useMemo(
     () => makeStreamCallbacks('Streaming'),
     [makeStreamCallbacks]
   );
@@ -1432,9 +1432,9 @@ const ConvertView: React.FC = () => {
       : {};
 
   const handleDownloadAudio = () => {
-    if (!audioUrl) return;
+    if (!mediaUrl) return;
 
-    const extension = audioContentType ? getExtensionFromContentType(audioContentType) : '.ogg';
+    const extension = mediaContentType ? getExtensionFromContentType(mediaContentType) : '.ogg';
 
     const primaryUpload =
       isMultiUpload && inputMode === 'upload'
@@ -1459,7 +1459,7 @@ const ConvertView: React.FC = () => {
 
     // Create download link directly from the existing object URL
     const link = document.createElement('a');
-    link.href = audioUrl;
+    link.href = mediaUrl;
     link.download = outputFileName;
     document.body.appendChild(link);
     link.click();
@@ -1756,22 +1756,22 @@ const ConvertView: React.FC = () => {
 
           <ConversionProgress status={conversionStatus} message={conversionMessage} />
 
-          {(audioUrl || audioStream) && (
+          {(mediaUrl || mediaStream) && (
             <div ref={resultsRef}>
-              {audioContentType?.includes('application/json') && audioStream ? (
+              {mediaContentType?.includes('application/json') && mediaStream ? (
                 isTranscriptionPipeline ? (
                   // Render transcription display for JSON content
                   // Use key to force remount when stream changes
                   <TranscriptionDisplay
                     key={streamKey}
-                    stream={audioStream}
+                    stream={mediaStream}
                     onComplete={transcriptionCallbacks.onComplete}
                     onCancel={transcriptionCallbacks.onCancel}
                   />
                 ) : (
                   <JsonStreamDisplay
                     key={streamKey}
-                    stream={audioStream}
+                    stream={mediaStream}
                     onComplete={transcriptionCallbacks.onComplete}
                     onCancel={transcriptionCallbacks.onCancel}
                   />
@@ -1780,20 +1780,20 @@ const ConvertView: React.FC = () => {
                 // Render media player for audio/video content
                 <AudioPlayerContainer>
                   <AudioPlayerTitle>
-                    {audioContentType?.startsWith('video/') ? 'Converted Video' : 'Converted Audio'}
+                    {mediaContentType?.startsWith('video/') ? 'Converted Video' : 'Converted Audio'}
                   </AudioPlayerTitle>
-                  {useStreaming && audioStream && audioContentType ? (
+                  {useStreaming && mediaStream && mediaContentType ? (
                     <MSEPlayer
-                      stream={audioStream}
-                      contentType={audioContentType}
-                      onComplete={audioStreamCallbacks.onComplete}
-                      onCancel={audioStreamCallbacks.onCancel}
+                      stream={mediaStream}
+                      contentType={mediaContentType}
+                      onComplete={mediaStreamCallbacks.onComplete}
+                      onCancel={mediaStreamCallbacks.onCancel}
                       onError={handleMsePlaybackError}
                     />
-                  ) : audioUrl ? (
-                    audioContentType?.startsWith('video/') ? (
+                  ) : mediaUrl ? (
+                    mediaContentType?.startsWith('video/') ? (
                       <video
-                        src={audioUrl}
+                        src={mediaUrl}
                         controls
                         autoPlay
                         style={{
@@ -1808,7 +1808,7 @@ const ConvertView: React.FC = () => {
                       <>
                         <HiddenAudio
                           ref={audioRef}
-                          src={audioUrl}
+                          src={mediaUrl}
                           preload="auto"
                           aria-label="Converted audio playback"
                         >
@@ -1818,9 +1818,9 @@ const ConvertView: React.FC = () => {
                       </>
                     )
                   ) : null}
-                  {audioUrl && (
+                  {mediaUrl && (
                     <DownloadLink onClick={handleDownloadAudio}>
-                      {audioContentType?.startsWith('video/')
+                      {mediaContentType?.startsWith('video/')
                         ? 'Download Video File'
                         : 'Download Audio File'}
                     </DownloadLink>
