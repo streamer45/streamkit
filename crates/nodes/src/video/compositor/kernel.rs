@@ -165,6 +165,9 @@ impl ConversionCache {
                     // Should not be called for RGBA, but handle gracefully.
                     rgba[..needed].copy_from_slice(&layer.data.as_slice()[..needed]);
                 },
+                _ => {
+                    rgba[..needed].fill(0);
+                },
             }
 
             self.entries[slot_idx] = Some(CachedConversion {
@@ -320,6 +323,7 @@ pub fn composite_frame(
                     PixelFormat::Rgba8 => {
                         conversion_cache.first_layer_all_opaque(layer, layer.data.as_slice())
                     },
+                    _ => false,
                 }
             },
         );
@@ -336,12 +340,12 @@ pub fn composite_frame(
         .map(|(slot_idx, entry)| {
             entry.as_ref().map(|layer| {
                 let src_data: &[u8] = match layer.pixel_format {
-                    PixelFormat::Rgba8 => layer.data.as_slice(),
                     PixelFormat::I420 | PixelFormat::Nv12 => {
                         // Cache was populated in pass 1; this is a shared
                         // read that cannot fail.
                         conversion_cache.get_cached(slot_idx, layer)
                     },
+                    _ => layer.data.as_slice(),
                 };
                 (layer, src_data)
             })

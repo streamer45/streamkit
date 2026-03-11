@@ -320,6 +320,11 @@ fn convert_frame(
             let chroma_h = h.div_ceil(2);
             w * h + chroma_w * chroma_h * 2
         },
+        other => {
+            return Err(StreamKitError::Runtime(format!(
+                "unsupported target pixel format: {other:?}"
+            )));
+        },
     };
 
     let mut out_data = video_pool

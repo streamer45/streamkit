@@ -66,6 +66,7 @@ impl GlobalNodeConstraints {
     /// If a value of the same concrete type was already present it is
     /// replaced and the old value is returned.
     pub fn insert<T: NodeConstraint>(&mut self, value: T) -> Option<T> {
+        tracing::debug!(constraint = T::constraint_name(), "inserting node constraint");
         self.inner
             .insert(TypeId::of::<T>(), Box::new(value))
             .and_then(|prev| prev.downcast::<T>().ok())

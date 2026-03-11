@@ -656,7 +656,7 @@ impl Vp9Encoder {
         let vpx_fmt = match frame.pixel_format {
             PixelFormat::I420 => VPX_IMG_FMT_I420,
             PixelFormat::Nv12 => VPX_IMG_FMT_NV12,
-            other @ PixelFormat::Rgba8 => {
+            other => {
                 return Err(format!("VP9 encoder expects I420 or NV12 input, got {other:?}"));
             },
         };

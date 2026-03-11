@@ -243,10 +243,24 @@ fn packet_type_entries() -> Vec<PacketTypeEntry> {
             runtime_repr: "Packet::Audio(AudioFrame)",
         },
         PacketTypeEntry {
-            id: "OpusAudio",
-            slug: "opus-audio",
-            label: "Opus Audio",
-            kind_repr: "PacketType::OpusAudio",
+            id: "EncodedAudio",
+            slug: "encoded-audio",
+            label: "Encoded Audio",
+            kind_repr: "PacketType::EncodedAudio(EncodedAudioFormat)",
+            runtime_repr: "Packet::Binary { data, metadata, .. }",
+        },
+        PacketTypeEntry {
+            id: "RawVideo",
+            slug: "raw-video",
+            label: "Raw Video",
+            kind_repr: "PacketType::RawVideo(RawVideoFormat)",
+            runtime_repr: "Packet::Video(VideoFrame)",
+        },
+        PacketTypeEntry {
+            id: "EncodedVideo",
+            slug: "encoded-video",
+            label: "Encoded Video",
+            kind_repr: "PacketType::EncodedVideo(EncodedVideoFormat)",
             runtime_repr: "Packet::Binary { data, metadata, .. }",
         },
         PacketTypeEntry {
@@ -400,7 +414,7 @@ Use `Custom` when you need **structured, typed messages** that don't fit existin
 
 Prefer other packet types when they fit:
 
-- Audio frames/streams: `/reference/packets/raw-audio/` or `/reference/packets/opus-audio/`
+- Audio frames/streams: `/reference/packets/raw-audio/` or `/reference/packets/encoded-audio/`
 - Plain strings: `/reference/packets/text/`
 - Opaque bytes, blobs, or media: `/reference/packets/binary/`
 - Speech-to-text results: `/reference/packets/transcription/`
@@ -539,10 +553,48 @@ Notes:
 "#
             .to_string(),
         ),
-        "OpusAudio" => Ok(
-            r"Opus packets use the `OpusAudio` packet type, but the runtime payload is still `Packet::Binary`.
+        "EncodedAudio" => Ok(
+            r"Encoded audio is defined by an `EncodedAudioFormat` (codec + optional codec-private data) in the type system.
 
-The Opus codec nodes encode/decode using `Packet::Binary { data, metadata, .. }` and label pins as `OpusAudio`.
+At runtime, encoded audio frames are carried as `Packet::Binary { data, metadata, .. }`. The codec nodes
+encode/decode using this binary payload and label pins with the appropriate `EncodedAudio` type.
+"
+            .to_string(),
+        ),
+        "RawVideo" => {
+            let mut out = String::new();
+            out.push_str(
+                r"Raw video is defined by a `RawVideoFormat` in the type system and carried as `Packet::Video(VideoFrame)` at runtime.
+
+### PacketType payload (`RawVideoFormat`)
+
+",
+            );
+            let schema = serde_json::to_value(schema_for!(streamkit_core::types::RawVideoFormat))
+                .context("failed to generate RawVideoFormat schema")?;
+            out.push_str(&render_object_fields(&schema, &schema, 0));
+            out.push_str(&render_raw_schema(&schema));
+
+            out.push_str(
+                r"
+### Runtime payload (`VideoFrame`)
+
+`VideoFrame` is optimized for zero-copy fan-out (Arc + CoW). It contains:
+
+- `layout` (`VideoLayout`) — plane offsets, strides, and dimensions
+- `data` (shared byte buffer backed by `VideoFramePool`)
+- `metadata` (`PacketMetadata`, optional)
+",
+            );
+
+            Ok(out)
+        },
+        "EncodedVideo" => Ok(
+            r"Encoded video is defined by an `EncodedVideoFormat` (codec, bitstream format, profile, level)
+in the type system.
+
+At runtime, encoded video frames are carried as `Packet::Binary { data, metadata, .. }`. The codec nodes
+encode/decode using this binary payload and label pins with the appropriate `EncodedVideo` type.
 "
             .to_string(),
         ),
