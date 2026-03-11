@@ -640,8 +640,8 @@ global_fetch_allowlist = []
 # Maximum allowed canvas dimension (width or height) in pixels.
 # Prevents runaway memory usage from oversized canvases.
 # Default: 7680 (8K UHD)
-default_max_canvas_dimension = 7680
+max_canvas_dimension = 7680
 
 # Maximum allowed font size for text overlays in pixels.
 # Default: 4096
-default_max_font_size = 4096
+max_font_size = 4096

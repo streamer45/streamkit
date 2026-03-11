@@ -84,6 +84,11 @@ pub enum Needs {
     ///   video: vp9_encoder
     ///   audio: opus_encoder
     /// ```
+    ///
+    /// **Note:** Because `Needs` uses `#[serde(untagged)]`, a single-entry
+    /// map whose key is `"node"` (with an optional `"mode"` key matching a
+    /// valid [`ConnectionMode`]) will be parsed as `Single(WithMode)` rather
+    /// than `Map`.  Avoid using `node` as a pin name.
     Map(IndexMap<String, NeedsDependency>),
 }
 
