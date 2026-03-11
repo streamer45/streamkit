@@ -45,6 +45,12 @@ pub(super) const unsafe fn read_rgba_u32(src: &[u8], offset: usize) -> u32 {
 ///
 /// `dst_ptr` must point to at least 16 writable bytes.  Source pixel values
 /// in `src_pixels` must be valid RGBA `u32` values.
+//
+// NOTE: no `#[target_feature(enable = "sse2")]` here — SSE2 is baseline on
+// x86_64 so the attribute is unnecessary, and omitting it allows
+// `#[inline(always)]` which is required for the hot inner-loop call sites.
+// (`#[target_feature]` and `#[inline(always)]` are mutually exclusive on
+// stable Rust.)
 #[inline(always)]
 #[allow(clippy::cast_ptr_alignment)] // _mm_storeu/loadu_si128 do not require alignment
 pub(super) unsafe fn blend_4px_opaque_sse2(dst_ptr: *mut u8, src_pixels: [u32; 4]) {
@@ -128,6 +134,9 @@ pub(super) unsafe fn blend_4px_opaque_sse2(dst_ptr: *mut u8, src_pixels: [u32; 4
 /// # Safety
 ///
 /// `dst_ptr` must point to at least 16 writable bytes.
+//
+// NOTE: no `#[target_feature(enable = "sse2")]` — see comment on
+// `blend_4px_opaque_sse2` for rationale.
 #[inline(always)]
 #[allow(clippy::cast_ptr_alignment)] // _mm_storeu/loadu_si128 do not require alignment
 pub(super) unsafe fn blend_4px_alpha_sse2(dst_ptr: *mut u8, src_pixels: [u32; 4], opacity: u16) {
@@ -507,7 +516,7 @@ macro_rules! impl_i420_to_rgba8_row {
             width: usize,
         ) -> usize {
             use std::arch::x86_64::{
-                _mm_add_epi32, _mm_or_si128, _mm_packs_epi32, _mm_packus_epi16, _mm_set1_epi32,
+                _mm_add_epi32, _mm_packs_epi32, _mm_packus_epi16, _mm_set1_epi32,
                 _mm_set1_epi8, _mm_set_epi32, _mm_setzero_si128, _mm_srai_epi32, _mm_storeu_si128,
                 _mm_sub_epi32, _mm_unpacklo_epi16, _mm_unpacklo_epi8,
             };
@@ -525,7 +534,6 @@ macro_rules! impl_i420_to_rgba8_row {
             let bias_16 = _mm_set1_epi32(16);
             let bias_128 = _mm_set1_epi32(128);
             let rounding = _mm_set1_epi32(128);
-            let alpha_mask = _mm_set1_epi32(0xFF00_0000_u32.cast_signed());
             let zero = _mm_setzero_si128();
 
             let mul32 = $mul32;
@@ -584,10 +592,11 @@ macro_rules! impl_i420_to_rgba8_row {
                 let g8 = _mm_packus_epi16(g16, zero);
                 let b8 = _mm_packus_epi16(b16, zero);
 
+                // Alpha channel is already 0xFF: `_mm_set1_epi8(-1)` in the
+                // `ba` interleave places 0xFF in every alpha byte position.
                 let rg = _mm_unpacklo_epi8(r8, g8);
                 let ba = _mm_unpacklo_epi8(b8, _mm_set1_epi8(-1));
                 let rgba = _mm_unpacklo_epi16(rg, ba);
-                let rgba = _mm_or_si128(rgba, alpha_mask);
 
                 let out_ptr = rgba_out.as_mut_ptr().add(col * 4);
                 _mm_storeu_si128(out_ptr.cast(), rgba);
@@ -624,7 +633,7 @@ macro_rules! impl_nv12_to_rgba8_row {
             width: usize,
         ) -> usize {
             use std::arch::x86_64::{
-                _mm_add_epi32, _mm_or_si128, _mm_packs_epi32, _mm_packus_epi16, _mm_set1_epi32,
+                _mm_add_epi32, _mm_packs_epi32, _mm_packus_epi16, _mm_set1_epi32,
                 _mm_set1_epi8, _mm_set_epi32, _mm_setzero_si128, _mm_srai_epi32, _mm_storeu_si128,
                 _mm_sub_epi32, _mm_unpacklo_epi16, _mm_unpacklo_epi8,
             };
@@ -642,7 +651,6 @@ macro_rules! impl_nv12_to_rgba8_row {
             let bias_16 = _mm_set1_epi32(16);
             let bias_128 = _mm_set1_epi32(128);
             let rounding = _mm_set1_epi32(128);
-            let alpha_mask = _mm_set1_epi32(0xFF00_0000_u32.cast_signed());
             let zero = _mm_setzero_si128();
 
             let mul32 = $mul32;
@@ -701,10 +709,11 @@ macro_rules! impl_nv12_to_rgba8_row {
                 let g8 = _mm_packus_epi16(g16, zero);
                 let b8 = _mm_packus_epi16(b16, zero);
 
+                // Alpha channel is already 0xFF: `_mm_set1_epi8(-1)` in the
+                // `ba` interleave places 0xFF in every alpha byte position.
                 let rg = _mm_unpacklo_epi8(r8, g8);
                 let ba = _mm_unpacklo_epi8(b8, _mm_set1_epi8(-1));
                 let rgba = _mm_unpacklo_epi16(rg, ba);
-                let rgba = _mm_or_si128(rgba, alpha_mask);
 
                 let out_ptr = rgba_out.as_mut_ptr().add(col * 4);
                 _mm_storeu_si128(out_ptr.cast(), rgba);
@@ -742,9 +751,9 @@ pub(super) unsafe fn nv12_to_rgba8_row_avx2(
     use std::arch::x86_64::{
         _mm256_add_epi32, _mm256_castsi256_si128, _mm256_cvtepu8_epi32, _mm256_extracti128_si256,
         _mm256_mullo_epi32, _mm256_set1_epi32, _mm256_srai_epi32, _mm256_sub_epi32,
-        _mm_loadl_epi64, _mm_or_si128, _mm_packs_epi32, _mm_packus_epi16, _mm_set1_epi32,
-        _mm_set1_epi8, _mm_set_epi8, _mm_setzero_si128, _mm_shuffle_epi8, _mm_storeu_si128,
-        _mm_unpacklo_epi16, _mm_unpacklo_epi8,
+        _mm_loadl_epi64, _mm_packs_epi32, _mm_packus_epi16, _mm_set1_epi8, _mm_set_epi8,
+        _mm_setzero_si128, _mm_shuffle_epi8, _mm_storeu_si128, _mm_unpacklo_epi16,
+        _mm_unpacklo_epi8,
     };
 
     let simd_width = width & !7; // round down to multiple of 8
@@ -760,7 +769,6 @@ pub(super) unsafe fn nv12_to_rgba8_row_avx2(
     let bias_16 = _mm256_set1_epi32(16);
     let bias_128 = _mm256_set1_epi32(128);
     let rounding = _mm256_set1_epi32(128);
-    let alpha_mask = _mm_set1_epi32(0xFF00_0000_u32.cast_signed());
     let zero = _mm_setzero_si128();
 
     // Shuffle controls for deinterleaving + duplicating NV12 UV pairs.
@@ -825,6 +833,9 @@ pub(super) unsafe fn nv12_to_rgba8_row_avx2(
         let b_lo = _mm256_castsi256_si128(b32);
         let b_hi = _mm256_extracti128_si256(b32, 1);
 
+        // Alpha channel is already 0xFF: `_mm_set1_epi8(-1)` in the
+        // `ba` interleave places 0xFF in every alpha byte position.
+
         // Pixels 0–3
         let r16 = _mm_packs_epi32(r_lo, zero);
         let g16 = _mm_packs_epi32(g_lo, zero);
@@ -836,7 +847,6 @@ pub(super) unsafe fn nv12_to_rgba8_row_avx2(
         let rg = _mm_unpacklo_epi8(r8, g8);
         let ba = _mm_unpacklo_epi8(b8, _mm_set1_epi8(-1));
         let rgba = _mm_unpacklo_epi16(rg, ba);
-        let rgba = _mm_or_si128(rgba, alpha_mask);
         _mm_storeu_si128(rgba_out.as_mut_ptr().add(col * 4).cast(), rgba);
 
         // Pixels 4–7
@@ -850,7 +860,6 @@ pub(super) unsafe fn nv12_to_rgba8_row_avx2(
         let rg = _mm_unpacklo_epi8(r8, g8);
         let ba = _mm_unpacklo_epi8(b8, _mm_set1_epi8(-1));
         let rgba = _mm_unpacklo_epi16(rg, ba);
-        let rgba = _mm_or_si128(rgba, alpha_mask);
         _mm_storeu_si128(rgba_out.as_mut_ptr().add((col + 4) * 4).cast(), rgba);
 
         col += 8;
@@ -879,9 +888,8 @@ pub(super) unsafe fn i420_to_rgba8_row_avx2(
     use std::arch::x86_64::{
         _mm256_add_epi32, _mm256_castsi256_si128, _mm256_cvtepu8_epi32, _mm256_extracti128_si256,
         _mm256_mullo_epi32, _mm256_set1_epi32, _mm256_set_epi32, _mm256_srai_epi32,
-        _mm256_sub_epi32, _mm_loadl_epi64, _mm_or_si128, _mm_packs_epi32, _mm_packus_epi16,
-        _mm_set1_epi32, _mm_set1_epi8, _mm_setzero_si128, _mm_storeu_si128, _mm_unpacklo_epi16,
-        _mm_unpacklo_epi8,
+        _mm256_sub_epi32, _mm_loadl_epi64, _mm_packs_epi32, _mm_packus_epi16, _mm_set1_epi8,
+        _mm_setzero_si128, _mm_storeu_si128, _mm_unpacklo_epi16, _mm_unpacklo_epi8,
     };
 
     let simd_width = width & !7; // round down to multiple of 8
@@ -897,7 +905,6 @@ pub(super) unsafe fn i420_to_rgba8_row_avx2(
     let bias_16 = _mm256_set1_epi32(16);
     let bias_128 = _mm256_set1_epi32(128);
     let rounding = _mm256_set1_epi32(128);
-    let alpha_mask = _mm_set1_epi32(0xFF00_0000_u32.cast_signed());
     let zero = _mm_setzero_si128();
 
     let mut col = 0usize;
@@ -970,6 +977,9 @@ pub(super) unsafe fn i420_to_rgba8_row_avx2(
         let b_lo = _mm256_castsi256_si128(b32);
         let b_hi = _mm256_extracti128_si256(b32, 1);
 
+        // Alpha channel is already 0xFF: `_mm_set1_epi8(-1)` in the
+        // `ba` interleave places 0xFF in every alpha byte position.
+
         // Pixels 0–3
         let r16 = _mm_packs_epi32(r_lo, zero);
         let g16 = _mm_packs_epi32(g_lo, zero);
@@ -981,7 +991,6 @@ pub(super) unsafe fn i420_to_rgba8_row_avx2(
         let rg = _mm_unpacklo_epi8(r8, g8);
         let ba = _mm_unpacklo_epi8(b8, _mm_set1_epi8(-1));
         let rgba = _mm_unpacklo_epi16(rg, ba);
-        let rgba = _mm_or_si128(rgba, alpha_mask);
         _mm_storeu_si128(rgba_out.as_mut_ptr().add(col * 4).cast(), rgba);
 
         // Pixels 4–7
@@ -995,7 +1004,6 @@ pub(super) unsafe fn i420_to_rgba8_row_avx2(
         let rg = _mm_unpacklo_epi8(r8, g8);
         let ba = _mm_unpacklo_epi8(b8, _mm_set1_epi8(-1));
         let rgba = _mm_unpacklo_epi16(rg, ba);
-        let rgba = _mm_or_si128(rgba, alpha_mask);
         _mm_storeu_si128(rgba_out.as_mut_ptr().add((col + 4) * 4).cast(), rgba);
 
         col += 8;
