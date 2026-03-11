@@ -582,3 +582,266 @@ async fn test_webm_mux_no_inputs_fails() {
     let result = Box::new(muxer).run(mux_context).await;
     assert!(result.is_err(), "Expected error when no inputs are connected");
 }
+
+/// Smoke test: combined audio (Opus) + video (VP9) muxed into a single WebM container.
+#[cfg(feature = "vp9")]
+#[tokio::test]
+async fn test_webm_mux_audio_and_video() {
+    use crate::test_utils::create_test_video_frame;
+    use crate::video::vp9::{Vp9EncoderConfig, Vp9EncoderNode};
+    use streamkit_core::types::{EncodedVideoFormat, PacketMetadata, PixelFormat, VideoCodec};
+
+    // ---- Step 1: Encode a few raw I420 frames to VP9 ----
+
+    let (enc_input_tx, enc_input_rx) = mpsc::channel(10);
+    let mut enc_inputs = HashMap::new();
+    enc_inputs.insert("in".to_string(), enc_input_rx);
+
+    let (enc_context, enc_sender, mut enc_state_rx) = create_test_context(enc_inputs, 10);
+    let encoder_config = Vp9EncoderConfig {
+        keyframe_interval: 1,
+        bitrate_kbps: 800,
+        threads: 1,
+        ..Default::default()
+    };
+    let encoder = match Vp9EncoderNode::new(encoder_config) {
+        Ok(enc) => enc,
+        Err(e) => {
+            eprintln!("Skipping combined audio+video mux test: encoder not available ({e})");
+            return;
+        },
+    };
+    let enc_handle = tokio::spawn(async move { Box::new(encoder).run(enc_context).await });
+
+    assert_state_initializing(&mut enc_state_rx).await;
+    assert_state_running(&mut enc_state_rx).await;
+
+    let frame_count = 5u64;
+    for i in 0..frame_count {
+        let mut frame = create_test_video_frame(64, 64, PixelFormat::I420, 16);
+        frame.metadata = Some(PacketMetadata {
+            timestamp_us: Some(i * 33_333),
+            duration_us: Some(33_333),
+            sequence: Some(i),
+            keyframe: Some(true),
+        });
+        enc_input_tx.send(Packet::Video(frame)).await.unwrap();
+    }
+    drop(enc_input_tx);
+
+    assert_state_stopped(&mut enc_state_rx).await;
+    enc_handle.await.unwrap().unwrap();
+
+    let encoded_video_packets = enc_sender.get_packets_for_pin("out").await;
+    assert!(!encoded_video_packets.is_empty(), "VP9 encoder produced no packets");
+
+    // ---- Step 2: Mux audio + video into WebM ----
+
+    let (mux_audio_tx, mux_audio_rx) = mpsc::channel(10);
+    let (mux_video_tx, mux_video_rx) = mpsc::channel(10);
+    let mut mux_inputs = HashMap::new();
+    mux_inputs.insert("in".to_string(), mux_audio_rx);
+    mux_inputs.insert("in_1".to_string(), mux_video_rx);
+
+    let (mut mux_context, mux_sender, mut mux_state_rx) = create_test_context(mux_inputs, 10);
+    mux_context.input_types.insert(
+        "in".to_string(),
+        PacketType::EncodedAudio(EncodedAudioFormat {
+            codec: AudioCodec::Opus,
+            codec_private: None,
+        }),
+    );
+    mux_context.input_types.insert(
+        "in_1".to_string(),
+        PacketType::EncodedVideo(EncodedVideoFormat {
+            codec: VideoCodec::Vp9,
+            bitstream_format: None,
+            codec_private: None,
+            profile: None,
+            level: None,
+        }),
+    );
+
+    let mux_config =
+        WebMMuxerConfig { video_width: 64, video_height: 64, ..WebMMuxerConfig::default() };
+    let muxer = WebMMuxerNode::new(mux_config);
+    let mux_handle = tokio::spawn(async move { Box::new(muxer).run(mux_context).await });
+
+    assert_state_initializing(&mut mux_state_rx).await;
+    assert_state_running(&mut mux_state_rx).await;
+
+    // Send audio packets
+    for _ in 0..10 {
+        mux_audio_tx.send(create_mock_opus_packet()).await.unwrap();
+    }
+    // Send video packets
+    for packet in encoded_video_packets {
+        mux_video_tx.send(packet).await.unwrap();
+    }
+    drop(mux_audio_tx);
+    drop(mux_video_tx);
+
+    assert_state_stopped(&mut mux_state_rx).await;
+    mux_handle.await.unwrap().unwrap();
+
+    // ---- Step 3: Validate output ----
+
+    let output_packets = mux_sender.get_packets_for_pin("out").await;
+    assert!(!output_packets.is_empty(), "WebM muxer produced no output for audio+video");
+
+    // Collect all output bytes
+    let mut webm_bytes = Vec::new();
+    for packet in &output_packets {
+        if let Packet::Binary { data, .. } = packet {
+            webm_bytes.extend_from_slice(data);
+        }
+    }
+
+    // Verify EBML header
+    assert!(webm_bytes.len() >= 4, "WebM output too small: {} bytes", webm_bytes.len());
+    assert_eq!(
+        &webm_bytes[..4],
+        &[0x1A, 0x45, 0xDF, 0xA3],
+        "WebM output does not start with EBML header"
+    );
+
+    // Verify content type includes both codecs
+    if let Packet::Binary { content_type, .. } = &output_packets[0] {
+        let ct = content_type.as_ref().expect("content_type should be set");
+        assert_eq!(
+            ct.as_ref(),
+            "video/webm; codecs=\"vp9,opus\"",
+            "Combined mux should include both codecs"
+        );
+    }
+
+    // Verify OpusHead is present (audio codec private)
+    assert!(
+        webm_bytes.windows(b"OpusHead".len()).any(|w| w == b"OpusHead"),
+        "Combined WebM output should include OpusHead codec private"
+    );
+
+    println!(
+        "WebM combined audio+video mux test passed: {} output packets, {} total bytes",
+        output_packets.len(),
+        webm_bytes.len()
+    );
+}
+
+/// Test that the WebM muxer auto-detects video dimensions from the first VP9 keyframe
+/// when `video_width` and `video_height` are both 0.
+#[cfg(feature = "vp9")]
+#[tokio::test]
+async fn test_webm_mux_vp9_auto_detect_dimensions() {
+    use crate::test_utils::create_test_video_frame;
+    use crate::video::vp9::{Vp9EncoderConfig, Vp9EncoderNode};
+    use streamkit_core::types::{EncodedVideoFormat, PacketMetadata, PixelFormat, VideoCodec};
+
+    // ---- Step 1: Encode raw frames to VP9 ----
+
+    let (enc_input_tx, enc_input_rx) = mpsc::channel(10);
+    let mut enc_inputs = HashMap::new();
+    enc_inputs.insert("in".to_string(), enc_input_rx);
+
+    let (enc_context, enc_sender, mut enc_state_rx) = create_test_context(enc_inputs, 10);
+    let encoder_config = Vp9EncoderConfig {
+        keyframe_interval: 1,
+        bitrate_kbps: 800,
+        threads: 1,
+        ..Default::default()
+    };
+    let encoder = match Vp9EncoderNode::new(encoder_config) {
+        Ok(enc) => enc,
+        Err(e) => {
+            eprintln!("Skipping VP9 auto-detect test: encoder not available ({e})");
+            return;
+        },
+    };
+    let enc_handle = tokio::spawn(async move { Box::new(encoder).run(enc_context).await });
+
+    assert_state_initializing(&mut enc_state_rx).await;
+    assert_state_running(&mut enc_state_rx).await;
+
+    let frame_count = 3u64;
+    for i in 0..frame_count {
+        let mut frame = create_test_video_frame(128, 96, PixelFormat::I420, 32);
+        frame.metadata = Some(PacketMetadata {
+            timestamp_us: Some(i * 33_333),
+            duration_us: Some(33_333),
+            sequence: Some(i),
+            keyframe: Some(true),
+        });
+        enc_input_tx.send(Packet::Video(frame)).await.unwrap();
+    }
+    drop(enc_input_tx);
+
+    assert_state_stopped(&mut enc_state_rx).await;
+    enc_handle.await.unwrap().unwrap();
+
+    let encoded_packets = enc_sender.get_packets_for_pin("out").await;
+    assert!(!encoded_packets.is_empty(), "VP9 encoder produced no packets");
+
+    // ---- Step 2: Mux with auto-detect dimensions (video_width=0, video_height=0) ----
+
+    let (mux_video_tx, mux_video_rx) = mpsc::channel(10);
+    let mut mux_inputs = HashMap::new();
+    // Single pin for video-only.  With width/height = 0 the muxer uses a single pin.
+    mux_inputs.insert("in".to_string(), mux_video_rx);
+
+    let (mut mux_context, mux_sender, mut mux_state_rx) = create_test_context(mux_inputs, 10);
+    mux_context.input_types.insert(
+        "in".to_string(),
+        PacketType::EncodedVideo(EncodedVideoFormat {
+            codec: VideoCodec::Vp9,
+            bitstream_format: None,
+            codec_private: None,
+            profile: None,
+            level: None,
+        }),
+    );
+
+    // Explicitly set 0x0 to trigger auto-detection
+    let mux_config =
+        WebMMuxerConfig { video_width: 0, video_height: 0, ..WebMMuxerConfig::default() };
+    let muxer = WebMMuxerNode::new(mux_config);
+    let mux_handle = tokio::spawn(async move { Box::new(muxer).run(mux_context).await });
+
+    assert_state_initializing(&mut mux_state_rx).await;
+    assert_state_running(&mut mux_state_rx).await;
+
+    for packet in encoded_packets {
+        mux_video_tx.send(packet).await.unwrap();
+    }
+    drop(mux_video_tx);
+
+    assert_state_stopped(&mut mux_state_rx).await;
+    mux_handle.await.unwrap().unwrap();
+
+    // ---- Step 3: Validate output ----
+
+    let output_packets = mux_sender.get_packets_for_pin("out").await;
+    assert!(
+        !output_packets.is_empty(),
+        "WebM muxer produced no output with auto-detected dimensions"
+    );
+
+    // Verify EBML header is valid
+    let mut webm_bytes = Vec::new();
+    for packet in &output_packets {
+        if let Packet::Binary { data, .. } = packet {
+            webm_bytes.extend_from_slice(data);
+        }
+    }
+    assert!(webm_bytes.len() >= 4, "WebM output too small: {} bytes", webm_bytes.len());
+    assert_eq!(
+        &webm_bytes[..4],
+        &[0x1A, 0x45, 0xDF, 0xA3],
+        "WebM output does not start with EBML header"
+    );
+
+    println!(
+        "WebM VP9 auto-detect dimensions test passed: {} output packets, {} total bytes",
+        output_packets.len(),
+        webm_bytes.len()
+    );
+}

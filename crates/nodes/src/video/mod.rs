@@ -19,6 +19,19 @@ use streamkit_core::{NodeRegistry, StreamKitError};
 /// Shared across WebM muxing and MoQ transport.
 pub const DEFAULT_VIDEO_FRAME_DURATION_US: u64 = 33_333;
 
+// ── Default VP9 codec parameters ─────────────────────────────────────────────
+//
+// Shared across MoQ catalog creation and WebM muxer codec-private data.
+
+/// VP9 profile 0 (4:2:0, 8-bit).
+pub const VP9_PROFILE: u8 = 0;
+/// VP9 level 1.0 (low-latency baseline).
+pub const VP9_LEVEL: u8 = 10;
+/// 8 bits per channel.
+pub const VP9_BIT_DEPTH: u8 = 8;
+/// 4:2:0 chroma subsampling (value 1 per VPCodecConfigurationRecord).
+pub const VP9_CHROMA_SUBSAMPLING: u8 = 1;
+
 /// Parse a pixel format string into a [`PixelFormat`].
 ///
 /// Accepts `"i420"`, `"nv12"`, `"rgba8"`, or `"rgba"` (case-insensitive).

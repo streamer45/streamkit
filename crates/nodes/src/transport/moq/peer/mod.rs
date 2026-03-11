@@ -12,6 +12,7 @@
 //! supported encoded media type (Opus audio, VP9 video). The actual media kind
 //! flowing through each pin is determined at runtime from `NodeContext::input_types`.
 
+use crate::video::{VP9_BIT_DEPTH, VP9_LEVEL, VP9_PROFILE};
 use async_trait::async_trait;
 use bytes::Buf;
 use schemars::JsonSchema;
@@ -255,7 +256,10 @@ fn make_broadcast_frame(packet: Packet, kind: MediaKind) -> Option<BroadcastFram
     if let Packet::Binary { data, metadata, .. } = packet {
         let duration_us = super::constants::packet_duration_us(metadata.as_ref());
         let keyframe = if kind == MediaKind::Video {
-            metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(false)
+            // Default to true when keyframe metadata is missing so that the
+            // subscriber's OrderedProducer opens an initial MoQ group on the
+            // first frame. Matches the convention in push.rs.
+            metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(true)
         } else {
             false
         };
@@ -1522,20 +1526,30 @@ impl MoqPeerNode {
                             *last_log = std::time::Instant::now();
                         }
 
-                        // Skip timestamp header (varint encoded timestamp in microseconds)
-                        // The hang protocol encodes timestamp at the start of each frame
-                        if let Err(e) = hang::container::Timestamp::decode(&mut payload) {
-                            tracing::warn!("Failed to decode frame timestamp: {e}");
-                            let _ = stats_delta_tx
-                                .try_send(NodeStatsDelta { received: 1, discarded: 1, ..Default::default() });
-                            return Ok(FrameResult::Continue);
-                        }
+                        // Decode the hang protocol timestamp (varint-encoded microseconds)
+                        // and propagate it as PacketMetadata so downstream nodes have timing.
+                        let timestamp = match hang::container::Timestamp::decode(&mut payload) {
+                            Ok(ts) => ts,
+                            Err(e) => {
+                                tracing::warn!("Failed to decode frame timestamp: {e}");
+                                let _ = stats_delta_tx
+                                    .try_send(NodeStatsDelta { received: 1, discarded: 1, ..Default::default() });
+                                return Ok(FrameResult::Continue);
+                            },
+                        };
+                        #[allow(clippy::cast_possible_truncation)] // MoQ timestamps fit in u64
+                        let timestamp_us = timestamp.as_micros() as u64;
 
                         let data = payload.copy_to_bytes(payload.remaining());
                         let packet = Packet::Binary {
                             data,
                             content_type: None,
-                            metadata: None,
+                            metadata: Some(streamkit_core::types::PacketMetadata {
+                                timestamp_us: Some(timestamp_us),
+                                duration_us: None,
+                                sequence: None,
+                                keyframe: None,
+                            }),
                         };
 
                         if output_sender.send(output_pin, packet).await.is_err() {
@@ -1842,9 +1856,9 @@ impl MoqPeerNode {
                 video_track.name.clone(),
                 hang::catalog::VideoConfig {
                     codec: hang::catalog::VideoCodec::VP9(hang::catalog::VP9 {
-                        profile: 0,
-                        level: 10,
-                        bit_depth: 8,
+                        profile: VP9_PROFILE,
+                        level: VP9_LEVEL,
+                        bit_depth: VP9_BIT_DEPTH,
                         ..hang::catalog::VP9::default()
                     }),
                     coded_width: Some(video_width),
@@ -1898,44 +1912,36 @@ impl MoqPeerNode {
         broadcast_name: String,
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
     ) -> Result<u64, StreamKitError> {
-        let mut packet_count: u64 = 0;
-        let mut last_log = std::time::Instant::now();
-        let mut frame_count = 0u64;
-        let group_duration_ms = output_group_duration_ms.max(1);
-        let mut audio_clock = MediaClock::new(output_initial_delay_ms);
-        let mut video_clock = MediaClock::new(output_initial_delay_ms);
         let meter = opentelemetry::global::meter("skit_nodes");
         let gap_histogram = meter
             .f64_histogram("moq.peer.inter_frame_ms")
             .with_description("Gap between consecutive frames sent to subscribers")
             .with_boundaries(streamkit_core::metrics::HISTOGRAM_BOUNDARIES_FRAME_GAP_MS.to_vec())
             .build();
-        let metric_labels = [
-            opentelemetry::KeyValue::new("node_id", node_id),
-            opentelemetry::KeyValue::new("broadcast", broadcast_name),
-        ];
-        let mut last_audio_ts_ms: Option<u64> = None;
-        let mut last_video_ts_ms: Option<u64> = None;
+
+        let mut ctx = SubscriberSendCtx {
+            audio_track_producer,
+            video_track_producer,
+            packet_count: 0,
+            frame_count: 0,
+            last_log: std::time::Instant::now(),
+            group_duration_ms: output_group_duration_ms.max(1),
+            audio_clock: MediaClock::new(output_initial_delay_ms),
+            video_clock: MediaClock::new(output_initial_delay_ms),
+            gap_histogram,
+            metric_labels: [
+                opentelemetry::KeyValue::new("node_id", node_id),
+                opentelemetry::KeyValue::new("broadcast", broadcast_name),
+            ],
+            last_audio_ts_ms: None,
+            last_video_ts_ms: None,
+            stats_delta_tx,
+        };
 
         loop {
             tokio::select! {
                 recv_result = broadcast_rx.recv() => {
-                    match Self::handle_broadcast_recv(
-                        recv_result,
-                        audio_track_producer,
-                        video_track_producer,
-                        &mut packet_count,
-                        &mut frame_count,
-                        &mut last_log,
-                        group_duration_ms,
-                        &mut audio_clock,
-                        &mut video_clock,
-                        &gap_histogram,
-                        &metric_labels,
-                        &mut last_audio_ts_ms,
-                        &mut last_video_ts_ms,
-                        stats_delta_tx,
-                    )? {
+                    match Self::handle_broadcast_recv(recv_result, &mut ctx)? {
                         SendResult::Continue => {}
                         SendResult::Stop => break,
                     }
@@ -1947,42 +1953,38 @@ impl MoqPeerNode {
             }
         }
 
-        Ok(packet_count)
+        Ok(ctx.packet_count)
     }
 
     /// Handle a single broadcast receive result, routing to the correct track producer.
-    #[allow(clippy::too_many_arguments, clippy::cast_precision_loss)]
+    #[allow(clippy::cast_precision_loss)]
     fn handle_broadcast_recv(
         recv_result: Result<BroadcastFrame, broadcast::error::RecvError>,
-        audio_track_producer: &mut Option<hang::container::OrderedProducer>,
-        video_track_producer: &mut Option<hang::container::OrderedProducer>,
-        packet_count: &mut u64,
-        frame_count: &mut u64,
-        last_log: &mut std::time::Instant,
-        group_duration_ms: u64,
-        audio_clock: &mut MediaClock,
-        video_clock: &mut MediaClock,
-        gap_histogram: &opentelemetry::metrics::Histogram<f64>,
-        metric_labels: &[opentelemetry::KeyValue],
-        last_audio_ts_ms: &mut Option<u64>,
-        last_video_ts_ms: &mut Option<u64>,
-        stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
+        ctx: &mut SubscriberSendCtx<'_>,
     ) -> Result<SendResult, StreamKitError> {
         match recv_result {
             Ok(broadcast_frame) => {
-                *packet_count += 1;
-                *frame_count += 1;
+                ctx.packet_count += 1;
+                ctx.frame_count += 1;
 
-                if last_log.elapsed() > Duration::from_secs(1) {
-                    tracing::debug!("Subscriber: sent {} frames/sec", *frame_count);
-                    *frame_count = 0;
-                    *last_log = std::time::Instant::now();
+                if ctx.last_log.elapsed() > Duration::from_secs(1) {
+                    tracing::debug!("Subscriber: sent {} frames/sec", ctx.frame_count);
+                    ctx.frame_count = 0;
+                    ctx.last_log = std::time::Instant::now();
                 }
 
                 // Select the appropriate clock, last_ts, and track producer based on media kind
                 let (clock, last_ts_ms, track_producer) = match broadcast_frame.kind {
-                    MediaKind::Audio => (audio_clock, last_audio_ts_ms, audio_track_producer),
-                    MediaKind::Video => (video_clock, last_video_ts_ms, video_track_producer),
+                    MediaKind::Audio => (
+                        &mut ctx.audio_clock,
+                        &mut ctx.last_audio_ts_ms,
+                        &mut ctx.audio_track_producer,
+                    ),
+                    MediaKind::Video => (
+                        &mut ctx.video_clock,
+                        &mut ctx.last_video_ts_ms,
+                        &mut ctx.video_track_producer,
+                    ),
                 };
 
                 let Some(track_producer) = track_producer else {
@@ -1994,14 +1996,14 @@ impl MoqPeerNode {
                 // For audio, use time-based group boundaries; for video, use keyframe flag
                 let keyframe = match broadcast_frame.kind {
                     MediaKind::Audio => {
-                        *packet_count == 1 || clock.is_group_boundary_ms(group_duration_ms)
+                        ctx.packet_count == 1 || clock.is_group_boundary_ms(ctx.group_duration_ms)
                     },
                     MediaKind::Video => broadcast_frame.keyframe,
                 };
 
                 if let Some(prev) = *last_ts_ms {
                     let gap = timestamp_ms.saturating_sub(prev);
-                    gap_histogram.record(gap as f64, metric_labels);
+                    ctx.gap_histogram.record(gap as f64, &ctx.metric_labels);
                 }
                 *last_ts_ms = Some(timestamp_ms);
 
@@ -2016,7 +2018,8 @@ impl MoqPeerNode {
                 if keyframe {
                     if let Err(e) = track_producer.keyframe() {
                         tracing::warn!(kind = ?broadcast_frame.kind, "Failed to signal keyframe: {e}");
-                        let _ = stats_delta_tx
+                        let _ = ctx
+                            .stats_delta_tx
                             .try_send(NodeStatsDelta { errored: 1, ..Default::default() });
                         return Ok(SendResult::Stop);
                     }
@@ -2026,7 +2029,8 @@ impl MoqPeerNode {
 
                 if let Err(e) = track_producer.write(frame) {
                     tracing::warn!(kind = ?broadcast_frame.kind, "Failed to write MoQ frame to subscriber: {e}");
-                    let _ = stats_delta_tx
+                    let _ = ctx
+                        .stats_delta_tx
                         .try_send(NodeStatsDelta { errored: 1, ..Default::default() });
                     return Ok(SendResult::Stop);
                 }
@@ -2040,8 +2044,9 @@ impl MoqPeerNode {
             },
             Err(broadcast::error::RecvError::Lagged(n)) => {
                 tracing::warn!("Subscriber lagged, dropped {} packets", n);
-                let _ =
-                    stats_delta_tx.try_send(NodeStatsDelta { discarded: n, ..Default::default() });
+                let _ = ctx
+                    .stats_delta_tx
+                    .try_send(NodeStatsDelta { discarded: n, ..Default::default() });
                 Ok(SendResult::Continue)
             },
             Err(broadcast::error::RecvError::Closed) => {
@@ -2058,4 +2063,23 @@ enum SendResult {
     Continue,
     /// Stop the send loop
     Stop,
+}
+
+/// Bundles the mutable loop state and immutable config that
+/// [`MoqPeerNode::handle_broadcast_recv`] needs, replacing a 14-parameter
+/// function signature with a single context reference.
+struct SubscriberSendCtx<'a> {
+    audio_track_producer: &'a mut Option<hang::container::OrderedProducer>,
+    video_track_producer: &'a mut Option<hang::container::OrderedProducer>,
+    packet_count: u64,
+    frame_count: u64,
+    last_log: std::time::Instant,
+    group_duration_ms: u64,
+    audio_clock: MediaClock,
+    video_clock: MediaClock,
+    gap_histogram: opentelemetry::metrics::Histogram<f64>,
+    metric_labels: [opentelemetry::KeyValue; 2],
+    last_audio_ts_ms: Option<u64>,
+    last_video_ts_ms: Option<u64>,
+    stats_delta_tx: &'a mpsc::Sender<NodeStatsDelta>,
 }

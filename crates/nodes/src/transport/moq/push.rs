@@ -5,6 +5,7 @@
 //! MoQ Push Node - publishes packets to a MoQ broadcast
 
 use super::constants::DEFAULT_AUDIO_FRAME_DURATION_US;
+use crate::video::{VP9_BIT_DEPTH, VP9_LEVEL, VP9_PROFILE};
 use async_trait::async_trait;
 use opentelemetry::{global, KeyValue};
 use schemars::JsonSchema;
@@ -238,9 +239,9 @@ impl ProcessorNode for MoqPushNode {
                 vt.name.clone(),
                 hang::catalog::VideoConfig {
                     codec: hang::catalog::VideoCodec::VP9(hang::catalog::VP9 {
-                        profile: 0,
-                        level: 10,
-                        bit_depth: 8,
+                        profile: VP9_PROFILE,
+                        level: VP9_LEVEL,
+                        bit_depth: VP9_BIT_DEPTH,
                         ..hang::catalog::VP9::default()
                     }),
                     coded_width: None,
