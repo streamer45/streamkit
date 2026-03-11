@@ -92,12 +92,16 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
 
     // Blur any active element (e.g. inline text input) before deselecting
     // so that the input's onBlur → commitEdit fires reliably.
-    const handlePaneClick = useCallback(() => {
-      if (document.activeElement instanceof HTMLElement) {
-        document.activeElement.blur();
-      }
-      onSelectLayer(null);
-    }, [onSelectLayer]);
+    const handlePaneClick = useCallback(
+      (e: React.PointerEvent) => {
+        if (e.button !== 0) return; // only primary (left) click deselects
+        if (document.activeElement instanceof HTMLElement) {
+          document.activeElement.blur();
+        }
+        onSelectLayer(null);
+      },
+      [onSelectLayer]
+    );
 
     // Cache ref-callbacks per layer id so React.memo on VideoLayer/TextOverlayLayer/
     // ImageOverlayLayer sees a stable function reference across renders.
@@ -141,12 +145,13 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
         }
         if (!hitId) return;
         e.preventDefault();
+        onSelectLayer(hitId);
         let kind: LayerKind = 'video';
         if (textOverlays.some((o) => o.id === hitId)) kind = 'text';
         else if (imageOverlays.some((o) => o.id === hitId)) kind = 'image';
         onLayerContextMenu(hitId, kind, e.clientX, e.clientY);
       },
-      [disabled, onLayerContextMenu, layerRefs, textOverlays, imageOverlays]
+      [disabled, onLayerContextMenu, onSelectLayer, layerRefs, textOverlays, imageOverlays]
     );
 
     const noopPointerDown = useCallback(() => {}, []);

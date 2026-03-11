@@ -230,28 +230,17 @@ describe('layoutStore', () => {
   });
 
   describe('fitView callbacks', () => {
-    it('should register and trigger fitView callbacks', () => {
-      vi.useFakeTimers();
-
+    it('should register and unregister fitView callbacks', () => {
       const callback = vi.fn();
       const unregister = registerFitViewCallback(callback);
 
-      // Trigger layout change
-      const { setPreset } = useLayoutStore.getState();
-      setPreset('focus-canvas');
-
-      // Callback should not fire immediately
+      // Callback is registered but nothing triggers it now
+      // (setPreset no longer fires fitView so panels hide/show
+      // without resetting the canvas viewport).
       expect(callback).not.toHaveBeenCalled();
-
-      // Fast-forward 200ms
-      vi.advanceTimersByTime(200);
-
-      // Callback should have fired
-      expect(callback).toHaveBeenCalledTimes(1);
 
       // Cleanup
       unregister();
-      vi.useRealTimers();
     });
 
     it('should not trigger callback after unregistering', () => {
@@ -276,7 +265,7 @@ describe('layoutStore', () => {
       vi.useRealTimers();
     });
 
-    it('should support multiple callbacks', () => {
+    it('should not trigger callbacks on preset change', () => {
       vi.useFakeTimers();
 
       const callback1 = vi.fn();
@@ -289,12 +278,13 @@ describe('layoutStore', () => {
       const { setPreset } = useLayoutStore.getState();
       setPreset('inspector-focus');
 
-      // Fast-forward 200ms
-      vi.advanceTimersByTime(200);
+      // Fast-forward well past any potential delay
+      vi.advanceTimersByTime(500);
 
-      // Both callbacks should have fired
-      expect(callback1).toHaveBeenCalledTimes(1);
-      expect(callback2).toHaveBeenCalledTimes(1);
+      // Callbacks should NOT fire — preset changes no longer
+      // trigger fitView so the canvas viewport stays stable.
+      expect(callback1).not.toHaveBeenCalled();
+      expect(callback2).not.toHaveBeenCalled();
 
       vi.useRealTimers();
     });
