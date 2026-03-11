@@ -32,6 +32,27 @@ use super::simd::{
 
 // ── Scalar blend helper ─────────────────────────────────────────────────────
 
+/// Composite one source pixel onto a destination row at `dst_idx` using the
+/// "over" operator.  `a_eff` is the pre-computed effective alpha (0..=255).
+///
+/// The caller must ensure `dst_idx + 3 < row_slice.len()`.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn blend_over_scalar(row_slice: &mut [u8], dst_idx: usize, r: u8, g: u8, b: u8, a_eff: u16) {
+    if a_eff >= 255 {
+        row_slice[dst_idx] = r;
+        row_slice[dst_idx + 1] = g;
+        row_slice[dst_idx + 2] = b;
+        row_slice[dst_idx + 3] = 255;
+    } else if a_eff > 0 {
+        row_slice[dst_idx] = blend_u8(r, row_slice[dst_idx], a_eff);
+        row_slice[dst_idx + 1] = blend_u8(g, row_slice[dst_idx + 1], a_eff);
+        row_slice[dst_idx + 2] = blend_u8(b, row_slice[dst_idx + 2], a_eff);
+        let da = u16::from(row_slice[dst_idx + 3]);
+        row_slice[dst_idx + 3] = (a_eff + ((da * (255 - a_eff) + 128) >> 8)).min(255) as u8;
+    }
+}
+
 /// Blend a single source pixel onto a destination row slice at `dst_off`.
 ///
 /// Handles fully-opaque, semi-transparent, and fully-transparent cases.
@@ -57,20 +78,8 @@ fn blend_pixel_scalar(
     if opacity_u16 < 256 {
         ia = ((u16::from(ia) * opacity_u16 + 128) >> 8).min(255) as u8;
     }
-    if ia > 0 && dst_off + 3 < row_slice.len() {
-        if ia == 255 {
-            row_slice[dst_off] = ir;
-            row_slice[dst_off + 1] = ig;
-            row_slice[dst_off + 2] = ib;
-            row_slice[dst_off + 3] = 255;
-        } else {
-            let a16 = u16::from(ia);
-            row_slice[dst_off] = blend_u8(ir, row_slice[dst_off], a16);
-            row_slice[dst_off + 1] = blend_u8(ig, row_slice[dst_off + 1], a16);
-            row_slice[dst_off + 2] = blend_u8(ib, row_slice[dst_off + 2], a16);
-            let da = u16::from(row_slice[dst_off + 3]);
-            row_slice[dst_off + 3] = (a16 + ((da * (255 - a16) + 128) >> 8)).min(255) as u8;
-        }
+    if dst_off + 3 < row_slice.len() {
+        blend_over_scalar(row_slice, dst_off, ir, ig, ib, u16::from(ia));
     }
 }
 
@@ -404,24 +413,15 @@ fn blit_row_opaque(
             for dx in tail_start..effective_rw {
                 let sx = x_map[dx];
                 let src_idx = src_row_base + sx * 4;
-                let sr = src[src_idx];
-                let sg = src[src_idx + 1];
-                let sb = src[src_idx + 2];
-                let sa = src[src_idx + 3];
                 let dst_idx = (rx + dx) * 4;
-                if sa == 255 {
-                    row_slice[dst_idx] = sr;
-                    row_slice[dst_idx + 1] = sg;
-                    row_slice[dst_idx + 2] = sb;
-                    row_slice[dst_idx + 3] = 255;
-                } else if sa > 0 {
-                    let a16 = u16::from(sa);
-                    row_slice[dst_idx] = blend_u8(sr, row_slice[dst_idx], a16);
-                    row_slice[dst_idx + 1] = blend_u8(sg, row_slice[dst_idx + 1], a16);
-                    row_slice[dst_idx + 2] = blend_u8(sb, row_slice[dst_idx + 2], a16);
-                    let da = u16::from(row_slice[dst_idx + 3]);
-                    row_slice[dst_idx + 3] = (a16 + ((da * (255 - a16) + 128) >> 8)).min(255) as u8;
-                }
+                blend_over_scalar(
+                    row_slice,
+                    dst_idx,
+                    src[src_idx],
+                    src[src_idx + 1],
+                    src[src_idx + 2],
+                    u16::from(src[src_idx + 3]),
+                );
             }
             return;
         }
@@ -435,29 +435,19 @@ fn blit_row_opaque(
             continue;
         }
 
-        let sr = src[src_idx];
-        let sg = src[src_idx + 1];
-        let sb = src[src_idx + 2];
-        let sa = src[src_idx + 3];
-
         let dst_idx = (rx + dx) * 4;
         if dst_idx + 3 >= row_slice.len() {
             continue;
         }
 
-        if sa == 255 {
-            row_slice[dst_idx] = sr;
-            row_slice[dst_idx + 1] = sg;
-            row_slice[dst_idx + 2] = sb;
-            row_slice[dst_idx + 3] = 255;
-        } else if sa > 0 {
-            let a16 = u16::from(sa);
-            row_slice[dst_idx] = blend_u8(sr, row_slice[dst_idx], a16);
-            row_slice[dst_idx + 1] = blend_u8(sg, row_slice[dst_idx + 1], a16);
-            row_slice[dst_idx + 2] = blend_u8(sb, row_slice[dst_idx + 2], a16);
-            let da = u16::from(row_slice[dst_idx + 3]);
-            row_slice[dst_idx + 3] = (a16 + ((da * (255 - a16) + 128) >> 8)).min(255) as u8;
-        }
+        blend_over_scalar(
+            row_slice,
+            dst_idx,
+            src[src_idx],
+            src[src_idx + 1],
+            src[src_idx + 2],
+            u16::from(src[src_idx + 3]),
+        );
     }
 }
 
@@ -576,25 +566,16 @@ fn blit_row_alpha(
             for dx in tail_start..effective_rw {
                 let sx = x_map[dx];
                 let src_idx = src_row_base + sx * 4;
-                let sr = src[src_idx];
-                let sg = src[src_idx + 1];
-                let sb = src[src_idx + 2];
-                let sa = src[src_idx + 3];
                 let dst_idx = (rx + dx) * 4;
-                let sa_eff = ((u16::from(sa) * opacity_u16 + 128) >> 8).min(255);
-                if sa_eff == 255 {
-                    row_slice[dst_idx] = sr;
-                    row_slice[dst_idx + 1] = sg;
-                    row_slice[dst_idx + 2] = sb;
-                    row_slice[dst_idx + 3] = 255;
-                } else if sa_eff > 0 {
-                    row_slice[dst_idx] = blend_u8(sr, row_slice[dst_idx], sa_eff);
-                    row_slice[dst_idx + 1] = blend_u8(sg, row_slice[dst_idx + 1], sa_eff);
-                    row_slice[dst_idx + 2] = blend_u8(sb, row_slice[dst_idx + 2], sa_eff);
-                    let da = u16::from(row_slice[dst_idx + 3]);
-                    row_slice[dst_idx + 3] =
-                        (sa_eff + ((da * (255 - sa_eff) + 128) >> 8)).min(255) as u8;
-                }
+                let sa_eff = ((u16::from(src[src_idx + 3]) * opacity_u16 + 128) >> 8).min(255);
+                blend_over_scalar(
+                    row_slice,
+                    dst_idx,
+                    src[src_idx],
+                    src[src_idx + 1],
+                    src[src_idx + 2],
+                    sa_eff,
+                );
             }
             return;
         }
@@ -608,29 +589,20 @@ fn blit_row_alpha(
             continue;
         }
 
-        let sr = src[src_idx];
-        let sg = src[src_idx + 1];
-        let sb = src[src_idx + 2];
-        let sa = src[src_idx + 3];
-
         let dst_idx = (rx + dx) * 4;
         if dst_idx + 3 >= row_slice.len() {
             continue;
         }
 
-        let sa_eff = ((u16::from(sa) * opacity_u16 + 128) >> 8).min(255);
-        if sa_eff == 255 {
-            row_slice[dst_idx] = sr;
-            row_slice[dst_idx + 1] = sg;
-            row_slice[dst_idx + 2] = sb;
-            row_slice[dst_idx + 3] = 255;
-        } else if sa_eff > 0 {
-            row_slice[dst_idx] = blend_u8(sr, row_slice[dst_idx], sa_eff);
-            row_slice[dst_idx + 1] = blend_u8(sg, row_slice[dst_idx + 1], sa_eff);
-            row_slice[dst_idx + 2] = blend_u8(sb, row_slice[dst_idx + 2], sa_eff);
-            let da = u16::from(row_slice[dst_idx + 3]);
-            row_slice[dst_idx + 3] = (sa_eff + ((da * (255 - sa_eff) + 128) >> 8)).min(255) as u8;
-        }
+        let sa_eff = ((u16::from(src[src_idx + 3]) * opacity_u16 + 128) >> 8).min(255);
+        blend_over_scalar(
+            row_slice,
+            dst_idx,
+            src[src_idx],
+            src[src_idx + 1],
+            src[src_idx + 2],
+            sa_eff,
+        );
     }
 }
 
