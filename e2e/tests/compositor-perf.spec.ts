@@ -173,6 +173,7 @@ async function dragSliderThumb(
 test.describe('Compositor Slider Perf — Cascade Re-render Budget', () => {
   let collector: ConsoleErrorCollector;
   let sessionId: string | null = null;
+  let sessionName: string | null = null;
 
   test.beforeEach(async ({ page }) => {
     collector = createConsoleErrorCollector(page);
@@ -195,9 +196,10 @@ test.describe('Compositor Slider Perf — Cascade Re-render Budget', () => {
       extraHTTPHeaders: getAuthHeaders(),
     });
 
+    sessionName = `perf-test-${Date.now()}`;
     const createResponse = await apiContext.post('/api/v1/sessions', {
       data: {
-        name: `perf-test-${Date.now()}`,
+        name: sessionName,
         yaml: WEBCAM_PIP_YAML,
       },
     });
@@ -221,12 +223,12 @@ test.describe('Compositor Slider Perf — Cascade Re-render Budget', () => {
       timeout: 15_000,
     });
 
-    // Wait for sessions list and click our session.
+    // Wait for sessions list and click our session by name.
     await expect(page.getByTestId('sessions-list')).toBeVisible({
       timeout: 10_000,
     });
 
-    const sessionItem = page.getByTestId('session-item').first();
+    const sessionItem = page.getByTestId('session-item').filter({ hasText: sessionName! });
     await expect(sessionItem).toBeVisible({ timeout: 10_000 });
     await sessionItem.click();
 
