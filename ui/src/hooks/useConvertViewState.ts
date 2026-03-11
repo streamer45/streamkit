@@ -42,9 +42,9 @@ export function useConvertViewState() {
   const [abortController, setAbortController] = useState<AbortController | null>(null);
 
   // Output state
-  const [audioUrl, setAudioUrl] = useState<string | null>(null);
-  const [audioContentType, setAudioContentType] = useState<string | null>(null);
-  const [audioStream, setAudioStream] = useState<ReadableStream<Uint8Array> | null>(null);
+  const [mediaUrl, setMediaUrl] = useState<string | null>(null);
+  const [mediaContentType, setMediaContentType] = useState<string | null>(null);
+  const [mediaStream, setMediaStream] = useState<ReadableStream<Uint8Array> | null>(null);
   const [useStreaming, setUseStreaming] = useState<boolean>(false);
   const [streamKey, setStreamKey] = useState<number>(0);
 
@@ -93,12 +93,12 @@ export function useConvertViewState() {
     setAbortController,
 
     // Output
-    audioUrl,
-    setAudioUrl,
-    audioContentType,
-    setAudioContentType,
-    audioStream,
-    setAudioStream,
+    mediaUrl,
+    setMediaUrl,
+    mediaContentType,
+    setMediaContentType,
+    mediaStream,
+    setMediaStream,
     useStreaming,
     setUseStreaming,
     streamKey,

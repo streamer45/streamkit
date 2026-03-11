@@ -16,8 +16,7 @@ const logger = getLogger('converter');
 export interface ConversionResult {
   success: boolean;
   error?: string;
-  audioUrl?: string;
-  mediaUrl?: string; // Generalized URL for any media output (audio or video)
+  mediaUrl?: string;
   contentType?: string;
   responseStream?: ReadableStream<Uint8Array>; // Stream for MSE-based playback or JSON streaming
   useStreaming?: boolean; // Whether to use streaming (MSE or JSON)
@@ -143,7 +142,6 @@ async function handleBlobPlayback(
 
   return {
     success: true,
-    audioUrl: mediaUrl, // Keep for backward compat
     mediaUrl,
     contentType,
     useStreaming: false,
