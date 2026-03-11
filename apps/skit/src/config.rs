@@ -616,6 +616,10 @@ const fn default_compositor_max_font_size() -> u32 {
     4096
 }
 
+// Backward-compat aliases: the TOML keys were renamed from
+// `default_max_canvas_dimension` → `max_canvas_dimension` (and similarly
+// for font size).  The `alias` attribute lets old config files keep working.
+
 /// Server-level defaults for the video compositor node.
 ///
 /// These limits apply to every compositor node created by the engine.
@@ -623,27 +627,30 @@ const fn default_compositor_max_font_size() -> u32 {
 ///
 /// ```toml
 /// [compositor]
-/// default_max_canvas_dimension = 4096
-/// default_max_font_size = 2048
+/// max_canvas_dimension = 4096
+/// max_font_size = 2048
 /// ```
 #[derive(Deserialize, Serialize, Debug, Clone, JsonSchema)]
 pub struct CompositorServerConfig {
     /// Maximum allowed canvas dimension (width or height) in pixels.
     /// Default: 7680 (8K UHD).
-    #[serde(default = "default_compositor_max_canvas_dimension")]
-    pub default_max_canvas_dimension: u32,
+    #[serde(
+        default = "default_compositor_max_canvas_dimension",
+        alias = "default_max_canvas_dimension"
+    )]
+    pub max_canvas_dimension: u32,
 
     /// Maximum allowed font size for text overlays in pixels.
     /// Default: 4096.
-    #[serde(default = "default_compositor_max_font_size")]
-    pub default_max_font_size: u32,
+    #[serde(default = "default_compositor_max_font_size", alias = "default_max_font_size")]
+    pub max_font_size: u32,
 }
 
 impl Default for CompositorServerConfig {
     fn default() -> Self {
         Self {
-            default_max_canvas_dimension: default_compositor_max_canvas_dimension(),
-            default_max_font_size: default_compositor_max_font_size(),
+            max_canvas_dimension: default_compositor_max_canvas_dimension(),
+            max_font_size: default_compositor_max_font_size(),
         }
     }
 }
