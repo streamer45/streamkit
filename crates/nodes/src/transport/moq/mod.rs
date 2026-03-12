@@ -165,7 +165,7 @@ pub fn register_moq_nodes(registry: &mut NodeRegistry) {
                 "dynamic".to_string(),
             ],
             true, // This is a bidirectional node
-            "Bidirectional MoQ peer for real-time audio communication. \
+            "Bidirectional MoQ peer for real-time audio and video communication. \
              Acts as both publisher and subscriber over a single WebTransport connection.",
         );
     }

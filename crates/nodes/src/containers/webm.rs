@@ -28,7 +28,9 @@ use webm::mux::{
 const DEFAULT_CHUNK_SIZE: usize = 65536;
 /// Default audio frame duration when metadata is missing (20ms Opus frame).
 const DEFAULT_FRAME_DURATION_US: u64 = 20_000;
-use crate::video::DEFAULT_VIDEO_FRAME_DURATION_US;
+use crate::video::{
+    DEFAULT_VIDEO_FRAME_DURATION_US, VP9_BIT_DEPTH, VP9_CHROMA_SUBSAMPLING, VP9_LEVEL, VP9_PROFILE,
+};
 
 // ---------------------------------------------------------------------------
 // VP9 keyframe dimension parser
@@ -764,7 +766,8 @@ impl ProcessorNode for WebMMuxerNode {
         // Video track is added first so that the segment header lists it prominently
         // for players that inspect the first track.
         let builder = if has_video {
-            let vp9_private = vp9_codec_private(0, 10, 8, 1);
+            let vp9_private =
+                vp9_codec_private(VP9_PROFILE, VP9_LEVEL, VP9_BIT_DEPTH, VP9_CHROMA_SUBSAMPLING);
 
             let (builder, vt) = builder
                 .add_video_track(video_width, video_height, VideoCodecId::VP9, None)
