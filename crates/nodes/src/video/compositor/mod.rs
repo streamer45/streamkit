@@ -653,7 +653,7 @@ impl ProcessorNode for CompositorNode {
                 // Emit layout via view data if it changed.
                 if last_layout.as_ref() != Some(&scene.layout) {
                     if let Ok(json) = serde_json::to_value(&scene.layout) {
-                        view_data_helpers::emit_view_data(&view_data_tx, &node_name, json);
+                        view_data_helpers::emit_view_data(&view_data_tx, &node_name, || json);
                     }
                     last_layout = Some(scene.layout.clone());
                 }

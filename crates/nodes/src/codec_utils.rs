@@ -85,13 +85,13 @@ pub async fn codec_forward_loop<T: Send + 'static, S: Send>(
             Some(control_msg) = context.control_rx.recv() => {
                 if matches!(control_msg, streamkit_core::control::NodeControlMessage::Shutdown) {
                     tracing::info!("{label} received shutdown signal");
-                    // NOTE: Aborting the input task and dropping codec_tx causes
-                    // the codec thread to exit/flush, but because we break out
-                    // here those flushed results are never sent downstream.
-                    // Data loss on explicit shutdown is acceptable.
+                    // NOTE: Dropping codec_tx first signals the codec thread to
+                    // exit/flush, then aborting ensures it doesn't linger.
+                    // Because we break out here, flushed results are never sent
+                    // downstream.  Data loss on explicit shutdown is acceptable.
                     input_task.abort();
-                    codec_task.abort();
                     drop(codec_tx);
+                    codec_task.abort();
                     break;
                 }
             }

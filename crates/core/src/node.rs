@@ -101,6 +101,10 @@ impl OutputSender {
     pub fn try_send(&mut self, pin_name: &str, packet: Packet) -> Result<(), OutputSendError> {
         use tokio::sync::mpsc::error::TrySendError;
 
+        // Cache the pin name up front so the mutable borrow is released
+        // before we immutably borrow `self.routing` in the match below.
+        let cached_pin = self.get_cached_pin_name(pin_name);
+
         match &self.routing {
             OutputRouting::Direct(senders) => {
                 if let Some(sender) = senders.get(pin_name) {
@@ -127,8 +131,6 @@ impl OutputSender {
                 }
             },
             OutputRouting::Routed(engine_tx) => {
-                let engine_tx = engine_tx.clone();
-                let cached_pin = self.get_cached_pin_name(pin_name);
                 let message = (self.node_name.clone(), cached_pin, packet);
                 match engine_tx.try_send(message) {
                     Ok(()) => {},
