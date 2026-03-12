@@ -6,8 +6,9 @@ use super::*;
 use crate::test_utils::{
     assert_state_initializing, assert_state_running, assert_state_stopped, create_test_context,
 };
+use crate::video::pixel_ops;
+use crate::video::pixel_ops::{scale_blit_rgba, scale_blit_rgba_rotated, BlitRect};
 use config::{LayerConfig, Rect};
-use pixel_ops::{scale_blit_rgba, scale_blit_rgba_rotated, BlitRect};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 

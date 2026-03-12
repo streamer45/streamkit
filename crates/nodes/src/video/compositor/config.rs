@@ -27,7 +27,7 @@ const fn default_fps() -> u32 {
 ///
 /// `x` and `y` are signed to allow off-screen positioning (e.g. for
 /// slide-in effects or rotation around the rect centre).
-#[derive(Deserialize, Debug, Clone, JsonSchema)]
+#[derive(Deserialize, Debug, Clone, Copy, JsonSchema)]
 #[cfg_attr(feature = "codegen", derive(ts_rs::TS))]
 pub struct Rect {
     pub x: i32,

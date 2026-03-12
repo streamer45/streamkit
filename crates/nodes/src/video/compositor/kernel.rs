@@ -152,6 +152,12 @@ impl ConversionCache {
             let mut rgba = self.entries[slot_idx].take().map(|c| c.rgba).unwrap_or_default();
             if rgba.len() < needed {
                 rgba.resize(needed, 0);
+            } else if rgba.len() > needed * 2 {
+                // Shrink if the old buffer is more than 2× what we need
+                // (e.g. layer resolution decreased from 1080p to 480p).
+                // This prevents holding ~6 MB of dead capacity per slot.
+                rgba.truncate(needed);
+                rgba.shrink_to_fit();
             }
 
             match layer.pixel_format {
@@ -365,11 +371,8 @@ pub fn composite_frame(
 
     // Video layers.
     for (layer, src_data) in resolved.iter().flatten() {
-        let dst_rect: BlitRect = layer
-            .rect
-            .clone()
-            .unwrap_or(Rect { x: 0, y: 0, width: canvas_w, height: canvas_h })
-            .into();
+        let dst_rect: BlitRect =
+            layer.rect.unwrap_or(Rect { x: 0, y: 0, width: canvas_w, height: canvas_h }).into();
         // NV12/I420 → RGBA8 conversion always writes alpha = 255.
         let src_opaque = layer.pixel_format != PixelFormat::Rgba8;
         items.push(CompositeItem {
@@ -393,7 +396,7 @@ pub fn composite_frame(
             src_data: &ov.rgba_data,
             src_width: ov.width,
             src_height: ov.height,
-            dst_rect: ov.rect.clone().into(),
+            dst_rect: ov.rect.into(),
             opacity: ov.opacity,
             rotation_degrees: ov.rotation_degrees,
             src_opaque: false,
@@ -410,7 +413,7 @@ pub fn composite_frame(
             src_data: &ov.rgba_data,
             src_width: ov.width,
             src_height: ov.height,
-            dst_rect: ov.rect.clone().into(),
+            dst_rect: ov.rect.into(),
             opacity: ov.opacity,
             rotation_degrees: ov.rotation_degrees,
             src_opaque: false,

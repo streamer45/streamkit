@@ -28,7 +28,6 @@
 pub mod config;
 pub mod kernel;
 pub mod overlay;
-pub mod pixel_ops;
 
 use async_trait::async_trait;
 use config::{
@@ -142,7 +141,7 @@ fn resolve_scene(
         let (rect, opacity, z_index, rotation_degrees, aspect_fit, mirror_h, mirror_v) =
             if let Some(lc) = layer_cfg {
                 (
-                    lc.rect.clone(),
+                    lc.rect,
                     lc.opacity,
                     lc.z_index,
                     lc.rotation_degrees,
@@ -237,7 +236,7 @@ fn resolve_scene(
 /// within the bounds.
 fn fit_rect_preserving_aspect(src_w: u32, src_h: u32, bounds: &config::Rect) -> config::Rect {
     if src_w == 0 || src_h == 0 || bounds.width == 0 || bounds.height == 0 {
-        return bounds.clone();
+        return *bounds;
     }
     let scale_w = f64::from(bounds.width) / f64::from(src_w);
     let scale_h = f64::from(bounds.height) / f64::from(src_h);
@@ -395,7 +394,7 @@ impl ProcessorNode for CompositorNode {
         let mut image_overlays_vec: Vec<Arc<DecodedOverlay>> =
             Vec::with_capacity(self.config.image_overlays.len());
         for img_cfg in &self.config.image_overlays {
-            match decode_image_overlay(img_cfg) {
+            match decode_image_overlay(img_cfg, self.limits.max_canvas_dimension) {
                 Ok(overlay) => {
                     tracing::info!(
                         "Decoded image overlay '{}': {}x{} -> rect ({},{} {}x{})",
@@ -676,7 +675,7 @@ impl ProcessorNode for CompositorNode {
                                 .as_ref()
                                 .map(|r| fit_rect_preserving_aspect(f.width, f.height, r))
                         } else {
-                            cfg.rect.clone()
+                            cfg.rect
                         };
                         LayerSnapshot {
                             data: f.data.clone(),
@@ -894,7 +893,7 @@ impl CompositorNode {
                                     continue;
                                 }
                             }
-                            match decode_image_overlay(img_cfg) {
+                            match decode_image_overlay(img_cfg, limits.max_canvas_dimension) {
                                 Ok(ov) => {
                                     new_image_overlays.push(Arc::new(ov));
                                 },

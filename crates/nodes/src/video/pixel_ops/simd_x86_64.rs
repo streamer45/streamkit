@@ -286,10 +286,11 @@ pub(super) unsafe fn blend_8px_opaque_avx2(dst_ptr: *mut u8, src_pixels: [u32; 8
     );
     let result_hi = _mm256_srli_epi16(_mm256_add_epi16(val_hi, _mm256_srli_epi16(val_hi, 8)), 8);
 
-    // Pack back to u8.  Since result_lo and result_hi both come from
-    // unpacking the same 256-bit register (src8/dst8), _mm256_packus_epi16
-    // already produces correct pixel order [px0..px3 | px4..px7] — no
-    // cross-lane permute needed.
+    // Pack back to u8.  `_mm256_packus_epi16` packs within each 128-bit
+    // lane independently: lane0 gets [result_lo lanes 0-1], lane1 gets
+    // [result_hi lanes 0-1].  This produces correct pixel order because
+    // `unpacklo/unpackhi_epi8` also operated within lanes — so lane0
+    // always holds pixels 0-3 and lane1 always holds pixels 4-7.
     let packed = _mm256_packus_epi16(result_lo, result_hi);
     _mm256_storeu_si256(dst_ptr.cast::<__m256i>(), packed);
 }
@@ -368,7 +369,8 @@ pub(super) unsafe fn blend_8px_alpha_avx2(dst_ptr: *mut u8, src_pixels: [u32; 8]
     );
     let result_hi = _mm256_srli_epi16(_mm256_add_epi16(val_hi, _mm256_srli_epi16(val_hi, 8)), 8);
 
-    // Same as opaque variant: pack already yields correct order, no permute.
+    // Same lane-local pack logic as `blend_8px_opaque_avx2`: unpack and
+    // pack both operate within 128-bit lanes, preserving pixel order.
     let packed = _mm256_packus_epi16(result_lo, result_hi);
     _mm256_storeu_si256(dst_ptr.cast::<__m256i>(), packed);
 }

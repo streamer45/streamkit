@@ -440,6 +440,14 @@ pub fn rgba8_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
         let y_offset_0 = r0 * y_stride;
         if y_offset_0 < y_len {
             let row_len = y_stride.min(y_len - y_offset_0);
+            // Debug assertion: verify that the Y-plane slice we are about
+            // to construct does not overlap with any other task's region.
+            // Each task owns rows [2*crow, 2*crow+1]; no two tasks share
+            // a `crow` value, so the regions are disjoint.
+            debug_assert!(
+                y_offset_0 + row_len <= y_len,
+                "Y-plane row r0={r0} overflows: offset={y_offset_0} + len={row_len} > {y_len}"
+            );
             let y_row_0 = unsafe {
                 std::slice::from_raw_parts_mut((y_base_addr + y_offset_0) as *mut u8, row_len)
             };
@@ -462,6 +470,15 @@ pub fn rgba8_to_i420_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
             let y_offset_1 = r1 * y_stride;
             if y_offset_1 < y_len {
                 let row_len = y_stride.min(y_len - y_offset_1);
+                debug_assert!(
+                    y_offset_1 + row_len <= y_len,
+                    "Y-plane row r1={r1} overflows: offset={y_offset_1} + len={row_len} > {y_len}"
+                );
+                // Verify non-overlap with r0's region.
+                debug_assert!(
+                    y_offset_1 >= r0 * y_stride + y_stride,
+                    "Y-plane rows r0={r0} and r1={r1} overlap"
+                );
                 let y_row_1 = unsafe {
                     std::slice::from_raw_parts_mut((y_base_addr + y_offset_1) as *mut u8, row_len)
                 };
@@ -620,6 +637,10 @@ pub fn rgba8_to_nv12_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
         let y_offset_0 = r0 * y_stride;
         if y_offset_0 < y_len {
             let row_len = y_stride.min(y_len - y_offset_0);
+            debug_assert!(
+                y_offset_0 + row_len <= y_len,
+                "Y-plane row r0={r0} overflows: offset={y_offset_0} + len={row_len} > {y_len}"
+            );
             // SAFETY: non-overlapping slice — see safety comment above.
             let y_row_0 = unsafe {
                 std::slice::from_raw_parts_mut((y_base_addr + y_offset_0) as *mut u8, row_len)
@@ -643,6 +664,14 @@ pub fn rgba8_to_nv12_buf(data: &[u8], width: u32, height: u32, out: &mut [u8]) {
             let y_offset_1 = r1 * y_stride;
             if y_offset_1 < y_len {
                 let row_len = y_stride.min(y_len - y_offset_1);
+                debug_assert!(
+                    y_offset_1 + row_len <= y_len,
+                    "Y-plane row r1={r1} overflows: offset={y_offset_1} + len={row_len} > {y_len}"
+                );
+                debug_assert!(
+                    y_offset_1 >= r0 * y_stride + y_stride,
+                    "Y-plane rows r0={r0} and r1={r1} overlap"
+                );
                 let y_row_1 = unsafe {
                     std::slice::from_raw_parts_mut((y_base_addr + y_offset_1) as *mut u8, row_len)
                 };

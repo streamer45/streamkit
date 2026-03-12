@@ -16,7 +16,7 @@ use super::{blend_u8, rayon_chunk_rows, RAYON_ROW_THRESHOLD};
 ///
 /// `x` and `y` are signed to allow off-screen positioning (e.g. for
 /// slide-in effects or rotation around the rect centre).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct BlitRect {
     pub x: i32,
     pub y: i32,
