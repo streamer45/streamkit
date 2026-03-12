@@ -35,16 +35,19 @@ pub mod view_data_helpers {
     ///
     /// Best-effort: uses `try_send` so the node never blocks on view data emission.
     /// Failures are silently ignored as view data is informational only.
+    ///
+    /// The `data` closure is only called when a sender is present, avoiding
+    /// unnecessary `serde_json::Value` construction when there are no subscribers.
     #[inline]
     pub fn emit_view_data(
         tx: &Option<mpsc::Sender<NodeViewDataUpdate>>,
         node_id: &str,
-        data: serde_json::Value,
+        data: impl FnOnce() -> serde_json::Value,
     ) {
         if let Some(tx) = tx {
             let _ = tx.try_send(NodeViewDataUpdate {
                 node_id: node_id.to_string(),
-                data,
+                data: data(),
                 timestamp: SystemTime::now(),
             });
         }

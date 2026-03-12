@@ -60,6 +60,7 @@ pub struct RawVideoFormat {
 /// Supported encoded audio codecs.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
+#[non_exhaustive]
 pub enum AudioCodec {
     Opus,
 }
@@ -366,7 +367,7 @@ impl VideoLayout {
     }
 }
 
-fn align_up(value: usize, align: usize) -> usize {
+const fn align_up(value: usize, align: usize) -> usize {
     if align <= 1 {
         value
     } else {
@@ -722,6 +723,14 @@ impl VideoFrame {
         Arc::make_mut(&mut self.data).as_mut_slice()
     }
 
+    /// Returns `true` when this frame holds the only strong reference to the
+    /// underlying data buffer, meaning `make_data_mut()` will not trigger a
+    /// copy.
+    ///
+    /// **Note:** This check is inherently racy — another thread could clone
+    /// the `Arc` between the call to `has_unique_data()` and a subsequent
+    /// mutation.  Use it as an advisory hint (e.g., for logging or metrics),
+    /// not as a synchronisation primitive.
     pub fn has_unique_data(&self) -> bool {
         Arc::strong_count(&self.data) == 1
     }
