@@ -87,12 +87,11 @@ impl Default for OggMuxerConfig {
 /// A node that muxes compressed packets (like Opus) into an Ogg container stream.
 pub struct OggMuxerNode {
     config: OggMuxerConfig,
-    is_first_packet: bool,
 }
 
 impl OggMuxerNode {
     pub const fn new(config: OggMuxerConfig) -> Self {
-        Self { config, is_first_packet: true }
+        Self { config }
     }
 }
 
@@ -222,9 +221,6 @@ impl ProcessorNode for OggMuxerNode {
                     // Force every packet to end a page for maximum streaming behavior.
                     // This allows chunk_size to work as expected by ensuring
                     // the buffer fills up regularly. Trade-off: slightly higher OGG overhead.
-                    if self.is_first_packet {
-                        self.is_first_packet = false;
-                    }
                     let pck_info = PacketWriteEndInfo::EndPage;
 
                     // Calculate granule position from metadata if available, otherwise use packet count

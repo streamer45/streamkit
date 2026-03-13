@@ -61,8 +61,17 @@ pub struct ColorBarsConfig {
     pub pixel_format: String,
     /// When `true`, draws the current wall-clock time (`HH:MM:SS.mmm`)
     /// onto each generated frame using a monospace font.
+    ///
+    /// See also [`draw_time_use_pts`](Self::draw_time_use_pts) for an
+    /// alternative time source.
     #[serde(default)]
     pub draw_time: bool,
+    /// When `true` (and `draw_time` is enabled), stamps the frame's
+    /// presentation timestamp (PTS) instead of the wall-clock time.
+    /// This is more useful for debugging A/V timing since the stamped
+    /// value matches the metadata the downstream pipeline sees.
+    #[serde(default)]
+    pub draw_time_use_pts: bool,
     /// Optional filesystem path to a custom TTF/OTF font used for the
     /// `draw_time` overlay.  When omitted the bundled DejaVu Sans Mono
     /// font (embedded in the binary) is used.
@@ -93,6 +102,7 @@ impl Default for ColorBarsConfig {
             pixel_format: default_pixel_format(),
             draw_time: false,
             draw_time_font_path: None,
+            draw_time_use_pts: false,
             animate: false,
         }
     }
@@ -236,6 +246,7 @@ impl ProcessorNode for ColorBarsNode {
         };
 
         let mut seq: u64 = 0;
+        let use_pts = self.config.draw_time_use_pts;
 
         loop {
             // Honour finite frame count.
@@ -296,7 +307,15 @@ impl ProcessorNode for ColorBarsNode {
                     pooled.as_mut_slice()[..total_bytes].copy_from_slice(&template);
                 }
                 if let Some(ref font) = draw_time_font {
-                    stamp_time(pooled.as_mut_slice(), width, height, pixel_format, &layout, font);
+                    stamp_time(
+                        pooled.as_mut_slice(),
+                        width,
+                        height,
+                        pixel_format,
+                        &layout,
+                        font,
+                        if use_pts { Some(timestamp_us) } else { None },
+                    );
                 }
                 streamkit_core::types::VideoFrame::from_pooled(
                     width,
@@ -316,7 +335,15 @@ impl ProcessorNode for ColorBarsNode {
                     template.clone()
                 };
                 if let Some(ref font) = draw_time_font {
-                    stamp_time(&mut data, width, height, pixel_format, &layout, font);
+                    stamp_time(
+                        &mut data,
+                        width,
+                        height,
+                        pixel_format,
+                        &layout,
+                        font,
+                        if use_pts { Some(timestamp_us) } else { None },
+                    );
                 }
                 streamkit_core::types::VideoFrame::with_metadata(
                     width,
@@ -345,12 +372,13 @@ impl ProcessorNode for ColorBarsNode {
 
 // ── SMPTE color bar generation ──────────────────────────────────────────────
 
-/// SMPTE EIA 75% color bars (ITU-R BT.601 Y'CbCr).
+/// SMPTE EIA 75% color bars (ITU-R BT.601 Y'CbCr, studio range).
 ///
 /// Seven equal-width vertical bars, left to right:
 ///   White, Yellow, Cyan, Green, Magenta, Red, Blue
 ///
-/// 75% amplitude values (studio range):
+/// 75% amplitude values in studio range (Y: 16–235, Cb/Cr: 16–240).
+/// Note: white Y = 180 (not 235) because these are 75% bars, not 100%.
 ///   | Bar     |   Y  |   U (Cb) |   V (Cr) |
 ///   |---------|------|----------|----------|
 ///   | White   | 180  |  128     |  128     |
@@ -617,16 +645,30 @@ fn stamp_time(
     pixel_format: PixelFormat,
     layout: &streamkit_core::types::VideoLayout,
     font: &fontdue::Font,
+    pts_us: Option<u64>,
 ) {
-    use std::time::SystemTime;
-
-    let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
-    let total_secs = now.as_secs();
-    let millis = now.subsec_millis();
-    let secs = total_secs % 60;
-    let mins = (total_secs / 60) % 60;
-    let hrs = (total_secs / 3600) % 24;
-    let time_str = format!("{hrs:02}:{mins:02}:{secs:02}.{millis:03}");
+    let time_str = pts_us.map_or_else(
+        || {
+            // Wall-clock mode (original behavior)
+            use std::time::SystemTime;
+            let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
+            let total_secs = now.as_secs();
+            let millis = now.subsec_millis();
+            let secs = total_secs % 60;
+            let mins = (total_secs / 60) % 60;
+            let hrs = (total_secs / 3600) % 24;
+            format!("{hrs:02}:{mins:02}:{secs:02}.{millis:03}")
+        },
+        |ts| {
+            // PTS mode: format the presentation timestamp as HH:MM:SS.mmm
+            let millis = (ts / 1000) % 1000;
+            let total_secs = ts / 1_000_000;
+            let secs = total_secs % 60;
+            let mins = (total_secs / 60) % 60;
+            let hrs = (total_secs / 3600) % 24;
+            format!("PTS {hrs:02}:{mins:02}:{secs:02}.{millis:03}")
+        },
+    );
 
     // Placement: bottom-left with a small margin.
     let margin_x: i32 = 8;
