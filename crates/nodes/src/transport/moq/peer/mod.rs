@@ -30,7 +30,12 @@ use streamkit_core::{
 };
 use tokio::sync::{broadcast, mpsc, watch, OwnedSemaphorePermit, Semaphore};
 
-/// Capacity for the broadcast channel (subscribers)
+/// Capacity for the broadcast channel (subscribers).
+///
+/// With audio+video multiplexed (~50 fps audio + 30 fps video = ~80 fps),
+/// 256 entries give a slow subscriber roughly 3 seconds of buffer before
+/// frames are dropped due to lagging. This is adequate for real-time
+/// streaming; increase if subscribers are expected to be bursty-slow.
 const SUBSCRIBER_BROADCAST_CAPACITY: usize = 256;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -228,6 +233,12 @@ const fn media_kind_for_packet_type(pt: &PacketType) -> Option<MediaKind> {
 /// content type starting with `"video/"` is classified as video.
 /// Audio packets (Opus) typically have `content_type: None`.
 ///
+/// **Important**: when `content_type` is `None` this defaults to audio.
+/// Upstream nodes that produce video **must** set `content_type` (e.g.
+/// `"video/vp9"`) for correct routing in dynamic pipelines. The
+/// static-pipeline path uses `NodeContext::input_types` instead and is
+/// unaffected.
+///
 /// # Panics (debug only)
 ///
 /// Debug-asserts that the `content_type` is either `None` (audio) or starts
@@ -244,7 +255,17 @@ fn infer_kind_from_packet(packet: &Packet) -> MediaKind {
                 "unexpected content_type {ct:?} — expected \"audio/…\" or \"video/…\""
             );
         } else {
-            tracing::trace!("packet has no content_type, assuming audio");
+            // No content_type → assume audio. This is correct for Opus packets
+            // but would misclassify video packets that forgot to set the field.
+            // Log at warn level on the first occurrence to aid debugging.
+            use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+            static WARNED: AtomicBool = AtomicBool::new(false);
+            if !WARNED.swap(true, AtomicOrdering::Relaxed) {
+                tracing::warn!(
+                    "packet has no content_type — defaulting to audio; \
+                     set content_type to \"video/…\" on video packets for correct routing"
+                );
+            }
         }
     }
     MediaKind::Audio
@@ -446,6 +467,18 @@ impl ProcessorNode for MoqPeerNode {
         let (media_state_tx, media_state_rx) =
             watch::channel(MediaTypeState { has_audio, has_video, resolved: types_resolved });
 
+        // Warn if both pins carry the same media kind — this is likely a
+        // misconfiguration since the node expects one audio and one video input.
+        if let (Some(k0), Some(k1)) = (pin_0_kind, pin_1_kind) {
+            if k0 == k1 {
+                tracing::warn!(
+                    kind = ?k0,
+                    "Both input pins carry the same media kind — \
+                     expected one audio and one video input for correct track multiplexing"
+                );
+            }
+        }
+
         // Symmetric output pin mapping: in ↔ out, in_1 ↔ out_1.
         // When pin types are known the mapping is exact; otherwise we fall
         // back to the convention audio → "out", video → "out_1".
@@ -526,32 +559,32 @@ impl ProcessorNode for MoqPeerNode {
                     let sub_count = subscriber_count.clone();
                     let broadcast_rx = subscriber_broadcast_tx.subscribe();
 
-            match Self::start_bidirectional_task(
-                conn,
-                BidirectionalTaskConfig {
-                    input_broadcast: self.config.input_broadcast.clone(),
-                    output_broadcast: self.config.output_broadcast.clone(),
-                    node_id: node_name.clone(),
-                    output_sender: context.output_sender.clone(),
-                    broadcast_rx,
-                    shutdown_rx: shutdown_tx.subscribe(),
-                    publisher_slot: publisher_slot.clone(),
-                    publisher_events: publisher_events_tx.clone(),
-                    subscriber_count: sub_count,
-                    stats_delta_tx: stats_delta_tx.clone(),
-                    media: SubscriberMediaConfig {
-                        has_video,
-                        has_audio,
-                        video_width: self.config.video_width,
-                        video_height: self.config.video_height,
-                        output_group_duration_ms: self.config.output_group_duration_ms,
-                        output_initial_delay_ms: self.config.output_initial_delay_ms,
-                    },
-                    media_state_rx: media_state_rx.clone(),
-                    audio_output_pin,
-                    video_output_pin,
-                },
-            ).await {
+                    match Self::start_bidirectional_task(
+                        conn,
+                        BidirectionalTaskConfig {
+                            input_broadcast: self.config.input_broadcast.clone(),
+                            output_broadcast: self.config.output_broadcast.clone(),
+                            node_id: node_name.clone(),
+                            output_sender: context.output_sender.clone(),
+                            broadcast_rx,
+                            shutdown_rx: shutdown_tx.subscribe(),
+                            publisher_slot: publisher_slot.clone(),
+                            publisher_events: publisher_events_tx.clone(),
+                            subscriber_count: sub_count,
+                            stats_delta_tx: stats_delta_tx.clone(),
+                            media: SubscriberMediaConfig {
+                                has_video,
+                                has_audio,
+                                video_width: self.config.video_width,
+                                video_height: self.config.video_height,
+                                output_group_duration_ms: self.config.output_group_duration_ms,
+                                output_initial_delay_ms: self.config.output_initial_delay_ms,
+                            },
+                            media_state_rx: media_state_rx.clone(),
+                            audio_output_pin,
+                            video_output_pin,
+                        },
+                    ).await {
                         Ok(_handle) => {
                             let count = subscriber_count.fetch_add(1, Ordering::SeqCst) + 1;
                             tracing::info!("Peer connected (total: {})", count);
@@ -1655,6 +1688,19 @@ impl MoqPeerNode {
 
     /// Wait for media type resolution and an optional grace period for
     /// additional media types, then apply the resolved state to `media`.
+    ///
+    /// ## Timing contract
+    ///
+    /// | Phase | Timeout | Purpose |
+    /// |-------|---------|---------|
+    /// | Resolution wait | 5 s | Wait for at least one input pin to deliver a packet so its media kind is known. Static pipelines resolve immediately; dynamic pipelines wait here. |
+    /// | Grace period | 500 ms | After one kind is known, briefly wait for the other kind before publishing the catalog. If the second kind doesn't arrive, the catalog is published with only the known type. |
+    ///
+    /// In dynamic pipelines both audio and video are optimistically advertised
+    /// in the `MediaTypeState`, so the grace period is effectively skipped
+    /// (both types are already flagged). The grace period matters only for
+    /// static pipelines where exactly one pin has a known type and the other
+    /// is connected but hasn't delivered its first packet yet.
     ///
     /// Returns `Ok(true)` when resolution succeeded and the caller should
     /// continue, or `Ok(false)` when a shutdown was received.

@@ -123,7 +123,7 @@ pub fn register_moq_nodes(registry: &mut NodeRegistry) {
             vec!["transport".to_string(), "moq".to_string(), "dynamic".to_string()],
             false,
             "Subscribes to a Media over QUIC (MoQ) broadcast. \
-             Receives encoded Opus audio and VP9 video from a remote publisher over WebTransport.",
+             Receives encoded audio and video from a remote publisher over WebTransport.",
         );
 
         let default_moq_push = MoqPushNode::new(MoqPushConfig::default());
@@ -142,7 +142,7 @@ pub fn register_moq_nodes(registry: &mut NodeRegistry) {
             vec!["transport".to_string(), "moq".to_string(), "dynamic".to_string()],
             false,
             "Publishes media to a Media over QUIC (MoQ) broadcast. \
-             Sends encoded Opus audio and optional VP9 video to subscribers over WebTransport.",
+             Sends encoded audio and optional video to subscribers over WebTransport.",
         );
 
         let default_moq_peer = MoqPeerNode::new(MoqPeerConfig::default());
@@ -166,7 +166,8 @@ pub fn register_moq_nodes(registry: &mut NodeRegistry) {
             ],
             true, // This is a bidirectional node
             "Bidirectional MoQ peer for real-time audio and video communication. \
-             Acts as both publisher and subscriber over a single WebTransport connection.",
+             Acts as both publisher and subscriber over a single WebTransport connection. \
+             Supported codecs: Opus (audio), VP9 (video).",
         );
     }
 }

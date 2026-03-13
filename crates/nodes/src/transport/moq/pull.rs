@@ -10,6 +10,7 @@ use bytes::Buf;
 use moq_lite::AsPath;
 use schemars::JsonSchema;
 use serde::Deserialize;
+use std::borrow::Cow;
 use std::time::Duration;
 use streamkit_core::timing::MediaClock;
 use streamkit_core::types::{
@@ -84,6 +85,9 @@ impl MoqPullNode {
             if track.name == "out" {
                 continue;
             }
+            // Track type is inferred from the track name prefix. The hang
+            // protocol uses `audio/data` and `video/data` as canonical names,
+            // so this aligns with the catalog-parsed codec info in parse_catalog().
             let produces_type = if track.name.starts_with("video/") {
                 PacketType::EncodedVideo(EncodedVideoFormat {
                     codec: VideoCodec::Vp9,
@@ -271,14 +275,21 @@ impl MoqPullNode {
         Ok((timestamp_us, payload.copy_to_bytes(payload.remaining())))
     }
 
+    /// Read the next raw MoQ frame, returning the payload and whether this
+    /// frame is the first in a newly opened MoQ group (i.e. a keyframe
+    /// boundary in the hang protocol).
     async fn read_next_raw_moq(
         track_consumer: &mut moq_lite::TrackConsumer,
         current_group: &mut Option<moq_lite::GroupConsumer>,
+        is_first_in_group: &mut bool,
     ) -> Result<Option<bytes::Bytes>, moq_lite::Error> {
         loop {
             if current_group.is_none() {
                 match track_consumer.next_group().await {
-                    Ok(Some(group)) => *current_group = Some(group),
+                    Ok(Some(group)) => {
+                        *current_group = Some(group);
+                        *is_first_in_group = true;
+                    },
                     Ok(None) => return Ok(None),
                     Err(e) => return Err(e),
                 }
@@ -560,7 +571,9 @@ impl MoqPullNode {
             ));
         }
 
-        // Find the first audio track (required for backward compatibility with "out" pin)
+        // Find the first audio and video tracks. Track type is determined by
+        // the hang protocol's canonical track name prefix (`audio/…` / `video/…`),
+        // consistent with how parse_catalog() discovers them from codec info.
         let audio_track = discovered_tracks.iter().find(|t| !t.name.starts_with("video/"));
         let video_track = discovered_tracks.iter().find(|t| t.name.starts_with("video/"));
 
@@ -604,7 +617,12 @@ impl MoqPullNode {
         let mut session_packet_count: u32 = 0;
         let mut last_audio_timestamp_us: Option<u64> = None;
         let mut last_video_timestamp_us: Option<u64> = None;
-        let mut clock = MediaClock::new(0);
+        // Separate clocks per media kind so that seeding from the first
+        // audio timestamp doesn't skew video timing (and vice versa).
+        let mut audio_clock = MediaClock::new(0);
+        let mut video_clock = MediaClock::new(0);
+        let mut audio_is_first_in_group = true;
+        let mut video_is_first_in_group = true;
         let mut consecutive_cancels: u32 = 0;
         let mut last_payload_at = tokio::time::Instant::now();
 
@@ -623,13 +641,27 @@ impl MoqPullNode {
             // the track consumers without lifetime issues from closures.
             let audio_read = async {
                 match audio_track_consumer.as_mut() {
-                    Some(c) => Self::read_next_raw_moq(c, &mut audio_current_group).await,
+                    Some(c) => {
+                        Self::read_next_raw_moq(
+                            c,
+                            &mut audio_current_group,
+                            &mut audio_is_first_in_group,
+                        )
+                        .await
+                    },
                     None => std::future::pending().await,
                 }
             };
             let video_read = async {
                 match video_track_consumer.as_mut() {
-                    Some(c) => Self::read_next_raw_moq(c, &mut video_current_group).await,
+                    Some(c) => {
+                        Self::read_next_raw_moq(
+                            c,
+                            &mut video_current_group,
+                            &mut video_is_first_in_group,
+                        )
+                        .await
+                    },
                     None => std::future::pending().await,
                 }
             };
@@ -709,13 +741,18 @@ impl MoqPullNode {
                         },
                     };
 
-                    let (last_ts, default_dur) = match source {
-                        ReadSource::Audio => {
-                            (&mut last_audio_timestamp_us, DEFAULT_AUDIO_FRAME_DURATION_US)
-                        },
+                    let (last_ts, default_dur, clock, is_first_in_group) = match source {
+                        ReadSource::Audio => (
+                            &mut last_audio_timestamp_us,
+                            DEFAULT_AUDIO_FRAME_DURATION_US,
+                            &mut audio_clock,
+                            &mut audio_is_first_in_group,
+                        ),
                         ReadSource::Video => (
                             &mut last_video_timestamp_us,
                             crate::video::DEFAULT_VIDEO_FRAME_DURATION_US,
+                            &mut video_clock,
+                            &mut video_is_first_in_group,
                         ),
                     };
 
@@ -726,16 +763,41 @@ impl MoqPullNode {
                         .and_then(|prev| timestamp_us.checked_sub(prev))
                         .filter(|d| *d > 0)
                         .or(Some(default_dur));
-                    let metadata = Some(PacketMetadata {
-                        timestamp_us: Some(timestamp_us),
-                        duration_us,
-                        sequence: None,
-                        keyframe: None,
-                    });
+
+                    // Propagate keyframe info for video: the first frame
+                    // after a new MoQ group is a keyframe in the hang protocol.
+                    let keyframe = match source {
+                        ReadSource::Video => {
+                            let kf = *is_first_in_group;
+                            *is_first_in_group = false;
+                            Some(kf)
+                        },
+                        ReadSource::Audio => None,
+                    };
+
+                    let (content_type, metadata) = match source {
+                        ReadSource::Video => (
+                            Some(Cow::Borrowed("video/vp9")),
+                            Some(PacketMetadata {
+                                timestamp_us: Some(timestamp_us),
+                                duration_us,
+                                sequence: None,
+                                keyframe,
+                            }),
+                        ),
+                        ReadSource::Audio => (
+                            None,
+                            Some(PacketMetadata {
+                                timestamp_us: Some(timestamp_us),
+                                duration_us,
+                                sequence: None,
+                                keyframe: None,
+                            }),
+                        ),
+                    };
                     *last_ts = Some(timestamp_us);
 
-                    let packet =
-                        Packet::Binary { data, content_type: None, metadata: metadata.clone() };
+                    let packet = Packet::Binary { data, content_type, metadata: metadata.clone() };
 
                     // Route packet to the correct output pin(s)
                     match source {
