@@ -41,6 +41,41 @@ const VPX_DECODER_ABI_VERSION: i32 = 3 + VPX_CODEC_ABI_VERSION;
 const VPX_EXT_RATECTRL_ABI_VERSION: i32 = 1;
 const VPX_ENCODER_ABI_VERSION: i32 = 15 + VPX_CODEC_ABI_VERSION + VPX_EXT_RATECTRL_ABI_VERSION;
 
+/// Asserts at startup that the linked libvpx exposes the VP9 encoder and decoder
+/// interfaces.  This catches library version mismatches or missing codec support
+/// early (at node registration) rather than at the first encode/decode attempt.
+///
+/// The check verifies that `vpx_codec_vp9_cx()` and `vpx_codec_vp9_dx()` return
+/// non-null pointers and that their `iface_name` strings contain "VP9".
+fn assert_vpx_abi_versions() {
+    // SAFETY: `vpx_codec_vp9_cx()` returns a pointer to a static
+    // `vpx_codec_iface_t`.  It is safe to pass to `vpx_codec_iface_name`.
+    let cx_iface = unsafe { vpx::vpx_codec_vp9_cx() };
+    assert!(!cx_iface.is_null(), "vpx_codec_vp9_cx() returned null — is libvpx built with VP9?");
+
+    // SAFETY: `vpx_codec_iface_name` accepts a non-null iface pointer and
+    // returns a static C string.
+    let cx_name = unsafe { CStr::from_ptr(vpx::vpx_codec_iface_name(cx_iface)) };
+    let cx_name_str = cx_name.to_str().unwrap_or("<invalid UTF-8>");
+    assert!(
+        cx_name_str.contains("VP9"),
+        "vpx_codec_vp9_cx() iface name does not contain 'VP9': {cx_name_str}"
+    );
+
+    // SAFETY: same reasoning for `vpx_codec_vp9_dx()`.
+    let dx_iface = unsafe { vpx::vpx_codec_vp9_dx() };
+    assert!(!dx_iface.is_null(), "vpx_codec_vp9_dx() returned null — is libvpx built with VP9?");
+
+    let dx_name = unsafe { CStr::from_ptr(vpx::vpx_codec_iface_name(dx_iface)) };
+    let dx_name_str = dx_name.to_str().unwrap_or("<invalid UTF-8>");
+    assert!(
+        dx_name_str.contains("VP9"),
+        "vpx_codec_vp9_dx() iface name does not contain 'VP9': {dx_name_str}"
+    );
+
+    tracing::debug!("libvpx ABI check passed: encoder={cx_name_str}, decoder={dx_name_str}");
+}
+
 const VPX_EFLAG_FORCE_KF: vpx::vpx_enc_frame_flags_t = 1;
 const VPX_FRAME_IS_KEY: u32 = 0x1;
 const VPX_DL_BEST_QUALITY: u64 = 0;
@@ -1048,6 +1083,9 @@ use streamkit_core::registry::StaticPins;
 
 #[allow(clippy::expect_used, clippy::missing_panics_doc)]
 pub fn register_vp9_nodes(registry: &mut NodeRegistry) {
+    // Verify the hardcoded ABI constants match the linked libvpx at startup.
+    assert_vpx_abi_versions();
+
     let default_decoder = Vp9DecoderNode::new(Vp9DecoderConfig::default())
         .expect("default VP9 decoder config should be valid");
     registry.register_static_with_description(

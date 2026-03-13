@@ -24,8 +24,6 @@ use webm::mux::{
 
 // --- WebM Constants ---
 
-/// Default chunk size for flushing buffers
-const DEFAULT_CHUNK_SIZE: usize = 65536;
 /// Default audio frame duration when metadata is missing (20ms Opus frame).
 const DEFAULT_FRAME_DURATION_US: u64 = 20_000;
 use crate::video::{
@@ -48,7 +46,7 @@ impl<'a> BitReader<'a> {
         Self { data, byte_offset: 0, bit_offset: 0 }
     }
 
-    /// Read `n` bits (1..=16) as a `u32`, MSB first.
+    /// Read `n` bits (1..=32) as a `u32`, MSB first.
     fn read(&mut self, n: u8) -> Option<u32> {
         let mut value: u32 = 0;
         for _ in 0..n {
@@ -167,9 +165,15 @@ const fn vp9_codec_private(
 /// Opus codec lookahead at 48kHz in samples (typical libopus default).
 ///
 /// This is written to the OpusHead `pre_skip` field so decoders can trim encoder delay.
+/// The actual lookahead depends on the Opus encoder build; override via
+/// [`WebMMuxerConfig::opus_preskip_samples`] if your encoder reports a different value.
 const OPUS_PRESKIP_SAMPLES: u16 = 312;
 
-fn opus_head_codec_private(sample_rate: u32, channels: u32) -> Result<[u8; 19], StreamKitError> {
+fn opus_head_codec_private(
+    sample_rate: u32,
+    channels: u32,
+    pre_skip: u16,
+) -> Result<[u8; 19], StreamKitError> {
     let channels_u8: u8 = channels.try_into().map_err(|_| {
         StreamKitError::Runtime(format!(
             "Invalid channel count for Opus/WebM: {channels} (must fit in u8)"
@@ -190,7 +194,7 @@ fn opus_head_codec_private(sample_rate: u32, channels: u32) -> Result<[u8; 19], 
     head[0..8].copy_from_slice(b"OpusHead");
     head[8] = 1; // version
     head[9] = channels_u8;
-    head[10..12].copy_from_slice(&OPUS_PRESKIP_SAMPLES.to_le_bytes());
+    head[10..12].copy_from_slice(&pre_skip.to_le_bytes());
     head[12..16].copy_from_slice(&sample_rate.to_le_bytes());
     head[16..18].copy_from_slice(&0i16.to_le_bytes()); // output gain
     head[18] = 0; // channel mapping family 0 (mono/stereo)
@@ -381,31 +385,14 @@ impl Write for MuxBuffer {
 impl Seek for MuxBuffer {
     fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
         match self {
-            Self::Live(b) => {
-                // Live mode uses non-seek writer; this should not be called.
-                // Provide a no-op implementation that returns the current position.
-                #[allow(clippy::expect_used)]
-                let mut state = b.state.lock().expect("SharedPacketBuffer mutex poisoned");
-                let base = state.base_offset;
-                let adjusted_pos = match pos {
-                    SeekFrom::Start(offset) => {
-                        if offset >= base as u64 {
-                            SeekFrom::Start(offset - base as u64)
-                        } else {
-                            tracing::warn!(
-                                "WebM seek to {} before base_offset {}, clamping to start",
-                                offset,
-                                base
-                            );
-                            SeekFrom::Start(0)
-                        }
-                    },
-                    SeekFrom::Current(offset) => SeekFrom::Current(offset),
-                    SeekFrom::End(offset) => SeekFrom::End(offset),
-                };
-                let result = state.cursor.seek(adjusted_pos)?;
-                drop(state);
-                Ok(result + base as u64)
+            Self::Live(_) => {
+                // Live mode uses Writer::new_non_seek — seeking should never
+                // happen.  Return an error to surface any unexpected code-path
+                // changes in libwebm rather than silently producing corrupt output.
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "Seek is not supported on the Live streaming buffer",
+                ))
             },
             Self::File(b) => b.seek(pos),
         }
@@ -442,11 +429,13 @@ pub struct WebMMuxerConfig {
     pub video_width: u32,
     /// Video height in pixels (required when a video input is connected)
     pub video_height: u32,
-    /// The number of bytes to buffer before flushing to the output. Defaults to 65536.
-    pub chunk_size: usize,
     /// Streaming mode: "live" for real-time streaming (no duration), "file" for complete files
     /// with duration (default)
     pub streaming_mode: WebMStreamingMode,
+    /// Opus encoder lookahead in samples at 48 kHz, written to the OpusHead
+    /// `pre_skip` field.  Decoders use this to trim encoder delay.
+    /// Default: 312 (typical libopus default).
+    pub opus_preskip_samples: u16,
 }
 
 impl Default for WebMMuxerConfig {
@@ -456,8 +445,8 @@ impl Default for WebMMuxerConfig {
             channels: 2,
             video_width: 0,
             video_height: 0,
-            chunk_size: DEFAULT_CHUNK_SIZE,
             streaming_mode: WebMStreamingMode::default(),
+            opus_preskip_samples: OPUS_PRESKIP_SAMPLES,
         }
     }
 }
@@ -643,7 +632,6 @@ impl ProcessorNode for WebMMuxerNode {
         let content_type_str: Cow<'static, str> =
             Cow::Borrowed(webm_content_type(has_audio, has_video));
 
-        let mut packet_count = 0u64;
         let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
 
         // In Live mode we use a non-seek, in-memory streaming buffer so bytes
@@ -766,6 +754,11 @@ impl ProcessorNode for WebMMuxerNode {
         // Video track is added first so that the segment header lists it prominently
         // for players that inspect the first track.
         let builder = if has_video {
+            // These constants must stay in sync with the VP9 encoder
+            // configuration in `crates/nodes/src/video/mod.rs`.  Currently the
+            // encoder only supports profile 0 (I420/NV12 at 8-bit), so the
+            // hardcoded values are correct.  If higher profiles are added
+            // (e.g. 10-bit, 4:4:4), these must be updated accordingly.
             let vp9_private =
                 vp9_codec_private(VP9_PROFILE, VP9_LEVEL, VP9_BIT_DEPTH, VP9_CHROMA_SUBSAMPLING);
 
@@ -795,14 +788,16 @@ impl ProcessorNode for WebMMuxerNode {
         };
 
         let builder = if has_audio {
-            let opus_private =
-                opus_head_codec_private(self.config.sample_rate, self.config.channels).map_err(
-                    |e| {
-                        let err_msg = format!("Failed to build OpusHead codec private: {e}");
-                        state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
-                        StreamKitError::Runtime(err_msg)
-                    },
-                )?;
+            let opus_private = opus_head_codec_private(
+                self.config.sample_rate,
+                self.config.channels,
+                self.config.opus_preskip_samples,
+            )
+            .map_err(|e| {
+                let err_msg = format!("Failed to build OpusHead codec private: {e}");
+                state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
+                StreamKitError::Runtime(err_msg)
+            })?;
 
             let (builder, at) = builder
                 .add_audio_track(
@@ -838,11 +833,7 @@ impl ProcessorNode for WebMMuxerNode {
 
         let mut audio_clock = MediaClock::new(0);
         let mut video_clock = MediaClock::new(0);
-        let mut header_sent = false;
-
-        // Monotonic timestamp guard: libwebm requires that timestamps across all tracks
-        // are non-decreasing. We track the last written timestamp and clamp if needed.
-        let mut last_written_ns: u64 = 0;
+        let mut mux_state = MuxState { header_sent: false, last_written_ns: 0, packet_count: 0 };
 
         tracing::info!("WebM segment built, entering receive loop to process incoming packets");
 
@@ -863,15 +854,13 @@ impl ProcessorNode for WebMMuxerNode {
                     is_keyframe,
                     DEFAULT_VIDEO_FRAME_DURATION_US,
                     &mut video_clock,
-                    &mut last_written_ns,
+                    &mut mux_state,
                     &mut segment,
                     &mut context,
                     live_flush_handle.as_ref(),
                     &content_type_str,
-                    &mut header_sent,
                     &mut stats_tracker,
                     &node_name,
-                    &mut packet_count,
                 )
                 .await?
                 {
@@ -886,29 +875,54 @@ impl ProcessorNode for WebMMuxerNode {
                 Video(Bytes, Option<PacketMetadata>),
                 AudioClosed,
                 VideoClosed,
+                Shutdown,
             }
 
             let frame = if audio_done {
                 // Only video remains
                 match video_rx.as_mut() {
-                    Some(rx) => match rx.recv().await {
-                        Some(Packet::Binary { data, metadata, .. }) => {
-                            MuxFrame::Video(data, metadata)
-                        },
-                        Some(_) => continue,
-                        None => MuxFrame::VideoClosed,
+                    Some(rx) => {
+                        tokio::select! {
+                            biased;
+                            Some(msg) = context.control_rx.recv() => {
+                                if matches!(msg, streamkit_core::control::NodeControlMessage::Shutdown) {
+                                    MuxFrame::Shutdown
+                                } else {
+                                    continue;
+                                }
+                            }
+                            result = rx.recv() => match result {
+                                Some(Packet::Binary { data, metadata, .. }) => {
+                                    MuxFrame::Video(data, metadata)
+                                },
+                                Some(_) => continue,
+                                None => MuxFrame::VideoClosed,
+                            }
+                        }
                     },
                     None => break,
                 }
             } else if video_done {
                 // Only audio remains
                 match audio_rx.as_mut() {
-                    Some(rx) => match rx.recv().await {
-                        Some(Packet::Binary { data, metadata, .. }) => {
-                            MuxFrame::Audio(data, metadata)
-                        },
-                        Some(_) => continue,
-                        None => MuxFrame::AudioClosed,
+                    Some(rx) => {
+                        tokio::select! {
+                            biased;
+                            Some(msg) = context.control_rx.recv() => {
+                                if matches!(msg, streamkit_core::control::NodeControlMessage::Shutdown) {
+                                    MuxFrame::Shutdown
+                                } else {
+                                    continue;
+                                }
+                            }
+                            result = rx.recv() => match result {
+                                Some(Packet::Binary { data, metadata, .. }) => {
+                                    MuxFrame::Audio(data, metadata)
+                                },
+                                Some(_) => continue,
+                                None => MuxFrame::AudioClosed,
+                            }
+                        }
                     },
                     None => break,
                 }
@@ -919,7 +933,14 @@ impl ProcessorNode for WebMMuxerNode {
                 match (audio_rx_ref, video_rx_ref) {
                     (Some(a_rx), Some(v_rx)) => {
                         tokio::select! {
-                            biased; // prefer audio first for stable ordering
+                            biased; // prefer shutdown, then audio for stable ordering
+                            Some(msg) = context.control_rx.recv() => {
+                                if matches!(msg, streamkit_core::control::NodeControlMessage::Shutdown) {
+                                    MuxFrame::Shutdown
+                                } else {
+                                    continue;
+                                }
+                            }
                             maybe_audio = a_rx.recv() => {
                                 match maybe_audio {
                                     Some(Packet::Binary { data, metadata, .. }) => {
@@ -945,6 +966,10 @@ impl ProcessorNode for WebMMuxerNode {
             };
 
             match frame {
+                MuxFrame::Shutdown => {
+                    tracing::info!("WebMMuxerNode received shutdown signal");
+                    break;
+                },
                 MuxFrame::AudioClosed => {
                     tracing::info!("WebMMuxerNode audio input closed");
                     audio_done = true;
@@ -965,15 +990,13 @@ impl ProcessorNode for WebMMuxerNode {
                         true,
                         DEFAULT_FRAME_DURATION_US,
                         &mut audio_clock,
-                        &mut last_written_ns,
+                        &mut mux_state,
                         &mut segment,
                         &mut context,
                         live_flush_handle.as_ref(),
                         &content_type_str,
-                        &mut header_sent,
                         &mut stats_tracker,
                         &node_name,
-                        &mut packet_count,
                     )
                     .await?
                     {
@@ -992,15 +1015,13 @@ impl ProcessorNode for WebMMuxerNode {
                         is_keyframe,
                         DEFAULT_VIDEO_FRAME_DURATION_US,
                         &mut video_clock,
-                        &mut last_written_ns,
+                        &mut mux_state,
                         &mut segment,
                         &mut context,
                         live_flush_handle.as_ref(),
                         &content_type_str,
-                        &mut header_sent,
                         &mut stats_tracker,
                         &node_name,
-                        &mut packet_count,
                     )
                     .await?
                     {
@@ -1012,7 +1033,7 @@ impl ProcessorNode for WebMMuxerNode {
 
         tracing::info!(
             "WebMMuxerNode input streams closed, processed {} packets total",
-            packet_count
+            mux_state.packet_count
         );
 
         // Finalize the segment and recover the buffer.
@@ -1053,6 +1074,24 @@ impl ProcessorNode for WebMMuxerNode {
     }
 }
 
+/// Mutable state shared across the muxer receive loop.
+///
+/// Groups the monotonic timestamp guard, header-sent flag, and packet counter
+/// into a single struct to reduce the number of loose parameters passed to
+/// [`mux_frame`] and [`flush_output`].
+///
+/// Per-track clocks are kept separate so callers can borrow a clock and this
+/// struct simultaneously without aliasing.
+struct MuxState {
+    /// Whether the WebM header has been flushed to the output.
+    header_sent: bool,
+    /// Monotonic timestamp guard: libwebm requires that timestamps across all
+    /// tracks are non-decreasing.  We track the last written timestamp and
+    /// clamp if needed.
+    last_written_ns: u64,
+    packet_count: u64,
+}
+
 /// Timestamps, clocks, and writes a single frame (audio or video) to the WebM
 /// segment, then flushes any buffered output.
 ///
@@ -1067,17 +1106,15 @@ async fn mux_frame(
     is_keyframe: bool,
     default_duration_us: u64,
     clock: &mut streamkit_core::timing::MediaClock,
-    last_written_ns: &mut u64,
+    state: &mut MuxState,
     segment: &mut webm::mux::Segment<MuxBuffer>,
     context: &mut NodeContext,
     live_buffer: Option<&SharedPacketBuffer>,
     content_type: &Cow<'static, str>,
-    header_sent: &mut bool,
     stats_tracker: &mut NodeStatsTracker,
     node_name: &str,
-    packet_count: &mut u64,
 ) -> Result<bool, StreamKitError> {
-    *packet_count += 1;
+    state.packet_count += 1;
     stats_tracker.received();
 
     let incoming_ts_us = metadata.and_then(|m| m.timestamp_us);
@@ -1093,8 +1130,8 @@ async fn mux_frame(
     clock.advance_by_duration_us(incoming_duration_us, default_duration_us);
 
     let mut timestamp_ns = presentation_ts_us.saturating_mul(1000);
-    if timestamp_ns < *last_written_ns {
-        timestamp_ns = *last_written_ns;
+    if timestamp_ns < state.last_written_ns {
+        timestamp_ns = state.last_written_ns;
     }
 
     if let Err(e) = segment.add_frame(track, data, timestamp_ns, is_keyframe) {
@@ -1105,7 +1142,7 @@ async fn mux_frame(
         return Err(StreamKitError::Runtime(err_msg));
     }
 
-    *last_written_ns = timestamp_ns;
+    state.last_written_ns = timestamp_ns;
 
     let output_metadata = Some(PacketMetadata {
         timestamp_us: Some(presentation_ts_us),
@@ -1119,7 +1156,7 @@ async fn mux_frame(
         live_buffer,
         content_type,
         output_metadata,
-        header_sent,
+        &mut state.header_sent,
         stats_tracker,
         node_name,
     )
