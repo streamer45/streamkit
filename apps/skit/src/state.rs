@@ -31,8 +31,14 @@ pub struct ShutdownTracker {
 
 impl ShutdownTracker {
     /// Register a background shutdown task.
+    ///
+    /// Prunes already-finished handles before pushing the new one so the
+    /// internal list stays bounded by the number of *concurrently running*
+    /// shutdown tasks rather than growing for the server's entire lifetime.
     pub async fn track(&self, handle: JoinHandle<()>) {
-        self.handles.lock().await.push(handle);
+        let mut guard = self.handles.lock().await;
+        guard.retain(|h| !h.is_finished());
+        guard.push(handle);
     }
 
     /// Wait for all tracked shutdown tasks to complete, with a timeout.
