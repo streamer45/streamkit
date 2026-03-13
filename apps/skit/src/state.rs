@@ -54,8 +54,7 @@ impl ShutdownTracker {
             return 0;
         }
         tracing::info!(count, "Draining background shutdown tasks");
-        let _ = tokio::time::timeout(timeout, futures::future::join_all(handles))
-            .await;
+        let _ = tokio::time::timeout(timeout, futures::future::join_all(handles)).await;
         count
     }
 }
