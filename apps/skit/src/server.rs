@@ -1884,7 +1884,8 @@ async fn destroy_session_handler(
     // Run engine shutdown in a background task so the HTTP response
     // returns immediately (shutdown_and_wait has a 10-second timeout).
     let shutdown_id = destroyed_id.clone();
-    tokio::spawn(async move {
+    let tracker = app_state.shutdown_tracker.clone();
+    let handle = tokio::spawn(async move {
         if let Err(e) = session.shutdown_and_wait().await {
             warn!(session_id = %shutdown_id, error = %e, "Error during engine shutdown");
             global::meter("skit_server").u64_counter("session.shutdown.errors").build().add(1, &[]);
@@ -1892,6 +1893,7 @@ async fn destroy_session_handler(
             info!(session_id = %shutdown_id, "Session destroyed successfully via HTTP");
         }
     });
+    tracker.track(handle).await;
 
     (StatusCode::OK, Json(serde_json::json!({ "session_id": destroyed_id }))).into_response()
 }
@@ -2316,6 +2318,19 @@ fn validate_pipeline_nodes(pipeline_def: &Pipeline) -> Result<(bool, bool, bool)
             "Pipeline must contain one 'streamkit::http_output' node for oneshot processing"
                 .to_string(),
         ));
+    }
+
+    // Generator mode: no http_input or file_reader, but there must be at
+    // least one other node that can produce data.
+    if !has_http_input && !has_file_read {
+        let non_output_count =
+            pipeline_def.nodes.values().filter(|n| n.kind != "streamkit::http_output").count();
+        if non_output_count == 0 {
+            return Err(AppError::BadRequest(
+                "Generator-mode pipeline must contain at least one node besides 'streamkit::http_output'"
+                    .to_string(),
+            ));
+        }
     }
 
     Ok((has_http_input, has_file_read, has_http_output))
@@ -3056,6 +3071,7 @@ pub fn create_app(
         plugin_manager,
         marketplace_jobs,
         auth,
+        shutdown_tracker: crate::state::ShutdownTracker::default(),
         #[cfg(feature = "moq")]
         moq_gateway,
     });
@@ -3612,8 +3628,11 @@ pub async fn start_server(config: &Config) -> Result<(), Box<dyn std::error::Err
         // Spawn a task to listen for shutdown signal
         tokio::spawn({
             let handle = handle.clone();
+            let tracker = app_state.shutdown_tracker.clone();
             async move {
                 shutdown_signal.await;
+                // Drain background shutdown tasks before stopping the server
+                tracker.drain(std::time::Duration::from_secs(10)).await;
                 handle.graceful_shutdown(Some(std::time::Duration::from_secs(10)));
             }
         });
@@ -3634,8 +3653,11 @@ pub async fn start_server(config: &Config) -> Result<(), Box<dyn std::error::Err
         // Spawn a task to listen for shutdown signal
         tokio::spawn({
             let handle = handle.clone();
+            let tracker = app_state.shutdown_tracker.clone();
             async move {
                 shutdown_signal.await;
+                // Drain background shutdown tasks before stopping the server
+                tracker.drain(std::time::Duration::from_secs(10)).await;
                 handle.graceful_shutdown(Some(std::time::Duration::from_secs(10)));
             }
         });

@@ -242,7 +242,8 @@ async fn handle_destroy_session(
     // would stall the entire WS select loop and cause the client's
     // 5-second request timeout to fire first).
     let shutdown_id = destroyed_id.clone();
-    tokio::spawn(async move {
+    let tracker = app_state.shutdown_tracker.clone();
+    let handle = tokio::spawn(async move {
         if let Err(e) = session.shutdown_and_wait().await {
             warn!(session_id = %shutdown_id, error = %e, "Error during engine shutdown");
             global::meter("skit_server").u64_counter("session.shutdown.errors").build().add(1, &[]);
@@ -250,6 +251,7 @@ async fn handle_destroy_session(
             info!(session_id = %shutdown_id, "Session destroyed successfully");
         }
     });
+    tracker.track(handle).await;
 
     Some(ResponsePayload::SessionDestroyed { session_id: destroyed_id })
 }
