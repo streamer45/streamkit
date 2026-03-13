@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+// `Hang` is only needed for the `Moq.Connection.Reload` type —
+// `Watch` and `Publish` provide the media-specific APIs.
 import * as Hang from '@moq/hang';
 import * as Publish from '@moq/publish';
 import { Effect } from '@moq/signals';

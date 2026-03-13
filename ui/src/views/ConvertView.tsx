@@ -433,16 +433,16 @@ const checkIfTTSPipeline = (yaml: string): boolean => {
 };
 
 /**
- * Detects if the current pipeline produces video output
- * (e.g. uses video encoders, video muxer settings, or video generator nodes).
+ * Detects if the current pipeline produces video output.
+ * Checks for `video::` node kind prefixes, and `video_width` / `video_height`
+ * when they appear as YAML mapping keys (not inside comments or arbitrary strings).
  */
 const checkIfVideoPipeline = (yaml: string): boolean => {
   const lowerYaml = yaml.toLowerCase();
-  return (
-    lowerYaml.includes('video::') ||
-    lowerYaml.includes('video_width') ||
-    lowerYaml.includes('video_height')
-  );
+  if (lowerYaml.includes('video::')) return true;
+  // Match video_width / video_height only as YAML keys (leading whitespace + colon suffix)
+  // to avoid false-positives on comments or unrelated string values.
+  return /^\s*video_width\s*:/m.test(lowerYaml) || /^\s*video_height\s*:/m.test(lowerYaml);
 };
 
 const resolveTextField = (fields: HttpInputField[]): HttpInputField | null => {

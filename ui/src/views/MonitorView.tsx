@@ -1765,16 +1765,32 @@ const MonitorViewContent: React.FC = () => {
   // Use session-specific connection status if a session is selected, otherwise use global
   const isConnected = selectedSessionId ? sessionIsConnected : globalIsConnected;
 
-  // Preview: stream store for watch-only MoQ connection from Monitor view
-  const previewStatus = useStreamStore((s) => s.status);
-  const previewLoadConfig = useStreamStore((s) => s.loadConfig);
-  const previewConnect = useStreamStore((s) => s.connect);
-  const previewSetEnablePublish = useStreamStore((s) => s.setEnablePublish);
-  const previewSetEnableWatch = useStreamStore((s) => s.setEnableWatch);
-  const previewConfigLoaded = useStreamStore((s) => s.configLoaded);
-  const previewSetServerUrl = useStreamStore((s) => s.setServerUrl);
-  const previewSetOutputBroadcast = useStreamStore((s) => s.setOutputBroadcast);
-  const previewSetPipelineOutputTypes = useStreamStore((s) => s.setPipelineOutputTypes);
+  // Preview: stream store for watch-only MoQ connection from Monitor view.
+  // Consolidated into a single useShallow selector to avoid 10 individual
+  // subscriptions that would each trigger selector evaluation on every store change.
+  const {
+    status: previewStatus,
+    loadConfig: previewLoadConfig,
+    connect: previewConnect,
+    setEnablePublish: previewSetEnablePublish,
+    setEnableWatch: previewSetEnableWatch,
+    configLoaded: previewConfigLoaded,
+    setServerUrl: previewSetServerUrl,
+    setOutputBroadcast: previewSetOutputBroadcast,
+    setPipelineOutputTypes: previewSetPipelineOutputTypes,
+  } = useStreamStore(
+    useShallow((s) => ({
+      status: s.status,
+      loadConfig: s.loadConfig,
+      connect: s.connect,
+      setEnablePublish: s.setEnablePublish,
+      setEnableWatch: s.setEnableWatch,
+      configLoaded: s.configLoaded,
+      setServerUrl: s.setServerUrl,
+      setOutputBroadcast: s.setOutputBroadcast,
+      setPipelineOutputTypes: s.setPipelineOutputTypes,
+    }))
+  );
   const isPreviewConnected = previewStatus === 'connected';
 
   // Extract MoQ peer settings from the selected session's pipeline so the
@@ -1799,6 +1815,10 @@ const MonitorViewContent: React.FC = () => {
       const params = moqNode[1].params as Record<string, unknown>;
       const gatewayPath = params.gateway_path as string | undefined;
       const outputBroadcast = params.output_broadcast as string | undefined;
+      // Read serverUrl at call-time via getState() rather than via a
+      // hook selector — this is a standard Zustand pattern for values
+      // that should be fresh when the callback fires, not stale from
+      // the last render.
       const currentUrl = useStreamStore.getState().serverUrl;
       if (gatewayPath && currentUrl) {
         previewSetServerUrl(updateUrlPath(currentUrl, gatewayPath));

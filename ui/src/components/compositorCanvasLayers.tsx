@@ -145,6 +145,7 @@ export const VideoLayer: React.FC<{
     <LayerBox
       ref={layerRef}
       className="nodrag nopan"
+      aria-label={`Video layer: ${layer.id}`}
       style={layerBoxStyle(layer.x, layer.y, layer.width, layer.height, {
         visible: layer.visible,
         opacity: layer.opacity,
@@ -232,6 +233,7 @@ export const TextOverlayLayer: React.FC<{
       <LayerBox
         ref={layerRef}
         className="nodrag nopan"
+        aria-label={`Text overlay: ${friendlyLabel(overlay.id, 'text', index)}`}
         style={layerBoxStyle(overlay.x, overlay.y, displayWidth, displayHeight, {
           visible: overlay.visible,
           opacity: overlay.opacity,
@@ -342,6 +344,9 @@ export const ImageOverlayLayer: React.FC<{
       return;
     }
     let mime = 'image/jpeg'; // default fallback
+    // MIME detection via base64 magic-byte prefixes.  Covers the most common
+    // web formats; unrecognised formats (AVIF, BMP, TIFF, …) fall back to
+    // JPEG which the browser may still decode correctly via content sniffing.
     if (overlay.dataBase64.startsWith('iVBOR')) mime = 'image/png';
     else if (overlay.dataBase64.startsWith('R0lGOD')) mime = 'image/gif';
     else if (overlay.dataBase64.startsWith('UklGR')) mime = 'image/webp';
@@ -370,6 +375,7 @@ export const ImageOverlayLayer: React.FC<{
     <LayerBox
       ref={layerRef}
       className="nodrag nopan"
+      aria-label={`Image overlay: ${friendlyLabel(overlay.id, 'image', index)}`}
       style={layerBoxStyle(overlay.x, overlay.y, overlay.width, overlay.height, {
         visible: overlay.visible,
         opacity: overlay.opacity,

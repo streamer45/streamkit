@@ -139,20 +139,21 @@ export const CompositorContextMenu: React.FC<CompositorContextMenuProps> = ({
     <MenuOverlay onPointerDown={onClose}>
       <MenuContainer
         ref={menuRef}
+        role="menu"
         data-testid="compositor-context-menu"
         style={{ left: menu.x, top: menu.y }}
         onPointerDown={(e) => e.stopPropagation()}
       >
-        <MenuItem data-testid="ctx-bring-to-front" onClick={handleBringToFront}>
+        <MenuItem role="menuitem" data-testid="ctx-bring-to-front" onClick={handleBringToFront}>
           Bring to Front
         </MenuItem>
-        <MenuItem data-testid="ctx-send-to-back" onClick={handleSendToBack}>
+        <MenuItem role="menuitem" data-testid="ctx-send-to-back" onClick={handleSendToBack}>
           Send to Back
         </MenuItem>
         {canDelete && (
           <>
-            <MenuDivider />
-            <MenuItem data-testid="ctx-delete" onClick={handleDelete}>
+            <MenuDivider role="separator" />
+            <MenuItem role="menuitem" data-testid="ctx-delete" onClick={handleDelete}>
               Delete
             </MenuItem>
           </>
