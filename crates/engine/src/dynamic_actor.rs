@@ -125,10 +125,17 @@ impl DynamicEngine {
         let (telemetry_tx, mut telemetry_rx) = mpsc::channel(DEFAULT_SUBSCRIBER_CHANNEL_CAPACITY);
         let (view_data_tx, mut view_data_rx) = mpsc::channel(DEFAULT_SUBSCRIBER_CHANNEL_CAPACITY);
 
+        let channels = NodeChannels {
+            state: state_tx,
+            stats: stats_tx,
+            telemetry: telemetry_tx,
+            view_data: view_data_tx,
+        };
+
         loop {
             tokio::select! {
                 Some(control_msg) = self.control_rx.recv() => {
-                    if !self.handle_engine_control(control_msg, &state_tx, &stats_tx, &telemetry_tx, &view_data_tx).await {
+                    if !self.handle_engine_control(control_msg, &channels).await {
                         break; // Shutdown requested
                     }
                 },
@@ -388,7 +395,14 @@ impl DynamicEngine {
 
         // Broadcast to all subscribers
         self.view_data_subscribers.retain(|subscriber| match subscriber.try_send(update.clone()) {
-            Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => true,
+            Ok(()) => true,
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                tracing::debug!(
+                    node = %update.node_id,
+                    "View data update dropped (subscriber channel full)"
+                );
+                true
+            },
             Err(mpsc::error::TrySendError::Closed(_)) => false,
         });
     }
@@ -967,10 +981,7 @@ impl DynamicEngine {
     async fn handle_engine_control(
         &mut self,
         msg: EngineControlMessage,
-        state_tx: &mpsc::Sender<NodeStateUpdate>,
-        stats_tx: &mpsc::Sender<NodeStatsUpdate>,
-        telemetry_tx: &mpsc::Sender<TelemetryEvent>,
-        view_data_tx: &mpsc::Sender<NodeViewDataUpdate>,
+        channels: &NodeChannels,
     ) -> bool {
         match msg {
             EngineControlMessage::AddNode { node_id, kind, params } => {
@@ -990,15 +1001,7 @@ impl DynamicEngine {
                 match node_result {
                     Ok(node) => {
                         self.node_kinds.insert(node_id.clone(), kind.clone());
-                        // Delegate initialization to helper function
-                        // Pass by reference to avoid unnecessary clones
-                        let channels = NodeChannels {
-                            state: state_tx.clone(),
-                            stats: stats_tx.clone(),
-                            telemetry: telemetry_tx.clone(),
-                            view_data: view_data_tx.clone(),
-                        };
-                        if let Err(e) = self.initialize_node(node, &node_id, &kind, &channels).await
+                        if let Err(e) = self.initialize_node(node, &node_id, &kind, channels).await
                         {
                             tracing::error!(
                                 node_id = %node_id,

@@ -53,8 +53,8 @@ use dynamic_actor::DynamicEngine;
 /// It can be used to run stateless pipelines or to start the long-running dynamic actor.
 pub struct Engine {
     pub registry: Arc<RwLock<NodeRegistry>>,
-    pub audio_pool: Arc<streamkit_core::AudioFramePool>,
-    pub video_pool: Arc<streamkit_core::VideoFramePool>,
+    pub(crate) audio_pool: Arc<streamkit_core::AudioFramePool>,
+    pub(crate) video_pool: Arc<streamkit_core::VideoFramePool>,
 }
 impl Default for Engine {
     fn default() -> Self {
