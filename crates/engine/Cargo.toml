@@ -11,6 +11,7 @@ keywords = ["audio", "pipeline", "engine", "streaming", "realtime"]
 categories = ["multimedia", "network-programming"]
 readme = "README.md"
 publish = false
+autobenches = false
 
 [dependencies]
 # Skit's core library
@@ -56,6 +57,7 @@ script = ["streamkit-nodes/script"]
 compositor = ["streamkit-nodes/compositor"]
 
 [dev-dependencies]
+criterion = { workspace = true }
 serde_json = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures = { workspace = true }

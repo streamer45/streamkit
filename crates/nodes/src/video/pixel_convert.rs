@@ -467,9 +467,14 @@ mod tests {
 
         input_tx.send(Packet::Video(frame)).await.unwrap();
 
-        // Small delay to ensure the first frame is processed before sending
-        // the second, so the caching logic can compare Arc pointers.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // Wait for the first output packet before sending the second so that
+        // the caching logic has a converted result to compare Arc pointers
+        // against.  This replaces a fragile `sleep(50ms)` that could fail
+        // under CI load.
+        let first_output = mock_sender
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .await
+            .expect("Timed out waiting for first output packet");
 
         input_tx.send(Packet::Video(frame_clone)).await.unwrap();
 
@@ -477,7 +482,10 @@ mod tests {
         assert_state_stopped(&mut state_rx).await;
         node_handle.await.unwrap().unwrap();
 
-        let output_packets = mock_sender.get_packets_for_pin("out").await;
+        // Collect the remaining output and prepend the first packet we
+        // already consumed above.
+        let mut output_packets = vec![first_output.2];
+        output_packets.extend(mock_sender.get_packets_for_pin("out").await);
         assert_eq!(output_packets.len(), 2, "Expected 2 output packets");
 
         // Both outputs should be NV12.

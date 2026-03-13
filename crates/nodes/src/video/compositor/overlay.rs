@@ -52,7 +52,10 @@ pub struct DecodedOverlay {
 ///
 /// Returns an error if the base64 data is invalid or the image cannot be
 /// decoded.
-pub fn decode_image_overlay(config: &ImageOverlayConfig) -> Result<DecodedOverlay, StreamKitError> {
+pub fn decode_image_overlay(
+    config: &ImageOverlayConfig,
+    max_dimension: u32,
+) -> Result<DecodedOverlay, StreamKitError> {
     use image::GenericImageView;
 
     use base64::Engine;
@@ -65,8 +68,15 @@ pub fn decode_image_overlay(config: &ImageOverlayConfig) -> Result<DecodedOverla
         StreamKitError::Configuration(format!("Failed to decode image overlay: {e}"))
     })?;
 
-    let rgba = img.to_rgba8();
     let (w, h) = img.dimensions();
+    if w > max_dimension || h > max_dimension {
+        return Err(StreamKitError::Configuration(format!(
+            "Decoded image dimensions {w}x{h} exceed the maximum allowed \
+             dimension ({max_dimension})",
+        )));
+    }
+
+    let rgba = img.to_rgba8();
 
     let target_w = config.transform.rect.width;
     let target_h = config.transform.rect.height;
@@ -103,7 +113,7 @@ pub fn decode_image_overlay(config: &ImageOverlayConfig) -> Result<DecodedOverla
         // Adjust the rect to match the fitted dimensions so the blit
         // stays on the identity-scale path and the image is centred
         // within the originally requested area.
-        let mut rect = config.transform.rect.clone();
+        let mut rect = config.transform.rect;
         rect.x += (target_w.cast_signed() - fit_w.cast_signed()) / 2;
         rect.y += (target_h.cast_signed() - fit_h.cast_signed()) / 2;
         rect.width = fit_w;
@@ -129,7 +139,7 @@ pub fn decode_image_overlay(config: &ImageOverlayConfig) -> Result<DecodedOverla
             rgba_data: rgba.into_raw(),
             width: w,
             height: h,
-            rect: config.transform.rect.clone(),
+            rect: config.transform.rect,
             opacity: config.transform.opacity,
             rotation_degrees: config.transform.rotation_degrees,
             z_index: config.transform.z_index,
@@ -168,7 +178,7 @@ use crate::video::fonts;
 /// sources use the filesystem path string.  Inline base64 data is keyed by
 /// a hash of the base64 string so the cache map does not retain what may be
 /// a several-hundred-KiB string per font.
-#[derive(Hash, Eq, PartialEq)]
+#[derive(Clone, Hash, Eq, PartialEq)]
 enum FontKey {
     /// A font from the compile-time bundled set (keyed by name).
     Bundled(&'static str),
@@ -178,6 +188,13 @@ enum FontKey {
     InlineHash(u64),
 }
 
+/// Maximum number of distinct fonts kept in [`FONT_CACHE`].
+///
+/// The 6 bundled DejaVu fonts plus a generous allowance for user-provided
+/// fonts via `font_path` or `font_data_base64`.  When the limit is reached,
+/// the oldest non-bundled entry is evicted (see [`load_font`]).
+const FONT_CACHE_MAX_ENTRIES: usize = 64;
+
 /// Process-wide cache of parsed `fontdue::Font` objects.
 ///
 /// `fontdue::Font::from_bytes` parses the full TTF/OTF table set and is
@@ -186,9 +203,9 @@ enum FontKey {
 /// parse happens once per distinct font for the lifetime of the process;
 /// subsequent `load_font` calls for the same source are an `Arc::clone`.
 ///
-/// The set of distinct fonts in any reasonable pipeline is tiny (bounded by
-/// the bundled set + whatever the user injects), so unbounded growth is not a
-/// concern.  The lock is held only for the map lookup / insert, never across
+/// Bounded to [`FONT_CACHE_MAX_ENTRIES`] to prevent unbounded growth when
+/// users repeatedly send `UpdateParams` with unique inline font data.
+/// The lock is held only for the map lookup / insert, never across
 /// the parse itself.
 static FONT_CACHE: LazyLock<Mutex<HashMap<FontKey, Arc<fontdue::Font>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -289,6 +306,16 @@ fn load_font(config: &TextOverlayConfig) -> Result<Arc<fontdue::Font>, String> {
     // Insert.  If the mutex is poisoned we simply skip caching — the caller
     // still gets a valid font, just without the memoisation benefit.
     if let Ok(mut cache) = FONT_CACHE.lock() {
+        // Evict a non-bundled entry if we've hit the capacity limit.
+        // Bundled fonts are never evicted since they are always available
+        // and essentially free (static data, no I/O).
+        if cache.len() >= FONT_CACHE_MAX_ENTRIES && !cache.contains_key(&key) {
+            if let Some(evict_key) =
+                cache.keys().find(|k| !matches!(k, FontKey::Bundled(_))).cloned()
+            {
+                cache.remove(&evict_key);
+            }
+        }
         cache.entry(key).or_insert_with(|| Arc::clone(&font));
     }
 
@@ -391,7 +418,7 @@ pub fn rasterize_text_overlay(config: &TextOverlayConfig) -> DecodedOverlay {
         rect: {
             // Use the expanded dimensions so the blit renders the full bitmap
             // without clipping text that exceeds the original rect.
-            let mut r = config.transform.rect.clone();
+            let mut r = config.transform.rect;
             r.width = w;
             r.height = h;
             r

@@ -86,7 +86,7 @@ pub fn measure_text(font: &fontdue::Font, font_size: f32, text: &str) -> (u32, u
         return (0, 0);
     }
 
-    let (ref_metrics, _) = font.rasterize('A', font_size);
+    let ref_metrics = font.metrics('A', font_size);
     let baseline_y = ref_metrics.height as f32;
 
     let mut total_width: f32 = 0.0;
@@ -94,7 +94,7 @@ pub fn measure_text(font: &fontdue::Font, font_size: f32, text: &str) -> (u32, u
     let mut max_bottom: i32 = 0; // lowest pixel below origin_y
 
     for ch in text.chars() {
-        let (metrics, _) = font.rasterize(ch, font_size);
+        let metrics = font.metrics(ch, font_size);
 
         let gy = (baseline_y - metrics.ymin as f32) as i32 - metrics.height as i32;
         let glyph_bottom = gy + metrics.height as i32;
