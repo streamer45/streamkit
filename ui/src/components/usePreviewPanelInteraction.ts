@@ -12,6 +12,8 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
+import { componentsLogger } from '@/utils/logger';
+
 const DEFAULT_WIDTH = 320;
 const MIN_WIDTH = 180;
 const MAX_WIDTH = 800;
@@ -127,9 +129,14 @@ export function usePreviewPanelInteraction(aspectRatio?: string): PanelInteracti
 
       const handleMove = (ev: PointerEvent) => {
         if (!dragRef.current) return;
+        const newRight = dragRef.current.origX - (ev.clientX - dragRef.current.startX);
+        const newBottom = dragRef.current.origY - (ev.clientY - dragRef.current.startY);
+        // Clamp so the panel stays within the viewport.
+        const maxRight = window.innerWidth - panelWidth;
+        const maxBottom = window.innerHeight - 40; // leave at least 40px visible
         setPos({
-          right: Math.max(0, dragRef.current.origX - (ev.clientX - dragRef.current.startX)),
-          bottom: Math.max(0, dragRef.current.origY - (ev.clientY - dragRef.current.startY)),
+          right: Math.max(0, Math.min(maxRight, newRight)),
+          bottom: Math.max(0, Math.min(maxBottom, newBottom)),
         });
       };
 
@@ -144,7 +151,7 @@ export function usePreviewPanelInteraction(aspectRatio?: string): PanelInteracti
       document.addEventListener('pointerup', handleUp);
       activeListenersRef.current = { move: handleMove, up: handleUp };
     },
-    [pos]
+    [pos, panelWidth]
   );
 
   const toggleCollapsed = useCallback(() => setCollapsed((prev) => !prev), []);
@@ -155,12 +162,16 @@ export function usePreviewPanelInteraction(aspectRatio?: string): PanelInteracti
       panelRef.current
         .requestFullscreen()
         .then(() => setIsFullscreen(true))
-        .catch(() => {});
+        .catch((err) => {
+          componentsLogger.warn('Fullscreen request denied:', err);
+        });
     } else {
       document
         .exitFullscreen()
         .then(() => setIsFullscreen(false))
-        .catch(() => {});
+        .catch((err) => {
+          componentsLogger.warn('Exit fullscreen failed:', err);
+        });
     }
   }, []);
 

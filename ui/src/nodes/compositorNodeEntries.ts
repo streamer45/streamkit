@@ -20,7 +20,11 @@ import type { CompositorEntry } from './compositorNodeParts';
 /** Build a structurally-stable unified entry list from the three layer
  *  sources.  Returns the previous array reference when the derived entries
  *  haven't changed, which lets downstream React.memo components bail out
- *  during opacity / rotation drags (those fields are not in entries). */
+ *  during opacity / rotation drags (those fields are not in entries).
+ *
+ *  NOTE: The field-by-field equality check is O(fields × entries).  For the
+ *  typical compositor (< 20 layers) this is negligible, but if layer counts
+ *  grow significantly a hash-based comparison would be more efficient. */
 export function useStableEntries(
   layers: { id: string; zIndex: number; visible: boolean }[],
   textOverlays: TextOverlayState[],

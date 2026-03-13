@@ -125,6 +125,10 @@ export function decideConnect(
   }
 
   const shouldWatch = state.connectionMode === 'session' || state.enableWatch;
+  // NOTE: Session mode no longer implicitly enables publishing.  Publishing is
+  // now driven entirely by `enablePublish` (which the session setup sets based
+  // on whether the pipeline needs client-side media inputs).  This was a
+  // deliberate change from the old behaviour where session mode always published.
   const shouldPublish = state.enablePublish;
 
   return { ok: true, trimmedServerUrl, shouldWatch, shouldPublish };
@@ -371,6 +375,9 @@ function schedulePostConnectWarnings(
     }, 10_000);
   }
 
+  // Camera warning mirrors the microphone warning above.  The guard
+  // `attempt.camera` is null when `!needsVideo`, so this block is only
+  // reached when the pipeline actually requested a camera source.
   if (decision.shouldPublish && attempt.camera) {
     const cameraRef = attempt.camera;
 
@@ -389,6 +396,31 @@ function schedulePostConnectWarnings(
       });
     }, 10_000);
   }
+}
+
+/** Apply watch-path results to the attempt object in a type-safe manner. */
+function applyWatchResult(
+  attempt: ConnectAttempt,
+  result: ReturnType<typeof setupWatchPath>
+): void {
+  attempt.watch = result.watch;
+  attempt.watchSync = result.watchSync;
+  attempt.audioSource = result.audioSource;
+  attempt.audioDecoder = result.audioDecoder;
+  attempt.audioEmitter = result.audioEmitter;
+  attempt.videoSource = result.videoSource;
+  attempt.videoDecoder = result.videoDecoder;
+  attempt.videoRenderer = result.videoRenderer;
+}
+
+/** Apply publish-path results to the attempt object in a type-safe manner. */
+function applyPublishResult(
+  attempt: ConnectAttempt,
+  result: ReturnType<typeof setupPublishPath>
+): void {
+  attempt.microphone = result.microphone;
+  attempt.camera = result.camera;
+  attempt.publish = result.publish;
 }
 
 /** Core connection logic extracted from the store for reduced complexity. */
@@ -427,7 +459,7 @@ export async function performConnect(
     setupConnectionStatusSync(attempt.healthEffect, attempt.connection, get, set);
 
     if (decision.shouldWatch) {
-      Object.assign(
+      applyWatchResult(
         attempt,
         setupWatchPath(
           attempt.healthEffect,
@@ -441,7 +473,7 @@ export async function performConnect(
     }
 
     if (decision.shouldPublish) {
-      Object.assign(
+      applyPublishResult(
         attempt,
         setupPublishPath(
           attempt.healthEffect,

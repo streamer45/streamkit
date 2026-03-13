@@ -30,6 +30,15 @@ import type {
 import { ImageOverlayLayer, TextOverlayLayer, VideoLayer } from './compositorCanvasLayers';
 import { CanvasInner, CanvasOuter, EmptyState, SnapGuideLine } from './compositorCanvasStyles';
 
+// Module-level no-op callbacks used when the canvas is disabled.
+// Defined here rather than inside the component to avoid per-instance creation.
+const noopPointerDown = () => {};
+const noopResizeStart = (() => {}) as (
+  id: string,
+  handle: ResizeHandle,
+  e: React.PointerEvent
+) => void;
+
 // ── Main canvas ─────────────────────────────────────────────────────────────
 
 export interface CompositorCanvasProps {
@@ -152,12 +161,6 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
         onLayerContextMenu(hitId, kind, e.clientX, e.clientY);
       },
       [disabled, onLayerContextMenu, onSelectLayer, layerRefs, textOverlays, imageOverlays]
-    );
-
-    const noopPointerDown = useCallback(() => {}, []);
-    const noopResizeStart = useCallback(
-      (() => {}) as (id: string, handle: ResizeHandle, e: React.PointerEvent) => void,
-      []
     );
 
     const hasContent = layers.length > 0 || textOverlays.length > 0 || imageOverlays.length > 0;

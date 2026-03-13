@@ -158,6 +158,7 @@ async function streamMediaData(
   isAborted: () => boolean
 ): Promise<void> {
   let totalBytes = 0;
+  let playbackStarted = false;
 
   while (true) {
     // Check if media element is in error state
@@ -178,7 +179,7 @@ async function streamMediaData(
     }
 
     totalBytes += value.length;
-    setStatus(`Streaming... ${(totalBytes / 1024).toFixed(1)} KB)`);
+    setStatus(`Streaming... ${(totalBytes / 1024).toFixed(1)} KB`);
 
     // Check media source and element state before appending
     if (mediaSource.readyState !== 'open' || hasRealMediaError(media)) {
@@ -189,8 +190,9 @@ async function streamMediaData(
 
     await processStreamChunk(value, sourceBuffer);
 
-    // Try to start playback after first chunk
-    if (totalBytes > 0) {
+    // Try to start playback once after the first chunk arrives.
+    if (!playbackStarted && totalBytes > 0) {
+      playbackStarted = true;
       tryAutoplay(media);
     }
   }
