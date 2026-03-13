@@ -324,6 +324,15 @@ fn compile_dag(
                 .map(|(idx, dep)| DepEntry::Auto { idx, total: deps.len(), dep })
                 .collect(),
             Needs::Map(map) => {
+                // Reject "node" as a pin name because it collides with the
+                // NeedsDependency::WithMode struct key and would be silently
+                // mis-parsed as Single(WithMode) instead of Map.
+                if map.contains_key("node") {
+                    return Err(format!(
+                        "Node '{node_name}': 'node' cannot be used as a pin name in a needs map \
+                         (it collides with the WithMode dependency syntax)"
+                    ));
+                }
                 map.iter().map(|(pin, dep)| DepEntry::Named { pin: pin.as_str(), dep }).collect()
             },
         };
@@ -419,7 +428,7 @@ nodes:
     needs: peer
 ";
 
-        let user_pipeline: UserPipeline = serde_saphyr::from_str(yaml).unwrap();
+        let user_pipeline = parse_yaml(yaml).unwrap();
         let result = compile(user_pipeline);
 
         // Should fail with a cycle error
@@ -446,7 +455,7 @@ nodes:
     needs: node_a
 ";
 
-        let user_pipeline: UserPipeline = serde_saphyr::from_str(yaml).unwrap();
+        let user_pipeline = parse_yaml(yaml).unwrap();
         let result = compile(user_pipeline);
 
         // Should fail with a cycle error
@@ -469,7 +478,7 @@ nodes:
     needs: non_existent_node
 ";
 
-        let user_pipeline: UserPipeline = serde_saphyr::from_str(yaml).unwrap();
+        let user_pipeline = parse_yaml(yaml).unwrap();
         let result = compile(user_pipeline);
 
         // Should fail with an error message
@@ -520,7 +529,7 @@ nodes:
     needs: ogg_muxer
 ";
 
-        let user_pipeline: UserPipeline = serde_saphyr::from_str(yaml).unwrap();
+        let user_pipeline = parse_yaml(yaml).unwrap();
         let result = compile(user_pipeline);
 
         // Should compile successfully - no cycle in needs graph
@@ -561,7 +570,7 @@ nodes:
     needs: encoder
 ";
 
-        let user_pipeline: UserPipeline = serde_saphyr::from_str(yaml).unwrap();
+        let user_pipeline = parse_yaml(yaml).unwrap();
         let result = compile(user_pipeline);
 
         // Should compile successfully - cycles with bidirectional nodes are allowed
@@ -575,7 +584,7 @@ nodes:
     #[test]
     fn test_sample_moq_mixing_compiles() {
         let yaml = include_str!("../../../samples/pipelines/dynamic/moq_mixing.yml");
-        let user_pipeline: UserPipeline = serde_saphyr::from_str(yaml).unwrap();
+        let user_pipeline = parse_yaml(yaml).unwrap();
         let result = compile(user_pipeline);
 
         assert!(
@@ -602,7 +611,7 @@ nodes:
     - input_b
 ";
 
-        let user_pipeline: UserPipeline = serde_saphyr::from_str(yaml).unwrap();
+        let user_pipeline = parse_yaml(yaml).unwrap();
         let pipeline = compile(user_pipeline).unwrap();
 
         // Should have 3 nodes
@@ -645,7 +654,7 @@ nodes:
     needs: source
 ";
 
-        let user_pipeline: UserPipeline = serde_saphyr::from_str(yaml).unwrap();
+        let user_pipeline = parse_yaml(yaml).unwrap();
         let pipeline = compile(user_pipeline).unwrap();
 
         // Should have 2 nodes
@@ -681,7 +690,7 @@ nodes:
     - input_b
 ";
 
-        let user_pipeline: UserPipeline = serde_saphyr::from_str(yaml).unwrap();
+        let user_pipeline = parse_yaml(yaml).unwrap();
         let pipeline = compile(user_pipeline).unwrap();
 
         // The mixer node should have num_inputs automatically set to 2 (oneshot mode)
@@ -714,7 +723,7 @@ steps:
   - kind: streamkit::http_output
 ";
 
-        let user_pipeline: UserPipeline = serde_saphyr::from_str(yaml).unwrap();
+        let user_pipeline = parse_yaml(yaml).unwrap();
         let pipeline = compile(user_pipeline).unwrap();
 
         // Should have 3 nodes with generated names
@@ -753,7 +762,7 @@ steps:
   - kind: streamkit::http_input
   - kind: streamkit::http_output
 ";
-        let pipeline: UserPipeline = serde_saphyr::from_str(yaml_oneshot).unwrap();
+        let pipeline = parse_yaml(yaml_oneshot).unwrap();
         let compiled = compile(pipeline).unwrap();
         assert_eq!(compiled.mode, EngineMode::OneShot);
 
@@ -763,7 +772,7 @@ mode: dynamic
 steps:
   - kind: core::passthrough
 ";
-        let pipeline: UserPipeline = serde_saphyr::from_str(yaml_dynamic).unwrap();
+        let pipeline = parse_yaml(yaml_dynamic).unwrap();
         let compiled = compile(pipeline).unwrap();
         assert_eq!(compiled.mode, EngineMode::Dynamic);
     }
@@ -776,7 +785,7 @@ steps:
 steps:
   - kind: core::passthrough
 ";
-        let pipeline: UserPipeline = serde_saphyr::from_str(yaml).unwrap();
+        let pipeline = parse_yaml(yaml).unwrap();
         let compiled = compile(pipeline).unwrap();
         assert_eq!(compiled.mode, EngineMode::Dynamic);
     }
@@ -791,7 +800,7 @@ mode: dynamic
 steps:
   - kind: core::passthrough
 ";
-        let pipeline: UserPipeline = serde_saphyr::from_str(yaml).unwrap();
+        let pipeline = parse_yaml(yaml).unwrap();
         let compiled = compile(pipeline).unwrap();
 
         assert_eq!(compiled.name, Some("Test Pipeline".to_string()));
@@ -816,7 +825,7 @@ nodes:
       mode: best_effort
 ";
 
-        let user_pipeline: UserPipeline = serde_saphyr::from_str(yaml).unwrap();
+        let user_pipeline = parse_yaml(yaml).unwrap();
         let pipeline = compile(user_pipeline).unwrap();
 
         // Should have 3 nodes
@@ -860,7 +869,7 @@ nodes:
         mode: best_effort
 ";
 
-        let user_pipeline: UserPipeline = serde_saphyr::from_str(yaml).unwrap();
+        let user_pipeline = parse_yaml(yaml).unwrap();
         let pipeline = compile(user_pipeline).unwrap();
 
         // Should have 3 nodes
