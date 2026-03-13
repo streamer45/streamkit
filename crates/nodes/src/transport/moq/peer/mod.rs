@@ -1213,6 +1213,7 @@ impl MoqPeerNode {
                             tracing::info!("Found audio track in catalog: {}", track_name);
                             audio_handle = Some(Self::spawn_track_processor(
                                 broadcast_consumer, track_name, audio_output_pin,
+                                false,
                                 &output_sender, shutdown_rx, stats_delta_tx,
                             ));
                         }
@@ -1224,6 +1225,7 @@ impl MoqPeerNode {
                             tracing::info!("Found video track in catalog: {}", track_name);
                             video_handle = Some(Self::spawn_track_processor(
                                 broadcast_consumer, track_name, video_output_pin,
+                                true,
                                 &output_sender, shutdown_rx, stats_delta_tx,
                             ));
                         }
@@ -1255,6 +1257,7 @@ impl MoqPeerNode {
         broadcast_consumer: &moq_lite::BroadcastConsumer,
         track_name: &str,
         output_pin: &'static str,
+        is_video: bool,
         output_sender: &streamkit_core::OutputSender,
         shutdown_rx: &broadcast::Receiver<()>,
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
@@ -1291,6 +1294,7 @@ impl MoqPeerNode {
                     consumer,
                     sender.clone(),
                     pin_name,
+                    is_video,
                     &mut task_shutdown,
                     &stats,
                 )
@@ -1455,6 +1459,7 @@ impl MoqPeerNode {
         mut track_consumer: moq_lite::TrackConsumer,
         mut output_sender: streamkit_core::OutputSender,
         output_pin: &str,
+        is_video: bool,
         shutdown_rx: &mut broadcast::Receiver<()>,
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
     ) -> TrackExit {
@@ -1491,6 +1496,7 @@ impl MoqPeerNode {
                     group,
                     &mut output_sender,
                     output_pin,
+                    is_video,
                     &mut frame_count,
                     &mut last_log,
                     shutdown_rx,
@@ -1554,6 +1560,7 @@ impl MoqPeerNode {
         group: &mut moq_lite::GroupConsumer,
         output_sender: &mut streamkit_core::OutputSender,
         output_pin: &str,
+        is_video: bool,
         frame_count: &mut u64,
         last_log: &mut std::time::Instant,
         shutdown_rx: &mut broadcast::Receiver<()>,
@@ -1588,9 +1595,14 @@ impl MoqPeerNode {
                         let timestamp_us = timestamp.as_micros() as u64;
 
                         let data = payload.copy_to_bytes(payload.remaining());
+                        let content_type = if is_video {
+                            Some(std::borrow::Cow::Borrowed("video/vp9"))
+                        } else {
+                            None
+                        };
                         let packet = Packet::Binary {
                             data,
-                            content_type: None,
+                            content_type,
                             metadata: Some(streamkit_core::types::PacketMetadata {
                                 timestamp_us: Some(timestamp_us),
                                 duration_us: None,
