@@ -195,6 +195,7 @@ Server-level limits for compositor nodes (requires `compositor` feature). These 
 |--------|------|---------|-------------|
 | `max_canvas_dimension` | int | `7680` | Maximum canvas dimension (width or height) in pixels. Prevents runaway memory from oversized canvases |
 | `max_font_size` | int | `4096` | Maximum font size for text overlays in pixels |
+| `max_text_length` | int | `10000` | Maximum text overlay string length in bytes |
 
 ## `[engine]`
 

@@ -138,12 +138,14 @@ Individual nodes cannot exceed these values, even via `UpdateParams`.
 [compositor]
 max_canvas_dimension = 7680
 max_font_size = 4096
+max_text_length = 10000
 ```
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `max_canvas_dimension` | integer (uint32) | `7680` | Maximum allowed canvas dimension (width or height) in pixels. Default: 7680 (8K UHD). |
 | `max_font_size` | integer (uint32) | `4096` | Maximum allowed font size for text overlays in pixels. Default: 4096. |
+| `max_text_length` | integer (uint) | `10000` | Maximum allowed text overlay string length in bytes. Default: 10000. |
 
 ## `[auth]`
 
@@ -412,7 +414,8 @@ Authentication configuration for built-in JWT-based auth.
       "$ref": "#/$defs/CompositorServerConfig",
       "default": {
         "max_canvas_dimension": 7680,
-        "max_font_size": 4096
+        "max_font_size": 4096,
+        "max_text_length": 10000
       }
     },
     "auth": {
@@ -1349,7 +1352,7 @@ Authentication configuration for built-in JWT-based auth.
       ]
     },
     "CompositorServerConfig": {
-      "description": "Server-level defaults for the video compositor node.\n\nThese limits apply to every compositor node created by the engine.\nIndividual nodes cannot exceed these values, even via `UpdateParams`.\n\n```toml\n[compositor]\nmax_canvas_dimension = 4096\nmax_font_size = 2048\n```",
+      "description": "Server-level defaults for the video compositor node.\n\nThese limits apply to every compositor node created by the engine.\nIndividual nodes cannot exceed these values, even via `UpdateParams`.\n\n```toml\n[compositor]\nmax_canvas_dimension = 7680\nmax_font_size = 4096\nmax_text_length = 10000\n```",
       "type": "object",
       "properties": {
         "max_canvas_dimension": {
@@ -1365,6 +1368,13 @@ Authentication configuration for built-in JWT-based auth.
           "format": "uint32",
           "minimum": 0,
           "default": 4096
+        },
+        "max_text_length": {
+          "description": "Maximum allowed text overlay string length in bytes.\nDefault: 10000.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 10000
         }
       }
     },

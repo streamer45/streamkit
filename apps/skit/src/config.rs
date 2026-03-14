@@ -633,6 +633,7 @@ const fn default_compositor_max_text_length() -> usize {
 /// [compositor]
 /// max_canvas_dimension = 7680
 /// max_font_size = 4096
+/// max_text_length = 10000
 /// ```
 // All fields are upper-bound limits — the shared `max_` prefix is intentional
 // and maps directly to the TOML key names.
