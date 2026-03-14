@@ -24,101 +24,7 @@ import {
   MOQ_BENIGN_PATTERNS,
   createConsoleErrorCollector,
 } from './test-helpers';
-
-// ---------------------------------------------------------------------------
-// Pipeline YAML — Webcam PiP compositor (same as compositor-keyboard.spec.ts)
-// ---------------------------------------------------------------------------
-
-const WEBCAM_PIP_YAML = `
-name: Webcam PiP (MoQ Stream)
-description: Composites the user's webcam as picture-in-picture over colorbars with a text overlay
-mode: dynamic
-
-nodes:
-  colorbars_bg:
-    kind: video::colorbars
-    params:
-      width: 1280
-      height: 720
-      fps: 30
-      draw_time: true
-
-  moq_peer:
-    kind: transport::moq::peer
-    params:
-      gateway_path: /moq/video
-      input_broadcast: input
-      output_broadcast: output
-      allow_reconnect: true
-    needs:
-      in: opus_encoder
-      in_1: vp9_encoder
-
-  vp9_decoder:
-    kind: video::vp9::decoder
-    needs:
-      in: moq_peer.out_1
-
-  compositor:
-    kind: video::compositor
-    params:
-      width: 1280
-      height: 720
-      num_inputs: 2
-      layers:
-        in_0:
-          opacity: 1.0
-          z_index: 0
-        in_1:
-          rect:
-            x: 880
-            y: 20
-            width: 380
-            height: 285
-          opacity: 0.95
-          z_index: 1
-      text_overlays:
-        - text: "Hello from StreamKit"
-          rect:
-            x: 40
-            y: 660
-            width: 400
-            height: 40
-          opacity: 1.0
-          z_index: 2
-          color: [255, 255, 255, 220]
-          font_size: 28
-          font_name: dejavu-sans-bold
-    needs:
-      - colorbars_bg
-      - vp9_decoder
-
-  pixel_convert:
-    kind: video::pixel_convert
-    params:
-      output_format: nv12
-    needs: compositor
-
-  vp9_encoder:
-    kind: video::vp9::encoder
-    params:
-      keyframe_interval: 30
-    needs: pixel_convert
-
-  opus_decoder:
-    kind: audio::opus::decoder
-    needs: moq_peer
-
-  gain:
-    kind: audio::gain
-    params:
-      gain: 1.0
-    needs: opus_decoder
-
-  opus_encoder:
-    kind: audio::opus::encoder
-    needs: gain
-`.trim();
+import { WEBCAM_PIP_YAML } from './compositor-fixtures';
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -175,9 +81,9 @@ test.describe('Compositor Context Menu', () => {
     await sessionItem.click();
 
     await expect(page.locator('.react-flow__node').first()).toBeVisible({ timeout: 15_000 });
-    await page.waitForTimeout(2_000);
 
     const compositorNode = page.locator('.react-flow__node').filter({ hasText: 'Compositor' });
+    // Wait for compositor node graph to fully settle.
     await expect(compositorNode).toBeVisible({ timeout: 10_000 });
 
     const canvasInner = compositorNode.locator('[data-canvas-width]');
@@ -198,11 +104,9 @@ test.describe('Compositor Context Menu', () => {
 
     // Select the layer first by left-clicking in the layer list.
     await inputLayer.click();
-    await page.waitForTimeout(300);
 
     // Right-click on the video layer box.
     await videoLayerBox.click({ button: 'right' });
-    await page.waitForTimeout(300);
 
     // The context menu should appear.
     const contextMenu = page.getByTestId('compositor-context-menu');
@@ -224,7 +128,6 @@ test.describe('Compositor Context Menu', () => {
 
     // Select text layer first.
     await textLayer.click();
-    await page.waitForTimeout(300);
 
     const textLayerBox = canvasInner
       .locator('.nodrag.nopan')
@@ -234,8 +137,6 @@ test.describe('Compositor Context Menu', () => {
 
     // Right-click on the text layer box.
     await textLayerBox.click({ button: 'right' });
-    await page.waitForTimeout(300);
-
     await expect(contextMenu).toBeVisible({ timeout: 3_000 });
 
     // Text layers should have "Delete" option.
@@ -244,7 +145,6 @@ test.describe('Compositor Context Menu', () => {
     // ── 7. Click "Bring to Front" action ────────────────────────────────
 
     await page.getByTestId('ctx-bring-to-front').click();
-    await page.waitForTimeout(300);
 
     // Menu should close after clicking an action.
     await expect(contextMenu).not.toBeVisible({ timeout: 3_000 });
@@ -253,11 +153,9 @@ test.describe('Compositor Context Menu', () => {
 
     // Select "Input 1" from layer list.
     await inputLayer.click();
-    await page.waitForTimeout(300);
 
     // Right-click on the video layer — should keep it selected (or select it).
     await videoLayerBox.click({ button: 'right' });
-    await page.waitForTimeout(300);
 
     await expect(contextMenu).toBeVisible({ timeout: 3_000 });
 
@@ -272,15 +170,12 @@ test.describe('Compositor Context Menu', () => {
 
     // Select text layer.
     await textLayer.click();
-    await page.waitForTimeout(300);
 
     // Right-click on text layer.
     await textLayerBox.click({ button: 'right' });
-    await page.waitForTimeout(300);
 
     await expect(contextMenu).toBeVisible({ timeout: 3_000 });
     await page.getByTestId('ctx-delete').click();
-    await page.waitForTimeout(300);
 
     // "Text 0" should be removed from the layer list.
     await expect(compositorNode.getByText('Text 0', { exact: true }).first()).not.toBeVisible({

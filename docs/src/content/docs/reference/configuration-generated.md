@@ -136,8 +136,8 @@ Individual nodes cannot exceed these values, even via `UpdateParams`.
 
 ```toml
 [compositor]
-max_canvas_dimension = 4096
-max_font_size = 2048
+max_canvas_dimension = 7680
+max_font_size = 4096
 ```
 
 | Option | Type | Default | Description |
@@ -369,6 +369,7 @@ Authentication configuration for built-in JWT-based auth.
             ],
             "allowed_nodes": [
               "audio::*",
+              "video::*",
               "containers::*",
               "transport::moq::*",
               "core::passthrough",
@@ -1009,6 +1010,7 @@ Authentication configuration for built-in JWT-based auth.
               ],
               "allowed_nodes": [
                 "audio::*",
+                "video::*",
                 "containers::*",
                 "transport::moq::*",
                 "core::passthrough",

@@ -36,7 +36,7 @@ Composites multiple raw video inputs (RGBA8) onto a single canvas with image and
 | Name | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `data_base64` | `string` | yes | — | Base64-encoded image data (PNG or JPEG). Decoded once during<br />initialization, not per-frame. |
-| `id` | `string` | no | `2bec0803-5fcd-42a4-a549-2a8ee1865758` | Stable unique identifier.  Auto-generated (UUID v4) when omitted. |
+| `id` | `string` | no | *(auto-generated UUID v4)* | Stable unique identifier.  Auto-generated (UUID v4) when omitted. |
 | `mirror_horizontal` | `boolean` | no | `false` | Mirror the layer horizontally (flip left ↔ right).  Default `false`. |
 | `mirror_vertical` | `boolean` | no | `false` | Mirror the layer vertically (flip top ↔ bottom).  Default `false`. |
 | `opacity` | `number (float)` | no | `1.0` | Opacity multiplier (0.0 = fully transparent, 1.0 = fully opaque). |
@@ -66,7 +66,7 @@ No structured fields.
 | `font_name` | `null | string` | no | `null` | Named font from the bundled set (embedded in the binary at compile<br />time — guaranteed to work without system font packages).<br />Takes precedence over `font_path` but not `font_data_base64`.<br />Available names: "dejavu-sans", "dejavu-sans-bold",<br />"dejavu-sans-mono", "dejavu-sans-mono-bold",<br />"dejavu-serif", "dejavu-serif-bold". |
 | `font_path` | `null | string` | no | `null` | Optional filesystem path to a TTF/OTF font file.<br />Use this for external or system-installed fonts not in the bundled set.<br />When omitted, a bundled default font (DejaVu Sans) is used. |
 | `font_size` | `integer (uint32)` | no | `24` | Font size in pixels.<br />min: `0` |
-| `id` | `string` | no | `d2fefd7f-735d-4482-9481-a101a1d5ad1f` | Stable unique identifier.  Auto-generated (UUID v4) when omitted. |
+| `id` | `string` | no | *(auto-generated UUID v4)* | Stable unique identifier.  Auto-generated (UUID v4) when omitted. |
 | `mirror_horizontal` | `boolean` | no | `false` | Mirror the layer horizontally (flip left ↔ right).  Default `false`. |
 | `mirror_vertical` | `boolean` | no | `false` | Mirror the layer vertically (flip top ↔ bottom).  Default `false`. |
 | `opacity` | `number (float)` | no | `1.0` | Opacity multiplier (0.0 = fully transparent, 1.0 = fully opaque). |

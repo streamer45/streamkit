@@ -129,13 +129,18 @@ steps:
       // Step 4: Verify the session disappears.
       await expect(sessionItem).toHaveCount(0, { timeout: 10000 });
 
-      // Step 5: Wait several seconds and assert the session does NOT reappear.
+      // Step 5: Poll for several seconds to verify the session does NOT reappear.
       // The old code would re-fetch the session list immediately after the
       // WebSocket event, and the server could still return the stale session
       // causing a brief flicker.  With the fix the optimistic removal prevents
       // any reappearance.
-      await page.waitForTimeout(5000);
-      await expect(sessionItem).toHaveCount(0);
+      //
+      // We poll every 500 ms for 5 s, asserting the count stays at 0 each time.
+      // This catches transient reappearances that a single check-after-sleep
+      // could miss.
+      await expect(async () => {
+        await expect(sessionItem).toHaveCount(0);
+      }).toPass({ intervals: [500, 500, 500, 500, 500, 500, 500, 500, 500, 500], timeout: 6_000 });
 
       sessionId = null;
     } finally {

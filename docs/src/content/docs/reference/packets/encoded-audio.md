@@ -15,7 +15,7 @@ Runtime: `Packet::Binary { data, metadata, .. }`
 - `label`: `Encoded Audio`
 - `color`: `#ff6b6b`
 - `display_template`: `Encoded Audio ({codec})`
-- `compat: wildcard fields (codec_private), color: `#ff6b6b``
+- compat: wildcard fields (`codec_private`), color: `#ff6b6b`
 
 ## Structure
 Encoded audio packets use `Packet::Binary`, with codec identity captured in the type system.
