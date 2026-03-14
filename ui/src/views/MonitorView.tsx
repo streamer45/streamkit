@@ -56,10 +56,7 @@ import { useNodeParamsStore } from '@/stores/nodeParamsStore';
 import { usePluginStore } from '@/stores/pluginStore';
 import { useSchemaStore } from '@/stores/schemaStore';
 import { useSessionStore } from '@/stores/sessionStore';
-import {
-  useStagingStore,
-  type StagingData,
-} from '@/stores/stagingStore';
+import { useStagingStore, type StagingData } from '@/stores/stagingStore';
 import { useStreamStore } from '@/stores/streamStore';
 import type {
   NodeDefinition,
