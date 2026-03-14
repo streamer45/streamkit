@@ -149,7 +149,7 @@ export const VideoLayer: React.FC<{
       style={layerBoxStyle(layer.x, layer.y, layer.width, layer.height, {
         visible: layer.visible,
         opacity: layer.opacity,
-        zIndex: layer.zIndex + 1,
+        zIndex: layer.zIndex,
         rotationDegrees: layer.rotationDegrees,
         mirrorHorizontal: layer.mirrorHorizontal,
         mirrorVertical: layer.mirrorVertical,
