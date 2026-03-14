@@ -390,7 +390,7 @@ async fn test_compositor_node_run_main_only() {
 }
 
 #[tokio::test]
-async fn test_compositor_node_preserves_metadata() {
+async fn test_compositor_node_generates_own_timestamps() {
     let (input_tx, input_rx) = mpsc::channel(10);
     let mut inputs = HashMap::new();
     inputs.insert("in_0".to_string(), input_rx);
@@ -405,6 +405,9 @@ async fn test_compositor_node_preserves_metadata() {
     assert_state_initializing(&mut state_rx).await;
     assert_state_running(&mut state_rx).await;
 
+    // Send a frame with an arbitrary input timestamp — the compositor
+    // should derive its own output timestamps from its configured fps
+    // and output sequence counter, not copy from the input.
     let mut frame = make_rgba_frame(2, 2, 100, 100, 100, 255);
     frame.metadata = Some(PacketMetadata {
         timestamp_us: Some(42_000),
@@ -424,10 +427,12 @@ async fn test_compositor_node_preserves_metadata() {
     assert!(!output_packets.is_empty());
 
     if let Packet::Video(ref out_frame) = output_packets[0] {
-        let meta = out_frame.metadata.as_ref().expect("metadata should be preserved");
-        assert_eq!(meta.timestamp_us, Some(42_000));
+        let meta = out_frame.metadata.as_ref().expect("metadata should be present");
+        // Default fps is 30 → frame_duration = 33333µs.
+        // First output frame (seq=0) gets timestamp 0.
+        assert_eq!(meta.timestamp_us, Some(0));
         assert_eq!(meta.duration_us, Some(33_333));
-        assert_eq!(meta.sequence, Some(0)); // output sequence starts at 0
+        assert_eq!(meta.sequence, Some(0));
     } else {
         panic!("Expected video packet");
     }

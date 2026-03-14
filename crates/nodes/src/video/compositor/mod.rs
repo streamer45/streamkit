@@ -546,6 +546,13 @@ impl ProcessorNode for CompositorNode {
         let mut output_seq: u64 = 0;
         let mut stop_reason: &str = "shutdown";
 
+        // Oneshot / batch pipelines provide a cancellation token;
+        // dynamic (live) pipelines do not.  In oneshot mode we take
+        // exactly one frame per slot per tick so every input frame
+        // is composited, whereas in live mode we drain to the latest
+        // frame to stay in sync with real-time input.
+        let is_oneshot = context.cancellation_token.is_some();
+
         // Set to `true` when the slot layout changes (input added,
         // removed, or disconnected) so the compositing thread clears
         // its conversion cache on the next frame.
@@ -561,11 +568,14 @@ impl ProcessorNode for CompositorNode {
 
         // ── Fixed-rate tick ──────────────────────────────────────────────
         // The compositor runs at a fixed fps regardless of input rates,
-        // like the audio clocked mixer.  On each tick it drains all inputs
-        // to their latest frame and composites.  Inputs that haven't
-        // delivered a new frame since the last tick reuse their previous
-        // frame.  This guarantees a constant output rate and decouples
-        // the compositor from input timing.
+        // like the audio clocked mixer.  On each tick it composites a
+        // frame and sends it downstream.
+        //
+        // Input drain strategy differs by pipeline mode:
+        //   • Live (dynamic): drain each slot to its latest frame so the
+        //     compositor always renders the freshest content.
+        //   • Oneshot (batch): take exactly one frame per slot per tick
+        //     so every input frame is composited.
         let tick_duration =
             std::time::Duration::from_nanos(1_000_000_000u64 / u64::from(self.config.fps));
         let mut tick = tokio::time::interval(tick_duration);
@@ -649,22 +659,40 @@ impl ProcessorNode for CompositorNode {
                 _ = tick.tick() => {}
             }
 
-            // ── Drain each slot to its latest frame (non-blocking) ──────
+            // ── Dequeue input frames (non-blocking) ─────────────────────
+            //
+            // In **live** mode we drain each slot to its most recent frame
+            // so the compositor always renders the freshest content and
+            // can recover from transient stalls without falling behind.
+            //
+            // In **oneshot / batch** mode we take exactly one frame per
+            // slot per tick so every input frame is composited.  Without
+            // this, batch sources (which produce frames as fast as
+            // possible without pacing) would dump all their frames into
+            // the channel and only the very last one would survive the
+            // drain — producing a tiny handful of output frames instead
+            // of the full expected count.
             for slot in &mut slots {
-                let mut latest: Option<VideoFrame> = None;
-                let mut dropped: u64 = 0;
-                while let Ok(Packet::Video(frame)) = slot.rx.try_recv() {
-                    if latest.is_some() {
-                        dropped += 1;
+                if is_oneshot {
+                    if let Ok(Packet::Video(frame)) = slot.rx.try_recv() {
+                        slot.latest_frame = Some(frame);
                     }
-                    latest = Some(frame);
-                }
-                if dropped > 0 {
-                    frames_dropped_counter.add(dropped, &otel_attrs);
-                    stats_tracker.discarded_n(dropped);
-                }
-                if let Some(frame) = latest {
-                    slot.latest_frame = Some(frame);
+                } else {
+                    let mut latest: Option<VideoFrame> = None;
+                    let mut dropped: u64 = 0;
+                    while let Ok(Packet::Video(frame)) = slot.rx.try_recv() {
+                        if latest.is_some() {
+                            dropped += 1;
+                        }
+                        latest = Some(frame);
+                    }
+                    if dropped > 0 {
+                        frames_dropped_counter.add(dropped, &otel_attrs);
+                        stats_tracker.discarded_n(dropped);
+                    }
+                    if let Some(frame) = latest {
+                        slot.latest_frame = Some(frame);
+                    }
                 }
             }
 
@@ -766,13 +794,18 @@ impl ProcessorNode for CompositorNode {
                 break;
             };
 
-            // Build metadata from the first available input frame.
-            let src_metadata =
-                slots.iter().find_map(|s| s.latest_frame.as_ref()).and_then(|f| f.metadata.clone());
-
+            // Derive output timestamps from the compositor's own sequence
+            // counter and configured fps rather than copying from input
+            // frames.  In batch/oneshot mode, inputs generate frames as
+            // fast as possible and the compositor drains many per tick,
+            // so the "latest input" timestamp can jump by hundreds of
+            // milliseconds — producing a WebM with huge gaps instead of
+            // smooth playback.  Using the compositor's own clock ensures
+            // a steady output cadence matching the configured fps.
+            let frame_duration_us = 1_000_000u64 / u64::from(self.config.fps);
             let metadata = Some(PacketMetadata {
-                timestamp_us: src_metadata.as_ref().and_then(|m| m.timestamp_us),
-                duration_us: src_metadata.as_ref().and_then(|m| m.duration_us),
+                timestamp_us: Some(output_seq * frame_duration_us),
+                duration_us: Some(frame_duration_us),
                 sequence: Some(output_seq),
                 // Don't set keyframe — the compositor outputs raw RGBA, not
                 // encoded video.  Downstream encoders (VP9) decide their own
@@ -819,9 +852,21 @@ impl ProcessorNode for CompositorNode {
             // production: if all input channels close between drain and
             // the next tick, the already-drained `latest_frame` values
             // would be discarded without ever being composited.
+            //
+            // In oneshot mode, a slot is only removed when the channel
+            // is closed **and** fully drained (is_empty) so that every
+            // queued input frame is composited.  In live mode, a closed
+            // channel is removed immediately since any residual frames
+            // are stale (the source is gone).
             let mut i = 0;
             while i < slots.len() {
-                if slots[i].rx.is_closed() {
+                let closed = slots[i].rx.is_closed();
+                let remove = if is_oneshot {
+                    closed && slots[i].rx.is_empty()
+                } else {
+                    closed
+                };
+                if remove {
                     tracing::info!("CompositorNode: input '{}' closed", slots[i].name);
                     clear_conversion_cache = true;
                     slots.remove(i);
