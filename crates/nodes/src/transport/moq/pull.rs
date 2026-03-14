@@ -893,9 +893,7 @@ impl MoqPullNode {
                                     }
                                 }
                             } else {
-                                tracing::warn!(
-                                    "audio track re-subscribe limit reached, giving up"
-                                );
+                                tracing::warn!("audio track re-subscribe limit reached, giving up");
                             }
                         },
                         ReadSource::Video => {
@@ -925,9 +923,7 @@ impl MoqPullNode {
                                     }
                                 }
                             } else {
-                                tracing::warn!(
-                                    "video track re-subscribe limit reached, giving up"
-                                );
+                                tracing::warn!("video track re-subscribe limit reached, giving up");
                             }
                         },
                     }
