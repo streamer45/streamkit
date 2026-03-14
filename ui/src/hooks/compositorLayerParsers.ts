@@ -319,15 +319,47 @@ export function serializeLayers(layers: LayerState[]): Record<string, LayerConfi
 
 // ── Merge / diff ────────────────────────────────────────────────────────────
 
+/** Keys that belong to OverlayBase and are resolved by the server.
+ *  Used by `mergeOverlayState` to separate server-owned fields from
+ *  type-specific config fields (text, fontSize, dataBase64, etc.). */
+const OVERLAY_BASE_KEYS: ReadonlySet<string> = new Set([
+  'id',
+  'x',
+  'y',
+  'width',
+  'height',
+  'opacity',
+  'rotationDegrees',
+  'zIndex',
+  'mirrorHorizontal',
+  'mirrorVertical',
+  'visible',
+]);
+
+/** Extract type-specific config fields from a parsed overlay by removing
+ *  all OverlayBase keys.  The result contains only fields like `text`,
+ *  `fontSize`, `fontName`, `color`, `dataBase64`, etc. */
+function pickConfigFields<T extends OverlayBase>(parsed: T): Partial<T> {
+  const config: Record<string, unknown> = {};
+  for (const key of Object.keys(parsed)) {
+    if (!OVERLAY_BASE_KEYS.has(key)) {
+      config[key] = (parsed as Record<string, unknown>)[key];
+    }
+  }
+  return config as Partial<T>;
+}
+
 /** Merge parsed overlays with existing state, preserving client-side visibility.
  *  Returns the same array reference if nothing changed (avoiding re-renders).
  *  An optional `hasExtraChanges` comparator can detect changes in type-specific
  *  fields (e.g. `text`, `fontSize` for text overlays).
  *
- *  When `preserveGeometry` is true (Monitor view), existing layer positions
- *  (x, y, width, height) are kept from `current` instead of being overwritten
- *  by `parsed`.  This prevents the config-derived positions from clobbering the
- *  server's resolved layout (e.g. aspect-fit adjusted rects). */
+ *  When `preserveGeometry` is true (Monitor view), ALL server-resolved fields
+ *  are kept from `current` — not just positions but also opacity, rotation,
+ *  z-index, mirror flags, and any runtime-only fields (e.g. measuredTextWidth).
+ *  Only type-specific config fields (text, fontSize, color, dataBase64, …) are
+ *  taken from `parsed`.  This prevents config-derived values from clobbering the
+ *  server's resolved layout that useServerLayoutSync applied. */
 export function mergeOverlayState<T extends OverlayBase>(
   current: T[],
   parsed: T[],
@@ -337,11 +369,15 @@ export function mergeOverlayState<T extends OverlayBase>(
   const merged = parsed.map((p) => {
     const existing = current.find((o) => o.id === p.id);
     if (existing) {
-      const base = preserveGeometry
-        ? { ...p, x: existing.x, y: existing.y, width: existing.width, height: existing.height }
-        : p;
+      if (preserveGeometry) {
+        // Monitor view: server is the source of truth for all OverlayBase
+        // fields.  Start from `existing` (preserves server-resolved spatial
+        // values AND runtime-only fields like measuredTextWidth), then
+        // overlay only type-specific config fields from `parsed`.
+        return { ...existing, ...pickConfigFields(p) } as T;
+      }
       return {
-        ...base,
+        ...p,
         visible: existing.visible,
         opacity: existing.visible ? p.opacity : existing.opacity,
       };
