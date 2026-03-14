@@ -170,14 +170,14 @@ export function useServerLayoutSync(
 
       setLayers((prev) => mapServerLayers(prev, layout.layers));
 
-      if (layout.text_overlays) {
+      if (Array.isArray(layout.text_overlays)) {
         setTextOverlays((prev) => {
           const base = applyServerOverlays(prev, layout.text_overlays);
           return mergeTextMeasurements(base, layout.text_overlays);
         });
       }
 
-      if (layout.image_overlays) {
+      if (Array.isArray(layout.image_overlays)) {
         setImageOverlays((prev) => applyServerOverlays(prev, layout.image_overlays));
       }
     };
