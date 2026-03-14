@@ -480,6 +480,10 @@ impl MoqPullNode {
             Video,
         }
 
+        /// Cap re-subscribe attempts per track to prevent tight loops if a
+        /// re-subscribed track immediately ends again.
+        const MAX_RESUBSCRIBE_ATTEMPTS: u32 = 3;
+
         let url = super::parse_moq_url(&self.config.url, self.config.jwt.as_deref())?;
 
         let client = super::shared_insecure_client()?;
@@ -625,6 +629,8 @@ impl MoqPullNode {
         let mut video_is_first_in_group = true;
         let mut consecutive_cancels: u32 = 0;
         let mut last_payload_at = tokio::time::Instant::now();
+        let mut audio_resubscribe_attempts: u32 = 0;
+        let mut video_resubscribe_attempts: u32 = 0;
 
         // Stats tracking
         let node_name = context.output_sender.node_name().to_string();
@@ -719,6 +725,13 @@ impl MoqPullNode {
                 Ok(Some(payload)) => {
                     consecutive_cancels = 0;
                     last_payload_at = tokio::time::Instant::now();
+
+                    // Reset re-subscribe attempts on successful payload so a
+                    // track that worked for a while gets fresh attempts later.
+                    match source {
+                        ReadSource::Audio => audio_resubscribe_attempts = 0,
+                        ReadSource::Video => video_resubscribe_attempts = 0,
+                    }
 
                     session_packet_count += 1;
                     *total_packet_count += 1;
@@ -846,11 +859,80 @@ impl MoqPullNode {
                         ReadSource::Video => "video",
                     };
                     tracing::info!(
-                        "{} track stream ended naturally after {} packets",
-                        kind,
-                        session_packet_count
+                        "{kind} track stream ended naturally after {session_packet_count} packets"
                     );
-                    return Ok(StreamEndReason::Natural);
+
+                    // Mark the ended track as inactive and reset its group state.
+                    // Then attempt to re-subscribe in case the publisher
+                    // re-announces the track (dynamic compositing scenario).
+                    match source {
+                        ReadSource::Audio => {
+                            audio_track_consumer = None;
+                            audio_current_group = None;
+                            audio_is_first_in_group = true;
+                            last_audio_timestamp_us = None;
+                            audio_clock = MediaClock::new(0);
+
+                            if audio_resubscribe_attempts < MAX_RESUBSCRIBE_ATTEMPTS {
+                                if let Some(track) = audio_track {
+                                    audio_resubscribe_attempts += 1;
+                                    match broadcast.subscribe_track(track) {
+                                        Ok(new_consumer) => {
+                                            tracing::info!(
+                                                attempt = audio_resubscribe_attempts,
+                                                "re-subscribed to audio track after it ended"
+                                            );
+                                            audio_track_consumer = Some(new_consumer);
+                                        },
+                                        Err(e) => {
+                                            tracing::debug!(
+                                                error = %e,
+                                                "could not re-subscribe to audio track"
+                                            );
+                                        },
+                                    }
+                                }
+                            } else {
+                                tracing::warn!("audio track re-subscribe limit reached, giving up");
+                            }
+                        },
+                        ReadSource::Video => {
+                            video_track_consumer = None;
+                            video_current_group = None;
+                            video_is_first_in_group = true;
+                            last_video_timestamp_us = None;
+                            video_clock = MediaClock::new(0);
+
+                            if video_resubscribe_attempts < MAX_RESUBSCRIBE_ATTEMPTS {
+                                if let Some(track) = video_track {
+                                    video_resubscribe_attempts += 1;
+                                    match broadcast.subscribe_track(track) {
+                                        Ok(new_consumer) => {
+                                            tracing::info!(
+                                                attempt = video_resubscribe_attempts,
+                                                "re-subscribed to video track after it ended"
+                                            );
+                                            video_track_consumer = Some(new_consumer);
+                                        },
+                                        Err(e) => {
+                                            tracing::debug!(
+                                                error = %e,
+                                                "could not re-subscribe to video track"
+                                            );
+                                        },
+                                    }
+                                }
+                            } else {
+                                tracing::warn!("video track re-subscribe limit reached, giving up");
+                            }
+                        },
+                    }
+
+                    // Only terminate when ALL active tracks have ended.
+                    if audio_track_consumer.is_none() && video_track_consumer.is_none() {
+                        tracing::info!("all tracks have ended, finishing connection");
+                        return Ok(StreamEndReason::Natural);
+                    }
                 },
                 Err(moq_lite::Error::Cancel) => {
                     consecutive_cancels = consecutive_cancels.saturating_add(1);
