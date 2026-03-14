@@ -2892,15 +2892,14 @@ const MonitorViewContent: React.FC = () => {
         setEdges(newEdges);
       });
 
-      // When pre-computed positions were used, schedule fitView after
-      // edges are committed so the viewport calculation includes the
-      // full graph.  A second RAF ensures the edge startTransition has
-      // been flushed before fitView measures the bounding box.
+      // When pre-computed positions were used, trigger a fitView after
+      // edges have been scheduled.  We set the React state flag here
+      // (inside the RAF) so the fitView effect's 150ms timer starts
+      // *after* the edge startTransition has been queued, giving React
+      // enough time to flush both transitions before fitView measures
+      // the bounding box.
       if (usedPrecomputedPositions) {
-        deferredEdgeRafRef.current = requestAnimationFrame(() => {
-          deferredEdgeRafRef.current = null;
-          rf.current?.fitView({ padding: 0.2, duration: 0 });
-        });
+        setNeedsFit(true);
       }
     });
 
