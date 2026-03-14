@@ -712,6 +712,14 @@ impl VideoFrame {
         metadata: Option<PacketMetadata>,
     ) -> Result<Self, StreamKitError> {
         Self::validate_layout(width, height, pixel_format, &layout, data.len())?;
+        // Truncate to match the layout, consistent with `from_pooled_with_layout`.
+        let data = if data.len() > layout.total_bytes() {
+            let mut owned = Arc::unwrap_or_clone(data);
+            owned.truncate(layout.total_bytes());
+            Arc::new(owned)
+        } else {
+            data
+        };
         Ok(Self { width, height, pixel_format, layout, data, metadata })
     }
 
@@ -802,6 +810,54 @@ mod tests {
         assert_eq!(frame_b.data()[0], 7);
         assert!(frame_a.has_unique_data());
         assert!(frame_b.has_unique_data());
+    }
+
+    #[test]
+    fn from_arc_and_pooled_with_layout_consistent_data_len() {
+        let width = 2;
+        let height = 1;
+        let pf = PixelFormat::Rgba8;
+        let layout = VideoLayout::packed(width, height, pf);
+        let expected = layout.total_bytes(); // 8 bytes
+
+        // Supply extra trailing bytes beyond what the layout requires.
+        let oversized: Vec<u8> = vec![0xAA; expected + 16];
+
+        let pooled_frame = VideoFrame::from_pooled_with_layout(
+            width,
+            height,
+            pf,
+            layout,
+            PooledVideoData::from_vec(oversized.clone()),
+            None,
+        )
+        .unwrap();
+
+        let arc_frame = VideoFrame::from_arc_with_layout(
+            width,
+            height,
+            pf,
+            layout,
+            Arc::new(PooledVideoData::from_vec(oversized)),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            pooled_frame.data_len(),
+            expected,
+            "from_pooled_with_layout should truncate to layout size"
+        );
+        assert_eq!(
+            arc_frame.data_len(),
+            expected,
+            "from_arc_with_layout should truncate to layout size"
+        );
+        assert_eq!(
+            pooled_frame.data_len(),
+            arc_frame.data_len(),
+            "both constructors must produce frames with the same data length"
+        );
     }
 
     #[test]
