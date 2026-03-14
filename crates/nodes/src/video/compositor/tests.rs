@@ -4,7 +4,8 @@
 
 use super::*;
 use crate::test_utils::{
-    assert_state_initializing, assert_state_running, assert_state_stopped, create_test_context,
+    assert_state_initializing, assert_state_running, assert_state_stopped,
+    create_oneshot_test_context, create_test_context,
 };
 use crate::video::pixel_ops;
 use crate::video::pixel_ops::{scale_blit_rgba, scale_blit_rgba_rotated, BlitRect};
@@ -1523,4 +1524,170 @@ fn test_crop_aligns_odd_origin_for_i420_rotated() {
     assert!(buf[idx] > 200, "Centre R={}, expected >200", buf[idx]);
     assert!(buf[idx + 1] < 30, "Centre G={}, expected <30", buf[idx + 1]);
     assert!(buf[idx + 2] < 30, "Centre B={}, expected <30", buf[idx + 2]);
+}
+
+// ── Oneshot / batch mode regression tests ───────────────────────────
+
+/// Regression test: in oneshot mode, sending N frames in a burst (the way
+/// batch colorbars do) must produce exactly N output frames.
+///
+/// Before the fix, the compositor's drain-to-latest logic discarded all
+/// but the last frame per tick, reducing 20 input frames to just a
+/// handful of outputs.
+#[tokio::test]
+async fn test_oneshot_batch_frame_preservation() {
+    let frame_count: usize = 20;
+
+    let (input_tx, input_rx) = mpsc::channel(256);
+    let mut inputs = HashMap::new();
+    inputs.insert("in_0".to_string(), input_rx);
+
+    let (context, mock_sender, mut state_rx) = create_oneshot_test_context(inputs, 256);
+
+    let config = CompositorConfig { width: 4, height: 4, ..Default::default() };
+    let node = CompositorNode::new(config, GlobalCompositorConfig::default());
+
+    let node_handle = tokio::spawn(async move { Box::new(node).run(context).await });
+
+    assert_state_initializing(&mut state_rx).await;
+    assert_state_running(&mut state_rx).await;
+
+    // Dump all frames at once — no sleep between sends.
+    for _ in 0..frame_count {
+        let frame = make_rgba_frame(4, 4, 255, 0, 0, 255);
+        input_tx.send(Packet::Video(frame)).await.unwrap();
+    }
+    drop(input_tx);
+
+    assert_state_stopped(&mut state_rx).await;
+    node_handle.await.unwrap().unwrap();
+
+    let output_packets = mock_sender.get_packets_for_pin("out").await;
+    assert_eq!(
+        output_packets.len(),
+        frame_count,
+        "Expected exactly {frame_count} output frames in oneshot mode, got {}",
+        output_packets.len(),
+    );
+}
+
+/// Regression test: compositor output timestamps must be monotonically
+/// increasing at exact `1_000_000 / fps` microsecond intervals,
+/// regardless of input frame timestamps.
+///
+/// Before the fix, the compositor copied timestamps from input frames.
+/// In batch mode this produced erratic gaps; in any mode it was wrong
+/// because input timestamps don't reflect the compositor's output cadence.
+#[tokio::test]
+async fn test_oneshot_output_timestamps_monotonic() {
+    let frame_count: usize = 10;
+    let fps: u32 = 30;
+    let expected_duration_us: u64 = 1_000_000 / u64::from(fps);
+
+    let (input_tx, input_rx) = mpsc::channel(256);
+    let mut inputs = HashMap::new();
+    inputs.insert("in_0".to_string(), input_rx);
+
+    let (context, mock_sender, mut state_rx) = create_oneshot_test_context(inputs, 256);
+
+    let config = CompositorConfig { width: 4, height: 4, fps, ..Default::default() };
+    let node = CompositorNode::new(config, GlobalCompositorConfig::default());
+
+    let node_handle = tokio::spawn(async move { Box::new(node).run(context).await });
+
+    assert_state_initializing(&mut state_rx).await;
+    assert_state_running(&mut state_rx).await;
+
+    // Send frames with deliberately wrong timestamps to prove the
+    // compositor ignores them.
+    for i in 0..frame_count {
+        let mut frame = make_rgba_frame(4, 4, 0, 255, 0, 255);
+        frame.metadata = Some(PacketMetadata {
+            timestamp_us: Some(999_999 + i as u64 * 77_777), // arbitrary junk
+            duration_us: Some(11_111),
+            sequence: Some(i as u64 + 100),
+            keyframe: None,
+        });
+        input_tx.send(Packet::Video(frame)).await.unwrap();
+    }
+    drop(input_tx);
+
+    assert_state_stopped(&mut state_rx).await;
+    node_handle.await.unwrap().unwrap();
+
+    let output_packets = mock_sender.get_packets_for_pin("out").await;
+    assert_eq!(output_packets.len(), frame_count);
+
+    for (i, pkt) in output_packets.iter().enumerate() {
+        if let Packet::Video(ref f) = pkt {
+            let meta = f.metadata.as_ref().expect("metadata should be present");
+            let expected_ts = i as u64 * expected_duration_us;
+            assert_eq!(
+                meta.timestamp_us,
+                Some(expected_ts),
+                "frame {i}: expected timestamp_us={expected_ts}, got {:?}",
+                meta.timestamp_us,
+            );
+            assert_eq!(
+                meta.duration_us,
+                Some(expected_duration_us),
+                "frame {i}: expected duration_us={expected_duration_us}, got {:?}",
+                meta.duration_us,
+            );
+            assert_eq!(meta.sequence, Some(i as u64));
+        } else {
+            panic!("Expected video packet at index {i}");
+        }
+    }
+}
+
+/// Regression test: in oneshot mode the compositor must not be limited
+/// by real-time tick pacing — processing N frames should complete in
+/// significantly less than N / fps wall-clock seconds.
+///
+/// Before the fix, the compositor used `tokio::time::interval(1s / fps)`
+/// even in batch mode, capping throughput at wall-clock fps.
+#[tokio::test]
+async fn test_oneshot_processes_faster_than_realtime() {
+    let frame_count: usize = 30;
+    let fps: u32 = 30;
+    // At real-time pacing, 30 frames at 30 fps = 1 second.
+    // We assert it completes in well under half that.
+    let max_allowed = std::time::Duration::from_millis(500);
+
+    let (input_tx, input_rx) = mpsc::channel(256);
+    let mut inputs = HashMap::new();
+    inputs.insert("in_0".to_string(), input_rx);
+
+    let (context, mock_sender, mut state_rx) = create_oneshot_test_context(inputs, 256);
+
+    let config = CompositorConfig { width: 4, height: 4, fps, ..Default::default() };
+    let node = CompositorNode::new(config, GlobalCompositorConfig::default());
+
+    let node_handle = tokio::spawn(async move { Box::new(node).run(context).await });
+
+    assert_state_initializing(&mut state_rx).await;
+    assert_state_running(&mut state_rx).await;
+
+    let start = std::time::Instant::now();
+
+    for _ in 0..frame_count {
+        let frame = make_rgba_frame(4, 4, 0, 0, 255, 255);
+        input_tx.send(Packet::Video(frame)).await.unwrap();
+    }
+    drop(input_tx);
+
+    assert_state_stopped(&mut state_rx).await;
+    node_handle.await.unwrap().unwrap();
+
+    let elapsed = start.elapsed();
+
+    let output_packets = mock_sender.get_packets_for_pin("out").await;
+    assert_eq!(output_packets.len(), frame_count);
+
+    assert!(
+        elapsed < max_allowed,
+        "Oneshot compositor took {elapsed:?} for {frame_count} frames at {fps} fps — \
+         expected < {max_allowed:?} (should not be real-time paced)",
+    );
 }
