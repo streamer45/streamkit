@@ -52,7 +52,7 @@ export class WebSocketService {
   // single store mutation at the next animation frame.
   private pendingNodeStates: Map<string, Map<string, NodeState>> = new Map();
   private pendingNodeStats: Map<string, Map<string, NodeStats>> = new Map();
-  private batchFlushScheduled = false;
+  private batchFlushRafId: number | null = null;
 
   constructor(url: string) {
     this.url = url;
@@ -255,13 +255,12 @@ export class WebSocketService {
    * during session load where many state events arrive in a burst.
    */
   private scheduleBatchFlush(): void {
-    if (this.batchFlushScheduled) return;
-    this.batchFlushScheduled = true;
-    requestAnimationFrame(() => this.flushBatchedUpdates());
+    if (this.batchFlushRafId !== null) return;
+    this.batchFlushRafId = requestAnimationFrame(() => this.flushBatchedUpdates());
   }
 
   private flushBatchedUpdates(): void {
-    this.batchFlushScheduled = false;
+    this.batchFlushRafId = null;
 
     // Convert pending Maps to Records and flush everything in a single
     // store mutation via batchUpdateSessionData.  This ensures that all
@@ -491,11 +490,13 @@ export class WebSocketService {
     });
     this.pendingRequests.clear();
 
-    // Clear pending batch buffers so a stale RAF callback doesn't
-    // apply updates after teardown.
+    // Cancel any pending RAF and clear batch buffers.
+    if (this.batchFlushRafId !== null) {
+      cancelAnimationFrame(this.batchFlushRafId);
+      this.batchFlushRafId = null;
+    }
     this.pendingNodeStates.clear();
     this.pendingNodeStats.clear();
-    this.batchFlushScheduled = false;
 
     if (this.ws) {
       this.ws.close();
