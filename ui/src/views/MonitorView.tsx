@@ -43,6 +43,7 @@ import { useSession } from '@/hooks/useSession';
 import { useSessionList } from '@/hooks/useSessionList';
 import { useSessionsPrefetch } from '@/hooks/useSessionsPrefetch';
 import { useWebSocket } from '@/hooks/useWebSocket';
+import { perfOnRender } from '@/perf';
 import { getWebSocketService } from '@/services/websocket';
 import { useLayoutStore } from '@/stores/layoutStore';
 import { useNodeParamsStore } from '@/stores/nodeParamsStore';
@@ -1821,7 +1822,12 @@ const MonitorViewContent: React.FC = () => {
     sessionSeenInListRef.current = true;
   }
   useEffect(() => {
-    if (selectedSessionId && !selectedSession && !isLoadingSessions && sessionSeenInListRef.current) {
+    if (
+      selectedSessionId &&
+      !selectedSession &&
+      !isLoadingSessions &&
+      sessionSeenInListRef.current
+    ) {
       sessionSeenInListRef.current = false;
       setSelectedSessionId(null);
     }
@@ -3595,11 +3601,13 @@ const MonitorViewContent: React.FC = () => {
 
 const MonitorView: React.FC = () => {
   return (
-    <ReactFlowProvider>
-      <DnDProvider>
-        <MonitorViewContent />
-      </DnDProvider>
-    </ReactFlowProvider>
+    <React.Profiler id="MonitorView" onRender={perfOnRender}>
+      <ReactFlowProvider>
+        <DnDProvider>
+          <MonitorViewContent />
+        </DnDProvider>
+      </ReactFlowProvider>
+    </React.Profiler>
   );
 };
 

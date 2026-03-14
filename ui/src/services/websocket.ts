@@ -7,7 +7,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { useNodeParamsStore } from '@/stores/nodeParamsStore';
 import { useSessionStore } from '@/stores/sessionStore';
 import { useTelemetryStore, parseTelemetryEvent } from '@/stores/telemetryStore';
-import type { Request, Response, Event, MessageType } from '@/types/types';
+import type { Request, Response, Event, MessageType, NodeState, NodeStats } from '@/types/types';
 import { getBasePathname } from '@/utils/baseHref';
 import { getLogger } from '@/utils/logger';
 
@@ -45,6 +45,14 @@ export class WebSocketService {
   private messageQueue: Request[] = [];
   private isIntentionallyClosed = false;
   private subscribedSessions: Set<string> = new Set();
+
+  // ── Microtask-level batching for high-frequency events ──────────────
+  // Buffer node-state and node-stats updates that arrive in rapid
+  // succession (e.g. during session initialisation) and flush them as a
+  // single store mutation at the end of the current microtask.
+  private pendingNodeStates: Map<string, Map<string, NodeState>> = new Map();
+  private pendingNodeStats: Map<string, Map<string, NodeStats>> = new Map();
+  private batchFlushScheduled = false;
 
   constructor(url: string) {
     this.url = url;
@@ -213,12 +221,56 @@ export class WebSocketService {
 
   private handleNodeStateChanged(payload: NodeStateChangedPayload): void {
     const { session_id, node_id, state } = payload;
-    useSessionStore.getState().updateNodeState(session_id, node_id, state);
+    let sessionMap = this.pendingNodeStates.get(session_id);
+    if (!sessionMap) {
+      sessionMap = new Map();
+      this.pendingNodeStates.set(session_id, sessionMap);
+    }
+    sessionMap.set(node_id, state);
+    this.scheduleBatchFlush();
   }
 
   private handleNodeStatsUpdated(payload: NodeStatsUpdatedPayload): void {
     const { session_id, node_id, stats } = payload;
-    useSessionStore.getState().updateNodeStats(session_id, node_id, stats);
+    let sessionMap = this.pendingNodeStats.get(session_id);
+    if (!sessionMap) {
+      sessionMap = new Map();
+      this.pendingNodeStats.set(session_id, sessionMap);
+    }
+    sessionMap.set(node_id, stats);
+    this.scheduleBatchFlush();
+  }
+
+  /**
+   * Schedule a microtask to flush buffered node-state and node-stats
+   * updates.  Multiple WebSocket messages arriving in the same event-loop
+   * tick are coalesced into a single Zustand `set()` call per session,
+   * dramatically reducing the number of subscriber notifications and
+   * React re-renders during session load.
+   */
+  private scheduleBatchFlush(): void {
+    if (this.batchFlushScheduled) return;
+    this.batchFlushScheduled = true;
+    queueMicrotask(() => this.flushBatchedUpdates());
+  }
+
+  private flushBatchedUpdates(): void {
+    this.batchFlushScheduled = false;
+    const store = useSessionStore.getState();
+
+    // Flush node states
+    for (const [sessionId, updates] of this.pendingNodeStates) {
+      const record: Record<string, NodeState> = Object.fromEntries(updates);
+      store.batchUpdateNodeStates(sessionId, record);
+    }
+    this.pendingNodeStates.clear();
+
+    // Flush node stats
+    for (const [sessionId, updates] of this.pendingNodeStats) {
+      const record: Record<string, NodeStats> = Object.fromEntries(updates);
+      store.batchUpdateNodeStats(sessionId, record);
+    }
+    this.pendingNodeStats.clear();
   }
 
   private handleNodeParamsChanged(payload: NodeParamsChangedPayload): void {

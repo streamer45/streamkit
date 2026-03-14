@@ -35,6 +35,12 @@ interface SessionStore {
   initSession: (sessionId: string, connected: boolean) => void;
   clearSession: (sessionId: string) => void;
   getSession: (sessionId: string) => SessionData | undefined;
+
+  // Batch actions — apply multiple updates in a single set() call to reduce
+  // the number of store notifications and subscriber re-renders.
+  batchUpdateNodeStates: (sessionId: string, updates: Record<string, NodeState>) => void;
+  batchUpdateNodeStats: (sessionId: string, updates: Record<string, NodeStats>) => void;
+  batchSetPipelines: (pipelines: Array<{ sessionId: string; pipeline: Pipeline }>) => void;
 }
 
 export const useSessionStore = create<SessionStore>((set, get) => ({
@@ -269,6 +275,60 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   getSession: (sessionId) => {
     return get().sessions.get(sessionId);
   },
+
+  batchUpdateNodeStates: (sessionId, updates) =>
+    set((prev) => {
+      const session = prev.sessions.get(sessionId);
+      if (!session) return prev;
+
+      const newSessions = new Map(prev.sessions);
+      newSessions.set(sessionId, {
+        ...session,
+        nodeStates: { ...session.nodeStates, ...updates },
+      });
+      return { sessions: newSessions };
+    }),
+
+  batchUpdateNodeStats: (sessionId, updates) =>
+    set((prev) => {
+      const session = prev.sessions.get(sessionId);
+      if (!session) return prev;
+
+      const newSessions = new Map(prev.sessions);
+      newSessions.set(sessionId, {
+        ...session,
+        nodeStats: { ...session.nodeStats, ...updates },
+      });
+      return { sessions: newSessions };
+    }),
+
+  batchSetPipelines: (pipelines) =>
+    set((prev) => {
+      const newSessions = new Map(prev.sessions);
+
+      for (const { sessionId, pipeline } of pipelines) {
+        const session = prev.sessions.get(sessionId);
+
+        const nodeStates: Record<string, NodeState> = {};
+        if (pipeline.nodes) {
+          for (const [nodeId, node] of Object.entries(pipeline.nodes)) {
+            if (node.state) {
+              nodeStates[nodeId] = node.state;
+            }
+          }
+        }
+
+        newSessions.set(sessionId, {
+          pipeline,
+          nodeStates: session ? { ...session.nodeStates, ...nodeStates } : nodeStates,
+          nodeStats: session?.nodeStats ?? {},
+          nodeViewData: session?.nodeViewData ?? {},
+          isConnected: session?.isConnected ?? false,
+        });
+      }
+
+      return { sessions: newSessions };
+    }),
 }));
 
 // Granular selector helpers to prevent unnecessary re-renders
