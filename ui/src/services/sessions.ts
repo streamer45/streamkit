@@ -28,12 +28,13 @@ interface CreateSessionResponse {
  * Lists all active sessions
  * @returns A promise that resolves to an array of sessions
  */
-export async function listSessions(): Promise<SessionInfo[]> {
+export async function listSessions(signal?: AbortSignal): Promise<SessionInfo[]> {
   const response = await fetchApi('/api/v1/sessions', {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
     },
+    signal,
   });
 
   if (!response.ok) {
