@@ -138,17 +138,15 @@ test.describe('Stream View - Dynamic Pipeline', () => {
         timeout: 15_000,
       });
 
-      // Give the subscribe path time to receive, decode, and start playing audio.
-      await page.waitForTimeout(2_000);
-      // Verify the AudioContext tracker (installed in beforeEach) recorded at
-      // least one running context with advancing currentTime — this proves the
-      // subscribe side is actually decoding and playing audio frames.
-      const audioState = await verifyAudioContextActive(page);
-      expect(
-        audioState.running,
-        'Expected at least one running AudioContext for audio playback'
-      ).toBeGreaterThan(0);
-      expect(audioState.maxCurrentTime, 'AudioContext should have advanced').toBeGreaterThan(0);
+      // Poll until the subscribe path receives, decodes, and starts playing audio.
+      await expect(async () => {
+        const audioState = await verifyAudioContextActive(page);
+        expect(
+          audioState.running,
+          'Expected at least one running AudioContext for audio playback'
+        ).toBeGreaterThan(0);
+        expect(audioState.maxCurrentTime, 'AudioContext should have advanced').toBeGreaterThan(0);
+      }).toPass({ timeout: 10_000 });
 
       // Assert console errors before teardown (same pattern as the session
       // lifecycle test — see collector.stop() comment above).
@@ -282,18 +280,17 @@ test.describe('Stream View - Video MoQ Color Bars Pipeline', () => {
       await expect(canvas).toBeVisible({ timeout: 5_000 });
       await canvas.scrollIntoViewIfNeeded();
 
-      // Give the video decoder time to render a few frames onto the canvas.
-      await page.waitForTimeout(3_000);
-
-      // Verify canvas is rendering non-black pixels (SMPTE color bars).
-      const canvasState = await verifyCanvasRendering(page);
-      expect(canvasState.found, 'Canvas element not found on page').toBe(true);
-      expect(canvasState.width, 'Canvas has no width').toBeGreaterThan(0);
-      expect(canvasState.height, 'Canvas has no height').toBeGreaterThan(0);
-      expect(
-        canvasState.hasNonBlackPixels,
-        'Canvas should have rendered non-black pixels from color bars'
-      ).toBe(true);
+      // Poll until the video decoder renders non-black pixels onto the canvas.
+      await expect(async () => {
+        const canvasState = await verifyCanvasRendering(page);
+        expect(canvasState.found, 'Canvas element not found on page').toBe(true);
+        expect(canvasState.width, 'Canvas has no width').toBeGreaterThan(0);
+        expect(canvasState.height, 'Canvas has no height').toBeGreaterThan(0);
+        expect(
+          canvasState.hasNonBlackPixels,
+          'Canvas should have rendered non-black pixels from color bars'
+        ).toBe(true);
+      }).toPass({ timeout: 15_000 });
 
       // Assert console errors before teardown.
       const unexpected = collector.getUnexpected(MOQ_BENIGN_PATTERNS);
@@ -425,26 +422,27 @@ test.describe('Stream View - Webcam PiP Pipeline', () => {
       await expect(canvas).toBeVisible({ timeout: 5_000 });
       await canvas.scrollIntoViewIfNeeded();
 
-      // Give the pipeline time to process audio+video and render output.
-      await page.waitForTimeout(4_000);
+      // Poll until the composited video renders non-black pixels onto the canvas.
+      await expect(async () => {
+        const canvasState = await verifyCanvasRendering(page);
+        expect(canvasState.found, 'Canvas element not found on page').toBe(true);
+        expect(canvasState.width, 'Canvas has no width').toBeGreaterThan(0);
+        expect(canvasState.height, 'Canvas has no height').toBeGreaterThan(0);
+        expect(
+          canvasState.hasNonBlackPixels,
+          'Canvas should have rendered non-black pixels from composited video'
+        ).toBe(true);
+      }).toPass({ timeout: 15_000 });
 
-      // Verify canvas is rendering (composited webcam PiP over colorbars).
-      const canvasState = await verifyCanvasRendering(page);
-      expect(canvasState.found, 'Canvas element not found on page').toBe(true);
-      expect(canvasState.width, 'Canvas has no width').toBeGreaterThan(0);
-      expect(canvasState.height, 'Canvas has no height').toBeGreaterThan(0);
-      expect(
-        canvasState.hasNonBlackPixels,
-        'Canvas should have rendered non-black pixels from composited video'
-      ).toBe(true);
-
-      // Verify audio is being decoded and played (gain-filtered loopback).
-      const audioState = await verifyAudioContextActive(page);
-      expect(
-        audioState.running,
-        'Expected at least one running AudioContext for audio playback'
-      ).toBeGreaterThan(0);
-      expect(audioState.maxCurrentTime, 'AudioContext should have advanced').toBeGreaterThan(0);
+      // Poll until audio is being decoded and played (gain-filtered loopback).
+      await expect(async () => {
+        const audioState = await verifyAudioContextActive(page);
+        expect(
+          audioState.running,
+          'Expected at least one running AudioContext for audio playback'
+        ).toBeGreaterThan(0);
+        expect(audioState.maxCurrentTime, 'AudioContext should have advanced').toBeGreaterThan(0);
+      }).toPass({ timeout: 10_000 });
 
       // Assert console errors before teardown.
       const unexpected = collector.getUnexpected(MOQ_BENIGN_PATTERNS);

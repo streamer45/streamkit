@@ -39,7 +39,7 @@ pub struct AudioFormat {
 }
 
 /// Describes the pixel format of raw video frames.
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
 #[non_exhaustive]
 pub enum PixelFormat {
