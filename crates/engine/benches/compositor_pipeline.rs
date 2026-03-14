@@ -253,6 +253,7 @@ fn build_pipeline(width: u32, height: u32, fps: u32, frame_count: u32) -> stream
         mode: EngineMode::OneShot,
         nodes,
         connections,
+        view_data: None,
     }
 }
 

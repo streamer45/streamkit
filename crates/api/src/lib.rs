@@ -9,6 +9,7 @@
 //! contract exclusively uses JSON for consistency and TypeScript compatibility.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use ts_rs::TS;
 
 // YAML pipeline format compilation
@@ -526,6 +527,12 @@ pub struct Pipeline {
     #[ts(type = "Record<string, Node>")]
     pub nodes: indexmap::IndexMap<String, Node>,
     pub connections: Vec<Connection>,
+    /// Resolved per-node view data (e.g., compositor layout).
+    /// Only populated in API responses; absent from pipeline definitions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    #[ts(type = "Record<string, JsonValue> | null")]
+    pub view_data: Option<HashMap<String, serde_json::Value>>,
 }
 
 // Type aliases for backwards compatibility

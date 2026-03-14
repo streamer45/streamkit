@@ -350,6 +350,19 @@ impl Session {
     pub async fn get_node_stats(&self) -> Result<HashMap<String, NodeStats>, String> {
         self.engine_handle.get_node_stats().await
     }
+
+    /// Gets the current view data for all nodes in this session's pipeline.
+    ///
+    /// View data contains resolved runtime state that differs from the static
+    /// config params (e.g., compositor resolved layout with aspect-fit adjustments).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the engine handle's oneshot channel fails to receive a response,
+    /// which typically indicates the engine actor has stopped or panicked.
+    pub async fn get_node_view_data(&self) -> Result<HashMap<String, serde_json::Value>, String> {
+        self.engine_handle.get_node_view_data().await
+    }
 }
 
 /// A thread-safe manager for all active sessions.

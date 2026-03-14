@@ -229,6 +229,101 @@ describe('sessionStore edge cases', () => {
     });
   });
 
+  describe('setPipeline view_data extraction', () => {
+    it('should extract view_data into nodeViewData on initial load', () => {
+      const sessionId = TEST_SESSION_ID;
+      const pipeline: Pipeline = {
+        name: null,
+        description: null,
+        mode: 'dynamic',
+        nodes: {
+          compositor: {
+            kind: 'video::compositor',
+            params: { width: 1280, height: 720 },
+            state: 'Running',
+          },
+        },
+        connections: [],
+        view_data: {
+          compositor: { layers: { in_0: { x: 0, y: 60, width: 1280, height: 600 } } },
+        },
+      };
+
+      useSessionStore.getState().setPipeline(sessionId, pipeline);
+
+      const session = useSessionStore.getState().getSession(sessionId);
+      expect(session?.nodeViewData).toBeDefined();
+      expect(session?.nodeViewData.compositor).toEqual({
+        layers: { in_0: { x: 0, y: 60, width: 1280, height: 600 } },
+      });
+    });
+
+    it('should merge view_data with existing nodeViewData', () => {
+      const sessionId = TEST_SESSION_ID;
+
+      // First pipeline sets initial view data
+      useSessionStore.getState().setPipeline(sessionId, {
+        name: null,
+        description: null,
+        mode: 'dynamic',
+        nodes: {},
+        connections: [],
+        view_data: { nodeA: { key: 'original' } },
+      });
+
+      // Second pipeline adds more view data
+      useSessionStore.getState().setPipeline(sessionId, {
+        name: null,
+        description: null,
+        mode: 'dynamic',
+        nodes: {},
+        connections: [],
+        view_data: { nodeB: { key: 'new' } },
+      });
+
+      const session = useSessionStore.getState().getSession(sessionId);
+      expect(session?.nodeViewData.nodeA).toEqual({ key: 'original' });
+      expect(session?.nodeViewData.nodeB).toEqual({ key: 'new' });
+    });
+
+    it('should handle null view_data gracefully', () => {
+      const sessionId = TEST_SESSION_ID;
+      const pipeline: Pipeline = {
+        name: null,
+        description: null,
+        mode: 'dynamic',
+        nodes: {},
+        connections: [],
+      };
+
+      useSessionStore.getState().setPipeline(sessionId, pipeline);
+
+      const session = useSessionStore.getState().getSession(sessionId);
+      expect(session?.nodeViewData).toEqual({});
+    });
+
+    it('should extract view_data in batchSetPipelines', () => {
+      const pipelines = [
+        {
+          sessionId: 'session-a',
+          pipeline: {
+            name: null,
+            description: null,
+            mode: 'dynamic' as const,
+            nodes: {},
+            connections: [],
+            view_data: { comp: { layers: { in_0: { x: 10 } } } },
+          },
+        },
+      ];
+
+      useSessionStore.getState().batchSetPipelines(pipelines);
+
+      const session = useSessionStore.getState().getSession('session-a');
+      expect(session?.nodeViewData.comp).toEqual({ layers: { in_0: { x: 10 } } });
+    });
+  });
+
   describe('Pipeline Updates with Missing Nodes', () => {
     beforeEach(() => {
       const pipeline: Pipeline = {

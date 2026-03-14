@@ -1926,6 +1926,7 @@ async fn get_pipeline_handler(
 
     // Fetch current node states without holding the pipeline lock.
     let node_states = session.get_node_states().await.unwrap_or_default();
+    let node_view_data = session.get_node_view_data().await.unwrap_or_default();
 
     // Clone pipeline (short lock hold) and add runtime state to nodes.
     let mut api_pipeline = {
@@ -1934,6 +1935,11 @@ async fn get_pipeline_handler(
     };
     for (id, node) in &mut api_pipeline.nodes {
         node.state = node_states.get(id).cloned();
+    }
+
+    // Attach resolved view data so clients have accurate positions on initial load.
+    if !node_view_data.is_empty() {
+        api_pipeline.view_data = Some(node_view_data);
     }
 
     info!("Fetched pipeline with states for session '{}' via HTTP", session_id);

@@ -177,7 +177,7 @@ fn compile_steps(
         nodes.insert(node_name, Node { kind: step.kind, params: step.params, state: None });
     }
 
-    Pipeline { name, description, mode, nodes, connections }
+    Pipeline { name, description, mode, nodes, connections, view_data: None }
 }
 
 /// Known bidirectional node kinds that are allowed to participate in cycles.
@@ -409,7 +409,7 @@ fn compile_dag(
         })
         .collect();
 
-    Ok(Pipeline { name, description, mode, nodes, connections })
+    Ok(Pipeline { name, description, mode, nodes, connections, view_data: None })
 }
 
 #[cfg(test)]
