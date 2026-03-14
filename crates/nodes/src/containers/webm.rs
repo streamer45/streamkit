@@ -987,7 +987,7 @@ impl ProcessorNode for WebMMuxerNode {
                     audio_done = true;
                 },
                 MuxFrame::VideoClosed => {
-                    if dropped_video_frames > 0 {
+                    if dropped_video_frames > 0 && !video_keyframe_seen {
                         tracing::warn!(
                             "WebMMuxerNode: video input closed after dropping \
                              {dropped_video_frames} frames (no keyframe was ever received)"
