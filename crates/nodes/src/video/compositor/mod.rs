@@ -861,11 +861,7 @@ impl ProcessorNode for CompositorNode {
             let mut i = 0;
             while i < slots.len() {
                 let closed = slots[i].rx.is_closed();
-                let remove = if is_oneshot {
-                    closed && slots[i].rx.is_empty()
-                } else {
-                    closed
-                };
+                let remove = if is_oneshot { closed && slots[i].rx.is_empty() } else { closed };
                 if remove {
                     tracing::info!("CompositorNode: input '{}' closed", slots[i].name);
                     clear_conversion_cache = true;
