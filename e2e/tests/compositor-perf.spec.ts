@@ -34,102 +34,7 @@ import {
   assertRenderBudget,
   formatPerfSummary,
 } from './perf-helpers';
-
-// ---------------------------------------------------------------------------
-// Pipeline YAML — Webcam PiP compositor
-// Embedded so the test is self-contained and does not depend on file paths.
-// ---------------------------------------------------------------------------
-
-const WEBCAM_PIP_YAML = `
-name: Webcam PiP (MoQ Stream)
-description: Composites the user's webcam as picture-in-picture over colorbars with a text overlay
-mode: dynamic
-
-nodes:
-  colorbars_bg:
-    kind: video::colorbars
-    params:
-      width: 1280
-      height: 720
-      fps: 30
-      draw_time: true
-
-  moq_peer:
-    kind: transport::moq::peer
-    params:
-      gateway_path: /moq/video
-      input_broadcast: input
-      output_broadcast: output
-      allow_reconnect: true
-    needs:
-      in: opus_encoder
-      in_1: vp9_encoder
-
-  vp9_decoder:
-    kind: video::vp9::decoder
-    needs:
-      in: moq_peer.out_1
-
-  compositor:
-    kind: video::compositor
-    params:
-      width: 1280
-      height: 720
-      num_inputs: 2
-      layers:
-        in_0:
-          opacity: 1.0
-          z_index: 0
-        in_1:
-          rect:
-            x: 880
-            y: 20
-            width: 380
-            height: 285
-          opacity: 0.95
-          z_index: 1
-      text_overlays:
-        - text: "Hello from StreamKit"
-          rect:
-            x: 40
-            y: 660
-            width: 400
-            height: 40
-          opacity: 1.0
-          z_index: 2
-          color: [255, 255, 255, 220]
-          font_size: 28
-          font_name: dejavu-sans-bold
-    needs:
-      - colorbars_bg
-      - vp9_decoder
-
-  pixel_convert:
-    kind: video::pixel_convert
-    params:
-      output_format: nv12
-    needs: compositor
-
-  vp9_encoder:
-    kind: video::vp9::encoder
-    params:
-      keyframe_interval: 30
-    needs: pixel_convert
-
-  opus_decoder:
-    kind: audio::opus::decoder
-    needs: moq_peer
-
-  gain:
-    kind: audio::gain
-    params:
-      gain: 1.0
-    needs: opus_decoder
-
-  opus_encoder:
-    kind: audio::opus::encoder
-    needs: gain
-`.trim();
+import { WEBCAM_PIP_YAML } from './compositor-fixtures';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -237,9 +142,6 @@ test.describe('Compositor Slider Perf — Cascade Re-render Budget', () => {
       timeout: 15_000,
     });
 
-    // Allow initial renders to settle.
-    await page.waitForTimeout(2_000);
-
     // ── 3. Verify dev-mode profiler is available ────────────────────────
 
     const hasPerfData = await page.evaluate(() => {
@@ -260,6 +162,7 @@ test.describe('Compositor Slider Perf — Cascade Re-render Budget', () => {
     // ── 4. Locate compositor node and its layer list ────────────────────
 
     // The compositor node is the React Flow node containing "Compositor".
+    // Wait for graph to settle before measuring perf data.
     const compositorNode = page.locator('.react-flow__node').filter({
       hasText: 'Compositor',
     });
@@ -299,7 +202,8 @@ test.describe('Compositor Slider Perf — Cascade Re-render Budget', () => {
       // Click the layer in the layer list to select it and open inspector.
       const layerDiv = compositorNode.getByText(layerName, { exact: true });
       await layerDiv.first().click();
-      await page.waitForTimeout(500); // let inspector render
+      // Wait for the inspector panel (with sliders) to become visible.
+      await expect(compositorNode.getByRole('slider').first()).toBeVisible({ timeout: 3_000 });
 
       // --- Opacity slider ---
       // The inspector shows an "Opacity" label followed by a Radix slider

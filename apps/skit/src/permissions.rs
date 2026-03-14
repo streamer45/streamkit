@@ -158,6 +158,7 @@ impl Permissions {
             allowed_nodes: vec![
                 // Users can use most nodes
                 "audio::*".to_string(),
+                "video::*".to_string(),
                 "containers::*".to_string(),
                 // Transport: allow MoQ, deny HTTP fetcher by default (SSRF risk)
                 "transport::moq::*".to_string(),

@@ -26,4 +26,5 @@ nodes:
       gateway_path: /moq/video
       output_broadcast: output
       allow_reconnect: true
-    needs: vp9_encoder
+    needs:
+      in: vp9_encoder

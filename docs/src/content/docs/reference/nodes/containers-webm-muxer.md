@@ -17,6 +17,8 @@ Muxes Opus audio and/or VP9 video into a WebM container. Produces streamable Web
 ### Inputs
 - `in` accepts `EncodedAudio(EncodedAudioFormat { codec: Opus, codec_private: None }), EncodedVideo(EncodedVideoFormat { codec: Vp9, bitstream_format: None, codec_private: None, profile: None, level: None })` (one)
 
+> **Dual-pin muxing:** When `video_width` and `video_height` are set to non-zero values, a second input pin (`in_1`) is created automatically to accept the video stream. Connect your audio encoder to `in` and your video encoder to `in_1` for combined audio+video WebM output.
+
 ### Outputs
 - `out` produces `Binary` (broadcast)
 

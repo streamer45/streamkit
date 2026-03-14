@@ -265,7 +265,25 @@ export async function verifyCanvasRendering(page: Page): Promise<{
     const y = Math.floor((height - sampleH) / 2);
 
     const ctx = canvas.getContext('2d');
-    if (!ctx) return { found: true, width, height, hasNonBlackPixels: false };
+    if (!ctx) {
+      // Canvas may be using a WebGL context (e.g. Hang.Watch.Video.Renderer).
+      // Attempt to read pixels via WebGL/WebGL2 instead.
+      const gl =
+        (canvas.getContext('webgl2') as WebGL2RenderingContext | null) ??
+        (canvas.getContext('webgl') as WebGLRenderingContext | null);
+      if (!gl) return { found: true, width, height, hasNonBlackPixels: false };
+
+      const pixels = new Uint8Array(sampleW * sampleH * 4);
+      gl.readPixels(x, y, sampleW, sampleH, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      let hasNonBlackPixels = false;
+      for (let i = 0; i < pixels.length; i += 4) {
+        if (pixels[i] > 0 || pixels[i + 1] > 0 || pixels[i + 2] > 0) {
+          hasNonBlackPixels = true;
+          break;
+        }
+      }
+      return { found: true, width, height, hasNonBlackPixels };
+    }
 
     const imageData = ctx.getImageData(x, y, sampleW, sampleH);
     const data = imageData.data;
