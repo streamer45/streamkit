@@ -319,15 +319,13 @@ fn main() {
 
     let args = BenchArgs::parse();
 
-    let resolution = format!("{}x{}", args.width, args.height);
-    eprintln!("╔══════════════════════════════════════════════════════════╗");
-    eprintln!("║         Compositor Pipeline Benchmark                   ║");
-    eprintln!("╠══════════════════════════════════════════════════════════╣");
-    eprintln!("║  Resolution : {:<42}║", resolution);
-    eprintln!("║  Target FPS : {:<42}║", args.fps);
-    eprintln!("║  Frames     : {:<42}║", args.frame_count);
-    eprintln!("║  Iterations : {:<42}║", args.iterations);
-    eprintln!("╚══════════════════════════════════════════════════════════╝");
+    eprintln!();
+    eprintln!("  Compositor Pipeline Benchmark");
+    eprintln!("  -----------------------------");
+    eprintln!("  Resolution : {}x{}", args.width, args.height);
+    eprintln!("  Target FPS : {}", args.fps);
+    eprintln!("  Frames     : {}", args.frame_count);
+    eprintln!("  Iterations : {}", args.iterations);
     eprintln!();
 
     let rt = tokio::runtime::Builder::new_multi_thread()
