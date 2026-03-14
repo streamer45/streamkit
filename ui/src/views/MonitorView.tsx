@@ -1743,6 +1743,18 @@ const MonitorViewContent: React.FC = () => {
     return found;
   }, [sessions, selectedSessionId]);
 
+  // Auto-select the first session when none is selected (e.g., initial load)
+  useEffect(() => {
+    if (!selectedSessionId && !isLoadingSessions && sessions.length > 0) {
+      const sessionId = sessions[0].id;
+      setSelectedSessionId(sessionId);
+
+      const savedPos = getNodePositions(sessionId);
+      setNeedsAutoLayout(Object.keys(savedPos).length === 0);
+      setNeedsFit(true);
+    }
+  }, [selectedSessionId, isLoadingSessions, sessions, getNodePositions]);
+
   // Prefetch pipeline data for all sessions to enable status display
   useSessionsPrefetch(sessions);
 
@@ -1772,6 +1784,7 @@ const MonitorViewContent: React.FC = () => {
     status: previewStatus,
     loadConfig: previewLoadConfig,
     connect: previewConnect,
+    disconnect: previewDisconnect,
     setEnablePublish: previewSetEnablePublish,
     setEnableWatch: previewSetEnableWatch,
     configLoaded: previewConfigLoaded,
@@ -1783,6 +1796,7 @@ const MonitorViewContent: React.FC = () => {
       status: s.status,
       loadConfig: s.loadConfig,
       connect: s.connect,
+      disconnect: s.disconnect,
       setEnablePublish: s.setEnablePublish,
       setEnableWatch: s.setEnableWatch,
       configLoaded: s.configLoaded,
@@ -1792,6 +1806,24 @@ const MonitorViewContent: React.FC = () => {
     }))
   );
   const isPreviewConnected = previewStatus === 'connected';
+
+  // When a session is destroyed, the optimistic removal empties the list
+  // before React processes the batched setSelectedSessionId(null) from
+  // handleConfirmQuickDelete.  Eagerly clear the selection here so the
+  // badge, "Enter Staging", and "Delete" controls disappear immediately.
+  useEffect(() => {
+    if (selectedSessionId && !selectedSession && !isLoadingSessions) {
+      setSelectedSessionId(null);
+    }
+  }, [selectedSessionId, selectedSession, isLoadingSessions]);
+
+  // Tear down the MoQ preview (and release camera/mic) when the selected
+  // session goes away.
+  useEffect(() => {
+    if (!selectedSessionId && previewStatus !== 'disconnected') {
+      previewDisconnect();
+    }
+  }, [selectedSessionId, previewStatus, previewDisconnect]);
 
   // Extract MoQ peer settings from the selected session's pipeline so the
   // preview connects to the correct gateway path and output broadcast.
