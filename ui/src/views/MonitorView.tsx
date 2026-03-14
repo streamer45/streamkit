@@ -2865,24 +2865,34 @@ const MonitorViewContent: React.FC = () => {
       deferredEdgeRafRef.current = null;
     }
 
-    React.startTransition(() => {
+    // When pre-computed positions were used, skip startTransition for the
+    // initial mount so nodes commit synchronously.  This ensures that
+    // nodes.length > 0 is visible to the fitView effect immediately,
+    // avoiding timing issues where startTransition defers the commit
+    // past the fitView evaluation.
+    if (precomputedPositions) {
       setNodes(newNodes);
       setEdges([]);
       topoEffectRanRef.current = true;
-    });
+    } else {
+      React.startTransition(() => {
+        setNodes(newNodes);
+        setEdges([]);
+        topoEffectRanRef.current = true;
+      });
+    }
 
     // Save pre-computed positions so the auto-layout effect can skip the
     // redundant measure → layout → fitView cycle.  Also persist them in
     // the staging store for cross-session-switch reuse.
-    const usedPrecomputedPositions = precomputedPositions !== null;
     if (precomputedPositions && selectedSessionId) {
       for (const [nodeId, position] of Object.entries(precomputedPositions)) {
         updateNodePosition(selectedSessionId, nodeId, position);
       }
-      // Clear both flags since we've already positioned nodes and will
-      // schedule our own fitView via RAF after edges are committed.
+      // Clear needsAutoLayout since we've already positioned nodes.
+      // Keep needsFit — the existing fitView effect will handle it
+      // once edges are also committed.
       setNeedsAutoLayout(false);
-      setNeedsFit(false);
     }
 
     // Schedule edge rendering for the next frame.
@@ -2891,16 +2901,6 @@ const MonitorViewContent: React.FC = () => {
       React.startTransition(() => {
         setEdges(newEdges);
       });
-
-      // When pre-computed positions were used, trigger a fitView after
-      // edges have been scheduled.  We set the React state flag here
-      // (inside the RAF) so the fitView effect's 150ms timer starts
-      // *after* the edge startTransition has been queued, giving React
-      // enough time to flush both transitions before fitView measures
-      // the bounding box.
-      if (usedPrecomputedPositions) {
-        setNeedsFit(true);
-      }
     });
 
     // Generate YAML using helper function
