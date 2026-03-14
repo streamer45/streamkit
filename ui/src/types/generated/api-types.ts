@@ -351,7 +351,12 @@ export type Node = { kind: string, params: JsonValue,
  */
 state: NodeState | null, };
 
-export type Pipeline = { name: string | null, description: string | null, mode: EngineMode, nodes: Record<string, Node>, connections: Array<Connection>, };
+export type Pipeline = { name: string | null, description: string | null, mode: EngineMode, nodes: Record<string, Node>, connections: Array<Connection>, 
+/**
+ * Resolved per-node view data (e.g., compositor layout).
+ * Only populated in API responses; absent from pipeline definitions.
+ */
+view_data?: Record<string, JsonValue> | null, };
 
 export type SamplePipeline = { id: string, name: string, description: string, yaml: string, is_system: boolean, mode: string, 
 /**

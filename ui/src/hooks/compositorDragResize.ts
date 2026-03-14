@@ -173,43 +173,62 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
       const updated = computeLayerFromPointer(state, e.clientX, e.clientY);
       setIsDragging(false);
 
+      // Pure click-to-select (zero movement) — don't commit to server.
+      // Committing here would send potentially stale config-parsed positions
+      // for ALL layers, overwriting the server's resolved layout.
+      const dx = e.clientX - state.startX;
+      const dy = e.clientY - state.startY;
+      const isZeroDelta = dx === 0 && dy === 0;
+
       if (state.layerKind === 'video') {
-        setLayers((prev) => prev.map((l) => (l.id === updated.id ? updated : l)));
-        const newLayers = layersRef.current.map((l) => (l.id === updated.id ? updated : l));
-        throttledConfigChange?.(newLayers);
+        if (!isZeroDelta) {
+          setLayers((prev) => prev.map((l) => (l.id === updated.id ? updated : l)));
+          const newLayers = layersRef.current.map((l) => (l.id === updated.id ? updated : l));
+          throttledConfigChange?.(newLayers);
+        }
       } else if (state.layerKind === 'text') {
-        const isResize = state.type === 'resize';
-        const origFontSize = state.origFontSize;
-        setTextOverlays((prev) => {
-          const next = prev.map((o) => {
-            if (o.id !== updated.id) return o;
-            const patch: Partial<TextOverlayState> = {
-              x: updated.x,
-              y: updated.y,
-              width: updated.width,
-              height: updated.height,
-            };
-            if (isResize && origFontSize != null && state.origLayer.width > 0) {
-              patch.fontSize = Math.max(
-                8,
-                Math.round(origFontSize * (updated.width / state.origLayer.width))
-              );
-            }
-            return { ...o, ...patch };
+        if (!isZeroDelta) {
+          const isResize = state.type === 'resize';
+          const origFontSize = state.origFontSize;
+          setTextOverlays((prev) => {
+            const next = prev.map((o) => {
+              if (o.id !== updated.id) return o;
+              const patch: Partial<TextOverlayState> = {
+                x: updated.x,
+                y: updated.y,
+                width: updated.width,
+                height: updated.height,
+              };
+              if (isResize && origFontSize != null && state.origLayer.width > 0) {
+                patch.fontSize = Math.max(
+                  8,
+                  Math.round(origFontSize * (updated.width / state.origLayer.width))
+                );
+              }
+              return { ...o, ...patch };
+            });
+            commitOverlaysRef.current(next, imageOverlaysRef.current);
+            return next;
           });
-          commitOverlaysRef.current(next, imageOverlaysRef.current);
-          return next;
-        });
+        }
       } else if (state.layerKind === 'image') {
-        setImageOverlays((prev) => {
-          const next = prev.map((o) =>
-            o.id === updated.id
-              ? { ...o, x: updated.x, y: updated.y, width: updated.width, height: updated.height }
-              : o
-          );
-          commitOverlaysRef.current(textOverlaysRef.current, next);
-          return next;
-        });
+        if (!isZeroDelta) {
+          setImageOverlays((prev) => {
+            const next = prev.map((o) =>
+              o.id === updated.id
+                ? {
+                    ...o,
+                    x: updated.x,
+                    y: updated.y,
+                    width: updated.width,
+                    height: updated.height,
+                  }
+                : o
+            );
+            commitOverlaysRef.current(textOverlaysRef.current, next);
+            return next;
+          });
+        }
       }
 
       dragStateRef.current = null;

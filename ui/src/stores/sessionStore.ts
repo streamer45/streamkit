@@ -108,11 +108,18 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
         });
       }
 
+      // Extract view data snapshot (e.g. compositor resolved layout) so
+      // useServerLayoutSync finds it immediately on mount.
+      const incomingViewData =
+        pipeline.view_data && typeof pipeline.view_data === 'object'
+          ? (pipeline.view_data as Record<string, unknown>)
+          : {};
+
       newSessions.set(sessionId, {
         pipeline,
         nodeStates: session ? { ...session.nodeStates, ...nodeStates } : nodeStates,
         nodeStats: session?.nodeStats ?? {},
-        nodeViewData: session?.nodeViewData ?? {},
+        nodeViewData: { ...(session?.nodeViewData ?? {}), ...incomingViewData },
         isConnected: session?.isConnected ?? false,
       });
       return { sessions: newSessions };
@@ -326,11 +333,17 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
           }
         }
 
+        // Extract view data snapshot so useServerLayoutSync finds it on mount.
+        const incomingViewData =
+          pipeline.view_data && typeof pipeline.view_data === 'object'
+            ? (pipeline.view_data as Record<string, unknown>)
+            : {};
+
         newSessions.set(sessionId, {
           pipeline,
           nodeStates: session ? { ...session.nodeStates, ...nodeStates } : nodeStates,
           nodeStats: session?.nodeStats ?? {},
-          nodeViewData: session?.nodeViewData ?? {},
+          nodeViewData: { ...(session?.nodeViewData ?? {}), ...incomingViewData },
           isConnected: session?.isConnected ?? false,
         });
       }
