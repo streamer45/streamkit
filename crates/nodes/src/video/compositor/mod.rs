@@ -580,9 +580,9 @@ impl ProcessorNode for CompositorNode {
         //     so every input frame is composited.  This lets benchmarks
         //     measure actual compositing throughput instead of being
         //     capped at wall-clock fps.
-        let mut tick = tokio::time::interval(
-            std::time::Duration::from_nanos(1_000_000_000u64 / u64::from(self.config.fps)),
-        );
+        let mut tick = tokio::time::interval(std::time::Duration::from_nanos(
+            1_000_000_000u64 / u64::from(self.config.fps),
+        ));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         // ── Cached resolved scene ────────────────────────────────────────
