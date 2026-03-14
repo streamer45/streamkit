@@ -567,19 +567,22 @@ impl ProcessorNode for CompositorNode {
             .build();
         let otel_attrs = [KeyValue::new("node", node_name.clone())];
 
-        // ── Fixed-rate tick ──────────────────────────────────────────────
-        // The compositor runs at a fixed fps regardless of input rates,
-        // like the audio clocked mixer.  On each tick it composites a
-        // frame and sends it downstream.
+        // ── Tick / pacing ────────────────────────────────────────────────
         //
-        // Input drain strategy differs by pipeline mode:
-        //   • Live (dynamic): drain each slot to its latest frame so the
-        //     compositor always renders the freshest content.
-        //   • Oneshot (batch): take exactly one frame per slot per tick
-        //     so every input frame is composited.
-        let tick_duration =
-            std::time::Duration::from_nanos(1_000_000_000u64 / u64::from(self.config.fps));
-        let mut tick = tokio::time::interval(tick_duration);
+        // Pipeline-mode strategy:
+        //
+        //   • Live (dynamic): Fixed-rate tick at the configured fps,
+        //     drain each slot to its latest frame so the compositor
+        //     always renders the freshest content.
+        //
+        //   • Oneshot (batch): No real-time pacing — process as fast as
+        //     possible, taking exactly one frame per slot per iteration
+        //     so every input frame is composited.  This lets benchmarks
+        //     measure actual compositing throughput instead of being
+        //     capped at wall-clock fps.
+        let mut tick = tokio::time::interval(
+            std::time::Duration::from_nanos(1_000_000_000u64 / u64::from(self.config.fps)),
+        );
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         // ── Cached resolved scene ────────────────────────────────────────
@@ -656,8 +659,16 @@ impl ProcessorNode for CompositorNode {
                     continue;
                 }
 
-                // Fixed-rate tick — time to composite.
-                _ = tick.tick() => {}
+                // Tick — in live mode wait for the fps interval;
+                // in oneshot mode just yield to let producers run,
+                // then proceed immediately.
+                _ = async {
+                    if is_oneshot {
+                        tokio::task::yield_now().await;
+                    } else {
+                        tick.tick().await;
+                    }
+                } => {}
             }
 
             // ── Dequeue input frames (non-blocking) ─────────────────────
