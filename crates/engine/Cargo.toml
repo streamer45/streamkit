@@ -37,7 +37,7 @@ opentelemetry = { workspace = true, features = ["metrics", "trace"] }
 serde-saphyr = { workspace = true }
 
 [features]
-default = ["oneshot", "dynamic", "plugins", "script", "compositor"]
+default = ["oneshot", "dynamic", "plugins", "script"]
 
 # Enables the self-contained pipeline runner for stateless,
 # start-to-finish processing. Ideal for oneshot file transcoding (e.g. HTTP request).
