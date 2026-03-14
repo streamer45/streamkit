@@ -2879,8 +2879,10 @@ const MonitorViewContent: React.FC = () => {
       for (const [nodeId, position] of Object.entries(precomputedPositions)) {
         updateNodePosition(selectedSessionId, nodeId, position);
       }
-      // Clear the needsAutoLayout flag since we've already positioned nodes.
+      // Clear both flags since we've already positioned nodes and will
+      // schedule our own fitView via RAF after edges are committed.
       setNeedsAutoLayout(false);
+      setNeedsFit(false);
     }
 
     // Schedule edge rendering for the next frame.
