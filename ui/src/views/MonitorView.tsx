@@ -2,7 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import styled from '@emotion/styled';
 import * as Tooltip from '@radix-ui/react-tooltip';
 import {
   ReactFlowProvider,
@@ -25,6 +24,48 @@ import { useShallow } from 'zustand/shallow';
 import ConfirmModal from '@/components/ConfirmModal';
 import ContextMenu from '@/components/ContextMenu';
 import { FlowCanvas } from '@/components/FlowCanvas';
+import {
+  LegendContainer,
+  LegendTitle,
+  LegendItem,
+  LegendDot,
+  ConnectionStatusContainer,
+  ConnectionStatusDot,
+  LeftPanelAside,
+  SessionsContainer,
+  SessionSearchInput,
+  SearchWrapper,
+  SessionListWrapper,
+  LoadingText,
+  SessionList,
+  SessionItemWrapper,
+  SessionButton,
+  SessionStatusBadge,
+  SessionButtonText,
+  SessionDeleteButton,
+  SessionTooltipContent,
+  TooltipRow,
+  TooltipLabel,
+  TooltipValue,
+  NodesLibraryContainer,
+  EmptyStateText,
+  CenterPanelContainer,
+  CanvasTopBar,
+  TopLeftControls,
+  TopRightControls,
+  SessionChipContainer,
+  SessionChipButton,
+  SessionChipName,
+  SessionChipMeta,
+  SessionChipCaret,
+  SessionStatusDot,
+  SessionDetailsPanel,
+  DetailsRow,
+  DetailsLabel,
+  DetailsValue,
+  ButtonGroup,
+  EmptyMonitorState,
+} from '@/components/monitor/MonitorView.styles';
 import NodePalette from '@/components/NodePalette';
 import { OutputPreviewPanel } from '@/components/OutputPreviewPanel';
 import PaneContextMenu from '@/components/PaneContextMenu';
@@ -68,6 +109,22 @@ import type {
   InputPin,
   OutputPin,
 } from '@/types/types';
+import { shortSessionId, summarizeNodeIssues } from '@/utils/nodeIssues';
+import {
+  computeAddedNodes,
+  computeRemovedNodes,
+  computeConnectionChanges,
+  preprocessMixerNodes,
+} from '@/utils/pipelineDiff';
+import {
+  buildEdgesFromConnections,
+  buildNodeObject,
+  generatePipelineYaml,
+  isRecord,
+  extractSlowTimeoutDetailsFromNodeState,
+  describeSlowInputs,
+  type SlowTimeoutDetails,
+} from '@/utils/pipelineGraph';
 import { topoLevelsFromPipeline, orderedNamesFromLevels, verticalLayout } from '@/utils/dag';
 import { deepEqual } from '@/utils/deepEqual';
 import { validateValue } from '@/utils/jsonSchema';
@@ -89,46 +146,6 @@ import {
   getSessionStatusLabel,
 } from '@/utils/sessionStatus';
 import { formatUptime, formatDateTime } from '@/utils/time';
-
-const LegendContainer = styled.div`
-  position: absolute;
-  bottom: 20px;
-  right: 20px;
-  background: var(--sk-panel-bg);
-  border: 1px solid var(--sk-border);
-  border-radius: 8px;
-  padding: 12px;
-  box-shadow: 0 4px 12px var(--sk-shadow);
-  z-index: 10;
-  font-size: 12px;
-`;
-
-const LegendTitle = styled.div`
-  font-weight: 600;
-  margin-bottom: 8px;
-  color: var(--sk-text);
-`;
-
-const LegendItem = styled.div`
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 6px;
-  color: var(--sk-text);
-
-  &:last-child {
-    margin-bottom: 0;
-  }
-`;
-
-const LegendDot = styled.div<{ color: string }>`
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background-color: ${(props) => props.color};
-  border: 1px solid var(--sk-border-strong);
-  flex-shrink: 0;
-`;
 
 // Memoized legend component to prevent re-renders during drag
 const Legend = React.memo(() => (
@@ -166,374 +183,13 @@ const EMPTY_PARAMS: Record<string, unknown> = {};
 // Memoized view title to prevent re-renders during drag
 const MonitorViewTitle = React.memo(() => <ViewTitle>Monitor</ViewTitle>);
 
-const ConnectionStatusContainer = styled.div<{ connected: boolean }>`
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 8px;
-  border-radius: 4px;
-  font-size: 12px;
-  background: ${(props) =>
-    props.connected ? 'var(--sk-overlay-medium)' : 'var(--sk-overlay-medium)'};
-  color: ${(props) => (props.connected ? 'var(--sk-success)' : 'var(--sk-danger)')};
-  border: 1px solid ${(props) => (props.connected ? 'var(--sk-success)' : 'var(--sk-danger)')};
-  user-select: none;
-`;
-
-const StatusDot = styled.div<{ connected: boolean }>`
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: ${(props) => (props.connected ? 'var(--sk-success)' : 'var(--sk-danger)')};
-  animation: ${(props) => (props.connected ? 'pulse 2s ease-in-out infinite' : 'none')};
-
-  @keyframes pulse {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.5;
-    }
-  }
-`;
-
 // Memoized ConnectionStatus component
 const ConnectionStatus = React.memo(({ connected }: { connected: boolean }) => (
   <ConnectionStatusContainer connected={connected}>
-    <StatusDot connected={connected} />
+    <ConnectionStatusDot connected={connected} />
     {connected ? 'Connected' : 'Disconnected'}
   </ConnectionStatusContainer>
 ));
-
-const LeftPanelAside = styled.aside`
-  height: 100%;
-  width: 100%;
-  border-right: 1px solid var(--sk-border);
-  background-color: var(--sk-sidebar-bg);
-  display: flex;
-  flex-direction: column;
-`;
-
-const SessionsContainer = styled.div`
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-`;
-
-const SessionSearchInput = styled.input`
-  box-sizing: border-box;
-  width: 100%;
-  padding: 8px 12px;
-  margin-bottom: 8px;
-  font-size: 13px;
-  border: 1px solid var(--sk-border);
-  border-radius: 6px;
-  background: var(--sk-input-bg);
-  color: var(--sk-text);
-  outline: none;
-  flex-shrink: 0;
-
-  &::placeholder {
-    color: var(--sk-text-muted);
-  }
-
-  &:focus {
-    border-color: var(--sk-primary);
-    box-shadow: 0 0 0 2px var(--sk-primary-alpha);
-  }
-`;
-
-const SearchWrapper = styled.div`
-  padding: 4px 4px 0 4px;
-`;
-
-const SessionListWrapper = styled.div`
-  flex: 1;
-  overflow-y: auto;
-  min-height: 0;
-  padding: 0 4px 4px 4px;
-`;
-
-const LoadingText = styled.p`
-  font-size: 12px;
-  color: var(--sk-text-muted);
-`;
-
-const SessionList = styled.ul`
-  list-style: none;
-  padding: 4px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-`;
-
-const SessionItemWrapper = styled.div`
-  position: relative;
-
-  &:hover .session-delete-button {
-    opacity: 1;
-    pointer-events: auto;
-  }
-`;
-
-const SessionButton = styled(Button)<{ active: boolean }>`
-  width: 100%;
-  padding: 8px;
-  text-align: left;
-  font-weight: 500;
-  font-size: 13px;
-  justify-content: flex-start;
-  gap: 8px;
-`;
-
-const SessionStatusBadge = styled.div<{ color: string }>`
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background-color: ${(props) => props.color};
-  border: 1px solid var(--sk-border-strong);
-  flex-shrink: 0;
-`;
-
-const SessionButtonText = styled.span`
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-`;
-
-const SessionDeleteButton = styled.button`
-  position: absolute;
-  right: 8px;
-  top: 50%;
-  transform: translateY(-50%);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.15s ease;
-  background: var(--sk-danger);
-  color: var(--sk-text-inverse);
-  border: none;
-  border-radius: 4px;
-  padding: 4px 8px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1;
-  font-size: 16px;
-  line-height: 1;
-
-  &:hover {
-    background: var(--sk-danger-hover);
-  }
-
-  &:active {
-    transform: translateY(-50%) scale(0.95);
-  }
-`;
-
-const SessionTooltipContent = styled(Tooltip.Content)`
-  background: var(--sk-panel-bg);
-  border: 1px solid var(--sk-border);
-  border-radius: 6px;
-  padding: 8px 12px;
-  box-shadow: 0 4px 12px var(--sk-shadow);
-  font-size: 11px;
-  z-index: 1000;
-  font-family:
-    'JetBrains Mono', 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', 'Droid Sans Mono',
-    'Courier New', monospace;
-`;
-
-const TooltipRow = styled.div`
-  display: flex;
-  gap: 8px;
-  margin: 4px 0;
-`;
-
-const TooltipLabel = styled.span`
-  opacity: 0.7;
-  min-width: 50px;
-`;
-
-const TooltipValue = styled.span`
-  font-weight: 500;
-  color: var(--sk-text);
-`;
-
-const NodesLibraryContainer = styled.div`
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-`;
-
-const EmptyStateText = styled.div`
-  padding: 20px;
-  font-size: 12px;
-  color: var(--sk-text-muted);
-  text-align: center;
-`;
-
-const CenterPanelContainer = styled.div`
-  width: 100%;
-  height: 100%;
-  position: relative;
-`;
-
-const CanvasTopBar = styled.div`
-  position: absolute;
-  top: 12px;
-  left: 12px;
-  right: 12px;
-  z-index: 11;
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  pointer-events: none;
-
-  @media (max-width: 900px) {
-    flex-direction: column;
-    align-items: stretch;
-  }
-`;
-
-const TopLeftControls = styled.div`
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  align-items: flex-start;
-  pointer-events: auto;
-  max-width: min(520px, 60vw);
-
-  @media (max-width: 900px) {
-    max-width: 100%;
-  }
-`;
-
-const TopRightControls = styled.div`
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 8px;
-  pointer-events: auto;
-
-  @media (max-width: 900px) {
-    align-items: flex-start;
-  }
-`;
-
-const SessionChipContainer = styled.div`
-  position: relative;
-`;
-
-const SessionChipButton = styled(Button)`
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  max-width: 100%;
-  user-select: none;
-`;
-
-const SessionChipName = styled.span`
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 260px;
-
-  @media (max-width: 900px) {
-    max-width: 52vw;
-  }
-`;
-
-const SessionChipMeta = styled.span`
-  color: var(--sk-text-muted);
-  font-size: 11px;
-  white-space: nowrap;
-`;
-
-const SessionChipCaret = styled.span`
-  margin-left: 2px;
-  opacity: 0.7;
-`;
-
-const SessionStatusDot = styled.span<{ color: string }>`
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: ${(p) => p.color};
-  box-shadow: 0 0 6px ${(p) => `${p.color}55`};
-`;
-
-const SessionDetailsPanel = styled.div`
-  position: absolute;
-  top: calc(100% + 8px);
-  left: 0;
-  z-index: 12;
-  background: var(--sk-panel-bg);
-  border: 1px solid var(--sk-border);
-  border-radius: 8px;
-  padding: 10px 12px;
-  box-shadow: 0 2px 12px var(--sk-shadow);
-  font-family:
-    'JetBrains Mono', 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', 'Droid Sans Mono',
-    'Courier New', monospace;
-  font-size: 11px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 280px;
-  max-width: min(520px, 80vw);
-`;
-
-const DetailsRow = styled.div`
-  display: flex;
-  gap: 10px;
-  align-items: center;
-`;
-
-const DetailsLabel = styled.span`
-  opacity: 0.7;
-  min-width: 56px;
-`;
-
-const DetailsValue = styled.span`
-  font-weight: 500;
-  color: var(--sk-text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-`;
-
-const ButtonGroup = styled.div`
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-
-  @media (max-width: 900px) {
-    justify-content: flex-start;
-  }
-`;
-
-const EmptyMonitorState = styled.div`
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  gap: 12px;
-  color: var(--sk-text-muted);
-  font-size: 14px;
-  text-align: center;
-`;
 
 interface SessionItemProps {
   session: { id: string; name: string | null; created_at: string };
@@ -544,73 +200,6 @@ interface SessionItemProps {
 
 interface SessionInfoDisplayProps {
   session: { id: string; name: string | null; created_at: string };
-}
-
-const shortSessionId = (sessionId: string): string =>
-  sessionId.split('-')[0] || sessionId.slice(0, 8);
-
-type NodeIssue = {
-  nodeId: string;
-  summary: string;
-};
-
-function formatIssueDetails(details: unknown): string | null {
-  if (details == null) return null;
-  try {
-    const serialized = JSON.stringify(details);
-    if (!serialized || serialized === 'null') return null;
-    return serialized.length > 180 ? `${serialized.slice(0, 180)}…` : serialized;
-  } catch {
-    return null;
-  }
-}
-
-function formatIssueSummary(prefix: string, reason: string, details: string | null): string {
-  if (!details) return `${prefix}: ${reason}`;
-  return `${prefix}: ${reason} (${details})`;
-}
-
-function summarizeNodeIssues(nodeStates: Record<string, NodeState>): NodeIssue[] {
-  const issues: NodeIssue[] = [];
-
-  for (const [nodeId, state] of Object.entries(nodeStates)) {
-    if (typeof state !== 'object' || state == null) continue;
-
-    if ('Failed' in state) {
-      issues.push({ nodeId, summary: `Failed: ${state.Failed.reason}` });
-      continue;
-    }
-    if ('Degraded' in state) {
-      const details = formatIssueDetails(state.Degraded.details);
-      issues.push({
-        nodeId,
-        summary: formatIssueSummary('Degraded', state.Degraded.reason, details),
-      });
-      continue;
-    }
-    if ('Recovering' in state) {
-      const details = formatIssueDetails(state.Recovering.details);
-      issues.push({
-        nodeId,
-        summary: formatIssueSummary('Recovering', state.Recovering.reason, details),
-      });
-      continue;
-    }
-    if ('Stopped' in state) {
-      issues.push({ nodeId, summary: `Stopped: ${state.Stopped.reason}` });
-      continue;
-    }
-  }
-
-  const priority = (issue: NodeIssue): number => {
-    if (issue.summary.startsWith('Failed:')) return 0;
-    if (issue.summary.startsWith('Degraded:')) return 1;
-    if (issue.summary.startsWith('Recovering:')) return 2;
-    if (issue.summary.startsWith('Stopped:')) return 3;
-    return 4;
-  };
-
-  return issues.sort((a, b) => priority(a) - priority(b) || a.nodeId.localeCompare(b.nodeId));
 }
 
 // Isolated uptime component that only re-renders itself every second
@@ -1063,292 +652,6 @@ const TopControls = React.memo(
   },
   areTopControlPropsEqual
 );
-
-// Helper functions for commit changes to reduce complexity
-
-/** Find nodes that were added in staged pipeline */
-const computeAddedNodes = (stagedPipeline: Pipeline, livePipeline: Pipeline): BatchOperation[] => {
-  const operations: BatchOperation[] = [];
-  for (const [nodeId, node] of Object.entries(stagedPipeline.nodes) as [string, Node][]) {
-    if (!(nodeId in livePipeline.nodes)) {
-      operations.push({
-        action: 'addnode',
-        node_id: nodeId,
-        kind: node.kind,
-        params: node.params,
-      });
-    }
-  }
-  return operations;
-};
-
-/** Find nodes that were removed in staged pipeline */
-const computeRemovedNodes = (
-  stagedPipeline: Pipeline,
-  livePipeline: Pipeline
-): BatchOperation[] => {
-  const operations: BatchOperation[] = [];
-  for (const nodeId of Object.keys(livePipeline.nodes)) {
-    if (!(nodeId in stagedPipeline.nodes)) {
-      operations.push({
-        action: 'removenode',
-        node_id: nodeId,
-      });
-    }
-  }
-  return operations;
-};
-
-/** Create a set of connection keys for comparison */
-const connectionKey = (c: Connection): string =>
-  `${c.from_node}:${c.from_pin}:${c.to_node}:${c.to_pin}`;
-
-/** Find connections that were added or removed */
-const computeConnectionChanges = (
-  stagedPipeline: Pipeline,
-  livePipeline: Pipeline
-): BatchOperation[] => {
-  const operations: BatchOperation[] = [];
-
-  const liveConnections = new Set(livePipeline.connections.map(connectionKey));
-  const stagedConnections = new Set(stagedPipeline.connections.map(connectionKey));
-
-  // Find connections that were added
-  for (const conn of stagedPipeline.connections) {
-    if (!liveConnections.has(connectionKey(conn))) {
-      operations.push({
-        action: 'connect',
-        from_node: conn.from_node,
-        from_pin: conn.from_pin,
-        to_node: conn.to_node,
-        to_pin: conn.to_pin,
-        mode: conn.mode ?? 'reliable',
-      });
-    }
-  }
-
-  // Find connections that were removed
-  for (const conn of livePipeline.connections) {
-    if (!stagedConnections.has(connectionKey(conn))) {
-      operations.push({
-        action: 'disconnect',
-        from_node: conn.from_node,
-        from_pin: conn.from_pin,
-        to_node: conn.to_node,
-        to_pin: conn.to_pin,
-      });
-    }
-  }
-
-  return operations;
-};
-
-/**
- * Pre-process mixer nodes to set num_inputs based on actual connections.
- * This ensures mixers are created in fixed mode with proper pin counts.
- */
-const preprocessMixerNodes = (operations: BatchOperation[]): void => {
-  const mixerNodeOps = operations.filter(
-    (op): op is Extract<BatchOperation, { action: 'addnode' }> =>
-      op.action === 'addnode' && op.kind === 'audio::mixer'
-  );
-
-  for (const mixerOp of mixerNodeOps) {
-    // Count connections to this mixer
-    const connectionsToMixer = operations.filter(
-      (op): op is Extract<BatchOperation, { action: 'connect' }> =>
-        op.action === 'connect' && op.to_node === mixerOp.node_id
-    );
-
-    if (connectionsToMixer.length > 0) {
-      // Set num_inputs to the actual connection count (overrides null or undefined)
-      // Type guard: merge params only if existing params is an object
-      const existingParams = mixerOp.params;
-      mixerOp.params =
-        existingParams && typeof existingParams === 'object' && !Array.isArray(existingParams)
-          ? { ...existingParams, num_inputs: connectionsToMixer.length }
-          : { num_inputs: connectionsToMixer.length };
-      viewsLogger.debug(
-        `Auto-configured mixer ${mixerOp.node_id} with num_inputs=${connectionsToMixer.length}`
-      );
-    }
-  }
-};
-
-// Helper functions for topology effect to reduce complexity
-
-/**
- * Checks if an edge connection is valid (both source and target pins exist).
- * Prevents React Flow warnings about missing handles.
- */
-const isValidEdgeConnection = (conn: Connection, nodeMap: Map<string, RFNode>): boolean => {
-  const sourceNode = nodeMap.get(conn.from_node);
-  const targetNode = nodeMap.get(conn.to_node);
-
-  if (!sourceNode || !targetNode) return false;
-
-  const isDynamicTemplatePin = (pin: InputPin | OutputPin): boolean =>
-    typeof pin.cardinality === 'object' && pin.cardinality !== null && 'Dynamic' in pin.cardinality;
-
-  // Check if the output pin exists
-  const sourceOutputs = (sourceNode.data.outputs || []) as OutputPin[];
-  const hasSourcePin = sourceOutputs.some(
-    (pin) => pin.name === conn.from_pin && !isDynamicTemplatePin(pin)
-  );
-
-  // Check if the input pin exists
-  const targetInputs = (targetNode.data.inputs || []) as InputPin[];
-  const hasTargetPin = targetInputs.some(
-    (pin) => pin.name === conn.to_pin && !isDynamicTemplatePin(pin)
-  );
-
-  return hasSourcePin && hasTargetPin;
-};
-
-/**
- * Build edges from pipeline connections, filtering out invalid ones.
- */
-const buildEdgesFromConnections = (connections: Connection[], nodes: RFNode[]): Edge[] => {
-  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
-
-  return connections
-    .filter((conn) => isValidEdgeConnection(conn, nodeMap))
-    .map((conn) => ({
-      id: `${conn.from_node}_${conn.from_pin}-${conn.to_node}_${conn.to_pin}`,
-      source: conn.from_node,
-      sourceHandle: conn.from_pin,
-      target: conn.to_node,
-      targetHandle: conn.to_pin,
-    }));
-};
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  value !== null && value !== undefined && typeof value === 'object' && !Array.isArray(value);
-
-type SlowTimeoutDetails = {
-  slowPins: string[];
-  newlySlowPins: string[];
-  syncTimeoutMs: number | null;
-};
-
-const extractSlowTimeoutDetailsFromNodeState = (
-  state: NodeState | null | undefined
-): SlowTimeoutDetails | null => {
-  if (!state || typeof state === 'string') return null;
-  if (!('Degraded' in state)) return null;
-  if (state.Degraded.reason !== 'slow_input_timeout') return null;
-
-  const details = state.Degraded.details;
-  if (!isRecord(details)) return null;
-
-  const slowPinsRaw = details['slow_pins'];
-  const newlySlowPinsRaw = details['newly_slow_pins'];
-  const syncTimeoutRaw = details['sync_timeout_ms'];
-
-  const slowPins = Array.isArray(slowPinsRaw)
-    ? slowPinsRaw.filter((p): p is string => typeof p === 'string')
-    : [];
-  const newlySlowPins = Array.isArray(newlySlowPinsRaw)
-    ? newlySlowPinsRaw.filter((p): p is string => typeof p === 'string')
-    : [];
-  const syncTimeoutMs = typeof syncTimeoutRaw === 'number' ? syncTimeoutRaw : null;
-
-  return { slowPins, newlySlowPins, syncTimeoutMs };
-};
-
-const describeSlowInputs = (pipeline: Pipeline, nodeId: string, slowPins: string[]): string[] => {
-  if (slowPins.length === 0) return [];
-  const slowPinSet = new Set(slowPins);
-
-  const sources = pipeline.connections
-    .filter((c) => c.to_node === nodeId && slowPinSet.has(c.to_pin))
-    .map((c) => `${c.from_node}.${c.from_pin} → ${c.to_pin}`);
-
-  sources.sort();
-  return sources;
-};
-
-/**
- * Generate YAML representation of the pipeline ordered by topological sort.
- */
-const generatePipelineYaml = (pipeline: Pipeline, orderedNames: string[]): string => {
-  const yamlObject: { nodes: Record<string, unknown> } = { nodes: {} };
-
-  for (const nodeName of orderedNames) {
-    const apiNode = pipeline.nodes[nodeName];
-    if (!apiNode) continue;
-
-    const needs = pipeline.connections
-      .filter((c: Connection) => c.to_node === nodeName)
-      .map((c: Connection) => c.from_node);
-
-    const nodeConfig: Record<string, unknown> = { kind: apiNode.kind };
-    if (apiNode.params && Object.keys(apiNode.params).length > 0) {
-      nodeConfig['params'] = apiNode.params;
-    }
-    if (needs.length === 1) {
-      nodeConfig['needs'] = needs[0];
-    } else if (needs.length > 1) {
-      nodeConfig['needs'] = needs;
-    }
-    yamlObject.nodes[nodeName] = nodeConfig;
-  }
-
-  return dump(yamlObject, { skipInvalid: true });
-};
-
-/**
- * Build a single Node object from pipeline data.
- * Helper for topology effect to reduce complexity.
- */
-interface BuildNodeParams {
-  nodeName: string;
-  apiNode: Node;
-  position: { x: number; y: number };
-  nodeState: unknown; // Can be string | null or NodeState enum
-  isStaged: boolean;
-  finalInputs: InputPin[];
-  finalOutputs: OutputPin[];
-  nodeDef: NodeDefinition | undefined;
-  stableOnParamChange: (nodeId: string, paramName: string, value: unknown) => void;
-  stableOnConfigChange?: (nodeId: string, config: Record<string, unknown>) => void;
-  selectedSessionId: string | null;
-}
-
-/** Determine the ReactFlow node type from the pipeline node kind */
-const nodeTypeForKind = (kind: string): string => {
-  if (kind === 'audio::gain') return 'audioGain';
-  if (kind === 'video::compositor') return 'compositor';
-  return 'configurable';
-};
-
-const buildNodeObject = (params: BuildNodeParams): RFNode => {
-  return {
-    id: params.nodeName,
-    type: nodeTypeForKind(params.apiNode.kind),
-    position: params.position,
-    dragHandle: '.drag-handle',
-    data: {
-      label: params.nodeName,
-      kind: params.apiNode.kind,
-      params: params.apiNode.params || {},
-      inputs: params.finalInputs,
-      outputs: params.finalOutputs,
-      paramSchema: params.nodeDef?.param_schema,
-      nodeDefinition: params.nodeDef,
-      definition: { bidirectional: params.nodeDef?.bidirectional },
-      state: params.nodeState,
-      // Stats are NOT included here to prevent re-renders when they update
-      // NodeStateIndicator will fetch them directly from session store on hover
-      // Use stable callback that checks staging mode at call-time
-      onParamChange: params.stableOnParamChange,
-      // Full-config change callback for compositor nodes
-      onConfigChange: params.stableOnConfigChange,
-      sessionId: params.selectedSessionId || undefined,
-      isStaged: params.isStaged,
-    },
-  };
-};
 
 const LeftPanel = React.memo(
   ({
