@@ -72,16 +72,13 @@ describe('useCompositorDragResize zero-delta guard', () => {
 
     // Simulate pointer-down at (500, 300)
     act(() => {
-      result.current.handleLayerPointerDown(
-        'layer-1',
-        {
-          button: 0,
-          clientX: 500,
-          clientY: 300,
-          stopPropagation: vi.fn(),
-          preventDefault: vi.fn(),
-        } as unknown as React.PointerEvent
-      );
+      result.current.handleLayerPointerDown('layer-1', {
+        button: 0,
+        clientX: 500,
+        clientY: 300,
+        stopPropagation: vi.fn(),
+        preventDefault: vi.fn(),
+      } as unknown as React.PointerEvent);
     });
 
     // Verify drag state was set
@@ -108,16 +105,13 @@ describe('useCompositorDragResize zero-delta guard', () => {
 
     // Simulate pointer-down at (500, 300)
     act(() => {
-      result.current.handleLayerPointerDown(
-        'layer-1',
-        {
-          button: 0,
-          clientX: 500,
-          clientY: 300,
-          stopPropagation: vi.fn(),
-          preventDefault: vi.fn(),
-        } as unknown as React.PointerEvent
-      );
+      result.current.handleLayerPointerDown('layer-1', {
+        button: 0,
+        clientX: 500,
+        clientY: 300,
+        stopPropagation: vi.fn(),
+        preventDefault: vi.fn(),
+      } as unknown as React.PointerEvent);
     });
 
     // Simulate pointer-up at a DIFFERENT position (non-zero delta)
