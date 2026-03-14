@@ -379,6 +379,7 @@ pub async fn wire_and_spawn_graph(
             pin_management_rx: None, // Stateless pipelines don't support dynamic pins
             audio_pool: audio_pool.clone(),
             video_pool: video_pool.clone(),
+            pipeline_mode: streamkit_core::PipelineMode::Oneshot,
             view_data_tx: None, // Stateless pipelines don't emit view data
         };
 

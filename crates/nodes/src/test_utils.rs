@@ -40,9 +40,26 @@ pub fn create_test_context(
         pin_management_rx: Some(pin_mgmt_rx), // Provide channel for dynamic pins support
         audio_pool: None,
         video_pool: None,
+        pipeline_mode: streamkit_core::node::PipelineMode::Dynamic,
         view_data_tx: None,
     };
 
+    (context, mock_sender, state_rx)
+}
+
+/// Creates a test NodeContext configured for **oneshot / batch** mode.
+///
+/// Identical to [`create_test_context`] but sets `cancellation_token` to
+/// `Some(CancellationToken::new())` so nodes that branch on pipeline mode
+/// (e.g. the compositor) exercise the oneshot code path.
+#[allow(clippy::implicit_hasher)]
+pub fn create_oneshot_test_context(
+    inputs: HashMap<String, mpsc::Receiver<streamkit_core::types::Packet>>,
+    batch_size: usize,
+) -> (NodeContext, MockOutputSender, mpsc::Receiver<NodeStateUpdate>) {
+    let (mut context, mock_sender, state_rx) = create_test_context(inputs, batch_size);
+    context.cancellation_token = Some(tokio_util::sync::CancellationToken::new());
+    context.pipeline_mode = streamkit_core::node::PipelineMode::Oneshot;
     (context, mock_sender, state_rx)
 }
 

@@ -77,7 +77,8 @@ pub use error::StreamKitError;
 
 // Core node abstractions
 pub use node::{
-    InitContext, NodeContext, OutputSendError, OutputSender, ProcessorNode, RoutedPacketMessage,
+    InitContext, NodeContext, OutputSendError, OutputSender, PipelineMode, ProcessorNode,
+    RoutedPacketMessage,
 };
 
 // Registry and factory

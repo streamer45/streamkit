@@ -544,7 +544,15 @@ impl ProcessorNode for CompositorNode {
         });
 
         let mut output_seq: u64 = 0;
+        let mut running_timestamp_us: u64 = 0;
         let mut stop_reason: &str = "shutdown";
+
+        // In oneshot / batch mode we take exactly one frame per slot
+        // per iteration so every input frame is composited, and we
+        // skip real-time tick pacing to maximise throughput.  In live
+        // / dynamic mode we drain to the latest frame to stay in sync
+        // with real-time input.
+        let is_oneshot = context.pipeline_mode == streamkit_core::PipelineMode::Oneshot;
 
         // Set to `true` when the slot layout changes (input added,
         // removed, or disconnected) so the compositing thread clears
@@ -559,16 +567,22 @@ impl ProcessorNode for CompositorNode {
             .build();
         let otel_attrs = [KeyValue::new("node", node_name.clone())];
 
-        // ── Fixed-rate tick ──────────────────────────────────────────────
-        // The compositor runs at a fixed fps regardless of input rates,
-        // like the audio clocked mixer.  On each tick it drains all inputs
-        // to their latest frame and composites.  Inputs that haven't
-        // delivered a new frame since the last tick reuse their previous
-        // frame.  This guarantees a constant output rate and decouples
-        // the compositor from input timing.
-        let tick_duration =
-            std::time::Duration::from_nanos(1_000_000_000u64 / u64::from(self.config.fps));
-        let mut tick = tokio::time::interval(tick_duration);
+        // ── Tick / pacing ────────────────────────────────────────────────
+        //
+        // Pipeline-mode strategy:
+        //
+        //   • Live (dynamic): Fixed-rate tick at the configured fps,
+        //     drain each slot to its latest frame so the compositor
+        //     always renders the freshest content.
+        //
+        //   • Oneshot (batch): No real-time pacing — process as fast as
+        //     possible, taking exactly one frame per slot per iteration
+        //     so every input frame is composited.  This lets benchmarks
+        //     measure actual compositing throughput instead of being
+        //     capped at wall-clock fps.
+        let mut tick = tokio::time::interval(std::time::Duration::from_nanos(
+            1_000_000_000u64 / u64::from(self.config.fps),
+        ));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         // ── Cached resolved scene ────────────────────────────────────────
@@ -645,31 +659,69 @@ impl ProcessorNode for CompositorNode {
                     continue;
                 }
 
-                // Fixed-rate tick — time to composite.
-                _ = tick.tick() => {}
+                // Tick — in live mode wait for the fps interval;
+                // in oneshot mode just yield to let producers run,
+                // then proceed immediately.
+                _ = async {
+                    if is_oneshot {
+                        tokio::task::yield_now().await;
+                    } else {
+                        tick.tick().await;
+                    }
+                } => {}
             }
 
-            // ── Drain each slot to its latest frame (non-blocking) ──────
+            // ── Dequeue input frames (non-blocking) ─────────────────────
+            //
+            // In **live** mode we drain each slot to its most recent frame
+            // so the compositor always renders the freshest content and
+            // can recover from transient stalls without falling behind.
+            //
+            // In **oneshot / batch** mode we take exactly one frame per
+            // slot per tick so every input frame is composited.  Without
+            // this, batch sources (which produce frames as fast as
+            // possible without pacing) would dump all their frames into
+            // the channel and only the very last one would survive the
+            // drain — producing a tiny handful of output frames instead
+            // of the full expected count.
+            let mut any_new_frame = false;
             for slot in &mut slots {
-                let mut latest: Option<VideoFrame> = None;
-                let mut dropped: u64 = 0;
-                while let Ok(Packet::Video(frame)) = slot.rx.try_recv() {
-                    if latest.is_some() {
-                        dropped += 1;
+                if is_oneshot {
+                    if let Ok(Packet::Video(frame)) = slot.rx.try_recv() {
+                        slot.latest_frame = Some(frame);
+                        any_new_frame = true;
                     }
-                    latest = Some(frame);
-                }
-                if dropped > 0 {
-                    frames_dropped_counter.add(dropped, &otel_attrs);
-                    stats_tracker.discarded_n(dropped);
-                }
-                if let Some(frame) = latest {
-                    slot.latest_frame = Some(frame);
+                } else {
+                    let mut latest: Option<VideoFrame> = None;
+                    let mut dropped: u64 = 0;
+                    while let Ok(Packet::Video(frame)) = slot.rx.try_recv() {
+                        if latest.is_some() {
+                            dropped += 1;
+                        }
+                        latest = Some(frame);
+                    }
+                    if dropped > 0 {
+                        frames_dropped_counter.add(dropped, &otel_attrs);
+                        stats_tracker.discarded_n(dropped);
+                    }
+                    if let Some(frame) = latest {
+                        slot.latest_frame = Some(frame);
+                    }
                 }
             }
 
             // Nothing to composite if no slot has ever received a frame.
             if !slots.iter().any(|s| s.latest_frame.is_some()) {
+                continue;
+            }
+
+            // In oneshot mode, skip compositing when no slot received a
+            // new frame this tick — avoids duplicating stale content.
+            if is_oneshot && !any_new_frame {
+                if slots.iter().all(|s| s.rx.is_closed() && s.rx.is_empty()) {
+                    stop_reason = "all_inputs_closed";
+                    break;
+                }
                 continue;
             }
 
@@ -766,13 +818,21 @@ impl ProcessorNode for CompositorNode {
                 break;
             };
 
-            // Build metadata from the first available input frame.
-            let src_metadata =
-                slots.iter().find_map(|s| s.latest_frame.as_ref()).and_then(|f| f.metadata.clone());
-
+            // Derive output timestamps from the compositor's own clock
+            // rather than copying from input frames.  In batch/oneshot
+            // mode, inputs generate frames as fast as possible and the
+            // compositor drains many per tick, so the "latest input"
+            // timestamp can jump by hundreds of milliseconds — producing
+            // a WebM with huge gaps instead of smooth playback.
+            //
+            // We use an incremental accumulator (`running_timestamp_us`)
+            // instead of `output_seq * frame_duration_us` so that
+            // dynamic fps changes via UpdateParams don't cause timestamps
+            // to jump backwards.
+            let frame_duration_us = 1_000_000u64 / u64::from(self.config.fps);
             let metadata = Some(PacketMetadata {
-                timestamp_us: src_metadata.as_ref().and_then(|m| m.timestamp_us),
-                duration_us: src_metadata.as_ref().and_then(|m| m.duration_us),
+                timestamp_us: Some(running_timestamp_us),
+                duration_us: Some(frame_duration_us),
                 sequence: Some(output_seq),
                 // Don't set keyframe — the compositor outputs raw RGBA, not
                 // encoded video.  Downstream encoders (VP9) decide their own
@@ -811,6 +871,7 @@ impl ProcessorNode for CompositorNode {
             }
 
             output_seq += 1;
+            running_timestamp_us += frame_duration_us;
 
             // ── Check for closed input channels ─────────────────────────
             // Done *after* compositing so the compositor always produces
@@ -819,9 +880,17 @@ impl ProcessorNode for CompositorNode {
             // production: if all input channels close between drain and
             // the next tick, the already-drained `latest_frame` values
             // would be discarded without ever being composited.
+            //
+            // In oneshot mode, a slot is only removed when the channel
+            // is closed **and** fully drained (is_empty) so that every
+            // queued input frame is composited.  In live mode, a closed
+            // channel is removed immediately since any residual frames
+            // are stale (the source is gone).
             let mut i = 0;
             while i < slots.len() {
-                if slots[i].rx.is_closed() {
+                let closed = slots[i].rx.is_closed();
+                let remove = if is_oneshot { closed && slots[i].rx.is_empty() } else { closed };
+                if remove {
                     tracing::info!("CompositorNode: input '{}' closed", slots[i].name);
                     clear_conversion_cache = true;
                     slots.remove(i);
