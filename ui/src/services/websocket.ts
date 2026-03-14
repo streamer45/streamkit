@@ -46,10 +46,10 @@ export class WebSocketService {
   private isIntentionallyClosed = false;
   private subscribedSessions: Set<string> = new Set();
 
-  // ── Microtask-level batching for high-frequency events ──────────────
+  // ── Frame-level batching for high-frequency events ──────────────────
   // Buffer node-state and node-stats updates that arrive in rapid
   // succession (e.g. during session initialisation) and flush them as a
-  // single store mutation at the end of the current microtask.
+  // single store mutation at the next animation frame.
   private pendingNodeStates: Map<string, Map<string, NodeState>> = new Map();
   private pendingNodeStats: Map<string, Map<string, NodeStats>> = new Map();
   private batchFlushScheduled = false;
@@ -214,6 +214,10 @@ export class WebSocketService {
 
   private handleSessionDestroyed(payload: SessionDestroyedPayload): void {
     this.subscribedSessions.delete(payload.session_id);
+    // Discard any buffered updates for this session so the RAF flush
+    // doesn't needlessly process stale entries.
+    this.pendingNodeStates.delete(payload.session_id);
+    this.pendingNodeStats.delete(payload.session_id);
     useSessionStore.getState().clearSession(payload.session_id);
     useNodeParamsStore.getState().resetSession(payload.session_id);
     useTelemetryStore.getState().clearSession(payload.session_id);
