@@ -259,7 +259,7 @@ Composites multiple raw video inputs (RGBA8) onto a single canvas with image and
         "id": {
           "description": "Stable unique identifier.  Auto-generated (UUID v4) when omitted.",
           "type": "string",
-          "default": "898332af-711f-4b7e-91ec-94c61c9bad6a"
+          "default": "(auto-generated UUID v4)"
         },
         "data_base64": {
           "description": "Base64-encoded image data (PNG or JPEG). Decoded once during\ninitialization, not per-frame.",
@@ -310,7 +310,7 @@ Composites multiple raw video inputs (RGBA8) onto a single canvas with image and
         "id": {
           "description": "Stable unique identifier.  Auto-generated (UUID v4) when omitted.",
           "type": "string",
-          "default": "7cde9d43-6306-4079-8faf-e47f6c98b43c"
+          "default": "(auto-generated UUID v4)"
         },
         "text": {
           "description": "The text string to render.",

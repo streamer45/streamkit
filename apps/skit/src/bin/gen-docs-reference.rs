@@ -1091,7 +1091,8 @@ fn trim_float(v: f64) -> String {
 }
 
 fn render_raw_schema(schema: &Value) -> String {
-    let pretty = serde_json::to_string_pretty(schema).unwrap_or_else(|_| "{}".to_string());
+    let sanitized = sanitize_uuid_defaults(schema.clone());
+    let pretty = serde_json::to_string_pretty(&sanitized).unwrap_or_else(|_| "{}".to_string());
     format!(
         r"
 <details>
@@ -1104,6 +1105,33 @@ fn render_raw_schema(schema: &Value) -> String {
 </details>
 "
     )
+}
+
+/// Recursively walk a JSON value and replace any `"default"` string value
+/// that looks like a UUID v4 with a stable placeholder.
+fn sanitize_uuid_defaults(mut value: Value) -> Value {
+    match &mut value {
+        Value::Object(map) => {
+            if let Some(Value::String(s)) = map.get("default") {
+                if is_uuid_v4(s) {
+                    map.insert(
+                        "default".to_string(),
+                        Value::String("(auto-generated UUID v4)".to_string()),
+                    );
+                }
+            }
+            for v in map.values_mut() {
+                *v = sanitize_uuid_defaults(v.clone());
+            }
+        },
+        Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                *item = sanitize_uuid_defaults(item.clone());
+            }
+        },
+        _ => {},
+    }
+    value
 }
 
 fn json_one_line(v: &Value) -> String {
