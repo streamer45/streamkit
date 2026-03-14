@@ -162,11 +162,11 @@ export function useServerLayoutSync(
     if (!sessionId) return;
 
     const applyServerLayout = (viewData: unknown) => {
-      if (!viewData) return;
+      if (!viewData || typeof viewData !== 'object') return;
       if (dragStateRef.current) return;
 
       const layout = viewData as CompositorLayout;
-      if (!layout.layers) return;
+      if (!Array.isArray(layout.layers)) return;
 
       setLayers((prev) => mapServerLayers(prev, layout.layers));
 
