@@ -586,8 +586,7 @@ impl ProcessorNode for MoqPeerNode {
                         },
                     ).await {
                         Ok(_handle) => {
-                            let count = subscriber_count.fetch_add(1, Ordering::SeqCst) + 1;
-                            tracing::info!("Peer connected (total: {})", count);
+                            tracing::info!("Peer task started");
                         }
                         Err(e) => {
                             tracing::error!("Failed to start peer task: {}", e);
@@ -693,8 +692,7 @@ impl ProcessorNode for MoqPeerNode {
                         media_state_rx.clone(),
                     ).await {
                         Ok(_handle) => {
-                            let count = subscriber_count.fetch_add(1, Ordering::SeqCst) + 1;
-                            tracing::info!("Subscriber connected (total: {})", count);
+                            tracing::info!("Subscriber task started");
                         }
                         Err(e) => {
                             tracing::error!("Failed to start subscriber task: {}", e);
@@ -971,6 +969,9 @@ impl MoqPeerNode {
             .map_err(|e| StreamKitError::Runtime(format!("Failed to accept session: {e}")))?;
 
         let handle = tokio::spawn(async move {
+            let count = config.subscriber_count.fetch_add(1, Ordering::SeqCst) + 1;
+            tracing::info!(path = %path, "Peer connected (total: {})", count);
+
             let mut publisher_shutdown_rx = config.shutdown_rx.resubscribe();
             let mut subscriber_shutdown_rx = config.shutdown_rx;
 
@@ -1671,6 +1672,9 @@ impl MoqPeerNode {
             .map_err(|e| StreamKitError::Runtime(format!("Failed to accept session: {e}")))?;
 
         let handle = tokio::spawn(async move {
+            let count = subscriber_count.fetch_add(1, Ordering::SeqCst) + 1;
+            tracing::info!("Subscriber connected (total: {})", count);
+
             let result = Self::subscriber_send_loop(
                 send_origin,
                 output_broadcast,
