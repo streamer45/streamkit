@@ -275,6 +275,13 @@ struct CompositeItem<'a> {
 ///
 /// Returns `None` when `crop_zoom <= 1.0` (no crop — full source visible).
 /// Otherwise returns `(x, y, w, h)` in source-pixel coordinates.
+///
+/// For 4:2:0 pixel formats (I420, NV12) the crop origin is rounded down
+/// to even coordinates so that it aligns with chroma sample boundaries.
+/// Without this alignment, the YUV→RGBA conversion (which upsamples
+/// chroma on the original pixel grid) would shift chroma by half a
+/// sample relative to luma when the crop origin falls on an odd pixel,
+/// causing visible colour fringing.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
 fn compute_src_crop(
     src_w: u32,
@@ -282,6 +289,7 @@ fn compute_src_crop(
     crop_x: f32,
     crop_y: f32,
     crop_zoom: f32,
+    pixel_format: PixelFormat,
 ) -> Option<(u32, u32, u32, u32)> {
     if crop_zoom <= 1.0 {
         return None;
@@ -290,9 +298,19 @@ fn compute_src_crop(
     let crop_h = (src_h as f32 / crop_zoom).round().max(1.0) as u32;
     let max_x = src_w.saturating_sub(crop_w);
     let max_y = src_h.saturating_sub(crop_h);
-    let x = crop_x.mul_add(max_x as f32, 0.0).round() as u32;
-    let y = crop_y.mul_add(max_y as f32, 0.0).round() as u32;
-    Some((x.min(max_x), y.min(max_y), crop_w, crop_h))
+    let mut x = crop_x.mul_add(max_x as f32, 0.0).round() as u32;
+    let mut y = crop_y.mul_add(max_y as f32, 0.0).round() as u32;
+    x = x.min(max_x);
+    y = y.min(max_y);
+
+    // For 4:2:0 subsampled formats, align the crop origin to even pixel
+    // boundaries so it sits on a chroma sample edge.
+    if matches!(pixel_format, PixelFormat::I420 | PixelFormat::Nv12) {
+        x &= !1;
+        y &= !1;
+    }
+
+    Some((x, y, crop_w, crop_h))
 }
 
 /// Composite all layers and overlays onto a fresh RGBA8 canvas buffer.
@@ -414,6 +432,7 @@ pub fn composite_frame(
             layer.crop_x,
             layer.crop_y,
             layer.crop_zoom,
+            layer.pixel_format,
         );
         items.push(CompositeItem {
             src_data,
@@ -490,4 +509,61 @@ pub fn composite_frame(
     }
 
     pooled
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compute_src_crop_aligns_odd_origin_for_i420() {
+        // 10×10 source, 2× zoom → crop region is 5×5.
+        // max_x = 5, max_y = 5.
+        // crop_x=0.6 → raw x = round(0.6 * 5) = 3 (odd).
+        // crop_y=0.6 → raw y = round(0.6 * 5) = 3 (odd).
+        // For I420 the origin must be rounded down to even: (2, 2).
+        let result = compute_src_crop(10, 10, 0.6, 0.6, 2.0, PixelFormat::I420);
+        let (x, y, w, h) = result.unwrap();
+        assert_eq!(x % 2, 0, "I420 crop x must be even, got {x}");
+        assert_eq!(y % 2, 0, "I420 crop y must be even, got {y}");
+        assert_eq!(w, 5);
+        assert_eq!(h, 5);
+    }
+
+    #[test]
+    fn compute_src_crop_aligns_odd_origin_for_nv12() {
+        // Same geometry as above but with NV12.
+        let result = compute_src_crop(10, 10, 0.6, 0.6, 2.0, PixelFormat::Nv12);
+        let (x, y, w, h) = result.unwrap();
+        assert_eq!(x % 2, 0, "NV12 crop x must be even, got {x}");
+        assert_eq!(y % 2, 0, "NV12 crop y must be even, got {y}");
+        assert_eq!(w, 5);
+        assert_eq!(h, 5);
+    }
+
+    #[test]
+    fn compute_src_crop_preserves_odd_origin_for_rgba() {
+        // For RGBA8 there is no chroma subsampling — odd origins are fine.
+        let result = compute_src_crop(10, 10, 0.6, 0.6, 2.0, PixelFormat::Rgba8);
+        let (x, y, _, _) = result.unwrap();
+        assert_eq!(x, 3, "RGBA crop x should remain 3 (odd is fine)");
+        assert_eq!(y, 3, "RGBA crop y should remain 3 (odd is fine)");
+    }
+
+    #[test]
+    fn compute_src_crop_even_origin_unchanged_for_420() {
+        // When the raw origin is already even, alignment is a no-op.
+        // crop_x=0.0 → x = 0 (even), crop_y=0.0 → y = 0 (even).
+        let result = compute_src_crop(10, 10, 0.0, 0.0, 2.0, PixelFormat::I420);
+        let (x, y, _, _) = result.unwrap();
+        assert_eq!(x, 0);
+        assert_eq!(y, 0);
+    }
+
+    #[test]
+    fn compute_src_crop_no_zoom_returns_none() {
+        // crop_zoom <= 1.0 → no crop region regardless of format.
+        assert!(compute_src_crop(10, 10, 0.5, 0.5, 1.0, PixelFormat::I420).is_none());
+        assert!(compute_src_crop(10, 10, 0.5, 0.5, 0.5, PixelFormat::Nv12).is_none());
+    }
 }

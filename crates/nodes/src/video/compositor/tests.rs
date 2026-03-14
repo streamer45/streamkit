@@ -1380,3 +1380,142 @@ fn test_crop_with_mirror_v_rotated() {
     assert_eq!(dst[idx + 1], 0, "Centre G should be 0 (blue quad)");
     assert_eq!(dst[idx + 2], 255, "Centre B should be 255 (blue quad)");
 }
+
+// ── Chroma subsampling alignment tests ──────────────────────────────
+
+/// Create a solid-colour I420 `VideoFrame`.
+///
+/// Converts a solid RGBA colour to I420 via `rgba8_to_i420_buf` so the
+/// test exercises the real conversion path.
+fn make_i420_frame(width: u32, height: u32, r: u8, g: u8, b: u8) -> VideoFrame {
+    let rgba = make_rgba_frame(width, height, r, g, b, 255);
+    let w = width as usize;
+    let h = height as usize;
+    let chroma_w = w.div_ceil(2);
+    let chroma_h = h.div_ceil(2);
+    let i420_size = w * h + 2 * chroma_w * chroma_h;
+    let mut i420_data = vec![0u8; i420_size];
+    pixel_ops::rgba8_to_i420_buf(rgba.data(), width, height, &mut i420_data);
+    VideoFrame::new(width, height, PixelFormat::I420, i420_data).unwrap()
+}
+
+/// Create a solid-colour NV12 `VideoFrame`.
+fn make_nv12_frame(width: u32, height: u32, r: u8, g: u8, b: u8) -> VideoFrame {
+    let rgba = make_rgba_frame(width, height, r, g, b, 255);
+    let w = width as usize;
+    let h = height as usize;
+    let chroma_w = w.div_ceil(2);
+    let chroma_h = h.div_ceil(2);
+    let nv12_size = w * h + chroma_w * 2 * chroma_h;
+    let mut nv12_data = vec![0u8; nv12_size];
+    pixel_ops::rgba8_to_nv12_buf(rgba.data(), width, height, &mut nv12_data);
+    VideoFrame::new(width, height, PixelFormat::Nv12, nv12_data).unwrap()
+}
+
+#[test]
+fn test_crop_aligns_odd_origin_for_i420_composite() {
+    // 8×8 solid-red I420 source with crop parameters that would
+    // normally produce an odd crop origin.
+    //
+    // 2× zoom → crop region 4×4.  max_x = max_y = 4.
+    // crop_x = 0.75 → raw x = round(0.75 * 4) = 3 (odd).
+    // crop_y = 0.75 → raw y = round(0.75 * 4) = 3 (odd).
+    //
+    // After chroma alignment the origin should snap to (2, 2).
+    // Because the source is solid red, the output canvas should
+    // consist entirely of (near-)red pixels — any chroma misalignment
+    // would shift colours noticeably.
+    let frame = make_i420_frame(8, 8, 255, 0, 0);
+    let layer = LayerSnapshot {
+        data: frame.data,
+        width: 8,
+        height: 8,
+        pixel_format: PixelFormat::I420,
+        rect: Some(Rect { x: 0, y: 0, width: 8, height: 8 }),
+        opacity: 1.0,
+        z_index: 0,
+        rotation_degrees: 0.0,
+        mirror_horizontal: false,
+        mirror_vertical: false,
+        crop_zoom: 2.0,
+        crop_x: 0.75,
+        crop_y: 0.75,
+    };
+
+    let mut cache = ConversionCache::new();
+    let result = composite_frame(8, 8, &[Some(layer)], &[], &[], None, &mut cache);
+    let buf = result.as_slice();
+
+    // Every pixel should be close to red (BT.601 round-trip tolerance).
+    for (i, pixel) in buf.chunks_exact(4).enumerate() {
+        assert!(pixel[0] > 200, "pixel {i}: R={}, expected >200", pixel[0]);
+        assert!(pixel[1] < 30, "pixel {i}: G={}, expected <30", pixel[1]);
+        assert!(pixel[2] < 30, "pixel {i}: B={}, expected <30", pixel[2]);
+    }
+}
+
+#[test]
+fn test_crop_aligns_odd_origin_for_nv12_composite() {
+    // Same test as above but with an NV12 source.
+    let frame = make_nv12_frame(8, 8, 255, 0, 0);
+    let layer = LayerSnapshot {
+        data: frame.data,
+        width: 8,
+        height: 8,
+        pixel_format: PixelFormat::Nv12,
+        rect: Some(Rect { x: 0, y: 0, width: 8, height: 8 }),
+        opacity: 1.0,
+        z_index: 0,
+        rotation_degrees: 0.0,
+        mirror_horizontal: false,
+        mirror_vertical: false,
+        crop_zoom: 2.0,
+        crop_x: 0.75,
+        crop_y: 0.75,
+    };
+
+    let mut cache = ConversionCache::new();
+    let result = composite_frame(8, 8, &[Some(layer)], &[], &[], None, &mut cache);
+    let buf = result.as_slice();
+
+    for (i, pixel) in buf.chunks_exact(4).enumerate() {
+        assert!(pixel[0] > 200, "pixel {i}: R={}, expected >200", pixel[0]);
+        assert!(pixel[1] < 30, "pixel {i}: G={}, expected <30", pixel[1]);
+        assert!(pixel[2] < 30, "pixel {i}: B={}, expected <30", pixel[2]);
+    }
+}
+
+#[test]
+fn test_crop_aligns_odd_origin_for_i420_rotated() {
+    // Exercise the rotated blit path (rotation > 0.01°) with an I420
+    // source and crop parameters that produce odd origins.  The centre
+    // pixel of the output should still be red.
+    let frame = make_i420_frame(8, 8, 255, 0, 0);
+    let layer = LayerSnapshot {
+        data: frame.data,
+        width: 8,
+        height: 8,
+        pixel_format: PixelFormat::I420,
+        rect: Some(Rect { x: 0, y: 0, width: 16, height: 16 }),
+        opacity: 1.0,
+        z_index: 0,
+        rotation_degrees: 15.0,
+        mirror_horizontal: false,
+        mirror_vertical: false,
+        crop_zoom: 2.0,
+        crop_x: 0.75,
+        crop_y: 0.75,
+    };
+
+    let mut cache = ConversionCache::new();
+    let result = composite_frame(16, 16, &[Some(layer)], &[], &[], None, &mut cache);
+    let buf = result.as_slice();
+
+    // Centre pixel (8, 8) should be close to red.
+    let cx = 8usize;
+    let cy = 8usize;
+    let idx = (cy * 16 + cx) * 4;
+    assert!(buf[idx] > 200, "Centre R={}, expected >200", buf[idx]);
+    assert!(buf[idx + 1] < 30, "Centre G={}, expected <30", buf[idx + 1]);
+    assert!(buf[idx + 2] < 30, "Centre B={}, expected <30", buf[idx + 2]);
+}
