@@ -443,7 +443,11 @@ impl ProcessorNode for CompositorNode {
         let mut text_overlays_vec: Vec<Arc<DecodedOverlay>> =
             Vec::with_capacity(self.config.text_overlays.len());
         for txt_cfg in &self.config.text_overlays {
-            text_overlays_vec.push(Arc::new(rasterize_text_overlay(txt_cfg)));
+            text_overlays_vec.push(Arc::new(rasterize_text_overlay(
+                txt_cfg,
+                self.limits.max_canvas_dimension,
+                self.limits.max_text_length,
+            )));
         }
 
         // Wrap in Arc<[...]> so per-frame clones into the work item are
@@ -934,7 +938,13 @@ impl CompositorNode {
                         let new_text_overlays: Vec<Arc<DecodedOverlay>> = new_config
                             .text_overlays
                             .iter()
-                            .map(|txt_cfg| Arc::new(rasterize_text_overlay(txt_cfg)))
+                            .map(|txt_cfg| {
+                                Arc::new(rasterize_text_overlay(
+                                    txt_cfg,
+                                    limits.max_canvas_dimension,
+                                    limits.max_text_length,
+                                ))
+                            })
                             .collect();
                         *text_overlays = Arc::from(new_text_overlays);
 

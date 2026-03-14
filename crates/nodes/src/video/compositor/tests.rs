@@ -281,7 +281,7 @@ fn test_rasterize_text_overlay_produces_pixels() {
         font_data_base64: None,
         font_name: None,
     };
-    let overlay = rasterize_text_overlay(&cfg);
+    let overlay = rasterize_text_overlay(&cfg, 7680, 10_000);
     // Bitmap is sized to the measured text extent, not the config rect.
     assert!(overlay.width > 0, "rasterized width must be positive");
     assert!(overlay.height > 0, "rasterized height must be positive");

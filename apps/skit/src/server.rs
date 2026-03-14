@@ -3011,6 +3011,7 @@ pub fn create_app(
         constraints.insert(streamkit_nodes::video::compositor::config::GlobalCompositorConfig {
             max_canvas_dimension: config.compositor.max_canvas_dimension,
             max_font_size: config.compositor.max_font_size,
+            max_text_length: config.compositor.max_text_length,
         });
     }
 
