@@ -7,6 +7,7 @@ use bytes::Bytes;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::borrow::Cow;
+use std::collections::VecDeque;
 use std::io::{BufWriter, Cursor, Read as _, Seek, SeekFrom, Write};
 use std::sync::{Arc, Mutex};
 use streamkit_core::stats::NodeStatsTracker;
@@ -26,6 +27,12 @@ use webm::mux::{
 
 /// Default audio frame duration when metadata is missing (20ms Opus frame).
 const DEFAULT_FRAME_DURATION_US: u64 = 20_000;
+
+/// Maximum number of video frames to buffer while waiting for the first
+/// keyframe to start a new WebM cluster. At 30 fps this is roughly
+/// 10 seconds of video. Prevents unbounded memory growth in long-running
+/// streams where keyframes are infrequent.
+const MAX_PENDING_VIDEO_FRAMES: usize = 300;
 use crate::video::{
     DEFAULT_VIDEO_FRAME_DURATION_US, VP9_BIT_DEPTH, VP9_CHROMA_SUBSAMPLING, VP9_LEVEL, VP9_PROFILE,
 };
@@ -842,6 +849,15 @@ impl ProcessorNode for WebMMuxerNode {
         let mut audio_done = !has_audio;
         let mut video_done = !has_video;
 
+        // Bounded buffer for video frames received before the first keyframe.
+        // WebM clusters must start with a keyframe, so non-keyframe video
+        // frames received before the first keyframe cannot be muxed into a
+        // valid stream.  This buffer caps memory usage when keyframes are
+        // infrequent; the oldest frames are dropped when the limit is reached.
+        let mut video_keyframe_seen = !has_video;
+        let mut pending_video_frames: VecDeque<(Bytes, Option<PacketMetadata>)> =
+            VecDeque::new();
+
         // If we buffered the first video packet for dimension detection, replay
         // it through the normal mux path before entering the receive loop.
         if let Some((data, metadata)) = first_video_packet.take() {
@@ -865,6 +881,9 @@ impl ProcessorNode for WebMMuxerNode {
                 .await?
                 {
                     video_done = true;
+                }
+                if is_keyframe {
+                    video_keyframe_seen = true;
                 }
             }
         }
@@ -975,6 +994,14 @@ impl ProcessorNode for WebMMuxerNode {
                     audio_done = true;
                 },
                 MuxFrame::VideoClosed => {
+                    if !pending_video_frames.is_empty() {
+                        tracing::warn!(
+                            "WebMMuxerNode: video input closed with {} pending frames \
+                             (no keyframe was ever received)",
+                            pending_video_frames.len()
+                        );
+                        pending_video_frames.clear();
+                    }
                     tracing::info!("WebMMuxerNode video input closed");
                     video_done = true;
                 },
@@ -1008,6 +1035,38 @@ impl ProcessorNode for WebMMuxerNode {
                         continue;
                     };
                     let is_keyframe = metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(false);
+
+                    // Gate on the first keyframe so the WebM stream starts at
+                    // a valid cluster boundary.  Non-keyframe frames received
+                    // before the first keyframe are buffered (bounded) and
+                    // discarded once the keyframe arrives — they cannot be
+                    // decoded without a preceding reference frame.
+                    if !video_keyframe_seen {
+                        if is_keyframe {
+                            if !pending_video_frames.is_empty() {
+                                tracing::info!(
+                                    "WebMMuxerNode: discarding {} buffered pre-keyframe \
+                                     video frames",
+                                    pending_video_frames.len()
+                                );
+                                pending_video_frames.clear();
+                            }
+                            video_keyframe_seen = true;
+                            // Fall through to mux this keyframe normally.
+                        } else {
+                            if pending_video_frames.len() >= MAX_PENDING_VIDEO_FRAMES {
+                                pending_video_frames.pop_front();
+                                tracing::warn!(
+                                    "WebMMuxerNode: pending video frame buffer full \
+                                     ({MAX_PENDING_VIDEO_FRAMES} frames), dropping \
+                                     oldest frame while waiting for first keyframe"
+                                );
+                            }
+                            pending_video_frames.push_back((data, metadata));
+                            continue;
+                        }
+                    }
+
                     if mux_frame(
                         &data,
                         metadata.as_ref(),
