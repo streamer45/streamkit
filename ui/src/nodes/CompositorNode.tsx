@@ -172,9 +172,11 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
   const showLiveIndicator = !data.isStaged && !!data.onConfigChange && !!data.sessionId;
 
   // Selected layer data for property controls
-  const selectedLayer = layers.find((l) => l.id === selectedLayerId);
-  const selectedTextOverlay = textOverlays.find((o) => o.id === selectedLayerId);
-  const selectedImageOverlay = imageOverlays.find((o) => o.id === selectedLayerId);
+  const [selectedLayer, selectedTextOverlay, selectedImageOverlay] = [
+    layers.find((l) => l.id === selectedLayerId),
+    textOverlays.find((o) => o.id === selectedLayerId),
+    imageOverlays.find((o) => o.id === selectedLayerId),
+  ];
 
   // Determine the kind of the selected layer once
   const selectedLayerKind = useMemo(() => {

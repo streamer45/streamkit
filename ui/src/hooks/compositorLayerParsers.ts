@@ -171,6 +171,38 @@ function parseTransformFields(
   };
 }
 
+/** Extract position/size from a layer config's rect, falling back to canvas dimensions. */
+function parseLayerRect(rect: Rect | null | undefined, canvasWidth: number, canvasHeight: number) {
+  return {
+    x: rect?.x ?? 0,
+    y: rect?.y ?? 0,
+    width: rect?.width ?? canvasWidth,
+    height: rect?.height ?? canvasHeight,
+  };
+}
+
+/** Map a single layer config entry to LayerState. */
+function layerConfigToState(
+  id: string,
+  cfg: LayerConfig,
+  canvasWidth: number,
+  canvasHeight: number
+): LayerState {
+  return {
+    id,
+    ...parseLayerRect(cfg.rect, canvasWidth, canvasHeight),
+    opacity: cfg.opacity ?? DEFAULT_OPACITY,
+    zIndex: cfg.z_index ?? DEFAULT_Z_INDEX,
+    rotationDegrees: cfg.rotation_degrees ?? DEFAULT_ROTATION_DEGREES,
+    mirrorHorizontal: cfg.mirror_horizontal ?? DEFAULT_MIRROR_HORIZONTAL,
+    mirrorVertical: cfg.mirror_vertical ?? DEFAULT_MIRROR_VERTICAL,
+    visible: DEFAULT_VISIBLE,
+    cropZoom: cfg.crop_zoom ?? DEFAULT_CROP_ZOOM,
+    cropX: cfg.crop_x ?? DEFAULT_CROP_X,
+    cropY: cfg.crop_y ?? DEFAULT_CROP_Y,
+  };
+}
+
 /** Parse layers from compositor params into LayerState array */
 export function parseLayers(
   params: Record<string, unknown>,
@@ -181,22 +213,7 @@ export function parseLayers(
   if (!layers || typeof layers !== 'object') return [];
 
   return Object.entries(layers)
-    .map(([id, cfg]) => ({
-      id,
-      x: cfg.rect?.x ?? 0,
-      y: cfg.rect?.y ?? 0,
-      width: cfg.rect?.width ?? canvasWidth,
-      height: cfg.rect?.height ?? canvasHeight,
-      opacity: cfg.opacity ?? DEFAULT_OPACITY,
-      zIndex: cfg.z_index ?? DEFAULT_Z_INDEX,
-      rotationDegrees: cfg.rotation_degrees ?? DEFAULT_ROTATION_DEGREES,
-      mirrorHorizontal: cfg.mirror_horizontal ?? DEFAULT_MIRROR_HORIZONTAL,
-      mirrorVertical: cfg.mirror_vertical ?? DEFAULT_MIRROR_VERTICAL,
-      visible: DEFAULT_VISIBLE,
-      cropZoom: cfg.crop_zoom ?? DEFAULT_CROP_ZOOM,
-      cropX: cfg.crop_x ?? DEFAULT_CROP_X,
-      cropY: cfg.crop_y ?? DEFAULT_CROP_Y,
-    }))
+    .map(([id, cfg]) => layerConfigToState(id, cfg, canvasWidth, canvasHeight))
     .sort((a, b) => a.zIndex - b.zIndex);
 }
 
