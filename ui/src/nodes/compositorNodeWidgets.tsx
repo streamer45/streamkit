@@ -353,6 +353,12 @@ export const MirrorControl: React.FC<{
 ));
 MirrorControl.displayName = 'MirrorControl';
 
+const CropSectionHeader = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 6px;
+`;
+
 export type CropZoomPatch = {
   cropX?: number;
   cropY?: number;
@@ -370,20 +376,19 @@ export const CropZoomControl: React.FC<{
 
   return (
     <InspectorSection data-testid="crop-zoom-section">
-      <InspectorSectionLabel>
-        Crop &amp; Zoom
+      <CropSectionHeader>
+        <InspectorSectionLabel>Crop &amp; Zoom</InspectorSectionLabel>
         <SKTooltip content="Reset to defaults">
           <ResetButton
             disabled={disabled}
             onClick={() => onChange({ cropZoom: 1.0, cropX: 0.5, cropY: 0.5 })}
             className="nodrag nopan"
-            style={{ marginLeft: 'auto' }}
             data-testid="crop-zoom-reset"
           >
-            <RotateCcw size={10} />
+            <RotateCcw size={12} />
           </ResetButton>
         </SKTooltip>
-      </InspectorSectionLabel>
+      </CropSectionHeader>
       <ControlRow>
         <ControlLabel>Zoom</ControlLabel>
         <CompactSliderRoot
