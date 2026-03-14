@@ -242,35 +242,42 @@ export class WebSocketService {
   }
 
   /**
-   * Schedule a microtask to flush buffered node-state and node-stats
-   * updates.  Multiple WebSocket messages arriving in the same event-loop
-   * tick are coalesced into a single Zustand `set()` call per session,
-   * dramatically reducing the number of subscriber notifications and
-   * React re-renders during session load.
+   * Schedule a `requestAnimationFrame` callback to flush buffered
+   * node-state and node-stats updates.  Unlike `queueMicrotask` (which
+   * drains after each macrotask), RAF coalesces updates across *all*
+   * WebSocket `onmessage` macrotasks that arrive within a single
+   * animation frame (~16 ms at 60 fps).  This dramatically reduces the
+   * number of Zustand `set()` calls — and therefore React re-renders —
+   * during session load where many state events arrive in a burst.
    */
   private scheduleBatchFlush(): void {
     if (this.batchFlushScheduled) return;
     this.batchFlushScheduled = true;
-    queueMicrotask(() => this.flushBatchedUpdates());
+    requestAnimationFrame(() => this.flushBatchedUpdates());
   }
 
   private flushBatchedUpdates(): void {
     this.batchFlushScheduled = false;
-    const store = useSessionStore.getState();
 
-    // Flush node states
+    // Convert pending Maps to Records and flush everything in a single
+    // store mutation via batchUpdateSessionData.  This ensures that all
+    // WebSocket events from one animation frame produce exactly ONE
+    // Zustand set() call, minimising React re-renders.
+    const stateUpdates = new Map<string, Record<string, NodeState>>();
     for (const [sessionId, updates] of this.pendingNodeStates) {
-      const record: Record<string, NodeState> = Object.fromEntries(updates);
-      store.batchUpdateNodeStates(sessionId, record);
+      stateUpdates.set(sessionId, Object.fromEntries(updates));
     }
     this.pendingNodeStates.clear();
 
-    // Flush node stats
+    const statsUpdates = new Map<string, Record<string, NodeStats>>();
     for (const [sessionId, updates] of this.pendingNodeStats) {
-      const record: Record<string, NodeStats> = Object.fromEntries(updates);
-      store.batchUpdateNodeStats(sessionId, record);
+      statsUpdates.set(sessionId, Object.fromEntries(updates));
     }
     this.pendingNodeStats.clear();
+
+    if (stateUpdates.size > 0 || statsUpdates.size > 0) {
+      useSessionStore.getState().batchUpdateSessionData(stateUpdates, statsUpdates);
+    }
   }
 
   private handleNodeParamsChanged(payload: NodeParamsChangedPayload): void {
@@ -479,6 +486,12 @@ export class WebSocketService {
       pending.reject(new Error('WebSocket closed'));
     });
     this.pendingRequests.clear();
+
+    // Clear pending batch buffers so a stale RAF callback doesn't
+    // apply updates after teardown.
+    this.pendingNodeStates.clear();
+    this.pendingNodeStats.clear();
+    this.batchFlushScheduled = false;
 
     if (this.ws) {
       this.ws.close();

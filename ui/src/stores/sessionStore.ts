@@ -41,6 +41,14 @@ interface SessionStore {
   batchUpdateNodeStates: (sessionId: string, updates: Record<string, NodeState>) => void;
   batchUpdateNodeStats: (sessionId: string, updates: Record<string, NodeStats>) => void;
   batchSetPipelines: (pipelines: Array<{ sessionId: string; pipeline: Pipeline }>) => void;
+
+  // Combined batch: merge node states AND stats for multiple sessions in a
+  // single set() call.  Used by the RAF-based WebSocket flush to ensure
+  // all updates from one animation frame produce exactly one store mutation.
+  batchUpdateSessionData: (
+    stateUpdates: Map<string, Record<string, NodeState>>,
+    statsUpdates: Map<string, Record<string, NodeStats>>
+  ) => void;
 }
 
 export const useSessionStore = create<SessionStore>((set, get) => ({
@@ -324,6 +332,34 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
           nodeStats: session?.nodeStats ?? {},
           nodeViewData: session?.nodeViewData ?? {},
           isConnected: session?.isConnected ?? false,
+        });
+      }
+
+      return { sessions: newSessions };
+    }),
+
+  batchUpdateSessionData: (stateUpdates, statsUpdates) =>
+    set((prev) => {
+      // Collect all session IDs that need updating.
+      const sessionIds = new Set<string>();
+      for (const id of stateUpdates.keys()) sessionIds.add(id);
+      for (const id of statsUpdates.keys()) sessionIds.add(id);
+
+      if (sessionIds.size === 0) return prev;
+
+      const newSessions = new Map(prev.sessions);
+
+      for (const sessionId of sessionIds) {
+        const session = newSessions.get(sessionId);
+        if (!session) continue;
+
+        const stateUpdate = stateUpdates.get(sessionId);
+        const statsUpdate = statsUpdates.get(sessionId);
+
+        newSessions.set(sessionId, {
+          ...session,
+          nodeStates: stateUpdate ? { ...session.nodeStates, ...stateUpdate } : session.nodeStates,
+          nodeStats: statsUpdate ? { ...session.nodeStats, ...statsUpdate } : session.nodeStats,
         });
       }
 

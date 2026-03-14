@@ -158,6 +158,11 @@ test.describe("Monitor Session Load Perf — Re-render Budget", () => {
     // enough for CI variance but will catch the pre-optimisation
     // behaviour of 500+ renders for a single session load.
     const monitorData = snapshot.components["MonitorView"];
+    expect(
+      monitorData,
+      `MonitorView profiler data missing. Available components: ${Object.keys(snapshot.components).join(", ") || "(none)"}`,
+    ).toBeTruthy();
+
     if (monitorData) {
       assertRenderBudget(snapshot, "MonitorView", {
         max: 150,
