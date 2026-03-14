@@ -1312,3 +1312,71 @@ fn test_scale_blit_rotated_with_src_region() {
     assert_eq!(dst[idx + 1], 0, "Centre G");
     assert_eq!(dst[idx + 2], 0, "Centre B");
 }
+
+#[test]
+fn test_crop_with_rotation_and_mirror() {
+    // 4×4 quadrant source, crop to top-right 2×2 (green) with mirror_h
+    // and a small rotation.  The mirror should stay within the crop region.
+    // With mirror_h, the green quadrant's pixels are reflected horizontally
+    // within the crop window (still green).  The 15° rotation exercises
+    // the rotated blit path (rotation >= 0.01°).
+    let src = make_quadrant_frame();
+    let src_data = src.data();
+    let mut dst = vec![0u8; 10 * 10 * 4]; // 10×10 canvas
+
+    scale_blit_rgba_rotated(
+        &mut dst,
+        10,
+        10,
+        src_data,
+        4,
+        4,
+        &BlitRect { x: 0, y: 0, width: 10, height: 10 },
+        1.0,
+        15.0,               // non-zero rotation to use rotated path
+        false,              // skip_transparent
+        true,               // mirror_h
+        false,              // mirror_v
+        Some((2, 0, 2, 2)), // top-right quadrant (green)
+    );
+
+    // Centre pixel should be green (mirrored green is still green).
+    let cx = 5usize;
+    let cy = 5usize;
+    let idx = (cy * 10 + cx) * 4;
+    assert_eq!(dst[idx], 0, "Centre R should be 0 (green quad)");
+    assert_eq!(dst[idx + 1], 255, "Centre G should be 255 (green quad)");
+    assert_eq!(dst[idx + 2], 0, "Centre B should be 0 (green quad)");
+}
+
+#[test]
+fn test_crop_with_mirror_v_rotated() {
+    // 4×4 quadrant source, crop to bottom-left 2×2 (blue) with mirror_v
+    // and rotation.  mirror_v within the blue crop region → still blue.
+    let src = make_quadrant_frame();
+    let src_data = src.data();
+    let mut dst = vec![0u8; 10 * 10 * 4];
+
+    scale_blit_rgba_rotated(
+        &mut dst,
+        10,
+        10,
+        src_data,
+        4,
+        4,
+        &BlitRect { x: 0, y: 0, width: 10, height: 10 },
+        1.0,
+        10.0, // non-zero rotation
+        false,
+        false,
+        true,               // mirror_v
+        Some((0, 2, 2, 2)), // bottom-left quadrant (blue)
+    );
+
+    let cx = 5usize;
+    let cy = 5usize;
+    let idx = (cy * 10 + cx) * 4;
+    assert_eq!(dst[idx], 0, "Centre R should be 0 (blue quad)");
+    assert_eq!(dst[idx + 1], 0, "Centre G should be 0 (blue quad)");
+    assert_eq!(dst[idx + 2], 255, "Centre B should be 255 (blue quad)");
+}

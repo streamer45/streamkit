@@ -369,7 +369,7 @@ export const CropZoomControl: React.FC<{
   const panDisabled = disabled || cropZoom <= 1.0;
 
   return (
-    <InspectorSection>
+    <InspectorSection data-testid="crop-zoom-section">
       <InspectorSectionLabel>
         Crop &amp; Zoom
         <SKTooltip content="Reset to defaults">
@@ -378,6 +378,7 @@ export const CropZoomControl: React.FC<{
             onClick={() => onChange({ cropZoom: 1.0, cropX: 0.5, cropY: 0.5 })}
             className="nodrag nopan"
             style={{ marginLeft: 'auto' }}
+            data-testid="crop-zoom-reset"
           >
             <RotateCcw size={10} />
           </ResetButton>
@@ -393,13 +394,14 @@ export const CropZoomControl: React.FC<{
           step={0.1}
           disabled={disabled}
           className="nodrag nopan"
+          data-testid="crop-zoom-slider"
         >
           <CompactSliderTrack>
             <CompactSliderRange />
           </CompactSliderTrack>
           <CompactSliderThumb />
         </CompactSliderRoot>
-        <ControlValue>{cropZoom.toFixed(1)}×</ControlValue>
+        <ControlValue data-testid="crop-zoom-value">{cropZoom.toFixed(1)}×</ControlValue>
       </ControlRow>
       <ControlRow>
         <ControlLabel>Pan X</ControlLabel>
@@ -411,6 +413,7 @@ export const CropZoomControl: React.FC<{
           step={0.01}
           disabled={panDisabled}
           className="nodrag nopan"
+          data-testid="crop-pan-x-slider"
         >
           <CompactSliderTrack>
             <CompactSliderRange />
@@ -429,6 +432,7 @@ export const CropZoomControl: React.FC<{
           step={0.01}
           disabled={panDisabled}
           className="nodrag nopan"
+          data-testid="crop-tilt-y-slider"
         >
           <CompactSliderTrack>
             <CompactSliderRange />
