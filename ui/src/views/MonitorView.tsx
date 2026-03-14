@@ -1494,16 +1494,13 @@ const MonitorViewContent: React.FC = () => {
   const [nodes, setNodes, onNodesChangeInternal] = useNodesState<RFNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 
-  // ── Debounce ReactFlow dimension changes ──────────────────────────────
-  // When ReactFlow measures newly-mounted nodes it fires onNodesChange
-  // with 'dimensions' changes — one per node, across multiple frames.
-  // Each call updates the nodes array in MonitorViewContent's state,
-  // triggering a full ~20 ms re-render.  We debounce dimension changes
-  // into a single RAF callback while applying interactive changes
-  // (selection, drag, remove) immediately.
-  const pendingDimChanges = useRef<NodeChange[]>([]);
-  const dimRafRef = useRef<number | null>(null);
-
+  // ── Low-priority dimension changes ────────────────────────────────────
+  // ReactFlow fires onNodesChange with 'dimensions' type for each node
+  // after mount measurement.  These are internal bookkeeping (the nodes
+  // are already visible) so we wrap them in startTransition to let React
+  // schedule them at lower priority rather than blocking the main thread.
+  // Interactive changes (select, drag, remove) bypass this and apply
+  // immediately.
   const onNodesChangeBatched = useCallback(
     (changes: NodeChange[]) => {
       const immediate: NodeChange[] = [];
@@ -1517,26 +1514,14 @@ const MonitorViewContent: React.FC = () => {
         }
       }
 
-      // Interactive changes (select, drag, remove) apply immediately
       if (immediate.length > 0) {
         onNodesChangeInternal(immediate);
       }
 
-      // Dimension changes are deferred and batched into one RAF
       if (deferred.length > 0) {
-        pendingDimChanges.current.push(...deferred);
-        if (dimRafRef.current === null) {
-          dimRafRef.current = requestAnimationFrame(() => {
-            dimRafRef.current = null;
-            const batch = pendingDimChanges.current;
-            pendingDimChanges.current = [];
-            if (batch.length > 0) {
-              React.startTransition(() => {
-                onNodesChangeInternal(batch);
-              });
-            }
-          });
-        }
+        React.startTransition(() => {
+          onNodesChangeInternal(deferred);
+        });
       }
     },
     [onNodesChangeInternal]
@@ -3047,12 +3032,6 @@ const MonitorViewContent: React.FC = () => {
     return () => {
       unsubscribe();
       if (throttleTimer !== null) clearTimeout(throttleTimer);
-      // Cancel any pending dimension-change RAF from onNodesChangeBatched
-      if (dimRafRef.current !== null) {
-        cancelAnimationFrame(dimRafRef.current);
-        dimRafRef.current = null;
-        pendingDimChanges.current = [];
-      }
     };
   }, [selectedSessionId, setNodes, setEdges]);
 
