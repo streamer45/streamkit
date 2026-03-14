@@ -987,6 +987,15 @@ fn object_schema_to_expand(root: &Value, schema: &Value) -> Option<Value> {
             .and_then(Value::as_array)
             .is_some_and(|arr| arr.iter().any(|t| t.as_str() == Some("object")))
     {
+        // For map-typed params (additionalProperties without top-level
+        // properties), recurse into the value schema so its fields are
+        // documented.
+        if resolved.get("properties").is_none() {
+            if let Some(ap) = resolved.get("additionalProperties") {
+                let ap_resolved = resolve_ref(root, ap).unwrap_or(ap);
+                return Some(ap_resolved.clone());
+            }
+        }
         return Some(resolved.clone());
     }
 
