@@ -258,7 +258,7 @@ export const TextOverlayLayer: React.FC<{
           Text only breaks on explicit newlines. */}
         <span
           ref={measureRef}
-          aria-hidden
+          aria-hidden="true"
           style={{
             position: 'absolute',
             visibility: 'hidden',
