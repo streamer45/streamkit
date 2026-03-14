@@ -846,11 +846,64 @@ impl MoqPullNode {
                         ReadSource::Video => "video",
                     };
                     tracing::info!(
-                        "{} track stream ended naturally after {} packets",
-                        kind,
-                        session_packet_count
+                        "{kind} track stream ended naturally after {session_packet_count} packets"
                     );
-                    return Ok(StreamEndReason::Natural);
+
+                    // Mark the ended track as inactive and reset its group state.
+                    // Then attempt to re-subscribe in case the publisher
+                    // re-announces the track (dynamic compositing scenario).
+                    match source {
+                        ReadSource::Audio => {
+                            audio_track_consumer = None;
+                            audio_current_group = None;
+                            audio_is_first_in_group = true;
+
+                            if let Some(track) = audio_track {
+                                match broadcast.subscribe_track(track) {
+                                    Ok(new_consumer) => {
+                                        tracing::info!(
+                                            "re-subscribed to audio track after it ended"
+                                        );
+                                        audio_track_consumer = Some(new_consumer);
+                                    },
+                                    Err(e) => {
+                                        tracing::debug!(
+                                            error = %e,
+                                            "could not re-subscribe to audio track"
+                                        );
+                                    },
+                                }
+                            }
+                        },
+                        ReadSource::Video => {
+                            video_track_consumer = None;
+                            video_current_group = None;
+                            video_is_first_in_group = true;
+
+                            if let Some(track) = video_track {
+                                match broadcast.subscribe_track(track) {
+                                    Ok(new_consumer) => {
+                                        tracing::info!(
+                                            "re-subscribed to video track after it ended"
+                                        );
+                                        video_track_consumer = Some(new_consumer);
+                                    },
+                                    Err(e) => {
+                                        tracing::debug!(
+                                            error = %e,
+                                            "could not re-subscribe to video track"
+                                        );
+                                    },
+                                }
+                            }
+                        },
+                    }
+
+                    // Only terminate when ALL active tracks have ended.
+                    if audio_track_consumer.is_none() && video_track_consumer.is_none() {
+                        tracing::info!("all tracks have ended, finishing connection");
+                        return Ok(StreamEndReason::Natural);
+                    }
                 },
                 Err(moq_lite::Error::Cancel) => {
                     consecutive_cancels = consecutive_cancels.saturating_add(1);
