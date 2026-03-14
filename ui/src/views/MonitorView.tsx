@@ -23,12 +23,9 @@ import { useShallow } from 'zustand/shallow';
 import ConfirmModal from '@/components/ConfirmModal';
 import ContextMenu from '@/components/ContextMenu';
 import { FlowCanvas } from '@/components/FlowCanvas';
+import { Legend } from '@/components/monitor/Legend';
 import { LeftPanel } from '@/components/monitor/LeftPanel';
 import {
-  LegendContainer,
-  LegendTitle,
-  LegendItem,
-  LegendDot,
   CenterPanelContainer,
   CanvasTopBar,
   TopLeftControls,
@@ -44,6 +41,7 @@ import { ViewTitle } from '@/components/ui/ViewTitle';
 import { DnDProvider, useDnD } from '@/context/DnDContext';
 import { useToast } from '@/context/ToastContext';
 import { useContextMenu } from '@/hooks/useContextMenu';
+import { useMonitorPreview } from '@/hooks/useMonitorPreview';
 import { useReactFlowCommon } from '@/hooks/useReactFlowCommon';
 import { useResolvedColorMode } from '@/hooks/useResolvedColorMode';
 import { useSession } from '@/hooks/useSession';
@@ -57,7 +55,6 @@ import { usePluginStore } from '@/stores/pluginStore';
 import { useSchemaStore } from '@/stores/schemaStore';
 import { useSessionStore } from '@/stores/sessionStore';
 import { useStagingStore, type StagingData } from '@/stores/stagingStore';
-import { useStreamStore } from '@/stores/streamStore';
 import type {
   NodeDefinition,
   Connection,
@@ -95,41 +92,9 @@ import {
   ESTIMATED_HEIGHT_BY_KIND,
 } from '@/utils/layoutConstants';
 import { viewsLogger } from '@/utils/logger';
-import { updateUrlPath } from '@/utils/moqPeerSettings';
 import { validatePipeline } from '@/utils/pipelineValidation';
 import { nodeTypes, defaultEdgeOptions } from '@/utils/reactFlowDefaults';
 import { collectNodeHeights } from '@/utils/reactFlowInstance';
-
-// Memoized legend component to prevent re-renders during drag
-const Legend = React.memo(() => (
-  <LegendContainer>
-    <LegendTitle>Node States</LegendTitle>
-    <LegendItem>
-      <LegendDot color="var(--sk-status-initializing)" />
-      <span>Initializing</span>
-    </LegendItem>
-    <LegendItem>
-      <LegendDot color="var(--sk-status-running)" />
-      <span>Running</span>
-    </LegendItem>
-    <LegendItem>
-      <LegendDot color="var(--sk-status-recovering)" />
-      <span>Recovering</span>
-    </LegendItem>
-    <LegendItem>
-      <LegendDot color="var(--sk-status-degraded)" />
-      <span>Degraded</span>
-    </LegendItem>
-    <LegendItem>
-      <LegendDot color="var(--sk-status-failed)" />
-      <span>Failed</span>
-    </LegendItem>
-    <LegendItem>
-      <LegendDot color="var(--sk-status-stopped)" />
-      <span>Stopped</span>
-    </LegendItem>
-  </LegendContainer>
-));
 
 const EMPTY_PARAMS: Record<string, unknown> = {};
 
@@ -471,35 +436,8 @@ const MonitorViewContent: React.FC = () => {
   // Use session-specific connection status if a session is selected, otherwise use global
   const isConnected = selectedSessionId ? sessionIsConnected : globalIsConnected;
 
-  // Preview: stream store for watch-only MoQ connection from Monitor view.
-  // Consolidated into a single useShallow selector to avoid 10 individual
-  // subscriptions that would each trigger selector evaluation on every store change.
-  const {
-    status: previewStatus,
-    loadConfig: previewLoadConfig,
-    connect: previewConnect,
-    disconnect: previewDisconnect,
-    setEnablePublish: previewSetEnablePublish,
-    setEnableWatch: previewSetEnableWatch,
-    configLoaded: previewConfigLoaded,
-    setServerUrl: previewSetServerUrl,
-    setOutputBroadcast: previewSetOutputBroadcast,
-    setPipelineOutputTypes: previewSetPipelineOutputTypes,
-  } = useStreamStore(
-    useShallow((s) => ({
-      status: s.status,
-      loadConfig: s.loadConfig,
-      connect: s.connect,
-      disconnect: s.disconnect,
-      setEnablePublish: s.setEnablePublish,
-      setEnableWatch: s.setEnableWatch,
-      configLoaded: s.configLoaded,
-      setServerUrl: s.setServerUrl,
-      setOutputBroadcast: s.setOutputBroadcast,
-      setPipelineOutputTypes: s.setPipelineOutputTypes,
-    }))
-  );
-  const isPreviewConnected = previewStatus === 'connected';
+  // Preview: watch-only MoQ connection from Monitor view.
+  const { isPreviewConnected, handleStartPreview } = useMonitorPreview(selectedSessionId, pipeline);
 
   // When a session is destroyed, the optimistic removal empties the list
   // before React processes the batched setSelectedSessionId(null) from
@@ -525,85 +463,6 @@ const MonitorViewContent: React.FC = () => {
       setSelectedSessionId(null);
     }
   }, [selectedSessionId, selectedSession, isLoadingSessions]);
-
-  // Tear down the MoQ preview (and release camera/mic) when the selected
-  // session is deselected (transitions from a value to null).  We track
-  // the previous value with a ref so we don't disconnect on initial mount
-  // (where selectedSessionId starts as null while the nav-state or
-  // auto-select effects haven't fired yet).
-  const prevSelectedSessionIdRef = useRef(selectedSessionId);
-  useEffect(() => {
-    const prev = prevSelectedSessionIdRef.current;
-    prevSelectedSessionIdRef.current = selectedSessionId;
-    if (prev && !selectedSessionId && previewStatus !== 'disconnected') {
-      previewDisconnect();
-    }
-  }, [selectedSessionId, previewStatus, previewDisconnect]);
-
-  // Extract MoQ peer settings from the selected session's pipeline so the
-  // preview connects to the correct gateway path and output broadcast.
-  const handleStartPreview = useCallback(async () => {
-    // Configure for watch-only mode (no publish/mic)
-    previewSetEnablePublish(false);
-    previewSetEnableWatch(true);
-    if (!previewConfigLoaded) {
-      await previewLoadConfig();
-    }
-
-    // Extract gateway_path and output_broadcast from the pipeline's moq_peer node
-    let moqNodeName: string | undefined;
-    const moqNode = pipeline
-      ? Object.entries(pipeline.nodes).find(
-          ([, n]) => n.kind === 'transport::moq::peer' && n.params
-        )
-      : undefined;
-    if (moqNode) {
-      moqNodeName = moqNode[0];
-      const params = moqNode[1].params as Record<string, unknown>;
-      const gatewayPath = params.gateway_path as string | undefined;
-      const outputBroadcast = params.output_broadcast as string | undefined;
-      // Read serverUrl at call-time via getState() rather than via a
-      // hook selector — this is a standard Zustand pattern for values
-      // that should be fresh when the callback fires, not stale from
-      // the last render.
-      const currentUrl = useStreamStore.getState().serverUrl;
-      if (gatewayPath && currentUrl) {
-        previewSetServerUrl(updateUrlPath(currentUrl, gatewayPath));
-      }
-      if (outputBroadcast) {
-        previewSetOutputBroadcast(outputBroadcast);
-      }
-    }
-
-    // Detect which media types the pipeline outputs by checking the kinds of
-    // nodes connected to the moq_peer's input pins.
-    let outputsAudio = true;
-    let outputsVideo = true;
-    if (pipeline && moqNodeName) {
-      outputsAudio = false;
-      outputsVideo = false;
-      for (const conn of pipeline.connections) {
-        if (conn.to_node !== moqNodeName) continue;
-        const sourceNode = pipeline.nodes[conn.from_node];
-        if (!sourceNode?.kind) continue;
-        if (sourceNode.kind.startsWith('audio::')) outputsAudio = true;
-        else if (sourceNode.kind.startsWith('video::')) outputsVideo = true;
-      }
-    }
-    previewSetPipelineOutputTypes(outputsAudio, outputsVideo);
-
-    await previewConnect();
-  }, [
-    previewSetEnablePublish,
-    previewSetEnableWatch,
-    previewConfigLoaded,
-    previewLoadConfig,
-    previewConnect,
-    pipeline,
-    previewSetServerUrl,
-    previewSetOutputBroadcast,
-    previewSetPipelineOutputTypes,
-  ]);
 
   // Handle entering staging mode
   // Use ref to avoid recreating callback when pipeline changes
