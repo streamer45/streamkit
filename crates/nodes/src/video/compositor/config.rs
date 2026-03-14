@@ -377,6 +377,9 @@ const DEFAULT_MAX_CANVAS_DIMENSION: u32 = 7680;
 /// Default maximum font size in pixels.
 const DEFAULT_MAX_FONT_SIZE: u32 = 4096;
 
+/// Default maximum text overlay string length in bytes.
+const DEFAULT_MAX_TEXT_LENGTH: usize = 10_000;
+
 /// Server-level limits for the compositor.
 ///
 /// Configured via `skit.toml` under the `[compositor]` section.
@@ -388,6 +391,12 @@ pub struct GlobalCompositorConfig {
     pub max_canvas_dimension: u32,
     /// Maximum allowed font size for text overlays in pixels.
     pub max_font_size: u32,
+    /// Maximum allowed text overlay string length in bytes.
+    ///
+    /// A 10 000-byte string is far more than any reasonable overlay would
+    /// ever display.  Capping the input prevents runaway glyph measurement /
+    /// rasterization and the corresponding memory spike.
+    pub max_text_length: usize,
 }
 
 impl streamkit_core::NodeConstraint for GlobalCompositorConfig {
@@ -401,6 +410,7 @@ impl Default for GlobalCompositorConfig {
         Self {
             max_canvas_dimension: DEFAULT_MAX_CANVAS_DIMENSION,
             max_font_size: DEFAULT_MAX_FONT_SIZE,
+            max_text_length: DEFAULT_MAX_TEXT_LENGTH,
         }
     }
 }
@@ -443,6 +453,13 @@ impl CompositorConfig {
                 return Err(format!(
                     "{label} font_size {} exceeds maximum {}",
                     txt.font_size, limits.max_font_size
+                ));
+            }
+            if txt.text.len() > limits.max_text_length {
+                return Err(format!(
+                    "{label} text length {} exceeds maximum {}",
+                    txt.text.len(),
+                    limits.max_text_length
                 ));
             }
         }

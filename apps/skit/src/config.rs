@@ -616,6 +616,10 @@ const fn default_compositor_max_font_size() -> u32 {
     4096
 }
 
+const fn default_compositor_max_text_length() -> usize {
+    10_000
+}
+
 // Backward-compat aliases: the TOML keys were renamed from
 // `default_max_canvas_dimension` → `max_canvas_dimension` (and similarly
 // for font size).  The `alias` attribute lets old config files keep working.
@@ -630,6 +634,9 @@ const fn default_compositor_max_font_size() -> u32 {
 /// max_canvas_dimension = 4096
 /// max_font_size = 2048
 /// ```
+// All fields are upper-bound limits — the shared `max_` prefix is intentional
+// and maps directly to the TOML key names.
+#[allow(clippy::struct_field_names)]
 #[derive(Deserialize, Serialize, Debug, Clone, JsonSchema)]
 pub struct CompositorServerConfig {
     /// Maximum allowed canvas dimension (width or height) in pixels.
@@ -644,6 +651,11 @@ pub struct CompositorServerConfig {
     /// Default: 4096.
     #[serde(default = "default_compositor_max_font_size", alias = "default_max_font_size")]
     pub max_font_size: u32,
+
+    /// Maximum allowed text overlay string length in bytes.
+    /// Default: 10000.
+    #[serde(default = "default_compositor_max_text_length")]
+    pub max_text_length: usize,
 }
 
 impl Default for CompositorServerConfig {
@@ -651,6 +663,7 @@ impl Default for CompositorServerConfig {
         Self {
             max_canvas_dimension: default_compositor_max_canvas_dimension(),
             max_font_size: default_compositor_max_font_size(),
+            max_text_length: default_compositor_max_text_length(),
         }
     }
 }

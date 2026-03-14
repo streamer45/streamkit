@@ -322,13 +322,6 @@ fn load_font(config: &TextOverlayConfig) -> Result<Arc<fontdue::Font>, String> {
     Ok(font)
 }
 
-/// Safety limit on text overlay string length.
-///
-/// A 10 000-character string is far more than any reasonable overlay
-/// would ever display.  Capping the input prevents runaway glyph
-/// measurement / rasterization and the corresponding memory spike.
-const MAX_TEXT_OVERLAY_LENGTH: usize = 10_000;
-
 /// Rasterize a text string into an RGBA8 bitmap at the exact measured
 /// text dimensions, clamped to `max_dimension` on each axis.
 ///
@@ -341,8 +334,15 @@ const MAX_TEXT_OVERLAY_LENGTH: usize = 10_000;
 /// clipping or excess transparent padding.  However, neither axis will
 /// exceed `max_dimension`, and if the config rect specifies non-zero
 /// width/height those act as additional upper bounds.
+///
+/// `max_text_length` caps the input string (at a valid UTF-8 boundary)
+/// before measurement/rasterization to prevent runaway glyph processing.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
-pub fn rasterize_text_overlay(config: &TextOverlayConfig, max_dimension: u32) -> DecodedOverlay {
+pub fn rasterize_text_overlay(
+    config: &TextOverlayConfig,
+    max_dimension: u32,
+    max_text_length: usize,
+) -> DecodedOverlay {
     // Attempt to load the font; fall back to rectangle placeholders on error.
     let font = match load_font(config) {
         Ok(f) => Some(f),
@@ -355,15 +355,15 @@ pub fn rasterize_text_overlay(config: &TextOverlayConfig, max_dimension: u32) ->
     // Truncate excessively long overlay strings to prevent unbounded
     // bitmap allocations.  The truncated text is what gets measured and
     // rasterized; the original config is not mutated.
-    let text: &str = if config.text.len() > MAX_TEXT_OVERLAY_LENGTH {
+    let text: &str = if config.text.len() > max_text_length {
         tracing::warn!(
-            "Text overlay '{}' truncated from {} to {MAX_TEXT_OVERLAY_LENGTH} bytes",
+            "Text overlay '{}' truncated from {} to {max_text_length} bytes",
             config.id,
             config.text.len(),
         );
         // Find the nearest char boundary at or before the limit so we
         // don't split a multi-byte UTF-8 sequence.
-        let mut end = MAX_TEXT_OVERLAY_LENGTH;
+        let mut end = max_text_length;
         while !config.text.is_char_boundary(end) {
             end -= 1;
         }
