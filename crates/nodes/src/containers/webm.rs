@@ -855,8 +855,7 @@ impl ProcessorNode for WebMMuxerNode {
         // valid stream.  This buffer caps memory usage when keyframes are
         // infrequent; the oldest frames are dropped when the limit is reached.
         let mut video_keyframe_seen = !has_video;
-        let mut pending_video_frames: VecDeque<(Bytes, Option<PacketMetadata>)> =
-            VecDeque::new();
+        let mut pending_video_frames: VecDeque<(Bytes, Option<PacketMetadata>)> = VecDeque::new();
 
         // If we buffered the first video packet for dimension detection, replay
         // it through the normal mux path before entering the receive loop.
