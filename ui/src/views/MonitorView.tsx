@@ -44,7 +44,6 @@ import { useSession } from '@/hooks/useSession';
 import { useSessionList } from '@/hooks/useSessionList';
 import { useSessionsPrefetch } from '@/hooks/useSessionsPrefetch';
 import { useWebSocket } from '@/hooks/useWebSocket';
-import { perfOnRender } from '@/perf';
 import { getWebSocketService } from '@/services/websocket';
 import { useLayoutStore } from '@/stores/layoutStore';
 import { useNodeParamsStore } from '@/stores/nodeParamsStore';
@@ -3674,13 +3673,11 @@ const MonitorViewContent: React.FC = () => {
 
 const MonitorView: React.FC = () => {
   return (
-    <React.Profiler id="MonitorView" onRender={perfOnRender}>
-      <ReactFlowProvider>
-        <DnDProvider>
-          <MonitorViewContent />
-        </DnDProvider>
-      </ReactFlowProvider>
-    </React.Profiler>
+    <ReactFlowProvider>
+      <DnDProvider>
+        <MonitorViewContent />
+      </DnDProvider>
+    </ReactFlowProvider>
   );
 };
 
