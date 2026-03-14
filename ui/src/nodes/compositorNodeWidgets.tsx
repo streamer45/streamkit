@@ -353,6 +353,95 @@ export const MirrorControl: React.FC<{
 ));
 MirrorControl.displayName = 'MirrorControl';
 
+export type CropZoomPatch = {
+  cropX?: number;
+  cropY?: number;
+  cropZoom?: number;
+};
+
+export const CropZoomControl: React.FC<{
+  cropZoom: number;
+  cropX: number;
+  cropY: number;
+  onChange: (patch: CropZoomPatch) => void;
+  disabled: boolean;
+}> = React.memo(({ cropZoom, cropX, cropY, onChange, disabled }) => {
+  const panDisabled = disabled || cropZoom <= 1.0;
+
+  return (
+    <InspectorSection>
+      <InspectorSectionLabel>
+        Crop &amp; Zoom
+        <SKTooltip content="Reset to defaults">
+          <ResetButton
+            disabled={disabled}
+            onClick={() => onChange({ cropZoom: 1.0, cropX: 0.5, cropY: 0.5 })}
+            className="nodrag nopan"
+            style={{ marginLeft: 'auto' }}
+          >
+            <RotateCcw size={10} />
+          </ResetButton>
+        </SKTooltip>
+      </InspectorSectionLabel>
+      <ControlRow>
+        <ControlLabel>Zoom</ControlLabel>
+        <CompactSliderRoot
+          value={[cropZoom]}
+          onValueChange={([v]) => onChange({ cropZoom: v })}
+          min={1}
+          max={4}
+          step={0.1}
+          disabled={disabled}
+          className="nodrag nopan"
+        >
+          <CompactSliderTrack>
+            <CompactSliderRange />
+          </CompactSliderTrack>
+          <CompactSliderThumb />
+        </CompactSliderRoot>
+        <ControlValue>{cropZoom.toFixed(1)}×</ControlValue>
+      </ControlRow>
+      <ControlRow>
+        <ControlLabel>Pan X</ControlLabel>
+        <CompactSliderRoot
+          value={[cropX]}
+          onValueChange={([v]) => onChange({ cropX: v })}
+          min={0}
+          max={1}
+          step={0.01}
+          disabled={panDisabled}
+          className="nodrag nopan"
+        >
+          <CompactSliderTrack>
+            <CompactSliderRange />
+          </CompactSliderTrack>
+          <CompactSliderThumb />
+        </CompactSliderRoot>
+        <ControlValue>{cropX.toFixed(2)}</ControlValue>
+      </ControlRow>
+      <ControlRow>
+        <ControlLabel>Tilt Y</ControlLabel>
+        <CompactSliderRoot
+          value={[cropY]}
+          onValueChange={([v]) => onChange({ cropY: v })}
+          min={0}
+          max={1}
+          step={0.01}
+          disabled={panDisabled}
+          className="nodrag nopan"
+        >
+          <CompactSliderTrack>
+            <CompactSliderRange />
+          </CompactSliderTrack>
+          <CompactSliderThumb />
+        </CompactSliderRoot>
+        <ControlValue>{cropY.toFixed(2)}</ControlValue>
+      </ControlRow>
+    </InspectorSection>
+  );
+});
+CropZoomControl.displayName = 'CropZoomControl';
+
 // ── Unified layer list ──────────────────────────────────────────────────────
 
 export const CompositorEntryList: React.FC<{

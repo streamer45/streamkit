@@ -28,6 +28,9 @@ import {
   DEFAULT_TEXT_COLOR,
   DEFAULT_TEXT_WIDTH,
   DEFAULT_TEXT_HEIGHT,
+  DEFAULT_CROP_ZOOM,
+  DEFAULT_CROP_X,
+  DEFAULT_CROP_Y,
 } from './compositorConstants';
 
 export type { LayerKind } from './compositorConstants';
@@ -50,6 +53,12 @@ export interface LayerState {
   mirrorVertical: boolean;
   /** Client-side visibility toggle (hidden layers send opacity=0 to backend) */
   visible: boolean;
+  /** Virtual PTZ crop zoom (1.0 = full source, 2.0 = 2× zoom). Only video layers. */
+  cropZoom: number;
+  /** Normalised crop pan X (0.0–1.0). Only meaningful when cropZoom > 1.0. */
+  cropX: number;
+  /** Normalised crop tilt Y (0.0–1.0). Only meaningful when cropZoom > 1.0. */
+  cropY: number;
 }
 
 /** A text overlay stored in compositor config */
@@ -184,6 +193,9 @@ export function parseLayers(
       mirrorHorizontal: cfg.mirror_horizontal ?? DEFAULT_MIRROR_HORIZONTAL,
       mirrorVertical: cfg.mirror_vertical ?? DEFAULT_MIRROR_VERTICAL,
       visible: DEFAULT_VISIBLE,
+      cropZoom: cfg.crop_zoom ?? DEFAULT_CROP_ZOOM,
+      cropX: cfg.crop_x ?? DEFAULT_CROP_X,
+      cropY: cfg.crop_y ?? DEFAULT_CROP_Y,
     }))
     .sort((a, b) => a.zIndex - b.zIndex);
 }
@@ -280,6 +292,9 @@ export function serializeLayers(layers: LayerState[]): Record<string, LayerConfi
     layersMap[layer.id] = {
       rect: serializeRect(layer),
       ...serializeSpatialFields(layer),
+      crop_zoom: Math.round(layer.cropZoom * 100) / 100,
+      crop_x: Math.round(layer.cropX * 100) / 100,
+      crop_y: Math.round(layer.cropY * 100) / 100,
     };
   }
   return layersMap;

@@ -36,12 +36,13 @@ import {
   CompactSliderRoot,
   CompactSliderThumb,
   CompactSliderTrack,
+  CropZoomControl,
   InspectorHeaderSection,
   MirrorControl,
   OpacityControl,
   RotationControl,
 } from './compositorNodeWidgets';
-import type { PositionSizePatch } from './compositorNodeWidgets';
+import type { CropZoomPatch, PositionSizePatch } from './compositorNodeWidgets';
 
 // ── Inspector props derivation ──────────────────────────────────────────────
 
@@ -158,6 +159,20 @@ export function useSelectedMirrorToggle(
       updateLayerMirror(selectedLayerId, axis);
     },
     [selectedLayerId, updateLayerMirror]
+  );
+}
+
+export function useSelectedCropZoomChange(
+  selectedLayerId: string | null,
+  selectedLayerKind: LayerKindTag | null,
+  updateLayerCropZoom: (id: string, patch: CropZoomPatch) => void
+): (patch: CropZoomPatch) => void {
+  return useCallback(
+    (patch: CropZoomPatch) => {
+      if (!selectedLayerId || selectedLayerKind !== 'video') return;
+      updateLayerCropZoom(selectedLayerId, patch);
+    },
+    [selectedLayerId, selectedLayerKind, updateLayerCropZoom]
   );
 }
 
@@ -324,11 +339,14 @@ export function useTextInspectorChildren(
 export interface CompositorInspectorProps {
   inspectorProps: InspectorLayerProps | null;
   selectedLayerName: string;
+  selectedLayerKind: LayerKindTag | null;
+  selectedLayer: LayerState | undefined;
   textInspectorChildren: React.ReactNode;
   handleSelectedOpacityChange: (v: number) => void;
   handleSelectedRotationChange: (v: number) => void;
   handleSelectedMirrorToggle: (axis: 'horizontal' | 'vertical') => void;
   handleSelectedPositionSizeChange: (patch: PositionSizePatch) => void;
+  handleSelectedCropZoomChange: (patch: CropZoomPatch) => void;
   dimensionsReadOnly?: boolean;
   disabled: boolean;
 }
@@ -337,11 +355,14 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
   ({
     inspectorProps,
     selectedLayerName,
+    selectedLayerKind,
+    selectedLayer,
     textInspectorChildren,
     handleSelectedOpacityChange,
     handleSelectedRotationChange,
     handleSelectedMirrorToggle,
     handleSelectedPositionSizeChange,
+    handleSelectedCropZoomChange,
     dimensionsReadOnly,
     disabled,
   }) => {
@@ -377,6 +398,15 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
             onToggle={handleSelectedMirrorToggle}
             disabled={disabled}
           />
+          {selectedLayerKind === 'video' && selectedLayer && (
+            <CropZoomControl
+              cropZoom={selectedLayer.cropZoom}
+              cropX={selectedLayer.cropX}
+              cropY={selectedLayer.cropY}
+              onChange={handleSelectedCropZoomChange}
+              disabled={disabled}
+            />
+          )}
         </InspectorControls>
       </>
     );

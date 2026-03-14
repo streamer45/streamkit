@@ -156,7 +156,24 @@ mirror_horizontal: boolean,
 /**
  * Mirror the layer vertically (flip top ↔ bottom).  Default `false`.
  */
-mirror_vertical: boolean, };
+mirror_vertical: boolean, 
+/**
+ * Zoom factor for virtual PTZ crop (1.0 = full source, 2.0 = 2× zoom
+ * showing the central 50% of the source).  Default 1.0.
+ */
+crop_zoom: number, 
+/**
+ * Normalized horizontal pan position for the crop window
+ * (0.0 = left edge, 0.5 = centred, 1.0 = right edge).  Only has a
+ * visible effect when `crop_zoom > 1.0`.  Default 0.5.
+ */
+crop_x: number, 
+/**
+ * Normalized vertical tilt position for the crop window
+ * (0.0 = top edge, 0.5 = centred, 1.0 = bottom edge).  Only has a
+ * visible effect when `crop_zoom > 1.0`.  Default 0.5.
+ */
+crop_y: number, };
 
 export type CompositorConfig = { 
 /**
@@ -196,9 +213,21 @@ text_overlays: Array<TextOverlayConfig>, };
 
 export type ResolvedLayer = { 
 /**
- * Pin name (e.g. "in_0").
+ * Pin name (e.g. `"in_0"`).
  */
-id: string, x: number, y: number, width: number, height: number, opacity: number, z_index: number, rotation_degrees: number, mirror_horizontal: boolean, mirror_vertical: boolean, };
+id: string, x: number, y: number, width: number, height: number, opacity: number, z_index: number, rotation_degrees: number, mirror_horizontal: boolean, mirror_vertical: boolean, 
+/**
+ * Crop zoom factor (1.0 = full source).
+ */
+crop_zoom: number, 
+/**
+ * Normalized crop pan X (0.0–1.0).
+ */
+crop_x: number, 
+/**
+ * Normalized crop tilt Y (0.0–1.0).
+ */
+crop_y: number, };
 
 export type ResolvedOverlay = { 
 /**
@@ -206,11 +235,12 @@ export type ResolvedOverlay = {
  */
 id: string, x: number, y: number, 
 /**
- * Resolved width after text wrapping / image aspect-fit.
+ * Width after text measurement / image aspect-fit (may differ from
+ * the config rect when content doesn't fill it exactly).
  */
 width: number, 
 /**
- * Resolved height after text wrapping / image aspect-fit.
+ * Height after text measurement / image aspect-fit.
  */
 height: number, opacity: number, z_index: number, rotation_degrees: number, mirror_horizontal: boolean, mirror_vertical: boolean, 
 /**

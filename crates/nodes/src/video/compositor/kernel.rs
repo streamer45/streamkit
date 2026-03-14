@@ -212,6 +212,12 @@ pub struct LayerSnapshot {
     pub mirror_horizontal: bool,
     /// Mirror vertically (flip top ↔ bottom).
     pub mirror_vertical: bool,
+    /// Virtual PTZ crop zoom factor (1.0 = full source, 2.0 = 2×).
+    pub crop_zoom: f32,
+    /// Normalized crop pan X (0.0–1.0).  Default 0.5 (centred).
+    pub crop_x: f32,
+    /// Normalized crop tilt Y (0.0–1.0).  Default 0.5 (centred).
+    pub crop_y: f32,
 }
 
 /// Work item sent from the async loop to the persistent compositing thread.
@@ -260,6 +266,33 @@ struct CompositeItem<'a> {
     sort_key: (i32, usize),
     mirror_horizontal: bool,
     mirror_vertical: bool,
+    /// Source sub-region in pixel coordinates `(x, y, w, h)`.  `None` means
+    /// sample the entire source.  Used for virtual PTZ crop/zoom.
+    src_region: Option<(u32, u32, u32, u32)>,
+}
+
+/// Compute the source crop rectangle from normalised crop parameters.
+///
+/// Returns `None` when `crop_zoom <= 1.0` (no crop — full source visible).
+/// Otherwise returns `(x, y, w, h)` in source-pixel coordinates.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+fn compute_src_crop(
+    src_w: u32,
+    src_h: u32,
+    crop_x: f32,
+    crop_y: f32,
+    crop_zoom: f32,
+) -> Option<(u32, u32, u32, u32)> {
+    if crop_zoom <= 1.0 {
+        return None;
+    }
+    let crop_w = (src_w as f32 / crop_zoom).round().max(1.0) as u32;
+    let crop_h = (src_h as f32 / crop_zoom).round().max(1.0) as u32;
+    let max_x = src_w.saturating_sub(crop_w);
+    let max_y = src_h.saturating_sub(crop_h);
+    let x = crop_x.mul_add(max_x as f32, 0.0).round() as u32;
+    let y = crop_y.mul_add(max_y as f32, 0.0).round() as u32;
+    Some((x.min(max_x), y.min(max_y), crop_w, crop_h))
 }
 
 /// Composite all layers and overlays onto a fresh RGBA8 canvas buffer.
@@ -375,6 +408,13 @@ pub fn composite_frame(
             layer.rect.unwrap_or(Rect { x: 0, y: 0, width: canvas_w, height: canvas_h }).into();
         // NV12/I420 → RGBA8 conversion always writes alpha = 255.
         let src_opaque = layer.pixel_format != PixelFormat::Rgba8;
+        let src_region = compute_src_crop(
+            layer.width,
+            layer.height,
+            layer.crop_x,
+            layer.crop_y,
+            layer.crop_zoom,
+        );
         items.push(CompositeItem {
             src_data,
             src_width: layer.width,
@@ -386,6 +426,7 @@ pub fn composite_frame(
             sort_key: (layer.z_index, insertion_order),
             mirror_horizontal: layer.mirror_horizontal,
             mirror_vertical: layer.mirror_vertical,
+            src_region,
         });
         insertion_order += 1;
     }
@@ -403,6 +444,7 @@ pub fn composite_frame(
             sort_key: (ov.z_index, insertion_order),
             mirror_horizontal: ov.mirror_horizontal,
             mirror_vertical: ov.mirror_vertical,
+            src_region: None,
         });
         insertion_order += 1;
     }
@@ -420,6 +462,7 @@ pub fn composite_frame(
             sort_key: (ov.z_index, insertion_order),
             mirror_horizontal: ov.mirror_horizontal,
             mirror_vertical: ov.mirror_vertical,
+            src_region: None,
         });
         insertion_order += 1;
     }
@@ -442,6 +485,7 @@ pub fn composite_frame(
             item.src_opaque,
             item.mirror_horizontal,
             item.mirror_vertical,
+            item.src_region,
         );
     }
 

@@ -24,6 +24,12 @@ export const DEFAULT_MIRROR_HORIZONTAL = false;
 export const DEFAULT_MIRROR_VERTICAL = false;
 export const DEFAULT_VISIBLE = true;
 
+// ── Default crop / zoom values ──────────────────────────────────────────────
+
+export const DEFAULT_CROP_ZOOM = 1.0;
+export const DEFAULT_CROP_X = 0.5;
+export const DEFAULT_CROP_Y = 0.5;
+
 // ── Default text overlay values ─────────────────────────────────────────────
 
 export const DEFAULT_FONT_SIZE = 24;

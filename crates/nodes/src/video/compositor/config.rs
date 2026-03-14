@@ -136,6 +136,16 @@ pub(crate) const fn default_z_index() -> i32 {
     0
 }
 
+/// Default crop zoom (1.0 = no zoom, full source frame visible).
+pub(crate) const fn default_crop_zoom() -> f32 {
+    1.0
+}
+
+/// Default crop centre (0.5 = centred on both axes).
+pub(crate) const fn default_crop_center() -> f32 {
+    0.5
+}
+
 const fn default_text_color() -> [u8; 4] {
     [255, 255, 255, 255]
 }
@@ -180,6 +190,20 @@ pub struct LayerConfig {
     /// Mirror the layer vertically (flip top ↔ bottom).  Default `false`.
     #[serde(default)]
     pub mirror_vertical: bool,
+    /// Zoom factor for virtual PTZ crop (1.0 = full source, 2.0 = 2× zoom
+    /// showing the central 50% of the source).  Default 1.0.
+    #[serde(default = "default_crop_zoom")]
+    pub crop_zoom: f32,
+    /// Normalized horizontal pan position for the crop window
+    /// (0.0 = left edge, 0.5 = centred, 1.0 = right edge).  Only has a
+    /// visible effect when `crop_zoom > 1.0`.  Default 0.5.
+    #[serde(default = "default_crop_center")]
+    pub crop_x: f32,
+    /// Normalized vertical tilt position for the crop window
+    /// (0.0 = top edge, 0.5 = centred, 1.0 = bottom edge).  Only has a
+    /// visible effect when `crop_zoom > 1.0`.  Default 0.5.
+    #[serde(default = "default_crop_center")]
+    pub crop_y: f32,
 }
 
 impl Default for LayerConfig {
@@ -191,6 +215,9 @@ impl Default for LayerConfig {
             rotation_degrees: 0.0,
             mirror_horizontal: false,
             mirror_vertical: false,
+            crop_zoom: default_crop_zoom(),
+            crop_x: default_crop_center(),
+            crop_y: default_crop_center(),
         }
     }
 }
@@ -266,6 +293,12 @@ pub struct ResolvedLayer {
     pub rotation_degrees: f32,
     pub mirror_horizontal: bool,
     pub mirror_vertical: bool,
+    /// Crop zoom factor (1.0 = full source).
+    pub crop_zoom: f32,
+    /// Normalized crop pan X (0.0–1.0).
+    pub crop_x: f32,
+    /// Normalized crop tilt Y (0.0–1.0).
+    pub crop_y: f32,
 }
 
 /// Server-computed layout for a single overlay (text or image).
@@ -320,6 +353,20 @@ fn validate_opacity(value: f32, label: &str) -> Result<(), String> {
 fn validate_rotation(value: f32, label: &str) -> Result<(), String> {
     if !value.is_finite() {
         return Err(format!("{label} rotation_degrees must be a finite number"));
+    }
+    Ok(())
+}
+
+/// Check that crop/zoom parameters are valid.
+fn validate_crop(crop_zoom: f32, crop_x: f32, crop_y: f32, label: &str) -> Result<(), String> {
+    if !crop_zoom.is_finite() || crop_zoom < 1.0 {
+        return Err(format!("{label} crop_zoom must be >= 1.0"));
+    }
+    if !crop_x.is_finite() || !(0.0..=1.0).contains(&crop_x) {
+        return Err(format!("{label} crop_x must be in [0.0, 1.0]"));
+    }
+    if !crop_y.is_finite() || !(0.0..=1.0).contains(&crop_y) {
+        return Err(format!("{label} crop_y must be in [0.0, 1.0]"));
     }
     Ok(())
 }
@@ -381,6 +428,7 @@ impl CompositorConfig {
         for (name, layer) in &self.layers {
             validate_opacity(layer.opacity, &format!("Layer '{name}'"))?;
             validate_rotation(layer.rotation_degrees, &format!("Layer '{name}'"))?;
+            validate_crop(layer.crop_zoom, layer.crop_x, layer.crop_y, &format!("Layer '{name}'"))?;
         }
         for img in &self.image_overlays {
             let label = format!("Image overlay '{}'", img.id);

@@ -45,6 +45,7 @@ fn test_scale_blit_identity() {
         false,
         false,
         false,
+        None,
     );
 
     // Pixel at (1,1) should be red.
@@ -79,6 +80,7 @@ fn test_scale_blit_with_opacity() {
         false,
         false,
         false,
+        None,
     );
 
     // Pixel (0,0): white at 50% over opaque black -> ~128 grey.
@@ -104,6 +106,7 @@ fn test_scale_blit_scaling() {
         false,
         false,
         false,
+        None,
     );
 
     // All pixels in the 4x4 destination rect should be red.
@@ -144,6 +147,7 @@ fn test_rotated_blit_stretch_to_fill() {
         false,
         false,
         false,
+        None,
     );
 
     // The centre of the rect (canvas pixel 20,20) should be covered
@@ -186,6 +190,9 @@ fn test_composite_frame_single_layer() {
         rotation_degrees: 0.0,
         mirror_horizontal: false,
         mirror_vertical: false,
+        crop_zoom: 1.0,
+        crop_x: 0.5,
+        crop_y: 0.5,
     };
 
     let mut cache = ConversionCache::new();
@@ -218,6 +225,9 @@ fn test_composite_frame_two_layers() {
         rotation_degrees: 0.0,
         mirror_horizontal: false,
         mirror_vertical: false,
+        crop_zoom: 1.0,
+        crop_x: 0.5,
+        crop_y: 0.5,
     };
     let layer1 = LayerSnapshot {
         data: green.data,
@@ -230,6 +240,9 @@ fn test_composite_frame_two_layers() {
         rotation_degrees: 0.0,
         mirror_horizontal: false,
         mirror_vertical: false,
+        crop_zoom: 1.0,
+        crop_x: 0.5,
+        crop_y: 0.5,
     };
 
     let mut cache = ConversionCache::new();
@@ -637,6 +650,7 @@ fn test_scale_blit_opacity_all_rows_written() {
         false,
         false,
         false,
+        None,
     );
 
     // Every single row should have been written to (non-zero pixels).
@@ -761,6 +775,9 @@ fn test_composite_frame_opacity_no_black_borders() {
         rotation_degrees: 0.0,
         mirror_horizontal: false,
         mirror_vertical: false,
+        crop_zoom: 1.0,
+        crop_x: 0.5,
+        crop_y: 0.5,
     };
 
     let mut cache = ConversionCache::new();
@@ -826,6 +843,7 @@ fn test_full_pipeline_opacity_nv12_roundtrip_no_black_bands() {
         false,
         false,
         false,
+        None,
     );
 
     // Verify compositor output: every row should have non-zero pixels.
@@ -893,6 +911,7 @@ fn test_mismatched_aspect_ratio_opacity_no_black_bars() {
         false,
         false,
         false,
+        None,
     );
 
     // Every row should have non-zero pixels (no black bars on left/right).
@@ -938,6 +957,7 @@ fn test_rotated_blit_mismatched_aspect_ratio_covers_centre() {
         false,
         false,
         false,
+        None,
     );
 
     // Centre of the rect (canvas pixel 30, 20) should be red.
@@ -1044,4 +1064,251 @@ fn test_rgba8_to_nv12_avx2_chroma_matches_scalar() {
             );
         }
     }
+}
+
+// ── Crop / zoom unit tests ──────────────────────────────────────────
+
+/// Create a 4×4 RGBA8 frame with four distinct colour quadrants:
+///   TL = red, TR = green, BL = blue, BR = white.
+fn make_quadrant_frame() -> VideoFrame {
+    let mut data = vec![0u8; 4 * 4 * 4];
+    for y in 0..4u32 {
+        for x in 0..4u32 {
+            let idx = ((y * 4 + x) * 4) as usize;
+            let (r, g, b) = match (x < 2, y < 2) {
+                (true, true) => (255, 0, 0),       // top-left: red
+                (false, true) => (0, 255, 0),      // top-right: green
+                (true, false) => (0, 0, 255),      // bottom-left: blue
+                (false, false) => (255, 255, 255), // bottom-right: white
+            };
+            data[idx] = r;
+            data[idx + 1] = g;
+            data[idx + 2] = b;
+            data[idx + 3] = 255;
+        }
+    }
+    VideoFrame::new(4, 4, PixelFormat::Rgba8, data).unwrap()
+}
+
+#[test]
+fn test_composite_frame_with_crop_zoom() {
+    // 2× zoom centred on top-left quadrant (crop_x=0.0, crop_y=0.0)
+    // should show only the red quadrant, scaled to fill a 4×4 canvas.
+    let frame = make_quadrant_frame();
+    let layer = LayerSnapshot {
+        data: frame.data,
+        width: 4,
+        height: 4,
+        pixel_format: PixelFormat::Rgba8,
+        rect: Some(Rect { x: 0, y: 0, width: 4, height: 4 }),
+        opacity: 1.0,
+        z_index: 0,
+        rotation_degrees: 0.0,
+        mirror_horizontal: false,
+        mirror_vertical: false,
+        crop_zoom: 2.0,
+        crop_x: 0.0,
+        crop_y: 0.0,
+    };
+
+    let mut cache = ConversionCache::new();
+    let result = composite_frame(4, 4, &[Some(layer)], &[], &[], None, &mut cache);
+    let buf = result.as_slice();
+
+    // Every pixel on the canvas should be red (from the TL quadrant).
+    for (i, pixel) in buf.chunks_exact(4).enumerate() {
+        assert_eq!(pixel[0], 255, "pixel {i} R");
+        assert_eq!(pixel[1], 0, "pixel {i} G");
+        assert_eq!(pixel[2], 0, "pixel {i} B");
+        assert_eq!(pixel[3], 255, "pixel {i} A");
+    }
+}
+
+#[test]
+fn test_crop_pan_right_edge() {
+    // 2× zoom with crop_x=1.0 → shows top-right quadrant (green).
+    let frame = make_quadrant_frame();
+    let layer = LayerSnapshot {
+        data: frame.data,
+        width: 4,
+        height: 4,
+        pixel_format: PixelFormat::Rgba8,
+        rect: Some(Rect { x: 0, y: 0, width: 4, height: 4 }),
+        opacity: 1.0,
+        z_index: 0,
+        rotation_degrees: 0.0,
+        mirror_horizontal: false,
+        mirror_vertical: false,
+        crop_zoom: 2.0,
+        crop_x: 1.0,
+        crop_y: 0.0,
+    };
+
+    let mut cache = ConversionCache::new();
+    let result = composite_frame(4, 4, &[Some(layer)], &[], &[], None, &mut cache);
+    let buf = result.as_slice();
+
+    for (i, pixel) in buf.chunks_exact(4).enumerate() {
+        assert_eq!(pixel[0], 0, "pixel {i} R");
+        assert_eq!(pixel[1], 255, "pixel {i} G");
+        assert_eq!(pixel[2], 0, "pixel {i} B");
+    }
+}
+
+#[test]
+fn test_crop_tilt_bottom() {
+    // 2× zoom with crop_y=1.0, crop_x=0.0 → shows bottom-left quadrant (blue).
+    let frame = make_quadrant_frame();
+    let layer = LayerSnapshot {
+        data: frame.data,
+        width: 4,
+        height: 4,
+        pixel_format: PixelFormat::Rgba8,
+        rect: Some(Rect { x: 0, y: 0, width: 4, height: 4 }),
+        opacity: 1.0,
+        z_index: 0,
+        rotation_degrees: 0.0,
+        mirror_horizontal: false,
+        mirror_vertical: false,
+        crop_zoom: 2.0,
+        crop_x: 0.0,
+        crop_y: 1.0,
+    };
+
+    let mut cache = ConversionCache::new();
+    let result = composite_frame(4, 4, &[Some(layer)], &[], &[], None, &mut cache);
+    let buf = result.as_slice();
+
+    for (i, pixel) in buf.chunks_exact(4).enumerate() {
+        assert_eq!(pixel[0], 0, "pixel {i} R");
+        assert_eq!(pixel[1], 0, "pixel {i} G");
+        assert_eq!(pixel[2], 255, "pixel {i} B");
+    }
+}
+
+#[test]
+fn test_crop_no_zoom_returns_full_frame() {
+    // crop_zoom=1.0 should show the entire source unchanged.
+    let frame = make_quadrant_frame();
+    let layer = LayerSnapshot {
+        data: frame.data.clone(),
+        width: 4,
+        height: 4,
+        pixel_format: PixelFormat::Rgba8,
+        rect: Some(Rect { x: 0, y: 0, width: 4, height: 4 }),
+        opacity: 1.0,
+        z_index: 0,
+        rotation_degrees: 0.0,
+        mirror_horizontal: false,
+        mirror_vertical: false,
+        crop_zoom: 1.0,
+        crop_x: 0.0,
+        crop_y: 0.0,
+    };
+
+    let mut cache = ConversionCache::new();
+    let result = composite_frame(4, 4, &[Some(layer)], &[], &[], None, &mut cache);
+    let buf = result.as_slice();
+
+    // (0,0) = red
+    assert_eq!(&buf[0..4], &[255, 0, 0, 255]);
+    // (3,0) = green
+    let idx = 3 * 4;
+    assert_eq!(&buf[idx..idx + 4], &[0, 255, 0, 255]);
+    // (0,3) = blue
+    let idx = (3 * 4) * 4;
+    assert_eq!(&buf[idx..idx + 4], &[0, 0, 255, 255]);
+    // (3,3) = white
+    let idx = (3 * 4 + 3) * 4;
+    assert_eq!(&buf[idx..idx + 4], &[255, 255, 255, 255]);
+}
+
+#[test]
+fn test_crop_validation() {
+    // crop_zoom < 1.0 should fail validation.
+    let mut cfg = CompositorConfig::default();
+    cfg.layers.insert("in_0".to_string(), LayerConfig { crop_zoom: 0.5, ..Default::default() });
+    assert!(cfg.validate(&GlobalCompositorConfig::default()).is_err());
+
+    // crop_x out of range should fail.
+    let mut cfg = CompositorConfig::default();
+    cfg.layers.insert("in_0".to_string(), LayerConfig { crop_x: 1.5, ..Default::default() });
+    assert!(cfg.validate(&GlobalCompositorConfig::default()).is_err());
+
+    // crop_y out of range should fail.
+    let mut cfg = CompositorConfig::default();
+    cfg.layers.insert("in_0".to_string(), LayerConfig { crop_y: -0.1, ..Default::default() });
+    assert!(cfg.validate(&GlobalCompositorConfig::default()).is_err());
+
+    // Valid crop values should pass.
+    let mut cfg = CompositorConfig::default();
+    cfg.layers.insert(
+        "in_0".to_string(),
+        LayerConfig { crop_zoom: 2.0, crop_x: 0.3, crop_y: 0.7, ..Default::default() },
+    );
+    assert!(cfg.validate(&GlobalCompositorConfig::default()).is_ok());
+}
+
+#[test]
+fn test_scale_blit_with_src_region() {
+    // 4×4 quadrant source, blit with a crop region selecting only
+    // the top-left 2×2 (red quadrant) onto a 4×4 canvas.
+    let src = make_quadrant_frame();
+    let src_data = src.data();
+    let mut dst = vec![0u8; 4 * 4 * 4];
+
+    scale_blit_rgba(
+        &mut dst,
+        4,
+        4,
+        src_data,
+        4,
+        4,
+        &BlitRect { x: 0, y: 0, width: 4, height: 4 },
+        1.0,
+        false,
+        false,
+        false,
+        Some((0, 0, 2, 2)), // crop to top-left 2×2
+    );
+
+    // All pixels should be red (sampled from the TL quadrant).
+    for (i, pixel) in dst.chunks_exact(4).enumerate() {
+        assert_eq!(pixel[0], 255, "pixel {i} R");
+        assert_eq!(pixel[1], 0, "pixel {i} G");
+        assert_eq!(pixel[2], 0, "pixel {i} B");
+    }
+}
+
+#[test]
+fn test_scale_blit_rotated_with_src_region() {
+    // 4×4 source, crop to top-left 2×2 (red), rotated 0° → centre
+    // of the destination rect should be red.
+    let src = make_quadrant_frame();
+    let src_data = src.data();
+    let mut dst = vec![0u8; 10 * 10 * 4]; // 10×10 canvas
+
+    scale_blit_rgba_rotated(
+        &mut dst,
+        10,
+        10,
+        src_data,
+        4,
+        4,
+        &BlitRect { x: 0, y: 0, width: 10, height: 10 },
+        1.0,
+        0.0,
+        false,
+        false,
+        false,
+        Some((0, 0, 2, 2)),
+    );
+
+    // Centre pixel (5,5) should be red.
+    let cx = 5usize;
+    let cy = 5usize;
+    let idx = (cy * 10 + cx) * 4;
+    assert_eq!(dst[idx], 255, "Centre R");
+    assert_eq!(dst[idx + 1], 0, "Centre G");
+    assert_eq!(dst[idx + 2], 0, "Centre B");
 }

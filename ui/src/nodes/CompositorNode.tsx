@@ -21,6 +21,7 @@ import { useStableEntries } from './compositorNodeEntries';
 import {
   CompositorInspector,
   useInspectorProps,
+  useSelectedCropZoomChange,
   useSelectedLayerName,
   useSelectedMirrorToggle,
   useSelectedOpacityChange,
@@ -81,6 +82,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
     updateLayerRotation,
     toggleLayerVisibility,
     updateLayerMirror,
+    updateLayerCropZoom,
     updateLayerPositionSize,
     layerRefs,
     snapGuideRefs,
@@ -198,6 +200,11 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
     updateImageOverlay
   );
   const handleSelectedMirrorToggle = useSelectedMirrorToggle(selectedLayerId, updateLayerMirror);
+  const handleSelectedCropZoomChange = useSelectedCropZoomChange(
+    selectedLayerId,
+    selectedLayerKind,
+    updateLayerCropZoom
+  );
   const handleSelectedPositionSizeChange = useSelectedPositionSizeChange(
     selectedLayerId,
     selectedLayerKind,
@@ -283,11 +290,14 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
           <CompositorInspector
             inspectorProps={inspectorProps}
             selectedLayerName={selectedLayerName}
+            selectedLayerKind={selectedLayerKind}
+            selectedLayer={selectedLayer}
             textInspectorChildren={textInspectorChildren}
             handleSelectedOpacityChange={handleSelectedOpacityChange}
             handleSelectedRotationChange={handleSelectedRotationChange}
             handleSelectedMirrorToggle={handleSelectedMirrorToggle}
             handleSelectedPositionSizeChange={handleSelectedPositionSizeChange}
+            handleSelectedCropZoomChange={handleSelectedCropZoomChange}
             dimensionsReadOnly={selectedLayerKind === 'text'}
             disabled={disabled}
           />
