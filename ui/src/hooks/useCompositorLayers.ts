@@ -161,6 +161,13 @@ export const useCompositorLayers = (
   }, [layers]);
 
   // ── Sync from props ─────────────────────────────────────────────────────
+  // In Monitor view (sessionId is set), the server's view data is the source
+  // of truth for geometry (x, y, width, height).  The "sync from props" effect
+  // must NOT overwrite server-resolved positions with config-parsed ones,
+  // otherwise a params echo-back from the server would clobber the accurate
+  // layout that useServerLayoutSync applied.
+  const isMonitorView = !!sessionId;
+
   useEffect(() => {
     if (dragStateRef.current) return;
     const parsed = parseLayers(params, canvasWidth, canvasHeight);
@@ -168,7 +175,8 @@ export const useCompositorLayers = (
     const merged = mergeOverlayState(
       layersRef.current,
       parsed,
-      (a, b) => a.cropZoom !== b.cropZoom || a.cropX !== b.cropX || a.cropY !== b.cropY
+      (a, b) => a.cropZoom !== b.cropZoom || a.cropX !== b.cropX || a.cropY !== b.cropY,
+      isMonitorView
     );
     if (merged !== layersRef.current) setLayers(merged);
 
@@ -180,11 +188,14 @@ export const useCompositorLayers = (
           a.text !== b.text ||
           a.fontSize !== b.fontSize ||
           a.fontName !== b.fontName ||
-          a.color.some((v, i) => v !== b.color[i])
+          a.color.some((v, i) => v !== b.color[i]),
+        isMonitorView
       )
     );
-    setImageOverlays((cur) => mergeOverlayState(cur, parseImageOverlays(params)));
-  }, [params, canvasWidth, canvasHeight]);
+    setImageOverlays((cur) =>
+      mergeOverlayState(cur, parseImageOverlays(params), undefined, isMonitorView)
+    );
+  }, [params, canvasWidth, canvasHeight, isMonitorView]);
 
   // ── Server-driven layout (Monitor view only) ───────────────────────────
   useServerLayoutSync(

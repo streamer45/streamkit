@@ -15,7 +15,7 @@ import { renderHook, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import React from 'react';
 
-import type { DragResizeDeps, DragState } from './compositorDragResize';
+import type { DragResizeDeps } from './compositorDragResize';
 import { useCompositorDragResize } from './compositorDragResize';
 import type { LayerState } from './compositorLayerParsers';
 
@@ -28,9 +28,14 @@ function makeLayer(id: string): LayerState {
     width: 200,
     height: 150,
     opacity: 1,
-    z_index: 0,
+    zIndex: 0,
     visible: true,
-    rotation_degrees: 0,
+    rotationDegrees: 0,
+    mirrorHorizontal: false,
+    mirrorVertical: false,
+    cropZoom: 1.0,
+    cropX: 0.5,
+    cropY: 0.5,
   };
 }
 

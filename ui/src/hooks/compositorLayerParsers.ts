@@ -322,17 +322,26 @@ export function serializeLayers(layers: LayerState[]): Record<string, LayerConfi
 /** Merge parsed overlays with existing state, preserving client-side visibility.
  *  Returns the same array reference if nothing changed (avoiding re-renders).
  *  An optional `hasExtraChanges` comparator can detect changes in type-specific
- *  fields (e.g. `text`, `fontSize` for text overlays). */
+ *  fields (e.g. `text`, `fontSize` for text overlays).
+ *
+ *  When `preserveGeometry` is true (Monitor view), existing layer positions
+ *  (x, y, width, height) are kept from `current` instead of being overwritten
+ *  by `parsed`.  This prevents the config-derived positions from clobbering the
+ *  server's resolved layout (e.g. aspect-fit adjusted rects). */
 export function mergeOverlayState<T extends OverlayBase>(
   current: T[],
   parsed: T[],
-  hasExtraChanges?: (a: T, b: T) => boolean
+  hasExtraChanges?: (a: T, b: T) => boolean,
+  preserveGeometry?: boolean
 ): T[] {
   const merged = parsed.map((p) => {
     const existing = current.find((o) => o.id === p.id);
     if (existing) {
+      const base = preserveGeometry
+        ? { ...p, x: existing.x, y: existing.y, width: existing.width, height: existing.height }
+        : p;
       return {
-        ...p,
+        ...base,
         visible: existing.visible,
         opacity: existing.visible ? p.opacity : existing.opacity,
       };
