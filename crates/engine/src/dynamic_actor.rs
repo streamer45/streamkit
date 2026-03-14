@@ -586,6 +586,7 @@ impl DynamicEngine {
             pin_management_rx,
             audio_pool: Some(self.audio_pool.clone()),
             video_pool: Some(self.video_pool.clone()),
+            pipeline_mode: streamkit_core::PipelineMode::Dynamic,
             view_data_tx: Some(channels.view_data.clone()),
         };
 

@@ -547,12 +547,12 @@ impl ProcessorNode for CompositorNode {
         let mut running_timestamp_us: u64 = 0;
         let mut stop_reason: &str = "shutdown";
 
-        // Oneshot / batch pipelines provide a cancellation token;
-        // dynamic (live) pipelines do not.  In oneshot mode we take
-        // exactly one frame per slot per tick so every input frame
-        // is composited, whereas in live mode we drain to the latest
-        // frame to stay in sync with real-time input.
-        let is_oneshot = context.cancellation_token.is_some();
+        // In oneshot / batch mode we take exactly one frame per slot
+        // per iteration so every input frame is composited, and we
+        // skip real-time tick pacing to maximise throughput.  In live
+        // / dynamic mode we drain to the latest frame to stay in sync
+        // with real-time input.
+        let is_oneshot = context.pipeline_mode == streamkit_core::PipelineMode::Oneshot;
 
         // Set to `true` when the slot layout changes (input added,
         // removed, or disconnected) so the compositing thread clears
@@ -684,10 +684,12 @@ impl ProcessorNode for CompositorNode {
             // the channel and only the very last one would survive the
             // drain — producing a tiny handful of output frames instead
             // of the full expected count.
+            let mut any_new_frame = false;
             for slot in &mut slots {
                 if is_oneshot {
                     if let Ok(Packet::Video(frame)) = slot.rx.try_recv() {
                         slot.latest_frame = Some(frame);
+                        any_new_frame = true;
                     }
                 } else {
                     let mut latest: Option<VideoFrame> = None;
@@ -710,6 +712,16 @@ impl ProcessorNode for CompositorNode {
 
             // Nothing to composite if no slot has ever received a frame.
             if !slots.iter().any(|s| s.latest_frame.is_some()) {
+                continue;
+            }
+
+            // In oneshot mode, skip compositing when no slot received a
+            // new frame this tick — avoids duplicating stale content.
+            if is_oneshot && !any_new_frame {
+                if slots.iter().all(|s| s.rx.is_closed() && s.rx.is_empty()) {
+                    stop_reason = "all_inputs_closed";
+                    break;
+                }
                 continue;
             }
 

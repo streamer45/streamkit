@@ -25,6 +25,21 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::mpsc;
 
+/// The execution mode of the pipeline a node is running in.
+///
+/// Nodes may use this to adjust their behaviour — for example, a compositor
+/// can skip real-time tick pacing in [`Oneshot`](PipelineMode::Oneshot) mode
+/// to maximise throughput, while still draining to the latest frame in
+/// [`Dynamic`](PipelineMode::Dynamic) mode for low-latency live compositing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PipelineMode {
+    /// Long-running dynamic pipeline (real-time processing).
+    #[default]
+    Dynamic,
+    /// Oneshot / batch pipeline (process as fast as possible).
+    Oneshot,
+}
+
 /// Message type for routed packet delivery.
 /// Uses `Arc<str>` for node and pin names to avoid heap allocations on every send.
 pub type RoutedPacketMessage = (Arc<str>, Arc<str>, Packet);
@@ -305,6 +320,11 @@ pub struct NodeContext {
     /// Nodes that produce video frames (decoders, scalers, compositors) may use this to
     /// amortize `Vec<u8>` allocations. If `None`, nodes should fall back to allocating.
     pub video_pool: Option<Arc<VideoFramePool>>,
+    /// The execution mode of the pipeline this node is running in.
+    ///
+    /// Nodes can use this to adjust behaviour — e.g. skip real-time
+    /// pacing in [`PipelineMode::Oneshot`] for maximum throughput.
+    pub pipeline_mode: PipelineMode,
     /// Channel for the node to emit structured view data for frontend consumption.
     /// Like stats_tx, this is optional and best-effort.
     pub view_data_tx: Option<mpsc::Sender<NodeViewDataUpdate>>,

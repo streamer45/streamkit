@@ -243,6 +243,7 @@ mod tests {
             pin_management_rx: None, // Test contexts don't support dynamic pins
             audio_pool: None,
             video_pool: None,
+            pipeline_mode: streamkit_core::PipelineMode::Dynamic,
             view_data_tx: None,
         };
 
