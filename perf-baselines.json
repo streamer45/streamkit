@@ -5,37 +5,37 @@
       "name": "opacity-slider-20-ticks",
       "meanRenderCount": 22,
       "stdevRenderCount": 0,
-      "meanDuration": 1.1199689999999367,
-      "stdevDuration": 0.17395419957955474,
+      "meanDuration": 1.1803574285714993,
+      "stdevDuration": 0.2400758747216084,
       "runs": 7,
-      "timestamp": "2026-03-10T20:19:25.462Z"
+      "timestamp": "2026-03-14T16:25:33.808Z"
     },
     "rotation-slider-20-ticks": {
       "name": "rotation-slider-20-ticks",
       "meanRenderCount": 22,
       "stdevRenderCount": 0,
-      "meanDuration": 0.9112065714285303,
-      "stdevDuration": 0.06577615521721797,
+      "meanDuration": 0.9628287142853813,
+      "stdevDuration": 0.06859915000597974,
       "runs": 7,
-      "timestamp": "2026-03-10T20:19:25.462Z"
+      "timestamp": "2026-03-14T16:25:33.808Z"
     },
     "param-echo-callback-stability": {
       "name": "param-echo-callback-stability",
       "meanRenderCount": 11,
       "stdevRenderCount": 0,
-      "meanDuration": 0.4364421428568091,
-      "stdevDuration": 0.026745171608937773,
+      "meanDuration": 0.46390057142873176,
+      "stdevDuration": 0.02317983549707675,
       "runs": 7,
-      "timestamp": "2026-03-10T20:19:25.462Z"
+      "timestamp": "2026-03-14T16:25:33.808Z"
     },
     "mixed-slider-20-ticks": {
       "name": "mixed-slider-20-ticks",
       "meanRenderCount": 22,
       "stdevRenderCount": 0,
-      "meanDuration": 0.8133350000003118,
-      "stdevDuration": 0.031025799595955337,
+      "meanDuration": 1.4670855714289897,
+      "stdevDuration": 1.3544630059128246,
       "runs": 7,
-      "timestamp": "2026-03-10T20:19:25.462Z"
+      "timestamp": "2026-03-14T16:25:33.808Z"
     }
   }
 }
