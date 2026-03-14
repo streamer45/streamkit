@@ -1759,10 +1759,11 @@ const MonitorViewContent: React.FC = () => {
   // Prefetch pipeline data for all sessions to enable status display
   useSessionsPrefetch(sessions);
 
-  // Subscribe to selected session
+  // Subscribe to selected session.
+  // nodeStates is intentionally NOT consumed from this hook — see the
+  // useNodeStatesSubscription block below for the reasoning.
   const {
     pipeline,
-    nodeStates,
     // nodeStats not used here - NodeStateIndicator fetches directly from session store
     isConnected: sessionIsConnected,
     isLoading: isLoadingPipeline,
@@ -2722,8 +2723,13 @@ const MonitorViewContent: React.FC = () => {
         updateNodePosition(selectedSessionId, nodeName, pos);
       }
 
-      // Use real-time state from Zustand if available, otherwise use pipeline state
-      const nodeState = nodeStates[nodeName] || apiNode.state;
+      // Use real-time state from Zustand if available, otherwise use pipeline state.
+      // Read directly from the store (non-reactive) since the topology effect only
+      // runs on structural changes, not on every node-state transition.
+      const currentNodeStates = selectedSessionId
+        ? (useSessionStore.getState().getSession(selectedSessionId)?.nodeStates ?? {})
+        : {};
+      const nodeState = currentNodeStates[nodeName] || apiNode.state;
 
       // Determine if this node is staged (for visual distinction)
       const isStaged = isInStagingMode && stagingData?.stagedNodes.has(nodeName);
@@ -2783,184 +2789,171 @@ const MonitorViewContent: React.FC = () => {
   const topoEffectRanRef = useRef(false);
   const isInitialMountRef = useRef(true);
 
-  // Lightweight patch: update node params/state without rebuilding layout or edges
-  // Skip when topology effect will run (topoKey changed)
+  // ── Non-reactive nodeStates subscription ─────────────────────────────
+  // Instead of subscribing reactively to nodeStates (which would re-render
+  // the entire ~3600-line MonitorViewContent on every node-state transition),
+  // we subscribe directly to the Zustand store and patch ReactFlow nodes /
+  // edges from the callback.  This completely bypasses React's render cycle
+  // for high-frequency state changes during session load.
+  // Keep topoKey accessible from the store subscription without stale closures
+  const topoKeyRef = useRef(topoKey);
+  topoKeyRef.current = topoKey;
+
   useEffect(() => {
-    if (!pipeline) return;
+    if (!selectedSessionId) return;
 
-    // Skip on initial mount - let topology effect handle everything
-    if (isInitialMountRef.current) {
-      viewsLogger.debug('Skipping patch effect on initial mount');
-      isInitialMountRef.current = false;
-      prevTopoKeyRef.current = topoKey;
-      return;
-    }
+    let prevNodeStates: Record<string, NodeState> | undefined;
+    isInitialMountRef.current = true;
 
-    // If topoKey changed, the topology effect will handle the full rebuild, skip this patch
-    if (prevTopoKeyRef.current !== topoKey) {
-      viewsLogger.debug(
-        'Skipping patch effect, topology changed (prev:',
-        prevTopoKeyRef.current.substring(0, 30),
-        'new:',
-        topoKey.substring(0, 30),
-        ')'
-      );
-      prevTopoKeyRef.current = topoKey;
-      return;
-    }
+    const unsubscribe = useSessionStore.subscribe((state) => {
+      const session = state.sessions.get(selectedSessionId);
+      const nodeStates = session?.nodeStates;
 
-    // Also skip if topology effect hasn't run yet
-    if (!topoEffectRanRef.current) {
-      viewsLogger.debug('Skipping patch effect, waiting for topology effect');
-      return;
-    }
+      // Skip if same reference (store changed for a different reason)
+      if (nodeStates === prevNodeStates) return;
+      prevNodeStates = nodeStates;
 
-    viewsLogger.debug('Running patch effect');
+      // Skip on initial mount — let the topology effect handle everything
+      if (isInitialMountRef.current) {
+        isInitialMountRef.current = false;
+        prevTopoKeyRef.current = topoKeyRef.current;
+        return;
+      }
 
-    // Use startTransition to mark this as low-priority update
-    React.startTransition(() => {
-      setNodes((prev) => {
-        const updatesById = new Map<
-          string,
-          { nextState: unknown; nextParams: Record<string, unknown> }
-        >();
+      // If topoKey changed, the topology effect will handle the full rebuild
+      if (prevTopoKeyRef.current !== topoKeyRef.current) {
+        prevTopoKeyRef.current = topoKeyRef.current;
+        return;
+      }
 
-        for (const n of prev) {
-          const apiNode = pipeline.nodes[n.id];
-          if (!apiNode) continue;
+      // Don't patch until the topology effect has built the initial graph
+      if (!topoEffectRanRef.current) return;
 
-          const nextState = nodeStates[n.id] ?? apiNode.state;
-          // Type guard: ensure params is an object of type Record<string, unknown>
-          const nextParams: Record<string, unknown> =
-            apiNode.params && typeof apiNode.params === 'object' && !Array.isArray(apiNode.params)
-              ? (apiNode.params as Record<string, unknown>)
-              : EMPTY_PARAMS;
+      const currentPipeline = pipelineRef.current;
+      if (!currentPipeline || !nodeStates) return;
 
-          // Deep comparison: check if state or params actually changed
-          const stateChanged = !deepEqual(n.data.state, nextState);
-          const paramsChanged = !deepEqual(n.data.params, nextParams);
+      // ── Patch node state/params ──────────────────────────────────────
+      React.startTransition(() => {
+        setNodes((prev) => {
+          const updatesById = new Map<
+            string,
+            { nextState: unknown; nextParams: Record<string, unknown> }
+          >();
 
-          if (stateChanged || paramsChanged) {
-            updatesById.set(n.id, { nextState, nextParams });
+          for (const n of prev) {
+            const apiNode = currentPipeline.nodes[n.id];
+            if (!apiNode) continue;
+
+            const nextState = nodeStates[n.id] ?? apiNode.state;
+            const nextParams: Record<string, unknown> =
+              apiNode.params && typeof apiNode.params === 'object' && !Array.isArray(apiNode.params)
+                ? (apiNode.params as Record<string, unknown>)
+                : EMPTY_PARAMS;
+
+            const stateChanged = !deepEqual(n.data.state, nextState);
+            const paramsChanged = !deepEqual(n.data.params, nextParams);
+
+            if (stateChanged || paramsChanged) {
+              updatesById.set(n.id, { nextState, nextParams });
+            }
           }
-        }
 
-        // Only create new array if there are actual changes
-        if (updatesById.size === 0) {
-          viewsLogger.debug('Patch effect: no changes, returning same array');
-          return prev; // Return same array reference - no re-render!
-        }
+          if (updatesById.size === 0) return prev;
 
-        // Create updated array
-        const updated = prev.map((n) => {
-          const updateInfo = updatesById.get(n.id);
-          if (!updateInfo) return n;
-
-          return {
-            ...n,
-            data: {
-              ...n.data,
-              state: updateInfo.nextState,
-              params: updateInfo.nextParams,
-              // Note: stats are NOT updated here to prevent re-renders
-              // NodeStateIndicator fetches them directly from the session store
-            },
-          };
-        });
-
-        viewsLogger.debug('Patch effect updated', updatesById.size, 'nodes');
-        return updated;
-      });
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    pipeline,
-    // stagingData removed - not needed for state/params updates
-    // isInStagingMode removed - topology effect handles mode changes
-    nodeStates,
-    topoKey, // Need this to know when topology changed
-    // nodeStats removed from dependencies - no longer causes re-renders
-    // Note: setNodes, tuneNode, updateStagedNodeParams are stable and don't need to be dependencies
-  ]);
-
-  // Lightweight patch: update edge alerts based on node degraded details.
-  useEffect(() => {
-    if (!pipeline) return;
-
-    const slowPinsByNode = new Map<string, Set<string>>();
-    const slowDetailsByNode = new Map<string, SlowTimeoutDetails>();
-    for (const [nodeId, apiNode] of Object.entries(pipeline.nodes)) {
-      const state = (nodeStates as Record<string, NodeState>)[nodeId] ?? apiNode.state ?? null;
-      const details = extractSlowTimeoutDetailsFromNodeState(state);
-      const slowPins = details?.slowPins ?? [];
-      if (slowPins.length > 0) {
-        slowPinsByNode.set(nodeId, new Set(slowPins));
-      }
-      if (details) {
-        slowDetailsByNode.set(nodeId, details);
-      }
-    }
-
-    React.startTransition(() => {
-      setEdges((prev) => {
-        let changed = false;
-
-        const next = prev.map((edge) => {
-          const targetPin = edge.targetHandle ?? '';
-          const shouldWarn = slowPinsByNode.get(edge.target)?.has(targetPin) ?? false;
-          const currentAlert = isRecord(edge.data) ? edge.data['alert'] : undefined;
-          const currentAlertKind =
-            isRecord(currentAlert) && typeof currentAlert['kind'] === 'string'
-              ? currentAlert['kind']
-              : null;
-          const isCurrentlyWarned = currentAlertKind === 'slow_input_timeout';
-
-          if (shouldWarn === isCurrentlyWarned) return edge;
-
-          changed = true;
-          const nextData: Record<string, unknown> = { ...(edge.data || {}) };
-
-          if (shouldWarn) {
-            const details = slowDetailsByNode.get(edge.target);
-            const slowPins = details?.slowPins ?? [];
-            const slowInputs = pipeline ? describeSlowInputs(pipeline, edge.target, slowPins) : [];
-
-            const lines: string[] = [];
-            if (slowInputs.length > 0) {
-              lines.push(`Slow inputs: ${slowInputs.join(', ')}`);
-            } else if (slowPins.length > 0) {
-              lines.push(`Slow pins: ${slowPins.join(', ')}`);
-            }
-
-            const sourceHandle = edge.sourceHandle ?? '';
-            lines.push(`This: ${edge.source}.${sourceHandle} → ${edge.targetHandle ?? ''}`);
-
-            if (details?.newlySlowPins && details.newlySlowPins.length > 0) {
-              lines.push(`Newly slow: ${details.newlySlowPins.join(', ')}`);
-            }
-            if (details?.syncTimeoutMs !== null && details?.syncTimeoutMs !== undefined) {
-              lines.push(`Timeout: ${details.syncTimeoutMs}ms`);
-            }
-
-            nextData.alert = {
-              kind: 'slow_input_timeout',
-              severity: 'warning',
-              tooltip: {
-                title: `${edge.target} degraded`,
-                lines,
+          return prev.map((n) => {
+            const updateInfo = updatesById.get(n.id);
+            if (!updateInfo) return n;
+            return {
+              ...n,
+              data: {
+                ...n.data,
+                state: updateInfo.nextState,
+                params: updateInfo.nextParams,
               },
             };
-          } else if (isCurrentlyWarned) {
-            delete nextData.alert;
-          }
-
-          return { ...edge, data: nextData };
+          });
         });
+      });
 
-        return changed ? next : prev;
+      // ── Patch edge alerts (slow-input-timeout) ───────────────────────
+      React.startTransition(() => {
+        const slowPinsByNode = new Map<string, Set<string>>();
+        const slowDetailsByNode = new Map<string, SlowTimeoutDetails>();
+        for (const [nodeId, apiNode] of Object.entries(currentPipeline.nodes)) {
+          const st = (nodeStates as Record<string, NodeState>)[nodeId] ?? apiNode.state ?? null;
+          const details = extractSlowTimeoutDetailsFromNodeState(st);
+          const slowPins = details?.slowPins ?? [];
+          if (slowPins.length > 0) {
+            slowPinsByNode.set(nodeId, new Set(slowPins));
+          }
+          if (details) {
+            slowDetailsByNode.set(nodeId, details);
+          }
+        }
+
+        setEdges((prev) => {
+          let changed = false;
+
+          const next = prev.map((edge) => {
+            const targetPin = edge.targetHandle ?? '';
+            const shouldWarn = slowPinsByNode.get(edge.target)?.has(targetPin) ?? false;
+            const currentAlert = isRecord(edge.data) ? edge.data['alert'] : undefined;
+            const currentAlertKind =
+              isRecord(currentAlert) && typeof currentAlert['kind'] === 'string'
+                ? currentAlert['kind']
+                : null;
+            const isCurrentlyWarned = currentAlertKind === 'slow_input_timeout';
+
+            if (shouldWarn === isCurrentlyWarned) return edge;
+
+            changed = true;
+            const nextData: Record<string, unknown> = { ...(edge.data || {}) };
+
+            if (shouldWarn) {
+              const details = slowDetailsByNode.get(edge.target);
+              const slowPins = details?.slowPins ?? [];
+              const p = pipelineRef.current;
+              const slowInputs = p ? describeSlowInputs(p, edge.target, slowPins) : [];
+
+              const lines: string[] = [];
+              if (slowInputs.length > 0) {
+                lines.push(`Slow inputs: ${slowInputs.join(', ')}`);
+              } else if (slowPins.length > 0) {
+                lines.push(`Slow pins: ${slowPins.join(', ')}`);
+              }
+
+              const sourceHandle = edge.sourceHandle ?? '';
+              lines.push(`This: ${edge.source}.${sourceHandle} → ${edge.targetHandle ?? ''}`);
+
+              if (details?.newlySlowPins && details.newlySlowPins.length > 0) {
+                lines.push(`Newly slow: ${details.newlySlowPins.join(', ')}`);
+              }
+              if (details?.syncTimeoutMs !== null && details?.syncTimeoutMs !== undefined) {
+                lines.push(`Timeout: ${details.syncTimeoutMs}ms`);
+              }
+
+              nextData.alert = {
+                kind: 'slow_input_timeout',
+                severity: 'warning',
+                tooltip: {
+                  title: `${edge.target} degraded`,
+                  lines,
+                },
+              };
+            } else if (isCurrentlyWarned) {
+              delete nextData.alert;
+            }
+
+            return { ...edge, data: nextData };
+          });
+
+          return changed ? next : prev;
+        });
       });
     });
-  }, [pipeline, nodeStates, setEdges]);
+
+    return unsubscribe;
+  }, [selectedSessionId, setNodes, setEdges]);
 
   // Create a stable callback that handles both staged and live param changes
   // This avoids recreating callbacks for each node, which would break React.memo
