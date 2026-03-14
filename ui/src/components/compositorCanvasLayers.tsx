@@ -149,7 +149,7 @@ export const VideoLayer: React.FC<{
       style={layerBoxStyle(layer.x, layer.y, layer.width, layer.height, {
         visible: layer.visible,
         opacity: layer.opacity,
-        zIndex: layer.zIndex + 1,
+        zIndex: layer.zIndex,
         rotationDegrees: layer.rotationDegrees,
         mirrorHorizontal: layer.mirrorHorizontal,
         mirrorVertical: layer.mirrorVertical,
@@ -237,7 +237,7 @@ export const TextOverlayLayer: React.FC<{
         style={layerBoxStyle(overlay.x, overlay.y, displayWidth, displayHeight, {
           visible: overlay.visible,
           opacity: overlay.opacity,
-          zIndex: overlay.zIndex ?? 100 + index,
+          zIndex: overlay.zIndex,
           rotationDegrees: overlay.rotationDegrees,
           mirrorHorizontal: overlay.mirrorHorizontal,
           mirrorVertical: overlay.mirrorVertical,
@@ -379,7 +379,7 @@ export const ImageOverlayLayer: React.FC<{
       style={layerBoxStyle(overlay.x, overlay.y, overlay.width, overlay.height, {
         visible: overlay.visible,
         opacity: overlay.opacity,
-        zIndex: overlay.zIndex ?? 200 + index,
+        zIndex: overlay.zIndex,
         rotationDegrees: overlay.rotationDegrees,
         mirrorHorizontal: overlay.mirrorHorizontal,
         mirrorVertical: overlay.mirrorVertical,
