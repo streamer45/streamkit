@@ -2795,6 +2795,12 @@ const MonitorViewContent: React.FC = () => {
   // we subscribe directly to the Zustand store and patch ReactFlow nodes /
   // edges from the callback.  This completely bypasses React's render cycle
   // for high-frequency state changes during session load.
+  //
+  // Patches are throttled: the first change applies immediately, then
+  // subsequent changes within PATCH_THROTTLE_MS are coalesced into a single
+  // deferred patch.  During session load, ~8 node-state transitions that
+  // would each trigger a full ~20 ms MonitorViewContent re-render are
+  // collapsed into 2–3 patches instead.
   // Keep topoKey accessible from the store subscription without stale closures
   const topoKeyRef = useRef(topoKey);
   topoKeyRef.current = topoKey;
@@ -2802,35 +2808,19 @@ const MonitorViewContent: React.FC = () => {
   useEffect(() => {
     if (!selectedSessionId) return;
 
+    const PATCH_THROTTLE_MS = 100;
+
     let prevNodeStates: Record<string, NodeState> | undefined;
+    let lastPatchTime = 0;
+    let throttleTimer: ReturnType<typeof setTimeout> | null = null;
+    let pendingNodeStates: Record<string, NodeState> | null = null;
     isInitialMountRef.current = true;
 
-    const unsubscribe = useSessionStore.subscribe((state) => {
-      const session = state.sessions.get(selectedSessionId);
-      const nodeStates = session?.nodeStates;
-
-      // Skip if same reference (store changed for a different reason)
-      if (nodeStates === prevNodeStates) return;
-      prevNodeStates = nodeStates;
-
-      // Skip on initial mount — let the topology effect handle everything
-      if (isInitialMountRef.current) {
-        isInitialMountRef.current = false;
-        prevTopoKeyRef.current = topoKeyRef.current;
-        return;
-      }
-
-      // If topoKey changed, the topology effect will handle the full rebuild
-      if (prevTopoKeyRef.current !== topoKeyRef.current) {
-        prevTopoKeyRef.current = topoKeyRef.current;
-        return;
-      }
-
-      // Don't patch until the topology effect has built the initial graph
-      if (!topoEffectRanRef.current) return;
+    const applyPatch = (nodeStates: Record<string, NodeState>) => {
+      lastPatchTime = performance.now();
 
       const currentPipeline = pipelineRef.current;
-      if (!currentPipeline || !nodeStates) return;
+      if (!currentPipeline) return;
 
       // ── Patch node state/params ──────────────────────────────────────
       React.startTransition(() => {
@@ -2950,9 +2940,66 @@ const MonitorViewContent: React.FC = () => {
           return changed ? next : prev;
         });
       });
+    };
+
+    const unsubscribe = useSessionStore.subscribe((state) => {
+      const session = state.sessions.get(selectedSessionId);
+      const nodeStates = session?.nodeStates;
+
+      // Skip if same reference (store changed for a different reason)
+      if (nodeStates === prevNodeStates) return;
+      prevNodeStates = nodeStates;
+
+      // Skip on initial mount — let the topology effect handle everything
+      if (isInitialMountRef.current) {
+        isInitialMountRef.current = false;
+        prevTopoKeyRef.current = topoKeyRef.current;
+        return;
+      }
+
+      // If topoKey changed, the topology effect will handle the full rebuild
+      if (prevTopoKeyRef.current !== topoKeyRef.current) {
+        prevTopoKeyRef.current = topoKeyRef.current;
+        return;
+      }
+
+      // Don't patch until the topology effect has built the initial graph
+      if (!topoEffectRanRef.current) return;
+
+      if (!nodeStates) return;
+
+      // ── Throttled patch ────────────────────────────────────────────────
+      // Apply immediately if enough time elapsed since the last patch;
+      // otherwise buffer and apply after the throttle window.  During
+      // session-load bursts this collapses ~8 individual setNodes calls
+      // (each triggering a ~20 ms MonitorViewContent re-render) into 2–3.
+      pendingNodeStates = nodeStates;
+      const now = performance.now();
+      const elapsed = now - lastPatchTime;
+
+      if (elapsed >= PATCH_THROTTLE_MS) {
+        // First change or enough time since last patch — apply now.
+        if (throttleTimer !== null) {
+          clearTimeout(throttleTimer);
+          throttleTimer = null;
+        }
+        applyPatch(nodeStates);
+      } else if (throttleTimer === null) {
+        // Schedule a trailing-edge flush.
+        throttleTimer = setTimeout(() => {
+          throttleTimer = null;
+          if (pendingNodeStates) {
+            applyPatch(pendingNodeStates);
+            pendingNodeStates = null;
+          }
+        }, PATCH_THROTTLE_MS - elapsed);
+      }
     });
 
-    return unsubscribe;
+    return () => {
+      unsubscribe();
+      if (throttleTimer !== null) clearTimeout(throttleTimer);
+    };
   }, [selectedSessionId, setNodes, setEdges]);
 
   // Create a stable callback that handles both staged and live param changes
