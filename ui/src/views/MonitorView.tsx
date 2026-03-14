@@ -2848,6 +2848,7 @@ const MonitorViewContent: React.FC = () => {
     let throttleTimer: ReturnType<typeof setTimeout> | null = null;
     let pendingNodeStates: Record<string, NodeState> | null = null;
     isInitialMountRef.current = true;
+    topoEffectRanRef.current = false;
 
     const applyPatch = (nodeStates: Record<string, NodeState>) => {
       lastPatchTime = performance.now();
