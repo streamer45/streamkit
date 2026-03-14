@@ -153,8 +153,27 @@ pub fn packet_type_to_c(pt: &PacketType) -> (CPacketTypeInfo, Option<CAudioForma
         ),
         // TODO: extend C ABI with CPacketType::RawVideo / EncodedVideo for structured video support.
         // Currently video types are mapped to opaque Binary, so native plugins cannot
-        // inspect width/height/pixel_format.
-        PacketType::RawVideo(_) | PacketType::EncodedVideo(_) | PacketType::Binary => (
+        // inspect width/height/pixel_format. This will be addressed when the C ABI gains
+        // native video packet types.
+        PacketType::RawVideo(_) | PacketType::EncodedVideo(_) => {
+            use std::sync::Once;
+            static WARN: Once = Once::new();
+            WARN.call_once(|| {
+                tracing::warn!(
+                    "Video PacketType mapped to Binary in native plugin ABI: \
+                     video metadata (width, height, pixel_format) is not preserved"
+                );
+            });
+            (
+                CPacketTypeInfo {
+                    type_discriminant: CPacketType::Binary,
+                    audio_format: std::ptr::null(),
+                    custom_type_id: std::ptr::null(),
+                },
+                None,
+            )
+        },
+        PacketType::Binary => (
             CPacketTypeInfo {
                 type_discriminant: CPacketType::Binary,
                 audio_format: std::ptr::null(),
@@ -321,13 +340,27 @@ pub fn packet_to_c(packet: &Packet) -> CPacketRepr {
             _owned: CPacketOwned::None,
         },
         // TODO: extend C ABI for structured video frame support (width, height, pixel_format, layout).
-        Packet::Video(frame) => CPacketRepr {
-            packet: CPacket {
-                packet_type: CPacketType::Binary,
-                data: frame.data.as_ptr().cast::<c_void>(),
-                len: frame.data.len(),
-            },
-            _owned: CPacketOwned::None,
+        // Currently video frames are converted to opaque Binary packets, discarding all
+        // metadata (width, height, pixel_format, layout, keyframe). Native plugins receiving
+        // these packets have no way to reconstruct the frame without out-of-band knowledge.
+        // This will be addressed when the C ABI gains native video types.
+        Packet::Video(frame) => {
+            use std::sync::Once;
+            static WARN: Once = Once::new();
+            WARN.call_once(|| {
+                tracing::warn!(
+                    "Video packet converted to Binary for native plugin: frame metadata \
+                     (width, height, pixel_format, layout, keyframe) is lost"
+                );
+            });
+            CPacketRepr {
+                packet: CPacket {
+                    packet_type: CPacketType::Binary,
+                    data: frame.data.as_ptr().cast::<c_void>(),
+                    len: frame.data.len(),
+                },
+                _owned: CPacketOwned::None,
+            }
         },
     }
 }

@@ -510,8 +510,18 @@ macro_rules! native_plugin_entry {
                                         $crate::types::CPacketType::Binary
                                     }
                                 }
+                                // TODO: extend C ABI with video packet types.
+                                // Currently video types are mapped to Binary, losing
+                                // width/height/pixel_format metadata.
                                 $crate::streamkit_core::types::PacketType::RawVideo(_)
                                 | $crate::streamkit_core::types::PacketType::EncodedVideo(_) => {
+                                    static WARN: std::sync::Once = std::sync::Once::new();
+                                    WARN.call_once(|| {
+                                        tracing::warn!(
+                                            "Video PacketType on input pin mapped to Binary in native \
+                                             plugin ABI: video metadata is not preserved"
+                                        );
+                                    });
                                     $crate::types::CPacketType::Binary
                                 }
                                 $crate::streamkit_core::types::PacketType::Text => {
@@ -604,8 +614,18 @@ macro_rules! native_plugin_entry {
                                     $crate::types::CPacketType::Binary
                                 }
                             }
+                            // TODO: extend C ABI with video packet types.
+                            // Currently video types are mapped to Binary, losing
+                            // width/height/pixel_format metadata.
                             $crate::streamkit_core::types::PacketType::RawVideo(_)
                             | $crate::streamkit_core::types::PacketType::EncodedVideo(_) => {
+                                static WARN: std::sync::Once = std::sync::Once::new();
+                                WARN.call_once(|| {
+                                    tracing::warn!(
+                                        "Video PacketType on output pin mapped to Binary in native \
+                                         plugin ABI: video metadata is not preserved"
+                                    );
+                                });
                                 $crate::types::CPacketType::Binary
                             }
                             $crate::streamkit_core::types::PacketType::Text => {
