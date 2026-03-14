@@ -1572,6 +1572,9 @@ const MonitorViewContent: React.FC = () => {
   const editMode = isInStagingMode;
   const [needsAutoLayout, setNeedsAutoLayout] = useState(false);
   const [needsFit, setNeedsFit] = useState(false);
+
+  // Ref to track the deferred-edge RAF so we can cancel it on cleanup / re-run.
+  const deferredEdgeRafRef = useRef<number | null>(null);
   const [selectedNodes, setSelectedNodes] = useState<string[]>([]);
   const [rightPaneView, setRightPaneView] = useState<'yaml' | 'inspector' | 'telemetry'>('yaml');
   const [showDeleteModal, setShowDeleteModal] = useState(false);
@@ -2739,17 +2742,63 @@ const MonitorViewContent: React.FC = () => {
     const savedPositions =
       isInStagingMode && selectedSessionId ? getNodePositions(selectedSessionId) : {};
 
+    // ── Pre-computed layout positions ──────────────────────────────────
+    // When no nodes have saved or previous positions (first load of a
+    // session), compute the DAG layout *before* mounting so nodes start
+    // at their final positions.  This eliminates the measure → auto-
+    // layout → fitView → remount cycle that causes a second expensive
+    // mount phase when previously off-screen elements become visible.
+    const hasPrevPositions = prevPositions.size > 0;
+    const hasSavedPositions = Object.keys(savedPositions).length > 0;
+    let precomputedPositions: Record<string, { x: number; y: number }> | null = null;
+
+    if (!hasPrevPositions && !hasSavedPositions) {
+      const estimatedHeights: Record<string, number> = {};
+      for (const name of orderedNames) {
+        const kind = activePipeline.nodes[name]?.kind;
+        if (kind) {
+          estimatedHeights[name] = ESTIMATED_HEIGHT_BY_KIND[kind] ?? DEFAULT_NODE_HEIGHT;
+        }
+      }
+
+      precomputedPositions = verticalLayout(levels, sortedLevels, {
+        nodeWidth: DEFAULT_NODE_WIDTH,
+        nodeHeight: DEFAULT_NODE_HEIGHT,
+        hGap: DEFAULT_HORIZONTAL_GAP,
+        vGap: DEFAULT_VERTICAL_GAP,
+        heights: estimatedHeights,
+        edges: activePipeline.connections.map((c) => ({ source: c.from_node, target: c.to_node })),
+      });
+
+      viewsLogger.debug(
+        'Pre-computed layout for',
+        Object.keys(precomputedPositions).length,
+        'nodes (no saved positions)'
+      );
+    }
+
     const newNodes: RFNode[] = [];
     for (const nodeName of orderedNames) {
       const apiNode = activePipeline.nodes[nodeName];
       if (!apiNode) continue;
 
-      // Resolve node position from various sources
-      const { position: pos, fromPending: positionFromPending } = resolveNodePosition(
+      // Resolve node position from various sources.
+      // If pre-computed layout positions are available (first load),
+      // use them as the fallback instead of (0,0).
+      const { position: resolvedPos, fromPending: positionFromPending } = resolveNodePosition(
         nodeName,
         prevPositions,
         savedPositions
       );
+
+      // Apply pre-computed position when no other source provided one.
+      let pos = resolvedPos;
+      if (precomputedPositions && pos.x === 0 && pos.y === 0 && !positionFromPending) {
+        const precomputed = precomputedPositions[nodeName];
+        if (precomputed) {
+          pos = precomputed;
+        }
+      }
 
       // Save position to staging store if it came from pending (newly dropped) and we're in staging mode
       if (positionFromPending && isInStagingMode && selectedSessionId) {
@@ -2800,20 +2849,59 @@ const MonitorViewContent: React.FC = () => {
       newNodes.push(node);
     }
 
-    // Build edges using helper function
+    // ── Deferred edge rendering ─────────────────────────────────────
+    // Mount nodes first so the user sees the pipeline structure
+    // immediately, then add edges on the next animation frame.
+    // This splits the initial mount (~1131 fibers) into two smaller
+    // chunks across separate frames — ~500 node mounts, then ~600
+    // edge mounts — preventing a single long blocking commit.
     const newEdges = buildEdgesFromConnections(activePipeline.connections, newNodes);
 
-    viewsLogger.debug('Setting', newNodes.length, 'nodes and', newEdges.length, 'edges');
-    // Batch node and edge updates to prevent double render
+    viewsLogger.debug('Setting', newNodes.length, 'nodes (edges deferred:', newEdges.length, ')');
+
+    // Cancel any previously-scheduled deferred edge RAF.
+    if (deferredEdgeRafRef.current !== null) {
+      cancelAnimationFrame(deferredEdgeRafRef.current);
+      deferredEdgeRafRef.current = null;
+    }
+
     React.startTransition(() => {
       setNodes(newNodes);
-      setEdges(newEdges);
+      setEdges([]);
       topoEffectRanRef.current = true;
+    });
+
+    // Save pre-computed positions so the auto-layout effect can skip the
+    // redundant measure → layout → fitView cycle.  Also persist them in
+    // the staging store for cross-session-switch reuse.
+    if (precomputedPositions && selectedSessionId) {
+      for (const [nodeId, position] of Object.entries(precomputedPositions)) {
+        updateNodePosition(selectedSessionId, nodeId, position);
+      }
+      // Clear the needsAutoLayout flag since we've already positioned nodes.
+      setNeedsAutoLayout(false);
+      // Trigger a fitView after nodes are mounted and measured.
+      setNeedsFit(true);
+    }
+
+    // Schedule edge rendering for the next frame.
+    deferredEdgeRafRef.current = requestAnimationFrame(() => {
+      deferredEdgeRafRef.current = null;
+      React.startTransition(() => {
+        setEdges(newEdges);
+      });
     });
 
     // Generate YAML using helper function
     const yamlString = generatePipelineYaml(activePipeline, orderedNames);
     setYamlString(yamlString);
+    // Cancel deferred edge RAF on cleanup (session switch, unmount).
+    return () => {
+      if (deferredEdgeRafRef.current !== null) {
+        cancelAnimationFrame(deferredEdgeRafRef.current);
+        deferredEdgeRafRef.current = null;
+      }
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [topoKey, defByKind, selectedSessionId, tuneNode]);
 
