@@ -1811,16 +1811,32 @@ const MonitorViewContent: React.FC = () => {
   // before React processes the batched setSelectedSessionId(null) from
   // handleConfirmQuickDelete.  Eagerly clear the selection here so the
   // badge, "Enter Staging", and "Delete" controls disappear immediately.
+  //
+  // The ref prevents this from fighting with the nav-state auto-select:
+  // we only clear selection for sessions that were *previously seen* in
+  // the list and then vanished (i.e., destroyed), not for a session ID
+  // that was just set via navigation state and hasn't appeared yet.
+  const sessionSeenInListRef = useRef(false);
+  if (selectedSession) {
+    sessionSeenInListRef.current = true;
+  }
   useEffect(() => {
-    if (selectedSessionId && !selectedSession && !isLoadingSessions) {
+    if (selectedSessionId && !selectedSession && !isLoadingSessions && sessionSeenInListRef.current) {
+      sessionSeenInListRef.current = false;
       setSelectedSessionId(null);
     }
   }, [selectedSessionId, selectedSession, isLoadingSessions]);
 
   // Tear down the MoQ preview (and release camera/mic) when the selected
-  // session goes away.
+  // session is deselected (transitions from a value to null).  We track
+  // the previous value with a ref so we don't disconnect on initial mount
+  // (where selectedSessionId starts as null while the nav-state or
+  // auto-select effects haven't fired yet).
+  const prevSelectedSessionIdRef = useRef(selectedSessionId);
   useEffect(() => {
-    if (!selectedSessionId && previewStatus !== 'disconnected') {
+    const prev = prevSelectedSessionIdRef.current;
+    prevSelectedSessionIdRef.current = selectedSessionId;
+    if (prev && !selectedSessionId && previewStatus !== 'disconnected') {
       previewDisconnect();
     }
   }, [selectedSessionId, previewStatus, previewDisconnect]);
