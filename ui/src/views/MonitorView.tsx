@@ -2874,14 +2874,13 @@ const MonitorViewContent: React.FC = () => {
     // Save pre-computed positions so the auto-layout effect can skip the
     // redundant measure → layout → fitView cycle.  Also persist them in
     // the staging store for cross-session-switch reuse.
+    const usedPrecomputedPositions = precomputedPositions !== null;
     if (precomputedPositions && selectedSessionId) {
       for (const [nodeId, position] of Object.entries(precomputedPositions)) {
         updateNodePosition(selectedSessionId, nodeId, position);
       }
       // Clear the needsAutoLayout flag since we've already positioned nodes.
       setNeedsAutoLayout(false);
-      // Trigger a fitView after nodes are mounted and measured.
-      setNeedsFit(true);
     }
 
     // Schedule edge rendering for the next frame.
@@ -2890,6 +2889,17 @@ const MonitorViewContent: React.FC = () => {
       React.startTransition(() => {
         setEdges(newEdges);
       });
+
+      // When pre-computed positions were used, schedule fitView after
+      // edges are committed so the viewport calculation includes the
+      // full graph.  A second RAF ensures the edge startTransition has
+      // been flushed before fitView measures the bounding box.
+      if (usedPrecomputedPositions) {
+        deferredEdgeRafRef.current = requestAnimationFrame(() => {
+          deferredEdgeRafRef.current = null;
+          rf.current?.fitView({ padding: 0.2, duration: 0 });
+        });
+      }
     });
 
     // Generate YAML using helper function
