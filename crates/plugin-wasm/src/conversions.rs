@@ -76,7 +76,22 @@ impl From<streamkit_core::types::Packet> for wit_types::Packet {
                 })
             },
             // TODO: extend WIT interface for structured video frame support.
-            streamkit_core::types::Packet::Video(frame) => Self::Binary(frame.data.to_vec()),
+            // Currently video frames are converted to opaque Binary packets, discarding
+            // all metadata (width, height, pixel_format, layout, keyframe). Plugins
+            // receiving these packets have no way to reconstruct the frame without
+            // out-of-band knowledge. This will be addressed when the WIT interface gains
+            // native video types.
+            streamkit_core::types::Packet::Video(frame) => {
+                use std::sync::Once;
+                static WARN: Once = Once::new();
+                WARN.call_once(|| {
+                    tracing::warn!(
+                        "Video packet converted to Binary for WASM plugin: frame metadata \
+                         (width, height, pixel_format, layout, keyframe) is lost"
+                    );
+                });
+                Self::Binary(frame.data.to_vec())
+            },
             streamkit_core::types::Packet::Binary { data, .. } => Self::Binary(data.to_vec()),
         }
     }
