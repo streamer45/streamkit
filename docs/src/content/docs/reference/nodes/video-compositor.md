@@ -55,7 +55,17 @@ Composites multiple raw video inputs (RGBA8) onto a single canvas with image and
 
 ### `layers` fields
 
-No structured fields.
+| Name | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `crop_x` | `number (float)` | no | `0.5` | Normalized horizontal pan position for the crop window<br />(0.0 = left edge, 0.5 = centred, 1.0 = right edge).  Only has a<br />visible effect when `crop_zoom > 1.0`.  Default 0.5. |
+| `crop_y` | `number (float)` | no | `0.5` | Normalized vertical tilt position for the crop window<br />(0.0 = top edge, 0.5 = centred, 1.0 = bottom edge).  Only has a<br />visible effect when `crop_zoom > 1.0`.  Default 0.5. |
+| `crop_zoom` | `number (float)` | no | `1.0` | Zoom factor for virtual PTZ crop (1.0 = full source, 2.0 = 2× zoom<br />showing the central 50% of the source).  Default 1.0. |
+| `mirror_horizontal` | `boolean` | no | `false` | Mirror the layer horizontally (flip left ↔ right).  Default `false`. |
+| `mirror_vertical` | `boolean` | no | `false` | Mirror the layer vertically (flip top ↔ bottom).  Default `false`. |
+| `opacity` | `number (float)` | no | `1.0` | Opacity (0.0 .. 1.0). Default 1.0. |
+| `rect` | `null | object` | no | — | Destination rectangle on the output canvas. If `None`, the input is<br />scaled to fill the entire canvas. |
+| `rotation_degrees` | `number (float)` | no | `0.0` | Clockwise rotation in degrees.  Default 0.0 (no rotation).<br />The layer is rotated around its destination rect centre. |
+| `z_index` | `integer (int32)` | no | `0` | Visual stacking order.  Lower values are drawn first (bottom);<br />higher values are drawn on top.  Ties are broken by slot index<br />(pin insertion order).  Default 0. |
 
 ### `text_overlays` fields
 
@@ -191,6 +201,24 @@ No structured fields.
           "description": "Mirror the layer vertically (flip top ↔ bottom).  Default `false`.",
           "type": "boolean",
           "default": false
+        },
+        "crop_zoom": {
+          "description": "Zoom factor for virtual PTZ crop (1.0 = full source, 2.0 = 2× zoom\nshowing the central 50% of the source).  Default 1.0.",
+          "type": "number",
+          "format": "float",
+          "default": 1.0
+        },
+        "crop_x": {
+          "description": "Normalized horizontal pan position for the crop window\n(0.0 = left edge, 0.5 = centred, 1.0 = right edge).  Only has a\nvisible effect when `crop_zoom > 1.0`.  Default 0.5.",
+          "type": "number",
+          "format": "float",
+          "default": 0.5
+        },
+        "crop_y": {
+          "description": "Normalized vertical tilt position for the crop window\n(0.0 = top edge, 0.5 = centred, 1.0 = bottom edge).  Only has a\nvisible effect when `crop_zoom > 1.0`.  Default 0.5.",
+          "type": "number",
+          "format": "float",
+          "default": 0.5
         }
       }
     },
@@ -231,7 +259,7 @@ No structured fields.
         "id": {
           "description": "Stable unique identifier.  Auto-generated (UUID v4) when omitted.",
           "type": "string",
-          "default": "2bec0803-5fcd-42a4-a549-2a8ee1865758"
+          "default": "(auto-generated UUID v4)"
         },
         "data_base64": {
           "description": "Base64-encoded image data (PNG or JPEG). Decoded once during\ninitialization, not per-frame.",
@@ -282,7 +310,7 @@ No structured fields.
         "id": {
           "description": "Stable unique identifier.  Auto-generated (UUID v4) when omitted.",
           "type": "string",
-          "default": "d2fefd7f-735d-4482-9481-a101a1d5ad1f"
+          "default": "(auto-generated UUID v4)"
         },
         "text": {
           "description": "The text string to render.",

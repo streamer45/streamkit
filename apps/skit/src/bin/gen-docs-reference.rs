@@ -894,11 +894,7 @@ fn render_params(schema: &Value) -> String {
             key,
             type_label,
             required_label,
-            if default_label.is_empty() {
-                "—".to_string()
-            } else {
-                format!("`{}`", default_label)
-            },
+            format_default_cell(&default_label),
             if description.is_empty() { "—".to_string() } else { description }
         ));
 
@@ -957,11 +953,7 @@ fn render_object_fields(root: &Value, obj_schema: &Value, depth: usize) -> Strin
             key,
             type_label,
             required_label,
-            if default_label.is_empty() {
-                "—".to_string()
-            } else {
-                format!("`{}`", default_label)
-            },
+            format_default_cell(&default_label),
             if description.is_empty() { "—".to_string() } else { description }
         ));
 
@@ -987,6 +979,15 @@ fn object_schema_to_expand(root: &Value, schema: &Value) -> Option<Value> {
             .and_then(Value::as_array)
             .is_some_and(|arr| arr.iter().any(|t| t.as_str() == Some("object")))
     {
+        // For map-typed params (additionalProperties without top-level
+        // properties), recurse into the value schema so its fields are
+        // documented.
+        if resolved.get("properties").is_none() {
+            if let Some(ap) = resolved.get("additionalProperties") {
+                let ap_resolved = resolve_ref(root, ap).unwrap_or(ap);
+                return Some(ap_resolved.clone());
+            }
+        }
         return Some(resolved.clone());
     }
 
@@ -1090,7 +1091,8 @@ fn trim_float(v: f64) -> String {
 }
 
 fn render_raw_schema(schema: &Value) -> String {
-    let pretty = serde_json::to_string_pretty(schema).unwrap_or_else(|_| "{}".to_string());
+    let sanitized = sanitize_uuid_defaults(schema.clone());
+    let pretty = serde_json::to_string_pretty(&sanitized).unwrap_or_else(|_| "{}".to_string());
     format!(
         r"
 <details>
@@ -1105,11 +1107,68 @@ fn render_raw_schema(schema: &Value) -> String {
     )
 }
 
+/// Recursively walk a JSON value and replace any `"default"` string value
+/// that looks like a UUID v4 with a stable placeholder.
+fn sanitize_uuid_defaults(mut value: Value) -> Value {
+    match &mut value {
+        Value::Object(map) => {
+            if let Some(Value::String(s)) = map.get("default") {
+                if is_uuid_v4(s) {
+                    map.insert(
+                        "default".to_string(),
+                        Value::String("(auto-generated UUID v4)".to_string()),
+                    );
+                }
+            }
+            for v in map.values_mut() {
+                *v = sanitize_uuid_defaults(v.clone());
+            }
+        },
+        Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                *item = sanitize_uuid_defaults(item.clone());
+            }
+        },
+        _ => {},
+    }
+    value
+}
+
 fn json_one_line(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
         _ => serde_json::to_string(v).unwrap_or_else(|_| String::new()),
     }
+}
+
+/// Formats a schema default value for the docs table, replacing
+/// runtime-generated sentinels (like UUID v4 strings) with stable
+/// descriptive text so the output doesn't change on every regeneration.
+fn format_default_cell(raw: &str) -> String {
+    if raw.is_empty() {
+        return "—".to_string();
+    }
+    if is_uuid_v4(raw) {
+        return "*(auto-generated UUID v4)*".to_string();
+    }
+    format!("`{}`", raw)
+}
+
+/// Returns `true` when `s` looks like a UUID v4 (8-4-4-4-12 hex pattern).
+fn is_uuid_v4(s: &str) -> bool {
+    // xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+    if s.len() != 36 {
+        return false;
+    }
+    let parts: Vec<&str> = s.split('-').collect();
+    if parts.len() != 5 {
+        return false;
+    }
+    let expected_lens = [8, 4, 4, 4, 12];
+    parts
+        .iter()
+        .zip(expected_lens.iter())
+        .all(|(part, &len)| part.len() == len && part.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
 fn yaml_string(s: &str) -> String {

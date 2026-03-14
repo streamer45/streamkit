@@ -627,8 +627,8 @@ const fn default_compositor_max_font_size() -> u32 {
 ///
 /// ```toml
 /// [compositor]
-/// max_canvas_dimension = 4096
-/// max_font_size = 2048
+/// max_canvas_dimension = 7680
+/// max_font_size = 4096
 /// ```
 #[derive(Deserialize, Serialize, Debug, Clone, JsonSchema)]
 pub struct CompositorServerConfig {
