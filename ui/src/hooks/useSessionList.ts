@@ -32,12 +32,18 @@ export function useSessionList() {
             'useSessionList: Optimistically removing destroyed session:',
             destroyedId
           );
+          // Cancel any in-flight refetches (e.g. from refetchInterval) so
+          // their stale response cannot overwrite the optimistic removal.
+          queryClient.cancelQueries({ queryKey: ['sessions'] });
           // Optimistically remove the destroyed session from the cache
           // immediately so the UI never flickers.  A deferred invalidation
           // re-fetches the list once the backend has fully cleaned up.
           queryClient.setQueryData<SessionInfo[]>(['sessions'], (old) =>
             old?.filter((s) => s.id !== destroyedId)
           );
+          // Evict the per-session pipeline cache so useSession's fallback
+          // (`pipeline ?? pipelineQuery.data`) can't resurrect the graph.
+          queryClient.removeQueries({ queryKey: ['pipeline', destroyedId] });
           // Defer the refetch so the HTTP response arrives after the
           // backend has actually removed the session from its map.
           if (destroyTimerRef.current) {
@@ -61,7 +67,7 @@ export function useSessionList() {
 
   return useQuery({
     queryKey: ['sessions'],
-    queryFn: listSessions,
+    queryFn: ({ signal }) => listSessions(signal),
     refetchInterval: 10000, // Poll every 10 seconds as fallback (WebSocket is primary)
     staleTime: 5000, // Consider data fresh for 5 seconds
     refetchOnWindowFocus: true, // Refetch when user returns to the tab
