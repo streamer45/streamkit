@@ -6,9 +6,18 @@
 //!
 //! Converts raw video frames between RGBA8, NV12, and I420 pixel formats.
 //! Runs the CPU-heavy conversion on a persistent `spawn_blocking` thread
-//! (same pattern as the VP9 encoder) and caches the output when the input
-//! `Arc<PooledVideoData>` pointer hasn't changed (zero-cost passthrough for
-//! static scenes).
+//! (same pattern as the VP9 encoder) and uses a **single-entry** cache:
+//! when the input `Arc<PooledVideoData>` pointer hasn't changed, the most
+//! recent conversion result is re-sent (zero-cost passthrough for static
+//! scenes).
+//!
+//! ## Memory bound
+//!
+//! The cache holds at most **one** converted frame (the most recent).
+//! New conversions overwrite the previous entry, so memory usage is O(1)
+//! regardless of how many distinct format pairs are converted over time.
+//! The `PixelFormat` enum currently has 3 variants giving 4 supported
+//! conversion pairs — all well within a single-entry cache strategy.
 //!
 //! Supported conversions:
 //! - RGBA8 → NV12
@@ -61,8 +70,10 @@ impl Default for PixelConvertConfig {
 ///
 /// When the input format already matches the target, the frame is forwarded
 /// unchanged (zero allocation).  When the input `Arc<PooledVideoData>`
-/// pointer is identical to the previous frame, the cached converted output
-/// is re-sent (ref-count bump only, no conversion).
+/// pointer is identical to the previous frame, the single-entry cache
+/// returns the previous conversion result (ref-count bump only, no
+/// conversion work).  The cache is bounded to exactly one frame — see the
+/// module-level documentation for the memory-bound rationale.
 pub struct PixelConvertNode {
     target_format: PixelFormat,
 }
@@ -161,11 +172,18 @@ impl ProcessorNode for PixelConvertNode {
                 .build();
             let otel_attrs = [KeyValue::new("node", otel_node_name)];
 
-            // Arc-pointer cache: if the input `Arc<PooledVideoData>` pointer is
-            // identical to the previous frame we re-send the cached conversion
-            // result (ref-count bump only, no CPU work).  This relies on the
+            // Single-entry Arc-pointer cache: stores only the *most recently*
+            // converted frame.  If the input `Arc<PooledVideoData>` pointer is
+            // identical to the previous frame we re-send the cached output
+            // (ref-count bump only, no CPU work).  This relies on the
             // project-wide invariant that `PooledVideoData` is immutable once
             // shared via `Arc` — nodes must never mutate pooled data in-place.
+            //
+            // Bounded by design: these are scalar variables, not a HashMap or
+            // Vec, so the cache cannot grow beyond one entry.  The memory
+            // overhead is exactly one frame buffer (e.g. ~8 MB for 1080p
+            // RGBA8, ~3 MB for 1080p NV12).  New conversions overwrite the
+            // previous entry.
             let mut last_input_ptr: usize = 0;
             let mut cached_output: Option<Arc<PooledVideoData>> = None;
             let mut cached_output_format: Option<PixelFormat> = None;
