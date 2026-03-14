@@ -319,11 +319,12 @@ fn main() {
 
     let args = BenchArgs::parse();
 
+    let resolution = format!("{}x{}", args.width, args.height);
     eprintln!("╔══════════════════════════════════════════════════════════╗");
     eprintln!("║         Compositor Pipeline Benchmark                   ║");
     eprintln!("╠══════════════════════════════════════════════════════════╣");
-    eprintln!("║  Resolution : {}×{:<36}║", args.width, format!("{}", args.height));
-    eprintln!("║  FPS        : {:<42}║", args.fps);
+    eprintln!("║  Resolution : {:<42}║", resolution);
+    eprintln!("║  Target FPS : {:<42}║", args.fps);
     eprintln!("║  Frames     : {:<42}║", args.frame_count);
     eprintln!("║  Iterations : {:<42}║", args.iterations);
     eprintln!("╚══════════════════════════════════════════════════════════╝");
@@ -342,12 +343,9 @@ fn main() {
     let mut valid_size = true;
 
     // Minimum expected output.
-    // In oneshot mode the compositor runs at real-time fps and produces
-    // far fewer composited frames than the input `frame_count` (batch
-    // colorbars emit all frames instantly; the compositor only ticks at
-    // its configured fps).  One VP9 keyframe at 640×480 is typically
-    // 5-10 KB, so 2000 bytes is a very conservative lower bound that
-    // still catches "no output at all" regressions.
+    // One VP9 keyframe at 640×480 is typically 5-10 KB, so 2000 bytes
+    // is a very conservative lower bound that catches "no output at all"
+    // regressions.
     let min_expected_bytes: usize = 2000;
 
     for iter in 1..=args.iterations {
