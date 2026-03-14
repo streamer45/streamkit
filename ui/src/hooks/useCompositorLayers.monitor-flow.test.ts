@@ -451,6 +451,78 @@ describe('Monitor view data flow integration', () => {
     expect(result.current.textOverlays[0].measuredTextHeight).toBe(44);
   });
 
+  it('image overlay dataBase64 changes are picked up in Monitor view', () => {
+    seedStore();
+
+    const params = makeParams({
+      image_overlays: [
+        {
+          id: 'img_0',
+          data_base64: 'aW1hZ2UtZGF0YQ==', // "image-data"
+          rect: { x: 10, y: 20, width: 100, height: 80 },
+          opacity: 1.0,
+          rotation_degrees: 0,
+          z_index: 50,
+          mirror_horizontal: false,
+          mirror_vertical: false,
+        },
+      ],
+    });
+    const opts = monitorOptions({ params });
+    const { result, rerender } = renderHook(
+      (props: UseCompositorLayersOptions) => useCompositorLayers(props),
+      { initialProps: opts }
+    );
+
+    // Server resolves image at a different position
+    const layout = makeServerLayout({
+      image_overlays: [
+        {
+          id: 'img_0',
+          x: 500,
+          y: 300,
+          width: 100,
+          height: 80,
+          opacity: 0.9,
+          z_index: 50,
+          rotation_degrees: 0,
+          mirror_horizontal: false,
+          mirror_vertical: false,
+        },
+      ],
+    });
+    act(() => pushServerViewData(layout));
+
+    expect(result.current.imageOverlays[0].x).toBe(500);
+    expect(result.current.imageOverlays[0].y).toBe(300);
+    expect(result.current.imageOverlays[0].dataBase64).toBe('aW1hZ2UtZGF0YQ==');
+
+    // Another client changes the image data via params
+    const updatedParams = makeParams({
+      image_overlays: [
+        {
+          id: 'img_0',
+          data_base64: 'bmV3LWltYWdl', // "new-image"
+          rect: { x: 10, y: 20, width: 100, height: 80 },
+          opacity: 1.0,
+          rotation_degrees: 0,
+          z_index: 50,
+          mirror_horizontal: false,
+          mirror_vertical: false,
+        },
+      ],
+    });
+    act(() => rerender({ ...opts, params: updatedParams }));
+
+    // dataBase64 must be updated (config field)
+    expect(result.current.imageOverlays[0].dataBase64).toBe('bmV3LWltYWdl');
+    // Server-resolved position must be preserved
+    expect(result.current.imageOverlays[0].x).toBe(500);
+    expect(result.current.imageOverlays[0].y).toBe(300);
+    // Server-resolved opacity must be preserved
+    expect(result.current.imageOverlays[0].opacity).toBe(0.9);
+  });
+
   it('Design view (no sessionId) still uses parsed positions as source of truth', () => {
     // This is the control test — Design view should NOT preserve existing geometry.
     const opts: UseCompositorLayersOptions = {
