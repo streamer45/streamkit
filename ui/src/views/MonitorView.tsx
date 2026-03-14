@@ -11,6 +11,7 @@ import {
   useOnSelectionChange,
   type Node as RFNode,
   type Edge,
+  type NodeChange,
   type Connection as RFConnection,
   type ReactFlowInstance,
   type OnConnectEnd,
@@ -1492,6 +1493,54 @@ const MonitorViewContent: React.FC = () => {
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [nodes, setNodes, onNodesChangeInternal] = useNodesState<RFNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+
+  // ── Debounce ReactFlow dimension changes ──────────────────────────────
+  // When ReactFlow measures newly-mounted nodes it fires onNodesChange
+  // with 'dimensions' changes — one per node, across multiple frames.
+  // Each call updates the nodes array in MonitorViewContent's state,
+  // triggering a full ~20 ms re-render.  We debounce dimension changes
+  // into a single RAF callback while applying interactive changes
+  // (selection, drag, remove) immediately.
+  const pendingDimChanges = useRef<NodeChange[]>([]);
+  const dimRafRef = useRef<number | null>(null);
+
+  const onNodesChangeBatched = useCallback(
+    (changes: NodeChange[]) => {
+      const immediate: NodeChange[] = [];
+      const deferred: NodeChange[] = [];
+
+      for (const c of changes) {
+        if (c.type === 'dimensions') {
+          deferred.push(c);
+        } else {
+          immediate.push(c);
+        }
+      }
+
+      // Interactive changes (select, drag, remove) apply immediately
+      if (immediate.length > 0) {
+        onNodesChangeInternal(immediate);
+      }
+
+      // Dimension changes are deferred and batched into one RAF
+      if (deferred.length > 0) {
+        pendingDimChanges.current.push(...deferred);
+        if (dimRafRef.current === null) {
+          dimRafRef.current = requestAnimationFrame(() => {
+            dimRafRef.current = null;
+            const batch = pendingDimChanges.current;
+            pendingDimChanges.current = [];
+            if (batch.length > 0) {
+              React.startTransition(() => {
+                onNodesChangeInternal(batch);
+              });
+            }
+          });
+        }
+      }
+    },
+    [onNodesChangeInternal]
+  );
   const [yamlString, setYamlString] = useState<string>('');
   // Track if user is actively editing YAML to prevent automatic updates from overwriting edits
   const isEditingYamlRef = useRef(false);
@@ -2822,8 +2871,9 @@ const MonitorViewContent: React.FC = () => {
       const currentPipeline = pipelineRef.current;
       if (!currentPipeline) return;
 
-      // ── Patch node state/params ──────────────────────────────────────
+      // ── Patch nodes + edges in one transition to avoid double render ──
       React.startTransition(() => {
+        // Patch node state/params
         setNodes((prev) => {
           const updatesById = new Map<
             string,
@@ -2863,10 +2913,8 @@ const MonitorViewContent: React.FC = () => {
             };
           });
         });
-      });
 
-      // ── Patch edge alerts (slow-input-timeout) ───────────────────────
-      React.startTransition(() => {
+        // Patch edge alerts (slow-input-timeout)
         const slowPinsByNode = new Map<string, Set<string>>();
         const slowDetailsByNode = new Map<string, SlowTimeoutDetails>();
         for (const [nodeId, apiNode] of Object.entries(currentPipeline.nodes)) {
@@ -2999,6 +3047,12 @@ const MonitorViewContent: React.FC = () => {
     return () => {
       unsubscribe();
       if (throttleTimer !== null) clearTimeout(throttleTimer);
+      // Cancel any pending dimension-change RAF from onNodesChangeBatched
+      if (dimRafRef.current !== null) {
+        cancelAnimationFrame(dimRafRef.current);
+        dimRafRef.current = null;
+        pendingDimChanges.current = [];
+      }
     };
   }, [selectedSessionId, setNodes, setEdges]);
 
@@ -3478,7 +3532,7 @@ const MonitorViewContent: React.FC = () => {
               nodes={nodes}
               edges={edges}
               nodeTypes={nodeTypes}
-              onNodesChange={onNodesChangeInternal}
+              onNodesChange={onNodesChangeBatched}
               onEdgesChange={onEdgesChange}
               colorMode={colorMode}
               onInit={onInit}
