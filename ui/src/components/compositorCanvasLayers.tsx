@@ -237,7 +237,7 @@ export const TextOverlayLayer: React.FC<{
         style={layerBoxStyle(overlay.x, overlay.y, displayWidth, displayHeight, {
           visible: overlay.visible,
           opacity: overlay.opacity,
-          zIndex: (overlay.zIndex ?? 100) + index,
+          zIndex: overlay.zIndex,
           rotationDegrees: overlay.rotationDegrees,
           mirrorHorizontal: overlay.mirrorHorizontal,
           mirrorVertical: overlay.mirrorVertical,
@@ -379,7 +379,7 @@ export const ImageOverlayLayer: React.FC<{
       style={layerBoxStyle(overlay.x, overlay.y, overlay.width, overlay.height, {
         visible: overlay.visible,
         opacity: overlay.opacity,
-        zIndex: (overlay.zIndex ?? 200) + index,
+        zIndex: overlay.zIndex,
         rotationDegrees: overlay.rotationDegrees,
         mirrorHorizontal: overlay.mirrorHorizontal,
         mirrorVertical: overlay.mirrorVertical,
