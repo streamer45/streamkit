@@ -193,7 +193,12 @@ export const useCompositorLayers = (
       )
     );
     setImageOverlays((cur) =>
-      mergeOverlayState(cur, parseImageOverlays(params), undefined, isMonitorView)
+      mergeOverlayState(
+        cur,
+        parseImageOverlays(params),
+        (a, b) => a.dataBase64 !== b.dataBase64,
+        isMonitorView
+      )
     );
   }, [params, canvasWidth, canvasHeight, isMonitorView]);
 
