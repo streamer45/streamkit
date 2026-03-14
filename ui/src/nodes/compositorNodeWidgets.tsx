@@ -353,6 +353,104 @@ export const MirrorControl: React.FC<{
 ));
 MirrorControl.displayName = 'MirrorControl';
 
+const CropSectionHeader = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 6px;
+`;
+
+export type CropZoomPatch = {
+  cropX?: number;
+  cropY?: number;
+  cropZoom?: number;
+};
+
+export const CropZoomControl: React.FC<{
+  cropZoom: number;
+  cropX: number;
+  cropY: number;
+  onChange: (patch: CropZoomPatch) => void;
+  disabled: boolean;
+}> = React.memo(({ cropZoom, cropX, cropY, onChange, disabled }) => {
+  const panDisabled = disabled || cropZoom <= 1.0;
+
+  return (
+    <InspectorSection data-testid="crop-zoom-section">
+      <CropSectionHeader>
+        <InspectorSectionLabel>Crop &amp; Zoom</InspectorSectionLabel>
+        <SKTooltip content="Reset to defaults">
+          <ResetButton
+            disabled={disabled}
+            onClick={() => onChange({ cropZoom: 1.0, cropX: 0.5, cropY: 0.5 })}
+            className="nodrag nopan"
+            data-testid="crop-zoom-reset"
+          >
+            <RotateCcw size={12} />
+          </ResetButton>
+        </SKTooltip>
+      </CropSectionHeader>
+      <ControlRow>
+        <ControlLabel>Zoom</ControlLabel>
+        <CompactSliderRoot
+          value={[cropZoom]}
+          onValueChange={([v]) => onChange({ cropZoom: v })}
+          min={1}
+          max={4}
+          step={0.1}
+          disabled={disabled}
+          className="nodrag nopan"
+          data-testid="crop-zoom-slider"
+        >
+          <CompactSliderTrack>
+            <CompactSliderRange />
+          </CompactSliderTrack>
+          <CompactSliderThumb />
+        </CompactSliderRoot>
+        <ControlValue data-testid="crop-zoom-value">{cropZoom.toFixed(1)}×</ControlValue>
+      </ControlRow>
+      <ControlRow>
+        <ControlLabel>Pan X</ControlLabel>
+        <CompactSliderRoot
+          value={[cropX]}
+          onValueChange={([v]) => onChange({ cropX: v })}
+          min={0}
+          max={1}
+          step={0.01}
+          disabled={panDisabled}
+          className="nodrag nopan"
+          data-testid="crop-pan-x-slider"
+        >
+          <CompactSliderTrack>
+            <CompactSliderRange />
+          </CompactSliderTrack>
+          <CompactSliderThumb />
+        </CompactSliderRoot>
+        <ControlValue>{cropX.toFixed(2)}</ControlValue>
+      </ControlRow>
+      <ControlRow>
+        <ControlLabel>Tilt Y</ControlLabel>
+        <CompactSliderRoot
+          value={[cropY]}
+          onValueChange={([v]) => onChange({ cropY: v })}
+          min={0}
+          max={1}
+          step={0.01}
+          disabled={panDisabled}
+          className="nodrag nopan"
+          data-testid="crop-tilt-y-slider"
+        >
+          <CompactSliderTrack>
+            <CompactSliderRange />
+          </CompactSliderTrack>
+          <CompactSliderThumb />
+        </CompactSliderRoot>
+        <ControlValue>{cropY.toFixed(2)}</ControlValue>
+      </ControlRow>
+    </InspectorSection>
+  );
+});
+CropZoomControl.displayName = 'CropZoomControl';
+
 // ── Unified layer list ──────────────────────────────────────────────────────
 
 export const CompositorEntryList: React.FC<{

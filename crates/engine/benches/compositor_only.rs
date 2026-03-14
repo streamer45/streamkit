@@ -117,6 +117,9 @@ fn make_layer(
         rotation_degrees,
         mirror_horizontal: false,
         mirror_vertical: false,
+        crop_zoom: 1.0,
+        crop_x: 0.5,
+        crop_y: 0.5,
     })
 }
 
@@ -353,6 +356,42 @@ fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
             image_overlays: Vec::new(),
             text_overlays: Vec::new(),
         },
+        // 2 layers RGBA with crop/zoom on PiP
+        Scenario {
+            label: "2-layer-rgba-cropped".to_string(),
+            layers: vec![
+                make_layer(
+                    generate_rgba_frame(canvas_w, canvas_h),
+                    canvas_w,
+                    canvas_h,
+                    PixelFormat::Rgba8,
+                    None,
+                    1.0,
+                    0,
+                    0.0,
+                ),
+                {
+                    let mut l = make_layer(
+                        generate_rgba_frame(pip_w, pip_h),
+                        pip_w,
+                        pip_h,
+                        PixelFormat::Rgba8,
+                        Some(Rect { x: pip_x, y: pip_y, width: pip_w, height: pip_h }),
+                        0.9,
+                        1,
+                        0.0,
+                    );
+                    if let Some(ref mut s) = l {
+                        s.crop_zoom = 2.0;
+                        s.crop_x = 0.3;
+                        s.crop_y = 0.7;
+                    }
+                    l
+                },
+            ],
+            image_overlays: Vec::new(),
+            text_overlays: Vec::new(),
+        },
         // 2 layers RGBA, static (same Arc — for cache-hit measurement)
         Scenario {
             label: "2-layer-rgba-static".to_string(),
@@ -372,6 +411,9 @@ fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
                         rotation_degrees: 0.0,
                         mirror_horizontal: false,
                         mirror_vertical: false,
+                        crop_zoom: 1.0,
+                        crop_x: 0.5,
+                        crop_y: 0.5,
                     }),
                     Some(LayerSnapshot {
                         data: pip,
@@ -384,6 +426,9 @@ fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
                         rotation_degrees: 0.0,
                         mirror_horizontal: false,
                         mirror_vertical: false,
+                        crop_zoom: 1.0,
+                        crop_x: 0.5,
+                        crop_y: 0.5,
                     }),
                 ]
             },

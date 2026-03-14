@@ -81,6 +81,9 @@ struct ResolvedSlotConfig {
     aspect_fit: bool,
     mirror_horizontal: bool,
     mirror_vertical: bool,
+    crop_zoom: f32,
+    crop_x: f32,
+    crop_y: f32,
 }
 
 /// Fully-resolved compositor scene for one configuration epoch.
@@ -138,38 +141,54 @@ fn resolve_scene(
     for (idx, slot) in slots.iter().enumerate() {
         let layer_cfg = config.layers.get(&slot.name);
         #[allow(clippy::option_if_let_else)]
-        let (rect, opacity, z_index, rotation_degrees, aspect_fit, mirror_h, mirror_v) =
-            if let Some(lc) = layer_cfg {
-                (
-                    lc.rect,
-                    lc.opacity,
-                    lc.z_index,
-                    lc.rotation_degrees,
-                    false,
-                    lc.mirror_horizontal,
-                    lc.mirror_vertical,
-                )
-            } else if idx > 0 && num_slots > 1 {
-                // Auto-PiP: non-first layers without explicit config.
-                let pip_w = config.width / 3;
-                let pip_h = config.height / 3;
-                #[allow(clippy::cast_possible_wrap)]
-                let pip_x = (config.width - pip_w - 20) as i32;
-                #[allow(clippy::cast_possible_wrap)]
-                let pip_y = (config.height - pip_h - 20) as i32;
-                #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
-                (
-                    Some(config::Rect { x: pip_x, y: pip_y, width: pip_w, height: pip_h }),
-                    1.0,
-                    idx as i32,
-                    0.0,
-                    true, // preserve source aspect ratio within PiP bounds
-                    false,
-                    false,
-                )
-            } else {
-                (None, 1.0, 0, 0.0, false, false, false)
-            };
+        let (
+            rect,
+            opacity,
+            z_index,
+            rotation_degrees,
+            aspect_fit,
+            mirror_h,
+            mirror_v,
+            crop_zoom,
+            crop_x,
+            crop_y,
+        ) = if let Some(lc) = layer_cfg {
+            (
+                lc.rect,
+                lc.opacity,
+                lc.z_index,
+                lc.rotation_degrees,
+                false,
+                lc.mirror_horizontal,
+                lc.mirror_vertical,
+                lc.crop_zoom,
+                lc.crop_x,
+                lc.crop_y,
+            )
+        } else if idx > 0 && num_slots > 1 {
+            // Auto-PiP: non-first layers without explicit config.
+            let pip_w = config.width / 3;
+            let pip_h = config.height / 3;
+            #[allow(clippy::cast_possible_wrap)]
+            let pip_x = (config.width - pip_w - 20) as i32;
+            #[allow(clippy::cast_possible_wrap)]
+            let pip_y = (config.height - pip_h - 20) as i32;
+            #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
+            (
+                Some(config::Rect { x: pip_x, y: pip_y, width: pip_w, height: pip_h }),
+                1.0,
+                idx as i32,
+                0.0,
+                true, // preserve source aspect ratio within PiP bounds
+                false,
+                false,
+                1.0,
+                0.5,
+                0.5,
+            )
+        } else {
+            (None, 1.0, 0, 0.0, false, false, false, 1.0, 0.5, 0.5)
+        };
 
         // Build the view-data layer using the current latest_frame for
         // aspect-fit computation (same dimensions the render path will use).
@@ -197,6 +216,9 @@ fn resolve_scene(
             rotation_degrees,
             mirror_horizontal: mirror_h,
             mirror_vertical: mirror_v,
+            crop_zoom,
+            crop_x,
+            crop_y,
         });
 
         configs.push(ResolvedSlotConfig {
@@ -207,6 +229,9 @@ fn resolve_scene(
             aspect_fit,
             mirror_horizontal: mirror_h,
             mirror_vertical: mirror_v,
+            crop_zoom,
+            crop_x,
+            crop_y,
         });
     }
 
@@ -688,6 +713,9 @@ impl ProcessorNode for CompositorNode {
                             rotation_degrees: cfg.rotation_degrees,
                             mirror_horizontal: cfg.mirror_horizontal,
                             mirror_vertical: cfg.mirror_vertical,
+                            crop_zoom: cfg.crop_zoom,
+                            crop_x: cfg.crop_x,
+                            crop_y: cfg.crop_y,
                         }
                     })
                 })

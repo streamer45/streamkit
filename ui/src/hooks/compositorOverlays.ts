@@ -25,6 +25,8 @@ import {
   DEFAULT_OVERLAY_Y_STEP,
   DEFAULT_TEXT_WIDTH,
   DEFAULT_TEXT_HEIGHT,
+  DEFAULT_CROP_X,
+  DEFAULT_CROP_Y,
 } from './compositorConstants';
 import type { LayerKind } from './compositorConstants';
 import type { LayerState, TextOverlayState, ImageOverlayState } from './compositorLayerParsers';
@@ -224,6 +226,31 @@ export function useCompositorOverlays(deps: OverlayDeps) {
       setImageOverlays,
       throttledConfigChange,
     ]
+  );
+
+  // ── Crop / zoom update ──────────────────────────────────────────────────
+
+  const updateLayerCropZoom = useCallback(
+    (layerId: string, patch: { cropX?: number; cropY?: number; cropZoom?: number }) => {
+      setLayers((prev) => {
+        const next = prev.map((l) => {
+          if (l.id !== layerId) return l;
+          const updated = { ...l };
+          if (patch.cropZoom !== undefined) updated.cropZoom = Math.max(1.0, patch.cropZoom);
+          if (patch.cropX !== undefined) updated.cropX = Math.max(0, Math.min(1, patch.cropX));
+          if (patch.cropY !== undefined) updated.cropY = Math.max(0, Math.min(1, patch.cropY));
+          // Reset pan/tilt when zoom returns to 1.0
+          if (updated.cropZoom <= 1.0) {
+            updated.cropX = DEFAULT_CROP_X;
+            updated.cropY = DEFAULT_CROP_Y;
+          }
+          return updated;
+        });
+        throttledConfigChange?.(next);
+        return next;
+      });
+    },
+    [setLayers, throttledConfigChange]
   );
 
   // ── Overlay commit helper ──────────────────────────────────────────
@@ -482,6 +509,7 @@ export function useCompositorOverlays(deps: OverlayDeps) {
     updateLayerZIndex,
     toggleLayerVisibility,
     updateLayerMirror,
+    updateLayerCropZoom,
     commitOverlaysRef,
     addTextOverlay,
     updateTextOverlay,

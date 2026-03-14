@@ -46,6 +46,9 @@ export function mapServerLayers(prev: LayerState[], serverLayers: ResolvedLayer[
       mirrorHorizontal: sl.mirror_horizontal,
       mirrorVertical: sl.mirror_vertical,
       visible: existing?.visible ?? true,
+      cropZoom: sl.crop_zoom,
+      cropX: sl.crop_x,
+      cropY: sl.crop_y,
     };
   });
   const changed =
@@ -62,7 +65,10 @@ export function mapServerLayers(prev: LayerState[], serverLayers: ResolvedLayer[
         s.rotationDegrees !== prev[i].rotationDegrees ||
         s.mirrorHorizontal !== prev[i].mirrorHorizontal ||
         s.mirrorVertical !== prev[i].mirrorVertical ||
-        s.visible !== prev[i].visible
+        s.visible !== prev[i].visible ||
+        s.cropZoom !== prev[i].cropZoom ||
+        s.cropX !== prev[i].cropX ||
+        s.cropY !== prev[i].cropY
     );
   return changed ? next : prev;
 }

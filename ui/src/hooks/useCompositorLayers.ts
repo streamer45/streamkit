@@ -22,6 +22,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 
 import { useCompositorCommit } from './compositorCommit';
 import type { LayerKind } from './compositorConstants';
+import { DEFAULT_CROP_X, DEFAULT_CROP_Y, DEFAULT_CROP_ZOOM } from './compositorConstants';
 import { useCompositorDragResize } from './compositorDragResize';
 import type { DragState } from './compositorDragResize';
 import type { CompositorKeyboardDeps } from './compositorKeyboard';
@@ -75,6 +76,11 @@ export interface UseCompositorLayersResult {
   toggleLayerVisibility: (layerId: string) => void;
   /** Toggle horizontal or vertical mirroring for a layer (video, text, or image). */
   updateLayerMirror: (layerId: string, axis: 'horizontal' | 'vertical') => void;
+  /** Update crop/zoom on a video layer. */
+  updateLayerCropZoom: (
+    layerId: string,
+    patch: { cropX?: number; cropY?: number; cropZoom?: number }
+  ) => void;
   /** Ref map: layer elements register here for direct DOM manipulation during drag */
   layerRefs: React.MutableRefObject<Map<string, HTMLDivElement>>;
   /** Refs to the snap guide line DOM elements for direct show/hide during drag */
@@ -159,7 +165,11 @@ export const useCompositorLayers = (
     if (dragStateRef.current) return;
     const parsed = parseLayers(params, canvasWidth, canvasHeight);
 
-    const merged = mergeOverlayState(layersRef.current, parsed);
+    const merged = mergeOverlayState(
+      layersRef.current,
+      parsed,
+      (a, b) => a.cropZoom !== b.cropZoom || a.cropX !== b.cropX || a.cropY !== b.cropY
+    );
     if (merged !== layersRef.current) setLayers(merged);
 
     setTextOverlays((cur) =>
@@ -192,9 +202,27 @@ export const useCompositorLayers = (
       const v = layersRef.current.find((l) => l.id === layerId);
       if (v) return { state: v, kind: 'video' };
       const t = textOverlaysRef.current.find((o) => o.id === layerId);
-      if (t) return { state: t, kind: 'text' };
+      if (t)
+        return {
+          state: {
+            ...t,
+            cropZoom: DEFAULT_CROP_ZOOM,
+            cropX: DEFAULT_CROP_X,
+            cropY: DEFAULT_CROP_Y,
+          },
+          kind: 'text',
+        };
       const img = imageOverlaysRef.current.find((o) => o.id === layerId);
-      if (img) return { state: img, kind: 'image' };
+      if (img)
+        return {
+          state: {
+            ...img,
+            cropZoom: DEFAULT_CROP_ZOOM,
+            cropX: DEFAULT_CROP_X,
+            cropY: DEFAULT_CROP_Y,
+          },
+          kind: 'image',
+        };
       return null;
     },
     []
@@ -258,6 +286,7 @@ export const useCompositorLayers = (
     updateLayerZIndex: overlayOps.updateLayerZIndex,
     toggleLayerVisibility: overlayOps.toggleLayerVisibility,
     updateLayerMirror: overlayOps.updateLayerMirror,
+    updateLayerCropZoom: overlayOps.updateLayerCropZoom,
     layerRefs,
     snapGuideRefs,
     isDragging,
