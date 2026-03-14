@@ -29,11 +29,7 @@ export function formatIssueDetails(details: unknown): string | null {
   }
 }
 
-export function formatIssueSummary(
-  prefix: string,
-  reason: string,
-  details: string | null
-): string {
+export function formatIssueSummary(prefix: string, reason: string, details: string | null): string {
   if (!details) return `${prefix}: ${reason}`;
   return `${prefix}: ${reason} (${details})`;
 }
