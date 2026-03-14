@@ -544,6 +544,7 @@ impl ProcessorNode for CompositorNode {
         });
 
         let mut output_seq: u64 = 0;
+        let mut running_timestamp_us: u64 = 0;
         let mut stop_reason: &str = "shutdown";
 
         // Oneshot / batch pipelines provide a cancellation token;
@@ -794,17 +795,20 @@ impl ProcessorNode for CompositorNode {
                 break;
             };
 
-            // Derive output timestamps from the compositor's own sequence
-            // counter and configured fps rather than copying from input
-            // frames.  In batch/oneshot mode, inputs generate frames as
-            // fast as possible and the compositor drains many per tick,
-            // so the "latest input" timestamp can jump by hundreds of
-            // milliseconds — producing a WebM with huge gaps instead of
-            // smooth playback.  Using the compositor's own clock ensures
-            // a steady output cadence matching the configured fps.
+            // Derive output timestamps from the compositor's own clock
+            // rather than copying from input frames.  In batch/oneshot
+            // mode, inputs generate frames as fast as possible and the
+            // compositor drains many per tick, so the "latest input"
+            // timestamp can jump by hundreds of milliseconds — producing
+            // a WebM with huge gaps instead of smooth playback.
+            //
+            // We use an incremental accumulator (`running_timestamp_us`)
+            // instead of `output_seq * frame_duration_us` so that
+            // dynamic fps changes via UpdateParams don't cause timestamps
+            // to jump backwards.
             let frame_duration_us = 1_000_000u64 / u64::from(self.config.fps);
             let metadata = Some(PacketMetadata {
-                timestamp_us: Some(output_seq * frame_duration_us),
+                timestamp_us: Some(running_timestamp_us),
                 duration_us: Some(frame_duration_us),
                 sequence: Some(output_seq),
                 // Don't set keyframe — the compositor outputs raw RGBA, not
@@ -844,6 +848,7 @@ impl ProcessorNode for CompositorNode {
             }
 
             output_seq += 1;
+            running_timestamp_us += frame_duration_us;
 
             // ── Check for closed input channels ─────────────────────────
             // Done *after* compositing so the compositor always produces
