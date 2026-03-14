@@ -7,7 +7,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { useNodeParamsStore } from '@/stores/nodeParamsStore';
 import { useSessionStore } from '@/stores/sessionStore';
 import { useTelemetryStore, parseTelemetryEvent } from '@/stores/telemetryStore';
-import type { Request, Response, Event, MessageType } from '@/types/types';
+import type { Request, Response, Event, MessageType, NodeState, NodeStats } from '@/types/types';
 import { getBasePathname } from '@/utils/baseHref';
 import { getLogger } from '@/utils/logger';
 
@@ -45,6 +45,14 @@ export class WebSocketService {
   private messageQueue: Request[] = [];
   private isIntentionallyClosed = false;
   private subscribedSessions: Set<string> = new Set();
+
+  // ── Frame-level batching for high-frequency events ──────────────────
+  // Buffer node-state and node-stats updates that arrive in rapid
+  // succession (e.g. during session initialisation) and flush them as a
+  // single store mutation at the next animation frame.
+  private pendingNodeStates: Map<string, Map<string, NodeState>> = new Map();
+  private pendingNodeStats: Map<string, Map<string, NodeStats>> = new Map();
+  private batchFlushRafId: number | null = null;
 
   constructor(url: string) {
     this.url = url;
@@ -206,6 +214,10 @@ export class WebSocketService {
 
   private handleSessionDestroyed(payload: SessionDestroyedPayload): void {
     this.subscribedSessions.delete(payload.session_id);
+    // Discard any buffered updates for this session so the RAF flush
+    // doesn't needlessly process stale entries.
+    this.pendingNodeStates.delete(payload.session_id);
+    this.pendingNodeStats.delete(payload.session_id);
     useSessionStore.getState().clearSession(payload.session_id);
     useNodeParamsStore.getState().resetSession(payload.session_id);
     useTelemetryStore.getState().clearSession(payload.session_id);
@@ -213,12 +225,62 @@ export class WebSocketService {
 
   private handleNodeStateChanged(payload: NodeStateChangedPayload): void {
     const { session_id, node_id, state } = payload;
-    useSessionStore.getState().updateNodeState(session_id, node_id, state);
+    let sessionMap = this.pendingNodeStates.get(session_id);
+    if (!sessionMap) {
+      sessionMap = new Map();
+      this.pendingNodeStates.set(session_id, sessionMap);
+    }
+    sessionMap.set(node_id, state);
+    this.scheduleBatchFlush();
   }
 
   private handleNodeStatsUpdated(payload: NodeStatsUpdatedPayload): void {
     const { session_id, node_id, stats } = payload;
-    useSessionStore.getState().updateNodeStats(session_id, node_id, stats);
+    let sessionMap = this.pendingNodeStats.get(session_id);
+    if (!sessionMap) {
+      sessionMap = new Map();
+      this.pendingNodeStats.set(session_id, sessionMap);
+    }
+    sessionMap.set(node_id, stats);
+    this.scheduleBatchFlush();
+  }
+
+  /**
+   * Schedule a `requestAnimationFrame` callback to flush buffered
+   * node-state and node-stats updates.  Unlike `queueMicrotask` (which
+   * drains after each macrotask), RAF coalesces updates across *all*
+   * WebSocket `onmessage` macrotasks that arrive within a single
+   * animation frame (~16 ms at 60 fps).  This dramatically reduces the
+   * number of Zustand `set()` calls — and therefore React re-renders —
+   * during session load where many state events arrive in a burst.
+   */
+  private scheduleBatchFlush(): void {
+    if (this.batchFlushRafId !== null) return;
+    this.batchFlushRafId = requestAnimationFrame(() => this.flushBatchedUpdates());
+  }
+
+  private flushBatchedUpdates(): void {
+    this.batchFlushRafId = null;
+
+    // Convert pending Maps to Records and flush everything in a single
+    // store mutation via batchUpdateSessionData.  This ensures that all
+    // WebSocket events from one animation frame produce exactly ONE
+    // Zustand set() call, minimising React re-renders.
+    const stateUpdates = new Map<string, Record<string, NodeState>>();
+    for (const [sessionId, updates] of this.pendingNodeStates) {
+      stateUpdates.set(sessionId, Object.fromEntries(updates));
+    }
+    this.pendingNodeStates.clear();
+
+    const statsUpdates = new Map<string, Record<string, NodeStats>>();
+    for (const [sessionId, updates] of this.pendingNodeStats) {
+      statsUpdates.set(sessionId, Object.fromEntries(updates));
+    }
+    this.pendingNodeStats.clear();
+
+    if (stateUpdates.size > 0 || statsUpdates.size > 0) {
+      useSessionStore.getState().batchUpdateSessionData(stateUpdates, statsUpdates);
+    }
   }
 
   private handleNodeParamsChanged(payload: NodeParamsChangedPayload): void {
@@ -427,6 +489,14 @@ export class WebSocketService {
       pending.reject(new Error('WebSocket closed'));
     });
     this.pendingRequests.clear();
+
+    // Cancel any pending RAF and clear batch buffers.
+    if (this.batchFlushRafId !== null) {
+      cancelAnimationFrame(this.batchFlushRafId);
+      this.batchFlushRafId = null;
+    }
+    this.pendingNodeStates.clear();
+    this.pendingNodeStats.clear();
 
     if (this.ws) {
       this.ws.close();

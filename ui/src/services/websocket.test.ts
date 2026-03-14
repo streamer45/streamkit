@@ -213,6 +213,9 @@ describe('WebSocketService', () => {
       const ws = service['ws']! as unknown as MockWebSocket;
       ws.simulateMessage(JSON.stringify(event));
 
+      // State/stats updates are RAF-batched; flush manually.
+      service['flushBatchedUpdates']();
+
       const session = useSessionStore.getState().getSession('session-1');
       expect(session?.nodeStates['node-1']).toBe('Running');
     });
@@ -242,6 +245,9 @@ describe('WebSocketService', () => {
 
       const ws = service['ws']! as unknown as MockWebSocket;
       ws.simulateMessage(JSON.stringify(event));
+
+      // State/stats updates are RAF-batched; flush manually.
+      service['flushBatchedUpdates']();
 
       const session = useSessionStore.getState().getSession('session-1');
       expect(session?.nodeStats['node-1']).toEqual(stats);
