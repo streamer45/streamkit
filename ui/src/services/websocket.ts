@@ -133,9 +133,13 @@ export class WebSocketService {
   }
 
   private resubscribeToSessions(): void {
-    // Re-subscribe to all sessions after reconnection
+    // Re-subscribe to all sessions after reconnection.
+    // Re-call initSession for each one to ensure the session entry exists
+    // in the store — if the entry was cleared during the disconnect window,
+    // events arriving before the next RAF flush would be silently dropped.
     this.subscribedSessions.forEach((sessionId) => {
       logger.info('Re-subscribing to session:', sessionId);
+      useSessionStore.getState().initSession(sessionId, true);
       this.send({
         type: 'request' as MessageType,
         correlation_id: uuidv4(),
