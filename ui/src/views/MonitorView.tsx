@@ -502,37 +502,47 @@ const MonitorViewContent: React.FC = () => {
     ]
   );
 
-  const onEdgesDelete = (deleted: Edge[]) => {
-    deleted.forEach((e) => {
-      const from_pin = e.sourceHandle || 'out';
-      const to_pin = e.targetHandle || 'in';
+  const onEdgesDelete = useCallback(
+    (deleted: Edge[]) => {
+      const sid = selectedSessionId;
+      const staging = sid ? useStagingStore.getState().staging[sid] : undefined;
+      const isStagingActive = staging?.mode === 'staging';
 
-      if (isInStagingMode && selectedSessionId) {
-        // Remove from staging store
-        removeStagedConnection(selectedSessionId, {
-          from_node: e.source,
-          from_pin,
-          to_node: e.target,
-          to_pin,
-        });
-      } else {
-        // Send to server immediately (monitor mode)
-        disconnectPins(e.source, from_pin, e.target, to_pin);
-      }
-    });
-  };
+      deleted.forEach((e) => {
+        const from_pin = e.sourceHandle || 'out';
+        const to_pin = e.targetHandle || 'in';
 
-  const onNodesDelete = (deleted: RFNode[]) => {
-    deleted.forEach((n) => {
-      if (isInStagingMode && selectedSessionId) {
-        // Remove from staging store
-        removeStagedNode(selectedSessionId, n.id);
-      } else {
-        // Send to server immediately (monitor mode)
-        removeNode(n.id);
-      }
-    });
-  };
+        if (isStagingActive && sid) {
+          removeStagedConnection(sid, {
+            from_node: e.source,
+            from_pin,
+            to_node: e.target,
+            to_pin,
+          });
+        } else {
+          disconnectPins(e.source, from_pin, e.target, to_pin);
+        }
+      });
+    },
+    [selectedSessionId, removeStagedConnection, disconnectPins]
+  );
+
+  const onNodesDelete = useCallback(
+    (deleted: RFNode[]) => {
+      const sid = selectedSessionId;
+      const staging = sid ? useStagingStore.getState().staging[sid] : undefined;
+      const isStagingActive = staging?.mode === 'staging';
+
+      deleted.forEach((n) => {
+        if (isStagingActive && sid) {
+          removeStagedNode(sid, n.id);
+        } else {
+          removeNode(n.id);
+        }
+      });
+    },
+    [selectedSessionId, removeStagedNode, removeNode]
+  );
 
   // Deletion is handled by React Flow's built-in delete key via onNodesDelete/onEdgesDelete.
 
@@ -988,44 +998,51 @@ const MonitorViewContent: React.FC = () => {
     removeNode(nodeId);
   };
 
-  const onDragOver = (event: React.DragEvent) => {
+  const onDragOver = useCallback((event: React.DragEvent) => {
     event.preventDefault();
     event.dataTransfer.dropEffect = 'move';
-  };
+  }, []);
 
-  const onDrop = (event: React.DragEvent) => {
-    event.preventDefault();
-    if (!type) {
-      return;
-    }
+  const onDrop = useCallback(
+    (event: React.DragEvent) => {
+      event.preventDefault();
+      if (!type) {
+        return;
+      }
 
-    // Calculate drop position in flow coordinates
-    const position = screenToFlow({
-      x: event.clientX,
-      y: event.clientY,
-    });
-
-    const kind = type;
-    const nodeId = generateName(kind);
-    const params = defaultParamsForKind(kind);
-
-    // Cache the position for when the node appears in the pipeline
-    pendingNodePositions.current.set(nodeId, position);
-
-    if (isInStagingMode && selectedSessionId) {
-      // Add to staging store
-      addStagedNode(selectedSessionId, nodeId, {
-        kind,
-        params: params as Record<string, unknown>,
-        state: null,
+      // Calculate drop position in flow coordinates
+      const position = screenToFlow({
+        x: event.clientX,
+        y: event.clientY,
       });
-    } else {
-      // Send to server immediately (monitor mode)
-      addNode(nodeId, kind, params);
-    }
 
-    setType(null);
-  };
+      const kind = type;
+      const nodeId = generateName(kind);
+      const params = defaultParamsForKind(kind);
+
+      // Cache the position for when the node appears in the pipeline
+      pendingNodePositions.current.set(nodeId, position);
+
+      const sid = selectedSessionId;
+      const staging = sid ? useStagingStore.getState().staging[sid] : undefined;
+      const isStagingActive = staging?.mode === 'staging';
+
+      if (isStagingActive && sid) {
+        // Add to staging store
+        addStagedNode(sid, nodeId, {
+          kind,
+          params: params as Record<string, unknown>,
+          state: null,
+        });
+      } else {
+        // Send to server immediately (monitor mode)
+        addNode(nodeId, kind, params);
+      }
+
+      setType(null);
+    },
+    [type, selectedSessionId, addStagedNode, addNode, setType]
+  );
 
   // Memoize left panel to prevent ResizableLayout from re-rendering
   const leftPanel = React.useMemo(
@@ -1133,11 +1150,10 @@ const MonitorViewContent: React.FC = () => {
         <OutputPreviewPanel hasSession={selectedSessionId != null} conditionalRender />
       </CenterPanelContainer>
     ),
-    // Intentional sparse dependencies for performance optimization:
-    // - Only track nodes.length, not full nodes array (FlowCanvas handles position updates internally)
-    // - Only track stagingData lengths, not full object (TopControls has its own memo optimization)
-    // - Handlers are stable via refs and don't need to be tracked
-    // - selectedSession used instead of sessions array to prevent unnecessary re-renders
+    // Performance: track nodes.length instead of nodes (FlowCanvas
+    // handles position updates internally via onNodesChange).
+    // stagingData lengths suffice because TopControls has its own memo.
+    // All handlers are now stable useCallback references.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       selectedSessionId,
@@ -1153,6 +1169,23 @@ const MonitorViewContent: React.FC = () => {
       isLoadingPipeline,
       handleStartPreview,
       isPreviewConnected,
+      handleCommitChanges,
+      handleDiscardChanges,
+      handleEnterStagingMode,
+      handleDeleteModalOpen,
+      onNodesChangeBatched,
+      onEdgesChange,
+      onNodeDragStop,
+      handleNodeDoubleClick,
+      onConnect,
+      onConnectEnd,
+      onEdgesDelete,
+      onNodesDelete,
+      onDrop,
+      onDragOver,
+      onPaneClick,
+      onPaneContextMenu,
+      onNodeContextMenu,
     ]
   );
 
