@@ -15,8 +15,8 @@
  * - Two effects that fire layout / fitView when the flags are set
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
 import type { Node as RFNode, ReactFlowInstance } from '@xyflow/react';
+import React, { useState, useEffect, useCallback } from 'react';
 
 import type { Pipeline } from '@/types/types';
 import { topoLevelsFromPipeline, verticalLayout } from '@/utils/dag';

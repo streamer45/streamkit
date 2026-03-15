@@ -23,8 +23,8 @@ import { useShallow } from 'zustand/shallow';
 import ConfirmModal from '@/components/ConfirmModal';
 import ContextMenu from '@/components/ContextMenu';
 import { FlowCanvas } from '@/components/FlowCanvas';
-import { Legend } from '@/components/monitor/Legend';
 import { LeftPanel } from '@/components/monitor/LeftPanel';
+import { Legend } from '@/components/monitor/Legend';
 import {
   CenterPanelContainer,
   CanvasTopBar,
@@ -67,6 +67,10 @@ import type {
   InputPin,
   OutputPin,
 } from '@/types/types';
+import { topoLevelsFromPipeline, orderedNamesFromLevels } from '@/utils/dag';
+import { deepEqual } from '@/utils/deepEqual';
+import { validateValue } from '@/utils/jsonSchema';
+import { viewsLogger } from '@/utils/logger';
 import {
   computeAddedNodes,
   computeRemovedNodes,
@@ -78,10 +82,6 @@ import {
   buildNodeObject,
   generatePipelineYaml,
 } from '@/utils/pipelineGraph';
-import { topoLevelsFromPipeline, orderedNamesFromLevels } from '@/utils/dag';
-import { deepEqual } from '@/utils/deepEqual';
-import { validateValue } from '@/utils/jsonSchema';
-import { viewsLogger } from '@/utils/logger';
 import { validatePipeline } from '@/utils/pipelineValidation';
 import { nodeTypes, defaultEdgeOptions } from '@/utils/reactFlowDefaults';
 

@@ -19,8 +19,8 @@
  * collapsed into 2–3 patches instead.
  */
 
-import React, { useEffect, useRef } from 'react';
 import type { Node as RFNode, Edge } from '@xyflow/react';
+import React, { useEffect, useRef } from 'react';
 
 import { useSessionStore } from '@/stores/sessionStore';
 import type { NodeState, Pipeline } from '@/types/types';
