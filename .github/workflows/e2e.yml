@@ -72,6 +72,9 @@ jobs:
         working-directory: ./e2e
         run: E2E_AUTH=1 bun run test
 
+      - name: Run E2E perf tests (dev server)
+        run: .github/scripts/run-perf-e2e.sh
+
       - name: Upload Playwright report
         uses: actions/upload-artifact@v4
         if: failure()

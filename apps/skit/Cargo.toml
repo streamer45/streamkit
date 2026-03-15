@@ -134,7 +134,7 @@ moq-lite = { version = "0.15.2", optional = true }
 blake2 = "0.10.6"
 
 [features]
-default = ["script", "compositor"]
+default = ["script", "compositor", "moq"]
 tokio-console = ["console-subscriber"]
 profiling = ["dep:pprof", "dep:tikv-jemallocator", "dep:jemalloc_pprof"]
 # DHAT allocation profiling - tracks allocation counts/rates (mutually exclusive with profiling)
