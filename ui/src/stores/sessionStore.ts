@@ -42,12 +42,14 @@ interface SessionStore {
   batchUpdateNodeStats: (sessionId: string, updates: Record<string, NodeStats>) => void;
   batchSetPipelines: (pipelines: Array<{ sessionId: string; pipeline: Pipeline }>) => void;
 
-  // Combined batch: merge node states AND stats for multiple sessions in a
-  // single set() call.  Used by the RAF-based WebSocket flush to ensure
-  // all updates from one animation frame produce exactly one store mutation.
+  // Combined batch: merge node states, stats, AND params for multiple
+  // sessions in a single set() call.  Used by the RAF-based WebSocket
+  // flush to ensure all updates from one animation frame produce exactly
+  // one store mutation.
   batchUpdateSessionData: (
     stateUpdates: Map<string, Record<string, NodeState>>,
-    statsUpdates: Map<string, Record<string, NodeStats>>
+    statsUpdates: Map<string, Record<string, NodeStats>>,
+    paramsUpdates?: Map<string, Record<string, Record<string, unknown>>>
   ) => void;
 }
 
@@ -351,12 +353,15 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       return { sessions: newSessions };
     }),
 
-  batchUpdateSessionData: (stateUpdates, statsUpdates) =>
+  batchUpdateSessionData: (stateUpdates, statsUpdates, paramsUpdates) =>
     set((prev) => {
       // Collect all session IDs that need updating.
       const sessionIds = new Set<string>();
       for (const id of stateUpdates.keys()) sessionIds.add(id);
       for (const id of statsUpdates.keys()) sessionIds.add(id);
+      if (paramsUpdates) {
+        for (const id of paramsUpdates.keys()) sessionIds.add(id);
+      }
 
       if (sessionIds.size === 0) return prev;
 
@@ -368,9 +373,38 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
 
         const stateUpdate = stateUpdates.get(sessionId);
         const statsUpdate = statsUpdates.get(sessionId);
+        const paramsUpdate = paramsUpdates?.get(sessionId);
+
+        // Merge param updates into the pipeline if present.
+        // This keeps sessionStore.pipeline as the single source of truth
+        // for node params, eliminating drift with nodeParamsStore.
+        let pipeline = session.pipeline;
+        if (paramsUpdate && pipeline) {
+          let pipelineChanged = false;
+          const updatedNodes = { ...pipeline.nodes };
+
+          for (const [nodeId, params] of Object.entries(paramsUpdate)) {
+            const existingNode = updatedNodes[nodeId];
+            if (!existingNode) continue;
+
+            const existingParams = existingNode.params;
+            const mergedParams =
+              existingParams && typeof existingParams === 'object' && !Array.isArray(existingParams)
+                ? { ...existingParams, ...params }
+                : params;
+
+            updatedNodes[nodeId] = { ...existingNode, params: mergedParams };
+            pipelineChanged = true;
+          }
+
+          if (pipelineChanged) {
+            pipeline = { ...pipeline, nodes: updatedNodes };
+          }
+        }
 
         newSessions.set(sessionId, {
           ...session,
+          pipeline,
           nodeStates: stateUpdate ? { ...session.nodeStates, ...stateUpdate } : session.nodeStates,
           nodeStats: statsUpdate ? { ...session.nodeStats, ...statsUpdate } : session.nodeStats,
         });

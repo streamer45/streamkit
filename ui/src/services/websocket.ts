@@ -47,11 +47,12 @@ export class WebSocketService {
   private subscribedSessions: Set<string> = new Set();
 
   // ── Frame-level batching for high-frequency events ──────────────────
-  // Buffer node-state and node-stats updates that arrive in rapid
-  // succession (e.g. during session initialisation) and flush them as a
-  // single store mutation at the next animation frame.
+  // Buffer node-state, node-stats, and node-param updates that arrive in
+  // rapid succession (e.g. during session initialisation) and flush them
+  // as a single store mutation at the next animation frame.
   private pendingNodeStates: Map<string, Map<string, NodeState>> = new Map();
   private pendingNodeStats: Map<string, Map<string, NodeStats>> = new Map();
+  private pendingNodeParams: Map<string, Map<string, Record<string, unknown>>> = new Map();
   private batchFlushRafId: number | null = null;
 
   constructor(url: string) {
@@ -222,6 +223,7 @@ export class WebSocketService {
     // doesn't needlessly process stale entries.
     this.pendingNodeStates.delete(payload.session_id);
     this.pendingNodeStats.delete(payload.session_id);
+    this.pendingNodeParams.delete(payload.session_id);
     useSessionStore.getState().clearSession(payload.session_id);
     useNodeParamsStore.getState().resetSession(payload.session_id);
     useTelemetryStore.getState().clearSession(payload.session_id);
@@ -282,25 +284,40 @@ export class WebSocketService {
     }
     this.pendingNodeStats.clear();
 
-    if (stateUpdates.size > 0 || statsUpdates.size > 0) {
-      useSessionStore.getState().batchUpdateSessionData(stateUpdates, statsUpdates);
+    const paramsUpdates = new Map<string, Record<string, Record<string, unknown>>>();
+    for (const [sessionId, updates] of this.pendingNodeParams) {
+      paramsUpdates.set(sessionId, Object.fromEntries(updates));
+    }
+    this.pendingNodeParams.clear();
+
+    if (stateUpdates.size > 0 || statsUpdates.size > 0 || paramsUpdates.size > 0) {
+      useSessionStore.getState().batchUpdateSessionData(stateUpdates, statsUpdates, paramsUpdates);
     }
   }
 
   private handleNodeParamsChanged(payload: NodeParamsChangedPayload): void {
     const { session_id, node_id, params } = payload;
 
-    // Update session store for pipeline view
-    // WARNING: This is problematic because it causes re-renders that cause issues with react flow.
-    //
-    // useSessionStore.getState().updateNodeParams(session_id, node_id, params as Record<string, unknown>);
-
-    // Batch all param updates into a single store update to avoid
-    // N intermediate states and N selector re-evaluations.
     if (params && typeof params === 'object' && !Array.isArray(params)) {
-      useNodeParamsStore
-        .getState()
-        .setParams(node_id, params as Record<string, unknown>, session_id);
+      const typedParams = params as Record<string, unknown>;
+
+      // Optimistic overlay for immediate UI feedback (e.g. slider controls
+      // that read from nodeParamsStore while the sessionStore pipeline
+      // hasn't been updated yet).
+      useNodeParamsStore.getState().setParams(node_id, typedParams, session_id);
+
+      // Also buffer the update for the session store's pipeline so the
+      // canonical source of truth stays in sync.  The update is flushed
+      // via the same RAF batch as node states/stats, so multiple param
+      // events within one frame produce exactly one store mutation.
+      let sessionMap = this.pendingNodeParams.get(session_id);
+      if (!sessionMap) {
+        sessionMap = new Map();
+        this.pendingNodeParams.set(session_id, sessionMap);
+      }
+      const existing = sessionMap.get(node_id);
+      sessionMap.set(node_id, existing ? { ...existing, ...typedParams } : typedParams);
+      this.scheduleBatchFlush();
     }
   }
 
@@ -501,6 +518,7 @@ export class WebSocketService {
     }
     this.pendingNodeStates.clear();
     this.pendingNodeStats.clear();
+    this.pendingNodeParams.clear();
 
     if (this.ws) {
       this.ws.close();
