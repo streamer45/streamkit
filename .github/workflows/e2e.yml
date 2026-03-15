@@ -49,8 +49,8 @@ jobs:
       - name: Install system dependencies (libvpx for VP9 video support)
         run: sudo apt-get update && sudo apt-get install -y libvpx-dev
 
-      - name: Build skit (debug)
-        run: cargo build -p streamkit-server --bin skit
+      - name: Build skit (debug, with MoQ)
+        run: cargo build -p streamkit-server --bin skit --features moq
 
       - name: Install E2E dependencies
         working-directory: ./e2e
