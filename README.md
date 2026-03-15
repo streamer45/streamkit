@@ -12,7 +12,7 @@ SPDX-License-Identifier: MPL-2.0
   <br>
 </h1>
 <h4 align="center">Build and run real-time media pipelines on your own infrastructure</h4>
-<p align="center"><em>Speech-to-text, voice agents, live audio processing — composable, observable, self-hosted.</em></p>
+<p align="center"><em>Speech-to-text, voice agents, live audio/video processing — composable, observable, self-hosted.</em></p>
 <p align="center">
   <a href="https://streamkit.dev"><img src="https://img.shields.io/badge/docs-streamkit.dev-blue?style=flat-square" alt="Documentation"></a>
   <a href="https://demo.streamkit.dev"><img src="https://img.shields.io/badge/demo-try%20it%20live-brightgreen?style=flat-square" alt="Live Demo"></a>
@@ -24,7 +24,7 @@ SPDX-License-Identifier: MPL-2.0
 <p align="center">
   <img src="docs/public/screenshots/monitor_view.png" alt="StreamKit web UI (Monitor View): visual pipeline editor" width="800">
   <br>
-  <em>Pipeline monitor showing real-time audio processing with node metrics</em>
+  <em>Pipeline monitor showing real-time media processing with node metrics</em>
 </p>
 
 **StreamKit** is a self-hostable media processing server (written in Rust). You run a single binary (`skit`), then compose pipelines as a node graph (DAG) made from built-in nodes, plugins, and scriptable logic — via a web UI, YAML, or API.
@@ -67,6 +67,7 @@ If you try it and something feels off, please open an issue (or a small PR). For
 - **Speech pipelines** — Build a transcription service: ingest audio via MoQ, run Whisper STT, stream transcription updates to clients.
 - **Real-time translation** — Bilingual streams with live subtitles using NLLB or Helsinki translation models.
 - **Voice agents** — TTS-powered bots that respond to audio input with Kokoro, Piper, or Matcha.
+- **Video compositing** — Combine camera feeds with overlays and PiP layouts using the built-in compositor, encoded with VP9 for real-time transport.
 - **Audio processing** — Mixing, gain control, format conversion, and custom routing.
 - **Batch processing** — High-throughput file conversion or offline transcription using the Oneshot HTTP API.
 - **Your idea** — Add your own node or plugin and compose it into a pipeline
@@ -79,7 +80,7 @@ If you try it and something feels off, please open an issue (or a small PR). For
   - **Dynamic**: long-running sessions you can inspect and reconfigure while they run
 - **Transport**: real-time media over MoQ/WebTransport (QUIC) plus a WebSocket control plane for UI and automation (WebSocket transport nodes are on the roadmap; in the near term, non-media streams may also ride MoQ)
 - **Plugins**: native (C ABI, in-process) and WASM (Component Model).
-- **Media focus**: audio-first today (Opus, WAV, OGG, FLAC, MP3). Video support is on the [roadmap](ROADMAP.md).
+- **Media focus**: audio (Opus, WAV, OGG, FLAC, MP3) and basic video (VP9 encode/decode, compositing, WebM muxing). Video capabilities are expanding — see the [roadmap](ROADMAP.md).
 
 ## Quickstart (Docker)
 

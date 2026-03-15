@@ -10,7 +10,7 @@ Built-in processing nodes for StreamKit pipelines.
 
 ## What Lives Here
 
-- Built-in node implementations (e.g. `core::*`, `audio::*`, `containers::*`, `transport::*`)
+- Built-in node implementations (e.g. `core::*`, `audio::*`, `video::*`, `containers::*`, `transport::*`)
 - Node parameter schemas (used by the UI for validation and editor controls)
 - Node-level tests and fixtures
 
