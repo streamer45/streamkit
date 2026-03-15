@@ -14,8 +14,12 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
+SKIT_PID=""
+VITE_PID=""
+
 cleanup() {
-  kill "$SKIT_PID" "$VITE_PID" 2>/dev/null || true
+  [ -n "$SKIT_PID" ] && kill "$SKIT_PID" 2>/dev/null || true
+  [ -n "$VITE_PID" ] && kill "$VITE_PID" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -27,9 +31,12 @@ RUST_LOG=warn \
 "$REPO_ROOT/target/debug/skit" serve &
 SKIT_PID=$!
 
-# Start Vite dev server in a subshell
-(cd "$REPO_ROOT/ui" && bunx --bun vite) &
+# Start Vite dev server.
+# Use `bun run dev` so Bun resolves from the project's package.json scripts.
+cd "$REPO_ROOT/ui"
+bun run dev &
 VITE_PID=$!
+cd "$REPO_ROOT"
 
 # Wait for skit to become healthy
 HEALTHY=0
@@ -46,9 +53,9 @@ if [ "$HEALTHY" -ne 1 ]; then
   exit 1
 fi
 
-# Wait for Vite dev server to be ready
+# Wait for Vite dev server to be ready (60s — first start may pre-bundle deps)
 HEALTHY=0
-for i in $(seq 1 30); do
+for i in $(seq 1 60); do
   if curl -sf http://127.0.0.1:3045/ > /dev/null 2>&1; then
     echo "Vite dev server is ready"
     HEALTHY=1
@@ -57,7 +64,7 @@ for i in $(seq 1 30); do
   sleep 1
 done
 if [ "$HEALTHY" -ne 1 ]; then
-  echo "ERROR: Vite dev server did not become ready within 30s"
+  echo "ERROR: Vite dev server did not become ready within 60s"
   exit 1
 fi
 
