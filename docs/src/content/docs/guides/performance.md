@@ -122,7 +122,7 @@ moq_peer_channel_capacity = 100  # (MoQ builds) MoQ transport internal queues (p
 | `demuxer_buffer_size` | 65536 | OGG demuxer duplex buffer (bytes) |
 | `moq_peer_channel_capacity` | 100 | (MoQ builds) MoQ peer internal channels (packets) |
 
-**Warning**: Only modify these if you understand the latency/throughput implications. The defaults are tuned for typical real-time audio processing workloads.
+**Warning**: Only modify these if you understand the latency/throughput implications. The defaults are tuned for typical real-time audio/video processing workloads.
 
 ### When to Adjust
 
@@ -147,6 +147,8 @@ The core audio frame pool is preallocated with fixed defaults and cannot be conf
 - `DEFAULT_AUDIO_BUFFERS_PER_BUCKET` = 32 buffers
 
 These are optimized for common audio frame sizes (10-80ms at 48kHz) and should not need adjustment.
+
+A separate video frame pool (`VideoFramePool`) manages reusable byte buffers for raw video frames, reducing per-frame allocation overhead in video pipelines.
 
 ## Complete Example
 

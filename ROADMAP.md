@@ -60,10 +60,10 @@ These are in place today and will be iterated on (not “added from scratch”):
 
 ### Dynamic Video over MoQ (VP9 MVP) (P0)
 
-- **Video packet types** — First-class video packets alongside audio, with explicit timing requirements
-- **VP9 baseline** — Real-time VP9 encode/decode path suitable for browser clients; **AV1 optional later**
+- ~~**Video packet types** — First-class video packets alongside audio, with explicit timing requirements~~
+- ~~**VP9 baseline** — Real-time VP9 encode/decode path suitable for browser clients; **AV1 optional later**~~
 - **MoQ/Hang-first interop** — Start by interoperating cleanly with `@moq/hang`, then generalize to “MoQ in general”
-- **Compositor MVP (main + PiP)** — Two live video inputs → one composed output, plus simple overlays (watermark/text/images)
+- ~~**Compositor MVP (main + PiP)** — Two live video inputs → one composed output, plus simple overlays (watermark/text/images)~~
 - **Golden-path demo** — A canonical “screen share + webcam → PiP → watchers” dynamic pipeline sample
 
 ### Reliability & Developer Experience

@@ -19,7 +19,7 @@ StreamKit has three major pieces:
 
 ## Extensibility
 
-- **Built-in nodes** (core, audio, containers, transport).
+- **Built-in nodes** (core, audio, video, containers, transport).
 - **Plugins**: native (in-process C ABI) and WASM (sandboxed Component Model).
 - **Script node**: sandboxed JavaScript (QuickJS) for lightweight integration and text processing.
 
