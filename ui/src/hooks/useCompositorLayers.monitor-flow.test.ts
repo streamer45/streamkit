@@ -488,6 +488,8 @@ describe('Monitor view data flow integration', () => {
           rotation_degrees: 0,
           mirror_horizontal: false,
           mirror_vertical: false,
+          measured_text_width: null,
+          measured_text_height: null,
         },
       ],
     });
