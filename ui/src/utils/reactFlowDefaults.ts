@@ -9,6 +9,7 @@
 
 import TypedEdge from '@/components/TypedEdge';
 import AudioGainNode from '@/nodes/AudioGainNode';
+import CompositorNode from '@/nodes/CompositorNode';
 import ConfigurableNode from '@/nodes/ConfigurableNode';
 
 /**
@@ -16,6 +17,7 @@ import ConfigurableNode from '@/nodes/ConfigurableNode';
  */
 export const nodeTypes = {
   audioGain: AudioGainNode,
+  compositor: CompositorNode,
   configurable: ConfigurableNode,
 };
 

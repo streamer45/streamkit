@@ -262,6 +262,35 @@ impl Session {
             );
         });
 
+        // Subscribe to view data updates from the engine
+        let mut view_data_rx = engine_handle
+            .subscribe_view_data()
+            .await
+            .map_err(|e| format!("Failed to subscribe to view data updates: {e}"))?;
+
+        // Spawn task to forward view data updates to WebSocket clients
+        let session_id_for_view_data = session_id.clone();
+        let event_tx_for_view_data = event_tx.clone();
+        tokio::spawn(async move {
+            while let Some(update) = view_data_rx.recv().await {
+                let event = ApiEvent {
+                    message_type: MessageType::Event,
+                    correlation_id: None,
+                    payload: EventPayload::NodeViewDataUpdated {
+                        session_id: session_id_for_view_data.clone(),
+                        node_id: update.node_id,
+                        data: update.data,
+                        timestamp: system_time_to_rfc3339(update.timestamp),
+                    },
+                };
+                let _ = event_tx_for_view_data.send(event);
+            }
+            tracing::debug!(
+                session_id = %session_id_for_view_data,
+                "View data forwarding task ended"
+            );
+        });
+
         // Subscribe to telemetry events from the engine
         let mut telemetry_rx = engine_handle
             .subscribe_telemetry()
@@ -320,6 +349,19 @@ impl Session {
     #[allow(dead_code)] // Reserved for future statistics API
     pub async fn get_node_stats(&self) -> Result<HashMap<String, NodeStats>, String> {
         self.engine_handle.get_node_stats().await
+    }
+
+    /// Gets the current view data for all nodes in this session's pipeline.
+    ///
+    /// View data contains resolved runtime state that differs from the static
+    /// config params (e.g., compositor resolved layout with aspect-fit adjustments).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the engine handle's oneshot channel fails to receive a response,
+    /// which typically indicates the engine actor has stopped or panicked.
+    pub async fn get_node_view_data(&self) -> Result<HashMap<String, serde_json::Value>, String> {
+        self.engine_handle.get_node_view_data().await
     }
 }
 

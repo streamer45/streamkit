@@ -19,6 +19,10 @@ vi.mock('./nodeParamsStore', () => ({
         params[key] = value;
         mockNodeParams.set(nodeId, params);
       }),
+      setParams: vi.fn((nodeId: string, params: Record<string, unknown>) => {
+        const existing = mockNodeParams.get(nodeId) || {};
+        mockNodeParams.set(nodeId, { ...existing, ...params });
+      }),
       getParamsForNode: vi.fn((nodeId: string) => mockNodeParams.get(nodeId) || {}),
     }),
   },

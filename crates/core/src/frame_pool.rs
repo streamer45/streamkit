@@ -139,6 +139,11 @@ impl<T: Clone + Default> FramePool<T> {
     /// Get pooled storage for at least `min_len` elements.
     ///
     /// If `min_len` doesn't fit in any bucket, returns a non-pooled buffer of exact size.
+    ///
+    /// On the first miss for a given bucket (cold start), an extra buffer is
+    /// allocated and placed into the pool so that the *next* `get()` at the
+    /// same size is a hit.  This amortises cold-start allocation cost without
+    /// pre-allocating every bucket size up front.
     pub fn get(&self, min_len: usize) -> PooledFrameData<T> {
         let (handle, bucket_idx, bucket_size, maybe_buf) = {
             let Ok(mut guard) = self.inner.lock() else {
@@ -154,6 +159,12 @@ impl<T: Clone + Default> FramePool<T> {
                 guard.hits += 1;
             } else {
                 guard.misses += 1;
+                // Lazy preallocate: on first miss for this bucket, seed the
+                // pool with one extra buffer so subsequent gets are hits.
+                if guard.buckets[bucket_idx].is_empty() && guard.buckets[bucket_idx].capacity() == 0
+                {
+                    guard.buckets[bucket_idx].push(vec![T::default(); bucket_size]);
+                }
             }
             (self.handle(), bucket_idx, bucket_size, buf)
         };
@@ -312,6 +323,52 @@ impl FramePool<f32> {
             DEFAULT_AUDIO_BUCKET_SIZES,
             DEFAULT_AUDIO_BUFFERS_PER_BUCKET,
             DEFAULT_AUDIO_MAX_BUFFERS_PER_BUCKET,
+        )
+    }
+}
+
+pub type VideoFramePool = FramePool<u8>;
+pub type PooledVideoData = PooledFrameData<u8>;
+
+/// Pre-computed buffer sizes for common video resolutions and pixel formats.
+///
+/// Each entry targets a specific resolution × format combination (packed, stride-align = 1):
+///
+/// | Bytes         | Resolution | Format | Notes                          |
+/// |---------------|------------|--------|--------------------------------|
+/// | 86,400        | 240×240    | NV12   | tiny test / thumbnail          |
+/// | 230,400       | 240×240    | RGBA8  | thumbnail (4 bpp)              |
+/// | 345,600       | 640×360    | NV12   | 360p                           |
+/// | 921,600       | 640×360    | RGBA8  | 360p (4 bpp)                   |
+/// | 1,382,400     | 1280×720   | NV12   | 720p                           |
+/// | 3,110,400     | 1920×1080  | NV12   | 1080p                          |
+/// | 3,686,400     | 1280×720   | RGBA8  | 720p (4 bpp)                   |
+/// | 8,294,400     | 1920×1080  | RGBA8  | 1080p (4 bpp)                  |
+/// | 12,441,600    | 3840×2160  | NV12   | 4K                             |
+/// | 33,177,600    | 3840×2160  | RGBA8  | 4K (4 bpp)                     |
+/// | 49,766,400    | 7680×4320  | NV12   | 8K                             |
+/// | 132,710,400   | 7680×4320  | RGBA8  | 8K (4 bpp)                     |
+pub const DEFAULT_VIDEO_BUCKET_SIZES: &[usize] = &[
+    86_400,
+    230_400,
+    345_600,
+    921_600,
+    1_382_400,
+    3_110_400,
+    3_686_400,
+    8_294_400,
+    12_441_600,
+    33_177_600,
+    49_766_400,
+    132_710_400,
+];
+pub const DEFAULT_VIDEO_MAX_BUFFERS_PER_BUCKET: usize = 16;
+
+impl FramePool<u8> {
+    pub fn video_default() -> Self {
+        Self::with_buckets(
+            DEFAULT_VIDEO_BUCKET_SIZES.to_vec(),
+            DEFAULT_VIDEO_MAX_BUFFERS_PER_BUCKET,
         )
     }
 }

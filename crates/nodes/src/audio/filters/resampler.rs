@@ -283,6 +283,7 @@ impl ProcessorNode for AudioResamplerNode {
                             timestamp_us: output_timestamp_us,
                             duration_us: Some(duration_us),
                             sequence: Some(output_sequence),
+                            keyframe: None,
                         };
                         output_sequence += 1;
                         if let Some(ts) = output_timestamp_us.as_mut() {
@@ -588,6 +589,7 @@ impl ProcessorNode for AudioResamplerNode {
                             timestamp_us: output_timestamp_us,
                             duration_us: Some(duration_us),
                             sequence: Some(output_sequence),
+                            keyframe: None,
                         };
                         output_sequence += 1;
                         if let Some(ts) = output_timestamp_us.as_mut() {
@@ -634,6 +636,7 @@ impl ProcessorNode for AudioResamplerNode {
                         timestamp_us: output_timestamp_us,
                         duration_us: Some(duration_us),
                         sequence: Some(output_sequence),
+                        keyframe: None,
                     };
                     output_sequence += 1;
                     if let Some(ts) = output_timestamp_us.as_mut() {
@@ -678,6 +681,7 @@ impl ProcessorNode for AudioResamplerNode {
                 timestamp_us: output_timestamp_us,
                 duration_us: Some(duration_us),
                 sequence: Some(output_sequence),
+                keyframe: None,
             };
             if let Some(ts) = output_timestamp_us.as_mut() {
                 *ts += duration_us;
@@ -757,6 +761,7 @@ mod tests {
 
         let context = NodeContext {
             inputs,
+            input_types: HashMap::new(),
             control_rx,
             output_sender,
             batch_size: 32,
@@ -767,6 +772,9 @@ mod tests {
             cancellation_token: None,
             pin_management_rx: None, // Test contexts don't support dynamic pins
             audio_pool: None,
+            video_pool: None,
+            pipeline_mode: streamkit_core::PipelineMode::Dynamic,
+            view_data_tx: None,
         };
 
         // Create node that downsamples from 48kHz to 24kHz
@@ -833,6 +841,7 @@ mod tests {
 
         let context = NodeContext {
             inputs,
+            input_types: HashMap::new(),
             control_rx,
             output_sender,
             batch_size: 32,
@@ -843,6 +852,9 @@ mod tests {
             cancellation_token: None,
             pin_management_rx: None, // Test contexts don't support dynamic pins
             audio_pool: None,
+            video_pool: None,
+            pipeline_mode: streamkit_core::PipelineMode::Dynamic,
+            view_data_tx: None,
         };
 
         let config = AudioResamplerConfig {

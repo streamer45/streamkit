@@ -16,7 +16,7 @@ const logger = getLogger('converter');
 export interface ConversionResult {
   success: boolean;
   error?: string;
-  audioUrl?: string;
+  mediaUrl?: string;
   contentType?: string;
   responseStream?: ReadableStream<Uint8Array>; // Stream for MSE-based playback or JSON streaming
   useStreaming?: boolean; // Whether to use streaming (MSE or JSON)
@@ -137,12 +137,12 @@ async function handleBlobPlayback(
   const blob = await response.blob();
   logger.debug('Downloaded blob size:', blob.size);
 
-  const audioUrl = URL.createObjectURL(blob);
-  logger.debug('Created audio URL for playback');
+  const mediaUrl = URL.createObjectURL(blob);
+  logger.debug('Created media URL for playback');
 
   return {
     success: true,
-    audioUrl,
+    mediaUrl,
     contentType,
     useStreaming: false,
   };
@@ -160,12 +160,16 @@ async function handleDownload(
   logger.debug('Downloaded blob size:', blob.size);
 
   // Generate a filename based on the original file
-  const originalName = mediaFile?.name || 'converted_audio';
   const extension = getExtensionFromContentType(contentType);
-  const baseName = originalName.includes('.')
-    ? originalName.substring(0, originalName.lastIndexOf('.'))
-    : originalName;
-  const outputFileName = `${baseName}_converted${extension}`;
+  let outputFileName: string;
+  if (mediaFile) {
+    const baseName = mediaFile.name.includes('.')
+      ? mediaFile.name.substring(0, mediaFile.name.lastIndexOf('.'))
+      : mediaFile.name;
+    outputFileName = `${baseName}_converted${extension}`;
+  } else {
+    outputFileName = `output${extension}`;
+  }
 
   // Trigger download
   downloadBlob(blob, outputFileName);

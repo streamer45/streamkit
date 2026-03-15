@@ -5,15 +5,18 @@
 //! MoQ Push Node - publishes packets to a MoQ broadcast
 
 use super::constants::DEFAULT_AUDIO_FRAME_DURATION_US;
+use crate::video::{VP9_BIT_DEPTH, VP9_LEVEL, VP9_PROFILE};
 use async_trait::async_trait;
 use opentelemetry::{global, KeyValue};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use streamkit_core::timing::MediaClock;
-use streamkit_core::types::{Packet, PacketType};
+use streamkit_core::types::{
+    AudioCodec, EncodedAudioFormat, EncodedVideoFormat, Packet, PacketType, VideoCodec,
+};
 use streamkit_core::{
-    packet_helpers, state_helpers, stats::NodeStatsTracker, InputPin, NodeContext, OutputPin,
-    PinCardinality, ProcessorNode, StreamKitError,
+    state_helpers, stats::NodeStatsTracker, InputPin, NodeContext, OutputPin, PinCardinality,
+    ProcessorNode, StreamKitError,
 };
 
 #[derive(Deserialize, Debug, JsonSchema, Clone)]
@@ -64,7 +67,11 @@ impl Default for MoqPushConfig {
     }
 }
 
-/// A node that receives Opus packets and publishes them to a MoQ broadcast.
+/// A node that receives encoded media and publishes it to a MoQ broadcast.
+///
+/// Supports arbitrary combinations of audio (Opus) and video (VP9) inputs.
+/// Audio is accepted on the `in` pin, and video on the `in_1` pin.
+/// Either or both may be connected; at least one must be present.
 pub struct MoqPushNode {
     config: MoqPushConfig,
 }
@@ -76,13 +83,30 @@ impl MoqPushNode {
 }
 
 #[async_trait]
+#[allow(clippy::too_many_lines)]
 impl ProcessorNode for MoqPushNode {
     fn input_pins(&self) -> Vec<InputPin> {
-        vec![InputPin {
-            name: "in".to_string(),
-            accepts_types: vec![PacketType::OpusAudio],
-            cardinality: PinCardinality::One,
-        }]
+        vec![
+            InputPin {
+                name: "in".to_string(),
+                accepts_types: vec![PacketType::EncodedAudio(EncodedAudioFormat {
+                    codec: AudioCodec::Opus,
+                    codec_private: None,
+                })],
+                cardinality: PinCardinality::One,
+            },
+            InputPin {
+                name: "in_1".to_string(),
+                accepts_types: vec![PacketType::EncodedVideo(EncodedVideoFormat {
+                    codec: VideoCodec::Vp9,
+                    bitstream_format: None,
+                    codec_private: None,
+                    profile: None,
+                    level: None,
+                })],
+                cardinality: PinCardinality::One,
+            },
+        ]
     }
 
     fn output_pins(&self) -> Vec<OutputPin> {
@@ -90,6 +114,12 @@ impl ProcessorNode for MoqPushNode {
     }
 
     async fn run(self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
+        /// Identifies which input produced the packet.
+        enum InputSource {
+            Audio,
+            Video,
+        }
+
         let node_name = context.output_sender.node_name().to_string();
         state_helpers::emit_initializing(&context.state_tx, &node_name);
 
@@ -142,63 +172,139 @@ impl ProcessorNode for MoqPushNode {
 
         tracing::info!("Publishing to broadcast '{}'", self.config.broadcast);
 
-        // Create an audio track for the opus data.
-        // Match @moq/hang defaults for interoperability.
-        let audio_track = moq_lite::Track { name: "audio/data".to_string(), priority: 80 };
+        // Detect which inputs are connected
+        let has_audio =
+            context.input_types.iter().any(|(_, pt)| matches!(pt, PacketType::EncodedAudio(_)));
+        let has_video =
+            context.input_types.iter().any(|(_, pt)| matches!(pt, PacketType::EncodedVideo(_)));
 
-        let track_producer = broadcast.create_track(audio_track.clone());
-        let mut track_producer: hang::container::OrderedProducer = track_producer.into();
+        if !has_audio && !has_video {
+            let err_msg = "MoqPushNode requires at least one audio or video input";
+            state_helpers::emit_failed(&context.state_tx, &node_name, err_msg);
+            return Err(StreamKitError::Configuration(err_msg.to_string()));
+        }
 
-        // Create and publish a catalog describing our audio track
+        // Create audio track if audio input is connected
+        let audio_track = if has_audio {
+            Some(moq_lite::Track { name: "audio/data".to_string(), priority: 80 })
+        } else {
+            None
+        };
+        let mut audio_producer: Option<hang::container::OrderedProducer> =
+            if let Some(ref at) = audio_track {
+                let producer = broadcast.create_track(at.clone()).map_err(|e| {
+                    StreamKitError::Runtime(format!("Failed to create audio track: {e}"))
+                })?;
+                Some(producer.into())
+            } else {
+                None
+            };
+
+        // Create video track if video input is connected
+        let video_track = if has_video {
+            Some(moq_lite::Track { name: "video/data".to_string(), priority: 60 })
+        } else {
+            None
+        };
+        let mut video_producer: Option<hang::container::OrderedProducer> =
+            if let Some(ref vt) = video_track {
+                let producer = broadcast.create_track(vt.clone()).map_err(|e| {
+                    StreamKitError::Runtime(format!("Failed to create video track: {e}"))
+                })?;
+                Some(producer.into())
+            } else {
+                None
+            };
+
+        // Build catalog with connected renditions
         let mut audio_renditions = std::collections::BTreeMap::new();
-        audio_renditions.insert(
-            audio_track.name.clone(),
-            hang::catalog::AudioConfig {
-                codec: hang::catalog::AudioCodec::Opus,
-                sample_rate: 48000,
-                channel_count: self.config.channels,
-                bitrate: Some(128_000),
-                description: None,
-                container: hang::catalog::Container::default(),
-                jitter: None,
-            },
-        );
+        if let Some(ref at) = audio_track {
+            audio_renditions.insert(
+                at.name.clone(),
+                hang::catalog::AudioConfig {
+                    codec: hang::catalog::AudioCodec::Opus,
+                    sample_rate: 48000,
+                    channel_count: self.config.channels,
+                    bitrate: Some(128_000),
+                    description: None,
+                    container: hang::catalog::Container::default(),
+                    jitter: None,
+                },
+            );
+        }
+
+        let mut video_renditions = std::collections::BTreeMap::new();
+        if let Some(ref vt) = video_track {
+            video_renditions.insert(
+                vt.name.clone(),
+                hang::catalog::VideoConfig {
+                    codec: hang::catalog::VideoCodec::VP9(hang::catalog::VP9 {
+                        profile: VP9_PROFILE,
+                        level: VP9_LEVEL,
+                        bit_depth: VP9_BIT_DEPTH,
+                        ..hang::catalog::VP9::default()
+                    }),
+                    coded_width: None,
+                    coded_height: None,
+                    display_ratio_width: None,
+                    display_ratio_height: None,
+                    framerate: Some(30.0),
+                    bitrate: None,
+                    description: None,
+                    optimize_for_latency: Some(true),
+                    container: hang::catalog::Container::default(),
+                    jitter: None,
+                },
+            );
+        }
 
         let catalog = hang::catalog::Catalog {
             audio: hang::catalog::Audio { renditions: audio_renditions },
+            video: hang::catalog::Video {
+                renditions: video_renditions,
+                display: None,
+                rotation: None,
+                flip: None,
+            },
             ..Default::default()
         };
 
         // Create catalog track and publish the catalog data
-        let mut catalog_producer = broadcast.create_track(hang::catalog::Catalog::default_track());
-        let catalog_json = match super::catalog_to_json(&catalog) {
+        let mut catalog_producer = broadcast
+            .create_track(hang::catalog::Catalog::default_track())
+            .map_err(|e| StreamKitError::Runtime(format!("Failed to create catalog track: {e}")))?;
+        let catalog_json = match catalog.to_string() {
             Ok(json) => json,
             Err(e) => {
-                state_helpers::emit_failed(&context.state_tx, &node_name, e.to_string());
-                return Err(e);
+                let err = StreamKitError::Runtime(format!("Failed to serialize catalog: {e}"));
+                state_helpers::emit_failed(&context.state_tx, &node_name, err.to_string());
+                return Err(err);
             },
         };
-        let catalog_data = catalog_json.into_bytes(); // Avoid intermediate Vec allocation
+        let catalog_data = catalog_json.into_bytes();
 
         tracing::debug!(
             "publishing catalog JSON: {}",
             std::str::from_utf8(&catalog_data).unwrap_or("<invalid utf8>")
         );
 
-        // Write the catalog frame
-        catalog_producer.write_frame(catalog_data);
-        // Keep the catalog track producer alive for the lifetime of the broadcast.
-        // If dropped, the underlying moq-lite track gets cancelled and watchers will go "offline".
+        catalog_producer
+            .write_frame(catalog_data)
+            .map_err(|e| StreamKitError::Runtime(format!("Failed to write catalog frame: {e}")))?;
         let _catalog_producer = catalog_producer;
 
-        tracing::info!("published catalog for broadcast");
+        tracing::info!(has_video, "published catalog for broadcast");
 
         state_helpers::emit_running(&context.state_tx, &node_name);
 
-        let mut input_rx = context.take_input("in")?;
+        let mut audio_rx = if has_audio { Some(context.take_input("in")?) } else { None };
+        let mut video_rx = if has_video { Some(context.take_input("in_1")?) } else { None };
         let mut packet_count: u64 = 0;
-        let mut clock = MediaClock::new(self.config.initial_delay_ms);
-        let mut seeded_from_timestamp = false;
+        let mut audio_clock = MediaClock::new(self.config.initial_delay_ms);
+        let mut video_clock = MediaClock::new(self.config.initial_delay_ms);
+        let mut audio_seeded = false;
+        let mut video_seeded = false;
+        let mut audio_first_sent = false;
 
         // Stats tracking
         let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
@@ -213,106 +319,170 @@ impl ProcessorNode for MoqPushNode {
             KeyValue::new("broadcast", self.config.broadcast.clone()),
         ];
 
-        // Read opus packets and write them to the MoQ track
-        tracing::info!("MoqPushNode waiting for input packets...");
+        tracing::info!(has_video, "MoqPushNode waiting for input packets...");
+
         loop {
-            tokio::select! {
-                Some(first_packet) = input_rx.recv() => {
-                    // Greedily collect a batch of packets
-                    let packet_batch = packet_helpers::batch_packets_greedy(
-                        first_packet,
-                        &mut input_rx,
-                        context.batch_size,
-                    );
-
-                    for packet in packet_batch {
-                        if let Packet::Binary { data, metadata, .. } = packet {
-                            let is_first = packet_count == 0;
-                            packet_count += 1;
-                            stats_tracker.received();
-
-                            if packet_count <= 5 || packet_count.is_multiple_of(50) {
-                                tracing::debug!(packet = packet_count, "MoQ publisher sending packet");
-                            }
-
-                            let duration_us = super::constants::packet_duration_us(metadata.as_ref())
-                                .or(Some(DEFAULT_AUDIO_FRAME_DURATION_US));
-                            let timestamp_ms = if let Some(meta_ts) =
-                                metadata.as_ref().and_then(|m| m.timestamp_us)
-                            {
-                                if !seeded_from_timestamp {
-                                    clock.seed_from_timestamp_us(meta_ts);
-                                    seeded_from_timestamp = true;
-                                }
-                                meta_ts
-                                    .saturating_add(999)
-                                    / 1_000
-                                    + self.config.initial_delay_ms
-                            } else {
-                                clock.timestamp_ms()
-                            };
-                            let keyframe =
-                                is_first || clock.is_group_boundary_ms(self.config.group_duration_ms);
-
-                            let timestamp = hang::container::Timestamp::from_millis(timestamp_ms).map_err(|_| {
-                                StreamKitError::Runtime("MoQ frame timestamp overflow".to_string())
-                            })?;
-
-                            let mut payload = hang::container::BufList::new();
-                            payload.push_chunk(data);
-
-                            let frame = hang::container::Frame { timestamp, keyframe, payload };
-
-                            if let Err(e) = track_producer.write(frame) {
-                                let err_msg = format!("Failed to write MoQ frame: {e}");
-                                tracing::warn!("{err_msg}");
-                                stats_tracker.errored();
-                                stats_tracker.force_send();
-                                state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
-                                return Err(StreamKitError::Runtime(err_msg));
-                            }
-
-                            if let Some(meta_ts) = metadata.as_ref().and_then(|m| m.timestamp_us) {
-                                let meta_ms = meta_ts / 1_000;
-                                let offset = timestamp_ms.saturating_sub(meta_ms);
-                                #[allow(clippy::cast_precision_loss)]
-                                {
-                                    clock_offset_histogram.record(offset as f64, &metric_labels);
-                                }
-                            }
-
-                            clock.advance_by_duration_us(duration_us, DEFAULT_AUDIO_FRAME_DURATION_US);
-                            stats_tracker.sent();
-                        } else {
-                            tracing::warn!("MoqPushNode received non-binary packet, ignoring");
-                            stats_tracker.discarded();
-                        }
+            let (input_source, packet) = tokio::select! {
+                pkt = async {
+                    match audio_rx.as_mut() {
+                        Some(rx) => rx.recv().await,
+                        _ => std::future::pending().await,
                     }
-                    stats_tracker.maybe_send();
+                } => {
+                    if let Some(p) = pkt {
+                        (InputSource::Audio, p)
+                    } else {
+                        audio_rx = None;
+                        if video_rx.is_none() { break; }
+                        continue;
+                    }
+                },
+                pkt = async {
+                    match video_rx.as_mut() {
+                        Some(rx) => rx.recv().await,
+                        _ => std::future::pending().await,
+                    }
+                } => {
+                    if let Some(p) = pkt {
+                        (InputSource::Video, p)
+                    } else {
+                        video_rx = None;
+                        if audio_rx.is_none() { break; }
+                        continue;
+                    }
                 },
                 Some(control_msg) = context.control_rx.recv() => {
-                    match control_msg {
-                        streamkit_core::control::NodeControlMessage::Shutdown => {
-                            tracing::info!("MoqPushNode received shutdown signal after {} packets", packet_count);
-                            break;
-                        }
-                        _ => {
-                            tracing::debug!("MoqPushNode received control message: {:?}", control_msg);
-                        }
+                    if matches!(control_msg, streamkit_core::control::NodeControlMessage::Shutdown) {
+                        tracing::info!("MoqPushNode received shutdown signal after {} packets", packet_count);
+                        break;
                     }
+                    tracing::debug!("MoqPushNode received control message: {:?}", control_msg);
+                    continue;
                 },
-                else => break
+                else => break,
+            };
+
+            if let Packet::Binary { data, metadata, .. } = packet {
+                packet_count += 1;
+                stats_tracker.received();
+
+                if packet_count <= 5 || packet_count.is_multiple_of(50) {
+                    tracing::debug!(packet = packet_count, "MoQ publisher sending packet");
+                }
+
+                let (clock, seeded, default_dur, producer) = match input_source {
+                    InputSource::Audio => {
+                        let Some(ap) = audio_producer.as_mut() else {
+                            tracing::warn!("audio producer missing for audio packet");
+                            stats_tracker.discarded();
+                            continue;
+                        };
+                        (&mut audio_clock, &mut audio_seeded, DEFAULT_AUDIO_FRAME_DURATION_US, ap)
+                    },
+                    InputSource::Video => {
+                        let Some(vp) = video_producer.as_mut() else {
+                            tracing::warn!("video producer missing for video packet");
+                            stats_tracker.discarded();
+                            continue;
+                        };
+                        (
+                            &mut video_clock,
+                            &mut video_seeded,
+                            crate::video::DEFAULT_VIDEO_FRAME_DURATION_US,
+                            vp,
+                        )
+                    },
+                };
+
+                let duration_us =
+                    super::constants::packet_duration_us(metadata.as_ref()).or(Some(default_dur));
+                let timestamp_ms =
+                    if let Some(meta_ts) = metadata.as_ref().and_then(|m| m.timestamp_us) {
+                        if !*seeded {
+                            clock.seed_from_timestamp_us(meta_ts);
+                            *seeded = true;
+                        }
+                        meta_ts.saturating_add(999) / 1_000 + self.config.initial_delay_ms
+                    } else {
+                        clock.timestamp_ms()
+                    };
+
+                let keyframe = match input_source {
+                    InputSource::Audio => {
+                        let first = !audio_first_sent;
+                        audio_first_sent = true;
+                        first || clock.is_group_boundary_ms(self.config.group_duration_ms)
+                    },
+                    InputSource::Video => {
+                        // Default to true when keyframe metadata is missing to ensure
+                        // the OrderedProducer opens an initial MoQ group.
+                        metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(true)
+                    },
+                };
+
+                let timestamp =
+                    hang::container::Timestamp::from_millis(timestamp_ms).map_err(|_| {
+                        StreamKitError::Runtime("MoQ frame timestamp overflow".to_string())
+                    })?;
+
+                let mut payload = hang::container::BufList::new();
+                payload.push_chunk(data);
+
+                if keyframe {
+                    if let Err(e) = producer.keyframe() {
+                        let err_msg = format!("Failed to signal keyframe: {e}");
+                        tracing::warn!("{err_msg}");
+                        stats_tracker.errored();
+                        stats_tracker.force_send();
+                        state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
+                        return Err(StreamKitError::Runtime(err_msg));
+                    }
+                }
+
+                let frame = hang::container::Frame { timestamp, payload };
+
+                if let Err(e) = producer.write(frame) {
+                    let err_msg = format!("Failed to write MoQ frame: {e}");
+                    tracing::warn!("{err_msg}");
+                    stats_tracker.errored();
+                    stats_tracker.force_send();
+                    state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
+                    return Err(StreamKitError::Runtime(err_msg));
+                }
+
+                if let Some(meta_ts) = metadata.as_ref().and_then(|m| m.timestamp_us) {
+                    let meta_ms = meta_ts / 1_000;
+                    let offset = timestamp_ms.saturating_sub(meta_ms);
+                    #[allow(clippy::cast_precision_loss)]
+                    {
+                        clock_offset_histogram.record(offset as f64, &metric_labels);
+                    }
+                }
+
+                clock.advance_by_duration_us(duration_us, default_dur);
+                stats_tracker.sent();
+            } else {
+                tracing::warn!("MoqPushNode received non-binary packet, ignoring");
+                stats_tracker.discarded();
             }
+
+            stats_tracker.maybe_send();
         }
+
         tracing::info!(
-            "MoqPushNode input channel closed after {} packets - pipeline upstream ended",
+            "MoqPushNode input channels closed after {} packets - pipeline upstream ended",
             packet_count
         );
 
         state_helpers::emit_stopped(&context.state_tx, &node_name, "input_closed");
 
-        // Close the track when done (best-effort)
-        track_producer.track.clone().close();
+        // Close tracks when done (best-effort)
+        if let Some(mut ap) = audio_producer {
+            let _ = ap.track.finish();
+        }
+        if let Some(mut vp) = video_producer {
+            let _ = vp.track.finish();
+        }
 
         tracing::info!("MoqPushNode finished after sending {} packets", packet_count);
         Ok(())

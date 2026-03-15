@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use streamkit_core::node::{NodeContext, OutputRouting, OutputSender, RoutedPacketMessage};
 use streamkit_core::state::NodeStateUpdate;
-use streamkit_core::types::Packet;
+use streamkit_core::types::{Packet, PixelFormat, VideoFrame, VideoLayout};
 use tokio::sync::mpsc;
 
 /// Creates a test NodeContext with mock channels
@@ -28,6 +28,7 @@ pub fn create_test_context(
 
     let context = NodeContext {
         inputs,
+        input_types: HashMap::new(),
         control_rx,
         output_sender,
         batch_size,
@@ -38,8 +39,27 @@ pub fn create_test_context(
         cancellation_token: None,
         pin_management_rx: Some(pin_mgmt_rx), // Provide channel for dynamic pins support
         audio_pool: None,
+        video_pool: None,
+        pipeline_mode: streamkit_core::node::PipelineMode::Dynamic,
+        view_data_tx: None,
     };
 
+    (context, mock_sender, state_rx)
+}
+
+/// Creates a test NodeContext configured for **oneshot / batch** mode.
+///
+/// Identical to [`create_test_context`] but sets `cancellation_token` to
+/// `Some(CancellationToken::new())` so nodes that branch on pipeline mode
+/// (e.g. the compositor) exercise the oneshot code path.
+#[allow(clippy::implicit_hasher)]
+pub fn create_oneshot_test_context(
+    inputs: HashMap<String, mpsc::Receiver<streamkit_core::types::Packet>>,
+    batch_size: usize,
+) -> (NodeContext, MockOutputSender, mpsc::Receiver<NodeStateUpdate>) {
+    let (mut context, mock_sender, state_rx) = create_test_context(inputs, batch_size);
+    context.cancellation_token = Some(tokio_util::sync::CancellationToken::new());
+    context.pipeline_mode = streamkit_core::node::PipelineMode::Oneshot;
     (context, mock_sender, state_rx)
 }
 
@@ -131,6 +151,49 @@ pub fn create_test_audio_packet(
 /// Helper to create a test binary packet
 pub fn create_test_binary_packet(data: Vec<u8>) -> Packet {
     Packet::Binary { data: bytes::Bytes::from(data), content_type: None, metadata: None }
+}
+
+/// Helper to create a simple video frame for testing.
+///
+/// # Panics
+///
+/// Panics if the width/height/pixel-format combination is not accepted by
+/// [`VideoFrame::new`] (e.g. zero dimensions or a mismatch between the computed
+/// layout size and the allocated buffer). Callers in tests pick these values
+/// deliberately, so a panic indicates a bug in the test itself.
+#[allow(clippy::expect_used)]
+pub fn create_test_video_frame(
+    width: u32,
+    height: u32,
+    pixel_format: PixelFormat,
+    fill_value: u8,
+) -> VideoFrame {
+    let layout = VideoLayout::packed(width, height, pixel_format);
+    let mut data = vec![fill_value; layout.total_bytes()];
+
+    if pixel_format == PixelFormat::I420 || pixel_format == PixelFormat::Nv12 {
+        // Neutral chroma for predictable decoder output.
+        // Works for both I420 (separate U/V planes) and NV12 (interleaved UV plane):
+        // filling with 128 produces neutral grey regardless of interleaving.
+        for plane in layout.planes().iter().skip(1) {
+            let start = plane.offset;
+            let end = start + plane.stride * plane.height as usize;
+            data[start..end].fill(128);
+        }
+    }
+
+    VideoFrame::new(width, height, pixel_format, data)
+        .expect("test video frame dimensions/format should be valid")
+}
+
+/// Helper to create a simple video packet for testing.
+pub fn create_test_video_packet(
+    width: u32,
+    height: u32,
+    pixel_format: PixelFormat,
+    fill_value: u8,
+) -> Packet {
+    Packet::Video(create_test_video_frame(width, height, pixel_format, fill_value))
 }
 
 /// Helper to extract audio data from a packet

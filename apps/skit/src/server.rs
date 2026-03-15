@@ -1621,8 +1621,8 @@ async fn create_session_handler(
     }
 
     // Parse and compile the YAML pipeline
-    let user_pipeline: UserPipeline = serde_saphyr::from_str(&req.yaml)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid YAML: {e}")))?;
+    let user_pipeline: UserPipeline =
+        streamkit_api::yaml::parse_yaml(&req.yaml).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
     let engine_pipeline = compile(user_pipeline)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid pipeline: {e}")))?;
@@ -1868,13 +1868,10 @@ async fn destroy_session_handler(
     };
 
     let destroyed_id = session.id.clone();
-    if let Err(e) = session.shutdown_and_wait().await {
-        warn!(session_id = %destroyed_id, error = %e, "Error during engine shutdown");
-    }
 
-    info!(session_id = %destroyed_id, "Session destroyed successfully via HTTP");
-
-    // Broadcast event to all WebSocket clients
+    // Broadcast event to all WebSocket clients BEFORE starting shutdown
+    // so clients are notified immediately.  The session has already been
+    // removed from the manager so ListSessions will no longer include it.
     let event = ApiEvent {
         message_type: MessageType::Event,
         correlation_id: None,
@@ -1883,6 +1880,20 @@ async fn destroy_session_handler(
     if let Err(e) = app_state.event_tx.send(event) {
         error!("Failed to broadcast SessionDestroyed event: {}", e);
     }
+
+    // Run engine shutdown in a background task so the HTTP response
+    // returns immediately (shutdown_and_wait has a 10-second timeout).
+    let shutdown_id = destroyed_id.clone();
+    let tracker = app_state.shutdown_tracker.clone();
+    let handle = tokio::spawn(async move {
+        if let Err(e) = session.shutdown_and_wait().await {
+            warn!(session_id = %shutdown_id, error = %e, "Error during engine shutdown");
+            global::meter("skit_server").u64_counter("session.shutdown.errors").build().add(1, &[]);
+        } else {
+            info!(session_id = %shutdown_id, "Session destroyed successfully via HTTP");
+        }
+    });
+    tracker.track(handle).await;
 
     (StatusCode::OK, Json(serde_json::json!({ "session_id": destroyed_id }))).into_response()
 }
@@ -1915,6 +1926,7 @@ async fn get_pipeline_handler(
 
     // Fetch current node states without holding the pipeline lock.
     let node_states = session.get_node_states().await.unwrap_or_default();
+    let node_view_data = session.get_node_view_data().await.unwrap_or_default();
 
     // Clone pipeline (short lock hold) and add runtime state to nodes.
     let mut api_pipeline = {
@@ -1923,6 +1935,11 @@ async fn get_pipeline_handler(
     };
     for (id, node) in &mut api_pipeline.nodes {
         node.state = node_states.get(id).cloned();
+    }
+
+    // Attach resolved view data so clients have accurate positions on initial load.
+    if !node_view_data.is_empty() {
+        api_pipeline.view_data = Some(node_view_data);
     }
 
     info!("Fetched pipeline with states for session '{}' via HTTP", session_id);
@@ -1970,7 +1987,9 @@ async fn parse_config_field(
         .bytes()
         .await
         .map_err(|e| AppError::BadRequest(format!("Failed to read config field: {e}")))?;
-    serde_saphyr::from_slice(&config_bytes).map_err(Into::into)
+    let yaml_str = std::str::from_utf8(&config_bytes)
+        .map_err(|e| AppError::BadRequest(format!("Config is not valid UTF-8: {e}")))?;
+    streamkit_api::yaml::parse_yaml(yaml_str).map_err(AppError::BadRequest)
 }
 
 /// Build http_input bindings from the pipeline definition.
@@ -2288,6 +2307,11 @@ async fn route_multipart_fields(
 
 /// Validate that the pipeline has the required nodes for oneshot processing.
 /// Returns (has_http_input, has_file_read, has_http_output) for logging purposes.
+///
+/// Pipelines must have `streamkit::http_output`. For input, they must have at least one of:
+/// - `streamkit::http_input` (HTTP streaming mode)
+/// - `core::file_reader` (file-based mode)
+/// - Neither (generator mode — the pipeline produces its own data, e.g. video::colorbars)
 fn validate_pipeline_nodes(pipeline_def: &Pipeline) -> Result<(bool, bool, bool), AppError> {
     let has_http_input =
         pipeline_def.nodes.values().any(|node| node.kind == "streamkit::http_input");
@@ -2295,18 +2319,24 @@ fn validate_pipeline_nodes(pipeline_def: &Pipeline) -> Result<(bool, bool, bool)
         pipeline_def.nodes.values().any(|node| node.kind == "streamkit::http_output");
     let has_file_read = pipeline_def.nodes.values().any(|node| node.kind == "core::file_reader");
 
-    if !has_http_input && !has_file_read {
-        return Err(AppError::BadRequest(
-            "Pipeline must contain at least one 'streamkit::http_input' or 'core::file_reader' node for oneshot processing"
-                .to_string(),
-        ));
-    }
-
     if !has_http_output {
         return Err(AppError::BadRequest(
             "Pipeline must contain one 'streamkit::http_output' node for oneshot processing"
                 .to_string(),
         ));
+    }
+
+    // Generator mode: no http_input or file_reader, but there must be at
+    // least one other node that can produce data.
+    if !has_http_input && !has_file_read {
+        let non_output_count =
+            pipeline_def.nodes.values().filter(|n| n.kind != "streamkit::http_output").count();
+        if non_output_count == 0 {
+            return Err(AppError::BadRequest(
+                "Generator-mode pipeline must contain at least one node besides 'streamkit::http_output'"
+                    .to_string(),
+            ));
+        }
     }
 
     Ok((has_http_input, has_file_read, has_http_output))
@@ -2592,7 +2622,7 @@ async fn process_oneshot_pipeline_handler(
 
     tracing::info!(
         "Pipeline validation passed: mode={}, has_http_input={}, has_file_read={}, has_http_output={}",
-        if has_http_input { "http-streaming" } else { "file-based" },
+        if has_http_input { "http-streaming" } else if has_file_read { "file-based" } else { "generator" },
         has_http_input,
         has_file_read,
         has_http_output
@@ -2959,38 +2989,42 @@ pub fn create_app(
     let wasm_plugin_dir = plugin_base_dir.join("wasm");
     let native_plugin_dir = plugin_base_dir.join("native");
 
-    // Create engine with script configuration if feature is enabled
-    #[cfg(feature = "script")]
-    let engine = {
-        // Convert server config AllowlistRule to nodes AllowlistRule
-        let global_script_allowlist = if config.script.global_fetch_allowlist.is_empty() {
-            None
-        } else {
-            Some(
-                config
-                    .script
-                    .global_fetch_allowlist
-                    .iter()
-                    .map(|rule| streamkit_nodes::core::script::AllowlistRule {
-                        url: rule.url.clone(),
-                        methods: rule.methods.clone(),
-                    })
-                    .collect(),
-            )
-        };
+    // Build server-level node constraints from config
+    let mut constraints = streamkit_core::GlobalNodeConstraints::new();
 
-        // Load secrets from environment variables
+    #[cfg(feature = "script")]
+    {
+        let global_fetch_allowlist = config
+            .script
+            .global_fetch_allowlist
+            .iter()
+            .map(|rule| streamkit_nodes::core::script::AllowlistRule {
+                url: rule.url.clone(),
+                methods: rule.methods.clone(),
+            })
+            .collect();
+
         let secrets = load_script_secrets(&config.script.secrets);
 
-        Arc::new(Engine::with_resource_manager_and_script_config(
-            resource_manager.clone(),
-            global_script_allowlist,
+        constraints.insert(streamkit_nodes::core::script::GlobalScriptConfig {
+            global_fetch_allowlist,
             secrets,
-        ))
-    };
+        });
+    }
 
-    #[cfg(not(feature = "script"))]
-    let engine = Arc::new(Engine::with_resource_manager(resource_manager.clone()));
+    #[cfg(feature = "compositor")]
+    {
+        constraints.insert(streamkit_nodes::video::compositor::config::GlobalCompositorConfig {
+            max_canvas_dimension: config.compositor.max_canvas_dimension,
+            max_font_size: config.compositor.max_font_size,
+            max_text_length: config.compositor.max_text_length,
+        });
+    }
+
+    let engine = Arc::new(Engine::with_resource_manager_and_constraints(
+        resource_manager.clone(),
+        &constraints,
+    ));
 
     // Initialize plugin manager - panic on failure since we can't proceed without it
     // This expect is justified and documented in the function's # Panics section
@@ -3044,6 +3078,7 @@ pub fn create_app(
         plugin_manager,
         marketplace_jobs,
         auth,
+        shutdown_tracker: crate::state::ShutdownTracker::default(),
         #[cfg(feature = "moq")]
         moq_gateway,
     });
@@ -3282,7 +3317,7 @@ fn start_moq_webtransport_acceptor(
                             match validate_moq_auth(&auth_state, &path, jwt_param).await {
                                 Ok(ctx) => Some(ctx),
                                 Err(status) => {
-                                    let _ = request.reject(status).await;
+                                    let _ = request.close(status.as_u16()).await;
                                     return;
                                 },
                             }
@@ -3600,8 +3635,11 @@ pub async fn start_server(config: &Config) -> Result<(), Box<dyn std::error::Err
         // Spawn a task to listen for shutdown signal
         tokio::spawn({
             let handle = handle.clone();
+            let tracker = app_state.shutdown_tracker.clone();
             async move {
                 shutdown_signal.await;
+                // Drain background shutdown tasks before stopping the server
+                tracker.drain(std::time::Duration::from_secs(10)).await;
                 handle.graceful_shutdown(Some(std::time::Duration::from_secs(10)));
             }
         });
@@ -3622,8 +3660,11 @@ pub async fn start_server(config: &Config) -> Result<(), Box<dyn std::error::Err
         // Spawn a task to listen for shutdown signal
         tokio::spawn({
             let handle = handle.clone();
+            let tracker = app_state.shutdown_tracker.clone();
             async move {
                 shutdown_signal.await;
+                // Drain background shutdown tasks before stopping the server
+                tracker.drain(std::time::Duration::from_secs(10)).await;
                 handle.graceful_shutdown(Some(std::time::Duration::from_secs(10)));
             }
         });

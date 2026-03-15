@@ -606,6 +606,69 @@ impl Default for ScriptConfig {
     }
 }
 
+// ── Compositor server config ─────────────────────────────────────────────
+
+const fn default_compositor_max_canvas_dimension() -> u32 {
+    7680
+}
+
+const fn default_compositor_max_font_size() -> u32 {
+    4096
+}
+
+const fn default_compositor_max_text_length() -> usize {
+    10_000
+}
+
+// Backward-compat aliases: the TOML keys were renamed from
+// `default_max_canvas_dimension` → `max_canvas_dimension` (and similarly
+// for font size).  The `alias` attribute lets old config files keep working.
+
+/// Server-level defaults for the video compositor node.
+///
+/// These limits apply to every compositor node created by the engine.
+/// Individual nodes cannot exceed these values, even via `UpdateParams`.
+///
+/// ```toml
+/// [compositor]
+/// max_canvas_dimension = 7680
+/// max_font_size = 4096
+/// max_text_length = 10000
+/// ```
+// All fields are upper-bound limits — the shared `max_` prefix is intentional
+// and maps directly to the TOML key names.
+#[allow(clippy::struct_field_names)]
+#[derive(Deserialize, Serialize, Debug, Clone, JsonSchema)]
+pub struct CompositorServerConfig {
+    /// Maximum allowed canvas dimension (width or height) in pixels.
+    /// Default: 7680 (8K UHD).
+    #[serde(
+        default = "default_compositor_max_canvas_dimension",
+        alias = "default_max_canvas_dimension"
+    )]
+    pub max_canvas_dimension: u32,
+
+    /// Maximum allowed font size for text overlays in pixels.
+    /// Default: 4096.
+    #[serde(default = "default_compositor_max_font_size", alias = "default_max_font_size")]
+    pub max_font_size: u32,
+
+    /// Maximum allowed text overlay string length in bytes.
+    /// Default: 10000.
+    #[serde(default = "default_compositor_max_text_length")]
+    pub max_text_length: usize,
+}
+
+impl Default for CompositorServerConfig {
+    fn default() -> Self {
+        Self {
+            max_canvas_dimension: default_compositor_max_canvas_dimension(),
+            max_font_size: default_compositor_max_font_size(),
+            max_text_length: default_compositor_max_text_length(),
+        }
+    }
+}
+
 /// Authentication mode for the server.
 #[derive(Deserialize, Serialize, Debug, Clone, Copy, Default, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -757,6 +820,9 @@ pub struct Config {
 
     #[serde(default)]
     pub script: ScriptConfig,
+
+    #[serde(default)]
+    pub compositor: CompositorServerConfig,
 
     #[serde(default)]
     pub auth: AuthConfig,

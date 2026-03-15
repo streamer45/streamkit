@@ -8,6 +8,20 @@ export type SampleFormat = "F32" | "S16Le";
 
 export type AudioFormat = { sample_rate: number, channels: number, sample_format: SampleFormat, };
 
+export type PixelFormat = "Rgba8" | "I420" | "Nv12";
+
+export type RawVideoFormat = { width: number | null, height: number | null, pixel_format: PixelFormat, };
+
+export type AudioCodec = "Opus";
+
+export type VideoCodec = "Vp9" | "H264" | "Av1";
+
+export type VideoBitstreamFormat = "AnnexB" | "Avcc";
+
+export type EncodedAudioFormat = { codec: AudioCodec, codec_private: Array<number> | null, };
+
+export type EncodedVideoFormat = { codec: VideoCodec, bitstream_format: VideoBitstreamFormat | null, codec_private: Array<number> | null, profile: string | null, level: string | null, };
+
 export type PacketMetadata = { 
 /**
  * Absolute timestamp in microseconds (presentation time)
@@ -20,7 +34,11 @@ duration_us: bigint | null,
 /**
  * Sequence number for ordering and detecting loss
  */
-sequence: bigint | null, };
+sequence: bigint | null, 
+/**
+ * Keyframe flag for encoded video packets (and raw frames if applicable)
+ */
+keyframe: boolean | null, };
 
 export type TranscriptionSegment = { 
 /**
@@ -58,7 +76,7 @@ language: string | null,
  */
 metadata: PacketMetadata | null, };
 
-export type PacketType = { "RawAudio": AudioFormat } | "OpusAudio" | "Text" | "Transcription" | { "Custom": { type_id: string, } } | "Binary" | "Any" | "Passthrough";
+export type PacketType = { "RawAudio": AudioFormat } | { "RawVideo": RawVideoFormat } | { "EncodedAudio": EncodedAudioFormat } | { "EncodedVideo": EncodedVideoFormat } | "Text" | "Transcription" | { "Custom": { type_id: string, } } | "Binary" | "Any" | "Passthrough";
 
 export type PinCardinality = "One" | "Broadcast" | { "Dynamic": { prefix: string, } };
 
@@ -115,7 +133,7 @@ export type Compatibility = { "kind": "any" } | { "kind": "exact" } | { "kind": 
 
 export type PacketTypeMeta = { 
 /**
- * Variant identifier (e.g., "RawAudio", "OpusAudio", "Binary", "Any").
+ * Variant identifier (e.g., "RawAudio", "EncodedAudio", "Binary", "Any").
  */
 id: string, 
 /**
@@ -281,7 +299,11 @@ timestamp: string, } | { "event": "nodeparamschanged", session_id: string, node_
 /**
  * ISO 8601 formatted timestamp when the session was created
  */
-created_at: string, } | { "event": "sessiondestroyed", session_id: string, } | { "event": "nodeadded", session_id: string, node_id: string, kind: string, params: JsonValue, } | { "event": "noderemoved", session_id: string, node_id: string, } | { "event": "connectionadded", session_id: string, from_node: string, from_pin: string, to_node: string, to_pin: string, } | { "event": "connectionremoved", session_id: string, from_node: string, from_pin: string, to_node: string, to_pin: string, } | { "event": "nodetelemetry", 
+created_at: string, } | { "event": "sessiondestroyed", session_id: string, } | { "event": "nodeadded", session_id: string, node_id: string, kind: string, params: JsonValue, } | { "event": "noderemoved", session_id: string, node_id: string, } | { "event": "connectionadded", session_id: string, from_node: string, from_pin: string, to_node: string, to_pin: string, } | { "event": "connectionremoved", session_id: string, from_node: string, from_pin: string, to_node: string, to_pin: string, } | { "event": "nodeviewdataupdated", session_id: string, node_id: string, data: JsonValue, 
+/**
+ * ISO 8601 formatted timestamp
+ */
+timestamp: string, } | { "event": "nodetelemetry", 
 /**
  * The session this event belongs to
  */
@@ -329,7 +351,12 @@ export type Node = { kind: string, params: JsonValue,
  */
 state: NodeState | null, };
 
-export type Pipeline = { name: string | null, description: string | null, mode: EngineMode, nodes: Record<string, Node>, connections: Array<Connection>, };
+export type Pipeline = { name: string | null, description: string | null, mode: EngineMode, nodes: Record<string, Node>, connections: Array<Connection>, 
+/**
+ * Resolved per-node view data (e.g., compositor layout).
+ * Only populated in API responses; absent from pipeline definitions.
+ */
+view_data?: Record<string, JsonValue> | null, };
 
 export type SamplePipeline = { id: string, name: string, description: string, yaml: string, is_system: boolean, mode: string, 
 /**

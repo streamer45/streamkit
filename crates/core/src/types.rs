@@ -12,7 +12,8 @@
 //! - Transcription types for speech processing
 //! - Extensible custom packet types for plugins
 
-use crate::frame_pool::PooledSamples;
+use crate::error::StreamKitError;
+use crate::frame_pool::{PooledSamples, PooledVideoData};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -37,6 +38,77 @@ pub struct AudioFormat {
     pub sample_format: SampleFormat,
 }
 
+/// Describes the pixel format of raw video frames.
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+#[non_exhaustive]
+pub enum PixelFormat {
+    Rgba8,
+    I420,
+    Nv12,
+}
+
+/// Contains the detailed metadata for a raw video stream.
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+pub struct RawVideoFormat {
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub pixel_format: PixelFormat,
+}
+
+/// Supported encoded audio codecs.
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+#[non_exhaustive]
+pub enum AudioCodec {
+    Opus,
+}
+
+/// Supported encoded video codecs.
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+#[non_exhaustive]
+pub enum VideoCodec {
+    Vp9,
+    /// Forward-looking placeholder — not yet wired into any encoder/decoder.
+    H264,
+    /// Forward-looking placeholder — not yet wired into any encoder/decoder.
+    Av1,
+}
+
+/// Bitstream format hints for video codecs (primarily H264).
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+pub enum VideoBitstreamFormat {
+    AnnexB,
+    Avcc,
+}
+
+/// Encoded audio format details (extensible for codec-specific config).
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+pub struct EncodedAudioFormat {
+    pub codec: AudioCodec,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codec_private: Option<Vec<u8>>,
+}
+
+/// Encoded video format details (extensible for codec-specific config).
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+pub struct EncodedVideoFormat {
+    pub codec: VideoCodec,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bitstream_format: Option<VideoBitstreamFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codec_private: Option<Vec<u8>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<String>,
+}
+
 /// Optional timing and sequencing metadata that can be attached to packets.
 /// Used for pacing, synchronization, and A/V alignment. See `timing` module for
 /// canonical semantics (media-time epoch, monotonicity, and preservation rules).
@@ -49,6 +121,8 @@ pub struct PacketMetadata {
     pub duration_us: Option<u64>,
     /// Sequence number for ordering and detecting loss
     pub sequence: Option<u64>,
+    /// Keyframe flag for encoded video packets (and raw frames if applicable)
+    pub keyframe: Option<bool>,
 }
 
 /// Describes the *type* of data, used for pre-flight pipeline validation.
@@ -57,8 +131,12 @@ pub struct PacketMetadata {
 pub enum PacketType {
     /// Raw, uncompressed audio with a specific format.
     RawAudio(AudioFormat),
-    /// Compressed Opus audio.
-    OpusAudio,
+    /// Raw, uncompressed video with a specific format.
+    RawVideo(RawVideoFormat),
+    /// Encoded audio with codec metadata.
+    EncodedAudio(EncodedAudioFormat),
+    /// Encoded video with codec metadata.
+    EncodedVideo(EncodedVideoFormat),
     /// Plain text.
     Text,
     /// Structured transcription data with timestamps and metadata.
@@ -93,6 +171,7 @@ pub enum PacketType {
 #[derive(Debug, Clone, Serialize)]
 pub enum Packet {
     Audio(AudioFrame),
+    Video(VideoFrame),
     /// Text payload (Arc-backed to make fan-out cloning cheap).
     Text(Arc<str>),
     /// Transcription payload (Arc-backed to make fan-out cloning cheap).
@@ -175,6 +254,143 @@ pub struct TranscriptionData {
     pub metadata: Option<PacketMetadata>,
 }
 
+/// Layout information for a single video plane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VideoPlane {
+    pub offset: usize,
+    pub stride: usize,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Packed layout for a video frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VideoLayout {
+    plane_count: usize,
+    planes: [VideoPlane; 3],
+    total_bytes: usize,
+    stride_align: u32,
+}
+
+impl VideoLayout {
+    pub fn packed(width: u32, height: u32, pixel_format: PixelFormat) -> Self {
+        Self::aligned(width, height, pixel_format, 1)
+    }
+
+    /// Compute the layout for the given dimensions, pixel format, and stride alignment.
+    ///
+    /// Zero-width or zero-height dimensions are allowed and produce a zero-byte layout.
+    /// This can be useful as a sentinel but callers should generally validate dimensions
+    /// before constructing frames.
+    pub fn aligned(width: u32, height: u32, pixel_format: PixelFormat, stride_align: u32) -> Self {
+        const EMPTY_PLANE: VideoPlane = VideoPlane { offset: 0, stride: 0, width: 0, height: 0 };
+        let mut planes = [EMPTY_PLANE; 3];
+        let stride_align = stride_align.max(1);
+        let stride_align_usize = stride_align as usize;
+
+        let (plane_count, total_bytes) = match pixel_format {
+            PixelFormat::Rgba8 => {
+                let stride = align_up(width as usize * 4, stride_align_usize);
+                let size = stride * height as usize;
+                planes[0] = VideoPlane { offset: 0, stride, width, height };
+                (1, size)
+            },
+            PixelFormat::I420 => {
+                let luma_stride = align_up(width as usize, stride_align_usize);
+                let luma_size = luma_stride * height as usize;
+                let chroma_width = (width + 1) as usize / 2;
+                let chroma_height = (height + 1) as usize / 2;
+                let chroma_stride = align_up(chroma_width, stride_align_usize);
+                let chroma_size = chroma_stride * chroma_height;
+
+                planes[0] = VideoPlane { offset: 0, stride: luma_stride, width, height };
+                planes[1] = VideoPlane {
+                    offset: luma_size,
+                    stride: chroma_stride,
+                    width: chroma_width as u32,
+                    height: chroma_height as u32,
+                };
+                planes[2] = VideoPlane {
+                    offset: luma_size + chroma_size,
+                    stride: chroma_stride,
+                    width: chroma_width as u32,
+                    height: chroma_height as u32,
+                };
+
+                (3, luma_size + chroma_size * 2)
+            },
+            PixelFormat::Nv12 => {
+                let luma_stride = align_up(width as usize, stride_align_usize);
+                let luma_size = luma_stride * height as usize;
+                let chroma_width = (width + 1) as usize / 2 * 2; // interleaved UV pairs
+                let chroma_height = (height + 1) as usize / 2;
+                let chroma_stride = align_up(chroma_width, stride_align_usize);
+                let chroma_size = chroma_stride * chroma_height;
+
+                planes[0] = VideoPlane { offset: 0, stride: luma_stride, width, height };
+                planes[1] = VideoPlane {
+                    offset: luma_size,
+                    stride: chroma_stride,
+                    width: chroma_width as u32,
+                    height: chroma_height as u32,
+                };
+
+                (2, luma_size + chroma_size)
+            },
+        };
+
+        Self { plane_count, planes, total_bytes, stride_align }
+    }
+
+    pub const fn plane_count(&self) -> usize {
+        self.plane_count
+    }
+
+    pub fn planes(&self) -> &[VideoPlane] {
+        &self.planes[..self.plane_count]
+    }
+
+    pub fn plane(&self, index: usize) -> Option<VideoPlane> {
+        if index < self.plane_count {
+            Some(self.planes[index])
+        } else {
+            None
+        }
+    }
+
+    pub const fn total_bytes(&self) -> usize {
+        self.total_bytes
+    }
+
+    pub const fn stride_align(&self) -> u32 {
+        self.stride_align
+    }
+}
+
+const fn align_up(value: usize, align: usize) -> usize {
+    if align <= 1 {
+        value
+    } else {
+        value.div_ceil(align) * align
+    }
+}
+
+/// A view into a single video plane.
+pub struct VideoPlaneRef<'a> {
+    pub data: &'a [u8],
+    pub stride: usize,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// A mutable view into a single video plane.
+pub struct VideoPlaneMut<'a> {
+    pub data: &'a mut [u8],
+    pub stride: usize,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// A single frame or packet of raw audio data, using f32 as the internal standard.
 ///
 /// Audio samples are stored in an `Arc<PooledSamples>` for efficient zero-copy cloning when packets
@@ -214,6 +430,19 @@ pub struct AudioFrame {
     pub samples: Arc<PooledSamples>,
     /// Optional timing metadata for pacing and synchronization
     pub metadata: Option<PacketMetadata>,
+}
+
+/// Custom serializer for Arc<PooledVideoData> - serializes as base64
+fn serialize_arc_pooled_video_bytes<S>(
+    arc: &Arc<PooledVideoData>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::Serialize;
+    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, arc.as_slice())
+        .serialize(serializer)
 }
 
 /// Custom serializer for Arc<PooledSamples> - serializes as a slice
@@ -265,6 +494,7 @@ impl AudioFrame {
     ///     timestamp_us: Some(1000),
     ///     duration_us: Some(20_000),
     ///     sequence: Some(42),
+    ///     keyframe: None,
     /// };
     /// let frame = AudioFrame::with_metadata(48000, 2, vec![0.5, -0.5], Some(metadata));
     /// assert_eq!(frame.metadata.unwrap().sequence, Some(42));
@@ -378,5 +608,271 @@ impl AudioFrame {
         }
         let frames = self.num_frames() as u64;
         Some((frames * 1_000_000) / u64::from(self.sample_rate))
+    }
+}
+
+/// A single frame of raw video data, stored in an Arc for zero-copy fan-out.
+#[derive(Debug, Clone, Serialize)]
+pub struct VideoFrame {
+    pub width: u32,
+    pub height: u32,
+    pub pixel_format: PixelFormat,
+    pub layout: VideoLayout,
+    #[serde(serialize_with = "serialize_arc_pooled_video_bytes")]
+    pub data: Arc<PooledVideoData>,
+    pub metadata: Option<PacketMetadata>,
+}
+
+impl VideoFrame {
+    /// Validate that `layout` is consistent with the given dimensions/format
+    /// and that `data_len` is large enough.
+    fn validate_layout(
+        width: u32,
+        height: u32,
+        pixel_format: PixelFormat,
+        layout: &VideoLayout,
+        data_len: usize,
+    ) -> Result<(), StreamKitError> {
+        let expected_layout =
+            VideoLayout::aligned(width, height, pixel_format, layout.stride_align());
+        if *layout != expected_layout {
+            return Err(StreamKitError::Runtime(format!(
+                "VideoFrame layout mismatch: expected {expected_layout:?}, got {layout:?}"
+            )));
+        }
+        if data_len < layout.total_bytes() {
+            return Err(StreamKitError::Runtime(format!(
+                "VideoFrame data buffer too small: need {} bytes, have {data_len}",
+                layout.total_bytes(),
+            )));
+        }
+        Ok(())
+    }
+
+    pub fn from_pooled(
+        width: u32,
+        height: u32,
+        pixel_format: PixelFormat,
+        data: PooledVideoData,
+        metadata: Option<PacketMetadata>,
+    ) -> Result<Self, StreamKitError> {
+        let layout = VideoLayout::packed(width, height, pixel_format);
+        Self::from_pooled_with_layout(width, height, pixel_format, layout, data, metadata)
+    }
+
+    pub fn from_pooled_with_layout(
+        width: u32,
+        height: u32,
+        pixel_format: PixelFormat,
+        layout: VideoLayout,
+        mut data: PooledVideoData,
+        metadata: Option<PacketMetadata>,
+    ) -> Result<Self, StreamKitError> {
+        Self::validate_layout(width, height, pixel_format, &layout, data.len())?;
+        data.truncate(layout.total_bytes());
+        Ok(Self { width, height, pixel_format, layout, data: Arc::new(data), metadata })
+    }
+
+    pub fn new(
+        width: u32,
+        height: u32,
+        pixel_format: PixelFormat,
+        data: Vec<u8>,
+    ) -> Result<Self, StreamKitError> {
+        Self::from_pooled(width, height, pixel_format, PooledVideoData::from_vec(data), None)
+    }
+
+    pub fn with_metadata(
+        width: u32,
+        height: u32,
+        pixel_format: PixelFormat,
+        data: Vec<u8>,
+        metadata: Option<PacketMetadata>,
+    ) -> Result<Self, StreamKitError> {
+        Self::from_pooled(width, height, pixel_format, PooledVideoData::from_vec(data), metadata)
+    }
+
+    pub fn from_arc(
+        width: u32,
+        height: u32,
+        pixel_format: PixelFormat,
+        data: Arc<PooledVideoData>,
+        metadata: Option<PacketMetadata>,
+    ) -> Result<Self, StreamKitError> {
+        let layout = VideoLayout::packed(width, height, pixel_format);
+        Self::from_arc_with_layout(width, height, pixel_format, layout, data, metadata)
+    }
+
+    pub fn from_arc_with_layout(
+        width: u32,
+        height: u32,
+        pixel_format: PixelFormat,
+        layout: VideoLayout,
+        data: Arc<PooledVideoData>,
+        metadata: Option<PacketMetadata>,
+    ) -> Result<Self, StreamKitError> {
+        Self::validate_layout(width, height, pixel_format, &layout, data.len())?;
+        // Truncate to match the layout, consistent with `from_pooled_with_layout`.
+        let data = if data.len() > layout.total_bytes() {
+            let mut owned = Arc::unwrap_or_clone(data);
+            owned.truncate(layout.total_bytes());
+            Arc::new(owned)
+        } else {
+            data
+        };
+        Ok(Self { width, height, pixel_format, layout, data, metadata })
+    }
+
+    pub fn data(&self) -> &[u8] {
+        self.data.as_slice()
+    }
+
+    pub fn make_data_mut(&mut self) -> &mut [u8] {
+        Arc::make_mut(&mut self.data).as_mut_slice()
+    }
+
+    /// Returns `true` when this frame holds the only strong reference to the
+    /// underlying data buffer, meaning `make_data_mut()` will not trigger a
+    /// copy.
+    ///
+    /// **Note:** This check is inherently racy — another thread could clone
+    /// the `Arc` between the call to `has_unique_data()` and a subsequent
+    /// mutation.  Use it as an advisory hint (e.g., for logging or metrics),
+    /// not as a synchronisation primitive.
+    pub fn has_unique_data(&self) -> bool {
+        Arc::strong_count(&self.data) == 1
+    }
+
+    pub fn data_len(&self) -> usize {
+        self.data.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    pub fn layout(&self) -> VideoLayout {
+        self.layout
+    }
+
+    pub fn plane(&self, index: usize) -> Option<VideoPlaneRef<'_>> {
+        let layout = self.layout();
+        let plane = layout.plane(index)?;
+        let start = plane.offset;
+        let end = start + plane.stride * plane.height as usize;
+        if end <= self.data.len() {
+            Some(VideoPlaneRef {
+                data: &self.data.as_slice()[start..end],
+                stride: plane.stride,
+                width: plane.width,
+                height: plane.height,
+            })
+        } else {
+            None
+        }
+    }
+
+    pub fn plane_mut(&mut self, index: usize) -> Option<VideoPlaneMut<'_>> {
+        let layout = self.layout();
+        let plane = layout.plane(index)?;
+        let start = plane.offset;
+        let end = start + plane.stride * plane.height as usize;
+        // Check bounds before triggering CoW to avoid a wasted copy.
+        if end > self.data.len() {
+            return None;
+        }
+        let data = Arc::make_mut(&mut self.data);
+        Some(VideoPlaneMut {
+            data: &mut data.as_mut_slice()[start..end],
+            stride: plane.stride,
+            width: plane.width,
+            height: plane.height,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::frame_pool::FramePool;
+
+    #[test]
+    fn video_frame_copy_on_write() {
+        let frame_a = VideoFrame::new(2, 1, PixelFormat::Rgba8, vec![0u8; 8]).unwrap();
+        let mut frame_b = frame_a.clone();
+
+        assert!(!frame_a.has_unique_data());
+        assert!(!frame_b.has_unique_data());
+
+        frame_b.make_data_mut()[0] = 7;
+
+        assert_eq!(frame_a.data()[0], 0);
+        assert_eq!(frame_b.data()[0], 7);
+        assert!(frame_a.has_unique_data());
+        assert!(frame_b.has_unique_data());
+    }
+
+    #[test]
+    fn from_arc_and_pooled_with_layout_consistent_data_len() {
+        let width = 2;
+        let height = 1;
+        let pf = PixelFormat::Rgba8;
+        let layout = VideoLayout::packed(width, height, pf);
+        let expected = layout.total_bytes(); // 8 bytes
+
+        // Supply extra trailing bytes beyond what the layout requires.
+        let oversized: Vec<u8> = vec![0xAA; expected + 16];
+
+        let pooled_frame = VideoFrame::from_pooled_with_layout(
+            width,
+            height,
+            pf,
+            layout,
+            PooledVideoData::from_vec(oversized.clone()),
+            None,
+        )
+        .unwrap();
+
+        let arc_frame = VideoFrame::from_arc_with_layout(
+            width,
+            height,
+            pf,
+            layout,
+            Arc::new(PooledVideoData::from_vec(oversized)),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            pooled_frame.data_len(),
+            expected,
+            "from_pooled_with_layout should truncate to layout size"
+        );
+        assert_eq!(
+            arc_frame.data_len(),
+            expected,
+            "from_arc_with_layout should truncate to layout size"
+        );
+        assert_eq!(
+            pooled_frame.data_len(),
+            arc_frame.data_len(),
+            "both constructors must produce frames with the same data length"
+        );
+    }
+
+    #[test]
+    fn video_frame_pool_returns_on_drop() {
+        let pool = FramePool::<u8>::preallocated(&[8], 1);
+        assert_eq!(pool.stats().buckets[0].available, 1);
+
+        {
+            let data = pool.get(8);
+            let frame = VideoFrame::from_pooled(2, 1, PixelFormat::Rgba8, data, None).unwrap();
+            assert_eq!(frame.data_len(), 8);
+            assert_eq!(pool.stats().buckets[0].available, 0);
+            drop(frame);
+        }
+
+        assert_eq!(pool.stats().buckets[0].available, 1);
     }
 }

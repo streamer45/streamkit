@@ -2,12 +2,12 @@
 # SPDX-FileCopyrightText: © 2025 StreamKit Contributors
 # SPDX-License-Identifier: MPL-2.0
 title: "transport::moq::peer"
-description: "Bidirectional MoQ peer for real-time audio communication. Acts as both publisher and subscriber over a single WebTransport connection."
+description: "Bidirectional MoQ peer for real-time audio and video communication. Acts as both publisher and subscriber over a single WebTransport connection. Supported codecs: Opus (audio), VP9 (video)."
 ---
 
 `kind`: `transport::moq::peer`
 
-Bidirectional MoQ peer for real-time audio communication. Acts as both publisher and subscriber over a single WebTransport connection.
+Bidirectional MoQ peer for real-time audio and video communication. Acts as both publisher and subscriber over a single WebTransport connection. Supported codecs: Opus (audio), VP9 (video).
 
 ## Categories
 - `transport`
@@ -17,10 +17,12 @@ Bidirectional MoQ peer for real-time audio communication. Acts as both publisher
 
 ## Pins
 ### Inputs
-- `in` accepts `OpusAudio` (one)
+- `in` accepts `EncodedAudio(EncodedAudioFormat { codec: Opus, codec_private: None }), EncodedVideo(EncodedVideoFormat { codec: Vp9, bitstream_format: None, codec_private: None, profile: None, level: None })` (one)
+- `in_1` accepts `EncodedAudio(EncodedAudioFormat { codec: Opus, codec_private: None }), EncodedVideo(EncodedVideoFormat { codec: Vp9, bitstream_format: None, codec_private: None, profile: None, level: None })` (one)
 
 ### Outputs
-- `out` produces `OpusAudio` (broadcast)
+- `out` produces `Any` (broadcast)
+- `out_1` produces `Any` (broadcast)
 
 ## Parameters
 | Name | Type | Required | Default | Description |
@@ -31,6 +33,8 @@ Bidirectional MoQ peer for real-time audio communication. Acts as both publisher
 | `output_broadcast` | `string` | no | `output` | Broadcast name to send to subscriber clients |
 | `output_group_duration_ms` | `integer (uint64)` | no | `40` | Duration of each MoQ group in milliseconds for the subscriber output.<br /><br />Default: 40ms (2 Opus frames at 20ms each).<br />min: `0` |
 | `output_initial_delay_ms` | `integer (uint64)` | no | `0` | Adds a timestamp offset (playout delay) so receivers can buffer before playback.<br /><br />Default: 0 (no added delay).<br />min: `0` |
+| `video_height` | `integer (uint32)` | no | `480` | Video height in pixels for the MoQ catalog.<br />Used to advertise the video resolution to subscribers.<br />Default: 480.<br />min: `0` |
+| `video_width` | `integer (uint32)` | no | `640` | Video width in pixels for the MoQ catalog.<br />Used to advertise the video resolution to subscribers.<br />Default: 640.<br />min: `0` |
 
 
 <details>
@@ -75,6 +79,20 @@ Bidirectional MoQ peer for real-time audio communication. Acts as both publisher
       "format": "uint64",
       "minimum": 0,
       "default": 0
+    },
+    "video_width": {
+      "description": "Video width in pixels for the MoQ catalog.\nUsed to advertise the video resolution to subscribers.\nDefault: 640.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0,
+      "default": 640
+    },
+    "video_height": {
+      "description": "Video height in pixels for the MoQ catalog.\nUsed to advertise the video resolution to subscribers.\nDefault: 480.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0,
+      "default": 480
     }
   }
 }

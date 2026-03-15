@@ -41,6 +41,7 @@ type EditorNodeData = {
 };
 
 type NeedsDependency = string | { node: string; mode?: ConnectionMode };
+type NeedsValue = NeedsDependency | NeedsDependency[] | Record<string, string>;
 
 type ParsedDependency = {
   sourceLabel: string;
@@ -66,7 +67,7 @@ type ImportedNodeConfig = {
   kind: string;
   params?: Record<string, unknown>;
   ui?: { position?: XYPosition };
-  needs?: NeedsDependency | NeedsDependency[];
+  needs?: NeedsValue;
 };
 
 export interface ParsedPipeline {
@@ -253,7 +254,11 @@ function createNodesFromPipeline(
 
       const newNode: Node<EditorNodeData> = {
         id: newId,
-        type: (config.kind === 'audio::gain' ? 'audioGain' : 'configurable') as string,
+        type: (config.kind === 'audio::gain'
+          ? 'audioGain'
+          : config.kind === 'video::compositor'
+            ? 'compositor'
+            : 'configurable') as string,
         dragHandle: '.drag-handle',
         position: (config.ui?.position as XYPosition) || {
           x: Math.random() * 800,
@@ -403,7 +408,62 @@ function createEdgesFromPipeline(
       const targetNode = nodeByLabel.get(label);
       if (!targetId || !targetNode) return;
 
-      const needs: NeedsDependency[] = Array.isArray(config.needs) ? config.needs : [config.needs];
+      // Handle map-style needs: { pinName: "sourceNode" }
+      const rawNeeds = config.needs;
+      const isMapStyle =
+        typeof rawNeeds === 'object' && !Array.isArray(rawNeeds) && !('node' in rawNeeds);
+
+      if (isMapStyle) {
+        const needsMap = rawNeeds as Record<string, string>;
+        Object.entries(needsMap).forEach(([targetPin, sourceRef]) => {
+          const { sourceLabel, sourcePin } = parseDependency(sourceRef);
+          const srcId = labelToIdMap.get(sourceLabel);
+          if (!srcId) {
+            throw new Error(
+              `Node "${label}" references non-existent node "${sourceLabel}" in needs.`
+            );
+          }
+          const srcNode = nodeByLabel.get(sourceLabel);
+          if (!srcNode) return;
+
+          const srcOutputs = (srcNode.data.outputs || []) as Array<{
+            name: string;
+            produces_type: PacketType;
+          }>;
+          const sourceHandleName = sourcePin ?? srcOutputs[0]?.name;
+          if (!sourceHandleName) {
+            throw new Error(`Node "${sourceLabel}" has no output pins to connect to "${label}".`);
+          }
+
+          validateConnectionCompatibility(
+            srcNode,
+            targetNode,
+            sourceHandleName,
+            targetPin,
+            sourceLabel,
+            label,
+            Array.from(nodeByLabel.values()),
+            newEdges
+          );
+
+          createEdgeForConnection(
+            srcNode,
+            targetNode,
+            srcId,
+            targetId,
+            sourceHandleName,
+            targetPin,
+            undefined,
+            nodeByLabel,
+            newEdges
+          );
+        });
+        return;
+      }
+
+      const needs: NeedsDependency[] = Array.isArray(rawNeeds)
+        ? rawNeeds
+        : [rawNeeds as NeedsDependency];
 
       needs.forEach((dep: NeedsDependency, needsIndex: number) => {
         const { sourceLabel, sourcePin, mode } = parseDependency(dep);

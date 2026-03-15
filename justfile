@@ -21,6 +21,7 @@ default:
 gen-types:
     @echo "Generating TypeScript types..."
     @cargo run -p streamkit-api --bin generate-ts-types
+    @cargo run -p streamkit-nodes --bin generate-compositor-types --features codegen
 
 # Fetch WIT dependencies (WASI interfaces)
 fetch-wit-deps:
@@ -81,11 +82,19 @@ build-skit:
     @echo "Building skit..."
     @cargo build --release {{moq_features}} -p streamkit-server --bin skit
 
+# Build skit in release mode with native CPU optimisations
+# Produces a binary tuned for the build host's microarchitecture (not portable).
+build-skit-native:
+    @echo "Building skit (target-cpu=native)..."
+    @RUSTFLAGS="-C target-cpu=native" cargo build --release {{moq_features}} -p streamkit-server --bin skit
+
 # Build the skit with profiling support
-# Uses frame pointers for fast stack unwinding (required by pprof frame-pointer feature)
+# Uses release-lto profile for thin LTO (eliminates UB-check overhead and enables
+# cross-crate SIMD inlining), frame pointers for fast stack unwinding (required by
+# pprof frame-pointer feature), and target-cpu=native so profiles reflect host-tuned codegen.
 build-skit-profiling:
-    @echo "Building skit with profiling support (frame pointers enabled)..."
-    @RUSTFLAGS="-C force-frame-pointers=yes" cargo build --release {{moq_features}} {{profiling_features}} -p streamkit-server --bin skit
+    @echo "Building skit with profiling support (release-lto + frame pointers + native CPU)..."
+    @RUSTFLAGS="-C force-frame-pointers=yes -C target-cpu=native" cargo build --profile release-lto {{moq_features}} {{profiling_features}} -p streamkit-server --bin skit
 
 # Start the skit server
 skit *args='': check-ui-dist
@@ -93,11 +102,13 @@ skit *args='': check-ui-dist
     @cargo run {{moq_features}} -p streamkit-server --bin skit -- {{args}}
 
 # Start the skit server with profiling support (CPU + heap)
-# Uses frame pointers for fast stack unwinding (required by pprof frame-pointer feature)
+# Uses release-lto profile for thin LTO (eliminates UB-check overhead and enables
+# cross-crate SIMD inlining), frame pointers for fast stack unwinding (required by
+# pprof frame-pointer feature), and target-cpu=native so profiles reflect host-tuned codegen.
 skit-profiling *args='':
-    @echo "Starting skit with profiling support (CPU + heap, frame pointers enabled)..."
+    @echo "Starting skit with profiling support (release-lto + CPU + heap, frame pointers + native CPU)..."
     @echo "Note: Heap profiling configuration is embedded in the binary"
-    @RUSTFLAGS="-C force-frame-pointers=yes" cargo run {{moq_features}} {{profiling_features}} -p streamkit-server --bin skit -- {{args}}
+    @RUSTFLAGS="-C force-frame-pointers=yes -C target-cpu=native" cargo run --profile release-lto {{moq_features}} {{profiling_features}} -p streamkit-server --bin skit -- {{args}}
 
 # Start the skit server with tokio-console support
 skit-console *args='':
@@ -220,6 +231,19 @@ ui: install-ui
 test-ui: install-ui
     @echo "Testing UI..."
     @bun run test:run
+
+# Run UI render-performance tests (Layer 1)
+[working-directory: 'ui']
+perf-ui: install-ui
+    @echo "Running UI render-performance tests..."
+    @bun run test:perf
+
+# Run e2e compositor perf test (Layer 2)
+# Requires: just skit (backend) + just ui (Vite dev server at :3045)
+[working-directory: 'e2e']
+perf-e2e: install-e2e
+    @echo "Running e2e compositor perf test against dev server..."
+    @E2E_BASE_URL=${E2E_BASE_URL:-http://localhost:3045} bunx playwright test tests/compositor-perf.spec.ts
 
 # Lint and type-check the UI code
 [working-directory: 'ui']

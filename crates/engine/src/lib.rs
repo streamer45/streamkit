@@ -9,6 +9,7 @@ use opentelemetry::global;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 pub use streamkit_api::Connection;
+use streamkit_core::constraints::GlobalNodeConstraints;
 use streamkit_core::registry::NodeRegistry;
 use tokio::sync::mpsc;
 
@@ -52,7 +53,8 @@ use dynamic_actor::DynamicEngine;
 /// It can be used to run stateless pipelines or to start the long-running dynamic actor.
 pub struct Engine {
     pub registry: Arc<RwLock<NodeRegistry>>,
-    pub audio_pool: Arc<streamkit_core::AudioFramePool>,
+    pub(crate) audio_pool: Arc<streamkit_core::AudioFramePool>,
+    pub(crate) video_pool: Arc<streamkit_core::VideoFramePool>,
 }
 impl Default for Engine {
     fn default() -> Self {
@@ -63,89 +65,45 @@ impl Default for Engine {
 impl Engine {
     /// Creates a new engine with a populated node registry.
     pub fn new() -> Self {
-        Self::build(
-            true,
-            None,
-            None,
-            #[cfg(feature = "script")]
-            None,
-            #[cfg(feature = "script")]
-            std::collections::HashMap::new(),
-        )
+        Self::build(true, None, None, &GlobalNodeConstraints::new())
     }
 
     /// Creates a new engine with a custom plugin directory.
     pub fn with_plugin_dir(plugin_dir: Option<std::path::PathBuf>) -> Self {
-        Self::build(
-            true,
-            plugin_dir,
-            None,
-            #[cfg(feature = "script")]
-            None,
-            #[cfg(feature = "script")]
-            std::collections::HashMap::new(),
-        )
+        Self::build(true, plugin_dir, None, &GlobalNodeConstraints::new())
     }
 
     /// Creates a new engine with only built-in nodes registered, skipping plugin loading.
     pub fn without_plugins() -> Self {
-        Self::build(
-            false,
-            None,
-            None,
-            #[cfg(feature = "script")]
-            None,
-            #[cfg(feature = "script")]
-            std::collections::HashMap::new(),
-        )
+        Self::build(false, None, None, &GlobalNodeConstraints::new())
     }
 
     /// Creates a new engine with resource management support.
     /// This is typically used by the server to enable shared resource caching (ML models, etc.).
     pub fn with_resource_manager(resource_manager: Arc<streamkit_core::ResourceManager>) -> Self {
-        Self::build(
-            false,
-            None,
-            Some(resource_manager),
-            #[cfg(feature = "script")]
-            None,
-            #[cfg(feature = "script")]
-            std::collections::HashMap::new(),
-        )
+        Self::build(false, None, Some(resource_manager), &GlobalNodeConstraints::new())
     }
 
-    /// Creates a new engine with resource management and script configuration.
-    /// This is typically used by the server to pass global script allowlists and secrets.
-    #[cfg(feature = "script")]
-    pub fn with_resource_manager_and_script_config(
+    /// Creates a new engine with resource management and server-level node
+    /// constraints.  This is the full-featured constructor used by the server.
+    pub fn with_resource_manager_and_constraints(
         resource_manager: Arc<streamkit_core::ResourceManager>,
-        global_script_allowlist: Option<Vec<streamkit_nodes::core::script::AllowlistRule>>,
-        secrets: std::collections::HashMap<String, streamkit_nodes::core::script::ScriptSecret>,
+        constraints: &GlobalNodeConstraints,
     ) -> Self {
-        Self::build(false, None, Some(resource_manager), global_script_allowlist, secrets)
+        Self::build(false, None, Some(resource_manager), constraints)
     }
 
     fn build(
         load_plugins: bool,
         plugin_dir: Option<std::path::PathBuf>,
         resource_manager: Option<Arc<streamkit_core::ResourceManager>>,
-        #[cfg(feature = "script")] global_script_allowlist: Option<
-            Vec<streamkit_nodes::core::script::AllowlistRule>,
-        >,
-        #[cfg(feature = "script")] secrets: std::collections::HashMap<
-            String,
-            streamkit_nodes::core::script::ScriptSecret,
-        >,
+        constraints: &GlobalNodeConstraints,
     ) -> Self {
         let mut registry =
             resource_manager.map_or_else(NodeRegistry::new, NodeRegistry::with_resource_manager);
 
         // Register built-in nodes
-        #[cfg(feature = "script")]
-        streamkit_nodes::register_nodes(&mut registry, global_script_allowlist, secrets);
-
-        #[cfg(not(feature = "script"))]
-        streamkit_nodes::register_nodes(&mut registry, None, Default::default());
+        streamkit_nodes::register_nodes(&mut registry, constraints);
 
         if load_plugins {
             // Load WASM plugins if feature is enabled
@@ -156,6 +114,7 @@ impl Engine {
         Self {
             registry: Arc::new(RwLock::new(registry)),
             audio_pool: Arc::new(streamkit_core::AudioFramePool::audio_default()),
+            video_pool: Arc::new(streamkit_core::VideoFramePool::video_default()),
         }
     }
 
@@ -229,6 +188,7 @@ impl Engine {
             batch_size: config.packet_batch_size,
             session_id: config.session_id,
             audio_pool: self.audio_pool.clone(),
+            video_pool: self.video_pool.clone(),
             node_input_capacity,
             pin_distributor_capacity,
             node_states: HashMap::new(),
@@ -236,6 +196,8 @@ impl Engine {
             node_stats: HashMap::new(),
             stats_subscribers: Vec::new(),
             telemetry_subscribers: Vec::new(),
+            node_view_data: HashMap::new(),
+            view_data_subscribers: Vec::new(),
             nodes_active_gauge: meter
                 .u64_gauge("engine.nodes.active")
                 .with_description("Number of active nodes in the pipeline")

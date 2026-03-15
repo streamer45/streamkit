@@ -36,6 +36,9 @@ jobs:
           bun install --frozen-lockfile
           bun run build
 
+      - name: Install system dependencies (libvpx for VP9 video support)
+        run: sudo apt-get update && sudo apt-get install -y libvpx-dev
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
@@ -89,6 +92,9 @@ jobs:
           bun install --frozen-lockfile
           bun run build
 
+      - name: Install system dependencies (libvpx for VP9 video support)
+        run: sudo apt-get update && sudo apt-get install -y libvpx-dev
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
@@ -128,6 +134,9 @@ jobs:
         run: |
           bun install --frozen-lockfile
           bun run build
+
+      - name: Install system dependencies (libvpx for VP9 video support)
+        run: sudo apt-get update && sudo apt-get install -y libvpx-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master

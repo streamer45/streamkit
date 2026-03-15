@@ -16,13 +16,29 @@ use crate::pins::{InputPin, OutputPin, PinManagementMessage, PinUpdate};
 use crate::state::NodeStateUpdate;
 use crate::stats::NodeStatsUpdate;
 use crate::telemetry::TelemetryEvent;
-use crate::types::Packet;
-use crate::AudioFramePool;
+use crate::types::{Packet, PacketType};
+use crate::view_data::NodeViewDataUpdate;
+use crate::{AudioFramePool, VideoFramePool};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::mpsc;
+
+/// The execution mode of the pipeline a node is running in.
+///
+/// Nodes may use this to adjust their behaviour — for example, a compositor
+/// can skip real-time tick pacing in [`Oneshot`](PipelineMode::Oneshot) mode
+/// to maximise throughput, while still draining to the latest frame in
+/// [`Dynamic`](PipelineMode::Dynamic) mode for low-latency live compositing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PipelineMode {
+    /// Long-running dynamic pipeline (real-time processing).
+    #[default]
+    Dynamic,
+    /// Oneshot / batch pipeline (process as fast as possible).
+    Oneshot,
+}
 
 /// Message type for routed packet delivery.
 /// Uses `Arc<str>` for node and pin names to avoid heap allocations on every send.
@@ -58,6 +74,10 @@ pub enum OutputSendError {
     /// The downstream channel (direct) or engine channel (routed) is closed.
     #[error("output channel closed for pin '{pin_name}' on node '{node_name}'")]
     ChannelClosed { node_name: String, pin_name: String },
+
+    /// The downstream channel is full (non-blocking send).
+    #[error("output channel full for pin '{pin_name}' on node '{node_name}'")]
+    ChannelFull { node_name: String, pin_name: String },
 }
 
 impl OutputSender {
@@ -82,6 +102,69 @@ impl OutputSender {
             self.pin_name_cache.insert(pin_name.to_string(), arc_name.clone());
             arc_name
         }
+    }
+
+    /// Non-blocking send from a specific output pin.
+    ///
+    /// Returns [`OutputSendError::ChannelFull`] when the downstream channel
+    /// has no capacity — callers may drop the packet and continue.
+    /// Returns [`OutputSendError::ChannelClosed`] or [`OutputSendError::PinNotFound`]
+    /// for permanent errors — callers should stop processing.
+    ///
+    /// Used by real-time nodes (e.g. compositor) that prefer dropping a frame
+    /// over stalling and accumulating latency.
+    pub fn try_send(&mut self, pin_name: &str, packet: Packet) -> Result<(), OutputSendError> {
+        use tokio::sync::mpsc::error::TrySendError;
+
+        // Cache the pin name up front so the mutable borrow is released
+        // before we immutably borrow `self.routing` in the match below.
+        let cached_pin = self.get_cached_pin_name(pin_name);
+
+        match &self.routing {
+            OutputRouting::Direct(senders) => {
+                if let Some(sender) = senders.get(pin_name) {
+                    match sender.try_send(packet) {
+                        Ok(()) => {},
+                        Err(TrySendError::Full(_)) => {
+                            return Err(OutputSendError::ChannelFull {
+                                node_name: self.node_name.to_string(),
+                                pin_name: pin_name.to_string(),
+                            });
+                        },
+                        Err(TrySendError::Closed(_)) => {
+                            return Err(OutputSendError::ChannelClosed {
+                                node_name: self.node_name.to_string(),
+                                pin_name: pin_name.to_string(),
+                            });
+                        },
+                    }
+                } else {
+                    return Err(OutputSendError::PinNotFound {
+                        node_name: self.node_name.to_string(),
+                        pin_name: pin_name.to_string(),
+                    });
+                }
+            },
+            OutputRouting::Routed(engine_tx) => {
+                let message = (self.node_name.clone(), cached_pin, packet);
+                match engine_tx.try_send(message) {
+                    Ok(()) => {},
+                    Err(TrySendError::Full(_)) => {
+                        return Err(OutputSendError::ChannelFull {
+                            node_name: self.node_name.to_string(),
+                            pin_name: pin_name.to_string(),
+                        });
+                    },
+                    Err(TrySendError::Closed(_)) => {
+                        return Err(OutputSendError::ChannelClosed {
+                            node_name: self.node_name.to_string(),
+                            pin_name: pin_name.to_string(),
+                        });
+                    },
+                }
+            },
+        }
+        Ok(())
     }
 
     /// Sends a packet from a specific output pin of this node.
@@ -190,6 +273,15 @@ pub struct InitContext {
 /// The context provided by the engine to a node when it is run.
 pub struct NodeContext {
     pub inputs: HashMap<String, mpsc::Receiver<Packet>>,
+    /// The [`PacketType`] that each connected input pin will receive, keyed by
+    /// pin name.  Populated by the graph builder from the upstream node's
+    /// output type so that nodes can make decisions based on the connected
+    /// media type without having to inspect packets at runtime.
+    ///
+    /// Only contains entries for *connected* pins (unconnected pins are absent).
+    /// May be empty for dynamic pipelines where connections are made after the
+    /// node is already running.
+    pub input_types: HashMap<String, PacketType>,
     pub control_rx: mpsc::Receiver<NodeControlMessage>,
     pub output_sender: OutputSender,
     pub batch_size: usize,
@@ -223,6 +315,19 @@ pub struct NodeContext {
     /// Nodes that produce audio frames (decoders, resamplers, mixers) may use this to
     /// amortize `Vec<f32>` allocations. If `None`, nodes should fall back to allocating.
     pub audio_pool: Option<Arc<AudioFramePool>>,
+    /// Optional per-pipeline video buffer pool for hot-path allocations.
+    ///
+    /// Nodes that produce video frames (decoders, scalers, compositors) may use this to
+    /// amortize `Vec<u8>` allocations. If `None`, nodes should fall back to allocating.
+    pub video_pool: Option<Arc<VideoFramePool>>,
+    /// The execution mode of the pipeline this node is running in.
+    ///
+    /// Nodes can use this to adjust behaviour — e.g. skip real-time
+    /// pacing in [`PipelineMode::Oneshot`] for maximum throughput.
+    pub pipeline_mode: PipelineMode,
+    /// Channel for the node to emit structured view data for frontend consumption.
+    /// Like stats_tx, this is optional and best-effort.
+    pub view_data_tx: Option<mpsc::Sender<NodeViewDataUpdate>>,
 }
 
 impl NodeContext {

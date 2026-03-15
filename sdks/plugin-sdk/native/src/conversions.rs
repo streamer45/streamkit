@@ -15,8 +15,8 @@ use std::ffi::{c_void, CStr, CString};
 use std::os::raw::c_char;
 use std::sync::Arc;
 use streamkit_core::types::{
-    AudioFormat, AudioFrame, CustomEncoding, CustomPacketData, Packet, PacketMetadata, PacketType,
-    SampleFormat, TranscriptionData,
+    AudioCodec, AudioFormat, AudioFrame, CustomEncoding, CustomPacketData, EncodedAudioFormat,
+    Packet, PacketMetadata, PacketType, SampleFormat, TranscriptionData,
 };
 
 /// Convert C packet type info to Rust PacketType
@@ -37,7 +37,10 @@ pub fn packet_type_from_c(cpt_info: CPacketTypeInfo) -> Result<PacketType, Strin
             let c_format = unsafe { &*cpt_info.audio_format };
             Ok(PacketType::RawAudio(audio_format_from_c(c_format)))
         },
-        CPacketType::OpusAudio => Ok(PacketType::OpusAudio),
+        CPacketType::OpusAudio => Ok(PacketType::EncodedAudio(EncodedAudioFormat {
+            codec: AudioCodec::Opus,
+            codec_private: None,
+        })),
         CPacketType::Text => Ok(PacketType::Text),
         CPacketType::Transcription => Ok(PacketType::Transcription),
         CPacketType::Custom => {
@@ -90,7 +93,7 @@ pub const fn audio_format_from_c(caf: &CAudioFormat) -> AudioFormat {
 /// Convert Rust PacketType to C representation
 /// Returns (CPacketTypeInfo, optional CAudioFormat that must be kept alive)
 /// For RawAudio types, the returned CAudioFormat must outlive the CPacketTypeInfo
-pub const fn packet_type_to_c(pt: &PacketType) -> (CPacketTypeInfo, Option<CAudioFormat>) {
+pub fn packet_type_to_c(pt: &PacketType) -> (CPacketTypeInfo, Option<CAudioFormat>) {
     match pt {
         PacketType::RawAudio(format) => {
             let c_format = audio_format_to_c(format);
@@ -103,14 +106,27 @@ pub const fn packet_type_to_c(pt: &PacketType) -> (CPacketTypeInfo, Option<CAudi
                 Some(c_format),
             )
         },
-        PacketType::OpusAudio => (
-            CPacketTypeInfo {
-                type_discriminant: CPacketType::OpusAudio,
-                audio_format: std::ptr::null(),
-                custom_type_id: std::ptr::null(),
-            },
-            None,
-        ),
+        PacketType::EncodedAudio(format) => {
+            if format.codec == AudioCodec::Opus && format.codec_private.is_none() {
+                (
+                    CPacketTypeInfo {
+                        type_discriminant: CPacketType::OpusAudio,
+                        audio_format: std::ptr::null(),
+                        custom_type_id: std::ptr::null(),
+                    },
+                    None,
+                )
+            } else {
+                (
+                    CPacketTypeInfo {
+                        type_discriminant: CPacketType::Binary,
+                        audio_format: std::ptr::null(),
+                        custom_type_id: std::ptr::null(),
+                    },
+                    None,
+                )
+            }
+        },
         PacketType::Text => (
             CPacketTypeInfo {
                 type_discriminant: CPacketType::Text,
@@ -135,6 +151,28 @@ pub const fn packet_type_to_c(pt: &PacketType) -> (CPacketTypeInfo, Option<CAudi
             },
             None,
         ),
+        // TODO: extend C ABI with CPacketType::RawVideo / EncodedVideo for structured video support.
+        // Currently video types are mapped to opaque Binary, so native plugins cannot
+        // inspect width/height/pixel_format. This will be addressed when the C ABI gains
+        // native video packet types.
+        PacketType::RawVideo(_) | PacketType::EncodedVideo(_) => {
+            use std::sync::Once;
+            static WARN: Once = Once::new();
+            WARN.call_once(|| {
+                tracing::warn!(
+                    "Video PacketType mapped to Binary in native plugin ABI: \
+                     video metadata (width, height, pixel_format) is not preserved"
+                );
+            });
+            (
+                CPacketTypeInfo {
+                    type_discriminant: CPacketType::Binary,
+                    audio_format: std::ptr::null(),
+                    custom_type_id: std::ptr::null(),
+                },
+                None,
+            )
+        },
         PacketType::Binary => (
             CPacketTypeInfo {
                 type_discriminant: CPacketType::Binary,
@@ -200,6 +238,7 @@ fn metadata_from_c(meta: &CPacketMetadata) -> PacketMetadata {
         timestamp_us: meta.has_timestamp_us.then_some(meta.timestamp_us),
         duration_us: meta.has_duration_us.then_some(meta.duration_us),
         sequence: meta.has_sequence.then_some(meta.sequence),
+        keyframe: None,
     }
 }
 
@@ -299,6 +338,29 @@ pub fn packet_to_c(packet: &Packet) -> CPacketRepr {
                 len: data.len(),
             },
             _owned: CPacketOwned::None,
+        },
+        // TODO: extend C ABI for structured video frame support (width, height, pixel_format, layout).
+        // Currently video frames are converted to opaque Binary packets, discarding all
+        // metadata (width, height, pixel_format, layout, keyframe). Native plugins receiving
+        // these packets have no way to reconstruct the frame without out-of-band knowledge.
+        // This will be addressed when the C ABI gains native video types.
+        Packet::Video(frame) => {
+            use std::sync::Once;
+            static WARN: Once = Once::new();
+            WARN.call_once(|| {
+                tracing::warn!(
+                    "Video packet converted to Binary for native plugin: frame metadata \
+                     (width, height, pixel_format, layout, keyframe) is lost"
+                );
+            });
+            CPacketRepr {
+                packet: CPacket {
+                    packet_type: CPacketType::Binary,
+                    data: frame.data.as_ptr().cast::<c_void>(),
+                    len: frame.data.len(),
+                },
+                _owned: CPacketOwned::None,
+            }
         },
     }
 }

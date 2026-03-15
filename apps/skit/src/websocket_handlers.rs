@@ -11,6 +11,7 @@ use crate::file_security;
 use crate::permissions::Permissions;
 use crate::session::Session;
 use crate::state::AppState;
+use opentelemetry::global;
 use streamkit_api::{
     Event as ApiEvent, EventPayload, MessageType, RequestPayload, ResponsePayload,
 };
@@ -223,13 +224,10 @@ async fn handle_destroy_session(
     };
     let destroyed_id = session.id.clone();
 
-    if let Err(e) = session.shutdown_and_wait().await {
-        warn!(session_id = %destroyed_id, error = %e, "Error during engine shutdown");
-    }
-
-    info!(session_id = %destroyed_id, "Session destroyed successfully");
-
-    // Broadcast event to all clients
+    // Broadcast event to all clients BEFORE starting shutdown so the
+    // response and event reach clients immediately.  The session has
+    // already been removed from the manager so ListSessions will no
+    // longer include it.
     let event = ApiEvent {
         message_type: MessageType::Event,
         correlation_id: None,
@@ -238,6 +236,22 @@ async fn handle_destroy_session(
     if let Err(e) = app_state.event_tx.send(event) {
         error!("Failed to broadcast SessionDestroyed event: {}", e);
     }
+
+    // Run engine shutdown in a background task so we don't block the
+    // WebSocket handler (shutdown_and_wait has a 10-second timeout which
+    // would stall the entire WS select loop and cause the client's
+    // 5-second request timeout to fire first).
+    let shutdown_id = destroyed_id.clone();
+    let tracker = app_state.shutdown_tracker.clone();
+    let handle = tokio::spawn(async move {
+        if let Err(e) = session.shutdown_and_wait().await {
+            warn!(session_id = %shutdown_id, error = %e, "Error during engine shutdown");
+            global::meter("skit_server").u64_counter("session.shutdown.errors").build().add(1, &[]);
+        } else {
+            info!(session_id = %shutdown_id, "Session destroyed successfully");
+        }
+    });
+    tracker.track(handle).await;
 
     Some(ResponsePayload::SessionDestroyed { session_id: destroyed_id })
 }
@@ -1014,6 +1028,7 @@ async fn handle_get_pipeline(
     }
 
     let node_states = session.get_node_states().await.unwrap_or_default();
+    let node_view_data = session.get_node_view_data().await.unwrap_or_default();
 
     // Clone pipeline (short lock hold) and add runtime state to nodes.
     let mut api_pipeline = {
@@ -1022,6 +1037,11 @@ async fn handle_get_pipeline(
     };
     for (id, node) in &mut api_pipeline.nodes {
         node.state = node_states.get(id).cloned();
+    }
+
+    // Attach resolved view data so clients have accurate positions on initial load.
+    if !node_view_data.is_empty() {
+        api_pipeline.view_data = Some(node_view_data);
     }
 
     info!(

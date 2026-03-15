@@ -346,6 +346,7 @@ fn decode_mp3_streaming_incremental(
                             timestamp_us: Some(cumulative_timestamp_us),
                             duration_us: Some(duration_us),
                             sequence: Some(frame_count),
+                            keyframe: None,
                         };
 
                         // Use blocking_send - more efficient than Handle::block_on
@@ -382,6 +383,7 @@ fn decode_mp3_streaming_incremental(
             timestamp_us: Some(cumulative_timestamp_us),
             duration_us: Some(duration_us),
             sequence: Some(frame_count),
+            keyframe: None,
         };
 
         let final_chunk: Vec<f32> = rechunk_buffer.into_iter().collect();
@@ -502,6 +504,7 @@ fn decode_mp3_streaming(data: &[u8], result_tx: &mpsc::Sender<DecodeResult>) -> 
                             timestamp_us: Some(cumulative_timestamp_us),
                             duration_us: Some(duration_us),
                             sequence: Some(packet_count),
+                            keyframe: None,
                         };
 
                         if frame_tx.send((chunk, sample_rate, channels, metadata)).is_err() {
@@ -532,6 +535,7 @@ fn decode_mp3_streaming(data: &[u8], result_tx: &mpsc::Sender<DecodeResult>) -> 
             timestamp_us: Some(cumulative_timestamp_us),
             duration_us: Some(duration_us),
             sequence: Some(packet_count),
+            keyframe: None,
         };
 
         let final_chunk: Vec<f32> = rechunk_buffer.into_iter().collect();

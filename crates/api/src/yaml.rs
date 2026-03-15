@@ -77,6 +77,19 @@ pub enum Needs {
     None,
     Single(NeedsDependency),
     Multiple(Vec<NeedsDependency>),
+    /// Map variant: keys are **target input pin names**.
+    /// Enables explicit pin targeting, e.g.
+    /// ```yaml
+    /// needs:
+    ///   video: vp9_encoder
+    ///   audio: opus_encoder
+    /// ```
+    ///
+    /// **Note:** Because `Needs` uses `#[serde(untagged)]`, a single-entry
+    /// map whose key is `"node"` (with an optional `"mode"` key matching a
+    /// valid [`ConnectionMode`]) will be parsed as `Single(WithMode)` rather
+    /// than `Map`.  Avoid using `node` as a pin name.
+    Map(IndexMap<String, NeedsDependency>),
 }
 
 /// The top-level structure for a user-facing pipeline definition.
@@ -103,6 +116,22 @@ pub enum UserPipeline {
         mode: EngineMode,
         nodes: IndexMap<String, UserNode>,
     },
+}
+
+/// Parse a YAML string into a [`UserPipeline`].
+///
+/// Uses a two-step approach (YAML → `serde_json::Value` → `UserPipeline`)
+/// to work around a `serde_saphyr` limitation where deeply nested
+/// structures fail to deserialize inside `#[serde(untagged)]` enums.
+///
+/// # Errors
+///
+/// Returns an error if the YAML is malformed or doesn't match the
+/// `UserPipeline` schema.
+pub fn parse_yaml(yaml: &str) -> Result<UserPipeline, String> {
+    let json_value: serde_json::Value =
+        serde_saphyr::from_str(yaml).map_err(|e| format!("Invalid YAML: {e}"))?;
+    serde_json::from_value(json_value).map_err(|e| format!("Invalid pipeline: {e}"))
 }
 
 /// "Compiles" the user-facing pipeline format into the explicit format the engine requires.
@@ -148,7 +177,7 @@ fn compile_steps(
         nodes.insert(node_name, Node { kind: step.kind, params: step.params, state: None });
     }
 
-    Pipeline { name, description, mode, nodes, connections }
+    Pipeline { name, description, mode, nodes, connections, view_data: None }
 }
 
 /// Known bidirectional node kinds that are allowed to participate in cycles.
@@ -227,6 +256,7 @@ fn detect_cycles(user_nodes: &IndexMap<String, UserNode>) -> Result<(), String> 
             Needs::None => vec![],
             Needs::Single(dep) => vec![dep.node_and_pin().0],
             Needs::Multiple(deps) => deps.iter().map(|d| d.node_and_pin().0).collect(),
+            Needs::Map(map) => map.values().map(|d| d.node_and_pin().0).collect(),
         };
 
         for dep_name in dependencies {
@@ -277,13 +307,44 @@ fn compile_dag(
     let mut connections = Vec::new();
 
     for (node_name, node_def) in &user_nodes {
-        let dependencies: Vec<&NeedsDependency> = match &node_def.needs {
+        // Collect dependencies and resolve target pin names.
+        // For Map variant, the map key is the explicit target pin name.
+        // For Single/Multiple, pin names are auto-generated ("in" / "in_N").
+        enum DepEntry<'a> {
+            Auto { idx: usize, total: usize, dep: &'a NeedsDependency },
+            Named { pin: &'a str, dep: &'a NeedsDependency },
+        }
+
+        let entries: Vec<DepEntry<'_>> = match &node_def.needs {
             Needs::None => vec![],
-            Needs::Single(dep) => vec![dep],
-            Needs::Multiple(deps) => deps.iter().collect(),
+            Needs::Single(dep) => vec![DepEntry::Auto { idx: 0, total: 1, dep }],
+            Needs::Multiple(deps) => deps
+                .iter()
+                .enumerate()
+                .map(|(idx, dep)| DepEntry::Auto { idx, total: deps.len(), dep })
+                .collect(),
+            Needs::Map(map) => {
+                // Reject "node" as a pin name because it collides with the
+                // NeedsDependency::WithMode struct key and would be silently
+                // mis-parsed as Single(WithMode) instead of Map.
+                if map.contains_key("node") {
+                    return Err(format!(
+                        "Node '{node_name}': 'node' cannot be used as a pin name in a needs map \
+                         (it collides with the WithMode dependency syntax)"
+                    ));
+                }
+                map.iter().map(|(pin, dep)| DepEntry::Named { pin: pin.as_str(), dep }).collect()
+            },
         };
 
-        for (idx, dep) in dependencies.iter().enumerate() {
+        for entry in &entries {
+            let (dep, to_pin) = match entry {
+                DepEntry::Auto { idx, total, dep } => {
+                    let pin = if *total > 1 { format!("in_{idx}") } else { "in".to_string() };
+                    (*dep, pin)
+                },
+                DepEntry::Named { pin, dep } => (*dep, (*pin).to_string()),
+            };
             let (dep_name, from_pin) = dep.node_and_pin();
 
             // Validate that the referenced node exists
@@ -292,10 +353,6 @@ fn compile_dag(
                     "Node '{node_name}' references non-existent node '{dep_name}' in 'needs' field"
                 ));
             }
-
-            // Use numbered input pins (in_0, in_1, etc.) when there are multiple inputs
-            let to_pin =
-                if dependencies.len() > 1 { format!("in_{idx}") } else { "in".to_string() };
 
             connections.push(Connection {
                 from_node: dep_name.to_string(),
@@ -352,7 +409,7 @@ fn compile_dag(
         })
         .collect();
 
-    Ok(Pipeline { name, description, mode, nodes, connections })
+    Ok(Pipeline { name, description, mode, nodes, connections, view_data: None })
 }
 
 #[cfg(test)]
@@ -371,7 +428,7 @@ nodes:
     needs: peer
 ";
 
-        let user_pipeline: UserPipeline = serde_saphyr::from_str(yaml).unwrap();
+        let user_pipeline = parse_yaml(yaml).unwrap();
         let result = compile(user_pipeline);
 
         // Should fail with a cycle error
@@ -398,7 +455,7 @@ nodes:
     needs: node_a
 ";
 
-        let user_pipeline: UserPipeline = serde_saphyr::from_str(yaml).unwrap();
+        let user_pipeline = parse_yaml(yaml).unwrap();
         let result = compile(user_pipeline);
 
         // Should fail with a cycle error
@@ -421,7 +478,7 @@ nodes:
     needs: non_existent_node
 ";
 
-        let user_pipeline: UserPipeline = serde_saphyr::from_str(yaml).unwrap();
+        let user_pipeline = parse_yaml(yaml).unwrap();
         let result = compile(user_pipeline);
 
         // Should fail with an error message
@@ -472,7 +529,7 @@ nodes:
     needs: ogg_muxer
 ";
 
-        let user_pipeline: UserPipeline = serde_saphyr::from_str(yaml).unwrap();
+        let user_pipeline = parse_yaml(yaml).unwrap();
         let result = compile(user_pipeline);
 
         // Should compile successfully - no cycle in needs graph
@@ -513,7 +570,7 @@ nodes:
     needs: encoder
 ";
 
-        let user_pipeline: UserPipeline = serde_saphyr::from_str(yaml).unwrap();
+        let user_pipeline = parse_yaml(yaml).unwrap();
         let result = compile(user_pipeline);
 
         // Should compile successfully - cycles with bidirectional nodes are allowed
@@ -527,7 +584,7 @@ nodes:
     #[test]
     fn test_sample_moq_mixing_compiles() {
         let yaml = include_str!("../../../samples/pipelines/dynamic/moq_mixing.yml");
-        let user_pipeline: UserPipeline = serde_saphyr::from_str(yaml).unwrap();
+        let user_pipeline = parse_yaml(yaml).unwrap();
         let result = compile(user_pipeline);
 
         assert!(
@@ -554,7 +611,7 @@ nodes:
     - input_b
 ";
 
-        let user_pipeline: UserPipeline = serde_saphyr::from_str(yaml).unwrap();
+        let user_pipeline = parse_yaml(yaml).unwrap();
         let pipeline = compile(user_pipeline).unwrap();
 
         // Should have 3 nodes
@@ -597,7 +654,7 @@ nodes:
     needs: source
 ";
 
-        let user_pipeline: UserPipeline = serde_saphyr::from_str(yaml).unwrap();
+        let user_pipeline = parse_yaml(yaml).unwrap();
         let pipeline = compile(user_pipeline).unwrap();
 
         // Should have 2 nodes
@@ -633,7 +690,7 @@ nodes:
     - input_b
 ";
 
-        let user_pipeline: UserPipeline = serde_saphyr::from_str(yaml).unwrap();
+        let user_pipeline = parse_yaml(yaml).unwrap();
         let pipeline = compile(user_pipeline).unwrap();
 
         // The mixer node should have num_inputs automatically set to 2 (oneshot mode)
@@ -666,7 +723,7 @@ steps:
   - kind: streamkit::http_output
 ";
 
-        let user_pipeline: UserPipeline = serde_saphyr::from_str(yaml).unwrap();
+        let user_pipeline = parse_yaml(yaml).unwrap();
         let pipeline = compile(user_pipeline).unwrap();
 
         // Should have 3 nodes with generated names
@@ -705,7 +762,7 @@ steps:
   - kind: streamkit::http_input
   - kind: streamkit::http_output
 ";
-        let pipeline: UserPipeline = serde_saphyr::from_str(yaml_oneshot).unwrap();
+        let pipeline = parse_yaml(yaml_oneshot).unwrap();
         let compiled = compile(pipeline).unwrap();
         assert_eq!(compiled.mode, EngineMode::OneShot);
 
@@ -715,7 +772,7 @@ mode: dynamic
 steps:
   - kind: core::passthrough
 ";
-        let pipeline: UserPipeline = serde_saphyr::from_str(yaml_dynamic).unwrap();
+        let pipeline = parse_yaml(yaml_dynamic).unwrap();
         let compiled = compile(pipeline).unwrap();
         assert_eq!(compiled.mode, EngineMode::Dynamic);
     }
@@ -728,7 +785,7 @@ steps:
 steps:
   - kind: core::passthrough
 ";
-        let pipeline: UserPipeline = serde_saphyr::from_str(yaml).unwrap();
+        let pipeline = parse_yaml(yaml).unwrap();
         let compiled = compile(pipeline).unwrap();
         assert_eq!(compiled.mode, EngineMode::Dynamic);
     }
@@ -743,7 +800,7 @@ mode: dynamic
 steps:
   - kind: core::passthrough
 ";
-        let pipeline: UserPipeline = serde_saphyr::from_str(yaml).unwrap();
+        let pipeline = parse_yaml(yaml).unwrap();
         let compiled = compile(pipeline).unwrap();
 
         assert_eq!(compiled.name, Some("Test Pipeline".to_string()));
@@ -768,7 +825,7 @@ nodes:
       mode: best_effort
 ";
 
-        let user_pipeline: UserPipeline = serde_saphyr::from_str(yaml).unwrap();
+        let user_pipeline = parse_yaml(yaml).unwrap();
         let pipeline = compile(user_pipeline).unwrap();
 
         // Should have 3 nodes
@@ -812,7 +869,7 @@ nodes:
         mode: best_effort
 ";
 
-        let user_pipeline: UserPipeline = serde_saphyr::from_str(yaml).unwrap();
+        let user_pipeline = parse_yaml(yaml).unwrap();
         let pipeline = compile(user_pipeline).unwrap();
 
         // Should have 3 nodes
@@ -838,5 +895,77 @@ nodes:
             .expect("Should have connection from input_b");
         assert_eq!(conn_b.mode, ConnectionMode::BestEffort);
         assert_eq!(conn_b.to_pin, "in_1");
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    fn test_needs_map_explicit_pin_targeting() {
+        let yaml = r"
+mode: dynamic
+nodes:
+  vp9_encoder:
+    kind: video::vp9_encoder
+  opus_encoder:
+    kind: audio::opus_encoder
+  muxer:
+    kind: containers::webm_muxer
+    needs:
+      video: vp9_encoder
+      audio: opus_encoder
+";
+
+        let user_pipeline = parse_yaml(yaml).unwrap();
+        let pipeline = compile(user_pipeline).unwrap();
+
+        // Should have 3 nodes
+        assert_eq!(pipeline.nodes.len(), 3);
+
+        // Should have 2 connections
+        assert_eq!(pipeline.connections.len(), 2);
+
+        // Connection from vp9_encoder should target the "video" pin
+        let video_conn = pipeline
+            .connections
+            .iter()
+            .find(|c| c.from_node == "vp9_encoder")
+            .expect("Should have connection from vp9_encoder");
+        assert_eq!(video_conn.to_node, "muxer");
+        assert_eq!(video_conn.to_pin, "video");
+        assert_eq!(video_conn.from_pin, "out");
+
+        // Connection from opus_encoder should target the "audio" pin
+        let audio_conn = pipeline
+            .connections
+            .iter()
+            .find(|c| c.from_node == "opus_encoder")
+            .expect("Should have connection from opus_encoder");
+        assert_eq!(audio_conn.to_node, "muxer");
+        assert_eq!(audio_conn.to_pin, "audio");
+        assert_eq!(audio_conn.from_pin, "out");
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    fn test_needs_map_with_output_pin_specifier() {
+        let yaml = r"
+mode: dynamic
+nodes:
+  source:
+    kind: test_source
+  sink:
+    kind: test_sink
+    needs:
+      my_input: source.alt_out
+";
+
+        let user_pipeline = parse_yaml(yaml).unwrap();
+        let pipeline = compile(user_pipeline).unwrap();
+
+        assert_eq!(pipeline.connections.len(), 1);
+        let conn = &pipeline.connections[0];
+        assert_eq!(conn.from_node, "source");
+        assert_eq!(conn.from_pin, "alt_out");
+        assert_eq!(conn.to_node, "sink");
+        assert_eq!(conn.to_pin, "my_input");
     }
 }

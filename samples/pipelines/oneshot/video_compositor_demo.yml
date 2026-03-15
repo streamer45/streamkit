@@ -1,0 +1,116 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Demonstrates the video::compositor node with three layers:
+#   1. A full-size 640x480 background colorbars (RGBA8)
+#   2. A smaller 320x240 PiP colorbars overlay (RGBA8) with explicit
+#      positioning and 15° clockwise rotation
+#   3. A text overlay ("StreamKit Demo") rendered with the bundled
+#      DejaVu Sans font (embedded in the binary)
+#
+# Per-layer rect, opacity, rotation_degrees, and text overlays can be
+# updated at runtime via UpdateParams (JSON) — changes take effect on
+# the very next composited frame.
+
+name: Video Compositor Demo
+description: Composites two colorbars sources (main + PiP) with a text overlay through the compositor node, encodes to VP9, and streams a WebM via http_output with real-time pacing (3 seconds)
+mode: oneshot
+
+nodes:
+  colorbars_bg:
+    kind: video::colorbars
+    params:
+      width: 1280
+      height: 720
+      fps: 30
+      frame_count: 90
+      pixel_format: rgba8
+      # Draw the current wall-clock time (HH:MM:SS.mmm) in the bottom-left
+      # corner using the bundled DejaVu Sans Mono font.
+      draw_time: true
+
+  colorbars_pip:
+    kind: video::colorbars
+    params:
+      width: 320
+      height: 240
+      fps: 30
+      frame_count: 90
+      pixel_format: rgba8
+      draw_time: true
+
+  compositor:
+    kind: video::compositor
+    params:
+      width: 1280
+      height: 720
+      num_inputs: 2
+      layers:
+        # Background fills the canvas (default when no rect is specified).
+        in_0:
+          opacity: 1.0
+          z_index: 0
+        # PiP overlay: positioned on the left side with a 15° clockwise
+        # rotation to demonstrate compositing transforms.  The source
+        # (320×240, 4:3) is uniformly fitted into a 240×180 (also 4:3)
+        # rect; if the rect aspect ratio differed the image would be
+        # letterboxed/pillarboxed rather than stretched.  Placed left so
+        # the main canvas blue bar (rightmost SMPTE bar) stays visible.
+        in_1:
+          rect:
+            x: 100
+            y: 220
+            width: 240
+            height: 180
+          opacity: 0.9
+          z_index: 1
+          rotation_degrees: 15.0
+      # Text overlays rendered with the bundled DejaVu Sans font.
+      # All overlay types now support rotation_degrees and z_index via the
+      # unified OverlayTransform consolidation.
+      text_overlays:
+        - id: "title"
+          text: "StreamKit Demo"
+          rect:
+            x: 20
+            y: 20
+            width: 400
+            height: 40
+          color: [255, 255, 255, 230]
+          font_size: 32
+          opacity: 1.0
+          rotation_degrees: 0.0
+          z_index: 2
+          font_name: dejavu-sans
+    needs:
+      - colorbars_bg
+      - colorbars_pip
+
+  pixel_convert:
+    kind: video::pixel_convert
+    params:
+      output_format: nv12
+    needs: compositor
+
+  vp9_encoder:
+    kind: video::vp9::encoder
+    needs: pixel_convert
+
+  webm_muxer:
+    kind: containers::webm::muxer
+    params:
+      video_width: 1280
+      video_height: 720
+      streaming_mode: live
+    needs: vp9_encoder
+
+  pacer:
+    kind: core::pacer
+    needs: webm_muxer
+
+  http_output:
+    kind: streamkit::http_output
+    params:
+      content_type: 'video/webm; codecs="vp9"'
+    needs: pacer

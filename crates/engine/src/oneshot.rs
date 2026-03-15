@@ -37,6 +37,75 @@ use streamkit_api::Pipeline;
 use streamkit_core::control::NodeControlMessage;
 use streamkit_core::error::StreamKitError;
 use streamkit_core::node::ProcessorNode;
+
+/// The detected input mode for a oneshot pipeline.
+enum OneshotInputMode {
+    /// HTTP streaming: pipeline has `streamkit::http_input` nodes.
+    HttpStreaming,
+    /// File-based: pipeline has `core::file_reader` nodes (no http_input).
+    FileBased,
+    /// Generator: pipeline produces its own data (e.g. `video::colorbars`).
+    Generator,
+}
+
+/// Validates the input mode of a oneshot pipeline.
+///
+/// Checks that the combination of pipeline nodes and provided input streams
+/// is consistent.
+fn validate_input_mode<S>(
+    has_http_input: bool,
+    source_node_ids: &[String],
+    http_input_nodes: &[String],
+    inputs: &[OneshotInput<S>],
+    output_node_id: Option<&String>,
+) -> Result<OneshotInputMode, StreamKitError> {
+    let output_label = output_node_id.map_or("unknown", String::as_str);
+
+    if has_http_input {
+        if inputs.is_empty() {
+            tracing::error!(
+                "Pipeline validation failed: no input streams provided for http_input nodes"
+            );
+            return Err(StreamKitError::Configuration(
+                "Input streams are required for 'streamkit::http_input' nodes.".to_string(),
+            ));
+        }
+        tracing::info!(
+            "HTTP streaming mode: {} http_input node(s), output='{output_label}'",
+            http_input_nodes.len(),
+        );
+        Ok(OneshotInputMode::HttpStreaming)
+    } else if !source_node_ids.is_empty() {
+        if !inputs.is_empty() {
+            tracing::error!(
+                "Pipeline validation failed: streams provided but no http_input nodes present"
+            );
+            return Err(StreamKitError::Configuration(
+                "Multipart streams were provided but the pipeline has no 'streamkit::http_input' nodes."
+                    .to_string(),
+            ));
+        }
+        tracing::info!(
+            "File-based mode: {} source node(s), output='{output_label}'",
+            source_node_ids.len(),
+        );
+        Ok(OneshotInputMode::FileBased)
+    } else {
+        // Generator mode: pipeline produces its own data (e.g. video::colorbars)
+        // No http_input or file_reader required — just needs http_output.
+        if !inputs.is_empty() {
+            tracing::error!(
+                "Pipeline validation failed: streams provided but no http_input nodes present"
+            );
+            return Err(StreamKitError::Configuration(
+                "Multipart streams were provided but the pipeline has no 'streamkit::http_input' nodes."
+                    .to_string(),
+            ));
+        }
+        tracing::info!("Generator mode: no input nodes, output='{output_label}'");
+        Ok(OneshotInputMode::Generator)
+    }
+}
 use streamkit_core::stats::{NodeStats, NodeStatsUpdate};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -104,7 +173,7 @@ impl Engine {
     ///
     /// Panics if the engine's registry lock is poisoned (only possible if a thread panicked
     /// while holding the lock).
-    #[allow(clippy::cognitive_complexity)]
+    #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
     pub async fn run_oneshot_pipeline<S, E>(
         &self,
         definition: Pipeline,
@@ -153,43 +222,13 @@ impl Engine {
 
         let has_http_input = !http_input_nodes.is_empty();
 
-        if has_http_input {
-            if inputs.is_empty() {
-                tracing::error!(
-                    "Pipeline validation failed: no input streams provided for http_input nodes"
-                );
-                return Err(StreamKitError::Configuration(
-                    "Input streams are required for 'streamkit::http_input' nodes.".to_string(),
-                ));
-            }
-            tracing::info!(
-                "HTTP streaming mode: {} http_input node(s), output='{}'",
-                http_input_nodes.len(),
-                output_node_id.as_deref().unwrap_or("unknown")
-            );
-        } else {
-            if source_node_ids.is_empty() {
-                tracing::error!("Pipeline validation failed: no file_reader nodes found");
-                return Err(StreamKitError::Configuration(
-                    "File-based pipelines must contain at least one 'core::file_reader' node."
-                        .to_string(),
-                ));
-            }
-            if !inputs.is_empty() {
-                tracing::error!(
-                    "Pipeline validation failed: streams provided but no http_input nodes present"
-                );
-                return Err(StreamKitError::Configuration(
-                    "Multipart streams were provided but the pipeline has no 'streamkit::http_input' nodes."
-                        .to_string(),
-                ));
-            }
-            tracing::info!(
-                "File-based mode: {} source node(s), output='{}'",
-                source_node_ids.len(),
-                output_node_id.as_deref().unwrap_or("unknown")
-            );
-        }
+        let _input_mode = validate_input_mode(
+            has_http_input,
+            &source_node_ids,
+            &http_input_nodes,
+            &inputs,
+            output_node_id.as_ref(),
+        )?;
 
         let output_node_id = output_node_id.ok_or_else(|| {
             tracing::error!("Pipeline validation failed: missing streamkit::http_output node");
@@ -325,11 +364,47 @@ impl Engine {
         })?;
         tracing::debug!("Creating final node instance of type '{}'", final_node_def.kind);
 
-        // Get the static content-type from the final node before we move it
+        // Walk backwards from the output node through the connection graph to find
+        // the first node that declares a content_type.  This allows passthrough-style
+        // nodes (pacer, passthrough, telemetry_tap, etc.) to be inserted before
+        // http_output without losing the upstream content type.
+        //
+        // NOTE: This walk follows a single path — at each step it picks the first
+        // connection whose `to_node` matches `cursor`.  For fan-in nodes (e.g. a
+        // compositor with multiple inputs) only one arbitrary upstream branch is
+        // traversed.  This is correct for content-type discovery because the
+        // content-producing node (encoder / muxer) sits downstream of any fan-in
+        // point, not upstream of it.
         let static_content_type = {
-            let temp_instance =
-                registry.create_node(&final_node_def.kind, final_node_def.params.as_ref())?;
-            temp_instance.content_type()
+            let mut cursor = final_node_id.as_str();
+            let mut found: Option<String> = None;
+            let mut steps = 0;
+            // Limit iterations to prevent infinite loops in malformed graphs.
+            let max_steps = definition.nodes.len();
+            for _ in 0..max_steps {
+                steps += 1;
+                if let Some(def) = definition.nodes.get(cursor) {
+                    let temp = registry.create_node(&def.kind, def.params.as_ref())?;
+                    if let Some(ct) = temp.content_type() {
+                        found = Some(ct);
+                        break;
+                    }
+                }
+                // Move to the upstream node that feeds `cursor`.
+                match definition.connections.iter().find(|c| c.to_node == cursor) {
+                    Some(conn) => cursor = conn.from_node.as_str(),
+                    None => break,
+                }
+            }
+            if found.is_none() {
+                tracing::warn!(
+                    steps,
+                    final_node = %final_node_id,
+                    "Content-type backward walk did not find a content_type; \
+                     response will fall back to configured or default type"
+                );
+            }
+            found
         };
 
         // --- 4. Instantiate all nodes for the pipeline ---
@@ -378,6 +453,7 @@ impl Engine {
         let node_kinds_for_metrics = node_kinds.clone();
 
         let audio_pool = self.audio_pool.clone();
+        let video_pool = self.video_pool.clone();
 
         let (stats_tx, stats_rx) = mpsc::channel(DEFAULT_STATE_CHANNEL_CAPACITY);
 
@@ -391,19 +467,37 @@ impl Engine {
             Some(stats_tx),
             Some(cancellation_token.clone()),
             Some(audio_pool),
+            Some(video_pool),
         )
         .await?;
         tracing::info!("Pipeline graph successfully spawned");
 
         spawn_oneshot_metrics_recorder(stats_rx, node_kinds_for_metrics);
 
-        // --- 5.5. Start file readers (if any) ---
-        if !source_node_ids.is_empty() {
+        // --- 5.5. Start source / generator nodes ---
+        // File readers need an explicit Start signal, and so do generator nodes
+        // (e.g. video::colorbars) that follow the Ready → Start lifecycle.
+        // In generator mode we find root nodes (never a to_node in any connection)
+        // and send them Start as well.
+        let mut start_node_ids: Vec<String> = source_node_ids.clone();
+
+        if !has_http_input && source_node_ids.is_empty() {
+            // Generator mode — find root nodes that need a Start signal.
+            let downstream_nodes: std::collections::HashSet<&str> =
+                definition.connections.iter().map(|c| c.to_node.as_str()).collect();
+            for name in definition.nodes.keys() {
+                if name != &output_node_id && !downstream_nodes.contains(name.as_str()) {
+                    start_node_ids.push(name.clone());
+                }
+            }
+        }
+
+        if !start_node_ids.is_empty() {
             tracing::info!(
-                "Sending Start signals to {} file_reader node(s)",
-                source_node_ids.len()
+                "Sending Start signals to {} source/generator node(s)",
+                start_node_ids.len()
             );
-            for source_id in &source_node_ids {
+            for source_id in &start_node_ids {
                 if let Some(node_handle) = live_nodes.get(source_id) {
                     tracing::debug!("Sending Start signal to source node '{}'", source_id);
                     if let Err(e) = node_handle.control_tx.send(NodeControlMessage::Start).await {

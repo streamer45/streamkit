@@ -46,7 +46,7 @@ fn main() -> Result<()> {
 
     // --- Built-in nodes (core runtime nodes) ---
     let mut registry = NodeRegistry::new();
-    streamkit_nodes::register_nodes(&mut registry, None, std::collections::HashMap::default());
+    streamkit_nodes::register_nodes(&mut registry, &streamkit_core::GlobalNodeConstraints::new());
 
     let mut built_in_nodes = registry.definitions();
     add_synthetic_oneshot_nodes(&mut built_in_nodes);
@@ -243,10 +243,24 @@ fn packet_type_entries() -> Vec<PacketTypeEntry> {
             runtime_repr: "Packet::Audio(AudioFrame)",
         },
         PacketTypeEntry {
-            id: "OpusAudio",
-            slug: "opus-audio",
-            label: "Opus Audio",
-            kind_repr: "PacketType::OpusAudio",
+            id: "EncodedAudio",
+            slug: "encoded-audio",
+            label: "Encoded Audio",
+            kind_repr: "PacketType::EncodedAudio(EncodedAudioFormat)",
+            runtime_repr: "Packet::Binary { data, metadata, .. }",
+        },
+        PacketTypeEntry {
+            id: "RawVideo",
+            slug: "raw-video",
+            label: "Raw Video",
+            kind_repr: "PacketType::RawVideo(RawVideoFormat)",
+            runtime_repr: "Packet::Video(VideoFrame)",
+        },
+        PacketTypeEntry {
+            id: "EncodedVideo",
+            slug: "encoded-video",
+            label: "Encoded Video",
+            kind_repr: "PacketType::EncodedVideo(EncodedVideoFormat)",
             runtime_repr: "Packet::Binary { data, metadata, .. }",
         },
         PacketTypeEntry {
@@ -400,7 +414,7 @@ Use `Custom` when you need **structured, typed messages** that don't fit existin
 
 Prefer other packet types when they fit:
 
-- Audio frames/streams: `/reference/packets/raw-audio/` or `/reference/packets/opus-audio/`
+- Audio frames/streams: `/reference/packets/raw-audio/` or `/reference/packets/encoded-audio/`
 - Plain strings: `/reference/packets/text/`
 - Opaque bytes, blobs, or media: `/reference/packets/binary/`
 - Speech-to-text results: `/reference/packets/transcription/`
@@ -539,10 +553,48 @@ Notes:
 "#
             .to_string(),
         ),
-        "OpusAudio" => Ok(
-            r"Opus packets use the `OpusAudio` packet type, but the runtime payload is still `Packet::Binary`.
+        "EncodedAudio" => Ok(
+            r"Encoded audio is defined by an `EncodedAudioFormat` (codec + optional codec-private data) in the type system.
 
-The Opus codec nodes encode/decode using `Packet::Binary { data, metadata, .. }` and label pins as `OpusAudio`.
+At runtime, encoded audio frames are carried as `Packet::Binary { data, metadata, .. }`. The codec nodes
+encode/decode using this binary payload and label pins with the appropriate `EncodedAudio` type.
+"
+            .to_string(),
+        ),
+        "RawVideo" => {
+            let mut out = String::new();
+            out.push_str(
+                r"Raw video is defined by a `RawVideoFormat` in the type system and carried as `Packet::Video(VideoFrame)` at runtime.
+
+### PacketType payload (`RawVideoFormat`)
+
+",
+            );
+            let schema = serde_json::to_value(schema_for!(streamkit_core::types::RawVideoFormat))
+                .context("failed to generate RawVideoFormat schema")?;
+            out.push_str(&render_object_fields(&schema, &schema, 0));
+            out.push_str(&render_raw_schema(&schema));
+
+            out.push_str(
+                r"
+### Runtime payload (`VideoFrame`)
+
+`VideoFrame` is optimized for zero-copy fan-out (Arc + CoW). It contains:
+
+- `layout` (`VideoLayout`) — plane offsets, strides, and dimensions
+- `data` (shared byte buffer backed by `VideoFramePool`)
+- `metadata` (`PacketMetadata`, optional)
+",
+            );
+
+            Ok(out)
+        },
+        "EncodedVideo" => Ok(
+            r"Encoded video is defined by an `EncodedVideoFormat` (codec, bitstream format, profile, level)
+in the type system.
+
+At runtime, encoded video frames are carried as `Packet::Binary { data, metadata, .. }`. The codec nodes
+encode/decode using this binary payload and label pins with the appropriate `EncodedVideo` type.
 "
             .to_string(),
         ),
@@ -842,11 +894,7 @@ fn render_params(schema: &Value) -> String {
             key,
             type_label,
             required_label,
-            if default_label.is_empty() {
-                "—".to_string()
-            } else {
-                format!("`{}`", default_label)
-            },
+            format_default_cell(&default_label),
             if description.is_empty() { "—".to_string() } else { description }
         ));
 
@@ -905,11 +953,7 @@ fn render_object_fields(root: &Value, obj_schema: &Value, depth: usize) -> Strin
             key,
             type_label,
             required_label,
-            if default_label.is_empty() {
-                "—".to_string()
-            } else {
-                format!("`{}`", default_label)
-            },
+            format_default_cell(&default_label),
             if description.is_empty() { "—".to_string() } else { description }
         ));
 
@@ -935,6 +979,15 @@ fn object_schema_to_expand(root: &Value, schema: &Value) -> Option<Value> {
             .and_then(Value::as_array)
             .is_some_and(|arr| arr.iter().any(|t| t.as_str() == Some("object")))
     {
+        // For map-typed params (additionalProperties without top-level
+        // properties), recurse into the value schema so its fields are
+        // documented.
+        if resolved.get("properties").is_none() {
+            if let Some(ap) = resolved.get("additionalProperties") {
+                let ap_resolved = resolve_ref(root, ap).unwrap_or(ap);
+                return Some(ap_resolved.clone());
+            }
+        }
         return Some(resolved.clone());
     }
 
@@ -1038,7 +1091,8 @@ fn trim_float(v: f64) -> String {
 }
 
 fn render_raw_schema(schema: &Value) -> String {
-    let pretty = serde_json::to_string_pretty(schema).unwrap_or_else(|_| "{}".to_string());
+    let sanitized = sanitize_uuid_defaults(schema.clone());
+    let pretty = serde_json::to_string_pretty(&sanitized).unwrap_or_else(|_| "{}".to_string());
     format!(
         r"
 <details>
@@ -1053,11 +1107,68 @@ fn render_raw_schema(schema: &Value) -> String {
     )
 }
 
+/// Recursively walk a JSON value and replace any `"default"` string value
+/// that looks like a UUID v4 with a stable placeholder.
+fn sanitize_uuid_defaults(mut value: Value) -> Value {
+    match &mut value {
+        Value::Object(map) => {
+            if let Some(Value::String(s)) = map.get("default") {
+                if is_uuid_v4(s) {
+                    map.insert(
+                        "default".to_string(),
+                        Value::String("(auto-generated UUID v4)".to_string()),
+                    );
+                }
+            }
+            for v in map.values_mut() {
+                *v = sanitize_uuid_defaults(v.clone());
+            }
+        },
+        Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                *item = sanitize_uuid_defaults(item.clone());
+            }
+        },
+        _ => {},
+    }
+    value
+}
+
 fn json_one_line(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
         _ => serde_json::to_string(v).unwrap_or_else(|_| String::new()),
     }
+}
+
+/// Formats a schema default value for the docs table, replacing
+/// runtime-generated sentinels (like UUID v4 strings) with stable
+/// descriptive text so the output doesn't change on every regeneration.
+fn format_default_cell(raw: &str) -> String {
+    if raw.is_empty() {
+        return "—".to_string();
+    }
+    if is_uuid_v4(raw) {
+        return "*(auto-generated UUID v4)*".to_string();
+    }
+    format!("`{}`", raw)
+}
+
+/// Returns `true` when `s` looks like a UUID v4 (8-4-4-4-12 hex pattern).
+fn is_uuid_v4(s: &str) -> bool {
+    // xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+    if s.len() != 36 {
+        return false;
+    }
+    let parts: Vec<&str> = s.split('-').collect();
+    if parts.len() != 5 {
+        return false;
+    }
+    let expected_lens = [8, 4, 4, 4, 12];
+    parts
+        .iter()
+        .zip(expected_lens.iter())
+        .all(|(part, &len)| part.len() == len && part.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
 fn yaml_string(s: &str) -> String {

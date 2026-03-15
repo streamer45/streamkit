@@ -15,16 +15,16 @@ members = [
 exclude = ["examples", "tests", "plugins"]
 
 [workspace.dependencies]
-streamkit-core = { version = "0.1", path = "crates/core" }
-streamkit-nodes = { version = "0.1", path = "crates/nodes" }
-streamkit-engine = { version = "0.1", path = "crates/engine" }
+streamkit-core = { version = "0.2", path = "crates/core" }
+streamkit-nodes = { version = "0.2", path = "crates/nodes" }
+streamkit-engine = { version = "0.2", path = "crates/engine" }
 streamkit-server = { version = "0.2", path = "apps/skit" }
 streamkit-client = { version = "0.1", path = "apps/skit-cli" }
-streamkit-api = { version = "0.1", path = "crates/api" }
-streamkit-plugin-wasm = { version = "0.1", path = "crates/plugin-wasm" }
-streamkit-plugin-native = { version = "0.1", path = "crates/plugin-native" }
+streamkit-api = { version = "0.2", path = "crates/api" }
+streamkit-plugin-wasm = { version = "0.2", path = "crates/plugin-wasm" }
+streamkit-plugin-native = { version = "0.2", path = "crates/plugin-native" }
 streamkit-plugin-sdk-wasm = { version = "0.1", path = "sdks/plugin-sdk/wasm/rust" }
-streamkit-plugin-sdk-native = { version = "0.1", path = "sdks/plugin-sdk/native" }
+streamkit-plugin-sdk-native = { version = "0.2", path = "sdks/plugin-sdk/native" }
 
 tracing = "0.1.44"
 
@@ -45,9 +45,18 @@ indexmap = { version = "2.13", features = ["serde"] }
 
 opentelemetry = "0.31.0"
 
-# Profile settings for better profiling experience
+criterion = { version = "0.5", default-features = false }
+
+# Profile settings
 [profile.release]
 debug = 1 # Include line tables for better stack traces in profiling
+
+# Maximally-optimised release build — use `cargo build --profile release-lto`.
+# CI sticks with the default `release` profile for faster builds.
+[profile.release-lto]
+inherits = "release"
+lto = "thin"       # Parallel cross-crate LTO — nearly as effective as "fat" but links much faster
+codegen-units = 16 # Allow parallel LLVM codegen/LTO (thin LTO handles cross-unit optimisation)
 
 [profile.dev]
 debug = 2 # Full debug info for development profiling

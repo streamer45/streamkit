@@ -378,6 +378,7 @@ mod tests {
 
         let context = NodeContext {
             inputs: HashMap::new(),
+            input_types: HashMap::new(),
             control_rx,
             output_sender,
             batch_size: 32,
@@ -388,6 +389,9 @@ mod tests {
             cancellation_token: None,
             pin_management_rx: None, // Test contexts don't support dynamic pins
             audio_pool: None,
+            video_pool: None,
+            pipeline_mode: streamkit_core::PipelineMode::Dynamic,
+            view_data_tx: None,
         };
 
         // Create and run node with small chunk size for testing

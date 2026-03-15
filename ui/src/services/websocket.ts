@@ -7,7 +7,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { useNodeParamsStore } from '@/stores/nodeParamsStore';
 import { useSessionStore } from '@/stores/sessionStore';
 import { useTelemetryStore, parseTelemetryEvent } from '@/stores/telemetryStore';
-import type { Request, Response, Event, MessageType } from '@/types/types';
+import type { Request, Response, Event, MessageType, NodeState, NodeStats } from '@/types/types';
 import { getBasePathname } from '@/utils/baseHref';
 import { getLogger } from '@/utils/logger';
 
@@ -25,6 +25,7 @@ type NodeRemovedPayload = Extract<WsEventPayload, { event: 'noderemoved' }>;
 type ConnectionAddedPayload = Extract<WsEventPayload, { event: 'connectionadded' }>;
 type ConnectionRemovedPayload = Extract<WsEventPayload, { event: 'connectionremoved' }>;
 type NodeTelemetryPayload = Extract<WsEventPayload, { event: 'nodetelemetry' }>;
+type NodeViewDataUpdatedPayload = Extract<WsEventPayload, { event: 'nodeviewdataupdated' }>;
 
 interface PendingRequest {
   resolve: (response: Response) => void;
@@ -44,6 +45,14 @@ export class WebSocketService {
   private messageQueue: Request[] = [];
   private isIntentionallyClosed = false;
   private subscribedSessions: Set<string> = new Set();
+
+  // ── Frame-level batching for high-frequency events ──────────────────
+  // Buffer node-state and node-stats updates that arrive in rapid
+  // succession (e.g. during session initialisation) and flush them as a
+  // single store mutation at the next animation frame.
+  private pendingNodeStates: Map<string, Map<string, NodeState>> = new Map();
+  private pendingNodeStats: Map<string, Map<string, NodeStats>> = new Map();
+  private batchFlushRafId: number | null = null;
 
   constructor(url: string) {
     this.url = url;
@@ -124,9 +133,13 @@ export class WebSocketService {
   }
 
   private resubscribeToSessions(): void {
-    // Re-subscribe to all sessions after reconnection
+    // Re-subscribe to all sessions after reconnection.
+    // Re-call initSession for each one to ensure the session entry exists
+    // in the store — if the entry was cleared during the disconnect window,
+    // events arriving before the next RAF flush would be silently dropped.
     this.subscribedSessions.forEach((sessionId) => {
       logger.info('Re-subscribing to session:', sessionId);
+      useSessionStore.getState().initSession(sessionId, true);
       this.send({
         type: 'request' as MessageType,
         correlation_id: uuidv4(),
@@ -195,6 +208,9 @@ export class WebSocketService {
       case 'nodetelemetry':
         this.handleNodeTelemetry(payload);
         break;
+      case 'nodeviewdataupdated':
+        this.handleNodeViewDataUpdated(payload);
+        break;
       default:
         break;
     }
@@ -202,6 +218,10 @@ export class WebSocketService {
 
   private handleSessionDestroyed(payload: SessionDestroyedPayload): void {
     this.subscribedSessions.delete(payload.session_id);
+    // Discard any buffered updates for this session so the RAF flush
+    // doesn't needlessly process stale entries.
+    this.pendingNodeStates.delete(payload.session_id);
+    this.pendingNodeStats.delete(payload.session_id);
     useSessionStore.getState().clearSession(payload.session_id);
     useNodeParamsStore.getState().resetSession(payload.session_id);
     useTelemetryStore.getState().clearSession(payload.session_id);
@@ -209,12 +229,62 @@ export class WebSocketService {
 
   private handleNodeStateChanged(payload: NodeStateChangedPayload): void {
     const { session_id, node_id, state } = payload;
-    useSessionStore.getState().updateNodeState(session_id, node_id, state);
+    let sessionMap = this.pendingNodeStates.get(session_id);
+    if (!sessionMap) {
+      sessionMap = new Map();
+      this.pendingNodeStates.set(session_id, sessionMap);
+    }
+    sessionMap.set(node_id, state);
+    this.scheduleBatchFlush();
   }
 
   private handleNodeStatsUpdated(payload: NodeStatsUpdatedPayload): void {
     const { session_id, node_id, stats } = payload;
-    useSessionStore.getState().updateNodeStats(session_id, node_id, stats);
+    let sessionMap = this.pendingNodeStats.get(session_id);
+    if (!sessionMap) {
+      sessionMap = new Map();
+      this.pendingNodeStats.set(session_id, sessionMap);
+    }
+    sessionMap.set(node_id, stats);
+    this.scheduleBatchFlush();
+  }
+
+  /**
+   * Schedule a `requestAnimationFrame` callback to flush buffered
+   * node-state and node-stats updates.  Unlike `queueMicrotask` (which
+   * drains after each macrotask), RAF coalesces updates across *all*
+   * WebSocket `onmessage` macrotasks that arrive within a single
+   * animation frame (~16 ms at 60 fps).  This dramatically reduces the
+   * number of Zustand `set()` calls — and therefore React re-renders —
+   * during session load where many state events arrive in a burst.
+   */
+  private scheduleBatchFlush(): void {
+    if (this.batchFlushRafId !== null) return;
+    this.batchFlushRafId = requestAnimationFrame(() => this.flushBatchedUpdates());
+  }
+
+  private flushBatchedUpdates(): void {
+    this.batchFlushRafId = null;
+
+    // Convert pending Maps to Records and flush everything in a single
+    // store mutation via batchUpdateSessionData.  This ensures that all
+    // WebSocket events from one animation frame produce exactly ONE
+    // Zustand set() call, minimising React re-renders.
+    const stateUpdates = new Map<string, Record<string, NodeState>>();
+    for (const [sessionId, updates] of this.pendingNodeStates) {
+      stateUpdates.set(sessionId, Object.fromEntries(updates));
+    }
+    this.pendingNodeStates.clear();
+
+    const statsUpdates = new Map<string, Record<string, NodeStats>>();
+    for (const [sessionId, updates] of this.pendingNodeStats) {
+      statsUpdates.set(sessionId, Object.fromEntries(updates));
+    }
+    this.pendingNodeStats.clear();
+
+    if (stateUpdates.size > 0 || statsUpdates.size > 0) {
+      useSessionStore.getState().batchUpdateSessionData(stateUpdates, statsUpdates);
+    }
   }
 
   private handleNodeParamsChanged(payload: NodeParamsChangedPayload): void {
@@ -225,11 +295,12 @@ export class WebSocketService {
     //
     // useSessionStore.getState().updateNodeParams(session_id, node_id, params as Record<string, unknown>);
 
-    // Also update the params store used by individual node UIs
+    // Batch all param updates into a single store update to avoid
+    // N intermediate states and N selector re-evaluations.
     if (params && typeof params === 'object' && !Array.isArray(params)) {
-      for (const [key, value] of Object.entries(params)) {
-        useNodeParamsStore.getState().setParam(node_id, key, value, session_id);
-      }
+      useNodeParamsStore
+        .getState()
+        .setParams(node_id, params as Record<string, unknown>, session_id);
     }
   }
 
@@ -255,6 +326,11 @@ export class WebSocketService {
     useSessionStore
       .getState()
       .removeConnection(session_id, { from_node, from_pin, to_node, to_pin });
+  }
+
+  private handleNodeViewDataUpdated(payload: NodeViewDataUpdatedPayload): void {
+    const { session_id, node_id, data } = payload;
+    useSessionStore.getState().updateNodeViewData(session_id, node_id, data);
   }
 
   private handleNodeTelemetry(payload: NodeTelemetryPayload): void {
@@ -338,7 +414,9 @@ export class WebSocketService {
 
   subscribeToSession(sessionId: string): void {
     this.subscribedSessions.add(sessionId);
-    // Set the connection status based on CURRENT WebSocket state
+    // Set the connection status based on CURRENT WebSocket state.
+    // Ensure the session entry exists in the store so that setConnected
+    // (which no longer auto-creates entries) has something to update.
     const isConnected = this.ws?.readyState === WebSocket.OPEN;
     logger.debug(
       'Subscribing to session',
@@ -348,7 +426,7 @@ export class WebSocketService {
       'connected:',
       isConnected
     );
-    useSessionStore.getState().setConnected(sessionId, isConnected);
+    useSessionStore.getState().initSession(sessionId, isConnected);
   }
 
   unsubscribeFromSession(sessionId: string): void {
@@ -415,6 +493,14 @@ export class WebSocketService {
       pending.reject(new Error('WebSocket closed'));
     });
     this.pendingRequests.clear();
+
+    // Cancel any pending RAF and clear batch buffers.
+    if (this.batchFlushRafId !== null) {
+      cancelAnimationFrame(this.batchFlushRafId);
+      this.batchFlushRafId = null;
+    }
+    this.pendingNodeStates.clear();
+    this.pendingNodeStats.clear();
 
     if (this.ws) {
       this.ws.close();

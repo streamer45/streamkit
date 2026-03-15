@@ -10,7 +10,21 @@ import { useShallow } from 'zustand/shallow';
 import ConfirmModal from '@/components/ConfirmModal';
 import { PipelineSelectionSection } from '@/components/stream/PipelineSelectionSection';
 import TelemetryTimelineComponent from '@/components/TelemetryTimeline';
+import {
+  ViewContainer,
+  ContentArea,
+  ContentWrapper,
+  BottomSpacer,
+  Section,
+  SectionTitle,
+  InfoBox,
+  InfoContent,
+  InfoTitle,
+  TechnicalDetailsToggle,
+  TechnicalDetails,
+} from '@/components/ui/ViewLayout';
 import { useStreamViewState } from '@/hooks/useStreamViewState';
+import { useVideoCanvas } from '@/hooks/useVideoCanvas';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { listDynamicSamples } from '@/services/samples';
 import { createSession } from '@/services/sessions';
@@ -23,52 +37,6 @@ import { orderSamplePipelinesSystemFirst } from '@/utils/samplePipelineOrdering'
 import { useStreamStore } from '../stores/streamStore';
 
 const logger = getLogger('StreamView');
-
-const ViewContainer = styled.div`
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  background: var(--sk-bg);
-`;
-
-const ContentArea = styled.div`
-  flex: 1;
-  overflow-y: auto;
-  display: flex;
-  justify-content: center;
-  padding: 40px;
-`;
-
-const ContentWrapper = styled.div`
-  width: 100%;
-  max-width: 1200px;
-  display: flex;
-  flex-direction: column;
-  gap: 32px;
-`;
-
-const BottomSpacer = styled.div`
-  height: 8px;
-  flex-shrink: 0;
-  /* With gap: 32px from ContentWrapper, this gives us 40px total bottom spacing */
-`;
-
-const Section = styled.div`
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding: 24px;
-  background: var(--sk-panel-bg);
-  border: 1px solid var(--sk-border);
-  border-radius: 12px;
-`;
-
-const SectionTitle = styled.h2`
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--sk-text);
-  margin: 0;
-`;
 
 const ConnectionControlsRow = styled.div`
   display: flex;
@@ -88,65 +56,6 @@ const ConnectionHint = styled.div`
   @media (max-width: 900px) {
     flex-basis: 100%;
   }
-`;
-
-const InfoBox = styled.div`
-  padding: 20px;
-  background: var(--sk-panel-bg);
-  border: 1px solid var(--sk-border);
-  border-left: 4px solid var(--sk-primary);
-  border-radius: 8px;
-  color: var(--sk-text);
-  font-size: 14px;
-  line-height: 1.6;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-`;
-
-const InfoContent = styled.div`
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-`;
-
-const InfoTitle = styled.h2`
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--sk-text);
-  margin: 0;
-`;
-
-const TechnicalDetailsToggle = styled.button`
-  padding: 8px 12px;
-  background: transparent;
-  color: var(--sk-text-muted);
-  border: 1px solid var(--sk-border);
-  border-radius: 6px;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  align-self: flex-start;
-
-  &:hover {
-    background: var(--sk-hover-bg);
-    color: var(--sk-text);
-    border-color: var(--sk-border-strong);
-  }
-`;
-
-const TechnicalDetails = styled.div`
-  padding-top: 12px;
-  border-top: 1px solid var(--sk-border);
-  color: var(--sk-text-muted);
-  font-size: 13px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
 `;
 
 const InputGroup = styled.div`
@@ -355,12 +264,17 @@ const StreamView: React.FC = () => {
     enableWatch,
     isMicEnabled,
     micStatus,
+    isCameraEnabled,
+    cameraStatus,
     watchStatus,
+    pipelineNeedsAudio,
+    pipelineNeedsVideo,
     errorMessage,
     configLoaded,
     activeSessionId,
     activeSessionName,
     activePipelineName,
+    videoRenderer,
     setServerUrl,
     setMoqToken,
     setInputBroadcast,
@@ -368,12 +282,15 @@ const StreamView: React.FC = () => {
     setConnectionMode,
     setEnablePublish,
     setEnableWatch,
+    setPipelineMediaTypes,
+    setPipelineOutputTypes,
     setActiveSession,
     clearActiveSession,
     loadConfig,
     connect,
     disconnect,
     toggleMicrophone,
+    toggleCamera,
   } = useStreamStore(
     useShallow((s) => ({
       status: s.status,
@@ -386,12 +303,17 @@ const StreamView: React.FC = () => {
       enableWatch: s.enableWatch,
       isMicEnabled: s.isMicEnabled,
       micStatus: s.micStatus,
+      isCameraEnabled: s.isCameraEnabled,
+      cameraStatus: s.cameraStatus,
       watchStatus: s.watchStatus,
+      pipelineNeedsAudio: s.pipelineNeedsAudio,
+      pipelineNeedsVideo: s.pipelineNeedsVideo,
       errorMessage: s.errorMessage,
       configLoaded: s.configLoaded,
       activeSessionId: s.activeSessionId,
       activeSessionName: s.activeSessionName,
       activePipelineName: s.activePipelineName,
+      videoRenderer: s.videoRenderer,
       setServerUrl: s.setServerUrl,
       setMoqToken: s.setMoqToken,
       setInputBroadcast: s.setInputBroadcast,
@@ -399,12 +321,15 @@ const StreamView: React.FC = () => {
       setConnectionMode: s.setConnectionMode,
       setEnablePublish: s.setEnablePublish,
       setEnableWatch: s.setEnableWatch,
+      setPipelineMediaTypes: s.setPipelineMediaTypes,
+      setPipelineOutputTypes: s.setPipelineOutputTypes,
       setActiveSession: s.setActiveSession,
       clearActiveSession: s.clearActiveSession,
       loadConfig: s.loadConfig,
       connect: s.connect,
       disconnect: s.disconnect,
       toggleMicrophone: s.toggleMicrophone,
+      toggleCamera: s.toggleCamera,
     }))
   );
 
@@ -412,6 +337,9 @@ const StreamView: React.FC = () => {
 
   // Get node definitions for YAML autocomplete
   const nodeDefinitions = useSchemaStore((s) => s.nodeDefinitions);
+
+  const { canvasRef: videoCanvasRef, aspectRatio: canvasAspectRatio } =
+    useVideoCanvas(videoRenderer);
 
   // Ensure schemas are loaded for autocomplete
   useEffect(() => {
@@ -525,10 +453,30 @@ const StreamView: React.FC = () => {
           if (moqSettings.outputBroadcast) {
             setOutputBroadcast(moqSettings.outputBroadcast);
           }
+          // Auto-toggle publish based on whether pipeline expects a publisher.
+          // Receive-only pipelines (no input_broadcast) skip microphone access.
+          setEnablePublish(moqSettings.hasInputBroadcast);
+
+          // Tell the store which devices the pipeline actually needs so that
+          // connect() only requests the relevant browser permissions.
+          setPipelineMediaTypes(moqSettings.needsAudioInput, moqSettings.needsVideoInput);
+
+          // Tell the store which media types the pipeline outputs to subscribers
+          // so that connect() only creates the relevant watch-side components.
+          setPipelineOutputTypes(moqSettings.outputsAudio, moqSettings.outputsVideo);
         }
       }
     },
-    [viewState, serverUrl, setServerUrl, setInputBroadcast, setOutputBroadcast]
+    [
+      viewState,
+      serverUrl,
+      setServerUrl,
+      setInputBroadcast,
+      setOutputBroadcast,
+      setEnablePublish,
+      setPipelineMediaTypes,
+      setPipelineOutputTypes,
+    ]
   );
 
   // Handle session creation
@@ -638,6 +586,13 @@ const StreamView: React.FC = () => {
     error: 'Mic: error',
   };
 
+  const cameraStatusText: Record<string, string> = {
+    disabled: 'Camera: disabled',
+    requesting: 'Camera: requesting permission…',
+    ready: 'Camera: ready',
+    error: 'Camera: error',
+  };
+
   const watchStatusText = {
     disabled: 'Watch: disabled',
     offline: 'Watch: offline',
@@ -725,7 +680,12 @@ const StreamView: React.FC = () => {
               </ModeButton>
               <ModeButton
                 active={connectionMode === 'direct'}
-                onClick={() => setConnectionMode('direct')}
+                onClick={() => {
+                  setConnectionMode('direct');
+                  // Direct mode has no pipeline YAML, so default to both media types
+                  setPipelineMediaTypes(true, true);
+                  setPipelineOutputTypes(true, true);
+                }}
                 disabled={status !== 'disconnected'}
               >
                 Direct Connect
@@ -786,9 +746,18 @@ const StreamView: React.FC = () => {
                 </ConnectionHint>
               )}
               {isStreaming && enablePublish && (
-                <ControlButton active={isMicEnabled} onClick={toggleMicrophone}>
-                  {isMicEnabled ? '🎤 Microphone On' : '🔇 Microphone Off'}
-                </ControlButton>
+                <>
+                  {pipelineNeedsAudio && (
+                    <ControlButton active={isMicEnabled} onClick={toggleMicrophone}>
+                      {isMicEnabled ? '🎤 Microphone On' : '🔇 Microphone Off'}
+                    </ControlButton>
+                  )}
+                  {pipelineNeedsVideo && (
+                    <ControlButton active={isCameraEnabled} onClick={toggleCamera}>
+                      {isCameraEnabled ? '📷 Camera On' : '📷 Camera Off'}
+                    </ControlButton>
+                  )}
+                </>
               )}
             </ConnectionControlsRow>
 
@@ -828,7 +797,9 @@ const StreamView: React.FC = () => {
             {(status === 'connecting' || status === 'connected') && (
               <div style={{ color: 'var(--sk-text-muted)', fontSize: '13px', padding: '4px 0' }}>
                 {status === 'connected' ? 'Relay: connected' : 'Relay: connecting…'} •{' '}
-                {watchStatusText[watchStatus]} • {micStatusText[micStatus]}
+                {watchStatusText[watchStatus]}
+                {pipelineNeedsAudio && <> • {micStatusText[micStatus]}</>}
+                {pipelineNeedsVideo && <> • {cameraStatusText[cameraStatus]}</>}
               </div>
             )}
 
@@ -892,6 +863,25 @@ const StreamView: React.FC = () => {
               </InputGroup>
             )}
           </Section>
+
+          {isStreaming && videoRenderer && (
+            <Section>
+              <SectionTitle>Video</SectionTitle>
+              <canvas
+                ref={videoCanvasRef}
+                style={{
+                  display: 'block',
+                  width: 'auto',
+                  maxWidth: '100%',
+                  maxHeight: 480,
+                  margin: '0 auto',
+                  borderRadius: 6,
+                  background: '#000',
+                  aspectRatio: canvasAspectRatio,
+                }}
+              />
+            </Section>
+          )}
 
           {connectionMode === 'session' && activeSessionId && (
             <Section>

@@ -2,8 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import styled from '@emotion/styled';
-import * as Tooltip from '@radix-ui/react-tooltip';
 import {
   ReactFlowProvider,
   useNodesState,
@@ -11,6 +9,7 @@ import {
   useOnSelectionChange,
   type Node as RFNode,
   type Edge,
+  type NodeChange,
   type Connection as RFConnection,
   type ReactFlowInstance,
   type OnConnectEnd,
@@ -24,18 +23,27 @@ import { useShallow } from 'zustand/shallow';
 import ConfirmModal from '@/components/ConfirmModal';
 import ContextMenu from '@/components/ContextMenu';
 import { FlowCanvas } from '@/components/FlowCanvas';
-import NodePalette from '@/components/NodePalette';
+import { LeftPanel } from '@/components/monitor/LeftPanel';
+import { Legend } from '@/components/monitor/Legend';
+import {
+  CenterPanelContainer,
+  CanvasTopBar,
+  TopLeftControls,
+  EmptyMonitorState,
+} from '@/components/monitor/MonitorView.styles';
+import { SessionInfoChip } from '@/components/monitor/SessionItem';
+import { TopControls } from '@/components/monitor/TopControls';
+import { OutputPreviewPanel } from '@/components/OutputPreviewPanel';
 import PaneContextMenu from '@/components/PaneContextMenu';
 import { PipelineRightPane } from '@/components/PipelineRightPane';
 import { ResizableLayout } from '@/components/ResizableLayout';
-import { SKTooltip } from '@/components/Tooltip';
-import { Button } from '@/components/ui/Button';
-import { TabsContent, TabsList, TabsRoot, TabsTrigger } from '@/components/ui/Tabs';
 import { ViewTitle } from '@/components/ui/ViewTitle';
 import { DnDProvider, useDnD } from '@/context/DnDContext';
 import { useToast } from '@/context/ToastContext';
+import { useAutoLayout } from '@/hooks/useAutoLayout';
 import { useContextMenu } from '@/hooks/useContextMenu';
-import { useFitViewOnLayoutPresetChange } from '@/hooks/useFitViewOnLayoutPresetChange';
+import { useMonitorPreview } from '@/hooks/useMonitorPreview';
+import { useNodeStatesSubscription } from '@/hooks/useNodeStatesSubscription';
 import { useReactFlowCommon } from '@/hooks/useReactFlowCommon';
 import { useResolvedColorMode } from '@/hooks/useResolvedColorMode';
 import { useSession } from '@/hooks/useSession';
@@ -48,1440 +56,37 @@ import { useNodeParamsStore } from '@/stores/nodeParamsStore';
 import { usePluginStore } from '@/stores/pluginStore';
 import { useSchemaStore } from '@/stores/schemaStore';
 import { useSessionStore } from '@/stores/sessionStore';
-import {
-  useStagingStore,
-  type StagingData,
-  type StagedChange,
-  type ValidationError,
-} from '@/stores/stagingStore';
+import { useStagingStore, type StagingData } from '@/stores/stagingStore';
 import type {
   NodeDefinition,
   Connection,
   Node,
-  NodeState,
   Pipeline,
   MessageType,
   BatchOperation,
   InputPin,
   OutputPin,
 } from '@/types/types';
-import { topoLevelsFromPipeline, orderedNamesFromLevels, verticalLayout } from '@/utils/dag';
+import { topoLevelsFromPipeline, orderedNamesFromLevels } from '@/utils/dag';
 import { deepEqual } from '@/utils/deepEqual';
 import { validateValue } from '@/utils/jsonSchema';
-import {
-  DEFAULT_NODE_WIDTH,
-  DEFAULT_NODE_HEIGHT,
-  DEFAULT_HORIZONTAL_GAP,
-  DEFAULT_VERTICAL_GAP,
-  ESTIMATED_HEIGHT_BY_KIND,
-} from '@/utils/layoutConstants';
 import { viewsLogger } from '@/utils/logger';
+import {
+  computeAddedNodes,
+  computeRemovedNodes,
+  computeConnectionChanges,
+  preprocessMixerNodes,
+} from '@/utils/pipelineDiff';
+import {
+  buildEdgesFromConnections,
+  buildNodeObject,
+  generatePipelineYaml,
+} from '@/utils/pipelineGraph';
 import { validatePipeline } from '@/utils/pipelineValidation';
 import { nodeTypes, defaultEdgeOptions } from '@/utils/reactFlowDefaults';
-import { collectNodeHeights } from '@/utils/reactFlowInstance';
-import {
-  computeSessionStatus,
-  getSessionStatusColor,
-  getSessionStatusLabel,
-} from '@/utils/sessionStatus';
-import { formatUptime, formatDateTime } from '@/utils/time';
-
-const LegendContainer = styled.div`
-  position: absolute;
-  bottom: 20px;
-  right: 20px;
-  background: var(--sk-panel-bg);
-  border: 1px solid var(--sk-border);
-  border-radius: 8px;
-  padding: 12px;
-  box-shadow: 0 4px 12px var(--sk-shadow);
-  z-index: 10;
-  font-size: 12px;
-`;
-
-const LegendTitle = styled.div`
-  font-weight: 600;
-  margin-bottom: 8px;
-  color: var(--sk-text);
-`;
-
-const LegendItem = styled.div`
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 6px;
-  color: var(--sk-text);
-
-  &:last-child {
-    margin-bottom: 0;
-  }
-`;
-
-const LegendDot = styled.div<{ color: string }>`
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background-color: ${(props) => props.color};
-  border: 1px solid var(--sk-border-strong);
-  flex-shrink: 0;
-`;
-
-// Memoized legend component to prevent re-renders during drag
-const Legend = React.memo(() => (
-  <LegendContainer>
-    <LegendTitle>Node States</LegendTitle>
-    <LegendItem>
-      <LegendDot color="var(--sk-status-initializing)" />
-      <span>Initializing</span>
-    </LegendItem>
-    <LegendItem>
-      <LegendDot color="var(--sk-status-running)" />
-      <span>Running</span>
-    </LegendItem>
-    <LegendItem>
-      <LegendDot color="var(--sk-status-recovering)" />
-      <span>Recovering</span>
-    </LegendItem>
-    <LegendItem>
-      <LegendDot color="var(--sk-status-degraded)" />
-      <span>Degraded</span>
-    </LegendItem>
-    <LegendItem>
-      <LegendDot color="var(--sk-status-failed)" />
-      <span>Failed</span>
-    </LegendItem>
-    <LegendItem>
-      <LegendDot color="var(--sk-status-stopped)" />
-      <span>Stopped</span>
-    </LegendItem>
-  </LegendContainer>
-));
-
-const EMPTY_PARAMS: Record<string, unknown> = {};
 
 // Memoized view title to prevent re-renders during drag
 const MonitorViewTitle = React.memo(() => <ViewTitle>Monitor</ViewTitle>);
-
-const ConnectionStatusContainer = styled.div<{ connected: boolean }>`
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 8px;
-  border-radius: 4px;
-  font-size: 12px;
-  background: ${(props) =>
-    props.connected ? 'var(--sk-overlay-medium)' : 'var(--sk-overlay-medium)'};
-  color: ${(props) => (props.connected ? 'var(--sk-success)' : 'var(--sk-danger)')};
-  border: 1px solid ${(props) => (props.connected ? 'var(--sk-success)' : 'var(--sk-danger)')};
-  user-select: none;
-`;
-
-const StatusDot = styled.div<{ connected: boolean }>`
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: ${(props) => (props.connected ? 'var(--sk-success)' : 'var(--sk-danger)')};
-  animation: ${(props) => (props.connected ? 'pulse 2s ease-in-out infinite' : 'none')};
-
-  @keyframes pulse {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.5;
-    }
-  }
-`;
-
-// Memoized ConnectionStatus component
-const ConnectionStatus = React.memo(({ connected }: { connected: boolean }) => (
-  <ConnectionStatusContainer connected={connected}>
-    <StatusDot connected={connected} />
-    {connected ? 'Connected' : 'Disconnected'}
-  </ConnectionStatusContainer>
-));
-
-const LeftPanelAside = styled.aside`
-  height: 100%;
-  width: 100%;
-  border-right: 1px solid var(--sk-border);
-  background-color: var(--sk-sidebar-bg);
-  display: flex;
-  flex-direction: column;
-`;
-
-const SessionsContainer = styled.div`
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-`;
-
-const SessionSearchInput = styled.input`
-  box-sizing: border-box;
-  width: 100%;
-  padding: 8px 12px;
-  margin-bottom: 8px;
-  font-size: 13px;
-  border: 1px solid var(--sk-border);
-  border-radius: 6px;
-  background: var(--sk-input-bg);
-  color: var(--sk-text);
-  outline: none;
-  flex-shrink: 0;
-
-  &::placeholder {
-    color: var(--sk-text-muted);
-  }
-
-  &:focus {
-    border-color: var(--sk-primary);
-    box-shadow: 0 0 0 2px var(--sk-primary-alpha);
-  }
-`;
-
-const SearchWrapper = styled.div`
-  padding: 4px 4px 0 4px;
-`;
-
-const SessionListWrapper = styled.div`
-  flex: 1;
-  overflow-y: auto;
-  min-height: 0;
-  padding: 0 4px 4px 4px;
-`;
-
-const LoadingText = styled.p`
-  font-size: 12px;
-  color: var(--sk-text-muted);
-`;
-
-const SessionList = styled.ul`
-  list-style: none;
-  padding: 4px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-`;
-
-const SessionItemWrapper = styled.div`
-  position: relative;
-
-  &:hover .session-delete-button {
-    opacity: 1;
-    pointer-events: auto;
-  }
-`;
-
-const SessionButton = styled(Button)<{ active: boolean }>`
-  width: 100%;
-  padding: 8px;
-  text-align: left;
-  font-weight: 500;
-  font-size: 13px;
-  justify-content: flex-start;
-  gap: 8px;
-`;
-
-const SessionStatusBadge = styled.div<{ color: string }>`
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background-color: ${(props) => props.color};
-  border: 1px solid var(--sk-border-strong);
-  flex-shrink: 0;
-`;
-
-const SessionButtonText = styled.span`
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-`;
-
-const SessionDeleteButton = styled.button`
-  position: absolute;
-  right: 8px;
-  top: 50%;
-  transform: translateY(-50%);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.15s ease;
-  background: var(--sk-danger);
-  color: var(--sk-text-inverse);
-  border: none;
-  border-radius: 4px;
-  padding: 4px 8px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1;
-  font-size: 16px;
-  line-height: 1;
-
-  &:hover {
-    background: var(--sk-danger-hover);
-  }
-
-  &:active {
-    transform: translateY(-50%) scale(0.95);
-  }
-`;
-
-const SessionTooltipContent = styled(Tooltip.Content)`
-  background: var(--sk-panel-bg);
-  border: 1px solid var(--sk-border);
-  border-radius: 6px;
-  padding: 8px 12px;
-  box-shadow: 0 4px 12px var(--sk-shadow);
-  font-size: 11px;
-  z-index: 1000;
-  font-family:
-    'JetBrains Mono', 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', 'Droid Sans Mono',
-    'Courier New', monospace;
-`;
-
-const TooltipRow = styled.div`
-  display: flex;
-  gap: 8px;
-  margin: 4px 0;
-`;
-
-const TooltipLabel = styled.span`
-  opacity: 0.7;
-  min-width: 50px;
-`;
-
-const TooltipValue = styled.span`
-  font-weight: 500;
-  color: var(--sk-text);
-`;
-
-const NodesLibraryContainer = styled.div`
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-`;
-
-const EmptyStateText = styled.div`
-  padding: 20px;
-  font-size: 12px;
-  color: var(--sk-text-muted);
-  text-align: center;
-`;
-
-const CenterPanelContainer = styled.div`
-  width: 100%;
-  height: 100%;
-  position: relative;
-`;
-
-const CanvasTopBar = styled.div`
-  position: absolute;
-  top: 12px;
-  left: 12px;
-  right: 12px;
-  z-index: 11;
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  pointer-events: none;
-
-  @media (max-width: 900px) {
-    flex-direction: column;
-    align-items: stretch;
-  }
-`;
-
-const TopLeftControls = styled.div`
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  align-items: flex-start;
-  pointer-events: auto;
-  max-width: min(520px, 60vw);
-
-  @media (max-width: 900px) {
-    max-width: 100%;
-  }
-`;
-
-const TopRightControls = styled.div`
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 8px;
-  pointer-events: auto;
-
-  @media (max-width: 900px) {
-    align-items: flex-start;
-  }
-`;
-
-const SessionChipContainer = styled.div`
-  position: relative;
-`;
-
-const SessionChipButton = styled(Button)`
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  max-width: 100%;
-  user-select: none;
-`;
-
-const SessionChipName = styled.span`
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 260px;
-
-  @media (max-width: 900px) {
-    max-width: 52vw;
-  }
-`;
-
-const SessionChipMeta = styled.span`
-  color: var(--sk-text-muted);
-  font-size: 11px;
-  white-space: nowrap;
-`;
-
-const SessionChipCaret = styled.span`
-  margin-left: 2px;
-  opacity: 0.7;
-`;
-
-const SessionStatusDot = styled.span<{ color: string }>`
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: ${(p) => p.color};
-  box-shadow: 0 0 6px ${(p) => `${p.color}55`};
-`;
-
-const SessionDetailsPanel = styled.div`
-  position: absolute;
-  top: calc(100% + 8px);
-  left: 0;
-  z-index: 12;
-  background: var(--sk-panel-bg);
-  border: 1px solid var(--sk-border);
-  border-radius: 8px;
-  padding: 10px 12px;
-  box-shadow: 0 2px 12px var(--sk-shadow);
-  font-family:
-    'JetBrains Mono', 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', 'Droid Sans Mono',
-    'Courier New', monospace;
-  font-size: 11px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 280px;
-  max-width: min(520px, 80vw);
-`;
-
-const DetailsRow = styled.div`
-  display: flex;
-  gap: 10px;
-  align-items: center;
-`;
-
-const DetailsLabel = styled.span`
-  opacity: 0.7;
-  min-width: 56px;
-`;
-
-const DetailsValue = styled.span`
-  font-weight: 500;
-  color: var(--sk-text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-`;
-
-const ButtonGroup = styled.div`
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-
-  @media (max-width: 900px) {
-    justify-content: flex-start;
-  }
-`;
-
-const EmptyMonitorState = styled.div`
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  gap: 12px;
-  color: var(--sk-text-muted);
-  font-size: 14px;
-  text-align: center;
-`;
-
-interface SessionItemProps {
-  session: { id: string; name: string | null; created_at: string };
-  isActive: boolean;
-  onClick: (id: string) => void;
-  onDelete: (id: string) => void;
-}
-
-interface SessionInfoDisplayProps {
-  session: { id: string; name: string | null; created_at: string };
-}
-
-const shortSessionId = (sessionId: string): string =>
-  sessionId.split('-')[0] || sessionId.slice(0, 8);
-
-type NodeIssue = {
-  nodeId: string;
-  summary: string;
-};
-
-function formatIssueDetails(details: unknown): string | null {
-  if (details == null) return null;
-  try {
-    const serialized = JSON.stringify(details);
-    if (!serialized || serialized === 'null') return null;
-    return serialized.length > 180 ? `${serialized.slice(0, 180)}…` : serialized;
-  } catch {
-    return null;
-  }
-}
-
-function formatIssueSummary(prefix: string, reason: string, details: string | null): string {
-  if (!details) return `${prefix}: ${reason}`;
-  return `${prefix}: ${reason} (${details})`;
-}
-
-function summarizeNodeIssues(nodeStates: Record<string, NodeState>): NodeIssue[] {
-  const issues: NodeIssue[] = [];
-
-  for (const [nodeId, state] of Object.entries(nodeStates)) {
-    if (typeof state !== 'object' || state == null) continue;
-
-    if ('Failed' in state) {
-      issues.push({ nodeId, summary: `Failed: ${state.Failed.reason}` });
-      continue;
-    }
-    if ('Degraded' in state) {
-      const details = formatIssueDetails(state.Degraded.details);
-      issues.push({
-        nodeId,
-        summary: formatIssueSummary('Degraded', state.Degraded.reason, details),
-      });
-      continue;
-    }
-    if ('Recovering' in state) {
-      const details = formatIssueDetails(state.Recovering.details);
-      issues.push({
-        nodeId,
-        summary: formatIssueSummary('Recovering', state.Recovering.reason, details),
-      });
-      continue;
-    }
-    if ('Stopped' in state) {
-      issues.push({ nodeId, summary: `Stopped: ${state.Stopped.reason}` });
-      continue;
-    }
-  }
-
-  const priority = (issue: NodeIssue): number => {
-    if (issue.summary.startsWith('Failed:')) return 0;
-    if (issue.summary.startsWith('Degraded:')) return 1;
-    if (issue.summary.startsWith('Recovering:')) return 2;
-    if (issue.summary.startsWith('Stopped:')) return 3;
-    return 4;
-  };
-
-  return issues.sort((a, b) => priority(a) - priority(b) || a.nodeId.localeCompare(b.nodeId));
-}
-
-// Isolated uptime component that only re-renders itself every second
-const SessionUptime: React.FC<{ createdAt: string }> = React.memo(({ createdAt }) => {
-  const [uptime, setUptime] = useState('');
-
-  useEffect(() => {
-    const updateUptime = () => {
-      setUptime(formatUptime(createdAt));
-    };
-
-    updateUptime();
-    const interval = setInterval(updateUptime, 1000);
-    return () => clearInterval(interval);
-  }, [createdAt]);
-
-  return <>{uptime}</>;
-});
-
-const InlineCopyButton: React.FC<{ text: string; tooltip?: string; ariaLabel?: string }> =
-  React.memo(({ text, tooltip = 'Copy to clipboard', ariaLabel = 'Copy to clipboard' }) => {
-    const [copied, setCopied] = useState(false);
-
-    const handleCopy = useCallback(
-      async (e: React.MouseEvent) => {
-        e.stopPropagation();
-        try {
-          await navigator.clipboard.writeText(text);
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1500);
-        } catch {
-          // no-op (clipboard can fail in some environments)
-        }
-      },
-      [text]
-    );
-
-    return (
-      <SKTooltip content={copied ? 'Copied!' : tooltip} side="top">
-        <Button
-          aria-label={ariaLabel}
-          variant="icon"
-          size="small"
-          onClick={handleCopy}
-          style={{ width: 26, height: 26, padding: 4 }}
-        >
-          {copied ? (
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <polyline points="20 6 9 17 4 12" />
-            </svg>
-          ) : (
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-            </svg>
-          )}
-        </Button>
-      </SKTooltip>
-    );
-  });
-
-const SessionInfoChip: React.FC<SessionInfoDisplayProps> = React.memo(({ session }) => {
-  // Get node states from session store with shallow comparison
-  const nodeStates = useSessionStore(
-    useShallow((state) => state.sessions.get(session.id)?.nodeStates ?? {})
-  );
-
-  // Compute session status - memoized to prevent recalculation on every uptime update
-  const sessionStatus = React.useMemo(() => computeSessionStatus(nodeStates), [nodeStates]);
-  const statusColor = React.useMemo(() => getSessionStatusColor(sessionStatus), [sessionStatus]);
-  const statusLabel = React.useMemo(() => getSessionStatusLabel(sessionStatus), [sessionStatus]);
-  const issues = React.useMemo(() => summarizeNodeIssues(nodeStates), [nodeStates]);
-  const issuesText = React.useMemo(
-    () =>
-      issues
-        .slice(0, 3)
-        .map((issue) => `${issue.nodeId}: ${issue.summary}`)
-        .join('\n'),
-    [issues]
-  );
-
-  const [isExpanded, setIsExpanded] = useState(false);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-
-  const displayName = session.name || `session-${shortSessionId(session.id)}`;
-
-  useEffect(() => {
-    setIsExpanded(false);
-  }, [session.id]);
-
-  useEffect(() => {
-    if (!isExpanded) return;
-    const onMouseDown = (e: MouseEvent) => {
-      if (!containerRef.current) return;
-      if (e.target instanceof Node && containerRef.current.contains(e.target)) return;
-      setIsExpanded(false);
-    };
-    document.addEventListener('mousedown', onMouseDown);
-    return () => document.removeEventListener('mousedown', onMouseDown);
-  }, [isExpanded]);
-
-  return (
-    <SessionChipContainer ref={containerRef}>
-      <SKTooltip
-        content={
-          <div style={{ maxWidth: 520 }}>
-            <div>
-              {displayName} ({shortSessionId(session.id)}) — click to{' '}
-              {isExpanded ? 'collapse' : 'expand'}
-            </div>
-            {issuesText && (
-              <div style={{ marginTop: 6, whiteSpace: 'pre-wrap', opacity: 0.9 }}>{issuesText}</div>
-            )}
-          </div>
-        }
-        side="bottom"
-      >
-        <SessionChipButton
-          aria-expanded={isExpanded}
-          variant="secondary"
-          onClick={() => setIsExpanded((v) => !v)}
-        >
-          <SessionStatusDot color={statusColor} />
-          <SessionChipName>{displayName}</SessionChipName>
-          <SessionChipMeta>{shortSessionId(session.id)}</SessionChipMeta>
-          <SessionChipCaret>{isExpanded ? '▴' : '▾'}</SessionChipCaret>
-        </SessionChipButton>
-      </SKTooltip>
-      {isExpanded && (
-        <SessionDetailsPanel>
-          <DetailsRow>
-            <DetailsLabel>Status</DetailsLabel>
-            <DetailsValue>{statusLabel}</DetailsValue>
-          </DetailsRow>
-          {issuesText && (
-            <DetailsRow style={{ alignItems: 'flex-start' }}>
-              <DetailsLabel>Issues</DetailsLabel>
-              <DetailsValue style={{ whiteSpace: 'pre-wrap', overflow: 'visible' }}>
-                {issuesText}
-              </DetailsValue>
-            </DetailsRow>
-          )}
-          <DetailsRow>
-            <DetailsLabel>Start</DetailsLabel>
-            <DetailsValue>{formatDateTime(session.created_at)}</DetailsValue>
-          </DetailsRow>
-          <DetailsRow>
-            <DetailsLabel>Up</DetailsLabel>
-            <DetailsValue>
-              <SessionUptime createdAt={session.created_at} />
-            </DetailsValue>
-          </DetailsRow>
-          <DetailsRow>
-            <DetailsLabel>ID</DetailsLabel>
-            <SKTooltip content={session.id} side="top">
-              <DetailsValue>{session.id}</DetailsValue>
-            </SKTooltip>
-            <InlineCopyButton
-              text={session.id}
-              tooltip="Copy session id"
-              ariaLabel="Copy session id"
-            />
-          </DetailsRow>
-        </SessionDetailsPanel>
-      )}
-    </SessionChipContainer>
-  );
-});
-
-const SessionItem: React.FC<SessionItemProps> = React.memo(
-  ({ session, isActive, onClick, onDelete }) => {
-    // Get node states from session store with shallow comparison
-    // Direct access pattern is more reliable than curried selectors
-    const nodeStates = useSessionStore(
-      useShallow((state) => state.sessions.get(session.id)?.nodeStates ?? {})
-    );
-
-    // Compute session status from node states - memoized to prevent recalculation on every uptime update
-    const sessionStatus = React.useMemo(() => computeSessionStatus(nodeStates), [nodeStates]);
-    const statusColor = React.useMemo(() => getSessionStatusColor(sessionStatus), [sessionStatus]);
-    const statusLabel = React.useMemo(() => getSessionStatusLabel(sessionStatus), [sessionStatus]);
-    const issues = React.useMemo(() => summarizeNodeIssues(nodeStates), [nodeStates]);
-    const issuesText = React.useMemo(
-      () =>
-        issues
-          .slice(0, 3)
-          .map((issue) => `${issue.nodeId}: ${issue.summary}`)
-          .join('\n'),
-      [issues]
-    );
-
-    const handleClick = React.useCallback(() => {
-      onClick(session.id);
-    }, [onClick, session.id]);
-
-    const handleDelete = React.useCallback(
-      (e: React.MouseEvent) => {
-        e.stopPropagation(); // Prevent session selection when clicking delete
-        onDelete(session.id);
-      },
-      [onDelete, session.id]
-    );
-
-    return (
-      <SessionItemWrapper data-testid="session-item">
-        <Tooltip.Provider delayDuration={300}>
-          <Tooltip.Root open={isActive ? false : undefined}>
-            <Tooltip.Trigger asChild>
-              <SessionButton variant="secondary" onClick={handleClick} active={isActive}>
-                <SessionStatusBadge color={statusColor} />
-                <SessionButtonText>{session.name || shortSessionId(session.id)}</SessionButtonText>
-              </SessionButton>
-            </Tooltip.Trigger>
-            {!isActive && (
-              <Tooltip.Portal>
-                <SessionTooltipContent side="right" sideOffset={8}>
-                  <TooltipRow>
-                    <TooltipLabel>Status:</TooltipLabel>
-                    <TooltipValue>{statusLabel}</TooltipValue>
-                  </TooltipRow>
-                  {issuesText && (
-                    <TooltipRow style={{ alignItems: 'flex-start' }}>
-                      <TooltipLabel>Issues:</TooltipLabel>
-                      <TooltipValue style={{ whiteSpace: 'pre-wrap' }}>{issuesText}</TooltipValue>
-                    </TooltipRow>
-                  )}
-                  <TooltipRow>
-                    <TooltipLabel>Start:</TooltipLabel>
-                    <TooltipValue>{formatDateTime(session.created_at)}</TooltipValue>
-                  </TooltipRow>
-                  <TooltipRow>
-                    <TooltipLabel>Up:</TooltipLabel>
-                    <TooltipValue>
-                      <SessionUptime createdAt={session.created_at} />
-                    </TooltipValue>
-                  </TooltipRow>
-                  <Tooltip.Arrow className="tooltip-arrow" style={{ fill: 'var(--sk-border)' }} />
-                </SessionTooltipContent>
-              </Tooltip.Portal>
-            )}
-          </Tooltip.Root>
-        </Tooltip.Provider>
-        <Tooltip.Root delayDuration={200}>
-          <Tooltip.Trigger asChild>
-            <SessionDeleteButton
-              className="session-delete-button"
-              onClick={handleDelete}
-              aria-label="Delete session"
-              data-testid="session-delete-btn"
-            >
-              🗑️
-            </SessionDeleteButton>
-          </Tooltip.Trigger>
-          <Tooltip.Portal>
-            <SessionTooltipContent side="right" sideOffset={5}>
-              Delete session
-              <Tooltip.Arrow className="tooltip-arrow" style={{ fill: 'var(--sk-border)' }} />
-            </SessionTooltipContent>
-          </Tooltip.Portal>
-        </Tooltip.Root>
-      </SessionItemWrapper>
-    );
-  }
-);
-
-const LiveBadge = styled.span`
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 6px 10px;
-  background: rgba(239, 68, 68, 0.15);
-  color: rgb(239, 68, 68);
-  border: 1px solid rgba(239, 68, 68, 0.3);
-  border-radius: 4px;
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.3px;
-  line-height: 1;
-  user-select: none;
-`;
-
-const LiveDot = styled.div`
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: rgb(239, 68, 68);
-  animation: pulse 2s ease-in-out infinite;
-  flex-shrink: 0;
-
-  @keyframes pulse {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.5;
-    }
-  }
-`;
-
-// Type for TopControls props
-interface TopControlsProps {
-  isConnected: boolean;
-  selectedSessionId: string | null;
-  isInStagingMode: boolean;
-  stagingData: StagingData | undefined;
-  onCommit: () => void;
-  onDiscard: () => void;
-  onEnterStaging: () => void;
-  onDelete: () => void;
-}
-
-/**
- * Helper function for TopControls memo comparison.
- * Complexity of 18 is acceptable here as it performs shallow equality checks
- * on 11 different properties to prevent unnecessary re-renders. Breaking this
- * into sub-functions would make the code harder to understand without providing
- * real benefits.
- */
-
-const areTopControlPropsEqual = (
-  prevProps: TopControlsProps,
-  nextProps: TopControlsProps
-): boolean => {
-  // Custom comparison to prevent re-renders when stagingData.version changes
-  // but the actual changes/errors arrays haven't changed
-  if (prevProps.isConnected !== nextProps.isConnected) return false;
-  if (prevProps.selectedSessionId !== nextProps.selectedSessionId) return false;
-  if (prevProps.isInStagingMode !== nextProps.isInStagingMode) return false;
-  if (prevProps.onCommit !== nextProps.onCommit) return false;
-  if (prevProps.onDiscard !== nextProps.onDiscard) return false;
-  if (prevProps.onEnterStaging !== nextProps.onEnterStaging) return false;
-  if (prevProps.onDelete !== nextProps.onDelete) return false;
-
-  // Compare changes array length and validation errors
-  const prevChanges = prevProps.stagingData?.changes ?? [];
-  const nextChanges = nextProps.stagingData?.changes ?? [];
-  const prevErrors = prevProps.stagingData?.validationErrors ?? [];
-  const nextErrors = nextProps.stagingData?.validationErrors ?? [];
-
-  if (prevChanges.length !== nextChanges.length) return false;
-  if (prevErrors.length !== nextErrors.length) return false;
-
-  // If lengths are same and other props haven't changed, don't re-render
-  return true;
-};
-
-// Memoized TopControls component to prevent re-renders during drag
-const TopControls = React.memo(
-  ({
-    isConnected,
-    selectedSessionId,
-    isInStagingMode,
-    stagingData,
-    onCommit,
-    onDiscard,
-    onEnterStaging,
-    onDelete,
-  }: TopControlsProps) => {
-    // Only extract the fields we need to minimize re-renders
-    const changes = stagingData?.changes ?? [];
-    const validationErrors = stagingData?.validationErrors ?? [];
-
-    return (
-      <TopRightControls>
-        <ConnectionStatus connected={isConnected} />
-        {selectedSessionId && (
-          <ButtonGroup>
-            {isInStagingMode && stagingData && (
-              <>
-                <SKTooltip
-                  content="Parameters on committed nodes apply immediately. Parameters on staged nodes are queued for commit."
-                  side="bottom"
-                >
-                  <LiveBadge>
-                    <LiveDot />
-                    Real-time Params
-                  </LiveBadge>
-                </SKTooltip>
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px',
-                    padding: '6px 12px',
-                    fontSize: '13px',
-                    color: 'var(--sk-text-muted)',
-                    borderRight: '1px solid var(--sk-border)',
-                    lineHeight: '1',
-                    userSelect: 'none',
-                  }}
-                >
-                  {(() => {
-                    const added = changes.filter(
-                      (c: StagedChange) => c.type === 'add_node' || c.type === 'add_connection'
-                    ).length;
-                    const removed = changes.filter(
-                      (c: StagedChange) =>
-                        c.type === 'remove_node' || c.type === 'remove_connection'
-                    ).length;
-                    const modified = changes.filter(
-                      (c: StagedChange) => c.type === 'update_params'
-                    ).length;
-                    const hasChanges = added > 0 || removed > 0 || modified > 0;
-
-                    if (!hasChanges) return <span>No changes</span>;
-
-                    const parts = [];
-                    if (added > 0)
-                      parts.push(
-                        <span key="add" style={{ color: 'var(--sk-success)' }}>
-                          +{added}
-                        </span>
-                      );
-                    if (removed > 0)
-                      parts.push(
-                        <span key="rem" style={{ color: 'var(--sk-danger)' }}>
-                          -{removed}
-                        </span>
-                      );
-                    if (modified > 0)
-                      parts.push(
-                        <SKTooltip key="mod" content="Staged nodes with parameter changes">
-                          <span style={{ color: 'var(--sk-warning)' }}>~{modified}</span>
-                        </SKTooltip>
-                      );
-
-                    return <>{parts}</>;
-                  })()}
-                </div>
-                <SKTooltip content="Commit all staged changes">
-                  <Button
-                    variant="primary"
-                    size="small"
-                    onClick={onCommit}
-                    disabled={
-                      !changes.length ||
-                      validationErrors.filter((e: ValidationError) => e.type === 'error').length > 0
-                    }
-                  >
-                    Commit
-                  </Button>
-                </SKTooltip>
-              </>
-            )}
-            <SKTooltip
-              content={isInStagingMode ? 'Discard staged changes and exit' : 'Enter Staging Mode'}
-            >
-              <Button
-                variant={isInStagingMode ? 'danger' : 'ghost'}
-                size="small"
-                onClick={() => (isInStagingMode ? onDiscard() : onEnterStaging())}
-                active={isInStagingMode}
-                aria-pressed={isInStagingMode}
-              >
-                {isInStagingMode ? 'Discard' : 'Enter Staging'}
-              </Button>
-            </SKTooltip>
-            {!isInStagingMode && (
-              <SKTooltip content="Delete Session" side="bottom">
-                <Button variant="danger" size="small" onClick={onDelete}>
-                  Delete
-                </Button>
-              </SKTooltip>
-            )}
-          </ButtonGroup>
-        )}
-      </TopRightControls>
-    );
-  },
-  areTopControlPropsEqual
-);
-
-// Helper functions for commit changes to reduce complexity
-
-/** Find nodes that were added in staged pipeline */
-const computeAddedNodes = (stagedPipeline: Pipeline, livePipeline: Pipeline): BatchOperation[] => {
-  const operations: BatchOperation[] = [];
-  for (const [nodeId, node] of Object.entries(stagedPipeline.nodes) as [string, Node][]) {
-    if (!(nodeId in livePipeline.nodes)) {
-      operations.push({
-        action: 'addnode',
-        node_id: nodeId,
-        kind: node.kind,
-        params: node.params,
-      });
-    }
-  }
-  return operations;
-};
-
-/** Find nodes that were removed in staged pipeline */
-const computeRemovedNodes = (
-  stagedPipeline: Pipeline,
-  livePipeline: Pipeline
-): BatchOperation[] => {
-  const operations: BatchOperation[] = [];
-  for (const nodeId of Object.keys(livePipeline.nodes)) {
-    if (!(nodeId in stagedPipeline.nodes)) {
-      operations.push({
-        action: 'removenode',
-        node_id: nodeId,
-      });
-    }
-  }
-  return operations;
-};
-
-/** Create a set of connection keys for comparison */
-const connectionKey = (c: Connection): string =>
-  `${c.from_node}:${c.from_pin}:${c.to_node}:${c.to_pin}`;
-
-/** Find connections that were added or removed */
-const computeConnectionChanges = (
-  stagedPipeline: Pipeline,
-  livePipeline: Pipeline
-): BatchOperation[] => {
-  const operations: BatchOperation[] = [];
-
-  const liveConnections = new Set(livePipeline.connections.map(connectionKey));
-  const stagedConnections = new Set(stagedPipeline.connections.map(connectionKey));
-
-  // Find connections that were added
-  for (const conn of stagedPipeline.connections) {
-    if (!liveConnections.has(connectionKey(conn))) {
-      operations.push({
-        action: 'connect',
-        from_node: conn.from_node,
-        from_pin: conn.from_pin,
-        to_node: conn.to_node,
-        to_pin: conn.to_pin,
-        mode: conn.mode ?? 'reliable',
-      });
-    }
-  }
-
-  // Find connections that were removed
-  for (const conn of livePipeline.connections) {
-    if (!stagedConnections.has(connectionKey(conn))) {
-      operations.push({
-        action: 'disconnect',
-        from_node: conn.from_node,
-        from_pin: conn.from_pin,
-        to_node: conn.to_node,
-        to_pin: conn.to_pin,
-      });
-    }
-  }
-
-  return operations;
-};
-
-/**
- * Pre-process mixer nodes to set num_inputs based on actual connections.
- * This ensures mixers are created in fixed mode with proper pin counts.
- */
-const preprocessMixerNodes = (operations: BatchOperation[]): void => {
-  const mixerNodeOps = operations.filter(
-    (op): op is Extract<BatchOperation, { action: 'addnode' }> =>
-      op.action === 'addnode' && op.kind === 'audio::mixer'
-  );
-
-  for (const mixerOp of mixerNodeOps) {
-    // Count connections to this mixer
-    const connectionsToMixer = operations.filter(
-      (op): op is Extract<BatchOperation, { action: 'connect' }> =>
-        op.action === 'connect' && op.to_node === mixerOp.node_id
-    );
-
-    if (connectionsToMixer.length > 0) {
-      // Set num_inputs to the actual connection count (overrides null or undefined)
-      // Type guard: merge params only if existing params is an object
-      const existingParams = mixerOp.params;
-      mixerOp.params =
-        existingParams && typeof existingParams === 'object' && !Array.isArray(existingParams)
-          ? { ...existingParams, num_inputs: connectionsToMixer.length }
-          : { num_inputs: connectionsToMixer.length };
-      viewsLogger.debug(
-        `Auto-configured mixer ${mixerOp.node_id} with num_inputs=${connectionsToMixer.length}`
-      );
-    }
-  }
-};
-
-// Helper functions for topology effect to reduce complexity
-
-/**
- * Checks if an edge connection is valid (both source and target pins exist).
- * Prevents React Flow warnings about missing handles.
- */
-const isValidEdgeConnection = (conn: Connection, nodeMap: Map<string, RFNode>): boolean => {
-  const sourceNode = nodeMap.get(conn.from_node);
-  const targetNode = nodeMap.get(conn.to_node);
-
-  if (!sourceNode || !targetNode) return false;
-
-  const isDynamicTemplatePin = (pin: InputPin | OutputPin): boolean =>
-    typeof pin.cardinality === 'object' && pin.cardinality !== null && 'Dynamic' in pin.cardinality;
-
-  // Check if the output pin exists
-  const sourceOutputs = (sourceNode.data.outputs || []) as OutputPin[];
-  const hasSourcePin = sourceOutputs.some(
-    (pin) => pin.name === conn.from_pin && !isDynamicTemplatePin(pin)
-  );
-
-  // Check if the input pin exists
-  const targetInputs = (targetNode.data.inputs || []) as InputPin[];
-  const hasTargetPin = targetInputs.some(
-    (pin) => pin.name === conn.to_pin && !isDynamicTemplatePin(pin)
-  );
-
-  return hasSourcePin && hasTargetPin;
-};
-
-/**
- * Build edges from pipeline connections, filtering out invalid ones.
- */
-const buildEdgesFromConnections = (connections: Connection[], nodes: RFNode[]): Edge[] => {
-  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
-
-  return connections
-    .filter((conn) => isValidEdgeConnection(conn, nodeMap))
-    .map((conn) => ({
-      id: `${conn.from_node}_${conn.from_pin}-${conn.to_node}_${conn.to_pin}`,
-      source: conn.from_node,
-      sourceHandle: conn.from_pin,
-      target: conn.to_node,
-      targetHandle: conn.to_pin,
-    }));
-};
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  value !== null && value !== undefined && typeof value === 'object' && !Array.isArray(value);
-
-type SlowTimeoutDetails = {
-  slowPins: string[];
-  newlySlowPins: string[];
-  syncTimeoutMs: number | null;
-};
-
-const extractSlowTimeoutDetailsFromNodeState = (
-  state: NodeState | null | undefined
-): SlowTimeoutDetails | null => {
-  if (!state || typeof state === 'string') return null;
-  if (!('Degraded' in state)) return null;
-  if (state.Degraded.reason !== 'slow_input_timeout') return null;
-
-  const details = state.Degraded.details;
-  if (!isRecord(details)) return null;
-
-  const slowPinsRaw = details['slow_pins'];
-  const newlySlowPinsRaw = details['newly_slow_pins'];
-  const syncTimeoutRaw = details['sync_timeout_ms'];
-
-  const slowPins = Array.isArray(slowPinsRaw)
-    ? slowPinsRaw.filter((p): p is string => typeof p === 'string')
-    : [];
-  const newlySlowPins = Array.isArray(newlySlowPinsRaw)
-    ? newlySlowPinsRaw.filter((p): p is string => typeof p === 'string')
-    : [];
-  const syncTimeoutMs = typeof syncTimeoutRaw === 'number' ? syncTimeoutRaw : null;
-
-  return { slowPins, newlySlowPins, syncTimeoutMs };
-};
-
-const describeSlowInputs = (pipeline: Pipeline, nodeId: string, slowPins: string[]): string[] => {
-  if (slowPins.length === 0) return [];
-  const slowPinSet = new Set(slowPins);
-
-  const sources = pipeline.connections
-    .filter((c) => c.to_node === nodeId && slowPinSet.has(c.to_pin))
-    .map((c) => `${c.from_node}.${c.from_pin} → ${c.to_pin}`);
-
-  sources.sort();
-  return sources;
-};
-
-/**
- * Generate YAML representation of the pipeline ordered by topological sort.
- */
-const generatePipelineYaml = (pipeline: Pipeline, orderedNames: string[]): string => {
-  const yamlObject: { nodes: Record<string, unknown> } = { nodes: {} };
-
-  for (const nodeName of orderedNames) {
-    const apiNode = pipeline.nodes[nodeName];
-    if (!apiNode) continue;
-
-    const needs = pipeline.connections
-      .filter((c: Connection) => c.to_node === nodeName)
-      .map((c: Connection) => c.from_node);
-
-    const nodeConfig: Record<string, unknown> = { kind: apiNode.kind };
-    if (apiNode.params && Object.keys(apiNode.params).length > 0) {
-      nodeConfig['params'] = apiNode.params;
-    }
-    if (needs.length === 1) {
-      nodeConfig['needs'] = needs[0];
-    } else if (needs.length > 1) {
-      nodeConfig['needs'] = needs;
-    }
-    yamlObject.nodes[nodeName] = nodeConfig;
-  }
-
-  return dump(yamlObject, { skipInvalid: true });
-};
-
-/**
- * Build a single Node object from pipeline data.
- * Helper for topology effect to reduce complexity.
- */
-interface BuildNodeParams {
-  nodeName: string;
-  apiNode: Node;
-  position: { x: number; y: number };
-  nodeState: unknown; // Can be string | null or NodeState enum
-  isStaged: boolean;
-  finalInputs: InputPin[];
-  finalOutputs: OutputPin[];
-  nodeDef: NodeDefinition | undefined;
-  stableOnParamChange: (nodeId: string, paramName: string, value: unknown) => void;
-  selectedSessionId: string | null;
-}
-
-const buildNodeObject = (params: BuildNodeParams): RFNode => {
-  return {
-    id: params.nodeName,
-    type: params.apiNode.kind === 'audio::gain' ? 'audioGain' : 'configurable',
-    position: params.position,
-    dragHandle: '.drag-handle',
-    data: {
-      label: params.nodeName,
-      kind: params.apiNode.kind,
-      params: params.apiNode.params || {},
-      inputs: params.finalInputs,
-      outputs: params.finalOutputs,
-      paramSchema: params.nodeDef?.param_schema,
-      nodeDefinition: params.nodeDef,
-      definition: { bidirectional: params.nodeDef?.bidirectional },
-      state: params.nodeState,
-      // Stats are NOT included here to prevent re-renders when they update
-      // NodeStateIndicator will fetch them directly from session store on hover
-      // Use stable callback that checks staging mode at call-time
-      onParamChange: params.stableOnParamChange,
-      sessionId: params.selectedSessionId || undefined,
-      isStaged: params.isStaged,
-    },
-  };
-};
-
-const LeftPanel = React.memo(
-  ({
-    isLoadingSessions,
-    sessions,
-    selectedSessionId,
-    onSessionClick,
-    onSessionDelete,
-    editMode,
-    nodeDefinitions,
-    onDragStart,
-    pluginKinds,
-    pluginTypes,
-  }: {
-    isLoadingSessions: boolean;
-    sessions: { id: string; name: string | null; created_at: string }[];
-    selectedSessionId: string | null;
-    onSessionClick: (id: string) => void;
-    onSessionDelete: (id: string) => void;
-    editMode: boolean;
-    nodeDefinitions: NodeDefinition[];
-    onDragStart: (event: React.DragEvent, nodeType: string) => void;
-    pluginKinds: Set<string>;
-    pluginTypes: Map<string, 'wasm' | 'native'>;
-  }) => {
-    const [activeTab, setActiveTab] = useState<'sessions' | 'add'>('sessions');
-    const [searchQuery, setSearchQuery] = useState('');
-
-    useEffect(() => {
-      if (!editMode && activeTab === 'add') {
-        setActiveTab('sessions');
-      }
-    }, [editMode, activeTab]);
-
-    const filteredSessions = React.useMemo(() => {
-      if (!searchQuery.trim()) {
-        return sessions;
-      }
-      const query = searchQuery.toLowerCase();
-      return sessions.filter(
-        (session) =>
-          session.id.toLowerCase().includes(query) ||
-          (session.name && session.name.toLowerCase().includes(query))
-      );
-    }, [sessions, searchQuery]);
-
-    return (
-      <LeftPanelAside>
-        <TabsRoot
-          value={activeTab}
-          onValueChange={(value) => setActiveTab(value as 'sessions' | 'add')}
-        >
-          <TabsList>
-            <TabsTrigger value="sessions">Sessions</TabsTrigger>
-            {editMode && (
-              <TabsTrigger value="add" disabled={!selectedSessionId}>
-                Nodes Library
-              </TabsTrigger>
-            )}
-          </TabsList>
-
-          <TabsContent value="sessions">
-            <SessionsContainer data-testid="sessions-list">
-              {isLoadingSessions ? (
-                <LoadingText>Loading sessions...</LoadingText>
-              ) : sessions.length === 0 ? (
-                <EmptyStateText>No active sessions</EmptyStateText>
-              ) : (
-                <>
-                  {sessions.length >= 5 && (
-                    <SearchWrapper>
-                      <SessionSearchInput
-                        type="text"
-                        placeholder="Search sessions..."
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                      />
-                    </SearchWrapper>
-                  )}
-                  <SessionListWrapper>
-                    {filteredSessions.length === 0 ? (
-                      <EmptyStateText>No matching sessions</EmptyStateText>
-                    ) : (
-                      <SessionList>
-                        {filteredSessions.map((session) => (
-                          <li key={session.id}>
-                            <SessionItem
-                              session={session}
-                              isActive={selectedSessionId === session.id}
-                              onClick={onSessionClick}
-                              onDelete={onSessionDelete}
-                            />
-                          </li>
-                        ))}
-                      </SessionList>
-                    )}
-                  </SessionListWrapper>
-                </>
-              )}
-            </SessionsContainer>
-          </TabsContent>
-
-          <TabsContent value="add">
-            {editMode && (
-              <NodesLibraryContainer>
-                {selectedSessionId ? (
-                  nodeDefinitions.length === 0 ? (
-                    <EmptyStateText>Loading node definitions…</EmptyStateText>
-                  ) : (
-                    <NodePalette
-                      nodeDefinitions={nodeDefinitions}
-                      onDragStart={onDragStart}
-                      pluginKinds={pluginKinds}
-                      pluginTypes={pluginTypes}
-                    />
-                  )
-                ) : (
-                  <EmptyStateText>Select a session to add nodes</EmptyStateText>
-                )}
-              </NodesLibraryContainer>
-            )}
-          </TabsContent>
-        </TabsRoot>
-      </LeftPanelAside>
-    );
-  }
-);
 
 /**
  * Main content component for the Monitor view.
@@ -1498,6 +103,39 @@ const MonitorViewContent: React.FC = () => {
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [nodes, setNodes, onNodesChangeInternal] = useNodesState<RFNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+
+  // ── Low-priority dimension changes ────────────────────────────────────
+  // ReactFlow fires onNodesChange with 'dimensions' type for each node
+  // after mount measurement.  These are internal bookkeeping (the nodes
+  // are already visible) so we wrap them in startTransition to let React
+  // schedule them at lower priority rather than blocking the main thread.
+  // Interactive changes (select, drag, remove) bypass this and apply
+  // immediately.
+  const onNodesChangeBatched = useCallback(
+    (changes: NodeChange[]) => {
+      const immediate: NodeChange[] = [];
+      const deferred: NodeChange[] = [];
+
+      for (const c of changes) {
+        if (c.type === 'dimensions') {
+          deferred.push(c);
+        } else {
+          immediate.push(c);
+        }
+      }
+
+      if (immediate.length > 0) {
+        onNodesChangeInternal(immediate);
+      }
+
+      if (deferred.length > 0) {
+        React.startTransition(() => {
+          onNodesChangeInternal(deferred);
+        });
+      }
+    },
+    [onNodesChangeInternal]
+  );
   const [yamlString, setYamlString] = useState<string>('');
   // Track if user is actively editing YAML to prevent automatic updates from overwriting edits
   const isEditingYamlRef = useRef(false);
@@ -1543,8 +181,6 @@ const MonitorViewContent: React.FC = () => {
 
   // For backward compatibility, editMode now means "staging mode"
   const editMode = isInStagingMode;
-  const [needsAutoLayout, setNeedsAutoLayout] = useState(false);
-  const [needsFit, setNeedsFit] = useState(false);
   const [selectedNodes, setSelectedNodes] = useState<string[]>([]);
   const [rightPaneView, setRightPaneView] = useState<'yaml' | 'inspector' | 'telemetry'>('yaml');
   const [showDeleteModal, setShowDeleteModal] = useState(false);
@@ -1750,17 +386,31 @@ const MonitorViewContent: React.FC = () => {
     return found;
   }, [sessions, selectedSessionId]);
 
+  // Auto-select the first session when none is selected (e.g., initial load)
+  useEffect(() => {
+    if (!selectedSessionId && !isLoadingSessions && sessions.length > 0) {
+      const sessionId = sessions[0].id;
+      setSelectedSessionId(sessionId);
+
+      const savedPos = getNodePositions(sessionId);
+      setNeedsAutoLayout(Object.keys(savedPos).length === 0);
+      setNeedsFit(true);
+    }
+  }, [selectedSessionId, isLoadingSessions, sessions, getNodePositions]);
+
   // Prefetch pipeline data for all sessions to enable status display
   useSessionsPrefetch(sessions);
 
-  // Subscribe to selected session
+  // Subscribe to selected session.
+  // nodeStates is intentionally NOT consumed from this hook — see the
+  // useNodeStatesSubscription block below for the reasoning.
   const {
     pipeline,
-    nodeStates,
     // nodeStats not used here - NodeStateIndicator fetches directly from session store
     isConnected: sessionIsConnected,
     isLoading: isLoadingPipeline,
     tuneNode,
+    tuneNodeConfig,
     addNode,
     removeNode,
     connectPins,
@@ -1771,11 +421,79 @@ const MonitorViewContent: React.FC = () => {
   // Use session-specific connection status if a session is selected, otherwise use global
   const isConnected = selectedSessionId ? sessionIsConnected : globalIsConnected;
 
-  // Handle entering staging mode
+  // Preview: watch-only MoQ connection from Monitor view.
+  const { isPreviewConnected, handleStartPreview } = useMonitorPreview(selectedSessionId, pipeline);
+
   // Use ref to avoid recreating callback when pipeline changes
   const pipelineRef = useRef(pipeline);
   pipelineRef.current = pipeline;
 
+  // Topology signature: only changes when nodes/kinds or connections change
+  // Use staged pipeline when in staging mode, otherwise use live pipeline
+  // Memoize based on the actual pipeline content to avoid re-renders when references change
+  const topoKey = React.useMemo(() => {
+    const activePipeline = isInStagingMode && stagedPipeline ? stagedPipeline : pipeline;
+    if (!activePipeline) return '';
+    const names = Object.keys(activePipeline.nodes).sort();
+    const kinds = names.map((n) => `${n}:${activePipeline.nodes[n].kind}`);
+    const conns = activePipeline.connections
+      .map((c: Connection) => `${c.from_node}:${c.from_pin}>${c.to_node}:${c.to_pin}`)
+      .sort();
+    const key = JSON.stringify([kinds, conns]);
+    viewsLogger.debug(
+      'topoKey recalculated:',
+      key.substring(0, 100),
+      'isInStagingMode:',
+      isInStagingMode
+    );
+    return key;
+  }, [stagedPipeline, pipeline, isInStagingMode]);
+
+  // Auto-layout + fit-view hook
+  const { setNeedsAutoLayout, setNeedsFit, handleAutoLayout } = useAutoLayout({
+    pipeline,
+    selectedSessionId,
+    nodesLength: nodes.length,
+    setNodes,
+    rf,
+    updateNodePosition,
+  });
+
+  // Throttled Zustand→ReactFlow patching bridge
+  const { topoEffectRanRef } = useNodeStatesSubscription({
+    selectedSessionId,
+    setNodes,
+    setEdges,
+    pipelineRef,
+    topoKey,
+  });
+
+  // When a session is destroyed, the optimistic removal empties the list
+  // before React processes the batched setSelectedSessionId(null) from
+  // handleConfirmQuickDelete.  Eagerly clear the selection here so the
+  // badge, "Enter Staging", and "Delete" controls disappear immediately.
+  //
+  // The ref prevents this from fighting with the nav-state auto-select:
+  // we only clear selection for sessions that were *previously seen* in
+  // the list and then vanished (i.e., destroyed), not for a session ID
+  // that was just set via navigation state and hasn't appeared yet.
+  const sessionSeenInListRef = useRef(false);
+  if (selectedSession) {
+    sessionSeenInListRef.current = true;
+  }
+  useEffect(() => {
+    if (
+      selectedSessionId &&
+      !selectedSession &&
+      !isLoadingSessions &&
+      sessionSeenInListRef.current
+    ) {
+      sessionSeenInListRef.current = false;
+      setSelectedSessionId(null);
+    }
+  }, [selectedSessionId, selectedSession, isLoadingSessions]);
+
+  // Handle entering staging mode
   const handleEnterStagingMode = useCallback(() => {
     viewsLogger.info('Entering staging mode');
     if (!selectedSessionId || !pipelineRef.current) return;
@@ -2195,27 +913,6 @@ const MonitorViewContent: React.FC = () => {
     [isInStagingMode, selectedSessionId, stagingData, pipeline, toast, nodeDefinitions, tuneNode]
   );
 
-  // Topology signature: only changes when nodes/kinds or connections change
-  // Use staged pipeline when in staging mode, otherwise use live pipeline
-  // Memoize based on the actual pipeline content to avoid re-renders when references change
-  const topoKey = React.useMemo(() => {
-    const activePipeline = isInStagingMode && stagedPipeline ? stagedPipeline : pipeline;
-    if (!activePipeline) return '';
-    const names = Object.keys(activePipeline.nodes).sort();
-    const kinds = names.map((n) => `${n}:${activePipeline.nodes[n].kind}`);
-    const conns = activePipeline.connections
-      .map((c: Connection) => `${c.from_node}:${c.from_pin}>${c.to_node}:${c.to_pin}`)
-      .sort();
-    const key = JSON.stringify([kinds, conns]);
-    viewsLogger.debug(
-      'topoKey recalculated:',
-      key.substring(0, 100),
-      'isInStagingMode:',
-      isInStagingMode
-    );
-    return key;
-  }, [stagedPipeline, pipeline, isInStagingMode]);
-
   const onConnect = React.useCallback(
     (connection: RFConnection) => {
       return createOnConnect(
@@ -2581,8 +1278,13 @@ const MonitorViewContent: React.FC = () => {
         updateNodePosition(selectedSessionId, nodeName, pos);
       }
 
-      // Use real-time state from Zustand if available, otherwise use pipeline state
-      const nodeState = nodeStates[nodeName] || apiNode.state;
+      // Use real-time state from Zustand if available, otherwise use pipeline state.
+      // Read directly from the store (non-reactive) since the topology effect only
+      // runs on structural changes, not on every node-state transition.
+      const currentNodeStates = selectedSessionId
+        ? (useSessionStore.getState().getSession(selectedSessionId)?.nodeStates ?? {})
+        : {};
+      const nodeState = currentNodeStates[nodeName] || apiNode.state;
 
       // Determine if this node is staged (for visual distinction)
       const isStaged = isInStagingMode && stagingData?.stagedNodes.has(nodeName);
@@ -2613,6 +1315,7 @@ const MonitorViewContent: React.FC = () => {
         finalOutputs,
         nodeDef,
         stableOnParamChange,
+        stableOnConfigChange,
         selectedSessionId,
       });
 
@@ -2635,190 +1338,6 @@ const MonitorViewContent: React.FC = () => {
     setYamlString(yamlString);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [topoKey, defByKind, selectedSessionId, tuneNode]);
-
-  // Track previous topoKey to avoid redundant patch effect when topology changes
-  const prevTopoKeyRef = useRef<string>('');
-  const topoEffectRanRef = useRef(false);
-  const isInitialMountRef = useRef(true);
-
-  // Lightweight patch: update node params/state without rebuilding layout or edges
-  // Skip when topology effect will run (topoKey changed)
-  useEffect(() => {
-    if (!pipeline) return;
-
-    // Skip on initial mount - let topology effect handle everything
-    if (isInitialMountRef.current) {
-      viewsLogger.debug('Skipping patch effect on initial mount');
-      isInitialMountRef.current = false;
-      prevTopoKeyRef.current = topoKey;
-      return;
-    }
-
-    // If topoKey changed, the topology effect will handle the full rebuild, skip this patch
-    if (prevTopoKeyRef.current !== topoKey) {
-      viewsLogger.debug(
-        'Skipping patch effect, topology changed (prev:',
-        prevTopoKeyRef.current.substring(0, 30),
-        'new:',
-        topoKey.substring(0, 30),
-        ')'
-      );
-      prevTopoKeyRef.current = topoKey;
-      return;
-    }
-
-    // Also skip if topology effect hasn't run yet
-    if (!topoEffectRanRef.current) {
-      viewsLogger.debug('Skipping patch effect, waiting for topology effect');
-      return;
-    }
-
-    viewsLogger.debug('Running patch effect');
-
-    // Use startTransition to mark this as low-priority update
-    React.startTransition(() => {
-      setNodes((prev) => {
-        const updatesById = new Map<
-          string,
-          { nextState: unknown; nextParams: Record<string, unknown> }
-        >();
-
-        for (const n of prev) {
-          const apiNode = pipeline.nodes[n.id];
-          if (!apiNode) continue;
-
-          const nextState = nodeStates[n.id] ?? apiNode.state;
-          // Type guard: ensure params is an object of type Record<string, unknown>
-          const nextParams: Record<string, unknown> =
-            apiNode.params && typeof apiNode.params === 'object' && !Array.isArray(apiNode.params)
-              ? (apiNode.params as Record<string, unknown>)
-              : EMPTY_PARAMS;
-
-          // Deep comparison: check if state or params actually changed
-          const stateChanged = !deepEqual(n.data.state, nextState);
-          const paramsChanged = !deepEqual(n.data.params, nextParams);
-
-          if (stateChanged || paramsChanged) {
-            updatesById.set(n.id, { nextState, nextParams });
-          }
-        }
-
-        // Only create new array if there are actual changes
-        if (updatesById.size === 0) {
-          viewsLogger.debug('Patch effect: no changes, returning same array');
-          return prev; // Return same array reference - no re-render!
-        }
-
-        // Create updated array
-        const updated = prev.map((n) => {
-          const updateInfo = updatesById.get(n.id);
-          if (!updateInfo) return n;
-
-          return {
-            ...n,
-            data: {
-              ...n.data,
-              state: updateInfo.nextState,
-              params: updateInfo.nextParams,
-              // Note: stats are NOT updated here to prevent re-renders
-              // NodeStateIndicator fetches them directly from the session store
-            },
-          };
-        });
-
-        viewsLogger.debug('Patch effect updated', updatesById.size, 'nodes');
-        return updated;
-      });
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    pipeline,
-    // stagingData removed - not needed for state/params updates
-    // isInStagingMode removed - topology effect handles mode changes
-    nodeStates,
-    topoKey, // Need this to know when topology changed
-    // nodeStats removed from dependencies - no longer causes re-renders
-    // Note: setNodes, tuneNode, updateStagedNodeParams are stable and don't need to be dependencies
-  ]);
-
-  // Lightweight patch: update edge alerts based on node degraded details.
-  useEffect(() => {
-    if (!pipeline) return;
-
-    const slowPinsByNode = new Map<string, Set<string>>();
-    const slowDetailsByNode = new Map<string, SlowTimeoutDetails>();
-    for (const [nodeId, apiNode] of Object.entries(pipeline.nodes)) {
-      const state = (nodeStates as Record<string, NodeState>)[nodeId] ?? apiNode.state ?? null;
-      const details = extractSlowTimeoutDetailsFromNodeState(state);
-      const slowPins = details?.slowPins ?? [];
-      if (slowPins.length > 0) {
-        slowPinsByNode.set(nodeId, new Set(slowPins));
-      }
-      if (details) {
-        slowDetailsByNode.set(nodeId, details);
-      }
-    }
-
-    React.startTransition(() => {
-      setEdges((prev) => {
-        let changed = false;
-
-        const next = prev.map((edge) => {
-          const targetPin = edge.targetHandle ?? '';
-          const shouldWarn = slowPinsByNode.get(edge.target)?.has(targetPin) ?? false;
-          const currentAlert = isRecord(edge.data) ? edge.data['alert'] : undefined;
-          const currentAlertKind =
-            isRecord(currentAlert) && typeof currentAlert['kind'] === 'string'
-              ? currentAlert['kind']
-              : null;
-          const isCurrentlyWarned = currentAlertKind === 'slow_input_timeout';
-
-          if (shouldWarn === isCurrentlyWarned) return edge;
-
-          changed = true;
-          const nextData: Record<string, unknown> = { ...(edge.data || {}) };
-
-          if (shouldWarn) {
-            const details = slowDetailsByNode.get(edge.target);
-            const slowPins = details?.slowPins ?? [];
-            const slowInputs = pipeline ? describeSlowInputs(pipeline, edge.target, slowPins) : [];
-
-            const lines: string[] = [];
-            if (slowInputs.length > 0) {
-              lines.push(`Slow inputs: ${slowInputs.join(', ')}`);
-            } else if (slowPins.length > 0) {
-              lines.push(`Slow pins: ${slowPins.join(', ')}`);
-            }
-
-            const sourceHandle = edge.sourceHandle ?? '';
-            lines.push(`This: ${edge.source}.${sourceHandle} → ${edge.targetHandle ?? ''}`);
-
-            if (details?.newlySlowPins && details.newlySlowPins.length > 0) {
-              lines.push(`Newly slow: ${details.newlySlowPins.join(', ')}`);
-            }
-            if (details?.syncTimeoutMs !== null && details?.syncTimeoutMs !== undefined) {
-              lines.push(`Timeout: ${details.syncTimeoutMs}ms`);
-            }
-
-            nextData.alert = {
-              kind: 'slow_input_timeout',
-              severity: 'warning',
-              tooltip: {
-                title: `${edge.target} degraded`,
-                lines,
-              },
-            };
-          } else if (isCurrentlyWarned) {
-            delete nextData.alert;
-          }
-
-          return { ...edge, data: nextData };
-        });
-
-        return changed ? next : prev;
-      });
-    });
-  }, [pipeline, nodeStates, setEdges]);
 
   // Create a stable callback that handles both staged and live param changes
   // This avoids recreating callbacks for each node, which would break React.memo
@@ -2844,6 +1363,25 @@ const MonitorViewContent: React.FC = () => {
       tuneNode(nodeId, paramName, value);
     },
     [selectedSessionId, updateStagedNodeParams, validateParamValue, toast, tuneNode]
+  );
+
+  // Stable callback for full-config updates (compositor nodes).
+  // Supports staging mode: staged config changes are stored locally,
+  // live changes are sent directly via tuneNodeConfig.
+  const stableOnConfigChange = useCallback(
+    (nodeId: string, config: Record<string, unknown>) => {
+      const currentStagingData = useStagingStore.getState().staging[selectedSessionId || ''];
+      const isCurrentlyInStagingMode = currentStagingData?.mode === 'staging';
+      const isNodeStaged = isCurrentlyInStagingMode && currentStagingData?.stagedNodes.has(nodeId);
+
+      if (isNodeStaged && selectedSessionId) {
+        updateStagedNodeParams(selectedSessionId, nodeId, config);
+        return;
+      }
+
+      tuneNodeConfig(nodeId, config);
+    },
+    [selectedSessionId, updateStagedNodeParams, tuneNodeConfig]
   );
 
   // In staging mode, keep each node's `isStaged` flag in sync with `stagedNodes`.
@@ -3078,148 +1616,6 @@ const MonitorViewContent: React.FC = () => {
     }
   };
 
-  const applyAutoLayout = React.useCallback(
-    (measuredHeights: Record<string, number>) => {
-      if (!pipeline) return;
-
-      const nodeWidth = DEFAULT_NODE_WIDTH;
-      const hGap = DEFAULT_HORIZONTAL_GAP;
-      const vGap = DEFAULT_VERTICAL_GAP;
-
-      const { levels, sortedLevels } = topoLevelsFromPipeline(pipeline);
-
-      const perNodeHeights: Record<string, number> = {};
-      for (const name of Object.keys(pipeline.nodes)) {
-        const measured = measuredHeights[name];
-        if (typeof measured === 'number' && Number.isFinite(measured)) {
-          perNodeHeights[name] = measured;
-        } else {
-          const kind = pipeline.nodes[name].kind;
-          perNodeHeights[name] = ESTIMATED_HEIGHT_BY_KIND[kind] ?? DEFAULT_NODE_HEIGHT;
-        }
-      }
-
-      const positions = verticalLayout(levels, sortedLevels, {
-        nodeWidth,
-        nodeHeight: DEFAULT_NODE_HEIGHT,
-        hGap,
-        vGap,
-        heights: perNodeHeights,
-        edges: pipeline.connections.map((c) => ({ source: c.from_node, target: c.to_node })),
-      });
-
-      viewsLogger.debug(
-        'Applying auto-layout positions to',
-        Object.keys(positions).length,
-        'nodes'
-      );
-
-      setNodes((prev) =>
-        prev.map((n) => {
-          const newPos = positions[n.id];
-          if (!newPos) return n;
-
-          // Only create new object if position actually changed
-          if (n.position.x === newPos.x && n.position.y === newPos.y) {
-            return n;
-          }
-
-          return {
-            ...n,
-            position: newPos,
-          };
-        })
-      );
-
-      // Save auto-layout positions to staging store so we don't need to re-run layout next time
-      if (selectedSessionId) {
-        Object.entries(positions).forEach(([nodeId, position]) => {
-          updateNodePosition(selectedSessionId, nodeId, position);
-        });
-        viewsLogger.debug(
-          'Saved auto-layout positions for',
-          Object.keys(positions).length,
-          'nodes'
-        );
-      }
-
-      // Wait for nodes to be positioned and rendered before fitting
-      setTimeout(() => {
-        viewsLogger.debug('Auto-layout complete, fitting view');
-        // No animation for better performance on initial load
-        rf.current?.fitView({ padding: 0.2, duration: 0 });
-      }, 100);
-    },
-    [pipeline, setNodes, selectedSessionId, updateNodePosition]
-  );
-
-  const handleAutoLayout = React.useCallback(() => {
-    if (!pipeline) return;
-
-    const runLayout = () => {
-      const measuredHeights = collectNodeHeights(rf.current);
-      applyAutoLayout(measuredHeights);
-    };
-
-    if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
-      window.requestAnimationFrame(runLayout);
-    } else {
-      runLayout();
-    }
-  }, [pipeline, applyAutoLayout]);
-
-  // Auto-layout when selecting a session: perform once after pipeline/nodes load
-  useEffect(() => {
-    if (needsAutoLayout && selectedSessionId && pipeline && nodes.length > 0) {
-      viewsLogger.debug('Auto-layout requested');
-      // Use requestIdleCallback to defer layout until browser is idle
-      // This prevents blocking the UI during heavy renders
-      const hasRequestIdleCallback = 'requestIdleCallback' in window;
-      const idleCallback = hasRequestIdleCallback
-        ? window.requestIdleCallback(
-            () => {
-              handleAutoLayout();
-              setNeedsAutoLayout(false);
-              setNeedsFit(false); // Auto-layout handles fitView, so clear this flag too
-            },
-            { timeout: 200 }
-          )
-        : setTimeout(() => {
-            handleAutoLayout();
-            setNeedsAutoLayout(false);
-            setNeedsFit(false);
-          }, 100);
-      return () => {
-        if (hasRequestIdleCallback) {
-          window.cancelIdleCallback(idleCallback as number);
-        } else {
-          clearTimeout(idleCallback as number);
-        }
-      };
-    }
-  }, [needsAutoLayout, selectedSessionId, pipeline, nodes.length, handleAutoLayout]);
-
-  // Fit view when selecting a session once nodes are present
-  // Skip if auto-layout is running since it handles fitView itself
-  useEffect(() => {
-    if (needsFit && selectedSessionId && nodes.length > 0 && !needsAutoLayout) {
-      viewsLogger.debug('FitView requested, waiting for nodes to settle');
-      const t = setTimeout(() => {
-        viewsLogger.debug('Fitting view to nodes');
-        // No animation on initial load for better performance
-        rf.current?.fitView({ padding: 0.2, duration: 0 });
-        setNeedsFit(false);
-      }, 150); // Increased delay to ensure nodes are positioned
-      return () => clearTimeout(t);
-    }
-  }, [needsFit, selectedSessionId, nodes.length, needsAutoLayout]);
-
-  // Register fitView callback for layout preset changes
-  useFitViewOnLayoutPresetChange({
-    reactFlowInstance: rf,
-    nodesCount: nodes.length,
-  });
-
   // Memoize left panel to prevent ResizableLayout from re-rendering
   const leftPanel = React.useMemo(
     () => (
@@ -3273,6 +1669,8 @@ const MonitorViewContent: React.FC = () => {
             onDiscard={handleDiscardChanges}
             onEnterStaging={handleEnterStagingMode}
             onDelete={handleDeleteModalOpen}
+            onStartPreview={handleStartPreview}
+            isPreviewConnected={isPreviewConnected}
           />
         </CanvasTopBar>
         {selectedSessionId && nodes.length > 0 ? (
@@ -3281,7 +1679,7 @@ const MonitorViewContent: React.FC = () => {
               nodes={nodes}
               edges={edges}
               nodeTypes={nodeTypes}
-              onNodesChange={onNodesChangeInternal}
+              onNodesChange={onNodesChangeBatched}
               onEdgesChange={onEdgesChange}
               colorMode={colorMode}
               onInit={onInit}
@@ -3321,6 +1719,7 @@ const MonitorViewContent: React.FC = () => {
             )}
           </EmptyMonitorState>
         )}
+        <OutputPreviewPanel hasSession={selectedSessionId != null} conditionalRender />
       </CenterPanelContainer>
     ),
     // Intentional sparse dependencies for performance optimization:
@@ -3341,6 +1740,8 @@ const MonitorViewContent: React.FC = () => {
       onInit,
       editMode,
       isLoadingPipeline,
+      handleStartPreview,
+      isPreviewConnected,
     ]
   );
 

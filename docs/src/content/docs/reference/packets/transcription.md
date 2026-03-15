@@ -145,6 +145,13 @@ Transcriptions are carried as `Packet::Transcription(Arc<TranscriptionData>)`.
           ],
           "format": "uint64",
           "minimum": 0
+        },
+        "keyframe": {
+          "description": "Keyframe flag for encoded video packets (and raw frames if applicable)",
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       }
     }

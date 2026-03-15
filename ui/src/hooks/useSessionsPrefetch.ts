@@ -22,8 +22,6 @@ async function fetchPipeline(sessionId: string): Promise<Pipeline> {
  * without requiring the session to be selected first
  */
 export function useSessionsPrefetch(sessions: SessionInfo[]) {
-  const setPipeline = useSessionStore((state) => state.setPipeline);
-
   // Fetch pipeline for each session
   const sessionIds = sessions.map((s) => s.id);
 
@@ -44,16 +42,24 @@ export function useSessionsPrefetch(sessions: SessionInfo[]) {
     refetchInterval: 10000, // Refetch every 10 seconds
   });
 
-  // Update Zustand store when pipeline data is fetched
+  // Batch-update Zustand store when pipeline data is fetched.
+  // Using batchSetPipelines applies all pipeline updates in a single
+  // set() call, avoiding N individual Map recreations and N subscriber
+  // notifications that previously caused render cascades.
+  const batchSetPipelines = useSessionStore((state) => state.batchSetPipelines);
   useEffect(() => {
     if (queries.data) {
-      queries.data.forEach(({ sessionId, pipeline }) => {
-        if (pipeline) {
-          setPipeline(sessionId, pipeline);
-        }
-      });
+      const batch = queries.data
+        .filter(
+          (entry): entry is { sessionId: string; pipeline: Pipeline } => entry.pipeline !== null
+        )
+        .map(({ sessionId, pipeline }) => ({ sessionId, pipeline }));
+
+      if (batch.length > 0) {
+        batchSetPipelines(batch);
+      }
     }
-  }, [queries.data, setPipeline]);
+  }, [queries.data, batchSetPipelines]);
 
   return queries;
 }

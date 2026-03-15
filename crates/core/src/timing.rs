@@ -104,6 +104,8 @@ pub fn merge_metadata<'a, I: Iterator<Item = &'a PacketMetadata>>(
     let mut ts = None;
     let mut dur = None;
     let mut seq = None;
+    let mut keyframe = None;
+    let mut keyframe_conflict = false;
     for m in iter {
         if let Some(t) = m.timestamp_us {
             ts = Some(ts.map_or(t, |prev: u64| prev.min(t)));
@@ -114,9 +116,21 @@ pub fn merge_metadata<'a, I: Iterator<Item = &'a PacketMetadata>>(
         if let Some(s) = m.sequence {
             seq = Some(seq.map_or(s, |prev: u64| prev.max(s)));
         }
+        if !keyframe_conflict {
+            if let Some(k) = m.keyframe {
+                match keyframe {
+                    None => keyframe = Some(k),
+                    Some(existing) if existing == k => {},
+                    Some(_) => {
+                        keyframe = None;
+                        keyframe_conflict = true;
+                    },
+                }
+            }
+        }
     }
-    if ts.is_some() || dur.is_some() || seq.is_some() {
-        Some(PacketMetadata { timestamp_us: ts, duration_us: dur, sequence: seq })
+    if ts.is_some() || dur.is_some() || seq.is_some() || keyframe.is_some() {
+        Some(PacketMetadata { timestamp_us: ts, duration_us: dur, sequence: seq, keyframe })
     } else {
         None
     }

@@ -111,6 +111,11 @@ impl PacerNode {
                 // Fallback: calculate from AudioFrame
                 Self::calculate_audio_duration(frame)
             },
+            Packet::Video(frame) => frame
+                .metadata
+                .as_ref()
+                .and_then(|m| m.duration_us)
+                .map_or(Duration::ZERO, Duration::from_micros),
             Packet::Binary { metadata, .. } => {
                 // Use metadata if available
                 metadata
@@ -139,6 +144,7 @@ impl PacerNode {
     fn packet_metadata(packet: &Packet) -> Option<&PacketMetadata> {
         match packet {
             Packet::Audio(frame) => frame.metadata.as_ref(),
+            Packet::Video(frame) => frame.metadata.as_ref(),
             Packet::Binary { metadata, .. } => metadata.as_ref(),
             Packet::Custom(custom) => custom.metadata.as_ref(),
             Packet::Transcription(transcription) => transcription.metadata.as_ref(),
@@ -487,6 +493,7 @@ mod tests {
 
         let context = NodeContext {
             inputs,
+            input_types: HashMap::new(),
             control_rx,
             output_sender,
             batch_size: 32,
@@ -497,6 +504,9 @@ mod tests {
             cancellation_token: None,
             pin_management_rx: None, // Test contexts don't support dynamic pins
             audio_pool: None,
+            video_pool: None,
+            pipeline_mode: streamkit_core::PipelineMode::Dynamic,
+            view_data_tx: None,
         };
 
         // Create node with very fast speed to minimize test time
@@ -517,6 +527,7 @@ mod tests {
                         timestamp_us: None,
                         duration_us: Some(1_000), // 1ms
                         sequence: Some(i),
+                        keyframe: None,
                     }),
                 })
                 .await

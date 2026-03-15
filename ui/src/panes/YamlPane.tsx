@@ -10,9 +10,11 @@ import { Decoration, EditorView, keymap } from '@codemirror/view';
 import styled from '@emotion/styled';
 import { solarizedDark, solarizedLight } from '@uiw/codemirror-theme-solarized';
 import CodeMirror from '@uiw/react-codemirror';
-import React, { useMemo, useRef, useEffect } from 'react';
+import { debounce } from 'lodash-es';
+import React, { useCallback, useMemo, useRef, useEffect } from 'react';
 
 import { CopyButton } from '@/components/CopyButton';
+import { useCompositorSelection } from '@/hooks/useCompositorSelection';
 import { useResolvedColorMode } from '@/hooks/useResolvedColorMode';
 import type { NodeDefinition } from '@/types/generated/api-types';
 import { createYamlAutocompletion } from '@/utils/yamlAutocompletion';
@@ -55,6 +57,17 @@ const ContentWrapper = styled.div`
   display: flex;
   flex-direction: column;
   gap: 10px;
+`;
+
+const ErrorBanner = styled.div`
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: var(--sk-error-bg, rgba(239, 68, 68, 0.1));
+  border: 1px solid var(--sk-error-border, rgba(239, 68, 68, 0.3));
+  border-radius: 4px;
+  color: var(--sk-error-text, #ef4444);
+  font-size: 12px;
+  font-family: var(--sk-font-code);
 `;
 
 const CodeMirrorWrapper = styled.div`
@@ -189,6 +202,181 @@ function findNodeLineRange(
   return null;
 }
 
+/** Find the array index of an overlay whose YAML `id:` field matches `targetId`
+ *  within a given section (e.g. `text_overlays:` or `image_overlays:`).
+ *  Returns -1 if not found. */
+function findOverlayIndexById(
+  lines: string[],
+  nodeRange: { startLine: number; endLine: number },
+  sectionKey: string,
+  targetId: string
+): number {
+  const section = findSectionStart(lines, nodeRange, sectionKey);
+  if (!section) return -1;
+  let itemIndex = -1;
+  for (let i = section.start + 1; i <= nodeRange.endLine; i++) {
+    const line = lines[i];
+    const indent = line.length - line.trimStart().length;
+    if (indent <= section.indent && line.trim().length > 0) break;
+    if (line.trimStart().startsWith('- ') && indent > section.indent) {
+      itemIndex++;
+    }
+    const trimmed = line.trim();
+    // Strip leading "- " so we also match "- id: foo" (id on array-item line)
+    const stripped = trimmed.startsWith('- ') ? trimmed.slice(2) : trimmed;
+    if (
+      (stripped === `id: ${targetId}` ||
+        stripped === `id: "${targetId}"` ||
+        stripped === `id: '${targetId}'`) &&
+      itemIndex >= 0
+    ) {
+      return itemIndex;
+    }
+  }
+  return -1;
+}
+
+/** Locate the start line and indent of a YAML section key within a range. */
+function findSectionStart(
+  lines: string[],
+  nodeRange: { startLine: number; endLine: number },
+  sectionKey: string
+): { start: number; indent: number } | null {
+  for (let i = nodeRange.startLine; i <= nodeRange.endLine; i++) {
+    if (lines[i].trim() === `${sectionKey}:`) {
+      return { start: i, indent: lines[i].length - lines[i].trimStart().length };
+    }
+  }
+  return null;
+}
+
+/** Find a map-style video layer key (e.g. "in_0:") under a section. */
+function findMapKeyRange(
+  lines: string[],
+  endLine: number,
+  sectionStart: number,
+  sectionIndent: number,
+  subKey: string
+): { startLine: number; endLine: number } | null {
+  let keyStart = -1;
+  let keyIndent = -1;
+  for (let i = sectionStart + 1; i <= endLine; i++) {
+    const line = lines[i];
+    const indent = line.length - line.trimStart().length;
+    if (indent <= sectionIndent && line.trim().length > 0) break;
+    const m = line.match(/^(\s+)([a-zA-Z0-9_:.-]+):\s*$/);
+    if (m && m[2] === subKey && indent > sectionIndent) {
+      keyStart = i;
+      keyIndent = indent;
+      continue;
+    }
+    if (keyStart !== -1 && indent <= keyIndent && line.trim().length > 0) {
+      return { startLine: keyStart, endLine: i - 1 };
+    }
+  }
+  return keyStart !== -1 ? { startLine: keyStart, endLine } : null;
+}
+
+/** Find the Nth array item ("- " prefix) under a section. */
+function findArrayItemRange(
+  lines: string[],
+  endLine: number,
+  sectionStart: number,
+  sectionIndent: number,
+  arrayIndex: number
+): { startLine: number; endLine: number } | null {
+  let itemCount = -1;
+  let itemStart = -1;
+  let itemIndent = -1;
+  for (let i = sectionStart + 1; i <= endLine; i++) {
+    const line = lines[i];
+    const indent = line.length - line.trimStart().length;
+    if (indent <= sectionIndent && line.trim().length > 0) break;
+    if (line.trimStart().startsWith('- ') && indent > sectionIndent) {
+      if (itemStart !== -1 && itemCount === arrayIndex) {
+        return { startLine: itemStart, endLine: i - 1 };
+      }
+      itemCount++;
+      itemStart = i;
+      itemIndent = indent;
+    }
+  }
+  if (itemStart !== -1 && itemCount === arrayIndex) {
+    for (let i = itemStart + 1; i <= endLine; i++) {
+      const line = lines[i];
+      const indent = line.length - line.trimStart().length;
+      if (indent <= sectionIndent && line.trim().length > 0)
+        return { startLine: itemStart, endLine: i - 1 };
+      if (line.trimStart().startsWith('- ') && indent <= itemIndent)
+        return { startLine: itemStart, endLine: i - 1 };
+    }
+    return { startLine: itemStart, endLine };
+  }
+  return null;
+}
+
+/**
+ * Find a compositor layer/overlay sub-key within a node's YAML range.
+ * Supports video layers (e.g. "in_0" under "layers:") by map-key lookup,
+ * and text/image overlays by scanning for a matching `id:` field within
+ * the `text_overlays:` / `image_overlays:` YAML arrays.
+ */
+function findLayerLineRange(
+  yaml: string,
+  nodeRange: { startLine: number; endLine: number },
+  layerId: string
+): { startLine: number; endLine: number } | null {
+  const lines = yaml.split('\n');
+
+  // Try video layers first (map key under "layers:")
+  const layersSection = findSectionStart(lines, nodeRange, 'layers');
+  if (layersSection) {
+    const mapRange = findMapKeyRange(
+      lines,
+      nodeRange.endLine,
+      layersSection.start,
+      layersSection.indent,
+      layerId
+    );
+    if (mapRange) return mapRange;
+  }
+
+  // Try text overlays (search by id field)
+  const textIdx = findOverlayIndexById(lines, nodeRange, 'text_overlays', layerId);
+  if (textIdx >= 0) {
+    const textSection = findSectionStart(lines, nodeRange, 'text_overlays');
+    if (textSection) {
+      return findArrayItemRange(
+        lines,
+        nodeRange.endLine,
+        textSection.start,
+        textSection.indent,
+        textIdx
+      );
+    }
+  }
+
+  // Try image overlays (search by id field)
+  const imgIdx = findOverlayIndexById(lines, nodeRange, 'image_overlays', layerId);
+  if (imgIdx >= 0) {
+    const imgSection = findSectionStart(lines, nodeRange, 'image_overlays');
+    if (imgSection) {
+      return findArrayItemRange(
+        lines,
+        nodeRange.endLine,
+        imgSection.start,
+        imgSection.indent,
+        imgIdx
+      );
+    }
+  }
+
+  return null;
+}
+
+/** Debounce delay (ms) for YAML edits in staging mode. */
+const YAML_EDIT_DEBOUNCE_MS = 500;
+
 const YamlPane: React.FC<YamlPaneProps> = ({
   yaml,
   onChange,
@@ -200,6 +388,29 @@ const YamlPane: React.FC<YamlPaneProps> = ({
   const colorMode = useResolvedColorMode();
   const isDarkMode = colorMode === 'dark';
   const editorViewRef = useRef<EditorView | null>(null);
+
+  // Debounce the upstream onChange so intermediate (invalid) YAML states
+  // produced while typing don't trigger a flood of parse-error toasts.
+  // CodeMirror manages its own internal buffer, so the editor stays
+  // responsive — only the parent's parse/validate cycle is deferred.
+  const debouncedOnChange = useMemo(() => {
+    if (!onChange) return undefined;
+    return debounce(onChange, YAML_EDIT_DEBOUNCE_MS, { leading: false, trailing: true });
+  }, [onChange]);
+
+  // Cancel any pending debounced call on unmount or when onChange changes.
+  useEffect(() => {
+    return () => {
+      debouncedOnChange?.cancel();
+    };
+  }, [debouncedOnChange]);
+
+  const handleChange = useCallback(
+    (value: string) => {
+      debouncedOnChange?.(value);
+    },
+    [debouncedOnChange]
+  );
 
   // Create highlighting extension for selected node
   const highlightExtension = useMemo(() => {
@@ -258,11 +469,29 @@ const YamlPane: React.FC<YamlPaneProps> = ({
     endLine: number;
   } | null>;
 
-  // Update highlights when highlightNodeLabel changes
+  // Read compositor layer selection (published by CompositorNode)
+  const compositorSelection = useCompositorSelection();
+
+  // Update highlights when highlightNodeLabel or compositor layer selection changes
   useEffect(() => {
     if (!editorViewRef.current) return;
 
-    const range = findNodeLineRange(yaml, highlightNodeLabel || '');
+    // If a compositor layer is selected, drill into that layer's YAML range
+    let range: { startLine: number; endLine: number } | null = null;
+    const nodeLabel = highlightNodeLabel || '';
+
+    if (
+      compositorSelection.layerId &&
+      compositorSelection.nodeLabel &&
+      compositorSelection.nodeLabel === nodeLabel
+    ) {
+      const nodeRange = findNodeLineRange(yaml, nodeLabel);
+      if (nodeRange) {
+        range = findLayerLineRange(yaml, nodeRange, compositorSelection.layerId) ?? nodeRange;
+      }
+    } else {
+      range = findNodeLineRange(yaml, nodeLabel);
+    }
 
     if (range) {
       // Apply highlight and scroll to view
@@ -283,7 +512,7 @@ const YamlPane: React.FC<YamlPaneProps> = ({
         effects: setHighlightEffect.of(null),
       });
     }
-  }, [highlightNodeLabel, yaml, setHighlightEffect]);
+  }, [highlightNodeLabel, yaml, setHighlightEffect, compositorSelection]);
 
   // Create autocompletion extension with keyboard shortcuts
   const autocompletionExtension = useMemo(() => {
@@ -370,7 +599,7 @@ const YamlPane: React.FC<YamlPaneProps> = ({
           <CopyButton text={yaml} />
           <CodeMirror
             value={yaml}
-            onChange={onChange}
+            onChange={handleChange}
             extensions={editorExtensions}
             theme={isDarkMode ? solarizedDark : solarizedLight}
             basicSetup={basicSetupOptions}
@@ -381,22 +610,7 @@ const YamlPane: React.FC<YamlPaneProps> = ({
             onCreateEditor={onCreateEditor}
           />
         </CodeMirrorWrapper>
-        {error && (
-          <div
-            style={{
-              marginTop: '8px',
-              padding: '8px 12px',
-              background: 'var(--sk-error-bg, rgba(239, 68, 68, 0.1))',
-              border: '1px solid var(--sk-error-border, rgba(239, 68, 68, 0.3))',
-              borderRadius: '4px',
-              color: 'var(--sk-error-text, #ef4444)',
-              fontSize: '12px',
-              fontFamily: 'var(--sk-font-code)',
-            }}
-          >
-            {error}
-          </div>
-        )}
+        {error && <ErrorBanner>{error}</ErrorBanner>}
       </ContentWrapper>
     </PaneWrapper>
   );

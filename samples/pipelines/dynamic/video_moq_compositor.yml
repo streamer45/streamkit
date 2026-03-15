@@ -1,0 +1,67 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+name: Video Compositor (MoQ Stream)
+description: Composites two colorbars sources through the compositor node and streams via MoQ
+mode: dynamic
+
+nodes:
+  colorbars_bg:
+    kind: video::colorbars
+    params:
+      width: 1280
+      height: 720
+      fps: 30
+      pixel_format: rgba8
+      draw_time: true
+
+  colorbars_pip:
+    kind: video::colorbars
+    params:
+      width: 320
+      height: 240
+      fps: 30
+      pixel_format: rgba8
+      draw_time: true
+
+  compositor:
+    kind: video::compositor
+    params:
+      width: 1280
+      height: 720
+      num_inputs: 2
+      layers:
+        in_0:
+          opacity: 1.0
+          z_index: 0
+        in_1:
+          rect:
+            x: 100
+            y: 220
+            width: 240
+            height: 180
+          opacity: 0.9
+          z_index: 1
+          rotation_degrees: 15.0
+    needs:
+      - colorbars_bg
+      - colorbars_pip
+
+  pixel_convert:
+    kind: video::pixel_convert
+    params:
+      output_format: nv12
+    needs: compositor
+
+  vp9_encoder:
+    kind: video::vp9::encoder
+    needs: pixel_convert
+
+  moq_peer:
+    kind: transport::moq::peer
+    params:
+      gateway_path: /moq/video
+      output_broadcast: output
+      allow_reconnect: true
+    needs: vp9_encoder

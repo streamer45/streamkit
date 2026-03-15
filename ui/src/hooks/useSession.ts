@@ -5,15 +5,12 @@
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useCallback } from 'react';
 import { v4 as uuidv4 } from 'uuid';
-import { useShallow } from 'zustand/shallow';
 
 import { fetchApi } from '@/services/base';
 import { getWebSocketService } from '@/services/websocket';
 import { useNodeParamsStore } from '@/stores/nodeParamsStore';
 import { useSessionStore } from '@/stores/sessionStore';
-import type { Pipeline, NodeState, Request, MessageType, BatchOperation } from '@/types/types';
-
-const EMPTY_NODE_STATES: Record<string, NodeState> = Object.freeze({});
+import type { Pipeline, Request, MessageType, BatchOperation } from '@/types/types';
 
 async function fetchPipeline(sessionId: string): Promise<Pipeline> {
   const response = await fetchApi(`/api/v1/sessions/${sessionId}/pipeline`);
@@ -52,15 +49,13 @@ export function useSession(sessionId: string | null) {
     }
   }, [pipelineQuery.data, sessionId]);
 
-  // Get real-time state from Zustand with granular selectors to minimize re-renders
-  // Use shallow comparison for objects to prevent re-renders when object references change but content is same
+  // Get real-time state from Zustand with granular selectors to minimize re-renders.
+  // nodeStates is intentionally NOT subscribed here — it changes on every WS
+  // node-state event and would force the (very large) MonitorViewContent to
+  // re-render each time.  MonitorViewContent patches ReactFlow nodes directly
+  // via a Zustand store subscription instead.
   const pipeline = useSessionStore((state) =>
     sessionId ? state.getSession(sessionId)?.pipeline : undefined
-  );
-  const nodeStates: Record<string, NodeState> = useSessionStore(
-    useShallow((state) =>
-      sessionId ? (state.getSession(sessionId)?.nodeStates ?? EMPTY_NODE_STATES) : EMPTY_NODE_STATES
-    )
   );
   const isConnectedFromStore = useSessionStore((state) =>
     sessionId ? (state.getSession(sessionId)?.isConnected ?? false) : false
@@ -86,6 +81,35 @@ export function useSession(sessionId: string | null) {
       };
 
       // Fire-and-forget WebSocket message; no optimistic global state mutation
+      wsService.sendFireAndForget(request);
+    },
+    [sessionId, wsService]
+  );
+
+  // Send a full config object as a single UpdateParams message.
+  // Unlike tuneNode (which sends one key-value pair), this sends the entire
+  // config so nodes like the compositor don't lose fields due to #[serde(default)].
+  const tuneNodeConfig = useCallback(
+    (nodeId: string, config: Record<string, unknown>) => {
+      if (!sessionId) return;
+
+      // Batch all param updates into a single store update to avoid
+      // N intermediate states that would trigger N selector re-evaluations.
+      useNodeParamsStore.getState().setParams(nodeId, config, sessionId);
+
+      const request: Request = {
+        type: 'request' as MessageType,
+        correlation_id: uuidv4(),
+        payload: {
+          action: 'tunenodeasync' as const,
+          session_id: sessionId,
+          node_id: nodeId,
+          message: {
+            UpdateParams: config,
+          },
+        },
+      };
+
       wsService.sendFireAndForget(request);
     },
     [sessionId, wsService]
@@ -197,11 +221,11 @@ export function useSession(sessionId: string | null) {
 
   return {
     pipeline: pipeline ?? pipelineQuery.data,
-    nodeStates,
     isConnected: isConnectedFromStore,
     isLoading: pipelineQuery.isLoading,
     error: pipelineQuery.error,
     tuneNode,
+    tuneNodeConfig,
     addNode,
     removeNode,
     connectPins,

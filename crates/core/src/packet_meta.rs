@@ -37,7 +37,7 @@ pub enum Compatibility {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct PacketTypeMeta {
-    /// Variant identifier (e.g., "RawAudio", "OpusAudio", "Binary", "Any").
+    /// Variant identifier (e.g., "RawAudio", "EncodedAudio", "Binary", "Any").
     pub id: String,
     /// Human-friendly default label.
     pub label: String,
@@ -81,13 +81,6 @@ pub fn packet_type_registry() -> &'static [PacketTypeMeta] {
                 compatibility: Compatibility::Exact,
             },
             PacketTypeMeta {
-                id: "OpusAudio".into(),
-                label: "Opus Audio".into(),
-                color: "#ff6b6b".into(),
-                display_template: None,
-                compatibility: Compatibility::Exact,
-            },
-            PacketTypeMeta {
                 id: "RawAudio".into(),
                 label: "Raw Audio".into(),
                 color: "#f39c12".into(),
@@ -105,6 +98,67 @@ pub fn packet_type_registry() -> &'static [PacketTypeMeta] {
                             wildcard_value: Some(serde_json::json!(0)),
                         },
                         FieldRule { name: "sample_format".into(), wildcard_value: None },
+                    ],
+                },
+            },
+            PacketTypeMeta {
+                id: "RawVideo".into(),
+                label: "Raw Video".into(),
+                color: "#1abc9c".into(),
+                display_template: Some("Raw Video ({width|*}x{height|*}, {pixel_format})".into()),
+                compatibility: Compatibility::StructFieldWildcard {
+                    fields: vec![
+                        FieldRule {
+                            name: "width".into(),
+                            wildcard_value: Some(serde_json::Value::Null),
+                        },
+                        FieldRule {
+                            name: "height".into(),
+                            wildcard_value: Some(serde_json::Value::Null),
+                        },
+                        FieldRule { name: "pixel_format".into(), wildcard_value: None },
+                    ],
+                },
+            },
+            PacketTypeMeta {
+                id: "EncodedAudio".into(),
+                label: "Encoded Audio".into(),
+                color: "#ff6b6b".into(),
+                display_template: Some("Encoded Audio ({codec})".into()),
+                compatibility: Compatibility::StructFieldWildcard {
+                    fields: vec![
+                        FieldRule { name: "codec".into(), wildcard_value: None },
+                        FieldRule {
+                            name: "codec_private".into(),
+                            wildcard_value: Some(serde_json::Value::Null),
+                        },
+                    ],
+                },
+            },
+            PacketTypeMeta {
+                id: "EncodedVideo".into(),
+                label: "Encoded Video".into(),
+                color: "#2980b9".into(),
+                display_template: Some("Encoded Video ({codec})".into()),
+                compatibility: Compatibility::StructFieldWildcard {
+                    fields: vec![
+                        FieldRule { name: "codec".into(), wildcard_value: None },
+                        FieldRule {
+                            name: "bitstream_format".into(),
+                            wildcard_value: Some(serde_json::Value::Null),
+                        },
+                        FieldRule {
+                            name: "codec_private".into(),
+                            wildcard_value: Some(serde_json::Value::Null),
+                        },
+                        FieldRule {
+                            name: "profile".into(),
+                            wildcard_value: Some(serde_json::Value::Null),
+                        },
+                        FieldRule {
+                            name: "level".into(),
+                            wildcard_value: Some(serde_json::Value::Null),
+                        },
                     ],
                 },
             },
@@ -190,15 +244,24 @@ pub fn can_connect(output: &PacketType, input: &PacketType, registry: &[PacketTy
             };
 
             fields.iter().all(|f| {
-                let Some(av) = out_map.get(&f.name) else {
-                    return false;
+                let wildcard = f.wildcard_value.as_ref();
+                let av = match out_map.get(&f.name) {
+                    Some(value) => value,
+                    None => match wildcard {
+                        Some(value) => value,
+                        None => return false,
+                    },
                 };
-                let Some(bv) = in_map.get(&f.name) else {
-                    return false;
+                let bv = match in_map.get(&f.name) {
+                    Some(value) => value,
+                    None => match wildcard {
+                        Some(value) => value,
+                        None => return false,
+                    },
                 };
 
                 // If either equals the wildcard, it matches
-                if let Some(wild) = &f.wildcard_value {
+                if let Some(wild) = wildcard {
                     if av == wild || bv == wild {
                         return true;
                     }
@@ -218,4 +281,70 @@ pub fn can_connect_any(
     registry: &[PacketTypeMeta],
 ) -> bool {
     inputs.iter().any(|inp| can_connect(output, inp, registry))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{AudioCodec, EncodedAudioFormat, PixelFormat, RawVideoFormat};
+
+    #[test]
+    fn raw_video_wildcard_dimensions() {
+        let registry = packet_type_registry();
+        let exact = RawVideoFormat {
+            width: Some(1920),
+            height: Some(1080),
+            pixel_format: PixelFormat::I420,
+        };
+        let wildcard =
+            RawVideoFormat { width: None, height: None, pixel_format: PixelFormat::I420 };
+        let mismatched = RawVideoFormat {
+            width: Some(1280),
+            height: Some(720),
+            pixel_format: PixelFormat::I420,
+        };
+        let different_format = RawVideoFormat {
+            width: Some(1920),
+            height: Some(1080),
+            pixel_format: PixelFormat::Rgba8,
+        };
+
+        assert!(can_connect(
+            &PacketType::RawVideo(exact.clone()),
+            &PacketType::RawVideo(exact.clone()),
+            registry
+        ));
+        assert!(can_connect(
+            &PacketType::RawVideo(exact.clone()),
+            &PacketType::RawVideo(wildcard.clone()),
+            registry
+        ));
+        assert!(can_connect(
+            &PacketType::RawVideo(wildcard),
+            &PacketType::RawVideo(exact.clone()),
+            registry
+        ));
+        assert!(!can_connect(
+            &PacketType::RawVideo(exact.clone()),
+            &PacketType::RawVideo(mismatched),
+            registry
+        ));
+        assert!(!can_connect(
+            &PacketType::RawVideo(exact),
+            &PacketType::RawVideo(different_format),
+            registry
+        ));
+    }
+
+    #[test]
+    fn encoded_audio_optional_fields() {
+        let registry = packet_type_registry();
+        let format = EncodedAudioFormat { codec: AudioCodec::Opus, codec_private: None };
+
+        assert!(can_connect(
+            &PacketType::EncodedAudio(format.clone()),
+            &PacketType::EncodedAudio(format),
+            registry
+        ));
+    }
 }

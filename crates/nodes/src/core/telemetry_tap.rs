@@ -131,6 +131,7 @@ impl TelemetryTapNode {
     fn should_tap_packet_type(&self, packet: &Packet) -> bool {
         let type_name = match packet {
             Packet::Audio(_) => "Audio",
+            Packet::Video(_) => "Video",
             Packet::Transcription(_) => "Transcription",
             Packet::Custom(_) => "Custom",
             Packet::Binary { .. } => "Binary",
@@ -331,6 +332,18 @@ impl ProcessorNode for TelemetryTapNode {
                             serde_json::json!({
                                 "size_bytes": data.len(),
                                 "has_metadata": metadata.is_some(),
+                            }),
+                        );
+                    },
+                    Packet::Video(frame) => {
+                        telemetry.emit(
+                            "video.received",
+                            serde_json::json!({
+                                "width": frame.width,
+                                "height": frame.height,
+                                "pixel_format": format!("{:?}", frame.pixel_format),
+                                "size_bytes": frame.data.len(),
+                                "has_metadata": frame.metadata.is_some(),
                             }),
                         );
                     },

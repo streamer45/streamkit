@@ -12,6 +12,7 @@ import {
   type ConsoleErrorCollector,
   createConsoleErrorCollector,
   verifyAudioPlayback,
+  verifyVideoPlayback,
 } from './test-helpers';
 
 const repoRoot = path.resolve(import.meta.dirname, '..', '..');
@@ -166,6 +167,52 @@ test.describe('Convert View - Audio Mixing Pipeline', () => {
     const playback = await verifyAudioPlayback(page);
     expect(playback.found, 'Audio element not found on page').toBe(true);
     expect(playback.duration, 'Audio has no duration').toBeGreaterThan(0);
+
+    const unexpected = collector.getUnexpected();
+    expect(unexpected, `Unexpected console errors: ${unexpected.join('; ')}`).toHaveLength(0);
+  });
+});
+
+test.describe('Convert View - Video Color Bars Pipeline', () => {
+  let collector: ConsoleErrorCollector;
+
+  test.beforeEach(async ({ page }) => {
+    collector = createConsoleErrorCollector(page);
+    await page.goto('/convert');
+    await ensureLoggedIn(page);
+    if (!page.url().includes('/convert')) {
+      await page.goto('/convert');
+    }
+    await expect(page.getByTestId('convert-view')).toBeVisible();
+  });
+
+  test('UI: select video colorbars template, generate, verify video player', async ({ page }) => {
+    // VP9 encoding can be slow; give the full pipeline up to 120s.
+    test.setTimeout(120_000);
+
+    await expect(page.getByText('1. Select Pipeline Template')).toBeVisible();
+
+    const templateCard = page.getByText('Video Color Bars (VP9/WebM)', {
+      exact: true,
+    });
+    await expect(templateCard).toBeVisible({ timeout: 10_000 });
+    await templateCard.click();
+
+    // This is a no-input (generator) pipeline, so the button says "Generate".
+    const generateButton = page.getByRole('button', { name: /Generate/i });
+    await expect(generateButton).toBeEnabled();
+    await generateButton.click();
+
+    // Wait for the video output to appear.
+    await expect(page.getByText('Converted Video')).toBeVisible({
+      timeout: 90_000,
+    });
+
+    const playback = await verifyVideoPlayback(page);
+    expect(playback.found, 'Video element not found on page').toBe(true);
+    expect(playback.readyState, 'Video not ready').toBeGreaterThanOrEqual(1);
+    expect(playback.videoWidth, 'Video has no width').toBeGreaterThan(0);
+    expect(playback.videoHeight, 'Video has no height').toBeGreaterThan(0);
 
     const unexpected = collector.getUnexpected();
     expect(unexpected, `Unexpected console errors: ${unexpected.join('; ')}`).toHaveLength(0);

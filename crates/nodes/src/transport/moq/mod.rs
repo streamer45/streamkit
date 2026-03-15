@@ -51,27 +51,6 @@ fn shared_insecure_client() -> Result<moq_native::Client, StreamKitError> {
     }
 }
 
-/// Serialize a catalog to JSON with `priority` fields injected into `video` and `audio`.
-///
-/// The published `@moq/hang` JS client (0.1.2) still requires `priority` in the catalog
-/// schema, but the Rust `hang` 0.13.0 crate removed it from the structs.
-/// The upstream JS source has already dropped the requirement, but a new npm release
-/// hasn't been published yet.  This shim keeps the two sides compatible.
-pub(super) fn catalog_to_json(catalog: &hang::catalog::Catalog) -> Result<String, StreamKitError> {
-    let mut value = serde_json::to_value(catalog)
-        .map_err(|e| StreamKitError::Runtime(format!("Failed to serialize catalog: {e}")))?;
-
-    if let Some(video) = value.get_mut("video").and_then(|v| v.as_object_mut()) {
-        video.entry("priority").or_insert(serde_json::json!(60));
-    }
-    if let Some(audio) = value.get_mut("audio").and_then(|v| v.as_object_mut()) {
-        audio.entry("priority").or_insert(serde_json::json!(80));
-    }
-
-    serde_json::to_string(&value)
-        .map_err(|e| StreamKitError::Runtime(format!("Failed to serialize catalog: {e}")))
-}
-
 pub(super) fn redact_url_str_for_logs(raw: &str) -> String {
     raw.parse::<Url>().map_or_else(
         |_| raw.split(['?', '#']).next().unwrap_or(raw).to_string(),
@@ -144,7 +123,7 @@ pub fn register_moq_nodes(registry: &mut NodeRegistry) {
             vec!["transport".to_string(), "moq".to_string(), "dynamic".to_string()],
             false,
             "Subscribes to a Media over QUIC (MoQ) broadcast. \
-             Receives Opus audio from a remote publisher over WebTransport.",
+             Receives encoded audio and video from a remote publisher over WebTransport.",
         );
 
         let default_moq_push = MoqPushNode::new(MoqPushConfig::default());
@@ -162,8 +141,8 @@ pub fn register_moq_nodes(registry: &mut NodeRegistry) {
             },
             vec!["transport".to_string(), "moq".to_string(), "dynamic".to_string()],
             false,
-            "Publishes audio to a Media over QUIC (MoQ) broadcast. \
-             Sends Opus audio to subscribers over WebTransport.",
+            "Publishes media to a Media over QUIC (MoQ) broadcast. \
+             Sends encoded audio and optional video to subscribers over WebTransport.",
         );
 
         let default_moq_peer = MoqPeerNode::new(MoqPeerConfig::default());
@@ -186,8 +165,9 @@ pub fn register_moq_nodes(registry: &mut NodeRegistry) {
                 "dynamic".to_string(),
             ],
             true, // This is a bidirectional node
-            "Bidirectional MoQ peer for real-time audio communication. \
-             Acts as both publisher and subscriber over a single WebTransport connection.",
+            "Bidirectional MoQ peer for real-time audio and video communication. \
+             Acts as both publisher and subscriber over a single WebTransport connection. \
+             Supported codecs: Opus (audio), VP9 (video).",
         );
     }
 }

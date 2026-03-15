@@ -10,6 +10,8 @@ const keyForNode = (nodeId: string, sessionId?: string) =>
 type NodeParamsState = {
   paramsById: Record<string, Record<string, unknown>>;
   setParam: (nodeId: string, key: string, value: unknown, sessionId?: string) => void;
+  /** Apply multiple param updates for a single node in one store update. */
+  setParams: (nodeId: string, params: Record<string, unknown>, sessionId?: string) => void;
   getParam: (nodeId: string, key: string, sessionId?: string) => unknown | undefined;
   getParamsForNode: (nodeId: string, sessionId?: string) => Record<string, unknown> | undefined;
   resetNode: (nodeId: string, sessionId?: string) => void;
@@ -26,6 +28,16 @@ export const useNodeParamsStore = create<NodeParamsState>((set, get) => ({
         [keyForNode(nodeId, sessionId)]: {
           ...(state.paramsById[keyForNode(nodeId, sessionId)] || {}),
           [key]: value,
+        },
+      },
+    })),
+  setParams: (nodeId, params, sessionId) =>
+    set((state) => ({
+      paramsById: {
+        ...state.paramsById,
+        [keyForNode(nodeId, sessionId)]: {
+          ...(state.paramsById[keyForNode(nodeId, sessionId)] || {}),
+          ...params,
         },
       },
     })),

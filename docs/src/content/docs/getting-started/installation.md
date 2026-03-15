@@ -44,6 +44,7 @@ Optional:
 - `cargo-deny` (`cargo install cargo-deny`) for license checks in `just lint`
 - `reuse` (`pip3 install --user reuse`) for SPDX license header checks in `just lint` (note: the apt package is too old)
 - `clang` and `libclang-dev` (`sudo apt install clang libclang-dev`) for building native ML plugins (e.g. whisper, sensevoice)
+- `libvpx` + `pkg-config` if building with `--features video` (VP9 nodes)
 
 ### Build Steps
 

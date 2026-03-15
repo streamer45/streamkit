@@ -49,6 +49,7 @@
 pub use async_trait::async_trait;
 
 // Module declarations
+pub mod constraints;
 pub mod control;
 pub mod error;
 pub mod frame_pool;
@@ -66,6 +67,7 @@ pub mod stats;
 pub mod telemetry;
 pub mod timing;
 pub mod types;
+pub mod view_data;
 
 // Convenience re-exports for commonly used types
 // These are the most frequently used types in node implementations
@@ -75,10 +77,12 @@ pub use error::StreamKitError;
 
 // Core node abstractions
 pub use node::{
-    InitContext, NodeContext, OutputSendError, OutputSender, ProcessorNode, RoutedPacketMessage,
+    InitContext, NodeContext, OutputSendError, OutputSender, PipelineMode, ProcessorNode,
+    RoutedPacketMessage,
 };
 
 // Registry and factory
+pub use constraints::{GlobalNodeConstraints, NodeConstraint};
 pub use registry::{NodeDefinition, NodeRegistry};
 
 // Resource management
@@ -93,6 +97,9 @@ pub use stats::{NodeStats, NodeStatsUpdate};
 // Telemetry
 pub use telemetry::{TelemetryConfig, TelemetryEmitter, TelemetryEvent};
 
+// View data
+pub use view_data::NodeViewDataUpdate;
+
 // Timing helpers
 pub use timing::*;
 
@@ -103,9 +110,12 @@ pub use pins::{InputPin, OutputPin, PinCardinality};
 pub use helpers::{config_helpers, packet_helpers};
 pub use state::state_helpers;
 pub use telemetry::telemetry_helpers;
+pub use view_data::view_data_helpers;
 
 // Frame pooling (optional hot-path optimization)
-pub use frame_pool::{AudioFramePool, FramePool, PooledFrameData, PooledSamples};
+pub use frame_pool::{
+    AudioFramePool, FramePool, PooledFrameData, PooledSamples, PooledVideoData, VideoFramePool,
+};
 
 // Node buffer configuration
 pub use node_config::{

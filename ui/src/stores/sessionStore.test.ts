@@ -18,17 +18,14 @@ describe('sessionStore', () => {
   });
 
   describe('updateNodeState', () => {
-    it('should create session and add node state if session does not exist', () => {
+    it('should ignore update for non-existent session', () => {
       const nodeId = 'node-1';
       const state: NodeState = 'Running';
 
       useSessionStore.getState().updateNodeState(TEST_SESSION_ID, nodeId, state);
 
       const session = useSessionStore.getState().getSession(TEST_SESSION_ID);
-      expect(session).toBeDefined();
-      expect(session?.nodeStates[nodeId]).toEqual(state);
-      expect(session?.isConnected).toBe(false);
-      expect(session?.pipeline).toBeNull();
+      expect(session).toBeUndefined();
     });
 
     it('should update existing node state', () => {
@@ -36,6 +33,7 @@ describe('sessionStore', () => {
       const initialState: NodeState = 'Initializing';
       const updatedState: NodeState = 'Running';
 
+      useSessionStore.getState().initSession(TEST_SESSION_ID, false);
       useSessionStore.getState().updateNodeState(TEST_SESSION_ID, nodeId, initialState);
       useSessionStore.getState().updateNodeState(TEST_SESSION_ID, nodeId, updatedState);
 
@@ -49,6 +47,7 @@ describe('sessionStore', () => {
       const state1: NodeState = 'Running';
       const state2: NodeState = { Stopped: { reason: 'completed' } };
 
+      useSessionStore.getState().initSession(TEST_SESSION_ID, false);
       useSessionStore.getState().updateNodeState(TEST_SESSION_ID, node1, state1);
       useSessionStore.getState().updateNodeState(TEST_SESSION_ID, node2, state2);
 
@@ -59,7 +58,7 @@ describe('sessionStore', () => {
   });
 
   describe('updateNodeStats', () => {
-    it('should create session and add node stats if session does not exist', () => {
+    it('should ignore update for non-existent session', () => {
       const nodeId = 'node-1';
       const stats = {
         received: BigInt(100),
@@ -72,8 +71,7 @@ describe('sessionStore', () => {
       useSessionStore.getState().updateNodeStats(TEST_SESSION_ID, nodeId, stats);
 
       const session = useSessionStore.getState().getSession(TEST_SESSION_ID);
-      expect(session).toBeDefined();
-      expect(session?.nodeStats[nodeId]).toEqual(stats);
+      expect(session).toBeUndefined();
     });
 
     it('should update existing node stats', () => {
@@ -93,6 +91,7 @@ describe('sessionStore', () => {
         duration_secs: 20.5,
       };
 
+      useSessionStore.getState().initSession(TEST_SESSION_ID, false);
       useSessionStore.getState().updateNodeStats(TEST_SESSION_ID, nodeId, initialStats);
       useSessionStore.getState().updateNodeStats(TEST_SESSION_ID, nodeId, updatedStats);
 
@@ -312,19 +311,19 @@ describe('sessionStore', () => {
   });
 
   describe('setConnected', () => {
-    it('should set connection status for a session', () => {
+    it('should ignore setConnected for non-existent session', () => {
       const sessionId = TEST_SESSION_ID;
 
       useSessionStore.getState().setConnected(sessionId, true);
 
       const session = useSessionStore.getState().getSession(sessionId);
-      expect(session?.isConnected).toBe(true);
+      expect(session).toBeUndefined();
     });
 
-    it('should update connection status', () => {
+    it('should update connection status for existing session', () => {
       const sessionId = TEST_SESSION_ID;
 
-      useSessionStore.getState().setConnected(sessionId, true);
+      useSessionStore.getState().initSession(sessionId, true);
       useSessionStore.getState().setConnected(sessionId, false);
 
       const session = useSessionStore.getState().getSession(sessionId);

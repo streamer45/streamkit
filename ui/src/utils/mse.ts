@@ -11,7 +11,7 @@ export function normalizeMimeType(contentType: string): string {
     return 'audio/webm; codecs="opus"';
   }
   if (contentType.includes('video/webm')) {
-    return 'video/webm; codecs="vp8, opus"';
+    return 'video/webm; codecs="vp9"';
   }
   if (contentType.includes('audio/mp4')) {
     return 'audio/mp4; codecs="mp4a.40.2"';

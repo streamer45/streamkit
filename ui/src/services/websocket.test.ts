@@ -196,6 +196,9 @@ describe('WebSocketService', () => {
     });
 
     it('should handle nodestatechanged event', () => {
+      // Session must exist before state updates are applied
+      useSessionStore.getState().initSession('session-1', true);
+
       const event: WsEvent = {
         type: 'event' as const,
         payload: {
@@ -210,11 +213,17 @@ describe('WebSocketService', () => {
       const ws = service['ws']! as unknown as MockWebSocket;
       ws.simulateMessage(JSON.stringify(event));
 
+      // State/stats updates are RAF-batched; flush manually.
+      service['flushBatchedUpdates']();
+
       const session = useSessionStore.getState().getSession('session-1');
       expect(session?.nodeStates['node-1']).toBe('Running');
     });
 
     it('should handle nodestatsupdated event', () => {
+      // Session must exist before stats updates are applied
+      useSessionStore.getState().initSession('session-1', true);
+
       const stats = {
         received: '100', // Stats are sent as strings over WebSocket
         sent: '95',
@@ -236,6 +245,9 @@ describe('WebSocketService', () => {
 
       const ws = service['ws']! as unknown as MockWebSocket;
       ws.simulateMessage(JSON.stringify(event));
+
+      // State/stats updates are RAF-batched; flush manually.
+      service['flushBatchedUpdates']();
 
       const session = useSessionStore.getState().getSession('session-1');
       expect(session?.nodeStats['node-1']).toEqual(stats);

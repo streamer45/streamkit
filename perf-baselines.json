@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "entries": {
+    "opacity-slider-20-ticks": {
+      "name": "opacity-slider-20-ticks",
+      "meanRenderCount": 22,
+      "stdevRenderCount": 0,
+      "meanDuration": 1.1199689999999367,
+      "stdevDuration": 0.17395419957955474,
+      "runs": 7,
+      "timestamp": "2026-03-10T20:19:25.462Z"
+    },
+    "rotation-slider-20-ticks": {
+      "name": "rotation-slider-20-ticks",
+      "meanRenderCount": 22,
+      "stdevRenderCount": 0,
+      "meanDuration": 0.9112065714285303,
+      "stdevDuration": 0.06577615521721797,
+      "runs": 7,
+      "timestamp": "2026-03-10T20:19:25.462Z"
+    },
+    "param-echo-callback-stability": {
+      "name": "param-echo-callback-stability",
+      "meanRenderCount": 11,
+      "stdevRenderCount": 0,
+      "meanDuration": 0.4364421428568091,
+      "stdevDuration": 0.026745171608937773,
+      "runs": 7,
+      "timestamp": "2026-03-10T20:19:25.462Z"
+    },
+    "mixed-slider-20-ticks": {
+      "name": "mixed-slider-20-ticks",
+      "meanRenderCount": 22,
+      "stdevRenderCount": 0,
+      "meanDuration": 0.8133350000003118,
+      "stdevDuration": 0.031025799595955337,
+      "runs": 7,
+      "timestamp": "2026-03-10T20:19:25.462Z"
+    }
+  }
+}

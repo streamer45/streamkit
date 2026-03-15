@@ -14,8 +14,21 @@ import { PipelineEditor } from '@/components/converter/PipelineEditor';
 import { TemplateSelector } from '@/components/converter/TemplateSelector';
 import { TranscriptionDisplay } from '@/components/converter/TranscriptionDisplay';
 import { CustomAudioPlayer } from '@/components/CustomAudioPlayer';
-import { MSEAudioPlayer } from '@/components/MSEAudioPlayer';
+import { MSEPlayer } from '@/components/MSEPlayer';
 import { RadioGroupRoot, RadioWithLabel } from '@/components/ui/RadioGroup';
+import {
+  ViewContainer,
+  ContentArea,
+  ContentWrapper,
+  BottomSpacer,
+  Section,
+  SectionTitle,
+  InfoBox,
+  InfoContent,
+  InfoTitle,
+  TechnicalDetailsToggle,
+  TechnicalDetails,
+} from '@/components/ui/ViewLayout';
 import { useConvertViewState } from '@/hooks/useConvertViewState';
 import { useAudioAssets } from '@/services/assets';
 import {
@@ -114,52 +127,6 @@ const deriveHttpInputFields = (
   }
 };
 
-const ViewContainer = styled.div`
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  background: var(--sk-bg);
-`;
-
-const ContentArea = styled.div`
-  flex: 1;
-  overflow-y: auto;
-  display: flex;
-  justify-content: center;
-  padding: 40px;
-`;
-
-const ContentWrapper = styled.div`
-  width: 100%;
-  max-width: 1200px;
-  display: flex;
-  flex-direction: column;
-  gap: 32px;
-`;
-
-const BottomSpacer = styled.div`
-  height: 8px;
-  flex-shrink: 0;
-  /* With gap: 32px from ContentWrapper, this gives us 40px total bottom spacing */
-`;
-
-const Section = styled.div`
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding: 24px;
-  background: var(--sk-panel-bg);
-  border: 1px solid var(--sk-border);
-  border-radius: 12px;
-`;
-
-const SectionTitle = styled.h2`
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--sk-text);
-  margin: 0;
-`;
-
 const EditorSection = styled.div`
   display: flex;
   flex-direction: column;
@@ -225,65 +192,6 @@ const ButtonSpinner = styled.div`
   border-top-color: white;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
-`;
-
-const InfoBox = styled.div`
-  padding: 20px;
-  background: var(--sk-panel-bg);
-  border: 1px solid var(--sk-border);
-  border-left: 4px solid var(--sk-primary);
-  border-radius: 8px;
-  color: var(--sk-text);
-  font-size: 14px;
-  line-height: 1.6;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-`;
-
-const InfoContent = styled.div`
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-`;
-
-const InfoTitle = styled.h2`
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--sk-text);
-  margin: 0;
-`;
-
-const TechnicalDetailsToggle = styled.button`
-  padding: 8px 12px;
-  background: transparent;
-  color: var(--sk-text-muted);
-  border: 1px solid var(--sk-border);
-  border-radius: 6px;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  align-self: flex-start;
-
-  &:hover {
-    background: var(--sk-hover-bg);
-    color: var(--sk-text);
-    border-color: var(--sk-border-strong);
-  }
-`;
-
-const TechnicalDetails = styled.div`
-  padding-top: 12px;
-  border-top: 1px solid var(--sk-border);
-  color: var(--sk-text-muted);
-  font-size: 13px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
 `;
 
 const CliSnippetContainer = styled.div`
@@ -480,6 +388,15 @@ const checkIfNoInputPipeline = (yaml: string): boolean => {
     return true;
   }
 
+  // Pipelines that have http_output but no http_input are self-contained generators
+  // (e.g. video::colorbars → encoder → muxer → http_output)
+  if (
+    lowerYaml.includes('streamkit::http_output') &&
+    !lowerYaml.includes('streamkit::http_input')
+  ) {
+    return true;
+  }
+
   return false;
 };
 
@@ -513,6 +430,19 @@ const checkIfTTSPipeline = (yaml: string): boolean => {
 
   // If we have TTS but no audio demuxer, it's a text input pipeline
   return hasTTS && !hasAudioDemuxer;
+};
+
+/**
+ * Detects if the current pipeline produces video output.
+ * Checks for `video::` node kind prefixes, and `video_width` / `video_height`
+ * when they appear as YAML mapping keys (not inside comments or arbitrary strings).
+ */
+const checkIfVideoPipeline = (yaml: string): boolean => {
+  const lowerYaml = yaml.toLowerCase();
+  if (lowerYaml.includes('video::')) return true;
+  // Match video_width / video_height only as YAML keys (leading whitespace + colon suffix)
+  // to avoid false-positives on comments or unrelated string values.
+  return /^\s*video_width\s*:/m.test(lowerYaml) || /^\s*video_height\s*:/m.test(lowerYaml);
 };
 
 const resolveTextField = (fields: HttpInputField[]): HttpInputField | null => {
@@ -608,6 +538,10 @@ const resolveFormatsForField = (
 };
 
 const buildNoInputUploads = (fields: HttpInputField[]): UploadField[] => {
+  // Generator pipelines (e.g. video::colorbars) have no http_input at all —
+  // return empty so the multipart request only contains the config field.
+  if (fields.length === 0) return [];
+
   const blob = new Blob([''], { type: 'application/octet-stream' });
   const file = new File([blob], 'empty', { type: 'application/octet-stream' });
   return [{ field: fields[0].name, file }];
@@ -813,12 +747,12 @@ const ConvertView: React.FC = () => {
     setOutputMode,
     abortController,
     setAbortController,
-    audioUrl,
-    setAudioUrl,
-    audioContentType,
-    setAudioContentType,
-    audioStream,
-    setAudioStream,
+    mediaUrl,
+    setMediaUrl,
+    mediaContentType,
+    setMediaContentType,
+    mediaStream,
+    setMediaStream,
     useStreaming,
     setUseStreaming,
     streamKey,
@@ -834,6 +768,9 @@ const ConvertView: React.FC = () => {
   const [cliCopied, setCliCopied] = useState(false);
   const [msePlaybackError, setMsePlaybackError] = useState<string | null>(null);
   const [mseFallbackLoading, setMseFallbackLoading] = useState<boolean>(false);
+
+  // Derived: detect if the selected pipeline produces video output
+  const isVideoPipeline = useMemo(() => checkIfVideoPipeline(pipelineYaml), [pipelineYaml]);
 
   // Generate CLI command based on current template and pipeline type
   const cliCommand = useMemo(() => {
@@ -874,14 +811,14 @@ const ConvertView: React.FC = () => {
 
   // Auto-scroll to results when they appear
   useEffect(() => {
-    if ((audioUrl || audioStream) && resultsRef.current) {
+    if ((mediaUrl || mediaStream) && resultsRef.current) {
       // Small delay to ensure content has rendered
       const timeoutId = setTimeout(() => {
         resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }, 100);
       return () => clearTimeout(timeoutId);
     }
-  }, [audioUrl, audioStream]);
+  }, [mediaUrl, mediaStream]);
 
   // Fetch audio assets
   const { data: audioAssets = [], isLoading: assetsLoading } = useAudioAssets();
@@ -1140,11 +1077,13 @@ const ConvertView: React.FC = () => {
   };
 
   const prepareUploads = useCallback(async (): Promise<UploadField[] | null> => {
-    const fields = resolveUploadFields(httpInputFields);
-
+    // For no-input (generator) pipelines, use the raw httpInputFields
+    // so that truly input-less pipelines (no http_input node) send no uploads.
     if (isNoInputPipeline) {
-      return buildNoInputUploads(fields);
+      return buildNoInputUploads(httpInputFields);
     }
+
+    const fields = resolveUploadFields(httpInputFields);
 
     if (isTTSPipeline) {
       return buildTtsUploads(fields, textInput, fieldUploads);
@@ -1172,16 +1111,16 @@ const ConvertView: React.FC = () => {
 
   // Helper: Clean up previous conversion state
   const cleanupPreviousState = useCallback(() => {
-    if (audioUrl && !useStreaming) {
-      URL.revokeObjectURL(audioUrl);
+    if (mediaUrl && !useStreaming) {
+      URL.revokeObjectURL(mediaUrl);
     }
-    setAudioUrl(null);
-    setAudioContentType(null);
-    setAudioStream(null);
+    setMediaUrl(null);
+    setMediaContentType(null);
+    setMediaStream(null);
     setUseStreaming(false);
     setMsePlaybackError(null);
     setMseFallbackLoading(false);
-  }, [audioUrl, setAudioContentType, setAudioStream, setAudioUrl, setUseStreaming, useStreaming]);
+  }, [mediaUrl, setMediaContentType, setMediaStream, setMediaUrl, setUseStreaming, useStreaming]);
 
   // Helper: Handle successful conversion result
   const handleConversionSuccess = useCallback(
@@ -1201,8 +1140,8 @@ const ConvertView: React.FC = () => {
         if (isStreaming && result.responseStream) {
           // Increment stream key to force component remount with new stream
           setStreamKey((prev) => prev + 1);
-          setAudioStream(result.responseStream);
-          setAudioContentType(result.contentType || null);
+          setMediaStream(result.responseStream);
+          setMediaContentType(result.contentType || null);
           setUseStreaming(true);
 
           // Different message for JSON transcription vs audio streaming
@@ -1213,14 +1152,16 @@ const ConvertView: React.FC = () => {
                 : 'Streaming JSON output… Results will appear below as they are generated.'
             );
           } else {
-            setConversionMessage('Streaming audio... Click Cancel to stop.');
+            const mediaKind = result.contentType?.startsWith('video/') ? 'video' : 'audio';
+            setConversionMessage(`Streaming ${mediaKind}... Click Cancel to stop.`);
           }
           // Keep processing state for cancellation
-        } else if (result.audioUrl) {
+        } else if (result.mediaUrl) {
           // Use blob URL for other formats
-          setAudioUrl(result.audioUrl);
-          setAudioContentType(result.contentType || null);
-          setConversionMessage('Conversion complete! You can now play the audio below.');
+          setMediaUrl(result.mediaUrl);
+          setMediaContentType(result.contentType || null);
+          const mediaKind = result.contentType?.startsWith('video/') ? 'video' : 'audio';
+          setConversionMessage(`Conversion complete! You can now play the ${mediaKind} below.`);
           setTimeout(() => {
             setConversionStatus('idle');
             setConversionMessage('');
@@ -1238,9 +1179,9 @@ const ConvertView: React.FC = () => {
       isTranscriptionPipeline,
       outputMode,
       setAbortController,
-      setAudioContentType,
-      setAudioStream,
-      setAudioUrl,
+      setMediaContentType,
+      setMediaStream,
+      setMediaUrl,
       setConversionMessage,
       setConversionStatus,
       setStreamKey,
@@ -1331,12 +1272,12 @@ const ConvertView: React.FC = () => {
 
       // Clear ALL audio/stream state immediately
       // This will unmount MSEAudioPlayer/TranscriptionDisplay and trigger their cleanup
-      if (audioUrl && !useStreaming) {
-        URL.revokeObjectURL(audioUrl);
+      if (mediaUrl && !useStreaming) {
+        URL.revokeObjectURL(mediaUrl);
       }
-      setAudioUrl(null);
-      setAudioStream(null);
-      setAudioContentType(null);
+      setMediaUrl(null);
+      setMediaStream(null);
+      setMediaContentType(null);
       setUseStreaming(false);
       setMsePlaybackError(null);
       setMseFallbackLoading(false);
@@ -1353,59 +1294,46 @@ const ConvertView: React.FC = () => {
     }
   };
 
-  const handleTranscriptionComplete = useCallback(() => {
-    viewsLogger.info('Transcription stream complete');
-    setConversionStatus('success');
-    setAbortController(null);
-    setConversionMessage('Transcription complete!');
-    setTimeout(() => {
-      setConversionStatus('idle');
-      setConversionMessage('');
-    }, 5000);
-  }, [setConversionStatus, setAbortController, setConversionMessage]);
-
-  const handleTranscriptionCancel = useCallback(() => {
-    viewsLogger.debug('Transcription cancelled callback');
-    // Only update if we still have an abort controller (not already handled by handleCancel)
-    setAbortController((currentController) => {
-      if (currentController) {
-        setConversionStatus('idle');
-        setConversionMessage('Transcription cancelled');
+  /** Build onComplete / onCancel callbacks for a streaming result (transcription or audio). */
+  const makeStreamCallbacks = useCallback(
+    (label: string) => ({
+      onComplete: () => {
+        viewsLogger.info(`${label} stream complete`);
+        setConversionStatus('success');
+        setAbortController(null);
+        setConversionMessage(`${label} complete!`);
         setTimeout(() => {
+          setConversionStatus('idle');
           setConversionMessage('');
-        }, 3000);
-        return null;
-      }
-      return currentController;
-    });
-  }, [setAbortController, setConversionStatus, setConversionMessage]);
+        }, 5000);
+      },
+      onCancel: () => {
+        viewsLogger.debug(`${label} cancelled callback`);
+        // Only update if we still have an abort controller (not already handled by handleCancel)
+        setAbortController((currentController) => {
+          if (currentController) {
+            setConversionStatus('idle');
+            setConversionMessage(`${label} cancelled`);
+            setTimeout(() => {
+              setConversionMessage('');
+            }, 3000);
+            return null;
+          }
+          return currentController;
+        });
+      },
+    }),
+    [setConversionStatus, setAbortController, setConversionMessage]
+  );
 
-  const handleAudioStreamComplete = useCallback(() => {
-    viewsLogger.info('Audio stream complete');
-    setConversionStatus('success');
-    setAbortController(null);
-    setConversionMessage('Audio streaming complete!');
-    setTimeout(() => {
-      setConversionStatus('idle');
-      setConversionMessage('');
-    }, 5000);
-  }, [setConversionStatus, setAbortController, setConversionMessage]);
-
-  const handleAudioStreamCancel = useCallback(() => {
-    viewsLogger.debug('Audio stream cancelled callback');
-    // Only update if we still have an abort controller (not already handled by handleCancel)
-    setAbortController((currentController) => {
-      if (currentController) {
-        setConversionStatus('idle');
-        setConversionMessage('Audio streaming cancelled');
-        setTimeout(() => {
-          setConversionMessage('');
-        }, 3000);
-        return null;
-      }
-      return currentController;
-    });
-  }, [setAbortController, setConversionStatus, setConversionMessage]);
+  const transcriptionCallbacks = useMemo(
+    () => makeStreamCallbacks('Transcription'),
+    [makeStreamCallbacks]
+  );
+  const mediaStreamCallbacks = useMemo(
+    () => makeStreamCallbacks('Streaming'),
+    [makeStreamCallbacks]
+  );
 
   const handleMsePlaybackError = useCallback(
     (message: string) => {
@@ -1504,34 +1432,34 @@ const ConvertView: React.FC = () => {
       : {};
 
   const handleDownloadAudio = () => {
-    if (!audioUrl) return;
+    if (!mediaUrl) return;
 
-    let outputFileName = 'converted_audio';
+    const extension = mediaContentType ? getExtensionFromContentType(mediaContentType) : '.ogg';
 
     const primaryUpload =
       isMultiUpload && inputMode === 'upload'
         ? (uploadFields.map((f) => fieldUploads[f.name]).find((f): f is File => Boolean(f)) ?? null)
         : selectedFile;
 
+    let outputFileName: string;
     if (inputMode === 'upload' && primaryUpload) {
       const originalName = primaryUpload.name;
       const baseName = originalName.includes('.')
         ? originalName.substring(0, originalName.lastIndexOf('.'))
         : originalName;
-      outputFileName = `${baseName}_converted`;
+      outputFileName = `${baseName}_converted${extension}`;
     } else if (inputMode === 'asset' && selectedAssetId) {
       const selectedAsset = audioAssets.find((a) => a.id === selectedAssetId);
-      if (selectedAsset) {
-        outputFileName = `${selectedAsset.name}_converted`;
-      }
+      outputFileName = selectedAsset
+        ? `${selectedAsset.name}_converted${extension}`
+        : `output${extension}`;
+    } else {
+      outputFileName = `output${extension}`;
     }
-
-    const extension = audioContentType ? getExtensionFromContentType(audioContentType) : '.ogg';
-    outputFileName += extension;
 
     // Create download link directly from the existing object URL
     const link = document.createElement('a');
-    link.href = audioUrl;
+    link.href = mediaUrl;
     link.download = outputFileName;
     document.body.appendChild(link);
     link.click();
@@ -1788,8 +1716,8 @@ const ConvertView: React.FC = () => {
                     value="playback"
                     label={
                       <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <span>🎵</span>
-                        <span>Play Audio</span>
+                        <span>{isVideoPipeline ? '🎬' : '🎵'}</span>
+                        <span>{isVideoPipeline ? 'Play Video' : 'Play Audio'}</span>
                       </span>
                     }
                   />
@@ -1815,7 +1743,7 @@ const ConvertView: React.FC = () => {
               </ConvertButton>
             ) : (
               <ConvertButton disabled={!canConvert} isProcessing={false} onClick={handleConvert}>
-                {isNoInputPipeline
+                {isNoInputPipeline && inputMode !== 'asset'
                   ? 'Generate'
                   : isTTSPipeline
                     ? 'Convert to Speech'
@@ -1828,53 +1756,74 @@ const ConvertView: React.FC = () => {
 
           <ConversionProgress status={conversionStatus} message={conversionMessage} />
 
-          {(audioUrl || audioStream) && (
+          {(mediaUrl || mediaStream) && (
             <div ref={resultsRef}>
-              {audioContentType?.includes('application/json') && audioStream ? (
+              {mediaContentType?.includes('application/json') && mediaStream ? (
                 isTranscriptionPipeline ? (
                   // Render transcription display for JSON content
                   // Use key to force remount when stream changes
                   <TranscriptionDisplay
                     key={streamKey}
-                    stream={audioStream}
-                    onComplete={handleTranscriptionComplete}
-                    onCancel={handleTranscriptionCancel}
+                    stream={mediaStream}
+                    onComplete={transcriptionCallbacks.onComplete}
+                    onCancel={transcriptionCallbacks.onCancel}
                   />
                 ) : (
                   <JsonStreamDisplay
                     key={streamKey}
-                    stream={audioStream}
-                    onComplete={handleTranscriptionComplete}
-                    onCancel={handleTranscriptionCancel}
+                    stream={mediaStream}
+                    onComplete={transcriptionCallbacks.onComplete}
+                    onCancel={transcriptionCallbacks.onCancel}
                   />
                 )
               ) : (
-                // Render audio player for audio content
+                // Render media player for audio/video content
                 <AudioPlayerContainer>
-                  <AudioPlayerTitle>Converted Audio</AudioPlayerTitle>
-                  {useStreaming && audioStream && audioContentType ? (
-                    <MSEAudioPlayer
-                      stream={audioStream}
-                      contentType={audioContentType}
-                      onComplete={handleAudioStreamComplete}
-                      onCancel={handleAudioStreamCancel}
+                  <AudioPlayerTitle>
+                    {mediaContentType?.startsWith('video/') ? 'Converted Video' : 'Converted Audio'}
+                  </AudioPlayerTitle>
+                  {useStreaming && mediaStream && mediaContentType ? (
+                    <MSEPlayer
+                      stream={mediaStream}
+                      contentType={mediaContentType}
+                      onComplete={mediaStreamCallbacks.onComplete}
+                      onCancel={mediaStreamCallbacks.onCancel}
                       onError={handleMsePlaybackError}
                     />
-                  ) : audioUrl ? (
-                    <>
-                      <HiddenAudio
-                        ref={audioRef}
-                        src={audioUrl}
-                        preload="auto"
-                        aria-label="Converted audio playback"
-                      >
-                        Your browser does not support the audio element.
-                      </HiddenAudio>
-                      <CustomAudioPlayer audioRef={audioRef} autoPlay />
-                    </>
+                  ) : mediaUrl ? (
+                    mediaContentType?.startsWith('video/') ? (
+                      <video
+                        src={mediaUrl}
+                        controls
+                        autoPlay
+                        style={{
+                          width: '100%',
+                          maxHeight: 480,
+                          borderRadius: 6,
+                          background: '#000',
+                        }}
+                        aria-label="Converted video playback"
+                      />
+                    ) : (
+                      <>
+                        <HiddenAudio
+                          ref={audioRef}
+                          src={mediaUrl}
+                          preload="auto"
+                          aria-label="Converted audio playback"
+                        >
+                          Your browser does not support the audio element.
+                        </HiddenAudio>
+                        <CustomAudioPlayer audioRef={audioRef} autoPlay />
+                      </>
+                    )
                   ) : null}
-                  {audioUrl && (
-                    <DownloadLink onClick={handleDownloadAudio}>Download Audio File</DownloadLink>
+                  {mediaUrl && (
+                    <DownloadLink onClick={handleDownloadAudio}>
+                      {mediaContentType?.startsWith('video/')
+                        ? 'Download Video File'
+                        : 'Download Audio File'}
+                    </DownloadLink>
                   )}
                   {msePlaybackError && (
                     <DownloadLink onClick={handleRetryWithoutStreaming}>

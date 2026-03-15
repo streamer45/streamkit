@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y \
     g++ \
     cmake \
     libopus-dev \
+    libvpx-dev \
     libclang-dev \
     clang \
     curl \
@@ -70,6 +71,7 @@ RUN apt-get update && apt-get install -y \
     g++ \
     cmake \
     libopus-dev \
+    libvpx-dev \
     libclang-dev \
     clang \
     curl \
@@ -116,6 +118,7 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     libssl3 \
     libopus0 \
+    libvpx7 \
     libgomp1 \
     curl \
     && rm -rf /var/lib/apt/lists/*
