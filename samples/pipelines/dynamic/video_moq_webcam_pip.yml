@@ -42,29 +42,54 @@ nodes:
       num_inputs: 2
       layers:
         in_0:
-          opacity: 1.0
+          rect:
+            x: 0
+            y: 0
+            width: 1280
+            height: 720
+          opacity: 1
+          rotation_degrees: 0
           z_index: 0
+          mirror_horizontal: false
+          mirror_vertical: false
+          crop_zoom: 1
+          crop_x: 0.5
+          crop_y: 0.5
         in_1:
           rect:
             x: 880
             y: 20
             width: 380
             height: 285
-          opacity: 0.95
+          opacity: 0.8
+          rotation_degrees: 0
           z_index: 1
+          mirror_horizontal: false
+          mirror_vertical: false
+          crop_zoom: 2.2
+          crop_x: 0.5
+          crop_y: 0.5
       text_overlays:
-        - id: "greeting"
-          text: "Hello from StreamKit"
+        - id: greeting
+          text: Hello from StreamKit
           rect:
-            x: 40
-            y: 660
-            width: 400
-            height: 40
-          opacity: 1.0
-          z_index: 2
-          color: [255, 255, 255, 220]
-          font_size: 28
+            x: 314
+            y: 327
+            width: 653
+            height: 66
+          color:
+            - 255
+            - 255
+            - 255
+            - 220
+          font_size: 55
           font_name: dejavu-sans-bold
+          opacity: 1
+          rotation_degrees: 0
+          z_index: 2
+          mirror_horizontal: false
+          mirror_vertical: false
+      image_overlays: []
     needs:
       - colorbars_bg
       - vp9_decoder
