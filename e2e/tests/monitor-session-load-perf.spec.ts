@@ -20,27 +20,27 @@
  * http://localhost:3045 (or wherever the dev server runs).
  */
 
-import { test, expect, request } from "@playwright/test";
+import { test, expect, request } from '@playwright/test';
 
-import { ensureLoggedIn, getAuthHeaders } from "./auth-helpers";
+import { ensureLoggedIn, getAuthHeaders } from './auth-helpers';
 import {
   type ConsoleErrorCollector,
   MOQ_BENIGN_PATTERNS,
   createConsoleErrorCollector,
-} from "./test-helpers";
+} from './test-helpers';
 import {
   resetPerfData,
   capturePerfData,
   assertRenderBudget,
   formatPerfSummary,
-} from "./perf-helpers";
-import { WEBCAM_PIP_YAML } from "./compositor-fixtures";
+} from './perf-helpers';
+import { WEBCAM_PIP_YAML } from './compositor-fixtures';
 
 // ---------------------------------------------------------------------------
 // Test
 // ---------------------------------------------------------------------------
 
-test.describe("Monitor Session Load Perf — Re-render Budget", () => {
+test.describe('Monitor Session Load Perf — Re-render Budget', () => {
   let collector: ConsoleErrorCollector;
   let sessionId: string | null = null;
 
@@ -48,7 +48,7 @@ test.describe("Monitor Session Load Perf — Re-render Budget", () => {
     collector = createConsoleErrorCollector(page);
   });
 
-  test("session load stays within render budget", async ({ page, baseURL }) => {
+  test('session load stays within render budget', async ({ page, baseURL }) => {
     // Session creation + full load + settle time.
     test.setTimeout(90_000);
 
@@ -64,7 +64,7 @@ test.describe("Monitor Session Load Perf — Re-render Budget", () => {
     });
 
     const sessionName = `perf-monitor-load-${Date.now()}`;
-    const createResponse = await apiContext.post("/api/v1/sessions", {
+    const createResponse = await apiContext.post('/api/v1/sessions', {
       data: {
         name: sessionName,
         yaml: WEBCAM_PIP_YAML,
@@ -72,10 +72,7 @@ test.describe("Monitor Session Load Perf — Re-render Budget", () => {
     });
 
     const responseText = await createResponse.text();
-    expect(
-      createResponse.ok(),
-      `Failed to create session: ${responseText}`,
-    ).toBeTruthy();
+    expect(createResponse.ok(), `Failed to create session: ${responseText}`).toBeTruthy();
 
     const createData = JSON.parse(responseText) as { session_id: string };
     sessionId = createData.session_id;
@@ -84,17 +81,17 @@ test.describe("Monitor Session Load Perf — Re-render Budget", () => {
 
     // ── 2. Navigate to monitor view ─────────────────────────────────────
 
-    await page.goto("/monitor");
+    await page.goto('/monitor');
     await ensureLoggedIn(page);
-    if (!page.url().includes("/monitor")) {
-      await page.goto("/monitor");
+    if (!page.url().includes('/monitor')) {
+      await page.goto('/monitor');
     }
-    await expect(page.getByTestId("monitor-view")).toBeVisible({
+    await expect(page.getByTestId('monitor-view')).toBeVisible({
       timeout: 15_000,
     });
 
     // Wait for sessions list to appear.
-    await expect(page.getByTestId("sessions-list")).toBeVisible({
+    await expect(page.getByTestId('sessions-list')).toBeVisible({
       timeout: 10_000,
     });
 
@@ -111,7 +108,7 @@ test.describe("Monitor Session Load Perf — Re-render Budget", () => {
     if (!hasPerfData) {
       test.skip(
         true,
-        "window.__PERF_DATA__ not found — test requires the Vite dev server (just ui)",
+        'window.__PERF_DATA__ not found — test requires the Vite dev server (just ui)'
       );
     }
 
@@ -122,9 +119,7 @@ test.describe("Monitor Session Load Perf — Re-render Budget", () => {
 
     await resetPerfData(page);
 
-    const sessionItem = page
-      .getByTestId("session-item")
-      .filter({ hasText: sessionName });
+    const sessionItem = page.getByTestId('session-item').filter({ hasText: sessionName });
     await expect(sessionItem).toBeVisible({ timeout: 10_000 });
     await sessionItem.click();
 
@@ -133,7 +128,7 @@ test.describe("Monitor Session Load Perf — Re-render Budget", () => {
     // Wait for React Flow nodes to appear — this signals that the
     // pipeline has been hydrated and rendered.
 
-    await expect(page.locator(".react-flow__node").first()).toBeVisible({
+    await expect(page.locator('.react-flow__node').first()).toBeVisible({
       timeout: 15_000,
     });
 
@@ -145,7 +140,7 @@ test.describe("Monitor Session Load Perf — Re-render Budget", () => {
     // ── 6. Capture and assert render budgets ────────────────────────────
 
     const snapshot = await capturePerfData(page);
-    console.log("\n" + formatPerfSummary(snapshot));
+    console.log('\n' + formatPerfSummary(snapshot));
 
     // The profiler store is available (dev mode).  We verify the perf
     // infrastructure works and that the session load path completes
@@ -154,9 +149,9 @@ test.describe("Monitor Session Load Perf — Re-render Budget", () => {
     // it must stay within budget.  MonitorView itself is NOT wrapped in a
     // permanent <Profiler> to avoid inflating cascade metrics in other
     // perf tests (e.g., compositor-perf).
-    const compositorData = snapshot.components["CompositorNode"];
+    const compositorData = snapshot.components['CompositorNode'];
     if (compositorData) {
-      assertRenderBudget(snapshot, "CompositorNode", {
+      assertRenderBudget(snapshot, 'CompositorNode', {
         max: 150,
         maxDuration: 3_000,
       });
@@ -167,14 +162,14 @@ test.describe("Monitor Session Load Perf — Re-render Budget", () => {
     // infrastructure ran during the session load.
     expect(
       Object.keys(snapshot.components).length,
-      "Perf snapshot should contain at least one profiled component after session load",
+      'Perf snapshot should contain at least one profiled component after session load'
     ).toBeGreaterThan(0);
 
     // ── 7. Console error check ──────────────────────────────────────────
 
     const unexpected = collector.getUnexpected(MOQ_BENIGN_PATTERNS);
     if (unexpected.length > 0) {
-      console.warn("Unexpected console errors (non-fatal):", unexpected);
+      console.warn('Unexpected console errors (non-fatal):', unexpected);
     }
   });
 

@@ -129,10 +129,7 @@ test.describe('Compositor Context Menu', () => {
     // Select text layer first.
     await textLayer.click();
 
-    const textLayerBox = canvasInner
-      .locator('.nodrag.nopan')
-      .filter({ hasText: 'Text 0' })
-      .first();
+    const textLayerBox = canvasInner.locator('.nodrag.nopan').filter({ hasText: 'Text 0' }).first();
     await expect(textLayerBox).toBeVisible({ timeout: 5_000 });
 
     // Right-click on the text layer box.
