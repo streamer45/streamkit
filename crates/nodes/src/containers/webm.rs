@@ -1344,7 +1344,9 @@ mod tests {
     #[test]
     fn content_type_audio_only_when_no_video_dims() {
         let node = muxer_with_dims(0, 0);
-        let ct = node.content_type().expect("should return Some");
+        let Some(ct) = node.content_type() else {
+            panic!("content_type should return Some");
+        };
         assert_eq!(ct, "audio/webm; codecs=\"opus\"");
     }
 
@@ -1355,7 +1357,9 @@ mod tests {
     #[test]
     fn content_type_includes_opus_when_video_dims_set() {
         let node = muxer_with_dims(1280, 720);
-        let ct = node.content_type().expect("should return Some");
+        let Some(ct) = node.content_type() else {
+            panic!("content_type should return Some");
+        };
         assert_eq!(ct, "video/webm; codecs=\"vp9,opus\"");
     }
 
