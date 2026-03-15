@@ -43,19 +43,32 @@ impl ShutdownTracker {
 
     /// Wait for all tracked shutdown tasks to complete, with a timeout.
     ///
-    /// Returns the number of tasks that were still pending when called.
+    /// Loops until no new handles appear, so tasks tracked while a
+    /// previous batch was being awaited are not orphaned.
+    /// Returns the total number of tasks that were drained.
     pub async fn drain(&self, timeout: std::time::Duration) -> usize {
-        let handles: Vec<JoinHandle<()>> = {
-            let mut guard = self.handles.lock().await;
-            std::mem::take(&mut *guard)
-        };
-        let count = handles.len();
-        if count == 0 {
-            return 0;
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut total = 0;
+
+        loop {
+            let handles: Vec<JoinHandle<()>> = {
+                let mut guard = self.handles.lock().await;
+                std::mem::take(&mut *guard)
+            };
+            if handles.is_empty() {
+                break;
+            }
+            let count = handles.len();
+            total += count;
+            tracing::info!(count, total, "Draining background shutdown tasks");
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            let _ = tokio::time::timeout(remaining, futures::future::join_all(handles)).await;
         }
-        tracing::info!(count, "Draining background shutdown tasks");
-        let _ = tokio::time::timeout(timeout, futures::future::join_all(handles)).await;
-        count
+
+        total
     }
 }
 
