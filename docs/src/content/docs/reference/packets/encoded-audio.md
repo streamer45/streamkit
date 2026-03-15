@@ -15,58 +15,10 @@ Runtime: `Packet::Binary { data, metadata, .. }`
 - `label`: `Encoded Audio`
 - `color`: `#ff6b6b`
 - `display_template`: `Encoded Audio ({codec})`
-- compat: wildcard fields (`codec_private`), color: `#ff6b6b`
+- `compat: wildcard fields (codec, codec_private), color: `#ff6b6b``
 
 ## Structure
-Encoded audio packets use `Packet::Binary`, with codec identity captured in the type system.
+Encoded audio is defined by an `EncodedAudioFormat` (codec + optional codec-private data) in the type system.
 
-### PacketType payload (`EncodedAudioFormat`)
-
-| Name | Type | Required | Default | Description |
-| --- | --- | --- | --- | --- |
-| `codec` | `string enum[Opus]` | yes | — | Encoded audio codec. |
-| `codec_private` | `null | array<integer (uint8)>` | no | — | Optional codec-specific extradata. Use `null` as a wildcard. |
-
-<details>
-<summary>Raw JSON Schema</summary>
-
-```json
-{
-  "$defs": {
-    "AudioCodec": {
-      "description": "Supported encoded audio codecs.",
-      "enum": [
-        "Opus"
-      ],
-      "type": "string"
-    }
-  },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "Encoded audio format details (extensible for codec-specific config).",
-  "properties": {
-    "codec": {
-      "$ref": "#/$defs/AudioCodec"
-    },
-    "codec_private": {
-      "description": "Optional codec-specific extradata.",
-      "items": {
-        "format": "uint8",
-        "maximum": 255,
-        "minimum": 0,
-        "type": "integer"
-      },
-      "type": [
-        "array",
-        "null"
-      ]
-    }
-  },
-  "required": [
-    "codec"
-  ],
-  "title": "EncodedAudioFormat",
-  "type": "object"
-}
-```
-
-</details>
+At runtime, encoded audio frames are carried as `Packet::Binary { data, metadata, .. }`. The codec nodes
+encode/decode using this binary payload and label pins with the appropriate `EncodedAudio` type.

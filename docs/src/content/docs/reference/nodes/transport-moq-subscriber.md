@@ -2,12 +2,12 @@
 # SPDX-FileCopyrightText: © 2025 StreamKit Contributors
 # SPDX-License-Identifier: MPL-2.0
 title: "transport::moq::subscriber"
-description: "Subscribes to a Media over QUIC (MoQ) broadcast. Receives encoded Opus audio and VP9 video from a remote publisher over WebTransport."
+description: "Subscribes to a Media over QUIC (MoQ) broadcast. Receives encoded audio and video from a remote publisher over WebTransport."
 ---
 
 `kind`: `transport::moq::subscriber`
 
-Subscribes to a Media over QUIC (MoQ) broadcast. Receives encoded Opus audio and VP9 video from a remote publisher over WebTransport.
+Subscribes to a Media over QUIC (MoQ) broadcast. Receives encoded audio and video from a remote publisher over WebTransport.
 
 ## Categories
 - `transport`
@@ -20,8 +20,6 @@ No inputs.
 
 ### Outputs
 - `out` produces `EncodedAudio(EncodedAudioFormat { codec: Opus, codec_private: None })` (broadcast)
-
-> **Dynamic video outputs:** When the remote broadcast includes video tracks, additional output pins are created dynamically during catalog discovery (e.g. a `video/data` pin producing `EncodedVideo(VP9)`). These pins are not shown here because they depend on the remote publisher's catalog.
 
 ## Parameters
 | Name | Type | Required | Default | Description |

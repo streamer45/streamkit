@@ -15,65 +15,63 @@ Runtime: `Packet::Video(VideoFrame)`
 - `label`: `Raw Video`
 - `color`: `#1abc9c`
 - `display_template`: `Raw Video ({width|*}x{height|*}, {pixel_format})`
-- `compat: wildcard fields (width, height), color: `#1abc9c``
+- `compat: wildcard fields (width, height, pixel_format), color: `#1abc9c``
 
 ## Structure
 Raw video is defined by a `RawVideoFormat` in the type system and carried as `Packet::Video(VideoFrame)` at runtime.
-
-Use `null` for `width` or `height` when you want wildcard/unknown dimensions.
 
 ### PacketType payload (`RawVideoFormat`)
 
 | Name | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `width` | `null | integer (uint32)` | no | — | Frame width in pixels. `null` acts as a wildcard. |
-| `height` | `null | integer (uint32)` | no | — | Frame height in pixels. `null` acts as a wildcard. |
-| `pixel_format` | `string enum[Rgba8, I420, Nv12]` | yes | — | Pixel format for raw frames. |
+| `height` | `integer | null (uint32)` | no | — | min: `0` |
+| `pixel_format` | `string enum[Rgba8, I420, Nv12]` | yes | — | Describes the pixel format of raw video frames. |
+| `width` | `integer | null (uint32)` | no | — | min: `0` |
 
 <details>
 <summary>Raw JSON Schema</summary>
 
 ```json
 {
-  "$defs": {
-    "PixelFormat": {
-      "description": "Describes the pixel format of raw video frames.",
-      "enum": [
-        "Rgba8",
-        "I420",
-        "Nv12"
-      ],
-      "type": "string"
-    }
-  },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RawVideoFormat",
   "description": "Contains the detailed metadata for a raw video stream.",
+  "type": "object",
   "properties": {
-    "height": {
-      "format": "uint32",
-      "minimum": 0,
+    "width": {
       "type": [
         "integer",
         "null"
-      ]
+      ],
+      "format": "uint32",
+      "minimum": 0
+    },
+    "height": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0
     },
     "pixel_format": {
       "$ref": "#/$defs/PixelFormat"
-    },
-    "width": {
-      "format": "uint32",
-      "minimum": 0,
-      "type": [
-        "integer",
-        "null"
-      ]
     }
   },
   "required": [
     "pixel_format"
   ],
-  "title": "RawVideoFormat",
-  "type": "object"
+  "$defs": {
+    "PixelFormat": {
+      "description": "Describes the pixel format of raw video frames.",
+      "type": "string",
+      "enum": [
+        "Rgba8",
+        "I420",
+        "Nv12"
+      ]
+    }
+  }
 }
 ```
 
@@ -81,20 +79,8 @@ Use `null` for `width` or `height` when you want wildcard/unknown dimensions.
 
 ### Runtime payload (`VideoFrame`)
 
-`VideoFrame` is optimized for zero-copy fan-out. It contains:
+`VideoFrame` is optimized for zero-copy fan-out (Arc + CoW). It contains:
 
-- `width` (u32)
-- `height` (u32)
-- `pixel_format` (`PixelFormat`)
-- `layout` (`VideoLayout`, includes per-plane offsets/strides and `stride_align`)
-- `data` (packed bytes; layout depends on the pixel format)
+- `layout` (`VideoLayout`) — plane offsets, strides, and dimensions
+- `data` (shared byte buffer backed by `VideoFramePool`)
 - `metadata` (`PacketMetadata`, optional)
-
-`VideoLayout` exposes:
-- `plane_count`
-- `planes[]` with `offset`, `stride`, `width`, `height`
-- `total_bytes`
-- `stride_align` (byte alignment used for each plane stride)
-
-StreamKit assumes raw video frames use a canonical aligned layout (as produced by `VideoLayout::aligned`).
-Codec nodes may reject frames whose layout does not match the expected canonical layout.

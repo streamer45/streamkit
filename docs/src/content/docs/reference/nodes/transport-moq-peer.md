@@ -2,12 +2,12 @@
 # SPDX-FileCopyrightText: © 2025 StreamKit Contributors
 # SPDX-License-Identifier: MPL-2.0
 title: "transport::moq::peer"
-description: "Bidirectional MoQ peer for real-time media communication. Acts as both publisher and subscriber over a single WebTransport connection, supporting Opus audio and VP9 video."
+description: "Bidirectional MoQ peer for real-time audio and video communication. Acts as both publisher and subscriber over a single WebTransport connection. Supported codecs: Opus (audio), VP9 (video)."
 ---
 
 `kind`: `transport::moq::peer`
 
-Bidirectional MoQ peer for real-time media communication. Acts as both publisher and subscriber over a single WebTransport connection, supporting Opus audio and VP9 video.
+Bidirectional MoQ peer for real-time audio and video communication. Acts as both publisher and subscriber over a single WebTransport connection. Supported codecs: Opus (audio), VP9 (video).
 
 ## Categories
 - `transport`

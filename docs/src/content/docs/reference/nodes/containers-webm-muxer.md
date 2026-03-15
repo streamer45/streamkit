@@ -17,8 +17,6 @@ Muxes Opus audio and/or VP9 video into a WebM container. Produces streamable Web
 ### Inputs
 - `in` accepts `EncodedAudio(EncodedAudioFormat { codec: Opus, codec_private: None }), EncodedVideo(EncodedVideoFormat { codec: Vp9, bitstream_format: None, codec_private: None, profile: None, level: None })` (one)
 
-> **Dual-pin muxing:** When `video_width` and `video_height` are set to non-zero values, a second input pin (`in_1`) is created automatically to accept the video stream. Connect your audio encoder to `in` and your video encoder to `in_1` for combined audio+video WebM output.
-
 ### Outputs
 - `out` produces `Binary` (broadcast)
 
@@ -26,7 +24,7 @@ Muxes Opus audio and/or VP9 video into a WebM container. Produces streamable Web
 | Name | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `channels` | `integer (uint32)` | no | `2` | Number of audio channels (1 for mono, 2 for stereo)<br />min: `0` |
-| `chunk_size` | `integer (uint)` | no | `65536` | The number of bytes to buffer before flushing to the output. Defaults to 65536.<br />min: `0` |
+| `opus_preskip_samples` | `integer (uint16)` | no | `312` | Opus encoder lookahead in samples at 48 kHz, written to the OpusHead<br />`pre_skip` field.  Decoders use this to trim encoder delay.<br />Default: 312 (typical libopus default).<br />min: `0`<br />max: `65535` |
 | `sample_rate` | `integer (uint32)` | no | `48000` | Audio sample rate in Hz (used when an audio input is connected)<br />min: `0` |
 | `streaming_mode` | `string` | no | — | — |
 | `video_height` | `integer (uint32)` | no | `0` | Video height in pixels (required when a video input is connected)<br />min: `0` |
@@ -70,16 +68,17 @@ Muxes Opus audio and/or VP9 video into a WebM container. Produces streamable Web
       "minimum": 0,
       "default": 0
     },
-    "chunk_size": {
-      "description": "The number of bytes to buffer before flushing to the output. Defaults to 65536.",
-      "type": "integer",
-      "format": "uint",
-      "minimum": 0,
-      "default": 65536
-    },
     "streaming_mode": {
       "description": "Streaming mode: \"live\" for real-time streaming (no duration), \"file\" for complete files\nwith duration (default)",
       "$ref": "#/$defs/WebMStreamingMode"
+    },
+    "opus_preskip_samples": {
+      "description": "Opus encoder lookahead in samples at 48 kHz, written to the OpusHead\n`pre_skip` field.  Decoders use this to trim encoder delay.\nDefault: 312 (typical libopus default).",
+      "type": "integer",
+      "format": "uint16",
+      "minimum": 0,
+      "maximum": 65535,
+      "default": 312
     }
   },
   "$defs": {

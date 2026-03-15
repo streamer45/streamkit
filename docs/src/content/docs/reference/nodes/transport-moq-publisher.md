@@ -2,12 +2,12 @@
 # SPDX-FileCopyrightText: © 2025 StreamKit Contributors
 # SPDX-License-Identifier: MPL-2.0
 title: "transport::moq::publisher"
-description: "Publishes media to a Media over QUIC (MoQ) broadcast. Sends encoded Opus audio and optional VP9 video to subscribers over WebTransport."
+description: "Publishes media to a Media over QUIC (MoQ) broadcast. Sends encoded audio and optional video to subscribers over WebTransport."
 ---
 
 `kind`: `transport::moq::publisher`
 
-Publishes media to a Media over QUIC (MoQ) broadcast. Sends encoded Opus audio and optional VP9 video to subscribers over WebTransport.
+Publishes media to a Media over QUIC (MoQ) broadcast. Sends encoded audio and optional video to subscribers over WebTransport.
 
 ## Categories
 - `transport`

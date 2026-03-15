@@ -112,7 +112,7 @@ Permission configuration section for skit.toml.
 | `default_role` | string | `admin` | Default role for requests without an authenticated role When built-in auth is disabled, this becomes the effective role for requests that are not assigned a role via a trusted role header or `SK_ROLE`. For production deployments, prefer enabling built-in auth (`[auth].mode`) or running behind an authenticating reverse proxy that sets `[permissions].role_header`. |
 | `role_header` | null | string | `null` | Optional trusted HTTP header used to select a role (e.g. "x-role" or "x-streamkit-role"). If unset, StreamKit ignores role headers entirely and uses `SK_ROLE`/`default_role`. Security note: Only enable this when running behind a trusted reverse proxy or auth layer that (a) authenticates the caller and (b) strips any incoming header with the same name before setting it. |
 | `allow_insecure_no_auth` | boolean | `false` | Allow starting the server on a non-loopback address without built-in auth or a trusted role header. This only applies when built-in auth is disabled. This is unsafe: all requests fall back to `SK_ROLE`/`default_role`. The server refuses to start in this configuration unless this flag is set. |
-| `roles` | object | `{"user":{"create_sessions":...` | Map of role name -> permissions |
+| `roles` | object | `{"viewer":{"create_sessions...` | Map of role name -> permissions |
 | `max_concurrent_sessions` | integer | null (uint) | `null` | Maximum concurrent dynamic sessions (global limit, applies to all users) None = unlimited |
 | `max_concurrent_oneshots` | integer | null (uint) | `null` | Maximum concurrent oneshot pipelines (global limit) None = unlimited |
 
@@ -285,69 +285,6 @@ Authentication configuration for built-in JWT-based auth.
         "role_header": null,
         "allow_insecure_no_auth": false,
         "roles": {
-          "admin": {
-            "create_sessions": true,
-            "destroy_sessions": true,
-            "list_sessions": true,
-            "modify_sessions": true,
-            "tune_nodes": true,
-            "load_plugins": true,
-            "delete_plugins": true,
-            "list_nodes": true,
-            "list_samples": true,
-            "read_samples": true,
-            "write_samples": true,
-            "delete_samples": true,
-            "allowed_samples": [
-              "*"
-            ],
-            "allowed_nodes": [
-              "*"
-            ],
-            "allowed_plugins": [
-              "*"
-            ],
-            "access_all_sessions": true,
-            "upload_assets": true,
-            "delete_assets": true,
-            "allowed_assets": [
-              "*"
-            ]
-          },
-          "viewer": {
-            "create_sessions": false,
-            "destroy_sessions": false,
-            "list_sessions": true,
-            "modify_sessions": false,
-            "tune_nodes": false,
-            "load_plugins": false,
-            "delete_plugins": false,
-            "list_nodes": true,
-            "list_samples": true,
-            "read_samples": true,
-            "write_samples": false,
-            "delete_samples": false,
-            "allowed_samples": [
-              "oneshot/*.yml",
-              "oneshot/*.yaml",
-              "dynamic/*.yml",
-              "dynamic/*.yaml",
-              "user/*.yml",
-              "user/*.yaml"
-            ],
-            "allowed_nodes": [
-              "*"
-            ],
-            "allowed_plugins": [
-              "*"
-            ],
-            "access_all_sessions": false,
-            "upload_assets": false,
-            "delete_assets": false,
-            "allowed_assets": [
-              "samples/audio/system/*"
-            ]
-          },
           "user": {
             "create_sessions": true,
             "destroy_sessions": true,
@@ -394,6 +331,69 @@ Authentication configuration for built-in JWT-based auth.
             "allowed_assets": [
               "samples/audio/system/*",
               "samples/audio/user/*"
+            ]
+          },
+          "viewer": {
+            "create_sessions": false,
+            "destroy_sessions": false,
+            "list_sessions": true,
+            "modify_sessions": false,
+            "tune_nodes": false,
+            "load_plugins": false,
+            "delete_plugins": false,
+            "list_nodes": true,
+            "list_samples": true,
+            "read_samples": true,
+            "write_samples": false,
+            "delete_samples": false,
+            "allowed_samples": [
+              "oneshot/*.yml",
+              "oneshot/*.yaml",
+              "dynamic/*.yml",
+              "dynamic/*.yaml",
+              "user/*.yml",
+              "user/*.yaml"
+            ],
+            "allowed_nodes": [
+              "*"
+            ],
+            "allowed_plugins": [
+              "*"
+            ],
+            "access_all_sessions": false,
+            "upload_assets": false,
+            "delete_assets": false,
+            "allowed_assets": [
+              "samples/audio/system/*"
+            ]
+          },
+          "admin": {
+            "create_sessions": true,
+            "destroy_sessions": true,
+            "list_sessions": true,
+            "modify_sessions": true,
+            "tune_nodes": true,
+            "load_plugins": true,
+            "delete_plugins": true,
+            "list_nodes": true,
+            "list_samples": true,
+            "read_samples": true,
+            "write_samples": true,
+            "delete_samples": true,
+            "allowed_samples": [
+              "*"
+            ],
+            "allowed_nodes": [
+              "*"
+            ],
+            "allowed_plugins": [
+              "*"
+            ],
+            "access_all_sessions": true,
+            "upload_assets": true,
+            "delete_assets": true,
+            "allowed_assets": [
+              "*"
             ]
           }
         },
@@ -990,6 +990,35 @@ Authentication configuration for built-in JWT-based auth.
             "$ref": "#/$defs/Permissions"
           },
           "default": {
+            "admin": {
+              "create_sessions": true,
+              "destroy_sessions": true,
+              "list_sessions": true,
+              "modify_sessions": true,
+              "tune_nodes": true,
+              "load_plugins": true,
+              "delete_plugins": true,
+              "list_nodes": true,
+              "list_samples": true,
+              "read_samples": true,
+              "write_samples": true,
+              "delete_samples": true,
+              "allowed_samples": [
+                "*"
+              ],
+              "allowed_nodes": [
+                "*"
+              ],
+              "allowed_plugins": [
+                "*"
+              ],
+              "access_all_sessions": true,
+              "upload_assets": true,
+              "delete_assets": true,
+              "allowed_assets": [
+                "*"
+              ]
+            },
             "user": {
               "create_sessions": true,
               "destroy_sessions": true,
@@ -1070,35 +1099,6 @@ Authentication configuration for built-in JWT-based auth.
               "delete_assets": false,
               "allowed_assets": [
                 "samples/audio/system/*"
-              ]
-            },
-            "admin": {
-              "create_sessions": true,
-              "destroy_sessions": true,
-              "list_sessions": true,
-              "modify_sessions": true,
-              "tune_nodes": true,
-              "load_plugins": true,
-              "delete_plugins": true,
-              "list_nodes": true,
-              "list_samples": true,
-              "read_samples": true,
-              "write_samples": true,
-              "delete_samples": true,
-              "allowed_samples": [
-                "*"
-              ],
-              "allowed_nodes": [
-                "*"
-              ],
-              "allowed_plugins": [
-                "*"
-              ],
-              "access_all_sessions": true,
-              "upload_assets": true,
-              "delete_assets": true,
-              "allowed_assets": [
-                "*"
               ]
             }
           }
