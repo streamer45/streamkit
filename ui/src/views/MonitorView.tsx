@@ -40,8 +40,10 @@ import { ResizableLayout } from '@/components/ResizableLayout';
 import { ViewTitle } from '@/components/ui/ViewTitle';
 import { DnDProvider, useDnD } from '@/context/DnDContext';
 import { useToast } from '@/context/ToastContext';
+import { useAutoLayout } from '@/hooks/useAutoLayout';
 import { useContextMenu } from '@/hooks/useContextMenu';
 import { useMonitorPreview } from '@/hooks/useMonitorPreview';
+import { useNodeStatesSubscription } from '@/hooks/useNodeStatesSubscription';
 import { useReactFlowCommon } from '@/hooks/useReactFlowCommon';
 import { useResolvedColorMode } from '@/hooks/useResolvedColorMode';
 import { useSession } from '@/hooks/useSession';
@@ -59,7 +61,6 @@ import type {
   NodeDefinition,
   Connection,
   Node,
-  NodeState,
   Pipeline,
   MessageType,
   BatchOperation,
@@ -76,27 +77,13 @@ import {
   buildEdgesFromConnections,
   buildNodeObject,
   generatePipelineYaml,
-  isRecord,
-  extractSlowTimeoutDetailsFromNodeState,
-  describeSlowInputs,
-  type SlowTimeoutDetails,
 } from '@/utils/pipelineGraph';
-import { topoLevelsFromPipeline, orderedNamesFromLevels, verticalLayout } from '@/utils/dag';
+import { topoLevelsFromPipeline, orderedNamesFromLevels } from '@/utils/dag';
 import { deepEqual } from '@/utils/deepEqual';
 import { validateValue } from '@/utils/jsonSchema';
-import {
-  DEFAULT_NODE_WIDTH,
-  DEFAULT_NODE_HEIGHT,
-  DEFAULT_HORIZONTAL_GAP,
-  DEFAULT_VERTICAL_GAP,
-  ESTIMATED_HEIGHT_BY_KIND,
-} from '@/utils/layoutConstants';
 import { viewsLogger } from '@/utils/logger';
 import { validatePipeline } from '@/utils/pipelineValidation';
 import { nodeTypes, defaultEdgeOptions } from '@/utils/reactFlowDefaults';
-import { collectNodeHeights } from '@/utils/reactFlowInstance';
-
-const EMPTY_PARAMS: Record<string, unknown> = {};
 
 // Memoized view title to prevent re-renders during drag
 const MonitorViewTitle = React.memo(() => <ViewTitle>Monitor</ViewTitle>);
@@ -194,8 +181,6 @@ const MonitorViewContent: React.FC = () => {
 
   // For backward compatibility, editMode now means "staging mode"
   const editMode = isInStagingMode;
-  const [needsAutoLayout, setNeedsAutoLayout] = useState(false);
-  const [needsFit, setNeedsFit] = useState(false);
   const [selectedNodes, setSelectedNodes] = useState<string[]>([]);
   const [rightPaneView, setRightPaneView] = useState<'yaml' | 'inspector' | 'telemetry'>('yaml');
   const [showDeleteModal, setShowDeleteModal] = useState(false);
@@ -439,6 +424,50 @@ const MonitorViewContent: React.FC = () => {
   // Preview: watch-only MoQ connection from Monitor view.
   const { isPreviewConnected, handleStartPreview } = useMonitorPreview(selectedSessionId, pipeline);
 
+  // Use ref to avoid recreating callback when pipeline changes
+  const pipelineRef = useRef(pipeline);
+  pipelineRef.current = pipeline;
+
+  // Topology signature: only changes when nodes/kinds or connections change
+  // Use staged pipeline when in staging mode, otherwise use live pipeline
+  // Memoize based on the actual pipeline content to avoid re-renders when references change
+  const topoKey = React.useMemo(() => {
+    const activePipeline = isInStagingMode && stagedPipeline ? stagedPipeline : pipeline;
+    if (!activePipeline) return '';
+    const names = Object.keys(activePipeline.nodes).sort();
+    const kinds = names.map((n) => `${n}:${activePipeline.nodes[n].kind}`);
+    const conns = activePipeline.connections
+      .map((c: Connection) => `${c.from_node}:${c.from_pin}>${c.to_node}:${c.to_pin}`)
+      .sort();
+    const key = JSON.stringify([kinds, conns]);
+    viewsLogger.debug(
+      'topoKey recalculated:',
+      key.substring(0, 100),
+      'isInStagingMode:',
+      isInStagingMode
+    );
+    return key;
+  }, [stagedPipeline, pipeline, isInStagingMode]);
+
+  // Auto-layout + fit-view hook
+  const { setNeedsAutoLayout, setNeedsFit, handleAutoLayout } = useAutoLayout({
+    pipeline,
+    selectedSessionId,
+    nodesLength: nodes.length,
+    setNodes,
+    rf,
+    updateNodePosition,
+  });
+
+  // Throttled Zustand→ReactFlow patching bridge
+  const { topoEffectRanRef } = useNodeStatesSubscription({
+    selectedSessionId,
+    setNodes,
+    setEdges,
+    pipelineRef,
+    topoKey,
+  });
+
   // When a session is destroyed, the optimistic removal empties the list
   // before React processes the batched setSelectedSessionId(null) from
   // handleConfirmQuickDelete.  Eagerly clear the selection here so the
@@ -465,10 +494,6 @@ const MonitorViewContent: React.FC = () => {
   }, [selectedSessionId, selectedSession, isLoadingSessions]);
 
   // Handle entering staging mode
-  // Use ref to avoid recreating callback when pipeline changes
-  const pipelineRef = useRef(pipeline);
-  pipelineRef.current = pipeline;
-
   const handleEnterStagingMode = useCallback(() => {
     viewsLogger.info('Entering staging mode');
     if (!selectedSessionId || !pipelineRef.current) return;
@@ -887,27 +912,6 @@ const MonitorViewContent: React.FC = () => {
     },
     [isInStagingMode, selectedSessionId, stagingData, pipeline, toast, nodeDefinitions, tuneNode]
   );
-
-  // Topology signature: only changes when nodes/kinds or connections change
-  // Use staged pipeline when in staging mode, otherwise use live pipeline
-  // Memoize based on the actual pipeline content to avoid re-renders when references change
-  const topoKey = React.useMemo(() => {
-    const activePipeline = isInStagingMode && stagedPipeline ? stagedPipeline : pipeline;
-    if (!activePipeline) return '';
-    const names = Object.keys(activePipeline.nodes).sort();
-    const kinds = names.map((n) => `${n}:${activePipeline.nodes[n].kind}`);
-    const conns = activePipeline.connections
-      .map((c: Connection) => `${c.from_node}:${c.from_pin}>${c.to_node}:${c.to_pin}`)
-      .sort();
-    const key = JSON.stringify([kinds, conns]);
-    viewsLogger.debug(
-      'topoKey recalculated:',
-      key.substring(0, 100),
-      'isInStagingMode:',
-      isInStagingMode
-    );
-    return key;
-  }, [stagedPipeline, pipeline, isInStagingMode]);
 
   const onConnect = React.useCallback(
     (connection: RFConnection) => {
@@ -1335,223 +1339,6 @@ const MonitorViewContent: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [topoKey, defByKind, selectedSessionId, tuneNode]);
 
-  // Track previous topoKey to avoid redundant patch effect when topology changes
-  const prevTopoKeyRef = useRef<string>('');
-  const topoEffectRanRef = useRef(false);
-  const isInitialMountRef = useRef(true);
-
-  // ── Non-reactive nodeStates subscription ─────────────────────────────
-  // Instead of subscribing reactively to nodeStates (which would re-render
-  // the entire ~3600-line MonitorViewContent on every node-state transition),
-  // we subscribe directly to the Zustand store and patch ReactFlow nodes /
-  // edges from the callback.  This completely bypasses React's render cycle
-  // for high-frequency state changes during session load.
-  //
-  // Patches are throttled: the first change applies immediately, then
-  // subsequent changes within PATCH_THROTTLE_MS are coalesced into a single
-  // deferred patch.  During session load, ~8 node-state transitions that
-  // would each trigger a full ~20 ms MonitorViewContent re-render are
-  // collapsed into 2–3 patches instead.
-  // Keep topoKey accessible from the store subscription without stale closures
-  const topoKeyRef = useRef(topoKey);
-  topoKeyRef.current = topoKey;
-
-  useEffect(() => {
-    if (!selectedSessionId) return;
-
-    const PATCH_THROTTLE_MS = 100;
-
-    let prevNodeStates: Record<string, NodeState> | undefined;
-    let lastPatchTime = 0;
-    let throttleTimer: ReturnType<typeof setTimeout> | null = null;
-    let pendingNodeStates: Record<string, NodeState> | null = null;
-    isInitialMountRef.current = true;
-
-    const applyPatch = (nodeStates: Record<string, NodeState>) => {
-      lastPatchTime = performance.now();
-
-      const currentPipeline = pipelineRef.current;
-      if (!currentPipeline) return;
-
-      // ── Patch nodes + edges in one transition to avoid double render ──
-      React.startTransition(() => {
-        // Patch node state/params
-        setNodes((prev) => {
-          const updatesById = new Map<
-            string,
-            { nextState: unknown; nextParams: Record<string, unknown> }
-          >();
-
-          for (const n of prev) {
-            const apiNode = currentPipeline.nodes[n.id];
-            if (!apiNode) continue;
-
-            const nextState = nodeStates[n.id] ?? apiNode.state;
-            const nextParams: Record<string, unknown> =
-              apiNode.params && typeof apiNode.params === 'object' && !Array.isArray(apiNode.params)
-                ? (apiNode.params as Record<string, unknown>)
-                : EMPTY_PARAMS;
-
-            const stateChanged = !deepEqual(n.data.state, nextState);
-            const paramsChanged = !deepEqual(n.data.params, nextParams);
-
-            if (stateChanged || paramsChanged) {
-              updatesById.set(n.id, { nextState, nextParams });
-            }
-          }
-
-          if (updatesById.size === 0) return prev;
-
-          return prev.map((n) => {
-            const updateInfo = updatesById.get(n.id);
-            if (!updateInfo) return n;
-            return {
-              ...n,
-              data: {
-                ...n.data,
-                state: updateInfo.nextState,
-                params: updateInfo.nextParams,
-              },
-            };
-          });
-        });
-
-        // Patch edge alerts (slow-input-timeout)
-        const slowPinsByNode = new Map<string, Set<string>>();
-        const slowDetailsByNode = new Map<string, SlowTimeoutDetails>();
-        for (const [nodeId, apiNode] of Object.entries(currentPipeline.nodes)) {
-          const st = (nodeStates as Record<string, NodeState>)[nodeId] ?? apiNode.state ?? null;
-          const details = extractSlowTimeoutDetailsFromNodeState(st);
-          const slowPins = details?.slowPins ?? [];
-          if (slowPins.length > 0) {
-            slowPinsByNode.set(nodeId, new Set(slowPins));
-          }
-          if (details) {
-            slowDetailsByNode.set(nodeId, details);
-          }
-        }
-
-        setEdges((prev) => {
-          let changed = false;
-
-          const next = prev.map((edge) => {
-            const targetPin = edge.targetHandle ?? '';
-            const shouldWarn = slowPinsByNode.get(edge.target)?.has(targetPin) ?? false;
-            const currentAlert = isRecord(edge.data) ? edge.data['alert'] : undefined;
-            const currentAlertKind =
-              isRecord(currentAlert) && typeof currentAlert['kind'] === 'string'
-                ? currentAlert['kind']
-                : null;
-            const isCurrentlyWarned = currentAlertKind === 'slow_input_timeout';
-
-            if (shouldWarn === isCurrentlyWarned) return edge;
-
-            changed = true;
-            const nextData: Record<string, unknown> = { ...(edge.data || {}) };
-
-            if (shouldWarn) {
-              const details = slowDetailsByNode.get(edge.target);
-              const slowPins = details?.slowPins ?? [];
-              const p = pipelineRef.current;
-              const slowInputs = p ? describeSlowInputs(p, edge.target, slowPins) : [];
-
-              const lines: string[] = [];
-              if (slowInputs.length > 0) {
-                lines.push(`Slow inputs: ${slowInputs.join(', ')}`);
-              } else if (slowPins.length > 0) {
-                lines.push(`Slow pins: ${slowPins.join(', ')}`);
-              }
-
-              const sourceHandle = edge.sourceHandle ?? '';
-              lines.push(`This: ${edge.source}.${sourceHandle} → ${edge.targetHandle ?? ''}`);
-
-              if (details?.newlySlowPins && details.newlySlowPins.length > 0) {
-                lines.push(`Newly slow: ${details.newlySlowPins.join(', ')}`);
-              }
-              if (details?.syncTimeoutMs !== null && details?.syncTimeoutMs !== undefined) {
-                lines.push(`Timeout: ${details.syncTimeoutMs}ms`);
-              }
-
-              nextData.alert = {
-                kind: 'slow_input_timeout',
-                severity: 'warning',
-                tooltip: {
-                  title: `${edge.target} degraded`,
-                  lines,
-                },
-              };
-            } else if (isCurrentlyWarned) {
-              delete nextData.alert;
-            }
-
-            return { ...edge, data: nextData };
-          });
-
-          return changed ? next : prev;
-        });
-      });
-    };
-
-    const unsubscribe = useSessionStore.subscribe((state) => {
-      const session = state.sessions.get(selectedSessionId);
-      const nodeStates = session?.nodeStates;
-
-      // Skip if same reference (store changed for a different reason)
-      if (nodeStates === prevNodeStates) return;
-      prevNodeStates = nodeStates;
-
-      // Skip on initial mount — let the topology effect handle everything
-      if (isInitialMountRef.current) {
-        isInitialMountRef.current = false;
-        prevTopoKeyRef.current = topoKeyRef.current;
-        return;
-      }
-
-      // If topoKey changed, the topology effect will handle the full rebuild
-      if (prevTopoKeyRef.current !== topoKeyRef.current) {
-        prevTopoKeyRef.current = topoKeyRef.current;
-        return;
-      }
-
-      // Don't patch until the topology effect has built the initial graph
-      if (!topoEffectRanRef.current) return;
-
-      if (!nodeStates) return;
-
-      // ── Throttled patch ────────────────────────────────────────────────
-      // Apply immediately if enough time elapsed since the last patch;
-      // otherwise buffer and apply after the throttle window.  During
-      // session-load bursts this collapses ~8 individual setNodes calls
-      // (each triggering a ~20 ms MonitorViewContent re-render) into 2–3.
-      pendingNodeStates = nodeStates;
-      const now = performance.now();
-      const elapsed = now - lastPatchTime;
-
-      if (elapsed >= PATCH_THROTTLE_MS) {
-        // First change or enough time since last patch — apply now.
-        if (throttleTimer !== null) {
-          clearTimeout(throttleTimer);
-          throttleTimer = null;
-        }
-        applyPatch(nodeStates);
-      } else if (throttleTimer === null) {
-        // Schedule a trailing-edge flush.
-        throttleTimer = setTimeout(() => {
-          throttleTimer = null;
-          if (pendingNodeStates) {
-            applyPatch(pendingNodeStates);
-            pendingNodeStates = null;
-          }
-        }, PATCH_THROTTLE_MS - elapsed);
-      }
-    });
-
-    return () => {
-      unsubscribe();
-      if (throttleTimer !== null) clearTimeout(throttleTimer);
-    };
-  }, [selectedSessionId, setNodes, setEdges]);
-
   // Create a stable callback that handles both staged and live param changes
   // This avoids recreating callbacks for each node, which would break React.memo
   const stableOnParamChange = useCallback(
@@ -1828,142 +1615,6 @@ const MonitorViewContent: React.FC = () => {
       setIsDeletingSession(false);
     }
   };
-
-  const applyAutoLayout = React.useCallback(
-    (measuredHeights: Record<string, number>) => {
-      if (!pipeline) return;
-
-      const nodeWidth = DEFAULT_NODE_WIDTH;
-      const hGap = DEFAULT_HORIZONTAL_GAP;
-      const vGap = DEFAULT_VERTICAL_GAP;
-
-      const { levels, sortedLevels } = topoLevelsFromPipeline(pipeline);
-
-      const perNodeHeights: Record<string, number> = {};
-      for (const name of Object.keys(pipeline.nodes)) {
-        const measured = measuredHeights[name];
-        if (typeof measured === 'number' && Number.isFinite(measured)) {
-          perNodeHeights[name] = measured;
-        } else {
-          const kind = pipeline.nodes[name].kind;
-          perNodeHeights[name] = ESTIMATED_HEIGHT_BY_KIND[kind] ?? DEFAULT_NODE_HEIGHT;
-        }
-      }
-
-      const positions = verticalLayout(levels, sortedLevels, {
-        nodeWidth,
-        nodeHeight: DEFAULT_NODE_HEIGHT,
-        hGap,
-        vGap,
-        heights: perNodeHeights,
-        edges: pipeline.connections.map((c) => ({ source: c.from_node, target: c.to_node })),
-      });
-
-      viewsLogger.debug(
-        'Applying auto-layout positions to',
-        Object.keys(positions).length,
-        'nodes'
-      );
-
-      setNodes((prev) =>
-        prev.map((n) => {
-          const newPos = positions[n.id];
-          if (!newPos) return n;
-
-          // Only create new object if position actually changed
-          if (n.position.x === newPos.x && n.position.y === newPos.y) {
-            return n;
-          }
-
-          return {
-            ...n,
-            position: newPos,
-          };
-        })
-      );
-
-      // Save auto-layout positions to staging store so we don't need to re-run layout next time
-      if (selectedSessionId) {
-        Object.entries(positions).forEach(([nodeId, position]) => {
-          updateNodePosition(selectedSessionId, nodeId, position);
-        });
-        viewsLogger.debug(
-          'Saved auto-layout positions for',
-          Object.keys(positions).length,
-          'nodes'
-        );
-      }
-
-      // Wait for nodes to be positioned and rendered before fitting
-      setTimeout(() => {
-        viewsLogger.debug('Auto-layout complete, fitting view');
-        // No animation for better performance on initial load
-        rf.current?.fitView({ padding: 0.2, duration: 0 });
-      }, 100);
-    },
-    [pipeline, setNodes, selectedSessionId, updateNodePosition]
-  );
-
-  const handleAutoLayout = React.useCallback(() => {
-    if (!pipeline) return;
-
-    const runLayout = () => {
-      const measuredHeights = collectNodeHeights(rf.current);
-      applyAutoLayout(measuredHeights);
-    };
-
-    if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
-      window.requestAnimationFrame(runLayout);
-    } else {
-      runLayout();
-    }
-  }, [pipeline, applyAutoLayout]);
-
-  // Auto-layout when selecting a session: perform once after pipeline/nodes load
-  useEffect(() => {
-    if (needsAutoLayout && selectedSessionId && pipeline && nodes.length > 0) {
-      viewsLogger.debug('Auto-layout requested');
-      // Use requestIdleCallback to defer layout until browser is idle
-      // This prevents blocking the UI during heavy renders
-      const hasRequestIdleCallback = 'requestIdleCallback' in window;
-      const idleCallback = hasRequestIdleCallback
-        ? window.requestIdleCallback(
-            () => {
-              handleAutoLayout();
-              setNeedsAutoLayout(false);
-              setNeedsFit(false); // Auto-layout handles fitView, so clear this flag too
-            },
-            { timeout: 200 }
-          )
-        : setTimeout(() => {
-            handleAutoLayout();
-            setNeedsAutoLayout(false);
-            setNeedsFit(false);
-          }, 100);
-      return () => {
-        if (hasRequestIdleCallback) {
-          window.cancelIdleCallback(idleCallback as number);
-        } else {
-          clearTimeout(idleCallback as number);
-        }
-      };
-    }
-  }, [needsAutoLayout, selectedSessionId, pipeline, nodes.length, handleAutoLayout]);
-
-  // Fit view when selecting a session once nodes are present
-  // Skip if auto-layout is running since it handles fitView itself
-  useEffect(() => {
-    if (needsFit && selectedSessionId && nodes.length > 0 && !needsAutoLayout) {
-      viewsLogger.debug('FitView requested, waiting for nodes to settle');
-      const t = setTimeout(() => {
-        viewsLogger.debug('Fitting view to nodes');
-        // No animation on initial load for better performance
-        rf.current?.fitView({ padding: 0.2, duration: 0 });
-        setNeedsFit(false);
-      }, 150); // Increased delay to ensure nodes are positioned
-      return () => clearTimeout(t);
-    }
-  }, [needsFit, selectedSessionId, nodes.length, needsAutoLayout]);
 
   // Memoize left panel to prevent ResizableLayout from re-rendering
   const leftPanel = React.useMemo(
