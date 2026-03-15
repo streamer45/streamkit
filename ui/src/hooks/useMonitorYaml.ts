@@ -133,6 +133,7 @@ export function useMonitorYaml({
 
         if (!parsed || !parsed.nodes || typeof parsed.nodes !== 'object') {
           toast.error('Invalid YAML: Must contain a "nodes" object');
+          isEditingYamlRef.current = false;
           return;
         }
 
