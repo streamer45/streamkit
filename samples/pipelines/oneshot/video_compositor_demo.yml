@@ -111,4 +111,6 @@ nodes:
 
   http_output:
     kind: streamkit::http_output
+    params:
+      content_type: 'video/webm; codecs="vp9"'
     needs: pacer
