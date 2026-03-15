@@ -603,9 +603,8 @@ impl ProcessorNode for WebMMuxerNode {
                 // Dynamic pipeline: classify from the first packet's content_type.
                 match rx.recv().await {
                     Some(Packet::Binary { data, content_type, metadata }) => {
-                        let video = content_type
-                            .as_deref()
-                            .is_some_and(|ct| ct.starts_with("video/"));
+                        let video =
+                            content_type.as_deref().is_some_and(|ct| ct.starts_with("video/"));
                         if video {
                             first_video_packet = Some((data, metadata));
                         } else {
@@ -645,7 +644,8 @@ impl ProcessorNode for WebMMuxerNode {
                     state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
                     return Err(StreamKitError::Runtime(err_msg));
                 }
-                let source = if use_packet_inspection { "packet inspection" } else { "connection type" };
+                let source =
+                    if use_packet_inspection { "packet inspection" } else { "connection type" };
                 tracing::info!(
                     "WebMMuxerNode: pin '{pin_name}' classified as VIDEO (from {source})"
                 );
@@ -659,7 +659,8 @@ impl ProcessorNode for WebMMuxerNode {
                     state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
                     return Err(StreamKitError::Runtime(err_msg));
                 }
-                let source = if use_packet_inspection { "packet inspection" } else { "connection type" };
+                let source =
+                    if use_packet_inspection { "packet inspection" } else { "connection type" };
                 tracing::info!(
                     "WebMMuxerNode: pin '{pin_name}' classified as AUDIO (from {source})"
                 );
