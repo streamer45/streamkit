@@ -568,12 +568,18 @@ impl ProcessorNode for WebMMuxerNode {
         state_helpers::emit_initializing(&context.state_tx, &node_name);
         tracing::info!("WebMMuxerNode starting");
 
-        // --- Classify generic inputs using connection-time type metadata ---
+        // --- Classify generic inputs as audio or video ---
         //
-        // Inputs use generic pin names ("in", "in_1", …).  The graph builder
-        // populates `context.input_types` with the upstream output's
-        // [`PacketType`] for each connected pin, so we can determine whether a
-        // channel carries audio or video without inspecting any packets.
+        // Inputs use generic pin names ("in", "in_1", …).  In oneshot/static
+        // pipelines the graph builder populates `context.input_types` with the
+        // upstream output's [`PacketType`] for each connected pin.
+        //
+        // In dynamic pipelines `input_types` is empty (connections are wired
+        // after nodes are spawned).  In that case we fall back to first-packet
+        // inspection: receive one packet from each channel and classify from
+        // the packet's `content_type` field (e.g. "video/vp9" → video,
+        // `None` → audio).  Inspected packets are buffered for replay after
+        // segment setup.
 
         if context.inputs.is_empty() {
             let err_msg = "WebMMuxerNode requires at least one input (audio or video)".to_string();
@@ -584,10 +590,51 @@ impl ProcessorNode for WebMMuxerNode {
         let mut audio_rx: Option<tokio::sync::mpsc::Receiver<Packet>> = None;
         let mut video_rx: Option<tokio::sync::mpsc::Receiver<Packet>> = None;
 
-        for (pin_name, rx) in context.inputs.drain() {
-            let is_video = context.input_types.get(&pin_name).is_some_and(|ty| {
-                matches!(ty, PacketType::EncodedVideo(_) | PacketType::RawVideo(_))
-            });
+        // Buffers for first packets consumed during classification (dynamic
+        // pipeline path).  The video buffer is also used by the dimension
+        // auto-detect step that follows.
+        let mut first_video_packet: Option<(Bytes, Option<PacketMetadata>)> = None;
+        let mut first_audio_packet: Option<(Bytes, Option<PacketMetadata>)> = None;
+
+        let use_packet_inspection = context.input_types.is_empty();
+
+        for (pin_name, mut rx) in context.inputs.drain() {
+            let is_video = if use_packet_inspection {
+                // Dynamic pipeline: classify from the first packet's content_type.
+                match rx.recv().await {
+                    Some(Packet::Binary { data, content_type, metadata }) => {
+                        let video = content_type
+                            .as_deref()
+                            .is_some_and(|ct| ct.starts_with("video/"));
+                        if video {
+                            first_video_packet = Some((data, metadata));
+                        } else {
+                            first_audio_packet = Some((data, metadata));
+                        }
+                        video
+                    },
+                    Some(_) => {
+                        // Non-binary packet on a muxer input is unexpected;
+                        // default to audio classification.
+                        tracing::warn!(
+                            "WebMMuxerNode: pin '{pin_name}' sent non-binary data, \
+                             classifying as audio"
+                        );
+                        false
+                    },
+                    None => {
+                        tracing::warn!(
+                            "WebMMuxerNode: pin '{pin_name}' closed before sending any data"
+                        );
+                        continue;
+                    },
+                }
+            } else {
+                // Oneshot/static pipeline: classify from connection metadata.
+                context.input_types.get(&pin_name).is_some_and(|ty| {
+                    matches!(ty, PacketType::EncodedVideo(_) | PacketType::RawVideo(_))
+                })
+            };
 
             if is_video {
                 if video_rx.is_some() {
@@ -598,8 +645,9 @@ impl ProcessorNode for WebMMuxerNode {
                     state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
                     return Err(StreamKitError::Runtime(err_msg));
                 }
+                let source = if use_packet_inspection { "packet inspection" } else { "connection type" };
                 tracing::info!(
-                    "WebMMuxerNode: pin '{pin_name}' classified as VIDEO (from connection type)"
+                    "WebMMuxerNode: pin '{pin_name}' classified as VIDEO (from {source})"
                 );
                 video_rx = Some(rx);
             } else {
@@ -611,8 +659,9 @@ impl ProcessorNode for WebMMuxerNode {
                     state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
                     return Err(StreamKitError::Runtime(err_msg));
                 }
+                let source = if use_packet_inspection { "packet inspection" } else { "connection type" };
                 tracing::info!(
-                    "WebMMuxerNode: pin '{pin_name}' classified as AUDIO (from connection type)"
+                    "WebMMuxerNode: pin '{pin_name}' classified as AUDIO (from {source})"
                 );
                 audio_rx = Some(rx);
             }
@@ -700,27 +749,38 @@ impl ProcessorNode for WebMMuxerNode {
         // keep the muxer config in sync with the upstream encoder / compositor.
         //
         // The first video packet is buffered so it can be replayed through the
-        // normal receive loop after the segment is built.
-
-        let mut first_video_packet: Option<(Bytes, Option<PacketMetadata>)> = None;
+        // normal receive loop after the segment is built.  If the packet-
+        // inspection classification path already consumed the first packet
+        // (dynamic pipelines), we reuse it here instead of recv-ing again.
 
         let (video_width, video_height) = if has_video {
             let mut w = self.config.video_width;
             let mut h = self.config.video_height;
 
             if w == 0 || h == 0 {
-                // Auto-detect: wait for the first video packet and parse its VP9 header.
-                tracing::info!(
-                    "WebMMuxerNode: video_width/video_height not configured, \
-                                auto-detecting from first VP9 keyframe"
-                );
-
-                let first = match video_rx.as_mut() {
-                    Some(rx) => rx.recv().await,
-                    None => None,
+                // Auto-detect: use the buffered first video packet if available
+                // (from packet-inspection classification), otherwise recv one.
+                let first_data = if let Some((data, meta)) = first_video_packet.take() {
+                    tracing::info!(
+                        "WebMMuxerNode: reusing buffered first video packet for \
+                         dimension auto-detection"
+                    );
+                    Some((data, meta))
+                } else {
+                    tracing::info!(
+                        "WebMMuxerNode: video_width/video_height not configured, \
+                                    auto-detecting from first VP9 keyframe"
+                    );
+                    match video_rx.as_mut() {
+                        Some(rx) => match rx.recv().await {
+                            Some(Packet::Binary { data, metadata, .. }) => Some((data, metadata)),
+                            _ => None,
+                        },
+                        None => None,
+                    }
                 };
 
-                if let Some(Packet::Binary { data, metadata, .. }) = first {
+                if let Some((data, metadata)) = first_data {
                     if let Some((detected_w, detected_h)) = parse_vp9_keyframe_dimensions(&data) {
                         tracing::info!(
                             "Auto-detected video dimensions: {}x{}",
@@ -880,6 +940,34 @@ impl ProcessorNode for WebMMuxerNode {
                 }
                 if is_keyframe {
                     video_keyframe_seen = true;
+                }
+            }
+        }
+
+        // If we buffered the first audio packet during packet-inspection
+        // classification (dynamic pipelines), replay it before entering the
+        // receive loop.
+        if let Some((data, metadata)) = first_audio_packet.take() {
+            if let Some(audio_track) = tracks.audio {
+                // Audio frames are always keyframes.
+                if mux_frame(
+                    &data,
+                    metadata.as_ref(),
+                    audio_track,
+                    true,
+                    DEFAULT_FRAME_DURATION_US,
+                    &mut audio_clock,
+                    &mut mux_state,
+                    &mut segment,
+                    &mut context,
+                    live_flush_handle.as_ref(),
+                    &content_type_str,
+                    &mut stats_tracker,
+                    &node_name,
+                )
+                .await?
+                {
+                    audio_done = true;
                 }
             }
         }

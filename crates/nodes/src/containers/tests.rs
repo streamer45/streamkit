@@ -1069,3 +1069,193 @@ async fn test_webm_mux_truncated_vp9_header() {
     let _ = result;
     println!("WebM truncated VP9 header test passed (no panic)");
 }
+
+/// Regression test: in dynamic pipelines `NodeContext::input_types` is empty,
+/// so the WebM muxer must fall back to first-packet inspection to classify
+/// inputs as audio vs video.  Previously all inputs defaulted to audio,
+/// causing "multiple audio inputs detected" when a video encoder was connected.
+#[cfg(feature = "vp9")]
+#[tokio::test]
+async fn test_webm_mux_dynamic_pipeline_classifies_inputs_from_packets() {
+    use crate::test_utils::create_test_video_frame;
+    use crate::video::vp9::{Vp9EncoderConfig, Vp9EncoderNode};
+    use streamkit_core::types::{PacketMetadata, PixelFormat};
+
+    // ---- Step 1: Encode a real VP9 keyframe ----
+
+    let (enc_input_tx, enc_input_rx) = mpsc::channel(10);
+    let mut enc_inputs = HashMap::new();
+    enc_inputs.insert("in".to_string(), enc_input_rx);
+
+    let (enc_context, enc_sender, mut enc_state_rx) = create_test_context(enc_inputs, 10);
+
+    let encoder_config = Vp9EncoderConfig {
+        keyframe_interval: 1,
+        bitrate_kbps: 800,
+        threads: 1,
+        ..Default::default()
+    };
+    let encoder = match Vp9EncoderNode::new(encoder_config) {
+        Ok(enc) => enc,
+        Err(e) => {
+            eprintln!("Skipping dynamic classification test: encoder not available ({e})");
+            return;
+        },
+    };
+    let enc_handle = tokio::spawn(async move { Box::new(encoder).run(enc_context).await });
+
+    assert_state_initializing(&mut enc_state_rx).await;
+    assert_state_running(&mut enc_state_rx).await;
+
+    let mut frame = create_test_video_frame(64, 64, PixelFormat::I420, 16);
+    frame.metadata = Some(PacketMetadata {
+        timestamp_us: Some(0),
+        duration_us: Some(33_333),
+        sequence: Some(0),
+        keyframe: Some(true),
+    });
+    enc_input_tx.send(Packet::Video(frame)).await.unwrap();
+    drop(enc_input_tx);
+
+    assert_state_stopped(&mut enc_state_rx).await;
+    enc_handle.await.unwrap().unwrap();
+
+    let encoded_video_packets = enc_sender.get_packets_for_pin("out").await;
+    assert!(!encoded_video_packets.is_empty(), "VP9 encoder produced no packets");
+
+    // ---- Step 2: Mux with empty input_types (dynamic pipeline simulation) ----
+
+    let (mux_audio_tx, mux_audio_rx) = mpsc::channel(10);
+    let (mux_video_tx, mux_video_rx) = mpsc::channel(10);
+    let mut mux_inputs = HashMap::new();
+    mux_inputs.insert("in".to_string(), mux_audio_rx);
+    mux_inputs.insert("in_1".to_string(), mux_video_rx);
+
+    // create_test_context sets input_types to HashMap::new() — exactly the
+    // dynamic pipeline case we're testing.  Do NOT populate input_types here.
+    let (mux_context, mux_sender, mut mux_state_rx) = create_test_context(mux_inputs, 10);
+    assert!(
+        mux_context.input_types.is_empty(),
+        "Test precondition: input_types must be empty to simulate dynamic pipeline"
+    );
+
+    let mux_config =
+        WebMMuxerConfig { video_width: 64, video_height: 64, ..WebMMuxerConfig::default() };
+    let muxer = WebMMuxerNode::new(mux_config);
+    let mux_handle = tokio::spawn(async move { Box::new(muxer).run(mux_context).await });
+
+    assert_state_initializing(&mut mux_state_rx).await;
+
+    // Send audio packets (content_type: None → classified as audio via packet inspection)
+    for _ in 0..5 {
+        mux_audio_tx.send(create_mock_opus_packet()).await.unwrap();
+    }
+    // Send video packets (content_type: Some("video/vp9") → classified as video)
+    for packet in encoded_video_packets {
+        mux_video_tx.send(packet).await.unwrap();
+    }
+    drop(mux_audio_tx);
+    drop(mux_video_tx);
+
+    // The key assertion: the node should reach Running state (not fail with
+    // "multiple audio inputs detected") and then stop cleanly.
+    assert_state_running(&mut mux_state_rx).await;
+    assert_state_stopped(&mut mux_state_rx).await;
+    mux_handle.await.unwrap().unwrap();
+
+    // Verify we got output packets (the muxer actually produced WebM data)
+    let output_packets = mux_sender.get_packets_for_pin("out").await;
+    assert!(
+        !output_packets.is_empty(),
+        "WebM muxer should produce output when classifying inputs via packet inspection"
+    );
+
+    println!("WebM dynamic pipeline input classification test passed");
+}
+
+/// Regression test: video-only muxing in a dynamic pipeline (empty input_types)
+/// should classify the single input as video from content_type, not default to audio.
+#[cfg(feature = "vp9")]
+#[tokio::test]
+async fn test_webm_mux_dynamic_pipeline_video_only() {
+    use crate::test_utils::create_test_video_frame;
+    use crate::video::vp9::{Vp9EncoderConfig, Vp9EncoderNode};
+    use streamkit_core::types::{PacketMetadata, PixelFormat};
+
+    // ---- Step 1: Encode a real VP9 keyframe ----
+
+    let (enc_input_tx, enc_input_rx) = mpsc::channel(10);
+    let mut enc_inputs = HashMap::new();
+    enc_inputs.insert("in".to_string(), enc_input_rx);
+
+    let (enc_context, enc_sender, mut enc_state_rx) = create_test_context(enc_inputs, 10);
+
+    let encoder_config = Vp9EncoderConfig {
+        keyframe_interval: 1,
+        bitrate_kbps: 800,
+        threads: 1,
+        ..Default::default()
+    };
+    let encoder = match Vp9EncoderNode::new(encoder_config) {
+        Ok(enc) => enc,
+        Err(e) => {
+            eprintln!("Skipping dynamic video-only test: encoder not available ({e})");
+            return;
+        },
+    };
+    let enc_handle = tokio::spawn(async move { Box::new(encoder).run(enc_context).await });
+
+    assert_state_initializing(&mut enc_state_rx).await;
+    assert_state_running(&mut enc_state_rx).await;
+
+    let mut frame = create_test_video_frame(64, 64, PixelFormat::I420, 16);
+    frame.metadata = Some(PacketMetadata {
+        timestamp_us: Some(0),
+        duration_us: Some(33_333),
+        sequence: Some(0),
+        keyframe: Some(true),
+    });
+    enc_input_tx.send(Packet::Video(frame)).await.unwrap();
+    drop(enc_input_tx);
+
+    assert_state_stopped(&mut enc_state_rx).await;
+    enc_handle.await.unwrap().unwrap();
+
+    let encoded_video_packets = enc_sender.get_packets_for_pin("out").await;
+    assert!(!encoded_video_packets.is_empty(), "VP9 encoder produced no packets");
+
+    // ---- Step 2: Video-only mux with empty input_types ----
+
+    let (mux_video_tx, mux_video_rx) = mpsc::channel(10);
+    let mut mux_inputs = HashMap::new();
+    mux_inputs.insert("in".to_string(), mux_video_rx);
+
+    let (mux_context, mux_sender, mut mux_state_rx) = create_test_context(mux_inputs, 10);
+    assert!(mux_context.input_types.is_empty());
+
+    // video_width/height = 0 triggers auto-detect from the first VP9 keyframe
+    let mux_config =
+        WebMMuxerConfig { video_width: 0, video_height: 0, ..WebMMuxerConfig::default() };
+    let muxer = WebMMuxerNode::new(mux_config);
+    let mux_handle = tokio::spawn(async move { Box::new(muxer).run(mux_context).await });
+
+    assert_state_initializing(&mut mux_state_rx).await;
+
+    // Send video packets — should be classified as video via content_type inspection
+    for packet in encoded_video_packets {
+        mux_video_tx.send(packet).await.unwrap();
+    }
+    drop(mux_video_tx);
+
+    assert_state_running(&mut mux_state_rx).await;
+    assert_state_stopped(&mut mux_state_rx).await;
+    mux_handle.await.unwrap().unwrap();
+
+    let output_packets = mux_sender.get_packets_for_pin("out").await;
+    assert!(
+        !output_packets.is_empty(),
+        "WebM muxer should produce output for video-only dynamic pipeline"
+    );
+
+    println!("WebM dynamic pipeline video-only classification test passed");
+}
