@@ -14,10 +14,7 @@ import {
   type ReactFlowInstance,
   type OnConnectEnd,
 } from '@xyflow/react';
-import { dump, load } from 'js-yaml';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { useLocation } from 'react-router-dom';
-import { v4 as uuidv4 } from 'uuid';
 import { useShallow } from 'zustand/shallow';
 
 import ConfirmModal from '@/components/ConfirmModal';
@@ -43,40 +40,28 @@ import { useToast } from '@/context/ToastContext';
 import { useAutoLayout } from '@/hooks/useAutoLayout';
 import { useContextMenu } from '@/hooks/useContextMenu';
 import { useMonitorPreview } from '@/hooks/useMonitorPreview';
+import {
+  useMonitorSessionManager,
+  type OnSessionActivated,
+} from '@/hooks/useMonitorSessionManager';
+import { useMonitorStaging } from '@/hooks/useMonitorStaging';
+import { useMonitorYaml } from '@/hooks/useMonitorYaml';
 import { useNodeStatesSubscription } from '@/hooks/useNodeStatesSubscription';
 import { useReactFlowCommon } from '@/hooks/useReactFlowCommon';
 import { useResolvedColorMode } from '@/hooks/useResolvedColorMode';
 import { useSession } from '@/hooks/useSession';
-import { useSessionList } from '@/hooks/useSessionList';
 import { useSessionsPrefetch } from '@/hooks/useSessionsPrefetch';
 import { useWebSocket } from '@/hooks/useWebSocket';
-import { getWebSocketService } from '@/services/websocket';
 import { useLayoutStore } from '@/stores/layoutStore';
-import { useNodeParamsStore } from '@/stores/nodeParamsStore';
 import { usePluginStore } from '@/stores/pluginStore';
 import { useSchemaStore } from '@/stores/schemaStore';
 import { useSessionStore } from '@/stores/sessionStore';
-import { useStagingStore, type StagingData } from '@/stores/stagingStore';
-import type {
-  NodeDefinition,
-  Connection,
-  Node,
-  Pipeline,
-  MessageType,
-  BatchOperation,
-  InputPin,
-  OutputPin,
-} from '@/types/types';
+import { useStagingStore } from '@/stores/stagingStore';
+import type { NodeDefinition, Connection, Pipeline, InputPin, OutputPin } from '@/types/types';
 import { topoLevelsFromPipeline, orderedNamesFromLevels } from '@/utils/dag';
 import { deepEqual } from '@/utils/deepEqual';
 import { validateValue } from '@/utils/jsonSchema';
 import { viewsLogger } from '@/utils/logger';
-import {
-  computeAddedNodes,
-  computeRemovedNodes,
-  computeConnectionChanges,
-  preprocessMixerNodes,
-} from '@/utils/pipelineDiff';
 import {
   buildEdgesFromConnections,
   buildNodeObject,
@@ -90,27 +75,21 @@ const MonitorViewTitle = React.memo(() => <ViewTitle>Monitor</ViewTitle>);
 
 /**
  * Main content component for the Monitor view.
- * This component has 114 statements which exceeds the max-statements limit.
- * However, breaking it down would require significant architectural changes
- * and may reduce code cohesion. The complexity is managed through:
- * - Extracted helper functions for complex operations
- * - useCallback/useMemo hooks to optimize re-renders
- * - Clear separation of concerns via comments
+ *
+ * Heavy concerns are delegated to extracted custom hooks:
+ * - useMonitorSessionManager – session selection, auto-select, deletion
+ * - useMonitorStaging – staging lifecycle (enter / discard / commit)
+ * - useMonitorYaml – YAML regeneration and YAML-edit handler
+ *
+ * This component wires them together and owns the rendering, topology
+ * computation, and ReactFlow integration.
  */
 // eslint-disable-next-line max-statements -- Main view component with many hooks and state management
 const MonitorViewContent: React.FC = () => {
-  const location = useLocation();
-  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [nodes, setNodes, onNodesChangeInternal] = useNodesState<RFNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 
   // ── Low-priority dimension changes ────────────────────────────────────
-  // ReactFlow fires onNodesChange with 'dimensions' type for each node
-  // after mount measurement.  These are internal bookkeeping (the nodes
-  // are already visible) so we wrap them in startTransition to let React
-  // schedule them at lower priority rather than blocking the main thread.
-  // Interactive changes (select, drag, remove) bypass this and apply
-  // immediately.
   const onNodesChangeBatched = useCallback(
     (changes: NodeChange[]) => {
       const immediate: NodeChange[] = [];
@@ -136,9 +115,7 @@ const MonitorViewContent: React.FC = () => {
     },
     [onNodesChangeInternal]
   );
-  const [yamlString, setYamlString] = useState<string>('');
-  // Track if user is actively editing YAML to prevent automatic updates from overwriting edits
-  const isEditingYamlRef = useRef(false);
+
   const nodeDefinitions = useSchemaStore(useShallow((s) => s.nodeDefinitions));
   const plugins = usePluginStore(useShallow((s) => s.plugins));
   const pluginKinds = React.useMemo(() => new Set(plugins.map((p) => p.kind)), [plugins]);
@@ -147,45 +124,8 @@ const MonitorViewContent: React.FC = () => {
     [plugins]
   );
 
-  // Staging mode state - select the specific session's staging data
-  // Version counter in staging data ensures changes are detected
-  // Use shallow comparison to ensure we get updates when nested properties change
-  const stagingData: StagingData | undefined = useStagingStore(
-    useShallow((s) => (selectedSessionId ? s.staging[selectedSessionId] : undefined))
-  );
-  const enterStagingMode = useStagingStore((s) => s.enterStagingMode);
-  const exitStagingMode = useStagingStore((s) => s.exitStagingMode);
-  const addStagedNode = useStagingStore((s) => s.addStagedNode);
-  const removeStagedNode = useStagingStore((s) => s.removeStagedNode);
-  const addStagedConnection = useStagingStore((s) => s.addStagedConnection);
-  const removeStagedConnection = useStagingStore((s) => s.removeStagedConnection);
-  const updateStagedNodeParams = useStagingStore((s) => s.updateStagedNodeParams);
-  const updateNodePosition = useStagingStore((s) => s.updateNodePosition);
-  const getNodePositions = useStagingStore((s) => s.getNodePositions);
-  const setValidationErrors = useStagingStore((s) => s.setValidationErrors);
-  const discardChanges = useStagingStore((s) => s.discardChanges);
-
-  // Derive computed values from staging data
-  const isInStagingMode = stagingData?.mode === 'staging';
-  const stagedPipeline = stagingData?.stagedPipeline ?? null;
-
-  // Save node positions when drag stops
-  const onNodeDragStop = useCallback(
-    (_event: React.MouseEvent, node: RFNode) => {
-      if (isInStagingMode && selectedSessionId) {
-        updateNodePosition(selectedSessionId, node.id, node.position);
-      }
-    },
-    [isInStagingMode, selectedSessionId, updateNodePosition]
-  );
-
-  // For backward compatibility, editMode now means "staging mode"
-  const editMode = isInStagingMode;
   const [selectedNodes, setSelectedNodes] = useState<string[]>([]);
   const [rightPaneView, setRightPaneView] = useState<'yaml' | 'inspector' | 'telemetry'>('yaml');
-  const [showDeleteModal, setShowDeleteModal] = useState(false);
-  const [sessionToDelete, setSessionToDelete] = useState<string | null>(null);
-  const [isDeletingSession, setIsDeletingSession] = useState(false);
   const colorMode = useResolvedColorMode();
   const { rightCollapsed, setRightCollapsed } = useLayoutStore(
     useShallow((state) => ({
@@ -198,25 +138,100 @@ const MonitorViewContent: React.FC = () => {
   // Cache for positions of nodes that are being added (to preserve drop location)
   const pendingNodePositions = React.useRef<Map<string, { x: number; y: number }>>(new Map());
 
-  // Auto-select session from navigation state (e.g., from Stream view)
-  useEffect(() => {
-    const state = location.state as { sessionId?: string } | null;
-    if (state?.sessionId && !selectedSessionId) {
-      const sessionId = state.sessionId;
-      setSelectedSessionId(sessionId);
+  // ── Session management (extracted hook) ───────────────────────────────
+  // Bridge ref: useMonitorSessionManager notifies us when a session is
+  // activated so we can trigger auto-layout.  The ref avoids a circular
+  // dependency between session selection and useAutoLayout.
+  const onSessionActivatedRef = useRef<OnSessionActivated>(() => {});
 
-      // Check if this session has saved positions in staging store
-      const savedPos = getNodePositions(sessionId);
-      const hasPositions = Object.keys(savedPos).length > 0;
+  const {
+    selectedSessionId,
+    selectedSession,
+    sessions,
+    isLoadingSessions,
+    showDeleteModal,
+    setShowDeleteModal,
+    sessionToDelete,
+    setSessionToDelete,
+    isDeletingSession,
+    handleSessionClick,
+    handleQuickDeleteSession,
+    handleConfirmQuickDelete,
+    handleDeleteSession,
+    handleDeleteModalOpen,
+  } = useMonitorSessionManager({ onSessionActivatedRef });
 
-      // Trigger auto-layout if no positions are saved
-      setNeedsAutoLayout(!hasPositions);
-      setNeedsFit(true);
+  // Get global WebSocket connection status
+  const { isConnected: globalIsConnected } = useWebSocket();
 
-      // Clear the state to avoid auto-selecting on subsequent visits
-      window.history.replaceState({}, document.title);
-    }
-  }, [location.state, selectedSessionId, getNodePositions]);
+  // Prefetch pipeline data for all sessions to enable status display
+  useSessionsPrefetch(sessions);
+
+  // Subscribe to selected session.
+  const {
+    pipeline,
+    isConnected: sessionIsConnected,
+    isLoading: isLoadingPipeline,
+    tuneNode,
+    tuneNodeConfig,
+    addNode,
+    removeNode,
+    connectPins,
+    disconnectPins,
+    applyBatch,
+  } = useSession(selectedSessionId);
+
+  const isConnected = selectedSessionId ? sessionIsConnected : globalIsConnected;
+
+  // Preview: watch-only MoQ connection from Monitor view.
+  const { isPreviewConnected, handleStartPreview } = useMonitorPreview(selectedSessionId, pipeline);
+
+  // Use ref to avoid recreating callback when pipeline changes
+  const pipelineRef = useRef<Pipeline | null>(pipeline ?? null);
+  pipelineRef.current = pipeline ?? null;
+
+  // Keep refs to avoid recreating callbacks on every drag
+  const nodesRefForCallbacks = React.useRef(nodes);
+  const edgesRefForCallbacks = React.useRef(edges);
+  React.useEffect(() => {
+    nodesRefForCallbacks.current = nodes;
+    edgesRefForCallbacks.current = edges;
+  }, [nodes, edges]);
+
+  // Keep a ref to the latest nodes for callbacks that need them
+  const nodesRef = React.useRef(nodes);
+  React.useEffect(() => {
+    nodesRef.current = nodes;
+  }, [nodes]);
+
+  // ── Staging mode (extracted hook) ─────────────────────────────────────
+  const {
+    stagingData,
+    isInStagingMode,
+    stagedPipeline,
+    addStagedNode,
+    removeStagedNode,
+    addStagedConnection,
+    removeStagedConnection,
+    updateStagedNodeParams,
+    updateNodePosition,
+    setValidationErrors,
+    handleEnterStagingMode,
+    handleDiscardChanges,
+    handleCommitChanges,
+    onNodeDragStop,
+  } = useMonitorStaging({
+    selectedSessionId,
+    pipelineRef,
+    nodesRef,
+    applyBatch,
+  });
+
+  const editMode = isInStagingMode;
+
+  // getNodePositions for the topology effect (not exposed from useMonitorStaging
+  // because it's also used by useMonitorSessionManager internally)
+  const getNodePositions = useStagingStore((s) => s.getNodePositions);
 
   // Use shared React Flow logic
   const {
@@ -233,14 +248,6 @@ const MonitorViewContent: React.FC = () => {
   const screenToFlow = (pt: { x: number; y: number }) => {
     return rf.current?.screenToFlowPosition(pt) ?? pt;
   };
-
-  // Keep refs to avoid recreating callbacks on every drag
-  const nodesRefForCallbacks = React.useRef(nodes);
-  const edgesRefForCallbacks = React.useRef(edges);
-  React.useEffect(() => {
-    nodesRefForCallbacks.current = nodes;
-    edgesRefForCallbacks.current = edges;
-  }, [nodes, edges]);
 
   // Use shared context menu logic
   const { menu, paneMenu, reactFlowWrapper, onNodeContextMenu, onPaneContextMenu, onPaneClick } =
@@ -346,91 +353,7 @@ const MonitorViewContent: React.FC = () => {
     }
   }, [selectedSessionId, isInStagingMode, stagedPipeline, defByKind, setValidationErrors, toast]);
 
-  // Keep a ref to the latest nodes for callbacks that need them
-  const nodesRef = React.useRef(nodes);
-  React.useEffect(() => {
-    nodesRef.current = nodes;
-  }, [nodes]);
-
-  // Get global WebSocket connection status
-  const { isConnected: globalIsConnected } = useWebSocket();
-
-  // Fetch session list
-  const { data: sessions = [], isLoading: isLoadingSessions } = useSessionList();
-
-  // Memoize the selected session to prevent unnecessary re-renders
-  // Uses a ref to store previous value and only updates when data actually changes (deep comparison)
-  const prevSelectedSessionRef = React.useRef<
-    { id: string; name: string | null; created_at: string } | undefined
-  >(undefined);
-  const selectedSession = React.useMemo(() => {
-    const found = sessions.find((s) => s.id === selectedSessionId);
-    const prev = prevSelectedSessionRef.current;
-
-    // If both are undefined/null, return undefined
-    if (!found && !prev) return undefined;
-
-    // If one is undefined, update and return the new value
-    if (!found || !prev) {
-      prevSelectedSessionRef.current = found;
-      return found;
-    }
-
-    // Deep comparison: if all fields match, return previous reference to prevent re-renders
-    if (found.id === prev.id && found.name === prev.name && found.created_at === prev.created_at) {
-      return prev;
-    }
-
-    // Data changed, update ref and return new value
-    prevSelectedSessionRef.current = found;
-    return found;
-  }, [sessions, selectedSessionId]);
-
-  // Auto-select the first session when none is selected (e.g., initial load)
-  useEffect(() => {
-    if (!selectedSessionId && !isLoadingSessions && sessions.length > 0) {
-      const sessionId = sessions[0].id;
-      setSelectedSessionId(sessionId);
-
-      const savedPos = getNodePositions(sessionId);
-      setNeedsAutoLayout(Object.keys(savedPos).length === 0);
-      setNeedsFit(true);
-    }
-  }, [selectedSessionId, isLoadingSessions, sessions, getNodePositions]);
-
-  // Prefetch pipeline data for all sessions to enable status display
-  useSessionsPrefetch(sessions);
-
-  // Subscribe to selected session.
-  // nodeStates is intentionally NOT consumed from this hook — see the
-  // useNodeStatesSubscription block below for the reasoning.
-  const {
-    pipeline,
-    // nodeStats not used here - NodeStateIndicator fetches directly from session store
-    isConnected: sessionIsConnected,
-    isLoading: isLoadingPipeline,
-    tuneNode,
-    tuneNodeConfig,
-    addNode,
-    removeNode,
-    connectPins,
-    disconnectPins,
-    applyBatch,
-  } = useSession(selectedSessionId);
-
-  // Use session-specific connection status if a session is selected, otherwise use global
-  const isConnected = selectedSessionId ? sessionIsConnected : globalIsConnected;
-
-  // Preview: watch-only MoQ connection from Monitor view.
-  const { isPreviewConnected, handleStartPreview } = useMonitorPreview(selectedSessionId, pipeline);
-
-  // Use ref to avoid recreating callback when pipeline changes
-  const pipelineRef = useRef(pipeline);
-  pipelineRef.current = pipeline;
-
   // Topology signature: only changes when nodes/kinds or connections change
-  // Use staged pipeline when in staging mode, otherwise use live pipeline
-  // Memoize based on the actual pipeline content to avoid re-renders when references change
   const topoKey = React.useMemo(() => {
     const activePipeline = isInStagingMode && stagedPipeline ? stagedPipeline : pipeline;
     if (!activePipeline) return '';
@@ -459,6 +382,12 @@ const MonitorViewContent: React.FC = () => {
     updateNodePosition,
   });
 
+  // Wire the session-activation bridge now that setNeedsAutoLayout is available
+  onSessionActivatedRef.current = (_sessionId: string, hasPositions: boolean) => {
+    setNeedsAutoLayout(!hasPositions);
+    setNeedsFit(true);
+  };
+
   // Throttled Zustand→ReactFlow patching bridge
   const { topoEffectRanRef } = useNodeStatesSubscription({
     selectedSessionId,
@@ -467,99 +396,6 @@ const MonitorViewContent: React.FC = () => {
     pipelineRef,
     topoKey,
   });
-
-  // When a session is destroyed, the optimistic removal empties the list
-  // before React processes the batched setSelectedSessionId(null) from
-  // handleConfirmQuickDelete.  Eagerly clear the selection here so the
-  // badge, "Enter Staging", and "Delete" controls disappear immediately.
-  //
-  // The ref prevents this from fighting with the nav-state auto-select:
-  // we only clear selection for sessions that were *previously seen* in
-  // the list and then vanished (i.e., destroyed), not for a session ID
-  // that was just set via navigation state and hasn't appeared yet.
-  const sessionSeenInListRef = useRef(false);
-  if (selectedSession) {
-    sessionSeenInListRef.current = true;
-  }
-  useEffect(() => {
-    if (
-      selectedSessionId &&
-      !selectedSession &&
-      !isLoadingSessions &&
-      sessionSeenInListRef.current
-    ) {
-      sessionSeenInListRef.current = false;
-      setSelectedSessionId(null);
-    }
-  }, [selectedSessionId, selectedSession, isLoadingSessions]);
-
-  // Handle entering staging mode
-  const handleEnterStagingMode = useCallback(() => {
-    viewsLogger.info('Entering staging mode');
-    if (!selectedSessionId || !pipelineRef.current) return;
-    enterStagingMode(selectedSessionId, pipelineRef.current);
-
-    // Capture all current node positions from the canvas
-    nodesRef.current.forEach((node) => {
-      updateNodePosition(selectedSessionId, node.id, node.position);
-    });
-  }, [selectedSessionId, enterStagingMode, updateNodePosition]);
-
-  // Handle discarding staged changes
-  const handleDiscardChanges = useCallback(() => {
-    viewsLogger.info('Discarding changes (exiting staging mode)');
-    if (!selectedSessionId) return;
-    discardChanges(selectedSessionId);
-  }, [selectedSessionId, discardChanges]);
-
-  // Handle committing staged changes
-  // Use ref to avoid recreating callback when pipeline/stagingData changes
-  const stagingDataRef = useRef(stagingData);
-  stagingDataRef.current = stagingData;
-
-  const handleCommitChanges = useCallback(async () => {
-    const currentPipeline = pipelineRef.current;
-    const currentStagingData = stagingDataRef.current;
-
-    if (!selectedSessionId || !currentPipeline || !currentStagingData?.stagedPipeline) return;
-
-    const stagedPipeline = currentStagingData.stagedPipeline;
-
-    try {
-      // Compute the differences between live and staged pipelines using helper functions
-      const operations: BatchOperation[] = [
-        ...computeAddedNodes(stagedPipeline, currentPipeline),
-        ...computeRemovedNodes(stagedPipeline, currentPipeline),
-        ...computeConnectionChanges(stagedPipeline, currentPipeline),
-      ];
-
-      if (operations.length === 0) {
-        toast.info('No changes to commit');
-        return;
-      }
-
-      // Pre-process mixer nodes to set num_inputs based on actual connections
-      preprocessMixerNodes(operations);
-
-      // Apply the batch
-      const response = await applyBatch(operations);
-
-      if (response?.payload?.action === 'batchapplied') {
-        if (response.payload.success) {
-          toast.success(`Successfully applied ${operations.length} changes`);
-          exitStagingMode(selectedSessionId);
-        } else {
-          const errors = response.payload.errors || ['Unknown error'];
-          toast.error(`Failed to apply changes: ${errors.join(', ')}`);
-        }
-      } else {
-        toast.error('Unexpected response from server');
-      }
-    } catch (error) {
-      viewsLogger.error('Failed to commit changes:', error);
-      toast.error('Failed to commit changes');
-    }
-  }, [selectedSessionId, applyBatch, toast, exitStagingMode]);
 
   // Helper to validate parameter value against schema
   const validateParamValue = useCallback(
@@ -618,300 +454,16 @@ const MonitorViewContent: React.FC = () => {
   // Memoized label change handler (currently no-op)
   const handleRightPaneLabelChange = useCallback(() => {}, []);
 
-  // Memoized handlers for TopControls to prevent re-renders
-  const handleDeleteModalOpen = useCallback(() => {
-    setShowDeleteModal(true);
-  }, []);
-
-  // Handle YAML changes in staging mode
-  const handleYamlChange = useCallback(
-    // eslint-disable-next-line max-statements -- YAML edits must preserve existing pin/handle ids (e.g. mixer `in_0`), which requires a multi-step transform.
-    (yaml: string) => {
-      if (!isInStagingMode || !selectedSessionId || !stagingData) return;
-
-      // Mark that user is editing YAML to prevent automatic regeneration
-      isEditingYamlRef.current = true;
-
-      try {
-        const parsed = load(yaml) as {
-          nodes?: Record<
-            string,
-            {
-              kind: string;
-              params?: Record<string, unknown>;
-              needs?: string | string[];
-              ui?: unknown;
-            }
-          >;
-        };
-
-        if (!parsed || !parsed.nodes || typeof parsed.nodes !== 'object') {
-          toast.error('Invalid YAML: Must contain a "nodes" object');
-          return;
-        }
-
-        // Build nodes map
-        const nodes: Record<string, Node> = {};
-        Object.entries(parsed.nodes).forEach(([nodeName, nodeConfig]) => {
-          nodes[nodeName] = {
-            kind: nodeConfig.kind,
-            params: nodeConfig.params || {},
-            state: null,
-          };
-        });
-
-        // Build connections from "needs" fields while preserving existing pin ids.
-        // The YAML format intentionally omits pin names (for readability), but React Flow needs
-        // concrete handle IDs (e.g. mixers use `in_0`, `in_1`, ... not `in`).
-        const basePipelineForPins = stagingData.stagedPipeline ?? pipeline;
-        const existingConnections = basePipelineForPins?.connections ?? [];
-
-        const existingByPair = new Map<string, Connection[]>();
-        for (const c of existingConnections) {
-          const key = `${c.from_node}→${c.to_node}`;
-          const arr = existingByPair.get(key);
-          if (arr) arr.push(c);
-          else existingByPair.set(key, [c]);
-        }
-
-        const parseDynamicIndex = (pin: string, prefix: string): number | null => {
-          if (!pin.startsWith(prefix)) return null;
-          const rest = pin.slice(prefix.length);
-          if (!/^\d+$/.test(rest)) return null;
-          const n = Number(rest);
-          return Number.isFinite(n) ? n : null;
-        };
-
-        type DynamicPinCardinality = Extract<
-          InputPin['cardinality'],
-          { Dynamic: { prefix: string } }
-        >;
-        const isDynamicCardinality = (
-          c: InputPin['cardinality'] | OutputPin['cardinality']
-        ): c is DynamicPinCardinality => typeof c === 'object' && c !== null && 'Dynamic' in c;
-
-        const getNodeDef = (nodeName: string) => {
-          const kind = nodes[nodeName]?.kind;
-          if (!kind) return undefined;
-          return nodeDefinitions.find((d) => d.kind === kind);
-        };
-
-        const pickSourcePin = (sourceNode: string): string => {
-          const def = getNodeDef(sourceNode);
-          const outputs = def?.outputs ?? [];
-
-          // Prefer a concrete `out` pin when present.
-          const outPin = outputs.find(
-            (p) => p.name === 'out' && !isDynamicCardinality(p.cardinality)
-          );
-          if (outPin) return outPin.name;
-
-          // Otherwise, if there's exactly one concrete output pin, use it.
-          const concreteOutputs = outputs.filter((p) => !isDynamicCardinality(p.cardinality));
-          if (concreteOutputs.length === 1) return concreteOutputs[0].name;
-
-          // Fallback for unknown defs.
-          return 'out';
-        };
-
-        const usedDynamicInputsByNode = new Map<string, Set<number>>();
-        const noteExistingDynamicInput = (toNode: string, pinName: string) => {
-          const def = getNodeDef(toNode);
-          const dyn = def?.inputs.find((p) => isDynamicCardinality(p.cardinality));
-          if (!dyn) return;
-          if (!isDynamicCardinality(dyn.cardinality)) return;
-          const prefix = dyn.cardinality.Dynamic.prefix;
-          const idx = parseDynamicIndex(pinName, prefix);
-          if (idx === null) return;
-          let set = usedDynamicInputsByNode.get(toNode);
-          if (!set) {
-            set = new Set();
-            usedDynamicInputsByNode.set(toNode, set);
-          }
-          set.add(idx);
-        };
-
-        for (const c of existingConnections) {
-          noteExistingDynamicInput(c.to_node, c.to_pin);
-        }
-
-        const allocateTargetPin = (targetNode: string): string => {
-          const def = getNodeDef(targetNode);
-          const inputs = def?.inputs ?? [];
-
-          // Prefer concrete `in` when present.
-          const inPin = inputs.find((p) => p.name === 'in' && !isDynamicCardinality(p.cardinality));
-          if (inPin) return inPin.name;
-
-          // If the node has dynamic inputs, allocate `prefix<index>` (e.g. `in_0`).
-          const dyn = inputs.find((p) => isDynamicCardinality(p.cardinality));
-          if (dyn && isDynamicCardinality(dyn.cardinality)) {
-            const prefix = dyn.cardinality.Dynamic.prefix;
-            let used = usedDynamicInputsByNode.get(targetNode);
-            if (!used) {
-              used = new Set();
-              usedDynamicInputsByNode.set(targetNode, used);
-            }
-            let i = 0;
-            while (used.has(i)) i++;
-            used.add(i);
-            return `${prefix}${i}`;
-          }
-
-          // Otherwise, if there's exactly one concrete input pin, use it.
-          const concreteInputs = inputs.filter((p) => !isDynamicCardinality(p.cardinality));
-          if (concreteInputs.length === 1) return concreteInputs[0].name;
-
-          // Fallback for unknown defs.
-          return 'in';
-        };
-
-        const connections: Connection[] = [];
-        const consumedPerPair = new Map<string, number>();
-        Object.entries(parsed.nodes).forEach(([nodeName, nodeConfig]) => {
-          if (!nodeConfig.needs) return;
-          const needs = Array.isArray(nodeConfig.needs) ? nodeConfig.needs : [nodeConfig.needs];
-          needs.forEach((sourceNode) => {
-            // Only connect nodes that exist in this YAML snapshot
-            if (!(sourceNode in nodes) || !(nodeName in nodes)) return;
-
-            const pairKey = `${sourceNode}→${nodeName}`;
-            const existing = existingByPair.get(pairKey);
-            const consumed = consumedPerPair.get(pairKey) ?? 0;
-
-            // Reuse existing pin names when possible to keep the graph stable on param-only edits.
-            if (existing && consumed < existing.length) {
-              const reused = existing[consumed];
-              consumedPerPair.set(pairKey, consumed + 1);
-              connections.push(reused);
-              noteExistingDynamicInput(nodeName, reused.to_pin);
-              return;
-            }
-
-            const from_pin = pickSourcePin(sourceNode);
-            const to_pin = allocateTargetPin(nodeName);
-            connections.push({
-              from_node: sourceNode,
-              from_pin,
-              to_node: nodeName,
-              to_pin,
-            });
-          });
-        });
-
-        const newPipeline: Pipeline = {
-          name: null,
-          description: null,
-          mode: 'dynamic',
-          nodes,
-          connections,
-        };
-
-        // Determine which nodes are new (not in original live pipeline)
-        const liveNodeNames = new Set(Object.keys(pipeline?.nodes || {}));
-        const stagedNodes = new Set<string>();
-        Object.keys(nodes).forEach((name) => {
-          if (!liveNodeNames.has(name)) {
-            stagedNodes.add(name);
-          }
-        });
-
-        // Sync params to nodeParamsStore for immediate UI updates
-        const paramsStore = useNodeParamsStore.getState();
-        Object.entries(nodes).forEach(([nodeName, node]) => {
-          if (node.params) {
-            Object.entries(node.params).forEach(([key, value]) => {
-              paramsStore.setParam(nodeName, key, value, selectedSessionId ?? undefined);
-            });
-          }
-        });
-
-        // Update staging store
-        useStagingStore.setState((state) => {
-          const data = state.staging[selectedSessionId];
-          if (!data) return state;
-
-          return {
-            staging: {
-              ...state.staging,
-              [selectedSessionId]: {
-                ...data,
-                stagedPipeline: newPipeline,
-                stagedNodes,
-                version: data.version + 1,
-              },
-            },
-          };
-        });
-
-        // After all state updates, check for tunable param changes in live nodes and dispatch tune events
-        // We do this after staging store update to ensure state is consistent
-        Object.entries(nodes).forEach(([nodeName, newNode]) => {
-          // Skip staged nodes - they'll be applied when staging is committed
-          if (stagedNodes.has(nodeName)) return;
-
-          const oldNode = pipeline?.nodes[nodeName];
-          if (!oldNode) return;
-
-          // Get the node definition to check which params are tunable
-          const nodeDef = nodeDefinitions.find((d) => d.kind === newNode.kind);
-          if (!nodeDef) return;
-
-          const schema = nodeDef.param_schema as
-            | { properties?: Record<string, { tunable?: boolean }> }
-            | undefined;
-          const properties = schema?.properties;
-          if (!properties) return;
-
-          // Compare old and new params
-          // Type guard: ensure params are objects with explicit typing
-          const oldParams: Record<string, unknown> =
-            oldNode.params && typeof oldNode.params === 'object' && !Array.isArray(oldNode.params)
-              ? (oldNode.params as Record<string, unknown>)
-              : {};
-          const newParams: Record<string, unknown> =
-            newNode.params && typeof newNode.params === 'object' && !Array.isArray(newNode.params)
-              ? (newNode.params as Record<string, unknown>)
-              : {};
-
-          Object.entries(newParams).forEach(([paramKey, newValue]) => {
-            // Check if this param is tunable
-            const propSchema = properties[paramKey];
-            if (!propSchema?.tunable) return;
-
-            // Check if value changed
-            const oldValue = oldParams[paramKey];
-            if (!deepEqual(oldValue, newValue)) {
-              // Validate before sending
-              const validationError = validateValue(newValue, propSchema);
-              if (validationError) {
-                toast.error(`Invalid value for ${nodeName}.${paramKey}: ${validationError}`);
-                return;
-              }
-
-              // Dispatch tune event for this live, tunable param
-              viewsLogger.debug(
-                `YAML edit: tuning live node ${nodeName}.${paramKey} from ${JSON.stringify(oldValue)} to ${JSON.stringify(newValue)}`
-              );
-              tuneNode(nodeName, paramKey, newValue);
-            }
-          });
-        });
-
-        // Clear the editing flag after a short delay to allow automatic updates to resume
-        // This prevents the YAML from being overwritten during active editing
-        setTimeout(() => {
-          isEditingYamlRef.current = false;
-        }, 1000);
-      } catch (error) {
-        viewsLogger.error('Failed to parse YAML:', error);
-        toast.error(`Invalid YAML: ${error instanceof Error ? error.message : String(error)}`);
-        // Clear editing flag even on error
-        isEditingYamlRef.current = false;
-      }
-    },
-    [isInStagingMode, selectedSessionId, stagingData, pipeline, toast, nodeDefinitions, tuneNode]
-  );
+  // ── YAML handling (extracted hook) ────────────────────────────────────
+  const { yamlString, setYamlFromTopology, handleYamlChange } = useMonitorYaml({
+    selectedSessionId,
+    pipeline,
+    isInStagingMode,
+    stagedPipeline,
+    stagingData,
+    nodeDefinitions,
+    tuneNode,
+  });
 
   const onConnect = React.useCallback(
     (connection: RFConnection) => {
@@ -1172,7 +724,8 @@ const MonitorViewContent: React.FC = () => {
         );
 
         if (dynamicTemplate) {
-          const prevNode = nodes.find((n) => n.id === nodeName);
+          // P1 1D: use nodesRef instead of `nodes` to avoid unstable deps
+          const prevNode = nodesRef.current.find((n) => n.id === nodeName);
           const dynamicInputs = reconstructDynamicInputs(
             nodeName,
             dynamicTemplate,
@@ -1190,7 +743,7 @@ const MonitorViewContent: React.FC = () => {
         );
 
         if (dynamicTemplate) {
-          const prevNode = nodes.find((n) => n.id === nodeName);
+          const prevNode = nodesRef.current.find((n) => n.id === nodeName);
           const dynamicOutputs = reconstructDynamicOutputs(
             nodeName,
             dynamicTemplate,
@@ -1203,7 +756,7 @@ const MonitorViewContent: React.FC = () => {
 
       return { finalInputs, finalOutputs };
     },
-    [nodes, reconstructDynamicInputs, reconstructDynamicOutputs]
+    [reconstructDynamicInputs, reconstructDynamicOutputs]
   );
 
   // Update nodes and edges when pipeline topology changes (nodes added/removed/reconnected)
@@ -1245,7 +798,7 @@ const MonitorViewContent: React.FC = () => {
       viewsLogger.debug('Topology effect: No pipeline, clearing nodes');
       setNodes([]);
       setEdges([]);
-      setYamlString('');
+      setYamlFromTopology('');
       return;
     }
 
@@ -1260,6 +813,11 @@ const MonitorViewContent: React.FC = () => {
     // Get saved positions from staging store if in staging mode
     const savedPositions =
       isInStagingMode && selectedSessionId ? getNodePositions(selectedSessionId) : {};
+
+    // P1 1E: hoist getState() above the loop — one call instead of N
+    const currentNodeStates = selectedSessionId
+      ? (useSessionStore.getState().getSession(selectedSessionId)?.nodeStates ?? {})
+      : {};
 
     const newNodes: RFNode[] = [];
     for (const nodeName of orderedNames) {
@@ -1278,16 +836,10 @@ const MonitorViewContent: React.FC = () => {
         updateNodePosition(selectedSessionId, nodeName, pos);
       }
 
-      // Use real-time state from Zustand if available, otherwise use pipeline state.
-      // Read directly from the store (non-reactive) since the topology effect only
-      // runs on structural changes, not on every node-state transition.
-      const currentNodeStates = selectedSessionId
-        ? (useSessionStore.getState().getSession(selectedSessionId)?.nodeStates ?? {})
-        : {};
       const nodeState = currentNodeStates[nodeName] || apiNode.state;
 
       // Determine if this node is staged (for visual distinction)
-      const isStaged = isInStagingMode && stagingData?.stagedNodes.has(nodeName);
+      const isStaged = isInStagingMode && (stagingData?.stagedNodes.has(nodeName) ?? false);
 
       // Get base pins from definition and resolve dynamic pins
       const baseInputs = defByKind.get(apiNode.kind)?.inputs ?? [];
@@ -1334,8 +886,8 @@ const MonitorViewContent: React.FC = () => {
     });
 
     // Generate YAML using helper function
-    const yamlString = generatePipelineYaml(activePipeline, orderedNames);
-    setYamlString(yamlString);
+    const generatedYaml = generatePipelineYaml(activePipeline, orderedNames);
+    setYamlFromTopology(generatedYaml);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [topoKey, defByKind, selectedSessionId, tuneNode]);
 
@@ -1415,57 +967,7 @@ const MonitorViewContent: React.FC = () => {
   // 2. needsFit effect (when needsFit is true)
   // Avoid auto-fitting on every node change to prevent disruption during editing.
 
-  // Keep YAML up to date with live (Zustand) param overrides
-  // Only runs when params change, not when nodes move
-  useEffect(() => {
-    // Skip YAML regeneration if user is actively editing to prevent overwriting their changes
-    if (isEditingYamlRef.current) {
-      return;
-    }
-
-    // Use staged pipeline when in staging mode, otherwise use live pipeline
-    const activePipeline = isInStagingMode && stagedPipeline ? stagedPipeline : pipeline;
-
-    if (!activePipeline) {
-      setYamlString('');
-      return;
-    }
-
-    const yamlObject: { nodes: Record<string, unknown> } = { nodes: {} };
-
-    // Use topological order to keep YAML stable (not affected by canvas positions)
-    const { levels, sortedLevels } = topoLevelsFromPipeline(activePipeline);
-    const sortedNames = orderedNamesFromLevels(levels, sortedLevels);
-
-    for (const nodeName of sortedNames) {
-      const apiNode = activePipeline.nodes[nodeName];
-      if (!apiNode) continue;
-
-      const needs = activePipeline.connections
-        .filter((c: Connection) => c.to_node === nodeName)
-        .map((c: Connection) => c.from_node);
-
-      const nodeConfig: Record<string, unknown> = { kind: apiNode.kind };
-
-      const overrides = useNodeParamsStore
-        .getState()
-        .getParamsForNode(nodeName, selectedSessionId ?? undefined);
-      const mergedParams = { ...(apiNode.params || {}), ...(overrides || {}) };
-      if (Object.keys(mergedParams).length > 0) {
-        nodeConfig['params'] = mergedParams;
-      }
-
-      if (needs.length === 1) {
-        nodeConfig['needs'] = needs[0];
-      } else if (needs.length > 1) {
-        nodeConfig['needs'] = needs;
-      }
-
-      yamlObject.nodes[nodeName] = nodeConfig;
-    }
-
-    setYamlString(dump(yamlObject, { skipInvalid: true }));
-  }, [pipeline, stagedPipeline, isInStagingMode, selectedSessionId]);
+  // YAML regeneration is handled by useMonitorYaml hook.
 
   const onConnectEnd: OnConnectEnd = React.useCallback(
     (event, connectionState) => {
@@ -1523,97 +1025,6 @@ const MonitorViewContent: React.FC = () => {
     }
 
     setType(null);
-  };
-
-  const handleSessionClick = useCallback(
-    (sessionId: string) => {
-      // Use startTransition to make session loading non-blocking
-      // This allows the UI to stay responsive while loading heavy pipelines
-      React.startTransition(() => {
-        setSelectedSessionId(sessionId);
-        // Check if this session has saved positions in staging store
-        const savedPos = getNodePositions(sessionId);
-        const hasPositions = Object.keys(savedPos).length > 0;
-
-        viewsLogger.debug('Session click, hasPositions:', hasPositions);
-        // Only auto-layout if no positions are saved
-        setNeedsAutoLayout(!hasPositions);
-        setNeedsFit(true);
-      });
-    },
-    [getNodePositions]
-  );
-
-  const handleQuickDeleteSession = useCallback((sessionId: string) => {
-    // Store which session to delete and show confirmation modal
-    setSessionToDelete(sessionId);
-  }, []);
-
-  const handleConfirmQuickDelete = async () => {
-    if (!sessionToDelete) return;
-
-    setIsDeletingSession(true);
-
-    try {
-      const wsService = getWebSocketService();
-
-      const response = await wsService.send({
-        type: 'request' as MessageType,
-        correlation_id: uuidv4(),
-        payload: {
-          action: 'destroysession' as const,
-          session_id: sessionToDelete,
-        },
-      });
-
-      if (response.payload.action === 'sessiondestroyed') {
-        toast.success(`Session deleted successfully`);
-        // If the deleted session was selected, clear selection
-        if (selectedSessionId === sessionToDelete) {
-          setSelectedSessionId(null);
-        }
-        setSessionToDelete(null);
-      } else if (response.payload.action === 'error') {
-        throw new Error(response.payload.message);
-      }
-    } catch (error) {
-      viewsLogger.error('Failed to delete session:', error);
-      toast.error(error instanceof Error ? error.message : 'Failed to delete session');
-    } finally {
-      setIsDeletingSession(false);
-    }
-  };
-
-  const handleDeleteSession = async () => {
-    if (!selectedSessionId) return;
-
-    setIsDeletingSession(true);
-
-    try {
-      const wsService = getWebSocketService();
-
-      const response = await wsService.send({
-        type: 'request' as MessageType,
-        correlation_id: uuidv4(),
-        payload: {
-          action: 'destroysession' as const,
-          session_id: selectedSessionId,
-        },
-      });
-
-      if (response.payload.action === 'sessiondestroyed') {
-        toast.success(`Session ${selectedSessionId} deleted successfully`);
-        setSelectedSessionId(null);
-        setShowDeleteModal(false);
-      } else if (response.payload.action === 'error') {
-        throw new Error(response.payload.message);
-      }
-    } catch (error) {
-      viewsLogger.error('Failed to delete session:', error);
-      toast.error(error instanceof Error ? error.message : 'Failed to delete session');
-    } finally {
-      setIsDeletingSession(false);
-    }
   };
 
   // Memoize left panel to prevent ResizableLayout from re-rendering
