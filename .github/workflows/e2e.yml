@@ -82,28 +82,41 @@ jobs:
           ./target/debug/skit serve &
           SKIT_PID=$!
 
-          # Start Vite dev server in the background
-          cd ui && bunx --bun vite &
+          # Start Vite dev server in the background (subshell so cd doesn't affect parent)
+          (cd ui && bunx --bun vite) &
           VITE_PID=$!
-          cd ..
 
           # Wait for skit to become healthy
+          HEALTHY=0
           for i in $(seq 1 30); do
             if curl -sf http://127.0.0.1:4545/healthz > /dev/null 2>&1; then
               echo "skit is healthy"
+              HEALTHY=1
               break
             fi
             sleep 1
           done
+          if [ "$HEALTHY" -ne 1 ]; then
+            echo "ERROR: skit did not become healthy within 30s"
+            kill $SKIT_PID $VITE_PID 2>/dev/null || true
+            exit 1
+          fi
 
           # Wait for Vite dev server to be ready
+          HEALTHY=0
           for i in $(seq 1 30); do
             if curl -sf http://127.0.0.1:3045/ > /dev/null 2>&1; then
               echo "Vite dev server is ready"
+              HEALTHY=1
               break
             fi
             sleep 1
           done
+          if [ "$HEALTHY" -ne 1 ]; then
+            echo "ERROR: Vite dev server did not become ready within 30s"
+            kill $SKIT_PID $VITE_PID 2>/dev/null || true
+            exit 1
+          fi
 
           # Run perf tests against the dev server
           cd e2e
