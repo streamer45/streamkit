@@ -56,7 +56,7 @@ fi
 # Wait for Vite dev server to be ready (60s — first start may pre-bundle deps)
 HEALTHY=0
 for i in $(seq 1 60); do
-  if curl -sf http://127.0.0.1:3045/ > /dev/null 2>&1; then
+  if curl -sf http://localhost:3045/ > /dev/null 2>&1; then
     echo "Vite dev server is ready"
     HEALTHY=1
     break
