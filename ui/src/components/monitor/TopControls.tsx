@@ -72,6 +72,13 @@ const areTopControlPropsEqual = (
   if (prevChanges.length !== nextChanges.length) return false;
   if (prevErrors.length !== nextErrors.length) return false;
 
+  // Compare the number of blocking errors, not just total length.
+  // The commit button is disabled when any error-type validation entry exists,
+  // so a warning→error swap at the same length must trigger a re-render.
+  const countErrors = (arr: readonly ValidationError[]) =>
+    arr.filter((e) => e.type === 'error').length;
+  if (countErrors(prevErrors) !== countErrors(nextErrors)) return false;
+
   // If lengths are same and other props haven't changed, don't re-render
   return true;
 };

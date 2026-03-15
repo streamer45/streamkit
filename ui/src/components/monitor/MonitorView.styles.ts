@@ -70,7 +70,9 @@ export const ConnectionStatusContainer = styled.div<{ connected: boolean }>`
   border-radius: 4px;
   font-size: 12px;
   background: ${(props) =>
-    props.connected ? 'var(--sk-overlay-medium)' : 'var(--sk-overlay-medium)'};
+    props.connected
+      ? 'var(--sk-overlay-medium)'
+      : 'color-mix(in srgb, var(--sk-danger) 10%, transparent)'};
   color: ${(props) => (props.connected ? 'var(--sk-success)' : 'var(--sk-danger)')};
   border: 1px solid ${(props) => (props.connected ? 'var(--sk-success)' : 'var(--sk-danger)')};
   user-select: none;

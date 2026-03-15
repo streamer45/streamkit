@@ -59,6 +59,9 @@ export function useAutoLayout({
   const [needsAutoLayout, setNeedsAutoLayout] = useState(false);
   const [needsFit, setNeedsFit] = useState(false);
 
+  // Track the fitView timer so it can be cancelled on unmount
+  const fitTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const applyAutoLayout = useCallback(
     (measuredHeights: Record<string, number>) => {
       if (!pipeline) return;
@@ -125,7 +128,9 @@ export function useAutoLayout({
       }
 
       // Wait for nodes to be positioned and rendered before fitting
-      setTimeout(() => {
+      if (fitTimerRef.current !== null) clearTimeout(fitTimerRef.current);
+      fitTimerRef.current = setTimeout(() => {
+        fitTimerRef.current = null;
         viewsLogger.debug('Auto-layout complete, fitting view');
         // No animation for better performance on initial load
         rf.current?.fitView({ padding: 0.2, duration: 0 });
@@ -194,6 +199,13 @@ export function useAutoLayout({
       return () => clearTimeout(t);
     }
   }, [needsFit, selectedSessionId, nodesLength, needsAutoLayout, rf]);
+
+  // Cancel any pending fitView timer on unmount
+  useEffect(() => {
+    return () => {
+      if (fitTimerRef.current !== null) clearTimeout(fitTimerRef.current);
+    };
+  }, []);
 
   return {
     needsAutoLayout,
