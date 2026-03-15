@@ -85,3 +85,65 @@ pub struct AppState {
     #[cfg(feature = "moq")]
     pub moq_gateway: Option<Arc<MoqGateway>>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn drain_awaits_all_tracked_tasks() {
+        let tracker = ShutdownTracker::default();
+        let counter = Arc::new(AtomicUsize::new(0));
+
+        for _ in 0..3 {
+            let c = counter.clone();
+            let handle = tokio::spawn(async move {
+                c.fetch_add(1, Ordering::SeqCst);
+            });
+            tracker.track(handle).await;
+        }
+
+        let drained = tracker.drain(Duration::from_secs(5)).await;
+        assert_eq!(drained, 3);
+        assert_eq!(counter.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn drain_returns_zero_when_empty() {
+        let tracker = ShutdownTracker::default();
+        let drained = tracker.drain(Duration::from_secs(1)).await;
+        assert_eq!(drained, 0);
+    }
+
+    /// Regression test: tasks tracked while a previous batch is being awaited
+    /// must not be orphaned.  The old implementation took all handles and
+    /// released the lock before awaiting — any handle pushed during that await
+    /// window was never drained.
+    #[tokio::test]
+    async fn drain_does_not_orphan_tasks_added_during_await() {
+        let tracker = ShutdownTracker::default();
+        let counter = Arc::new(AtomicUsize::new(0));
+
+        // First task: slow, and while it runs it adds a second task to the tracker.
+        let tracker_clone = tracker.clone();
+        let counter_clone = counter.clone();
+        let inner_counter = counter.clone();
+        let handle = tokio::spawn(async move {
+            counter_clone.fetch_add(1, Ordering::SeqCst);
+            // Simulate a task that registers follow-up work during shutdown.
+            let c = inner_counter;
+            let follow_up = tokio::spawn(async move {
+                c.fetch_add(1, Ordering::SeqCst);
+            });
+            tracker_clone.track(follow_up).await;
+        });
+        tracker.track(handle).await;
+
+        let drained = tracker.drain(Duration::from_secs(5)).await;
+        // Both the original task and the follow-up must have been drained.
+        assert!(drained >= 2, "expected at least 2 drained tasks, got {drained}");
+        assert_eq!(counter.load(Ordering::SeqCst), 2);
+    }
+}
