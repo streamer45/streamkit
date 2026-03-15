@@ -33,7 +33,7 @@ trap cleanup EXIT
 
 # Start skit backend on the resolved localhost address
 SK_SERVER__ADDRESS="${LOCALHOST_IP}:4545" \
-SK_SERVER__MOQ_GATEWAY_URL="http://localhost:4545/moq" \
+SK_SERVER__MOQ_GATEWAY_URL="http://${LOCALHOST_IP}:4545/moq" \
 SK_LOG__FILE_ENABLE=false \
 RUST_LOG=warn \
 "$REPO_ROOT/target/debug/skit" serve &

@@ -115,7 +115,7 @@ async function startServer(): Promise<ServerInfo> {
     env: {
       ...process.env,
       SK_SERVER__ADDRESS: `127.0.0.1:${port}`,
-      SK_SERVER__MOQ_GATEWAY_URL: `http://localhost:${port}/moq`,
+      SK_SERVER__MOQ_GATEWAY_URL: `http://127.0.0.1:${port}/moq`,
       SK_LOG__FILE_ENABLE: 'false', // Avoid writing skit.log
       ...(enableAuth
         ? {
