@@ -12,19 +12,20 @@ use streamkit_nodes::video::compositor::config::{
     CompositorConfig, CompositorLayout, ImageOverlayConfig, LayerConfig, OverlayTransform, Rect,
     ResolvedLayer, ResolvedOverlay, TextOverlayConfig,
 };
-use ts_rs::TS;
+use ts_rs::{Config, TS};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let cfg = Config::default();
     let declarations = vec![
-        format!("export {}", Rect::decl()),
-        format!("export {}", OverlayTransform::decl()),
-        format!("export {}", ImageOverlayConfig::decl()),
-        format!("export {}", TextOverlayConfig::decl()),
-        format!("export {}", LayerConfig::decl()),
-        format!("export {}", CompositorConfig::decl()),
-        format!("export {}", ResolvedLayer::decl()),
-        format!("export {}", ResolvedOverlay::decl()),
-        format!("export {}", CompositorLayout::decl()),
+        format!("export {}", Rect::decl(&cfg)),
+        format!("export {}", OverlayTransform::decl(&cfg)),
+        format!("export {}", ImageOverlayConfig::decl(&cfg)),
+        format!("export {}", TextOverlayConfig::decl(&cfg)),
+        format!("export {}", LayerConfig::decl(&cfg)),
+        format!("export {}", CompositorConfig::decl(&cfg)),
+        format!("export {}", ResolvedLayer::decl(&cfg)),
+        format!("export {}", ResolvedOverlay::decl(&cfg)),
+        format!("export {}", CompositorLayout::decl(&cfg)),
     ];
 
     let output = declarations.join("\n\n");

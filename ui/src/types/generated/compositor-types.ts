@@ -201,7 +201,7 @@ num_inputs: number | null,
  * Per-layer configuration, keyed by pin name (e.g. `"in_0"`).
  * Layers without an entry here are scaled to fill the canvas.
  */
-layers: { [key in string]?: LayerConfig }, 
+layers: { [key in string]: LayerConfig }, 
 /**
  * Static image overlays (decoded once during init).
  */

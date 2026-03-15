@@ -46,9 +46,9 @@ url = { version = "2.5.8", optional = true, features = ["serde"] }
 rquickjs = { version = "0.11", features = ["array-buffer", "futures", "loader", "parallel"], optional = true }
 wildmatch = { version = "2.6", optional = true }
 
-moq-native = { version = "0.13.2", optional = true }
-moq-lite = { version = "0.15.0", optional = true }
-hang = { version = "0.15.1", optional = true }
+moq-native = { version = "0.13.4", optional = true }
+moq-lite = { version = "0.15.2", optional = true }
+hang = { version = "0.15.2", optional = true }
 
 # For local dev, debugging moq stuff
 # moq-native = { path = "../../moq/rs/moq-native", optional = true }
@@ -60,7 +60,7 @@ reqwest = { version = "0.13", optional = true, default-features = false, feature
   "rustls",
   "stream",
 ] }
-tempfile = { version = "3.24", optional = true }
+tempfile = { version = "3.27", optional = true }
 uuid = { version = "1", optional = true, features = ["v4"] }
 rubato = { version = "1.0", optional = true }
 audioadapter-buffers = { version = "2.0", optional = true }
@@ -73,13 +73,13 @@ symphonia = { version = "0.5.5", optional = true, default-features = false, feat
 ] }
 webm = { version = "2.2.0", optional = true }
 env-libvpx-sys = { version = "5.1.3", optional = true }
-image = { version = "0.25.9", optional = true, default-features = false, features = ["png", "jpeg"] }
+image = { version = "0.25.10", optional = true, default-features = false, features = ["png", "jpeg"] }
 tiny-skia = { version = "0.12.0", optional = true }
 base64 = { version = "0.22", optional = true }
 rayon = { version = "1.10", optional = true }
 fontdue = { version = "0.9", optional = true }
 smallvec = { version = "1.13", optional = true, features = ["serde"] }
-ts-rs = { version = "11.1.0", optional = true }
+ts-rs = { version = "12.0.1", optional = true }
 
 futures-util = "0.3"
 
@@ -139,7 +139,7 @@ path = "src/bin/generate_compositor_types.rs"
 required-features = ["codegen", "compositor"]
 
 [dev-dependencies]
-tempfile = "3.24"
+tempfile = "3.27"
 axum = "0.8"
 tower = "0.5.3"
 

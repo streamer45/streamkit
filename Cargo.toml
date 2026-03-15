@@ -28,7 +28,7 @@ streamkit-plugin-sdk-native = { version = "0.2", path = "sdks/plugin-sdk/native"
 
 tracing = "0.1.44"
 
-tokio = "1.49"
+tokio = "1.50"
 tokio-util = "0.7.18"
 
 async-trait = "0.1.89"
@@ -39,7 +39,7 @@ bytes = "1.11.0"
 futures = "0.3.31"
 
 serde = { version = "1.0.228", features = ["derive", "rc"] }
-serde-saphyr = "0.0.15"
+serde-saphyr = "0.0.21"
 serde_json = "1.0"
 indexmap = { version = "2.13", features = ["serde"] }
 
