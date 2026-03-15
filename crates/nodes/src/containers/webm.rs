@@ -547,16 +547,19 @@ impl ProcessorNode for WebMMuxerNode {
     }
 
     fn content_type(&self) -> Option<String> {
-        // This static hint is used before the node runs.
-        // We can only infer from config: if video dimensions are set, video is
-        // present. Audio presence is unknown at this stage, so we conservatively
-        // report only what we can confirm — the runtime `run()` method uses the
-        // actual connected tracks for the real content-type.
+        // This static hint is used before the node runs (e.g. by the oneshot
+        // backward walk to set the HTTP Content-Type header).  We can only
+        // infer from config: if video dimensions are set, video is present.
+        // Audio presence is unknown at this stage so we assume true — it is
+        // safe to advertise "vp9,opus" even if only video is connected
+        // (consumers simply won't find an Opus track), whereas advertising
+        // only "vp9" when Opus IS present would break MSE consumers that
+        // need to initialise an audio SourceBuffer.
         let has_video = self.config.video_width > 0 && self.config.video_height > 0;
-        // Without a way to know if audio will be connected, assume audio-only
-        // when no video dimensions are configured, and video-only when they are.
-        // Mixed audio+video pipelines will get the correct type at runtime.
-        let has_audio = !has_video;
+        // Audio is always assumed present: when video dims are zero, only
+        // audio is possible; when video dims are set, combined A+V is the
+        // common case and omitting Opus from the type is harmful.
+        let has_audio = true;
         Some(webm_content_type(has_audio, has_video).to_string())
     }
 
@@ -1321,5 +1324,46 @@ pub fn register_webm_nodes(registry: &mut NodeRegistry) {
              Produces streamable WebM output compatible with web browsers. \
              Supports audio-only, video-only, or combined audio+video muxing.",
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use streamkit_core::ProcessorNode;
+
+    /// Helper to build a `WebMMuxerNode` with the given video dimensions.
+    fn muxer_with_dims(w: u32, h: u32) -> WebMMuxerNode {
+        WebMMuxerNode::new(WebMMuxerConfig {
+            video_width: w,
+            video_height: h,
+            ..WebMMuxerConfig::default()
+        })
+    }
+
+    #[test]
+    fn content_type_audio_only_when_no_video_dims() {
+        let node = muxer_with_dims(0, 0);
+        let ct = node.content_type().expect("should return Some");
+        assert_eq!(ct, "audio/webm; codecs=\"opus\"");
+    }
+
+    /// Regression test: when video dimensions are set, the static hint must
+    /// include both codecs so that MSE consumers can initialise an audio
+    /// SourceBuffer.  Previously `has_audio = !has_video` caused the hint
+    /// to omit Opus for combined A+V pipelines.
+    #[test]
+    fn content_type_includes_opus_when_video_dims_set() {
+        let node = muxer_with_dims(1280, 720);
+        let ct = node.content_type().expect("should return Some");
+        assert_eq!(ct, "video/webm; codecs=\"vp9,opus\"");
+    }
+
+    #[test]
+    fn webm_content_type_helper_covers_all_combinations() {
+        assert_eq!(webm_content_type(true, true), "video/webm; codecs=\"vp9,opus\"");
+        assert_eq!(webm_content_type(false, true), "video/webm; codecs=\"vp9\"");
+        assert_eq!(webm_content_type(true, false), "audio/webm; codecs=\"opus\"");
+        assert_eq!(webm_content_type(false, false), "video/webm");
     }
 }
