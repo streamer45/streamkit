@@ -348,7 +348,17 @@ async fn main() {
 
     let cli = Cli::parse();
 
-    match cli.command {
+    // Dispatch into a heap-allocated future to keep main's stack frame small.
+    // The many command variants produce a large async state machine (~660 KiB)
+    // which would otherwise overflow Clippy's stack-size threshold.
+    Box::pin(dispatch(cli.command)).await;
+}
+
+// Always called via Box::pin (heap-allocated), so the large async state machine
+// never lands on the call stack. Cognitive complexity is inherent to CLI dispatch.
+#[allow(clippy::large_stack_frames, clippy::cognitive_complexity)]
+async fn dispatch(command: Commands) {
+    match command {
         Commands::OneShot { pipeline, input, extra_input, output, server } => {
             info!("Starting StreamKit client - oneshot processing");
 

@@ -184,7 +184,7 @@ impl ProcessorNode for MoqPullNode {
         let mut total_packet_count = 0;
         // Main reconnection loop - simple 1 second retry for all failures
         loop {
-            match self.run_connection(&mut context, &mut total_packet_count).await {
+            match Box::pin(self.run_connection(&mut context, &mut total_packet_count)).await {
                 Ok(StreamEndReason::Natural) => {
                     tracing::info!(
                         "MoqPullNode finished successfully after {} total packets",
