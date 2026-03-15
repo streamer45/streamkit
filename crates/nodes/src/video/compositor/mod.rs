@@ -662,7 +662,7 @@ impl ProcessorNode for CompositorNode {
                 // Tick — in live mode wait for the fps interval;
                 // in oneshot mode just yield to let producers run,
                 // then proceed immediately.
-                _ = async {
+                () = async {
                     if is_oneshot {
                         tokio::task::yield_now().await;
                     } else {
