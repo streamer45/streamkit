@@ -156,7 +156,12 @@ export function useServerLayoutSync(
   dragStateRef: React.MutableRefObject<unknown>,
   setLayers: React.Dispatch<React.SetStateAction<LayerState[]>>,
   setTextOverlays: React.Dispatch<React.SetStateAction<TextOverlayState[]>>,
-  setImageOverlays: React.Dispatch<React.SetStateAction<ImageOverlayState[]>>
+  setImageOverlays: React.Dispatch<React.SetStateAction<ImageOverlayState[]>>,
+  /** When provided, set to `true` once server layout data has been applied.
+   *  Callers can use this to gate config-parsed geometry from the "sync from
+   *  props" effect so that `useServerLayoutSync` becomes the exclusive
+   *  geometry source in Monitor view. */
+  serverLayoutAppliedRef?: React.MutableRefObject<boolean>
 ): void {
   useEffect(() => {
     if (!sessionId) return;
@@ -167,6 +172,10 @@ export function useServerLayoutSync(
 
       const layout = viewData as CompositorLayout;
       if (!Array.isArray(layout.layers)) return;
+
+      if (serverLayoutAppliedRef) {
+        serverLayoutAppliedRef.current = true;
+      }
 
       setLayers((prev) => mapServerLayers(prev, layout.layers));
 

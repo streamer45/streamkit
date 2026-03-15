@@ -161,22 +161,44 @@ export const useCompositorLayers = (
   }, [layers]);
 
   // ── Sync from props ─────────────────────────────────────────────────────
-  // In Monitor view (sessionId is set), the server's view data is the source
-  // of truth for geometry (x, y, width, height).  The "sync from props" effect
-  // must NOT overwrite server-resolved positions with config-parsed ones,
-  // otherwise a params echo-back from the server would clobber the accurate
-  // layout that useServerLayoutSync applied.
+  // In Monitor view (sessionId is set), the server's view data is the
+  // exclusive source of truth for geometry (x, y, width, height, etc.).
+  // Once server layout data has been applied at least once, config-parsed
+  // geometry from `parseLayers` is unreliable (it may arrive from a params
+  // echo-back that lags behind the server's resolved layout).
+  //
+  // The `serverLayoutAppliedRef` acts as a hard gate: once true, the "sync
+  // from props" effect skips geometry entirely by passing
+  // `preserveGeometry=true` to `mergeOverlayState`, so only type-specific
+  // config fields (text content, font, base64 data, …) are merged.  Before
+  // the first server layout arrives, config-parsed geometry is used as a
+  // fallback so layers are visible immediately on mount.
   const isMonitorView = !!sessionId;
+  const serverLayoutAppliedRef = useRef(false);
+
+  // Reset when the session changes so the first param parse provides
+  // geometry until the new session's server layout arrives.
+  useEffect(() => {
+    serverLayoutAppliedRef.current = false;
+  }, [sessionId]);
 
   useEffect(() => {
     if (dragStateRef.current) return;
+
+    // Once the server has provided layout data, skip geometry from params
+    // entirely.  The `preserveGeometry` flag in mergeOverlayState keeps
+    // all OverlayBase fields from current state and only takes config
+    // fields from parsed — making useServerLayoutSync the exclusive
+    // geometry source.
+    const preserveGeometry = isMonitorView && serverLayoutAppliedRef.current;
+
     const parsed = parseLayers(params, canvasWidth, canvasHeight);
 
     const merged = mergeOverlayState(
       layersRef.current,
       parsed,
       (a, b) => a.cropZoom !== b.cropZoom || a.cropX !== b.cropX || a.cropY !== b.cropY,
-      isMonitorView
+      preserveGeometry
     );
     if (merged !== layersRef.current) setLayers(merged);
 
@@ -189,7 +211,7 @@ export const useCompositorLayers = (
           a.fontSize !== b.fontSize ||
           a.fontName !== b.fontName ||
           a.color.some((v, i) => v !== b.color[i]),
-        isMonitorView
+        preserveGeometry
       )
     );
     setImageOverlays((cur) =>
@@ -197,7 +219,7 @@ export const useCompositorLayers = (
         cur,
         parseImageOverlays(params),
         (a, b) => a.dataBase64 !== b.dataBase64,
-        isMonitorView
+        preserveGeometry
       )
     );
   }, [params, canvasWidth, canvasHeight, isMonitorView]);
@@ -209,7 +231,8 @@ export const useCompositorLayers = (
     dragStateRef,
     setLayers,
     setTextOverlays,
-    setImageOverlays
+    setImageOverlays,
+    serverLayoutAppliedRef
   );
 
   // ── Find layer across all types ─────────────────────────────────────────
