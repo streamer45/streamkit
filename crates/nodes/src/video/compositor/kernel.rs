@@ -523,7 +523,7 @@ mod tests {
         // crop_y=0.6 → raw y = round(0.6 * 5) = 3 (odd).
         // For I420 the origin must be rounded down to even: (2, 2).
         let result = compute_src_crop(10, 10, 0.6, 0.6, 2.0, PixelFormat::I420);
-        let (x, y, w, h) = result.unwrap();
+        let (x, y, w, h) = result.expect("I420 crop should succeed");
         assert_eq!(x % 2, 0, "I420 crop x must be even, got {x}");
         assert_eq!(y % 2, 0, "I420 crop y must be even, got {y}");
         assert_eq!(w, 5);
@@ -534,7 +534,7 @@ mod tests {
     fn compute_src_crop_aligns_odd_origin_for_nv12() {
         // Same geometry as above but with NV12.
         let result = compute_src_crop(10, 10, 0.6, 0.6, 2.0, PixelFormat::Nv12);
-        let (x, y, w, h) = result.unwrap();
+        let (x, y, w, h) = result.expect("NV12 crop should succeed");
         assert_eq!(x % 2, 0, "NV12 crop x must be even, got {x}");
         assert_eq!(y % 2, 0, "NV12 crop y must be even, got {y}");
         assert_eq!(w, 5);
@@ -545,7 +545,7 @@ mod tests {
     fn compute_src_crop_preserves_odd_origin_for_rgba() {
         // For RGBA8 there is no chroma subsampling — odd origins are fine.
         let result = compute_src_crop(10, 10, 0.6, 0.6, 2.0, PixelFormat::Rgba8);
-        let (x, y, _, _) = result.unwrap();
+        let (x, y, _, _) = result.expect("RGBA crop should succeed");
         assert_eq!(x, 3, "RGBA crop x should remain 3 (odd is fine)");
         assert_eq!(y, 3, "RGBA crop y should remain 3 (odd is fine)");
     }
@@ -555,7 +555,7 @@ mod tests {
         // When the raw origin is already even, alignment is a no-op.
         // crop_x=0.0 → x = 0 (even), crop_y=0.0 → y = 0 (even).
         let result = compute_src_crop(10, 10, 0.0, 0.0, 2.0, PixelFormat::I420);
-        let (x, y, _, _) = result.unwrap();
+        let (x, y, _, _) = result.expect("I420 even-origin crop should succeed");
         assert_eq!(x, 0);
         assert_eq!(y, 0);
     }

@@ -1197,7 +1197,7 @@ fn test_crop_no_zoom_returns_full_frame() {
     // crop_zoom=1.0 should show the entire source unchanged.
     let frame = make_quadrant_frame();
     let layer = LayerSnapshot {
-        data: frame.data.clone(),
+        data: frame.data,
         width: 4,
         height: 4,
         pixel_format: PixelFormat::Rgba8,
@@ -1395,11 +1395,11 @@ fn test_crop_with_mirror_v_rotated() {
 /// test exercises the real conversion path.
 fn make_i420_frame(width: u32, height: u32, r: u8, g: u8, b: u8) -> VideoFrame {
     let rgba = make_rgba_frame(width, height, r, g, b, 255);
-    let w = width as usize;
-    let h = height as usize;
-    let chroma_w = w.div_ceil(2);
-    let chroma_h = h.div_ceil(2);
-    let i420_size = w * h + 2 * chroma_w * chroma_h;
+    let luma_w = width as usize;
+    let luma_h = height as usize;
+    let chroma_w = luma_w.div_ceil(2);
+    let chroma_h = luma_h.div_ceil(2);
+    let i420_size = luma_w * luma_h + 2 * chroma_w * chroma_h;
     let mut i420_data = vec![0u8; i420_size];
     pixel_ops::rgba8_to_i420_buf(rgba.data(), width, height, &mut i420_data);
     VideoFrame::new(width, height, PixelFormat::I420, i420_data).unwrap()
@@ -1408,11 +1408,11 @@ fn make_i420_frame(width: u32, height: u32, r: u8, g: u8, b: u8) -> VideoFrame {
 /// Create a solid-colour NV12 `VideoFrame`.
 fn make_nv12_frame(width: u32, height: u32, r: u8, g: u8, b: u8) -> VideoFrame {
     let rgba = make_rgba_frame(width, height, r, g, b, 255);
-    let w = width as usize;
-    let h = height as usize;
-    let chroma_w = w.div_ceil(2);
-    let chroma_h = h.div_ceil(2);
-    let nv12_size = w * h + chroma_w * 2 * chroma_h;
+    let luma_w = width as usize;
+    let luma_h = height as usize;
+    let chroma_w = luma_w.div_ceil(2);
+    let chroma_h = luma_h.div_ceil(2);
+    let nv12_size = luma_w * luma_h + chroma_w * 2 * chroma_h;
     let mut nv12_data = vec![0u8; nv12_size];
     pixel_ops::rgba8_to_nv12_buf(rgba.data(), width, height, &mut nv12_data);
     VideoFrame::new(width, height, PixelFormat::Nv12, nv12_data).unwrap()
