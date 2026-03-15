@@ -14,6 +14,14 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
+# Resolve localhost to a numeric IP (skit's SocketAddr parser needs an IP, not
+# a hostname).  Use the same resolved address everywhere so skit, Vite, and
+# Playwright all talk to the same interface.
+LOCALHOST_IP="$(getent ahostsv4 localhost | head -1 | awk '{print $1}')"
+if [ -z "$LOCALHOST_IP" ]; then
+  LOCALHOST_IP="127.0.0.1"
+fi
+
 SKIT_PID=""
 VITE_PID=""
 
@@ -23,9 +31,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Start skit backend on default port for Vite proxy
-SK_SERVER__ADDRESS=127.0.0.1:4545 \
-SK_SERVER__MOQ_GATEWAY_URL=http://127.0.0.1:4545/moq \
+# Start skit backend on the resolved localhost address
+SK_SERVER__ADDRESS="${LOCALHOST_IP}:4545" \
+SK_SERVER__MOQ_GATEWAY_URL="http://localhost:4545/moq" \
 SK_LOG__FILE_ENABLE=false \
 RUST_LOG=warn \
 "$REPO_ROOT/target/debug/skit" serve &
@@ -41,7 +49,7 @@ cd "$REPO_ROOT"
 # Wait for skit to become healthy
 HEALTHY=0
 for i in $(seq 1 30); do
-  if curl -sf http://127.0.0.1:4545/healthz > /dev/null 2>&1; then
+  if curl -sf http://localhost:4545/healthz > /dev/null 2>&1; then
     echo "skit is healthy"
     HEALTHY=1
     break
