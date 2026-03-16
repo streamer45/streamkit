@@ -184,6 +184,7 @@ const MonitorViewContent: React.FC = () => {
       // Clear the state to avoid auto-selecting on subsequent visits
       window.history.replaceState({}, document.title);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- setNeedsAutoLayout/setNeedsFit are stable useState setters declared later
   }, [location.state, selectedSessionId, getNodePositions]);
 
   // Use shared React Flow logic
@@ -340,6 +341,7 @@ const MonitorViewContent: React.FC = () => {
       setNeedsAutoLayout(Object.keys(savedPos).length === 0);
       setNeedsFit(true);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- setNeedsAutoLayout/setNeedsFit are stable useState setters declared later
   }, [selectedSessionId, isLoadingSessions, sessions, getNodePositions]);
 
   // Prefetch pipeline data for all sessions to enable status display
@@ -992,6 +994,7 @@ const MonitorViewContent: React.FC = () => {
         setNeedsFit(true);
       });
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- setNeedsAutoLayout/setNeedsFit are stable useState setters
     [getNodePositions]
   );
 

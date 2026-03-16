@@ -34,6 +34,83 @@ import {
 
 const EMPTY_PARAMS: Record<string, unknown> = {};
 
+/** Build tooltip lines for a slow-input-timeout alert. */
+function buildSlowInputTooltipLines(
+  edge: Edge,
+  details: SlowTimeoutDetails | undefined,
+  pipeline: Pipeline
+): string[] {
+  const slowPins = details?.slowPins ?? [];
+  const slowInputs = describeSlowInputs(pipeline, edge.target, slowPins);
+
+  const lines: string[] = [];
+  if (slowInputs.length > 0) {
+    lines.push(`Slow inputs: ${slowInputs.join(', ')}`);
+  } else if (slowPins.length > 0) {
+    lines.push(`Slow pins: ${slowPins.join(', ')}`);
+  }
+
+  lines.push(`This: ${edge.source}.${edge.sourceHandle ?? ''} → ${edge.targetHandle ?? ''}`);
+
+  if (details?.newlySlowPins && details.newlySlowPins.length > 0) {
+    lines.push(`Newly slow: ${details.newlySlowPins.join(', ')}`);
+  }
+  if (details?.syncTimeoutMs != null) {
+    lines.push(`Timeout: ${details.syncTimeoutMs}ms`);
+  }
+  return lines;
+}
+
+/**
+ * Build edge alert data for slow-input-timeout degradation.
+ * Extracted from the main subscription callback to reduce complexity.
+ */
+function buildEdgeAlert(
+  edge: Edge,
+  slowPinsByNode: Map<string, Set<string>>,
+  slowDetailsByNode: Map<string, SlowTimeoutDetails>,
+  pipeline: Pipeline
+): Record<string, unknown> | null {
+  const shouldWarn = slowPinsByNode.get(edge.target)?.has(edge.targetHandle ?? '') ?? false;
+  if (!shouldWarn) return null;
+
+  const details = slowDetailsByNode.get(edge.target);
+  return {
+    kind: 'slow_input_timeout',
+    severity: 'warning',
+    tooltip: {
+      title: `${edge.target} degraded`,
+      lines: buildSlowInputTooltipLines(edge, details, pipeline),
+    },
+  };
+}
+
+/**
+ * Collect slow-input-timeout data from node states for edge alert patching.
+ */
+function collectSlowPinData(
+  pipeline: Pipeline,
+  nodeStates: Record<string, NodeState>
+): {
+  slowPinsByNode: Map<string, Set<string>>;
+  slowDetailsByNode: Map<string, SlowTimeoutDetails>;
+} {
+  const slowPinsByNode = new Map<string, Set<string>>();
+  const slowDetailsByNode = new Map<string, SlowTimeoutDetails>();
+  for (const [nodeId, apiNode] of Object.entries(pipeline.nodes)) {
+    const st = nodeStates[nodeId] ?? apiNode.state ?? null;
+    const details = extractSlowTimeoutDetailsFromNodeState(st);
+    const slowPins = details?.slowPins ?? [];
+    if (slowPins.length > 0) {
+      slowPinsByNode.set(nodeId, new Set(slowPins));
+    }
+    if (details) {
+      slowDetailsByNode.set(nodeId, details);
+    }
+  }
+  return { slowPinsByNode, slowDetailsByNode };
+}
+
 export interface UseNodeStatesSubscriptionOptions {
   selectedSessionId: string | null;
   setNodes: React.Dispatch<React.SetStateAction<RFNode[]>>;
@@ -124,19 +201,10 @@ export function useNodeStatesSubscription({
         });
 
         // Patch edge alerts (slow-input-timeout)
-        const slowPinsByNode = new Map<string, Set<string>>();
-        const slowDetailsByNode = new Map<string, SlowTimeoutDetails>();
-        for (const [nodeId, apiNode] of Object.entries(currentPipeline.nodes)) {
-          const st = (nodeStates as Record<string, NodeState>)[nodeId] ?? apiNode.state ?? null;
-          const details = extractSlowTimeoutDetailsFromNodeState(st);
-          const slowPins = details?.slowPins ?? [];
-          if (slowPins.length > 0) {
-            slowPinsByNode.set(nodeId, new Set(slowPins));
-          }
-          if (details) {
-            slowDetailsByNode.set(nodeId, details);
-          }
-        }
+        const { slowPinsByNode, slowDetailsByNode } = collectSlowPinData(
+          currentPipeline,
+          nodeStates
+        );
 
         setEdges((prev) => {
           let changed = false;
@@ -157,36 +225,12 @@ export function useNodeStatesSubscription({
             const nextData: Record<string, unknown> = { ...(edge.data || {}) };
 
             if (shouldWarn) {
-              const details = slowDetailsByNode.get(edge.target);
-              const slowPins = details?.slowPins ?? [];
-              const p = pipelineRef.current;
-              const slowInputs = p ? describeSlowInputs(p, edge.target, slowPins) : [];
-
-              const lines: string[] = [];
-              if (slowInputs.length > 0) {
-                lines.push(`Slow inputs: ${slowInputs.join(', ')}`);
-              } else if (slowPins.length > 0) {
-                lines.push(`Slow pins: ${slowPins.join(', ')}`);
-              }
-
-              const sourceHandle = edge.sourceHandle ?? '';
-              lines.push(`This: ${edge.source}.${sourceHandle} → ${edge.targetHandle ?? ''}`);
-
-              if (details?.newlySlowPins && details.newlySlowPins.length > 0) {
-                lines.push(`Newly slow: ${details.newlySlowPins.join(', ')}`);
-              }
-              if (details?.syncTimeoutMs !== null && details?.syncTimeoutMs !== undefined) {
-                lines.push(`Timeout: ${details.syncTimeoutMs}ms`);
-              }
-
-              nextData.alert = {
-                kind: 'slow_input_timeout',
-                severity: 'warning',
-                tooltip: {
-                  title: `${edge.target} degraded`,
-                  lines,
-                },
-              };
+              nextData.alert = buildEdgeAlert(
+                edge,
+                slowPinsByNode,
+                slowDetailsByNode,
+                currentPipeline
+              );
             } else if (isCurrentlyWarned) {
               delete nextData.alert;
             }
