@@ -7,6 +7,8 @@
  *
  * Extracted from MonitorViewContent to keep node-action concerns self-contained
  * and reduce the component's statement count.
+ *
+ * All mutations are sent to the server immediately via WebSocket.
  */
 
 import type {
@@ -20,14 +22,11 @@ import React, { useCallback } from 'react';
 
 import { useDnD } from '@/context/DnDContext';
 import { useSchemaStore } from '@/stores/schemaStore';
-import { useStagingStore } from '@/stores/stagingStore';
-import type { Connection, Node as PipelineNode, Pipeline } from '@/types/types';
+import type { Pipeline } from '@/types/types';
 import { viewsLogger } from '@/utils/logger';
 
 interface UseMonitorNodeActionsOptions {
-  selectedSessionId: string | null;
   pipelineRef: React.RefObject<Pipeline | null>;
-  isInStagingMode: boolean;
   nodesRefForCallbacks: React.RefObject<RFNode[]>;
   edgesRefForCallbacks: React.RefObject<Edge[]>;
   setNodes: React.Dispatch<React.SetStateAction<RFNode[]>>;
@@ -40,10 +39,6 @@ interface UseMonitorNodeActionsOptions {
     setNodes?: (updater: (nodes: RFNode[]) => RFNode[]) => void
   ) => (connection: RFConnection) => void;
   createOnConnectEnd: (nodes: RFNode[], edges: Edge[]) => OnConnectEnd;
-  addStagedConnection: (sessionId: string, connection: Connection) => void;
-  removeStagedConnection: (sessionId: string, connection: Connection) => void;
-  addStagedNode: (sessionId: string, nodeId: string, node: PipelineNode) => void;
-  removeStagedNode: (sessionId: string, nodeId: string) => void;
   connectPins: (fromNode: string, fromPin: string, toNode: string, toPin: string) => void;
   disconnectPins: (fromNode: string, fromPin: string, toNode: string, toPin: string) => void;
   addNode: (nodeId: string, kind: string, params: Record<string, unknown>) => void;
@@ -53,19 +48,13 @@ interface UseMonitorNodeActionsOptions {
 }
 
 export function useMonitorNodeActions({
-  selectedSessionId,
   pipelineRef,
-  isInStagingMode,
   nodesRefForCallbacks,
   edgesRefForCallbacks,
   setNodes,
   setEdges,
   createOnConnect,
   createOnConnectEnd,
-  addStagedConnection,
-  removeStagedConnection,
-  addStagedNode,
-  removeStagedNode,
   connectPins,
   disconnectPins,
   addNode,
@@ -120,33 +109,13 @@ export function useMonitorNodeActions({
         (conn: RFConnection) => {
           const from_pin = conn.sourceHandle || 'out';
           const to_pin = conn.targetHandle || 'in';
-
-          if (isInStagingMode && selectedSessionId) {
-            // Add to staging store instead of sending to server
-            addStagedConnection(selectedSessionId, {
-              from_node: conn.source,
-              from_pin,
-              to_node: conn.target,
-              to_pin,
-            });
-          } else {
-            // Send to server immediately (monitor mode)
-            connectPins(conn.source, from_pin, conn.target, to_pin);
-          }
+          connectPins(conn.source, from_pin, conn.target, to_pin);
         },
         edgesRefForCallbacks.current,
         setNodes
       )(connection);
     },
-    [
-      createOnConnect,
-      setEdges,
-      isInStagingMode,
-      selectedSessionId,
-      addStagedConnection,
-      connectPins,
-      setNodes,
-    ]
+    [createOnConnect, setEdges, connectPins, setNodes]
   );
 
   const onConnectEnd: OnConnectEnd = useCallback(
@@ -162,44 +131,22 @@ export function useMonitorNodeActions({
   // ── Deletion handlers ─────────────────────────────────────────────────
   const onEdgesDelete = useCallback(
     (deleted: Edge[]) => {
-      const sid = selectedSessionId;
-      const staging = sid ? useStagingStore.getState().staging[sid] : undefined;
-      const isStagingActive = staging?.mode === 'staging';
-
       deleted.forEach((e) => {
         const from_pin = e.sourceHandle || 'out';
         const to_pin = e.targetHandle || 'in';
-
-        if (isStagingActive && sid) {
-          removeStagedConnection(sid, {
-            from_node: e.source,
-            from_pin,
-            to_node: e.target,
-            to_pin,
-          });
-        } else {
-          disconnectPins(e.source, from_pin, e.target, to_pin);
-        }
+        disconnectPins(e.source, from_pin, e.target, to_pin);
       });
     },
-    [selectedSessionId, removeStagedConnection, disconnectPins]
+    [disconnectPins]
   );
 
   const onNodesDelete = useCallback(
     (deleted: RFNode[]) => {
-      const sid = selectedSessionId;
-      const staging = sid ? useStagingStore.getState().staging[sid] : undefined;
-      const isStagingActive = staging?.mode === 'staging';
-
       deleted.forEach((n) => {
-        if (isStagingActive && sid) {
-          removeStagedNode(sid, n.id);
-        } else {
-          removeNode(n.id);
-        }
+        removeNode(n.id);
       });
     },
-    [selectedSessionId, removeStagedNode, removeNode]
+    [removeNode]
   );
 
   // ── Context menu handlers ─────────────────────────────────────────────
@@ -250,25 +197,10 @@ export function useMonitorNodeActions({
       // Cache the position for when the node appears in the pipeline
       pendingNodePositions.current.set(nodeId, position);
 
-      const sid = selectedSessionId;
-      const staging = sid ? useStagingStore.getState().staging[sid] : undefined;
-      const isStagingActive = staging?.mode === 'staging';
-
-      if (isStagingActive && sid) {
-        // Add to staging store
-        addStagedNode(sid, nodeId, {
-          kind,
-          params: params as Record<string, unknown>,
-          state: null,
-        });
-      } else {
-        // Send to server immediately (monitor mode)
-        addNode(nodeId, kind, params);
-      }
-
+      addNode(nodeId, kind, params);
       setType(null);
     },
-    [type, selectedSessionId, addStagedNode, addNode, setType, generateName, getDefaultParams]
+    [type, addNode, setType, generateName, getDefaultParams]
   );
 
   return {

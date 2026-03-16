@@ -5,11 +5,11 @@
 /**
  * Left sidebar panel for the Monitor View.
  *
- * Contains the session list (with search) and, in staging mode,
- * a "Nodes Library" tab for drag-and-drop node insertion.
+ * Contains the session list (with search) and a "Nodes Library" tab
+ * for drag-and-drop node insertion.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 
 import {
   LeftPanelAside,
@@ -37,7 +37,6 @@ interface LeftPanelProps {
   selectedSessionId: string | null;
   onSessionClick: (id: string) => void;
   onSessionDelete: (id: string) => void;
-  editMode: boolean;
   nodeDefinitions: NodeDefinition[];
   onDragStart: (event: React.DragEvent, nodeType: string) => void;
   pluginKinds: Set<string>;
@@ -55,7 +54,6 @@ export const LeftPanel = React.memo(
     selectedSessionId,
     onSessionClick,
     onSessionDelete,
-    editMode,
     nodeDefinitions,
     onDragStart,
     pluginKinds,
@@ -63,12 +61,6 @@ export const LeftPanel = React.memo(
   }: LeftPanelProps) => {
     const [activeTab, setActiveTab] = useState<'sessions' | 'add'>('sessions');
     const [searchQuery, setSearchQuery] = useState('');
-
-    useEffect(() => {
-      if (!editMode && activeTab === 'add') {
-        setActiveTab('sessions');
-      }
-    }, [editMode, activeTab]);
 
     const filteredSessions = React.useMemo(() => {
       if (!searchQuery.trim()) {
@@ -90,11 +82,9 @@ export const LeftPanel = React.memo(
         >
           <TabsList>
             <TabsTrigger value="sessions">Sessions</TabsTrigger>
-            {editMode && (
-              <TabsTrigger value="add" disabled={!selectedSessionId}>
-                Nodes Library
-              </TabsTrigger>
-            )}
+            <TabsTrigger value="add" disabled={!selectedSessionId}>
+              Nodes Library
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="sessions">
@@ -139,24 +129,22 @@ export const LeftPanel = React.memo(
           </TabsContent>
 
           <TabsContent value="add">
-            {editMode && (
-              <NodesLibraryContainer>
-                {selectedSessionId ? (
-                  nodeDefinitions.length === 0 ? (
-                    <EmptyStateText>Loading node definitions…</EmptyStateText>
-                  ) : (
-                    <NodePalette
-                      nodeDefinitions={nodeDefinitions}
-                      onDragStart={onDragStart}
-                      pluginKinds={pluginKinds}
-                      pluginTypes={pluginTypes}
-                    />
-                  )
+            <NodesLibraryContainer>
+              {selectedSessionId ? (
+                nodeDefinitions.length === 0 ? (
+                  <EmptyStateText>Loading node definitions…</EmptyStateText>
                 ) : (
-                  <EmptyStateText>Select a session to add nodes</EmptyStateText>
-                )}
-              </NodesLibraryContainer>
-            )}
+                  <NodePalette
+                    nodeDefinitions={nodeDefinitions}
+                    onDragStart={onDragStart}
+                    pluginKinds={pluginKinds}
+                    pluginTypes={pluginTypes}
+                  />
+                )
+              ) : (
+                <EmptyStateText>Select a session to add nodes</EmptyStateText>
+              )}
+            </NodesLibraryContainer>
           </TabsContent>
         </TabsRoot>
       </LeftPanelAside>

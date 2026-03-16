@@ -2,9 +2,15 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import type { ValidationError } from '@/stores/stagingStore';
 import type { Connection, Pipeline, NodeDefinition, PacketType } from '@/types/types';
 import { wouldCreateCycle } from '@/utils/dag';
+
+export interface ValidationError {
+  type: 'error' | 'warning';
+  message: string;
+  nodeId?: string;
+  connectionId?: string;
+}
 
 /**
  * Validates that all nodes in the pipeline exist in the registry

@@ -36,7 +36,6 @@ export interface UseAutoLayoutOptions {
   nodesLength: number;
   setNodes: React.Dispatch<React.SetStateAction<RFNode[]>>;
   rf: React.RefObject<ReactFlowInstance | null>;
-  updateNodePosition: (sessionId: string, nodeId: string, pos: { x: number; y: number }) => void;
 }
 
 export interface UseAutoLayoutReturn {
@@ -54,7 +53,6 @@ export function useAutoLayout({
   nodesLength,
   setNodes,
   rf,
-  updateNodePosition,
 }: UseAutoLayoutOptions): UseAutoLayoutReturn {
   const [needsAutoLayout, setNeedsAutoLayout] = useState(false);
   const [needsFit, setNeedsFit] = useState(false);
@@ -115,18 +113,6 @@ export function useAutoLayout({
         })
       );
 
-      // Save auto-layout positions to staging store so we don't need to re-run layout next time
-      if (selectedSessionId) {
-        Object.entries(positions).forEach(([nodeId, position]) => {
-          updateNodePosition(selectedSessionId, nodeId, position);
-        });
-        viewsLogger.debug(
-          'Saved auto-layout positions for',
-          Object.keys(positions).length,
-          'nodes'
-        );
-      }
-
       // Wait for nodes to be positioned and rendered before fitting
       if (fitTimerRef.current !== null) clearTimeout(fitTimerRef.current);
       fitTimerRef.current = setTimeout(() => {
@@ -136,7 +122,7 @@ export function useAutoLayout({
         rf.current?.fitView({ padding: 0.2, duration: 0 });
       }, 100);
     },
-    [pipeline, setNodes, selectedSessionId, updateNodePosition, rf]
+    [pipeline, setNodes, rf]
   );
 
   const handleAutoLayout = useCallback(() => {

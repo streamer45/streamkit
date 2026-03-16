@@ -44,7 +44,6 @@ import {
   useMonitorSessionManager,
   type OnSessionActivated,
 } from '@/hooks/useMonitorSessionManager';
-import { useMonitorStaging } from '@/hooks/useMonitorStaging';
 import { useMonitorYaml } from '@/hooks/useMonitorYaml';
 import { useNodeStatesSubscription } from '@/hooks/useNodeStatesSubscription';
 import { useReactFlowCommon } from '@/hooks/useReactFlowCommon';
@@ -56,7 +55,6 @@ import { useLayoutStore } from '@/stores/layoutStore';
 import { usePluginStore } from '@/stores/pluginStore';
 import { useSchemaStore } from '@/stores/schemaStore';
 import { useSessionStore } from '@/stores/sessionStore';
-import { useStagingStore } from '@/stores/stagingStore';
 import type { NodeDefinition, Connection, Pipeline, InputPin, OutputPin } from '@/types/types';
 import { topoLevelsFromPipeline, orderedNamesFromLevels } from '@/utils/dag';
 import { deepEqual } from '@/utils/deepEqual';
@@ -67,7 +65,6 @@ import {
   buildNodeObject,
   generatePipelineYaml,
 } from '@/utils/pipelineGraph';
-import { validatePipeline } from '@/utils/pipelineValidation';
 import { nodeTypes, defaultEdgeOptions } from '@/utils/reactFlowDefaults';
 
 // Memoized view title to prevent re-renders during drag
@@ -79,8 +76,7 @@ const MonitorViewTitle = React.memo(() => <ViewTitle>Monitor</ViewTitle>);
  * Heavy concerns are delegated to extracted custom hooks:
  * - useMonitorNodeActions – drag/drop, connect, delete callbacks
  * - useMonitorSessionManager – session selection, auto-select, deletion
- * - useMonitorStaging – staging lifecycle (enter / discard / commit)
- * - useMonitorYaml – YAML regeneration and YAML-edit handler
+ * - useMonitorYaml – YAML regeneration
  *
  * This component wires them together and owns the rendering, topology
  * computation, and ReactFlow integration.
@@ -178,7 +174,6 @@ const MonitorViewContent: React.FC = () => {
     removeNode,
     connectPins,
     disconnectPins,
-    applyBatch,
   } = useSession(selectedSessionId);
 
   const isConnected = selectedSessionId ? sessionIsConnected : globalIsConnected;
@@ -204,35 +199,6 @@ const MonitorViewContent: React.FC = () => {
     nodesRef.current = nodes;
   }, [nodes]);
 
-  // ── Staging mode (extracted hook) ─────────────────────────────────────
-  const {
-    stagingData,
-    isInStagingMode,
-    stagedPipeline,
-    addStagedNode,
-    removeStagedNode,
-    addStagedConnection,
-    removeStagedConnection,
-    updateStagedNodeParams,
-    updateNodePosition,
-    setValidationErrors,
-    handleEnterStagingMode,
-    handleDiscardChanges,
-    handleCommitChanges,
-    onNodeDragStop,
-  } = useMonitorStaging({
-    selectedSessionId,
-    pipelineRef,
-    nodesRef,
-    applyBatch,
-  });
-
-  const editMode = isInStagingMode;
-
-  // getNodePositions for the topology effect (not exposed from useMonitorStaging
-  // because it's also used by useMonitorSessionManager internally)
-  const getNodePositions = useStagingStore((s) => s.getNodePositions);
-
   // Use shared React Flow logic
   const {
     onInit: baseOnInit,
@@ -257,19 +223,13 @@ const MonitorViewContent: React.FC = () => {
     handleDuplicateNode,
     handleDeleteNode,
   } = useMonitorNodeActions({
-    selectedSessionId,
     pipelineRef,
-    isInStagingMode,
     nodesRefForCallbacks,
     edgesRefForCallbacks,
     setNodes: setNodes as React.Dispatch<SetStateAction<RFNode[]>>,
     setEdges: setEdges as React.Dispatch<SetStateAction<Edge[]>>,
     createOnConnect,
     createOnConnectEnd,
-    addStagedConnection,
-    removeStagedConnection,
-    addStagedNode,
-    removeStagedNode,
     connectPins,
     disconnectPins,
     addNode,
@@ -342,7 +302,6 @@ const MonitorViewContent: React.FC = () => {
       prevData?.['kind'] !== nextData['kind'] ||
       prevData?.['label'] !== nextData['label'] ||
       prevData?.['sessionId'] !== nextData['sessionId'] ||
-      prevData?.['isStaged'] !== nextData['isStaged'] ||
       !deepEqual(prevData?.['state'], nextData['state']) ||
       !deepEqual(prevData?.['params'], nextData['params'])
     ) {
@@ -365,36 +324,16 @@ const MonitorViewContent: React.FC = () => {
     return defByKind.get(kind) ?? null;
   })();
 
-  // Run validation whenever staged pipeline changes
-  useEffect(() => {
-    if (!selectedSessionId || !isInStagingMode || !stagedPipeline) return;
-
-    viewsLogger.debug('Running validation');
-    const errors = validatePipeline(stagedPipeline, defByKind);
-    setValidationErrors(selectedSessionId, errors);
-
-    // Show toast for validation errors
-    const errorCount = errors.filter((e) => e.type === 'error').length;
-    if (errorCount > 0) {
-      toast.error(
-        `Validation failed: ${errorCount} error${errorCount > 1 ? 's' : ''} found. Fix them before committing.`
-      );
-    }
-  }, [selectedSessionId, isInStagingMode, stagedPipeline, defByKind, setValidationErrors, toast]);
-
   // ── Topology computation ───────────────────────────────────────────────
   // NOTE: useMonitorTopology extraction was evaluated and intentionally skipped.
   // Reasons:
   //   1. 15+ parameters would be needed (nodes, setNodes, setEdges, pipeline,
-  //      isInStagingMode, stagingData, selectedSessionId, nodesRef,
-  //      pendingNodePositions, updateNodePosition, tuneNode, tuneNodeConfig,
-  //      updateStagedNodeParams, topoEffectRanRef, setYamlFromTopology, …).
+  //      selectedSessionId, nodesRef, pendingNodePositions, tuneNode,
+  //      tuneNodeConfig, topoEffectRanRef, setYamlFromTopology, …).
   //   2. topoKey is consumed by useNodeStatesSubscription which returns
   //      topoEffectRanRef, creating a bidirectional dependency that would
   //      require splitting the topology hook or computing topoKey separately.
   //   3. setYamlFromTopology from useMonitorYaml adds another cross-hook dep.
-  //   4. stableOnParamChange / stableOnConfigChange depend on staging + session
-  //      state that would all need forwarding through the interface.
   //   Overall, the extraction would add more interface complexity than it removes
   //   from the component.  The helpers (resolveNodePosition, resolveDynamicPins,
   //   reconstructDynamic{Inputs,Outputs}) are already factored out as callbacks,
@@ -402,22 +341,14 @@ const MonitorViewContent: React.FC = () => {
 
   // Topology signature: only changes when nodes/kinds or connections change
   const topoKey = React.useMemo(() => {
-    const activePipeline = isInStagingMode && stagedPipeline ? stagedPipeline : pipeline;
-    if (!activePipeline) return '';
-    const names = Object.keys(activePipeline.nodes).sort();
-    const kinds = names.map((n) => `${n}:${activePipeline.nodes[n].kind}`);
-    const conns = activePipeline.connections
+    if (!pipeline) return '';
+    const names = Object.keys(pipeline.nodes).sort();
+    const kinds = names.map((n) => `${n}:${pipeline.nodes[n].kind}`);
+    const conns = pipeline.connections
       .map((c: Connection) => `${c.from_node}:${c.from_pin}>${c.to_node}:${c.to_pin}`)
       .sort();
-    const key = JSON.stringify([kinds, conns]);
-    viewsLogger.debug(
-      'topoKey recalculated:',
-      key.substring(0, 100),
-      'isInStagingMode:',
-      isInStagingMode
-    );
-    return key;
-  }, [stagedPipeline, pipeline, isInStagingMode]);
+    return JSON.stringify([kinds, conns]);
+  }, [pipeline]);
 
   // Auto-layout + fit-view hook
   const { setNeedsAutoLayout, setNeedsFit, handleAutoLayout } = useAutoLayout({
@@ -426,7 +357,6 @@ const MonitorViewContent: React.FC = () => {
     nodesLength: nodes.length,
     setNodes,
     rf,
-    updateNodePosition,
   });
 
   // Wire the session-activation bridge now that setNeedsAutoLayout is available
@@ -472,12 +402,6 @@ const MonitorViewContent: React.FC = () => {
   // Memoized param change handler for right pane
   const handleRightPaneParamChange = useCallback(
     (nodeId: string, key: string, value: unknown) => {
-      const isStaged = isInStagingMode && stagingData?.stagedNodes.has(nodeId);
-      if (isStaged && selectedSessionId) {
-        updateStagedNodeParams(selectedSessionId, nodeId, { [key]: value });
-        return;
-      }
-
       // Validate before sending to server
       const error = validateParamValue(nodeId, key, value);
       if (error) {
@@ -487,40 +411,26 @@ const MonitorViewContent: React.FC = () => {
 
       tuneNode(nodeId, key, value);
     },
-    [
-      isInStagingMode,
-      stagingData?.stagedNodes,
-      selectedSessionId,
-      updateStagedNodeParams,
-      validateParamValue,
-      toast,
-      tuneNode,
-    ]
+    [validateParamValue, toast, tuneNode]
   );
 
   // Memoized label change handler (currently no-op)
   const handleRightPaneLabelChange = useCallback(() => {}, []);
 
   // ── YAML handling (extracted hook) ────────────────────────────────────
-  const { yamlString, setYamlFromTopology, handleYamlChange } = useMonitorYaml({
+  const { yamlString, setYamlFromTopology } = useMonitorYaml({
     selectedSessionId,
     pipeline,
-    isInStagingMode,
-    stagedPipeline,
-    stagingData,
-    nodeDefinitions,
-    tuneNode,
   });
 
   // Track previous topoKey to avoid unnecessary rebuilds
   const prevTopoKeyForTopologyRef = useRef<string>('');
 
-  // Helper: Resolve node position from various sources (previous, pending, saved, or default)
+  // Helper: Resolve node position from various sources (previous, pending, or default)
   const resolveNodePosition = useCallback(
     (
       nodeName: string,
-      prevPositions: Map<string, { x: number; y: number }>,
-      savedPositions: Record<string, { x: number; y: number }>
+      prevPositions: Map<string, { x: number; y: number }>
     ): { position: { x: number; y: number }; fromPending: boolean } => {
       let pos = prevPositions.get(nodeName);
       let fromPending = false;
@@ -530,11 +440,6 @@ const MonitorViewContent: React.FC = () => {
         pos = pendingNodePositions.current.get(nodeName)!;
         pendingNodePositions.current.delete(nodeName);
         fromPending = true;
-      }
-
-      // Check saved positions from staging store
-      if (!pos && savedPositions[nodeName]) {
-        pos = savedPositions[nodeName];
       }
 
       return {
@@ -727,11 +632,8 @@ const MonitorViewContent: React.FC = () => {
     }
     prevTopoKeyForTopologyRef.current = topoKey;
 
-    // Use staged pipeline when in staging mode, otherwise use live pipeline
-    const activePipeline =
-      isInStagingMode && stagingData?.stagedPipeline ? stagingData.stagedPipeline : pipeline;
-
-    if (!activePipeline) {
+    // Use live pipeline directly (staging mode was removed)
+    if (!pipeline) {
       viewsLogger.debug('Topology effect: No pipeline, clearing nodes');
       setNodes([]);
       setEdges([]);
@@ -742,14 +644,10 @@ const MonitorViewContent: React.FC = () => {
     viewsLogger.debug('Topology effect triggered, topoKey:', topoKey.substring(0, 50) + '...');
 
     // Preserve existing node positions; do not auto-layout during edits.
-    const { levels, sortedLevels } = topoLevelsFromPipeline(activePipeline);
+    const { levels, sortedLevels } = topoLevelsFromPipeline(pipeline);
     const orderedNames = orderedNamesFromLevels(levels, sortedLevels);
 
     const prevPositions = new Map(nodes.map((n) => [n.id, n.position]));
-
-    // Get saved positions from staging store if in staging mode
-    const savedPositions =
-      isInStagingMode && selectedSessionId ? getNodePositions(selectedSessionId) : {};
 
     // P1 1E: hoist getState() above the loop — one call instead of N
     const currentNodeStates = selectedSessionId
@@ -758,25 +656,13 @@ const MonitorViewContent: React.FC = () => {
 
     const newNodes: RFNode[] = [];
     for (const nodeName of orderedNames) {
-      const apiNode = activePipeline.nodes[nodeName];
+      const apiNode = pipeline.nodes[nodeName];
       if (!apiNode) continue;
 
       // Resolve node position from various sources
-      const { position: pos, fromPending: positionFromPending } = resolveNodePosition(
-        nodeName,
-        prevPositions,
-        savedPositions
-      );
-
-      // Save position to staging store if it came from pending (newly dropped) and we're in staging mode
-      if (positionFromPending && isInStagingMode && selectedSessionId) {
-        updateNodePosition(selectedSessionId, nodeName, pos);
-      }
+      const { position: pos } = resolveNodePosition(nodeName, prevPositions);
 
       const nodeState = currentNodeStates[nodeName] || apiNode.state;
-
-      // Determine if this node is staged (for visual distinction)
-      const isStaged = isInStagingMode && (stagingData?.stagedNodes.has(nodeName) ?? false);
 
       // Get base pins from definition and resolve dynamic pins
       const baseInputs = defByKind.get(apiNode.kind)?.inputs ?? [];
@@ -786,7 +672,7 @@ const MonitorViewContent: React.FC = () => {
       const { finalInputs, finalOutputs } = resolveDynamicPins(
         nodeDefinition,
         nodeName,
-        activePipeline,
+        pipeline,
         baseInputs,
         baseOutputs
       );
@@ -799,7 +685,6 @@ const MonitorViewContent: React.FC = () => {
         apiNode,
         position: pos,
         nodeState,
-        isStaged,
         finalInputs,
         finalOutputs,
         nodeDef,
@@ -812,7 +697,7 @@ const MonitorViewContent: React.FC = () => {
     }
 
     // Build edges using helper function
-    const newEdges = buildEdgesFromConnections(activePipeline.connections, newNodes);
+    const newEdges = buildEdgesFromConnections(pipeline.connections, newNodes);
 
     viewsLogger.debug('Setting', newNodes.length, 'nodes and', newEdges.length, 'edges');
     // Batch node and edge updates to prevent double render
@@ -823,25 +708,15 @@ const MonitorViewContent: React.FC = () => {
     });
 
     // Generate YAML using helper function
-    const generatedYaml = generatePipelineYaml(activePipeline, orderedNames);
+    const generatedYaml = generatePipelineYaml(pipeline, orderedNames);
     setYamlFromTopology(generatedYaml);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [topoKey, defByKind, selectedSessionId, tuneNode]);
 
-  // Create a stable callback that handles both staged and live param changes
+  // Create a stable callback for param changes sent directly to the server.
   // This avoids recreating callbacks for each node, which would break React.memo
   const stableOnParamChange = useCallback(
     (nodeId: string, paramName: string, value: unknown) => {
-      // Check at call time if we're in staging mode and if this node is staged
-      const currentStagingData = useStagingStore.getState().staging[selectedSessionId || ''];
-      const isCurrentlyInStagingMode = currentStagingData?.mode === 'staging';
-      const isNodeStaged = isCurrentlyInStagingMode && currentStagingData?.stagedNodes.has(nodeId);
-
-      if (isNodeStaged && selectedSessionId) {
-        updateStagedNodeParams(selectedSessionId, nodeId, { [paramName]: value });
-        return;
-      }
-
       // Validate before sending to server
       const error = validateParamValue(nodeId, paramName, value);
       if (error) {
@@ -851,53 +726,16 @@ const MonitorViewContent: React.FC = () => {
 
       tuneNode(nodeId, paramName, value);
     },
-    [selectedSessionId, updateStagedNodeParams, validateParamValue, toast, tuneNode]
+    [validateParamValue, toast, tuneNode]
   );
 
   // Stable callback for full-config updates (compositor nodes).
-  // Supports staging mode: staged config changes are stored locally,
-  // live changes are sent directly via tuneNodeConfig.
   const stableOnConfigChange = useCallback(
     (nodeId: string, config: Record<string, unknown>) => {
-      const currentStagingData = useStagingStore.getState().staging[selectedSessionId || ''];
-      const isCurrentlyInStagingMode = currentStagingData?.mode === 'staging';
-      const isNodeStaged = isCurrentlyInStagingMode && currentStagingData?.stagedNodes.has(nodeId);
-
-      if (isNodeStaged && selectedSessionId) {
-        updateStagedNodeParams(selectedSessionId, nodeId, config);
-        return;
-      }
-
       tuneNodeConfig(nodeId, config);
     },
-    [selectedSessionId, updateStagedNodeParams, tuneNodeConfig]
+    [tuneNodeConfig]
   );
-
-  // In staging mode, keep each node's `isStaged` flag in sync with `stagedNodes`.
-  useEffect(() => {
-    if (nodes.length === 0 || !isInStagingMode) return;
-
-    // Only update if there are actually staged nodes
-    if (!stagingData?.stagedNodes || stagingData.stagedNodes.size === 0) return;
-
-    viewsLogger.debug('Updating isStaged flags for', stagingData.stagedNodes.size, 'nodes');
-    setNodes((prev) =>
-      prev.map((n) => {
-        const isNodeStaged = stagingData.stagedNodes.has(n.id);
-        if (n.data.isStaged === isNodeStaged) {
-          return n; // No change
-        }
-        return {
-          ...n,
-          data: {
-            ...n.data,
-            isStaged: isNodeStaged,
-          },
-        };
-      })
-    );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stagingData?.stagedNodes, nodes.length, isInStagingMode]);
 
   // NOTE: fitView is triggered only by:
   // 1. Auto-layout effect (when needsAutoLayout is true)
@@ -915,7 +753,6 @@ const MonitorViewContent: React.FC = () => {
         selectedSessionId={selectedSessionId}
         onSessionClick={handleSessionClick}
         onSessionDelete={handleQuickDeleteSession}
-        editMode={editMode}
         nodeDefinitions={nodeDefinitions}
         onDragStart={onDragStart}
         pluginKinds={pluginKinds}
@@ -928,7 +765,6 @@ const MonitorViewContent: React.FC = () => {
       selectedSessionId,
       handleSessionClick,
       handleQuickDeleteSession,
-      editMode,
       nodeDefinitions,
       onDragStart,
       pluginKinds,
@@ -939,7 +775,6 @@ const MonitorViewContent: React.FC = () => {
   // Memoize center panel to prevent ResizableLayout from re-rendering
 
   // - Only track nodes.length, not full nodes array (FlowCanvas handles position updates internally)
-  // - Only track stagingData lengths, not full object (TopControls has its own memo optimization)
   // - Handlers are stable via refs and don't need to be tracked
   // - selectedSession used instead of sessions array to prevent unnecessary re-renders
   const centerPanel = React.useMemo(
@@ -953,11 +788,6 @@ const MonitorViewContent: React.FC = () => {
           <TopControls
             isConnected={isConnected}
             selectedSessionId={selectedSessionId}
-            isInStagingMode={isInStagingMode}
-            stagingData={stagingData}
-            onCommit={handleCommitChanges}
-            onDiscard={handleDiscardChanges}
-            onEnterStaging={handleEnterStagingMode}
             onDelete={handleDeleteModalOpen}
             onStartPreview={handleStartPreview}
             isPreviewConnected={isPreviewConnected}
@@ -974,8 +804,7 @@ const MonitorViewContent: React.FC = () => {
               colorMode={colorMode}
               onInit={onInit}
               defaultEdgeOptions={defaultEdgeOptions}
-              editMode={editMode}
-              onNodeDragStop={onNodeDragStop}
+              editMode={true}
               onNodeDoubleClick={handleNodeDoubleClick}
               isValidConnection={
                 isValidConnection
@@ -1014,30 +843,21 @@ const MonitorViewContent: React.FC = () => {
     ),
     // Performance: track nodes.length instead of nodes (FlowCanvas
     // handles position updates internally via onNodesChange).
-    // stagingData lengths suffice because TopControls has its own memo.
     // All handlers are now stable useCallback references.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       selectedSessionId,
       selectedSession,
       isConnected,
-      isInStagingMode,
-      stagingData?.changes.length,
-      stagingData?.validationErrors.length,
       nodes.length,
       colorMode,
       onInit,
-      editMode,
       isLoadingPipeline,
       handleStartPreview,
       isPreviewConnected,
-      handleCommitChanges,
-      handleDiscardChanges,
-      handleEnterStagingMode,
       handleDeleteModalOpen,
       onNodesChangeBatched,
       onEdgesChange,
-      onNodeDragStop,
       handleNodeDoubleClick,
       onConnect,
       onConnectEnd,
@@ -1073,12 +893,11 @@ const MonitorViewContent: React.FC = () => {
           rightPaneView={rightPaneView}
           setRightPaneView={setRightPaneView}
           yamlString={yamlString}
-          onYamlChange={isInStagingMode ? handleYamlChange : undefined}
           onParamChange={handleRightPaneParamChange}
           onLabelChange={handleRightPaneLabelChange}
           nodeDefinitions={nodeDefinitions}
-          readOnly={!editMode}
-          yamlReadOnly={!isInStagingMode}
+          readOnly={false}
+          yamlReadOnly={true}
           isMonitorView={true}
           sessionId={selectedSessionId}
         />
@@ -1092,12 +911,9 @@ const MonitorViewContent: React.FC = () => {
       rightPaneView,
       setRightPaneView,
       yamlString,
-      isInStagingMode,
-      handleYamlChange,
       handleRightPaneParamChange,
       handleRightPaneLabelChange,
       nodeDefinitions,
-      editMode,
     ]
   );
 

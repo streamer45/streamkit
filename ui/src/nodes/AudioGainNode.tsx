@@ -81,7 +81,6 @@ interface AudioGainNodeData {
   stats?: NodeStats;
   onParamChange?: (nodeId: string, paramName: string, value: unknown) => void;
   sessionId?: string;
-  isStaged?: boolean;
 }
 
 interface AudioGainNodeProps {
@@ -137,10 +136,9 @@ const AudioGainNode: React.FC<AudioGainNodeProps> = React.memo(({ id, data, sele
     handleChange(e);
   };
 
-  // Show live indicator when node is in an active session (has sessionId) and is not staged
+  // Show live indicator when node is in an active session (has sessionId)
   // This prevents the LIVE badge from showing in design view (which has no sessionId)
-  const showLiveIndicator =
-    !data.isStaged && !!data.onParamChange && !!(data as { sessionId?: string }).sessionId;
+  const showLiveIndicator = !!data.onParamChange && !!(data as { sessionId?: string }).sessionId;
 
   return (
     <NodeFrame

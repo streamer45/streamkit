@@ -19,14 +19,12 @@ import { v4 as uuidv4 } from 'uuid';
 import { useToast } from '@/context/ToastContext';
 import { useSessionList } from '@/hooks/useSessionList';
 import { getWebSocketService } from '@/services/websocket';
-import { useStagingStore } from '@/stores/stagingStore';
 import type { MessageType } from '@/types/types';
 import { viewsLogger } from '@/utils/logger';
 
 /**
  * Callback fired every time a session becomes the active session.
- * `hasPositions` is true when the staging store already has saved positions
- * for that session (i.e. no auto-layout needed).
+ * Auto-layout always runs on activation (no saved positions without staging store).
  */
 export type OnSessionActivated = (sessionId: string, hasPositions: boolean) => void;
 
@@ -45,8 +43,6 @@ export function useMonitorSessionManager({
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [sessionToDelete, setSessionToDelete] = useState<string | null>(null);
   const [isDeletingSession, setIsDeletingSession] = useState(false);
-
-  const getNodePositions = useStagingStore((s) => s.getNodePositions);
 
   // Fetch session list
   const { data: sessions = [], isLoading: isLoadingSessions } = useSessionList();
@@ -77,11 +73,10 @@ export function useMonitorSessionManager({
   /** Notify the component that a session was activated. */
   const notifyActivated = useCallback(
     (sessionId: string) => {
-      const savedPos = getNodePositions(sessionId);
-      const hasPositions = Object.keys(savedPos).length > 0;
-      onSessionActivatedRef.current(sessionId, hasPositions);
+      // Without staging store, we always trigger auto-layout
+      onSessionActivatedRef.current(sessionId, false);
     },
-    [getNodePositions, onSessionActivatedRef]
+    [onSessionActivatedRef]
   );
 
   // Auto-select session from navigation state (e.g., from Stream view)
