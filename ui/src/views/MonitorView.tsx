@@ -208,10 +208,13 @@ const MonitorViewContent: React.FC = () => {
     createOnConnectEnd,
   } = useReactFlowCommon();
   const rf = React.useRef<ReactFlowInstance | null>(null);
-  const onInit = (instance: ReactFlowInstance) => {
-    rf.current = instance;
-    baseOnInit(instance);
-  };
+  const onInit = useCallback(
+    (instance: ReactFlowInstance) => {
+      rf.current = instance;
+      baseOnInit(instance);
+    },
+    [baseOnInit]
+  );
   // ── Node interaction callbacks (extracted hook) ───────────────────────
   const {
     onConnect,
