@@ -243,13 +243,23 @@ export const RotationControl: React.FC<{
             key={deg}
             isActive={normalisedRotation === deg}
             disabled={disabled}
-            onClick={() => onChange(deg)}
+            onClick={() => {
+              onChange(deg);
+              onCommit?.();
+            }}
           >
             {deg}&deg;
           </PresetButton>
         ))}
         <SKTooltip content="Reset to 0&deg;">
-          <ResetButton disabled={disabled} onClick={() => onChange(0)} className="nodrag nopan">
+          <ResetButton
+            disabled={disabled}
+            onClick={() => {
+              onChange(0);
+              onCommit?.();
+            }}
+            className="nodrag nopan"
+          >
             <RotateCcw size={10} />
           </ResetButton>
         </SKTooltip>

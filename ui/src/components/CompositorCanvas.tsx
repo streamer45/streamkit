@@ -64,11 +64,10 @@ export interface CompositorCanvasProps {
 /**
  * Custom comparator for CompositorCanvas memo.
  *
- * The canvas only needs to re-render when layer geometry (count, IDs,
- * positions, sizes, zIndex, visibility) changes — NOT when appearance-only
- * props like opacity or rotation change.  Those are applied via inline
- * styles on individual VideoLayer/TextOverlayLayer/ImageOverlayLayer
- * components which have their own React.memo.
+ * Video layers use zero-render DOM updates for opacity/rotation during
+ * slider drags, so we only compare geometry fields for those.
+ * Text and image overlays update via React state (not the zero-render path),
+ * so we use reference equality — a new array reference means content changed.
  */
 function areCanvasPropsEqual(prev: CompositorCanvasProps, next: CompositorCanvasProps): boolean {
   // Scalar props
@@ -88,12 +87,14 @@ function areCanvasPropsEqual(prev: CompositorCanvasProps, next: CompositorCanvas
   if (prev.layerRefs !== next.layerRefs) return false;
   if (prev.snapGuideRefs !== next.snapGuideRefs) return false;
 
-  // Layers: compare geometry only, skip appearance (opacity, rotation, mirror)
+  // Video layers: compare geometry only, skip appearance (opacity, rotation, mirror)
+  // since those use the zero-render DOM path
   if (!layerArrayGeometryEqual(prev.layers, next.layers)) return false;
 
-  // Overlay arrays: compare by count + IDs + geometry
-  if (!overlayArrayGeometryEqual(prev.textOverlays, next.textOverlays)) return false;
-  if (!overlayArrayGeometryEqual(prev.imageOverlays, next.imageOverlays)) return false;
+  // Text/image overlays: use reference equality since they update via React state
+  // and content changes (text, font, color, opacity, rotation) need to re-render
+  if (prev.textOverlays !== next.textOverlays) return false;
+  if (prev.imageOverlays !== next.imageOverlays) return false;
 
   return true;
 }
@@ -112,39 +113,6 @@ function layerArrayGeometryEqual(a: readonly LayerState[], b: readonly LayerStat
       la.height !== lb.height ||
       la.zIndex !== lb.zIndex ||
       la.visible !== lb.visible
-    ) {
-      return false;
-    }
-  }
-  return true;
-}
-
-/** Compare overlay arrays by geometry fields only. */
-function overlayArrayGeometryEqual<
-  T extends {
-    id: string;
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-    zIndex: number;
-    visible: boolean;
-  },
->(a: readonly T[] | undefined, b: readonly T[] | undefined): boolean {
-  const aa = a ?? [];
-  const bb = b ?? [];
-  if (aa.length !== bb.length) return false;
-  for (let i = 0; i < aa.length; i++) {
-    const oa = aa[i];
-    const ob = bb[i];
-    if (
-      oa.id !== ob.id ||
-      oa.x !== ob.x ||
-      oa.y !== ob.y ||
-      oa.width !== ob.width ||
-      oa.height !== ob.height ||
-      oa.zIndex !== ob.zIndex ||
-      oa.visible !== ob.visible
     ) {
       return false;
     }

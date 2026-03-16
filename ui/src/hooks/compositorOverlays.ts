@@ -44,6 +44,8 @@ export interface OverlayDeps {
   imageOverlaysRef: React.MutableRefObject<ImageOverlayState[]>;
   /** DOM element refs for layers — used for zero-render opacity/rotation updates. */
   layerRefs: React.MutableRefObject<Map<string, HTMLDivElement>>;
+  /** Set to true during zero-render slider drags to guard against server echo-back overwrites. */
+  sliderActiveRef: React.MutableRefObject<boolean>;
   throttledConfigChange: ((layers: LayerState[]) => void) | null;
   throttledOverlayCommit: ((text: TextOverlayState[], img: ImageOverlayState[]) => void) | null;
 }
@@ -61,6 +63,7 @@ export function useCompositorOverlays(deps: OverlayDeps) {
     textOverlaysRef,
     imageOverlaysRef,
     layerRefs,
+    sliderActiveRef,
     throttledConfigChange,
     throttledOverlayCommit,
   } = deps;
@@ -82,6 +85,7 @@ export function useCompositorOverlays(deps: OverlayDeps) {
   const updateLayerOpacity = useCallback(
     (layerId: string, opacity: number) => {
       const clamped = Math.max(0, Math.min(1, opacity));
+      sliderActiveRef.current = true;
       // Update the ref (source of truth during drag)
       const idx = layersRef.current.findIndex((l) => l.id === layerId);
       if (idx !== -1) {
@@ -98,11 +102,12 @@ export function useCompositorOverlays(deps: OverlayDeps) {
       // Send to server (throttled)
       throttledConfigChange?.(layersRef.current);
     },
-    [layersRef, layerRefs, throttledConfigChange]
+    [layersRef, layerRefs, sliderActiveRef, throttledConfigChange]
   );
 
   const updateLayerRotation = useCallback(
     (layerId: string, degrees: number) => {
+      sliderActiveRef.current = true;
       // Update the ref
       const idx = layersRef.current.findIndex((l) => l.id === layerId);
       if (idx !== -1) {
@@ -125,7 +130,7 @@ export function useCompositorOverlays(deps: OverlayDeps) {
       // Send to server (throttled)
       throttledConfigChange?.(layersRef.current);
     },
-    [layersRef, layerRefs, throttledConfigChange]
+    [layersRef, layerRefs, sliderActiveRef, throttledConfigChange]
   );
 
   /**
@@ -134,8 +139,9 @@ export function useCompositorOverlays(deps: OverlayDeps) {
    * zero-render opacity/rotation updates.
    */
   const commitLayerAppearance = useCallback(() => {
+    sliderActiveRef.current = false;
     setLayers([...layersRef.current]);
-  }, [setLayers, layersRef]);
+  }, [setLayers, layersRef, sliderActiveRef]);
 
   const updateLayerPositionSize = useCallback(
     (layerId: string, patch: { x?: number; y?: number; width?: number; height?: number }) => {

@@ -154,6 +154,7 @@ export const useCompositorLayers = (
   }, [imageOverlays]);
 
   const layerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const sliderActiveRef = useRef(false);
   const snapGuideRefs = useRef<{
     vertical: HTMLDivElement | null;
     horizontal: HTMLDivElement | null;
@@ -173,7 +174,7 @@ export const useCompositorLayers = (
   const isMonitorView = !!sessionId;
 
   useEffect(() => {
-    if (dragStateRef.current) return;
+    if (dragStateRef.current || sliderActiveRef.current) return;
     const parsed = parseLayers(params, canvasWidth, canvasHeight);
 
     const merged = mergeOverlayState(
@@ -271,6 +272,7 @@ export const useCompositorLayers = (
     textOverlaysRef,
     imageOverlaysRef,
     layerRefs,
+    sliderActiveRef,
     throttledConfigChange,
     throttledOverlayCommit,
   });
