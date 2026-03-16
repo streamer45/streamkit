@@ -55,7 +55,7 @@ import { useLayoutStore } from '@/stores/layoutStore';
 import { usePluginStore } from '@/stores/pluginStore';
 import { useSchemaStore } from '@/stores/schemaStore';
 import { useSessionStore } from '@/stores/sessionStore';
-import type { NodeDefinition, Connection, Pipeline, InputPin, OutputPin } from '@/types/types';
+import type { NodeDefinition, Pipeline, InputPin, OutputPin } from '@/types/types';
 import { topoLevelsFromPipeline, orderedNamesFromLevels } from '@/utils/dag';
 import { deepEqual } from '@/utils/deepEqual';
 import { validateValue } from '@/utils/jsonSchema';
@@ -63,6 +63,7 @@ import { viewsLogger } from '@/utils/logger';
 import {
   buildEdgesFromConnections,
   buildNodeObject,
+  computeTopoKey,
   generatePipelineYaml,
 } from '@/utils/pipelineGraph';
 import { nodeTypes, defaultEdgeOptions } from '@/utils/reactFlowDefaults';
@@ -339,16 +340,14 @@ const MonitorViewContent: React.FC = () => {
   //   reconstructDynamic{Inputs,Outputs}) are already factored out as callbacks,
   //   keeping the topology effect itself reasonably readable.
 
-  // Topology signature: only changes when nodes/kinds or connections change
-  const topoKey = React.useMemo(() => {
-    if (!pipeline) return '';
-    const names = Object.keys(pipeline.nodes).sort();
-    const kinds = names.map((n) => `${n}:${pipeline.nodes[n].kind}`);
-    const conns = pipeline.connections
-      .map((c: Connection) => `${c.from_node}:${c.from_pin}>${c.to_node}:${c.to_pin}`)
-      .sort();
-    return JSON.stringify([kinds, conns]);
-  }, [pipeline]);
+  // Topology signature: changes when nodes/kinds, connections, or session changes.
+  // Including selectedSessionId ensures that switching between sessions with
+  // identical topology still forces a node rebuild (re-binding callbacks like
+  // stableOnParamChange to the correct session's tuneNode).
+  const topoKey = React.useMemo(
+    () => computeTopoKey(pipeline, selectedSessionId),
+    [pipeline, selectedSessionId]
+  );
 
   // Auto-layout + fit-view hook
   const { setNeedsAutoLayout, setNeedsFit, handleAutoLayout } = useAutoLayout({
@@ -625,7 +624,7 @@ const MonitorViewContent: React.FC = () => {
       prevTopoKeyForTopologyRef.current === topoKey
     );
 
-    // Skip if topoKey hasn't actually changed (entering/exiting staging with same topology)
+    // Skip if topoKey hasn't actually changed (e.g. pipeline reference changed but topology is identical)
     if (prevTopoKeyForTopologyRef.current === topoKey && nodes.length > 0) {
       viewsLogger.debug('Skipping topology effect, topoKey unchanged');
       return;

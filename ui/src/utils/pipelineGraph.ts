@@ -75,6 +75,32 @@ export const describeSlowInputs = (
 };
 
 // ---------------------------------------------------------------------------
+// Topology key
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute a topology key that uniquely identifies the structural shape of a
+ * pipeline within a specific session.  The key changes when:
+ *   - node names or kinds change
+ *   - connections change
+ *   - the selected session changes (so switching between sessions with
+ *     identical topology still forces a node rebuild, ensuring callbacks
+ *     like `stableOnParamChange` are re-bound to the correct session)
+ */
+export const computeTopoKey = (
+  pipeline: Pipeline | null | undefined,
+  selectedSessionId: string | null
+): string => {
+  if (!pipeline) return '';
+  const names = Object.keys(pipeline.nodes).sort();
+  const kinds = names.map((n) => `${n}:${pipeline.nodes[n].kind}`);
+  const conns = pipeline.connections
+    .map((c: Connection) => `${c.from_node}:${c.from_pin}>${c.to_node}:${c.to_pin}`)
+    .sort();
+  return JSON.stringify([selectedSessionId, kinds, conns]);
+};
+
+// ---------------------------------------------------------------------------
 // Edge connection validation
 // ---------------------------------------------------------------------------
 
