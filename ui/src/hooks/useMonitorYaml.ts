@@ -5,29 +5,51 @@
 /**
  * YAML synchronisation for the Monitor view.
  *
- * Regenerates YAML when the active pipeline changes (unless the user
- * is actively editing). YAML is read-only in the monitor view — all
- * mutations go through direct WebSocket calls.
+ * YAML is **read-only** in Monitor view — all mutations go through direct
+ * WebSocket calls.  This hook regenerates the YAML string whenever the
+ * canonical pipeline (from `sessionStore`) changes.
  *
- * Extracted from MonitorViewContent to isolate the regeneration effect.
+ * To avoid O(N·log N) YAML dumps on every RAF-batched param echo-back
+ * (e.g. during rapid slider drags), regeneration is **debounced** for
+ * param-only changes.  Structural changes (topology effect) bypass the
+ * debounce by calling `setYamlFromTopology` directly.
+ *
+ * **Single source of truth**: params are read exclusively from
+ * `sessionStore.pipeline.nodes[x].params`.  `nodeParamsStore` is NOT
+ * consulted — it exists only as an optimistic overlay for immediate UI
+ * controls (sliders, inspector).
  */
 
-import { dump } from 'js-yaml';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 
-import { useNodeParamsStore } from '@/stores/nodeParamsStore';
-import type { Connection, Pipeline } from '@/types/types';
-import { topoLevelsFromPipeline, orderedNamesFromLevels } from '@/utils/dag';
+import type { Pipeline } from '@/types/types';
+import { pipelineToYaml } from '@/utils/pipelineGraph';
+
+/** Debounce window for param-only YAML regeneration (ms). */
+const YAML_REGEN_DEBOUNCE_MS = 300;
 
 interface UseMonitorYamlOptions {
   selectedSessionId: string | null;
   pipeline: Pipeline | null | undefined;
+  /** Current topology key — used to distinguish structural changes
+   *  (which should regenerate immediately) from param-only changes
+   *  (which are debounced). */
+  topoKey: string;
 }
 
-export function useMonitorYaml({ selectedSessionId, pipeline }: UseMonitorYamlOptions) {
+export function useMonitorYaml({ selectedSessionId, pipeline, topoKey }: UseMonitorYamlOptions) {
   const [yamlString, setYamlString] = useState<string>('');
+  const prevTopoKeyRef = useRef(topoKey);
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // ── YAML regeneration effect ──────────────────────────────────────────
+  // ── Debounced YAML regeneration for param-only pipeline changes ──────
+  //
+  // When topoKey changes, the topology effect in MonitorView calls
+  // setYamlFromTopology directly (immediate, no debounce).
+  //
+  // When only params change (pipeline reference changes but topoKey is
+  // stable), we debounce to avoid dumping YAML on every RAF frame during
+  // slider drags.
 
   useEffect(() => {
     if (!pipeline) {
@@ -35,43 +57,40 @@ export function useMonitorYaml({ selectedSessionId, pipeline }: UseMonitorYamlOp
       return;
     }
 
-    const yamlObject: { nodes: Record<string, unknown> } = { nodes: {} };
-
-    const { levels, sortedLevels } = topoLevelsFromPipeline(pipeline);
-    const sortedNames = orderedNamesFromLevels(levels, sortedLevels);
-
-    for (const nodeName of sortedNames) {
-      const apiNode = pipeline.nodes[nodeName];
-      if (!apiNode) continue;
-
-      const needs = pipeline.connections
-        .filter((c: Connection) => c.to_node === nodeName)
-        .map((c: Connection) => c.from_node);
-
-      const nodeConfig: Record<string, unknown> = { kind: apiNode.kind };
-
-      const overrides = useNodeParamsStore
-        .getState()
-        .getParamsForNode(nodeName, selectedSessionId ?? undefined);
-      const mergedParams = { ...(apiNode.params || {}), ...(overrides || {}) };
-      if (Object.keys(mergedParams).length > 0) {
-        nodeConfig['params'] = mergedParams;
-      }
-
-      if (needs.length === 1) {
-        nodeConfig['needs'] = needs[0];
-      } else if (needs.length > 1) {
-        nodeConfig['needs'] = needs;
-      }
-
-      yamlObject.nodes[nodeName] = nodeConfig;
+    // Structural change — the topology effect handles YAML via
+    // setYamlFromTopology.  Update our ref and skip.
+    if (prevTopoKeyRef.current !== topoKey) {
+      prevTopoKeyRef.current = topoKey;
+      return;
     }
 
-    setYamlString(dump(yamlObject, { skipInvalid: true }));
-  }, [pipeline, selectedSessionId]);
+    // Param-only change — debounce.
+    if (debounceTimerRef.current !== null) {
+      clearTimeout(debounceTimerRef.current);
+    }
+    debounceTimerRef.current = setTimeout(() => {
+      debounceTimerRef.current = null;
+      setYamlString(pipelineToYaml(pipeline));
+    }, YAML_REGEN_DEBOUNCE_MS);
 
-  /** Set YAML from the topology effect (external caller). */
-  const setYamlFromTopology = setYamlString;
+    return () => {
+      if (debounceTimerRef.current !== null) {
+        clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
+      }
+    };
+  }, [pipeline, selectedSessionId, topoKey]);
+
+  /** Set YAML from the topology effect (external caller, immediate). */
+  const setYamlFromTopology = useCallback((yaml: string) => {
+    // Cancel any pending debounced regeneration — structural YAML takes
+    // precedence.
+    if (debounceTimerRef.current !== null) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
+    setYamlString(yaml);
+  }, []);
 
   return {
     yamlString,

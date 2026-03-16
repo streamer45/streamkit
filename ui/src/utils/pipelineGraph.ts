@@ -19,6 +19,7 @@ import type {
   InputPin,
   OutputPin,
 } from '@/types/types';
+import { topoLevelsFromPipeline, orderedNamesFromLevels } from '@/utils/dag';
 
 // ---------------------------------------------------------------------------
 // Edge-alert helpers (slow-input-timeout)
@@ -181,6 +182,17 @@ export const generatePipelineYaml = (pipeline: Pipeline, orderedNames: string[])
 
   return dump(yamlObject, { skipInvalid: true });
 };
+
+/**
+ * Convenience wrapper: topologically sort a pipeline and dump it as YAML.
+ * Used by `useMonitorYaml` for debounced param-only regeneration where the
+ * caller doesn't already have a pre-computed `orderedNames`.
+ */
+export function pipelineToYaml(pipeline: Pipeline): string {
+  const { levels, sortedLevels } = topoLevelsFromPipeline(pipeline);
+  const orderedNames = orderedNamesFromLevels(levels, sortedLevels);
+  return generatePipelineYaml(pipeline, orderedNames);
+}
 
 // ---------------------------------------------------------------------------
 // ReactFlow node construction

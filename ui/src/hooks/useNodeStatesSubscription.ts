@@ -3,14 +3,18 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Hook that bridges Zustand node-state updates to ReactFlow nodes/edges
- * without re-rendering MonitorViewContent.
+ * Hook that bridges Zustand node-state and pipeline-param updates to
+ * ReactFlow nodes/edges without re-rendering MonitorViewContent.
  *
- * Instead of subscribing reactively to `nodeStates` (which would re-render
- * the entire component on every node-state transition), this hook subscribes
- * directly to the Zustand store and patches ReactFlow nodes/edges from the
- * callback.  This completely bypasses React's render cycle for high-frequency
- * state changes during session load.
+ * Instead of subscribing reactively to `nodeStates` or `pipeline` (which
+ * would re-render the entire component on every change), this hook
+ * subscribes directly to the Zustand store and patches ReactFlow
+ * nodes/edges from the callback.  This completely bypasses React's
+ * render cycle for high-frequency state/param changes.
+ *
+ * The subscription fires when *either* `nodeStates` or `pipeline`
+ * reference changes — ensuring that RAF-batched param echo-backs (which
+ * only update `pipeline.nodes[x].params`) also flow into RF node data.
  *
  * Patches are throttled: the first change applies immediately, then
  * subsequent changes within PATCH_THROTTLE_MS are coalesced into a single
@@ -69,6 +73,7 @@ export function useNodeStatesSubscription({
     const PATCH_THROTTLE_MS = 100;
 
     let prevNodeStates: Record<string, NodeState> | undefined;
+    let prevPipeline: Pipeline | undefined | null;
     let lastPatchTime = 0;
     let throttleTimer: ReturnType<typeof setTimeout> | null = null;
     let pendingNodeStates: Record<string, NodeState> | null = null;
@@ -202,10 +207,15 @@ export function useNodeStatesSubscription({
     const unsubscribe = useSessionStore.subscribe((state) => {
       const session = state.sessions.get(selectedSessionId);
       const nodeStates = session?.nodeStates;
+      const pipeline = session?.pipeline;
 
-      // Skip if same reference (store changed for a different reason)
-      if (nodeStates === prevNodeStates) return;
+      // Skip if neither nodeStates nor pipeline changed (store updated
+      // for an unrelated reason, e.g. a different session).
+      const statesChanged = nodeStates !== prevNodeStates;
+      const pipelineChanged = pipeline !== prevPipeline;
+      if (!statesChanged && !pipelineChanged) return;
       prevNodeStates = nodeStates;
+      prevPipeline = pipeline;
 
       // Skip on initial mount — let the topology effect handle everything
       if (isInitialMountRef.current) {

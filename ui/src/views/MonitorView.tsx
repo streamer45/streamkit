@@ -361,11 +361,15 @@ const MonitorViewContent: React.FC = () => {
     rf,
   });
 
-  // Wire the session-activation bridge now that setNeedsAutoLayout is available
-  onSessionActivatedRef.current = (_sessionId: string, hasPositions: boolean) => {
-    setNeedsAutoLayout(!hasPositions);
-    setNeedsFit(true);
-  };
+  // Wire the session-activation bridge now that setNeedsAutoLayout is available.
+  // Using useEffect keeps the ref assignment inside the React lifecycle and
+  // avoids the unusual pattern of reassigning a ref on every render body.
+  useEffect(() => {
+    onSessionActivatedRef.current = (_sessionId: string, hasPositions: boolean) => {
+      setNeedsAutoLayout(!hasPositions);
+      setNeedsFit(true);
+    };
+  }, [setNeedsAutoLayout, setNeedsFit, onSessionActivatedRef]);
 
   // Throttled Zustand→ReactFlow patching bridge
   const { topoEffectRanRef } = useNodeStatesSubscription({
@@ -423,6 +427,7 @@ const MonitorViewContent: React.FC = () => {
   const { yamlString, setYamlFromTopology } = useMonitorYaml({
     selectedSessionId,
     pipeline,
+    topoKey,
   });
 
   // Track previous topoKey to avoid unnecessary rebuilds
@@ -627,7 +632,12 @@ const MonitorViewContent: React.FC = () => {
       prevTopoKeyForTopologyRef.current === topoKey
     );
 
-    // Skip if topoKey hasn't actually changed (e.g. pipeline reference changed but topology is identical)
+    // Skip if topoKey hasn't actually changed (e.g. pipeline reference changed but topology is identical).
+    // NOTE: `nodes.length` is read from the closure but NOT included in the
+    // deps array.  This is intentional — we only want to allow a rebuild when
+    // the graph is empty (length === 0), e.g. right after a session switch
+    // clears the canvas.  Including `nodes` in deps would cause the effect to
+    // re-run on every position/drag change, defeating the purpose of topoKey.
     if (prevTopoKeyForTopologyRef.current === topoKey && nodes.length > 0) {
       viewsLogger.debug('Skipping topology effect, topoKey unchanged');
       return;

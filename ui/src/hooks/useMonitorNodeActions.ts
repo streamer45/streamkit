@@ -18,7 +18,7 @@ import type {
   ReactFlowInstance,
   OnConnectEnd,
 } from '@xyflow/react';
-import React, { useCallback } from 'react';
+import React, { useCallback, useRef } from 'react';
 
 import { useDnD } from '@/context/DnDContext';
 import { useSchemaStore } from '@/stores/schemaStore';
@@ -63,6 +63,13 @@ export function useMonitorNodeActions({
   rfInstance,
 }: UseMonitorNodeActionsOptions) {
   const [type, setType] = useDnD();
+
+  // Keep a ref to the DnD type so onDrop can read the current value
+  // without capturing `type` in its deps.  This prevents onDrop from
+  // being recreated on every drag-start (which would bust centerPanel
+  // memoisation).
+  const typeRef = useRef(type);
+  typeRef.current = type;
 
   // ── Name generation ───────────────────────────────────────────────────
   const generateName = useCallback(
@@ -115,6 +122,7 @@ export function useMonitorNodeActions({
         setNodes
       )(connection);
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- refs are stable objects; .current is read at call time
     [createOnConnect, setEdges, connectPins, setNodes]
   );
 
@@ -125,6 +133,7 @@ export function useMonitorNodeActions({
         connectionState
       );
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- refs are stable objects; .current is read at call time
     [createOnConnectEnd]
   );
 
@@ -180,7 +189,8 @@ export function useMonitorNodeActions({
   const onDrop = useCallback(
     (event: React.DragEvent) => {
       event.preventDefault();
-      if (!type) {
+      const currentType = typeRef.current;
+      if (!currentType) {
         return;
       }
 
@@ -190,7 +200,7 @@ export function useMonitorNodeActions({
         y: event.clientY,
       }) ?? { x: event.clientX, y: event.clientY };
 
-      const kind = type;
+      const kind = currentType;
       const nodeId = generateName(kind);
       const params = getDefaultParams(kind);
 
@@ -200,7 +210,10 @@ export function useMonitorNodeActions({
       addNode(nodeId, kind, params);
       setType(null);
     },
-    [type, addNode, setType, generateName, getDefaultParams]
+    // typeRef is read from a ref — no need to include `type` as a dep.
+    // This keeps onDrop stable across drag-start events.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [addNode, setType, generateName, getDefaultParams]
   );
 
   return {
