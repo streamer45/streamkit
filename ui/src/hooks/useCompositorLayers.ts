@@ -20,6 +20,8 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 
+import { PARAM_THROTTLE_MS } from '@/constants/timing';
+
 import { useCompositorCommit } from './compositorCommit';
 import type { LayerKind } from './compositorConstants';
 import { DEFAULT_CROP_X, DEFAULT_CROP_Y, DEFAULT_CROP_ZOOM } from './compositorConstants';
@@ -68,6 +70,8 @@ export interface UseCompositorLayersResult {
   handleResizePointerDown: (layerId: string, handle: ResizeHandle, e: React.PointerEvent) => void;
   updateLayerOpacity: (layerId: string, opacity: number) => void;
   updateLayerRotation: (layerId: string, degrees: number) => void;
+  /** Sync ref-based appearance state to React state. Call on slider pointer-up. */
+  commitLayerAppearance: () => void;
   updateLayerPositionSize: (
     layerId: string,
     patch: { x?: number; y?: number; width?: number; height?: number }
@@ -118,7 +122,7 @@ export const useCompositorLayers = (
     params,
     onConfigChange,
     onParamChange,
-    throttleMs = 100,
+    throttleMs = PARAM_THROTTLE_MS,
   } = options;
 
   const [layers, setLayers] = useState<LayerState[]>(() =>
@@ -266,6 +270,7 @@ export const useCompositorLayers = (
     layersRef,
     textOverlaysRef,
     imageOverlaysRef,
+    layerRefs,
     throttledConfigChange,
     throttledOverlayCommit,
   });
@@ -298,6 +303,7 @@ export const useCompositorLayers = (
     handleResizePointerDown,
     updateLayerOpacity: overlayOps.updateLayerOpacity,
     updateLayerRotation: overlayOps.updateLayerRotation,
+    commitLayerAppearance: overlayOps.commitLayerAppearance,
     updateLayerPositionSize: overlayOps.updateLayerPositionSize,
     updateLayerZIndex: overlayOps.updateLayerZIndex,
     toggleLayerVisibility: overlayOps.toggleLayerVisibility,

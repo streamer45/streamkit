@@ -61,6 +61,97 @@ export interface CompositorCanvasProps {
   disabled?: boolean;
 }
 
+/**
+ * Custom comparator for CompositorCanvas memo.
+ *
+ * The canvas only needs to re-render when layer geometry (count, IDs,
+ * positions, sizes, zIndex, visibility) changes — NOT when appearance-only
+ * props like opacity or rotation change.  Those are applied via inline
+ * styles on individual VideoLayer/TextOverlayLayer/ImageOverlayLayer
+ * components which have their own React.memo.
+ */
+function areCanvasPropsEqual(prev: CompositorCanvasProps, next: CompositorCanvasProps): boolean {
+  // Scalar props
+  if (prev.canvasWidth !== next.canvasWidth) return false;
+  if (prev.canvasHeight !== next.canvasHeight) return false;
+  if (prev.selectedLayerId !== next.selectedLayerId) return false;
+  if (prev.disabled !== next.disabled) return false;
+
+  // Callback identity (stable via useCallback in parent)
+  if (prev.onSelectLayer !== next.onSelectLayer) return false;
+  if (prev.onLayerPointerDown !== next.onLayerPointerDown) return false;
+  if (prev.onResizePointerDown !== next.onResizePointerDown) return false;
+  if (prev.onTextFocusRequest !== next.onTextFocusRequest) return false;
+  if (prev.onLayerContextMenu !== next.onLayerContextMenu) return false;
+
+  // Ref identity (stable MutableRefObjects)
+  if (prev.layerRefs !== next.layerRefs) return false;
+  if (prev.snapGuideRefs !== next.snapGuideRefs) return false;
+
+  // Layers: compare geometry only, skip appearance (opacity, rotation, mirror)
+  if (!layerArrayGeometryEqual(prev.layers, next.layers)) return false;
+
+  // Overlay arrays: compare by count + IDs + geometry
+  if (!overlayArrayGeometryEqual(prev.textOverlays, next.textOverlays)) return false;
+  if (!overlayArrayGeometryEqual(prev.imageOverlays, next.imageOverlays)) return false;
+
+  return true;
+}
+
+/** Compare layer arrays by geometry fields only (skip opacity/rotation/mirror). */
+function layerArrayGeometryEqual(a: readonly LayerState[], b: readonly LayerState[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const la = a[i];
+    const lb = b[i];
+    if (
+      la.id !== lb.id ||
+      la.x !== lb.x ||
+      la.y !== lb.y ||
+      la.width !== lb.width ||
+      la.height !== lb.height ||
+      la.zIndex !== lb.zIndex ||
+      la.visible !== lb.visible
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Compare overlay arrays by geometry fields only. */
+function overlayArrayGeometryEqual<
+  T extends {
+    id: string;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    zIndex: number;
+    visible: boolean;
+  },
+>(a: readonly T[] | undefined, b: readonly T[] | undefined): boolean {
+  const aa = a ?? [];
+  const bb = b ?? [];
+  if (aa.length !== bb.length) return false;
+  for (let i = 0; i < aa.length; i++) {
+    const oa = aa[i];
+    const ob = bb[i];
+    if (
+      oa.id !== ob.id ||
+      oa.x !== ob.x ||
+      oa.y !== ob.y ||
+      oa.width !== ob.width ||
+      oa.height !== ob.height ||
+      oa.zIndex !== ob.zIndex ||
+      oa.visible !== ob.visible
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
   ({
     canvasWidth,
@@ -235,7 +326,8 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
         </CanvasInner>
       </CanvasOuter>
     );
-  }
+  },
+  areCanvasPropsEqual
 );
 
 CompositorCanvas.displayName = 'CompositorCanvas';

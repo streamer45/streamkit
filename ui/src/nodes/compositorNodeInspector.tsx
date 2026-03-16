@@ -347,6 +347,8 @@ export interface CompositorInspectorProps {
   handleSelectedMirrorToggle: (axis: 'horizontal' | 'vertical') => void;
   handleSelectedPositionSizeChange: (patch: PositionSizePatch) => void;
   handleSelectedCropZoomChange: (patch: CropZoomPatch) => void;
+  /** Called on slider pointer-up to sync ref-based appearance to React state. */
+  onAppearanceCommit?: () => void;
   dimensionsReadOnly?: boolean;
   disabled: boolean;
 }
@@ -363,6 +365,7 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
     handleSelectedMirrorToggle,
     handleSelectedPositionSizeChange,
     handleSelectedCropZoomChange,
+    onAppearanceCommit,
     dimensionsReadOnly,
     disabled,
   }) => {
@@ -385,11 +388,13 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
           <OpacityControl
             opacity={inspectorProps.opacity}
             onChange={handleSelectedOpacityChange}
+            onCommit={onAppearanceCommit}
             disabled={disabled}
           />
           <RotationControl
             rotationDegrees={inspectorProps.rotationDegrees}
             onChange={handleSelectedRotationChange}
+            onCommit={onAppearanceCommit}
             disabled={disabled}
           />
           <MirrorControl

@@ -42,6 +42,8 @@ export interface OverlayDeps {
   layersRef: React.MutableRefObject<LayerState[]>;
   textOverlaysRef: React.MutableRefObject<TextOverlayState[]>;
   imageOverlaysRef: React.MutableRefObject<ImageOverlayState[]>;
+  /** DOM element refs for layers — used for zero-render opacity/rotation updates. */
+  layerRefs: React.MutableRefObject<Map<string, HTMLDivElement>>;
   throttledConfigChange: ((layers: LayerState[]) => void) | null;
   throttledOverlayCommit: ((text: TextOverlayState[], img: ImageOverlayState[]) => void) | null;
 }
@@ -58,6 +60,7 @@ export function useCompositorOverlays(deps: OverlayDeps) {
     layersRef,
     textOverlaysRef,
     imageOverlaysRef,
+    layerRefs,
     throttledConfigChange,
     throttledOverlayCommit,
   } = deps;
@@ -70,30 +73,69 @@ export function useCompositorOverlays(deps: OverlayDeps) {
   );
 
   // ── Layer property updates ───────────────────────────────────────────
+  //
+  // Opacity and rotation use zero-render updates during slider drags:
+  // update the ref + DOM element directly, send throttled server update,
+  // but skip setLayers() to avoid full CompositorNode re-renders.
+  // React state is synced on pointer-up via commitLayerAppearance().
 
   const updateLayerOpacity = useCallback(
     (layerId: string, opacity: number) => {
-      setLayers((prev) => {
-        const next = prev.map((l) =>
-          l.id === layerId ? { ...l, opacity: Math.max(0, Math.min(1, opacity)) } : l
+      const clamped = Math.max(0, Math.min(1, opacity));
+      // Update the ref (source of truth during drag)
+      const idx = layersRef.current.findIndex((l) => l.id === layerId);
+      if (idx !== -1) {
+        layersRef.current = layersRef.current.map((l, i) =>
+          i === idx ? { ...l, opacity: clamped } : l
         );
-        throttledConfigChange?.(next);
-        return next;
-      });
+      }
+      // Apply directly to DOM for instant visual feedback
+      const el = layerRefs.current.get(layerId);
+      if (el) {
+        const layer = layersRef.current[idx];
+        el.style.opacity = String(layer?.visible !== false ? clamped : 0.2);
+      }
+      // Send to server (throttled)
+      throttledConfigChange?.(layersRef.current);
     },
-    [setLayers, throttledConfigChange]
+    [layersRef, layerRefs, throttledConfigChange]
   );
 
   const updateLayerRotation = useCallback(
     (layerId: string, degrees: number) => {
-      setLayers((prev) => {
-        const next = prev.map((l) => (l.id === layerId ? { ...l, rotationDegrees: degrees } : l));
-        throttledConfigChange?.(next);
-        return next;
-      });
+      // Update the ref
+      const idx = layersRef.current.findIndex((l) => l.id === layerId);
+      if (idx !== -1) {
+        layersRef.current = layersRef.current.map((l, i) =>
+          i === idx ? { ...l, rotationDegrees: degrees } : l
+        );
+      }
+      // Apply directly to DOM
+      const el = layerRefs.current.get(layerId);
+      if (el) {
+        const layer = layersRef.current[idx];
+        if (layer) {
+          const parts: string[] = [];
+          if (degrees !== 0) parts.push(`rotate(${degrees}deg)`);
+          if (layer.mirrorHorizontal) parts.push('scaleX(-1)');
+          if (layer.mirrorVertical) parts.push('scaleY(-1)');
+          el.style.transform = parts.length > 0 ? parts.join(' ') : '';
+        }
+      }
+      // Send to server (throttled)
+      throttledConfigChange?.(layersRef.current);
     },
-    [setLayers, throttledConfigChange]
+    [layersRef, layerRefs, throttledConfigChange]
   );
+
+  /**
+   * Sync the ref-based layer state back to React state.
+   * Call this on pointer-up (onValueCommit) after a series of
+   * zero-render opacity/rotation updates.
+   */
+  const commitLayerAppearance = useCallback(() => {
+    setLayers([...layersRef.current]);
+  }, [setLayers, layersRef]);
 
   const updateLayerPositionSize = useCallback(
     (layerId: string, patch: { x?: number; y?: number; width?: number; height?: number }) => {
@@ -505,6 +547,7 @@ export function useCompositorOverlays(deps: OverlayDeps) {
     selectLayer,
     updateLayerOpacity,
     updateLayerRotation,
+    commitLayerAppearance,
     updateLayerPositionSize,
     updateLayerZIndex,
     toggleLayerVisibility,

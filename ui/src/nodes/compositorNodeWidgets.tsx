@@ -197,14 +197,17 @@ InspectorHeaderSection.displayName = 'InspectorHeaderSection';
 export const OpacityControl: React.FC<{
   opacity: number;
   onChange: (value: number) => void;
+  /** Called on pointer-up to sync React state after zero-render slider drags. */
+  onCommit?: () => void;
   disabled: boolean;
-}> = React.memo(({ opacity, onChange, disabled }) => (
+}> = React.memo(({ opacity, onChange, onCommit, disabled }) => (
   <InspectorSection>
     <InspectorSectionLabel>Opacity</InspectorSectionLabel>
     <ControlRow>
       <CompactSliderRoot
         value={[opacity]}
         onValueChange={([v]) => onChange(v)}
+        onValueCommit={onCommit ? () => onCommit() : undefined}
         min={0}
         max={1}
         step={0.01}
@@ -225,8 +228,10 @@ OpacityControl.displayName = 'OpacityControl';
 export const RotationControl: React.FC<{
   rotationDegrees: number;
   onChange: (value: number) => void;
+  /** Called on pointer-up to sync React state after zero-render slider drags. */
+  onCommit?: () => void;
   disabled: boolean;
-}> = React.memo(({ rotationDegrees, onChange, disabled }) => {
+}> = React.memo(({ rotationDegrees, onChange, onCommit, disabled }) => {
   const normalisedRotation = ((Math.round(rotationDegrees) % 360) + 360) % 360;
 
   return (
@@ -253,6 +258,7 @@ export const RotationControl: React.FC<{
         <CompactSliderRoot
           value={[normalisedRotation]}
           onValueChange={([v]) => onChange(v)}
+          onValueCommit={onCommit ? () => onCommit() : undefined}
           min={0}
           max={359}
           step={1}
