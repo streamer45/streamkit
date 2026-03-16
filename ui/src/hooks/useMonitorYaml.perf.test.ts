@@ -22,9 +22,7 @@ import type { Pipeline } from '@/types/types';
 import { useMonitorYaml } from './useMonitorYaml';
 
 /** Build a minimal pipeline for YAML generation. */
-function makePipeline(
-  paramOverrides: Record<string, Record<string, unknown>> = {}
-): Pipeline {
+function makePipeline(paramOverrides: Record<string, Record<string, unknown>> = {}): Pipeline {
   return {
     nodes: {
       source: {
@@ -56,16 +54,13 @@ describe('useMonitorYaml param flow', () => {
     const pipeline = makePipeline();
     const topoKey = 'source,encoder|source->encoder';
 
-    const { result, rerender } = renderHook(
-      (props) => useMonitorYaml(props),
-      {
-        initialProps: {
-          selectedSessionId: 'session-1',
-          pipeline,
-          topoKey,
-        },
-      }
-    );
+    const { result, rerender } = renderHook((props) => useMonitorYaml(props), {
+      initialProps: {
+        selectedSessionId: 'session-1',
+        pipeline,
+        topoKey,
+      },
+    });
 
     // Initial render — no YAML yet (debounce hasn't fired)
     expect(result.current.yamlString).toBe('');
@@ -108,16 +103,13 @@ describe('useMonitorYaml param flow', () => {
     const pipeline = makePipeline();
     const topoKey = 'source,encoder|source->encoder';
 
-    const { result, rerender } = renderHook(
-      (props) => useMonitorYaml(props),
-      {
-        initialProps: {
-          selectedSessionId: 'session-1',
-          pipeline,
-          topoKey,
-        },
-      }
-    );
+    const { result, rerender } = renderHook((props) => useMonitorYaml(props), {
+      initialProps: {
+        selectedSessionId: 'session-1',
+        pipeline,
+        topoKey,
+      },
+    });
 
     // Fire initial debounce
     act(() => {
@@ -155,16 +147,13 @@ describe('useMonitorYaml param flow', () => {
     const pipeline = makePipeline();
     const topoKey = 'source,encoder|source->encoder';
 
-    const { result, rerender } = renderHook(
-      (props) => useMonitorYaml(props),
-      {
-        initialProps: {
-          selectedSessionId: 'session-1' as string | null,
-          pipeline: pipeline as Pipeline | null,
-          topoKey,
-        },
-      }
-    );
+    const { result, rerender } = renderHook((props) => useMonitorYaml(props), {
+      initialProps: {
+        selectedSessionId: 'session-1' as string | null,
+        pipeline: pipeline as Pipeline | null,
+        topoKey,
+      },
+    });
 
     // Fire initial debounce
     act(() => {
@@ -188,16 +177,13 @@ describe('useMonitorYaml param flow', () => {
     const pipeline = makePipeline();
     const topoKey1 = 'source,encoder|source->encoder';
 
-    const { result, rerender } = renderHook(
-      (props) => useMonitorYaml(props),
-      {
-        initialProps: {
-          selectedSessionId: 'session-1',
-          pipeline,
-          topoKey: topoKey1,
-        },
-      }
-    );
+    const { result, rerender } = renderHook((props) => useMonitorYaml(props), {
+      initialProps: {
+        selectedSessionId: 'session-1',
+        pipeline,
+        topoKey: topoKey1,
+      },
+    });
 
     // Fire initial debounce
     act(() => {
