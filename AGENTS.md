@@ -124,6 +124,37 @@ Key files:
 Use Layer 2 when you need real paint/layout timing or want to profile
 interactions end-to-end with actual browser rendering.
 
+### Ad-hoc profiling with React DevTools exports
+
+For investigating specific performance issues (e.g. "why does dragging this
+slider feel sluggish?"), capture a profile from the React DevTools Profiler
+and analyze it with the included script:
+
+1. Open React DevTools > Profiler tab, record the interaction, then **Export**
+   the profile as JSON.
+2. Run:
+
+```bash
+just analyze-profile profiling-data.json           # summary + top components
+just analyze-profile profiling-data.json --cascade  # re-render cascade trees
+just analyze-profile profiling-data.json --why      # prop-change analysis
+just analyze-profile profiling-data.json --commit 10  # single commit detail
+just analyze-profile profiling-data.json --filter "Compositor|VideoLayer"
+```
+
+The script (`scripts/analyze-react-profile.mjs`) parses the React DevTools
+profiling JSON (format v5), maps fiber IDs to component names, and reports:
+
+- **Top components** by total self-time across all commits
+- **Cascade trees** showing the full re-render chain for the heaviest commits
+- **Why analysis** identifying prop-driven re-renders (potential object-reference
+  instability) and cascade victims (components re-rendering only because a parent
+  did)
+- **Per-commit detail** with every component's self/actual time and trigger reason
+
+Use this to pinpoint memoization breaks, unstable object references, and
+unnecessary re-render cascades before diving into code.
+
 ### Updating the baseline
 
 Run `just perf-ui` — the last test in the render-perf suite writes a fresh

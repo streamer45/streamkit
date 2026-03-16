@@ -245,6 +245,12 @@ perf-e2e: install-e2e
     @echo "Running e2e compositor perf test against dev server..."
     @E2E_BASE_URL=${E2E_BASE_URL:-http://localhost:3045} bunx playwright test tests/compositor-perf.spec.ts
 
+# Analyze a React DevTools profiling export to find unnecessary re-renders
+# Usage: just analyze-profile <profile.json> [options]
+# Options: --top N, --commit N, --threshold MS, --filter PATTERN, --cascade, --why, --summary
+analyze-profile *ARGS:
+    @node scripts/analyze-react-profile.mjs {{ARGS}}
+
 # Lint and type-check the UI code
 [working-directory: 'ui']
 lint-ui: install-ui
