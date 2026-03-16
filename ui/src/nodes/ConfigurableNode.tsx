@@ -112,7 +112,6 @@ interface ConfigurableNodeData {
   definition?: { bidirectional?: boolean };
   onParamChange?: (nodeId: string, paramName: string, value: unknown) => void;
   sessionId?: string;
-  isStaged?: boolean;
 }
 
 interface ConfigurableNodeProps {
@@ -274,8 +273,6 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(({ id, data
   nodesLogger.debug(
     'ConfigurableNode Render:',
     id,
-    'isStaged:',
-    data.isStaged,
     'onParamChange:',
     !!data.onParamChange,
     'onParamChange identity:',
@@ -290,9 +287,9 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(({ id, data
   // Detect bidirectional nodes using the bidirectional property from node definition
   const isBidirectional = data.definition?.bidirectional ?? false;
 
-  // Show live indicator when node is in an active session (has sessionId) and is not staged
+  // Show live indicator when node is in an active session (has sessionId)
   // This prevents the LIVE badge from showing in design view (which has no sessionId)
-  const showLiveIndicator = !data.isStaged && !!data.onParamChange && !!data.sessionId;
+  const showLiveIndicator = !!data.onParamChange && !!data.sessionId;
 
   return (
     <NodeFrame

@@ -169,7 +169,6 @@ export interface BuildNodeParams {
   apiNode: Node;
   position: { x: number; y: number };
   nodeState: unknown; // Can be string | null or NodeState enum
-  isStaged: boolean;
   finalInputs: InputPin[];
   finalOutputs: OutputPin[];
   nodeDef: NodeDefinition | undefined;
@@ -203,12 +202,10 @@ export const buildNodeObject = (params: BuildNodeParams): RFNode => {
       state: params.nodeState,
       // Stats are NOT included here to prevent re-renders when they update
       // NodeStateIndicator will fetch them directly from session store on hover
-      // Use stable callback that checks staging mode at call-time
       onParamChange: params.stableOnParamChange,
       // Full-config change callback for compositor nodes
       onConfigChange: params.stableOnConfigChange,
       sessionId: params.selectedSessionId || undefined,
-      isStaged: params.isStaged,
     },
   };
 };

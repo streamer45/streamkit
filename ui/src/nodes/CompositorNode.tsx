@@ -55,7 +55,6 @@ interface CompositorNodeData {
   onParamChange?: (nodeId: string, paramName: string, value: unknown) => void;
   onConfigChange?: (nodeId: string, config: Record<string, unknown>) => void;
   sessionId?: string;
-  isStaged?: boolean;
 }
 
 interface CompositorNodeProps {
@@ -168,8 +167,8 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
     return () => clearCompositorSelection(data.label);
   }, [selected, data.label, selectedLayerId]);
 
-  // Show live indicator when node is in an active session and is not staged
-  const showLiveIndicator = !data.isStaged && !!data.onConfigChange && !!data.sessionId;
+  // Show live indicator when node is in an active session
+  const showLiveIndicator = !!data.onConfigChange && !!data.sessionId;
 
   // Selected layer data for property controls
   const [selectedLayer, selectedTextOverlay, selectedImageOverlay] = [
