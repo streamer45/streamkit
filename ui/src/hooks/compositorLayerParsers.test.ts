@@ -218,20 +218,18 @@ describe('mergeOverlayState', () => {
       expect(result[0].dataBase64).toBe('new-data');
     });
 
-    it('handles new overlays (not in current) by using parsed values', () => {
+    it('skips new overlays from parsed that are not in current (prevents stale echo re-add)', () => {
       const current: TextOverlayState[] = [];
       const parsed = [makeTextOverlay({ id: 'text_new', text: 'Brand new' })];
 
       const result = mergeOverlayState(current, parsed, textHasExtraChanges, true);
 
-      expect(result.length).toBe(1);
-      expect(result[0].id).toBe('text_new');
-      expect(result[0].text).toBe('Brand new');
-      // Falls through to parsed since no existing match
-      expect(result[0].x).toBe(0);
+      // New items from parsed are skipped — additions go through local
+      // state (addTextOverlay) and useState initialiser on topology rebuild.
+      expect(result.length).toBe(0);
     });
 
-    it('handles removed overlays (in current but not in parsed)', () => {
+    it('keeps locally-added overlays not yet in parsed (pending server confirmation)', () => {
       const current = [
         makeTextOverlay({ id: 'text_0' }),
         makeTextOverlay({ id: 'text_1', text: 'Second' }),
@@ -240,8 +238,10 @@ describe('mergeOverlayState', () => {
 
       const result = mergeOverlayState(current, parsed, textHasExtraChanges, true);
 
-      expect(result.length).toBe(1);
+      // text_0 is in both → merged.  text_1 is only in current → kept.
+      expect(result.length).toBe(2);
       expect(result[0].id).toBe('text_0');
+      expect(result[1].id).toBe('text_1');
     });
   });
 });

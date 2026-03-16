@@ -359,31 +359,49 @@ function pickConfigFields<T extends OverlayBase>(parsed: T): Partial<T> {
  *  z-index, mirror flags, and any runtime-only fields (e.g. measuredTextWidth).
  *  Only type-specific config fields (text, fontSize, color, dataBase64, …) are
  *  taken from `parsed`.  This prevents config-derived values from clobbering the
- *  server's resolved layout that useServerLayoutSync applied. */
+ *  server's resolved layout that useServerLayoutSync applied.
+ *
+ *  **Reconciliation policy**:
+ *  - Items in both `parsed` and `current` → merged (update properties).
+ *  - Items in `parsed` only → **skipped**.  Additions go through local state
+ *    (`addTextOverlay`, `addImageOverlay`) and the `useState` initialiser on
+ *    topology rebuild.  Skipping prevents stale server echo-backs from
+ *    re-adding overlays that were just deleted locally.
+ *  - Items in `current` only → **kept**.  These are locally-added items
+ *    whose server confirmation hasn't arrived yet. */
 export function mergeOverlayState<T extends OverlayBase>(
   current: T[],
   parsed: T[],
   hasExtraChanges?: (a: T, b: T) => boolean,
   preserveGeometry?: boolean
 ): T[] {
-  const merged = parsed.map((p) => {
+  // 1. Merge items present in both parsed and current.
+  const merged: T[] = [];
+  for (const p of parsed) {
     const existing = current.find((o) => o.id === p.id);
-    if (existing) {
-      if (preserveGeometry) {
-        // Monitor view: server is the source of truth for all OverlayBase
-        // fields.  Start from `existing` (preserves server-resolved spatial
-        // values AND runtime-only fields like measuredTextWidth), then
-        // overlay only type-specific config fields from `parsed`.
-        return { ...existing, ...pickConfigFields(p) } as T;
-      }
-      return {
+    if (!existing) continue; // skip additions from server (see docstring)
+    if (preserveGeometry) {
+      // Monitor view: server is the source of truth for all OverlayBase
+      // fields.  Start from `existing` (preserves server-resolved spatial
+      // values AND runtime-only fields like measuredTextWidth), then
+      // overlay only type-specific config fields from `parsed`.
+      merged.push({ ...existing, ...pickConfigFields(p) } as T);
+    } else {
+      merged.push({
         ...p,
         visible: existing.visible,
         opacity: existing.visible ? p.opacity : existing.opacity,
-      };
+      } as T);
     }
-    return p;
-  });
+  }
+
+  // 2. Keep items in current that aren't in parsed (locally-added,
+  //    pending server confirmation).
+  for (const c of current) {
+    if (!parsed.some((p) => p.id === c.id)) {
+      merged.push(c);
+    }
+  }
   const changed =
     merged.length !== current.length ||
     merged.some(
