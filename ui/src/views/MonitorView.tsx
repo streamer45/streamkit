@@ -10,11 +10,10 @@ import {
   type Node as RFNode,
   type Edge,
   type NodeChange,
-  type Connection as RFConnection,
   type ReactFlowInstance,
-  type OnConnectEnd,
 } from '@xyflow/react';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import type { SetStateAction } from 'react';
 import { useShallow } from 'zustand/shallow';
 
 import ConfirmModal from '@/components/ConfirmModal';
@@ -35,10 +34,11 @@ import PaneContextMenu from '@/components/PaneContextMenu';
 import { PipelineRightPane } from '@/components/PipelineRightPane';
 import { ResizableLayout } from '@/components/ResizableLayout';
 import { ViewTitle } from '@/components/ui/ViewTitle';
-import { DnDProvider, useDnD } from '@/context/DnDContext';
+import { DnDProvider } from '@/context/DnDContext';
 import { useToast } from '@/context/ToastContext';
 import { useAutoLayout } from '@/hooks/useAutoLayout';
 import { useContextMenu } from '@/hooks/useContextMenu';
+import { useMonitorNodeActions } from '@/hooks/useMonitorNodeActions';
 import { useMonitorPreview } from '@/hooks/useMonitorPreview';
 import {
   useMonitorSessionManager,
@@ -77,6 +77,7 @@ const MonitorViewTitle = React.memo(() => <ViewTitle>Monitor</ViewTitle>);
  * Main content component for the Monitor view.
  *
  * Heavy concerns are delegated to extracted custom hooks:
+ * - useMonitorNodeActions – drag/drop, connect, delete callbacks
  * - useMonitorSessionManager – session selection, auto-select, deletion
  * - useMonitorStaging – staging lifecycle (enter / discard / commit)
  * - useMonitorYaml – YAML regeneration and YAML-edit handler
@@ -133,7 +134,6 @@ const MonitorViewContent: React.FC = () => {
       setRightCollapsed: state.setRightCollapsed,
     }))
   );
-  const [type, setType] = useDnD();
   const toast = useToast();
   // Cache for positions of nodes that are being added (to preserve drop location)
   const pendingNodePositions = React.useRef<Map<string, { x: number; y: number }>>(new Map());
@@ -245,9 +245,38 @@ const MonitorViewContent: React.FC = () => {
     rf.current = instance;
     baseOnInit(instance);
   };
-  const screenToFlow = (pt: { x: number; y: number }) => {
-    return rf.current?.screenToFlowPosition(pt) ?? pt;
-  };
+  // ── Node interaction callbacks (extracted hook) ───────────────────────
+  const {
+    onConnect,
+    onConnectEnd,
+    onEdgesDelete,
+    onNodesDelete,
+    onDragStart,
+    onDrop,
+    onDragOver,
+    handleDuplicateNode,
+    handleDeleteNode,
+  } = useMonitorNodeActions({
+    selectedSessionId,
+    pipelineRef,
+    isInStagingMode,
+    nodesRefForCallbacks,
+    edgesRefForCallbacks,
+    setNodes: setNodes as React.Dispatch<SetStateAction<RFNode[]>>,
+    setEdges: setEdges as React.Dispatch<SetStateAction<Edge[]>>,
+    createOnConnect,
+    createOnConnectEnd,
+    addStagedConnection,
+    removeStagedConnection,
+    addStagedNode,
+    removeStagedNode,
+    connectPins,
+    disconnectPins,
+    addNode,
+    removeNode,
+    pendingNodePositions,
+    rfInstance: rf,
+  });
 
   // Use shared context menu logic
   const { menu, paneMenu, reactFlowWrapper, onNodeContextMenu, onPaneContextMenu, onPaneClick } =
@@ -352,6 +381,24 @@ const MonitorViewContent: React.FC = () => {
       );
     }
   }, [selectedSessionId, isInStagingMode, stagedPipeline, defByKind, setValidationErrors, toast]);
+
+  // ── Topology computation ───────────────────────────────────────────────
+  // NOTE: useMonitorTopology extraction was evaluated and intentionally skipped.
+  // Reasons:
+  //   1. 15+ parameters would be needed (nodes, setNodes, setEdges, pipeline,
+  //      isInStagingMode, stagingData, selectedSessionId, nodesRef,
+  //      pendingNodePositions, updateNodePosition, tuneNode, tuneNodeConfig,
+  //      updateStagedNodeParams, topoEffectRanRef, setYamlFromTopology, …).
+  //   2. topoKey is consumed by useNodeStatesSubscription which returns
+  //      topoEffectRanRef, creating a bidirectional dependency that would
+  //      require splitting the topology hook or computing topoKey separately.
+  //   3. setYamlFromTopology from useMonitorYaml adds another cross-hook dep.
+  //   4. stableOnParamChange / stableOnConfigChange depend on staging + session
+  //      state that would all need forwarding through the interface.
+  //   Overall, the extraction would add more interface complexity than it removes
+  //   from the component.  The helpers (resolveNodePosition, resolveDynamicPins,
+  //   reconstructDynamic{Inputs,Outputs}) are already factored out as callbacks,
+  //   keeping the topology effect itself reasonably readable.
 
   // Topology signature: only changes when nodes/kinds or connections change
   const topoKey = React.useMemo(() => {
@@ -464,126 +511,6 @@ const MonitorViewContent: React.FC = () => {
     nodeDefinitions,
     tuneNode,
   });
-
-  const onConnect = React.useCallback(
-    (connection: RFConnection) => {
-      return createOnConnect(
-        nodesRefForCallbacks.current,
-        setEdges,
-        (conn: RFConnection) => {
-          const from_pin = conn.sourceHandle || 'out';
-          const to_pin = conn.targetHandle || 'in';
-
-          if (isInStagingMode && selectedSessionId) {
-            // Add to staging store instead of sending to server
-            addStagedConnection(selectedSessionId, {
-              from_node: conn.source,
-              from_pin,
-              to_node: conn.target,
-              to_pin,
-            });
-          } else {
-            // Send to server immediately (monitor mode)
-            connectPins(conn.source, from_pin, conn.target, to_pin);
-          }
-        },
-        edgesRefForCallbacks.current,
-        setNodes
-      )(connection);
-    },
-    [
-      createOnConnect,
-      setEdges,
-      isInStagingMode,
-      selectedSessionId,
-      addStagedConnection,
-      connectPins,
-      setNodes,
-    ]
-  );
-
-  const onEdgesDelete = useCallback(
-    (deleted: Edge[]) => {
-      const sid = selectedSessionId;
-      const staging = sid ? useStagingStore.getState().staging[sid] : undefined;
-      const isStagingActive = staging?.mode === 'staging';
-
-      deleted.forEach((e) => {
-        const from_pin = e.sourceHandle || 'out';
-        const to_pin = e.targetHandle || 'in';
-
-        if (isStagingActive && sid) {
-          removeStagedConnection(sid, {
-            from_node: e.source,
-            from_pin,
-            to_node: e.target,
-            to_pin,
-          });
-        } else {
-          disconnectPins(e.source, from_pin, e.target, to_pin);
-        }
-      });
-    },
-    [selectedSessionId, removeStagedConnection, disconnectPins]
-  );
-
-  const onNodesDelete = useCallback(
-    (deleted: RFNode[]) => {
-      const sid = selectedSessionId;
-      const staging = sid ? useStagingStore.getState().staging[sid] : undefined;
-      const isStagingActive = staging?.mode === 'staging';
-
-      deleted.forEach((n) => {
-        if (isStagingActive && sid) {
-          removeStagedNode(sid, n.id);
-        } else {
-          removeNode(n.id);
-        }
-      });
-    },
-    [selectedSessionId, removeStagedNode, removeNode]
-  );
-
-  // Deletion is handled by React Flow's built-in delete key via onNodesDelete/onEdgesDelete.
-
-  // Helpers to add nodes with sensible defaults
-  const generateName = (kind: string) => {
-    const existing = pipeline ? Object.keys(pipeline.nodes) : [];
-    let i = 1;
-    let candidate = `${kind}_${i}`;
-    while (existing.includes(candidate)) {
-      i += 1;
-      candidate = `${kind}_${i}`;
-    }
-    return candidate;
-  };
-
-  const defaultParamsForKind = (kind: string): Record<string, unknown> => {
-    const def = nodeDefinitions.find((d) => d.kind === kind);
-    const params: Record<string, unknown> = {};
-    const schema = def?.param_schema as Record<string, unknown> | undefined;
-    const props = schema?.properties as Record<string, Record<string, unknown>> | undefined;
-    if (props) {
-      Object.entries(props).forEach(([key, propSchema]) => {
-        if (propSchema && typeof propSchema === 'object' && 'default' in propSchema) {
-          const defVal = propSchema.default;
-          if (defVal !== undefined) {
-            params[key] = defVal;
-          }
-        }
-      });
-    }
-    return params;
-  };
-
-  const onDragStart = useCallback(
-    (event: React.DragEvent, nodeType: string) => {
-      setType(nodeType);
-      event.dataTransfer.setData('text/plain', nodeType);
-      event.dataTransfer.effectAllowed = 'move';
-    },
-    [setType]
-  );
 
   // Track previous topoKey to avoid unnecessary rebuilds
   const prevTopoKeyForTopologyRef = useRef<string>('');
@@ -978,71 +905,6 @@ const MonitorViewContent: React.FC = () => {
   // Avoid auto-fitting on every node change to prevent disruption during editing.
 
   // YAML regeneration is handled by useMonitorYaml hook.
-
-  const onConnectEnd: OnConnectEnd = React.useCallback(
-    (event, connectionState) => {
-      return createOnConnectEnd(nodesRefForCallbacks.current, edgesRefForCallbacks.current)(
-        event,
-        connectionState
-      );
-    },
-    [createOnConnectEnd]
-  );
-
-  const handleDuplicateNode = (nodeId: string) => {
-    // In monitor mode, we could potentially duplicate via WebSocket
-    viewsLogger.debug('Duplicate node:', nodeId);
-  };
-
-  const handleDeleteNode = (nodeId: string) => {
-    removeNode(nodeId);
-  };
-
-  const onDragOver = useCallback((event: React.DragEvent) => {
-    event.preventDefault();
-    event.dataTransfer.dropEffect = 'move';
-  }, []);
-
-  const onDrop = useCallback(
-    (event: React.DragEvent) => {
-      event.preventDefault();
-      if (!type) {
-        return;
-      }
-
-      // Calculate drop position in flow coordinates
-      const position = screenToFlow({
-        x: event.clientX,
-        y: event.clientY,
-      });
-
-      const kind = type;
-      const nodeId = generateName(kind);
-      const params = defaultParamsForKind(kind);
-
-      // Cache the position for when the node appears in the pipeline
-      pendingNodePositions.current.set(nodeId, position);
-
-      const sid = selectedSessionId;
-      const staging = sid ? useStagingStore.getState().staging[sid] : undefined;
-      const isStagingActive = staging?.mode === 'staging';
-
-      if (isStagingActive && sid) {
-        // Add to staging store
-        addStagedNode(sid, nodeId, {
-          kind,
-          params: params as Record<string, unknown>,
-          state: null,
-        });
-      } else {
-        // Send to server immediately (monitor mode)
-        addNode(nodeId, kind, params);
-      }
-
-      setType(null);
-    },
-    [type, selectedSessionId, addStagedNode, addNode, setType]
-  );
 
   // Memoize left panel to prevent ResizableLayout from re-rendering
   const leftPanel = React.useMemo(
