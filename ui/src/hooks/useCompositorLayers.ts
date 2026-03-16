@@ -212,6 +212,7 @@ export const useCompositorLayers = (
     sessionId,
     nodeId,
     dragStateRef,
+    sliderActiveRef,
     setLayers,
     setTextOverlays,
     setImageOverlays

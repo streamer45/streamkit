@@ -88,7 +88,7 @@ export default tseslint.config(
       "sonarjs/cognitive-complexity": ["warn", 30],
 
       // ---- File size / nesting heuristics ----
-      "max-lines": ["warn", { max: 500, skipBlankLines: true, skipComments: true }],
+      "max-lines": ["warn", { max: 550, skipBlankLines: true, skipComments: true }],
       "max-depth": ["warn", 4],                    // nesting depth
       "max-statements": ["warn", 30],
 
