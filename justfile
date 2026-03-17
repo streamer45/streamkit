@@ -264,6 +264,12 @@ fix-ui: install-ui
     @bun run format
     @bun run lint:fix
 
+# Check for unused files, exports, and dependencies in the UI code
+[working-directory: 'ui']
+knip-ui: install-ui
+    @echo "Checking for unused code in UI..."
+    @bun run knip
+
 # --- Documentation ---
 # Install documentation site dependencies
 [working-directory: 'docs']
