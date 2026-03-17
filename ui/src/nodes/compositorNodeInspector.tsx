@@ -388,13 +388,13 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
           <OpacityControl
             opacity={inspectorProps.opacity}
             onChange={handleSelectedOpacityChange}
-            onCommit={onAppearanceCommit}
+            onCommit={selectedLayerKind === 'video' ? onAppearanceCommit : undefined}
             disabled={disabled}
           />
           <RotationControl
             rotationDegrees={inspectorProps.rotationDegrees}
             onChange={handleSelectedRotationChange}
-            onCommit={onAppearanceCommit}
+            onCommit={selectedLayerKind === 'video' ? onAppearanceCommit : undefined}
             disabled={disabled}
           />
           <MirrorControl
