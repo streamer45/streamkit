@@ -169,15 +169,17 @@ export const useCompositorLayers = (
     if (dragStateRef.current) return;
 
     const parsedLayers = parseLayers(params, canvasWidth, canvasHeight);
-    const mergedLayers = mergeOverlayState(
-      layersRef.current,
-      parsedLayers,
-      (a, b) => a.cropZoom !== b.cropZoom || a.cropX !== b.cropX || a.cropY !== b.cropY,
-      isMonitorView
+    // Functional update so we read the actual current atom value, not the
+    // potentially stale layersRef (which is synced via useEffect, running
+    // after this useLayoutEffect).
+    setLayers((current) =>
+      mergeOverlayState(
+        current,
+        parsedLayers,
+        (a, b) => a.cropZoom !== b.cropZoom || a.cropX !== b.cropX || a.cropY !== b.cropY,
+        isMonitorView
+      )
     );
-    if (mergedLayers !== layersRef.current) {
-      setLayers(mergedLayers);
-    }
 
     setTextOverlays((current) =>
       mergeOverlayState(
