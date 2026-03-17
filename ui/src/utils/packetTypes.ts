@@ -234,21 +234,6 @@ export function getPinCardinalityDescription(
   return 'Unknown cardinality';
 }
 
-/**
- * Checks if a pin list contains any dynamic cardinality pins
- */
-export function hasDynamicPins(pins: Array<{ cardinality: PinCardinality }>): boolean {
-  return pins.some((pin) => typeof pin.cardinality === 'object' && 'Dynamic' in pin.cardinality);
-}
-
-/**
- * Checks if a pin list is empty or only has dynamic pins (needs placeholder)
- */
-export function needsPlaceholderPin(pins: Array<{ cardinality: PinCardinality }>): boolean {
-  if (pins.length === 0) return true;
-  return hasDynamicPins(pins) && pins.length === 0;
-}
-
 function getNodeKind(node: Node): string {
   return ((node.data as Record<string, unknown>).kind as string | undefined) ?? '';
 }

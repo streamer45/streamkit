@@ -274,5 +274,3 @@ const TelemetryEventCard: React.FC<TelemetryEventCardProps> = React.memo(({ even
 });
 
 TelemetryEventCard.displayName = 'TelemetryEventCard';
-
-export default TelemetryTimeline;

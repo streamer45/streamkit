@@ -91,7 +91,6 @@ jobs:
   knip:
     name: Knip (unused code)
     runs-on: ubuntu-22.04
-    continue-on-error: true
     defaults:
       run:
         working-directory: ./ui

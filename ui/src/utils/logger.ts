@@ -33,11 +33,8 @@ export function getLogger(name: string): Logger<ILogObj> {
 }
 
 // Convenience loggers for common modules
-export const servicesLogger = getLogger('services');
 export const viewsLogger = getLogger('views');
 export const componentsLogger = getLogger('components');
-export const storesLogger = getLogger('stores');
 export const hooksLogger = getLogger('hooks');
-export const panesLogger = getLogger('panes');
 export const nodesLogger = getLogger('nodes');
 export const utilsLogger = getLogger('utils');

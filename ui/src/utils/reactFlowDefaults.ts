@@ -7,7 +7,6 @@
  * Centralizes node types and edge options for consistency.
  */
 
-import TypedEdge from '@/components/TypedEdge';
 import AudioGainNode from '@/nodes/AudioGainNode';
 import CompositorNode from '@/nodes/CompositorNode';
 import ConfigurableNode from '@/nodes/ConfigurableNode';
@@ -19,13 +18,6 @@ export const nodeTypes = {
   audioGain: AudioGainNode,
   compositor: CompositorNode,
   configurable: ConfigurableNode,
-};
-
-/**
- * Edge type mappings for ReactFlow
- */
-export const edgeTypes = {
-  typed: TypedEdge,
 };
 
 /**

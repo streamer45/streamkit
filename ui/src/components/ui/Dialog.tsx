@@ -131,35 +131,6 @@ export const Input = styled.input`
   }
 `;
 
-export const Textarea = styled.textarea`
-  width: 100%;
-  padding: 8px 12px;
-  border: 1px solid var(--sk-border);
-  border-radius: 6px;
-  background: var(--sk-bg);
-  color: var(--sk-text);
-  font-size: 14px;
-  font-family: inherit;
-  box-sizing: border-box;
-  resize: vertical;
-  min-height: 80px;
-
-  &:focus {
-    outline: none;
-    border-color: var(--sk-primary);
-    box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.1);
-  }
-
-  &:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-
-  &::placeholder {
-    color: var(--sk-text-muted);
-  }
-`;
-
 // Re-export Radix components we need
 export const Dialog = RadixDialog.Root;
 export const DialogPortal = RadixDialog.Portal;

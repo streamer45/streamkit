@@ -147,6 +147,8 @@ export function formatReport(comparisons: ComparisonResult[]): string {
 
 /**
  * Format the comparison report as a Markdown table suitable for PR comments.
+ *
+ * @public
  */
 export function formatMarkdownReport(comparisons: ComparisonResult[]): string {
   const lines: string[] = [

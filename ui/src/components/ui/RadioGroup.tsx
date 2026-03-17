@@ -98,6 +98,3 @@ export const RadioWithLabel: React.FC<RadioWithLabelProps> = ({ value, id, disab
     </RadioLabel>
   );
 };
-
-// Re-export Radix primitives
-export const RadioGroup = RadixRadioGroup.Root;

@@ -24,9 +24,12 @@
  * ```
  */
 
+/** @public — perf measurement framework for current and future render-perf tests */
 export { measureRenders, measureHookRenders } from './measure';
+/** @public */
 export type { MeasureRendersOptions, MeasureHookRendersOptions } from './measure';
 
+/** @public */
 export {
   readBaseline,
   writeBaseline,
@@ -35,6 +38,7 @@ export {
   formatMarkdownReport,
 } from './compare';
 
+/** @public */
 export type {
   RenderMeasurement,
   MeasureResult,

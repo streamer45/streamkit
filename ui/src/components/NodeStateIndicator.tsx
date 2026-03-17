@@ -460,5 +460,3 @@ export const NodeStateIndicator: React.FC<NodeStateIndicatorProps> = ({
     </SKTooltip>
   );
 };
-
-export default NodeStateIndicator;

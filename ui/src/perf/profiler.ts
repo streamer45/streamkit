@@ -23,6 +23,7 @@
  *   const data = await page.evaluate(() => window.__PERF_DATA__);
  */
 
+/** @public — consumed by Playwright e2e tests via window.__PERF_DATA__ */
 export interface PerfCommit {
   id: string;
   phase: 'mount' | 'update' | 'nested-update';
@@ -32,6 +33,7 @@ export interface PerfCommit {
   commitTime: number;
 }
 
+/** @public — consumed by Playwright e2e tests via window.__PERF_DATA__ */
 export interface PerfComponentData {
   /** Total number of commits for this profiler id. */
   renderCount: number;
@@ -43,6 +45,7 @@ export interface PerfComponentData {
   commits: PerfCommit[];
 }
 
+/** @public — consumed by Playwright e2e tests via window.__PERF_DATA__ */
 export interface PerfDataStore {
   /** Component-level profiling data keyed by Profiler id. */
   components: Record<string, PerfComponentData>;
@@ -120,6 +123,8 @@ export const perfOnRender: React.ProfilerOnRenderCallback = isDev
  * Call this from Playwright before running an interaction scenario:
  *
  *   await page.evaluate(() => window.__PERF_RESET__?.());
+ *
+ * @public — consumed by Playwright e2e tests
  */
 export function resetPerfData(): void {
   if (!isDev) return;
@@ -138,6 +143,8 @@ if (isDev && typeof window !== 'undefined') {
 
 /**
  * Get a snapshot of the current perf data (for programmatic use in tests).
+ *
+ * @public — consumed by Playwright e2e tests
  */
 export function getPerfData(): PerfDataStore {
   return store;

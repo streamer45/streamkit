@@ -70,52 +70,6 @@ export function wouldCreateCycle(
   return !hasBidirectionalNode;
 }
 
-export function topoOrderFromEdges(nodeIds: string[], edges: SimpleEdge[]): string[] {
-  const inDegree: Record<string, number> = {};
-  const outgoing: Record<string, string[]> = {};
-  const seen = new Set<string>();
-
-  nodeIds.forEach((id) => {
-    inDegree[id] = 0;
-    outgoing[id] = [];
-  });
-
-  for (const e of edges) {
-    if (!(e.source in outgoing) || !(e.target in inDegree)) continue;
-    outgoing[e.source].push(e.target);
-    inDegree[e.target] += 1;
-  }
-
-  const queue: string[] = [];
-  for (const id of nodeIds) {
-    if (inDegree[id] === 0) queue.push(id);
-  }
-
-  const ordered: string[] = [];
-  while (queue.length > 0) {
-    const u = queue.shift() as string;
-    if (seen.has(u)) continue;
-    seen.add(u);
-    ordered.push(u);
-    for (const v of outgoing[u]) {
-      inDegree[v] -= 1;
-      if (inDegree[v] === 0) {
-        queue.push(v);
-      }
-    }
-  }
-
-  // Include any remaining nodes (cycles or disconnected) in a stable way.
-  for (const id of nodeIds) {
-    if (!seen.has(id)) {
-      seen.add(id);
-      ordered.push(id);
-    }
-  }
-
-  return ordered;
-}
-
 /**
  * Initialize graph data structures for topological level assignment
  */
