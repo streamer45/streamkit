@@ -161,6 +161,18 @@ export const useCompositorLayers = (
   }>({ vertical: null, horizontal: null });
   const dragStateRef = useRef<DragState | null>(null);
   const layersRef = useRef(layers);
+
+  // Safety net: clear sliderActiveRef when the selected layer changes or on
+  // unmount.  If a slider component unmounts mid-drag (layer deselected,
+  // removed, or Escape pressed), onValueCommit never fires and the ref
+  // would remain stuck at true, permanently blocking server/prop sync.
+  useEffect(() => {
+    if (sliderActiveRef.current) {
+      sliderActiveRef.current = false;
+      setLayers([...layersRef.current]);
+    }
+  }, [selectedLayerId, setLayers]);
+
   useEffect(() => {
     // During zero-render slider drags, layersRef is the source of truth
     // (updated directly by updateLayerOpacity/updateLayerRotation).
