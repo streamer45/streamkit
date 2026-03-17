@@ -91,38 +91,6 @@ export async function listDynamicSamples(): Promise<SamplePipeline[]> {
 }
 
 /**
- * Gets a specific sample pipeline by ID
- * @param id - The sample pipeline ID
- * @returns A promise that resolves to the sample pipeline
- */
-export async function getSample(id: string): Promise<SamplePipeline> {
-  logger.info('Fetching sample pipeline:', id);
-
-  const response = await fetchApi(`/api/v1/samples/oneshot/${encodeURIComponent(id)}`, {
-    method: 'GET',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    logger.error('Failed to fetch sample:', {
-      id,
-      status: response.status,
-      statusText: response.statusText,
-      error: errorText,
-    });
-    throw new Error(`Failed to fetch sample: ${response.statusText}`);
-  }
-
-  const sample: SamplePipeline = await response.json();
-  logger.info('Fetched sample:', sample.name);
-
-  return sample;
-}
-
-/**
  * Saves a new user pipeline
  * @param request - The pipeline data to save
  * @returns A promise that resolves to the created sample pipeline

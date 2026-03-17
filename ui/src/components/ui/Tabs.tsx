@@ -74,6 +74,3 @@ export const TabsContent = styled(RadixTabs.Content)`
     outline-offset: -2px;
   }
 `;
-
-// Re-export Radix primitives
-export const Tabs = RadixTabs.Root;

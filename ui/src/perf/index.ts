@@ -24,5 +24,7 @@
  * ```
  */
 
+/** @public — re-exports for Playwright e2e tests */
 export { perfOnRender, resetPerfData, getPerfData } from './profiler';
+/** @public — re-exports for Playwright e2e tests */
 export type { PerfCommit, PerfComponentData, PerfDataStore } from './profiler';

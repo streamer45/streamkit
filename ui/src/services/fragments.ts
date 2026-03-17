@@ -6,7 +6,7 @@ import YAML from 'yaml';
 
 import type { SamplePipeline } from '@/types/generated/api-types';
 
-import { saveSample, deleteSample, listAllSamples } from './samples';
+import { saveSample, deleteSample } from './samples';
 
 export interface FragmentMetadata {
   tags: string[];
@@ -125,13 +125,4 @@ export async function saveFragment(
  */
 export async function deleteFragment(id: string): Promise<void> {
   return deleteSample(id);
-}
-
-/**
- * List all fragments (filters samples to only return fragments)
- */
-export async function listFragments(): Promise<Array<SamplePipeline & FragmentMetadata>> {
-  const samples = await listAllSamples();
-
-  return samplesToFragments(samples);
 }

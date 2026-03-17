@@ -539,12 +539,6 @@ export const InspectorTitle = styled.span`
   color: var(--sk-primary);
 `;
 
-export const InspectorPosition = styled.span`
-  font-variant-numeric: tabular-nums;
-  color: var(--sk-text-muted);
-  font-size: 10px;
-`;
-
 export const InspectorSection = styled.div`
   display: flex;
   flex-direction: column;

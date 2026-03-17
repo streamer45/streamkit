@@ -383,8 +383,3 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
     </PlayerContainer>
   );
 };
-
-/**
- * @deprecated Use MSEPlayer instead. This alias is kept for backward compatibility.
- */
-export const MSEAudioPlayer = MSEPlayer;

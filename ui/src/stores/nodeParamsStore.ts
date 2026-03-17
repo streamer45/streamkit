@@ -68,6 +68,3 @@ export type { NodeParamsState };
 export const selectNodeParam =
   (nodeId: string, key: string, sessionId?: string) => (state: NodeParamsState) =>
     state.paramsById[keyForNode(nodeId, sessionId)]?.[key];
-
-export const selectNodeParams = (nodeId: string, sessionId?: string) => (state: NodeParamsState) =>
-  state.paramsById[keyForNode(nodeId, sessionId)];

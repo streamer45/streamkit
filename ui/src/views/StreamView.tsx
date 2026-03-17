@@ -9,7 +9,7 @@ import { useShallow } from 'zustand/shallow';
 
 import ConfirmModal from '@/components/ConfirmModal';
 import { PipelineSelectionSection } from '@/components/stream/PipelineSelectionSection';
-import TelemetryTimelineComponent from '@/components/TelemetryTimeline';
+import { TelemetryTimeline as TelemetryTimelineComponent } from '@/components/TelemetryTimeline';
 import {
   ViewContainer,
   ContentArea,

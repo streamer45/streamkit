@@ -50,41 +50,6 @@ export type Response = Message<ResponsePayload>;
 export type Event = Message<EventPayload>;
 
 /**
- * Represents a node instance in the pipeline graph.
- * Used for both the staging area (design mode) and the live session graph.
- * This is the UI's representation - the backend uses Node which includes runtime state.
- */
-export interface NodeInstance {
-  /** Unique identifier for this node instance within the session */
-  id: string;
-  /** Node type identifier (e.g., "audio::gain", "plugin::native::whisper", "core::script") */
-  kind: string;
-  /** Position on the React Flow canvas (x, y coordinates in pixels) */
-  position: { x: number; y: number };
-  /** Optional JSON configuration parameters specific to this node type */
-  params?: Record<string, unknown>;
-}
-
-/**
- * Data structure passed to React Flow custom node components.
- * Contains all the information needed to render a node and handle parameter updates.
- *
- * @see ConfigurableNode - The main React Flow node component that uses this data
- */
-export interface CustomNodeData {
-  /** Display label for the node (shown in the node's header) */
-  label: string;
-  /** Node type identifier (same as NodeInstance.kind) */
-  kind: string;
-  /** Current parameter values for this node instance */
-  params: Record<string, unknown>;
-  /** JSON Schema for parameter validation and UI generation (from NodeDefinition) */
-  paramSchema?: unknown;
-  /** Callback invoked when a parameter changes in the node's UI */
-  onParamChange: (nodeId: string, paramName: string, value: unknown) => void;
-}
-
-/**
  * Plugin type discriminator.
  * - "wasm": WebAssembly Component Model plugin (sandboxed, ~50-200% overhead)
  * - "native": Native plugin via C ABI (trusted, ~0-5% overhead)

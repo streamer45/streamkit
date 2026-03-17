@@ -101,6 +101,3 @@ export const CheckboxWithLabel: React.FC<CheckboxWithLabelProps> = ({
     </CheckboxLabel>
   );
 };
-
-// Re-export Radix primitives
-export const Checkbox = RadixCheckbox.Root;

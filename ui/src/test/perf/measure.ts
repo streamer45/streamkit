@@ -35,7 +35,7 @@ import React from 'react';
 
 import type { MeasureResult, RenderMeasurement } from './types';
 
-/** Options for {@link measureRenders}. */
+/** Options for {@link measureRenders}. @public */
 export interface MeasureRendersOptions {
   /** Number of measurement runs (default: 7). */
   runs?: number;
@@ -54,7 +54,7 @@ export interface MeasureRendersOptions {
   wrapper?: React.ComponentType<{ children: React.ReactNode }>;
 }
 
-/** Options for {@link measureHookRenders}. */
+/** Options for {@link measureHookRenders}. @public */
 export interface MeasureHookRendersOptions<TProps, TResult> {
   /** Number of measurement runs (default: 7). */
   runs?: number;
@@ -88,6 +88,8 @@ function stats(values: number[]): { mean: number; stdev: number } {
 /**
  * Mount `ui`, optionally run a `scenario`, and measure React render
  * performance across multiple runs.
+ *
+ * @public
  */
 export async function measureRenders(
   ui: React.ReactElement,

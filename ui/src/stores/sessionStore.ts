@@ -380,29 +380,6 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     }),
 }));
 
-// Granular selector helpers to prevent unnecessary re-renders
-// Use these to subscribe to only the specific parts of session data you need
-
-export const selectSessionPipeline = (sessionId: string | null) => (state: SessionStore) =>
-  sessionId ? (state.sessions.get(sessionId)?.pipeline ?? null) : null;
-
-export const selectNodeStates = (sessionId: string | null) => (state: SessionStore) =>
-  sessionId ? (state.sessions.get(sessionId)?.nodeStates ?? {}) : {};
-
-export const selectNodeState =
-  (sessionId: string | null, nodeId: string) => (state: SessionStore) =>
-    sessionId ? state.sessions.get(sessionId)?.nodeStates[nodeId] : undefined;
-
-export const selectNodeStats = (sessionId: string | null) => (state: SessionStore) =>
-  sessionId ? (state.sessions.get(sessionId)?.nodeStats ?? {}) : {};
-
-export const selectNodeStat =
-  (sessionId: string | null, nodeId: string) => (state: SessionStore) =>
-    sessionId ? state.sessions.get(sessionId)?.nodeStats[nodeId] : undefined;
-
 export const selectNodeViewData =
   (sessionId: string | null, nodeId: string) => (state: SessionStore) =>
     sessionId ? state.sessions.get(sessionId)?.nodeViewData[nodeId] : undefined;
-
-export const selectSessionIsConnected = (sessionId: string | null) => (state: SessionStore) =>
-  sessionId ? (state.sessions.get(sessionId)?.isConnected ?? false) : false;

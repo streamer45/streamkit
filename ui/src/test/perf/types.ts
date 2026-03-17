@@ -9,7 +9,7 @@
  * with React Testing Library, so no Jest dependency is needed.
  */
 
-/** Stats collected for a single measurement run. */
+/** Stats collected for a single measurement run. @public */
 export interface RenderMeasurement {
   /** Total number of React commits (re-renders) observed. */
   renderCount: number;
@@ -21,7 +21,7 @@ export interface RenderMeasurement {
   commitDurations: number[];
 }
 
-/** Aggregated statistics across multiple runs. */
+/** Aggregated statistics across multiple runs. @public */
 export interface MeasureResult {
   /** Human-readable scenario name. */
   name: string;
@@ -39,7 +39,7 @@ export interface MeasureResult {
   measurements: RenderMeasurement[];
 }
 
-/** Stored baseline entry for a single scenario. */
+/** Stored baseline entry for a single scenario. @public */
 export interface BaselineEntry {
   name: string;
   meanRenderCount: number;
@@ -51,14 +51,14 @@ export interface BaselineEntry {
   timestamp: string;
 }
 
-/** Full baseline file containing multiple scenario entries. */
+/** Full baseline file containing multiple scenario entries. @public */
 export interface BaselineFile {
   /** Schema version for forward-compat. */
   version: 1;
   entries: Record<string, BaselineEntry>;
 }
 
-/** Comparison result for a single scenario. */
+/** Comparison result for a single scenario. @public */
 export interface ComparisonResult {
   name: string;
   current: MeasureResult;

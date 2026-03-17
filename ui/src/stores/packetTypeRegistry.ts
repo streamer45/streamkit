@@ -31,7 +31,3 @@ export function setPacketTypeRegistry(metas: PacketTypeMeta[]): void {
 export function getPacketTypeMeta(kind: string): PacketTypeMeta | undefined {
   return usePacketTypeRegistryStore.getState().metasById[kind];
 }
-
-export function isPacketTypeRegistryLoaded(): boolean {
-  return usePacketTypeRegistryStore.getState().isLoaded;
-}
