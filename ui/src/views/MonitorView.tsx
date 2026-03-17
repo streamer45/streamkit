@@ -139,6 +139,7 @@ const MonitorViewContent: React.FC = () => {
   // Node position store for persisting canvas positions
   const updateNodePosition = useNodePositionStore((s) => s.updateNodePosition);
   const getNodePositions = useNodePositionStore((s) => s.getNodePositions);
+  const clearSessionPositions = useNodePositionStore((s) => s.clearSession);
 
   // Save node positions when drag stops
   const onNodeDragStop = useCallback(
@@ -1022,6 +1023,7 @@ const MonitorViewContent: React.FC = () => {
 
       if (response.payload.action === 'sessiondestroyed') {
         toast.success(`Session deleted successfully`);
+        clearSessionPositions(sessionToDelete);
         // If the deleted session was selected, clear selection
         if (selectedSessionId === sessionToDelete) {
           setSelectedSessionId(null);
@@ -1057,6 +1059,7 @@ const MonitorViewContent: React.FC = () => {
 
       if (response.payload.action === 'sessiondestroyed') {
         toast.success(`Session ${selectedSessionId} deleted successfully`);
+        clearSessionPositions(selectedSessionId);
         setSelectedSessionId(null);
         setShowDeleteModal(false);
       } else if (response.payload.action === 'error') {

@@ -73,7 +73,7 @@ export const useNodePositionStore = create<NodePositionStore>()(
 
       clearSession: (sessionId) =>
         set((state) => {
-          // eslint-disable-next-line @typescript-eslint/no-unused-vars
+          // eslint-disable-next-line @typescript-eslint/no-unused-vars -- Destructure-to-exclude pattern: _removed captures the key to omit it from `rest`
           const { [sessionId]: _removed, ...rest } = state.positions;
           return { positions: rest };
         }),

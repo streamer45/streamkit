@@ -162,7 +162,12 @@ export const useCompositorLayers = (
   const dragStateRef = useRef<DragState | null>(null);
   const layersRef = useRef(layers);
   useEffect(() => {
-    layersRef.current = layers;
+    // During zero-render slider drags, layersRef is the source of truth
+    // (updated directly by updateLayerOpacity/updateLayerRotation).
+    // Don't overwrite it with stale React state from concurrent operations.
+    if (!sliderActiveRef.current) {
+      layersRef.current = layers;
+    }
   }, [layers]);
 
   // ── Sync from props ─────────────────────────────────────────────────────
