@@ -117,6 +117,7 @@ export default tseslint.config(
       "**/views/StreamView.tsx",    // 673 lines - Live streaming with MoQ connection orchestration
       "**/panes/ControlPane.tsx",   // 868 lines - Control panel with many widgets
       "**/panes/SamplePipelinesPane.tsx", // 582 lines - Pipeline templates browser
+      "**/nodes/compositorNodeWidgets.tsx", // ~510 lines - Many memoized inspector sub-components with local slider state
     ],
     rules: {
       "max-lines": "off",  // Acknowledged: these are complex view orchestrators

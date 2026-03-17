@@ -8,7 +8,7 @@
  * Encapsulates:
  * - `needsAutoLayout` / `needsFit` state flags
  * - `applyAutoLayout` — computes vertical DAG positions from measured node
- *   heights, patches ReactFlow nodes, saves positions to the staging store,
+ *   heights, patches ReactFlow nodes, saves positions to the position store,
  *   and triggers fitView
  * - `handleAutoLayout` — collects measured heights from the ReactFlow
  *   instance and delegates to `applyAutoLayout` inside `requestAnimationFrame`
@@ -115,7 +115,7 @@ export function useAutoLayout({
         })
       );
 
-      // Save auto-layout positions to staging store so we don't need to re-run layout next time
+      // Save auto-layout positions to position store so we don't need to re-run layout next time
       if (selectedSessionId) {
         Object.entries(positions).forEach(([nodeId, position]) => {
           updateNodePosition(selectedSessionId, nodeId, position);

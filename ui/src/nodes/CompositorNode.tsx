@@ -55,7 +55,6 @@ interface CompositorNodeData {
   onParamChange?: (nodeId: string, paramName: string, value: unknown) => void;
   onConfigChange?: (nodeId: string, config: Record<string, unknown>) => void;
   sessionId?: string;
-  isStaged?: boolean;
 }
 
 interface CompositorNodeProps {
@@ -66,6 +65,7 @@ interface CompositorNodeProps {
 
 // ── Main compositor node ──────────────────────────────────────────────────────────────
 
+// eslint-disable-next-line max-statements -- Compositor node has many hooks for layers, inspector, and canvas
 const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, selected }) => {
   nodesLogger.debug('CompositorNode Render:', id);
 
@@ -80,6 +80,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
     handleResizePointerDown,
     updateLayerOpacity,
     updateLayerRotation,
+    commitLayerAppearance,
     toggleLayerVisibility,
     updateLayerMirror,
     updateLayerCropZoom,
@@ -168,15 +169,32 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
     return () => clearCompositorSelection(data.label);
   }, [selected, data.label, selectedLayerId]);
 
-  // Show live indicator when node is in an active session and is not staged
-  const showLiveIndicator = !data.isStaged && !!data.onConfigChange && !!data.sessionId;
+  // Show live indicator when node is in an active session
+  const showLiveIndicator = !!data.onConfigChange && !!data.sessionId;
 
-  // Selected layer data for property controls
-  const [selectedLayer, selectedTextOverlay, selectedImageOverlay] = [
-    layers.find((l) => l.id === selectedLayerId),
-    textOverlays.find((o) => o.id === selectedLayerId),
-    imageOverlays.find((o) => o.id === selectedLayerId),
-  ];
+  // Selected layer data for property controls.
+  // Memoize by value (not by reference) so that appearance-only changes
+  // (opacity, rotation) on the selected layer produce a new object, but
+  // changes to *other* layers don't invalidate these references.
+  const selectedLayer = useMemo(
+    () => layers.find((l) => l.id === selectedLayerId),
+    // layers array reference changes on every update, but we only care
+    // about the specific layer matching selectedLayerId.  JSON key the
+    // selected layer's fields so the memo only recomputes when the
+    // selected layer's data actually changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [selectedLayerId, layers.find((l) => l.id === selectedLayerId)]
+  );
+  const selectedTextOverlay = useMemo(
+    () => textOverlays.find((o) => o.id === selectedLayerId),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [selectedLayerId, textOverlays.find((o) => o.id === selectedLayerId)]
+  );
+  const selectedImageOverlay = useMemo(
+    () => imageOverlays.find((o) => o.id === selectedLayerId),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [selectedLayerId, imageOverlays.find((o) => o.id === selectedLayerId)]
+  );
 
   // Determine the kind of the selected layer once
   const selectedLayerKind = useMemo(() => {
@@ -253,6 +271,125 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
     [showLiveIndicator, canvasWidth, canvasHeight]
   );
 
+  // Memoize side panel content to prevent cascade re-renders through
+  // intermediate styled divs when only appearance props change.
+  const sidePanelContent = useMemo(
+    () => (
+      <>
+        <CompositorEntryList
+          entries={entries}
+          selectedLayerId={selectedLayerId}
+          onSelectLayer={selectLayer}
+          onToggleVisibility={toggleLayerVisibility}
+          onAddText={addTextOverlay}
+          onRemoveText={removeTextOverlay}
+          onAddImage={addImageOverlay}
+          onRemoveImage={removeImageOverlay}
+          onReorderLayers={reorderLayers}
+          disabled={disabled}
+        />
+
+        <CompositorInspector
+          inspectorProps={inspectorProps}
+          selectedLayerName={selectedLayerName}
+          selectedLayerKind={selectedLayerKind}
+          selectedLayer={selectedLayer}
+          textInspectorChildren={textInspectorChildren}
+          handleSelectedOpacityChange={handleSelectedOpacityChange}
+          handleSelectedRotationChange={handleSelectedRotationChange}
+          handleSelectedMirrorToggle={handleSelectedMirrorToggle}
+          handleSelectedPositionSizeChange={handleSelectedPositionSizeChange}
+          handleSelectedCropZoomChange={handleSelectedCropZoomChange}
+          onAppearanceCommit={commitLayerAppearance}
+          dimensionsReadOnly={selectedLayerKind === 'text'}
+          disabled={disabled}
+        />
+      </>
+    ),
+    [
+      entries,
+      selectedLayerId,
+      selectLayer,
+      toggleLayerVisibility,
+      addTextOverlay,
+      removeTextOverlay,
+      addImageOverlay,
+      removeImageOverlay,
+      reorderLayers,
+      disabled,
+      inspectorProps,
+      selectedLayerName,
+      selectedLayerKind,
+      selectedLayer,
+      textInspectorChildren,
+      handleSelectedOpacityChange,
+      handleSelectedRotationChange,
+      handleSelectedMirrorToggle,
+      handleSelectedPositionSizeChange,
+      handleSelectedCropZoomChange,
+      commitLayerAppearance,
+    ]
+  );
+
+  // Memoize canvas section content to prevent cascade through
+  // CompositorWrapper → CanvasSection styled div wrappers.
+  const canvasSectionContent = useMemo(
+    () => (
+      <>
+        {canvasHeaderContent}
+
+        <CompositorCanvas
+          canvasWidth={canvasWidth}
+          canvasHeight={canvasHeight}
+          layers={layers}
+          textOverlays={textOverlays}
+          imageOverlays={imageOverlays}
+          selectedLayerId={selectedLayerId}
+          onSelectLayer={selectLayer}
+          onLayerPointerDown={handleLayerPointerDown}
+          onResizePointerDown={handleResizePointerDown}
+          onTextFocusRequest={disabled ? undefined : handleTextFocusRequest}
+          onLayerContextMenu={disabled ? undefined : contextMenuHandlers.open}
+          layerRefs={layerRefs}
+          snapGuideRefs={snapGuideRefs}
+          disabled={disabled}
+        />
+        {contextMenu && entries.some((e) => e.id === contextMenu.layerId) && (
+          <CompositorContextMenu
+            menu={contextMenu}
+            entries={entries}
+            onReorderLayers={reorderLayers}
+            onRemoveText={removeTextOverlay}
+            onRemoveImage={removeImageOverlay}
+            onClose={contextMenuHandlers.close}
+          />
+        )}
+      </>
+    ),
+    [
+      canvasHeaderContent,
+      canvasWidth,
+      canvasHeight,
+      layers,
+      textOverlays,
+      imageOverlays,
+      selectedLayerId,
+      selectLayer,
+      handleLayerPointerDown,
+      handleResizePointerDown,
+      disabled,
+      handleTextFocusRequest,
+      contextMenuHandlers,
+      layerRefs,
+      snapGuideRefs,
+      contextMenu,
+      entries,
+      reorderLayers,
+      removeTextOverlay,
+      removeImageOverlay,
+    ]
+  );
+
   const nodeContent = (
     <NodeFrame
       id={id}
@@ -275,67 +412,10 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
             (e.g. "Text 0") is matched before identically-named canvas labels
             by Playwright's getByText().first(). The panel uses position:absolute
             so DOM order has no effect on visual layout. */}
-        <SidePanel className="nodrag nopan">
-          <CompositorEntryList
-            entries={entries}
-            selectedLayerId={selectedLayerId}
-            onSelectLayer={selectLayer}
-            onToggleVisibility={toggleLayerVisibility}
-            onAddText={addTextOverlay}
-            onRemoveText={removeTextOverlay}
-            onAddImage={addImageOverlay}
-            onRemoveImage={removeImageOverlay}
-            onReorderLayers={reorderLayers}
-            disabled={disabled}
-          />
-
-          <CompositorInspector
-            inspectorProps={inspectorProps}
-            selectedLayerName={selectedLayerName}
-            selectedLayerKind={selectedLayerKind}
-            selectedLayer={selectedLayer}
-            textInspectorChildren={textInspectorChildren}
-            handleSelectedOpacityChange={handleSelectedOpacityChange}
-            handleSelectedRotationChange={handleSelectedRotationChange}
-            handleSelectedMirrorToggle={handleSelectedMirrorToggle}
-            handleSelectedPositionSizeChange={handleSelectedPositionSizeChange}
-            handleSelectedCropZoomChange={handleSelectedCropZoomChange}
-            dimensionsReadOnly={selectedLayerKind === 'text'}
-            disabled={disabled}
-          />
-        </SidePanel>
+        <SidePanel className="nodrag nopan">{sidePanelContent}</SidePanel>
 
         <CompositorWrapper>
-          <CanvasSection>
-            {canvasHeaderContent}
-
-            <CompositorCanvas
-              canvasWidth={canvasWidth}
-              canvasHeight={canvasHeight}
-              layers={layers}
-              textOverlays={textOverlays}
-              imageOverlays={imageOverlays}
-              selectedLayerId={selectedLayerId}
-              onSelectLayer={selectLayer}
-              onLayerPointerDown={handleLayerPointerDown}
-              onResizePointerDown={handleResizePointerDown}
-              onTextFocusRequest={disabled ? undefined : handleTextFocusRequest}
-              onLayerContextMenu={disabled ? undefined : contextMenuHandlers.open}
-              layerRefs={layerRefs}
-              snapGuideRefs={snapGuideRefs}
-              disabled={disabled}
-            />
-            {contextMenu && entries.some((e) => e.id === contextMenu.layerId) && (
-              <CompositorContextMenu
-                menu={contextMenu}
-                entries={entries}
-                onReorderLayers={reorderLayers}
-                onRemoveText={removeTextOverlay}
-                onRemoveImage={removeImageOverlay}
-                onClose={contextMenuHandlers.close}
-              />
-            )}
-          </CanvasSection>
+          <CanvasSection>{canvasSectionContent}</CanvasSection>
         </CompositorWrapper>
       </CompositorOuterWrapper>
     </NodeFrame>

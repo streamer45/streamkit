@@ -68,7 +68,9 @@ function defaultOptions(
 /**
  * Maximum renders allowed for 20 rapid slider ticks.
  *
- * Expected: 1 (mount) + 1 (selectLayer) + 20 (slider ticks) = 22.
+ * Expected: 1 (mount) + 1 (selectLayer) = 2.
+ * Opacity/rotation updates use the zero-render path (ref + DOM only,
+ * no setLayers), so the hook doesn't re-render during the drag.
  * Budget gives headroom for React batching variance.
  */
 const SLIDER_BUDGET = 30;

@@ -10,6 +10,7 @@
 import { throttle } from 'lodash-es';
 import { useState, useEffect, useMemo, useRef } from 'react';
 
+import { PARAM_THROTTLE_MS } from '@/constants/timing';
 import { useNodeParamsStore, selectNodeParam } from '@/stores/nodeParamsStore';
 
 export interface UseNumericSliderOptions {
@@ -73,7 +74,7 @@ export const useNumericSlider = (options: UseNumericSliderOptions): UseNumericSl
     propValue,
     onParamChange,
     transformValue,
-    throttleMs = 100,
+    throttleMs = PARAM_THROTTLE_MS,
   } = options;
 
   // Get stored value from Zustand store

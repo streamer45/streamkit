@@ -20,6 +20,8 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 
+import { PARAM_THROTTLE_MS } from '@/constants/timing';
+
 import { useCompositorCommit } from './compositorCommit';
 import type { LayerKind } from './compositorConstants';
 import { DEFAULT_CROP_X, DEFAULT_CROP_Y, DEFAULT_CROP_ZOOM } from './compositorConstants';
@@ -68,6 +70,8 @@ export interface UseCompositorLayersResult {
   handleResizePointerDown: (layerId: string, handle: ResizeHandle, e: React.PointerEvent) => void;
   updateLayerOpacity: (layerId: string, opacity: number) => void;
   updateLayerRotation: (layerId: string, degrees: number) => void;
+  /** Sync ref-based appearance state to React state. Call on slider pointer-up. */
+  commitLayerAppearance: () => void;
   updateLayerPositionSize: (
     layerId: string,
     patch: { x?: number; y?: number; width?: number; height?: number }
@@ -118,7 +122,7 @@ export const useCompositorLayers = (
     params,
     onConfigChange,
     onParamChange,
-    throttleMs = 100,
+    throttleMs = PARAM_THROTTLE_MS,
   } = options;
 
   const [layers, setLayers] = useState<LayerState[]>(() =>
@@ -150,14 +154,32 @@ export const useCompositorLayers = (
   }, [imageOverlays]);
 
   const layerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const sliderActiveRef = useRef(false);
   const snapGuideRefs = useRef<{
     vertical: HTMLDivElement | null;
     horizontal: HTMLDivElement | null;
   }>({ vertical: null, horizontal: null });
   const dragStateRef = useRef<DragState | null>(null);
   const layersRef = useRef(layers);
+
+  // Safety net: clear sliderActiveRef when the selected layer changes or on
+  // unmount.  If a slider component unmounts mid-drag (layer deselected,
+  // removed, or Escape pressed), onValueCommit never fires and the ref
+  // would remain stuck at true, permanently blocking server/prop sync.
   useEffect(() => {
-    layersRef.current = layers;
+    if (sliderActiveRef.current) {
+      sliderActiveRef.current = false;
+      setLayers([...layersRef.current]);
+    }
+  }, [selectedLayerId, setLayers]);
+
+  useEffect(() => {
+    // During zero-render slider drags, layersRef is the source of truth
+    // (updated directly by updateLayerOpacity/updateLayerRotation).
+    // Don't overwrite it with stale React state from concurrent operations.
+    if (!sliderActiveRef.current) {
+      layersRef.current = layers;
+    }
   }, [layers]);
 
   // ── Sync from props ─────────────────────────────────────────────────────
@@ -169,7 +191,7 @@ export const useCompositorLayers = (
   const isMonitorView = !!sessionId;
 
   useEffect(() => {
-    if (dragStateRef.current) return;
+    if (dragStateRef.current || sliderActiveRef.current) return;
     const parsed = parseLayers(params, canvasWidth, canvasHeight);
 
     const merged = mergeOverlayState(
@@ -207,6 +229,7 @@ export const useCompositorLayers = (
     sessionId,
     nodeId,
     dragStateRef,
+    sliderActiveRef,
     setLayers,
     setTextOverlays,
     setImageOverlays
@@ -266,6 +289,8 @@ export const useCompositorLayers = (
     layersRef,
     textOverlaysRef,
     imageOverlaysRef,
+    layerRefs,
+    sliderActiveRef,
     throttledConfigChange,
     throttledOverlayCommit,
   });
@@ -298,6 +323,7 @@ export const useCompositorLayers = (
     handleResizePointerDown,
     updateLayerOpacity: overlayOps.updateLayerOpacity,
     updateLayerRotation: overlayOps.updateLayerRotation,
+    commitLayerAppearance: overlayOps.commitLayerAppearance,
     updateLayerPositionSize: overlayOps.updateLayerPositionSize,
     updateLayerZIndex: overlayOps.updateLayerZIndex,
     toggleLayerVisibility: overlayOps.toggleLayerVisibility,

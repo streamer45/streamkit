@@ -67,6 +67,9 @@ models
 
 demo/
 
+# React DevTools profiling exports
+profiling-data*.json
+
 # E2E test artifacts
 e2e/test-results
 e2e/playwright-report
