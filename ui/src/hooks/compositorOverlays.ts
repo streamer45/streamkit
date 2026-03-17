@@ -110,22 +110,20 @@ export function useCompositorOverlays(deps: OverlayDeps) {
       sliderActiveRef.current = true;
       // Update the ref
       const idx = layersRef.current.findIndex((l) => l.id === layerId);
-      if (idx !== -1) {
-        layersRef.current = layersRef.current.map((l, i) =>
-          i === idx ? { ...l, rotationDegrees: degrees } : l
-        );
-      }
+      if (idx === -1) return;
+
+      layersRef.current = layersRef.current.map((l, i) =>
+        i === idx ? { ...l, rotationDegrees: degrees } : l
+      );
       // Apply directly to DOM
       const el = layerRefs.current.get(layerId);
       if (el) {
         const layer = layersRef.current[idx];
-        if (layer) {
-          const parts: string[] = [];
-          if (degrees !== 0) parts.push(`rotate(${degrees}deg)`);
-          if (layer.mirrorHorizontal) parts.push('scaleX(-1)');
-          if (layer.mirrorVertical) parts.push('scaleY(-1)');
-          el.style.transform = parts.length > 0 ? parts.join(' ') : '';
-        }
+        const parts: string[] = [];
+        if (degrees !== 0) parts.push(`rotate(${degrees}deg)`);
+        if (layer.mirrorHorizontal) parts.push('scaleX(-1)');
+        if (layer.mirrorVertical) parts.push('scaleY(-1)');
+        el.style.transform = parts.length > 0 ? parts.join(' ') : '';
       }
       // Send to server (throttled)
       throttledConfigChange?.(layersRef.current);
