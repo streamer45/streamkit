@@ -79,7 +79,6 @@
     "@xyflow/react": "^12.10.1",
     "codemirror": "^6.0.2",
     "jotai": "^2.18.1",
-    "jotai-zustand": "^0.6.0",
     "js-yaml": "^4.1.1",
     "lodash-es": "^4.17.23",
     "lucide-react": "^0.577.0",

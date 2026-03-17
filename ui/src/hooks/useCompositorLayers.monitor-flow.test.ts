@@ -138,6 +138,24 @@ afterEach(() => {
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 describe('Monitor view data flow integration', () => {
+  it('layers are populated synchronously on initial render (no empty-state flash)', () => {
+    seedStore();
+    const opts = monitorOptions();
+    // renderHook returns the first committed result — layers must be parsed
+    // from params immediately (useLayoutEffect), not deferred to a post-paint
+    // useEffect.  If this assertion fails, the sync-from-props effect was
+    // changed back to useEffect and the compositor will flash "No layers".
+    const { result } = renderHook(
+      (props: UseCompositorLayersOptions) => useCompositorLayers(props),
+      { initialProps: opts }
+    );
+
+    expect(result.current.layers).toHaveLength(1);
+    expect(result.current.layers[0].id).toBe('in_0');
+    expect(result.current.textOverlays).toHaveLength(0);
+    expect(result.current.imageOverlays).toHaveLength(0);
+  });
+
   it('server-resolved layer positions survive a params echo-back', () => {
     seedStore();
 

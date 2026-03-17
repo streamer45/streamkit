@@ -13,7 +13,7 @@
  */
 
 import { useAtom } from 'jotai';
-import { useEffect, useCallback, useRef } from 'react';
+import { useEffect, useLayoutEffect, useCallback, useRef } from 'react';
 
 import { PARAM_THROTTLE_MS } from '@/constants/timing';
 import {
@@ -163,7 +163,9 @@ export const useCompositorLayers = (
   // must NOT overwrite server-resolved positions with config-parsed ones.
   const isMonitorView = !!sessionId;
 
-  useEffect(() => {
+  // useLayoutEffect so atoms are populated before the first paint, avoiding a
+  // flash of empty state (atoms default to []).
+  useLayoutEffect(() => {
     if (dragStateRef.current) return;
 
     const parsedLayers = parseLayers(params, canvasWidth, canvasHeight);
