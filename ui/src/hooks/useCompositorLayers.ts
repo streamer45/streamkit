@@ -3,24 +3,27 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Hook for managing compositor layer state with zero-render drag/resize.
+ * Hook for managing compositor layer state.
  *
- * During pointer-driven interactions (drag, resize), visual updates are
- * applied directly to DOM elements via refs and requestAnimationFrame.
- * React state is only committed on pointer-up (or throttled for live mode),
- * keeping the experience butter-smooth with no mid-drag re-renders.
- *
- * Heavy subsystems are extracted into companion modules:
- *  - compositorCommit       – commit adapter, throttled persistence
- *  - compositorServerSync   – server-driven layout subscription
- *  - compositorOverlays     – overlay CRUD, layer property updates, reorder
- *  - compositorDragResize   – pointer drag / resize handlers
- *  - compositorLayerParsers – parsing, serialisation, pure helpers
+ * Drag/resize still uses the zero-render ref + requestAnimationFrame path for
+ * pointer-move performance, but layer appearance updates (opacity / rotation)
+ * now go through normal React state. Jotai keeps that state scoped per
+ * compositor node instance and removes the need for the old sliderActiveRef /
+ * direct-DOM mutation hack.
  */
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useAtom } from 'jotai';
+import { useEffect, useCallback, useRef } from 'react';
 
 import { PARAM_THROTTLE_MS } from '@/constants/timing';
+import {
+  cleanupCompositorAtoms,
+  compositorImageOverlaysAtom,
+  compositorIsDraggingAtom,
+  compositorLayersAtom,
+  compositorSelectedLayerAtom,
+  compositorTextOverlaysAtom,
+} from '@/stores/compositorAtoms';
 
 import { useCompositorCommit } from './compositorCommit';
 import type { LayerKind } from './compositorConstants';
@@ -35,19 +38,19 @@ import {
   parseTextOverlays,
 } from './compositorLayerParsers';
 import type {
-  LayerState,
-  TextOverlayState,
   ImageOverlayState,
+  LayerState,
   ResizeHandle,
+  TextOverlayState,
 } from './compositorLayerParsers';
 import { useCompositorOverlays } from './compositorOverlays';
 import { useServerLayoutSync } from './compositorServerSync';
 
 export type {
-  LayerState,
-  TextOverlayState,
   ImageOverlayState,
+  LayerState,
   ResizeHandle,
+  TextOverlayState,
 } from './compositorLayerParsers';
 export type { LayerKind } from './compositorConstants';
 
@@ -70,33 +73,24 @@ export interface UseCompositorLayersResult {
   handleResizePointerDown: (layerId: string, handle: ResizeHandle, e: React.PointerEvent) => void;
   updateLayerOpacity: (layerId: string, opacity: number) => void;
   updateLayerRotation: (layerId: string, degrees: number) => void;
-  /** Sync ref-based appearance state to React state. Call on slider pointer-up. */
-  commitLayerAppearance: () => void;
   updateLayerPositionSize: (
     layerId: string,
     patch: { x?: number; y?: number; width?: number; height?: number }
   ) => void;
   updateLayerZIndex: (layerId: string, zIndex: number) => void;
   toggleLayerVisibility: (layerId: string) => void;
-  /** Toggle horizontal or vertical mirroring for a layer (video, text, or image). */
   updateLayerMirror: (layerId: string, axis: 'horizontal' | 'vertical') => void;
-  /** Update crop/zoom on a video layer. */
   updateLayerCropZoom: (
     layerId: string,
     patch: { cropX?: number; cropY?: number; cropZoom?: number }
   ) => void;
-  /** Ref map: layer elements register here for direct DOM manipulation during drag */
   layerRefs: React.MutableRefObject<Map<string, HTMLDivElement>>;
-  /** Refs to the snap guide line DOM elements for direct show/hide during drag */
   snapGuideRefs: React.MutableRefObject<{
     vertical: HTMLDivElement | null;
     horizontal: HTMLDivElement | null;
   }>;
-  /** Whether a drag/resize is currently in progress */
   isDragging: boolean;
-  /** Text overlays */
   textOverlays: TextOverlayState[];
-  /** Image overlays */
   imageOverlays: ImageOverlayState[];
   addTextOverlay: (text: string) => void;
   updateTextOverlay: (id: string, updates: Partial<Omit<TextOverlayState, 'id'>>) => void;
@@ -104,10 +98,7 @@ export interface UseCompositorLayersResult {
   addImageOverlay: (dataBase64: string, naturalWidth?: number, naturalHeight?: number) => void;
   updateImageOverlay: (id: string, updates: Partial<Omit<ImageOverlayState, 'id'>>) => void;
   removeImageOverlay: (id: string) => void;
-  /** Atomically reassign z-index values for all layer types in one commit.
-   *  Each entry maps a layer id + kind to its new z-index. */
   reorderLayers: (entries: Array<{ id: string; kind: LayerKind; zIndex: number }>) => void;
-  /** Pre-assembled deps bag for useCompositorKeyboard. */
   keyboardDeps: CompositorKeyboardDeps;
 }
 
@@ -125,27 +116,32 @@ export const useCompositorLayers = (
     throttleMs = PARAM_THROTTLE_MS,
   } = options;
 
-  const [layers, setLayers] = useState<LayerState[]>(() =>
-    parseLayers(params, canvasWidth, canvasHeight)
-  );
-  const [textOverlays, setTextOverlays] = useState<TextOverlayState[]>(() =>
-    parseTextOverlays(params)
-  );
-  const [imageOverlays, setImageOverlays] = useState<ImageOverlayState[]>(() =>
-    parseImageOverlays(params)
-  );
-  const [selectedLayerId, setSelectedLayerId] = useState<string | null>(null);
-  const [isDragging, setIsDragging] = useState(false);
+  const [layers, setLayers] = useAtom(compositorLayersAtom(nodeId));
+  const [textOverlays, setTextOverlays] = useAtom(compositorTextOverlaysAtom(nodeId));
+  const [imageOverlays, setImageOverlays] = useAtom(compositorImageOverlaysAtom(nodeId));
+  const [selectedLayerId, setSelectedLayerId] = useAtom(compositorSelectedLayerAtom(nodeId));
+  const [isDragging, setIsDragging] = useAtom(compositorIsDraggingAtom(nodeId));
+
+  const layerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const snapGuideRefs = useRef<{
+    vertical: HTMLDivElement | null;
+    horizontal: HTMLDivElement | null;
+  }>({ vertical: null, horizontal: null });
+  const dragStateRef = useRef<DragState | null>(null);
 
   // Stable refs — let throttled / memoised callbacks read latest values
-  // at call-time without triggering cascading dependency changes.
+  // at call-time without triggering dependency churn.
   const paramsRef = useRef(params);
+  const layersRef = useRef(layers);
+  const textOverlaysRef = useRef(textOverlays);
+  const imageOverlaysRef = useRef(imageOverlays);
+
   useEffect(() => {
     paramsRef.current = params;
   }, [params]);
-
-  const textOverlaysRef = useRef(textOverlays);
-  const imageOverlaysRef = useRef(imageOverlays);
+  useEffect(() => {
+    layersRef.current = layers;
+  }, [layers]);
   useEffect(() => {
     textOverlaysRef.current = textOverlays;
   }, [textOverlays]);
@@ -153,83 +149,70 @@ export const useCompositorLayers = (
     imageOverlaysRef.current = imageOverlays;
   }, [imageOverlays]);
 
-  const layerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
-  const sliderActiveRef = useRef(false);
-  const snapGuideRefs = useRef<{
-    vertical: HTMLDivElement | null;
-    horizontal: HTMLDivElement | null;
-  }>({ vertical: null, horizontal: null });
-  const dragStateRef = useRef<DragState | null>(null);
-  const layersRef = useRef(layers);
-
-  // Safety net: clear sliderActiveRef when the selected layer changes or on
-  // unmount.  If a slider component unmounts mid-drag (layer deselected,
-  // removed, or Escape pressed), onValueCommit never fires and the ref
-  // would remain stuck at true, permanently blocking server/prop sync.
+  // Clean up atom family entries when this compositor node unmounts or
+  // nodeId changes, so stale atoms don't accumulate.
   useEffect(() => {
-    if (sliderActiveRef.current) {
-      sliderActiveRef.current = false;
-      setLayers([...layersRef.current]);
-    }
-  }, [selectedLayerId, setLayers]);
-
-  useEffect(() => {
-    // During zero-render slider drags, layersRef is the source of truth
-    // (updated directly by updateLayerOpacity/updateLayerRotation).
-    // Don't overwrite it with stale React state from concurrent operations.
-    if (!sliderActiveRef.current) {
-      layersRef.current = layers;
-    }
-  }, [layers]);
+    return () => {
+      cleanupCompositorAtoms(nodeId);
+    };
+  }, [nodeId]);
 
   // ── Sync from props ─────────────────────────────────────────────────────
   // In Monitor view (sessionId is set), the server's view data is the source
-  // of truth for geometry (x, y, width, height).  The "sync from props" effect
-  // must NOT overwrite server-resolved positions with config-parsed ones,
-  // otherwise a params echo-back from the server would clobber the accurate
-  // layout that useServerLayoutSync applied.
+  // of truth for geometry (x, y, width, height). The sync-from-props effect
+  // must NOT overwrite server-resolved positions with config-parsed ones.
   const isMonitorView = !!sessionId;
 
   useEffect(() => {
-    if (dragStateRef.current || sliderActiveRef.current) return;
-    const parsed = parseLayers(params, canvasWidth, canvasHeight);
+    if (dragStateRef.current) return;
 
-    const merged = mergeOverlayState(
+    const parsedLayers = parseLayers(params, canvasWidth, canvasHeight);
+    const mergedLayers = mergeOverlayState(
       layersRef.current,
-      parsed,
+      parsedLayers,
       (a, b) => a.cropZoom !== b.cropZoom || a.cropX !== b.cropX || a.cropY !== b.cropY,
       isMonitorView
     );
-    if (merged !== layersRef.current) setLayers(merged);
+    if (mergedLayers !== layersRef.current) {
+      setLayers(mergedLayers);
+    }
 
-    setTextOverlays((cur) =>
+    setTextOverlays((current) =>
       mergeOverlayState(
-        cur,
+        current,
         parseTextOverlays(params),
         (a, b) =>
           a.text !== b.text ||
           a.fontSize !== b.fontSize ||
           a.fontName !== b.fontName ||
-          a.color.some((v, i) => v !== b.color[i]),
+          a.color.some((value, index) => value !== b.color[index]),
         isMonitorView
       )
     );
-    setImageOverlays((cur) =>
+
+    setImageOverlays((current) =>
       mergeOverlayState(
-        cur,
+        current,
         parseImageOverlays(params),
         (a, b) => a.dataBase64 !== b.dataBase64,
         isMonitorView
       )
     );
-  }, [params, canvasWidth, canvasHeight, isMonitorView]);
+  }, [
+    params,
+    canvasWidth,
+    canvasHeight,
+    isMonitorView,
+    setLayers,
+    setTextOverlays,
+    setImageOverlays,
+  ]);
 
   // ── Server-driven layout (Monitor view only) ───────────────────────────
   useServerLayoutSync(
     sessionId,
     nodeId,
     dragStateRef,
-    sliderActiveRef,
     setLayers,
     setTextOverlays,
     setImageOverlays
@@ -238,36 +221,43 @@ export const useCompositorLayers = (
   // ── Find layer across all types ─────────────────────────────────────────
   const findAnyLayer = useCallback(
     (layerId: string): { state: LayerState; kind: LayerKind } | null => {
-      const v = layersRef.current.find((l) => l.id === layerId);
-      if (v) return { state: v, kind: 'video' };
-      const t = textOverlaysRef.current.find((o) => o.id === layerId);
-      if (t)
+      const videoLayer = layersRef.current.find((layer) => layer.id === layerId);
+      if (videoLayer) {
+        return { state: videoLayer, kind: 'video' };
+      }
+
+      const textOverlay = textOverlaysRef.current.find((overlay) => overlay.id === layerId);
+      if (textOverlay) {
         return {
           state: {
-            ...t,
+            ...textOverlay,
             cropZoom: DEFAULT_CROP_ZOOM,
             cropX: DEFAULT_CROP_X,
             cropY: DEFAULT_CROP_Y,
           },
           kind: 'text',
         };
-      const img = imageOverlaysRef.current.find((o) => o.id === layerId);
-      if (img)
+      }
+
+      const imageOverlay = imageOverlaysRef.current.find((overlay) => overlay.id === layerId);
+      if (imageOverlay) {
         return {
           state: {
-            ...img,
+            ...imageOverlay,
             cropZoom: DEFAULT_CROP_ZOOM,
             cropX: DEFAULT_CROP_X,
             cropY: DEFAULT_CROP_Y,
           },
           kind: 'image',
         };
+      }
+
       return null;
     },
     []
   );
 
-  // ── Commit / persistence ───────────────────────────────────────────────────
+  // ── Commit / persistence ────────────────────────────────────────────────
   const { commitAdapter, throttledConfigChange, throttledOverlayCommit } = useCompositorCommit({
     nodeId,
     onConfigChange,
@@ -289,8 +279,6 @@ export const useCompositorLayers = (
     layersRef,
     textOverlaysRef,
     imageOverlaysRef,
-    layerRefs,
-    sliderActiveRef,
     throttledConfigChange,
     throttledOverlayCommit,
   });
@@ -323,7 +311,6 @@ export const useCompositorLayers = (
     handleResizePointerDown,
     updateLayerOpacity: overlayOps.updateLayerOpacity,
     updateLayerRotation: overlayOps.updateLayerRotation,
-    commitLayerAppearance: overlayOps.commitLayerAppearance,
     updateLayerPositionSize: overlayOps.updateLayerPositionSize,
     updateLayerZIndex: overlayOps.updateLayerZIndex,
     toggleLayerVisibility: overlayOps.toggleLayerVisibility,

@@ -61,76 +61,6 @@ export interface CompositorCanvasProps {
   disabled?: boolean;
 }
 
-/**
- * Custom comparator for CompositorCanvas memo.
- *
- * Video layers use zero-render DOM updates for opacity/rotation during
- * slider drags, so we only compare geometry fields for those.
- * Text and image overlays update via React state (not the zero-render path),
- * so we use reference equality — a new array reference means content changed.
- *
- * Known limitation: server-pushed opacity/rotation changes from other clients
- * won't trigger a canvas re-render until the next geometry change. This is
- * acceptable for the single-client case (echo-backs carry the same values).
- * The Jotai migration will resolve this by giving each field its own atom.
- */
-function areCanvasPropsEqual(prev: CompositorCanvasProps, next: CompositorCanvasProps): boolean {
-  // Scalar props
-  if (prev.canvasWidth !== next.canvasWidth) return false;
-  if (prev.canvasHeight !== next.canvasHeight) return false;
-  if (prev.selectedLayerId !== next.selectedLayerId) return false;
-  if (prev.disabled !== next.disabled) return false;
-
-  // Callback identity (stable via useCallback in parent)
-  if (prev.onSelectLayer !== next.onSelectLayer) return false;
-  if (prev.onLayerPointerDown !== next.onLayerPointerDown) return false;
-  if (prev.onResizePointerDown !== next.onResizePointerDown) return false;
-  if (prev.onTextFocusRequest !== next.onTextFocusRequest) return false;
-  if (prev.onLayerContextMenu !== next.onLayerContextMenu) return false;
-
-  // Ref identity (stable MutableRefObjects)
-  if (prev.layerRefs !== next.layerRefs) return false;
-  if (prev.snapGuideRefs !== next.snapGuideRefs) return false;
-
-  // Video layers: compare geometry only, skip appearance (opacity, rotation, mirror)
-  // since those use the zero-render DOM path
-  if (!layerArrayGeometryEqual(prev.layers, next.layers)) return false;
-
-  // Text/image overlays: use reference equality since they update via React state
-  // and content changes (text, font, color, opacity, rotation) need to re-render
-  if (prev.textOverlays !== next.textOverlays) return false;
-  if (prev.imageOverlays !== next.imageOverlays) return false;
-
-  return true;
-}
-
-/**
- * Compare layer arrays by geometry + mirror fields, skipping opacity/rotation
- * (those use the zero-render DOM path during slider drags).
- * Mirror is included because updateLayerMirror updates via React state, not DOM.
- */
-function layerArrayGeometryEqual(a: readonly LayerState[], b: readonly LayerState[]): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    const la = a[i];
-    const lb = b[i];
-    if (
-      la.id !== lb.id ||
-      la.x !== lb.x ||
-      la.y !== lb.y ||
-      la.width !== lb.width ||
-      la.height !== lb.height ||
-      la.zIndex !== lb.zIndex ||
-      la.visible !== lb.visible ||
-      la.mirrorHorizontal !== lb.mirrorHorizontal ||
-      la.mirrorVertical !== lb.mirrorVertical
-    ) {
-      return false;
-    }
-  }
-  return true;
-}
-
 export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
   ({
     canvasWidth,
@@ -305,8 +235,7 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
         </CanvasInner>
       </CanvasOuter>
     );
-  },
-  areCanvasPropsEqual
+  }
 );
 
 CompositorCanvas.displayName = 'CompositorCanvas';

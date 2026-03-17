@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { Provider as JotaiProvider } from 'jotai';
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 
@@ -14,6 +15,7 @@ import { ToastProvider } from './context/ToastContext';
 import Layout from './Layout';
 import { fetchAuthMe } from './services/auth';
 import { initializePermissions } from './services/permissions';
+import { jotaiStore } from './stores/jotaiStore';
 import { ensureSchemasLoaded } from './stores/schemaStore';
 import { getBasePathname } from './utils/baseHref';
 import { getLogger } from './utils/logger';
@@ -98,39 +100,41 @@ const App: React.FC = () => {
 
   return (
     <ErrorBoundary>
-      <QueryClientProvider client={queryClient}>
-        <ThemeProvider>
-          <ToastProvider>
-            <TooltipProvider delayDuration={300} skipDelayDuration={200}>
-              <BrowserRouter basename={getBasePathname()}>
-                <Routes>
-                  <Route
-                    path="/login"
-                    element={<LoginView onLoggedIn={() => setRequiresLogin(false)} />}
-                  />
-                  <Route
-                    path="/"
-                    element={requiresLogin ? <Navigate to="/login" replace /> : <Layout />}
-                  >
-                    <Route index element={<Navigate to="/design" replace />} />
-                    <Route path="design" element={<DesignView />} />
-                    <Route path="monitor" element={<MonitorView />} />
-                    <Route path="convert" element={<ConvertView />} />
-                    <Route path="stream" element={<StreamView />} />
-                    <Route path="admin" element={<Navigate to="/admin/plugins" replace />} />
+      <JotaiProvider store={jotaiStore}>
+        <QueryClientProvider client={queryClient}>
+          <ThemeProvider>
+            <ToastProvider>
+              <TooltipProvider delayDuration={300} skipDelayDuration={200}>
+                <BrowserRouter basename={getBasePathname()}>
+                  <Routes>
                     <Route
-                      path="admin/plugins"
-                      element={<Navigate to="/admin/plugins/installed" replace />}
+                      path="/login"
+                      element={<LoginView onLoggedIn={() => setRequiresLogin(false)} />}
                     />
-                    <Route path="admin/plugins/:tab" element={<PluginsView />} />
-                    <Route path="admin/tokens" element={<TokensView />} />
-                  </Route>
-                </Routes>
-              </BrowserRouter>
-            </TooltipProvider>
-          </ToastProvider>
-        </ThemeProvider>
-      </QueryClientProvider>
+                    <Route
+                      path="/"
+                      element={requiresLogin ? <Navigate to="/login" replace /> : <Layout />}
+                    >
+                      <Route index element={<Navigate to="/design" replace />} />
+                      <Route path="design" element={<DesignView />} />
+                      <Route path="monitor" element={<MonitorView />} />
+                      <Route path="convert" element={<ConvertView />} />
+                      <Route path="stream" element={<StreamView />} />
+                      <Route path="admin" element={<Navigate to="/admin/plugins" replace />} />
+                      <Route
+                        path="admin/plugins"
+                        element={<Navigate to="/admin/plugins/installed" replace />}
+                      />
+                      <Route path="admin/plugins/:tab" element={<PluginsView />} />
+                      <Route path="admin/tokens" element={<TokensView />} />
+                    </Route>
+                  </Routes>
+                </BrowserRouter>
+              </TooltipProvider>
+            </ToastProvider>
+          </ThemeProvider>
+        </QueryClientProvider>
+      </JotaiProvider>
     </ErrorBoundary>
   );
 };

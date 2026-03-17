@@ -80,7 +80,6 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
     handleResizePointerDown,
     updateLayerOpacity,
     updateLayerRotation,
-    commitLayerAppearance,
     toggleLayerVisibility,
     updateLayerMirror,
     updateLayerCropZoom,
@@ -173,28 +172,9 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
   const showLiveIndicator = !!data.onConfigChange && !!data.sessionId;
 
   // Selected layer data for property controls.
-  // Memoize by value (not by reference) so that appearance-only changes
-  // (opacity, rotation) on the selected layer produce a new object, but
-  // changes to *other* layers don't invalidate these references.
-  const selectedLayer = useMemo(
-    () => layers.find((l) => l.id === selectedLayerId),
-    // layers array reference changes on every update, but we only care
-    // about the specific layer matching selectedLayerId.  JSON key the
-    // selected layer's fields so the memo only recomputes when the
-    // selected layer's data actually changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selectedLayerId, layers.find((l) => l.id === selectedLayerId)]
-  );
-  const selectedTextOverlay = useMemo(
-    () => textOverlays.find((o) => o.id === selectedLayerId),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selectedLayerId, textOverlays.find((o) => o.id === selectedLayerId)]
-  );
-  const selectedImageOverlay = useMemo(
-    () => imageOverlays.find((o) => o.id === selectedLayerId),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selectedLayerId, imageOverlays.find((o) => o.id === selectedLayerId)]
-  );
+  const selectedLayer = layers.find((l) => l.id === selectedLayerId);
+  const selectedTextOverlay = textOverlays.find((o) => o.id === selectedLayerId);
+  const selectedImageOverlay = imageOverlays.find((o) => o.id === selectedLayerId);
 
   // Determine the kind of the selected layer once
   const selectedLayerKind = useMemo(() => {
@@ -300,7 +280,6 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
           handleSelectedMirrorToggle={handleSelectedMirrorToggle}
           handleSelectedPositionSizeChange={handleSelectedPositionSizeChange}
           handleSelectedCropZoomChange={handleSelectedCropZoomChange}
-          onAppearanceCommit={commitLayerAppearance}
           dimensionsReadOnly={selectedLayerKind === 'text'}
           disabled={disabled}
         />
@@ -327,7 +306,6 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
       handleSelectedMirrorToggle,
       handleSelectedPositionSizeChange,
       handleSelectedCropZoomChange,
-      commitLayerAppearance,
     ]
   );
 

@@ -154,7 +154,6 @@ export function useServerLayoutSync(
   sessionId: string | undefined,
   nodeId: string,
   dragStateRef: React.MutableRefObject<unknown>,
-  sliderActiveRef: React.MutableRefObject<boolean>,
   setLayers: React.Dispatch<React.SetStateAction<LayerState[]>>,
   setTextOverlays: React.Dispatch<React.SetStateAction<TextOverlayState[]>>,
   setImageOverlays: React.Dispatch<React.SetStateAction<ImageOverlayState[]>>
@@ -164,9 +163,9 @@ export function useServerLayoutSync(
 
     const applyServerLayout = (viewData: unknown) => {
       if (!viewData || typeof viewData !== 'object') return;
-      // Skip during drag/resize or zero-render slider updates to avoid
-      // server echo-backs overwriting in-flight local state
-      if (dragStateRef.current || sliderActiveRef.current) return;
+      // Skip during drag/resize to avoid server echo-backs overwriting
+      // in-flight local state
+      if (dragStateRef.current) return;
 
       const layout = viewData as CompositorLayout;
       if (!Array.isArray(layout.layers)) return;
@@ -199,13 +198,5 @@ export function useServerLayoutSync(
       }
     });
     return unsubscribe;
-  }, [
-    sessionId,
-    nodeId,
-    dragStateRef,
-    sliderActiveRef,
-    setLayers,
-    setTextOverlays,
-    setImageOverlays,
-  ]);
+  }, [sessionId, nodeId, dragStateRef, setLayers, setTextOverlays, setImageOverlays]);
 }
