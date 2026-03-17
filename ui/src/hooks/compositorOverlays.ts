@@ -85,10 +85,10 @@ export function useCompositorOverlays(deps: OverlayDeps) {
   const updateLayerOpacity = useCallback(
     (layerId: string, opacity: number) => {
       const clamped = Math.max(0, Math.min(1, opacity));
-      sliderActiveRef.current = true;
       // Update the ref (source of truth during drag)
       const idx = layersRef.current.findIndex((l) => l.id === layerId);
       if (idx === -1) return;
+      sliderActiveRef.current = true;
 
       layersRef.current = layersRef.current.map((l, i) =>
         i === idx ? { ...l, opacity: clamped } : l
@@ -107,10 +107,10 @@ export function useCompositorOverlays(deps: OverlayDeps) {
 
   const updateLayerRotation = useCallback(
     (layerId: string, degrees: number) => {
-      sliderActiveRef.current = true;
       // Update the ref
       const idx = layersRef.current.findIndex((l) => l.id === layerId);
       if (idx === -1) return;
+      sliderActiveRef.current = true;
 
       layersRef.current = layersRef.current.map((l, i) =>
         i === idx ? { ...l, rotationDegrees: degrees } : l
