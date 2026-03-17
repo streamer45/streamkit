@@ -99,7 +99,11 @@ function areCanvasPropsEqual(prev: CompositorCanvasProps, next: CompositorCanvas
   return true;
 }
 
-/** Compare layer arrays by geometry fields only (skip opacity/rotation/mirror). */
+/**
+ * Compare layer arrays by geometry + mirror fields, skipping opacity/rotation
+ * (those use the zero-render DOM path during slider drags).
+ * Mirror is included because updateLayerMirror updates via React state, not DOM.
+ */
 function layerArrayGeometryEqual(a: readonly LayerState[], b: readonly LayerState[]): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
@@ -112,7 +116,9 @@ function layerArrayGeometryEqual(a: readonly LayerState[], b: readonly LayerStat
       la.width !== lb.width ||
       la.height !== lb.height ||
       la.zIndex !== lb.zIndex ||
-      la.visible !== lb.visible
+      la.visible !== lb.visible ||
+      la.mirrorHorizontal !== lb.mirrorHorizontal ||
+      la.mirrorVertical !== lb.mirrorVertical
     ) {
       return false;
     }
