@@ -68,6 +68,11 @@ export interface CompositorCanvasProps {
  * slider drags, so we only compare geometry fields for those.
  * Text and image overlays update via React state (not the zero-render path),
  * so we use reference equality — a new array reference means content changed.
+ *
+ * Known limitation: server-pushed opacity/rotation changes from other clients
+ * won't trigger a canvas re-render until the next geometry change. This is
+ * acceptable for the single-client case (echo-backs carry the same values).
+ * The Jotai migration will resolve this by giving each field its own atom.
  */
 function areCanvasPropsEqual(prev: CompositorCanvasProps, next: CompositorCanvasProps): boolean {
   // Scalar props

@@ -88,16 +88,16 @@ export function useCompositorOverlays(deps: OverlayDeps) {
       sliderActiveRef.current = true;
       // Update the ref (source of truth during drag)
       const idx = layersRef.current.findIndex((l) => l.id === layerId);
-      if (idx !== -1) {
-        layersRef.current = layersRef.current.map((l, i) =>
-          i === idx ? { ...l, opacity: clamped } : l
-        );
-      }
+      if (idx === -1) return;
+
+      layersRef.current = layersRef.current.map((l, i) =>
+        i === idx ? { ...l, opacity: clamped } : l
+      );
       // Apply directly to DOM for instant visual feedback
       const el = layerRefs.current.get(layerId);
       if (el) {
         const layer = layersRef.current[idx];
-        el.style.opacity = String(layer?.visible !== false ? clamped : 0.2);
+        el.style.opacity = String(layer.visible ? clamped : 0.2);
       }
       // Send to server (throttled)
       throttledConfigChange?.(layersRef.current);

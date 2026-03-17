@@ -88,7 +88,7 @@ export default tseslint.config(
       "sonarjs/cognitive-complexity": ["warn", 30],
 
       // ---- File size / nesting heuristics ----
-      "max-lines": ["warn", { max: 550, skipBlankLines: true, skipComments: true }],
+      "max-lines": ["warn", { max: 500, skipBlankLines: true, skipComments: true }],
       "max-depth": ["warn", 4],                    // nesting depth
       "max-statements": ["warn", 30],
 
@@ -117,6 +117,7 @@ export default tseslint.config(
       "**/views/StreamView.tsx",    // 673 lines - Live streaming with MoQ connection orchestration
       "**/panes/ControlPane.tsx",   // 868 lines - Control panel with many widgets
       "**/panes/SamplePipelinesPane.tsx", // 582 lines - Pipeline templates browser
+      "**/nodes/compositorNodeWidgets.tsx", // ~510 lines - Many memoized inspector sub-components with local slider state
     ],
     rules: {
       "max-lines": "off",  // Acknowledged: these are complex view orchestrators
