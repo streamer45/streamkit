@@ -428,9 +428,7 @@ function printCascade(analysis) {
       const selfStr = comp.selfDur > 0.1 ? ` (${comp.selfDur.toFixed(1)}ms)` : "";
       console.log(`${prefix}${comp.name}${selfStr} — ${comp.reason}`);
 
-      // Find children that also re-rendered
-      const childrenSnapshot = Object.values(analysis.commitSummaries[0]) // we need snapshots
-      // Actually let's use the parent map in reverse
+      // Find children that also re-rendered (using parent map in reverse)
       const children = [...renderedIds].filter(
         (id) => parentMap.get(id) === fiberId
       );
