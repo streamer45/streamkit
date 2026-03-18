@@ -19,7 +19,11 @@
 
 import { useEffect } from 'react';
 
-import { useSessionStore, selectNodeViewData } from '@/stores/sessionStore';
+import {
+  sessionStore as defaultSessionStore,
+  nodeViewDataAtom,
+  nodeKey,
+} from '@/stores/sessionAtoms';
 import type {
   CompositorLayout,
   ResolvedLayer,
@@ -155,11 +159,11 @@ export function mergeTextMeasurements(
 
 /** Subscribe to server-driven layout updates for a compositor node.
  *
- *  Uses an external Zustand subscription (useSessionStore.subscribe)
- *  instead of a store selector hook to avoid triggering a React re-render
- *  on every view-data arrival.  Writes go directly to the Jotai store's
- *  per-layer atoms — only atoms whose values actually changed trigger
- *  subscriber re-renders. */
+ *  Subscribes to the per-node viewData Jotai atom in the default
+ *  (provider-less) store.  This avoids the compositor Provider's scoped
+ *  store and doesn't trigger React re-renders.  Writes go directly to
+ *  the compositor Jotai store's per-layer atoms — only atoms whose
+ *  values actually changed trigger subscriber re-renders. */
 export function useServerLayoutSync(
   sessionId: string | undefined,
   nodeId: string,
@@ -196,18 +200,16 @@ export function useServerLayoutSync(
       }
     };
 
-    // Apply current value immediately (if any)
-    const current = selectNodeViewData(sessionId, nodeId)(useSessionStore.getState());
+    // Apply current value immediately (if any) from the default Jotai store.
+    const viewDataAtom = nodeViewDataAtom(nodeKey(sessionId, nodeId));
+    const current = defaultSessionStore.get(viewDataAtom);
     applyServerLayout(current);
 
-    // Subscribe externally — does NOT cause React re-renders.
-    const selector = selectNodeViewData(sessionId, nodeId);
-    const unsubscribe = useSessionStore.subscribe((state, prevState) => {
-      const viewData = selector(state);
-      const prevViewData = selector(prevState);
-      if (viewData !== prevViewData) {
-        applyServerLayout(viewData);
-      }
+    // Subscribe to the Jotai atom in the default (provider-less) store.
+    // This runs outside the compositor Provider scope, so we use
+    // defaultSessionStore.sub() directly instead of useAtomValue.
+    const unsubscribe = defaultSessionStore.sub(viewDataAtom, () => {
+      applyServerLayout(defaultSessionStore.get(viewDataAtom));
     });
     return unsubscribe;
   }, [sessionId, nodeId, store, dragStateRef]);

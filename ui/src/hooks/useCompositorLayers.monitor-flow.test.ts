@@ -22,6 +22,7 @@
 import { renderHook, act } from '@testing-library/react';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 
+import { writeNodeViewData, writeSessionConnected, clearSessionAtoms } from '@/stores/sessionAtoms';
 import { useSessionStore } from '@/stores/sessionStore';
 import type { CompositorLayout } from '@/types/generated/compositor-types';
 
@@ -125,11 +126,13 @@ function makeServerLayout(overrides: Partial<CompositorLayout> = {}): Compositor
 
 /** Seed the Zustand store with a session so useServerLayoutSync finds it. */
 function seedStore() {
+  writeSessionConnected(SESSION_ID, true);
   useSessionStore.getState().initSession(SESSION_ID, true);
 }
 
 /** Push server view data into the store (simulates a WS view_data message). */
 function pushServerViewData(layout: CompositorLayout) {
+  writeNodeViewData(SESSION_ID, NODE_ID, layout);
   useSessionStore.getState().updateNodeViewData(SESSION_ID, NODE_ID, layout);
 }
 
@@ -137,6 +140,7 @@ function pushServerViewData(layout: CompositorLayout) {
 
 afterEach(() => {
   // Clean up store between tests
+  clearSessionAtoms(SESSION_ID);
   useSessionStore.getState().clearSession(SESSION_ID);
 });
 

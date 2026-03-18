@@ -29,6 +29,7 @@
         "@uiw/react-codemirror": "^4.25.8",
         "@xyflow/react": "^12.10.1",
         "codemirror": "^6.0.2",
+        "jotai": "^2.18.1",
         "jotai-family": "^1.0.1",
         "js-yaml": "^4.1.1",
         "lodash-es": "^4.17.23",

@@ -52,11 +52,15 @@ import { useSessionsPrefetch } from '@/hooks/useSessionsPrefetch';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { getWebSocketService } from '@/services/websocket';
 import { useLayoutStore } from '@/stores/layoutStore';
-import { useNodeParamsStore } from '@/stores/nodeParamsStore';
 import { useNodePositionStore } from '@/stores/nodePositionStore';
 import { usePluginStore } from '@/stores/pluginStore';
 import { useSchemaStore } from '@/stores/schemaStore';
-import { useSessionStore } from '@/stores/sessionStore';
+import {
+  sessionStore as defaultSessionStore,
+  nodeStateAtom,
+  nodeParamsAtom,
+  nodeKey,
+} from '@/stores/sessionAtoms';
 import type {
   NodeDefinition,
   Connection,
@@ -801,13 +805,13 @@ const MonitorViewContent: React.FC = () => {
         updateNodePosition(selectedSessionId, nodeName, pos);
       }
 
-      // Use real-time state from Zustand if available, otherwise use pipeline state.
-      // Read directly from the store (non-reactive) since the topology effect only
-      // runs on structural changes, not on every node-state transition.
-      const currentNodeStates = selectedSessionId
-        ? (useSessionStore.getState().getSession(selectedSessionId)?.nodeStates ?? {})
-        : {};
-      const nodeState = currentNodeStates[nodeName] || apiNode.state;
+      // Use real-time state from Jotai atom if available, otherwise use pipeline state.
+      // Read directly from the default store (non-reactive) since the topology effect
+      // only runs on structural changes, not on every node-state transition.
+      const nodeState =
+        (selectedSessionId
+          ? defaultSessionStore.get(nodeStateAtom(nodeKey(selectedSessionId, nodeName)))
+          : null) ?? apiNode.state;
 
       // Get base pins from definition and resolve dynamic pins
       const baseInputs = defByKind.get(apiNode.kind)?.inputs ?? [];
@@ -910,9 +914,8 @@ const MonitorViewContent: React.FC = () => {
 
       const nodeConfig: Record<string, unknown> = { kind: apiNode.kind };
 
-      const overrides = useNodeParamsStore
-        .getState()
-        .getParamsForNode(nodeName, selectedSessionId ?? undefined);
+      const paramKey = selectedSessionId ? `${selectedSessionId}\0${nodeName}` : nodeName;
+      const overrides = defaultSessionStore.get(nodeParamsAtom(paramKey));
       const mergedParams = { ...(apiNode.params || {}), ...(overrides || {}) };
       if (Object.keys(mergedParams).length > 0) {
         nodeConfig['params'] = mergedParams;

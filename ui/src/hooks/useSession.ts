@@ -3,14 +3,40 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { useQuery } from '@tanstack/react-query';
+import { useAtomValue } from 'jotai/react';
 import { useEffect, useCallback } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 
 import { fetchApi } from '@/services/base';
 import { getWebSocketService } from '@/services/websocket';
 import { useNodeParamsStore } from '@/stores/nodeParamsStore';
+import {
+  sessionConnectedAtom,
+  sessionStore as defaultSessionStore,
+  nodeStateAtom,
+  nodeViewDataAtom,
+  nodeKey,
+  writeNodeParam,
+  writeNodeParams,
+} from '@/stores/sessionAtoms';
 import { useSessionStore } from '@/stores/sessionStore';
 import type { Pipeline, Request, MessageType, BatchOperation } from '@/types/types';
+
+/** Seed Jotai atoms with initial node states and view data from a pipeline. */
+function seedPipelineAtoms(sessionId: string, pipeline: Pipeline): void {
+  if (pipeline.nodes) {
+    for (const [nodeId, node] of Object.entries(pipeline.nodes)) {
+      if (node.state) {
+        defaultSessionStore.set(nodeStateAtom(nodeKey(sessionId, nodeId)), node.state);
+      }
+    }
+  }
+  if (pipeline.view_data && typeof pipeline.view_data === 'object') {
+    for (const [nodeId, data] of Object.entries(pipeline.view_data as Record<string, unknown>)) {
+      defaultSessionStore.set(nodeViewDataAtom(nodeKey(sessionId, nodeId)), data);
+    }
+  }
+}
 
 async function fetchPipeline(sessionId: string): Promise<Pipeline> {
   const response = await fetchApi(`/api/v1/sessions/${sessionId}/pipeline`);
@@ -42,10 +68,11 @@ export function useSession(sessionId: string | null) {
     staleTime: Infinity, // WebSocket keeps it fresh
   });
 
-  // Update Zustand store when pipeline data is fetched
+  // Update Zustand store and seed Jotai atoms when pipeline data is fetched
   useEffect(() => {
     if (pipelineQuery.data && sessionId) {
       useSessionStore.getState().setPipeline(sessionId, pipelineQuery.data);
+      seedPipelineAtoms(sessionId, pipelineQuery.data);
     }
   }, [pipelineQuery.data, sessionId]);
 
@@ -57,14 +84,16 @@ export function useSession(sessionId: string | null) {
   const pipeline = useSessionStore((state) =>
     sessionId ? state.getSession(sessionId)?.pipeline : undefined
   );
-  const isConnectedFromStore = useSessionStore((state) =>
-    sessionId ? (state.getSession(sessionId)?.isConnected ?? false) : false
-  );
+  // Read connection status from Jotai atom (fine-grained, per-session).
+  const isConnectedFromStore = useAtomValue(sessionConnectedAtom(sessionId ?? ''));
 
   const tuneNode = useCallback(
     (nodeId: string, param: string, value: unknown) => {
       if (!sessionId) return;
 
+      // Jotai: fine-grained per-node atom
+      writeNodeParam(nodeId, param, value, sessionId);
+      // Zustand: keep for consumers that still read from Zustand
       useNodeParamsStore.getState().setParam(nodeId, param, value, sessionId);
 
       const request: Request = {
@@ -93,8 +122,9 @@ export function useSession(sessionId: string | null) {
     (nodeId: string, config: Record<string, unknown>) => {
       if (!sessionId) return;
 
-      // Batch all param updates into a single store update to avoid
-      // N intermediate states that would trigger N selector re-evaluations.
+      // Jotai: fine-grained per-node atom
+      writeNodeParams(nodeId, config, sessionId);
+      // Zustand: keep for consumers that still read from Zustand
       useNodeParamsStore.getState().setParams(nodeId, config, sessionId);
 
       const request: Request = {

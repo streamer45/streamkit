@@ -3,8 +3,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import styled from '@emotion/styled';
+import { useAtomValue } from 'jotai/react';
 import React from 'react';
 
+import { nodeStatsAtom, nodeKey } from '@/stores/sessionAtoms';
 import { useSessionStore } from '@/stores/sessionStore';
 import type { NodeState, NodeStats, Pipeline } from '@/types/types';
 
@@ -391,9 +393,7 @@ const LiveNodeStateTooltipContent = React.memo(
     sessionId: string;
     fallbackStats?: NodeStats;
   }) => {
-    const liveStats = useSessionStore(
-      React.useCallback((s) => s.sessions.get(sessionId)?.nodeStats[nodeId], [nodeId, sessionId])
-    );
+    const liveStats = useAtomValue(nodeStatsAtom(nodeKey(sessionId, nodeId)));
     const pipeline = useSessionStore(
       React.useCallback((s) => s.sessions.get(sessionId)?.pipeline, [sessionId])
     );
@@ -415,17 +415,11 @@ export const NodeStateIndicator: React.FC<NodeStateIndicatorProps> = ({
 }) => {
   const [isTooltipOpen, setIsTooltipOpen] = React.useState(false);
 
-  // IMPORTANT: avoid subscribing to node stats while the tooltip is closed.
-  // Stats are high-frequency and would otherwise cause constant re-renders of all node indicators.
-  const liveStats = useSessionStore(
-    React.useCallback(
-      (s) =>
-        isTooltipOpen && nodeId && sessionId
-          ? s.sessions.get(sessionId)?.nodeStats[nodeId]
-          : undefined,
-      [isTooltipOpen, nodeId, sessionId]
-    )
-  );
+  // Read per-node stats from Jotai atom (fine-grained, only this node's atom).
+  // Only surface the value when the tooltip is open to avoid unnecessary work
+  // in downstream rendering (the atom subscription itself is lightweight).
+  const statsAtomValue = useAtomValue(nodeStatsAtom(nodeKey(sessionId ?? '', nodeId ?? '')));
+  const liveStats = isTooltipOpen && nodeId && sessionId ? statsAtomValue : undefined;
 
   const stats = liveStats ?? propStats;
   const hasErrors = isTooltipOpen && stats && stats.errored > 0;

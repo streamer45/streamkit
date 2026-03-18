@@ -9,6 +9,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useToast } from '@/context/ToastContext';
 import { useNodeParamsStore } from '@/stores/nodeParamsStore';
 import { useSchemaStore } from '@/stores/schemaStore';
+import { writeNodeParam, clearNodeParams } from '@/stores/sessionAtoms';
 import { hooksLogger } from '@/utils/logger';
 import { parseYamlToPipeline, type EngineMode } from '@/utils/yamlPipeline';
 
@@ -103,6 +104,9 @@ export const usePipeline = () => {
 
   const handleParamChange = useCallback(
     (nodeId: string, paramName: string, value: unknown) => {
+      // Jotai: fine-grained per-node atom
+      writeNodeParam(nodeId, paramName, value);
+      // Zustand: keep for consumers that still read from Zustand
       setParam(nodeId, paramName, value);
       // Keep the YAML editor in sync with param changes made via the canvas
       // (e.g. compositor layer drag / slider). The guard prevents a feedback
@@ -184,6 +188,7 @@ export const usePipeline = () => {
     updateSourceRef.current = 'yaml';
 
     result.nodes.forEach((node) => {
+      clearNodeParams(node.id);
       resetNode(node.id);
     });
 
@@ -231,6 +236,7 @@ export const usePipeline = () => {
         updateSourceRef.current = 'yaml';
 
         result.nodes.forEach((node) => {
+          clearNodeParams(node.id);
           resetNode(node.id);
         });
 

@@ -5,6 +5,14 @@
 import { v4 as uuidv4 } from 'uuid';
 
 import { useNodeParamsStore } from '@/stores/nodeParamsStore';
+import {
+  batchWriteNodeStates,
+  batchWriteNodeStats,
+  writeNodeViewData,
+  writeSessionConnected,
+  clearSessionAtoms,
+  writeNodeParams,
+} from '@/stores/sessionAtoms';
 import { useSessionStore } from '@/stores/sessionStore';
 import { useTelemetryStore, parseTelemetryEvent } from '@/stores/telemetryStore';
 import type { Request, Response, Event, MessageType, NodeState, NodeStats } from '@/types/types';
@@ -139,6 +147,7 @@ export class WebSocketService {
     // events arriving before the next RAF flush would be silently dropped.
     this.subscribedSessions.forEach((sessionId) => {
       logger.info('Re-subscribing to session:', sessionId);
+      writeSessionConnected(sessionId, true);
       useSessionStore.getState().initSession(sessionId, true);
       this.send({
         type: 'request' as MessageType,
@@ -222,6 +231,7 @@ export class WebSocketService {
     // doesn't needlessly process stale entries.
     this.pendingNodeStates.delete(payload.session_id);
     this.pendingNodeStats.delete(payload.session_id);
+    clearSessionAtoms(payload.session_id);
     useSessionStore.getState().clearSession(payload.session_id);
     useNodeParamsStore.getState().resetSession(payload.session_id);
     useTelemetryStore.getState().clearSession(payload.session_id);
@@ -283,6 +293,13 @@ export class WebSocketService {
     this.pendingNodeStats.clear();
 
     if (stateUpdates.size > 0 || statsUpdates.size > 0) {
+      // Write to Jotai atoms (per-node, fine-grained reactivity)
+      batchWriteNodeStates(stateUpdates);
+      batchWriteNodeStats(statsUpdates);
+
+      // Also keep Zustand write for pipeline-related consumers that still read
+      // nodeStates from the Zustand store (will be removed when those consumers
+      // are migrated).
       useSessionStore.getState().batchUpdateSessionData(stateUpdates, statsUpdates);
     }
   }
@@ -298,6 +315,9 @@ export class WebSocketService {
     // Batch all param updates into a single store update to avoid
     // N intermediate states and N selector re-evaluations.
     if (params && typeof params === 'object' && !Array.isArray(params)) {
+      // Jotai: fine-grained per-node atom
+      writeNodeParams(node_id, params as Record<string, unknown>, session_id);
+      // Zustand: keep for consumers that still read from Zustand
       useNodeParamsStore
         .getState()
         .setParams(node_id, params as Record<string, unknown>, session_id);
@@ -330,6 +350,8 @@ export class WebSocketService {
 
   private handleNodeViewDataUpdated(payload: NodeViewDataUpdatedPayload): void {
     const { session_id, node_id, data } = payload;
+    writeNodeViewData(session_id, node_id, data);
+    // Keep Zustand write for consumers not yet migrated to Jotai atoms.
     useSessionStore.getState().updateNodeViewData(session_id, node_id, data);
   }
 
@@ -426,6 +448,7 @@ export class WebSocketService {
       'connected:',
       isConnected
     );
+    writeSessionConnected(sessionId, isConnected);
     useSessionStore.getState().initSession(sessionId, isConnected);
   }
 
@@ -433,6 +456,7 @@ export class WebSocketService {
     this.subscribedSessions.delete(sessionId);
     // Keep the session entry so the Monitor session list can display the latest known status
     // even when a session is not actively selected/subscribed.
+    writeSessionConnected(sessionId, false);
     useSessionStore.getState().setConnected(sessionId, false);
     useNodeParamsStore.getState().resetSession(sessionId);
   }
@@ -466,6 +490,7 @@ export class WebSocketService {
     // Update all subscribed sessions
     this.subscribedSessions.forEach((sessionId) => {
       logger.debug('Updating connection status for session', sessionId, ':', connected);
+      writeSessionConnected(sessionId, connected);
       useSessionStore.getState().setConnected(sessionId, connected);
     });
 

@@ -6,6 +6,12 @@ import { useQuery } from '@tanstack/react-query';
 import { useEffect } from 'react';
 
 import { fetchApi } from '@/services/base';
+import {
+  sessionStore as defaultSessionStore,
+  nodeStateAtom,
+  nodeViewDataAtom,
+  nodeKey,
+} from '@/stores/sessionAtoms';
 import { useSessionStore } from '@/stores/sessionStore';
 import type { Pipeline, SessionInfo } from '@/types/types';
 
@@ -15,6 +21,24 @@ async function fetchPipeline(sessionId: string): Promise<Pipeline> {
     throw new Error(`Failed to fetch pipeline: ${response.statusText}`);
   }
   return response.json();
+}
+
+/** Seed Jotai atoms with initial node states and view data from pipelines. */
+function seedSessionAtoms(batch: Array<{ sessionId: string; pipeline: Pipeline }>): void {
+  for (const { sessionId, pipeline } of batch) {
+    if (pipeline.nodes) {
+      for (const [nodeId, node] of Object.entries(pipeline.nodes)) {
+        if (node.state) {
+          defaultSessionStore.set(nodeStateAtom(nodeKey(sessionId, nodeId)), node.state);
+        }
+      }
+    }
+    if (pipeline.view_data && typeof pipeline.view_data === 'object') {
+      for (const [nodeId, data] of Object.entries(pipeline.view_data as Record<string, unknown>)) {
+        defaultSessionStore.set(nodeViewDataAtom(nodeKey(sessionId, nodeId)), data);
+      }
+    }
+  }
 }
 
 /**
@@ -57,6 +81,7 @@ export function useSessionsPrefetch(sessions: SessionInfo[]) {
 
       if (batch.length > 0) {
         batchSetPipelines(batch);
+        seedSessionAtoms(batch);
       }
     }
   }, [queries.data, batchSetPipelines]);

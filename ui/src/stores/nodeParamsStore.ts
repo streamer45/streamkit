@@ -64,7 +64,3 @@ export const useNodeParamsStore = create<NodeParamsState>((set, get) => ({
 }));
 
 export type { NodeParamsState };
-
-export const selectNodeParam =
-  (nodeId: string, key: string, sessionId?: string) => (state: NodeParamsState) =>
-    state.paramsById[keyForNode(nodeId, sessionId)]?.[key];
