@@ -131,29 +131,28 @@ export function writeSessionConnected(sessionId: string, connected: boolean): vo
 export function clearSessionAtoms(sessionId: string): void {
   const prefix = `${sessionId}\0`;
 
-  for (const key of nodeStateAtom.getParams()) {
-    if (key.startsWith(prefix)) {
-      sessionStore.set(nodeStateAtom(key), null);
-      nodeStateAtom.remove(key);
-    }
+  // Snapshot keys into arrays before iterating, so that .remove() during
+  // the loop doesn't mutate the iterator mid-flight.
+  const stateKeys = [...nodeStateAtom.getParams()].filter((k) => k.startsWith(prefix));
+  const statsKeys = [...nodeStatsAtom.getParams()].filter((k) => k.startsWith(prefix));
+  const viewKeys = [...nodeViewDataAtom.getParams()].filter((k) => k.startsWith(prefix));
+  const paramKeys = [...nodeParamsAtom.getParams()].filter((k) => k.startsWith(prefix));
+
+  for (const key of stateKeys) {
+    sessionStore.set(nodeStateAtom(key), null);
+    nodeStateAtom.remove(key);
   }
-  for (const key of nodeStatsAtom.getParams()) {
-    if (key.startsWith(prefix)) {
-      sessionStore.set(nodeStatsAtom(key), null);
-      nodeStatsAtom.remove(key);
-    }
+  for (const key of statsKeys) {
+    sessionStore.set(nodeStatsAtom(key), null);
+    nodeStatsAtom.remove(key);
   }
-  for (const key of nodeViewDataAtom.getParams()) {
-    if (key.startsWith(prefix)) {
-      sessionStore.set(nodeViewDataAtom(key), undefined);
-      nodeViewDataAtom.remove(key);
-    }
+  for (const key of viewKeys) {
+    sessionStore.set(nodeViewDataAtom(key), undefined);
+    nodeViewDataAtom.remove(key);
   }
-  for (const key of nodeParamsAtom.getParams()) {
-    if (key.startsWith(prefix)) {
-      sessionStore.set(nodeParamsAtom(key), {});
-      nodeParamsAtom.remove(key);
-    }
+  for (const key of paramKeys) {
+    sessionStore.set(nodeParamsAtom(key), {});
+    nodeParamsAtom.remove(key);
   }
 
   sessionStore.set(sessionConnectedAtom(sessionId), false);

@@ -249,18 +249,14 @@ export function getImageOverlaysFromStore(store: CompositorStore): ImageOverlayS
   return store.get(allImageOverlaysAtom);
 }
 
-/** Remove atomFamily cache entries for all overlay IDs tracked by this store.
- *  Text/image overlays use crypto.randomUUID() for IDs, so each add/remove
- *  cycle creates a permanent atomFamily cache entry.  Call on compositor
- *  unmount to prevent unbounded growth.
- *
- *  Video layer IDs (e.g. "in_0") are reused across instances, so their cache
- *  entries are shared and NOT removed here. */
-export function cleanupCompositorAtoms(store: CompositorStore): void {
-  for (const id of store.get(textOverlayIdsAtom)) {
-    textOverlayAtoms.remove(id);
-  }
-  for (const id of store.get(imageOverlayIdsAtom)) {
-    imageOverlayAtoms.remove(id);
-  }
-}
+// NOTE: We intentionally do NOT call atomFamily.remove() for compositor
+// overlay atoms on unmount.  The atom families are global singletons shared
+// across all compositor stores.  Removing a cache entry invalidates the atom
+// reference for ALL stores, and React 19's double-invoked effects (dev mode)
+// would call cleanup before remount, leaving components with null atoms.
+//
+// The trade-off: UUID-based overlay IDs (from crypto.randomUUID()) create
+// permanent atomFamily cache entries.  Each entry is lightweight (~80 bytes
+// for the atom config) so this is acceptable for typical usage.  For
+// session-scoped atoms that DO need cleanup, see clearSessionAtoms in
+// sessionAtoms.ts which safely uses .remove() on the default store.
