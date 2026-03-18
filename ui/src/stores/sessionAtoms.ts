@@ -17,7 +17,7 @@
 import { atom, getDefaultStore } from 'jotai';
 import { atomFamily } from 'jotai-family';
 
-import type { NodeState, NodeStats } from '@/types/types';
+import type { NodeState, NodeStats, Pipeline } from '@/types/types';
 
 // ── Default store reference ─────────────────────────────────────────────────
 
@@ -123,6 +123,23 @@ export function writeNodeViewData(sessionId: string, nodeId: string, data: unkno
 /** Write session connected status. */
 export function writeSessionConnected(sessionId: string, connected: boolean): void {
   sessionStore.set(sessionConnectedAtom(sessionId), connected);
+}
+
+/** Seed Jotai atoms with initial node states and view data from a pipeline.
+ *  Called when pipeline data first arrives (fetch or batch prefetch). */
+export function seedPipelineAtoms(sessionId: string, pipeline: Pipeline): void {
+  if (pipeline.nodes) {
+    for (const [nodeId, node] of Object.entries(pipeline.nodes)) {
+      if (node.state) {
+        sessionStore.set(nodeStateAtom(nodeKey(sessionId, nodeId)), node.state);
+      }
+    }
+  }
+  if (pipeline.view_data && typeof pipeline.view_data === 'object') {
+    for (const [nodeId, data] of Object.entries(pipeline.view_data as Record<string, unknown>)) {
+      sessionStore.set(nodeViewDataAtom(nodeKey(sessionId, nodeId)), data);
+    }
+  }
 }
 
 /** Clear all atoms for a session (on session destroy).

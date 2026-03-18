@@ -44,18 +44,21 @@ export const selectedLayerIdAtom = atom<string | null>(null);
 /** Whether a drag/resize is in progress. */
 export const isDraggingAtom = atom(false);
 
-/** Per-layer atom family — each layer has its own atom. */
-export const layerAtoms = atomFamily(
-  (_id: string) => atom<LayerState | null>(null) // eslint-disable-line @typescript-eslint/no-unused-vars
-);
-/** Per-text-overlay atom family. */
-export const textOverlayAtoms = atomFamily(
-  (_id: string) => atom<TextOverlayState | null>(null) // eslint-disable-line @typescript-eslint/no-unused-vars
-);
-/** Per-image-overlay atom family. */
-export const imageOverlayAtoms = atomFamily(
-  (_id: string) => atom<ImageOverlayState | null>(null) // eslint-disable-line @typescript-eslint/no-unused-vars
-);
+// Per-entity atom families.  The factory param (_id) is used by atomFamily
+// for cache lookup — the factory itself always returns the same default atom
+// since initial state is independent of the key.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export const layerAtoms = atomFamily((_id: string) => atom<LayerState | null>(null));
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export const textOverlayAtoms = atomFamily((_id: string) => atom<TextOverlayState | null>(null));
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export const imageOverlayAtoms = atomFamily((_id: string) => atom<ImageOverlayState | null>(null));
+
+/** Static sentinel atoms for components that conditionally opt out of a
+ *  per-entity subscription (avoids phantom '' entries in atomFamily caches). */
+export const nullLayerAtom = atom<LayerState | null>(null);
+export const nullTextOverlayAtom = atom<TextOverlayState | null>(null);
+export const nullImageOverlayAtom = atom<ImageOverlayState | null>(null);
 
 // ── Derived atoms ───────────────────────────────────────────────────────────
 

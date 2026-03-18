@@ -86,12 +86,11 @@ export function useCompositorOverlays(deps: OverlayDeps) {
       setLayers((prev) => {
         const idx = prev.findIndex((l) => l.id === layerId);
         if (idx === -1) return prev;
-        const next = prev.map((l, i) => (i === idx ? { ...l, opacity: clamped } : l));
-        throttledConfigChange?.(next);
-        return next;
+        return prev.map((l, i) => (i === idx ? { ...l, opacity: clamped } : l));
       });
+      throttledConfigChange?.(layersRef.current);
     },
-    [setLayers, throttledConfigChange]
+    [setLayers, layersRef, throttledConfigChange]
   );
 
   const updateLayerRotation = useCallback(
@@ -99,18 +98,17 @@ export function useCompositorOverlays(deps: OverlayDeps) {
       setLayers((prev) => {
         const idx = prev.findIndex((l) => l.id === layerId);
         if (idx === -1) return prev;
-        const next = prev.map((l, i) => (i === idx ? { ...l, rotationDegrees: degrees } : l));
-        throttledConfigChange?.(next);
-        return next;
+        return prev.map((l, i) => (i === idx ? { ...l, rotationDegrees: degrees } : l));
       });
+      throttledConfigChange?.(layersRef.current);
     },
-    [setLayers, throttledConfigChange]
+    [setLayers, layersRef, throttledConfigChange]
   );
 
   const updateLayerPositionSize = useCallback(
     (layerId: string, patch: { x?: number; y?: number; width?: number; height?: number }) => {
       setLayers((prev) => {
-        const next = prev.map((l) => {
+        return prev.map((l) => {
           if (l.id !== layerId) return l;
           const updated = { ...l };
           if (patch.x !== undefined) updated.x = patch.x;
@@ -140,24 +138,22 @@ export function useCompositorOverlays(deps: OverlayDeps) {
           }
           return updated;
         });
-        throttledConfigChange?.(next);
-        return next;
       });
+      throttledConfigChange?.(layersRef.current);
     },
-    [setLayers, throttledConfigChange]
+    [setLayers, layersRef, throttledConfigChange]
   );
 
   const updateLayerZIndex = useCallback(
     (layerId: string, zIndex: number) => {
       setLayers((prev) => {
-        const next = prev
+        return prev
           .map((l) => (l.id === layerId ? { ...l, zIndex } : l))
           .sort((a, b) => a.zIndex - b.zIndex);
-        throttledConfigChange?.(next);
-        return next;
       });
+      throttledConfigChange?.(layersRef.current);
     },
-    [setLayers, throttledConfigChange]
+    [setLayers, layersRef, throttledConfigChange]
   );
 
   // ── Visibility toggle ──────────────────────────────────────────────
@@ -165,11 +161,10 @@ export function useCompositorOverlays(deps: OverlayDeps) {
   const toggleLayerVisibility = useCallback(
     (layerId: string) => {
       if (layersRef.current.some((l) => l.id === layerId)) {
-        setLayers((prev) => {
-          const next = prev.map((l) => (l.id === layerId ? { ...l, visible: !l.visible } : l));
-          throttledConfigChange?.(next);
-          return next;
-        });
+        setLayers((prev) =>
+          prev.map((l) => (l.id === layerId ? { ...l, visible: !l.visible } : l))
+        );
+        throttledConfigChange?.(layersRef.current);
         return;
       }
       if (textOverlaysRef.current.some((o) => o.id === layerId)) {
@@ -206,11 +201,8 @@ export function useCompositorOverlays(deps: OverlayDeps) {
       const field = axis === 'horizontal' ? 'mirrorHorizontal' : 'mirrorVertical';
 
       if (layersRef.current.some((l) => l.id === layerId)) {
-        setLayers((prev) => {
-          const next = prev.map((l) => (l.id === layerId ? { ...l, [field]: !l[field] } : l));
-          throttledConfigChange?.(next);
-          return next;
-        });
+        setLayers((prev) => prev.map((l) => (l.id === layerId ? { ...l, [field]: !l[field] } : l)));
+        throttledConfigChange?.(layersRef.current);
         return;
       }
       if (textOverlaysRef.current.some((o) => o.id === layerId)) {
@@ -245,7 +237,7 @@ export function useCompositorOverlays(deps: OverlayDeps) {
   const updateLayerCropZoom = useCallback(
     (layerId: string, patch: { cropX?: number; cropY?: number; cropZoom?: number }) => {
       setLayers((prev) => {
-        const next = prev.map((l) => {
+        return prev.map((l) => {
           if (l.id !== layerId) return l;
           const updated = { ...l };
           if (patch.cropZoom !== undefined) updated.cropZoom = Math.max(1.0, patch.cropZoom);
@@ -258,11 +250,10 @@ export function useCompositorOverlays(deps: OverlayDeps) {
           }
           return updated;
         });
-        throttledConfigChange?.(next);
-        return next;
       });
+      throttledConfigChange?.(layersRef.current);
     },
-    [setLayers, throttledConfigChange]
+    [setLayers, layersRef, throttledConfigChange]
   );
 
   // ── Overlay commit helper ──────────────────────────────────────────

@@ -12,31 +12,12 @@ import { getWebSocketService } from '@/services/websocket';
 import { useNodeParamsStore } from '@/stores/nodeParamsStore';
 import {
   sessionConnectedAtom,
-  sessionStore as defaultSessionStore,
-  nodeStateAtom,
-  nodeViewDataAtom,
-  nodeKey,
+  seedPipelineAtoms,
   writeNodeParam,
   writeNodeParams,
 } from '@/stores/sessionAtoms';
 import { useSessionStore } from '@/stores/sessionStore';
 import type { Pipeline, Request, MessageType, BatchOperation } from '@/types/types';
-
-/** Seed Jotai atoms with initial node states and view data from a pipeline. */
-function seedPipelineAtoms(sessionId: string, pipeline: Pipeline): void {
-  if (pipeline.nodes) {
-    for (const [nodeId, node] of Object.entries(pipeline.nodes)) {
-      if (node.state) {
-        defaultSessionStore.set(nodeStateAtom(nodeKey(sessionId, nodeId)), node.state);
-      }
-    }
-  }
-  if (pipeline.view_data && typeof pipeline.view_data === 'object') {
-    for (const [nodeId, data] of Object.entries(pipeline.view_data as Record<string, unknown>)) {
-      defaultSessionStore.set(nodeViewDataAtom(nodeKey(sessionId, nodeId)), data);
-    }
-  }
-}
 
 async function fetchPipeline(sessionId: string): Promise<Pipeline> {
   const response = await fetchApi(`/api/v1/sessions/${sessionId}/pipeline`);

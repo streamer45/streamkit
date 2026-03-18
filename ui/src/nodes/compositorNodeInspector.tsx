@@ -25,6 +25,9 @@ import {
   layerAtoms,
   textOverlayAtoms,
   imageOverlayAtoms,
+  nullLayerAtom,
+  nullTextOverlayAtom,
+  nullImageOverlayAtom,
   textOverlayIdsAtom,
   imageOverlayIdsAtom,
 } from '@/hooks/compositorAtoms';
@@ -89,9 +92,15 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
     // ── Read from atoms ────────────────────────────────────────────────────
     const selectedLayerId = useAtomValue(selectedLayerIdAtom);
     const selectedLayerKind = useAtomValue(selectedLayerKindAtom);
-    const selectedLayer = useAtomValue(layerAtoms(selectedLayerId ?? ''));
-    const selectedTextOverlay = useAtomValue(textOverlayAtoms(selectedLayerId ?? ''));
-    const selectedImageOverlay = useAtomValue(imageOverlayAtoms(selectedLayerId ?? ''));
+    const selectedLayer = useAtomValue(
+      selectedLayerId ? layerAtoms(selectedLayerId) : nullLayerAtom
+    );
+    const selectedTextOverlay = useAtomValue(
+      selectedLayerId ? textOverlayAtoms(selectedLayerId) : nullTextOverlayAtom
+    );
+    const selectedImageOverlay = useAtomValue(
+      selectedLayerId ? imageOverlayAtoms(selectedLayerId) : nullImageOverlayAtom
+    );
     const textOverlayIds = useAtomValue(textOverlayIdsAtom);
     const imageOverlayIds = useAtomValue(imageOverlayIdsAtom);
 
@@ -259,7 +268,9 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
           </InspectorSection>
         </>
       );
-    }, [selectedTextOverlay, updateTextOverlay, disabled, textInputRef]);
+      // textInputRef is a stable useRef — omitted from deps intentionally.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [selectedTextOverlay, updateTextOverlay, disabled]);
 
     // ── Early return after all hooks ───────────────────────────────────────
     const source = selectedLayer ?? selectedTextOverlay ?? selectedImageOverlay;
