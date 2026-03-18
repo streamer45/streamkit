@@ -142,4 +142,28 @@ export default tseslint.config(
       "complexity": "off",
     },
   },
+  {
+    // Exception for Jotai atom equality helpers - field-by-field comparison functions
+    // have inherent cyclomatic complexity proportional to the number of fields.
+    files: ["**/hooks/compositorAtoms.ts"],
+    rules: {
+      "complexity": "off",
+    },
+  },
+  {
+    // Exception for compositor canvas layers - TextOverlayLayer has inherent complexity
+    // from null guards, conditional measurement, and display sizing logic.
+    files: ["**/components/compositorCanvasLayers.tsx"],
+    rules: {
+      "complexity": "off",
+    },
+  },
+  {
+    // Exception for compositor inspector - dispatches to 3 layer types (video/text/image)
+    // across 5 property callbacks, giving inherent branching complexity.
+    files: ["**/nodes/compositorNodeInspector.tsx"],
+    rules: {
+      "complexity": "off",
+    },
+  },
 );

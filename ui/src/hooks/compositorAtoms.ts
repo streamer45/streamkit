@@ -19,7 +19,12 @@ import { atom, createStore } from 'jotai';
 import { atomFamily } from 'jotai-family';
 
 import type { LayerKind } from './compositorConstants';
-import type { LayerState, TextOverlayState, ImageOverlayState } from './compositorLayerParsers';
+import type {
+  LayerState,
+  TextOverlayState,
+  ImageOverlayState,
+  OverlayBase,
+} from './compositorLayerParsers';
 
 // ── Store type ──────────────────────────────────────────────────────────────
 
@@ -97,43 +102,37 @@ function idsEqual(a: readonly string[], b: readonly string[]): boolean {
   return true;
 }
 
+/** Shared OverlayBase field equality (id, position, appearance, visibility). */
+function baseFieldsEqual(a: OverlayBase, b: OverlayBase): boolean {
+  return (
+    a.id === b.id &&
+    a.x === b.x &&
+    a.y === b.y &&
+    a.width === b.width &&
+    a.height === b.height &&
+    a.opacity === b.opacity &&
+    a.zIndex === b.zIndex &&
+    a.rotationDegrees === b.rotationDegrees &&
+    a.mirrorHorizontal === b.mirrorHorizontal &&
+    a.mirrorVertical === b.mirrorVertical &&
+    a.visible === b.visible
+  );
+}
+
 /** Field-level equality for LayerState.  Returns true when all fields match,
  *  even if the object references differ (e.g. after a mergeOverlayState
  *  spread from a server echo-back).  This prevents spurious atom writes that
  *  would cascade re-renders to VideoLayers whose data hasn't actually changed. */
 function layerEqual(a: LayerState, b: LayerState): boolean {
   return (
-    a.id === b.id &&
-    a.x === b.x &&
-    a.y === b.y &&
-    a.width === b.width &&
-    a.height === b.height &&
-    a.opacity === b.opacity &&
-    a.zIndex === b.zIndex &&
-    a.rotationDegrees === b.rotationDegrees &&
-    a.mirrorHorizontal === b.mirrorHorizontal &&
-    a.mirrorVertical === b.mirrorVertical &&
-    a.visible === b.visible &&
-    a.cropZoom === b.cropZoom &&
-    a.cropX === b.cropX &&
-    a.cropY === b.cropY
+    baseFieldsEqual(a, b) && a.cropZoom === b.cropZoom && a.cropX === b.cropX && a.cropY === b.cropY
   );
 }
 
 /** Field-level equality for TextOverlayState. */
 function textOverlayEqual(a: TextOverlayState, b: TextOverlayState): boolean {
   return (
-    a.id === b.id &&
-    a.x === b.x &&
-    a.y === b.y &&
-    a.width === b.width &&
-    a.height === b.height &&
-    a.opacity === b.opacity &&
-    a.zIndex === b.zIndex &&
-    a.rotationDegrees === b.rotationDegrees &&
-    a.mirrorHorizontal === b.mirrorHorizontal &&
-    a.mirrorVertical === b.mirrorVertical &&
-    a.visible === b.visible &&
+    baseFieldsEqual(a, b) &&
     a.text === b.text &&
     a.fontSize === b.fontSize &&
     a.fontName === b.fontName &&
@@ -148,20 +147,7 @@ function textOverlayEqual(a: TextOverlayState, b: TextOverlayState): boolean {
 
 /** Field-level equality for ImageOverlayState. */
 function imageOverlayEqual(a: ImageOverlayState, b: ImageOverlayState): boolean {
-  return (
-    a.id === b.id &&
-    a.x === b.x &&
-    a.y === b.y &&
-    a.width === b.width &&
-    a.height === b.height &&
-    a.opacity === b.opacity &&
-    a.zIndex === b.zIndex &&
-    a.rotationDegrees === b.rotationDegrees &&
-    a.mirrorHorizontal === b.mirrorHorizontal &&
-    a.mirrorVertical === b.mirrorVertical &&
-    a.visible === b.visible &&
-    a.dataBase64 === b.dataBase64
-  );
+  return baseFieldsEqual(a, b) && a.dataBase64 === b.dataBase64;
 }
 
 // ── Bulk helpers ────────────────────────────────────────────────────────────
