@@ -23,11 +23,15 @@ import {
   selectedLayerIdAtom,
   selectedLayerKindAtom,
   layerAtoms,
+  layerOpacityAtom,
+  layerRotationAtom,
   textOverlayAtoms,
   imageOverlayAtoms,
   nullLayerAtom,
   nullTextOverlayAtom,
   nullImageOverlayAtom,
+  nullOpacityAtom,
+  nullRotationAtom,
   textOverlayIdsAtom,
   imageOverlayIdsAtom,
 } from '@/hooks/compositorAtoms';
@@ -305,13 +309,15 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
             dimensionsReadOnly={dimensionsReadOnly}
           />
           {textInspectorChildren}
-          <OpacityControl
-            opacity={source.opacity}
+          <ConnectedOpacityControl
+            selectedLayerId={selectedLayerId}
+            selectedLayerKind={selectedLayerKind}
             onChange={handleOpacityChange}
             disabled={disabled}
           />
-          <RotationControl
-            rotationDegrees={source.rotationDegrees}
+          <ConnectedRotationControl
+            selectedLayerId={selectedLayerId}
+            selectedLayerKind={selectedLayerKind}
             onChange={handleRotationChange}
             disabled={disabled}
           />
@@ -336,3 +342,67 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
   }
 );
 CompositorInspector.displayName = 'CompositorInspector';
+
+// ── Connected controls with field-level atom subscriptions ───────────────────
+//
+// These subscribe to derived atoms that return primitives (number).  Jotai's
+// Object.is check means: when opacity changes, layerRotationAtom re-evaluates
+// but returns the same number → ConnectedRotationControl skips re-render.
+// This prevents the "all controls re-render on every slider tick" cascade.
+
+type LayerKindTag = 'video' | 'text' | 'image';
+
+const ConnectedOpacityControl: React.FC<{
+  selectedLayerId: string;
+  selectedLayerKind: LayerKindTag | null;
+  onChange: (v: number) => void;
+  disabled: boolean;
+}> = React.memo(({ selectedLayerId, selectedLayerKind, onChange, disabled }) => {
+  // For video layers, subscribe to the derived primitive atom.
+  // For text/image overlays, read from the full overlay atom (they don't
+  // have high-frequency slider updates, so the full atom is fine).
+  const videoOpacity = useAtomValue(
+    selectedLayerKind === 'video' ? layerOpacityAtom(selectedLayerId) : nullOpacityAtom
+  );
+  const textOverlay = useAtomValue(
+    selectedLayerKind === 'text' ? textOverlayAtoms(selectedLayerId) : nullTextOverlayAtom
+  );
+  const imageOverlay = useAtomValue(
+    selectedLayerKind === 'image' ? imageOverlayAtoms(selectedLayerId) : nullImageOverlayAtom
+  );
+
+  const opacity =
+    selectedLayerKind === 'video'
+      ? videoOpacity
+      : (textOverlay?.opacity ?? imageOverlay?.opacity ?? 1);
+
+  return <OpacityControl opacity={opacity} onChange={onChange} disabled={disabled} />;
+});
+ConnectedOpacityControl.displayName = 'ConnectedOpacityControl';
+
+const ConnectedRotationControl: React.FC<{
+  selectedLayerId: string;
+  selectedLayerKind: LayerKindTag | null;
+  onChange: (v: number) => void;
+  disabled: boolean;
+}> = React.memo(({ selectedLayerId, selectedLayerKind, onChange, disabled }) => {
+  const videoRotation = useAtomValue(
+    selectedLayerKind === 'video' ? layerRotationAtom(selectedLayerId) : nullRotationAtom
+  );
+  const textOverlay = useAtomValue(
+    selectedLayerKind === 'text' ? textOverlayAtoms(selectedLayerId) : nullTextOverlayAtom
+  );
+  const imageOverlay = useAtomValue(
+    selectedLayerKind === 'image' ? imageOverlayAtoms(selectedLayerId) : nullImageOverlayAtom
+  );
+
+  const rotationDegrees =
+    selectedLayerKind === 'video'
+      ? videoRotation
+      : (textOverlay?.rotationDegrees ?? imageOverlay?.rotationDegrees ?? 0);
+
+  return (
+    <RotationControl rotationDegrees={rotationDegrees} onChange={onChange} disabled={disabled} />
+  );
+});
+ConnectedRotationControl.displayName = 'ConnectedRotationControl';

@@ -55,10 +55,12 @@ export const textOverlayAtoms = atomFamily((_id: string) => atom<TextOverlayStat
 export const imageOverlayAtoms = atomFamily((_id: string) => atom<ImageOverlayState | null>(null));
 
 /** Static sentinel atoms for components that conditionally opt out of a
- *  per-entity subscription (avoids phantom '' entries in atomFamily caches). */
+ *  per-entity subscription (avoids phantom entries in atomFamily caches). */
 export const nullLayerAtom = atom<LayerState | null>(null);
 export const nullTextOverlayAtom = atom<TextOverlayState | null>(null);
 export const nullImageOverlayAtom = atom<ImageOverlayState | null>(null);
+export const nullOpacityAtom = atom(1);
+export const nullRotationAtom = atom(0);
 
 // ── Derived atoms ───────────────────────────────────────────────────────────
 
@@ -83,6 +85,22 @@ export const allImageOverlaysAtom = atom<ImageOverlayState[]>((get) => {
     .map((id) => get(imageOverlayAtoms(id)))
     .filter((o): o is ImageOverlayState => o !== null);
 });
+
+// ── Derived atom families for field-level subscriptions ──────────────────────
+//
+// These return primitives, so Jotai's Object.is check ensures that when a
+// slider tick writes a new LayerState with changed opacity, subscribers of
+// layerRotationAtom (which returns the same number) skip re-render entirely.
+//
+// Used by inspector controls so that e.g. OpacityControl only re-renders when
+// opacity changes, not when rotation/position/etc change on the same layer.
+
+export const layerOpacityAtom = atomFamily((id: string) =>
+  atom((get) => get(layerAtoms(id))?.opacity ?? 1)
+);
+export const layerRotationAtom = atomFamily((id: string) =>
+  atom((get) => get(layerAtoms(id))?.rotationDegrees ?? 0)
+);
 
 /** The kind of the currently selected layer, or null.
  *  Checks ID list atoms instead of probing atomFamily entries directly,
