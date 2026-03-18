@@ -8,7 +8,13 @@
  * When a live pipeline is running (Monitor view), the server is the source of
  * truth for layer positions, dimensions, and overlay measurements.  This module
  * encapsulates the view-data subscription and the diffing logic that keeps the
- * React state in sync without unnecessary re-renders.
+ * Jotai atom state in sync without unnecessary re-renders.
+ *
+ * With Jotai atoms, only the specific layer atoms that actually changed get new
+ * values — other layers and their subscribed components are unaffected.  The
+ * sliderActiveRef guard is no longer needed because atom-level writes during
+ * slider drags are immediately overwritten by the next slider tick; any brief
+ * echo-back regression is imperceptible.
  */
 
 import { useEffect } from 'react';
@@ -20,12 +26,16 @@ import type {
   ResolvedOverlay,
 } from '@/types/generated/compositor-types';
 
-import type {
-  LayerState,
-  TextOverlayState,
-  ImageOverlayState,
-  OverlayBase,
-} from './compositorLayerParsers';
+import type { CompositorStore } from './compositorAtoms';
+import {
+  getImageOverlaysFromStore,
+  getLayersFromStore,
+  getTextOverlaysFromStore,
+  setImageOverlaysInStore,
+  setLayersInStore,
+  setTextOverlaysInStore,
+} from './compositorAtoms';
+import type { LayerState, TextOverlayState, OverlayBase } from './compositorLayerParsers';
 
 // ── Pure helpers ────────────────────────────────────────────────────────────
 
@@ -147,41 +157,42 @@ export function mergeTextMeasurements(
  *
  *  Uses an external Zustand subscription (useSessionStore.subscribe)
  *  instead of a store selector hook to avoid triggering a React re-render
- *  on every view-data arrival.  The setters below already perform shallow
- *  comparison and only produce a new state reference when something
- *  actually changed, so the component only re-renders when needed. */
+ *  on every view-data arrival.  Writes go directly to the Jotai store's
+ *  per-layer atoms — only atoms whose values actually changed trigger
+ *  subscriber re-renders. */
 export function useServerLayoutSync(
   sessionId: string | undefined,
   nodeId: string,
-  dragStateRef: React.MutableRefObject<unknown>,
-  sliderActiveRef: React.MutableRefObject<boolean>,
-  setLayers: React.Dispatch<React.SetStateAction<LayerState[]>>,
-  setTextOverlays: React.Dispatch<React.SetStateAction<TextOverlayState[]>>,
-  setImageOverlays: React.Dispatch<React.SetStateAction<ImageOverlayState[]>>
+  store: CompositorStore,
+  dragStateRef: React.MutableRefObject<unknown>
 ): void {
   useEffect(() => {
     if (!sessionId) return;
 
     const applyServerLayout = (viewData: unknown) => {
       if (!viewData || typeof viewData !== 'object') return;
-      // Skip during drag/resize or zero-render slider updates to avoid
-      // server echo-backs overwriting in-flight local state
-      if (dragStateRef.current || sliderActiveRef.current) return;
+      // Skip during drag/resize to avoid server echo-backs overwriting
+      // in-flight local state.
+      if (dragStateRef.current) return;
 
       const layout = viewData as CompositorLayout;
       if (!Array.isArray(layout.layers)) return;
 
-      setLayers((prev) => mapServerLayers(prev, layout.layers));
+      const prevLayers = getLayersFromStore(store);
+      const newLayers = mapServerLayers(prevLayers, layout.layers);
+      if (newLayers !== prevLayers) setLayersInStore(store, newLayers);
 
       if (Array.isArray(layout.text_overlays)) {
-        setTextOverlays((prev) => {
-          const base = applyServerOverlays(prev, layout.text_overlays);
-          return mergeTextMeasurements(base, layout.text_overlays);
-        });
+        const prevText = getTextOverlaysFromStore(store);
+        const base = applyServerOverlays(prevText, layout.text_overlays);
+        const next = mergeTextMeasurements(base, layout.text_overlays);
+        if (next !== prevText) setTextOverlaysInStore(store, next);
       }
 
       if (Array.isArray(layout.image_overlays)) {
-        setImageOverlays((prev) => applyServerOverlays(prev, layout.image_overlays));
+        const prevImg = getImageOverlaysFromStore(store);
+        const next = applyServerOverlays(prevImg, layout.image_overlays);
+        if (next !== prevImg) setImageOverlaysInStore(store, next);
       }
     };
 
@@ -199,13 +210,5 @@ export function useServerLayoutSync(
       }
     });
     return unsubscribe;
-  }, [
-    sessionId,
-    nodeId,
-    dragStateRef,
-    sliderActiveRef,
-    setLayers,
-    setTextOverlays,
-    setImageOverlays,
-  ]);
+  }, [sessionId, nodeId, store, dragStateRef]);
 }

@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+import { Provider, useAtomValue } from 'jotai/react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { CompositorCanvas } from '@/components/CompositorCanvas';
@@ -9,26 +10,17 @@ import { CompositorContextMenu, type ContextMenuState } from '@/components/compo
 import { NodeFrame } from '@/components/node/NodeFrame';
 import { SKTooltip } from '@/components/Tooltip';
 import { LiveBadge, LiveDot } from '@/components/ui/LiveIndicator';
+import { allLayersAtom, allTextOverlaysAtom, allImageOverlaysAtom } from '@/hooks/compositorAtoms';
 import { useCompositorKeyboard } from '@/hooks/compositorKeyboard';
 import { useCompositorLayers } from '@/hooks/useCompositorLayers';
-import type { TextOverlayState, LayerKind } from '@/hooks/useCompositorLayers';
+import type { LayerKind } from '@/hooks/useCompositorLayers';
 import { clearCompositorSelection, setCompositorSelection } from '@/hooks/useCompositorSelection';
 import { perfOnRender } from '@/perf';
 import type { InputPin, OutputPin, NodeState, NodeStats, NodeDefinition } from '@/types/types';
 import { nodesLogger } from '@/utils/logger';
 
 import { useStableEntries } from './compositorNodeEntries';
-import {
-  CompositorInspector,
-  useInspectorProps,
-  useSelectedCropZoomChange,
-  useSelectedLayerName,
-  useSelectedMirrorToggle,
-  useSelectedOpacityChange,
-  useSelectedPositionSizeChange,
-  useSelectedRotationChange,
-  useTextInspectorChildren,
-} from './compositorNodeInspector';
+import { CompositorInspector } from './compositorNodeInspector';
 import {
   CanvasHeader,
   CanvasLabel,
@@ -63,9 +55,58 @@ interface CompositorNodeProps {
   selected?: boolean;
 }
 
+// ── Connected entry list ──────────────────────────────────────────────────────────────
+// Subscribes to all layer atoms so it re-renders when entries change, but
+// useStableEntries returns a stable reference during opacity/rotation drags,
+// so CompositorEntryList (React.memo) bails out on those ticks.
+
+interface ConnectedEntryListProps {
+  selectedLayerId: string | null;
+  onSelectLayer: (id: string | null) => void;
+  onToggleVisibility: (layerId: string) => void;
+  onAddText: (text: string) => void;
+  onRemoveText: (id: string) => void;
+  onAddImage: (dataBase64: string, naturalWidth?: number, naturalHeight?: number) => void;
+  onRemoveImage: (id: string) => void;
+  onReorderLayers: (entries: Array<{ id: string; kind: LayerKind; zIndex: number }>) => void;
+  disabled: boolean;
+}
+
+const ConnectedEntryList: React.FC<ConnectedEntryListProps> = React.memo((props) => {
+  const layers = useAtomValue(allLayersAtom);
+  const textOverlays = useAtomValue(allTextOverlaysAtom);
+  const imageOverlays = useAtomValue(allImageOverlaysAtom);
+  const entries = useStableEntries(layers, textOverlays, imageOverlays);
+
+  return <CompositorEntryList entries={entries} {...props} />;
+});
+ConnectedEntryList.displayName = 'ConnectedEntryList';
+
+// ── Connected context menu ────────────────────────────────────────────────────────────
+// Only mounts when the context menu is open. Reads entries from atoms.
+
+interface ConnectedContextMenuProps {
+  menu: ContextMenuState;
+  onReorderLayers: (entries: Array<{ id: string; kind: LayerKind; zIndex: number }>) => void;
+  onRemoveText: (id: string) => void;
+  onRemoveImage: (id: string) => void;
+  onClose: () => void;
+}
+
+const ConnectedContextMenu: React.FC<ConnectedContextMenuProps> = React.memo((props) => {
+  const layers = useAtomValue(allLayersAtom);
+  const textOverlays = useAtomValue(allTextOverlaysAtom);
+  const imageOverlays = useAtomValue(allImageOverlaysAtom);
+  const entries = useStableEntries(layers, textOverlays, imageOverlays);
+
+  if (!entries.some((e) => e.id === props.menu.layerId)) return null;
+
+  return <CompositorContextMenu entries={entries} {...props} />;
+});
+ConnectedContextMenu.displayName = 'ConnectedContextMenu';
+
 // ── Main compositor node ──────────────────────────────────────────────────────────────
 
-// eslint-disable-next-line max-statements -- Compositor node has many hooks for layers, inspector, and canvas
 const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, selected }) => {
   nodesLogger.debug('CompositorNode Render:', id);
 
@@ -73,22 +114,18 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
   const canvasHeight = (data.params?.height as number) ?? 720;
 
   const {
-    layers,
     selectedLayerId,
     selectLayer,
     handleLayerPointerDown,
     handleResizePointerDown,
     updateLayerOpacity,
     updateLayerRotation,
-    commitLayerAppearance,
     toggleLayerVisibility,
     updateLayerMirror,
     updateLayerCropZoom,
     updateLayerPositionSize,
     layerRefs,
     snapGuideRefs,
-    textOverlays,
-    imageOverlays,
     addTextOverlay,
     updateTextOverlay,
     removeTextOverlay,
@@ -97,6 +134,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
     removeImageOverlay,
     reorderLayers,
     keyboardDeps,
+    store,
   } = useCompositorLayers({
     nodeId: id,
     sessionId: data.sessionId,
@@ -140,12 +178,8 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
     }
   }, [selectedLayerId]);
 
-  // Text inspector children (includes the textInputRef for double-click focus)
-  const { textInspectorChildren, textInputRef } = useTextInspectorChildren(
-    textOverlays.find((o) => o.id === selectedLayerId),
-    updateTextOverlay as (id: string, patch: Partial<TextOverlayState>) => void,
-    disabled
-  );
+  // Standalone textInputRef — passed to inspector for double-click focus
+  const textInputRef = useRef<HTMLTextAreaElement>(null);
 
   const handleTextFocusRequest = useCallback(
     (layerId: string) => {
@@ -156,12 +190,8 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
         if (el) el.selectionStart = el.selectionEnd = el.value.length;
       });
     },
-    [selectLayer, textInputRef]
+    [selectLayer]
   );
-
-  // Structurally-stable entries list -- same reference during opacity/rotation
-  // drags so CompositorEntryList's React.memo bails out.
-  const entries = useStableEntries(layers, textOverlays, imageOverlays);
 
   // Broadcast compositor layer selection for YAML highlighting
   useEffect(() => {
@@ -171,81 +201,6 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
 
   // Show live indicator when node is in an active session
   const showLiveIndicator = !!data.onConfigChange && !!data.sessionId;
-
-  // Selected layer data for property controls.
-  // Memoize by value (not by reference) so that appearance-only changes
-  // (opacity, rotation) on the selected layer produce a new object, but
-  // changes to *other* layers don't invalidate these references.
-  const selectedLayer = useMemo(
-    () => layers.find((l) => l.id === selectedLayerId),
-    // layers array reference changes on every update, but we only care
-    // about the specific layer matching selectedLayerId.  JSON key the
-    // selected layer's fields so the memo only recomputes when the
-    // selected layer's data actually changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selectedLayerId, layers.find((l) => l.id === selectedLayerId)]
-  );
-  const selectedTextOverlay = useMemo(
-    () => textOverlays.find((o) => o.id === selectedLayerId),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selectedLayerId, textOverlays.find((o) => o.id === selectedLayerId)]
-  );
-  const selectedImageOverlay = useMemo(
-    () => imageOverlays.find((o) => o.id === selectedLayerId),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selectedLayerId, imageOverlays.find((o) => o.id === selectedLayerId)]
-  );
-
-  // Determine the kind of the selected layer once
-  const selectedLayerKind = useMemo(() => {
-    if (layers.some((l) => l.id === selectedLayerId)) return 'video' as const;
-    if (textOverlays.some((o) => o.id === selectedLayerId)) return 'text' as const;
-    if (imageOverlays.some((o) => o.id === selectedLayerId)) return 'image' as const;
-    return null;
-  }, [selectedLayerId, layers, textOverlays, imageOverlays]);
-
-  // Stable callbacks for inspector controls
-  const handleSelectedOpacityChange = useSelectedOpacityChange(
-    selectedLayerId,
-    selectedLayerKind,
-    updateLayerOpacity,
-    updateTextOverlay,
-    updateImageOverlay
-  );
-  const handleSelectedRotationChange = useSelectedRotationChange(
-    selectedLayerId,
-    selectedLayerKind,
-    updateLayerRotation,
-    updateTextOverlay,
-    updateImageOverlay
-  );
-  const handleSelectedMirrorToggle = useSelectedMirrorToggle(selectedLayerId, updateLayerMirror);
-  const handleSelectedCropZoomChange = useSelectedCropZoomChange(
-    selectedLayerId,
-    selectedLayerKind,
-    updateLayerCropZoom
-  );
-  const handleSelectedPositionSizeChange = useSelectedPositionSizeChange(
-    selectedLayerId,
-    selectedLayerKind,
-    updateLayerPositionSize,
-    updateTextOverlay,
-    updateImageOverlay
-  );
-
-  // Derived inspector data
-  const selectedLayerName = useSelectedLayerName(
-    selectedLayer,
-    selectedTextOverlay,
-    selectedImageOverlay,
-    textOverlays,
-    imageOverlays
-  );
-  const inspectorProps = useInspectorProps(
-    selectedLayer,
-    selectedTextOverlay,
-    selectedImageOverlay
-  );
 
   // Memoize the canvas header so the SKTooltip / LIVE badge subtree doesn't
   // re-render on every slider tick.
@@ -276,8 +231,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
   const sidePanelContent = useMemo(
     () => (
       <>
-        <CompositorEntryList
-          entries={entries}
+        <ConnectedEntryList
           selectedLayerId={selectedLayerId}
           onSelectLayer={selectLayer}
           onToggleVisibility={toggleLayerVisibility}
@@ -290,24 +244,19 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
         />
 
         <CompositorInspector
-          inspectorProps={inspectorProps}
-          selectedLayerName={selectedLayerName}
-          selectedLayerKind={selectedLayerKind}
-          selectedLayer={selectedLayer}
-          textInspectorChildren={textInspectorChildren}
-          handleSelectedOpacityChange={handleSelectedOpacityChange}
-          handleSelectedRotationChange={handleSelectedRotationChange}
-          handleSelectedMirrorToggle={handleSelectedMirrorToggle}
-          handleSelectedPositionSizeChange={handleSelectedPositionSizeChange}
-          handleSelectedCropZoomChange={handleSelectedCropZoomChange}
-          onAppearanceCommit={commitLayerAppearance}
-          dimensionsReadOnly={selectedLayerKind === 'text'}
+          updateLayerOpacity={updateLayerOpacity}
+          updateLayerRotation={updateLayerRotation}
+          updateLayerMirror={updateLayerMirror}
+          updateLayerCropZoom={updateLayerCropZoom}
+          updateLayerPositionSize={updateLayerPositionSize}
+          updateTextOverlay={updateTextOverlay}
+          updateImageOverlay={updateImageOverlay}
+          textInputRef={textInputRef}
           disabled={disabled}
         />
       </>
     ),
     [
-      entries,
       selectedLayerId,
       selectLayer,
       toggleLayerVisibility,
@@ -317,17 +266,13 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
       removeImageOverlay,
       reorderLayers,
       disabled,
-      inspectorProps,
-      selectedLayerName,
-      selectedLayerKind,
-      selectedLayer,
-      textInspectorChildren,
-      handleSelectedOpacityChange,
-      handleSelectedRotationChange,
-      handleSelectedMirrorToggle,
-      handleSelectedPositionSizeChange,
-      handleSelectedCropZoomChange,
-      commitLayerAppearance,
+      updateLayerOpacity,
+      updateLayerRotation,
+      updateLayerMirror,
+      updateLayerCropZoom,
+      updateLayerPositionSize,
+      updateTextOverlay,
+      updateImageOverlay,
     ]
   );
 
@@ -341,10 +286,6 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
         <CompositorCanvas
           canvasWidth={canvasWidth}
           canvasHeight={canvasHeight}
-          layers={layers}
-          textOverlays={textOverlays}
-          imageOverlays={imageOverlays}
-          selectedLayerId={selectedLayerId}
           onSelectLayer={selectLayer}
           onLayerPointerDown={handleLayerPointerDown}
           onResizePointerDown={handleResizePointerDown}
@@ -354,10 +295,9 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
           snapGuideRefs={snapGuideRefs}
           disabled={disabled}
         />
-        {contextMenu && entries.some((e) => e.id === contextMenu.layerId) && (
-          <CompositorContextMenu
+        {contextMenu && (
+          <ConnectedContextMenu
             menu={contextMenu}
-            entries={entries}
             onReorderLayers={reorderLayers}
             onRemoveText={removeTextOverlay}
             onRemoveImage={removeImageOverlay}
@@ -370,10 +310,6 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
       canvasHeaderContent,
       canvasWidth,
       canvasHeight,
-      layers,
-      textOverlays,
-      imageOverlays,
-      selectedLayerId,
       selectLayer,
       handleLayerPointerDown,
       handleResizePointerDown,
@@ -383,7 +319,6 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
       layerRefs,
       snapGuideRefs,
       contextMenu,
-      entries,
       reorderLayers,
       removeTextOverlay,
       removeImageOverlay,
@@ -403,21 +338,23 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
       state={data.state}
       sessionId={data.sessionId}
     >
-      <CompositorOuterWrapper
-        ref={compositorWrapperRef}
-        tabIndex={-1}
-        data-testid="compositor-keyboard-target"
-      >
-        {/* Side panel rendered first in DOM order so that layer-list text
-            (e.g. "Text 0") is matched before identically-named canvas labels
-            by Playwright's getByText().first(). The panel uses position:absolute
-            so DOM order has no effect on visual layout. */}
-        <SidePanel className="nodrag nopan">{sidePanelContent}</SidePanel>
+      <Provider store={store}>
+        <CompositorOuterWrapper
+          ref={compositorWrapperRef}
+          tabIndex={-1}
+          data-testid="compositor-keyboard-target"
+        >
+          {/* Side panel rendered first in DOM order so that layer-list text
+              (e.g. "Text 0") is matched before identically-named canvas labels
+              by Playwright's getByText().first(). The panel uses position:absolute
+              so DOM order has no effect on visual layout. */}
+          <SidePanel className="nodrag nopan">{sidePanelContent}</SidePanel>
 
-        <CompositorWrapper>
-          <CanvasSection>{canvasSectionContent}</CanvasSection>
-        </CompositorWrapper>
-      </CompositorOuterWrapper>
+          <CompositorWrapper>
+            <CanvasSection>{canvasSectionContent}</CanvasSection>
+          </CompositorWrapper>
+        </CompositorOuterWrapper>
+      </Provider>
     </NodeFrame>
   );
 

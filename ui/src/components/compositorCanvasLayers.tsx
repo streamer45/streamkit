@@ -9,14 +9,11 @@
  * lint threshold while preserving identical runtime behaviour.
  */
 
+import { useAtomValue } from 'jotai/react';
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
-import type {
-  LayerState,
-  TextOverlayState,
-  ImageOverlayState,
-  ResizeHandle,
-} from '@/hooks/useCompositorLayers';
+import { layerAtoms, textOverlayAtoms, imageOverlayAtoms } from '@/hooks/compositorAtoms';
+import type { ResizeHandle } from '@/hooks/useCompositorLayers';
 import { friendlyLabel } from '@/nodes/compositorNodeParts';
 
 import {
@@ -123,19 +120,23 @@ ResizeHandles.displayName = 'ResizeHandles';
 // ── Video input layer ───────────────────────────────────────────────────────
 
 export const VideoLayer: React.FC<{
-  layer: LayerState;
+  layerId: string;
   index: number;
   isSelected: boolean;
   onPointerDown: (layerId: string, e: React.PointerEvent) => void;
   onResizeStart: (layerId: string, handle: ResizeHandle, e: React.PointerEvent) => void;
   layerRef: (el: HTMLDivElement | null) => void;
-}> = React.memo(({ layer, index, isSelected, onPointerDown, onResizeStart, layerRef }) => {
+}> = React.memo(({ layerId, index, isSelected, onPointerDown, onResizeStart, layerRef }) => {
+  const layer = useAtomValue(layerAtoms(layerId));
+
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
-      onPointerDown(layer.id, e);
+      onPointerDown(layerId, e);
     },
-    [layer.id, onPointerDown]
+    [layerId, onPointerDown]
   );
+
+  if (!layer) return null;
 
   const hue = layerHue(index);
   const borderColor = isSelected ? 'var(--sk-primary)' : `hsla(${hue}, 70%, 65%, 0.8)`;
@@ -172,7 +173,7 @@ VideoLayer.displayName = 'VideoLayer';
 // ── Text overlay layer ──────────────────────────────────────────────────────
 
 export const TextOverlayLayer: React.FC<{
-  overlay: TextOverlayState;
+  overlayId: string;
   index: number;
   isSelected: boolean;
   onPointerDown: (layerId: string, e: React.PointerEvent) => void;
@@ -180,14 +181,24 @@ export const TextOverlayLayer: React.FC<{
   onTextFocusRequest?: (id: string) => void;
   layerRef: (el: HTMLDivElement | null) => void;
 }> = React.memo(
-  ({ overlay, index, isSelected, onPointerDown, onResizeStart, onTextFocusRequest, layerRef }) => {
+  ({
+    overlayId,
+    index,
+    isSelected,
+    onPointerDown,
+    onResizeStart,
+    onTextFocusRequest,
+    layerRef,
+  }) => {
+    const overlay = useAtomValue(textOverlayAtoms(overlayId));
+
     // Measure the browser-rendered text dimensions with a hidden span.
     // No word wrapping — only explicit newlines break lines, so the
     // natural text width is deterministic and the box auto-sizes to fit.
     const measureRef = useRef<HTMLSpanElement>(null);
     const [browserTextSize, setBrowserTextSize] = useState({ w: 0, h: 0 });
     useLayoutEffect(() => {
-      if (measureRef.current) {
+      if (measureRef.current && overlay) {
         // offsetWidth / offsetHeight are in the element's own CSS-pixel
         // coordinate space, unaffected by ancestor transforms (the canvas
         // scale).  getBoundingClientRect() would return viewport-scaled
@@ -197,23 +208,26 @@ export const TextOverlayLayer: React.FC<{
           h: measureRef.current.offsetHeight,
         });
       }
-    }, [overlay.text, overlay.fontSize, overlay.fontName]);
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- measure only when text/font changes, not the full overlay
+    }, [overlay?.text, overlay?.fontSize, overlay?.fontName]);
 
     const handlePointerDown = useCallback(
       (e: React.PointerEvent) => {
-        onPointerDown(overlay.id, e);
+        onPointerDown(overlayId, e);
       },
-      [overlay.id, onPointerDown]
+      [overlayId, onPointerDown]
     );
 
     const handleDoubleClick = useCallback(
       (e: React.MouseEvent) => {
         e.stopPropagation();
         e.preventDefault();
-        onTextFocusRequest?.(overlay.id);
+        onTextFocusRequest?.(overlayId);
       },
-      [onTextFocusRequest, overlay.id]
+      [onTextFocusRequest, overlayId]
     );
+
+    if (!overlay) return null;
 
     const hue = layerHue(index + 100); // offset from video layers
     const borderColor = isSelected ? 'var(--sk-primary)' : `hsla(${hue}, 70%, 65%, 0.8)`;
@@ -310,23 +324,21 @@ TextOverlayLayer.displayName = 'TextOverlayLayer';
 // ── Image overlay layer ─────────────────────────────────────────────────────
 
 export const ImageOverlayLayer: React.FC<{
-  overlay: ImageOverlayState;
+  overlayId: string;
   index: number;
   isSelected: boolean;
   onPointerDown: (layerId: string, e: React.PointerEvent) => void;
   onResizeStart: (layerId: string, handle: ResizeHandle, e: React.PointerEvent) => void;
   layerRef: (el: HTMLDivElement | null) => void;
-}> = React.memo(({ overlay, index, isSelected, onPointerDown, onResizeStart, layerRef }) => {
+}> = React.memo(({ overlayId, index, isSelected, onPointerDown, onResizeStart, layerRef }) => {
+  const overlay = useAtomValue(imageOverlayAtoms(overlayId));
+
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
-      onPointerDown(overlay.id, e);
+      onPointerDown(overlayId, e);
     },
-    [overlay.id, onPointerDown]
+    [overlayId, onPointerDown]
   );
-
-  const hue = layerHue(index + 200); // offset from text overlays
-  const borderColor = isSelected ? 'var(--sk-primary)' : `hsla(${hue}, 70%, 65%, 0.8)`;
-  const bgColor = isSelected ? `hsla(${hue}, 60%, 50%, 0.25)` : `hsla(${hue}, 60%, 50%, 0.12)`;
 
   // Build a blob URL for the image thumbnail.  Using fetch() with a
   // data-URI lets the browser decode the base64 natively, which is
@@ -339,7 +351,7 @@ export const ImageOverlayLayer: React.FC<{
   const [imgSrc, setImgSrc] = useState<string | undefined>();
 
   useEffect(() => {
-    if (!overlay.dataBase64) {
+    if (!overlay?.dataBase64) {
       setImgSrc(undefined);
       return;
     }
@@ -369,7 +381,13 @@ export const ImageOverlayLayer: React.FC<{
       cancelled = true;
       if (url) URL.revokeObjectURL(url);
     };
-  }, [overlay.dataBase64]);
+  }, [overlay?.dataBase64]);
+
+  if (!overlay) return null;
+
+  const hue = layerHue(index + 200); // offset from text overlays
+  const borderColor = isSelected ? 'var(--sk-primary)' : `hsla(${hue}, 70%, 65%, 0.8)`;
+  const bgColor = isSelected ? `hsla(${hue}, 60%, 50%, 0.25)` : `hsla(${hue}, 60%, 50%, 0.12)`;
 
   return (
     <LayerBox
