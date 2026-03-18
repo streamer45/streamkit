@@ -81,13 +81,15 @@ export const allImageOverlaysAtom = atom<ImageOverlayState[]>((get) => {
     .filter((o): o is ImageOverlayState => o !== null);
 });
 
-/** The kind of the currently selected layer, or null. */
+/** The kind of the currently selected layer, or null.
+ *  Checks ID list atoms instead of probing atomFamily entries directly,
+ *  which would create phantom cache entries for unrelated layer types. */
 export const selectedLayerKindAtom = atom<LayerKind | null>((get) => {
   const id = get(selectedLayerIdAtom);
   if (!id) return null;
-  if (get(layerAtoms(id))) return 'video';
-  if (get(textOverlayAtoms(id))) return 'text';
-  if (get(imageOverlayAtoms(id))) return 'image';
+  if (get(layerIdsAtom).includes(id)) return 'video';
+  if (get(textOverlayIdsAtom).includes(id)) return 'text';
+  if (get(imageOverlayIdsAtom).includes(id)) return 'image';
   return null;
 });
 
@@ -245,4 +247,20 @@ export function getTextOverlaysFromStore(store: CompositorStore): TextOverlaySta
 /** Read all image overlays from the store. */
 export function getImageOverlaysFromStore(store: CompositorStore): ImageOverlayState[] {
   return store.get(allImageOverlaysAtom);
+}
+
+/** Remove atomFamily cache entries for all overlay IDs tracked by this store.
+ *  Text/image overlays use crypto.randomUUID() for IDs, so each add/remove
+ *  cycle creates a permanent atomFamily cache entry.  Call on compositor
+ *  unmount to prevent unbounded growth.
+ *
+ *  Video layer IDs (e.g. "in_0") are reused across instances, so their cache
+ *  entries are shared and NOT removed here. */
+export function cleanupCompositorAtoms(store: CompositorStore): void {
+  for (const id of store.get(textOverlayIdsAtom)) {
+    textOverlayAtoms.remove(id);
+  }
+  for (const id of store.get(imageOverlayIdsAtom)) {
+    imageOverlayAtoms.remove(id);
+  }
 }

@@ -33,6 +33,7 @@ import {
   allImageOverlaysAtom,
   allLayersAtom,
   allTextOverlaysAtom,
+  cleanupCompositorAtoms,
   getImageOverlaysFromStore,
   getLayersFromStore,
   getTextOverlaysFromStore,
@@ -153,6 +154,13 @@ export const useCompositorLayers = (
     // handled by the sync-from-props effect below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Clean up UUID-based overlay atoms from the global atomFamily cache on
+  // unmount.  Text/image overlay IDs are crypto.randomUUID(), so without
+  // cleanup each add/remove cycle leaks a permanent cache entry.
+  useEffect(() => {
+    return () => cleanupCompositorAtoms(store);
+  }, [store]);
 
   // ── Atom-backed setters ─────────────────────────────────────────────────
   // These are drop-in replacements for React.Dispatch<SetStateAction<T>>
