@@ -33,6 +33,11 @@ export function nodeKey(sessionId: string, nodeId: string): string {
   return `${sessionId}\0${nodeId}`;
 }
 
+/** Static atom that always returns null.  Used as a subscription target when
+ *  a component needs to conditionally opt out of a high-frequency atom
+ *  (e.g. stats when the tooltip is closed) without breaking the rules of hooks. */
+export const nullStatsAtom = atom<NodeStats | null>(null);
+
 // ── Per-node atoms ──────────────────────────────────────────────────────────
 
 export const nodeStateAtom = atomFamily(
@@ -120,12 +125,37 @@ export function writeSessionConnected(sessionId: string, connected: boolean): vo
   sessionStore.set(sessionConnectedAtom(sessionId), connected);
 }
 
-/** Clear all atoms for a session (on session destroy). */
+/** Clear all atoms for a session (on session destroy).
+ *  Iterates atomFamily caches (jotai-family supports iteration) and removes
+ *  entries whose key starts with the session prefix to prevent memory leaks. */
 export function clearSessionAtoms(sessionId: string): void {
-  // We can't iterate atomFamily params easily, but setting to null/undefined
-  // is sufficient — components reading from destroyed sessions will see null
-  // and handle it gracefully.  The atomFamily cache entries remain but are
-  // lightweight (just atom configs, no large state).
+  const prefix = `${sessionId}\0`;
+
+  for (const key of nodeStateAtom.getParams()) {
+    if (key.startsWith(prefix)) {
+      sessionStore.set(nodeStateAtom(key), null);
+      nodeStateAtom.remove(key);
+    }
+  }
+  for (const key of nodeStatsAtom.getParams()) {
+    if (key.startsWith(prefix)) {
+      sessionStore.set(nodeStatsAtom(key), null);
+      nodeStatsAtom.remove(key);
+    }
+  }
+  for (const key of nodeViewDataAtom.getParams()) {
+    if (key.startsWith(prefix)) {
+      sessionStore.set(nodeViewDataAtom(key), undefined);
+      nodeViewDataAtom.remove(key);
+    }
+  }
+  for (const key of nodeParamsAtom.getParams()) {
+    if (key.startsWith(prefix)) {
+      sessionStore.set(nodeParamsAtom(key), {});
+      nodeParamsAtom.remove(key);
+    }
+  }
+
   sessionStore.set(sessionConnectedAtom(sessionId), false);
   sessionConnectedAtom.remove(sessionId);
 }

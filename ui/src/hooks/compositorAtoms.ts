@@ -171,10 +171,12 @@ export function setLayersInStore(store: CompositorStore, layers: LayerState[]): 
     }
   }
 
+  // Null out removed layers in this store. Do NOT call layerAtoms.remove() —
+  // the atomFamily cache is global (shared across all compositor stores), and
+  // removing an entry would invalidate other stores that share the same layer ID.
   for (const prevId of prevIds) {
     if (!newIdSet.has(prevId)) {
       store.set(layerAtoms(prevId), null);
-      layerAtoms.remove(prevId);
     }
   }
 }
@@ -199,7 +201,6 @@ export function setTextOverlaysInStore(store: CompositorStore, overlays: TextOve
   for (const prevId of prevIds) {
     if (!newIdSet.has(prevId)) {
       store.set(textOverlayAtoms(prevId), null);
-      textOverlayAtoms.remove(prevId);
     }
   }
 }
@@ -227,7 +228,6 @@ export function setImageOverlaysInStore(
   for (const prevId of prevIds) {
     if (!newIdSet.has(prevId)) {
       store.set(imageOverlayAtoms(prevId), null);
-      imageOverlayAtoms.remove(prevId);
     }
   }
 }

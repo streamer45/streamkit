@@ -6,7 +6,7 @@ import styled from '@emotion/styled';
 import { useAtomValue } from 'jotai/react';
 import React from 'react';
 
-import { nodeStatsAtom, nodeKey } from '@/stores/sessionAtoms';
+import { nodeStatsAtom, nullStatsAtom, nodeKey } from '@/stores/sessionAtoms';
 import { useSessionStore } from '@/stores/sessionStore';
 import type { NodeState, NodeStats, Pipeline } from '@/types/types';
 
@@ -415,11 +415,13 @@ export const NodeStateIndicator: React.FC<NodeStateIndicatorProps> = ({
 }) => {
   const [isTooltipOpen, setIsTooltipOpen] = React.useState(false);
 
-  // Read per-node stats from Jotai atom (fine-grained, only this node's atom).
-  // Only surface the value when the tooltip is open to avoid unnecessary work
-  // in downstream rendering (the atom subscription itself is lightweight).
-  const statsAtomValue = useAtomValue(nodeStatsAtom(nodeKey(sessionId ?? '', nodeId ?? '')));
-  const liveStats = isTooltipOpen && nodeId && sessionId ? statsAtomValue : undefined;
+  // Subscribe to the real stats atom only when the tooltip is open.
+  // Stats are high-frequency (up to ~60fps via WebSocket RAF flush) and
+  // would otherwise cause constant re-renders of all node indicators.
+  // When the tooltip is closed, subscribe to a static null atom instead.
+  const shouldSubscribe = isTooltipOpen && !!nodeId && !!sessionId;
+  const statsAtom = shouldSubscribe ? nodeStatsAtom(nodeKey(sessionId!, nodeId!)) : nullStatsAtom;
+  const liveStats = useAtomValue(statsAtom);
 
   const stats = liveStats ?? propStats;
   const hasErrors = isTooltipOpen && stats && stats.errored > 0;
