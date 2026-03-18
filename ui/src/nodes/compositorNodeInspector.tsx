@@ -337,9 +337,11 @@ export function useTextInspectorChildren(
 // ── Compositor inspector component ──────────────────────────────────────────
 
 export interface CompositorInspectorProps {
+  nodeId: string;
   inspectorProps: InspectorLayerProps | null;
   selectedLayerName: string;
   selectedLayerKind: LayerKindTag | null;
+  selectedLayerId: string | null;
   selectedLayer: LayerState | undefined;
   textInspectorChildren: React.ReactNode;
   handleSelectedOpacityChange: (v: number) => void;
@@ -353,9 +355,11 @@ export interface CompositorInspectorProps {
 
 export const CompositorInspector: React.FC<CompositorInspectorProps> = React.memo(
   ({
+    nodeId,
     inspectorProps,
     selectedLayerName,
     selectedLayerKind,
+    selectedLayerId,
     selectedLayer,
     textInspectorChildren,
     handleSelectedOpacityChange,
@@ -366,7 +370,7 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
     dimensionsReadOnly,
     disabled,
   }) => {
-    if (!inspectorProps) return null;
+    if (!inspectorProps || !selectedLayerId) return null;
     return (
       <>
         <SidePanelDivider />
@@ -383,12 +387,14 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
           />
           {textInspectorChildren}
           <OpacityControl
-            opacity={inspectorProps.opacity}
+            nodeId={nodeId}
+            layerId={selectedLayerId}
             onChange={handleSelectedOpacityChange}
             disabled={disabled}
           />
           <RotationControl
-            rotationDegrees={inspectorProps.rotationDegrees}
+            nodeId={nodeId}
+            layerId={selectedLayerId}
             onChange={handleSelectedRotationChange}
             disabled={disabled}
           />

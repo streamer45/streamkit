@@ -22,6 +22,8 @@
 import { renderHook, act } from '@testing-library/react';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 
+import { compositorLayerOpacityAtom, cleanupCompositorAtoms } from '@/stores/compositorAtoms';
+import { jotaiStore } from '@/stores/jotaiStore';
 import { useSessionStore } from '@/stores/sessionStore';
 import type { CompositorLayout } from '@/types/generated/compositor-types';
 
@@ -133,6 +135,7 @@ function pushServerViewData(layout: CompositorLayout) {
 afterEach(() => {
   // Clean up store between tests
   useSessionStore.getState().clearSession(SESSION_ID);
+  cleanupCompositorAtoms(NODE_ID);
 });
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -541,6 +544,79 @@ describe('Monitor view data flow integration', () => {
     expect(result.current.imageOverlays[0].y).toBe(300);
     // Server-resolved opacity must be preserved
     expect(result.current.imageOverlays[0].opacity).toBe(0.9);
+  });
+
+  it('server echo-back is blocked during active opacity slider drag', () => {
+    seedStore();
+
+    const params = makeParams({
+      layers: {
+        in_0: { opacity: 1.0, z_index: 0 },
+        in_1: {
+          rect: { x: 100, y: 200, width: 320, height: 240 },
+          opacity: 0.8,
+          z_index: 1,
+        },
+      },
+    });
+    const opts = monitorOptions({ params });
+    const { result } = renderHook(
+      (props: UseCompositorLayersOptions) => useCompositorLayers(props),
+      { initialProps: opts }
+    );
+
+    // Verify initial state — in_1 parsed with opacity 0.8
+    expect(result.current.layers.find((l) => l.id === 'in_1')!.opacity).toBe(0.8);
+
+    // User drags opacity slider → updateLayerOpacity writes per-layer atom
+    // + marks appearanceActiveRef = true for 200ms
+    act(() => result.current.updateLayerOpacity('in_1', 0.3));
+
+    // While slider is active, server sends an echo-back with the OLD opacity.
+    // The echo-back should be blocked by the appearanceActiveRef guard.
+    const layout = makeServerLayout({
+      layers: [
+        {
+          id: 'in_0',
+          x: 0,
+          y: 0,
+          width: 1280,
+          height: 720,
+          opacity: 1.0,
+          z_index: 0,
+          rotation_degrees: 0,
+          mirror_horizontal: false,
+          mirror_vertical: false,
+          crop_zoom: 1.0,
+          crop_x: 0.5,
+          crop_y: 0.5,
+        },
+        {
+          id: 'in_1',
+          x: 100,
+          y: 200,
+          width: 320,
+          height: 240,
+          opacity: 0.8, // stale server value
+          z_index: 1,
+          rotation_degrees: 0,
+          mirror_horizontal: false,
+          mirror_vertical: false,
+          crop_zoom: 1.0,
+          crop_x: 0.5,
+          crop_y: 0.5,
+        },
+      ],
+    });
+    act(() => pushServerViewData(layout));
+
+    // The user's slider value (0.3) should persist in the per-layer atom.
+    // updateLayerOpacity writes to the atom directly (not setLayers), and
+    // the echo-back guard blocks syncLayerAppearanceAtoms from overwriting
+    // it with the stale 0.8 value.  The per-layer atom is the authoritative
+    // source during a drag — slider controls and VideoLayer read from it.
+    const atomValue = jotaiStore.get(compositorLayerOpacityAtom(`${NODE_ID}:in_1`));
+    expect(atomValue).toBe(0.3);
   });
 
   it('Design view (no sessionId) still uses parsed positions as source of truth', () => {

@@ -15,6 +15,8 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 import { SKTooltip } from '@/components/Tooltip';
 import type { LayerKind } from '@/hooks/useCompositorLayers';
+import { compositorLayerOpacityAtom, compositorLayerRotationAtom } from '@/stores/compositorAtoms';
+import { jotaiStore } from '@/stores/jotaiStore';
 
 import {
   AddMenu,
@@ -195,38 +197,62 @@ export const InspectorHeaderSection: React.FC<{
 InspectorHeaderSection.displayName = 'InspectorHeaderSection';
 
 export const OpacityControl: React.FC<{
-  opacity: number;
+  nodeId: string;
+  layerId: string;
   onChange: (value: number) => void;
   disabled: boolean;
-}> = React.memo(({ opacity, onChange, disabled }) => (
-  <InspectorSection>
-    <InspectorSectionLabel>Opacity</InspectorSectionLabel>
-    <ControlRow>
-      <CompactSliderRoot
-        value={[opacity]}
-        onValueChange={([v]) => onChange(v)}
-        min={0}
-        max={1}
-        step={0.01}
-        disabled={disabled}
-        className="nodrag nopan"
-      >
-        <CompactSliderTrack>
-          <CompactSliderRange />
-        </CompactSliderTrack>
-        <CompactSliderThumb />
-      </CompactSliderRoot>
-      <ControlValue>{(opacity * 100).toFixed(0)}%</ControlValue>
-    </ControlRow>
-  </InspectorSection>
-));
+}> = React.memo(({ nodeId, layerId, onChange, disabled }) => {
+  const opacity = jotaiStore.get(compositorLayerOpacityAtom(`${nodeId}:${layerId}`));
+  // Subscribe to per-layer atom so this component re-renders on opacity
+  // changes without re-rendering the entire compositor tree.
+  const [, forceRender] = useState(0);
+  useEffect(() => {
+    const unsub = jotaiStore.sub(compositorLayerOpacityAtom(`${nodeId}:${layerId}`), () => {
+      forceRender((c) => c + 1);
+    });
+    return unsub;
+  }, [nodeId, layerId]);
+
+  return (
+    <InspectorSection>
+      <InspectorSectionLabel>Opacity</InspectorSectionLabel>
+      <ControlRow>
+        <CompactSliderRoot
+          value={[opacity]}
+          onValueChange={([v]) => onChange(v)}
+          min={0}
+          max={1}
+          step={0.01}
+          disabled={disabled}
+          className="nodrag nopan"
+        >
+          <CompactSliderTrack>
+            <CompactSliderRange />
+          </CompactSliderTrack>
+          <CompactSliderThumb />
+        </CompactSliderRoot>
+        <ControlValue>{(opacity * 100).toFixed(0)}%</ControlValue>
+      </ControlRow>
+    </InspectorSection>
+  );
+});
 OpacityControl.displayName = 'OpacityControl';
 
 export const RotationControl: React.FC<{
-  rotationDegrees: number;
+  nodeId: string;
+  layerId: string;
   onChange: (value: number) => void;
   disabled: boolean;
-}> = React.memo(({ rotationDegrees, onChange, disabled }) => {
+}> = React.memo(({ nodeId, layerId, onChange, disabled }) => {
+  const rotationDegrees = jotaiStore.get(compositorLayerRotationAtom(`${nodeId}:${layerId}`));
+  const [, forceRender] = useState(0);
+  useEffect(() => {
+    const unsub = jotaiStore.sub(compositorLayerRotationAtom(`${nodeId}:${layerId}`), () => {
+      forceRender((c) => c + 1);
+    });
+    return unsub;
+  }, [nodeId, layerId]);
+
   const normalisedRotation = ((Math.round(rotationDegrees) % 360) + 360) % 360;
 
   return (

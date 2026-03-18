@@ -73,6 +73,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
   const canvasHeight = (data.params?.height as number) ?? 720;
 
   const {
+    nodeId: compositorNodeId,
     layers,
     selectedLayerId,
     selectLayer,
@@ -270,9 +271,11 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
         />
 
         <CompositorInspector
+          nodeId={compositorNodeId}
           inspectorProps={inspectorProps}
           selectedLayerName={selectedLayerName}
           selectedLayerKind={selectedLayerKind}
+          selectedLayerId={selectedLayerId}
           selectedLayer={selectedLayer}
           textInspectorChildren={textInspectorChildren}
           handleSelectedOpacityChange={handleSelectedOpacityChange}
@@ -296,6 +299,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
       removeImageOverlay,
       reorderLayers,
       disabled,
+      compositorNodeId,
       inspectorProps,
       selectedLayerName,
       selectedLayerKind,
@@ -317,6 +321,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
         {canvasHeaderContent}
 
         <CompositorCanvas
+          nodeId={compositorNodeId}
           canvasWidth={canvasWidth}
           canvasHeight={canvasHeight}
           layers={layers}
@@ -348,6 +353,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
       canvasHeaderContent,
       canvasWidth,
       canvasHeight,
+      compositorNodeId,
       layers,
       textOverlays,
       imageOverlays,

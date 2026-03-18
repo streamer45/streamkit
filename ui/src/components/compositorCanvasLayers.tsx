@@ -18,6 +18,8 @@ import type {
   ResizeHandle,
 } from '@/hooks/useCompositorLayers';
 import { friendlyLabel } from '@/nodes/compositorNodeParts';
+import { compositorLayerOpacityAtom, compositorLayerRotationAtom } from '@/stores/compositorAtoms';
+import { jotaiStore } from '@/stores/jotaiStore';
 
 import {
   LayerBox,
@@ -123,13 +125,34 @@ ResizeHandles.displayName = 'ResizeHandles';
 // ── Video input layer ───────────────────────────────────────────────────────
 
 export const VideoLayer: React.FC<{
+  nodeId: string;
   layer: LayerState;
   index: number;
   isSelected: boolean;
   onPointerDown: (layerId: string, e: React.PointerEvent) => void;
   onResizeStart: (layerId: string, handle: ResizeHandle, e: React.PointerEvent) => void;
   layerRef: (el: HTMLDivElement | null) => void;
-}> = React.memo(({ layer, index, isSelected, onPointerDown, onResizeStart, layerRef }) => {
+}> = React.memo(({ nodeId, layer, index, isSelected, onPointerDown, onResizeStart, layerRef }) => {
+  // Read opacity/rotation from per-layer atoms so this component
+  // re-renders only when THIS layer's appearance changes, not when
+  // any layer in the array changes.
+  const atomKey = `${nodeId}:${layer.id}`;
+  const opacity = jotaiStore.get(compositorLayerOpacityAtom(atomKey));
+  const rotationDegrees = jotaiStore.get(compositorLayerRotationAtom(atomKey));
+  const [, forceRender] = useState(0);
+  useEffect(() => {
+    const unsub1 = jotaiStore.sub(compositorLayerOpacityAtom(atomKey), () => {
+      forceRender((c) => c + 1);
+    });
+    const unsub2 = jotaiStore.sub(compositorLayerRotationAtom(atomKey), () => {
+      forceRender((c) => c + 1);
+    });
+    return () => {
+      unsub1();
+      unsub2();
+    };
+  }, [atomKey]);
+
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
       onPointerDown(layer.id, e);
@@ -148,9 +171,9 @@ export const VideoLayer: React.FC<{
       aria-label={`Video layer: ${layer.id}`}
       style={layerBoxStyle(layer.x, layer.y, layer.width, layer.height, {
         visible: layer.visible,
-        opacity: layer.opacity,
+        opacity,
         zIndex: layer.zIndex,
-        rotationDegrees: layer.rotationDegrees,
+        rotationDegrees,
         mirrorHorizontal: layer.mirrorHorizontal,
         mirrorVertical: layer.mirrorVertical,
         borderColor,

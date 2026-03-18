@@ -42,6 +42,7 @@ const noopResizeStart = (() => {}) as (
 // ── Main canvas ─────────────────────────────────────────────────────────────
 
 export interface CompositorCanvasProps {
+  nodeId: string;
   canvasWidth: number;
   canvasHeight: number;
   layers: LayerState[];
@@ -63,6 +64,7 @@ export interface CompositorCanvasProps {
 
 export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
   ({
+    nodeId,
     canvasWidth,
     canvasHeight,
     layers,
@@ -187,6 +189,7 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
               {layers.map((layer, i) => (
                 <VideoLayer
                   key={layer.id}
+                  nodeId={nodeId}
                   layer={layer}
                   index={i}
                   isSelected={selectedLayerId === layer.id}

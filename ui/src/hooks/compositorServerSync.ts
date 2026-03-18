@@ -13,6 +13,7 @@
 
 import { useEffect } from 'react';
 
+import { syncLayerAppearanceAtoms } from '@/stores/compositorAtoms';
 import { useSessionStore, selectNodeViewData } from '@/stores/sessionStore';
 import type {
   CompositorLayout,
@@ -154,6 +155,7 @@ export function useServerLayoutSync(
   sessionId: string | undefined,
   nodeId: string,
   dragStateRef: React.MutableRefObject<unknown>,
+  appearanceActiveRef: React.MutableRefObject<boolean>,
   setLayers: React.Dispatch<React.SetStateAction<LayerState[]>>,
   setTextOverlays: React.Dispatch<React.SetStateAction<TextOverlayState[]>>,
   setImageOverlays: React.Dispatch<React.SetStateAction<ImageOverlayState[]>>
@@ -163,24 +165,36 @@ export function useServerLayoutSync(
 
     const applyServerLayout = (viewData: unknown) => {
       if (!viewData || typeof viewData !== 'object') return;
-      // Skip during drag/resize to avoid server echo-backs overwriting
-      // in-flight local state
-      if (dragStateRef.current) return;
+      // Skip during drag/resize or appearance slider activity to avoid
+      // server echo-backs overwriting in-flight local state
+      if (dragStateRef.current || appearanceActiveRef.current) return;
 
       const layout = viewData as CompositorLayout;
       if (!Array.isArray(layout.layers)) return;
 
-      setLayers((prev) => mapServerLayers(prev, layout.layers));
+      setLayers((prev) => {
+        const next = mapServerLayers(prev, layout.layers);
+        // Sync per-layer appearance atoms from server data so the
+        // inspector controls and canvas layers reflect resolved values.
+        syncLayerAppearanceAtoms(nodeId, next);
+        return next;
+      });
 
       if (Array.isArray(layout.text_overlays)) {
         setTextOverlays((prev) => {
           const base = applyServerOverlays(prev, layout.text_overlays);
-          return mergeTextMeasurements(base, layout.text_overlays);
+          const merged = mergeTextMeasurements(base, layout.text_overlays);
+          syncLayerAppearanceAtoms(nodeId, merged);
+          return merged;
         });
       }
 
       if (Array.isArray(layout.image_overlays)) {
-        setImageOverlays((prev) => applyServerOverlays(prev, layout.image_overlays));
+        setImageOverlays((prev) => {
+          const next = applyServerOverlays(prev, layout.image_overlays);
+          syncLayerAppearanceAtoms(nodeId, next);
+          return next;
+        });
       }
     };
 
@@ -198,5 +212,13 @@ export function useServerLayoutSync(
       }
     });
     return unsubscribe;
-  }, [sessionId, nodeId, dragStateRef, setLayers, setTextOverlays, setImageOverlays]);
+  }, [
+    sessionId,
+    nodeId,
+    dragStateRef,
+    appearanceActiveRef,
+    setLayers,
+    setTextOverlays,
+    setImageOverlays,
+  ]);
 }

@@ -23,6 +23,7 @@ import {
   compositorLayersAtom,
   compositorSelectedLayerAtom,
   compositorTextOverlaysAtom,
+  syncLayerAppearanceAtoms,
 } from '@/stores/compositorAtoms';
 
 import { useCompositorCommit } from './compositorCommit';
@@ -66,6 +67,7 @@ export interface UseCompositorLayersOptions {
 }
 
 export interface UseCompositorLayersResult {
+  nodeId: string;
   layers: LayerState[];
   selectedLayerId: string | null;
   selectLayer: (id: string | null) => void;
@@ -172,17 +174,20 @@ export const useCompositorLayers = (
     // Functional update so we read the actual current atom value, not the
     // potentially stale layersRef (which is synced via useEffect, running
     // after this useLayoutEffect).
-    setLayers((current) =>
-      mergeOverlayState(
+    let mergedLayers: LayerState[] = [];
+    setLayers((current) => {
+      mergedLayers = mergeOverlayState(
         current,
         parsedLayers,
         (a, b) => a.cropZoom !== b.cropZoom || a.cropX !== b.cropX || a.cropY !== b.cropY,
         isMonitorView
-      )
-    );
+      );
+      return mergedLayers;
+    });
 
-    setTextOverlays((current) =>
-      mergeOverlayState(
+    let mergedText: TextOverlayState[] = [];
+    setTextOverlays((current) => {
+      mergedText = mergeOverlayState(
         current,
         parseTextOverlays(params),
         (a, b) =>
@@ -191,36 +196,34 @@ export const useCompositorLayers = (
           a.fontName !== b.fontName ||
           a.color.some((value, index) => value !== b.color[index]),
         isMonitorView
-      )
-    );
+      );
+      return mergedText;
+    });
 
-    setImageOverlays((current) =>
-      mergeOverlayState(
+    let mergedImg: ImageOverlayState[] = [];
+    setImageOverlays((current) => {
+      mergedImg = mergeOverlayState(
         current,
         parseImageOverlays(params),
         (a, b) => a.dataBase64 !== b.dataBase64,
         isMonitorView
-      )
-    );
+      );
+      return mergedImg;
+    });
+
+    // Sync per-layer appearance atoms so OpacityControl / RotationControl
+    // and VideoLayer have the correct initial values.
+    syncLayerAppearanceAtoms(nodeId, [...mergedLayers, ...mergedText, ...mergedImg]);
   }, [
     params,
     canvasWidth,
     canvasHeight,
     isMonitorView,
+    nodeId,
     setLayers,
     setTextOverlays,
     setImageOverlays,
   ]);
-
-  // ── Server-driven layout (Monitor view only) ───────────────────────────
-  useServerLayoutSync(
-    sessionId,
-    nodeId,
-    dragStateRef,
-    setLayers,
-    setTextOverlays,
-    setImageOverlays
-  );
 
   // ── Find layer across all types ─────────────────────────────────────────
   const findAnyLayer = useCallback(
@@ -275,6 +278,7 @@ export const useCompositorLayers = (
 
   // ── Overlay CRUD, property updates, reorder ─────────────────────────────
   const overlayOps = useCompositorOverlays({
+    nodeId,
     commitAdapter,
     setLayers,
     setTextOverlays,
@@ -286,6 +290,17 @@ export const useCompositorLayers = (
     throttledConfigChange,
     throttledOverlayCommit,
   });
+
+  // ── Server-driven layout (Monitor view only) ───────────────────────────
+  useServerLayoutSync(
+    sessionId,
+    nodeId,
+    dragStateRef,
+    overlayOps.appearanceActiveRef,
+    setLayers,
+    setTextOverlays,
+    setImageOverlays
+  );
 
   // ── Drag / resize handlers ──────────────────────────────────────────────
   const { handleLayerPointerDown, handleResizePointerDown } = useCompositorDragResize({
@@ -308,6 +323,7 @@ export const useCompositorLayers = (
   });
 
   return {
+    nodeId,
     layers,
     selectedLayerId,
     selectLayer: overlayOps.selectLayer,

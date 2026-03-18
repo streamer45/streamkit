@@ -10,6 +10,9 @@
 
 import { useCallback, useEffect, useRef } from 'react';
 
+import { compositorLayerOpacityAtom, compositorLayerRotationAtom } from '@/stores/compositorAtoms';
+import { jotaiStore } from '@/stores/jotaiStore';
+
 import type { CommitAdapter } from './compositorCommit';
 import {
   DEFAULT_OPACITY,
@@ -33,7 +36,13 @@ import type { LayerState, TextOverlayState, ImageOverlayState } from './composit
 
 // ── Shared dependency bag ────────────────────────────────────────────────
 
+/** Delay (ms) before clearing the appearance-active guard after the
+ *  last slider update.  Must be long enough to cover one server
+ *  round-trip so we don't apply the echo before the guard clears. */
+const APPEARANCE_GUARD_MS = 200;
+
 export interface OverlayDeps {
+  nodeId: string;
   commitAdapter: CommitAdapter | null;
   setLayers: React.Dispatch<React.SetStateAction<LayerState[]>>;
   setTextOverlays: React.Dispatch<React.SetStateAction<TextOverlayState[]>>;
@@ -50,6 +59,7 @@ export interface OverlayDeps {
 
 export function useCompositorOverlays(deps: OverlayDeps) {
   const {
+    nodeId,
     commitAdapter,
     setLayers,
     setTextOverlays,
@@ -62,6 +72,29 @@ export function useCompositorOverlays(deps: OverlayDeps) {
     throttledOverlayCommit,
   } = deps;
 
+  // ── Appearance-active guard ───────────────────────────────────────────
+  //
+  // While the user is dragging an opacity / rotation slider, server
+  // echo-backs must not overwrite the in-flight value.  This ref is set
+  // to `true` on every slider tick and cleared after a short debounce.
+  const appearanceActiveRef = useRef(false);
+  const appearanceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Clean up the debounce timer on unmount.
+  useEffect(() => {
+    return () => {
+      if (appearanceTimerRef.current) clearTimeout(appearanceTimerRef.current);
+    };
+  }, []);
+
+  const markAppearanceActive = useCallback(() => {
+    appearanceActiveRef.current = true;
+    if (appearanceTimerRef.current) clearTimeout(appearanceTimerRef.current);
+    appearanceTimerRef.current = setTimeout(() => {
+      appearanceActiveRef.current = false;
+    }, APPEARANCE_GUARD_MS);
+  }, []);
+
   // ── selectLayer ──────────────────────────────────────────────────────
 
   const selectLayer = useCallback(
@@ -71,32 +104,38 @@ export function useCompositorOverlays(deps: OverlayDeps) {
 
   // ── Layer property updates ───────────────────────────────────────────
   //
-  // With Jotai-backed state, opacity and rotation updates go through
-  // normal React state (setLayers).  Per-node atom scoping keeps
-  // re-renders limited to the compositor instance, so the old
-  // zero-render DOM-mutation hack is no longer needed.
+  // Opacity and rotation writes go to per-layer Jotai atoms so that only
+  // OpacityControl / RotationControl and the affected VideoLayer
+  // re-render.  The full layers-array atom is NOT updated during slider
+  // drags; instead we mutate the mutable ref and pass it to the
+  // throttled config-change callback for server persistence.
 
   const updateLayerOpacity = useCallback(
     (layerId: string, opacity: number) => {
       const clamped = Math.max(0, Math.min(1, opacity));
-      setLayers((prev) => {
-        const next = prev.map((l) => (l.id === layerId ? { ...l, opacity: clamped } : l));
-        throttledConfigChange?.(next);
-        return next;
-      });
+      // 1. Per-layer atom → only subscribers re-render
+      jotaiStore.set(compositorLayerOpacityAtom(`${nodeId}:${layerId}`), clamped);
+      // 2. Mutable ref → throttledConfigChange reads the latest array
+      layersRef.current = layersRef.current.map((l) =>
+        l.id === layerId ? { ...l, opacity: clamped } : l
+      );
+      throttledConfigChange?.(layersRef.current);
+      // 3. Guard against server echo-backs
+      markAppearanceActive();
     },
-    [setLayers, throttledConfigChange]
+    [nodeId, layersRef, throttledConfigChange, markAppearanceActive]
   );
 
   const updateLayerRotation = useCallback(
     (layerId: string, degrees: number) => {
-      setLayers((prev) => {
-        const next = prev.map((l) => (l.id === layerId ? { ...l, rotationDegrees: degrees } : l));
-        throttledConfigChange?.(next);
-        return next;
-      });
+      jotaiStore.set(compositorLayerRotationAtom(`${nodeId}:${layerId}`), degrees);
+      layersRef.current = layersRef.current.map((l) =>
+        l.id === layerId ? { ...l, rotationDegrees: degrees } : l
+      );
+      throttledConfigChange?.(layersRef.current);
+      markAppearanceActive();
     },
-    [setLayers, throttledConfigChange]
+    [nodeId, layersRef, throttledConfigChange, markAppearanceActive]
   );
 
   const updateLayerPositionSize = useCallback(
@@ -522,5 +561,6 @@ export function useCompositorOverlays(deps: OverlayDeps) {
     updateImageOverlay,
     removeImageOverlay,
     reorderLayers,
+    appearanceActiveRef,
   };
 }
