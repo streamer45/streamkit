@@ -20,6 +20,8 @@ use crate::permissions::Permissions;
 use crate::state::AppState;
 
 static ACTIVE_CONNECTIONS: AtomicU64 = AtomicU64::new(0);
+/// Monotonically increasing counter for unique connection IDs (never decremented).
+static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(0);
 const DEFAULT_MAX_WS_MESSAGE_BYTES: usize = 1024 * 1024; // 1 MiB
 
 fn max_ws_message_bytes() -> usize {
@@ -148,9 +150,10 @@ pub async fn handle_websocket(
 
     let metrics = WebSocketMetrics::shared();
     // Unique connection ID used for echo suppression (TuneNodeSilent).
-    // The counter doubles as both connection ID and active-connection gauge input.
-    let conn_id = ACTIVE_CONNECTIONS.fetch_add(1, Ordering::Relaxed);
-    let active = conn_id + 1;
+    // NEXT_CONN_ID is monotonically increasing and never decremented, ensuring
+    // IDs are never reused even after connections disconnect.
+    let conn_id = NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed);
+    let active = ACTIVE_CONNECTIONS.fetch_add(1, Ordering::Relaxed) + 1;
     metrics.connections_gauge.record(active, &[]);
 
     let mut event_rx = app_state.event_tx.subscribe();

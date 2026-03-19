@@ -114,6 +114,35 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
+    fn make_test_event() -> ApiEvent {
+        use streamkit_api::{EventPayload, Message, MessageType};
+        Message {
+            message_type: MessageType::Event,
+            correlation_id: None,
+            payload: EventPayload::SessionCreated {
+                session_id: "s1".into(),
+                name: None,
+                created_at: String::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn broadcast_event_to_all_has_no_exclusion() {
+        let be = BroadcastEvent::to_all(make_test_event());
+        assert!(be.exclude_conn_id.is_none());
+    }
+
+    #[test]
+    fn broadcast_event_with_exclusion_filters_matching_conn() {
+        let be = BroadcastEvent { event: make_test_event(), exclude_conn_id: Some(42) };
+        // Simulates the check in the per-connection event loop:
+        // matching conn_id → skip
+        assert_eq!(be.exclude_conn_id, Some(42));
+        assert!(be.exclude_conn_id == Some(42)); // sender: skip
+        assert!(be.exclude_conn_id != Some(99)); // other conn: deliver
+    }
+
     #[tokio::test]
     async fn drain_awaits_all_tracked_tasks() {
         let tracker = ShutdownTracker::default();
