@@ -136,11 +136,7 @@ mod tests {
     #[test]
     fn broadcast_event_with_exclusion_filters_matching_conn() {
         let be = BroadcastEvent { event: make_test_event(), exclude_conn_id: Some(42) };
-        // Simulates the check in the per-connection event loop:
-        // matching conn_id → skip
         assert_eq!(be.exclude_conn_id, Some(42));
-        assert!(be.exclude_conn_id == Some(42)); // sender: skip
-        assert!(be.exclude_conn_id != Some(99)); // other conn: deliver
     }
 
     #[tokio::test]

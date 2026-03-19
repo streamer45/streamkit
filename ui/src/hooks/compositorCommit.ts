@@ -196,6 +196,12 @@ export function useCompositorCommit(opts: UseCompositorCommitOptions): UseCompos
   // Debounced cleanup: clears the flag shortly after the last throttled tick.
   // The delay matches throttleMs so the flag stays true for the full throttle
   // window and is cleared once no more ticks arrive.
+  // NOTE: there is a small theoretical window where the flag clears just before
+  // the server finishes processing the last throttled message and broadcasts
+  // NodeViewDataUpdated.  In practice the server processes tune messages in
+  // sub-millisecond time and the debounce window is ~100ms, so this is
+  // extremely unlikely to manifest.  If it does, increase the delay (e.g.
+  // throttleMs * 1.5).
   const clearThrottleActive = useMemo(
     () =>
       debounce(() => {

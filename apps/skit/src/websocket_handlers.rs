@@ -877,23 +877,30 @@ async fn handle_tune_node(
     Some(ResponsePayload::Success)
 }
 
-/// Handle async node tuning (fire-and-forget).
+/// Shared implementation for fire-and-forget node tuning.
+///
+/// Both `TuneNodeAsync` and `TuneNodeSilent` delegate here.  The only
+/// behavioural difference is `exclude_conn_id`: `None` broadcasts to all
+/// clients, `Some(id)` skips the sender (echo suppression).
 ///
 /// Complexity (37/30) is due to: permission check, session lookup, conditional UpdateParams
 /// handling with pipeline update + event broadcast, engine message sending.
 #[allow(clippy::cognitive_complexity)]
-async fn handle_tune_node_async(
+async fn handle_tune_node_fire_and_forget(
     session_id: String,
     node_id: String,
     message: NodeControlMessage,
     app_state: &AppState,
     perms: &Permissions,
     role_name: &str,
+    exclude_conn_id: Option<u64>,
 ) -> Option<ResponsePayload> {
+    let action_label = if exclude_conn_id.is_some() { "TuneNodeSilent" } else { "TuneNodeAsync" };
+
     // Check permission to tune nodes
     if !perms.tune_nodes {
         // For async operations, we don't send a response but we should still log
-        warn!("Permission denied: attempted to tune node without permission via TuneNodeAsync");
+        warn!("Permission denied: attempted to tune node without permission via {action_label}");
         return None;
     }
 
@@ -908,7 +915,7 @@ async fn handle_tune_node_async(
             warn!(
                 session_id = %session_id,
                 role = %role_name,
-                "Permission denied: attempted to tune node in session not owned via TuneNodeAsync"
+                "Permission denied: attempted to tune node in session not owned via {action_label}"
             );
             return None;
         }
@@ -974,12 +981,12 @@ async fn handle_tune_node_async(
                 } else {
                     warn!(
                         node_id = %node_id,
-                        "Attempted to tune params for non-existent node in pipeline model via TuneNodeAsync"
+                        "Attempted to tune params for non-existent node in pipeline model via {action_label}"
                     );
                 }
             } // Lock released here
 
-            // Broadcast event to all clients
+            // Broadcast event — exclude_conn_id controls whether the sender is skipped.
             let event = ApiEvent {
                 message_type: MessageType::Event,
                 correlation_id: None,
@@ -989,7 +996,7 @@ async fn handle_tune_node_async(
                     params: params.clone(),
                 },
             };
-            if let Err(e) = app_state.event_tx.send(BroadcastEvent::to_all(event)) {
+            if let Err(e) = app_state.event_tx.send(BroadcastEvent { event, exclude_conn_id }) {
                 error!("Failed to broadcast NodeParamsChanged event: {}", e);
             }
         }
@@ -997,19 +1004,30 @@ async fn handle_tune_node_async(
         let control_msg = EngineControlMessage::TuneNode { node_id, message };
         session.send_control_message(control_msg).await;
     } else {
-        warn!("Could not tune non-existent session '{}' via TuneNodeAsync", session_id);
+        warn!("Could not tune non-existent session '{session_id}' via {action_label}");
     }
     None // Do not send a response
 }
 
-/// Handle silent node tuning — fire-and-forget with echo suppression.
+/// Handle async node tuning (fire-and-forget, broadcasts to all).
+async fn handle_tune_node_async(
+    session_id: String,
+    node_id: String,
+    message: NodeControlMessage,
+    app_state: &AppState,
+    perms: &Permissions,
+    role_name: &str,
+) -> Option<ResponsePayload> {
+    handle_tune_node_fire_and_forget(
+        session_id, node_id, message, app_state, perms, role_name, None,
+    )
+    .await
+}
+
+/// Handle silent node tuning (fire-and-forget, echo suppression).
 ///
-/// Nearly identical to [`handle_tune_node_async`] but broadcasts
-/// `NodeParamsChanged` with `exclude_conn_id` set to the sender's connection
-/// ID.  The per-connection event loop in `handle_websocket` skips the event
-/// for that connection, preventing stale echo-backs during high-frequency
-/// slider drags.
-#[allow(clippy::cognitive_complexity)]
+/// Broadcasts `NodeParamsChanged` to all clients *except* the sender,
+/// preventing stale echo-backs during high-frequency slider drags.
 async fn handle_tune_node_silent(
     session_id: String,
     node_id: String,
@@ -1019,117 +1037,16 @@ async fn handle_tune_node_silent(
     role_name: &str,
     conn_id: u64,
 ) -> Option<ResponsePayload> {
-    // Check permission to tune nodes
-    if !perms.tune_nodes {
-        warn!("Permission denied: attempted to tune node without permission via TuneNodeSilent");
-        return None;
-    }
-
-    let session = {
-        let session_manager = app_state.session_manager.lock().await;
-        session_manager.get_session_by_name_or_id(&session_id)
-    }; // Session manager lock released here
-
-    if let Some(session) = session {
-        // Check ownership
-        if !can_access_session(&session, role_name, perms) {
-            warn!(
-                session_id = %session_id,
-                role = %role_name,
-                "Permission denied: attempted to tune node in session not owned via TuneNodeSilent"
-            );
-            return None;
-        }
-
-        // Handle UpdateParams specially for pipeline model updates and event broadcasting
-        if let NodeControlMessage::UpdateParams(ref params) = message {
-            let (kind, file_path, script_path) = {
-                let pipeline = session.pipeline.lock().await;
-                let kind = pipeline.nodes.get(&node_id).map(|n| n.kind.clone());
-                let file_path =
-                    params.get("path").and_then(serde_json::Value::as_str).map(str::to_string);
-                let script_path = params
-                    .get("script_path")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string);
-                drop(pipeline);
-                (kind, file_path, script_path)
-            };
-
-            let file_path = file_path.as_deref();
-            let script_path = script_path.as_deref();
-
-            if kind.as_deref() == Some("core::file_reader") {
-                let Some(path) = file_path else {
-                    warn!("Invalid file_reader params: expected params.path to be a string");
-                    return None;
-                };
-                if let Err(e) = file_security::validate_file_path(path, &app_state.config.security)
-                {
-                    warn!("Invalid file path: {e}");
-                    return None;
-                }
-            }
-
-            if kind.as_deref() == Some("core::file_writer") {
-                if let Some(path) = file_path {
-                    if let Err(e) =
-                        file_security::validate_write_path(path, &app_state.config.security)
-                    {
-                        warn!("Invalid write path: {e}");
-                        return None;
-                    }
-                }
-            }
-
-            if kind.as_deref() == Some("core::script") {
-                if let Some(path) = script_path {
-                    if !path.trim().is_empty() {
-                        if let Err(e) =
-                            file_security::validate_file_path(path, &app_state.config.security)
-                        {
-                            warn!("Invalid script_path: {e}");
-                            return None;
-                        }
-                    }
-                }
-            }
-
-            {
-                let mut pipeline = session.pipeline.lock().await;
-                if let Some(node) = pipeline.nodes.get_mut(&node_id) {
-                    node.params = Some(params.clone());
-                } else {
-                    warn!(
-                        node_id = %node_id,
-                        "Attempted to tune params for non-existent node in pipeline model via TuneNodeSilent"
-                    );
-                }
-            } // Lock released here
-
-            // Broadcast event to all clients EXCEPT the sender (echo suppression).
-            let event = ApiEvent {
-                message_type: MessageType::Event,
-                correlation_id: None,
-                payload: EventPayload::NodeParamsChanged {
-                    session_id: session.id.clone(),
-                    node_id: node_id.clone(),
-                    params: params.clone(),
-                },
-            };
-            if let Err(e) =
-                app_state.event_tx.send(BroadcastEvent { event, exclude_conn_id: Some(conn_id) })
-            {
-                error!("Failed to broadcast NodeParamsChanged event: {}", e);
-            }
-        }
-
-        let control_msg = EngineControlMessage::TuneNode { node_id, message };
-        session.send_control_message(control_msg).await;
-    } else {
-        warn!("Could not tune non-existent session '{}' via TuneNodeSilent", session_id);
-    }
-    None // Do not send a response
+    handle_tune_node_fire_and_forget(
+        session_id,
+        node_id,
+        message,
+        app_state,
+        perms,
+        role_name,
+        Some(conn_id),
+    )
+    .await
 }
 
 async fn handle_get_pipeline(
