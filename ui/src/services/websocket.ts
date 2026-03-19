@@ -10,6 +10,7 @@ import {
   writeNodeViewData,
   writeSessionConnected,
   clearSessionAtoms,
+  resetSessionParams,
   writeNodeParams,
 } from '@/stores/sessionAtoms';
 import { useSessionStore } from '@/stores/sessionStore';
@@ -451,6 +452,7 @@ export class WebSocketService {
     // Keep the session entry so the Monitor session list can display the latest known status
     // even when a session is not actively selected/subscribed.
     writeSessionConnected(sessionId, false);
+    resetSessionParams(sessionId);
     useSessionStore.getState().setConnected(sessionId, false);
   }
 

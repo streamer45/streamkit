@@ -79,6 +79,16 @@ export function clearNodeParams(nodeId: string, sessionId?: string): void {
   nodeParamsAtom.remove(k);
 }
 
+/** Reset all node params for a session (e.g. on unsubscribe).
+ *  Sets atoms to empty objects but does NOT remove from the cache —
+ *  the session may be resubscribed and the atoms reused. */
+export function resetSessionParams(sessionId: string): void {
+  const prefix = `${sessionId}\0`;
+  for (const key of [...nodeParamsAtom.getParams()].filter((k) => k.startsWith(prefix))) {
+    sessionStore.set(nodeParamsAtom(key), {});
+  }
+}
+
 // ── Per-session connected atom ──────────────────────────────────────────────
 
 export const sessionConnectedAtom = atomFamily((_sessionId: string) => atom(false));
