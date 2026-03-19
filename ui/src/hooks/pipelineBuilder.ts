@@ -10,7 +10,7 @@
 
 import type { Node, Edge } from '@xyflow/react';
 
-import { useNodeParamsStore } from '@/stores/nodeParamsStore';
+import { sessionStore as defaultSessionStore, nodeParamsAtom } from '@/stores/sessionAtoms';
 import type { EngineMode } from '@/utils/yamlPipeline';
 
 type EditorNodeData = {
@@ -129,7 +129,7 @@ export function buildPipelineForYaml(
       };
     }
 
-    const overrides = useNodeParamsStore.getState().paramsById[node.id];
+    const overrides = defaultSessionStore.get(nodeParamsAtom(node.id));
     const mergedParams = { ...(node.data.params || {}), ...(overrides || {}) };
     if (Object.keys(mergedParams).length > 0) {
       nodeConfig['params'] = mergedParams;

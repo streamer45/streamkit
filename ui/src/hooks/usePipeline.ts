@@ -7,9 +7,13 @@ import { dump } from 'js-yaml';
 import { useState, useEffect, useRef, useCallback } from 'react';
 
 import { useToast } from '@/context/ToastContext';
-import { useNodeParamsStore } from '@/stores/nodeParamsStore';
 import { useSchemaStore } from '@/stores/schemaStore';
-import { writeNodeParam, clearNodeParams } from '@/stores/sessionAtoms';
+import {
+  sessionStore as defaultSessionStore,
+  nodeParamsAtom,
+  writeNodeParam,
+  clearNodeParams,
+} from '@/stores/sessionAtoms';
 import { hooksLogger } from '@/utils/logger';
 import { parseYamlToPipeline, type EngineMode } from '@/utils/yamlPipeline';
 
@@ -95,32 +99,22 @@ export const usePipeline = () => {
     [setNodes, toast]
   );
 
-  const setParam = useNodeParamsStore((s) => s.setParam);
-  const resetNode = useNodeParamsStore((s) => s.resetNode);
-
   // Ref to hold the latest regenerateYamlFromCanvas without adding it as
   // a dependency of handleParamChange (which would cause identity churn).
   const regenerateYamlRef = useRef<() => void>(() => {});
 
-  const handleParamChange = useCallback(
-    (nodeId: string, paramName: string, value: unknown) => {
-      // Jotai: fine-grained per-node atom
-      writeNodeParam(nodeId, paramName, value);
-      // TODO(jotai-cleanup): remove Zustand write after remaining consumers migrate
-      // Zustand: keep for consumers that still read from Zustand
-      setParam(nodeId, paramName, value);
-      // Keep the YAML editor in sync with param changes made via the canvas
-      // (e.g. compositor layer drag / slider). The guard prevents a feedback
-      // loop when YAML editing triggers parseYamlToPipeline which stores the
-      // onParamChange callback inside node data but never calls it inline.
-      // We defer via queueMicrotask to avoid calling setState (setYamlString)
-      // while React is still rendering the component that triggered this change.
-      if (updateSourceRef.current !== 'yaml') {
-        queueMicrotask(() => regenerateYamlRef.current());
-      }
-    },
-    [setParam]
-  );
+  const handleParamChange = useCallback((nodeId: string, paramName: string, value: unknown) => {
+    writeNodeParam(nodeId, paramName, value);
+    // Keep the YAML editor in sync with param changes made via the canvas
+    // (e.g. compositor layer drag / slider). The guard prevents a feedback
+    // loop when YAML editing triggers parseYamlToPipeline which stores the
+    // onParamChange callback inside node data but never calls it inline.
+    // We defer via queueMicrotask to avoid calling setState (setYamlString)
+    // while React is still rendering the component that triggered this change.
+    if (updateSourceRef.current !== 'yaml') {
+      queueMicrotask(() => regenerateYamlRef.current());
+    }
+  }, []);
 
   const regenerateYamlFromCanvas = useCallback(
     (snapshot?: {
@@ -190,7 +184,6 @@ export const usePipeline = () => {
 
     result.nodes.forEach((node) => {
       clearNodeParams(node.id);
-      resetNode(node.id);
     });
 
     setNodes(result.nodes);
@@ -238,7 +231,6 @@ export const usePipeline = () => {
 
         result.nodes.forEach((node) => {
           clearNodeParams(node.id);
-          resetNode(node.id);
         });
 
         setNodes(result.nodes);
@@ -251,7 +243,7 @@ export const usePipeline = () => {
         }, 100);
       }, 500);
     },
-    [nodeDefinitions, handleParamChange, handleLabelChange, setNodes, setEdges, setMode, resetNode]
+    [nodeDefinitions, handleParamChange, handleLabelChange, setNodes, setEdges, setMode]
   );
 
   useEffect(() => {
@@ -351,7 +343,7 @@ export const usePipeline = () => {
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { onParamChange, onLabelChange, ...restData } = node.data as EditorNodeData;
 
-      const liveOverrides = useNodeParamsStore.getState().paramsById[node.id];
+      const liveOverrides = defaultSessionStore.get(nodeParamsAtom(node.id));
       const mergedParams = { ...(restData.params || {}), ...(liveOverrides || {}) };
 
       return {

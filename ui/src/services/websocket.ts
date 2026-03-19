@@ -4,7 +4,6 @@
 
 import { v4 as uuidv4 } from 'uuid';
 
-import { useNodeParamsStore } from '@/stores/nodeParamsStore';
 import {
   batchWriteNodeStates,
   batchWriteNodeStats,
@@ -233,7 +232,6 @@ export class WebSocketService {
     this.pendingNodeStats.delete(payload.session_id);
     clearSessionAtoms(payload.session_id);
     useSessionStore.getState().clearSession(payload.session_id);
-    useNodeParamsStore.getState().resetSession(payload.session_id);
     useTelemetryStore.getState().clearSession(payload.session_id);
   }
 
@@ -316,13 +314,7 @@ export class WebSocketService {
     // Batch all param updates into a single store update to avoid
     // N intermediate states and N selector re-evaluations.
     if (params && typeof params === 'object' && !Array.isArray(params)) {
-      // Jotai: fine-grained per-node atom
       writeNodeParams(node_id, params as Record<string, unknown>, session_id);
-      // TODO(jotai-cleanup): remove Zustand write after remaining consumers migrate
-      // Zustand: keep for consumers that still read from Zustand
-      useNodeParamsStore
-        .getState()
-        .setParams(node_id, params as Record<string, unknown>, session_id);
     }
   }
 
@@ -460,7 +452,6 @@ export class WebSocketService {
     // even when a session is not actively selected/subscribed.
     writeSessionConnected(sessionId, false);
     useSessionStore.getState().setConnected(sessionId, false);
-    useNodeParamsStore.getState().resetSession(sessionId);
   }
 
   onMessage(handler: MessageHandler): () => void {

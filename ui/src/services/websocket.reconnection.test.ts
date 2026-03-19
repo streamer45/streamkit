@@ -9,7 +9,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-import { useNodeParamsStore } from '@/stores/nodeParamsStore';
 import { useSessionStore } from '@/stores/sessionStore';
 
 import { WebSocketService } from './websocket';
@@ -78,7 +77,6 @@ describe('WebSocketService reconnection', () => {
 
   beforeEach(() => {
     useSessionStore.setState({ sessions: new Map() });
-    useNodeParamsStore.setState({ paramsById: {} });
     global.WebSocket = MockWebSocket as unknown as typeof WebSocket;
 
     if (typeof globalThis.window === 'undefined') {
@@ -253,7 +251,6 @@ describe('WebSocketService reconnection', () => {
   describe('timer-dependent tests', () => {
     it('should timeout request after 5 seconds', async () => {
       useSessionStore.setState({ sessions: new Map() });
-      useNodeParamsStore.setState({ paramsById: {} });
 
       vi.useFakeTimers();
 
@@ -287,7 +284,6 @@ describe('WebSocketService reconnection', () => {
 
     it('should cancel reconnection timeout on close', async () => {
       useSessionStore.setState({ sessions: new Map() });
-      useNodeParamsStore.setState({ paramsById: {} });
 
       vi.useFakeTimers();
 

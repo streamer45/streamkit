@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-import { useNodeParamsStore } from '@/stores/nodeParamsStore';
+import { sessionStore, nodeParamsAtom, nodeKey } from '@/stores/sessionAtoms';
 import { useSessionStore } from '@/stores/sessionStore';
 import type { Response, Event as WsEvent } from '@/types/types';
 
@@ -68,7 +68,6 @@ describe('WebSocketService', () => {
   beforeEach(() => {
     // Reset stores
     useSessionStore.setState({ sessions: new Map() });
-    useNodeParamsStore.setState({ paramsById: {} });
 
     // Mock WebSocket globally
     global.WebSocket = MockWebSocket as unknown as typeof WebSocket;
@@ -270,8 +269,8 @@ describe('WebSocketService', () => {
       const ws = service['ws']! as unknown as MockWebSocket;
       ws.simulateMessage(JSON.stringify(event));
 
-      // Should update nodeParamsStore (uses paramsById, not params)
-      const nodeParams = useNodeParamsStore.getState().getParamsForNode('node-1', 'session-1');
+      // Should update Jotai nodeParamsAtom
+      const nodeParams = sessionStore.get(nodeParamsAtom(nodeKey('session-1', 'node-1')));
       expect(nodeParams).toEqual(params);
     });
 
@@ -302,8 +301,10 @@ describe('WebSocketService', () => {
         } satisfies WsEvent)
       );
 
-      expect(useNodeParamsStore.getState().getParam('gain', 'gain', 'session-a')).toBe(0.5);
-      expect(useNodeParamsStore.getState().getParam('gain', 'gain', 'session-b')).toBe(2.0);
+      const paramsA = sessionStore.get(nodeParamsAtom(nodeKey('session-a', 'gain')));
+      expect(paramsA.gain).toBe(0.5);
+      const paramsB = sessionStore.get(nodeParamsAtom(nodeKey('session-b', 'gain')));
+      expect(paramsB.gain).toBe(2.0);
     });
 
     it('should handle nodeadded event', () => {

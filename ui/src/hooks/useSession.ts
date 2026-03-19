@@ -9,7 +9,6 @@ import { v4 as uuidv4 } from 'uuid';
 
 import { fetchApi } from '@/services/base';
 import { getWebSocketService } from '@/services/websocket';
-import { useNodeParamsStore } from '@/stores/nodeParamsStore';
 import {
   sessionConnectedAtom,
   seedPipelineAtoms,
@@ -72,11 +71,7 @@ export function useSession(sessionId: string | null) {
     (nodeId: string, param: string, value: unknown) => {
       if (!sessionId) return;
 
-      // Jotai: fine-grained per-node atom
       writeNodeParam(nodeId, param, value, sessionId);
-      // TODO(jotai-cleanup): remove Zustand write after remaining consumers migrate
-      // Zustand: keep for consumers that still read from Zustand
-      useNodeParamsStore.getState().setParam(nodeId, param, value, sessionId);
 
       const request: Request = {
         type: 'request' as MessageType,
@@ -104,11 +99,7 @@ export function useSession(sessionId: string | null) {
     (nodeId: string, config: Record<string, unknown>) => {
       if (!sessionId) return;
 
-      // Jotai: fine-grained per-node atom
       writeNodeParams(nodeId, config, sessionId);
-      // TODO(jotai-cleanup): remove Zustand write after remaining consumers migrate
-      // Zustand: keep for consumers that still read from Zustand
-      useNodeParamsStore.getState().setParams(nodeId, config, sessionId);
 
       const request: Request = {
         type: 'request' as MessageType,
