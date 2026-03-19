@@ -209,6 +209,20 @@ pub enum RequestPayload {
         /// The control message (typically UpdateParams)
         message: NodeControlMessage,
     },
+    /// Fire-and-forget node tuning with echo suppression.
+    ///
+    /// Identical to `TuneNodeAsync` but the server broadcasts
+    /// `NodeParamsChanged` to all clients **except** the originating
+    /// WebSocket connection.  Used during high-frequency slider drags to
+    /// prevent stale echo-backs from overwriting the sender's local state.
+    TuneNodeSilent {
+        /// The session ID containing the node
+        session_id: String,
+        /// The node ID to send the message to
+        node_id: String,
+        /// The control message (typically UpdateParams)
+        message: NodeControlMessage,
+    },
     /// Get the current pipeline state for a session
     GetPipeline {
         /// The session ID to query

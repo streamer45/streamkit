@@ -37,7 +37,6 @@ import {
   getLayersFromStore,
   getTextOverlaysFromStore,
   isDraggingAtom,
-  isSliderActiveAtom,
   selectedLayerIdAtom,
   setImageOverlaysInStore,
   setLayersInStore,
@@ -79,6 +78,8 @@ export interface UseCompositorLayersOptions {
   canvasHeight: number;
   params: Record<string, unknown>;
   onConfigChange?: (nodeId: string, config: Record<string, unknown>) => void;
+  /** Silent config change: broadcasts to other clients only (no echo-back). */
+  onConfigChangeSilent?: (nodeId: string, config: Record<string, unknown>) => void;
   onParamChange?: (nodeId: string, paramName: string, value: unknown) => void;
   throttleMs?: number;
 }
@@ -137,6 +138,7 @@ export const useCompositorLayers = (
     canvasHeight,
     params,
     onConfigChange,
+    onConfigChangeSilent,
     onParamChange,
     throttleMs = PARAM_THROTTLE_MS,
   } = options;
@@ -214,13 +216,6 @@ export const useCompositorLayers = (
   useEffect(() => {
     const unsub1 = store.sub(selectedLayerIdAtom, () => {
       setSelectedLayerIdState(store.get(selectedLayerIdAtom));
-      // Safety net: clear slider-active flag when selection changes.
-      // If a slider component unmounts mid-drag (layer deselected, removed,
-      // or Escape pressed), onValueCommit never fires and the flag would
-      // remain stuck, permanently blocking echo-back sync.
-      if (store.get(isSliderActiveAtom)) {
-        store.set(isSliderActiveAtom, false);
-      }
     });
     const unsub2 = store.sub(isDraggingAtom, () => {
       setIsDraggingState(store.get(isDraggingAtom));
@@ -267,6 +262,22 @@ export const useCompositorLayers = (
   }>({ vertical: null, horizontal: null });
   const dragStateRef = useRef<DragState | null>(null);
 
+  // ── Commit / persistence ───────────────────────────────────────────────────
+  // Hoisted above sync-from-props so throttleActiveRef is available to the
+  // echo-back guards.
+  const { commitAdapter, throttledConfigChange, throttledOverlayCommit, throttleActiveRef } =
+    useCompositorCommit({
+      nodeId,
+      onConfigChange,
+      onConfigChangeSilent,
+      onParamChange,
+      throttleMs,
+      paramsRef,
+      layersRef,
+      textOverlaysRef,
+      imageOverlaysRef,
+    });
+
   // ── Sync from props ─────────────────────────────────────────────────────
   // In Monitor view (sessionId is set), the server's view data is the source
   // of truth for geometry.  The "sync from props" effect must NOT overwrite
@@ -274,11 +285,11 @@ export const useCompositorLayers = (
   const isMonitorView = !!sessionId;
 
   useEffect(() => {
-    // Skip echo-back processing during drag/resize or active slider interaction.
-    // Atoms already have the latest local value; echo-backs carry stale data.
-    // Reconciliation happens automatically when the slider commits (isSliderActive
-    // flips to false → next params change triggers this effect without the guard).
-    if (dragStateRef.current || store.get(isSliderActiveAtom)) return;
+    // Skip echo-back processing during drag/resize or active throttled slider
+    // sends — atoms already have the latest local value; echo-backs carry stale
+    // data.  TuneNodeSilent suppresses NodeParamsChanged server-side, but
+    // NodeViewDataUpdated is still broadcast to all clients, so we guard here.
+    if (dragStateRef.current || throttleActiveRef.current) return;
     const parsed = parseLayers(params, canvasWidth, canvasHeight);
     const currentLayers = getLayersFromStore(store);
 
@@ -314,7 +325,7 @@ export const useCompositorLayers = (
   }, [params, canvasWidth, canvasHeight, isMonitorView, store]);
 
   // ── Server-driven layout (Monitor view only) ───────────────────────────
-  useServerLayoutSync(sessionId, nodeId, store, dragStateRef);
+  useServerLayoutSync(sessionId, nodeId, store, dragStateRef, throttleActiveRef);
 
   // ── Find layer across all types ─────────────────────────────────────────
   const findAnyLayer = useCallback(
@@ -347,18 +358,6 @@ export const useCompositorLayers = (
     },
     []
   );
-
-  // ── Commit / persistence ───────────────────────────────────────────────────
-  const { commitAdapter, throttledConfigChange, throttledOverlayCommit } = useCompositorCommit({
-    nodeId,
-    onConfigChange,
-    onParamChange,
-    throttleMs,
-    paramsRef,
-    layersRef,
-    textOverlaysRef,
-    imageOverlaysRef,
-  });
 
   // ── Overlay CRUD, property updates, reorder ─────────────────────────────
   const overlayOps = useCompositorOverlays({

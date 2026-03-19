@@ -1778,7 +1778,7 @@ async fn create_session_handler(
             created_at: created_at_str.clone(),
         },
     };
-    if app_state.event_tx.send(event).is_err() {
+    if app_state.event_tx.send(crate::state::BroadcastEvent::to_all(event)).is_err() {
         debug!("No WebSocket clients connected to receive SessionCreated event");
     }
 
@@ -1877,7 +1877,7 @@ async fn destroy_session_handler(
         correlation_id: None,
         payload: EventPayload::SessionDestroyed { session_id: destroyed_id.clone() },
     };
-    if let Err(e) = app_state.event_tx.send(event) {
+    if let Err(e) = app_state.event_tx.send(crate::state::BroadcastEvent::to_all(event)) {
         error!("Failed to broadcast SessionDestroyed event: {}", e);
     }
 

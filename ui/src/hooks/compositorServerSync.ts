@@ -11,10 +11,14 @@
  * Jotai atom state in sync without unnecessary re-renders.
  *
  * With Jotai atoms, only the specific layer atoms that actually changed get new
- * values — other layers and their subscribed components are unaffected.  The
- * sliderActiveRef guard is no longer needed because atom-level writes during
- * slider drags are immediately overwritten by the next slider tick; any brief
- * echo-back regression is imperceptible.
+ * values — other layers and their subscribed components are unaffected.
+ *
+ * During slider drags the client sends `TuneNodeSilent` which suppresses
+ * `NodeParamsChanged` echo-back server-side.  However, `NodeViewDataUpdated`
+ * is still broadcast to all clients (the engine doesn't track the originating
+ * connection), so a lightweight client-side guard (`throttleActiveRef`) skips
+ * view-data updates while a throttled silent send is in-flight.  Pointer-driven
+ * drag/resize uses the existing `dragStateRef` guard.
  */
 
 import { useEffect } from 'react';
@@ -35,7 +39,6 @@ import {
   getImageOverlaysFromStore,
   getLayersFromStore,
   getTextOverlaysFromStore,
-  isSliderActiveAtom,
   setImageOverlaysInStore,
   setLayersInStore,
   setTextOverlaysInStore,
@@ -169,16 +172,20 @@ export function useServerLayoutSync(
   sessionId: string | undefined,
   nodeId: string,
   store: CompositorStore,
-  dragStateRef: React.MutableRefObject<unknown>
+  dragStateRef: React.MutableRefObject<unknown>,
+  throttleActiveRef: React.MutableRefObject<boolean>
 ): void {
   useEffect(() => {
     if (!sessionId) return;
 
     const applyServerLayout = (viewData: unknown) => {
       if (!viewData || typeof viewData !== 'object') return;
-      // Skip during drag/resize or active slider interaction to avoid
+      // Skip during drag/resize or active throttled slider sends to avoid
       // server echo-backs overwriting in-flight local atom values.
-      if (dragStateRef.current || store.get(isSliderActiveAtom)) return;
+      // TuneNodeSilent suppresses NodeParamsChanged server-side, but
+      // NodeViewDataUpdated is still broadcast to all clients, so we guard
+      // against stale view-data here.
+      if (dragStateRef.current || throttleActiveRef.current) return;
 
       const layout = viewData as CompositorLayout;
       if (!Array.isArray(layout.layers)) return;
@@ -213,5 +220,5 @@ export function useServerLayoutSync(
       applyServerLayout(defaultSessionStore.get(viewDataAtom));
     });
     return unsubscribe;
-  }, [sessionId, nodeId, store, dragStateRef]);
+  }, [sessionId, nodeId, store, dragStateRef, throttleActiveRef]);
 }

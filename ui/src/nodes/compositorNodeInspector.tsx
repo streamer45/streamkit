@@ -16,13 +16,12 @@
  * RotationControl or MirrorControl.
  */
 
-import { useAtomValue, useSetAtom } from 'jotai/react';
+import { useAtomValue } from 'jotai/react';
 import React, { useCallback, useMemo, useRef } from 'react';
 
 import {
   selectedLayerIdAtom,
   selectedLayerKindAtom,
-  isSliderActiveAtom,
   layerAtoms,
   layerOpacityAtom,
   layerRotationAtom,
@@ -358,8 +357,6 @@ const ConnectedOpacityControl: React.FC<{
   onChange: (v: number) => void;
   disabled: boolean;
 }> = React.memo(({ selectedLayerId, selectedLayerKind, onChange, disabled }) => {
-  const setSliderActive = useSetAtom(isSliderActiveAtom);
-
   const videoOpacity = useAtomValue(
     selectedLayerKind === 'video' ? layerOpacityAtom(selectedLayerId) : nullOpacityAtom
   );
@@ -375,18 +372,7 @@ const ConnectedOpacityControl: React.FC<{
       ? videoOpacity
       : (textOverlay?.opacity ?? imageOverlay?.opacity ?? 1);
 
-  const handleSliderStart = useCallback(() => setSliderActive(true), [setSliderActive]);
-  const handleSliderEnd = useCallback(() => setSliderActive(false), [setSliderActive]);
-
-  return (
-    <OpacityControl
-      opacity={opacity}
-      onChange={onChange}
-      onSliderStart={handleSliderStart}
-      onSliderEnd={handleSliderEnd}
-      disabled={disabled}
-    />
-  );
+  return <OpacityControl opacity={opacity} onChange={onChange} disabled={disabled} />;
 });
 ConnectedOpacityControl.displayName = 'ConnectedOpacityControl';
 
@@ -396,8 +382,6 @@ const ConnectedRotationControl: React.FC<{
   onChange: (v: number) => void;
   disabled: boolean;
 }> = React.memo(({ selectedLayerId, selectedLayerKind, onChange, disabled }) => {
-  const setSliderActive = useSetAtom(isSliderActiveAtom);
-
   const videoRotation = useAtomValue(
     selectedLayerKind === 'video' ? layerRotationAtom(selectedLayerId) : nullRotationAtom
   );
@@ -413,17 +397,8 @@ const ConnectedRotationControl: React.FC<{
       ? videoRotation
       : (textOverlay?.rotationDegrees ?? imageOverlay?.rotationDegrees ?? 0);
 
-  const handleSliderStart = useCallback(() => setSliderActive(true), [setSliderActive]);
-  const handleSliderEnd = useCallback(() => setSliderActive(false), [setSliderActive]);
-
   return (
-    <RotationControl
-      rotationDegrees={rotationDegrees}
-      onChange={onChange}
-      onSliderStart={handleSliderStart}
-      onSliderEnd={handleSliderEnd}
-      disabled={disabled}
-    />
+    <RotationControl rotationDegrees={rotationDegrees} onChange={onChange} disabled={disabled} />
   );
 });
 ConnectedRotationControl.displayName = 'ConnectedRotationControl';

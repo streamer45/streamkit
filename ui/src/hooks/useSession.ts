@@ -119,6 +119,33 @@ export function useSession(sessionId: string | null) {
     [sessionId, wsService]
   );
 
+  // Silent variant: server broadcasts NodeParamsChanged to other clients only
+  // (no echo-back to sender).  Used during high-frequency slider drags to
+  // avoid stale echo-backs overwriting the local atom value.
+  const tuneNodeConfigSilent = useCallback(
+    (nodeId: string, config: Record<string, unknown>) => {
+      if (!sessionId) return;
+
+      writeNodeParams(nodeId, config, sessionId);
+
+      const request: Request = {
+        type: 'request' as MessageType,
+        correlation_id: uuidv4(),
+        payload: {
+          action: 'tunenodesilent' as const,
+          session_id: sessionId,
+          node_id: nodeId,
+          message: {
+            UpdateParams: config,
+          },
+        },
+      };
+
+      wsService.sendFireAndForget(request);
+    },
+    [sessionId, wsService]
+  );
+
   const addNode = useCallback(
     (nodeId: string, kind: string, params: Record<string, unknown> = {}) => {
       if (!sessionId) return;
@@ -230,6 +257,7 @@ export function useSession(sessionId: string | null) {
     error: pipelineQuery.error,
     tuneNode,
     tuneNodeConfig,
+    tuneNodeConfigSilent,
     addNode,
     removeNode,
     connectPins,

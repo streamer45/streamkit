@@ -5,6 +5,7 @@
 //! server/src/session.rs: Manages live, dynamic pipeline sessions.
 
 use crate::config::Config;
+use crate::state::BroadcastEvent;
 use opentelemetry::global;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -174,7 +175,7 @@ impl Session {
         engine: &Engine,
         config: &Config,
         name: Option<String>,
-        event_tx: broadcast::Sender<ApiEvent>,
+        event_tx: broadcast::Sender<BroadcastEvent>,
         created_by: Option<String>,
     ) -> Result<Self, String> {
         let session_id = Uuid::new_v4().to_string();
@@ -232,7 +233,7 @@ impl Session {
                 };
                 // broadcast::send() returns Err when there are no active receivers,
                 // but that's okay - just keep forwarding for when clients connect
-                let _ = event_tx_for_state.send(event);
+                let _ = event_tx_for_state.send(BroadcastEvent::to_all(event));
             }
             tracing::debug!(session_id = %session_id_for_state, "State forwarding task ended");
         });
@@ -254,7 +255,7 @@ impl Session {
                 };
                 // broadcast::send() returns Err when there are no active receivers,
                 // but that's okay - just keep forwarding for when clients connect
-                let _ = event_tx_for_statistics.send(event);
+                let _ = event_tx_for_statistics.send(BroadcastEvent::to_all(event));
             }
             tracing::debug!(
                 session_id = %session_id_for_statistics,
@@ -283,7 +284,7 @@ impl Session {
                         timestamp: system_time_to_rfc3339(update.timestamp),
                     },
                 };
-                let _ = event_tx_for_view_data.send(event);
+                let _ = event_tx_for_view_data.send(BroadcastEvent::to_all(event));
             }
             tracing::debug!(
                 session_id = %session_id_for_view_data,
@@ -312,7 +313,7 @@ impl Session {
                 );
                 // broadcast::send() returns Err when there are no active receivers,
                 // but that's okay - just keep forwarding for when clients connect
-                let _ = event_tx_for_telemetry.send(event);
+                let _ = event_tx_for_telemetry.send(BroadcastEvent::to_all(event));
             }
             tracing::debug!(
                 session_id = %session_id_for_telemetry,

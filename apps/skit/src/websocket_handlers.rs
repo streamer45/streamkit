@@ -10,7 +10,7 @@
 use crate::file_security;
 use crate::permissions::Permissions;
 use crate::session::Session;
-use crate::state::AppState;
+use crate::state::{AppState, BroadcastEvent};
 use opentelemetry::global;
 use streamkit_api::{
     Event as ApiEvent, EventPayload, MessageType, RequestPayload, ResponsePayload,
@@ -40,6 +40,7 @@ pub async fn handle_request_payload(
     perms: &Permissions,
     role_name: &str,
     correlation_id: Option<String>,
+    conn_id: u64,
 ) -> Option<ResponsePayload> {
     match payload {
         RequestPayload::CreateSession { name } => {
@@ -73,6 +74,12 @@ pub async fn handle_request_payload(
         },
         RequestPayload::TuneNodeAsync { session_id, node_id, message } => {
             handle_tune_node_async(session_id, node_id, message, app_state, perms, role_name).await
+        },
+        RequestPayload::TuneNodeSilent { session_id, node_id, message } => {
+            handle_tune_node_silent(
+                session_id, node_id, message, app_state, perms, role_name, conn_id,
+            )
+            .await
         },
         RequestPayload::GetPipeline { session_id } => {
             handle_get_pipeline(session_id, app_state, perms, role_name).await
@@ -163,7 +170,7 @@ async fn handle_create_session(
             created_at: created_at_str.clone(),
         },
     };
-    if app_state.event_tx.send(event).is_err() {
+    if app_state.event_tx.send(BroadcastEvent::to_all(event)).is_err() {
         debug!("No WebSocket clients connected to receive SessionCreated event");
     }
 
@@ -233,7 +240,7 @@ async fn handle_destroy_session(
         correlation_id: None,
         payload: EventPayload::SessionDestroyed { session_id: destroyed_id.clone() },
     };
-    if let Err(e) = app_state.event_tx.send(event) {
+    if let Err(e) = app_state.event_tx.send(BroadcastEvent::to_all(event)) {
         error!("Failed to broadcast SessionDestroyed event: {}", e);
     }
 
@@ -532,7 +539,7 @@ async fn handle_add_node(
             params: params.clone(),
         },
     };
-    if let Err(e) = app_state.event_tx.send(event) {
+    if let Err(e) = app_state.event_tx.send(BroadcastEvent::to_all(event)) {
         error!("Failed to broadcast NodeAdded event: {}", e);
     }
 
@@ -590,7 +597,7 @@ async fn handle_remove_node(
             node_id: node_id.clone(),
         },
     };
-    if let Err(e) = app_state.event_tx.send(event) {
+    if let Err(e) = app_state.event_tx.send(BroadcastEvent::to_all(event)) {
         error!("Failed to broadcast NodeRemoved event: {}", e);
     }
 
@@ -661,7 +668,7 @@ async fn handle_connect(
             to_pin: to_pin.clone(),
         },
     };
-    if let Err(e) = app_state.event_tx.send(event) {
+    if let Err(e) = app_state.event_tx.send(BroadcastEvent::to_all(event)) {
         error!("Failed to broadcast ConnectionAdded event: {}", e);
     }
 
@@ -740,7 +747,7 @@ async fn handle_disconnect(
             to_pin: to_pin.clone(),
         },
     };
-    if let Err(e) = app_state.event_tx.send(event) {
+    if let Err(e) = app_state.event_tx.send(BroadcastEvent::to_all(event)) {
         error!("Failed to broadcast ConnectionRemoved event: {}", e);
     }
 
@@ -859,7 +866,7 @@ async fn handle_tune_node(
                 params: params.clone(),
             },
         };
-        if let Err(e) = app_state.event_tx.send(event) {
+        if let Err(e) = app_state.event_tx.send(BroadcastEvent::to_all(event)) {
             error!("Failed to broadcast NodeParamsChanged event: {}", e);
         }
     }
@@ -870,23 +877,30 @@ async fn handle_tune_node(
     Some(ResponsePayload::Success)
 }
 
-/// Handle async node tuning (fire-and-forget).
+/// Shared implementation for fire-and-forget node tuning.
+///
+/// Both `TuneNodeAsync` and `TuneNodeSilent` delegate here.  The only
+/// behavioural difference is `exclude_conn_id`: `None` broadcasts to all
+/// clients, `Some(id)` skips the sender (echo suppression).
 ///
 /// Complexity (37/30) is due to: permission check, session lookup, conditional UpdateParams
 /// handling with pipeline update + event broadcast, engine message sending.
 #[allow(clippy::cognitive_complexity)]
-async fn handle_tune_node_async(
+async fn handle_tune_node_fire_and_forget(
     session_id: String,
     node_id: String,
     message: NodeControlMessage,
     app_state: &AppState,
     perms: &Permissions,
     role_name: &str,
+    exclude_conn_id: Option<u64>,
 ) -> Option<ResponsePayload> {
+    let action_label = if exclude_conn_id.is_some() { "TuneNodeSilent" } else { "TuneNodeAsync" };
+
     // Check permission to tune nodes
     if !perms.tune_nodes {
         // For async operations, we don't send a response but we should still log
-        warn!("Permission denied: attempted to tune node without permission via TuneNodeAsync");
+        warn!("Permission denied: attempted to tune node without permission via {action_label}");
         return None;
     }
 
@@ -901,7 +915,7 @@ async fn handle_tune_node_async(
             warn!(
                 session_id = %session_id,
                 role = %role_name,
-                "Permission denied: attempted to tune node in session not owned via TuneNodeAsync"
+                "Permission denied: attempted to tune node in session not owned via {action_label}"
             );
             return None;
         }
@@ -967,12 +981,12 @@ async fn handle_tune_node_async(
                 } else {
                     warn!(
                         node_id = %node_id,
-                        "Attempted to tune params for non-existent node in pipeline model via TuneNodeAsync"
+                        "Attempted to tune params for non-existent node in pipeline model via {action_label}"
                     );
                 }
             } // Lock released here
 
-            // Broadcast event to all clients
+            // Broadcast event — exclude_conn_id controls whether the sender is skipped.
             let event = ApiEvent {
                 message_type: MessageType::Event,
                 correlation_id: None,
@@ -982,7 +996,7 @@ async fn handle_tune_node_async(
                     params: params.clone(),
                 },
             };
-            if let Err(e) = app_state.event_tx.send(event) {
+            if let Err(e) = app_state.event_tx.send(BroadcastEvent { event, exclude_conn_id }) {
                 error!("Failed to broadcast NodeParamsChanged event: {}", e);
             }
         }
@@ -990,9 +1004,49 @@ async fn handle_tune_node_async(
         let control_msg = EngineControlMessage::TuneNode { node_id, message };
         session.send_control_message(control_msg).await;
     } else {
-        warn!("Could not tune non-existent session '{}' via TuneNodeAsync", session_id);
+        warn!("Could not tune non-existent session '{session_id}' via {action_label}");
     }
     None // Do not send a response
+}
+
+/// Handle async node tuning (fire-and-forget, broadcasts to all).
+async fn handle_tune_node_async(
+    session_id: String,
+    node_id: String,
+    message: NodeControlMessage,
+    app_state: &AppState,
+    perms: &Permissions,
+    role_name: &str,
+) -> Option<ResponsePayload> {
+    handle_tune_node_fire_and_forget(
+        session_id, node_id, message, app_state, perms, role_name, None,
+    )
+    .await
+}
+
+/// Handle silent node tuning (fire-and-forget, echo suppression).
+///
+/// Broadcasts `NodeParamsChanged` to all clients *except* the sender,
+/// preventing stale echo-backs during high-frequency slider drags.
+async fn handle_tune_node_silent(
+    session_id: String,
+    node_id: String,
+    message: NodeControlMessage,
+    app_state: &AppState,
+    perms: &Permissions,
+    role_name: &str,
+    conn_id: u64,
+) -> Option<ResponsePayload> {
+    handle_tune_node_fire_and_forget(
+        session_id,
+        node_id,
+        message,
+        app_state,
+        perms,
+        role_name,
+        Some(conn_id),
+    )
+    .await
 }
 
 async fn handle_get_pipeline(

@@ -46,6 +46,8 @@ interface CompositorNodeData {
   definition?: { bidirectional?: boolean };
   onParamChange?: (nodeId: string, paramName: string, value: unknown) => void;
   onConfigChange?: (nodeId: string, config: Record<string, unknown>) => void;
+  /** Silent config change: broadcasts to other clients only (no echo-back). */
+  onConfigChangeSilent?: (nodeId: string, config: Record<string, unknown>) => void;
   sessionId?: string;
 }
 
@@ -142,6 +144,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
     canvasHeight,
     params: data.params ?? {},
     onConfigChange: data.onConfigChange,
+    onConfigChangeSilent: data.onConfigChangeSilent,
     onParamChange: data.onParamChange,
   });
 
