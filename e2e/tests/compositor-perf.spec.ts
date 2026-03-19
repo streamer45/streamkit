@@ -264,16 +264,14 @@ test.describe('Compositor Slider Perf — Cascade Re-render Budget', () => {
     // pre-PR-#89 regression where every slider tick caused 94+ fiber
     // re-renders across the entire tree.
     //
-    // Observed baseline: ~500 renders for the full 3-layer scenario
-    // (originally ~385 when the test was written; drifted upward due to
-    // additional inspector controls and server echo-back timing).
-    // Budget of 600 gives ~20% headroom while still catching the
-    // pre-PR-#89 regression (thousands of renders when every slider
-    // tick triggered 94+ fiber re-renders).
+    // Observed baseline: ~395 renders for the full 3-layer scenario.
+    // Echo-backs are skipped during slider drags (fire-and-forget with
+    // reconciliation on commit), keeping the count well bounded.
+    // Budget of 500 gives ~25% headroom while still catching regressions.
     const compositorData = snapshot.components['CompositorNode'];
     if (compositorData) {
       assertRenderBudget(snapshot, 'CompositorNode', {
-        max: 600,
+        max: 500,
         maxDuration: 5_000,
       });
     }

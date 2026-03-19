@@ -379,7 +379,3 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       return { sessions: newSessions };
     }),
 }));
-
-export const selectNodeViewData =
-  (sessionId: string | null, nodeId: string) => (state: SessionStore) =>
-    sessionId ? state.sessions.get(sessionId)?.nodeViewData[nodeId] : undefined;

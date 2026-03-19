@@ -3,12 +3,18 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { useQuery } from '@tanstack/react-query';
+import { useAtomValue } from 'jotai/react';
 import { useEffect, useCallback } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 
 import { fetchApi } from '@/services/base';
 import { getWebSocketService } from '@/services/websocket';
-import { useNodeParamsStore } from '@/stores/nodeParamsStore';
+import {
+  sessionConnectedAtom,
+  seedPipelineAtoms,
+  writeNodeParam,
+  writeNodeParams,
+} from '@/stores/sessionAtoms';
 import { useSessionStore } from '@/stores/sessionStore';
 import type { Pipeline, Request, MessageType, BatchOperation } from '@/types/types';
 
@@ -42,10 +48,11 @@ export function useSession(sessionId: string | null) {
     staleTime: Infinity, // WebSocket keeps it fresh
   });
 
-  // Update Zustand store when pipeline data is fetched
+  // Update Zustand store and seed Jotai atoms when pipeline data is fetched
   useEffect(() => {
     if (pipelineQuery.data && sessionId) {
       useSessionStore.getState().setPipeline(sessionId, pipelineQuery.data);
+      seedPipelineAtoms(sessionId, pipelineQuery.data);
     }
   }, [pipelineQuery.data, sessionId]);
 
@@ -57,15 +64,14 @@ export function useSession(sessionId: string | null) {
   const pipeline = useSessionStore((state) =>
     sessionId ? state.getSession(sessionId)?.pipeline : undefined
   );
-  const isConnectedFromStore = useSessionStore((state) =>
-    sessionId ? (state.getSession(sessionId)?.isConnected ?? false) : false
-  );
+  // Read connection status from Jotai atom (fine-grained, per-session).
+  const isConnectedFromStore = useAtomValue(sessionConnectedAtom(sessionId ?? ''));
 
   const tuneNode = useCallback(
     (nodeId: string, param: string, value: unknown) => {
       if (!sessionId) return;
 
-      useNodeParamsStore.getState().setParam(nodeId, param, value, sessionId);
+      writeNodeParam(nodeId, param, value, sessionId);
 
       const request: Request = {
         type: 'request' as MessageType,
@@ -93,9 +99,7 @@ export function useSession(sessionId: string | null) {
     (nodeId: string, config: Record<string, unknown>) => {
       if (!sessionId) return;
 
-      // Batch all param updates into a single store update to avoid
-      // N intermediate states that would trigger N selector re-evaluations.
-      useNodeParamsStore.getState().setParams(nodeId, config, sessionId);
+      writeNodeParams(nodeId, config, sessionId);
 
       const request: Request = {
         type: 'request' as MessageType,

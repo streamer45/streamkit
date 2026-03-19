@@ -3,8 +3,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import styled from '@emotion/styled';
+import { useAtomValue } from 'jotai/react';
 import React from 'react';
 
+import { nodeStatsAtom, nullStatsAtom, nodeKey } from '@/stores/sessionAtoms';
 import { useSessionStore } from '@/stores/sessionStore';
 import type { NodeState, NodeStats, Pipeline } from '@/types/types';
 
@@ -391,9 +393,7 @@ const LiveNodeStateTooltipContent = React.memo(
     sessionId: string;
     fallbackStats?: NodeStats;
   }) => {
-    const liveStats = useSessionStore(
-      React.useCallback((s) => s.sessions.get(sessionId)?.nodeStats[nodeId], [nodeId, sessionId])
-    );
+    const liveStats = useAtomValue(nodeStatsAtom(nodeKey(sessionId, nodeId)));
     const pipeline = useSessionStore(
       React.useCallback((s) => s.sessions.get(sessionId)?.pipeline, [sessionId])
     );
@@ -415,17 +415,13 @@ export const NodeStateIndicator: React.FC<NodeStateIndicatorProps> = ({
 }) => {
   const [isTooltipOpen, setIsTooltipOpen] = React.useState(false);
 
-  // IMPORTANT: avoid subscribing to node stats while the tooltip is closed.
-  // Stats are high-frequency and would otherwise cause constant re-renders of all node indicators.
-  const liveStats = useSessionStore(
-    React.useCallback(
-      (s) =>
-        isTooltipOpen && nodeId && sessionId
-          ? s.sessions.get(sessionId)?.nodeStats[nodeId]
-          : undefined,
-      [isTooltipOpen, nodeId, sessionId]
-    )
-  );
+  // Subscribe to the real stats atom only when the tooltip is open.
+  // Stats are high-frequency (up to ~60fps via WebSocket RAF flush) and
+  // would otherwise cause constant re-renders of all node indicators.
+  // When the tooltip is closed, subscribe to a static null atom instead.
+  const shouldSubscribe = isTooltipOpen && !!nodeId && !!sessionId;
+  const statsAtom = shouldSubscribe ? nodeStatsAtom(nodeKey(sessionId!, nodeId!)) : nullStatsAtom;
+  const liveStats = useAtomValue(statsAtom);
 
   const stats = liveStats ?? propStats;
   const hasErrors = isTooltipOpen && stats && stats.errored > 0;

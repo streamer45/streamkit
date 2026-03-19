@@ -7,11 +7,12 @@
  * Handles local state, store synchronization, drag tracking, and throttled updates.
  */
 
+import { useAtomValue } from 'jotai/react';
 import { throttle } from 'lodash-es';
 import { useState, useEffect, useMemo, useRef } from 'react';
 
 import { PARAM_THROTTLE_MS } from '@/constants/timing';
-import { useNodeParamsStore, selectNodeParam } from '@/stores/nodeParamsStore';
+import { nodeParamsAtom } from '@/stores/sessionAtoms';
 
 export interface UseNumericSliderOptions {
   nodeId: string;
@@ -77,10 +78,10 @@ export const useNumericSlider = (options: UseNumericSliderOptions): UseNumericSl
     throttleMs = PARAM_THROTTLE_MS,
   } = options;
 
-  // Get stored value from Zustand store
-  const storedValue = useNodeParamsStore(selectNodeParam(nodeId, paramKey, sessionId)) as
-    | number
-    | undefined;
+  // Get stored value from Jotai per-node atom (fine-grained reactivity)
+  const paramsKey = sessionId ? `${sessionId}\0${nodeId}` : nodeId;
+  const nodeParams = useAtomValue(nodeParamsAtom(paramsKey));
+  const storedValue = nodeParams[paramKey] as number | undefined;
 
   // Determine effective value: stored > prop > default
   const effectiveValue = (() => {

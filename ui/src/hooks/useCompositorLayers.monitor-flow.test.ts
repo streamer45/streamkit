@@ -22,9 +22,15 @@
 import { renderHook, act } from '@testing-library/react';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 
+import { writeNodeViewData, writeSessionConnected, clearSessionAtoms } from '@/stores/sessionAtoms';
 import { useSessionStore } from '@/stores/sessionStore';
 import type { CompositorLayout } from '@/types/generated/compositor-types';
 
+import {
+  getLayersFromStore,
+  getTextOverlaysFromStore,
+  getImageOverlaysFromStore,
+} from './compositorAtoms';
 import type { UseCompositorLayersOptions } from './useCompositorLayers';
 import { useCompositorLayers } from './useCompositorLayers';
 
@@ -120,11 +126,13 @@ function makeServerLayout(overrides: Partial<CompositorLayout> = {}): Compositor
 
 /** Seed the Zustand store with a session so useServerLayoutSync finds it. */
 function seedStore() {
+  writeSessionConnected(SESSION_ID, true);
   useSessionStore.getState().initSession(SESSION_ID, true);
 }
 
 /** Push server view data into the store (simulates a WS view_data message). */
 function pushServerViewData(layout: CompositorLayout) {
+  writeNodeViewData(SESSION_ID, NODE_ID, layout);
   useSessionStore.getState().updateNodeViewData(SESSION_ID, NODE_ID, layout);
 }
 
@@ -132,6 +140,7 @@ function pushServerViewData(layout: CompositorLayout) {
 
 afterEach(() => {
   // Clean up store between tests
+  clearSessionAtoms(SESSION_ID);
   useSessionStore.getState().clearSession(SESSION_ID);
 });
 
@@ -150,25 +159,28 @@ describe('Monitor view data flow integration', () => {
     );
 
     // Initial state: parsed from params (full canvas fallback)
-    expect(result.current.layers[0].x).toBe(0);
-    expect(result.current.layers[0].width).toBe(1280);
+    const layers0 = getLayersFromStore(result.current.store);
+    expect(layers0[0].x).toBe(0);
+    expect(layers0[0].width).toBe(1280);
 
     // Server view data arrives
     act(() => pushServerViewData(makeServerLayout()));
 
     // Server-resolved positions applied
-    expect(result.current.layers[0].x).toBe(160);
-    expect(result.current.layers[0].width).toBe(960);
-    expect(result.current.layers[0].height).toBe(720);
+    const layers1 = getLayersFromStore(result.current.store);
+    expect(layers1[0].x).toBe(160);
+    expect(layers1[0].width).toBe(960);
+    expect(layers1[0].height).toBe(720);
 
     // Params echo-back: new reference, same content.
     // This triggers the "sync from props" effect.
     act(() => rerender({ ...opts, params: makeParams() }));
 
     // Server-resolved positions must survive the echo-back.
-    expect(result.current.layers[0].x).toBe(160);
-    expect(result.current.layers[0].width).toBe(960);
-    expect(result.current.layers[0].height).toBe(720);
+    const layers2 = getLayersFromStore(result.current.store);
+    expect(layers2[0].x).toBe(160);
+    expect(layers2[0].width).toBe(960);
+    expect(layers2[0].height).toBe(720);
   });
 
   it('server text overlay measurements survive a params echo-back', () => {
@@ -181,8 +193,9 @@ describe('Monitor view data flow integration', () => {
     );
 
     // Initial text overlay from params
-    expect(result.current.textOverlays[0].id).toBe('text_0');
-    expect(result.current.textOverlays[0].measuredTextWidth).toBeUndefined();
+    const text0 = getTextOverlaysFromStore(result.current.store);
+    expect(text0[0].id).toBe('text_0');
+    expect(text0[0].measuredTextWidth).toBeUndefined();
 
     // Server sends layout with text measurements
     const layout = makeServerLayout({
@@ -206,19 +219,21 @@ describe('Monitor view data flow integration', () => {
     act(() => pushServerViewData(layout));
 
     // Measurements applied
-    expect(result.current.textOverlays[0].measuredTextWidth).toBe(275);
-    expect(result.current.textOverlays[0].measuredTextHeight).toBe(42);
-    expect(result.current.textOverlays[0].x).toBe(50);
-    expect(result.current.textOverlays[0].y).toBe(100);
+    const text1 = getTextOverlaysFromStore(result.current.store);
+    expect(text1[0].measuredTextWidth).toBe(275);
+    expect(text1[0].measuredTextHeight).toBe(42);
+    expect(text1[0].x).toBe(50);
+    expect(text1[0].y).toBe(100);
 
     // Params echo-back
     act(() => rerender({ ...opts, params: makeParamsWithText() }));
 
     // Measurements and server positions must survive
-    expect(result.current.textOverlays[0].measuredTextWidth).toBe(275);
-    expect(result.current.textOverlays[0].measuredTextHeight).toBe(42);
-    expect(result.current.textOverlays[0].x).toBe(50);
-    expect(result.current.textOverlays[0].y).toBe(100);
+    const text2 = getTextOverlaysFromStore(result.current.store);
+    expect(text2[0].measuredTextWidth).toBe(275);
+    expect(text2[0].measuredTextHeight).toBe(42);
+    expect(text2[0].x).toBe(50);
+    expect(text2[0].y).toBe(100);
   });
 
   it('config changes from params are picked up while preserving server geometry', () => {
@@ -251,8 +266,9 @@ describe('Monitor view data flow integration', () => {
     });
     act(() => pushServerViewData(layout));
 
-    expect(result.current.textOverlays[0].text).toBe('Hello');
-    expect(result.current.textOverlays[0].x).toBe(300);
+    const text0 = getTextOverlaysFromStore(result.current.store);
+    expect(text0[0].text).toBe('Hello');
+    expect(text0[0].x).toBe(300);
 
     // Params update with different text content (e.g. from another client)
     act(() =>
@@ -263,13 +279,14 @@ describe('Monitor view data flow integration', () => {
     );
 
     // Text content updated from params
-    expect(result.current.textOverlays[0].text).toBe('Updated text');
-    expect(result.current.textOverlays[0].fontSize).toBe(48);
+    const text1 = getTextOverlaysFromStore(result.current.store);
+    expect(text1[0].text).toBe('Updated text');
+    expect(text1[0].fontSize).toBe(48);
     // Server position preserved
-    expect(result.current.textOverlays[0].x).toBe(300);
-    expect(result.current.textOverlays[0].y).toBe(200);
+    expect(text1[0].x).toBe(300);
+    expect(text1[0].y).toBe(200);
     // Measurements preserved
-    expect(result.current.textOverlays[0].measuredTextWidth).toBe(275);
+    expect(text1[0].measuredTextWidth).toBe(275);
   });
 
   it('server-resolved opacity/rotation/zIndex survive params echo-back', () => {
@@ -288,17 +305,19 @@ describe('Monitor view data flow integration', () => {
     layout.layers[0].z_index = 5;
     act(() => pushServerViewData(layout));
 
-    expect(result.current.layers[0].opacity).toBe(0.75);
-    expect(result.current.layers[0].rotationDegrees).toBe(45);
-    expect(result.current.layers[0].zIndex).toBe(5);
+    const layers0 = getLayersFromStore(result.current.store);
+    expect(layers0[0].opacity).toBe(0.75);
+    expect(layers0[0].rotationDegrees).toBe(45);
+    expect(layers0[0].zIndex).toBe(5);
 
     // Params echo-back (params still have default opacity=1, rotation=0, z_index=0)
     act(() => rerender({ ...opts, params: makeParams() }));
 
     // Server-resolved values must survive
-    expect(result.current.layers[0].opacity).toBe(0.75);
-    expect(result.current.layers[0].rotationDegrees).toBe(45);
-    expect(result.current.layers[0].zIndex).toBe(5);
+    const layers1 = getLayersFromStore(result.current.store);
+    expect(layers1[0].opacity).toBe(0.75);
+    expect(layers1[0].rotationDegrees).toBe(45);
+    expect(layers1[0].zIndex).toBe(5);
   });
 
   it('selecting different layers does not reset positions', () => {
@@ -358,8 +377,9 @@ describe('Monitor view data flow integration', () => {
     act(() => pushServerViewData(layout));
 
     // Verify server positions applied
-    const layer0 = result.current.layers.find((l) => l.id === 'in_0')!;
-    const layer1 = result.current.layers.find((l) => l.id === 'in_1')!;
+    const layers0 = getLayersFromStore(result.current.store);
+    const layer0 = layers0.find((l) => l.id === 'in_0')!;
+    const layer1 = layers0.find((l) => l.id === 'in_1')!;
     expect(layer0.x).toBe(160);
     expect(layer1.x).toBe(800);
 
@@ -372,8 +392,9 @@ describe('Monitor view data flow integration', () => {
     expect(result.current.selectedLayerId).toBe('in_1');
 
     // Both layers should keep their server-resolved positions
-    const layer0After = result.current.layers.find((l) => l.id === 'in_0')!;
-    const layer1After = result.current.layers.find((l) => l.id === 'in_1')!;
+    const layers1 = getLayersFromStore(result.current.store);
+    const layer0After = layers1.find((l) => l.id === 'in_0')!;
+    const layer1After = layers1.find((l) => l.id === 'in_1')!;
     expect(layer0After.x).toBe(160);
     expect(layer0After.width).toBe(960);
     expect(layer1After.x).toBe(800);
@@ -431,9 +452,10 @@ describe('Monitor view data flow integration', () => {
     act(() => pushServerViewData(layout));
 
     // Verify server state
-    expect(result.current.textOverlays[0].x).toBe(400);
-    expect(result.current.textOverlays[0].y).toBe(300);
-    expect(result.current.textOverlays[0].measuredTextWidth).toBe(245);
+    const text0 = getTextOverlaysFromStore(result.current.store);
+    expect(text0[0].x).toBe(400);
+    expect(text0[0].y).toBe(300);
+    expect(text0[0].measuredTextWidth).toBe(245);
 
     // Select the text overlay
     act(() => result.current.selectLayer('text_0'));
@@ -444,11 +466,12 @@ describe('Monitor view data flow integration', () => {
     expect(result.current.selectedLayerId).toBe('in_0');
 
     // Text overlay position and measurements must be unchanged
-    expect(result.current.textOverlays[0].x).toBe(400);
-    expect(result.current.textOverlays[0].y).toBe(300);
-    expect(result.current.textOverlays[0].width).toBe(250);
-    expect(result.current.textOverlays[0].measuredTextWidth).toBe(245);
-    expect(result.current.textOverlays[0].measuredTextHeight).toBe(44);
+    const text1 = getTextOverlaysFromStore(result.current.store);
+    expect(text1[0].x).toBe(400);
+    expect(text1[0].y).toBe(300);
+    expect(text1[0].width).toBe(250);
+    expect(text1[0].measuredTextWidth).toBe(245);
+    expect(text1[0].measuredTextHeight).toBe(44);
   });
 
   it('image overlay dataBase64 changes are picked up in Monitor view', () => {
@@ -495,9 +518,10 @@ describe('Monitor view data flow integration', () => {
     });
     act(() => pushServerViewData(layout));
 
-    expect(result.current.imageOverlays[0].x).toBe(500);
-    expect(result.current.imageOverlays[0].y).toBe(300);
-    expect(result.current.imageOverlays[0].dataBase64).toBe('aW1hZ2UtZGF0YQ==');
+    const img0 = getImageOverlaysFromStore(result.current.store);
+    expect(img0[0].x).toBe(500);
+    expect(img0[0].y).toBe(300);
+    expect(img0[0].dataBase64).toBe('aW1hZ2UtZGF0YQ==');
 
     // Another client changes the image data via params
     const updatedParams = makeParams({
@@ -517,12 +541,13 @@ describe('Monitor view data flow integration', () => {
     act(() => rerender({ ...opts, params: updatedParams }));
 
     // dataBase64 must be updated (config field)
-    expect(result.current.imageOverlays[0].dataBase64).toBe('bmV3LWltYWdl');
+    const img1 = getImageOverlaysFromStore(result.current.store);
+    expect(img1[0].dataBase64).toBe('bmV3LWltYWdl');
     // Server-resolved position must be preserved
-    expect(result.current.imageOverlays[0].x).toBe(500);
-    expect(result.current.imageOverlays[0].y).toBe(300);
+    expect(img1[0].x).toBe(500);
+    expect(img1[0].y).toBe(300);
     // Server-resolved opacity must be preserved
-    expect(result.current.imageOverlays[0].opacity).toBe(0.9);
+    expect(img1[0].opacity).toBe(0.9);
   });
 
   it('Design view (no sessionId) still uses parsed positions as source of truth', () => {
@@ -543,8 +568,9 @@ describe('Monitor view data flow integration', () => {
     );
 
     // Text overlay at parsed position
-    expect(result.current.textOverlays[0].x).toBe(0);
-    expect(result.current.textOverlays[0].y).toBe(0);
+    const text0 = getTextOverlaysFromStore(result.current.store);
+    expect(text0[0].x).toBe(0);
+    expect(text0[0].y).toBe(0);
 
     // Params update with new position
     act(() =>
@@ -555,7 +581,8 @@ describe('Monitor view data flow integration', () => {
     );
 
     // Design view: position should update from params (not preserved)
-    expect(result.current.textOverlays[0].x).toBe(100);
-    expect(result.current.textOverlays[0].y).toBe(200);
+    const text1 = getTextOverlaysFromStore(result.current.store);
+    expect(text1[0].x).toBe(100);
+    expect(text1[0].y).toBe(200);
   });
 });

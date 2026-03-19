@@ -6,6 +6,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useEffect } from 'react';
 
 import { fetchApi } from '@/services/base';
+import { seedPipelineAtoms } from '@/stores/sessionAtoms';
 import { useSessionStore } from '@/stores/sessionStore';
 import type { Pipeline, SessionInfo } from '@/types/types';
 
@@ -57,6 +58,9 @@ export function useSessionsPrefetch(sessions: SessionInfo[]) {
 
       if (batch.length > 0) {
         batchSetPipelines(batch);
+        for (const entry of batch) {
+          seedPipelineAtoms(entry.sessionId, entry.pipeline);
+        }
       }
     }
   }, [queries.data, batchSetPipelines]);

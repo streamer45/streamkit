@@ -6,6 +6,11 @@
  * Overlay CRUD, layer property updates (opacity / rotation / z-index /
  * visibility / mirror), and batch reorder logic extracted from
  * useCompositorLayers to keep the main hook under the max-lines limit.
+ *
+ * Opacity and rotation updates write to Jotai atoms via the atom-backed
+ * setLayers setter.  Only the affected layer's atom changes, so only
+ * components subscribed to that atom re-render — no zero-render DOM hack
+ * or sliderActiveRef needed.
  */
 
 import { useCallback, useEffect, useRef } from 'react';
@@ -42,10 +47,6 @@ export interface OverlayDeps {
   layersRef: React.MutableRefObject<LayerState[]>;
   textOverlaysRef: React.MutableRefObject<TextOverlayState[]>;
   imageOverlaysRef: React.MutableRefObject<ImageOverlayState[]>;
-  /** DOM element refs for layers — used for zero-render opacity/rotation updates. */
-  layerRefs: React.MutableRefObject<Map<string, HTMLDivElement>>;
-  /** Set to true during zero-render slider drags to guard against server echo-back overwrites. */
-  sliderActiveRef: React.MutableRefObject<boolean>;
   throttledConfigChange: ((layers: LayerState[]) => void) | null;
   throttledOverlayCommit: ((text: TextOverlayState[], img: ImageOverlayState[]) => void) | null;
 }
@@ -62,8 +63,6 @@ export function useCompositorOverlays(deps: OverlayDeps) {
     layersRef,
     textOverlaysRef,
     imageOverlaysRef,
-    layerRefs,
-    sliderActiveRef,
     throttledConfigChange,
     throttledOverlayCommit,
   } = deps;
@@ -77,74 +76,45 @@ export function useCompositorOverlays(deps: OverlayDeps) {
 
   // ── Layer property updates ───────────────────────────────────────────
   //
-  // Opacity and rotation use zero-render updates during slider drags:
-  // update the ref + DOM element directly, send throttled server update,
-  // but skip setLayers() to avoid full CompositorNode re-renders.
-  // React state is synced on pointer-up via commitLayerAppearance().
+  // Opacity and rotation write to atoms via the atom-backed setLayers.
+  // Only the affected layer's atom changes — fine-grained reactivity
+  // means just the slider control and that one VideoLayer re-render.
+  //
+  // layersRef.current is read immediately after setLayers() for the
+  // throttled server send.  This is safe because setLayers → store.set()
+  // → synchronous store.sub(allLayersAtom) callback updates layersRef
+  // in useCompositorLayers.  Would break if Jotai ever batched sub
+  // notifications, but that's not the case in Jotai 2.x.
 
   const updateLayerOpacity = useCallback(
     (layerId: string, opacity: number) => {
       const clamped = Math.max(0, Math.min(1, opacity));
-      // Update the ref (source of truth during drag)
-      const idx = layersRef.current.findIndex((l) => l.id === layerId);
-      if (idx === -1) return;
-      sliderActiveRef.current = true;
-
-      layersRef.current = layersRef.current.map((l, i) =>
-        i === idx ? { ...l, opacity: clamped } : l
-      );
-      // Apply directly to DOM for instant visual feedback
-      const el = layerRefs.current.get(layerId);
-      if (el) {
-        const layer = layersRef.current[idx];
-        el.style.opacity = String(layer.visible ? clamped : 0.2);
-      }
-      // Send to server (throttled)
+      setLayers((prev) => {
+        const idx = prev.findIndex((l) => l.id === layerId);
+        if (idx === -1) return prev;
+        return prev.map((l, i) => (i === idx ? { ...l, opacity: clamped } : l));
+      });
       throttledConfigChange?.(layersRef.current);
     },
-    [layersRef, layerRefs, sliderActiveRef, throttledConfigChange]
+    [setLayers, layersRef, throttledConfigChange]
   );
 
   const updateLayerRotation = useCallback(
     (layerId: string, degrees: number) => {
-      // Update the ref
-      const idx = layersRef.current.findIndex((l) => l.id === layerId);
-      if (idx === -1) return;
-      sliderActiveRef.current = true;
-
-      layersRef.current = layersRef.current.map((l, i) =>
-        i === idx ? { ...l, rotationDegrees: degrees } : l
-      );
-      // Apply directly to DOM
-      const el = layerRefs.current.get(layerId);
-      if (el) {
-        const layer = layersRef.current[idx];
-        const parts: string[] = [];
-        if (degrees !== 0) parts.push(`rotate(${degrees}deg)`);
-        if (layer.mirrorHorizontal) parts.push('scaleX(-1)');
-        if (layer.mirrorVertical) parts.push('scaleY(-1)');
-        el.style.transform = parts.length > 0 ? parts.join(' ') : '';
-      }
-      // Send to server (throttled)
+      setLayers((prev) => {
+        const idx = prev.findIndex((l) => l.id === layerId);
+        if (idx === -1) return prev;
+        return prev.map((l, i) => (i === idx ? { ...l, rotationDegrees: degrees } : l));
+      });
       throttledConfigChange?.(layersRef.current);
     },
-    [layersRef, layerRefs, sliderActiveRef, throttledConfigChange]
+    [setLayers, layersRef, throttledConfigChange]
   );
-
-  /**
-   * Sync the ref-based layer state back to React state.
-   * Call this on pointer-up (onValueCommit) after a series of
-   * zero-render opacity/rotation updates.
-   */
-  const commitLayerAppearance = useCallback(() => {
-    sliderActiveRef.current = false;
-    setLayers([...layersRef.current]);
-  }, [setLayers, layersRef, sliderActiveRef]);
 
   const updateLayerPositionSize = useCallback(
     (layerId: string, patch: { x?: number; y?: number; width?: number; height?: number }) => {
       setLayers((prev) => {
-        const next = prev.map((l) => {
+        return prev.map((l) => {
           if (l.id !== layerId) return l;
           const updated = { ...l };
           if (patch.x !== undefined) updated.x = patch.x;
@@ -174,24 +144,22 @@ export function useCompositorOverlays(deps: OverlayDeps) {
           }
           return updated;
         });
-        throttledConfigChange?.(next);
-        return next;
       });
+      throttledConfigChange?.(layersRef.current);
     },
-    [setLayers, throttledConfigChange]
+    [setLayers, layersRef, throttledConfigChange]
   );
 
   const updateLayerZIndex = useCallback(
     (layerId: string, zIndex: number) => {
       setLayers((prev) => {
-        const next = prev
+        return prev
           .map((l) => (l.id === layerId ? { ...l, zIndex } : l))
           .sort((a, b) => a.zIndex - b.zIndex);
-        throttledConfigChange?.(next);
-        return next;
       });
+      throttledConfigChange?.(layersRef.current);
     },
-    [setLayers, throttledConfigChange]
+    [setLayers, layersRef, throttledConfigChange]
   );
 
   // ── Visibility toggle ──────────────────────────────────────────────
@@ -199,11 +167,10 @@ export function useCompositorOverlays(deps: OverlayDeps) {
   const toggleLayerVisibility = useCallback(
     (layerId: string) => {
       if (layersRef.current.some((l) => l.id === layerId)) {
-        setLayers((prev) => {
-          const next = prev.map((l) => (l.id === layerId ? { ...l, visible: !l.visible } : l));
-          throttledConfigChange?.(next);
-          return next;
-        });
+        setLayers((prev) =>
+          prev.map((l) => (l.id === layerId ? { ...l, visible: !l.visible } : l))
+        );
+        throttledConfigChange?.(layersRef.current);
         return;
       }
       if (textOverlaysRef.current.some((o) => o.id === layerId)) {
@@ -240,11 +207,8 @@ export function useCompositorOverlays(deps: OverlayDeps) {
       const field = axis === 'horizontal' ? 'mirrorHorizontal' : 'mirrorVertical';
 
       if (layersRef.current.some((l) => l.id === layerId)) {
-        setLayers((prev) => {
-          const next = prev.map((l) => (l.id === layerId ? { ...l, [field]: !l[field] } : l));
-          throttledConfigChange?.(next);
-          return next;
-        });
+        setLayers((prev) => prev.map((l) => (l.id === layerId ? { ...l, [field]: !l[field] } : l)));
+        throttledConfigChange?.(layersRef.current);
         return;
       }
       if (textOverlaysRef.current.some((o) => o.id === layerId)) {
@@ -279,7 +243,7 @@ export function useCompositorOverlays(deps: OverlayDeps) {
   const updateLayerCropZoom = useCallback(
     (layerId: string, patch: { cropX?: number; cropY?: number; cropZoom?: number }) => {
       setLayers((prev) => {
-        const next = prev.map((l) => {
+        return prev.map((l) => {
           if (l.id !== layerId) return l;
           const updated = { ...l };
           if (patch.cropZoom !== undefined) updated.cropZoom = Math.max(1.0, patch.cropZoom);
@@ -292,11 +256,10 @@ export function useCompositorOverlays(deps: OverlayDeps) {
           }
           return updated;
         });
-        throttledConfigChange?.(next);
-        return next;
       });
+      throttledConfigChange?.(layersRef.current);
     },
-    [setLayers, throttledConfigChange]
+    [setLayers, layersRef, throttledConfigChange]
   );
 
   // ── Overlay commit helper ──────────────────────────────────────────
@@ -551,7 +514,6 @@ export function useCompositorOverlays(deps: OverlayDeps) {
     selectLayer,
     updateLayerOpacity,
     updateLayerRotation,
-    commitLayerAppearance,
     updateLayerPositionSize,
     updateLayerZIndex,
     toggleLayerVisibility,

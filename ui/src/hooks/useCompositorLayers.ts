@@ -3,12 +3,16 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Hook for managing compositor layer state with zero-render drag/resize.
+ * Hook for managing compositor layer state with Jotai atoms.
  *
- * During pointer-driven interactions (drag, resize), visual updates are
- * applied directly to DOM elements via refs and requestAnimationFrame.
- * React state is only committed on pointer-up (or throttled for live mode),
- * keeping the experience butter-smooth with no mid-drag re-renders.
+ * Each layer (video input, text overlay, image overlay) has its own Jotai
+ * atom.  Components subscribe to individual atoms for fine-grained
+ * reactivity — an opacity change on one layer only re-renders that layer's
+ * canvas element and the slider control, not the entire tree.
+ *
+ * A per-compositor-instance Jotai store (createStore()) scopes atoms so
+ * multiple compositor nodes don't share state.  The store is returned in the
+ * result for wrapping children in a Provider.
  *
  * Heavy subsystems are extracted into companion modules:
  *  - compositorCommit       – commit adapter, throttled persistence
@@ -16,12 +20,29 @@
  *  - compositorOverlays     – overlay CRUD, layer property updates, reorder
  *  - compositorDragResize   – pointer drag / resize handlers
  *  - compositorLayerParsers – parsing, serialisation, pure helpers
+ *  - compositorAtoms        – Jotai atom definitions and bulk helpers
  */
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { createStore } from 'jotai';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { PARAM_THROTTLE_MS } from '@/constants/timing';
 
+import type { CompositorStore } from './compositorAtoms';
+import {
+  allImageOverlaysAtom,
+  allLayersAtom,
+  allTextOverlaysAtom,
+  getImageOverlaysFromStore,
+  getLayersFromStore,
+  getTextOverlaysFromStore,
+  isDraggingAtom,
+  isSliderActiveAtom,
+  selectedLayerIdAtom,
+  setImageOverlaysInStore,
+  setLayersInStore,
+  setTextOverlaysInStore,
+} from './compositorAtoms';
 import { useCompositorCommit } from './compositorCommit';
 import type { LayerKind } from './compositorConstants';
 import { DEFAULT_CROP_X, DEFAULT_CROP_Y, DEFAULT_CROP_ZOOM } from './compositorConstants';
@@ -63,15 +84,14 @@ export interface UseCompositorLayersOptions {
 }
 
 export interface UseCompositorLayersResult {
-  layers: LayerState[];
+  /** Per-instance Jotai store — wrap children in <Provider store={store}>. */
+  store: CompositorStore;
   selectedLayerId: string | null;
   selectLayer: (id: string | null) => void;
   handleLayerPointerDown: (layerId: string, e: React.PointerEvent) => void;
   handleResizePointerDown: (layerId: string, handle: ResizeHandle, e: React.PointerEvent) => void;
   updateLayerOpacity: (layerId: string, opacity: number) => void;
   updateLayerRotation: (layerId: string, degrees: number) => void;
-  /** Sync ref-based appearance state to React state. Call on slider pointer-up. */
-  commitLayerAppearance: () => void;
   updateLayerPositionSize: (
     layerId: string,
     patch: { x?: number; y?: number; width?: number; height?: number }
@@ -94,10 +114,6 @@ export interface UseCompositorLayersResult {
   }>;
   /** Whether a drag/resize is currently in progress */
   isDragging: boolean;
-  /** Text overlays */
-  textOverlays: TextOverlayState[];
-  /** Image overlays */
-  imageOverlays: ImageOverlayState[];
   addTextOverlay: (text: string) => void;
   updateTextOverlay: (id: string, updates: Partial<Omit<TextOverlayState, 'id'>>) => void;
   removeTextOverlay: (id: string) => void;
@@ -125,115 +141,180 @@ export const useCompositorLayers = (
     throttleMs = PARAM_THROTTLE_MS,
   } = options;
 
-  const [layers, setLayers] = useState<LayerState[]>(() =>
-    parseLayers(params, canvasWidth, canvasHeight)
-  );
-  const [textOverlays, setTextOverlays] = useState<TextOverlayState[]>(() =>
-    parseTextOverlays(params)
-  );
-  const [imageOverlays, setImageOverlays] = useState<ImageOverlayState[]>(() =>
-    parseImageOverlays(params)
-  );
-  const [selectedLayerId, setSelectedLayerId] = useState<string | null>(null);
-  const [isDragging, setIsDragging] = useState(false);
+  // ── Per-instance Jotai store ────────────────────────────────────────────
+  const store = useMemo(() => {
+    const s = createStore();
+    // Initialize atoms from params
+    const parsed = parseLayers(params, canvasWidth, canvasHeight);
+    setLayersInStore(s, parsed);
+    setTextOverlaysInStore(s, parseTextOverlays(params));
+    setImageOverlaysInStore(s, parseImageOverlays(params));
+    return s;
+    // Store is created once per compositor instance. Params changes are
+    // handled by the sync-from-props effect below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // Stable refs — let throttled / memoised callbacks read latest values
-  // at call-time without triggering cascading dependency changes.
+  // ── Atom-backed setters ─────────────────────────────────────────────────
+  // These are drop-in replacements for React.Dispatch<SetStateAction<T>>
+  // so sub-hooks (compositorOverlays, compositorDragResize) don't need
+  // interface changes.
+
+  const setLayers = useCallback(
+    (action: React.SetStateAction<LayerState[]>) => {
+      const current = getLayersFromStore(store);
+      const next = typeof action === 'function' ? action(current) : action;
+      setLayersInStore(store, next);
+    },
+    [store]
+  );
+
+  const setTextOverlays = useCallback(
+    (action: React.SetStateAction<TextOverlayState[]>) => {
+      const current = getTextOverlaysFromStore(store);
+      const next = typeof action === 'function' ? action(current) : action;
+      setTextOverlaysInStore(store, next);
+    },
+    [store]
+  );
+
+  const setImageOverlays = useCallback(
+    (action: React.SetStateAction<ImageOverlayState[]>) => {
+      const current = getImageOverlaysFromStore(store);
+      const next = typeof action === 'function' ? action(current) : action;
+      setImageOverlaysInStore(store, next);
+    },
+    [store]
+  );
+
+  const setSelectedLayerId = useCallback(
+    (action: React.SetStateAction<string | null>) => {
+      const current = store.get(selectedLayerIdAtom);
+      const next = typeof action === 'function' ? action(current) : action;
+      if (next !== current) store.set(selectedLayerIdAtom, next);
+    },
+    [store]
+  );
+
+  const setIsDragging = useCallback(
+    (action: React.SetStateAction<boolean>) => {
+      const current = store.get(isDraggingAtom);
+      const next = typeof action === 'function' ? action(current) : action;
+      if (next !== current) store.set(isDraggingAtom, next);
+    },
+    [store]
+  );
+
+  // ── Reactive primitives (no array subscriptions!) ────────────────────────
+  // Only subscribe to lightweight primitive atoms to avoid re-rendering
+  // CompositorNode on every layer property change.
+  const [selectedLayerId, setSelectedLayerIdState] = useState(() => store.get(selectedLayerIdAtom));
+  const [isDragging, setIsDraggingState] = useState(() => store.get(isDraggingAtom));
+
+  useEffect(() => {
+    const unsub1 = store.sub(selectedLayerIdAtom, () => {
+      setSelectedLayerIdState(store.get(selectedLayerIdAtom));
+      // Safety net: clear slider-active flag when selection changes.
+      // If a slider component unmounts mid-drag (layer deselected, removed,
+      // or Escape pressed), onValueCommit never fires and the flag would
+      // remain stuck, permanently blocking echo-back sync.
+      if (store.get(isSliderActiveAtom)) {
+        store.set(isSliderActiveAtom, false);
+      }
+    });
+    const unsub2 = store.sub(isDraggingAtom, () => {
+      setIsDraggingState(store.get(isDraggingAtom));
+    });
+    return () => {
+      unsub1();
+      unsub2();
+    };
+  }, [store]);
+
+  // ── Stable refs ─────────────────────────────────────────────────────────
+  // Sub-hooks read these in callbacks to get the latest values without
+  // triggering dependency changes.  Synced from atom subscriptions.
   const paramsRef = useRef(params);
   useEffect(() => {
     paramsRef.current = params;
   }, [params]);
 
-  const textOverlaysRef = useRef(textOverlays);
-  const imageOverlaysRef = useRef(imageOverlays);
+  const layersRef = useRef<LayerState[]>(getLayersFromStore(store));
+  const textOverlaysRef = useRef<TextOverlayState[]>(getTextOverlaysFromStore(store));
+  const imageOverlaysRef = useRef<ImageOverlayState[]>(getImageOverlaysFromStore(store));
+
   useEffect(() => {
-    textOverlaysRef.current = textOverlays;
-  }, [textOverlays]);
-  useEffect(() => {
-    imageOverlaysRef.current = imageOverlays;
-  }, [imageOverlays]);
+    const unsub1 = store.sub(allLayersAtom, () => {
+      layersRef.current = getLayersFromStore(store);
+    });
+    const unsub2 = store.sub(allTextOverlaysAtom, () => {
+      textOverlaysRef.current = getTextOverlaysFromStore(store);
+    });
+    const unsub3 = store.sub(allImageOverlaysAtom, () => {
+      imageOverlaysRef.current = getImageOverlaysFromStore(store);
+    });
+    return () => {
+      unsub1();
+      unsub2();
+      unsub3();
+    };
+  }, [store]);
 
   const layerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
-  const sliderActiveRef = useRef(false);
   const snapGuideRefs = useRef<{
     vertical: HTMLDivElement | null;
     horizontal: HTMLDivElement | null;
   }>({ vertical: null, horizontal: null });
   const dragStateRef = useRef<DragState | null>(null);
-  const layersRef = useRef(layers);
-
-  // Safety net: clear sliderActiveRef when the selected layer changes or on
-  // unmount.  If a slider component unmounts mid-drag (layer deselected,
-  // removed, or Escape pressed), onValueCommit never fires and the ref
-  // would remain stuck at true, permanently blocking server/prop sync.
-  useEffect(() => {
-    if (sliderActiveRef.current) {
-      sliderActiveRef.current = false;
-      setLayers([...layersRef.current]);
-    }
-  }, [selectedLayerId, setLayers]);
-
-  useEffect(() => {
-    // During zero-render slider drags, layersRef is the source of truth
-    // (updated directly by updateLayerOpacity/updateLayerRotation).
-    // Don't overwrite it with stale React state from concurrent operations.
-    if (!sliderActiveRef.current) {
-      layersRef.current = layers;
-    }
-  }, [layers]);
 
   // ── Sync from props ─────────────────────────────────────────────────────
   // In Monitor view (sessionId is set), the server's view data is the source
-  // of truth for geometry (x, y, width, height).  The "sync from props" effect
-  // must NOT overwrite server-resolved positions with config-parsed ones,
-  // otherwise a params echo-back from the server would clobber the accurate
-  // layout that useServerLayoutSync applied.
+  // of truth for geometry.  The "sync from props" effect must NOT overwrite
+  // server-resolved positions with config-parsed ones.
   const isMonitorView = !!sessionId;
 
   useEffect(() => {
-    if (dragStateRef.current || sliderActiveRef.current) return;
+    // Skip echo-back processing during drag/resize or active slider interaction.
+    // Atoms already have the latest local value; echo-backs carry stale data.
+    // Reconciliation happens automatically when the slider commits (isSliderActive
+    // flips to false → next params change triggers this effect without the guard).
+    if (dragStateRef.current || store.get(isSliderActiveAtom)) return;
     const parsed = parseLayers(params, canvasWidth, canvasHeight);
+    const currentLayers = getLayersFromStore(store);
 
     const merged = mergeOverlayState(
-      layersRef.current,
+      currentLayers,
       parsed,
       (a, b) => a.cropZoom !== b.cropZoom || a.cropX !== b.cropX || a.cropY !== b.cropY,
       isMonitorView
     );
-    if (merged !== layersRef.current) setLayers(merged);
+    if (merged !== currentLayers) setLayersInStore(store, merged);
 
-    setTextOverlays((cur) =>
-      mergeOverlayState(
-        cur,
-        parseTextOverlays(params),
-        (a, b) =>
-          a.text !== b.text ||
-          a.fontSize !== b.fontSize ||
-          a.fontName !== b.fontName ||
-          a.color.some((v, i) => v !== b.color[i]),
-        isMonitorView
-      )
+    const currentText = getTextOverlaysFromStore(store);
+    const mergedText = mergeOverlayState(
+      currentText,
+      parseTextOverlays(params),
+      (a, b) =>
+        a.text !== b.text ||
+        a.fontSize !== b.fontSize ||
+        a.fontName !== b.fontName ||
+        a.color.some((v, i) => v !== b.color[i]),
+      isMonitorView
     );
-    setImageOverlays((cur) =>
-      mergeOverlayState(
-        cur,
-        parseImageOverlays(params),
-        (a, b) => a.dataBase64 !== b.dataBase64,
-        isMonitorView
-      )
+    if (mergedText !== currentText) setTextOverlaysInStore(store, mergedText);
+
+    const currentImg = getImageOverlaysFromStore(store);
+    const mergedImg = mergeOverlayState(
+      currentImg,
+      parseImageOverlays(params),
+      (a, b) => a.dataBase64 !== b.dataBase64,
+      isMonitorView
     );
-  }, [params, canvasWidth, canvasHeight, isMonitorView]);
+    if (mergedImg !== currentImg) setImageOverlaysInStore(store, mergedImg);
+  }, [params, canvasWidth, canvasHeight, isMonitorView, store]);
 
   // ── Server-driven layout (Monitor view only) ───────────────────────────
-  useServerLayoutSync(
-    sessionId,
-    nodeId,
-    dragStateRef,
-    sliderActiveRef,
-    setLayers,
-    setTextOverlays,
-    setImageOverlays
-  );
+  useServerLayoutSync(sessionId, nodeId, store, dragStateRef);
 
   // ── Find layer across all types ─────────────────────────────────────────
   const findAnyLayer = useCallback(
@@ -289,8 +370,6 @@ export const useCompositorLayers = (
     layersRef,
     textOverlaysRef,
     imageOverlaysRef,
-    layerRefs,
-    sliderActiveRef,
     throttledConfigChange,
     throttledOverlayCommit,
   });
@@ -316,14 +395,13 @@ export const useCompositorLayers = (
   });
 
   return {
-    layers,
+    store,
     selectedLayerId,
     selectLayer: overlayOps.selectLayer,
     handleLayerPointerDown,
     handleResizePointerDown,
     updateLayerOpacity: overlayOps.updateLayerOpacity,
     updateLayerRotation: overlayOps.updateLayerRotation,
-    commitLayerAppearance: overlayOps.commitLayerAppearance,
     updateLayerPositionSize: overlayOps.updateLayerPositionSize,
     updateLayerZIndex: overlayOps.updateLayerZIndex,
     toggleLayerVisibility: overlayOps.toggleLayerVisibility,
@@ -332,8 +410,6 @@ export const useCompositorLayers = (
     layerRefs,
     snapGuideRefs,
     isDragging,
-    textOverlays,
-    imageOverlays,
     addTextOverlay: overlayOps.addTextOverlay,
     updateTextOverlay: overlayOps.updateTextOverlay,
     removeTextOverlay: overlayOps.removeTextOverlay,

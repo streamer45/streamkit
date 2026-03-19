@@ -15,7 +15,6 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 import { SKTooltip } from '@/components/Tooltip';
 import type { LayerKind } from '@/hooks/useCompositorLayers';
-import { useDragLocalValue } from '@/hooks/useDragLocalValue';
 
 import {
   AddMenu,
@@ -198,26 +197,23 @@ InspectorHeaderSection.displayName = 'InspectorHeaderSection';
 export const OpacityControl: React.FC<{
   opacity: number;
   onChange: (value: number) => void;
-  onCommit?: () => void;
+  onSliderStart?: () => void;
+  onSliderEnd?: () => void;
   disabled: boolean;
-}> = React.memo(({ opacity, onChange, onCommit, disabled }) => {
-  const { localValue, setLocalValue, draggingRef } = useDragLocalValue(opacity);
-
+}> = React.memo(({ opacity, onChange, onSliderStart, onSliderEnd, disabled }) => {
   return (
     <InspectorSection>
       <InspectorSectionLabel>Opacity</InspectorSectionLabel>
       <ControlRow>
         <CompactSliderRoot
-          value={[localValue]}
+          value={[opacity]}
           onValueChange={([v]) => {
-            draggingRef.current = true;
-            setLocalValue(v);
             onChange(v);
           }}
-          onValueCommit={() => {
-            draggingRef.current = false;
-            onCommit?.();
+          onPointerDown={(e) => {
+            if (e.button === 0) onSliderStart?.();
           }}
+          onValueCommit={() => onSliderEnd?.()}
           min={0}
           max={1}
           step={0.01}
@@ -229,7 +225,7 @@ export const OpacityControl: React.FC<{
           </CompactSliderTrack>
           <CompactSliderThumb />
         </CompactSliderRoot>
-        <ControlValue>{(localValue * 100).toFixed(0)}%</ControlValue>
+        <ControlValue>{(opacity * 100).toFixed(0)}%</ControlValue>
       </ControlRow>
     </InspectorSection>
   );
@@ -239,11 +235,11 @@ OpacityControl.displayName = 'OpacityControl';
 export const RotationControl: React.FC<{
   rotationDegrees: number;
   onChange: (value: number) => void;
-  onCommit?: () => void;
+  onSliderStart?: () => void;
+  onSliderEnd?: () => void;
   disabled: boolean;
-}> = React.memo(({ rotationDegrees, onChange, onCommit, disabled }) => {
-  const { localValue, setLocalValue, draggingRef } = useDragLocalValue(rotationDegrees);
-  const normalisedRotation = ((Math.round(localValue) % 360) + 360) % 360;
+}> = React.memo(({ rotationDegrees, onChange, onSliderStart, onSliderEnd, disabled }) => {
+  const normalisedRotation = ((Math.round(rotationDegrees) % 360) + 360) % 360;
 
   return (
     <InspectorSection>
@@ -255,9 +251,7 @@ export const RotationControl: React.FC<{
             isActive={normalisedRotation === deg}
             disabled={disabled}
             onClick={() => {
-              setLocalValue(deg);
               onChange(deg);
-              onCommit?.();
             }}
           >
             {deg}&deg;
@@ -267,9 +261,7 @@ export const RotationControl: React.FC<{
           <ResetButton
             disabled={disabled}
             onClick={() => {
-              setLocalValue(0);
               onChange(0);
-              onCommit?.();
             }}
             className="nodrag nopan"
           >
@@ -281,14 +273,12 @@ export const RotationControl: React.FC<{
         <CompactSliderRoot
           value={[normalisedRotation]}
           onValueChange={([v]) => {
-            draggingRef.current = true;
-            setLocalValue(v);
             onChange(v);
           }}
-          onValueCommit={() => {
-            draggingRef.current = false;
-            onCommit?.();
+          onPointerDown={(e) => {
+            if (e.button === 0) onSliderStart?.();
           }}
+          onValueCommit={() => onSliderEnd?.()}
           min={0}
           max={359}
           step={1}

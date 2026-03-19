@@ -4,11 +4,12 @@
 
 import styled from '@emotion/styled';
 import type { Node } from '@xyflow/react';
+import { useAtomValue } from 'jotai/react';
 import React from 'react';
 
 import { SKTooltip } from '@/components/Tooltip';
 import { CheckboxWithLabel } from '@/components/ui/Checkbox';
-import { useNodeParamsStore } from '@/stores/nodeParamsStore';
+import { nodeParamsAtom } from '@/stores/sessionAtoms';
 import type { NodeDefinition, InputPin, OutputPin, PacketType } from '@/types/types';
 import {
   formatPacketType,
@@ -17,8 +18,6 @@ import {
   getPinCardinalityIcon,
   getPinCardinalityDescription,
 } from '@/utils/packetTypes';
-
-const EMPTY_PARAMS: Record<string, unknown> = Object.freeze({});
 
 interface JsonSchemaProperty {
   type?: string;
@@ -270,10 +269,10 @@ const InspectorPane: React.FC<InspectorPaneProps> = ({
   readOnly = false,
   isMonitorView = false,
 }) => {
-  // Read live params for this node from a lightweight store to avoid re-rendering ReactFlow.
-  // Important: don't create a new object each render; keep a stable fallback to avoid infinite loops.
-  const nodeParams =
-    useNodeParamsStore((s) => s.getParamsForNode(node.id, node.data.sessionId)) ?? EMPTY_PARAMS;
+  // Read live params for this node from a per-node Jotai atom (fine-grained reactivity).
+  // Only re-renders when THIS node's params change, not when any node's params change.
+  const paramsKey = node.data.sessionId ? `${node.data.sessionId}\0${node.id}` : node.id;
+  const nodeParams = useAtomValue(nodeParamsAtom(paramsKey));
 
   const handleInputChange = (key: string, value: unknown) => {
     onParamChange(node.id, key, value);
