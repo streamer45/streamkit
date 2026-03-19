@@ -40,24 +40,14 @@ export const nullStatsAtom = atom<NodeStats | null>(null);
 
 // ── Per-node atoms ──────────────────────────────────────────────────────────
 
-export const nodeStateAtom = atomFamily(
-  (_key: string) => atom<NodeState | null>(null) // eslint-disable-line @typescript-eslint/no-unused-vars
-);
-
-export const nodeStatsAtom = atomFamily(
-  (_key: string) => atom<NodeStats | null>(null) // eslint-disable-line @typescript-eslint/no-unused-vars
-);
-
-export const nodeViewDataAtom = atomFamily(
-  (_key: string) => atom<unknown>(undefined) // eslint-disable-line @typescript-eslint/no-unused-vars
-);
+export const nodeStateAtom = atomFamily((_key: string) => atom<NodeState | null>(null));
+export const nodeStatsAtom = atomFamily((_key: string) => atom<NodeStats | null>(null));
+export const nodeViewDataAtom = atomFamily((_key: string) => atom<unknown>(undefined));
 
 // ── Per-node params atom ────────────────────────────────────────────────────
 
 /** Per-node params atom -- stores the full Record<string, unknown> for a node. */
-export const nodeParamsAtom = atomFamily(
-  (_key: string) => atom<Record<string, unknown>>({}) // eslint-disable-line @typescript-eslint/no-unused-vars
-);
+export const nodeParamsAtom = atomFamily((_key: string) => atom<Record<string, unknown>>({}));
 
 /** Write a single node param to the Jotai atom. */
 export function writeNodeParam(
@@ -91,9 +81,7 @@ export function clearNodeParams(nodeId: string, sessionId?: string): void {
 
 // ── Per-session connected atom ──────────────────────────────────────────────
 
-export const sessionConnectedAtom = atomFamily(
-  (_sessionId: string) => atom(false) // eslint-disable-line @typescript-eslint/no-unused-vars
-);
+export const sessionConnectedAtom = atomFamily((_sessionId: string) => atom(false));
 
 // ── Batch write helpers ─────────────────────────────────────────────────────
 

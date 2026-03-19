@@ -16,12 +16,13 @@
  * RotationControl or MirrorControl.
  */
 
-import { useAtomValue } from 'jotai/react';
+import { useAtomValue, useSetAtom } from 'jotai/react';
 import React, { useCallback, useMemo, useRef } from 'react';
 
 import {
   selectedLayerIdAtom,
   selectedLayerKindAtom,
+  isSliderActiveAtom,
   layerAtoms,
   layerOpacityAtom,
   layerRotationAtom,
@@ -35,6 +36,7 @@ import {
   textOverlayIdsAtom,
   imageOverlayIdsAtom,
 } from '@/hooks/compositorAtoms';
+import type { LayerKind } from '@/hooks/compositorConstants';
 import type { TextOverlayState, ImageOverlayState } from '@/hooks/compositorLayerParsers';
 
 import {
@@ -350,17 +352,14 @@ CompositorInspector.displayName = 'CompositorInspector';
 // but returns the same number → ConnectedRotationControl skips re-render.
 // This prevents the "all controls re-render on every slider tick" cascade.
 
-type LayerKindTag = 'video' | 'text' | 'image';
-
 const ConnectedOpacityControl: React.FC<{
   selectedLayerId: string;
-  selectedLayerKind: LayerKindTag | null;
+  selectedLayerKind: LayerKind | null;
   onChange: (v: number) => void;
   disabled: boolean;
 }> = React.memo(({ selectedLayerId, selectedLayerKind, onChange, disabled }) => {
-  // For video layers, subscribe to the derived primitive atom.
-  // For text/image overlays, read from the full overlay atom (they don't
-  // have high-frequency slider updates, so the full atom is fine).
+  const setSliderActive = useSetAtom(isSliderActiveAtom);
+
   const videoOpacity = useAtomValue(
     selectedLayerKind === 'video' ? layerOpacityAtom(selectedLayerId) : nullOpacityAtom
   );
@@ -376,16 +375,29 @@ const ConnectedOpacityControl: React.FC<{
       ? videoOpacity
       : (textOverlay?.opacity ?? imageOverlay?.opacity ?? 1);
 
-  return <OpacityControl opacity={opacity} onChange={onChange} disabled={disabled} />;
+  const handleSliderStart = useCallback(() => setSliderActive(true), [setSliderActive]);
+  const handleSliderEnd = useCallback(() => setSliderActive(false), [setSliderActive]);
+
+  return (
+    <OpacityControl
+      opacity={opacity}
+      onChange={onChange}
+      onSliderStart={handleSliderStart}
+      onSliderEnd={handleSliderEnd}
+      disabled={disabled}
+    />
+  );
 });
 ConnectedOpacityControl.displayName = 'ConnectedOpacityControl';
 
 const ConnectedRotationControl: React.FC<{
   selectedLayerId: string;
-  selectedLayerKind: LayerKindTag | null;
+  selectedLayerKind: LayerKind | null;
   onChange: (v: number) => void;
   disabled: boolean;
 }> = React.memo(({ selectedLayerId, selectedLayerKind, onChange, disabled }) => {
+  const setSliderActive = useSetAtom(isSliderActiveAtom);
+
   const videoRotation = useAtomValue(
     selectedLayerKind === 'video' ? layerRotationAtom(selectedLayerId) : nullRotationAtom
   );
@@ -401,8 +413,17 @@ const ConnectedRotationControl: React.FC<{
       ? videoRotation
       : (textOverlay?.rotationDegrees ?? imageOverlay?.rotationDegrees ?? 0);
 
+  const handleSliderStart = useCallback(() => setSliderActive(true), [setSliderActive]);
+  const handleSliderEnd = useCallback(() => setSliderActive(false), [setSliderActive]);
+
   return (
-    <RotationControl rotationDegrees={rotationDegrees} onChange={onChange} disabled={disabled} />
+    <RotationControl
+      rotationDegrees={rotationDegrees}
+      onChange={onChange}
+      onSliderStart={handleSliderStart}
+      onSliderEnd={handleSliderEnd}
+      disabled={disabled}
+    />
   );
 });
 ConnectedRotationControl.displayName = 'ConnectedRotationControl';

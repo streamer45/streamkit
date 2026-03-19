@@ -145,9 +145,12 @@ export default tseslint.config(
   {
     // Exception for Jotai atom equality helpers - field-by-field comparison functions
     // have inherent cyclomatic complexity proportional to the number of fields.
-    files: ["**/hooks/compositorAtoms.ts"],
+    // Also: atomFamily factories receive an _id param used for cache lookup, not
+    // inside the factory body — suppress the unused-vars lint for these files.
+    files: ["**/hooks/compositorAtoms.ts", "**/stores/sessionAtoms.ts"],
     rules: {
       "complexity": "off",
+      "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_" }],
     },
   },
   {

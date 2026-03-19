@@ -35,6 +35,7 @@ import {
   getImageOverlaysFromStore,
   getLayersFromStore,
   getTextOverlaysFromStore,
+  isSliderActiveAtom,
   setImageOverlaysInStore,
   setLayersInStore,
   setTextOverlaysInStore,
@@ -175,9 +176,9 @@ export function useServerLayoutSync(
 
     const applyServerLayout = (viewData: unknown) => {
       if (!viewData || typeof viewData !== 'object') return;
-      // Skip during drag/resize to avoid server echo-backs overwriting
-      // in-flight local state.
-      if (dragStateRef.current) return;
+      // Skip during drag/resize or active slider interaction to avoid
+      // server echo-backs overwriting in-flight local atom values.
+      if (dragStateRef.current || store.get(isSliderActiveAtom)) return;
 
       const layout = viewData as CompositorLayout;
       if (!Array.isArray(layout.layers)) return;
