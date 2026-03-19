@@ -210,7 +210,9 @@ export const OpacityControl: React.FC<{
           onValueChange={([v]) => {
             onChange(v);
           }}
-          onPointerDown={() => onSliderStart?.()}
+          onPointerDown={(e) => {
+            if (e.button === 0) onSliderStart?.();
+          }}
           onValueCommit={() => onSliderEnd?.()}
           min={0}
           max={1}
@@ -273,7 +275,9 @@ export const RotationControl: React.FC<{
           onValueChange={([v]) => {
             onChange(v);
           }}
-          onPointerDown={() => onSliderStart?.()}
+          onPointerDown={(e) => {
+            if (e.button === 0) onSliderStart?.();
+          }}
           onValueCommit={() => onSliderEnd?.()}
           min={0}
           max={359}
