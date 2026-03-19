@@ -106,6 +106,7 @@ export const usePipeline = () => {
     (nodeId: string, paramName: string, value: unknown) => {
       // Jotai: fine-grained per-node atom
       writeNodeParam(nodeId, paramName, value);
+      // TODO(jotai-cleanup): remove Zustand write after remaining consumers migrate
       // Zustand: keep for consumers that still read from Zustand
       setParam(nodeId, paramName, value);
       // Keep the YAML editor in sync with param changes made via the canvas

@@ -79,6 +79,12 @@ export function useCompositorOverlays(deps: OverlayDeps) {
   // Opacity and rotation write to atoms via the atom-backed setLayers.
   // Only the affected layer's atom changes — fine-grained reactivity
   // means just the slider control and that one VideoLayer re-render.
+  //
+  // layersRef.current is read immediately after setLayers() for the
+  // throttled server send.  This is safe because setLayers → store.set()
+  // → synchronous store.sub(allLayersAtom) callback updates layersRef
+  // in useCompositorLayers.  Would break if Jotai ever batched sub
+  // notifications, but that's not the case in Jotai 2.x.
 
   const updateLayerOpacity = useCallback(
     (layerId: string, opacity: number) => {

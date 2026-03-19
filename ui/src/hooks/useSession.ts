@@ -74,6 +74,7 @@ export function useSession(sessionId: string | null) {
 
       // Jotai: fine-grained per-node atom
       writeNodeParam(nodeId, param, value, sessionId);
+      // TODO(jotai-cleanup): remove Zustand write after remaining consumers migrate
       // Zustand: keep for consumers that still read from Zustand
       useNodeParamsStore.getState().setParam(nodeId, param, value, sessionId);
 
@@ -105,6 +106,7 @@ export function useSession(sessionId: string | null) {
 
       // Jotai: fine-grained per-node atom
       writeNodeParams(nodeId, config, sessionId);
+      // TODO(jotai-cleanup): remove Zustand write after remaining consumers migrate
       // Zustand: keep for consumers that still read from Zustand
       useNodeParamsStore.getState().setParams(nodeId, config, sessionId);
 

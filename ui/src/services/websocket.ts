@@ -297,6 +297,7 @@ export class WebSocketService {
       batchWriteNodeStates(stateUpdates);
       batchWriteNodeStats(statsUpdates);
 
+      // TODO(jotai-cleanup): remove Zustand write after remaining consumers migrate
       // Also keep Zustand write for pipeline-related consumers that still read
       // nodeStates from the Zustand store (will be removed when those consumers
       // are migrated).
@@ -317,6 +318,7 @@ export class WebSocketService {
     if (params && typeof params === 'object' && !Array.isArray(params)) {
       // Jotai: fine-grained per-node atom
       writeNodeParams(node_id, params as Record<string, unknown>, session_id);
+      // TODO(jotai-cleanup): remove Zustand write after remaining consumers migrate
       // Zustand: keep for consumers that still read from Zustand
       useNodeParamsStore
         .getState()

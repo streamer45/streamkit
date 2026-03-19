@@ -208,9 +208,9 @@ export const OpacityControl: React.FC<{
         <CompactSliderRoot
           value={[opacity]}
           onValueChange={([v]) => {
-            onSliderStart?.();
             onChange(v);
           }}
+          onPointerDown={() => onSliderStart?.()}
           onValueCommit={() => onSliderEnd?.()}
           min={0}
           max={1}
@@ -271,9 +271,9 @@ export const RotationControl: React.FC<{
         <CompactSliderRoot
           value={[normalisedRotation]}
           onValueChange={([v]) => {
-            onSliderStart?.();
             onChange(v);
           }}
+          onPointerDown={() => onSliderStart?.()}
           onValueCommit={() => onSliderEnd?.()}
           min={0}
           max={359}
