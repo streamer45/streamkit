@@ -160,7 +160,6 @@ export const VideoLayer: React.FC<{
           outlineStyle: layer.visible ? 'solid' : 'dashed',
         }),
         borderRadius: layer.cropCircle ? '50%' : undefined,
-        overflow: layer.cropCircle ? 'hidden' : undefined,
       }}
       onPointerDown={handlePointerDown}
     >
