@@ -9,6 +9,28 @@ use tokio::task::JoinHandle;
 use streamkit_api::Event as ApiEvent;
 use streamkit_engine::Engine;
 
+/// Wrapper around [`ApiEvent`] that carries per-connection exclusion metadata
+/// through the broadcast channel.
+///
+/// The `exclude_conn_id` field enables server-side echo suppression for
+/// `TuneNodeSilent`: the WebSocket event loop skips sending the event to the
+/// connection that originated the request, preventing stale echo-backs during
+/// high-frequency slider drags.
+#[derive(Clone, Debug)]
+pub struct BroadcastEvent {
+    pub event: ApiEvent,
+    /// When set, the per-connection event loop in [`handle_websocket`] skips
+    /// sending this event to the connection with the matching ID.
+    pub exclude_conn_id: Option<u64>,
+}
+
+impl BroadcastEvent {
+    /// Wrap an event with no exclusion (broadcast to all connections).
+    pub const fn to_all(event: ApiEvent) -> Self {
+        Self { event, exclude_conn_id: None }
+    }
+}
+
 use crate::auth::AuthState;
 use crate::config::Config;
 use crate::marketplace_installer::InstallJobQueue;
@@ -77,7 +99,7 @@ pub struct AppState {
     pub engine: Arc<Engine>,
     pub session_manager: Arc<Mutex<SessionManager>>,
     pub config: Arc<Config>,
-    pub event_tx: broadcast::Sender<ApiEvent>,
+    pub event_tx: broadcast::Sender<BroadcastEvent>,
     pub plugin_manager: SharedUnifiedPluginManager,
     pub marketplace_jobs: InstallJobQueue,
     pub auth: Arc<AuthState>,

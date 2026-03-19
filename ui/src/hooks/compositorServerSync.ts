@@ -11,10 +11,11 @@
  * Jotai atom state in sync without unnecessary re-renders.
  *
  * With Jotai atoms, only the specific layer atoms that actually changed get new
- * values — other layers and their subscribed components are unaffected.  The
- * sliderActiveRef guard is no longer needed because atom-level writes during
- * slider drags are immediately overwritten by the next slider tick; any brief
- * echo-back regression is imperceptible.
+ * values — other layers and their subscribed components are unaffected.
+ *
+ * During slider drags the client sends `TuneNodeSilent` which suppresses
+ * echo-back server-side, so no client-side guard is needed for sliders.  The
+ * only remaining guard is for pointer-driven drag/resize (dragStateRef).
  */
 
 import { useEffect } from 'react';
@@ -35,7 +36,6 @@ import {
   getImageOverlaysFromStore,
   getLayersFromStore,
   getTextOverlaysFromStore,
-  isSliderActiveAtom,
   setImageOverlaysInStore,
   setLayersInStore,
   setTextOverlaysInStore,
@@ -176,9 +176,11 @@ export function useServerLayoutSync(
 
     const applyServerLayout = (viewData: unknown) => {
       if (!viewData || typeof viewData !== 'object') return;
-      // Skip during drag/resize or active slider interaction to avoid
-      // server echo-backs overwriting in-flight local atom values.
-      if (dragStateRef.current || store.get(isSliderActiveAtom)) return;
+      // Skip during drag/resize to avoid server echo-backs overwriting
+      // in-flight local atom values.  Slider drags use the silent WS action
+      // (TuneNodeSilent) which suppresses echo-back server-side, so no
+      // client-side guard is needed for sliders.
+      if (dragStateRef.current) return;
 
       const layout = viewData as CompositorLayout;
       if (!Array.isArray(layout.layers)) return;

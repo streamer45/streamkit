@@ -197,10 +197,8 @@ InspectorHeaderSection.displayName = 'InspectorHeaderSection';
 export const OpacityControl: React.FC<{
   opacity: number;
   onChange: (value: number) => void;
-  onSliderStart?: () => void;
-  onSliderEnd?: () => void;
   disabled: boolean;
-}> = React.memo(({ opacity, onChange, onSliderStart, onSliderEnd, disabled }) => {
+}> = React.memo(({ opacity, onChange, disabled }) => {
   return (
     <InspectorSection>
       <InspectorSectionLabel>Opacity</InspectorSectionLabel>
@@ -210,10 +208,6 @@ export const OpacityControl: React.FC<{
           onValueChange={([v]) => {
             onChange(v);
           }}
-          onPointerDown={(e) => {
-            if (e.button === 0) onSliderStart?.();
-          }}
-          onValueCommit={() => onSliderEnd?.()}
           min={0}
           max={1}
           step={0.01}
@@ -235,10 +229,8 @@ OpacityControl.displayName = 'OpacityControl';
 export const RotationControl: React.FC<{
   rotationDegrees: number;
   onChange: (value: number) => void;
-  onSliderStart?: () => void;
-  onSliderEnd?: () => void;
   disabled: boolean;
-}> = React.memo(({ rotationDegrees, onChange, onSliderStart, onSliderEnd, disabled }) => {
+}> = React.memo(({ rotationDegrees, onChange, disabled }) => {
   const normalisedRotation = ((Math.round(rotationDegrees) % 360) + 360) % 360;
 
   return (
@@ -275,10 +267,6 @@ export const RotationControl: React.FC<{
           onValueChange={([v]) => {
             onChange(v);
           }}
-          onPointerDown={(e) => {
-            if (e.button === 0) onSliderStart?.();
-          }}
-          onValueCommit={() => onSliderEnd?.()}
           min={0}
           max={359}
           step={1}

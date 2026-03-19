@@ -10,7 +10,7 @@
 use crate::file_security;
 use crate::permissions::Permissions;
 use crate::session::Session;
-use crate::state::AppState;
+use crate::state::{AppState, BroadcastEvent};
 use opentelemetry::global;
 use streamkit_api::{
     Event as ApiEvent, EventPayload, MessageType, RequestPayload, ResponsePayload,
@@ -40,6 +40,7 @@ pub async fn handle_request_payload(
     perms: &Permissions,
     role_name: &str,
     correlation_id: Option<String>,
+    conn_id: u64,
 ) -> Option<ResponsePayload> {
     match payload {
         RequestPayload::CreateSession { name } => {
@@ -73,6 +74,12 @@ pub async fn handle_request_payload(
         },
         RequestPayload::TuneNodeAsync { session_id, node_id, message } => {
             handle_tune_node_async(session_id, node_id, message, app_state, perms, role_name).await
+        },
+        RequestPayload::TuneNodeSilent { session_id, node_id, message } => {
+            handle_tune_node_silent(
+                session_id, node_id, message, app_state, perms, role_name, conn_id,
+            )
+            .await
         },
         RequestPayload::GetPipeline { session_id } => {
             handle_get_pipeline(session_id, app_state, perms, role_name).await
@@ -163,7 +170,7 @@ async fn handle_create_session(
             created_at: created_at_str.clone(),
         },
     };
-    if app_state.event_tx.send(event).is_err() {
+    if app_state.event_tx.send(BroadcastEvent::to_all(event)).is_err() {
         debug!("No WebSocket clients connected to receive SessionCreated event");
     }
 
@@ -233,7 +240,7 @@ async fn handle_destroy_session(
         correlation_id: None,
         payload: EventPayload::SessionDestroyed { session_id: destroyed_id.clone() },
     };
-    if let Err(e) = app_state.event_tx.send(event) {
+    if let Err(e) = app_state.event_tx.send(BroadcastEvent::to_all(event)) {
         error!("Failed to broadcast SessionDestroyed event: {}", e);
     }
 
@@ -532,7 +539,7 @@ async fn handle_add_node(
             params: params.clone(),
         },
     };
-    if let Err(e) = app_state.event_tx.send(event) {
+    if let Err(e) = app_state.event_tx.send(BroadcastEvent::to_all(event)) {
         error!("Failed to broadcast NodeAdded event: {}", e);
     }
 
@@ -590,7 +597,7 @@ async fn handle_remove_node(
             node_id: node_id.clone(),
         },
     };
-    if let Err(e) = app_state.event_tx.send(event) {
+    if let Err(e) = app_state.event_tx.send(BroadcastEvent::to_all(event)) {
         error!("Failed to broadcast NodeRemoved event: {}", e);
     }
 
@@ -661,7 +668,7 @@ async fn handle_connect(
             to_pin: to_pin.clone(),
         },
     };
-    if let Err(e) = app_state.event_tx.send(event) {
+    if let Err(e) = app_state.event_tx.send(BroadcastEvent::to_all(event)) {
         error!("Failed to broadcast ConnectionAdded event: {}", e);
     }
 
@@ -740,7 +747,7 @@ async fn handle_disconnect(
             to_pin: to_pin.clone(),
         },
     };
-    if let Err(e) = app_state.event_tx.send(event) {
+    if let Err(e) = app_state.event_tx.send(BroadcastEvent::to_all(event)) {
         error!("Failed to broadcast ConnectionRemoved event: {}", e);
     }
 
@@ -859,7 +866,7 @@ async fn handle_tune_node(
                 params: params.clone(),
             },
         };
-        if let Err(e) = app_state.event_tx.send(event) {
+        if let Err(e) = app_state.event_tx.send(BroadcastEvent::to_all(event)) {
             error!("Failed to broadcast NodeParamsChanged event: {}", e);
         }
     }
@@ -982,7 +989,7 @@ async fn handle_tune_node_async(
                     params: params.clone(),
                 },
             };
-            if let Err(e) = app_state.event_tx.send(event) {
+            if let Err(e) = app_state.event_tx.send(BroadcastEvent::to_all(event)) {
                 error!("Failed to broadcast NodeParamsChanged event: {}", e);
             }
         }
@@ -991,6 +998,136 @@ async fn handle_tune_node_async(
         session.send_control_message(control_msg).await;
     } else {
         warn!("Could not tune non-existent session '{}' via TuneNodeAsync", session_id);
+    }
+    None // Do not send a response
+}
+
+/// Handle silent node tuning — fire-and-forget with echo suppression.
+///
+/// Nearly identical to [`handle_tune_node_async`] but broadcasts
+/// `NodeParamsChanged` with `exclude_conn_id` set to the sender's connection
+/// ID.  The per-connection event loop in `handle_websocket` skips the event
+/// for that connection, preventing stale echo-backs during high-frequency
+/// slider drags.
+#[allow(clippy::cognitive_complexity)]
+async fn handle_tune_node_silent(
+    session_id: String,
+    node_id: String,
+    message: NodeControlMessage,
+    app_state: &AppState,
+    perms: &Permissions,
+    role_name: &str,
+    conn_id: u64,
+) -> Option<ResponsePayload> {
+    // Check permission to tune nodes
+    if !perms.tune_nodes {
+        warn!("Permission denied: attempted to tune node without permission via TuneNodeSilent");
+        return None;
+    }
+
+    let session = {
+        let session_manager = app_state.session_manager.lock().await;
+        session_manager.get_session_by_name_or_id(&session_id)
+    }; // Session manager lock released here
+
+    if let Some(session) = session {
+        // Check ownership
+        if !can_access_session(&session, role_name, perms) {
+            warn!(
+                session_id = %session_id,
+                role = %role_name,
+                "Permission denied: attempted to tune node in session not owned via TuneNodeSilent"
+            );
+            return None;
+        }
+
+        // Handle UpdateParams specially for pipeline model updates and event broadcasting
+        if let NodeControlMessage::UpdateParams(ref params) = message {
+            let (kind, file_path, script_path) = {
+                let pipeline = session.pipeline.lock().await;
+                let kind = pipeline.nodes.get(&node_id).map(|n| n.kind.clone());
+                let file_path =
+                    params.get("path").and_then(serde_json::Value::as_str).map(str::to_string);
+                let script_path = params
+                    .get("script_path")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+                drop(pipeline);
+                (kind, file_path, script_path)
+            };
+
+            let file_path = file_path.as_deref();
+            let script_path = script_path.as_deref();
+
+            if kind.as_deref() == Some("core::file_reader") {
+                let Some(path) = file_path else {
+                    warn!("Invalid file_reader params: expected params.path to be a string");
+                    return None;
+                };
+                if let Err(e) = file_security::validate_file_path(path, &app_state.config.security)
+                {
+                    warn!("Invalid file path: {e}");
+                    return None;
+                }
+            }
+
+            if kind.as_deref() == Some("core::file_writer") {
+                if let Some(path) = file_path {
+                    if let Err(e) =
+                        file_security::validate_write_path(path, &app_state.config.security)
+                    {
+                        warn!("Invalid write path: {e}");
+                        return None;
+                    }
+                }
+            }
+
+            if kind.as_deref() == Some("core::script") {
+                if let Some(path) = script_path {
+                    if !path.trim().is_empty() {
+                        if let Err(e) =
+                            file_security::validate_file_path(path, &app_state.config.security)
+                        {
+                            warn!("Invalid script_path: {e}");
+                            return None;
+                        }
+                    }
+                }
+            }
+
+            {
+                let mut pipeline = session.pipeline.lock().await;
+                if let Some(node) = pipeline.nodes.get_mut(&node_id) {
+                    node.params = Some(params.clone());
+                } else {
+                    warn!(
+                        node_id = %node_id,
+                        "Attempted to tune params for non-existent node in pipeline model via TuneNodeSilent"
+                    );
+                }
+            } // Lock released here
+
+            // Broadcast event to all clients EXCEPT the sender (echo suppression).
+            let event = ApiEvent {
+                message_type: MessageType::Event,
+                correlation_id: None,
+                payload: EventPayload::NodeParamsChanged {
+                    session_id: session.id.clone(),
+                    node_id: node_id.clone(),
+                    params: params.clone(),
+                },
+            };
+            if let Err(e) =
+                app_state.event_tx.send(BroadcastEvent { event, exclude_conn_id: Some(conn_id) })
+            {
+                error!("Failed to broadcast NodeParamsChanged event: {}", e);
+            }
+        }
+
+        let control_msg = EngineControlMessage::TuneNode { node_id, message };
+        session.send_control_message(control_msg).await;
+    } else {
+        warn!("Could not tune non-existent session '{}' via TuneNodeSilent", session_id);
     }
     None // Do not send a response
 }

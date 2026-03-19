@@ -37,7 +37,6 @@ import {
   getLayersFromStore,
   getTextOverlaysFromStore,
   isDraggingAtom,
-  isSliderActiveAtom,
   selectedLayerIdAtom,
   setImageOverlaysInStore,
   setLayersInStore,
@@ -79,6 +78,8 @@ export interface UseCompositorLayersOptions {
   canvasHeight: number;
   params: Record<string, unknown>;
   onConfigChange?: (nodeId: string, config: Record<string, unknown>) => void;
+  /** Silent config change: broadcasts to other clients only (no echo-back). */
+  onConfigChangeSilent?: (nodeId: string, config: Record<string, unknown>) => void;
   onParamChange?: (nodeId: string, paramName: string, value: unknown) => void;
   throttleMs?: number;
 }
@@ -137,6 +138,7 @@ export const useCompositorLayers = (
     canvasHeight,
     params,
     onConfigChange,
+    onConfigChangeSilent,
     onParamChange,
     throttleMs = PARAM_THROTTLE_MS,
   } = options;
@@ -214,13 +216,6 @@ export const useCompositorLayers = (
   useEffect(() => {
     const unsub1 = store.sub(selectedLayerIdAtom, () => {
       setSelectedLayerIdState(store.get(selectedLayerIdAtom));
-      // Safety net: clear slider-active flag when selection changes.
-      // If a slider component unmounts mid-drag (layer deselected, removed,
-      // or Escape pressed), onValueCommit never fires and the flag would
-      // remain stuck, permanently blocking echo-back sync.
-      if (store.get(isSliderActiveAtom)) {
-        store.set(isSliderActiveAtom, false);
-      }
     });
     const unsub2 = store.sub(isDraggingAtom, () => {
       setIsDraggingState(store.get(isDraggingAtom));
@@ -274,11 +269,11 @@ export const useCompositorLayers = (
   const isMonitorView = !!sessionId;
 
   useEffect(() => {
-    // Skip echo-back processing during drag/resize or active slider interaction.
-    // Atoms already have the latest local value; echo-backs carry stale data.
-    // Reconciliation happens automatically when the slider commits (isSliderActive
-    // flips to false → next params change triggers this effect without the guard).
-    if (dragStateRef.current || store.get(isSliderActiveAtom)) return;
+    // Skip echo-back processing during drag/resize — atoms already have the
+    // latest local value; echo-backs carry stale data.  Slider drags use the
+    // silent WS action (TuneNodeSilent) which suppresses echo-back server-side,
+    // so no client-side guard is needed for sliders.
+    if (dragStateRef.current) return;
     const parsed = parseLayers(params, canvasWidth, canvasHeight);
     const currentLayers = getLayersFromStore(store);
 
@@ -352,6 +347,7 @@ export const useCompositorLayers = (
   const { commitAdapter, throttledConfigChange, throttledOverlayCommit } = useCompositorCommit({
     nodeId,
     onConfigChange,
+    onConfigChangeSilent,
     onParamChange,
     throttleMs,
     paramsRef,

@@ -43,12 +43,6 @@ export const imageOverlayIdsAtom = atom<string[]>([]);
 export const selectedLayerIdAtom = atom<string | null>(null);
 /** Whether a drag/resize is in progress. */
 export const isDraggingAtom = atom(false);
-/** Whether a slider (opacity/rotation) is actively being dragged.
- *  When true, the sync-from-props effect skips echo-back processing
- *  to avoid overwriting in-flight local atom values with stale server data.
- *  Server sends continue (fire-and-forget for live preview); reconciliation
- *  happens on slider commit when this flips back to false. */
-export const isSliderActiveAtom = atom(false);
 
 // Per-entity atom families.  The factory param (_id) is used by atomFamily
 // for cache lookup — the factory itself always returns the same default atom
