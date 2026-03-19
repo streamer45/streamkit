@@ -301,7 +301,11 @@ export const useCompositorLayers = (
     const merged = mergeOverlayState(
       currentLayers,
       parsed,
-      (a, b) => a.cropZoom !== b.cropZoom || a.cropX !== b.cropX || a.cropY !== b.cropY,
+      (a, b) =>
+        a.cropZoom !== b.cropZoom ||
+        a.cropX !== b.cropX ||
+        a.cropY !== b.cropY ||
+        a.cropCircle !== b.cropCircle,
       isMonitorView
     );
     if (merged !== currentLayers) setLayersInStore(store, merged);

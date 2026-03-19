@@ -1835,3 +1835,67 @@ fn test_composite_frame_crop_circle() {
     assert_eq!(buf[0], 0, "Corner R");
     assert_eq!(buf[3], 0, "Corner A");
 }
+
+#[test]
+fn test_composite_frame_crop_circle_skip_clear() {
+    // Regression test: when crop_circle is true on the first (full-canvas)
+    // layer, the skip_clear optimisation must NOT fire — pixels outside the
+    // ellipse must be cleared to transparent black.  With a pooled buffer
+    // the recycled memory may contain stale data from a prior frame; if the
+    // canvas isn't cleared those stale pixels would leak through.
+    //
+    // We simulate this by using a VideoFramePool, filling the recycled
+    // buffer with garbage, then compositing a crop_circle layer and
+    // asserting that the corner pixel is zeroed.
+    use streamkit_core::VideoFramePool;
+
+    let pool = VideoFramePool::video_default();
+    let canvas_w: u32 = 20;
+    let canvas_h: u32 = 20;
+    let total_bytes = (canvas_w as usize) * (canvas_h as usize) * 4;
+
+    // Prime the pool: get a buffer, fill it with non-zero garbage, then
+    // drop it so it returns to the pool.
+    {
+        let mut primer = pool.get(total_bytes);
+        primer.as_mut_slice().fill(0xAB);
+    }
+
+    // Now composite_frame will recycle that buffer (pool hit).
+    let frame = make_rgba_frame(canvas_w, canvas_h, 255, 0, 0, 255);
+    let layer = LayerSnapshot {
+        data: frame.data,
+        width: canvas_w,
+        height: canvas_h,
+        pixel_format: PixelFormat::Rgba8,
+        rect: Some(Rect { x: 0, y: 0, width: canvas_w, height: canvas_h }),
+        opacity: 1.0,
+        z_index: 0,
+        rotation_degrees: 0.0,
+        mirror_horizontal: false,
+        mirror_vertical: false,
+        crop_zoom: 1.0,
+        crop_x: 0.5,
+        crop_y: 0.5,
+        crop_circle: true,
+    };
+
+    let mut cache = ConversionCache::new();
+    let result =
+        composite_frame(canvas_w, canvas_h, &[Some(layer)], &[], &[], Some(&pool), &mut cache);
+    let buf = result.as_slice();
+
+    // Corner (0,0) is outside the ellipse — must be transparent black,
+    // NOT the 0xAB garbage from the recycled buffer.
+    assert_eq!(buf[0], 0, "Corner R must be 0 (was stale pool data)");
+    assert_eq!(buf[1], 0, "Corner G must be 0");
+    assert_eq!(buf[2], 0, "Corner B must be 0");
+    assert_eq!(buf[3], 0, "Corner A must be 0 (was stale pool data)");
+
+    // Centre pixel should still be red.
+    let cx = 10usize;
+    let cy = 10usize;
+    let idx = (cy * canvas_w as usize + cx) * 4;
+    assert_eq!(buf[idx], 255, "Centre R");
+    assert!(buf[idx + 3] > 200, "Centre A");
+}
