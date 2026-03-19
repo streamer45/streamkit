@@ -120,6 +120,7 @@ fn make_layer(
         crop_zoom: 1.0,
         crop_x: 0.5,
         crop_y: 0.5,
+        crop_circle: false,
     })
 }
 
@@ -414,6 +415,7 @@ fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
                         crop_zoom: 1.0,
                         crop_x: 0.5,
                         crop_y: 0.5,
+                        crop_circle: false,
                     }),
                     Some(LayerSnapshot {
                         data: pip,
@@ -429,6 +431,7 @@ fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
                         crop_zoom: 1.0,
                         crop_x: 0.5,
                         crop_y: 0.5,
+                        crop_circle: false,
                     }),
                 ]
             },

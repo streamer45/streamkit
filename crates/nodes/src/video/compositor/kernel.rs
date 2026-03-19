@@ -218,6 +218,8 @@ pub struct LayerSnapshot {
     pub crop_x: f32,
     /// Normalized crop tilt Y (0.0–1.0).  Default 0.5 (centred).
     pub crop_y: f32,
+    /// Clip the layer to an ellipse inscribed in the destination rect.
+    pub crop_circle: bool,
 }
 
 /// Work item sent from the async loop to the persistent compositing thread.
@@ -252,6 +254,7 @@ pub struct CompositeResult {
 
 /// A resolved, ready-to-composite item.  Unifies video layers and decoded
 /// overlays into a single type for the z-sorted compositing loop.
+#[allow(clippy::struct_excessive_bools)]
 struct CompositeItem<'a> {
     src_data: &'a [u8],
     src_width: u32,
@@ -269,6 +272,8 @@ struct CompositeItem<'a> {
     /// Source sub-region in pixel coordinates `(x, y, w, h)`.  `None` means
     /// sample the entire source.  Used for virtual PTZ crop/zoom.
     src_region: Option<(u32, u32, u32, u32)>,
+    /// Clip the composited layer to an ellipse inscribed in the destination rect.
+    crop_circle: bool,
 }
 
 /// Compute the source crop rectangle from normalised crop parameters.
@@ -446,6 +451,7 @@ pub fn composite_frame(
             mirror_horizontal: layer.mirror_horizontal,
             mirror_vertical: layer.mirror_vertical,
             src_region,
+            crop_circle: layer.crop_circle,
         });
         insertion_order += 1;
     }
@@ -464,6 +470,7 @@ pub fn composite_frame(
             mirror_horizontal: ov.mirror_horizontal,
             mirror_vertical: ov.mirror_vertical,
             src_region: None,
+            crop_circle: false,
         });
         insertion_order += 1;
     }
@@ -482,6 +489,7 @@ pub fn composite_frame(
             mirror_horizontal: ov.mirror_horizontal,
             mirror_vertical: ov.mirror_vertical,
             src_region: None,
+            crop_circle: false,
         });
         insertion_order += 1;
     }
@@ -505,6 +513,7 @@ pub fn composite_frame(
             item.mirror_horizontal,
             item.mirror_vertical,
             item.src_region,
+            item.crop_circle,
         );
     }
 

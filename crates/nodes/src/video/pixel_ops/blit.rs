@@ -91,7 +91,13 @@ fn blend_pixel_scalar(
 ///
 /// Rows are processed in parallel via `rayon` when the blit region is large
 /// enough to benefit from multi-core dispatch.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::too_many_arguments)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::too_many_arguments,
+    clippy::fn_params_excessive_bools,
+    clippy::similar_names
+)]
 pub fn scale_blit_rgba(
     dst: &mut [u8],
     dst_width: u32,
@@ -105,6 +111,7 @@ pub fn scale_blit_rgba(
     mirror_h: bool,
     mirror_v: bool,
     src_region: Option<(u32, u32, u32, u32)>,
+    crop_circle: bool,
 ) {
     use rayon::prelude::*;
 
@@ -174,6 +181,7 @@ pub fn scale_blit_rgba(
         && !mirror_h
         && !mirror_v
         && src_region.is_none()
+        && !crop_circle
     {
         let src_row_bytes = sw * 4;
         let copy_bytes = effective_rect_w * 4;
@@ -269,6 +277,92 @@ pub fn scale_blit_rgba(
             }
         })
         .collect();
+
+    if crop_circle {
+        // ── Ellipse-masked blit path ──────────────────────────────────
+        // Per-pixel ellipse test with anti-aliased edges.  Uses a
+        // dedicated scalar loop — the SIMD fast paths are bypassed since
+        // the per-pixel ellipse alpha multiplier makes vectorisation
+        // impractical without significant complexity.
+        #[allow(clippy::cast_precision_loss)]
+        let ellipse_sx = 2.0 / rw as f32;
+        #[allow(clippy::cast_precision_loss)]
+        let ellipse_sy = 2.0 / rh as f32;
+        // AA band width in normalised coords (~1.5 pixels).
+        let aa_band = ellipse_sx.max(ellipse_sy) * 1.5;
+        let aa_inner = 1.0 - aa_band;
+
+        let blit_row_ellipse = |dy: usize, row_slice: &mut [u8]| {
+            #[allow(clippy::cast_precision_loss)]
+            let ny = ((dy + src_row_skip) as f32).mul_add(ellipse_sy, -1.0) + ellipse_sy * 0.5;
+            let ny2 = ny * ny;
+            if ny2 >= 1.0 {
+                return;
+            }
+
+            let sy_in_crop = (dy + src_row_skip) * crop_h / rh;
+            let sy = if mirror_v {
+                crop_y + crop_h.saturating_sub(1).saturating_sub(sy_in_crop)
+            } else {
+                crop_y + sy_in_crop
+            };
+            let src_row_base = sy * sw * 4;
+
+            for (dx, &sx_mapped) in x_map.iter().enumerate().take(effective_rect_w) {
+                #[allow(clippy::cast_precision_loss)]
+                let nx = ((dx + src_col_skip) as f32).mul_add(ellipse_sx, -1.0) + ellipse_sx * 0.5;
+                let dist2 = nx * nx + ny2;
+                if dist2 > 1.0 {
+                    continue;
+                }
+
+                // Anti-aliased edge falloff.
+                let ellipse_alpha = if dist2 > aa_inner * aa_inner {
+                    let radius = dist2.sqrt();
+                    ((1.0 - radius) / aa_band).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                };
+
+                let eff_opacity = opacity * ellipse_alpha;
+                if eff_opacity <= 0.001 {
+                    continue;
+                }
+
+                let sx = sx_mapped;
+                let si = src_row_base + sx * 4;
+                if si + 3 >= src.len() {
+                    continue;
+                }
+
+                let dst_off = (rx + dx) * 4;
+                if dst_off + 3 >= row_slice.len() {
+                    continue;
+                }
+
+                let sr = src[si];
+                let sg = src[si + 1];
+                let sb = src[si + 2];
+                let sa = src[si + 3];
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let a_eff = (f32::from(sa) * eff_opacity).round().clamp(0.0, 255.0) as u16;
+                blend_over_scalar(row_slice, dst_off, sr, sg, sb, a_eff);
+            }
+        };
+
+        if effective_rh >= RAYON_ROW_THRESHOLD {
+            dst_rows.par_chunks_mut(row_stride).take(effective_rh).enumerate().for_each(
+                |(dy, row_slice)| {
+                    blit_row_ellipse(dy, row_slice);
+                },
+            );
+        } else {
+            for (dy, row_slice) in dst_rows.chunks_mut(row_stride).take(effective_rh).enumerate() {
+                blit_row_ellipse(dy, row_slice);
+            }
+        }
+        return;
+    }
 
     if effective_rh >= RAYON_ROW_THRESHOLD {
         dst_rows.par_chunks_mut(row_stride).take(effective_rh).enumerate().for_each(
@@ -742,6 +836,7 @@ unsafe fn rotated_blit_avx2_loop(
     clippy::cast_possible_wrap,
     // AVX2 block has side-effects (SIMD writes) before assigning done.
     clippy::useless_let_if_seq,
+    clippy::fn_params_excessive_bools,
     // Function is large due to SIMD specialisations; splitting would hurt readability.
     clippy::too_many_lines
 )]
@@ -759,6 +854,7 @@ pub fn scale_blit_rgba_rotated(
     mirror_h: bool,
     mirror_v: bool,
     src_region: Option<(u32, u32, u32, u32)>,
+    crop_circle: bool,
 ) {
     if src_width == 0 || src_height == 0 || dst_rect.width == 0 || dst_rect.height == 0 {
         return;
@@ -772,8 +868,19 @@ pub fn scale_blit_rgba_rotated(
     // source to fill the destination rect (no aspect-ratio fitting).
     if rotation_deg.abs() < 0.01 {
         scale_blit_rgba(
-            dst, dst_width, dst_height, src, src_width, src_height, dst_rect, opacity, src_opaque,
-            mirror_h, mirror_v, src_region,
+            dst,
+            dst_width,
+            dst_height,
+            src,
+            src_width,
+            src_height,
+            dst_rect,
+            opacity,
+            src_opaque,
+            mirror_h,
+            mirror_v,
+            src_region,
+            crop_circle,
         );
         return;
     }
@@ -886,6 +993,36 @@ pub fn scale_blit_rgba_rotated(
                 continue;
             }
 
+            // ── Ellipse crop mask ──────────────────────────────────
+            // When crop_circle is enabled, test the pixel against the
+            // ellipse inscribed in the destination rect.  Normalised
+            // coordinates: nx ∈ [-1, 1], ny ∈ [-1, 1].
+            let ellipse_coverage = if crop_circle {
+                let nx = local_x / half_cw;
+                let ny = local_y / half_ch;
+                let r2 = nx * nx + ny * ny;
+                if r2 > 1.0 {
+                    // Fully outside ellipse — skip pixel.
+                    local_x += cos_a;
+                    local_y -= sin_a;
+                    px += 1;
+                    continue;
+                }
+                // Anti-aliased edge: smoothstep over ~1.5 pixel band.
+                let ellipse_sx = 2.0 / rw;
+                let ellipse_sy = 2.0 / rh;
+                let aa_band = ellipse_sx.max(ellipse_sy) * 1.5;
+                let aa_inner = 1.0 - aa_band;
+                let dist = r2.sqrt();
+                if dist > aa_inner {
+                    ((1.0 - dist) / aa_band).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                }
+            } else {
+                1.0
+            };
+
             // Map from rect-local coords to source pixel coords.
             // `local_x/y` ∈ [-half_cw, half_cw] × [-half_ch, half_ch]
             // for points inside the rect.  Convert to source pixel
@@ -931,6 +1068,11 @@ pub fn scale_blit_rgba_rotated(
                 sa = f32::from(sa).mul_add(min_dist, 0.5) as u8;
             }
 
+            // Apply ellipse coverage for crop_circle.
+            if ellipse_coverage < 1.0 {
+                sa = f32::from(sa).mul_add(ellipse_coverage, 0.5) as u8;
+            }
+
             if sa > 0 {
                 let dst_off = px as usize * 4;
                 if dst_off + 3 < row_slice.len() {
@@ -961,7 +1103,7 @@ pub fn scale_blit_rgba_rotated(
             // So if min_dist >= 2.0, at least the next pixel is also fully
             // interior (min_dist ≥ 1.0).  We use this to batch interior
             // pixels with a tighter loop that skips the coverage branch.
-            if min_dist >= 2.0 {
+            if min_dist >= 2.0 && !crop_circle {
                 // Number of pixels we can safely process without AA.
                 // Conservative: (min_dist - 1.0).floor() guarantees
                 // min_dist stays >= 1.0 for all skipped pixels.

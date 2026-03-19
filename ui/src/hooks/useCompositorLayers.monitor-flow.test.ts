@@ -116,6 +116,7 @@ function makeServerLayout(overrides: Partial<CompositorLayout> = {}): Compositor
         crop_zoom: 1.0,
         crop_x: 0.5,
         crop_y: 0.5,
+        crop_circle: false,
       },
     ],
     text_overlays: [],
@@ -356,6 +357,7 @@ describe('Monitor view data flow integration', () => {
           crop_zoom: 1.0,
           crop_x: 0.5,
           crop_y: 0.5,
+          crop_circle: false,
         },
         {
           id: 'in_1',
@@ -371,6 +373,7 @@ describe('Monitor view data flow integration', () => {
           crop_zoom: 1.0,
           crop_x: 0.5,
           crop_y: 0.5,
+          crop_circle: false,
         },
       ],
     });
@@ -622,6 +625,7 @@ describe('Monitor view data flow integration', () => {
               crop_zoom: 1.0,
               crop_x: 0.5,
               crop_y: 0.5,
+              crop_circle: false,
             },
           ],
         })
@@ -663,6 +667,7 @@ describe('Monitor view data flow integration', () => {
               crop_zoom: 1.0,
               crop_x: 0.5,
               crop_y: 0.5,
+              crop_circle: false,
             },
           ],
         })

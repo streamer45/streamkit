@@ -44,7 +44,12 @@ import {
 } from './compositorAtoms';
 import { useCompositorCommit } from './compositorCommit';
 import type { LayerKind } from './compositorConstants';
-import { DEFAULT_CROP_X, DEFAULT_CROP_Y, DEFAULT_CROP_ZOOM } from './compositorConstants';
+import {
+  DEFAULT_CROP_CIRCLE,
+  DEFAULT_CROP_X,
+  DEFAULT_CROP_Y,
+  DEFAULT_CROP_ZOOM,
+} from './compositorConstants';
 import { useCompositorDragResize } from './compositorDragResize';
 import type { DragState } from './compositorDragResize';
 import type { CompositorKeyboardDeps } from './compositorKeyboard';
@@ -104,7 +109,7 @@ export interface UseCompositorLayersResult {
   /** Update crop/zoom on a video layer. */
   updateLayerCropZoom: (
     layerId: string,
-    patch: { cropX?: number; cropY?: number; cropZoom?: number }
+    patch: { cropX?: number; cropY?: number; cropZoom?: number; cropCircle?: boolean }
   ) => void;
   /** Ref map: layer elements register here for direct DOM manipulation during drag */
   layerRefs: React.MutableRefObject<Map<string, HTMLDivElement>>;
@@ -340,6 +345,7 @@ export const useCompositorLayers = (
             cropZoom: DEFAULT_CROP_ZOOM,
             cropX: DEFAULT_CROP_X,
             cropY: DEFAULT_CROP_Y,
+            cropCircle: DEFAULT_CROP_CIRCLE,
           },
           kind: 'text',
         };
@@ -351,6 +357,7 @@ export const useCompositorLayers = (
             cropZoom: DEFAULT_CROP_ZOOM,
             cropX: DEFAULT_CROP_X,
             cropY: DEFAULT_CROP_Y,
+            cropCircle: DEFAULT_CROP_CIRCLE,
           },
           kind: 'image',
         };

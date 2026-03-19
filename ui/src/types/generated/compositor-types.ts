@@ -173,7 +173,12 @@ crop_x: number,
  * (0.0 = top edge, 0.5 = centred, 1.0 = bottom edge).  Only has a
  * visible effect when `crop_zoom > 1.0`.  Default 0.5.
  */
-crop_y: number, };
+crop_y: number, 
+/**
+ * Clip the layer to an ellipse inscribed in the destination rect.
+ * When the rect is square this produces a perfect circle.  Default `false`.
+ */
+crop_circle: boolean, };
 
 export type CompositorConfig = { 
 /**
@@ -227,7 +232,11 @@ crop_x: number,
 /**
  * Normalized crop tilt Y (0.0–1.0).
  */
-crop_y: number, };
+crop_y: number, 
+/**
+ * Whether the layer is clipped to an ellipse inscribed in the rect.
+ */
+crop_circle: boolean, };
 
 export type ResolvedOverlay = { 
 /**

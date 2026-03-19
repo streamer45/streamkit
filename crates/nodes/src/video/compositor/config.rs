@@ -204,6 +204,10 @@ pub struct LayerConfig {
     /// visible effect when `crop_zoom > 1.0`.  Default 0.5.
     #[serde(default = "default_crop_center")]
     pub crop_y: f32,
+    /// Clip the layer to an ellipse inscribed in the destination rect.
+    /// When the rect is square this produces a perfect circle.  Default `false`.
+    #[serde(default)]
+    pub crop_circle: bool,
 }
 
 impl Default for LayerConfig {
@@ -218,6 +222,7 @@ impl Default for LayerConfig {
             crop_zoom: default_crop_zoom(),
             crop_x: default_crop_center(),
             crop_y: default_crop_center(),
+            crop_circle: false,
         }
     }
 }
@@ -299,6 +304,8 @@ pub struct ResolvedLayer {
     pub crop_x: f32,
     /// Normalized crop tilt Y (0.0–1.0).
     pub crop_y: f32,
+    /// Whether the layer is clipped to an ellipse inscribed in the rect.
+    pub crop_circle: bool,
 }
 
 /// Server-computed layout for a single overlay (text or image).

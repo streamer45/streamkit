@@ -147,17 +147,21 @@ export const VideoLayer: React.FC<{
       ref={layerRef}
       className="nodrag nopan"
       aria-label={`Video layer: ${layer.id}`}
-      style={layerBoxStyle(layer.x, layer.y, layer.width, layer.height, {
-        visible: layer.visible,
-        opacity: layer.opacity,
-        zIndex: layer.zIndex,
-        rotationDegrees: layer.rotationDegrees,
-        mirrorHorizontal: layer.mirrorHorizontal,
-        mirrorVertical: layer.mirrorVertical,
-        borderColor,
-        bgColor,
-        outlineStyle: layer.visible ? 'solid' : 'dashed',
-      })}
+      style={{
+        ...layerBoxStyle(layer.x, layer.y, layer.width, layer.height, {
+          visible: layer.visible,
+          opacity: layer.opacity,
+          zIndex: layer.zIndex,
+          rotationDegrees: layer.rotationDegrees,
+          mirrorHorizontal: layer.mirrorHorizontal,
+          mirrorVertical: layer.mirrorVertical,
+          borderColor,
+          bgColor,
+          outlineStyle: layer.visible ? 'solid' : 'dashed',
+        }),
+        borderRadius: layer.cropCircle ? '50%' : undefined,
+        overflow: layer.cropCircle ? 'hidden' : undefined,
+      }}
       onPointerDown={handlePointerDown}
     >
       <LayerLabel>{layer.id}</LayerLabel>
