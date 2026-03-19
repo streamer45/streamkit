@@ -262,6 +262,22 @@ export const useCompositorLayers = (
   }>({ vertical: null, horizontal: null });
   const dragStateRef = useRef<DragState | null>(null);
 
+  // ── Commit / persistence ───────────────────────────────────────────────────
+  // Hoisted above sync-from-props so throttleActiveRef is available to the
+  // echo-back guards.
+  const { commitAdapter, throttledConfigChange, throttledOverlayCommit, throttleActiveRef } =
+    useCompositorCommit({
+      nodeId,
+      onConfigChange,
+      onConfigChangeSilent,
+      onParamChange,
+      throttleMs,
+      paramsRef,
+      layersRef,
+      textOverlaysRef,
+      imageOverlaysRef,
+    });
+
   // ── Sync from props ─────────────────────────────────────────────────────
   // In Monitor view (sessionId is set), the server's view data is the source
   // of truth for geometry.  The "sync from props" effect must NOT overwrite
@@ -269,11 +285,11 @@ export const useCompositorLayers = (
   const isMonitorView = !!sessionId;
 
   useEffect(() => {
-    // Skip echo-back processing during drag/resize — atoms already have the
-    // latest local value; echo-backs carry stale data.  Slider drags use the
-    // silent WS action (TuneNodeSilent) which suppresses echo-back server-side,
-    // so no client-side guard is needed for sliders.
-    if (dragStateRef.current) return;
+    // Skip echo-back processing during drag/resize or active throttled slider
+    // sends — atoms already have the latest local value; echo-backs carry stale
+    // data.  TuneNodeSilent suppresses NodeParamsChanged server-side, but
+    // NodeViewDataUpdated is still broadcast to all clients, so we guard here.
+    if (dragStateRef.current || throttleActiveRef.current) return;
     const parsed = parseLayers(params, canvasWidth, canvasHeight);
     const currentLayers = getLayersFromStore(store);
 
@@ -309,7 +325,7 @@ export const useCompositorLayers = (
   }, [params, canvasWidth, canvasHeight, isMonitorView, store]);
 
   // ── Server-driven layout (Monitor view only) ───────────────────────────
-  useServerLayoutSync(sessionId, nodeId, store, dragStateRef);
+  useServerLayoutSync(sessionId, nodeId, store, dragStateRef, throttleActiveRef);
 
   // ── Find layer across all types ─────────────────────────────────────────
   const findAnyLayer = useCallback(
@@ -342,19 +358,6 @@ export const useCompositorLayers = (
     },
     []
   );
-
-  // ── Commit / persistence ───────────────────────────────────────────────────
-  const { commitAdapter, throttledConfigChange, throttledOverlayCommit } = useCompositorCommit({
-    nodeId,
-    onConfigChange,
-    onConfigChangeSilent,
-    onParamChange,
-    throttleMs,
-    paramsRef,
-    layersRef,
-    textOverlaysRef,
-    imageOverlaysRef,
-  });
 
   // ── Overlay CRUD, property updates, reorder ─────────────────────────────
   const overlayOps = useCompositorOverlays({

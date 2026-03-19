@@ -585,4 +585,93 @@ describe('Monitor view data flow integration', () => {
     expect(text1[0].x).toBe(100);
     expect(text1[0].y).toBe(200);
   });
+
+  it('server view-data updates are skipped during active throttled slider sends', () => {
+    seedStore();
+
+    const onConfigChangeSilent = vi.fn();
+    const opts = monitorOptions({
+      onConfigChangeSilent,
+      params: makeParams({
+        layers: {
+          in_0: { opacity: 0.8, z_index: 0 },
+        },
+      }),
+    });
+    const { result } = renderHook(
+      (props: UseCompositorLayersOptions) => useCompositorLayers(props),
+      { initialProps: opts }
+    );
+
+    // Server resolves initial layout
+    act(() =>
+      pushServerViewData(
+        makeServerLayout({
+          layers: [
+            {
+              id: 'in_0',
+              x: 160,
+              y: 0,
+              width: 960,
+              height: 720,
+              opacity: 0.8,
+              z_index: 0,
+              rotation_degrees: 0,
+              mirror_horizontal: false,
+              mirror_vertical: false,
+              crop_zoom: 1.0,
+              crop_x: 0.5,
+              crop_y: 0.5,
+            },
+          ],
+        })
+      )
+    );
+
+    const layers0 = getLayersFromStore(result.current.store);
+    expect(layers0[0].opacity).toBe(0.8);
+
+    // Simulate a slider drag: user changes opacity locally via the
+    // updateLayerOpacity helper.  This triggers a throttled silent send
+    // which sets throttleActiveRef = true.
+    act(() => result.current.updateLayerOpacity('in_0', 0.5));
+
+    // The throttled commit adapter should have been called (via the silent path)
+    expect(onConfigChangeSilent).toHaveBeenCalled();
+
+    // Local atom now has the user's value
+    const layers1 = getLayersFromStore(result.current.store);
+    expect(layers1[0].opacity).toBe(0.5);
+
+    // Server sends a stale NodeViewDataUpdated with old opacity (0.8).
+    // Because throttleActiveRef is true, this should be skipped.
+    act(() =>
+      pushServerViewData(
+        makeServerLayout({
+          layers: [
+            {
+              id: 'in_0',
+              x: 160,
+              y: 0,
+              width: 960,
+              height: 720,
+              opacity: 0.8,
+              z_index: 0,
+              rotation_degrees: 0,
+              mirror_horizontal: false,
+              mirror_vertical: false,
+              crop_zoom: 1.0,
+              crop_x: 0.5,
+              crop_y: 0.5,
+            },
+          ],
+        })
+      )
+    );
+
+    // Local atom must still hold the user's value (0.5), not the stale
+    // server value (0.8).
+    const layers2 = getLayersFromStore(result.current.store);
+    expect(layers2[0].opacity).toBe(0.5);
+  });
 });

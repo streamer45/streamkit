@@ -14,8 +14,11 @@
  * values — other layers and their subscribed components are unaffected.
  *
  * During slider drags the client sends `TuneNodeSilent` which suppresses
- * echo-back server-side, so no client-side guard is needed for sliders.  The
- * only remaining guard is for pointer-driven drag/resize (dragStateRef).
+ * `NodeParamsChanged` echo-back server-side.  However, `NodeViewDataUpdated`
+ * is still broadcast to all clients (the engine doesn't track the originating
+ * connection), so a lightweight client-side guard (`throttleActiveRef`) skips
+ * view-data updates while a throttled silent send is in-flight.  Pointer-driven
+ * drag/resize uses the existing `dragStateRef` guard.
  */
 
 import { useEffect } from 'react';
@@ -169,18 +172,20 @@ export function useServerLayoutSync(
   sessionId: string | undefined,
   nodeId: string,
   store: CompositorStore,
-  dragStateRef: React.MutableRefObject<unknown>
+  dragStateRef: React.MutableRefObject<unknown>,
+  throttleActiveRef: React.MutableRefObject<boolean>
 ): void {
   useEffect(() => {
     if (!sessionId) return;
 
     const applyServerLayout = (viewData: unknown) => {
       if (!viewData || typeof viewData !== 'object') return;
-      // Skip during drag/resize to avoid server echo-backs overwriting
-      // in-flight local atom values.  Slider drags use the silent WS action
-      // (TuneNodeSilent) which suppresses echo-back server-side, so no
-      // client-side guard is needed for sliders.
-      if (dragStateRef.current) return;
+      // Skip during drag/resize or active throttled slider sends to avoid
+      // server echo-backs overwriting in-flight local atom values.
+      // TuneNodeSilent suppresses NodeParamsChanged server-side, but
+      // NodeViewDataUpdated is still broadcast to all clients, so we guard
+      // against stale view-data here.
+      if (dragStateRef.current || throttleActiveRef.current) return;
 
       const layout = viewData as CompositorLayout;
       if (!Array.isArray(layout.layers)) return;
@@ -215,5 +220,5 @@ export function useServerLayoutSync(
       applyServerLayout(defaultSessionStore.get(viewDataAtom));
     });
     return unsubscribe;
-  }, [sessionId, nodeId, store, dragStateRef]);
+  }, [sessionId, nodeId, store, dragStateRef, throttleActiveRef]);
 }
