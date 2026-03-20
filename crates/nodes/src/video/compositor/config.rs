@@ -18,8 +18,9 @@ use std::collections::HashMap;
 /// rect — when the rect is square this produces a perfect circle, ideal
 /// for Loom-style webcam PIP overlays.
 ///
-/// New variants (e.g. `RoundedRect`, `Hexagon`) can be added without
-/// breaking existing pipelines since unknown values deserialize as `Rect`.
+/// New variants (e.g. `RoundedRect`, `Hexagon`) can be added in the
+/// future.  The field-level `#[serde(default)]` on `LayerConfig` means a
+/// missing `crop_shape` key defaults to `Rect`.
 #[derive(Deserialize, Serialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
 #[cfg_attr(feature = "codegen", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
