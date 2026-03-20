@@ -29,6 +29,7 @@ export const DEFAULT_VISIBLE = true;
 export const DEFAULT_CROP_ZOOM = 1.0;
 export const DEFAULT_CROP_X = 0.5;
 export const DEFAULT_CROP_Y = 0.5;
+export const DEFAULT_CROP_SHAPE: 'rect' | 'circle' = 'rect';
 
 // ── Default text overlay values ─────────────────────────────────────────────
 

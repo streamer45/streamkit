@@ -145,7 +145,11 @@ function baseFieldsEqual(a: OverlayBase, b: OverlayBase): boolean {
  *  would cascade re-renders to VideoLayers whose data hasn't actually changed. */
 function layerEqual(a: LayerState, b: LayerState): boolean {
   return (
-    baseFieldsEqual(a, b) && a.cropZoom === b.cropZoom && a.cropX === b.cropX && a.cropY === b.cropY
+    baseFieldsEqual(a, b) &&
+    a.cropZoom === b.cropZoom &&
+    a.cropX === b.cropX &&
+    a.cropY === b.cropY &&
+    a.cropShape === b.cropShape
   );
 }
 

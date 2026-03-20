@@ -173,7 +173,14 @@ crop_x: number,
  * (0.0 = top edge, 0.5 = centred, 1.0 = bottom edge).  Only has a
  * visible effect when `crop_zoom > 1.0`.  Default 0.5.
  */
-crop_y: number, };
+crop_y: number, 
+/**
+ * Shape clipping applied to the layer.  Default `Rect` (no clipping).
+ * Set to `Circle` for Loom-style circular webcam PIP overlays.
+ */
+crop_shape: CropShape, };
+
+export type CropShape = "rect" | "circle";
 
 export type CompositorConfig = { 
 /**
@@ -227,7 +234,11 @@ crop_x: number,
 /**
  * Normalized crop tilt Y (0.0–1.0).
  */
-crop_y: number, };
+crop_y: number, 
+/**
+ * Shape clipping applied to the layer.
+ */
+crop_shape: CropShape, };
 
 export type ResolvedOverlay = { 
 /**

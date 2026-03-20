@@ -70,6 +70,7 @@ struct InputSlot {
 /// Rebuilt only when compositor config or pin set changes, avoiding
 /// per-frame `HashMap` lookups and `sort_by` calls.
 #[derive(Clone)]
+#[allow(clippy::struct_excessive_bools)]
 struct ResolvedSlotConfig {
     rect: Option<config::Rect>,
     opacity: f32,
@@ -84,6 +85,7 @@ struct ResolvedSlotConfig {
     crop_zoom: f32,
     crop_x: f32,
     crop_y: f32,
+    crop_shape: config::CropShape,
 }
 
 /// Fully-resolved compositor scene for one configuration epoch.
@@ -152,6 +154,7 @@ fn resolve_scene(
             crop_zoom,
             crop_x,
             crop_y,
+            crop_shape,
         ) = if let Some(lc) = layer_cfg {
             (
                 lc.rect,
@@ -164,6 +167,7 @@ fn resolve_scene(
                 lc.crop_zoom,
                 lc.crop_x,
                 lc.crop_y,
+                lc.crop_shape,
             )
         } else if idx > 0 && num_slots > 1 {
             // Auto-PiP: non-first layers without explicit config.
@@ -185,9 +189,10 @@ fn resolve_scene(
                 1.0,
                 0.5,
                 0.5,
+                config::CropShape::Rect,
             )
         } else {
-            (None, 1.0, 0, 0.0, false, false, false, 1.0, 0.5, 0.5)
+            (None, 1.0, 0, 0.0, false, false, false, 1.0, 0.5, 0.5, config::CropShape::Rect)
         };
 
         // Build the view-data layer using the current latest_frame for
@@ -219,6 +224,7 @@ fn resolve_scene(
             crop_zoom,
             crop_x,
             crop_y,
+            crop_shape,
         });
 
         configs.push(ResolvedSlotConfig {
@@ -232,6 +238,7 @@ fn resolve_scene(
             crop_zoom,
             crop_x,
             crop_y,
+            crop_shape,
         });
     }
 
@@ -772,6 +779,7 @@ impl ProcessorNode for CompositorNode {
                             crop_zoom: cfg.crop_zoom,
                             crop_x: cfg.crop_x,
                             crop_y: cfg.crop_y,
+                            crop_shape: cfg.crop_shape,
                         }
                     })
                 })

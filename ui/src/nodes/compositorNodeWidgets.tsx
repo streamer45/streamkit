@@ -323,15 +323,17 @@ export type CropZoomPatch = {
   cropX?: number;
   cropY?: number;
   cropZoom?: number;
+  cropShape?: 'rect' | 'circle';
 };
 
 export const CropZoomControl: React.FC<{
   cropZoom: number;
   cropX: number;
   cropY: number;
+  cropShape: 'rect' | 'circle';
   onChange: (patch: CropZoomPatch) => void;
   disabled: boolean;
-}> = React.memo(({ cropZoom, cropX, cropY, onChange, disabled }) => {
+}> = React.memo(({ cropZoom, cropX, cropY, cropShape, onChange, disabled }) => {
   const panDisabled = disabled || cropZoom <= 1.0;
 
   return (
@@ -341,7 +343,7 @@ export const CropZoomControl: React.FC<{
         <SKTooltip content="Reset to defaults">
           <ResetButton
             disabled={disabled}
-            onClick={() => onChange({ cropZoom: 1.0, cropX: 0.5, cropY: 0.5 })}
+            onClick={() => onChange({ cropZoom: 1.0, cropX: 0.5, cropY: 0.5, cropShape: 'rect' })}
             className="nodrag nopan"
             data-testid="crop-zoom-reset"
           >
@@ -349,6 +351,27 @@ export const CropZoomControl: React.FC<{
           </ResetButton>
         </SKTooltip>
       </CropSectionHeader>
+      <ControlRow>
+        <ControlLabel>Shape</ControlLabel>
+        <MirrorToggleRow className="nodrag nopan" style={{ flex: 1 }}>
+          <MirrorButton
+            isActive={cropShape === 'rect'}
+            disabled={disabled}
+            onClick={() => onChange({ cropShape: 'rect' })}
+            data-testid="crop-shape-rect"
+          >
+            ▭ Rect
+          </MirrorButton>
+          <MirrorButton
+            isActive={cropShape === 'circle'}
+            disabled={disabled}
+            onClick={() => onChange({ cropShape: 'circle' })}
+            data-testid="crop-shape-circle"
+          >
+            ● Circle
+          </MirrorButton>
+        </MirrorToggleRow>
+      </ControlRow>
       <ControlRow>
         <ControlLabel>Zoom</ControlLabel>
         <CompactSliderRoot

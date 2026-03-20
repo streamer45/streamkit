@@ -44,7 +44,12 @@ import {
 } from './compositorAtoms';
 import { useCompositorCommit } from './compositorCommit';
 import type { LayerKind } from './compositorConstants';
-import { DEFAULT_CROP_X, DEFAULT_CROP_Y, DEFAULT_CROP_ZOOM } from './compositorConstants';
+import {
+  DEFAULT_CROP_SHAPE,
+  DEFAULT_CROP_X,
+  DEFAULT_CROP_Y,
+  DEFAULT_CROP_ZOOM,
+} from './compositorConstants';
 import { useCompositorDragResize } from './compositorDragResize';
 import type { DragState } from './compositorDragResize';
 import type { CompositorKeyboardDeps } from './compositorKeyboard';
@@ -104,7 +109,7 @@ export interface UseCompositorLayersResult {
   /** Update crop/zoom on a video layer. */
   updateLayerCropZoom: (
     layerId: string,
-    patch: { cropX?: number; cropY?: number; cropZoom?: number }
+    patch: { cropX?: number; cropY?: number; cropZoom?: number; cropShape?: 'rect' | 'circle' }
   ) => void;
   /** Ref map: layer elements register here for direct DOM manipulation during drag */
   layerRefs: React.MutableRefObject<Map<string, HTMLDivElement>>;
@@ -296,7 +301,11 @@ export const useCompositorLayers = (
     const merged = mergeOverlayState(
       currentLayers,
       parsed,
-      (a, b) => a.cropZoom !== b.cropZoom || a.cropX !== b.cropX || a.cropY !== b.cropY,
+      (a, b) =>
+        a.cropZoom !== b.cropZoom ||
+        a.cropX !== b.cropX ||
+        a.cropY !== b.cropY ||
+        a.cropShape !== b.cropShape,
       isMonitorView
     );
     if (merged !== currentLayers) setLayersInStore(store, merged);
@@ -340,6 +349,7 @@ export const useCompositorLayers = (
             cropZoom: DEFAULT_CROP_ZOOM,
             cropX: DEFAULT_CROP_X,
             cropY: DEFAULT_CROP_Y,
+            cropShape: DEFAULT_CROP_SHAPE,
           },
           kind: 'text',
         };
@@ -351,6 +361,7 @@ export const useCompositorLayers = (
             cropZoom: DEFAULT_CROP_ZOOM,
             cropX: DEFAULT_CROP_X,
             cropY: DEFAULT_CROP_Y,
+            cropShape: DEFAULT_CROP_SHAPE,
           },
           kind: 'image',
         };

@@ -47,6 +47,7 @@ fn test_scale_blit_identity() {
         false,
         false,
         None,
+        false,
     );
 
     // Pixel at (1,1) should be red.
@@ -82,6 +83,7 @@ fn test_scale_blit_with_opacity() {
         false,
         false,
         None,
+        false,
     );
 
     // Pixel (0,0): white at 50% over opaque black -> ~128 grey.
@@ -108,6 +110,7 @@ fn test_scale_blit_scaling() {
         false,
         false,
         None,
+        false,
     );
 
     // All pixels in the 4x4 destination rect should be red.
@@ -149,6 +152,7 @@ fn test_rotated_blit_stretch_to_fill() {
         false,
         false,
         None,
+        false,
     );
 
     // The centre of the rect (canvas pixel 20,20) should be covered
@@ -194,6 +198,7 @@ fn test_composite_frame_single_layer() {
         crop_zoom: 1.0,
         crop_x: 0.5,
         crop_y: 0.5,
+        crop_shape: config::CropShape::Rect,
     };
 
     let mut cache = ConversionCache::new();
@@ -229,6 +234,7 @@ fn test_composite_frame_two_layers() {
         crop_zoom: 1.0,
         crop_x: 0.5,
         crop_y: 0.5,
+        crop_shape: config::CropShape::Rect,
     };
     let layer1 = LayerSnapshot {
         data: green.data,
@@ -244,6 +250,7 @@ fn test_composite_frame_two_layers() {
         crop_zoom: 1.0,
         crop_x: 0.5,
         crop_y: 0.5,
+        crop_shape: config::CropShape::Rect,
     };
 
     let mut cache = ConversionCache::new();
@@ -657,6 +664,7 @@ fn test_scale_blit_opacity_all_rows_written() {
         false,
         false,
         None,
+        false,
     );
 
     // Every single row should have been written to (non-zero pixels).
@@ -784,6 +792,7 @@ fn test_composite_frame_opacity_no_black_borders() {
         crop_zoom: 1.0,
         crop_x: 0.5,
         crop_y: 0.5,
+        crop_shape: config::CropShape::Rect,
     };
 
     let mut cache = ConversionCache::new();
@@ -850,6 +859,7 @@ fn test_full_pipeline_opacity_nv12_roundtrip_no_black_bands() {
         false,
         false,
         None,
+        false,
     );
 
     // Verify compositor output: every row should have non-zero pixels.
@@ -918,6 +928,7 @@ fn test_mismatched_aspect_ratio_opacity_no_black_bars() {
         false,
         false,
         None,
+        false,
     );
 
     // Every row should have non-zero pixels (no black bars on left/right).
@@ -964,6 +975,7 @@ fn test_rotated_blit_mismatched_aspect_ratio_covers_centre() {
         false,
         false,
         None,
+        false,
     );
 
     // Centre of the rect (canvas pixel 30, 20) should be red.
@@ -1115,6 +1127,7 @@ fn test_composite_frame_with_crop_zoom() {
         crop_zoom: 2.0,
         crop_x: 0.0,
         crop_y: 0.0,
+        crop_shape: config::CropShape::Rect,
     };
 
     let mut cache = ConversionCache::new();
@@ -1148,6 +1161,7 @@ fn test_crop_pan_right_edge() {
         crop_zoom: 2.0,
         crop_x: 1.0,
         crop_y: 0.0,
+        crop_shape: config::CropShape::Rect,
     };
 
     let mut cache = ConversionCache::new();
@@ -1179,6 +1193,7 @@ fn test_crop_tilt_bottom() {
         crop_zoom: 2.0,
         crop_x: 0.0,
         crop_y: 1.0,
+        crop_shape: config::CropShape::Rect,
     };
 
     let mut cache = ConversionCache::new();
@@ -1210,6 +1225,7 @@ fn test_crop_no_zoom_returns_full_frame() {
         crop_zoom: 1.0,
         crop_x: 0.0,
         crop_y: 0.0,
+        crop_shape: config::CropShape::Rect,
     };
 
     let mut cache = ConversionCache::new();
@@ -1276,6 +1292,7 @@ fn test_scale_blit_with_src_region() {
         false,
         false,
         Some((0, 0, 2, 2)), // crop to top-left 2×2
+        false,
     );
 
     // All pixels should be red (sampled from the TL quadrant).
@@ -1308,6 +1325,7 @@ fn test_scale_blit_rotated_with_src_region() {
         false,
         false,
         Some((0, 0, 2, 2)),
+        false,
     );
 
     // Centre pixel (5,5) should be red.
@@ -1344,6 +1362,7 @@ fn test_crop_with_rotation_and_mirror() {
         true,               // mirror_h
         false,              // mirror_v
         Some((2, 0, 2, 2)), // top-right quadrant (green)
+        false,
     );
 
     // Centre pixel should be green (mirrored green is still green).
@@ -1377,6 +1396,7 @@ fn test_crop_with_mirror_v_rotated() {
         false,
         true,               // mirror_v
         Some((0, 2, 2, 2)), // bottom-left quadrant (blue)
+        false,
     );
 
     let cx = 5usize;
@@ -1446,6 +1466,7 @@ fn test_crop_aligns_odd_origin_for_i420_composite() {
         crop_zoom: 2.0,
         crop_x: 0.75,
         crop_y: 0.75,
+        crop_shape: config::CropShape::Rect,
     };
 
     let mut cache = ConversionCache::new();
@@ -1478,6 +1499,7 @@ fn test_crop_aligns_odd_origin_for_nv12_composite() {
         crop_zoom: 2.0,
         crop_x: 0.75,
         crop_y: 0.75,
+        crop_shape: config::CropShape::Rect,
     };
 
     let mut cache = ConversionCache::new();
@@ -1511,6 +1533,7 @@ fn test_crop_aligns_odd_origin_for_i420_rotated() {
         crop_zoom: 2.0,
         crop_x: 0.75,
         crop_y: 0.75,
+        crop_shape: config::CropShape::Rect,
     };
 
     let mut cache = ConversionCache::new();
@@ -1690,4 +1713,189 @@ async fn test_oneshot_processes_faster_than_realtime() {
         "Oneshot compositor took {elapsed:?} for {frame_count} frames at {fps} fps — \
          expected < {max_allowed:?} (should not be real-time paced)",
     );
+}
+
+#[test]
+fn test_scale_blit_crop_shape_circle_masks_corners() {
+    // Blit a solid red 20×20 source onto a 20×20 canvas with crop_shape: circle
+    // enabled.  The centre pixel must be red (inside the circle) and the
+    // corner pixel (0,0) must remain transparent (outside the circle).
+    let src = [255u8, 0, 0, 255].repeat(20 * 20);
+    let mut dst = vec![0u8; 20 * 20 * 4];
+
+    scale_blit_rgba(
+        &mut dst,
+        20,
+        20,
+        &src,
+        20,
+        20,
+        &BlitRect { x: 0, y: 0, width: 20, height: 20 },
+        1.0,
+        false,
+        false,
+        false,
+        None,
+        true, // crop_shape = circle
+    );
+
+    // Centre pixel (10,10) should be red — well inside the circle.
+    let cx = 10usize;
+    let cy = 10usize;
+    let idx = (cy * 20 + cx) * 4;
+    assert_eq!(dst[idx], 255, "Centre R");
+    assert_eq!(dst[idx + 1], 0, "Centre G");
+    assert_eq!(dst[idx + 2], 0, "Centre B");
+    assert!(dst[idx + 3] > 200, "Centre A should be mostly opaque");
+
+    // Corner pixel (0,0) is well outside the inscribed circle and should
+    // remain transparent black.
+    assert_eq!(dst[0], 0, "Corner (0,0) R should be 0");
+    assert_eq!(dst[3], 0, "Corner (0,0) A should be 0");
+
+    // Corner pixel (19,19) should also be transparent.
+    let corner_idx = (19 * 20 + 19) * 4;
+    assert_eq!(dst[corner_idx + 3], 0, "Corner (19,19) A should be 0");
+}
+
+#[test]
+fn test_scale_blit_rotated_crop_shape_circle_masks_corners() {
+    // Same test but through the rotated blit path (with a small rotation).
+    let src = [255u8, 0, 0, 255].repeat(20 * 20);
+    let mut dst = vec![0u8; 40 * 40 * 4];
+
+    scale_blit_rgba_rotated(
+        &mut dst,
+        40,
+        40,
+        &src,
+        20,
+        20,
+        &BlitRect { x: 10, y: 10, width: 20, height: 20 },
+        1.0,
+        5.0, // small rotation to use the rotated path
+        false,
+        false,
+        false,
+        None,
+        true, // crop_shape = circle
+    );
+
+    // Centre of the rect (canvas pixel 20,20) should be red.
+    let cx = 20usize;
+    let cy = 20usize;
+    let idx = (cy * 40 + cx) * 4;
+    assert_eq!(dst[idx], 255, "Centre R");
+    assert_eq!(dst[idx + 1], 0, "Centre G");
+    assert_eq!(dst[idx + 2], 0, "Centre B");
+    assert!(dst[idx + 3] > 200, "Centre A should be mostly opaque");
+
+    // The rect corner (10,10) is outside both the rotated rect and the
+    // ellipse — should be transparent.
+    let corner_idx = (10usize * 40 + 10) * 4;
+    assert_eq!(dst[corner_idx + 3], 0, "Rect corner should be transparent");
+}
+
+#[test]
+fn test_composite_frame_crop_shape_circle() {
+    // A 20×20 red layer with crop_shape: circle on a 20×20 canvas.
+    // Centre should be red, corners should be transparent black.
+    let frame = make_rgba_frame(20, 20, 255, 0, 0, 255);
+    let layer = LayerSnapshot {
+        data: frame.data,
+        width: 20,
+        height: 20,
+        pixel_format: PixelFormat::Rgba8,
+        rect: Some(Rect { x: 0, y: 0, width: 20, height: 20 }),
+        opacity: 1.0,
+        z_index: 0,
+        rotation_degrees: 0.0,
+        mirror_horizontal: false,
+        mirror_vertical: false,
+        crop_zoom: 1.0,
+        crop_x: 0.5,
+        crop_y: 0.5,
+        crop_shape: config::CropShape::Circle,
+    };
+
+    let mut cache = ConversionCache::new();
+    let result = composite_frame(20, 20, &[Some(layer)], &[], &[], None, &mut cache);
+    let buf = result.as_slice();
+
+    // Centre pixel (10,10) should be red.
+    let cx = 10usize;
+    let cy = 10usize;
+    let idx = (cy * 20 + cx) * 4;
+    assert_eq!(buf[idx], 255, "Centre R");
+    assert_eq!(buf[idx + 1], 0, "Centre G");
+    assert_eq!(buf[idx + 2], 0, "Centre B");
+    assert!(buf[idx + 3] > 200, "Centre A");
+
+    // Corner (0,0) should be transparent black.
+    assert_eq!(buf[0], 0, "Corner R");
+    assert_eq!(buf[3], 0, "Corner A");
+}
+
+#[test]
+fn test_composite_frame_crop_shape_circle_skip_clear() {
+    // Regression test: when crop_shape is circle on the first (full-canvas)
+    // layer, the skip_clear optimisation must NOT fire — pixels outside the
+    // ellipse must be cleared to transparent black.  With a pooled buffer
+    // the recycled memory may contain stale data from a prior frame; if the
+    // canvas isn't cleared those stale pixels would leak through.
+    //
+    // We simulate this by using a VideoFramePool, filling the recycled
+    // buffer with garbage, then compositing a crop_shape=circle layer and
+    // asserting that the corner pixel is zeroed.
+    use streamkit_core::VideoFramePool;
+
+    let pool = VideoFramePool::video_default();
+    let canvas_w: u32 = 20;
+    let canvas_h: u32 = 20;
+    let total_bytes = (canvas_w as usize) * (canvas_h as usize) * 4;
+
+    // Prime the pool: get a buffer, fill it with non-zero garbage, then
+    // drop it so it returns to the pool.
+    {
+        let mut primer = pool.get(total_bytes);
+        primer.as_mut_slice().fill(0xAB);
+    }
+
+    // Now composite_frame will recycle that buffer (pool hit).
+    let frame = make_rgba_frame(canvas_w, canvas_h, 255, 0, 0, 255);
+    let layer = LayerSnapshot {
+        data: frame.data,
+        width: canvas_w,
+        height: canvas_h,
+        pixel_format: PixelFormat::Rgba8,
+        rect: Some(Rect { x: 0, y: 0, width: canvas_w, height: canvas_h }),
+        opacity: 1.0,
+        z_index: 0,
+        rotation_degrees: 0.0,
+        mirror_horizontal: false,
+        mirror_vertical: false,
+        crop_zoom: 1.0,
+        crop_x: 0.5,
+        crop_y: 0.5,
+        crop_shape: config::CropShape::Circle,
+    };
+
+    let mut cache = ConversionCache::new();
+    let result =
+        composite_frame(canvas_w, canvas_h, &[Some(layer)], &[], &[], Some(&pool), &mut cache);
+    let buf = result.as_slice();
+
+    // Corner (0,0) is outside the ellipse — must be transparent black,
+    // NOT the 0xAB garbage from the recycled buffer.
+    assert_eq!(buf[0], 0, "Corner R must be 0 (was stale pool data)");
+    assert_eq!(buf[1], 0, "Corner G must be 0");
+    assert_eq!(buf[2], 0, "Corner B must be 0");
+    assert_eq!(buf[3], 0, "Corner A must be 0 (was stale pool data)");
+
+    // Centre pixel should still be red.
+    let cx = 10usize;
+    let cy = 10usize;
+    let idx = (cy * canvas_w as usize + cx) * 4;
+    assert_eq!(buf[idx], 255, "Centre R");
+    assert!(buf[idx + 3] > 200, "Centre A");
 }
