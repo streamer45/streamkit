@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use anyhow::Result;
-use rand::{distr::Alphanumeric, Rng};
+use rand::{distr::Alphanumeric, RngExt};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{sleep, Duration};
