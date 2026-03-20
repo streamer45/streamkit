@@ -175,10 +175,12 @@ crop_x: number,
  */
 crop_y: number, 
 /**
- * Clip the layer to an ellipse inscribed in the destination rect.
- * When the rect is square this produces a perfect circle.  Default `false`.
+ * Shape clipping applied to the layer.  Default `Rect` (no clipping).
+ * Set to `Circle` for Loom-style circular webcam PIP overlays.
  */
-crop_circle: boolean, };
+crop_shape: CropShape, };
+
+export type CropShape = "rect" | "circle";
 
 export type CompositorConfig = { 
 /**
@@ -234,9 +236,9 @@ crop_x: number,
  */
 crop_y: number, 
 /**
- * Whether the layer is clipped to an ellipse inscribed in the rect.
+ * Shape clipping applied to the layer.
  */
-crop_circle: boolean, };
+crop_shape: CropShape, };
 
 export type ResolvedOverlay = { 
 /**

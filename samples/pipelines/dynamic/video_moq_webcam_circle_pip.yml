@@ -56,7 +56,7 @@ nodes:
           crop_zoom: 1
           crop_x: 0.5
           crop_y: 0.5
-          crop_circle: false
+          crop_shape: rect
         # Webcam PiP: circular crop, bottom-right corner
         # Square rect (200×200) gives a perfect circle
         in_1:
@@ -73,7 +73,7 @@ nodes:
           crop_zoom: 1.8
           crop_x: 0.5
           crop_y: 0.4
-          crop_circle: true
+          crop_shape: circle
       text_overlays:
         - id: greeting
           text: Hello from StreamKit

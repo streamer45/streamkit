@@ -45,7 +45,7 @@ import {
 import { useCompositorCommit } from './compositorCommit';
 import type { LayerKind } from './compositorConstants';
 import {
-  DEFAULT_CROP_CIRCLE,
+  DEFAULT_CROP_SHAPE,
   DEFAULT_CROP_X,
   DEFAULT_CROP_Y,
   DEFAULT_CROP_ZOOM,
@@ -109,7 +109,7 @@ export interface UseCompositorLayersResult {
   /** Update crop/zoom on a video layer. */
   updateLayerCropZoom: (
     layerId: string,
-    patch: { cropX?: number; cropY?: number; cropZoom?: number; cropCircle?: boolean }
+    patch: { cropX?: number; cropY?: number; cropZoom?: number; cropShape?: 'rect' | 'circle' }
   ) => void;
   /** Ref map: layer elements register here for direct DOM manipulation during drag */
   layerRefs: React.MutableRefObject<Map<string, HTMLDivElement>>;
@@ -305,7 +305,7 @@ export const useCompositorLayers = (
         a.cropZoom !== b.cropZoom ||
         a.cropX !== b.cropX ||
         a.cropY !== b.cropY ||
-        a.cropCircle !== b.cropCircle,
+        a.cropShape !== b.cropShape,
       isMonitorView
     );
     if (merged !== currentLayers) setLayersInStore(store, merged);
@@ -349,7 +349,7 @@ export const useCompositorLayers = (
             cropZoom: DEFAULT_CROP_ZOOM,
             cropX: DEFAULT_CROP_X,
             cropY: DEFAULT_CROP_Y,
-            cropCircle: DEFAULT_CROP_CIRCLE,
+            cropShape: DEFAULT_CROP_SHAPE,
           },
           kind: 'text',
         };
@@ -361,7 +361,7 @@ export const useCompositorLayers = (
             cropZoom: DEFAULT_CROP_ZOOM,
             cropX: DEFAULT_CROP_X,
             cropY: DEFAULT_CROP_Y,
-            cropCircle: DEFAULT_CROP_CIRCLE,
+            cropShape: DEFAULT_CROP_SHAPE,
           },
           kind: 'image',
         };

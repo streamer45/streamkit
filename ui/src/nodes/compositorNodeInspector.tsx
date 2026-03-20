@@ -333,7 +333,7 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
               cropZoom={selectedLayer.cropZoom}
               cropX={selectedLayer.cropX}
               cropY={selectedLayer.cropY}
-              cropCircle={selectedLayer.cropCircle}
+              cropShape={selectedLayer.cropShape}
               onChange={handleCropZoomChange}
               disabled={disabled}
             />

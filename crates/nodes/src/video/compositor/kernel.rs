@@ -218,8 +218,8 @@ pub struct LayerSnapshot {
     pub crop_x: f32,
     /// Normalized crop tilt Y (0.0–1.0).  Default 0.5 (centred).
     pub crop_y: f32,
-    /// Clip the layer to an ellipse inscribed in the destination rect.
-    pub crop_circle: bool,
+    /// Shape clipping applied to the layer.
+    pub crop_shape: super::config::CropShape,
 }
 
 /// Work item sent from the async loop to the persistent compositing thread.
@@ -272,8 +272,8 @@ struct CompositeItem<'a> {
     /// Source sub-region in pixel coordinates `(x, y, w, h)`.  `None` means
     /// sample the entire source.  Used for virtual PTZ crop/zoom.
     src_region: Option<(u32, u32, u32, u32)>,
-    /// Clip the composited layer to an ellipse inscribed in the destination rect.
-    crop_circle: bool,
+    /// Shape clipping applied to the composited layer.
+    crop_shape: super::config::CropShape,
 }
 
 /// Compute the source crop rectangle from normalised crop parameters.
@@ -362,34 +362,36 @@ pub fn composite_frame(
     // skipping the canvas clear.  We do the alpha-opaqueness check here
     // while `conversion_cache` is still mutably available.  The result
     // is a simple bool so no borrows leak into pass 2.
-    let skip_clear = layers
-        .iter()
-        .enumerate()
-        .find_map(|(i, e)| e.as_ref().map(|l| (i, l)))
-        .is_some_and(|(_slot_idx, layer)| {
-            // Quick checks that don't need the pixel data.
-            if layer.opacity < 1.0 || layer.rotation_degrees.abs() >= 0.01 || layer.crop_circle {
-                return false;
-            }
-            let covers = layer.rect.as_ref().is_none_or(|r| {
-                r.x <= 0
-                    && r.y <= 0
-                    && i64::from(r.width) + i64::from(r.x) >= i64::from(canvas_w)
-                    && i64::from(r.height) + i64::from(r.y) >= i64::from(canvas_h)
-            });
-            if !covers {
-                return false;
-            }
-            // Alpha check — needs mutable access to conversion_cache.
-            match layer.pixel_format {
-                // I420/NV12 → RGBA conversion always writes alpha = 255.
-                PixelFormat::I420 | PixelFormat::Nv12 => true,
-                PixelFormat::Rgba8 => {
-                    conversion_cache.first_layer_all_opaque(layer, layer.data.as_slice())
-                },
-                _ => false,
-            }
-        });
+    let skip_clear =
+        layers.iter().enumerate().find_map(|(i, e)| e.as_ref().map(|l| (i, l))).is_some_and(
+            |(_slot_idx, layer)| {
+                // Quick checks that don't need the pixel data.
+                if layer.opacity < 1.0
+                    || layer.rotation_degrees.abs() >= 0.01
+                    || layer.crop_shape != super::config::CropShape::Rect
+                {
+                    return false;
+                }
+                let covers = layer.rect.as_ref().is_none_or(|r| {
+                    r.x <= 0
+                        && r.y <= 0
+                        && i64::from(r.width) + i64::from(r.x) >= i64::from(canvas_w)
+                        && i64::from(r.height) + i64::from(r.y) >= i64::from(canvas_h)
+                });
+                if !covers {
+                    return false;
+                }
+                // Alpha check — needs mutable access to conversion_cache.
+                match layer.pixel_format {
+                    // I420/NV12 → RGBA conversion always writes alpha = 255.
+                    PixelFormat::I420 | PixelFormat::Nv12 => true,
+                    PixelFormat::Rgba8 => {
+                        conversion_cache.first_layer_all_opaque(layer, layer.data.as_slice())
+                    },
+                    _ => false,
+                }
+            },
+        );
     if !skip_clear {
         buf[..total_bytes].fill(0);
     }
@@ -452,7 +454,7 @@ pub fn composite_frame(
             mirror_horizontal: layer.mirror_horizontal,
             mirror_vertical: layer.mirror_vertical,
             src_region,
-            crop_circle: layer.crop_circle,
+            crop_shape: layer.crop_shape,
         });
         insertion_order += 1;
     }
@@ -471,7 +473,7 @@ pub fn composite_frame(
             mirror_horizontal: ov.mirror_horizontal,
             mirror_vertical: ov.mirror_vertical,
             src_region: None,
-            crop_circle: false,
+            crop_shape: super::config::CropShape::Rect,
         });
         insertion_order += 1;
     }
@@ -490,7 +492,7 @@ pub fn composite_frame(
             mirror_horizontal: ov.mirror_horizontal,
             mirror_vertical: ov.mirror_vertical,
             src_region: None,
-            crop_circle: false,
+            crop_shape: super::config::CropShape::Rect,
         });
         insertion_order += 1;
     }
@@ -514,7 +516,7 @@ pub fn composite_frame(
             item.mirror_horizontal,
             item.mirror_vertical,
             item.src_region,
-            item.crop_circle,
+            item.crop_shape == super::config::CropShape::Circle,
         );
     }
 

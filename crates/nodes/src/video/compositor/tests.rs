@@ -198,7 +198,7 @@ fn test_composite_frame_single_layer() {
         crop_zoom: 1.0,
         crop_x: 0.5,
         crop_y: 0.5,
-        crop_circle: false,
+        crop_shape: config::CropShape::Rect,
     };
 
     let mut cache = ConversionCache::new();
@@ -234,7 +234,7 @@ fn test_composite_frame_two_layers() {
         crop_zoom: 1.0,
         crop_x: 0.5,
         crop_y: 0.5,
-        crop_circle: false,
+        crop_shape: config::CropShape::Rect,
     };
     let layer1 = LayerSnapshot {
         data: green.data,
@@ -250,7 +250,7 @@ fn test_composite_frame_two_layers() {
         crop_zoom: 1.0,
         crop_x: 0.5,
         crop_y: 0.5,
-        crop_circle: false,
+        crop_shape: config::CropShape::Rect,
     };
 
     let mut cache = ConversionCache::new();
@@ -792,7 +792,7 @@ fn test_composite_frame_opacity_no_black_borders() {
         crop_zoom: 1.0,
         crop_x: 0.5,
         crop_y: 0.5,
-        crop_circle: false,
+        crop_shape: config::CropShape::Rect,
     };
 
     let mut cache = ConversionCache::new();
@@ -1127,7 +1127,7 @@ fn test_composite_frame_with_crop_zoom() {
         crop_zoom: 2.0,
         crop_x: 0.0,
         crop_y: 0.0,
-        crop_circle: false,
+        crop_shape: config::CropShape::Rect,
     };
 
     let mut cache = ConversionCache::new();
@@ -1161,7 +1161,7 @@ fn test_crop_pan_right_edge() {
         crop_zoom: 2.0,
         crop_x: 1.0,
         crop_y: 0.0,
-        crop_circle: false,
+        crop_shape: config::CropShape::Rect,
     };
 
     let mut cache = ConversionCache::new();
@@ -1193,7 +1193,7 @@ fn test_crop_tilt_bottom() {
         crop_zoom: 2.0,
         crop_x: 0.0,
         crop_y: 1.0,
-        crop_circle: false,
+        crop_shape: config::CropShape::Rect,
     };
 
     let mut cache = ConversionCache::new();
@@ -1225,7 +1225,7 @@ fn test_crop_no_zoom_returns_full_frame() {
         crop_zoom: 1.0,
         crop_x: 0.0,
         crop_y: 0.0,
-        crop_circle: false,
+        crop_shape: config::CropShape::Rect,
     };
 
     let mut cache = ConversionCache::new();
@@ -1466,7 +1466,7 @@ fn test_crop_aligns_odd_origin_for_i420_composite() {
         crop_zoom: 2.0,
         crop_x: 0.75,
         crop_y: 0.75,
-        crop_circle: false,
+        crop_shape: config::CropShape::Rect,
     };
 
     let mut cache = ConversionCache::new();
@@ -1499,7 +1499,7 @@ fn test_crop_aligns_odd_origin_for_nv12_composite() {
         crop_zoom: 2.0,
         crop_x: 0.75,
         crop_y: 0.75,
-        crop_circle: false,
+        crop_shape: config::CropShape::Rect,
     };
 
     let mut cache = ConversionCache::new();
@@ -1533,7 +1533,7 @@ fn test_crop_aligns_odd_origin_for_i420_rotated() {
         crop_zoom: 2.0,
         crop_x: 0.75,
         crop_y: 0.75,
-        crop_circle: false,
+        crop_shape: config::CropShape::Rect,
     };
 
     let mut cache = ConversionCache::new();
@@ -1716,8 +1716,8 @@ async fn test_oneshot_processes_faster_than_realtime() {
 }
 
 #[test]
-fn test_scale_blit_crop_circle_masks_corners() {
-    // Blit a solid red 20×20 source onto a 20×20 canvas with crop_circle
+fn test_scale_blit_crop_shape_circle_masks_corners() {
+    // Blit a solid red 20×20 source onto a 20×20 canvas with crop_shape: circle
     // enabled.  The centre pixel must be red (inside the circle) and the
     // corner pixel (0,0) must remain transparent (outside the circle).
     let src = [255u8, 0, 0, 255].repeat(20 * 20);
@@ -1736,7 +1736,7 @@ fn test_scale_blit_crop_circle_masks_corners() {
         false,
         false,
         None,
-        true, // crop_circle
+        true, // crop_shape = circle
     );
 
     // Centre pixel (10,10) should be red — well inside the circle.
@@ -1759,7 +1759,7 @@ fn test_scale_blit_crop_circle_masks_corners() {
 }
 
 #[test]
-fn test_scale_blit_rotated_crop_circle_masks_corners() {
+fn test_scale_blit_rotated_crop_shape_circle_masks_corners() {
     // Same test but through the rotated blit path (with a small rotation).
     let src = [255u8, 0, 0, 255].repeat(20 * 20);
     let mut dst = vec![0u8; 40 * 40 * 4];
@@ -1778,7 +1778,7 @@ fn test_scale_blit_rotated_crop_circle_masks_corners() {
         false,
         false,
         None,
-        true, // crop_circle
+        true, // crop_shape = circle
     );
 
     // Centre of the rect (canvas pixel 20,20) should be red.
@@ -1797,8 +1797,8 @@ fn test_scale_blit_rotated_crop_circle_masks_corners() {
 }
 
 #[test]
-fn test_composite_frame_crop_circle() {
-    // A 20×20 red layer with crop_circle on a 20×20 canvas.
+fn test_composite_frame_crop_shape_circle() {
+    // A 20×20 red layer with crop_shape: circle on a 20×20 canvas.
     // Centre should be red, corners should be transparent black.
     let frame = make_rgba_frame(20, 20, 255, 0, 0, 255);
     let layer = LayerSnapshot {
@@ -1815,7 +1815,7 @@ fn test_composite_frame_crop_circle() {
         crop_zoom: 1.0,
         crop_x: 0.5,
         crop_y: 0.5,
-        crop_circle: true,
+        crop_shape: config::CropShape::Circle,
     };
 
     let mut cache = ConversionCache::new();
@@ -1837,15 +1837,15 @@ fn test_composite_frame_crop_circle() {
 }
 
 #[test]
-fn test_composite_frame_crop_circle_skip_clear() {
-    // Regression test: when crop_circle is true on the first (full-canvas)
+fn test_composite_frame_crop_shape_circle_skip_clear() {
+    // Regression test: when crop_shape is circle on the first (full-canvas)
     // layer, the skip_clear optimisation must NOT fire — pixels outside the
     // ellipse must be cleared to transparent black.  With a pooled buffer
     // the recycled memory may contain stale data from a prior frame; if the
     // canvas isn't cleared those stale pixels would leak through.
     //
     // We simulate this by using a VideoFramePool, filling the recycled
-    // buffer with garbage, then compositing a crop_circle layer and
+    // buffer with garbage, then compositing a crop_shape=circle layer and
     // asserting that the corner pixel is zeroed.
     use streamkit_core::VideoFramePool;
 
@@ -1877,7 +1877,7 @@ fn test_composite_frame_crop_circle_skip_clear() {
         crop_zoom: 1.0,
         crop_x: 0.5,
         crop_y: 0.5,
-        crop_circle: true,
+        crop_shape: config::CropShape::Circle,
     };
 
     let mut cache = ConversionCache::new();

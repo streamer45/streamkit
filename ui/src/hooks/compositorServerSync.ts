@@ -67,7 +67,7 @@ export function mapServerLayers(prev: LayerState[], serverLayers: ResolvedLayer[
       cropZoom: sl.crop_zoom,
       cropX: sl.crop_x,
       cropY: sl.crop_y,
-      cropCircle: sl.crop_circle,
+      cropShape: sl.crop_shape,
     };
   });
   const changed =
@@ -88,7 +88,7 @@ export function mapServerLayers(prev: LayerState[], serverLayers: ResolvedLayer[
         s.cropZoom !== prev[i].cropZoom ||
         s.cropX !== prev[i].cropX ||
         s.cropY !== prev[i].cropY ||
-        s.cropCircle !== prev[i].cropCircle
+        s.cropShape !== prev[i].cropShape
     );
   return changed ? next : prev;
 }

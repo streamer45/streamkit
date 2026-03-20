@@ -31,7 +31,7 @@ import {
   DEFAULT_CROP_ZOOM,
   DEFAULT_CROP_X,
   DEFAULT_CROP_Y,
-  DEFAULT_CROP_CIRCLE,
+  DEFAULT_CROP_SHAPE,
 } from './compositorConstants';
 
 export type { LayerKind } from './compositorConstants';
@@ -60,8 +60,8 @@ export interface LayerState {
   cropX: number;
   /** Normalised crop tilt Y (0.0–1.0). Only meaningful when cropZoom > 1.0. */
   cropY: number;
-  /** Clip the layer to an ellipse inscribed in the destination rect. */
-  cropCircle: boolean;
+  /** Shape clipping applied to the layer. */
+  cropShape: 'rect' | 'circle';
 }
 
 /** A text overlay stored in compositor config */
@@ -203,7 +203,7 @@ function layerConfigToState(
     cropZoom: cfg.crop_zoom ?? DEFAULT_CROP_ZOOM,
     cropX: cfg.crop_x ?? DEFAULT_CROP_X,
     cropY: cfg.crop_y ?? DEFAULT_CROP_Y,
-    cropCircle: cfg.crop_circle ?? DEFAULT_CROP_CIRCLE,
+    cropShape: cfg.crop_shape ?? DEFAULT_CROP_SHAPE,
   };
 }
 
@@ -316,7 +316,7 @@ export function serializeLayers(layers: LayerState[]): Record<string, LayerConfi
       crop_zoom: Math.round(layer.cropZoom * 100) / 100,
       crop_x: Math.round(layer.cropX * 100) / 100,
       crop_y: Math.round(layer.cropY * 100) / 100,
-      crop_circle: layer.cropCircle,
+      crop_shape: layer.cropShape,
     };
   }
   return layersMap;

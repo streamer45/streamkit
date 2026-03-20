@@ -36,7 +36,7 @@ function makeLayer(id: string): LayerState {
     cropZoom: 1.0,
     cropX: 0.5,
     cropY: 0.5,
-    cropCircle: false,
+    cropShape: 'rect' as const,
   };
 }
 

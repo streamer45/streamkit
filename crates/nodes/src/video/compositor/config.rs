@@ -11,6 +11,26 @@ use std::collections::HashMap;
 
 // ── Configuration ───────────────────────────────────────────────────────────
 
+/// Shape used to clip a composited layer.
+///
+/// `Rect` (the default) renders the layer as-is within its destination
+/// rectangle.  `Circle` clips to an ellipse inscribed in the destination
+/// rect — when the rect is square this produces a perfect circle, ideal
+/// for Loom-style webcam PIP overlays.
+///
+/// New variants (e.g. `RoundedRect`, `Hexagon`) can be added without
+/// breaking existing pipelines since unknown values deserialize as `Rect`.
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
+#[cfg_attr(feature = "codegen", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum CropShape {
+    /// No shape clipping — the layer fills its destination rectangle.
+    #[default]
+    Rect,
+    /// Clip to an ellipse inscribed in the destination rectangle.
+    Circle,
+}
+
 const fn default_width() -> u32 {
     1280
 }
@@ -204,10 +224,10 @@ pub struct LayerConfig {
     /// visible effect when `crop_zoom > 1.0`.  Default 0.5.
     #[serde(default = "default_crop_center")]
     pub crop_y: f32,
-    /// Clip the layer to an ellipse inscribed in the destination rect.
-    /// When the rect is square this produces a perfect circle.  Default `false`.
+    /// Shape clipping applied to the layer.  Default `Rect` (no clipping).
+    /// Set to `Circle` for Loom-style circular webcam PIP overlays.
     #[serde(default)]
-    pub crop_circle: bool,
+    pub crop_shape: CropShape,
 }
 
 impl Default for LayerConfig {
@@ -222,7 +242,7 @@ impl Default for LayerConfig {
             crop_zoom: default_crop_zoom(),
             crop_x: default_crop_center(),
             crop_y: default_crop_center(),
-            crop_circle: false,
+            crop_shape: CropShape::default(),
         }
     }
 }
@@ -304,8 +324,8 @@ pub struct ResolvedLayer {
     pub crop_x: f32,
     /// Normalized crop tilt Y (0.0–1.0).
     pub crop_y: f32,
-    /// Whether the layer is clipped to an ellipse inscribed in the rect.
-    pub crop_circle: bool,
+    /// Shape clipping applied to the layer.
+    pub crop_shape: CropShape,
 }
 
 /// Server-computed layout for a single overlay (text or image).

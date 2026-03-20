@@ -120,7 +120,7 @@ fn make_layer(
         crop_zoom: 1.0,
         crop_x: 0.5,
         crop_y: 0.5,
-        crop_circle: false,
+        crop_shape: streamkit_nodes::video::compositor::config::CropShape::Rect,
     })
 }
 
@@ -415,7 +415,7 @@ fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
                         crop_zoom: 1.0,
                         crop_x: 0.5,
                         crop_y: 0.5,
-                        crop_circle: false,
+                        crop_shape: streamkit_nodes::video::compositor::config::CropShape::Rect,
                     }),
                     Some(LayerSnapshot {
                         data: pip,
@@ -431,7 +431,7 @@ fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
                         crop_zoom: 1.0,
                         crop_x: 0.5,
                         crop_y: 0.5,
-                        crop_circle: false,
+                        crop_shape: streamkit_nodes::video::compositor::config::CropShape::Rect,
                     }),
                 ]
             },

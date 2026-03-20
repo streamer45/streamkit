@@ -243,7 +243,7 @@ export function useCompositorOverlays(deps: OverlayDeps) {
   const updateLayerCropZoom = useCallback(
     (
       layerId: string,
-      patch: { cropX?: number; cropY?: number; cropZoom?: number; cropCircle?: boolean }
+      patch: { cropX?: number; cropY?: number; cropZoom?: number; cropShape?: 'rect' | 'circle' }
     ) => {
       setLayers((prev) => {
         return prev.map((l) => {
@@ -252,7 +252,7 @@ export function useCompositorOverlays(deps: OverlayDeps) {
           if (patch.cropZoom !== undefined) updated.cropZoom = Math.max(1.0, patch.cropZoom);
           if (patch.cropX !== undefined) updated.cropX = Math.max(0, Math.min(1, patch.cropX));
           if (patch.cropY !== undefined) updated.cropY = Math.max(0, Math.min(1, patch.cropY));
-          if (patch.cropCircle !== undefined) updated.cropCircle = patch.cropCircle;
+          if (patch.cropShape !== undefined) updated.cropShape = patch.cropShape;
           // Reset pan/tilt when zoom returns to 1.0
           if (updated.cropZoom <= 1.0) {
             updated.cropX = DEFAULT_CROP_X;
