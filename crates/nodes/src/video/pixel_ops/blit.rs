@@ -966,6 +966,14 @@ pub fn scale_blit_rgba_rotated(
     let crop_sw_u = crop_sw as usize;
     let crop_sh_u = crop_sh as usize;
 
+    // Pre-compute ellipse AA constants outside the hot loop — they only
+    // depend on the destination rect dimensions which are loop-invariant.
+    // (Mirrors the axis-aligned path at line ~288.)
+    let ellipse_sx = 2.0 / rw;
+    let ellipse_sy = 2.0 / rh;
+    let aa_band = ellipse_sx.max(ellipse_sy) * 1.5;
+    let aa_inner = 1.0 - aa_band;
+
     let process_row = |py: i32, row_slice: &mut [u8]| {
         let dy = py as f32 - cy;
 
@@ -1009,10 +1017,6 @@ pub fn scale_blit_rgba_rotated(
                     continue;
                 }
                 // Anti-aliased edge: smoothstep over ~1.5 pixel band.
-                let ellipse_sx = 2.0 / rw;
-                let ellipse_sy = 2.0 / rh;
-                let aa_band = ellipse_sx.max(ellipse_sy) * 1.5;
-                let aa_inner = 1.0 - aa_band;
                 let dist = r2.sqrt();
                 if dist > aa_inner {
                     ((1.0 - dist) / aa_band).clamp(0.0, 1.0)
