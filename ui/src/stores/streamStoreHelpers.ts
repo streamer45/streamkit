@@ -6,7 +6,7 @@
 
 import * as Hang from '@moq/hang';
 import * as Publish from '@moq/publish';
-import type { Signal } from '@moq/signals';
+import type { Getter } from '@moq/signals';
 import { Effect } from '@moq/signals';
 import * as Watch from '@moq/watch';
 
@@ -82,7 +82,7 @@ export const NULL_MOQ_REFS = {
 } as const;
 
 export function waitForSignalValue<T>(
-  signal: Signal<T>,
+  signal: Getter<T>,
   predicate: (value: T) => boolean,
   timeoutMs: number,
   timeoutMessage: string
