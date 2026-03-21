@@ -294,10 +294,7 @@ export const TextOverlayLayer: React.FC<{
         </span>
         <TextContent
           style={{
-            transform: contentMirrorTransform(
-              overlay.mirrorHorizontal,
-              overlay.mirrorVertical
-            ),
+            transform: contentMirrorTransform(overlay.mirrorHorizontal, overlay.mirrorVertical),
           }}
         >
           <span
@@ -427,10 +424,7 @@ export const ImageOverlayLayer: React.FC<{
             objectFit: 'contain',
             pointerEvents: 'none',
             opacity: 0.85,
-            transform: contentMirrorTransform(
-              overlay.mirrorHorizontal,
-              overlay.mirrorVertical
-            ),
+            transform: contentMirrorTransform(overlay.mirrorHorizontal, overlay.mirrorVertical),
           }}
         />
       )}

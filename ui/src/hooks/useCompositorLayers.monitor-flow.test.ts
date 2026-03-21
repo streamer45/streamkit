@@ -96,29 +96,58 @@ function monitorOptions(
   };
 }
 
+/** Build a ResolvedLayer with sensible defaults. */
+function serverLayer(
+  id: string,
+  overrides: Record<string, unknown> = {}
+): CompositorLayout['layers'][number] {
+  return {
+    id,
+    x: 160,
+    y: 0,
+    width: 960,
+    height: 720,
+    opacity: 1.0,
+    z_index: 0,
+    rotation_degrees: 0,
+    mirror_horizontal: false,
+    mirror_vertical: false,
+    crop_zoom: 1.0,
+    crop_x: 0.5,
+    crop_y: 0.5,
+    crop_shape: 'rect' as const,
+    ...overrides,
+  };
+}
+
+/** Build a ResolvedOverlay with sensible defaults. */
+function serverOverlay(
+  id: string,
+  overrides: Record<string, unknown> = {}
+): CompositorLayout['text_overlays'][number] {
+  return {
+    id,
+    x: 0,
+    y: 0,
+    width: 200,
+    height: 40,
+    opacity: 1.0,
+    z_index: 100,
+    rotation_degrees: 0,
+    mirror_horizontal: false,
+    mirror_vertical: false,
+    measured_text_width: null,
+    measured_text_height: null,
+    ...overrides,
+  };
+}
+
 /** Build a CompositorLayout representing server-resolved positions. */
 function makeServerLayout(overrides: Partial<CompositorLayout> = {}): CompositorLayout {
   return {
     canvas_width: 1280,
     canvas_height: 720,
-    layers: [
-      {
-        id: 'in_0',
-        x: 160,
-        y: 0,
-        width: 960,
-        height: 720,
-        opacity: 1.0,
-        z_index: 0,
-        rotation_degrees: 0,
-        mirror_horizontal: false,
-        mirror_vertical: false,
-        crop_zoom: 1.0,
-        crop_x: 0.5,
-        crop_y: 0.5,
-        crop_shape: 'rect' as const,
-      },
-    ],
+    layers: [serverLayer('in_0')],
     text_overlays: [],
     image_overlays: [],
     ...overrides,
@@ -201,20 +230,14 @@ describe('Monitor view data flow integration', () => {
     // Server sends layout with text measurements
     const layout = makeServerLayout({
       text_overlays: [
-        {
-          id: 'text_0',
+        serverOverlay('text_0', {
           x: 50,
           y: 100,
           width: 280,
           height: 45,
-          opacity: 1.0,
-          z_index: 100,
-          rotation_degrees: 0,
-          mirror_horizontal: false,
-          mirror_vertical: false,
           measured_text_width: 275,
           measured_text_height: 42,
-        },
+        }),
       ],
     });
     act(() => pushServerViewData(layout));
@@ -249,20 +272,14 @@ describe('Monitor view data flow integration', () => {
     // Server positions
     const layout = makeServerLayout({
       text_overlays: [
-        {
-          id: 'text_0',
+        serverOverlay('text_0', {
           x: 300,
           y: 200,
           width: 280,
           height: 45,
-          opacity: 1.0,
-          z_index: 100,
-          rotation_degrees: 0,
-          mirror_horizontal: false,
-          mirror_vertical: false,
           measured_text_width: 275,
           measured_text_height: 42,
-        },
+        }),
       ],
     });
     act(() => pushServerViewData(layout));
@@ -343,38 +360,8 @@ describe('Monitor view data flow integration', () => {
     // Server resolves both layers at specific positions
     const layout = makeServerLayout({
       layers: [
-        {
-          id: 'in_0',
-          x: 160,
-          y: 0,
-          width: 960,
-          height: 720,
-          opacity: 1.0,
-          z_index: 0,
-          rotation_degrees: 0,
-          mirror_horizontal: false,
-          mirror_vertical: false,
-          crop_zoom: 1.0,
-          crop_x: 0.5,
-          crop_y: 0.5,
-          crop_shape: 'rect' as const,
-        },
-        {
-          id: 'in_1',
-          x: 800,
-          y: 400,
-          width: 320,
-          height: 240,
-          opacity: 1.0,
-          z_index: 1,
-          rotation_degrees: 0,
-          mirror_horizontal: false,
-          mirror_vertical: false,
-          crop_zoom: 1.0,
-          crop_x: 0.5,
-          crop_y: 0.5,
-          crop_shape: 'rect' as const,
-        },
+        serverLayer('in_0'),
+        serverLayer('in_1', { x: 800, y: 400, width: 320, height: 240, z_index: 1 }),
       ],
     });
     act(() => pushServerViewData(layout));
@@ -436,20 +423,14 @@ describe('Monitor view data flow integration', () => {
     // Server resolves text overlay at a different position with measurements
     const layout = makeServerLayout({
       text_overlays: [
-        {
-          id: 'text_0',
+        serverOverlay('text_0', {
           x: 400,
           y: 300,
           width: 250,
           height: 48,
-          opacity: 1.0,
-          z_index: 100,
-          rotation_degrees: 0,
-          mirror_horizontal: false,
-          mirror_vertical: false,
           measured_text_width: 245,
           measured_text_height: 44,
-        },
+        }),
       ],
     });
     act(() => pushServerViewData(layout));
@@ -503,20 +484,14 @@ describe('Monitor view data flow integration', () => {
     // Server resolves image at a different position
     const layout = makeServerLayout({
       image_overlays: [
-        {
-          id: 'img_0',
+        serverOverlay('img_0', {
           x: 500,
           y: 300,
           width: 100,
           height: 80,
           opacity: 0.9,
           z_index: 50,
-          rotation_degrees: 0,
-          mirror_horizontal: false,
-          mirror_vertical: false,
-          measured_text_width: null,
-          measured_text_height: null,
-        },
+        }),
       ],
     });
     act(() => pushServerViewData(layout));
@@ -608,28 +583,7 @@ describe('Monitor view data flow integration', () => {
 
     // Server resolves initial layout
     act(() =>
-      pushServerViewData(
-        makeServerLayout({
-          layers: [
-            {
-              id: 'in_0',
-              x: 160,
-              y: 0,
-              width: 960,
-              height: 720,
-              opacity: 0.8,
-              z_index: 0,
-              rotation_degrees: 0,
-              mirror_horizontal: false,
-              mirror_vertical: false,
-              crop_zoom: 1.0,
-              crop_x: 0.5,
-              crop_y: 0.5,
-              crop_shape: 'rect' as const,
-            },
-          ],
-        })
-      )
+      pushServerViewData(makeServerLayout({ layers: [serverLayer('in_0', { opacity: 0.8 })] }))
     );
 
     const layers0 = getLayersFromStore(result.current.store);
@@ -650,28 +604,7 @@ describe('Monitor view data flow integration', () => {
     // Server sends a stale NodeViewDataUpdated with old opacity (0.8).
     // Because throttleActiveRef is true, this should be skipped.
     act(() =>
-      pushServerViewData(
-        makeServerLayout({
-          layers: [
-            {
-              id: 'in_0',
-              x: 160,
-              y: 0,
-              width: 960,
-              height: 720,
-              opacity: 0.8,
-              z_index: 0,
-              rotation_degrees: 0,
-              mirror_horizontal: false,
-              mirror_vertical: false,
-              crop_zoom: 1.0,
-              crop_x: 0.5,
-              crop_y: 0.5,
-              crop_shape: 'rect' as const,
-            },
-          ],
-        })
-      )
+      pushServerViewData(makeServerLayout({ layers: [serverLayer('in_0', { opacity: 0.8 })] }))
     );
 
     // Local atom must still hold the user's value (0.5), not the stale
