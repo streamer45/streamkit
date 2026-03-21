@@ -49,6 +49,15 @@ export default defineConfig(({ mode }) => {
       alias: {
         '@': path.resolve(__dirname, './src'),
       },
+      dedupe: [
+        '@codemirror/state',
+        '@codemirror/view',
+        '@codemirror/language',
+        '@codemirror/commands',
+        '@codemirror/autocomplete',
+        '@codemirror/lint',
+        '@codemirror/search',
+      ],
     },
     define: {
       'import.meta.env.VITE_WS_URL':
