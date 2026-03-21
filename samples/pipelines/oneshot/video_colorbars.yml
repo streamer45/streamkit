@@ -16,6 +16,7 @@ nodes:
       frame_count: 300  # 10 seconds at 30fps
       pixel_format: nv12
       draw_time: true
+      draw_time_use_pts: true
 
   vp9_encoder:
     kind: video::vp9::encoder

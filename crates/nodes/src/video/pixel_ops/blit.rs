@@ -279,24 +279,31 @@ pub fn scale_blit_rgba(
         .collect();
 
     if crop_circle {
-        // ── Ellipse-masked blit path ──────────────────────────────────
-        // Per-pixel ellipse test with anti-aliased edges.  Uses a
+        // ── Circle-masked blit path ───────────────────────────────────
+        // Per-pixel circle test with anti-aliased edges.  Uses a
         // dedicated scalar loop — the SIMD fast paths are bypassed since
-        // the per-pixel ellipse alpha multiplier makes vectorisation
+        // the per-pixel circle alpha multiplier makes vectorisation
         // impractical without significant complexity.
+        //
+        // The circle is always a true circle (not an ellipse) using
+        // min(width, height) as the diameter, centred in the rect.
         #[allow(clippy::cast_precision_loss)]
-        let ellipse_sx = 2.0 / rw as f32;
+        let rw_f = rw as f32;
         #[allow(clippy::cast_precision_loss)]
-        let ellipse_sy = 2.0 / rh as f32;
-        // AA band width in normalised coords (~1.5 pixels).
-        let aa_band = ellipse_sx.max(ellipse_sy) * 1.5;
-        let aa_inner = 1.0 - aa_band;
+        let rh_f = rh as f32;
+        let diameter = rw_f.min(rh_f);
+        let radius_px = diameter * 0.5;
+        let center_x = rw_f * 0.5;
+        let center_y = rh_f * 0.5;
+        // AA band width in pixels (~1.5 pixels).
+        let aa_band_px = 1.5;
+        let aa_inner_px = radius_px - aa_band_px;
 
-        let blit_row_ellipse = |dy: usize, row_slice: &mut [u8]| {
+        let blit_row_circle = |dy: usize, row_slice: &mut [u8]| {
+            // Pixel centre Y relative to circle centre.
             #[allow(clippy::cast_precision_loss)]
-            let ny = ((dy + src_row_skip) as f32).mul_add(ellipse_sy, -1.0) + ellipse_sy * 0.5;
-            let ny2 = ny * ny;
-            if ny2 >= 1.0 {
+            let py = (dy + src_row_skip) as f32 + 0.5 - center_y;
+            if py.abs() >= radius_px {
                 return;
             }
 
@@ -309,22 +316,22 @@ pub fn scale_blit_rgba(
             let src_row_base = sy * sw * 4;
 
             for (dx, &sx_mapped) in x_map.iter().enumerate().take(effective_rect_w) {
+                // Pixel centre X relative to circle centre.
                 #[allow(clippy::cast_precision_loss)]
-                let nx = ((dx + src_col_skip) as f32).mul_add(ellipse_sx, -1.0) + ellipse_sx * 0.5;
-                let dist2 = nx * nx + ny2;
-                if dist2 > 1.0 {
+                let px = (dx + src_col_skip) as f32 + 0.5 - center_x;
+                let dist = (px * px + py * py).sqrt();
+                if dist > radius_px {
                     continue;
                 }
 
                 // Anti-aliased edge falloff.
-                let ellipse_alpha = if dist2 > aa_inner * aa_inner {
-                    let radius = dist2.sqrt();
-                    ((1.0 - radius) / aa_band).clamp(0.0, 1.0)
+                let circle_alpha = if dist > aa_inner_px {
+                    ((radius_px - dist) / aa_band_px).clamp(0.0, 1.0)
                 } else {
                     1.0
                 };
 
-                let eff_opacity = opacity * ellipse_alpha;
+                let eff_opacity = opacity * circle_alpha;
                 if eff_opacity <= 0.001 {
                     continue;
                 }
@@ -353,12 +360,12 @@ pub fn scale_blit_rgba(
         if effective_rh >= RAYON_ROW_THRESHOLD {
             dst_rows.par_chunks_mut(row_stride).take(effective_rh).enumerate().for_each(
                 |(dy, row_slice)| {
-                    blit_row_ellipse(dy, row_slice);
+                    blit_row_circle(dy, row_slice);
                 },
             );
         } else {
             for (dy, row_slice) in dst_rows.chunks_mut(row_stride).take(effective_rh).enumerate() {
-                blit_row_ellipse(dy, row_slice);
+                blit_row_circle(dy, row_slice);
             }
         }
         return;
@@ -966,14 +973,6 @@ pub fn scale_blit_rgba_rotated(
     let crop_sw_u = crop_sw as usize;
     let crop_sh_u = crop_sh as usize;
 
-    // Pre-compute ellipse AA constants outside the hot loop — they only
-    // depend on the destination rect dimensions which are loop-invariant.
-    // (Mirrors the axis-aligned path at line ~288.)
-    let ellipse_sx = 2.0 / rw;
-    let ellipse_sy = 2.0 / rh;
-    let aa_band = ellipse_sx.max(ellipse_sy) * 1.5;
-    let aa_inner = 1.0 - aa_band;
-
     let process_row = |py: i32, row_slice: &mut [u8]| {
         let dy = py as f32 - cy;
 
@@ -1001,25 +1000,24 @@ pub fn scale_blit_rgba_rotated(
                 continue;
             }
 
-            // ── Ellipse crop mask ──────────────────────────────────
-            // When crop_circle is enabled, test the pixel against the
-            // ellipse inscribed in the destination rect.  Normalised
-            // coordinates: nx ∈ [-1, 1], ny ∈ [-1, 1].
-            let ellipse_coverage = if crop_circle {
-                let nx = local_x / half_cw;
-                let ny = local_y / half_ch;
-                let r2 = nx * nx + ny * ny;
-                if r2 > 1.0 {
-                    // Fully outside ellipse — skip pixel.
+            // ── Circle crop mask ───────────────────────────────────
+            // When crop_circle is enabled, test the pixel against a
+            // true circle (not ellipse) inscribed in the shorter
+            // dimension of the destination rect, centred on the rect.
+            let circle_coverage = if crop_circle {
+                let circle_radius = half_cw.min(half_ch);
+                let dist = (local_x * local_x + local_y * local_y).sqrt();
+                if dist > circle_radius {
+                    // Fully outside circle — skip pixel.
                     local_x += cos_a;
                     local_y -= sin_a;
                     px += 1;
                     continue;
                 }
                 // Anti-aliased edge: smoothstep over ~1.5 pixel band.
-                let dist = r2.sqrt();
-                if dist > aa_inner {
-                    ((1.0 - dist) / aa_band).clamp(0.0, 1.0)
+                let aa_inner_r = circle_radius - 1.5;
+                if dist > aa_inner_r {
+                    ((circle_radius - dist) / 1.5).clamp(0.0, 1.0)
                 } else {
                     1.0
                 }
@@ -1072,9 +1070,9 @@ pub fn scale_blit_rgba_rotated(
                 sa = f32::from(sa).mul_add(min_dist, 0.5) as u8;
             }
 
-            // Apply ellipse coverage for crop_circle.
-            if ellipse_coverage < 1.0 {
-                sa = f32::from(sa).mul_add(ellipse_coverage, 0.5) as u8;
+            // Apply circle coverage for crop_circle.
+            if circle_coverage < 1.0 {
+                sa = f32::from(sa).mul_add(circle_coverage, 0.5) as u8;
             }
 
             if sa > 0 {

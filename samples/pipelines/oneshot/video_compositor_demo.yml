@@ -26,9 +26,11 @@ nodes:
       fps: 30
       frame_count: 300
       pixel_format: rgba8
-      # Draw the current wall-clock time (HH:MM:SS.mmm) in the bottom-left
-      # corner using the bundled DejaVu Sans Mono font.
+      # Draw the presentation timestamp (PTS) so every frame visibly differs.
+      # Wall-clock mode would show nearly identical times since oneshot
+      # pipelines generate all frames as fast as possible.
       draw_time: true
+      draw_time_use_pts: true
 
   colorbars_pip:
     kind: video::colorbars
@@ -39,6 +41,7 @@ nodes:
       frame_count: 300
       pixel_format: rgba8
       draw_time: true
+      draw_time_use_pts: true
 
   compositor:
     kind: video::compositor

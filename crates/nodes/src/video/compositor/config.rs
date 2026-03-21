@@ -28,7 +28,9 @@ pub enum CropShape {
     /// No shape clipping — the layer fills its destination rectangle.
     #[default]
     Rect,
-    /// Clip to an ellipse inscribed in the destination rectangle.
+    /// Clip to a circle inscribed in the shorter side of the destination
+    /// rectangle.  The circle is always a true circle (never an ellipse),
+    /// centred within the rect.
     Circle,
 }
 

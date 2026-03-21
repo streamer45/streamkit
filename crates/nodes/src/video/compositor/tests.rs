@@ -1837,6 +1837,52 @@ fn test_composite_frame_crop_shape_circle() {
 }
 
 #[test]
+fn test_scale_blit_crop_shape_circle_nonsquare_rect() {
+    // Verify that crop_shape: circle on a non-square destination rect
+    // produces a true circle (using min dimension as diameter), NOT an
+    // ellipse.  A 40×20 rect should crop to a circle of diameter 20
+    // centred in the rect.  A pixel at (5, 10) — inside an ellipse but
+    // outside the true circle — must remain transparent.
+    let src = [255u8, 0, 0, 255].repeat(40 * 20);
+    let mut dst = vec![0u8; 40 * 20 * 4];
+
+    scale_blit_rgba(
+        &mut dst,
+        40,
+        20,
+        &src,
+        40,
+        20,
+        &BlitRect { x: 0, y: 0, width: 40, height: 20 },
+        1.0,
+        false,
+        false,
+        false,
+        None,
+        true, // crop_shape = circle
+    );
+
+    // Centre pixel (20, 10) should be red — inside the circle.
+    let idx = (10 * 40 + 20) * 4;
+    assert_eq!(dst[idx], 255, "Centre R");
+    assert!(dst[idx + 3] > 200, "Centre A should be mostly opaque");
+
+    // Pixel (5, 10) — on the horizontal midline but well outside a
+    // circle of radius 10 centred at (20, 10).  Distance from centre
+    // is 15, which is > 10.  An ellipse would include this point.
+    let outside_idx = (10 * 40 + 5) * 4;
+    assert_eq!(dst[outside_idx + 3], 0, "Pixel (5,10) should be transparent — outside true circle");
+
+    // Pixel (30, 10) — symmetric to (5,10) on the other side.
+    let outside_idx2 = (10 * 40 + 35) * 4;
+    assert_eq!(
+        dst[outside_idx2 + 3],
+        0,
+        "Pixel (35,10) should be transparent — outside true circle"
+    );
+}
+
+#[test]
 fn test_composite_frame_crop_shape_circle_skip_clear() {
     // Regression test: when crop_shape is circle on the first (full-canvas)
     // layer, the skip_clear optimisation must NOT fire — pixels outside the
