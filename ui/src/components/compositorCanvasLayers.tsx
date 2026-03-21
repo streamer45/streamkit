@@ -50,14 +50,21 @@ export function cssFontFamily(fontName: string): string {
   return FONT_FAMILY_MAP[fontName] ?? 'sans-serif';
 }
 
-/** Build a CSS transform string combining rotation and mirror flips. */
-export function layerTransform(
-  rotationDegrees: number,
+/** Build a CSS transform string for rotation only.
+ *  Mirror flips are applied to inner content elements instead of the
+ *  LayerBox itself so that resize handles and labels stay in the correct
+ *  orientation. */
+export function layerTransform(rotationDegrees: number): string | undefined {
+  return rotationDegrees !== 0 ? `rotate(${rotationDegrees}deg)` : undefined;
+}
+
+/** Build a CSS transform string for mirror flips, applied to content
+ *  elements (images, text) inside a layer box. */
+export function contentMirrorTransform(
   mirrorHorizontal: boolean,
   mirrorVertical: boolean
 ): string | undefined {
   const parts: string[] = [];
-  if (rotationDegrees !== 0) parts.push(`rotate(${rotationDegrees}deg)`);
   if (mirrorHorizontal) parts.push('scaleX(-1)');
   if (mirrorVertical) parts.push('scaleY(-1)');
   return parts.length > 0 ? parts.join(' ') : undefined;
@@ -74,8 +81,6 @@ export function layerBoxStyle(
     opacity: number;
     zIndex: number;
     rotationDegrees: number;
-    mirrorHorizontal: boolean;
-    mirrorVertical: boolean;
     borderColor: string;
     bgColor: string;
     outlineStyle?: 'solid' | 'dashed';
@@ -87,7 +92,7 @@ export function layerBoxStyle(
     width,
     height,
     opacity: opts.visible ? opts.opacity : 0.2,
-    transform: layerTransform(opts.rotationDegrees, opts.mirrorHorizontal, opts.mirrorVertical),
+    transform: layerTransform(opts.rotationDegrees),
     zIndex: opts.zIndex,
     outline: `2px ${opts.outlineStyle ?? 'solid'} ${opts.borderColor}`,
     outlineOffset: '-2px',
@@ -153,8 +158,6 @@ export const VideoLayer: React.FC<{
           opacity: layer.opacity,
           zIndex: layer.zIndex,
           rotationDegrees: layer.rotationDegrees,
-          mirrorHorizontal: layer.mirrorHorizontal,
-          mirrorVertical: layer.mirrorVertical,
           borderColor,
           bgColor,
           outlineStyle: layer.visible ? 'solid' : 'dashed',
@@ -256,8 +259,6 @@ export const TextOverlayLayer: React.FC<{
           opacity: overlay.opacity,
           zIndex: overlay.zIndex,
           rotationDegrees: overlay.rotationDegrees,
-          mirrorHorizontal: overlay.mirrorHorizontal,
-          mirrorVertical: overlay.mirrorVertical,
           borderColor,
           bgColor,
           outlineStyle: 'dashed',
@@ -291,7 +292,11 @@ export const TextOverlayLayer: React.FC<{
         >
           {overlay.text}
         </span>
-        <TextContent>
+        <TextContent
+          style={{
+            transform: contentMirrorTransform(overlay.mirrorHorizontal, overlay.mirrorVertical),
+          }}
+        >
           <span
             style={{
               fontSize: overlay.fontSize,
@@ -402,8 +407,6 @@ export const ImageOverlayLayer: React.FC<{
         opacity: overlay.opacity,
         zIndex: overlay.zIndex,
         rotationDegrees: overlay.rotationDegrees,
-        mirrorHorizontal: overlay.mirrorHorizontal,
-        mirrorVertical: overlay.mirrorVertical,
         borderColor,
         bgColor,
       })}
@@ -421,6 +424,7 @@ export const ImageOverlayLayer: React.FC<{
             objectFit: 'contain',
             pointerEvents: 'none',
             opacity: 0.85,
+            transform: contentMirrorTransform(overlay.mirrorHorizontal, overlay.mirrorVertical),
           }}
         />
       )}
