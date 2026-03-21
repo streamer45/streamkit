@@ -70,11 +70,6 @@ feature-depth = 1
 # A list of advisory IDs to ignore. Note that ignored advisories will still
 # output a note when they are encountered.
 ignore = [
-  # paste is unmaintained but still functional. It's a transitive dependency from
-  # moq-transport and mp4-atom (via hang). No security vulnerability, just maintenance
-  # status. Will be resolved when upstream moq ecosystem migrates to pastey.
-  { id = "RUSTSEC-2024-0436", reason = "transitive dep from moq ecosystem, no security issue" },
-
   # rustls-pemfile is unmaintained. We upgraded axum-server to 0.8 which removed it,
   # but moq-native still depends on it. Will be resolved when moq-native updates.
   { id = "RUSTSEC-2025-0134", reason = "transitive dep from moq-native, no security issue" },
