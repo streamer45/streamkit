@@ -442,8 +442,11 @@ const StreamView: React.FC = () => {
         // Auto-adjust connection settings based on moq_peer node in the pipeline
         const moqSettings = extractMoqPeerSettings(template.yaml);
         if (moqSettings) {
-          // Update gateway URL path if specified
-          if (moqSettings.gatewayPath && serverUrl) {
+          // Update server URL: direct relay URL takes priority, otherwise
+          // apply the gateway path to the current server URL.
+          if (moqSettings.relayUrl) {
+            setServerUrl(moqSettings.relayUrl);
+          } else if (moqSettings.gatewayPath && serverUrl) {
             setServerUrl(updateUrlPath(serverUrl, moqSettings.gatewayPath));
           }
           // Update broadcast names if specified

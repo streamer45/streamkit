@@ -30,6 +30,18 @@ pub struct MoqPushConfig {
     pub broadcast: String,
     #[serde(default = "default_channels")]
     pub channels: u32,
+    /// Whether to publish an audio track (Opus on the `in` pin).
+    ///
+    /// Required for dynamic pipelines where `input_types` is not available at
+    /// startup. In oneshot pipelines this is auto-detected from `input_types`
+    /// when left as `None`.
+    pub audio: Option<bool>,
+    /// Whether to publish a video track (VP9 on the `in_1` pin).
+    ///
+    /// Required for dynamic pipelines where `input_types` is not available at
+    /// startup. In oneshot pipelines this is auto-detected from `input_types`
+    /// when left as `None`.
+    pub video: Option<bool>,
     /// Duration of each MoQ group in milliseconds.
     /// Smaller groups = lower latency but more overhead.
     /// Larger groups = higher latency but better efficiency.
@@ -61,6 +73,8 @@ impl Default for MoqPushConfig {
             jwt: None,
             broadcast: String::new(),
             channels: 2,
+            audio: None,
+            video: None,
             group_duration_ms: default_group_duration_ms(),
             initial_delay_ms: 0,
         }
@@ -172,11 +186,16 @@ impl ProcessorNode for MoqPushNode {
 
         tracing::info!("Publishing to broadcast '{}'", self.config.broadcast);
 
-        // Detect which inputs are connected
-        let has_audio =
-            context.input_types.iter().any(|(_, pt)| matches!(pt, PacketType::EncodedAudio(_)));
-        let has_video =
-            context.input_types.iter().any(|(_, pt)| matches!(pt, PacketType::EncodedVideo(_)));
+        // Detect which inputs are connected.
+        // Explicit config (`audio`/`video`) takes priority — required for dynamic
+        // pipelines where `input_types` is empty at startup.
+        // Falls back to `input_types` (populated by the graph builder in oneshot pipelines).
+        let has_audio = self.config.audio.unwrap_or_else(|| {
+            context.input_types.iter().any(|(_, pt)| matches!(pt, PacketType::EncodedAudio(_)))
+        });
+        let has_video = self.config.video.unwrap_or_else(|| {
+            context.input_types.iter().any(|(_, pt)| matches!(pt, PacketType::EncodedVideo(_)))
+        });
 
         if !has_audio && !has_video {
             let err_msg = "MoqPushNode requires at least one audio or video input";

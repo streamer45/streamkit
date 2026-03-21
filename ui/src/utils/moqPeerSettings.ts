@@ -6,6 +6,8 @@ import { load } from 'js-yaml';
 
 export interface MoqPeerSettings {
   gatewayPath?: string;
+  /** Direct relay URL from publisher/subscriber `url` param (external relay pattern). */
+  relayUrl?: string;
   inputBroadcast?: string;
   outputBroadcast?: string;
   /** Whether the pipeline declares an input_broadcast (i.e. expects a publisher). */
@@ -28,6 +30,11 @@ type ParsedNode = {
     gateway_path?: string;
     input_broadcast?: string;
     output_broadcast?: string;
+    url?: string;
+    broadcast?: string;
+    audio?: boolean;
+    video?: boolean;
+    [key: string]: unknown;
   };
   needs?: NeedsValue;
 };
@@ -110,13 +117,88 @@ function detectPeerOutputMediaTypes(
   return { outputsAudio, outputsVideo };
 }
 
+/** Finds the first subscriber and publisher nodes in the pipeline. */
+function findPubSubNodes(nodes: Record<string, ParsedNode>): {
+  subscriberName: string | null;
+  subscriberConfig: ParsedNode | null;
+  publisherConfig: ParsedNode | null;
+} {
+  let subscriberName: string | null = null;
+  let subscriberConfig: ParsedNode | null = null;
+  let publisherConfig: ParsedNode | null = null;
+
+  for (const [name, nodeConfig] of Object.entries(nodes)) {
+    if (nodeConfig.kind === 'transport::moq::subscriber') {
+      subscriberName = name;
+      subscriberConfig = nodeConfig;
+    } else if (nodeConfig.kind === 'transport::moq::publisher') {
+      publisherConfig = nodeConfig;
+    }
+  }
+
+  return { subscriberName, subscriberConfig, publisherConfig };
+}
+
+/**
+ * Detects which media types downstream nodes consume from a subscriber node
+ * by scanning `needs` references across all nodes.
+ */
+function detectSubscriberInputMediaTypes(
+  subscriberName: string,
+  nodes: Record<string, ParsedNode>
+): { needsAudio: boolean; needsVideo: boolean } {
+  let needsAudio = false;
+  let needsVideo = false;
+
+  for (const nodeConfig of Object.values(nodes)) {
+    for (const ref of collectNeedsRefs(nodeConfig.needs)) {
+      if (ref === subscriberName || ref === `${subscriberName}.out`) {
+        needsAudio = true;
+      } else if (ref.startsWith(`${subscriberName}.`) && ref.includes('video')) {
+        needsVideo = true;
+      }
+    }
+  }
+
+  return { needsAudio, needsVideo };
+}
+
+/**
+ * Detects media types for pipelines using separate `transport::moq::publisher`
+ * and `transport::moq::subscriber` nodes (external relay pattern).
+ */
+function extractPubSubSettings(nodes: Record<string, ParsedNode>): MoqPeerSettings | null {
+  const { subscriberName, subscriberConfig, publisherConfig } = findPubSubNodes(nodes);
+  if (!subscriberConfig && !publisherConfig) return null;
+
+  const subParams = subscriberConfig?.params;
+  const pubParams = publisherConfig?.params;
+
+  const inputMedia =
+    subscriberName != null
+      ? detectSubscriberInputMediaTypes(subscriberName, nodes)
+      : { needsAudio: false, needsVideo: false };
+
+  return {
+    relayUrl: subParams?.url ?? pubParams?.url,
+    inputBroadcast: subParams?.broadcast,
+    outputBroadcast: pubParams?.broadcast,
+    hasInputBroadcast: Boolean(subParams?.broadcast),
+    needsAudioInput: inputMedia.needsAudio,
+    needsVideoInput: inputMedia.needsVideo,
+    outputsAudio: pubParams?.audio === true,
+    outputsVideo: pubParams?.video === true,
+  };
+}
+
 /**
  * Extracts moq_peer settings from a pipeline YAML string.
- * Looks for any node with kind 'transport::moq::peer' and returns its
- * gateway_path, input_broadcast, and output_broadcast parameters.
+ * Looks for `transport::moq::peer` nodes first (gateway pattern), then falls
+ * back to separate `transport::moq::publisher`/`subscriber` nodes (external
+ * relay pattern).
  *
  * @param yamlContent - The YAML string to parse
- * @returns MoqPeerSettings if a moq_peer node is found, null otherwise
+ * @returns MoqPeerSettings if MoQ transport nodes are found, null otherwise
  */
 export function extractMoqPeerSettings(yamlContent: string): MoqPeerSettings | null {
   try {
@@ -137,28 +219,25 @@ export function extractMoqPeerSettings(yamlContent: string): MoqPeerSettings | n
       }
     }
 
-    if (!peerNodeName || !peerNodeConfig?.params) {
-      return null;
+    // Gateway pattern: transport::moq::peer
+    if (peerNodeName && peerNodeConfig?.params) {
+      const { needsAudio, needsVideo } = detectPeerInputMediaTypes(peerNodeName, parsed.nodes);
+      const { outputsAudio, outputsVideo } = detectPeerOutputMediaTypes(peerNodeName, parsed.nodes);
+
+      return {
+        gatewayPath: peerNodeConfig.params.gateway_path,
+        inputBroadcast: peerNodeConfig.params.input_broadcast,
+        outputBroadcast: peerNodeConfig.params.output_broadcast,
+        hasInputBroadcast: Boolean(peerNodeConfig.params.input_broadcast),
+        needsAudioInput: needsAudio,
+        needsVideoInput: needsVideo,
+        outputsAudio,
+        outputsVideo,
+      };
     }
 
-    // Determine which media types downstream nodes consume from the moq_peer
-    // using the stable pin naming convention (see detectPeerInputMediaTypes).
-    const { needsAudio, needsVideo } = detectPeerInputMediaTypes(peerNodeName, parsed.nodes);
-
-    // Determine which media types the moq_peer outputs to subscribers
-    // by examining the kinds of nodes wired into its input pins.
-    const { outputsAudio, outputsVideo } = detectPeerOutputMediaTypes(peerNodeName, parsed.nodes);
-
-    return {
-      gatewayPath: peerNodeConfig.params.gateway_path,
-      inputBroadcast: peerNodeConfig.params.input_broadcast,
-      outputBroadcast: peerNodeConfig.params.output_broadcast,
-      hasInputBroadcast: Boolean(peerNodeConfig.params.input_broadcast),
-      needsAudioInput: needsAudio,
-      needsVideoInput: needsVideo,
-      outputsAudio,
-      outputsVideo,
-    };
+    // External relay pattern: separate publisher/subscriber nodes
+    return extractPubSubSettings(parsed.nodes);
   } catch {
     return null;
   }

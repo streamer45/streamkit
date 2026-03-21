@@ -51,8 +51,8 @@ criterion = { version = "0.5", default-features = false }
 [profile.release]
 debug = 1 # Include line tables for better stack traces in profiling
 
-# Maximally-optimised release build — use `cargo build --profile release-lto`.
-# CI sticks with the default `release` profile for faster builds.
+# Optimised release build — use `cargo build --profile release-lto`.
+# All official Dockerfiles use this profile for the skit binary.
 [profile.release-lto]
 inherits = "release"
 lto = "thin"       # Parallel cross-crate LTO — nearly as effective as "fat" but links much faster

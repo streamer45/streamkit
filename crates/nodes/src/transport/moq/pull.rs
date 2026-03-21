@@ -334,17 +334,30 @@ impl MoqPullNode {
                 StreamKitError::Runtime(format!("Failed to create consumer session: {e}"))
             })?;
 
-        // Subscribe to the specified broadcast.
-        //
-        // During dynamic session initialization, the broadcast may not have been announced yet.
-        // Treat this as "no tracks discovered" rather than a hard error: the runtime `run()` path
-        // already waits for announcements and will connect once the broadcast appears.
-        let Some(broadcast) = consumer.consume_broadcast(&self.config.broadcast) else {
-            tracing::debug!(
+        // Wait for the broadcast to be announced.  During dynamic session
+        // initialization the publisher (browser) may not have connected yet, so
+        // we poll with a short delay up to the timeout.
+        let broadcast_poll_interval = Duration::from_millis(250);
+        let discovery_timeout = Duration::from_secs(15);
+
+        let discovery_start = tokio::time::Instant::now();
+        let broadcast = loop {
+            if let Some(b) = consumer.consume_broadcast(&self.config.broadcast) {
+                break b;
+            }
+            if discovery_start.elapsed() >= discovery_timeout {
+                tracing::debug!(
+                    broadcast = %self.config.broadcast,
+                    "Broadcast not announced within {}s; using default output pin",
+                    discovery_timeout.as_secs()
+                );
+                return Ok(Vec::new());
+            }
+            tracing::trace!(
                 broadcast = %self.config.broadcast,
-                "Broadcast not available during catalog discovery; using default output pin"
+                "Broadcast not yet announced, retrying..."
             );
-            return Ok(Vec::new());
+            tokio::time::sleep(broadcast_poll_interval).await;
         };
 
         // Subscribe to the catalog track
@@ -366,17 +379,86 @@ impl MoqPullNode {
         Ok(tracks)
     }
 
+    /// Extract supported tracks (Opus audio, VP9 video) from a parsed catalog.
+    fn extract_tracks(catalog: &hang::catalog::Catalog) -> Vec<moq_lite::Track> {
+        let mut tracks = Vec::new();
+
+        for (name, config) in &catalog.audio.renditions {
+            if matches!(config.codec, hang::catalog::AudioCodec::Opus) {
+                tracing::info!(track = %name, "found opus audio track");
+                tracks.push(moq_lite::Track { name: name.clone(), priority: 80 });
+            } else {
+                tracing::debug!(track = %name, codec = %config.codec, "skipping non-opus audio track");
+            }
+        }
+
+        for (name, config) in &catalog.video.renditions {
+            if matches!(config.codec, hang::catalog::VideoCodec::VP9(_)) {
+                tracing::info!(track = %name, "found VP9 video track");
+                tracks.push(moq_lite::Track { name: name.clone(), priority: 60 });
+            } else {
+                tracing::debug!(track = %name, codec = ?config.codec, "skipping non-VP9 video track");
+            }
+        }
+
+        tracks
+    }
+
+    /// Returns true if the track list contains both an audio and a video track.
+    fn has_audio_and_video(tracks: &[moq_lite::Track]) -> bool {
+        tracks.iter().any(|t| t.name.starts_with("audio/"))
+            && tracks.iter().any(|t| t.name.starts_with("video/"))
+    }
+
+    /// After finding initial tracks, wait for catalog updates that might add more
+    /// (e.g. the browser's video encoder finishing after audio was already ready).
+    /// Returns as soon as both audio and video are present, or on timeout.
+    async fn settle_catalog(
+        catalog_consumer: &mut hang::catalog::CatalogConsumer,
+        mut best: Vec<moq_lite::Track>,
+    ) -> Vec<moq_lite::Track> {
+        if Self::has_audio_and_video(&best) {
+            return best;
+        }
+
+        let settle_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+
+        loop {
+            let remaining = settle_deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+
+            match tokio::time::timeout(remaining, catalog_consumer.next()).await {
+                Ok(Ok(Some(updated))) => {
+                    let updated_tracks = Self::extract_tracks(&updated);
+                    if updated_tracks.len() > best.len() {
+                        tracing::info!(
+                            prev = best.len(),
+                            now = updated_tracks.len(),
+                            "Catalog updated with more tracks"
+                        );
+                        best = updated_tracks;
+                        if Self::has_audio_and_video(&best) {
+                            break;
+                        }
+                    }
+                },
+                _ => break,
+            }
+        }
+
+        best
+    }
+
     async fn parse_catalog(
         &self,
         catalog_consumer: &mut hang::catalog::CatalogConsumer,
     ) -> Result<Vec<moq_lite::Track>, StreamKitError> {
-        const CATALOG_TIMEOUT: Duration = Duration::from_secs(30);
-        const RETRY_DELAY: Duration = Duration::from_millis(100);
-
+        let catalog_timeout = Duration::from_secs(30);
+        let retry_delay = Duration::from_millis(100);
         let start = tokio::time::Instant::now();
 
-        // Keep trying to get a catalog with tracks until timeout
-        // Use 1s timeout per attempt, but retry within the same connection instead of failing
         loop {
             let catalog =
                 match tokio::time::timeout(Duration::from_millis(1000), catalog_consumer.next())
@@ -394,75 +476,33 @@ impl MoqPullNode {
                         )));
                     },
                     Err(_timeout) => {
-                        // Timeout is not fatal - just means catalog isn't ready yet
-                        // Check if we've exceeded the overall timeout
-                        if start.elapsed() >= CATALOG_TIMEOUT {
+                        if start.elapsed() >= catalog_timeout {
                             return Err(StreamKitError::Runtime(format!(
                                 "Timed out waiting for catalog after {} seconds",
-                                CATALOG_TIMEOUT.as_secs()
+                                catalog_timeout.as_secs()
                             )));
                         }
-                        // Catalog not ready yet, wait a bit before trying again
-                        tracing::trace!(
-                            "Catalog not ready yet (timeout), retrying in {}ms...",
-                            RETRY_DELAY.as_millis()
-                        );
-                        tokio::time::sleep(RETRY_DELAY).await;
+                        tracing::trace!("Catalog not ready yet, retrying...");
+                        tokio::time::sleep(retry_delay).await;
                         continue;
                     },
                 };
 
-            let mut tracks = Vec::new();
-
-            for (track_name, config) in catalog.audio.renditions {
-                match config.codec {
-                    hang::catalog::AudioCodec::Opus => {
-                        tracing::info!(track = %track_name, "found opus audio track");
-                        let track = moq_lite::Track { name: track_name, priority: 80 };
-                        tracks.push(track);
-                    },
-                    codec => {
-                        tracing::debug!(
-                            "skipping non-opus audio track: {} (codec: {})",
-                            track_name,
-                            codec
-                        );
-                    },
-                }
-            }
-
-            for (track_name, config) in catalog.video.renditions {
-                match config.codec {
-                    hang::catalog::VideoCodec::VP9(_) => {
-                        tracing::info!(track = %track_name, "found VP9 video track");
-                        let track = moq_lite::Track { name: track_name, priority: 60 };
-                        tracks.push(track);
-                    },
-                    codec => {
-                        tracing::debug!(
-                            "skipping non-VP9 video track: {} (codec: {:?})",
-                            track_name,
-                            codec
-                        );
-                    },
-                }
-            }
+            let tracks = Self::extract_tracks(&catalog);
 
             if !tracks.is_empty() {
-                return Ok(tracks);
+                return Ok(Self::settle_catalog(catalog_consumer, tracks).await);
             }
 
-            // Check if we've exceeded the overall timeout
-            if start.elapsed() >= CATALOG_TIMEOUT {
+            if start.elapsed() >= catalog_timeout {
                 return Err(StreamKitError::Runtime(format!(
                     "No supported tracks found in catalog after {} seconds",
-                    CATALOG_TIMEOUT.as_secs()
+                    catalog_timeout.as_secs()
                 )));
             }
 
-            // Catalog is empty, wait a bit before checking for the next update
             tracing::trace!("Catalog has no supported tracks yet, waiting for next update...");
-            tokio::time::sleep(RETRY_DELAY).await;
+            tokio::time::sleep(retry_delay).await;
         }
     }
 
@@ -954,6 +994,13 @@ impl MoqPullNode {
                             "Excessive track cancels without payloads; reconnecting"
                         );
                         return Ok(StreamEndReason::Reconnect);
+                    }
+
+                    // Yield after consecutive cancels to avoid busy-spinning.
+                    // A single cancel is normal (e.g. group skip), but a burst
+                    // means the publisher has gone away or the relay has no data.
+                    if consecutive_cancels > 5 {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
                     }
                 },
                 Err(e) => {
