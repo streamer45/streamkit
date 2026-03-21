@@ -163,9 +163,7 @@ export const VideoLayer: React.FC<{
           outlineStyle: layer.visible ? 'solid' : 'dashed',
         }),
         borderRadius:
-          layer.cropShape === 'circle'
-            ? `${Math.min(layer.width, layer.height) / 2}px`
-            : undefined,
+          layer.cropShape === 'circle' ? `${Math.min(layer.width, layer.height) / 2}px` : undefined,
       }}
       onPointerDown={handlePointerDown}
     >
