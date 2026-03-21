@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import type { Signal } from '@moq/signals';
+import type { Getter } from '@moq/signals';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -265,8 +265,8 @@ describe('waitForSignalValue', () => {
       },
     };
 
-    // Cast to Signal<T> — only peek/subscribe are needed by waitForSignalValue.
-    return mock as typeof mock & Signal<T>;
+    // Cast to Getter<T> — only peek/subscribe are needed by waitForSignalValue.
+    return mock as typeof mock & Getter<T>;
   }
 
   it('should resolve immediately when predicate matches initial value', async () => {

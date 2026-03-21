@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-use rand::Rng;
+use rand::RngExt;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;

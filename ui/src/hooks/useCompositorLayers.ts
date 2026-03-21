@@ -331,7 +331,7 @@ export const useCompositorLayers = (
       isMonitorView
     );
     if (mergedImg !== currentImg) setImageOverlaysInStore(store, mergedImg);
-  }, [params, canvasWidth, canvasHeight, isMonitorView, store]);
+  }, [params, canvasWidth, canvasHeight, isMonitorView, store, throttleActiveRef]);
 
   // ── Server-driven layout (Monitor view only) ───────────────────────────
   useServerLayoutSync(sessionId, nodeId, store, dragStateRef, throttleActiveRef);

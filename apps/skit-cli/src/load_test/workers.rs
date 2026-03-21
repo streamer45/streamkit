@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-use rand::{distr::Alphanumeric, Rng};
+use rand::{distr::Alphanumeric, RngExt};
 use std::time::Instant;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
