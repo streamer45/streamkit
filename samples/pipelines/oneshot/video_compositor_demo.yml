@@ -24,7 +24,7 @@ nodes:
       width: 1280
       height: 720
       fps: 30
-      frame_count: 90
+      frame_count: 300
       pixel_format: rgba8
       # Draw the current wall-clock time (HH:MM:SS.mmm) in the bottom-left
       # corner using the bundled DejaVu Sans Mono font.
@@ -36,7 +36,7 @@ nodes:
       width: 320
       height: 240
       fps: 30
-      frame_count: 90
+      frame_count: 300
       pixel_format: rgba8
       draw_time: true
 

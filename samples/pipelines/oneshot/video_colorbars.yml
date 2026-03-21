@@ -13,7 +13,7 @@ nodes:
       width: 1280
       height: 720
       fps: 30
-      frame_count: 150  # 5 seconds at 30fps
+      frame_count: 300  # 10 seconds at 30fps
       pixel_format: nv12
       draw_time: true
 
