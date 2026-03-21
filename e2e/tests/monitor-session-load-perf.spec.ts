@@ -125,12 +125,16 @@ test.describe('Monitor Session Load Perf — Re-render Budget', () => {
 
     // ── 5. Wait for the session graph to fully load ─────────────────────
     //
-    // Wait for React Flow nodes to appear — this signals that the
-    // pipeline has been hydrated and rendered.
+    // Wait specifically for the Compositor node to appear — it is the
+    // only component wrapped in <React.Profiler>, so it MUST be mounted
+    // before we capture perf data.  Waiting for any `.react-flow__node`
+    // is insufficient because the pipeline has ~10 nodes and the
+    // compositor may mount last.
 
-    await expect(page.locator('.react-flow__node').first()).toBeVisible({
-      timeout: 15_000,
+    const compositorNode = page.locator('.react-flow__node').filter({
+      hasText: 'Compositor',
     });
+    await expect(compositorNode).toBeVisible({ timeout: 15_000 });
 
     // Allow WebSocket state events to settle. Node state events arrive
     // asynchronously after the pipeline is rendered, so we give them time
