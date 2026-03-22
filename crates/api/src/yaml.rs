@@ -857,7 +857,9 @@ pub fn lint_client_against_nodes(
             for node in nodes.iter().filter(|n| n.kind == "streamkit::http_input") {
                 if let Some(params) = node.params {
                     // Single field: { field: { name: "foo" } }
-                    if let Some(name) = params.get("field").and_then(|f| f.get("name")).and_then(|n| n.as_str()) {
+                    if let Some(name) =
+                        params.get("field").and_then(|f| f.get("name")).and_then(|n| n.as_str())
+                    {
                         declared_fields.push(name.to_string());
                     }
                     // Multi field: { fields: [{ name: "foo" }, { name: "bar" }] }
@@ -871,9 +873,9 @@ pub fn lint_client_against_nodes(
                 }
                 // http_input with no params has a single default field named "media"
                 if (node.params.is_none()
-                    || node.params.is_none_or(|p| {
-                        p.get("field").is_none() && p.get("fields").is_none()
-                    }))
+                    || node
+                        .params
+                        .is_none_or(|p| p.get("field").is_none() && p.get("fields").is_none()))
                     && !declared_fields.contains(&"media".to_string())
                 {
                     declared_fields.push("media".to_string());
@@ -924,16 +926,10 @@ pub fn lint_client_against_nodes(
         let peer_gateway_paths: Vec<&str> = nodes
             .iter()
             .filter(|n| n.kind == "transport::moq::peer")
-            .filter_map(|n| {
-                n.params
-                    .and_then(|p| p.get("gateway_path"))
-                    .and_then(|v| v.as_str())
-            })
+            .filter_map(|n| n.params.and_then(|p| p.get("gateway_path")).and_then(|v| v.as_str()))
             .collect();
 
-        if !peer_gateway_paths.is_empty()
-            && !peer_gateway_paths.iter().any(|gw| gw == client_gw)
-        {
+        if !peer_gateway_paths.is_empty() && !peer_gateway_paths.iter().any(|gw| gw == client_gw) {
             warnings.push(ClientLintWarning {
                 rule: "gateway-path-mismatch",
                 message: format!(
@@ -949,14 +945,9 @@ pub fn lint_client_against_nodes(
         let node_urls: Vec<&str> = nodes
             .iter()
             .filter(|n| {
-                n.kind == "transport::moq::publisher"
-                    || n.kind == "transport::moq::subscriber"
+                n.kind == "transport::moq::publisher" || n.kind == "transport::moq::subscriber"
             })
-            .filter_map(|n| {
-                n.params
-                    .and_then(|p| p.get("url"))
-                    .and_then(|v| v.as_str())
-            })
+            .filter_map(|n| n.params.and_then(|p| p.get("url")).and_then(|v| v.as_str()))
             .collect();
 
         if !node_urls.is_empty() && !node_urls.iter().any(|u| u == client_url) {
@@ -983,13 +974,13 @@ pub fn lint_client_against_nodes(
                     if let Some(b) = params.get("output_broadcast").and_then(|v| v.as_str()) {
                         node_broadcasts.push(b);
                     }
-                }
+                },
                 "transport::moq::publisher" | "transport::moq::subscriber" => {
                     if let Some(b) = params.get("broadcast").and_then(|v| v.as_str()) {
                         node_broadcasts.push(b);
                     }
-                }
-                _ => {}
+                },
+                _ => {},
             }
         }
     }
@@ -1011,8 +1002,7 @@ pub fn lint_client_against_nodes(
             }
         }
         if let Some(ref watch) = client.watch {
-            if !watch.broadcast.is_empty()
-                && !node_broadcasts.iter().any(|b| *b == watch.broadcast)
+            if !watch.broadcast.is_empty() && !node_broadcasts.iter().any(|b| *b == watch.broadcast)
             {
                 warnings.push(ClientLintWarning {
                     rule: "broadcast-mismatch",
@@ -2065,7 +2055,11 @@ client:
         let mut hints = IndexMap::new();
         hints.insert(
             "media".into(),
-            FieldHint { field_type: Some(FieldType::File), accept: Some("audio/*".into()), placeholder: None },
+            FieldHint {
+                field_type: Some(FieldType::File),
+                accept: Some("audio/*".into()),
+                placeholder: None,
+            },
         );
         let c = ClientSection {
             input: Some(InputConfig {
@@ -2092,7 +2086,11 @@ client:
         let mut hints = IndexMap::new();
         hints.insert(
             "prompt".into(),
-            FieldHint { field_type: Some(FieldType::Text), accept: None, placeholder: Some("Enter text".into()) },
+            FieldHint {
+                field_type: Some(FieldType::Text),
+                accept: None,
+                placeholder: Some("Enter text".into()),
+            },
         );
         let c = ClientSection {
             input: Some(InputConfig {
@@ -2237,7 +2235,11 @@ client:
     fn test_lint_broadcast_mismatch_publish() {
         let c = ClientSection {
             gateway_path: Some("/moq/test".into()),
-            publish: Some(PublishConfig { broadcast: "wrong_name".into(), audio: true, video: false }),
+            publish: Some(PublishConfig {
+                broadcast: "wrong_name".into(),
+                audio: true,
+                video: false,
+            }),
             ..Default::default()
         };
         let params = serde_json::json!({
