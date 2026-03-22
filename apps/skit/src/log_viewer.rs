@@ -468,6 +468,7 @@ pub async fn stream_logs_handler(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
