@@ -27,6 +27,16 @@
 name: Real-Time Speech Translation (English → Spanish) - Helsinki
 description: Real-time speech translation from English to Spanish using Apache 2.0 licensed Helsinki OPUS-MT
 mode: dynamic
+client:
+  gateway_path: /moq/speech-translate-helsinki-en-es
+  publish:
+    broadcast: input
+    audio: true
+    video: false
+  watch:
+    broadcast: output
+    audio: true
+    video: false
 
 nodes:
   # ============================================================

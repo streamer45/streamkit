@@ -2,9 +2,6 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-#
-# skit:input_asset_tags=speech
-
 # Speech Translation using Helsinki-NLP OPUS-MT (Apache 2.0 licensed)
 #
 # This pipeline is an alternative to speech_to_text_translate.yml that uses
@@ -18,6 +15,14 @@
 name: Speech Translation (English → Spanish) - Helsinki
 description: Translates English speech into Spanish speech using Apache 2.0 licensed Helsinki OPUS-MT
 mode: oneshot
+client:
+  input:
+    type: file_upload
+    accept: "audio/*"
+    asset_tags:
+      - speech
+  output:
+    type: audio
 steps:
   - kind: streamkit::http_input
 

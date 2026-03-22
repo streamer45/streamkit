@@ -5,6 +5,11 @@
 name: Text-to-Speech (Useless Facts)
 description: Fetches a random fact and reads it out loud using Kokoro
 mode: oneshot
+client:
+  input:
+    type: trigger
+  output:
+    type: audio
 steps:
   # HTTP input (body can be empty, just triggers the pipeline)
   - kind: streamkit::http_input

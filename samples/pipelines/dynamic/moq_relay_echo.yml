@@ -5,6 +5,16 @@
 name: MoQ Relay Echo (Audio)
 description: Subscribes to an audio broadcast on a MoQ relay, applies unity gain, and republishes — validates the full relay pub/sub path
 mode: dynamic
+client:
+  relay_url: http://localhost:4443
+  publish:
+    broadcast: input
+    audio: true
+    video: false
+  watch:
+    broadcast: output
+    audio: true
+    video: false
 nodes:
   moq_input:
     kind: transport::moq::subscriber

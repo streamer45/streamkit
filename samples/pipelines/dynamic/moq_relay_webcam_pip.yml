@@ -7,6 +7,16 @@ description: Subscribes audio+video from a MoQ relay, composites the webcam as P
 # NOTE: The publisher must already be streaming to the 'input' broadcast before
 # starting this pipeline, otherwise track discovery will miss the video/data pin.
 mode: dynamic
+client:
+  relay_url: http://localhost:4443
+  publish:
+    broadcast: input
+    audio: true
+    video: true
+  watch:
+    broadcast: output
+    audio: true
+    video: true
 
 nodes:
   colorbars_bg:

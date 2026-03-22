@@ -1,9 +1,14 @@
-#
-# skit:input_asset_tags=speech
-
 name: Dual Upload Mixer
 description: Mix two uploaded Ogg/Opus tracks and return Opus/WebM
 mode: oneshot
+client:
+  input:
+    type: file_upload
+    accept: "audio/*"
+    asset_tags:
+      - speech
+  output:
+    type: audio
 nodes:
   # ============================================================
   # INPUTS: Two uploaded audio tracks

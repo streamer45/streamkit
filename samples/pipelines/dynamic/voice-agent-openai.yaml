@@ -12,6 +12,16 @@
 name: Real-Time Voice Agent (OpenAI)
 description: Runs a MoQ voice agent using Whisper STT, OpenAI, and Kokoro TTS
 mode: dynamic
+client:
+  gateway_path: /moq/voice-agent-openai
+  publish:
+    broadcast: input
+    audio: true
+    video: false
+  watch:
+    broadcast: output
+    audio: true
+    video: false
 nodes:
   # ============================================================
   # INPUT: Receive audio from MoQ broadcast

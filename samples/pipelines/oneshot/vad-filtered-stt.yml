@@ -2,12 +2,17 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-#
-# skit:input_asset_tags=speech
-
 name: Speech-to-Text (Whisper, VAD-Filtered)
 description: Filters silence with VAD before transcribing with Whisper
 mode: oneshot
+client:
+  input:
+    type: file_upload
+    accept: "audio/*"
+    asset_tags:
+      - speech
+  output:
+    type: transcription
 steps:
   - kind: streamkit::http_input
 

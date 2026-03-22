@@ -5,6 +5,12 @@
 name: Video Compositor (MoQ Stream)
 description: Composites two colorbars sources through the compositor node and streams via MoQ
 mode: dynamic
+client:
+  gateway_path: /moq/video
+  watch:
+    broadcast: output
+    audio: false
+    video: true
 
 nodes:
   colorbars_bg:

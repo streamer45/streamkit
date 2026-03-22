@@ -1,6 +1,16 @@
 name: Real-Time MoQ Mixing (Mic + Music)
 description: Mixes a live MoQ input stream with a local music track and republishes to MoQ
 mode: dynamic
+client:
+  gateway_path: /moq/mixing
+  publish:
+    broadcast: input
+    audio: true
+    video: false
+  watch:
+    broadcast: output
+    audio: true
+    video: false
 nodes:
   # ============================================================
   # INPUTS: MoQ mic input + local music file

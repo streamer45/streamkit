@@ -1,6 +1,12 @@
 name: Volume Boost (2×)
 description: Boosts the volume of an uploaded Ogg/Opus file and returns Ogg/Opus
 mode: oneshot
+client:
+  input:
+    type: file_upload
+    accept: "audio/*"
+  output:
+    type: audio
 steps:
   - kind: streamkit::http_input
   - kind: containers::ogg::demuxer

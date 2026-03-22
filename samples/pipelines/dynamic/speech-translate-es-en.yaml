@@ -24,6 +24,16 @@
 name: Real-Time Speech Translation (Spanish → English)
 description: Real-time speech translation from Spanish to English via MoQ
 mode: dynamic
+client:
+  gateway_path: /moq/speech-translate-es-en
+  publish:
+    broadcast: input
+    audio: true
+    video: false
+  watch:
+    broadcast: output
+    audio: true
+    video: false
 
 nodes:
   # ============================================================
