@@ -9,8 +9,8 @@
 use std::fs;
 use std::path::Path;
 use streamkit_nodes::video::compositor::config::{
-    CompositorConfig, CompositorLayout, ImageOverlayConfig, LayerConfig, OverlayTransform, Rect,
-    ResolvedLayer, ResolvedOverlay, TextOverlayConfig,
+    CompositorConfig, CompositorLayout, CropShape, ImageOverlayConfig, LayerConfig,
+    OverlayTransform, Rect, ResolvedLayer, ResolvedOverlay, TextOverlayConfig,
 };
 use ts_rs::{Config, TS};
 
@@ -18,6 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = Config::default();
     let declarations = vec![
         format!("export {}", Rect::decl(&cfg)),
+        format!("export {}", CropShape::decl(&cfg)),
         format!("export {}", OverlayTransform::decl(&cfg)),
         format!("export {}", ImageOverlayConfig::decl(&cfg)),
         format!("export {}", TextOverlayConfig::decl(&cfg)),

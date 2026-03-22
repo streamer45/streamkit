@@ -302,12 +302,18 @@ impl Default for CompositorConfig {
 }
 
 // ── Server-computed layout types ─────────────────────────────────────────
-// These are emitted via the view data channel so the frontend can render
-// overlays / layers at server-computed positions (server is source of truth
-// in Monitor view).
+// Emitted via the view data channel so the frontend can render layers /
+// overlays at server-computed positions (server is the source of truth for
+// geometry in Monitor view).
+//
+// These structs carry ONLY values that the client cannot derive from config
+// alone — primarily aspect-fit positions and text measurements.  Config-echo
+// fields (opacity, rotation, z_index, mirror, crop) are intentionally
+// excluded so that stale view-data echoes never overwrite the client's
+// authoritative local state during high-frequency interactions.
 
-/// Server-computed layout for a single video layer.
-#[derive(Serialize, Clone, Debug, PartialEq)]
+/// Server-computed geometry for a single video layer.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "codegen", derive(ts_rs::TS))]
 pub struct ResolvedLayer {
     /// Pin name (e.g. `"in_0"`).
@@ -316,23 +322,10 @@ pub struct ResolvedLayer {
     pub y: i32,
     pub width: u32,
     pub height: u32,
-    pub opacity: f32,
-    pub z_index: i32,
-    pub rotation_degrees: f32,
-    pub mirror_horizontal: bool,
-    pub mirror_vertical: bool,
-    /// Crop zoom factor (1.0 = full source).
-    pub crop_zoom: f32,
-    /// Normalized crop pan X (0.0–1.0).
-    pub crop_x: f32,
-    /// Normalized crop tilt Y (0.0–1.0).
-    pub crop_y: f32,
-    /// Shape clipping applied to the layer.
-    pub crop_shape: CropShape,
 }
 
-/// Server-computed layout for a single overlay (text or image).
-#[derive(Serialize, Clone, Debug, PartialEq)]
+/// Server-computed geometry for a single overlay (text or image).
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "codegen", derive(ts_rs::TS))]
 pub struct ResolvedOverlay {
     /// Stable overlay identifier (matches the config `id` field).
@@ -344,11 +337,6 @@ pub struct ResolvedOverlay {
     pub width: u32,
     /// Height after text measurement / image aspect-fit.
     pub height: u32,
-    pub opacity: f32,
-    pub z_index: i32,
-    pub rotation_degrees: f32,
-    pub mirror_horizontal: bool,
-    pub mirror_vertical: bool,
     /// Actual text width measured by the font engine (text overlays only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub measured_text_width: Option<u32>,
@@ -358,7 +346,7 @@ pub struct ResolvedOverlay {
 }
 
 /// The complete server-computed compositor layout, serialized as view data.
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "codegen", derive(ts_rs::TS))]
 pub struct CompositorLayout {
     pub canvas_width: u32,

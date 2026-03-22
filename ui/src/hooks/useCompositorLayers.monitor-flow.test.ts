@@ -12,6 +12,7 @@
  *   - A server params echo-back overwrites server-resolved positions
  *   - Runtime measurement fields (measuredTextWidth) are lost on re-merge
  *   - Focus/selection changes cause layer positions to revert
+ *   - Server view-data (geometry-only) overwrites client-authoritative fields
  *
  * Each test mounts the real useCompositorLayers hook with a sessionId
  * (Monitor view) and drives the Zustand session store to simulate server
@@ -96,7 +97,7 @@ function monitorOptions(
   };
 }
 
-/** Build a ResolvedLayer with sensible defaults. */
+/** Build a geometry-only ResolvedLayer (matches narrowed server struct). */
 function serverLayer(
   id: string,
   overrides: Record<string, unknown> = {}
@@ -107,20 +108,11 @@ function serverLayer(
     y: 0,
     width: 960,
     height: 720,
-    opacity: 1.0,
-    z_index: 0,
-    rotation_degrees: 0,
-    mirror_horizontal: false,
-    mirror_vertical: false,
-    crop_zoom: 1.0,
-    crop_x: 0.5,
-    crop_y: 0.5,
-    crop_shape: 'rect' as const,
     ...overrides,
   };
 }
 
-/** Build a ResolvedOverlay with sensible defaults. */
+/** Build a geometry-only ResolvedOverlay (matches narrowed server struct). */
 function serverOverlay(
   id: string,
   overrides: Record<string, unknown> = {}
@@ -131,11 +123,6 @@ function serverOverlay(
     y: 0,
     width: 200,
     height: 40,
-    opacity: 1.0,
-    z_index: 100,
-    rotation_degrees: 0,
-    mirror_horizontal: false,
-    mirror_vertical: false,
     measured_text_width: null,
     measured_text_height: null,
     ...overrides,
@@ -193,7 +180,7 @@ describe('Monitor view data flow integration', () => {
     expect(layers0[0].x).toBe(0);
     expect(layers0[0].width).toBe(1280);
 
-    // Server view data arrives
+    // Server view data arrives (geometry only)
     act(() => pushServerViewData(makeServerLayout()));
 
     // Server-resolved positions applied
@@ -307,35 +294,77 @@ describe('Monitor view data flow integration', () => {
     expect(text1[0].measuredTextWidth).toBe(275);
   });
 
-  it('server-resolved opacity/rotation/zIndex survive params echo-back', () => {
+  it('server view-data does not overwrite client-side opacity/rotation', () => {
     seedStore();
 
-    const opts = monitorOptions();
-    const { result, rerender } = renderHook(
+    const opts = monitorOptions({
+      params: makeParams({
+        layers: {
+          in_0: { opacity: 0.5, z_index: 3, rotation_degrees: 45 },
+        },
+      }),
+    });
+    const { result } = renderHook(
       (props: UseCompositorLayersOptions) => useCompositorLayers(props),
       { initialProps: opts }
     );
 
-    // Server resolves layer with specific opacity/rotation/z-index
-    const layout = makeServerLayout();
-    layout.layers[0].opacity = 0.75;
-    layout.layers[0].rotation_degrees = 45;
-    layout.layers[0].z_index = 5;
-    act(() => pushServerViewData(layout));
+    // Client state has the config-driven values
+    const layers0 = getLayersFromStore(result.current.store);
+    expect(layers0[0].opacity).toBe(0.5);
+    expect(layers0[0].zIndex).toBe(3);
+    expect(layers0[0].rotationDegrees).toBe(45);
+
+    // Server sends geometry-only view data (no opacity/rotation/z_index)
+    act(() => pushServerViewData(makeServerLayout()));
+
+    // Config-driven fields must be preserved — view data only updates geometry
+    const layers1 = getLayersFromStore(result.current.store);
+    expect(layers1[0].opacity).toBe(0.5);
+    expect(layers1[0].zIndex).toBe(3);
+    expect(layers1[0].rotationDegrees).toBe(45);
+    // Geometry updated from server
+    expect(layers1[0].x).toBe(160);
+    expect(layers1[0].width).toBe(960);
+  });
+
+  it('opacity slider changes are never overwritten by server view-data', () => {
+    seedStore();
+
+    const onConfigChangeSilent = vi.fn();
+    const opts = monitorOptions({
+      onConfigChangeSilent,
+      params: makeParams({
+        layers: {
+          in_0: { opacity: 0.8, z_index: 0 },
+        },
+      }),
+    });
+    const { result } = renderHook(
+      (props: UseCompositorLayersOptions) => useCompositorLayers(props),
+      { initialProps: opts }
+    );
+
+    // Server resolves initial layout (geometry only)
+    act(() => pushServerViewData(makeServerLayout()));
 
     const layers0 = getLayersFromStore(result.current.store);
-    expect(layers0[0].opacity).toBe(0.75);
-    expect(layers0[0].rotationDegrees).toBe(45);
-    expect(layers0[0].zIndex).toBe(5);
+    expect(layers0[0].opacity).toBe(0.8);
 
-    // Params echo-back (params still have default opacity=1, rotation=0, z_index=0)
-    act(() => rerender({ ...opts, params: makeParams() }));
+    // User changes opacity locally via the slider
+    act(() => result.current.updateLayerOpacity('in_0', 0.5));
+    expect(onConfigChangeSilent).toHaveBeenCalled();
 
-    // Server-resolved values must survive
+    // Local atom now has the user's value
     const layers1 = getLayersFromStore(result.current.store);
-    expect(layers1[0].opacity).toBe(0.75);
-    expect(layers1[0].rotationDegrees).toBe(45);
-    expect(layers1[0].zIndex).toBe(5);
+    expect(layers1[0].opacity).toBe(0.5);
+
+    // Server sends another view-data update (geometry only — no opacity field).
+    // This must NOT touch opacity since it's not in the payload.
+    act(() => pushServerViewData(makeServerLayout()));
+
+    const layers2 = getLayersFromStore(result.current.store);
+    expect(layers2[0].opacity).toBe(0.5);
   });
 
   it('selecting different layers does not reset positions', () => {
@@ -361,7 +390,7 @@ describe('Monitor view data flow integration', () => {
     const layout = makeServerLayout({
       layers: [
         serverLayer('in_0'),
-        serverLayer('in_1', { x: 800, y: 400, width: 320, height: 240, z_index: 1 }),
+        serverLayer('in_1', { x: 800, y: 400, width: 320, height: 240 }),
       ],
     });
     act(() => pushServerViewData(layout));
@@ -481,7 +510,7 @@ describe('Monitor view data flow integration', () => {
       { initialProps: opts }
     );
 
-    // Server resolves image at a different position
+    // Server resolves image at a different position (geometry only)
     const layout = makeServerLayout({
       image_overlays: [
         serverOverlay('img_0', {
@@ -489,8 +518,6 @@ describe('Monitor view data flow integration', () => {
           y: 300,
           width: 100,
           height: 80,
-          opacity: 0.9,
-          z_index: 50,
         }),
       ],
     });
@@ -500,6 +527,8 @@ describe('Monitor view data flow integration', () => {
     expect(img0[0].x).toBe(500);
     expect(img0[0].y).toBe(300);
     expect(img0[0].dataBase64).toBe('aW1hZ2UtZGF0YQ==');
+    // Config-driven opacity preserved (not in view data)
+    expect(img0[0].opacity).toBe(1.0);
 
     // Another client changes the image data via params
     const updatedParams = makeParams({
@@ -524,8 +553,6 @@ describe('Monitor view data flow integration', () => {
     // Server-resolved position must be preserved
     expect(img1[0].x).toBe(500);
     expect(img1[0].y).toBe(300);
-    // Server-resolved opacity must be preserved
-    expect(img1[0].opacity).toBe(0.9);
   });
 
   it('Design view (no sessionId) still uses parsed positions as source of truth', () => {
@@ -562,54 +589,5 @@ describe('Monitor view data flow integration', () => {
     const text1 = getTextOverlaysFromStore(result.current.store);
     expect(text1[0].x).toBe(100);
     expect(text1[0].y).toBe(200);
-  });
-
-  it('server view-data updates are skipped during active throttled slider sends', () => {
-    seedStore();
-
-    const onConfigChangeSilent = vi.fn();
-    const opts = monitorOptions({
-      onConfigChangeSilent,
-      params: makeParams({
-        layers: {
-          in_0: { opacity: 0.8, z_index: 0 },
-        },
-      }),
-    });
-    const { result } = renderHook(
-      (props: UseCompositorLayersOptions) => useCompositorLayers(props),
-      { initialProps: opts }
-    );
-
-    // Server resolves initial layout
-    act(() =>
-      pushServerViewData(makeServerLayout({ layers: [serverLayer('in_0', { opacity: 0.8 })] }))
-    );
-
-    const layers0 = getLayersFromStore(result.current.store);
-    expect(layers0[0].opacity).toBe(0.8);
-
-    // Simulate a slider drag: user changes opacity locally via the
-    // updateLayerOpacity helper.  This triggers a throttled silent send
-    // which sets throttleActiveRef = true.
-    act(() => result.current.updateLayerOpacity('in_0', 0.5));
-
-    // The throttled commit adapter should have been called (via the silent path)
-    expect(onConfigChangeSilent).toHaveBeenCalled();
-
-    // Local atom now has the user's value
-    const layers1 = getLayersFromStore(result.current.store);
-    expect(layers1[0].opacity).toBe(0.5);
-
-    // Server sends a stale NodeViewDataUpdated with old opacity (0.8).
-    // Because throttleActiveRef is true, this should be skipped.
-    act(() =>
-      pushServerViewData(makeServerLayout({ layers: [serverLayer('in_0', { opacity: 0.8 })] }))
-    );
-
-    // Local atom must still hold the user's value (0.5), not the stale
-    // server value (0.8).
-    const layers2 = getLayersFromStore(result.current.store);
-    expect(layers2[0].opacity).toBe(0.5);
   });
 });

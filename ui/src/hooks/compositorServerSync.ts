@@ -6,19 +6,19 @@
  * Server-driven layout synchronisation for the compositor.
  *
  * When a live pipeline is running (Monitor view), the server is the source of
- * truth for layer positions, dimensions, and overlay measurements.  This module
- * encapsulates the view-data subscription and the diffing logic that keeps the
- * Jotai atom state in sync without unnecessary re-renders.
+ * truth for layer geometry (positions/sizes from aspect-fit, auto-PiP, and
+ * text measurement).  This module encapsulates the view-data subscription and
+ * the diffing logic that keeps the Jotai atom state in sync without
+ * unnecessary re-renders.
  *
- * With Jotai atoms, only the specific layer atoms that actually changed get new
- * values — other layers and their subscribed components are unaffected.
+ * View data carries ONLY server-computed fields (x, y, width, height, and
+ * text measurements).  Config-driven fields (opacity, rotation, z_index,
+ * mirror, crop) are never in the view-data payload, so there is no risk of
+ * stale echo-backs overwriting the client's authoritative local state during
+ * high-frequency slider interactions.
  *
- * During slider drags the client sends `TuneNodeSilent` which suppresses
- * `NodeParamsChanged` echo-back server-side.  However, `NodeViewDataUpdated`
- * is still broadcast to all clients (the engine doesn't track the originating
- * connection), so a lightweight client-side guard (`throttleActiveRef`) skips
- * view-data updates while a throttled silent send is in-flight.  Pointer-driven
- * drag/resize uses the existing `dragStateRef` guard.
+ * During pointer drags the `dragStateRef` guard still prevents stale geometry
+ * from overwriting in-flight DOM positions.
  */
 
 import { useEffect } from 'react';
@@ -47,90 +47,44 @@ import type { LayerState, TextOverlayState, OverlayBase } from './compositorLaye
 
 // ── Pure helpers ────────────────────────────────────────────────────────────
 
-/** Map server layer data to client LayerState[], preserving client-only fields. */
+/** Map server geometry onto existing client LayerState[], preserving all
+ *  config-driven fields (opacity, rotation, z_index, mirror, crop, visible). */
 export function mapServerLayers(prev: LayerState[], serverLayers: ResolvedLayer[]): LayerState[] {
-  const next: LayerState[] = serverLayers.map((sl) => {
-    const existing = prev.find((l) => l.id === sl.id);
-    const opacity = existing && !existing.visible ? existing.opacity : sl.opacity;
-    return {
-      id: sl.id,
-      x: sl.x,
-      y: sl.y,
-      width: sl.width,
-      height: sl.height,
-      opacity,
-      zIndex: sl.z_index,
-      rotationDegrees: sl.rotation_degrees,
-      mirrorHorizontal: sl.mirror_horizontal,
-      mirrorVertical: sl.mirror_vertical,
-      visible: existing?.visible ?? true,
-      cropZoom: sl.crop_zoom,
-      cropX: sl.crop_x,
-      cropY: sl.crop_y,
-      cropShape: sl.crop_shape,
-    };
-  });
-  const changed =
-    next.length !== prev.length ||
-    next.some(
-      (s, i) =>
-        s.id !== prev[i].id ||
-        s.x !== prev[i].x ||
-        s.y !== prev[i].y ||
-        s.width !== prev[i].width ||
-        s.height !== prev[i].height ||
-        s.opacity !== prev[i].opacity ||
-        s.zIndex !== prev[i].zIndex ||
-        s.rotationDegrees !== prev[i].rotationDegrees ||
-        s.mirrorHorizontal !== prev[i].mirrorHorizontal ||
-        s.mirrorVertical !== prev[i].mirrorVertical ||
-        s.visible !== prev[i].visible ||
-        s.cropZoom !== prev[i].cropZoom ||
-        s.cropX !== prev[i].cropX ||
-        s.cropY !== prev[i].cropY ||
-        s.cropShape !== prev[i].cropShape
-    );
-  return changed ? next : prev;
+  const next: LayerState[] = serverLayers
+    .map((sl) => {
+      const existing = prev.find((l) => l.id === sl.id);
+      if (!existing) {
+        // New layer from server with no local counterpart — should be rare.
+        // Return a stub; sync-from-props will fill in the config fields.
+        return undefined;
+      }
+      if (
+        existing.x === sl.x &&
+        existing.y === sl.y &&
+        existing.width === sl.width &&
+        existing.height === sl.height
+      ) {
+        return existing;
+      }
+      return { ...existing, x: sl.x, y: sl.y, width: sl.width, height: sl.height };
+    })
+    .filter((l): l is LayerState => l !== undefined);
+
+  return next.length !== prev.length || next.some((s, i) => s !== prev[i]) ? next : prev;
 }
 
-/** Resolve a single overlay against its server counterpart.
- *  Returns the original object when nothing changed (referential equality). */
+/** Apply server-resolved geometry to a single overlay, preserving all
+ *  config-driven fields.  Returns the original reference when unchanged. */
 function resolveOverlay<T extends OverlayBase>(o: T, so: ResolvedOverlay): T {
-  const opacity = !o.visible ? o.opacity : so.opacity;
-  const mh = so.mirror_horizontal;
-  const mv = so.mirror_vertical;
-
-  if (
-    o.x === so.x &&
-    o.y === so.y &&
-    o.width === so.width &&
-    o.height === so.height &&
-    o.opacity === opacity &&
-    o.zIndex === so.z_index &&
-    o.rotationDegrees === so.rotation_degrees &&
-    o.mirrorHorizontal === mh &&
-    o.mirrorVertical === mv
-  ) {
+  if (o.x === so.x && o.y === so.y && o.width === so.width && o.height === so.height) {
     return o;
   }
-  return {
-    ...o,
-    x: so.x,
-    y: so.y,
-    width: so.width,
-    height: so.height,
-    opacity,
-    zIndex: so.z_index,
-    rotationDegrees: so.rotation_degrees,
-    mirrorHorizontal: mh,
-    mirrorVertical: mv,
-  };
+  return { ...o, x: so.x, y: so.y, width: so.width, height: so.height };
 }
 
-/** Apply server-resolved overlay positions to local state.
+/** Apply server-resolved overlay geometry to local state.
  *  Matches by stable `id` instead of array index.
- *  Preserves original opacity for hidden overlays and performs
- *  shallow equality to avoid unnecessary re-renders. */
+ *  Performs shallow equality to avoid unnecessary re-renders. */
 export function applyServerOverlays<T extends OverlayBase>(
   prev: T[],
   serverItems: ResolvedOverlay[]
@@ -174,20 +128,16 @@ export function useServerLayoutSync(
   sessionId: string | undefined,
   nodeId: string,
   store: CompositorStore,
-  dragStateRef: React.MutableRefObject<unknown>,
-  throttleActiveRef: React.MutableRefObject<boolean>
+  dragStateRef: React.MutableRefObject<unknown>
 ): void {
   useEffect(() => {
     if (!sessionId) return;
 
     const applyServerLayout = (viewData: unknown) => {
       if (!viewData || typeof viewData !== 'object') return;
-      // Skip during drag/resize or active throttled slider sends to avoid
-      // server echo-backs overwriting in-flight local atom values.
-      // TuneNodeSilent suppresses NodeParamsChanged server-side, but
-      // NodeViewDataUpdated is still broadcast to all clients, so we guard
-      // against stale view-data here.
-      if (dragStateRef.current || throttleActiveRef.current) return;
+      // Skip during pointer drag/resize to avoid stale server geometry
+      // overwriting in-flight DOM positions.
+      if (dragStateRef.current) return;
 
       const layout = viewData as CompositorLayout;
       if (!Array.isArray(layout.layers)) return;
@@ -222,5 +172,5 @@ export function useServerLayoutSync(
       applyServerLayout(defaultSessionStore.get(viewDataAtom));
     });
     return unsubscribe;
-  }, [sessionId, nodeId, store, dragStateRef, throttleActiveRef]);
+  }, [sessionId, nodeId, store, dragStateRef]);
 }

@@ -268,20 +268,17 @@ export const useCompositorLayers = (
   const dragStateRef = useRef<DragState | null>(null);
 
   // ── Commit / persistence ───────────────────────────────────────────────────
-  // Hoisted above sync-from-props so throttleActiveRef is available to the
-  // echo-back guards.
-  const { commitAdapter, throttledConfigChange, throttledOverlayCommit, throttleActiveRef } =
-    useCompositorCommit({
-      nodeId,
-      onConfigChange,
-      onConfigChangeSilent,
-      onParamChange,
-      throttleMs,
-      paramsRef,
-      layersRef,
-      textOverlaysRef,
-      imageOverlaysRef,
-    });
+  const { commitAdapter, throttledConfigChange, throttledOverlayCommit } = useCompositorCommit({
+    nodeId,
+    onConfigChange,
+    onConfigChangeSilent,
+    onParamChange,
+    throttleMs,
+    paramsRef,
+    layersRef,
+    textOverlaysRef,
+    imageOverlaysRef,
+  });
 
   // ── Sync from props ─────────────────────────────────────────────────────
   // In Monitor view (sessionId is set), the server's view data is the source
@@ -298,11 +295,10 @@ export const useCompositorLayers = (
   const prevParsedImgRef = useRef<ImageOverlayState[]>([]);
 
   useEffect(() => {
-    // Skip echo-back processing during drag/resize or active throttled slider
-    // sends — atoms already have the latest local value; echo-backs carry stale
-    // data.  TuneNodeSilent suppresses NodeParamsChanged server-side, but
-    // NodeViewDataUpdated is still broadcast to all clients, so we guard here.
-    if (dragStateRef.current || throttleActiveRef.current) return;
+    // Skip during pointer drag/resize — atoms already have the latest local
+    // value and the sync would be a no-op in Monitor view (preserveGeometry
+    // keeps OverlayBase fields from existing state).
+    if (dragStateRef.current) return;
 
     const parsed = parseLayers(params, canvasWidth, canvasHeight);
     const currentLayers = getLayersFromStore(store);
@@ -348,10 +344,10 @@ export const useCompositorLayers = (
     );
     if (mergedImg !== currentImg) setImageOverlaysInStore(store, mergedImg);
     prevParsedImgRef.current = parsedImg;
-  }, [params, canvasWidth, canvasHeight, isMonitorView, store, throttleActiveRef]);
+  }, [params, canvasWidth, canvasHeight, isMonitorView, store]);
 
   // ── Server-driven layout (Monitor view only) ───────────────────────────
-  useServerLayoutSync(sessionId, nodeId, store, dragStateRef, throttleActiveRef);
+  useServerLayoutSync(sessionId, nodeId, store, dragStateRef);
 
   // ── Find layer across all types ─────────────────────────────────────────
   const findAnyLayer = useCallback(

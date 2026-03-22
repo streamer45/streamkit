@@ -18,16 +18,3 @@
  * while leaving headroom for network RTT and server processing.
  */
 export const PARAM_THROTTLE_MS = 33;
-
-/**
- * How long the echo-back guard stays active after the last throttled send.
- *
- * TuneNodeSilent suppresses NodeParamsChanged for the sender, but
- * NodeViewDataUpdated is still broadcast to all clients.  The guard must
- * stay active long enough for the last echo to arrive *and* be ignored.
- *
- * Must exceed the worst-case network round-trip time.  200ms covers most
- * WAN scenarios (RTT ≤ 150ms) with comfortable margin for jitter and
- * server processing.
- */
-export const ECHO_GUARD_MS = 200;
