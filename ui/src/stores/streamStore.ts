@@ -69,6 +69,11 @@ interface StreamState {
   activeSessionName: string | null;
   activePipelineName: string | null;
 
+  // Connect lifecycle — abort controller for the in-flight performConnect call
+  connectAbort: AbortController | null;
+  /** Human-readable label for the current phase of a connect attempt. */
+  connectingStep: string;
+
   // MoQ references (stored but not serialized)
   publish: Publish.Broadcast | null;
   watch: Watch.Broadcast | null;
@@ -148,6 +153,8 @@ export const useStreamStore = create<StreamState>((set, get) => ({
   isExternalRelay: false,
   errorMessage: '',
   configLoaded: false,
+  connectAbort: null,
+  connectingStep: '',
 
   // Active session state
   activeSessionId: null,
@@ -235,7 +242,15 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       return false;
     }
 
+    // Abort any in-flight connect attempt so it doesn't later overwrite
+    // our state.  This is defensive — normally disconnect() already aborted,
+    // but a rapid connect→connect without disconnect can still race.
+    state.connectAbort?.abort();
+
+    const abort = new AbortController();
     set({
+      connectAbort: abort,
+      connectingStep: '',
       status: 'connecting',
       errorMessage: '',
       watchStatus: decision.shouldWatch ? 'loading' : 'disabled',
@@ -243,17 +258,23 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       cameraStatus: decision.shouldPublish && state.pipelineNeedsVideo ? 'requesting' : 'disabled',
     });
 
-    return performConnect(state, decision, get, set);
+    return performConnect(state, decision, get, set, abort.signal);
   },
 
   disconnect: () => {
     const state = get();
+
+    // Cancel any in-flight connect attempt so its catch/success path
+    // doesn't later overwrite the freshly-reset store.
+    state.connectAbort?.abort();
 
     // Reuse the same teardown logic used when a connect attempt fails.
     cleanupConnectAttempt(state);
 
     set({
       status: 'disconnected',
+      connectAbort: null,
+      connectingStep: '',
       isMicEnabled: false,
       micStatus: 'disabled',
       isCameraEnabled: false,
