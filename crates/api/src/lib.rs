@@ -328,7 +328,7 @@ pub enum ResponsePayload {
         nodes: Vec<NodeDefinition>,
     },
     Pipeline {
-        pipeline: ApiPipeline,
+        pipeline: Box<ApiPipeline>,
     },
     ValidationResult {
         errors: Vec<ValidationError>,

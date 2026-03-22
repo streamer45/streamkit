@@ -1521,10 +1521,10 @@ async fn populate_session_pipeline(session: &crate::session::Session, engine_pip
     let mut pipeline = session.pipeline.lock().await;
 
     // Forward top-level metadata so the UI can read it from the session snapshot.
-    pipeline.name = engine_pipeline.name.clone();
-    pipeline.description = engine_pipeline.description.clone();
+    pipeline.name.clone_from(&engine_pipeline.name);
+    pipeline.description.clone_from(&engine_pipeline.description);
     pipeline.mode = engine_pipeline.mode;
-    pipeline.client = engine_pipeline.client.clone();
+    pipeline.client.clone_from(&engine_pipeline.client);
 
     // Add nodes to in-memory pipeline
     for (node_id, node_spec) in &engine_pipeline.nodes {
