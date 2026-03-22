@@ -157,9 +157,7 @@ test.describe('Compositor Crop Shape Controls', () => {
     const videoLayerBox = canvasInner.locator('.nodrag.nopan').filter({ hasText: 'in_1' }).first();
     await expect(videoLayerBox).toBeVisible({ timeout: 5_000 });
 
-    const clipPath = await videoLayerBox.evaluate(
-      (el) => window.getComputedStyle(el).clipPath
-    );
+    const clipPath = await videoLayerBox.evaluate((el) => window.getComputedStyle(el).clipPath);
     expect(clipPath).toMatch(/^circle\(/);
 
     // ── 6. Switch to Rect ────────────────────────────────────────────────
