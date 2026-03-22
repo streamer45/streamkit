@@ -10,8 +10,8 @@
  * the throttled commit helpers and their cleanup effect.
  */
 
-import { debounce, throttle } from 'lodash-es';
-import { useEffect, useMemo, useRef } from 'react';
+import { throttle } from 'lodash-es';
+import { useEffect, useMemo } from 'react';
 
 import {
   buildConfig,
@@ -112,7 +112,7 @@ export function createCommitAdapter(
 export interface UseCompositorCommitOptions {
   nodeId: string;
   onConfigChange?: (nodeId: string, config: Record<string, unknown>) => void;
-  /** Silent config change: broadcasts to other clients only (no echo-back). */
+  /** Silent config change: broadcasts to other clients only (no NodeParamsChanged echo-back). */
   onConfigChangeSilent?: (nodeId: string, config: Record<string, unknown>) => void;
   onParamChange?: (nodeId: string, key: string, value: unknown) => void;
   throttleMs: number;
@@ -129,10 +129,6 @@ export interface UseCompositorCommitResult {
   throttledConfigChange: ((layers: LayerState[]) => void) | null;
   /** Throttled commit for overlay property changes (e.g. slider drags). */
   throttledOverlayCommit: ((text: TextOverlayState[], img: ImageOverlayState[]) => void) | null;
-  /** Ref that is `true` while a throttled silent send is in-flight.
-   *  Used by sync guards to skip view-data echo-backs during slider drags
-   *  (NodeViewDataUpdated is NOT suppressed by TuneNodeSilent). */
-  throttleActiveRef: React.MutableRefObject<boolean>;
 }
 
 /** Hook that creates a CommitAdapter, throttled commit helpers, and
@@ -165,7 +161,8 @@ export function useCompositorCommit(opts: UseCompositorCommitOptions): UseCompos
   );
 
   // Silent commit adapter: used by throttled sends during slider drags.
-  // Routes through onConfigChangeSilent so the server skips echo-back.
+  // Routes through onConfigChangeSilent so the server skips NodeParamsChanged
+  // echo-back, avoiding redundant param writes on the sender.
   const silentCommitAdapter = useMemo(
     () =>
       createCommitAdapter(
@@ -188,28 +185,6 @@ export function useCompositorCommit(opts: UseCompositorCommitOptions): UseCompos
     ]
   );
 
-  // Ref that is `true` while a throttled silent send is in-flight.
-  // Used by sync guards to skip view-data echo-backs during slider drags
-  // (NodeViewDataUpdated is NOT suppressed by TuneNodeSilent).
-  const throttleActiveRef = useRef(false);
-
-  // Debounced cleanup: clears the flag shortly after the last throttled tick.
-  // The delay matches throttleMs so the flag stays true for the full throttle
-  // window and is cleared once no more ticks arrive.
-  // NOTE: there is a small theoretical window where the flag clears just before
-  // the server finishes processing the last throttled message and broadcasts
-  // NodeViewDataUpdated.  In practice the server processes tune messages in
-  // sub-millisecond time and the debounce window is ~100ms, so this is
-  // extremely unlikely to manifest.  If it does, increase the delay (e.g.
-  // throttleMs * 1.5).
-  const clearThrottleActive = useMemo(
-    () =>
-      debounce(() => {
-        throttleActiveRef.current = false;
-      }, throttleMs),
-    [throttleMs]
-  );
-
   const throttledConfigChange = useMemo(() => {
     // Throttled sends use the silent adapter (no echo-back) when available,
     // falling back to the normal adapter for Design view.
@@ -217,38 +192,32 @@ export function useCompositorCommit(opts: UseCompositorCommitOptions): UseCompos
     if (!adapter) return null;
     return throttle(
       (currentLayers: LayerState[]) => {
-        throttleActiveRef.current = true;
-        clearThrottleActive();
         adapter.commitLayers(currentLayers);
       },
       throttleMs,
       { leading: true, trailing: true }
     );
-  }, [silentCommitAdapter, commitAdapter, throttleMs, clearThrottleActive]);
+  }, [silentCommitAdapter, commitAdapter, throttleMs]);
 
   const throttledOverlayCommit = useMemo(() => {
-    // Throttled sends use the silent adapter (no echo-back) when available.
     const adapter = silentCommitAdapter ?? commitAdapter;
     if (!adapter) return null;
     return throttle(
       (nextText: TextOverlayState[], nextImg: ImageOverlayState[]) => {
-        throttleActiveRef.current = true;
-        clearThrottleActive();
         adapter.commitOverlays(nextText, nextImg);
       },
       throttleMs,
       { leading: true, trailing: true }
     );
-  }, [silentCommitAdapter, commitAdapter, throttleMs, clearThrottleActive]);
+  }, [silentCommitAdapter, commitAdapter, throttleMs]);
 
   useEffect(
     () => () => {
       throttledConfigChange?.cancel();
       throttledOverlayCommit?.cancel();
-      clearThrottleActive.cancel();
     },
-    [throttledConfigChange, throttledOverlayCommit, clearThrottleActive]
+    [throttledConfigChange, throttledOverlayCommit]
   );
 
-  return { commitAdapter, throttledConfigChange, throttledOverlayCommit, throttleActiveRef };
+  return { commitAdapter, throttledConfigChange, throttledOverlayCommit };
 }

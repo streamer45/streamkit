@@ -114,11 +114,6 @@ fn decoded_to_resolved(ov: &DecodedOverlay) -> ResolvedOverlay {
         y: ov.rect.y,
         width: ov.rect.width,
         height: ov.rect.height,
-        opacity: ov.opacity,
-        z_index: ov.z_index,
-        rotation_degrees: ov.rotation_degrees,
-        mirror_horizontal: ov.mirror_horizontal,
-        mirror_vertical: ov.mirror_vertical,
         measured_text_width: ov.measured_text_width,
         measured_text_height: ov.measured_text_height,
     }
@@ -210,22 +205,7 @@ fn resolve_scene(
             rect.as_ref()
                 .map_or((0, 0, config.width, config.height), |r| (r.x, r.y, r.width, r.height))
         };
-        layers.push(ResolvedLayer {
-            id: slot.name.clone(),
-            x: lx,
-            y: ly,
-            width: lw,
-            height: lh,
-            opacity,
-            z_index,
-            rotation_degrees,
-            mirror_horizontal: mirror_h,
-            mirror_vertical: mirror_v,
-            crop_zoom,
-            crop_x,
-            crop_y,
-            crop_shape,
-        });
+        layers.push(ResolvedLayer { id: slot.name.clone(), x: lx, y: ly, width: lw, height: lh });
 
         configs.push(ResolvedSlotConfig {
             rect,

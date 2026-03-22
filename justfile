@@ -1199,10 +1199,10 @@ e2e-auth-headed: build-ui install-e2e
     @cargo build -p streamkit-server --bin skit
     @cd e2e && E2E_AUTH=1 bun run test:headed
 
-# Run E2E against external server
-e2e-external url:
+# Run E2E against external server (optional filter greps test names)
+e2e-external url filter='':
     @echo "Running E2E tests against {{url}}..."
-    @cd e2e && E2E_BASE_URL={{url}} bun run test:only
+    @cd e2e && E2E_BASE_URL={{url}} bun run test:only {{ if filter != "" { "--grep '" + filter + "'" } else { "" } }}
 
 # Show E2E test report
 [working-directory: 'e2e']

@@ -354,6 +354,34 @@ function pickConfigFields<T extends OverlayBase>(parsed: T): Partial<T> {
   return config as Partial<T>;
 }
 
+/** Pick only config fields that actually changed between two parsed overlays.
+ *  Returns only keys where the value in `newParsed` differs from `prevParsed`.
+ *  This prevents topology rebuilds (which re-parse potentially stale params)
+ *  from overwriting local inspector edits (color, fontSize, etc.) when the
+ *  parsed params haven't actually changed. */
+function pickChangedConfigFields<T extends OverlayBase>(
+  newParsed: T,
+  prevParsed: T | undefined
+): Partial<T> {
+  if (!prevParsed) return pickConfigFields(newParsed);
+  const diff: Record<string, unknown> = {};
+  const newRec = newParsed as Record<string, unknown>;
+  const prevRec = prevParsed as Record<string, unknown>;
+  for (const key of Object.keys(newRec)) {
+    if (OVERLAY_BASE_KEYS.has(key)) continue;
+    const nv = newRec[key];
+    const pv = prevRec[key];
+    if (Array.isArray(nv) && Array.isArray(pv)) {
+      if (nv.length !== pv.length || nv.some((v, i) => v !== pv[i])) {
+        diff[key] = nv;
+      }
+    } else if (nv !== pv) {
+      diff[key] = nv;
+    }
+  }
+  return diff as Partial<T>;
+}
+
 /** Merge parsed overlays with existing state, preserving client-side visibility.
  *  Returns the same array reference if nothing changed (avoiding re-renders).
  *  An optional `hasExtraChanges` comparator can detect changes in type-specific
@@ -364,12 +392,18 @@ function pickConfigFields<T extends OverlayBase>(parsed: T): Partial<T> {
  *  z-index, mirror flags, and any runtime-only fields (e.g. measuredTextWidth).
  *  Only type-specific config fields (text, fontSize, color, dataBase64, …) are
  *  taken from `parsed`.  This prevents config-derived values from clobbering the
- *  server's resolved layout that useServerLayoutSync applied. */
+ *  server's resolved layout that useServerLayoutSync applied.
+ *
+ *  When `previousParsed` is provided (Monitor view), only config fields that
+ *  actually changed between the previous and new parsed data are applied.  This
+ *  prevents topology rebuilds with stale params from overwriting inspector
+ *  edits (e.g. color alpha changes). */
 export function mergeOverlayState<T extends OverlayBase>(
   current: T[],
   parsed: T[],
   hasExtraChanges?: (a: T, b: T) => boolean,
-  preserveGeometry?: boolean
+  preserveGeometry?: boolean,
+  previousParsed?: T[]
 ): T[] {
   const merged = parsed.map((p) => {
     const existing = current.find((o) => o.id === p.id);
@@ -378,8 +412,14 @@ export function mergeOverlayState<T extends OverlayBase>(
         // Monitor view: server is the source of truth for all OverlayBase
         // fields.  Start from `existing` (preserves server-resolved spatial
         // values AND runtime-only fields like measuredTextWidth), then
-        // overlay only type-specific config fields from `parsed`.
-        return { ...existing, ...pickConfigFields(p) } as T;
+        // overlay only type-specific config fields that actually changed
+        // in the parsed params.
+        const prev = previousParsed?.find((o) => o.id === p.id);
+        const configDiff = pickChangedConfigFields(p, prev);
+        // No config fields changed → return the same reference to preserve
+        // referential equality and avoid unnecessary atom writes / re-renders.
+        if (Object.keys(configDiff).length === 0) return existing;
+        return { ...existing, ...configDiff } as T;
       }
       return {
         ...p,

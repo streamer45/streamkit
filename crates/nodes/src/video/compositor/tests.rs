@@ -1837,6 +1837,52 @@ fn test_composite_frame_crop_shape_circle() {
 }
 
 #[test]
+fn test_scale_blit_crop_shape_circle_nonsquare_rect() {
+    // Verify that crop_shape: circle on a non-square destination rect
+    // produces a true circle (using min dimension as diameter), NOT an
+    // ellipse.  A 40×20 rect should crop to a circle of diameter 20
+    // centred in the rect.  A pixel at (5, 10) — inside an ellipse but
+    // outside the true circle — must remain transparent.
+    let src = [255u8, 0, 0, 255].repeat(40 * 20);
+    let mut dst = vec![0u8; 40 * 20 * 4];
+
+    scale_blit_rgba(
+        &mut dst,
+        40,
+        20,
+        &src,
+        40,
+        20,
+        &BlitRect { x: 0, y: 0, width: 40, height: 20 },
+        1.0,
+        false,
+        false,
+        false,
+        None,
+        true, // crop_shape = circle
+    );
+
+    // Centre pixel (20, 10) should be red — inside the circle.
+    let idx = (10 * 40 + 20) * 4;
+    assert_eq!(dst[idx], 255, "Centre R");
+    assert!(dst[idx + 3] > 200, "Centre A should be mostly opaque");
+
+    // Pixel (5, 10) — on the horizontal midline but well outside a
+    // circle of radius 10 centred at (20, 10).  Distance from centre
+    // is 15, which is > 10.  An ellipse would include this point.
+    let outside_idx = (10 * 40 + 5) * 4;
+    assert_eq!(dst[outside_idx + 3], 0, "Pixel (5,10) should be transparent — outside true circle");
+
+    // Pixel (30, 10) — symmetric to (5,10) on the other side.
+    let outside_idx2 = (10 * 40 + 35) * 4;
+    assert_eq!(
+        dst[outside_idx2 + 3],
+        0,
+        "Pixel (35,10) should be transparent — outside true circle"
+    );
+}
+
+#[test]
 fn test_composite_frame_crop_shape_circle_skip_clear() {
     // Regression test: when crop_shape is circle on the first (full-canvas)
     // layer, the skip_clear optimisation must NOT fire — pixels outside the
@@ -1898,4 +1944,132 @@ fn test_composite_frame_crop_shape_circle_skip_clear() {
     let idx = (cy * canvas_w as usize + cx) * 4;
     assert_eq!(buf[idx], 255, "Centre R");
     assert!(buf[idx + 3] > 200, "Centre A");
+}
+
+// ── resolve_scene / view-data layout tests ─────────────────────────────
+
+/// Helper: build an `InputSlot` with the given name and optional latest frame.
+fn make_slot(name: &str, frame: Option<VideoFrame>) -> InputSlot {
+    let (_tx, rx) = mpsc::channel::<Packet>(1);
+    InputSlot { name: name.to_string(), rx, latest_frame: frame }
+}
+
+#[test]
+fn test_resolve_scene_explicit_rect() {
+    let mut config = CompositorConfig { width: 1280, height: 720, ..Default::default() };
+    config.layers.insert(
+        "in_0".to_string(),
+        LayerConfig {
+            rect: Some(Rect { x: 100, y: 50, width: 640, height: 360 }),
+            opacity: 0.5,
+            z_index: 3,
+            rotation_degrees: 45.0,
+            ..Default::default()
+        },
+    );
+
+    let slots = [make_slot("in_0", None)];
+    let empty_overlays: Arc<[Arc<overlay::DecodedOverlay>]> = Arc::from(vec![]);
+    let scene = resolve_scene(&slots, &config, &empty_overlays, &empty_overlays);
+
+    // View-data layer carries only server-computed geometry.
+    assert_eq!(scene.layout.layers.len(), 1);
+    let rl = &scene.layout.layers[0];
+    assert_eq!(rl.id, "in_0");
+    assert_eq!(rl.x, 100);
+    assert_eq!(rl.y, 50);
+    assert_eq!(rl.width, 640);
+    assert_eq!(rl.height, 360);
+
+    // Config fields (opacity, rotation, z_index, etc.) are NOT in the view-data
+    // struct — they live only in the internal ResolvedSlotConfig.
+    assert!((scene.configs[0].opacity - 0.5).abs() < f32::EPSILON);
+    assert_eq!(scene.configs[0].z_index, 3);
+    assert!((scene.configs[0].rotation_degrees - 45.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn test_resolve_scene_fullscreen_fallback() {
+    // A single slot without explicit config → fullscreen.
+    let config = CompositorConfig { width: 1920, height: 1080, ..Default::default() };
+    let slots = [make_slot("in_0", None)];
+    let empty: Arc<[Arc<overlay::DecodedOverlay>]> = Arc::from(vec![]);
+    let scene = resolve_scene(&slots, &config, &empty, &empty);
+
+    let rl = &scene.layout.layers[0];
+    assert_eq!(rl.x, 0);
+    assert_eq!(rl.y, 0);
+    assert_eq!(rl.width, 1920);
+    assert_eq!(rl.height, 1080);
+}
+
+#[test]
+fn test_resolve_scene_auto_pip() {
+    // Two slots, second has no config → auto-PiP (bottom-right, 1/3 canvas).
+    let config = CompositorConfig { width: 1200, height: 900, ..Default::default() };
+    let slots = [make_slot("in_0", None), make_slot("in_1", None)];
+    let empty: Arc<[Arc<overlay::DecodedOverlay>]> = Arc::from(vec![]);
+    let scene = resolve_scene(&slots, &config, &empty, &empty);
+
+    assert_eq!(scene.layout.layers.len(), 2);
+    // First slot: fullscreen
+    assert_eq!(scene.layout.layers[0].width, 1200);
+    // Second slot: PiP (1/3 canvas = 400×300, inset 20px from bottom-right)
+    let pip = &scene.layout.layers[1];
+    assert_eq!(pip.width, 400);
+    assert_eq!(pip.height, 300);
+    assert_eq!(pip.x, 1200 - 400 - 20);
+    assert_eq!(pip.y, 900 - 300 - 20);
+}
+
+#[test]
+fn test_resolve_scene_auto_pip_aspect_fit() {
+    // Auto-PiP with a frame present → aspect-fit within PiP bounds.
+    let config = CompositorConfig { width: 1200, height: 900, ..Default::default() };
+    // 4:3 source, PiP bounds would be 400×300
+    let frame = make_rgba_frame(800, 600, 0, 0, 0, 255);
+    let slots = [make_slot("in_0", None), make_slot("in_1", Some(frame))];
+    let empty: Arc<[Arc<overlay::DecodedOverlay>]> = Arc::from(vec![]);
+    let scene = resolve_scene(&slots, &config, &empty, &empty);
+
+    // 800×600 (4:3) fits exactly in 400×300 (also 4:3) → 400×300
+    let pip = &scene.layout.layers[1];
+    assert_eq!(pip.width, 400);
+    assert_eq!(pip.height, 300);
+}
+
+#[test]
+fn test_resolve_scene_overlay_geometry() {
+    let config = CompositorConfig { width: 1280, height: 720, ..Default::default() };
+    let slots: Vec<InputSlot> = vec![];
+    let empty: Arc<[Arc<overlay::DecodedOverlay>]> = Arc::from(vec![]);
+
+    let text_overlay = Arc::new(overlay::DecodedOverlay {
+        id: "text_0".to_string(),
+        rgba_data: vec![0u8; 4],
+        width: 200,
+        height: 40,
+        rect: Rect { x: 50, y: 100, width: 200, height: 40 },
+        opacity: 0.8,
+        rotation_degrees: 15.0,
+        z_index: 5,
+        mirror_horizontal: true,
+        mirror_vertical: false,
+        measured_text_width: Some(195),
+        measured_text_height: Some(38),
+    });
+    let text_overlays: Arc<[Arc<overlay::DecodedOverlay>]> = Arc::from(vec![text_overlay]);
+
+    let scene = resolve_scene(&slots, &config, &empty, &text_overlays);
+
+    // View-data overlay carries only geometry + measurements.
+    assert_eq!(scene.layout.text_overlays.len(), 1);
+    let ro = &scene.layout.text_overlays[0];
+    assert_eq!(ro.id, "text_0");
+    assert_eq!(ro.x, 50);
+    assert_eq!(ro.y, 100);
+    assert_eq!(ro.width, 200);
+    assert_eq!(ro.height, 40);
+    assert_eq!(ro.measured_text_width, Some(195));
+    assert_eq!(ro.measured_text_height, Some(38));
 }

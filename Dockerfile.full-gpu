@@ -48,10 +48,10 @@ RUN mkdir -p ui/dist && echo '<!DOCTYPE html><html><body>Building...</body></htm
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/build/target \
-    cargo build --release -p streamkit-server --bin skit --features "moq" -j$(nproc) && \
+    cargo build --profile release-lto -p streamkit-server --bin skit --features "moq" -j$(nproc) && \
     # Copy compiled artifacts out of cache mount so they persist in the layer
     mkdir -p /build/target-out && \
-    cp -r /build/target/release /build/target-out/
+    cp -r /build/target/release-lto /build/target-out/
 
 # Stage 2: Build UI
 FROM oven/bun:1.3.5-alpine AS ui-builder
@@ -102,22 +102,23 @@ COPY --from=ui-builder /build/ui/dist ./ui/dist
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/build/target \
-    --mount=type=bind,from=rust-deps,source=/build/target-out/release,target=/build/target-init \
+    --mount=type=bind,from=rust-deps,source=/build/target-out/release-lto,target=/build/target-init \
     bash -c '\
       # Copy pre-built dependencies if target is empty (first build) \
-      if [ ! -d "/build/target/release/deps" ]; then \
+      if [ ! -d "/build/target/release-lto/deps" ]; then \
         echo "Initializing target from cache..."; \
-        cp -r /build/target-init/* /build/target/release/ || true; \
+        mkdir -p /build/target/release-lto; \
+        cp -r /build/target-init/* /build/target/release-lto/ || true; \
       fi; \
       # Remove server binary to force rebuild with new UI \
-      rm -rf /build/target/release/skit \
-        /build/target/release/skit.d \
-        /build/target/release/deps/streamkit_server-* \
-        /build/target/release/.fingerprint/streamkit-server-*; \
+      rm -rf /build/target/release-lto/skit \
+        /build/target/release-lto/skit.d \
+        /build/target/release-lto/deps/streamkit_server-* \
+        /build/target/release-lto/.fingerprint/streamkit-server-*; \
       # Build only the server binary \
-      cargo build --release --features "moq" --bin skit -j$(nproc); \
+      cargo build --profile release-lto --features "moq" --bin skit -j$(nproc); \
       # Copy final binary out of cache mount \
-      mkdir -p /build/bin && cp /build/target/release/skit /build/bin/skit \
+      mkdir -p /build/bin && cp /build/target/release-lto/skit /build/bin/skit \
     '
 
 # Stage 4: Build Whisper plugin with CUDA support
@@ -609,21 +610,23 @@ RUN ldconfig
 ENV LD_LIBRARY_PATH=/usr/local/lib:/usr/local/nvidia/lib64:/usr/local/nvidia/lib:${LD_LIBRARY_PATH}
 
 # Copy whisper plugin and models
-COPY --from=whisper-builder /build/plugins /opt/streamkit/plugins
-COPY --from=whisper-builder /build/models /opt/streamkit/models
+# IMPORTANT: Use --chown=app:app on every COPY to avoid a bulk `chown -R` later
+# which would duplicate every file in a new layer (~12GB waste).
+COPY --chown=app:app --from=whisper-builder /build/plugins /opt/streamkit/plugins
+COPY --chown=app:app --from=whisper-builder /build/models /opt/streamkit/models
 
 # Copy kokoro plugin and models (merge into /opt/streamkit/plugins and /opt/streamkit/models)
-COPY --from=kokoro-builder /build/plugins/native/* /opt/streamkit/plugins/native/
-COPY --from=kokoro-builder /build/models/kokoro-multi-lang-v1_1 /opt/streamkit/models/kokoro-multi-lang-v1_1
+COPY --chown=app:app --from=kokoro-builder /build/plugins/native/* /opt/streamkit/plugins/native/
+COPY --chown=app:app --from=kokoro-builder /build/models/kokoro-multi-lang-v1_1 /opt/streamkit/models/kokoro-multi-lang-v1_1
 
 # Copy piper plugin and models (merge into /opt/streamkit/plugins and /opt/streamkit/models)
-COPY --from=piper-builder /build/plugins/native/* /opt/streamkit/plugins/native/
-COPY --from=piper-builder /build/models/vits-piper-en_US-libritts_r-medium /opt/streamkit/models/vits-piper-en_US-libritts_r-medium
-COPY --from=piper-builder /build/models/vits-piper-es_MX-claude-high /opt/streamkit/models/vits-piper-es_MX-claude-high
+COPY --chown=app:app --from=piper-builder /build/plugins/native/* /opt/streamkit/plugins/native/
+COPY --chown=app:app --from=piper-builder /build/models/vits-piper-en_US-libritts_r-medium /opt/streamkit/models/vits-piper-en_US-libritts_r-medium
+COPY --chown=app:app --from=piper-builder /build/models/vits-piper-es_MX-claude-high /opt/streamkit/models/vits-piper-es_MX-claude-high
 
 # Copy sensevoice plugin and models (merge into /opt/streamkit/plugins and /opt/streamkit/models)
-COPY --from=sensevoice-builder /build/plugins/native/* /opt/streamkit/plugins/native/
-COPY --from=sensevoice-builder /build/models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09 /opt/streamkit/models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09
+COPY --chown=app:app --from=sensevoice-builder /build/plugins/native/* /opt/streamkit/plugins/native/
+COPY --chown=app:app --from=sensevoice-builder /build/models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09 /opt/streamkit/models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09
 
 # Copy CTranslate2 libraries from nllb-builder
 COPY --from=nllb-builder /usr/local/lib/libctranslate2.so* /usr/local/lib/
@@ -632,39 +635,38 @@ RUN ldconfig
 # Copy nllb plugin and models (merge into /opt/streamkit/plugins and /opt/streamkit/models)
 # - 3.3B-float16: GPU-optimized model
 # - 600M-INT8: CPU fallback model
-COPY --from=nllb-builder /build/plugins/native/* /opt/streamkit/plugins/native/
-COPY --from=nllb-builder /build/models/nllb-200-3.3B-ct2-float16 /opt/streamkit/models/nllb-200-3.3B-ct2-float16
-COPY --from=nllb-builder /build/models/nllb-200-distilled-600M-ct2-int8 /opt/streamkit/models/nllb-200-distilled-600M-ct2-int8
+COPY --chown=app:app --from=nllb-builder /build/plugins/native/* /opt/streamkit/plugins/native/
+COPY --chown=app:app --from=nllb-builder /build/models/nllb-200-3.3B-ct2-float16 /opt/streamkit/models/nllb-200-3.3B-ct2-float16
+COPY --chown=app:app --from=nllb-builder /build/models/nllb-200-distilled-600M-ct2-int8 /opt/streamkit/models/nllb-200-distilled-600M-ct2-int8
 
 # Copy helsinki plugin and models (merge into /opt/streamkit/plugins and /opt/streamkit/models)
-COPY --from=helsinki-builder /build/plugins/native/* /opt/streamkit/plugins/native/
-COPY --from=helsinki-builder /build/models/opus-mt-en-es /opt/streamkit/models/opus-mt-en-es
-COPY --from=helsinki-builder /build/models/opus-mt-es-en /opt/streamkit/models/opus-mt-es-en
+COPY --chown=app:app --from=helsinki-builder /build/plugins/native/* /opt/streamkit/plugins/native/
+COPY --chown=app:app --from=helsinki-builder /build/models/opus-mt-en-es /opt/streamkit/models/opus-mt-en-es
+COPY --chown=app:app --from=helsinki-builder /build/models/opus-mt-es-en /opt/streamkit/models/opus-mt-es-en
 
 # Copy vad plugin and model (merge into /opt/streamkit/plugins and /opt/streamkit/models)
-COPY --from=vad-builder /build/plugins/native/* /opt/streamkit/plugins/native/
-COPY --from=vad-builder /build/models/ten-vad.onnx /opt/streamkit/models/ten-vad.onnx
+COPY --chown=app:app --from=vad-builder /build/plugins/native/* /opt/streamkit/plugins/native/
+COPY --chown=app:app --from=vad-builder /build/models/ten-vad.onnx /opt/streamkit/models/ten-vad.onnx
 
 # Copy matcha plugin and models (merge into /opt/streamkit/plugins and /opt/streamkit/models)
-COPY --from=matcha-builder /build/plugins/native/* /opt/streamkit/plugins/native/
-COPY --from=matcha-builder /build/models/matcha-icefall-en_US-ljspeech /opt/streamkit/models/matcha-icefall-en_US-ljspeech
+COPY --chown=app:app --from=matcha-builder /build/plugins/native/* /opt/streamkit/plugins/native/
+COPY --chown=app:app --from=matcha-builder /build/models/matcha-icefall-en_US-ljspeech /opt/streamkit/models/matcha-icefall-en_US-ljspeech
 
 # Copy sample pipelines
 COPY --chown=app:app samples /opt/streamkit/samples
 
 # Copy official Docker configuration (no dependency on private demo assets)
-RUN mkdir -p /opt/streamkit/config
 COPY --chown=app:app docker-skit.toml /opt/streamkit/config/skit.toml
 COPY --chown=app:app docker-skit-gpu.toml /opt/streamkit/config/skit-gpu.toml
 
 # Copy demo configurations used by `demo/launcher`
-RUN mkdir -p /opt/streamkit/demo
 COPY --chown=app:app demo/skit.toml /opt/streamkit/demo/skit.toml
 COPY --chown=app:app demo/skit-gpu.toml /opt/streamkit/demo/skit-gpu.toml
 
-# Ensure runtime-writable directories exist, and keep /app/* as compatibility symlinks.
-RUN mkdir -p /opt/streamkit/.plugins /opt/streamkit/logs && \
-    chown -R app:app /opt/streamkit && \
+# Create runtime-writable directories and compatibility symlinks.
+# No bulk chown needed — all COPY instructions above use --chown=app:app.
+RUN mkdir -p /opt/streamkit/.plugins /opt/streamkit/logs /opt/streamkit/config /opt/streamkit/demo && \
+    chown app:app /opt/streamkit/.plugins /opt/streamkit/logs /opt/streamkit/config /opt/streamkit/demo && \
     mkdir -p /app && \
     ln -sfn /opt/streamkit/config/skit.toml /opt/streamkit/skit.toml && \
     ln -sfn /opt/streamkit/config/skit-gpu.toml /opt/streamkit/skit-gpu.toml && \

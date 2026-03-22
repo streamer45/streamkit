@@ -53,6 +53,10 @@ export interface ConnectableState {
   pipelineNeedsVideo: boolean;
   pipelineOutputsAudio: boolean;
   pipelineOutputsVideo: boolean;
+  /** True when the pipeline uses separate publisher/subscriber nodes via an
+   *  external MoQ relay, as opposed to a gateway `transport::moq::peer` node
+   *  managed directly by skit. */
+  isExternalRelay: boolean;
   status: ConnectionStatus;
   errorMessage: string;
   isMicEnabled: boolean;
@@ -107,6 +111,41 @@ export function waitForSignalValue<T>(
       }
     });
   });
+}
+
+/**
+ * Waits for a specific broadcast to be announced on the MoQ relay.
+ * Used when publishing to an external relay: the skit pipeline needs time to
+ * discover input, build the graph, and start publishing output. Polling for
+ * the announcement avoids a fixed delay.
+ */
+async function waitForBroadcastAnnouncement(
+  connection: Hang.Moq.Connection.Reload,
+  broadcastName: string,
+  timeoutMs = 15_000
+): Promise<void> {
+  const conn = connection.established.peek();
+  if (!conn) return;
+  logger.info(`Waiting for broadcast '${broadcastName}' announcement...`);
+  const announcements = conn.announced();
+  const deadline = Date.now() + timeoutMs;
+  try {
+    while (Date.now() < deadline) {
+      const remaining = deadline - Date.now();
+      const entry = await Promise.race([
+        announcements.next(),
+        new Promise<null>((r) => setTimeout(() => r(null), remaining)),
+      ]);
+      if (!entry) break;
+      if (entry.active && entry.path.toString() === broadcastName) {
+        logger.info(`Broadcast '${broadcastName}' announced`);
+        return;
+      }
+    }
+    logger.warn(`Broadcast '${broadcastName}' not announced within ${timeoutMs}ms, proceeding`);
+  } finally {
+    announcements.close();
+  }
 }
 
 export function decideConnect(
@@ -276,53 +315,71 @@ function setupWatchPath(
   };
 }
 
-function setupPublishPath(
+/** Create media sources and wait for camera permission if needed. */
+async function setupMediaSources(
+  healthEffect: Effect,
+  needsAudio: boolean,
+  needsVideo: boolean,
+  set: StateSetter
+): Promise<{
+  microphone: Publish.Source.Microphone | null;
+  camera: Publish.Source.Camera | null;
+}> {
+  let microphone: Publish.Source.Microphone | null = null;
+  let camera: Publish.Source.Camera | null = null;
+  if (needsAudio) {
+    microphone = new Publish.Source.Microphone({ enabled: true });
+    set({ micStatus: microphone.source.peek() ? 'ready' : 'requesting' });
+    healthEffect.subscribe(microphone.source, (v) =>
+      set({ micStatus: v ? 'ready' : 'requesting' })
+    );
+  }
+  if (needsVideo) {
+    camera = new Publish.Source.Camera({ enabled: true });
+    set({ cameraStatus: camera.source.peek() ? 'ready' : 'requesting' });
+    healthEffect.subscribe(camera.source, (v) => set({ cameraStatus: v ? 'ready' : 'requesting' }));
+    // Wait for camera before creating the broadcast — the MoQ catalog is
+    // published immediately and downstream subscribers only read it once.
+    if (!camera.source.peek()) {
+      try {
+        await waitForSignalValue(
+          camera.source,
+          (v) => v !== undefined,
+          15_000,
+          'Camera not available'
+        );
+      } catch (e) {
+        shutdownMediaSource(camera);
+        shutdownMediaSource(microphone);
+        throw e;
+      }
+    }
+  }
+  return { microphone, camera };
+}
+
+async function setupPublishPath(
   healthEffect: Effect,
   connection: Hang.Moq.Connection.Reload,
   inputBroadcast: string,
   needsAudio: boolean,
   needsVideo: boolean,
   set: StateSetter
-): {
+): Promise<{
   microphone: Publish.Source.Microphone | null;
   camera: Publish.Source.Camera | null;
   publish: Publish.Broadcast;
-} {
-  let microphone: Publish.Source.Microphone | null = null;
-  let camera: Publish.Source.Camera | null = null;
-
-  if (needsAudio) {
-    logger.info('Step 4: Creating microphone source');
-    microphone = new Publish.Source.Microphone({ enabled: true });
-
-    set({ micStatus: microphone.source.peek() ? 'ready' : 'requesting' });
-    healthEffect.subscribe(microphone.source, (value) => {
-      set({ micStatus: value ? 'ready' : 'requesting' });
-    });
-  }
-
-  if (needsVideo) {
-    logger.info('Step 4b: Creating camera source');
-    camera = new Publish.Source.Camera({ enabled: true });
-
-    set({ cameraStatus: camera.source.peek() ? 'ready' : 'requesting' });
-    healthEffect.subscribe(camera.source, (value) => {
-      set({ cameraStatus: value ? 'ready' : 'requesting' });
-    });
-  }
+}> {
+  const { microphone, camera } = await setupMediaSources(healthEffect, needsAudio, needsVideo, set);
 
   logger.info('Step 5: Creating publish broadcast');
-
   const broadcastConfig: ConstructorParameters<typeof Publish.Broadcast>[0] = {
     connection: connection.established,
     enabled: true,
     name: Publish.Lite.Path.from(inputBroadcast),
   };
   if (needsAudio && microphone) {
-    broadcastConfig.audio = {
-      enabled: true,
-      source: microphone.source,
-    };
+    broadcastConfig.audio = { enabled: true, source: microphone.source };
   }
   if (needsVideo && camera) {
     broadcastConfig.video = {
@@ -332,6 +389,25 @@ function setupPublishPath(
   }
 
   const publish = new Publish.Broadcast(broadcastConfig);
+
+  // Wait for the video encoder to produce a catalog entry before returning.
+  if (needsVideo) {
+    logger.info('Step 5b: Waiting for video catalog...');
+    try {
+      await waitForSignalValue(
+        publish.video.catalog,
+        (v) => v !== undefined,
+        10_000,
+        'Video encoder failed to initialize'
+      );
+    } catch (e) {
+      publish.close();
+      shutdownMediaSource(camera);
+      shutdownMediaSource(microphone);
+      throw e;
+    }
+    logger.info('Step 5b: Video catalog ready');
+  }
 
   return { microphone, camera, publish };
 }
@@ -416,7 +492,7 @@ function applyWatchResult(
 /** Apply publish-path results to the attempt object in a type-safe manner. */
 function applyPublishResult(
   attempt: ConnectAttempt,
-  result: ReturnType<typeof setupPublishPath>
+  result: Awaited<ReturnType<typeof setupPublishPath>>
 ): void {
   attempt.microphone = result.microphone;
   attempt.camera = result.camera;
@@ -430,21 +506,7 @@ export async function performConnect(
   get: () => ConnectableState & { outputBroadcast: string },
   set: StateSetter
 ): Promise<boolean> {
-  const attempt: ConnectAttempt = {
-    connection: null,
-    healthEffect: null,
-    watch: null,
-    watchSync: null,
-    audioSource: null,
-    audioDecoder: null,
-    audioEmitter: null,
-    videoSource: null,
-    videoDecoder: null,
-    videoRenderer: null,
-    microphone: null,
-    camera: null,
-    publish: null,
-  };
+  const attempt: ConnectAttempt = { ...NULL_MOQ_REFS };
 
   try {
     logger.info('Step 1: Creating connection to relay server');
@@ -458,24 +520,14 @@ export async function performConnect(
     attempt.healthEffect = new Effect();
     setupConnectionStatusSync(attempt.healthEffect, attempt.connection, get, set);
 
-    if (decision.shouldWatch) {
-      applyWatchResult(
-        attempt,
-        setupWatchPath(
-          attempt.healthEffect,
-          attempt.connection,
-          state.outputBroadcast,
-          state.pipelineOutputsAudio,
-          state.pipelineOutputsVideo,
-          set
-        )
-      );
-    }
-
+    // Set up publish BEFORE watch. For external relay pipelines (pub/sub),
+    // the skit pipeline needs input data before it can publish output.
+    // If we watch first, the subscribe to output/catalog.json fails with
+    // RESET_STREAM because skit hasn't started publishing yet.
     if (decision.shouldPublish) {
       applyPublishResult(
         attempt,
-        setupPublishPath(
+        await setupPublishPath(
           attempt.healthEffect,
           attempt.connection,
           state.inputBroadcast,
@@ -492,6 +544,30 @@ export async function performConnect(
       12_000,
       'Timed out connecting to MoQ gateway.'
     );
+
+    if (decision.shouldWatch) {
+      // When publishing to an external relay, the skit pipeline needs time to
+      // discover input tracks, build the graph, and start publishing output.
+      // Wait for the output broadcast to be announced on the relay before
+      // subscribing, otherwise the catalog subscribe gets RESET_STREAM.
+      // In gateway mode the skit server manages the peer connection directly,
+      // so no announcement polling is needed.
+      if (decision.shouldPublish && state.isExternalRelay) {
+        await waitForBroadcastAnnouncement(attempt.connection, state.outputBroadcast);
+      }
+
+      applyWatchResult(
+        attempt,
+        setupWatchPath(
+          attempt.healthEffect,
+          attempt.connection,
+          state.outputBroadcast,
+          state.pipelineOutputsAudio,
+          state.pipelineOutputsVideo,
+          set
+        )
+      );
+    }
 
     schedulePostConnectWarnings(decision, attempt, get, set);
 

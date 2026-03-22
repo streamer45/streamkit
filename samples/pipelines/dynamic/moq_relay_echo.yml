@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+name: MoQ Relay Echo (Audio)
+description: Subscribes to an audio broadcast on a MoQ relay, applies unity gain, and republishes — validates the full relay pub/sub path
+mode: dynamic
+nodes:
+  moq_input:
+    kind: transport::moq::subscriber
+    params:
+      url: http://localhost:4443
+      broadcast: input
+      backoff_cap: 4
+      max_retries: 10
+  opus_decoder:
+    kind: audio::opus::decoder
+    needs: moq_input
+  gain:
+    kind: audio::gain
+    params:
+      gain: 1.0
+    needs: opus_decoder
+  opus_encoder:
+    kind: audio::opus::encoder
+    needs: gain
+  moq_output:
+    kind: transport::moq::publisher
+    params:
+      url: http://localhost:4443
+      broadcast: output
+      channels: 1
+      group_duration_ms: 40
+      initial_delay_ms: 250
+      audio: true
+    needs: opus_encoder

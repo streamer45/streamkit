@@ -147,20 +147,16 @@ test.describe('Webcam Circle PiP Pipeline — E2E Validation', () => {
     const videoLayerBox = canvasInner.locator('.nodrag.nopan').filter({ hasText: 'in_1' }).first();
     await expect(videoLayerBox).toBeVisible({ timeout: 5_000 });
 
-    const borderRadius = await videoLayerBox.evaluate(
-      (el) => window.getComputedStyle(el).borderRadius
-    );
-    expect(borderRadius).toBe('50%');
+    const clipPath = await videoLayerBox.evaluate((el) => window.getComputedStyle(el).clipPath);
+    expect(clipPath).toMatch(/^circle\(/);
 
     // ── 6. Verify in_0 does NOT have circular preview ────────────────────
 
     const bgLayerBox = canvasInner.locator('.nodrag.nopan').filter({ hasText: 'in_0' }).first();
     await expect(bgLayerBox).toBeVisible({ timeout: 5_000 });
 
-    const bgBorderRadius = await bgLayerBox.evaluate(
-      (el) => window.getComputedStyle(el).borderRadius
-    );
-    expect(bgBorderRadius).not.toBe('50%');
+    const bgClipPath = await bgLayerBox.evaluate((el) => window.getComputedStyle(el).clipPath);
+    expect(bgClipPath).toBe('none');
 
     // ── 7. Select in_1 — Crop & Zoom shows circle shape ─────────────────
 

@@ -2,6 +2,8 @@
 
 export type Rect = { x: number, y: number, width: number, height: number, };
 
+export type CropShape = "rect" | "circle";
+
 export type OverlayTransform = { 
 /**
  * Destination rectangle on the output canvas.
@@ -180,8 +182,6 @@ crop_y: number,
  */
 crop_shape: CropShape, };
 
-export type CropShape = "rect" | "circle";
-
 export type CompositorConfig = { 
 /**
  * Output canvas width in pixels.
@@ -222,23 +222,7 @@ export type ResolvedLayer = {
 /**
  * Pin name (e.g. `"in_0"`).
  */
-id: string, x: number, y: number, width: number, height: number, opacity: number, z_index: number, rotation_degrees: number, mirror_horizontal: boolean, mirror_vertical: boolean, 
-/**
- * Crop zoom factor (1.0 = full source).
- */
-crop_zoom: number, 
-/**
- * Normalized crop pan X (0.0–1.0).
- */
-crop_x: number, 
-/**
- * Normalized crop tilt Y (0.0–1.0).
- */
-crop_y: number, 
-/**
- * Shape clipping applied to the layer.
- */
-crop_shape: CropShape, };
+id: string, x: number, y: number, width: number, height: number, };
 
 export type ResolvedOverlay = { 
 /**
@@ -253,7 +237,7 @@ width: number,
 /**
  * Height after text measurement / image aspect-fit.
  */
-height: number, opacity: number, z_index: number, rotation_degrees: number, mirror_horizontal: boolean, mirror_vertical: boolean, 
+height: number, 
 /**
  * Actual text width measured by the font engine (text overlays only).
  */

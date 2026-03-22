@@ -41,10 +41,10 @@ RUN mkdir -p ui/dist && echo '<!DOCTYPE html><html><body>Building...</body></htm
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/build/target \
-    cargo build --locked --release -p streamkit-server --bin skit --features "moq" && \
+    cargo build --locked --profile release-lto -p streamkit-server --bin skit --features "moq" && \
     # Copy compiled artifacts out of cache mount so they persist in the layer
     mkdir -p /build/target-out && \
-    cp -r /build/target/release /build/target-out/
+    cp -r /build/target/release-lto /build/target-out/
 
 # Stage 2: Build UI
 FROM oven/bun:1.3.5-alpine AS ui-builder
@@ -94,22 +94,23 @@ COPY --from=ui-builder /build/ui/dist ./ui/dist
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/build/target \
-    --mount=type=bind,from=rust-deps,source=/build/target-out/release,target=/build/target-init \
+    --mount=type=bind,from=rust-deps,source=/build/target-out/release-lto,target=/build/target-init \
     bash -c '\
       # Copy pre-built dependencies if target is empty (first build) \
-      if [ ! -d "/build/target/release/deps" ]; then \
+      if [ ! -d "/build/target/release-lto/deps" ]; then \
         echo "Initializing target from cache..."; \
-        cp -r /build/target-init/* /build/target/release/ || true; \
+        mkdir -p /build/target/release-lto; \
+        cp -r /build/target-init/* /build/target/release-lto/ || true; \
       fi; \
       # Remove server binary to force rebuild with new UI \
-      rm -rf /build/target/release/skit \
-        /build/target/release/skit.d \
-        /build/target/release/deps/streamkit_server-* \
-        /build/target/release/.fingerprint/streamkit-server-*; \
+      rm -rf /build/target/release-lto/skit \
+        /build/target/release-lto/skit.d \
+        /build/target/release-lto/deps/streamkit_server-* \
+        /build/target/release-lto/.fingerprint/streamkit-server-*; \
       # Build only the server binary \
-      cargo build --locked --release --features "moq" --bin skit; \
+      cargo build --locked --profile release-lto --features "moq" --bin skit; \
       # Copy final binary out of cache mount \
-      mkdir -p /build/bin && cp /build/target/release/skit /build/bin/skit \
+      mkdir -p /build/bin && cp /build/target/release-lto/skit /build/bin/skit \
     '
 
 # Runtime stage - minimal image with server + samples
