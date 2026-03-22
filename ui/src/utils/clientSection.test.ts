@@ -33,7 +33,13 @@ describe('extractClientFromParsed', () => {
       gateway_path: '/moq/test',
       publish: null,
       watch: null,
-      input: { type: 'file_upload', accept: 'audio/opus' },
+      input: {
+        type: 'file_upload',
+        accept: 'audio/opus',
+        asset_tags: null,
+        placeholder: null,
+        field_hints: null,
+      },
       output: { type: 'audio' },
     };
     const parsed = { nodes: {}, client };
