@@ -30,9 +30,6 @@ export function useConvertViewState() {
   // Pipeline state
   const [pipelineYaml, setPipelineYaml] = useState<string>('');
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
-  const [isTranscriptionPipeline, setIsTranscriptionPipeline] = useState<boolean>(false);
-  const [isTTSPipeline, setIsTTSPipeline] = useState<boolean>(false);
-  const [isNoInputPipeline, setIsNoInputPipeline] = useState<boolean>(false);
   const [textInput, setTextInput] = useState<string>('');
 
   // Conversion state
@@ -73,12 +70,6 @@ export function useConvertViewState() {
     setPipelineYaml,
     selectedTemplateId,
     setSelectedTemplateId,
-    isTranscriptionPipeline,
-    setIsTranscriptionPipeline,
-    isTTSPipeline,
-    setIsTTSPipeline,
-    isNoInputPipeline,
-    setIsNoInputPipeline,
     textInput,
     setTextInput,
 

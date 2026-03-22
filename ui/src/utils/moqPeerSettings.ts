@@ -2,11 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import { load } from 'js-yaml';
-
-import type { ClientSection } from '@/types/types';
-
-import { deriveSettingsFromClient } from './clientSection';
+import { deriveSettingsFromClient, parseClientFromYaml } from './clientSection';
 
 export interface MoqPeerSettings {
   gatewayPath?: string;
@@ -38,22 +34,15 @@ export interface MoqPeerSettings {
  * @returns MoqPeerSettings if the client section declares MoQ transport, null otherwise
  */
 export function extractMoqPeerSettings(yamlContent: string): MoqPeerSettings | null {
-  try {
-    const parsed = load(yamlContent) as Record<string, unknown> | null;
-    if (!parsed || typeof parsed !== 'object') return null;
+  const client = parseClientFromYaml(yamlContent);
+  if (!client) return null;
 
-    const client = parsed.client as ClientSection | undefined;
-    if (!client) return null;
-
-    // Only return settings for dynamic pipelines that declare MoQ transport.
-    if (!client.gateway_path && !client.relay_url && !client.publish && !client.watch) {
-      return null;
-    }
-
-    return deriveSettingsFromClient(client);
-  } catch {
+  // Only return settings for dynamic pipelines that declare MoQ transport.
+  if (!client.gateway_path && !client.relay_url && !client.publish && !client.watch) {
     return null;
   }
+
+  return deriveSettingsFromClient(client);
 }
 
 /**

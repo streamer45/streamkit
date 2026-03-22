@@ -39,12 +39,12 @@ import {
 } from '@/services/converter';
 import { listSamples } from '@/services/samples';
 import { ensureSchemasLoaded, useSchemaStore } from '@/stores/schemaStore';
+import { parseAcceptToFormats, parseClientFromYaml } from '@/utils/clientSection';
 import { viewsLogger } from '@/utils/logger';
 import { orderSamplePipelinesSystemFirst } from '@/utils/samplePipelineOrdering';
 import { injectFileReadNode } from '@/utils/yamlPipeline';
 
 type HttpInputField = { name: string; required: boolean };
-type InputFormatSpec = { all: string[]; perField: Record<string, string[]> };
 
 const resolveUploadFields = (httpInputFields: HttpInputField[]): HttpInputField[] =>
   httpInputFields.length > 0 ? httpInputFields : [{ name: 'media', required: true }];
@@ -360,91 +360,6 @@ const CharCounter = styled.div`
   text-align: right;
 `;
 
-// Helper functions moved outside component (pure functions, no dependencies)
-
-/**
- * Detects if the current pipeline is a transcription pipeline
- */
-const checkIfTranscriptionPipeline = (yaml: string): boolean => {
-  // A transcription pipeline is one that produces `Transcription` packets.
-  // `core::json_serialize` is used by many pipelines (VAD events, etc.) so it is not a signal.
-  const lowerYaml = yaml.toLowerCase();
-  return (
-    lowerYaml.includes('plugin::native::whisper') ||
-    lowerYaml.includes('plugin::native::sensevoice') ||
-    lowerYaml.includes('transcription')
-  );
-};
-
-/**
- * Detects if the current pipeline generates its own input (no user input needed)
- */
-const checkIfNoInputPipeline = (yaml: string): boolean => {
-  const lowerYaml = yaml.toLowerCase();
-
-  // Check if pipeline starts with a script node that uses fetch()
-  // This indicates the pipeline generates its own data
-  if (lowerYaml.includes('core::script') && lowerYaml.includes('fetch')) {
-    return true;
-  }
-
-  // Pipelines that have http_output but no http_input are self-contained generators
-  // (e.g. video::colorbars → encoder → muxer → http_output)
-  if (
-    lowerYaml.includes('streamkit::http_output') &&
-    !lowerYaml.includes('streamkit::http_input')
-  ) {
-    return true;
-  }
-
-  return false;
-};
-
-/**
- * Detects if the current pipeline is a TTS pipeline (text input)
- */
-const checkIfTTSPipeline = (yaml: string): boolean => {
-  // First check if it's a no-input pipeline (takes precedence)
-  if (checkIfNoInputPipeline(yaml)) {
-    return false;
-  }
-
-  // A TTS pipeline for text input should have text_chunker as an early node
-  // Just having TTS nodes isn't enough - the pipeline might use TTS as a component
-  // in a larger audio-to-audio pipeline (like speech translation)
-  const lowerYaml = yaml.toLowerCase();
-
-  // Check for text_chunker which indicates text input processing
-  if (lowerYaml.includes('text_chunker')) {
-    return true;
-  }
-
-  // Additional heuristic: If we have TTS but NO audio demuxers/decoders,
-  // it's likely a text input pipeline
-  const hasTTS =
-    lowerYaml.includes('kokoro_tts') ||
-    lowerYaml.includes('piper_tts') ||
-    lowerYaml.includes('text-to-speech');
-
-  const hasAudioDemuxer = lowerYaml.includes('demux') || lowerYaml.includes('decode');
-
-  // If we have TTS but no audio demuxer, it's a text input pipeline
-  return hasTTS && !hasAudioDemuxer;
-};
-
-/**
- * Detects if the current pipeline produces video output.
- * Checks for `video::` node kind prefixes, and `video_width` / `video_height`
- * when they appear as YAML mapping keys (not inside comments or arbitrary strings).
- */
-const checkIfVideoPipeline = (yaml: string): boolean => {
-  const lowerYaml = yaml.toLowerCase();
-  if (lowerYaml.includes('video::')) return true;
-  // Match video_width / video_height only as YAML keys (leading whitespace + colon suffix)
-  // to avoid false-positives on comments or unrelated string values.
-  return /^\s*video_width\s*:/m.test(lowerYaml) || /^\s*video_height\s*:/m.test(lowerYaml);
-};
-
 const resolveTextField = (fields: HttpInputField[]): HttpInputField | null => {
   if (fields.length === 0) {
     return null;
@@ -464,77 +379,6 @@ const splitTtsFields = (
     textField,
     extraFields: fields.filter((field) => field.name !== textField.name),
   };
-};
-
-const FORMAT_ACCEPT_MAP: Record<string, string> = {
-  ogg: '.ogg',
-  opus: '.opus',
-  mp3: '.mp3',
-  wav: '.wav',
-  flac: '.flac',
-  txt: '.txt',
-  text: '.txt',
-  json: '.json',
-};
-
-const detectInputFormatSpec = (yaml: string): InputFormatSpec | null => {
-  const match = yaml.match(/^\s*#\s*skit:input_formats\s*=\s*([^\n#]+)\s*$/im);
-  if (!match?.[1]) return null;
-
-  const spec: InputFormatSpec = { all: [], perField: {} };
-
-  for (const entry of match[1].split(',')) {
-    const token = entry.trim();
-    if (!token) continue;
-
-    const parts = token.split(':');
-    if (parts.length > 1) {
-      const field = parts[0].trim().toLowerCase();
-      const formats = parts
-        .slice(1)
-        .join(':')
-        .split(/[|+]/)
-        .map((format) => format.trim().toLowerCase())
-        .filter(Boolean);
-
-      if (!field || formats.length === 0) continue;
-
-      const existing = spec.perField[field] ?? [];
-      for (const format of formats) {
-        if (!existing.includes(format)) {
-          existing.push(format);
-        }
-      }
-      spec.perField[field] = existing;
-    } else {
-      const format = token.toLowerCase();
-      if (!spec.all.includes(format)) {
-        spec.all.push(format);
-      }
-    }
-  }
-
-  if (spec.all.length === 0 && Object.keys(spec.perField).length === 0) {
-    return null;
-  }
-
-  return spec;
-};
-
-const resolveFormatsForField = (
-  fieldName: string,
-  formatSpec: InputFormatSpec | null,
-  fallbackFormats: string[] | null
-): string[] | null => {
-  const key = fieldName.toLowerCase();
-  const perField = formatSpec?.perField?.[key];
-  if (perField && perField.length > 0) {
-    return perField;
-  }
-  if (formatSpec?.all && formatSpec.all.length > 0) {
-    return formatSpec.all;
-  }
-  return fallbackFormats;
 };
 
 const buildNoInputUploads = (fields: HttpInputField[]): UploadField[] => {
@@ -603,37 +447,12 @@ const buildUploadModeUploads = (
   return [{ field: fields[0].name, file: selectedFile }];
 };
 
-const formatHintForField = (
-  field: HttpInputField,
-  formatSpec: InputFormatSpec | null,
-  fallbackFormats: string[] | null,
-  isTts: boolean
-): { accept?: string; hint?: string } => {
-  const name = field.name.toLowerCase();
-  const fieldOverrides =
-    (formatSpec?.all?.length ?? 0) > 0 || (formatSpec?.perField?.[name]?.length ?? 0) > 0;
-
-  if (isTts && name.includes('voice') && !fieldOverrides) {
-    return { accept: 'audio/wav,.wav,.wave', hint: 'Expected format: WAV audio' };
-  }
-
-  const formats = resolveFormatsForField(field.name, formatSpec, fallbackFormats);
-  if (!formats || formats.length === 0) {
-    return {};
-  }
-
-  const unique = Array.from(new Set(formats.map((format) => format.toLowerCase())));
-  const accept = unique
-    .map((format) => FORMAT_ACCEPT_MAP[format])
-    .filter(Boolean)
-    .join(',');
-  const label = unique.map((format) => format.toUpperCase()).join(', ');
-  const hint = `Expected format${unique.length > 1 ? 's' : ''}: ${label}`;
-
-  return {
-    accept: accept || undefined,
-    hint,
-  };
+const assetMatchesTag = (assetId: string, tag: string): boolean => {
+  if (tag === 'speech') return assetId.toLowerCase().startsWith('speech_');
+  if (tag === 'music') return assetId.toLowerCase().startsWith('music_');
+  if (tag.startsWith('id:'))
+    return assetId.toLowerCase() === tag.slice('id:'.length).trim().toLowerCase();
+  return false;
 };
 
 /**
@@ -731,12 +550,6 @@ const ConvertView: React.FC = () => {
     setPipelineYaml,
     selectedTemplateId,
     setSelectedTemplateId,
-    isTranscriptionPipeline,
-    setIsTranscriptionPipeline,
-    isTTSPipeline,
-    setIsTTSPipeline,
-    isNoInputPipeline,
-    setIsNoInputPipeline,
     textInput,
     setTextInput,
     conversionStatus,
@@ -769,8 +582,12 @@ const ConvertView: React.FC = () => {
   const [msePlaybackError, setMsePlaybackError] = useState<string | null>(null);
   const [mseFallbackLoading, setMseFallbackLoading] = useState<boolean>(false);
 
-  // Derived: detect if the selected pipeline produces video output
-  const isVideoPipeline = useMemo(() => checkIfVideoPipeline(pipelineYaml), [pipelineYaml]);
+  // Derive pipeline characteristics from declarative client section
+  const client = useMemo(() => parseClientFromYaml(pipelineYaml), [pipelineYaml]);
+  const isTranscriptionPipeline = client?.output?.type === 'transcription';
+  const isTTSPipeline = client?.input?.type === 'text';
+  const isNoInputPipeline = client?.input?.type === 'none' || client?.input?.type === 'trigger';
+  const isVideoPipeline = client?.output?.type === 'video';
 
   // Generate CLI command based on current template and pipeline type
   const cliCommand = useMemo(() => {
@@ -823,101 +640,39 @@ const ConvertView: React.FC = () => {
   // Fetch audio assets
   const { data: audioAssets = [], isLoading: assetsLoading } = useAudioAssets();
 
-  /**
-   * Detects the expected input format(s) from a pipeline YAML
-   * Returns an array of compatible formats, or null if any format is acceptable
-   */
-  const detectExpectedFormats = (yaml: string): string[] | null => {
-    const lowerYaml = yaml.toLowerCase();
-
-    // If there's no demuxer/decoder node, any format might work (e.g., passthrough pipelines)
-    const hasDecoder = lowerYaml.includes('demux') || lowerYaml.includes('decode');
-    if (!hasDecoder) {
-      return null; // Accept all formats
-    }
-
-    const compatibleFormats: string[] = [];
-
-    // OGG container (opus, vorbis)
-    // Match patterns: ogg::demuxer, ogg_demux, opus::decoder, opus_decode
-    if (
-      lowerYaml.includes('ogg::demux') ||
-      lowerYaml.includes('ogg_demux') ||
-      lowerYaml.includes('opus::decode') ||
-      lowerYaml.includes('opus_decode')
-    ) {
-      compatibleFormats.push('ogg', 'opus');
-    }
-
-    // FLAC
-    if (lowerYaml.includes('flac')) {
-      compatibleFormats.push('flac');
-    }
-
-    // WAV/PCM
-    if (lowerYaml.includes('wav') || lowerYaml.includes('pcm')) {
-      compatibleFormats.push('wav');
-    }
-
-    // MP3
-    if (lowerYaml.includes('mp3')) {
-      compatibleFormats.push('mp3');
-    }
-
-    // If we found specific formats, return them; otherwise return null (accept all)
-    return compatibleFormats.length > 0 ? compatibleFormats : null;
-  };
-
-  /**
-   * Detects optional asset tags for Convert view's asset picker.
-   *
-   * This is a UI-only hint, carried in YAML comments so it doesn't affect pipeline parsing.
-   *
-   * Format:
-   *   # skit:input_asset_tags=speech,music
-   */
-  const detectInputAssetTags = (yaml: string): string[] | null => {
-    const match = yaml.match(/^\s*#\s*skit:input_asset_tags\s*=\s*([^\n#]+)\s*$/im);
-    if (!match?.[1]) return null;
-
-    const tags = match[1]
-      .split(',')
-      .map((tag) => tag.trim().toLowerCase())
-      .filter(Boolean);
-
-    return tags.length > 0 ? tags : null;
-  };
-
-  const assetMatchesTag = (assetId: string, tag: string): boolean => {
-    if (tag === 'speech') {
-      return assetId.toLowerCase().startsWith('speech_');
-    }
-
-    if (tag === 'music') {
-      return assetId.toLowerCase().startsWith('music_');
-    }
-
-    if (tag.startsWith('id:')) {
-      return assetId.toLowerCase() === tag.slice('id:'.length).trim().toLowerCase();
-    }
-
-    return false;
-  };
-
-  // Filter assets based on pipeline's expected format; for multi-field uploads, allow all assets so fields can mix
-  const inputFormatSpec = React.useMemo(() => detectInputFormatSpec(pipelineYaml), [pipelineYaml]);
-  const inferredFormats = React.useMemo(() => detectExpectedFormats(pipelineYaml), [pipelineYaml]);
-  const assetFieldName = httpInputFields.length > 0 ? httpInputFields[0].name : 'media';
-  const assetFormats = React.useMemo(
-    () => resolveFormatsForField(assetFieldName, inputFormatSpec, inferredFormats),
-    [assetFieldName, inputFormatSpec, inferredFormats]
+  // Derive a field-hint lookup from the client section
+  const getFieldHint = useCallback(
+    (fieldName: string): { accept?: string; hint?: string } => {
+      const hints = client?.input?.field_hints;
+      if (hints) {
+        const fh = hints[fieldName];
+        if (fh) {
+          const formats = parseAcceptToFormats(fh.accept);
+          if (formats && formats.length > 0) {
+            const accept = formats.map((f) => `.${f}`).join(',');
+            const label = formats.map((f) => f.toUpperCase()).join(', ');
+            return { accept, hint: `Expected format${formats.length > 1 ? 's' : ''}: ${label}` };
+          }
+          if (fh.accept) return { accept: fh.accept };
+        }
+      }
+      // Fall back to top-level input accept
+      const topFormats = parseAcceptToFormats(client?.input?.accept);
+      if (topFormats && topFormats.length > 0) {
+        const accept = topFormats.map((f) => `.${f}`).join(',');
+        const label = topFormats.map((f) => f.toUpperCase()).join(', ');
+        return { accept, hint: `Expected format${topFormats.length > 1 ? 's' : ''}: ${label}` };
+      }
+      return {};
+    },
+    [client]
   );
-  const filteredAssets = React.useMemo(() => {
-    if (!pipelineYaml) {
-      return audioAssets;
-    }
 
-    const inputAssetTags = detectInputAssetTags(pipelineYaml);
+  // Filter assets based on client-declared accept & asset_tags
+  const assetFormats = useMemo(() => parseAcceptToFormats(client?.input?.accept), [client]);
+  const inputAssetTags = client?.input?.asset_tags ?? null;
+  const filteredAssets = useMemo(() => {
+    if (!pipelineYaml) return audioAssets;
 
     // Multi-field pipelines: only filter by format (avoid tag-based narrowing so users can mix content)
     if (httpInputFields.length > 1) {
@@ -933,7 +688,6 @@ const ConvertView: React.FC = () => {
 
     viewsLogger.debug('Expected formats:', assetFormats, 'Total assets:', audioAssets.length);
 
-    // Filter assets to only those with compatible formats
     const formatFiltered = assetFormats
       ? audioAssets.filter((asset) => assetFormats.includes(asset.format.toLowerCase()))
       : audioAssets;
@@ -947,7 +701,7 @@ const ConvertView: React.FC = () => {
     viewsLogger.debug('Filtered to', tagFiltered.length, 'compatible assets');
 
     return tagFiltered;
-  }, [audioAssets, pipelineYaml, httpInputFields.length, assetFormats]);
+  }, [audioAssets, pipelineYaml, httpInputFields.length, assetFormats, inputAssetTags]);
 
   // Clear selected asset if it's no longer in the filtered list
   useEffect(() => {
@@ -971,30 +725,12 @@ const ConvertView: React.FC = () => {
     });
   }, [pipelineYaml]);
 
-  // Watch for pipeline YAML changes and update transcription/TTS detection
+  // Force playback mode for transcription/TTS pipelines
   useEffect(() => {
-    const isTranscription = checkIfTranscriptionPipeline(pipelineYaml);
-    const isTTS = checkIfTTSPipeline(pipelineYaml);
-    const isNoInput = checkIfNoInputPipeline(pipelineYaml);
-    setIsTranscriptionPipeline(isTranscription);
-    setIsTTSPipeline(isTTS);
-    setIsNoInputPipeline(isNoInput);
-    // Force playback mode for transcription pipelines
-    if (isTranscription && outputMode !== 'playback') {
+    if ((isTranscriptionPipeline || isTTSPipeline) && outputMode !== 'playback') {
       setOutputMode('playback');
     }
-    // TTS pipelines always output audio, so default to playback
-    if (isTTS && outputMode !== 'playback') {
-      setOutputMode('playback');
-    }
-  }, [
-    pipelineYaml,
-    outputMode,
-    setIsTranscriptionPipeline,
-    setIsTTSPipeline,
-    setIsNoInputPipeline,
-    setOutputMode,
-  ]);
+  }, [isTranscriptionPipeline, isTTSPipeline, outputMode, setOutputMode]);
 
   // Update YAML when asset selection changes
   useEffect(() => {
@@ -1038,7 +774,7 @@ const ConvertView: React.FC = () => {
           const defaultSample = orderedSamples[0];
           setSelectedTemplateId(defaultSample.id);
           setPipelineYaml(defaultSample.yaml);
-          setIsTranscriptionPipeline(checkIfTranscriptionPipeline(defaultSample.yaml));
+          // Client-section flags are derived via useMemo, no manual setter needed
         }
       } catch (error) {
         viewsLogger.error('Failed to fetch samples:', error);
@@ -1049,14 +785,7 @@ const ConvertView: React.FC = () => {
     };
 
     fetchSamples();
-  }, [
-    setSamples,
-    setSamplesLoading,
-    setSamplesError,
-    setSelectedTemplateId,
-    setPipelineYaml,
-    setIsTranscriptionPipeline,
-  ]);
+  }, [setSamples, setSamplesLoading, setSamplesError, setSelectedTemplateId, setPipelineYaml]);
 
   const handleTemplateSelect = (templateId: string) => {
     const sample = samples.find((s) => s.id === templateId);
@@ -1068,9 +797,10 @@ const ConvertView: React.FC = () => {
 
       // Set original YAML (asset selection will be reapplied via useEffect if needed)
       setPipelineYaml(sample.yaml);
-      setIsTranscriptionPipeline(checkIfTranscriptionPipeline(sample.yaml));
-      // Force playback mode for transcription pipelines
-      if (checkIfTranscriptionPipeline(sample.yaml)) {
+      // Force playback for transcription pipelines (will be picked up by the
+      // effect once pipelineYaml updates and client is re-derived).
+      const templateClient = parseClientFromYaml(sample.yaml);
+      if (templateClient?.output?.type === 'transcription') {
         setOutputMode('playback');
       }
     }
@@ -1426,10 +1156,7 @@ const ConvertView: React.FC = () => {
   const ttsMissingRequiredUploads = ttsExtraFields.some(
     (field) => field.required && !fieldUploads[field.name]
   );
-  const singleUploadHint =
-    uploadFields.length > 0
-      ? formatHintForField(uploadFields[0], inputFormatSpec, inferredFormats, isTTSPipeline)
-      : {};
+  const singleUploadHint = uploadFields.length > 0 ? getFieldHint(uploadFields[0].name) : {};
 
   const handleDownloadAudio = () => {
     if (!mediaUrl) return;
@@ -1604,12 +1331,7 @@ const ConvertView: React.FC = () => {
                     <div style={{ marginTop: '12px' }}>
                       <TextAreaLabel>Additional uploads:</TextAreaLabel>
                       {ttsExtraFields.map((field) => {
-                        const hint = formatHintForField(
-                          field,
-                          inputFormatSpec,
-                          inferredFormats,
-                          isTTSPipeline
-                        );
+                        const hint = getFieldHint(field.name);
                         return (
                           <div key={field.name} style={{ marginTop: '8px' }}>
                             <TextAreaLabel>
@@ -1658,12 +1380,7 @@ const ConvertView: React.FC = () => {
                           or pick an existing asset.
                         </p>
                         {uploadFields.map((field) => {
-                          const hint = formatHintForField(
-                            field,
-                            inputFormatSpec,
-                            inferredFormats,
-                            isTTSPipeline
-                          );
+                          const hint = getFieldHint(field.name);
                           return (
                             <div key={field.name} style={{ marginBottom: '12px' }}>
                               <TextAreaLabel>
