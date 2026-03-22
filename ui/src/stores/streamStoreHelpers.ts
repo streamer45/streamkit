@@ -53,6 +53,10 @@ export interface ConnectableState {
   pipelineNeedsVideo: boolean;
   pipelineOutputsAudio: boolean;
   pipelineOutputsVideo: boolean;
+  /** True when the pipeline uses separate publisher/subscriber nodes via an
+   *  external MoQ relay, as opposed to a gateway `transport::moq::peer` node
+   *  managed directly by skit. */
+  isExternalRelay: boolean;
   status: ConnectionStatus;
   errorMessage: string;
   isMicEnabled: boolean;
@@ -546,7 +550,9 @@ export async function performConnect(
       // discover input tracks, build the graph, and start publishing output.
       // Wait for the output broadcast to be announced on the relay before
       // subscribing, otherwise the catalog subscribe gets RESET_STREAM.
-      if (decision.shouldPublish) {
+      // In gateway mode the skit server manages the peer connection directly,
+      // so no announcement polling is needed.
+      if (decision.shouldPublish && state.isExternalRelay) {
         await waitForBroadcastAnnouncement(attempt.connection, state.outputBroadcast);
       }
 

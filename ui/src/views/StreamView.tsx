@@ -284,6 +284,7 @@ const StreamView: React.FC = () => {
     setEnableWatch,
     setPipelineMediaTypes,
     setPipelineOutputTypes,
+    setIsExternalRelay,
     setActiveSession,
     clearActiveSession,
     loadConfig,
@@ -323,6 +324,7 @@ const StreamView: React.FC = () => {
       setEnableWatch: s.setEnableWatch,
       setPipelineMediaTypes: s.setPipelineMediaTypes,
       setPipelineOutputTypes: s.setPipelineOutputTypes,
+      setIsExternalRelay: s.setIsExternalRelay,
       setActiveSession: s.setActiveSession,
       clearActiveSession: s.clearActiveSession,
       loadConfig: s.loadConfig,
@@ -412,10 +414,33 @@ const StreamView: React.FC = () => {
         const orderedSamples = orderSamplePipelinesSystemFirst(samples);
         viewState.setSamples(orderedSamples);
 
-        // Auto-select first template if available
+        // Auto-select first template if available and apply its MoQ
+        // settings so the stream store (pipelineNeedsVideo, etc.) matches
+        // the selected template.  Without this, clicking an already-selected
+        // radio item won't fire onValueChange, leaving the store defaults.
         if (orderedSamples.length > 0 && !viewState.selectedTemplateId) {
-          viewState.setSelectedTemplateId(orderedSamples[0].id);
-          viewState.setPipelineYaml(orderedSamples[0].yaml);
+          const first = orderedSamples[0];
+          viewState.setSelectedTemplateId(first.id);
+          viewState.setPipelineYaml(first.yaml);
+
+          const moqSettings = extractMoqPeerSettings(first.yaml);
+          if (moqSettings) {
+            if (moqSettings.relayUrl) {
+              setServerUrl(moqSettings.relayUrl);
+            } else if (moqSettings.gatewayPath && serverUrl) {
+              setServerUrl(updateUrlPath(serverUrl, moqSettings.gatewayPath));
+            }
+            if (moqSettings.inputBroadcast) {
+              setInputBroadcast(moqSettings.inputBroadcast);
+            }
+            if (moqSettings.outputBroadcast) {
+              setOutputBroadcast(moqSettings.outputBroadcast);
+            }
+            setEnablePublish(moqSettings.hasInputBroadcast);
+            setPipelineMediaTypes(moqSettings.needsAudioInput, moqSettings.needsVideoInput);
+            setPipelineOutputTypes(moqSettings.outputsAudio, moqSettings.outputsVideo);
+            setIsExternalRelay(Boolean(moqSettings.relayUrl));
+          }
         }
       } catch (error) {
         logger.error('Failed to load dynamic samples:', error);
@@ -467,6 +492,11 @@ const StreamView: React.FC = () => {
           // Tell the store which media types the pipeline outputs to subscribers
           // so that connect() only creates the relevant watch-side components.
           setPipelineOutputTypes(moqSettings.outputsAudio, moqSettings.outputsVideo);
+
+          // Flag whether this pipeline uses an external relay so that
+          // performConnect can skip the broadcast-announcement wait in
+          // gateway mode.
+          setIsExternalRelay(Boolean(moqSettings.relayUrl));
         }
       }
     },
@@ -479,6 +509,7 @@ const StreamView: React.FC = () => {
       setEnablePublish,
       setPipelineMediaTypes,
       setPipelineOutputTypes,
+      setIsExternalRelay,
     ]
   );
 

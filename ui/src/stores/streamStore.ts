@@ -55,6 +55,9 @@ interface StreamState {
   pipelineOutputsAudio: boolean;
   pipelineOutputsVideo: boolean;
 
+  // Pipeline topology flag — true when using separate pub/sub nodes via external relay
+  isExternalRelay: boolean;
+
   // Error state
   errorMessage: string;
 
@@ -94,6 +97,7 @@ interface StreamState {
   setEnableWatch: (enabled: boolean) => void;
   setPipelineMediaTypes: (audio: boolean, video: boolean) => void;
   setPipelineOutputTypes: (audio: boolean, video: boolean) => void;
+  setIsExternalRelay: (v: boolean) => void;
   loadConfig: () => Promise<void>;
 
   // Session actions
@@ -141,6 +145,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
   pipelineNeedsVideo: true,
   pipelineOutputsAudio: true,
   pipelineOutputsVideo: true,
+  isExternalRelay: false,
   errorMessage: '',
   configLoaded: false,
 
@@ -167,6 +172,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
     set({ pipelineNeedsAudio: audio, pipelineNeedsVideo: video }),
   setPipelineOutputTypes: (audio, video) =>
     set({ pipelineOutputsAudio: audio, pipelineOutputsVideo: video }),
+  setIsExternalRelay: (v) => set({ isExternalRelay: v }),
 
   // Session setters
   setActiveSession: (sessionId, sessionName, pipelineName) =>
