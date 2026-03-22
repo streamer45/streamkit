@@ -10,6 +10,10 @@ test.describe('Log Viewer', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/admin/logs');
     await ensureLoggedIn(page);
+    if (!page.url().includes('/admin/logs')) {
+      await page.goto('/admin/logs');
+    }
+    await expect(page.getByTestId('logs-view')).toBeVisible();
   });
 
   test('navigates to log viewer and displays UI', async ({ page }) => {
