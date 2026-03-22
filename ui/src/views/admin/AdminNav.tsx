@@ -15,6 +15,9 @@ const AdminNav: React.FC = () => {
       <AdminNavLink to="/admin/tokens" className={({ isActive }) => (isActive ? 'active' : '')}>
         Tokens
       </AdminNavLink>
+      <AdminNavLink to="/admin/logs" className={({ isActive }) => (isActive ? 'active' : '')}>
+        Logs
+      </AdminNavLink>
     </AdminNavBar>
   );
 };

@@ -35,6 +35,7 @@ mod auth;
 mod cli;
 mod config;
 mod file_security;
+mod log_viewer;
 mod logging;
 mod marketplace;
 mod marketplace_installer;
