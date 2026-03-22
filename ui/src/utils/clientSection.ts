@@ -63,34 +63,3 @@ export function parseAcceptToFormats(accept: string | null | undefined): string[
   }
   return formats.length > 0 ? formats : null;
 }
-
-/**
- * Derives `MoqPeerSettings`-shaped data from a declarative `ClientSection`.
- *
- * The return type mirrors the `MoqPeerSettings` interface defined in
- * `moqPeerSettings.ts`.  We avoid importing that interface here to prevent
- * a circular module dependency.
- */
-export function deriveSettingsFromClient(client: ClientSection): {
-  gatewayPath?: string;
-  relayUrl?: string;
-  inputBroadcast?: string;
-  outputBroadcast?: string;
-  hasInputBroadcast: boolean;
-  needsAudioInput: boolean;
-  needsVideoInput: boolean;
-  outputsAudio: boolean;
-  outputsVideo: boolean;
-} {
-  return {
-    gatewayPath: client.gateway_path ?? undefined,
-    relayUrl: client.relay_url ?? undefined,
-    inputBroadcast: client.publish?.broadcast,
-    outputBroadcast: client.watch?.broadcast,
-    hasInputBroadcast: Boolean(client.publish),
-    needsAudioInput: client.publish?.audio ?? false,
-    needsVideoInput: client.publish?.video ?? false,
-    outputsAudio: client.watch?.audio ?? false,
-    outputsVideo: client.watch?.video ?? false,
-  };
-}

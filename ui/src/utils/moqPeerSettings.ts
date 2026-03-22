@@ -2,7 +2,9 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import { deriveSettingsFromClient, parseClientFromYaml } from './clientSection';
+import type { ClientSection } from '@/types/types';
+
+import { parseClientFromYaml } from './clientSection';
 
 export interface MoqPeerSettings {
   gatewayPath?: string;
@@ -20,6 +22,23 @@ export interface MoqPeerSettings {
   outputsAudio: boolean;
   /** Whether the pipeline outputs video to subscribers via the moq_peer. */
   outputsVideo: boolean;
+}
+
+/**
+ * Derives `MoqPeerSettings` from a declarative `ClientSection`.
+ */
+export function deriveSettingsFromClient(client: ClientSection): MoqPeerSettings {
+  return {
+    gatewayPath: client.gateway_path ?? undefined,
+    relayUrl: client.relay_url ?? undefined,
+    inputBroadcast: client.publish?.broadcast,
+    outputBroadcast: client.watch?.broadcast,
+    hasInputBroadcast: Boolean(client.publish),
+    needsAudioInput: client.publish?.audio ?? false,
+    needsVideoInput: client.publish?.video ?? false,
+    outputsAudio: client.watch?.audio ?? false,
+    outputsVideo: client.watch?.video ?? false,
+  };
 }
 
 /**

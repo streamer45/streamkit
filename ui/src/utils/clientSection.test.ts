@@ -7,12 +7,12 @@ import { describe, expect, it } from 'vitest';
 import type { ClientSection } from '@/types/types';
 
 import {
-  deriveSettingsFromClient,
   extractClientFromParsed,
   extractClientSection,
   parseAcceptToFormats,
   parseClientFromYaml,
 } from './clientSection';
+import { deriveSettingsFromClient } from './moqPeerSettings';
 
 describe('extractClientFromParsed', () => {
   it('returns null for null input', () => {
