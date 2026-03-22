@@ -39,7 +39,11 @@ import {
 } from '@/services/converter';
 import { listSamples } from '@/services/samples';
 import { ensureSchemasLoaded, useSchemaStore } from '@/stores/schemaStore';
-import { parseAcceptToFormats, parseClientFromYaml } from '@/utils/clientSection';
+import {
+  extractClientFromParsed,
+  parseAcceptToFormats,
+  parseClientFromYaml,
+} from '@/utils/clientSection';
 import { viewsLogger } from '@/utils/logger';
 import { orderSamplePipelinesSystemFirst } from '@/utils/samplePipelineOrdering';
 import { injectFileReadNode } from '@/utils/yamlPipeline';
@@ -89,11 +93,10 @@ const extractFieldsFromNode = (
   return fallback ? [{ name: fallback, required: defaultField ? false : true }] : [];
 };
 
-const deriveHttpInputFields = (
-  yaml: string
+const deriveHttpInputFieldsFromParsed = (
+  parsed: Record<string, unknown> | null | undefined
 ): { fields: HttpInputField[]; hasHttpInput: boolean } => {
   try {
-    const parsed = loadYaml(yaml) as { nodes?: unknown; steps?: unknown } | null;
     if (!parsed || typeof parsed !== 'object') return { fields: [], hasHttpInput: false };
 
     if (isRecord(parsed.nodes)) {
@@ -582,8 +585,18 @@ const ConvertView: React.FC = () => {
   const [msePlaybackError, setMsePlaybackError] = useState<string | null>(null);
   const [mseFallbackLoading, setMseFallbackLoading] = useState<boolean>(false);
 
-  // Derive pipeline characteristics from declarative client section
-  const client = useMemo(() => parseClientFromYaml(pipelineYaml), [pipelineYaml]);
+  // Parse pipeline YAML once — derive both client section and http_input fields
+  // from the same parsed object to avoid double-parsing.
+  const parsedPipelineYaml = useMemo(() => {
+    try {
+      const parsed = loadYaml(pipelineYaml) as Record<string, unknown> | null;
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch {
+      return null;
+    }
+  }, [pipelineYaml]);
+
+  const client = useMemo(() => extractClientFromParsed(parsedPipelineYaml), [parsedPipelineYaml]);
   const isTranscriptionPipeline = client?.output?.type === 'transcription';
   const isTTSPipeline = client?.input?.type === 'text';
   const isNoInputPipeline = client?.input?.type === 'none' || client?.input?.type === 'trigger';
@@ -713,7 +726,7 @@ const ConvertView: React.FC = () => {
 
   // Track http_input fields for multi-upload pipelines
   useEffect(() => {
-    const { fields, hasHttpInput: hasHttp } = deriveHttpInputFields(pipelineYaml);
+    const { fields, hasHttpInput: hasHttp } = deriveHttpInputFieldsFromParsed(parsedPipelineYaml);
     setHasHttpInput(hasHttp);
     setHttpInputFields(fields);
     setFieldUploads((prev) => {
@@ -723,7 +736,7 @@ const ConvertView: React.FC = () => {
       });
       return next;
     });
-  }, [pipelineYaml]);
+  }, [parsedPipelineYaml]);
 
   // Force playback mode for transcription/TTS pipelines
   useEffect(() => {

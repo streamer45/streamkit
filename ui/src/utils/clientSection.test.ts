@@ -8,10 +8,38 @@ import type { ClientSection } from '@/types/types';
 
 import {
   deriveSettingsFromClient,
+  extractClientFromParsed,
   extractClientSection,
   parseAcceptToFormats,
   parseClientFromYaml,
 } from './clientSection';
+
+describe('extractClientFromParsed', () => {
+  it('returns null for null input', () => {
+    expect(extractClientFromParsed(null)).toBeNull();
+  });
+
+  it('returns null for undefined input', () => {
+    expect(extractClientFromParsed(undefined)).toBeNull();
+  });
+
+  it('returns null when parsed object has no client key', () => {
+    expect(extractClientFromParsed({ nodes: {}, steps: [] })).toBeNull();
+  });
+
+  it('extracts client section from a pre-parsed object', () => {
+    const client: ClientSection = {
+      relay_url: null,
+      gateway_path: '/moq/test',
+      publish: null,
+      watch: null,
+      input: { type: 'file_upload', accept: 'audio/opus' },
+      output: { type: 'audio' },
+    };
+    const parsed = { nodes: {}, client };
+    expect(extractClientFromParsed(parsed)).toBe(client);
+  });
+});
 
 describe('extractClientSection', () => {
   it('returns null for null pipeline', () => {

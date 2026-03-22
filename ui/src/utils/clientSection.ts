@@ -15,14 +15,25 @@ export function extractClientSection(pipeline: Pipeline | null | undefined): Cli
 }
 
 /**
+ * Extracts the `client` section from an already-parsed YAML object.
+ * Use this when you have already called `load()` and want to avoid
+ * parsing the same YAML string again.
+ */
+export function extractClientFromParsed(
+  parsed: Record<string, unknown> | null | undefined
+): ClientSection | null {
+  if (!parsed || typeof parsed !== 'object') return null;
+  return (parsed.client as ClientSection) ?? null;
+}
+
+/**
  * Parses a raw pipeline YAML string and extracts the `client` section.
  * Returns `null` if the YAML is invalid or has no client section.
  */
 export function parseClientFromYaml(yamlContent: string): ClientSection | null {
   try {
     const parsed = load(yamlContent) as Record<string, unknown> | null;
-    if (!parsed || typeof parsed !== 'object') return null;
-    return (parsed.client as ClientSection) ?? null;
+    return extractClientFromParsed(parsed);
   } catch {
     return null;
   }
