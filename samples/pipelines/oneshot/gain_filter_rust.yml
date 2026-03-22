@@ -4,7 +4,7 @@ mode: oneshot
 client:
   input:
     type: file_upload
-    accept: "audio/*"
+    accept: "audio/ogg"
   output:
     type: audio
 steps:
