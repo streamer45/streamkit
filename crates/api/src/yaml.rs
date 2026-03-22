@@ -568,6 +568,209 @@ fn compile_dag(
     Ok(Pipeline { name, description, mode, client, nodes, connections, view_data: None })
 }
 
+// ---------------------------------------------------------------------------
+// Client section lint pass — semantic validation
+// ---------------------------------------------------------------------------
+
+/// A single lint warning produced by [`lint_client_section`].
+#[derive(Debug, Clone)]
+pub struct ClientLintWarning {
+    /// Machine-readable rule identifier (e.g. `"mode-mismatch"`).
+    pub rule: &'static str,
+    /// Human-readable description of the problem.
+    pub message: String,
+}
+
+/// Validates the `client` section against the compiled pipeline, returning
+/// any semantic warnings.
+///
+/// This is a *lint* pass — it never prevents compilation, but surfaces
+/// likely authoring mistakes so tooling (CLI, editor integrations) can
+/// flag them.
+///
+/// # Rules
+///
+///  1. **`mode-mismatch-dynamic`** — Dynamic pipeline declares oneshot-only
+///     fields (`input` / `output`).
+///  2. **`mode-mismatch-oneshot`** — Oneshot pipeline declares dynamic-only
+///     fields (`publish` / `watch` / `gateway_path` / `relay_url`).
+///  3. **`missing-gateway`** — Dynamic pipeline has `publish` or `watch`
+///     but no `gateway_path` or `relay_url`.
+///  4. **`publish-no-media`** — `publish` block sets both `audio` and
+///     `video` to false.
+///  5. **`watch-no-media`** — `watch` block sets both `audio` and `video`
+///     to false.
+///  6. **`input-none-with-accept`** — `input.type` is `none` but `accept`
+///     is set (accept is meaningless without a file picker).
+///  7. **`input-trigger-with-accept`** — `input.type` is `trigger` but
+///     `accept` is set.
+///  8. **`field-hints-no-input`** — `field_hints` is present but
+///     `input.type` is `none`.
+///  9. **`asset-tags-no-input`** — `asset_tags` is present but
+///     `input.type` is `none` or `text`.
+/// 10. **`text-no-placeholder`** — `input.type` is `text` but no
+///     `placeholder` is provided (best-practice hint).
+/// 11. **`empty-broadcast`** — `publish.broadcast` or `watch.broadcast`
+///     is an empty string.
+/// 12. **`duplicate-broadcast`** — `publish.broadcast` equals
+///     `watch.broadcast` (would cause a loop).
+pub fn lint_client_section(client: &ClientSection, mode: EngineMode) -> Vec<ClientLintWarning> {
+    let mut warnings = Vec::new();
+
+    let has_dynamic_fields = client.gateway_path.is_some()
+        || client.relay_url.is_some()
+        || client.publish.is_some()
+        || client.watch.is_some();
+
+    let has_oneshot_fields = client.input.is_some() || client.output.is_some();
+
+    // Rule 1: dynamic pipeline with oneshot-only fields
+    if mode == EngineMode::Dynamic && has_oneshot_fields {
+        warnings.push(ClientLintWarning {
+            rule: "mode-mismatch-dynamic",
+            message: "Dynamic pipeline declares `input` or `output` — these are oneshot-only \
+                      fields and will be ignored."
+                .into(),
+        });
+    }
+
+    // Rule 2: oneshot pipeline with dynamic-only fields
+    if mode == EngineMode::OneShot && has_dynamic_fields {
+        warnings.push(ClientLintWarning {
+            rule: "mode-mismatch-oneshot",
+            message: "Oneshot pipeline declares `publish`, `watch`, `gateway_path`, or \
+                      `relay_url` — these are dynamic-only fields and will be ignored."
+                .into(),
+        });
+    }
+
+    // Rule 3: missing gateway
+    if (client.publish.is_some() || client.watch.is_some())
+        && client.gateway_path.is_none()
+        && client.relay_url.is_none()
+    {
+        warnings.push(ClientLintWarning {
+            rule: "missing-gateway",
+            message: "Pipeline has `publish` or `watch` but no `gateway_path` or `relay_url` — \
+                      the browser won't know where to connect."
+                .into(),
+        });
+    }
+
+    // Rule 4: publish with no media
+    if let Some(ref publish) = client.publish {
+        if !publish.audio && !publish.video {
+            warnings.push(ClientLintWarning {
+                rule: "publish-no-media",
+                message: "publish block sets both `audio` and `video` to false — nothing will be \
+                          sent from the browser."
+                    .into(),
+            });
+        }
+
+        // Rule 11a: empty broadcast
+        if publish.broadcast.is_empty() {
+            warnings.push(ClientLintWarning {
+                rule: "empty-broadcast",
+                message: "publish.broadcast is an empty string.".into(),
+            });
+        }
+    }
+
+    // Rule 5: watch with no media
+    if let Some(ref watch) = client.watch {
+        if !watch.audio && !watch.video {
+            warnings.push(ClientLintWarning {
+                rule: "watch-no-media",
+                message: "watch block sets both `audio` and `video` to false — nothing will be \
+                          received by the browser."
+                    .into(),
+            });
+        }
+
+        // Rule 11b: empty broadcast
+        if watch.broadcast.is_empty() {
+            warnings.push(ClientLintWarning {
+                rule: "empty-broadcast",
+                message: "watch.broadcast is an empty string.".into(),
+            });
+        }
+    }
+
+    // Rule 12: duplicate broadcast
+    if let (Some(ref publish), Some(ref watch)) = (&client.publish, &client.watch) {
+        if !publish.broadcast.is_empty() && publish.broadcast == watch.broadcast {
+            warnings.push(ClientLintWarning {
+                rule: "duplicate-broadcast",
+                message: format!(
+                    "publish.broadcast and watch.broadcast are both '{}' — this would \
+                     cause a feedback loop.",
+                    publish.broadcast
+                ),
+            });
+        }
+    }
+
+    // Input-related rules
+    if let Some(ref input) = client.input {
+        // Rule 6: input none with accept
+        if matches!(input.input_type, InputType::None) && input.accept.is_some() {
+            warnings.push(ClientLintWarning {
+                rule: "input-none-with-accept",
+                message: "input.type is `none` but `accept` is set — accept is meaningless \
+                          without a file picker."
+                    .into(),
+            });
+        }
+
+        // Rule 7: input trigger with accept
+        if matches!(input.input_type, InputType::Trigger) && input.accept.is_some() {
+            warnings.push(ClientLintWarning {
+                rule: "input-trigger-with-accept",
+                message: "input.type is `trigger` but `accept` is set — accept is meaningless \
+                          for trigger inputs."
+                    .into(),
+            });
+        }
+
+        // Rule 8: field_hints with no input
+        if matches!(input.input_type, InputType::None)
+            && input.field_hints.as_ref().is_some_and(|h| !h.is_empty())
+        {
+            warnings.push(ClientLintWarning {
+                rule: "field-hints-no-input",
+                message: "field_hints is present but input.type is `none` — hints are unused \
+                          without an input."
+                    .into(),
+            });
+        }
+
+        // Rule 9: asset_tags with no input or text input
+        if matches!(input.input_type, InputType::None | InputType::Text)
+            && input.asset_tags.as_ref().is_some_and(|t| !t.is_empty())
+        {
+            warnings.push(ClientLintWarning {
+                rule: "asset-tags-no-input",
+                message: "asset_tags is present but input.type is `none` or `text` — tags are \
+                          only useful for file_upload inputs."
+                    .into(),
+            });
+        }
+
+        // Rule 10: text input without placeholder
+        if matches!(input.input_type, InputType::Text) && input.placeholder.is_none() {
+            warnings.push(ClientLintWarning {
+                rule: "text-no-placeholder",
+                message: "input.type is `text` but no `placeholder` is provided — consider \
+                          adding one for a better UX."
+                    .into(),
+            });
+        }
+    }
+
+    warnings
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1293,5 +1496,225 @@ client:
         let input = client.input.expect("input config should be present");
         let tags = input.asset_tags.expect("asset_tags should be present");
         assert_eq!(tags, vec!["speech", "voice"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Client section lint tests
+    // -----------------------------------------------------------------------
+
+    /// Helper to build a minimal valid dynamic client section.
+    fn dynamic_client() -> ClientSection {
+        ClientSection {
+            relay_url: None,
+            gateway_path: Some("/moq/test".into()),
+            publish: Some(PublishConfig { broadcast: "input".into(), audio: true, video: false }),
+            watch: Some(WatchConfig { broadcast: "output".into(), audio: true, video: true }),
+            input: None,
+            output: None,
+        }
+    }
+
+    /// Helper to build a minimal valid oneshot client section.
+    fn oneshot_client() -> ClientSection {
+        ClientSection {
+            relay_url: None,
+            gateway_path: None,
+            publish: None,
+            watch: None,
+            input: Some(InputConfig {
+                input_type: InputType::FileUpload,
+                accept: Some("audio/*".into()),
+                asset_tags: None,
+                placeholder: None,
+                field_hints: None,
+            }),
+            output: Some(OutputConfig { output_type: OutputType::Audio }),
+        }
+    }
+
+    #[test]
+    fn test_lint_clean_dynamic() {
+        let warnings = lint_client_section(&dynamic_client(), EngineMode::Dynamic);
+        assert!(warnings.is_empty(), "Expected no warnings: {warnings:?}");
+    }
+
+    #[test]
+    fn test_lint_clean_oneshot() {
+        let warnings = lint_client_section(&oneshot_client(), EngineMode::OneShot);
+        assert!(warnings.is_empty(), "Expected no warnings: {warnings:?}");
+    }
+
+    #[test]
+    fn test_lint_mode_mismatch_dynamic_with_oneshot_fields() {
+        let mut c = dynamic_client();
+        c.input = Some(InputConfig {
+            input_type: InputType::FileUpload,
+            accept: None,
+            asset_tags: None,
+            placeholder: None,
+            field_hints: None,
+        });
+        let warnings = lint_client_section(&c, EngineMode::Dynamic);
+        assert!(warnings.iter().any(|w| w.rule == "mode-mismatch-dynamic"));
+    }
+
+    #[test]
+    fn test_lint_mode_mismatch_oneshot_with_dynamic_fields() {
+        let mut c = oneshot_client();
+        c.gateway_path = Some("/moq/test".into());
+        let warnings = lint_client_section(&c, EngineMode::OneShot);
+        assert!(warnings.iter().any(|w| w.rule == "mode-mismatch-oneshot"));
+    }
+
+    #[test]
+    fn test_lint_missing_gateway() {
+        let c = ClientSection {
+            relay_url: None,
+            gateway_path: None,
+            publish: Some(PublishConfig { broadcast: "x".into(), audio: true, video: false }),
+            watch: None,
+            input: None,
+            output: None,
+        };
+        let warnings = lint_client_section(&c, EngineMode::Dynamic);
+        assert!(warnings.iter().any(|w| w.rule == "missing-gateway"));
+    }
+
+    #[test]
+    fn test_lint_publish_no_media() {
+        let mut c = dynamic_client();
+        c.publish = Some(PublishConfig { broadcast: "x".into(), audio: false, video: false });
+        let warnings = lint_client_section(&c, EngineMode::Dynamic);
+        assert!(warnings.iter().any(|w| w.rule == "publish-no-media"));
+    }
+
+    #[test]
+    fn test_lint_watch_no_media() {
+        let mut c = dynamic_client();
+        c.watch = Some(WatchConfig { broadcast: "x".into(), audio: false, video: false });
+        let warnings = lint_client_section(&c, EngineMode::Dynamic);
+        assert!(warnings.iter().any(|w| w.rule == "watch-no-media"));
+    }
+
+    #[test]
+    fn test_lint_empty_broadcast() {
+        let mut c = dynamic_client();
+        c.publish = Some(PublishConfig { broadcast: String::new(), audio: true, video: false });
+        let warnings = lint_client_section(&c, EngineMode::Dynamic);
+        assert!(warnings.iter().any(|w| w.rule == "empty-broadcast"));
+    }
+
+    #[test]
+    fn test_lint_duplicate_broadcast() {
+        let mut c = dynamic_client();
+        c.publish = Some(PublishConfig { broadcast: "same".into(), audio: true, video: false });
+        c.watch = Some(WatchConfig { broadcast: "same".into(), audio: true, video: true });
+        let warnings = lint_client_section(&c, EngineMode::Dynamic);
+        assert!(warnings.iter().any(|w| w.rule == "duplicate-broadcast"));
+    }
+
+    #[test]
+    fn test_lint_input_none_with_accept() {
+        let c = ClientSection {
+            relay_url: None,
+            gateway_path: None,
+            publish: None,
+            watch: None,
+            input: Some(InputConfig {
+                input_type: InputType::None,
+                accept: Some("audio/*".into()),
+                asset_tags: None,
+                placeholder: None,
+                field_hints: None,
+            }),
+            output: Some(OutputConfig { output_type: OutputType::Video }),
+        };
+        let warnings = lint_client_section(&c, EngineMode::OneShot);
+        assert!(warnings.iter().any(|w| w.rule == "input-none-with-accept"));
+    }
+
+    #[test]
+    fn test_lint_input_trigger_with_accept() {
+        let c = ClientSection {
+            relay_url: None,
+            gateway_path: None,
+            publish: None,
+            watch: None,
+            input: Some(InputConfig {
+                input_type: InputType::Trigger,
+                accept: Some("audio/*".into()),
+                asset_tags: None,
+                placeholder: None,
+                field_hints: None,
+            }),
+            output: Some(OutputConfig { output_type: OutputType::Audio }),
+        };
+        let warnings = lint_client_section(&c, EngineMode::OneShot);
+        assert!(warnings.iter().any(|w| w.rule == "input-trigger-with-accept"));
+    }
+
+    #[test]
+    fn test_lint_field_hints_no_input() {
+        let mut hints = IndexMap::new();
+        hints.insert(
+            "x".into(),
+            FieldHint { field_type: Some(FieldType::File), accept: None, placeholder: None },
+        );
+        let c = ClientSection {
+            relay_url: None,
+            gateway_path: None,
+            publish: None,
+            watch: None,
+            input: Some(InputConfig {
+                input_type: InputType::None,
+                accept: None,
+                asset_tags: None,
+                placeholder: None,
+                field_hints: Some(hints),
+            }),
+            output: Some(OutputConfig { output_type: OutputType::Video }),
+        };
+        let warnings = lint_client_section(&c, EngineMode::OneShot);
+        assert!(warnings.iter().any(|w| w.rule == "field-hints-no-input"));
+    }
+
+    #[test]
+    fn test_lint_asset_tags_text_input() {
+        let c = ClientSection {
+            relay_url: None,
+            gateway_path: None,
+            publish: None,
+            watch: None,
+            input: Some(InputConfig {
+                input_type: InputType::Text,
+                accept: None,
+                asset_tags: Some(vec!["speech".into()]),
+                placeholder: Some("Enter text".into()),
+                field_hints: None,
+            }),
+            output: Some(OutputConfig { output_type: OutputType::Audio }),
+        };
+        let warnings = lint_client_section(&c, EngineMode::OneShot);
+        assert!(warnings.iter().any(|w| w.rule == "asset-tags-no-input"));
+    }
+
+    #[test]
+    fn test_lint_text_no_placeholder() {
+        let c = ClientSection {
+            relay_url: None,
+            gateway_path: None,
+            publish: None,
+            watch: None,
+            input: Some(InputConfig {
+                input_type: InputType::Text,
+                accept: None,
+                asset_tags: None,
+                placeholder: None,
+                field_hints: None,
+            }),
+            output: Some(OutputConfig { output_type: OutputType::Audio }),
+        };
+        let warnings = lint_client_section(&c, EngineMode::OneShot);
+        assert!(warnings.iter().any(|w| w.rule == "text-no-placeholder"));
     }
 }
