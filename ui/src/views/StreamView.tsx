@@ -860,7 +860,9 @@ const StreamView: React.FC = () => {
               <div style={{ color: 'var(--sk-text-muted)', fontSize: '13px', padding: '4px 0' }}>
                 {status === 'connected'
                   ? 'Relay: connected'
-                  : connectingStep ? 'Connecting — ' + (connectingStepText[connectingStep] ?? connectingStep) : 'Connecting…'}{' '}
+                  : connectingStep
+                    ? 'Connecting — ' + (connectingStepText[connectingStep] ?? connectingStep)
+                    : 'Connecting…'}{' '}
                 • {watchStatusText[watchStatus]}
                 {pipelineNeedsAudio && <> • {micStatusText[micStatus]}</>}
                 {pipelineNeedsVideo && <> • {cameraStatusText[cameraStatus]}</>}
