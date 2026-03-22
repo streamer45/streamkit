@@ -152,15 +152,15 @@ test.describe('Compositor Crop Shape Controls', () => {
     await expectButtonActive(circleButton, true);
     await expectButtonActive(rectButton, false);
 
-    // ── 5. Verify canvas preview shows circular border-radius ────────────
+    // ── 5. Verify canvas preview shows circular clip-path ─────────────────
 
     const videoLayerBox = canvasInner.locator('.nodrag.nopan').filter({ hasText: 'in_1' }).first();
     await expect(videoLayerBox).toBeVisible({ timeout: 5_000 });
 
-    const borderRadius = await videoLayerBox.evaluate(
-      (el) => window.getComputedStyle(el).borderRadius
+    const clipPath = await videoLayerBox.evaluate(
+      (el) => window.getComputedStyle(el).clipPath
     );
-    expect(borderRadius).toBe('50%');
+    expect(clipPath).toMatch(/^circle\(/);
 
     // ── 6. Switch to Rect ────────────────────────────────────────────────
 
@@ -169,11 +169,11 @@ test.describe('Compositor Crop Shape Controls', () => {
     await expectButtonActive(rectButton, true);
     await expectButtonActive(circleButton, false);
 
-    // Canvas preview should no longer have circular border-radius.
-    const borderRadiusAfterRect = await videoLayerBox.evaluate(
-      (el) => window.getComputedStyle(el).borderRadius
+    // Canvas preview should no longer have circular clip-path.
+    const clipPathAfterRect = await videoLayerBox.evaluate(
+      (el) => window.getComputedStyle(el).clipPath
     );
-    expect(borderRadiusAfterRect).not.toBe('50%');
+    expect(clipPathAfterRect).toBe('none');
 
     // ── 7. Switch back to Circle ─────────────────────────────────────────
 
@@ -181,10 +181,10 @@ test.describe('Compositor Crop Shape Controls', () => {
 
     await expectButtonActive(circleButton, true);
 
-    const borderRadiusAfterCircle = await videoLayerBox.evaluate(
-      (el) => window.getComputedStyle(el).borderRadius
+    const clipPathAfterCircle = await videoLayerBox.evaluate(
+      (el) => window.getComputedStyle(el).clipPath
     );
-    expect(borderRadiusAfterCircle).toBe('50%');
+    expect(clipPathAfterCircle).toMatch(/^circle\(/);
 
     // ── 8. Reset restores shape to Rect ──────────────────────────────────
 
@@ -199,11 +199,11 @@ test.describe('Compositor Crop Shape Controls', () => {
     const zoomValue = compositorNode.getByTestId('crop-zoom-value');
     await expect(zoomValue).toHaveText('1.0×', { timeout: 3_000 });
 
-    // Canvas preview should have no circular border-radius after reset.
-    const borderRadiusAfterReset = await videoLayerBox.evaluate(
-      (el) => window.getComputedStyle(el).borderRadius
+    // Canvas preview should have no circular clip-path after reset.
+    const clipPathAfterReset = await videoLayerBox.evaluate(
+      (el) => window.getComputedStyle(el).clipPath
     );
-    expect(borderRadiusAfterReset).not.toBe('50%');
+    expect(clipPathAfterReset).toBe('none');
 
     // ── 9. Select text overlay — Crop & Zoom should NOT appear ───────────
 
