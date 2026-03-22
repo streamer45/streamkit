@@ -289,10 +289,11 @@ export const useCompositorLayers = (
   // server-resolved positions with config-parsed ones.
   const isMonitorView = !!sessionId;
 
-  // Track previous parsed overlays so sync-from-props can detect which
+  // Track previous parsed results so sync-from-props can detect which
   // config fields ACTUALLY changed in the new params vs the previous parse.
   // Without this, topology rebuilds with stale params overwrite local
-  // inspector edits (e.g. color alpha).
+  // inspector edits (crop/zoom on video layers, color alpha on text, etc.).
+  const prevParsedLayersRef = useRef<LayerState[]>([]);
   const prevParsedTextRef = useRef<TextOverlayState[]>([]);
   const prevParsedImgRef = useRef<ImageOverlayState[]>([]);
 
@@ -314,9 +315,11 @@ export const useCompositorLayers = (
         a.cropX !== b.cropX ||
         a.cropY !== b.cropY ||
         a.cropShape !== b.cropShape,
-      isMonitorView
+      isMonitorView,
+      isMonitorView ? prevParsedLayersRef.current : undefined
     );
     if (merged !== currentLayers) setLayersInStore(store, merged);
+    prevParsedLayersRef.current = parsed;
 
     const parsedText = parseTextOverlays(params);
     const currentText = getTextOverlaysFromStore(store);

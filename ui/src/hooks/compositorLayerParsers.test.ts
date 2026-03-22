@@ -14,7 +14,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-import type { TextOverlayState, ImageOverlayState } from './compositorLayerParsers';
+import type { LayerState, TextOverlayState, ImageOverlayState } from './compositorLayerParsers';
 import { mergeOverlayState } from './compositorLayerParsers';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -58,11 +58,38 @@ function makeImageOverlay(overrides: Partial<ImageOverlayState> = {}): ImageOver
   };
 }
 
+function makeLayer(overrides: Partial<LayerState> = {}): LayerState {
+  return {
+    id: 'in_0',
+    x: 0,
+    y: 0,
+    width: 640,
+    height: 480,
+    opacity: 1,
+    rotationDegrees: 0,
+    zIndex: 0,
+    mirrorHorizontal: false,
+    mirrorVertical: false,
+    visible: true,
+    cropZoom: 1.0,
+    cropX: 0.5,
+    cropY: 0.5,
+    cropShape: 'rect' as const,
+    ...overrides,
+  };
+}
+
 const textHasExtraChanges = (a: TextOverlayState, b: TextOverlayState) =>
   a.text !== b.text ||
   a.fontSize !== b.fontSize ||
   a.fontName !== b.fontName ||
   a.color.some((v, i) => v !== b.color[i]);
+
+const layerHasExtraChanges = (a: LayerState, b: LayerState) =>
+  a.cropZoom !== b.cropZoom ||
+  a.cropX !== b.cropX ||
+  a.cropY !== b.cropY ||
+  a.cropShape !== b.cropShape;
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
@@ -242,6 +269,225 @@ describe('mergeOverlayState', () => {
 
       expect(result.length).toBe(1);
       expect(result[0].id).toBe('text_0');
+    });
+  });
+
+  describe('previousParsed — stale topology rebuild protection', () => {
+    // Simulates the bug: user edits a field via inspector, then a topology
+    // rebuild fires sync-from-props with the same stale params.  Without
+    // previousParsed, the stale value overwrites the user's local edit.
+
+    it('does NOT overwrite text color when parsed params are unchanged', () => {
+      // User changed color alpha to 128 via inspector → local state updated
+      const current = [makeTextOverlay({ color: [255, 255, 255, 128] })];
+      // Topology rebuild re-parses same stale params (alpha=255)
+      const parsed = [makeTextOverlay({ color: [255, 255, 255, 255] })];
+      // Previous parse had the same stale value
+      const previousParsed = [makeTextOverlay({ color: [255, 255, 255, 255] })];
+
+      const result = mergeOverlayState(
+        current,
+        parsed,
+        textHasExtraChanges,
+        true,
+        previousParsed
+      );
+
+      // Color should be preserved from local state (not overwritten)
+      expect(result[0].color).toEqual([255, 255, 255, 128]);
+      // Should return same reference (no unnecessary re-render)
+      expect(result).toBe(current);
+    });
+
+    it('does NOT overwrite text fontSize when parsed params are unchanged', () => {
+      const current = [makeTextOverlay({ fontSize: 48 })];
+      const parsed = [makeTextOverlay({ fontSize: 32 })];
+      const previousParsed = [makeTextOverlay({ fontSize: 32 })];
+
+      const result = mergeOverlayState(
+        current,
+        parsed,
+        textHasExtraChanges,
+        true,
+        previousParsed
+      );
+
+      expect(result[0].fontSize).toBe(48);
+      expect(result).toBe(current);
+    });
+
+    it('does NOT overwrite video layer cropZoom when parsed params are unchanged', () => {
+      // User zoomed to 2.5× and panned via inspector
+      const current = [makeLayer({ cropZoom: 2.5, cropX: 0.3, cropY: 0.7 })];
+      // Topology rebuild re-parses same stale params (default zoom)
+      const parsed = [makeLayer({ cropZoom: 1.0, cropX: 0.5, cropY: 0.5 })];
+      const previousParsed = [makeLayer({ cropZoom: 1.0, cropX: 0.5, cropY: 0.5 })];
+
+      const result = mergeOverlayState(
+        current,
+        parsed,
+        layerHasExtraChanges,
+        true,
+        previousParsed
+      );
+
+      expect(result[0].cropZoom).toBe(2.5);
+      expect(result[0].cropX).toBe(0.3);
+      expect(result[0].cropY).toBe(0.7);
+      expect(result).toBe(current);
+    });
+
+    it('does NOT overwrite video layer cropShape when parsed params are unchanged', () => {
+      const current = [makeLayer({ cropShape: 'circle' })];
+      const parsed = [makeLayer({ cropShape: 'rect' })];
+      const previousParsed = [makeLayer({ cropShape: 'rect' })];
+
+      const result = mergeOverlayState(
+        current,
+        parsed,
+        layerHasExtraChanges,
+        true,
+        previousParsed
+      );
+
+      expect(result[0].cropShape).toBe('circle');
+      expect(result).toBe(current);
+    });
+
+    it('DOES apply config fields when parsed params actually changed', () => {
+      // User had local color alpha=128
+      const current = [makeTextOverlay({ color: [255, 255, 255, 128] })];
+      // New params have a genuinely different color (e.g. from another client)
+      const parsed = [makeTextOverlay({ color: [255, 0, 0, 255] })];
+      // Previous parse had the old default
+      const previousParsed = [makeTextOverlay({ color: [255, 255, 255, 255] })];
+
+      const result = mergeOverlayState(
+        current,
+        parsed,
+        textHasExtraChanges,
+        true,
+        previousParsed
+      );
+
+      // Color should be updated because parsed actually changed vs previous
+      expect(result[0].color).toEqual([255, 0, 0, 255]);
+    });
+
+    it('DOES apply config fields when previousParsed is empty (first sync)', () => {
+      const current = [makeTextOverlay({ text: 'Local edit' })];
+      const parsed = [makeTextOverlay({ text: 'From server' })];
+      const previousParsed: TextOverlayState[] = [];
+
+      const result = mergeOverlayState(
+        current,
+        parsed,
+        textHasExtraChanges,
+        true,
+        previousParsed
+      );
+
+      // No previous match → falls back to pickConfigFields (apply all)
+      expect(result[0].text).toBe('From server');
+    });
+
+    it('preserves OverlayBase fields even when config fields change', () => {
+      const current = [
+        makeTextOverlay({
+          x: 100,
+          y: 200,
+          opacity: 0.5,
+          rotationDegrees: 45,
+        }),
+      ];
+      const parsed = [
+        makeTextOverlay({
+          x: 0,
+          y: 0,
+          opacity: 1,
+          rotationDegrees: 0,
+          text: 'Updated text',
+        }),
+      ];
+      const previousParsed = [makeTextOverlay({ text: 'Old text' })];
+
+      const result = mergeOverlayState(
+        current,
+        parsed,
+        textHasExtraChanges,
+        true,
+        previousParsed
+      );
+
+      // OverlayBase from existing
+      expect(result[0].x).toBe(100);
+      expect(result[0].y).toBe(200);
+      expect(result[0].opacity).toBe(0.5);
+      expect(result[0].rotationDegrees).toBe(45);
+      // Config field applied because it actually changed
+      expect(result[0].text).toBe('Updated text');
+    });
+
+    it('handles mix of changed and unchanged config fields', () => {
+      const current = [makeTextOverlay({ text: 'Local', fontSize: 48, fontName: 'mono' })];
+      // Only text changed in parsed, fontSize and fontName stayed the same
+      const parsed = [makeTextOverlay({ text: 'New', fontSize: 32, fontName: 'dejavu-sans' })];
+      const previousParsed = [
+        makeTextOverlay({ text: 'Old', fontSize: 32, fontName: 'dejavu-sans' }),
+      ];
+
+      const result = mergeOverlayState(
+        current,
+        parsed,
+        textHasExtraChanges,
+        true,
+        previousParsed
+      );
+
+      // text changed in parsed → applied
+      expect(result[0].text).toBe('New');
+      // fontSize unchanged in parsed → local value preserved
+      expect(result[0].fontSize).toBe(48);
+      // fontName unchanged in parsed → local value preserved
+      expect(result[0].fontName).toBe('mono');
+    });
+
+    it('does NOT overwrite image dataBase64 when parsed params are unchanged', () => {
+      const current = [makeImageOverlay({ dataBase64: 'local-edit' })];
+      const parsed = [makeImageOverlay({ dataBase64: 'stale-server' })];
+      const previousParsed = [makeImageOverlay({ dataBase64: 'stale-server' })];
+
+      const imageHasExtraChanges = (a: ImageOverlayState, b: ImageOverlayState) =>
+        a.dataBase64 !== b.dataBase64;
+
+      const result = mergeOverlayState(
+        current,
+        parsed,
+        imageHasExtraChanges,
+        true,
+        previousParsed
+      );
+
+      expect(result[0].dataBase64).toBe('local-edit');
+      expect(result).toBe(current);
+    });
+
+    it('is not used when preserveGeometry=false (Design view)', () => {
+      // In Design view, previousParsed is ignored — parsed always wins
+      const current = [makeTextOverlay({ color: [255, 255, 255, 128] })];
+      const parsed = [makeTextOverlay({ color: [255, 255, 255, 255] })];
+      const previousParsed = [makeTextOverlay({ color: [255, 255, 255, 255] })];
+
+      const result = mergeOverlayState(
+        current,
+        parsed,
+        textHasExtraChanges,
+        false,
+        previousParsed
+      );
+
+      // Design view takes all fields from parsed
+      expect(result[0].color).toEqual([255, 255, 255, 255]);
     });
   });
 });
