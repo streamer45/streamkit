@@ -18,7 +18,7 @@ mode: oneshot
 client:
   input:
     type: file_upload
-    accept: "audio/ogg"
+    accept: "audio/opus"
     asset_tags:
       - speech
   output:
