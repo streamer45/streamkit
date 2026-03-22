@@ -719,6 +719,9 @@ const StreamView: React.FC = () => {
                   // Direct mode has no pipeline YAML, so default to both media types
                   setPipelineMediaTypes(true, true);
                   setPipelineOutputTypes(true, true);
+                  // Direct mode connects to a relay without a skit pipeline,
+                  // so there is no external relay announcement to wait for.
+                  setIsExternalRelay(false);
                 }}
                 disabled={status !== 'disconnected'}
               >
