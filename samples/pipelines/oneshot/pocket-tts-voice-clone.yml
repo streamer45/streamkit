@@ -7,7 +7,7 @@ description: Synthesizes speech from text using Pocket TTS with a voice prompt W
 mode: oneshot
 client:
   input:
-    type: file_upload
+    type: text
     field_hints:
       voice:
         type: file

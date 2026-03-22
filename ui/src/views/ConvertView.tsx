@@ -809,7 +809,8 @@ const ConvertView: React.FC = () => {
   const prepareUploads = useCallback(async (): Promise<UploadField[] | null> => {
     // For no-input (generator) pipelines, use the raw httpInputFields
     // so that truly input-less pipelines (no http_input node) send no uploads.
-    if (isNoInputPipeline) {
+    // Also handle custom pipelines without a client section that lack http_input.
+    if (isNoInputPipeline || (!client && !hasHttpInput)) {
       return buildNoInputUploads(httpInputFields);
     }
 
@@ -828,6 +829,7 @@ const ConvertView: React.FC = () => {
     }
     return [];
   }, [
+    client,
     fieldUploads,
     httpInputFields,
     inputMode,
