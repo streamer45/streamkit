@@ -437,19 +437,19 @@ steps:
     expect(isNoInput).toBe(true);
   });
 
-  it('identifies json_stream output type for JsonStreamDisplay', () => {
+  it('identifies json output type for JsonStreamDisplay', () => {
     const yaml = `
 client:
   input:
     type: file_upload
     accept: "audio/*"
   output:
-    type: json_stream
+    type: json
 steps:
   - kind: streamkit::http_input
 `;
     const client = parseClientFromYaml(yaml);
-    expect(client?.output?.type).toBe('json_stream');
+    expect(client?.output?.type).toBe('json');
   });
 
   it('classifies text input as TTS pipeline', () => {

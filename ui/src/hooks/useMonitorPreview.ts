@@ -18,6 +18,45 @@ import { useStreamStore } from '@/stores/streamStore';
 import type { Pipeline } from '@/types/types';
 import { updateUrlPath } from '@/utils/moqPeerSettings';
 
+interface PreviewMoqConfig {
+  gatewayPath?: string;
+  outputBroadcast?: string;
+  outputsAudio: boolean;
+  outputsVideo: boolean;
+}
+
+/**
+ * Derives MoQ preview configuration from the pipeline's node graph.
+ * Used as a fallback for interactively-created sessions that don't have
+ * a `client` section.
+ */
+function deriveMoqConfigFromNodes(pipeline: Pipeline): PreviewMoqConfig {
+  const config: PreviewMoqConfig = { outputsAudio: true, outputsVideo: true };
+
+  const moqEntry = Object.entries(pipeline.nodes).find(
+    ([, n]) => n.kind === 'transport::moq::peer' && n.params
+  );
+  if (!moqEntry) return config;
+
+  const [moqNodeName, moqNode] = moqEntry;
+  const params = moqNode.params as Record<string, unknown>;
+  config.gatewayPath = params.gateway_path as string | undefined;
+  config.outputBroadcast = params.output_broadcast as string | undefined;
+
+  // Detect media types from connection graph
+  config.outputsAudio = false;
+  config.outputsVideo = false;
+  for (const conn of pipeline.connections) {
+    if (conn.to_node !== moqNodeName) continue;
+    const sourceNode = pipeline.nodes[conn.from_node];
+    if (!sourceNode?.kind) continue;
+    if (sourceNode.kind.startsWith('audio::')) config.outputsAudio = true;
+    else if (sourceNode.kind.startsWith('video::')) config.outputsVideo = true;
+  }
+
+  return config;
+}
+
 export interface UseMonitorPreviewReturn {
   isPreviewConnected: boolean;
   handleStartPreview: () => Promise<void>;
@@ -80,23 +119,36 @@ export function useMonitorPreview(
     }
 
     // Read gateway_path and output_broadcast from the pipeline's client section.
+    // Fall back to scanning the node graph for interactively-created sessions
+    // that don't have a client section.
     const client = pipeline?.client ?? null;
+    let gatewayPath: string | undefined;
+    let outputBroadcast: string | undefined;
+    let outputsAudio = true;
+    let outputsVideo = true;
+
     if (client) {
-      if (client.gateway_path) {
-        const currentUrl = useStreamStore.getState().serverUrl;
-        if (currentUrl) {
-          previewSetServerUrl(updateUrlPath(currentUrl, client.gateway_path));
-        }
-      }
-      if (client.watch?.broadcast) {
-        previewSetOutputBroadcast(client.watch.broadcast);
-      }
+      gatewayPath = client.gateway_path ?? undefined;
+      outputBroadcast = client.watch?.broadcast;
+      outputsAudio = client.watch?.audio ?? true;
+      outputsVideo = client.watch?.video ?? true;
+    } else if (pipeline) {
+      const fallback = deriveMoqConfigFromNodes(pipeline);
+      gatewayPath = fallback.gatewayPath;
+      outputBroadcast = fallback.outputBroadcast;
+      outputsAudio = fallback.outputsAudio;
+      outputsVideo = fallback.outputsVideo;
     }
 
-    // Media types default to both enabled unless the client section
-    // explicitly declares which types the pipeline outputs.
-    const outputsAudio = client?.watch?.audio ?? true;
-    const outputsVideo = client?.watch?.video ?? true;
+    if (gatewayPath) {
+      const currentUrl = useStreamStore.getState().serverUrl;
+      if (currentUrl) {
+        previewSetServerUrl(updateUrlPath(currentUrl, gatewayPath));
+      }
+    }
+    if (outputBroadcast) {
+      previewSetOutputBroadcast(outputBroadcast);
+    }
     previewSetPipelineOutputTypes(outputsAudio, outputsVideo);
 
     await previewConnect();
