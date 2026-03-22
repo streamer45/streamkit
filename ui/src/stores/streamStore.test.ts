@@ -98,6 +98,8 @@ describe('streamStore', () => {
       pipelineOutputsVideo: true,
       errorMessage: '',
       configLoaded: false,
+      connectAbort: null,
+      connectingStep: '',
       activeSessionId: null,
       activeSessionName: null,
       activePipelineName: null,

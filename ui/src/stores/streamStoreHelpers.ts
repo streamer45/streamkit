@@ -156,13 +156,29 @@ async function waitForBroadcastAnnouncement(
   const announcements = conn.announced();
   const deadline = Date.now() + timeoutMs;
   try {
+    // Build a promise that rejects when the abort signal fires so the
+    // Promise.race below reacts immediately instead of polling.
+    const abortPromise = abortSignal
+      ? new Promise<never>((_, reject) => {
+          abortSignal.addEventListener(
+            'abort',
+            () => reject(new DOMException('Aborted', 'AbortError')),
+            { once: true }
+          );
+        })
+      : null;
+
     while (Date.now() < deadline) {
-      if (abortSignal?.aborted) throw new DOMException('Aborted', 'AbortError');
       const remaining = deadline - Date.now();
-      const entry = await Promise.race([
+      const racers: Promise<unknown>[] = [
         announcements.next(),
         new Promise<null>((r) => setTimeout(() => r(null), remaining)),
-      ]);
+      ];
+      if (abortPromise) racers.push(abortPromise);
+
+      const entry = (await Promise.race(racers)) as Awaited<
+        ReturnType<typeof announcements.next>
+      > | null;
       if (!entry) break;
       if (entry.active && entry.path.toString() === broadcastName) {
         logger.info(`Broadcast '${broadcastName}' announced`);
