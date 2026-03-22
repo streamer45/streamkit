@@ -538,6 +538,10 @@ pub struct Pipeline {
     pub description: Option<String>,
     #[serde(default)]
     pub mode: EngineMode,
+    /// Declarative UI metadata — forwarded unchanged from `UserPipeline`,
+    /// ignored by the engine for execution.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client: Option<yaml::ClientSection>,
     #[ts(type = "Record<string, Node>")]
     pub nodes: indexmap::IndexMap<String, Node>,
     pub connections: Vec<Connection>,

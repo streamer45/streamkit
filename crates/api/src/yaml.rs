@@ -11,7 +11,8 @@
 
 use super::{Connection, ConnectionMode, EngineMode, Node, Pipeline};
 use indexmap::IndexMap;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 /// Represents a single step in a linear pipeline definition.
 #[derive(Debug, Deserialize)]
@@ -92,6 +93,146 @@ pub enum Needs {
     Map(IndexMap<String, NeedsDependency>),
 }
 
+// ---------------------------------------------------------------------------
+// Declarative `client` section — UI metadata for pipeline rendering
+// ---------------------------------------------------------------------------
+
+/// Top-level `client` section in pipeline YAML.
+///
+/// Declares what the browser UI should do when rendering this pipeline.
+/// Dynamic pipelines use `relay_url`/`gateway_path`/`publish`/`watch`;
+/// oneshot pipelines use `input`/`output`.  The two sets are mutually
+/// exclusive by mode (enforced by the lint pass, not at parse time).
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+#[ts(export)]
+pub struct ClientSection {
+    /// Direct relay URL for external MoQ relay pattern.
+    pub relay_url: Option<String>,
+    /// Gateway path for gateway-managed MoQ pattern.
+    pub gateway_path: Option<String>,
+    /// Browser-side publish configuration (dynamic pipelines).
+    pub publish: Option<PublishConfig>,
+    /// Browser-side watch configuration (dynamic pipelines).
+    pub watch: Option<WatchConfig>,
+    /// Input UX configuration (oneshot pipelines).
+    pub input: Option<InputConfig>,
+    /// Output rendering configuration (oneshot pipelines).
+    pub output: Option<OutputConfig>,
+}
+
+/// Browser-side publish configuration for dynamic pipelines.
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+#[ts(export)]
+pub struct PublishConfig {
+    /// Broadcast name the browser publishes to.
+    pub broadcast: String,
+    /// Whether the pipeline consumes audio from the browser.
+    #[serde(default)]
+    pub audio: bool,
+    /// Whether the pipeline consumes video from the browser.
+    #[serde(default)]
+    pub video: bool,
+}
+
+/// Browser-side watch configuration for dynamic pipelines.
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+#[ts(export)]
+pub struct WatchConfig {
+    /// Broadcast name the browser subscribes to.
+    pub broadcast: String,
+    /// Whether the pipeline outputs audio to subscribers.
+    #[serde(default)]
+    pub audio: bool,
+    /// Whether the pipeline outputs video to subscribers.
+    #[serde(default)]
+    pub video: bool,
+}
+
+/// Input UX configuration for oneshot pipelines.
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+#[ts(export)]
+pub struct InputConfig {
+    /// The kind of input UX to present.
+    #[serde(rename = "type")]
+    pub input_type: InputType,
+    /// MIME filter for file pickers (e.g. `audio/*`).
+    pub accept: Option<String>,
+    /// Tags for filtering the asset picker (e.g. `["speech"]`).
+    pub asset_tags: Option<Vec<String>>,
+    /// Placeholder text for text inputs.
+    pub placeholder: Option<String>,
+    /// Per-field UI hints keyed by `http_input` field name.
+    #[ts(type = "Record<string, FieldHint> | null")]
+    pub field_hints: Option<IndexMap<String, FieldHint>>,
+}
+
+/// The kind of input UX a oneshot pipeline expects.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum InputType {
+    /// File upload with optional MIME filter.
+    FileUpload,
+    /// Free-form text input.
+    Text,
+    /// Has `http_input` but the body is irrelevant (trigger only).
+    Trigger,
+    /// No `http_input` node — pipeline generates its own input.
+    None,
+}
+
+/// Output rendering configuration for oneshot pipelines.
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+#[ts(export)]
+pub struct OutputConfig {
+    /// The media kind the pipeline produces.
+    #[serde(rename = "type")]
+    pub output_type: OutputType,
+}
+
+/// The media kind a oneshot pipeline produces.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputType {
+    /// Transcription segments (JSON stream).
+    Transcription,
+    /// Generic JSON stream.
+    Json,
+    /// Audio output.
+    Audio,
+    /// Video output.
+    Video,
+}
+
+/// Per-field input type discriminator for `field_hints`.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum FieldType {
+    /// File upload field.
+    File,
+    /// Text input field.
+    Text,
+}
+
+/// Per-field UI hint within `InputConfig.field_hints`.
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+#[ts(export)]
+pub struct FieldHint {
+    /// Override the field's input type (default is file upload).
+    #[serde(rename = "type")]
+    pub field_type: Option<FieldType>,
+    /// MIME filter for file picker.
+    pub accept: Option<String>,
+    /// Placeholder text for text inputs.
+    pub placeholder: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// User-facing pipeline definition
+// ---------------------------------------------------------------------------
+
 /// The top-level structure for a user-facing pipeline definition.
 /// `serde(untagged)` allows it to be parsed as either a steps-based
 /// pipeline or a nodes-based (DAG) pipeline.
@@ -106,6 +247,8 @@ pub enum UserPipeline {
         #[serde(default)]
         mode: EngineMode,
         steps: Vec<Step>,
+        /// Declarative UI metadata (optional — required only for UI rendering).
+        client: Option<ClientSection>,
     },
     Dag {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -115,6 +258,8 @@ pub enum UserPipeline {
         #[serde(default)]
         mode: EngineMode,
         nodes: IndexMap<String, UserNode>,
+        /// Declarative UI metadata (optional — required only for UI rendering).
+        client: Option<ClientSection>,
     },
 }
 
@@ -131,6 +276,15 @@ pub enum UserPipeline {
 pub fn parse_yaml(yaml: &str) -> Result<UserPipeline, String> {
     let json_value: serde_json::Value =
         serde_saphyr::from_str(yaml).map_err(|e| format!("Invalid YAML: {e}"))?;
+
+    // Pre-validate `client` if present so that enum/type errors produce
+    // actionable messages instead of collapsing into the generic
+    // "did not match any variant" error from the untagged `UserPipeline`.
+    if let Some(client_val) = json_value.get("client") {
+        let _: ClientSection = serde_json::from_value(client_val.clone())
+            .map_err(|e| format!("Invalid client section: {e}"))?;
+    }
+
     serde_json::from_value(json_value).map_err(|e| format!("Invalid pipeline: {e}"))
 }
 
@@ -141,11 +295,11 @@ pub fn parse_yaml(yaml: &str) -> Result<UserPipeline, String> {
 /// Returns an error if a node references a non-existent dependency in its `needs` field.
 pub fn compile(pipeline: UserPipeline) -> Result<Pipeline, String> {
     match pipeline {
-        UserPipeline::Steps { name, description, mode, steps } => {
-            Ok(compile_steps(name, description, mode, steps))
+        UserPipeline::Steps { name, description, mode, steps, client } => {
+            Ok(compile_steps(name, description, mode, steps, client))
         },
-        UserPipeline::Dag { name, description, mode, nodes } => {
-            compile_dag(name, description, mode, nodes)
+        UserPipeline::Dag { name, description, mode, nodes, client } => {
+            compile_dag(name, description, mode, nodes, client)
         },
     }
 }
@@ -156,6 +310,7 @@ fn compile_steps(
     description: Option<String>,
     mode: EngineMode,
     steps: Vec<Step>,
+    client: Option<ClientSection>,
 ) -> Pipeline {
     let mut nodes = IndexMap::new();
     let mut connections = Vec::new();
@@ -177,7 +332,7 @@ fn compile_steps(
         nodes.insert(node_name, Node { kind: step.kind, params: step.params, state: None });
     }
 
-    Pipeline { name, description, mode, nodes, connections, view_data: None }
+    Pipeline { name, description, mode, client, nodes, connections, view_data: None }
 }
 
 /// Known bidirectional node kinds that are allowed to participate in cycles.
@@ -300,6 +455,7 @@ fn compile_dag(
     description: Option<String>,
     mode: EngineMode,
     user_nodes: IndexMap<String, UserNode>,
+    client: Option<ClientSection>,
 ) -> Result<Pipeline, String> {
     // First, detect cycles in the dependency graph
     detect_cycles(&user_nodes)?;
@@ -409,7 +565,7 @@ fn compile_dag(
         })
         .collect();
 
-    Ok(Pipeline { name, description, mode, nodes, connections, view_data: None })
+    Ok(Pipeline { name, description, mode, client, nodes, connections, view_data: None })
 }
 
 #[cfg(test)]
@@ -967,5 +1123,175 @@ nodes:
         assert_eq!(conn.from_pin, "alt_out");
         assert_eq!(conn.to_node, "sink");
         assert_eq!(conn.to_pin, "my_input");
+    }
+
+    // -----------------------------------------------------------------------
+    // Client section tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn test_client_section_parsed_in_steps() {
+        let yaml = r#"
+mode: oneshot
+steps:
+  - kind: streamkit::http_input
+  - kind: streamkit::http_output
+client:
+  input:
+    type: file_upload
+    accept: "audio/*"
+  output:
+    type: transcription
+"#;
+        let pipeline = parse_yaml(yaml).unwrap();
+        let compiled = compile(pipeline).unwrap();
+
+        let client = compiled.client.expect("client section should be present");
+        let input = client.input.expect("input config should be present");
+        assert!(matches!(input.input_type, InputType::FileUpload));
+        assert_eq!(input.accept.as_deref(), Some("audio/*"));
+
+        let output = client.output.expect("output config should be present");
+        assert!(matches!(output.output_type, OutputType::Transcription));
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn test_client_section_parsed_in_dag() {
+        let yaml = r#"
+mode: dynamic
+nodes:
+  peer:
+    kind: transport::moq::peer
+    params:
+      gateway_path: /moq/test
+      input_broadcast: camera
+      output_broadcast: output
+client:
+  gateway_path: /moq/test
+  publish:
+    broadcast: camera
+    audio: true
+    video: true
+  watch:
+    broadcast: output
+    audio: true
+    video: true
+"#;
+        let pipeline = parse_yaml(yaml).unwrap();
+        let compiled = compile(pipeline).unwrap();
+
+        let client = compiled.client.expect("client section should be present");
+        assert_eq!(client.gateway_path.as_deref(), Some("/moq/test"));
+
+        let publish = client.publish.expect("publish config should be present");
+        assert_eq!(publish.broadcast, "camera");
+        assert!(publish.audio);
+        assert!(publish.video);
+
+        let watch = client.watch.expect("watch config should be present");
+        assert_eq!(watch.broadcast, "output");
+        assert!(watch.audio);
+        assert!(watch.video);
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn test_client_section_optional() {
+        let yaml = r"
+mode: oneshot
+steps:
+  - kind: core::passthrough
+";
+        let pipeline = parse_yaml(yaml).unwrap();
+        let compiled = compile(pipeline).unwrap();
+        assert!(compiled.client.is_none());
+    }
+
+    #[test]
+    fn test_invalid_client_section_rejected() {
+        let yaml = r#"
+mode: oneshot
+steps:
+  - kind: streamkit::http_input
+client:
+  input:
+    type: invalid_type
+"#;
+        let result = parse_yaml(yaml);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("Invalid client section"),
+            "Error should mention client section: {err}"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn test_client_section_with_field_hints() {
+        let yaml = r#"
+mode: oneshot
+steps:
+  - kind: streamkit::http_input
+  - kind: streamkit::http_output
+client:
+  input:
+    type: file_upload
+    accept: "audio/*"
+    field_hints:
+      text:
+        type: text
+        placeholder: "Enter your prompt"
+      reference:
+        type: file
+        accept: "audio/*"
+  output:
+    type: audio
+"#;
+        let pipeline = parse_yaml(yaml).unwrap();
+        let compiled = compile(pipeline).unwrap();
+
+        let client = compiled.client.expect("client section should be present");
+        let input = client.input.expect("input config should be present");
+        let hints = input.field_hints.expect("field_hints should be present");
+
+        assert_eq!(hints.len(), 2);
+
+        let text_hint = hints.get("text").expect("text hint should exist");
+        assert!(matches!(text_hint.field_type, Some(FieldType::Text)));
+        assert_eq!(text_hint.placeholder.as_deref(), Some("Enter your prompt"));
+
+        let ref_hint = hints.get("reference").expect("reference hint should exist");
+        assert!(matches!(ref_hint.field_type, Some(FieldType::File)));
+        assert_eq!(ref_hint.accept.as_deref(), Some("audio/*"));
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn test_client_section_with_asset_tags() {
+        let yaml = r#"
+mode: oneshot
+steps:
+  - kind: streamkit::http_input
+  - kind: streamkit::http_output
+client:
+  input:
+    type: file_upload
+    accept: "audio/*"
+    asset_tags:
+      - speech
+      - voice
+  output:
+    type: transcription
+"#;
+        let pipeline = parse_yaml(yaml).unwrap();
+        let compiled = compile(pipeline).unwrap();
+
+        let client = compiled.client.expect("client section should be present");
+        let input = client.input.expect("input config should be present");
+        let tags = input.asset_tags.expect("asset_tags should be present");
+        assert_eq!(tags, vec!["speech", "voice"]);
     }
 }
