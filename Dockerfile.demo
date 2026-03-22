@@ -609,7 +609,8 @@ RUN find /opt/streamkit/samples/pipelines -type f \( -name '*.yml' -o -name '*.y
     /opt/streamkit/samples/pipelines/oneshot/speech_to_text_translate.yml \
     /opt/streamkit/samples/pipelines/oneshot/gain_filter_rust.yml \
     /opt/streamkit/samples/pipelines/dynamic/speech-translate-en-es.yaml \
-    /opt/streamkit/samples/pipelines/dynamic/speech-translate-es-en.yaml
+    /opt/streamkit/samples/pipelines/dynamic/speech-translate-es-en.yaml && \
+    chown -R app:app /opt/streamkit/samples/pipelines
 
 # Copy demo configuration
 COPY --chown=app:app docker-skit-demo.toml /opt/streamkit/config/skit.toml

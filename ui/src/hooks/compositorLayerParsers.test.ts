@@ -285,13 +285,7 @@ describe('mergeOverlayState', () => {
       // Previous parse had the same stale value
       const previousParsed = [makeTextOverlay({ color: [255, 255, 255, 255] })];
 
-      const result = mergeOverlayState(
-        current,
-        parsed,
-        textHasExtraChanges,
-        true,
-        previousParsed
-      );
+      const result = mergeOverlayState(current, parsed, textHasExtraChanges, true, previousParsed);
 
       // Color should be preserved from local state (not overwritten)
       expect(result[0].color).toEqual([255, 255, 255, 128]);
@@ -304,13 +298,7 @@ describe('mergeOverlayState', () => {
       const parsed = [makeTextOverlay({ fontSize: 32 })];
       const previousParsed = [makeTextOverlay({ fontSize: 32 })];
 
-      const result = mergeOverlayState(
-        current,
-        parsed,
-        textHasExtraChanges,
-        true,
-        previousParsed
-      );
+      const result = mergeOverlayState(current, parsed, textHasExtraChanges, true, previousParsed);
 
       expect(result[0].fontSize).toBe(48);
       expect(result).toBe(current);
@@ -323,13 +311,7 @@ describe('mergeOverlayState', () => {
       const parsed = [makeLayer({ cropZoom: 1.0, cropX: 0.5, cropY: 0.5 })];
       const previousParsed = [makeLayer({ cropZoom: 1.0, cropX: 0.5, cropY: 0.5 })];
 
-      const result = mergeOverlayState(
-        current,
-        parsed,
-        layerHasExtraChanges,
-        true,
-        previousParsed
-      );
+      const result = mergeOverlayState(current, parsed, layerHasExtraChanges, true, previousParsed);
 
       expect(result[0].cropZoom).toBe(2.5);
       expect(result[0].cropX).toBe(0.3);
@@ -342,13 +324,7 @@ describe('mergeOverlayState', () => {
       const parsed = [makeLayer({ cropShape: 'rect' })];
       const previousParsed = [makeLayer({ cropShape: 'rect' })];
 
-      const result = mergeOverlayState(
-        current,
-        parsed,
-        layerHasExtraChanges,
-        true,
-        previousParsed
-      );
+      const result = mergeOverlayState(current, parsed, layerHasExtraChanges, true, previousParsed);
 
       expect(result[0].cropShape).toBe('circle');
       expect(result).toBe(current);
@@ -362,13 +338,7 @@ describe('mergeOverlayState', () => {
       // Previous parse had the old default
       const previousParsed = [makeTextOverlay({ color: [255, 255, 255, 255] })];
 
-      const result = mergeOverlayState(
-        current,
-        parsed,
-        textHasExtraChanges,
-        true,
-        previousParsed
-      );
+      const result = mergeOverlayState(current, parsed, textHasExtraChanges, true, previousParsed);
 
       // Color should be updated because parsed actually changed vs previous
       expect(result[0].color).toEqual([255, 0, 0, 255]);
@@ -379,13 +349,7 @@ describe('mergeOverlayState', () => {
       const parsed = [makeTextOverlay({ text: 'From server' })];
       const previousParsed: TextOverlayState[] = [];
 
-      const result = mergeOverlayState(
-        current,
-        parsed,
-        textHasExtraChanges,
-        true,
-        previousParsed
-      );
+      const result = mergeOverlayState(current, parsed, textHasExtraChanges, true, previousParsed);
 
       // No previous match → falls back to pickConfigFields (apply all)
       expect(result[0].text).toBe('From server');
@@ -411,13 +375,7 @@ describe('mergeOverlayState', () => {
       ];
       const previousParsed = [makeTextOverlay({ text: 'Old text' })];
 
-      const result = mergeOverlayState(
-        current,
-        parsed,
-        textHasExtraChanges,
-        true,
-        previousParsed
-      );
+      const result = mergeOverlayState(current, parsed, textHasExtraChanges, true, previousParsed);
 
       // OverlayBase from existing
       expect(result[0].x).toBe(100);
@@ -436,13 +394,7 @@ describe('mergeOverlayState', () => {
         makeTextOverlay({ text: 'Old', fontSize: 32, fontName: 'dejavu-sans' }),
       ];
 
-      const result = mergeOverlayState(
-        current,
-        parsed,
-        textHasExtraChanges,
-        true,
-        previousParsed
-      );
+      const result = mergeOverlayState(current, parsed, textHasExtraChanges, true, previousParsed);
 
       // text changed in parsed → applied
       expect(result[0].text).toBe('New');
@@ -460,13 +412,7 @@ describe('mergeOverlayState', () => {
       const imageHasExtraChanges = (a: ImageOverlayState, b: ImageOverlayState) =>
         a.dataBase64 !== b.dataBase64;
 
-      const result = mergeOverlayState(
-        current,
-        parsed,
-        imageHasExtraChanges,
-        true,
-        previousParsed
-      );
+      const result = mergeOverlayState(current, parsed, imageHasExtraChanges, true, previousParsed);
 
       expect(result[0].dataBase64).toBe('local-edit');
       expect(result).toBe(current);
@@ -478,13 +424,7 @@ describe('mergeOverlayState', () => {
       const parsed = [makeTextOverlay({ color: [255, 255, 255, 255] })];
       const previousParsed = [makeTextOverlay({ color: [255, 255, 255, 255] })];
 
-      const result = mergeOverlayState(
-        current,
-        parsed,
-        textHasExtraChanges,
-        false,
-        previousParsed
-      );
+      const result = mergeOverlayState(current, parsed, textHasExtraChanges, false, previousParsed);
 
       // Design view takes all fields from parsed
       expect(result[0].color).toEqual([255, 255, 255, 255]);

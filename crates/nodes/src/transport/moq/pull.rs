@@ -432,11 +432,11 @@ impl MoqPullNode {
             match tokio::time::timeout(remaining, catalog_consumer.next()).await {
                 Ok(Ok(Some(updated))) => {
                     let updated_tracks = Self::extract_tracks(&updated);
-                    if updated_tracks.len() > best.len() {
+                    if !updated_tracks.is_empty() {
                         tracing::info!(
                             prev = best.len(),
                             now = updated_tracks.len(),
-                            "Catalog updated with more tracks"
+                            "Catalog updated"
                         );
                         best = updated_tracks;
                         if Self::has_audio_and_video(&best) {

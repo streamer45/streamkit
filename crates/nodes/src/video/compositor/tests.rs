@@ -1983,9 +1983,9 @@ fn test_resolve_scene_explicit_rect() {
 
     // Config fields (opacity, rotation, z_index, etc.) are NOT in the view-data
     // struct — they live only in the internal ResolvedSlotConfig.
-    assert_eq!(scene.configs[0].opacity, 0.5);
+    assert!((scene.configs[0].opacity - 0.5).abs() < f32::EPSILON);
     assert_eq!(scene.configs[0].z_index, 3);
-    assert_eq!(scene.configs[0].rotation_degrees, 45.0);
+    assert!((scene.configs[0].rotation_degrees - 45.0).abs() < f32::EPSILON);
 }
 
 #[test]

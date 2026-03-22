@@ -319,7 +319,7 @@ pub fn scale_blit_rgba(
                 // Pixel centre X relative to circle centre.
                 #[allow(clippy::cast_precision_loss)]
                 let px = (dx + src_col_skip) as f32 + 0.5 - center_x;
-                let dist = (px * px + py * py).sqrt();
+                let dist = px.hypot(py);
                 if dist > radius_px {
                     continue;
                 }
@@ -1006,7 +1006,7 @@ pub fn scale_blit_rgba_rotated(
             // dimension of the destination rect, centred on the rect.
             let circle_coverage = if crop_circle {
                 let circle_radius = half_cw.min(half_ch);
-                let dist = (local_x * local_x + local_y * local_y).sqrt();
+                let dist = local_x.hypot(local_y);
                 if dist > circle_radius {
                     // Fully outside circle — skip pixel.
                     local_x += cos_a;

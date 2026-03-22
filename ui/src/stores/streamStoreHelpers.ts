@@ -122,12 +122,9 @@ async function waitForBroadcastAnnouncement(
 ): Promise<void> {
   const conn = connection.established.peek();
   if (!conn) return;
-
-  logger.info(`Waiting for broadcast '${broadcastName}' to be announced...`);
-
+  logger.info(`Waiting for broadcast '${broadcastName}' announcement...`);
   const announcements = conn.announced();
   const deadline = Date.now() + timeoutMs;
-
   try {
     while (Date.now() < deadline) {
       const remaining = deadline - Date.now();
@@ -135,15 +132,13 @@ async function waitForBroadcastAnnouncement(
         announcements.next(),
         new Promise<null>((r) => setTimeout(() => r(null), remaining)),
       ]);
-      if (!entry) break; // timeout
+      if (!entry) break;
       if (entry.active && entry.path.toString() === broadcastName) {
         logger.info(`Broadcast '${broadcastName}' announced`);
         return;
       }
     }
-    logger.warn(
-      `Broadcast '${broadcastName}' not announced within ${timeoutMs}ms, proceeding anyway`
-    );
+    logger.warn(`Broadcast '${broadcastName}' not announced within ${timeoutMs}ms, proceeding`);
   } finally {
     announcements.close();
   }
@@ -316,6 +311,49 @@ function setupWatchPath(
   };
 }
 
+/** Create media sources and wait for camera permission if needed. */
+async function setupMediaSources(
+  healthEffect: Effect,
+  needsAudio: boolean,
+  needsVideo: boolean,
+  set: StateSetter
+): Promise<{
+  microphone: Publish.Source.Microphone | null;
+  camera: Publish.Source.Camera | null;
+}> {
+  let microphone: Publish.Source.Microphone | null = null;
+  let camera: Publish.Source.Camera | null = null;
+  if (needsAudio) {
+    microphone = new Publish.Source.Microphone({ enabled: true });
+    set({ micStatus: microphone.source.peek() ? 'ready' : 'requesting' });
+    healthEffect.subscribe(microphone.source, (v) =>
+      set({ micStatus: v ? 'ready' : 'requesting' })
+    );
+  }
+  if (needsVideo) {
+    camera = new Publish.Source.Camera({ enabled: true });
+    set({ cameraStatus: camera.source.peek() ? 'ready' : 'requesting' });
+    healthEffect.subscribe(camera.source, (v) => set({ cameraStatus: v ? 'ready' : 'requesting' }));
+    // Wait for camera before creating the broadcast — the MoQ catalog is
+    // published immediately and downstream subscribers only read it once.
+    if (!camera.source.peek()) {
+      try {
+        await waitForSignalValue(
+          camera.source,
+          (v) => v !== undefined,
+          15_000,
+          'Camera not available'
+        );
+      } catch (e) {
+        shutdownMediaSource(camera);
+        shutdownMediaSource(microphone);
+        throw e;
+      }
+    }
+  }
+  return { microphone, camera };
+}
+
 async function setupPublishPath(
   healthEffect: Effect,
   connection: Hang.Moq.Connection.Reload,
@@ -328,57 +366,16 @@ async function setupPublishPath(
   camera: Publish.Source.Camera | null;
   publish: Publish.Broadcast;
 }> {
-  let microphone: Publish.Source.Microphone | null = null;
-  let camera: Publish.Source.Camera | null = null;
-
-  if (needsAudio) {
-    logger.info('Step 4: Creating microphone source');
-    microphone = new Publish.Source.Microphone({ enabled: true });
-
-    set({ micStatus: microphone.source.peek() ? 'ready' : 'requesting' });
-    healthEffect.subscribe(microphone.source, (value) => {
-      set({ micStatus: value ? 'ready' : 'requesting' });
-    });
-  }
-
-  if (needsVideo) {
-    logger.info('Step 4b: Creating camera source');
-    camera = new Publish.Source.Camera({ enabled: true });
-
-    set({ cameraStatus: camera.source.peek() ? 'ready' : 'requesting' });
-    healthEffect.subscribe(camera.source, (value) => {
-      set({ cameraStatus: value ? 'ready' : 'requesting' });
-    });
-
-    // Wait for the camera to become available before creating the broadcast.
-    // The MoQ catalog is published as soon as the broadcast is created;
-    // if the camera isn't ready yet the catalog will only list audio tracks
-    // and downstream subscribers (e.g. skit's MoqPullNode) won't discover
-    // the video track because they only read the catalog once at startup.
-    if (!camera.source.peek()) {
-      logger.info('Step 4c: Waiting for camera permission...');
-      await waitForSignalValue(
-        camera.source,
-        (v) => v !== undefined,
-        15_000,
-        'Camera not available'
-      );
-      logger.info('Step 4c: Camera ready');
-    }
-  }
+  const { microphone, camera } = await setupMediaSources(healthEffect, needsAudio, needsVideo, set);
 
   logger.info('Step 5: Creating publish broadcast');
-
   const broadcastConfig: ConstructorParameters<typeof Publish.Broadcast>[0] = {
     connection: connection.established,
     enabled: true,
     name: Publish.Lite.Path.from(inputBroadcast),
   };
   if (needsAudio && microphone) {
-    broadcastConfig.audio = {
-      enabled: true,
-      source: microphone.source,
-    };
+    broadcastConfig.audio = { enabled: true, source: microphone.source };
   }
   if (needsVideo && camera) {
     broadcastConfig.video = {
@@ -389,19 +386,22 @@ async function setupPublishPath(
 
   const publish = new Publish.Broadcast(broadcastConfig);
 
-  // When video is enabled, wait for the video encoder pipeline to produce a
-  // catalog entry before returning. The encoder chain is async: camera frame →
-  // dimensions → codec probe → config → catalog.  If we return before this
-  // completes, the broadcast catalog will omit video and downstream subscribers
-  // (which only read the catalog once) will never discover the video track.
+  // Wait for the video encoder to produce a catalog entry before returning.
   if (needsVideo) {
     logger.info('Step 5b: Waiting for video catalog...');
-    await waitForSignalValue(
-      publish.video.catalog,
-      (v) => v !== undefined,
-      10_000,
-      'Video encoder failed to initialize'
-    );
+    try {
+      await waitForSignalValue(
+        publish.video.catalog,
+        (v) => v !== undefined,
+        10_000,
+        'Video encoder failed to initialize'
+      );
+    } catch (e) {
+      publish.close();
+      shutdownMediaSource(camera);
+      shutdownMediaSource(microphone);
+      throw e;
+    }
     logger.info('Step 5b: Video catalog ready');
   }
 
@@ -502,21 +502,7 @@ export async function performConnect(
   get: () => ConnectableState & { outputBroadcast: string },
   set: StateSetter
 ): Promise<boolean> {
-  const attempt: ConnectAttempt = {
-    connection: null,
-    healthEffect: null,
-    watch: null,
-    watchSync: null,
-    audioSource: null,
-    audioDecoder: null,
-    audioEmitter: null,
-    videoSource: null,
-    videoDecoder: null,
-    videoRenderer: null,
-    microphone: null,
-    camera: null,
-    publish: null,
-  };
+  const attempt: ConnectAttempt = { ...NULL_MOQ_REFS };
 
   try {
     logger.info('Step 1: Creating connection to relay server');
