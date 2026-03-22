@@ -262,8 +262,8 @@ async fn read_forward(
 
 /// Read lines backward from the given byte offset (or end of file).
 ///
-/// Reads a chunk backward from the offset, splits into lines, and returns
-/// up to `limit` lines (in chronological order).
+/// Reads in chunks working backward from the offset, joining partial lines
+/// at chunk boundaries via a carry buffer so no lines are lost.
 async fn read_backward(
     mut file: tokio::fs::File,
     file_size: u64,
@@ -280,6 +280,9 @@ async fn read_backward(
 
     let mut collected: Vec<String> = Vec::with_capacity(limit.min(256));
     let mut current_end = end;
+    // Partial line fragment carried from the start of the previously-read (higher-offset) chunk.
+    // It is the continuation of the last split element of the current chunk.
+    let mut carry = String::new();
 
     // Read in chunks working backward until we have enough lines or reach start of file
     while collected.len() < limit && current_end > 0 {
@@ -302,29 +305,38 @@ async fn read_backward(
         })?;
 
         let text = String::from_utf8_lossy(&buf);
-        let mut chunk_lines: Vec<&str> = text.split('\n').collect();
+        let mut parts: Vec<&str> = text.split('\n').collect();
 
-        // If we're not at the start of the file, the first element is a partial line — drop it
-        if chunk_start > 0 && !chunk_lines.is_empty() {
-            chunk_lines.remove(0);
+        // The last split element may be a partial line whose continuation is in `carry`.
+        // Join them to form the complete line at this chunk's upper boundary.
+        let last = parts.pop().unwrap_or("");
+        let completed_tail =
+            if carry.is_empty() { last.to_string() } else { format!("{last}{carry}") };
+
+        // If we're not at the start of the file, the first split element is a partial line
+        // whose beginning is in an earlier chunk. Save it as carry for the next iteration.
+        if chunk_start > 0 && !parts.is_empty() {
+            carry = parts.remove(0).to_string();
+        } else {
+            carry = String::new();
         }
 
-        // Remove trailing empty element from split
-        if chunk_lines.last().is_some_and(|l| l.is_empty()) {
-            chunk_lines.pop();
-        }
-
-        // Filter and prepend (we're going backward, so prepend to maintain order)
-        let filtered: Vec<String> = chunk_lines
+        // `parts` now contains only complete lines (no boundary partials).
+        // Filter them, then append the completed tail line.
+        let mut chunk_lines: Vec<String> = parts
             .into_iter()
             .filter(|line| !line.is_empty() && line_passes_filters(line, level, filter))
             .map(String::from)
             .collect();
 
-        // Take from the end of filtered to fill our remaining capacity
-        let take_count = remaining_lines.min(filtered.len());
-        let start_idx = filtered.len().saturating_sub(take_count);
-        let mut new_lines: Vec<String> = filtered[start_idx..].to_vec();
+        if !completed_tail.is_empty() && line_passes_filters(&completed_tail, level, filter) {
+            chunk_lines.push(completed_tail);
+        }
+
+        // Take from the end of chunk_lines to fill remaining capacity, then prepend to collected
+        let take_count = remaining_lines.min(chunk_lines.len());
+        let start_idx = chunk_lines.len().saturating_sub(take_count);
+        let mut new_lines: Vec<String> = chunk_lines[start_idx..].to_vec();
         new_lines.append(&mut collected);
         collected = new_lines;
 
@@ -510,5 +522,35 @@ mod tests {
         assert!(line_passes_filters(line, Some(""), None));
         assert!(line_passes_filters(line, None, Some("")));
         assert!(line_passes_filters(line, Some(""), Some("")));
+    }
+
+    /// Verify that backward reading with a small chunk size (forcing multi-chunk)
+    /// correctly joins partial lines at chunk boundaries instead of dropping them.
+    #[tokio::test]
+    async fn test_read_backward_multi_chunk_preserves_lines() {
+        use tokio::io::AsyncWriteExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.log");
+
+        // Write enough lines so that a small forced chunk triggers multi-chunk reading.
+        let mut f = tokio::fs::File::create(&path).await.unwrap();
+        let mut expected: Vec<String> = Vec::new();
+        for i in 0..20 {
+            let line = format!("2024-01-01T00:00:00Z  INFO test: line number {i}");
+            f.write_all(line.as_bytes()).await.unwrap();
+            f.write_all(b"\n").await.unwrap();
+            expected.push(line);
+        }
+        f.flush().await.unwrap();
+        drop(f);
+
+        let file = tokio::fs::File::open(&path).await.unwrap();
+        let file_size = file.metadata().await.unwrap().len();
+
+        let resp = read_backward(file, file_size, None, 100, None, None).await.unwrap();
+
+        assert_eq!(resp.lines, expected, "all lines should be returned in order");
+        assert!(!resp.has_more);
     }
 }

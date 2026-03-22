@@ -77,7 +77,6 @@ function useLogViewer(shouldLoad: boolean): UseLogViewerResult {
   const [fileSize, setFileSize] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const [nextOffset, setNextOffset] = useState(0);
-  const [currentOffset, setCurrentOffset] = useState<number | undefined>(undefined);
 
   const [filterText, setFilterText] = useState('');
   const [levelFilter, setLevelFilter] = useState('');
@@ -111,7 +110,6 @@ function useLogViewer(shouldLoad: boolean): UseLogViewerResult {
         setFileSize(response.file_size);
         setHasMore(response.has_more);
         setNextOffset(response.next_offset);
-        setCurrentOffset(offset);
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Failed to load logs';
         logger.error('Failed to load logs:', err);
@@ -200,12 +198,10 @@ function useLogViewer(shouldLoad: boolean): UseLogViewerResult {
   }, [loadLogs, nextOffset]);
 
   const handleLoadOlder = useCallback(() => {
-    if (currentOffset !== undefined && currentOffset > 0) {
-      loadLogs('backward', currentOffset);
-    } else {
-      loadLogs('backward');
+    if (nextOffset > 0) {
+      loadLogs('backward', nextOffset);
     }
-  }, [loadLogs, currentOffset]);
+  }, [loadLogs, nextOffset]);
 
   const handleLoadLatest = useCallback(() => {
     loadLogs('backward');
