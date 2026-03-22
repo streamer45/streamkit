@@ -158,9 +158,12 @@ test.describe('Log Viewer', () => {
   test('log API supports level filtering', async ({ page }) => {
     const headers = getAuthHeaders();
 
-    const response = await page.request.get('/api/v1/logs?limit=100&direction=backward&level=info', {
-      headers,
-    });
+    const response = await page.request.get(
+      '/api/v1/logs?limit=100&direction=backward&level=info',
+      {
+        headers,
+      }
+    );
 
     expect(response.ok()).toBeTruthy();
 
