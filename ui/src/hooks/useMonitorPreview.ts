@@ -69,8 +69,8 @@ export function useMonitorPreview(
     }
   }, [selectedSessionId, previewStatus, previewDisconnect]);
 
-  // Extract MoQ peer settings from the selected session's pipeline so the
-  // preview connects to the correct gateway path and output broadcast.
+  // Read MoQ peer settings from the pipeline's declarative client section
+  // instead of scanning the compiled node graph.
   const handleStartPreview = useCallback(async () => {
     // Configure for watch-only mode (no publish/mic)
     previewSetEnablePublish(false);
@@ -79,46 +79,24 @@ export function useMonitorPreview(
       await previewLoadConfig();
     }
 
-    // Extract gateway_path and output_broadcast from the pipeline's moq_peer node
-    let moqNodeName: string | undefined;
-    const moqNode = pipeline
-      ? Object.entries(pipeline.nodes).find(
-          ([, n]) => n.kind === 'transport::moq::peer' && n.params
-        )
-      : undefined;
-    if (moqNode) {
-      moqNodeName = moqNode[0];
-      const params = moqNode[1].params as Record<string, unknown>;
-      const gatewayPath = params.gateway_path as string | undefined;
-      const outputBroadcast = params.output_broadcast as string | undefined;
-      // Read serverUrl at call-time via getState() rather than via a
-      // hook selector — this is a standard Zustand pattern for values
-      // that should be fresh when the callback fires, not stale from
-      // the last render.
-      const currentUrl = useStreamStore.getState().serverUrl;
-      if (gatewayPath && currentUrl) {
-        previewSetServerUrl(updateUrlPath(currentUrl, gatewayPath));
+    // Read gateway_path and output_broadcast from the pipeline's client section.
+    const client = pipeline?.client ?? null;
+    if (client) {
+      if (client.gateway_path) {
+        const currentUrl = useStreamStore.getState().serverUrl;
+        if (currentUrl) {
+          previewSetServerUrl(updateUrlPath(currentUrl, client.gateway_path));
+        }
       }
-      if (outputBroadcast) {
-        previewSetOutputBroadcast(outputBroadcast);
+      if (client.watch?.broadcast) {
+        previewSetOutputBroadcast(client.watch.broadcast);
       }
     }
 
-    // Detect which media types the pipeline outputs by checking the kinds of
-    // nodes connected to the moq_peer's input pins.
-    let outputsAudio = true;
-    let outputsVideo = true;
-    if (pipeline && moqNodeName) {
-      outputsAudio = false;
-      outputsVideo = false;
-      for (const conn of pipeline.connections) {
-        if (conn.to_node !== moqNodeName) continue;
-        const sourceNode = pipeline.nodes[conn.from_node];
-        if (!sourceNode?.kind) continue;
-        if (sourceNode.kind.startsWith('audio::')) outputsAudio = true;
-        else if (sourceNode.kind.startsWith('video::')) outputsVideo = true;
-      }
-    }
+    // Media types default to both enabled unless the client section
+    // explicitly declares which types the pipeline outputs.
+    const outputsAudio = client?.watch?.audio ?? true;
+    const outputsVideo = client?.watch?.video ?? true;
     previewSetPipelineOutputTypes(outputsAudio, outputsVideo);
 
     await previewConnect();

@@ -50,6 +50,7 @@ describe('sessionStore edge cases', () => {
         name: null,
         description: null,
         mode: 'dynamic',
+        client: null,
         nodes: { 'node-1': { kind: 'core::passthrough', params: {}, state: 'Initializing' } },
         connections: [],
       };
@@ -57,6 +58,7 @@ describe('sessionStore edge cases', () => {
         name: null,
         description: null,
         mode: 'dynamic',
+        client: null,
         nodes: { 'node-2': { kind: 'core::gain', params: { gain: 1.0 }, state: 'Initializing' } },
         connections: [],
       };
@@ -98,6 +100,7 @@ describe('sessionStore edge cases', () => {
         name: null,
         description: null,
         mode: 'dynamic',
+        client: null,
         nodes: {
           'node-1': {
             kind: 'core::passthrough',
@@ -236,6 +239,7 @@ describe('sessionStore edge cases', () => {
         name: null,
         description: null,
         mode: 'dynamic',
+        client: null,
         nodes: {
           compositor: {
             kind: 'video::compositor',
@@ -266,6 +270,7 @@ describe('sessionStore edge cases', () => {
         name: null,
         description: null,
         mode: 'dynamic',
+        client: null,
         nodes: {},
         connections: [],
         view_data: { nodeA: { key: 'original' } },
@@ -276,6 +281,7 @@ describe('sessionStore edge cases', () => {
         name: null,
         description: null,
         mode: 'dynamic',
+        client: null,
         nodes: {},
         connections: [],
         view_data: { nodeB: { key: 'new' } },
@@ -292,6 +298,7 @@ describe('sessionStore edge cases', () => {
         name: null,
         description: null,
         mode: 'dynamic',
+        client: null,
         nodes: {},
         connections: [],
       };
@@ -310,6 +317,7 @@ describe('sessionStore edge cases', () => {
             name: null,
             description: null,
             mode: 'dynamic' as const,
+            client: null,
             nodes: {},
             connections: [],
             view_data: { comp: { layers: { in_0: { x: 10 } } } },
@@ -330,6 +338,7 @@ describe('sessionStore edge cases', () => {
         name: null,
         description: null,
         mode: 'dynamic',
+        client: null,
         nodes: {
           'node-1': { kind: 'core::passthrough', params: {}, state: 'Initializing' },
         },

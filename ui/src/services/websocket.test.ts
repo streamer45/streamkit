@@ -325,6 +325,7 @@ describe('WebSocketService', () => {
                   name: null,
                   description: null,
                   mode: 'dynamic',
+                  client: null,
                   nodes: {},
                   connections: [],
                 },
