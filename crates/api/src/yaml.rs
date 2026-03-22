@@ -103,7 +103,7 @@ pub enum Needs {
 /// Dynamic pipelines use `relay_url`/`gateway_path`/`publish`/`watch`;
 /// oneshot pipelines use `input`/`output`.  The two sets are mutually
 /// exclusive by mode (enforced by the lint pass, not at parse time).
-#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, TS)]
 #[ts(export)]
 pub struct ClientSection {
     /// Direct relay URL for external MoQ relay pattern.
@@ -765,6 +765,265 @@ pub fn lint_client_section(client: &ClientSection, mode: EngineMode) -> Vec<Clie
                           adding one for a better UX."
                     .into(),
             });
+        }
+    }
+
+    warnings
+}
+
+/// A lightweight view of a pipeline's nodes used by
+/// [`lint_client_against_nodes`] for cross-validation.
+///
+/// Callers construct this from either `UserPipeline::Dag` nodes or
+/// `UserPipeline::Steps` steps.
+pub struct NodeInfo<'a> {
+    pub kind: &'a str,
+    pub params: Option<&'a serde_json::Value>,
+}
+
+/// Cross-validates the `client` section against the pipeline's node graph.
+///
+/// This is a second lint layer that complements [`lint_client_section`]
+/// (which checks `client` in isolation).  The rules here require knowledge
+/// of which nodes exist and their params.
+///
+/// # Rules
+///
+/// 13. **`input-requires-http-input`** — `input.type` is `file_upload`,
+///     `text`, or `trigger` but no `streamkit::http_input` node exists.
+/// 14. **`input-none-has-http-input`** — `input.type` is `none` but an
+///     `streamkit::http_input` node exists (should be `trigger`).
+/// 15. **`field-hint-unknown-field`** — `field_hints` references a field
+///     name not found in any `streamkit::http_input` node's `fields` param.
+/// 16. **`publish-no-transport`** — `publish` is declared but no MoQ
+///     transport node (`transport::moq::peer` or
+///     `transport::moq::subscriber`) exists.
+/// 17. **`watch-no-transport`** — `watch` is declared but no MoQ transport
+///     node (`transport::moq::peer` or `transport::moq::publisher`) exists.
+/// 18. **`gateway-path-mismatch`** — `client.gateway_path` does not match
+///     the `gateway_path` param on a `transport::moq::peer` node.
+/// 19. **`relay-url-mismatch`** — `client.relay_url` does not match the
+///     `url` param on a `transport::moq::publisher` or
+///     `transport::moq::subscriber` node.
+/// 20. **`broadcast-mismatch`** — `publish.broadcast` or `watch.broadcast`
+///     does not match any broadcast name configured on MoQ transport nodes.
+pub fn lint_client_against_nodes(
+    client: &ClientSection,
+    _mode: EngineMode,
+    nodes: &[NodeInfo<'_>],
+) -> Vec<ClientLintWarning> {
+    let mut warnings = Vec::new();
+
+    // Collect node kinds and params for efficient lookup.
+    let has_http_input = nodes.iter().any(|n| n.kind == "streamkit::http_input");
+    let has_moq_peer = nodes.iter().any(|n| n.kind == "transport::moq::peer");
+    let has_moq_subscriber = nodes.iter().any(|n| n.kind == "transport::moq::subscriber");
+    let has_moq_publisher = nodes.iter().any(|n| n.kind == "transport::moq::publisher");
+
+    // Rule 13: input requires http_input node
+    if let Some(ref input) = client.input {
+        let needs_http_input = matches!(
+            input.input_type,
+            InputType::FileUpload | InputType::Text | InputType::Trigger
+        );
+        if needs_http_input && !has_http_input {
+            warnings.push(ClientLintWarning {
+                rule: "input-requires-http-input",
+                message: format!(
+                    "input.type is `{}` but no `streamkit::http_input` node exists.",
+                    match input.input_type {
+                        InputType::FileUpload => "file_upload",
+                        InputType::Text => "text",
+                        InputType::Trigger => "trigger",
+                        InputType::None => "none",
+                    }
+                ),
+            });
+        }
+
+        // Rule 14: input.type is none but http_input exists
+        if matches!(input.input_type, InputType::None) && has_http_input {
+            warnings.push(ClientLintWarning {
+                rule: "input-none-has-http-input",
+                message: "input.type is `none` but a `streamkit::http_input` node exists — \
+                          consider using `trigger` instead."
+                    .into(),
+            });
+        }
+
+        // Rule 15: field_hints references unknown field names
+        if let Some(ref hints) = input.field_hints {
+            let mut declared_fields: Vec<String> = Vec::new();
+            for node in nodes.iter().filter(|n| n.kind == "streamkit::http_input") {
+                if let Some(params) = node.params {
+                    // Single field: { field: { name: "foo" } }
+                    if let Some(name) = params.get("field").and_then(|f| f.get("name")).and_then(|n| n.as_str()) {
+                        declared_fields.push(name.to_string());
+                    }
+                    // Multi field: { fields: [{ name: "foo" }, { name: "bar" }] }
+                    if let Some(fields_arr) = params.get("fields").and_then(|f| f.as_array()) {
+                        for f in fields_arr {
+                            if let Some(name) = f.get("name").and_then(|n| n.as_str()) {
+                                declared_fields.push(name.to_string());
+                            }
+                        }
+                    }
+                }
+                // http_input with no params has a single default field named "media"
+                if (node.params.is_none()
+                    || node.params.is_none_or(|p| {
+                        p.get("field").is_none() && p.get("fields").is_none()
+                    }))
+                    && !declared_fields.contains(&"media".to_string())
+                {
+                    declared_fields.push("media".to_string());
+                }
+            }
+
+            if !declared_fields.is_empty() {
+                for hint_name in hints.keys() {
+                    if !declared_fields.iter().any(|f| f == hint_name) {
+                        warnings.push(ClientLintWarning {
+                            rule: "field-hint-unknown-field",
+                            message: format!(
+                                "field_hints references `{hint_name}` but no `streamkit::http_input` \
+                                 node declares a field with that name. Known fields: {}.",
+                                declared_fields.join(", ")
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // Rule 16: publish but no MoQ subscriber/peer
+    // Browser publish = server subscribes → need moq::peer or moq::subscriber
+    if client.publish.is_some() && !has_moq_peer && !has_moq_subscriber {
+        warnings.push(ClientLintWarning {
+            rule: "publish-no-transport",
+            message: "client declares `publish` but no `transport::moq::peer` or \
+                      `transport::moq::subscriber` node exists."
+                .into(),
+        });
+    }
+
+    // Rule 17: watch but no MoQ publisher/peer
+    // Browser watch = server publishes → need moq::peer or moq::publisher
+    if client.watch.is_some() && !has_moq_peer && !has_moq_publisher {
+        warnings.push(ClientLintWarning {
+            rule: "watch-no-transport",
+            message: "client declares `watch` but no `transport::moq::peer` or \
+                      `transport::moq::publisher` node exists."
+                .into(),
+        });
+    }
+
+    // Rule 18: gateway_path mismatch with moq::peer node
+    if let Some(ref client_gw) = client.gateway_path {
+        let peer_gateway_paths: Vec<&str> = nodes
+            .iter()
+            .filter(|n| n.kind == "transport::moq::peer")
+            .filter_map(|n| {
+                n.params
+                    .and_then(|p| p.get("gateway_path"))
+                    .and_then(|v| v.as_str())
+            })
+            .collect();
+
+        if !peer_gateway_paths.is_empty()
+            && !peer_gateway_paths.iter().any(|gw| gw == client_gw)
+        {
+            warnings.push(ClientLintWarning {
+                rule: "gateway-path-mismatch",
+                message: format!(
+                    "client.gateway_path is `{client_gw}` but moq::peer node(s) declare: {}.",
+                    peer_gateway_paths.join(", ")
+                ),
+            });
+        }
+    }
+
+    // Rule 19: relay_url mismatch with publisher/subscriber nodes
+    if let Some(ref client_url) = client.relay_url {
+        let node_urls: Vec<&str> = nodes
+            .iter()
+            .filter(|n| {
+                n.kind == "transport::moq::publisher"
+                    || n.kind == "transport::moq::subscriber"
+            })
+            .filter_map(|n| {
+                n.params
+                    .and_then(|p| p.get("url"))
+                    .and_then(|v| v.as_str())
+            })
+            .collect();
+
+        if !node_urls.is_empty() && !node_urls.iter().any(|u| u == client_url) {
+            warnings.push(ClientLintWarning {
+                rule: "relay-url-mismatch",
+                message: format!(
+                    "client.relay_url is `{client_url}` but transport node(s) declare: {}.",
+                    node_urls.join(", ")
+                ),
+            });
+        }
+    }
+
+    // Rule 20: broadcast name mismatch
+    // Collect all broadcast names from MoQ transport nodes.
+    let mut node_broadcasts: Vec<&str> = Vec::new();
+    for node in nodes {
+        if let Some(params) = node.params {
+            match node.kind {
+                "transport::moq::peer" => {
+                    if let Some(b) = params.get("input_broadcast").and_then(|v| v.as_str()) {
+                        node_broadcasts.push(b);
+                    }
+                    if let Some(b) = params.get("output_broadcast").and_then(|v| v.as_str()) {
+                        node_broadcasts.push(b);
+                    }
+                }
+                "transport::moq::publisher" | "transport::moq::subscriber" => {
+                    if let Some(b) = params.get("broadcast").and_then(|v| v.as_str()) {
+                        node_broadcasts.push(b);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if !node_broadcasts.is_empty() {
+        if let Some(ref publish) = client.publish {
+            if !publish.broadcast.is_empty()
+                && !node_broadcasts.iter().any(|b| *b == publish.broadcast)
+            {
+                warnings.push(ClientLintWarning {
+                    rule: "broadcast-mismatch",
+                    message: format!(
+                        "publish.broadcast is `{}` but no MoQ transport node declares \
+                         that broadcast name. Node broadcasts: {}.",
+                        publish.broadcast,
+                        node_broadcasts.join(", ")
+                    ),
+                });
+            }
+        }
+        if let Some(ref watch) = client.watch {
+            if !watch.broadcast.is_empty()
+                && !node_broadcasts.iter().any(|b| *b == watch.broadcast)
+            {
+                warnings.push(ClientLintWarning {
+                    rule: "broadcast-mismatch",
+                    message: format!(
+                        "watch.broadcast is `{}` but no MoQ transport node declares \
+                         that broadcast name. Node broadcasts: {}.",
+                        watch.broadcast,
+                        node_broadcasts.join(", ")
+                    ),
+                });
+            }
         }
     }
 
@@ -1716,5 +1975,317 @@ client:
         };
         let warnings = lint_client_section(&c, EngineMode::OneShot);
         assert!(warnings.iter().any(|w| w.rule == "text-no-placeholder"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Client-vs-nodes cross-validation tests (rules 13–20)
+    // -----------------------------------------------------------------------
+
+    /// Helper: a `streamkit::http_input` node with no params.
+    fn http_input_node() -> serde_json::Value {
+        serde_json::Value::Null // represents "no params object"
+    }
+
+    fn node<'a>(kind: &'a str, params: Option<&'a serde_json::Value>) -> NodeInfo<'a> {
+        NodeInfo { kind, params }
+    }
+
+    // Rule 13 — input-requires-http-input
+    #[test]
+    fn test_lint_input_requires_http_input() {
+        let c = oneshot_client(); // input.type = file_upload
+        let nodes: Vec<NodeInfo<'_>> = vec![]; // no http_input
+        let warnings = lint_client_against_nodes(&c, EngineMode::OneShot, &nodes);
+        assert!(warnings.iter().any(|w| w.rule == "input-requires-http-input"));
+    }
+
+    #[test]
+    fn test_lint_input_requires_http_input_clean() {
+        let c = oneshot_client();
+        let null = http_input_node();
+        let nodes = vec![node("streamkit::http_input", Some(&null))];
+        let warnings = lint_client_against_nodes(&c, EngineMode::OneShot, &nodes);
+        assert!(
+            !warnings.iter().any(|w| w.rule == "input-requires-http-input"),
+            "Should not warn when http_input exists: {warnings:?}"
+        );
+    }
+
+    // Rule 14 — input-none-has-http-input
+    #[test]
+    fn test_lint_input_none_has_http_input() {
+        let c = ClientSection {
+            input: Some(InputConfig {
+                input_type: InputType::None,
+                accept: None,
+                asset_tags: None,
+                placeholder: None,
+                field_hints: None,
+            }),
+            output: Some(OutputConfig { output_type: OutputType::Video }),
+            ..Default::default()
+        };
+        let null = http_input_node();
+        let nodes = vec![node("streamkit::http_input", Some(&null))];
+        let warnings = lint_client_against_nodes(&c, EngineMode::OneShot, &nodes);
+        assert!(warnings.iter().any(|w| w.rule == "input-none-has-http-input"));
+    }
+
+    // Rule 15 — field-hint-unknown-field
+    #[test]
+    fn test_lint_field_hint_unknown_field() {
+        let mut hints = IndexMap::new();
+        hints.insert(
+            "nonexistent".into(),
+            FieldHint { field_type: Some(FieldType::Text), accept: None, placeholder: None },
+        );
+        let c = ClientSection {
+            input: Some(InputConfig {
+                input_type: InputType::FileUpload,
+                accept: Some("audio/*".into()),
+                asset_tags: None,
+                placeholder: None,
+                field_hints: Some(hints),
+            }),
+            output: Some(OutputConfig { output_type: OutputType::Audio }),
+            ..Default::default()
+        };
+        // http_input with no explicit field/fields → default field is "media"
+        let null = http_input_node();
+        let nodes = vec![node("streamkit::http_input", Some(&null))];
+        let warnings = lint_client_against_nodes(&c, EngineMode::OneShot, &nodes);
+        assert!(
+            warnings.iter().any(|w| w.rule == "field-hint-unknown-field"),
+            "Should warn for unknown field hint name: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_lint_field_hint_known_field_clean() {
+        let mut hints = IndexMap::new();
+        hints.insert(
+            "media".into(),
+            FieldHint { field_type: Some(FieldType::File), accept: Some("audio/*".into()), placeholder: None },
+        );
+        let c = ClientSection {
+            input: Some(InputConfig {
+                input_type: InputType::FileUpload,
+                accept: Some("audio/*".into()),
+                asset_tags: None,
+                placeholder: None,
+                field_hints: Some(hints),
+            }),
+            output: Some(OutputConfig { output_type: OutputType::Audio }),
+            ..Default::default()
+        };
+        let null = http_input_node();
+        let nodes = vec![node("streamkit::http_input", Some(&null))];
+        let warnings = lint_client_against_nodes(&c, EngineMode::OneShot, &nodes);
+        assert!(
+            !warnings.iter().any(|w| w.rule == "field-hint-unknown-field"),
+            "Should not warn for default 'media' field: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_lint_field_hint_explicit_fields_array() {
+        let mut hints = IndexMap::new();
+        hints.insert(
+            "prompt".into(),
+            FieldHint { field_type: Some(FieldType::Text), accept: None, placeholder: Some("Enter text".into()) },
+        );
+        let c = ClientSection {
+            input: Some(InputConfig {
+                input_type: InputType::FileUpload,
+                accept: Some("audio/*".into()),
+                asset_tags: None,
+                placeholder: None,
+                field_hints: Some(hints),
+            }),
+            output: Some(OutputConfig { output_type: OutputType::Audio }),
+            ..Default::default()
+        };
+        let params = serde_json::json!({
+            "fields": [
+                { "name": "media" },
+                { "name": "prompt" }
+            ]
+        });
+        let nodes = vec![node("streamkit::http_input", Some(&params))];
+        let warnings = lint_client_against_nodes(&c, EngineMode::OneShot, &nodes);
+        assert!(
+            !warnings.iter().any(|w| w.rule == "field-hint-unknown-field"),
+            "Should not warn when hint matches declared field: {warnings:?}"
+        );
+    }
+
+    // Rule 16 — publish-no-transport
+    #[test]
+    fn test_lint_publish_no_transport() {
+        let c = dynamic_client();
+        let nodes: Vec<NodeInfo<'_>> = vec![]; // no MoQ nodes
+        let warnings = lint_client_against_nodes(&c, EngineMode::Dynamic, &nodes);
+        assert!(warnings.iter().any(|w| w.rule == "publish-no-transport"));
+    }
+
+    #[test]
+    fn test_lint_publish_with_peer_clean() {
+        let c = dynamic_client();
+        let params = serde_json::json!({
+            "gateway_path": "/moq/test",
+            "input_broadcast": "input",
+            "output_broadcast": "output"
+        });
+        let nodes = vec![node("transport::moq::peer", Some(&params))];
+        let warnings = lint_client_against_nodes(&c, EngineMode::Dynamic, &nodes);
+        assert!(
+            !warnings.iter().any(|w| w.rule == "publish-no-transport"),
+            "Should not warn when peer exists: {warnings:?}"
+        );
+    }
+
+    // Rule 17 — watch-no-transport
+    #[test]
+    fn test_lint_watch_no_transport() {
+        let c = ClientSection {
+            gateway_path: Some("/moq/test".into()),
+            watch: Some(WatchConfig { broadcast: "output".into(), audio: true, video: true }),
+            ..Default::default()
+        };
+        let nodes: Vec<NodeInfo<'_>> = vec![]; // no MoQ nodes
+        let warnings = lint_client_against_nodes(&c, EngineMode::Dynamic, &nodes);
+        assert!(warnings.iter().any(|w| w.rule == "watch-no-transport"));
+    }
+
+    // Rule 18 — gateway-path-mismatch
+    #[test]
+    fn test_lint_gateway_path_mismatch() {
+        let c = ClientSection {
+            gateway_path: Some("/moq/wrong".into()),
+            publish: Some(PublishConfig { broadcast: "input".into(), audio: true, video: false }),
+            ..Default::default()
+        };
+        let params = serde_json::json!({
+            "gateway_path": "/moq/correct",
+            "input_broadcast": "input"
+        });
+        let nodes = vec![node("transport::moq::peer", Some(&params))];
+        let warnings = lint_client_against_nodes(&c, EngineMode::Dynamic, &nodes);
+        assert!(
+            warnings.iter().any(|w| w.rule == "gateway-path-mismatch"),
+            "Should warn when gateway_path differs: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_lint_gateway_path_match_clean() {
+        let c = dynamic_client(); // gateway_path = /moq/test
+        let params = serde_json::json!({
+            "gateway_path": "/moq/test",
+            "input_broadcast": "input",
+            "output_broadcast": "output"
+        });
+        let nodes = vec![node("transport::moq::peer", Some(&params))];
+        let warnings = lint_client_against_nodes(&c, EngineMode::Dynamic, &nodes);
+        assert!(
+            !warnings.iter().any(|w| w.rule == "gateway-path-mismatch"),
+            "Should not warn when gateway_path matches: {warnings:?}"
+        );
+    }
+
+    // Rule 19 — relay-url-mismatch
+    #[test]
+    fn test_lint_relay_url_mismatch() {
+        let c = ClientSection {
+            relay_url: Some("https://relay.example.com".into()),
+            publish: Some(PublishConfig { broadcast: "input".into(), audio: true, video: false }),
+            ..Default::default()
+        };
+        let params = serde_json::json!({
+            "url": "https://other-relay.example.com",
+            "broadcast": "input"
+        });
+        let nodes = vec![node("transport::moq::publisher", Some(&params))];
+        let warnings = lint_client_against_nodes(&c, EngineMode::Dynamic, &nodes);
+        assert!(
+            warnings.iter().any(|w| w.rule == "relay-url-mismatch"),
+            "Should warn when relay_url differs: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_lint_relay_url_match_clean() {
+        let c = ClientSection {
+            relay_url: Some("https://relay.example.com".into()),
+            publish: Some(PublishConfig { broadcast: "input".into(), audio: true, video: false }),
+            ..Default::default()
+        };
+        let params = serde_json::json!({
+            "url": "https://relay.example.com",
+            "broadcast": "input"
+        });
+        let nodes = vec![node("transport::moq::subscriber", Some(&params))];
+        let warnings = lint_client_against_nodes(&c, EngineMode::Dynamic, &nodes);
+        assert!(
+            !warnings.iter().any(|w| w.rule == "relay-url-mismatch"),
+            "Should not warn when relay_url matches: {warnings:?}"
+        );
+    }
+
+    // Rule 20 — broadcast-mismatch
+    #[test]
+    fn test_lint_broadcast_mismatch_publish() {
+        let c = ClientSection {
+            gateway_path: Some("/moq/test".into()),
+            publish: Some(PublishConfig { broadcast: "wrong_name".into(), audio: true, video: false }),
+            ..Default::default()
+        };
+        let params = serde_json::json!({
+            "gateway_path": "/moq/test",
+            "input_broadcast": "camera",
+            "output_broadcast": "output"
+        });
+        let nodes = vec![node("transport::moq::peer", Some(&params))];
+        let warnings = lint_client_against_nodes(&c, EngineMode::Dynamic, &nodes);
+        assert!(
+            warnings.iter().any(|w| w.rule == "broadcast-mismatch"),
+            "Should warn when publish.broadcast doesn't match any node broadcast: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_lint_broadcast_mismatch_watch() {
+        let c = ClientSection {
+            gateway_path: Some("/moq/test".into()),
+            watch: Some(WatchConfig { broadcast: "wrong_name".into(), audio: true, video: true }),
+            ..Default::default()
+        };
+        let params = serde_json::json!({
+            "gateway_path": "/moq/test",
+            "input_broadcast": "camera",
+            "output_broadcast": "output"
+        });
+        let nodes = vec![node("transport::moq::peer", Some(&params))];
+        let warnings = lint_client_against_nodes(&c, EngineMode::Dynamic, &nodes);
+        assert!(
+            warnings.iter().any(|w| w.rule == "broadcast-mismatch"),
+            "Should warn when watch.broadcast doesn't match any node broadcast: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_lint_broadcast_match_clean() {
+        let c = dynamic_client(); // publish=input, watch=output
+        let params = serde_json::json!({
+            "gateway_path": "/moq/test",
+            "input_broadcast": "input",
+            "output_broadcast": "output"
+        });
+        let nodes = vec![node("transport::moq::peer", Some(&params))];
+        let warnings = lint_client_against_nodes(&c, EngineMode::Dynamic, &nodes);
+        assert!(
+            !warnings.iter().any(|w| w.rule == "broadcast-mismatch"),
+            "Should not warn when broadcast names match: {warnings:?}"
+        );
     }
 }

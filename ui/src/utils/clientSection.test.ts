@@ -256,3 +256,216 @@ nodes:
     expect(parseClientFromYaml('{{invalid')).toBeNull();
   });
 });
+
+// -----------------------------------------------------------------------
+// Monitor preview config derivation (Gap 4a)
+// -----------------------------------------------------------------------
+
+describe('deriveSettingsFromClient — monitor preview scenarios', () => {
+  it('derives watch-only settings for monitor preview (no publish)', () => {
+    const client: ClientSection = {
+      relay_url: null,
+      gateway_path: '/moq/transcoder',
+      publish: null,
+      watch: { broadcast: 'output', audio: true, video: false },
+      input: null,
+      output: null,
+    };
+
+    const settings = deriveSettingsFromClient(client);
+
+    expect(settings.gatewayPath).toBe('/moq/transcoder');
+    expect(settings.outputBroadcast).toBe('output');
+    expect(settings.hasInputBroadcast).toBe(false);
+    expect(settings.outputsAudio).toBe(true);
+    expect(settings.outputsVideo).toBe(false);
+  });
+
+  it('derives audio+video output for compositor preview', () => {
+    const client: ClientSection = {
+      relay_url: null,
+      gateway_path: '/moq/compositor',
+      publish: { broadcast: 'camera', audio: true, video: true },
+      watch: { broadcast: 'composited', audio: true, video: true },
+      input: null,
+      output: null,
+    };
+
+    const settings = deriveSettingsFromClient(client);
+
+    expect(settings.outputsAudio).toBe(true);
+    expect(settings.outputsVideo).toBe(true);
+    expect(settings.outputBroadcast).toBe('composited');
+  });
+
+  it('derives relay-url settings for external relay preview', () => {
+    const client: ClientSection = {
+      relay_url: 'https://relay.example.com',
+      gateway_path: null,
+      publish: null,
+      watch: { broadcast: 'preview', audio: false, video: true },
+      input: null,
+      output: null,
+    };
+
+    const settings = deriveSettingsFromClient(client);
+
+    expect(settings.relayUrl).toBe('https://relay.example.com');
+    expect(settings.gatewayPath).toBeUndefined();
+    expect(settings.outputsVideo).toBe(true);
+    expect(settings.outputsAudio).toBe(false);
+  });
+});
+
+// -----------------------------------------------------------------------
+// ConvertView-driven pipeline classification (Gap 4b)
+// -----------------------------------------------------------------------
+
+describe('parseClientFromYaml — trigger vs none and output-type', () => {
+  it('parses trigger input type', () => {
+    const yaml = `
+client:
+  input:
+    type: trigger
+  output:
+    type: video
+steps:
+  - kind: core::passthrough
+`;
+    const client = parseClientFromYaml(yaml);
+    expect(client).not.toBeNull();
+    expect(client?.input?.type).toBe('trigger');
+    expect(client?.output?.type).toBe('video');
+  });
+
+  it('parses none input type', () => {
+    const yaml = `
+client:
+  input:
+    type: none
+  output:
+    type: video
+steps:
+  - kind: core::passthrough
+`;
+    const client = parseClientFromYaml(yaml);
+    expect(client?.input?.type).toBe('none');
+  });
+
+  it('identifies transcription output type for renderer selection', () => {
+    const yaml = `
+client:
+  input:
+    type: file_upload
+    accept: "audio/*"
+  output:
+    type: transcription
+steps:
+  - kind: streamkit::http_input
+`;
+    const client = parseClientFromYaml(yaml);
+    expect(client?.output?.type).toBe('transcription');
+    // ConvertView uses: isTranscriptionPipeline = client?.output?.type === 'transcription'
+    expect(client?.output?.type === 'transcription').toBe(true);
+  });
+
+  it('identifies audio output type for audio player renderer', () => {
+    const yaml = `
+client:
+  input:
+    type: file_upload
+    accept: "audio/*"
+  output:
+    type: audio
+steps:
+  - kind: streamkit::http_input
+`;
+    const client = parseClientFromYaml(yaml);
+    expect(client?.output?.type).toBe('audio');
+    // ConvertView renders CustomAudioPlayer for audio output
+    expect(client?.output?.type === 'audio').toBe(true);
+  });
+
+  it('identifies video output type for video player renderer', () => {
+    const yaml = `
+client:
+  input:
+    type: none
+  output:
+    type: video
+steps:
+  - kind: core::passthrough
+`;
+    const client = parseClientFromYaml(yaml);
+    expect(client?.output?.type).toBe('video');
+    // ConvertView: isVideoPipeline = client?.output?.type === 'video'
+    const isNoInput = client?.input?.type === 'none' || client?.input?.type === 'trigger';
+    expect(isNoInput).toBe(true);
+  });
+
+  it('identifies json_stream output type for JsonStreamDisplay', () => {
+    const yaml = `
+client:
+  input:
+    type: file_upload
+    accept: "audio/*"
+  output:
+    type: json_stream
+steps:
+  - kind: streamkit::http_input
+`;
+    const client = parseClientFromYaml(yaml);
+    expect(client?.output?.type).toBe('json_stream');
+  });
+
+  it('classifies text input as TTS pipeline', () => {
+    const yaml = `
+client:
+  input:
+    type: text
+    placeholder: "Enter text to convert to speech"
+  output:
+    type: audio
+steps:
+  - kind: streamkit::http_input
+`;
+    const client = parseClientFromYaml(yaml);
+    // ConvertView: isTTSPipeline = client?.input?.type === 'text'
+    expect(client?.input?.type).toBe('text');
+    expect(client?.input?.type === 'text').toBe(true);
+  });
+
+  it('trigger and none both classify as no-input pipeline', () => {
+    for (const inputType of ['trigger', 'none']) {
+      const yaml = `
+client:
+  input:
+    type: ${inputType}
+  output:
+    type: audio
+steps:
+  - kind: core::passthrough
+`;
+      const client = parseClientFromYaml(yaml);
+      // ConvertView: isNoInputPipeline = client?.input?.type === 'none' || client?.input?.type === 'trigger'
+      const isNoInput = client?.input?.type === 'none' || client?.input?.type === 'trigger';
+      expect(isNoInput).toBe(true);
+    }
+  });
+
+  it('file_upload does NOT classify as no-input pipeline', () => {
+    const yaml = `
+client:
+  input:
+    type: file_upload
+    accept: "audio/*"
+  output:
+    type: audio
+steps:
+  - kind: streamkit::http_input
+`;
+    const client = parseClientFromYaml(yaml);
+    const isNoInput = client?.input?.type === 'none' || client?.input?.type === 'trigger';
+    expect(isNoInput).toBe(false);
+  });
+});

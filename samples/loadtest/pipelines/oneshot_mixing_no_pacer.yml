@@ -4,7 +4,6 @@
 # Purpose: maximize throughput/CPU load by removing real-time pacer nodes.
 # This intentionally processes inputs as fast as possible.
 #
-# skit:input_asset_tags=speech
 #
 
 name: "Loadtest: Audio Mixing (No Pacer)"
