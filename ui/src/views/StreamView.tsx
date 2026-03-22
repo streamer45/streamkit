@@ -427,8 +427,12 @@ const StreamView: React.FC = () => {
           if (moqSettings) {
             if (moqSettings.relayUrl) {
               setServerUrl(moqSettings.relayUrl);
-            } else if (moqSettings.gatewayPath && serverUrl) {
-              setServerUrl(updateUrlPath(serverUrl, moqSettings.gatewayPath));
+            } else if (moqSettings.gatewayPath && useStreamStore.getState().serverUrl) {
+              // Read serverUrl directly from the store since this effect
+              // runs on mount and the closure-captured value is still ''.
+              setServerUrl(
+                updateUrlPath(useStreamStore.getState().serverUrl, moqSettings.gatewayPath)
+              );
             }
             if (moqSettings.inputBroadcast) {
               setInputBroadcast(moqSettings.inputBroadcast);
@@ -707,7 +711,14 @@ const StreamView: React.FC = () => {
             <ModeToggle>
               <ModeButton
                 active={connectionMode === 'session'}
-                onClick={() => setConnectionMode('session')}
+                onClick={() => {
+                  setConnectionMode('session');
+                  // Re-apply the selected template's MoQ settings that
+                  // were overridden by Direct Connect mode.
+                  if (viewState.selectedTemplateId) {
+                    handleTemplateSelect(viewState.selectedTemplateId);
+                  }
+                }}
                 disabled={status !== 'disconnected'}
               >
                 Session
