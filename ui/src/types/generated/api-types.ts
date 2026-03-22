@@ -368,7 +368,7 @@ export type Pipeline = { name: string | null, description: string | null, mode: 
  * Declarative UI metadata — forwarded unchanged from `UserPipeline`,
  * ignored by the engine for execution.
  */
-client: ClientSection | null, nodes: Record<string, Node>, connections: Array<Connection>, 
+client?: ClientSection | null, nodes: Record<string, Node>, connections: Array<Connection>, 
 /**
  * Resolved per-node view data (e.g., compositor layout).
  * Only populated in API responses; absent from pipeline definitions.
