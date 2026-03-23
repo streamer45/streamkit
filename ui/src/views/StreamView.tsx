@@ -292,6 +292,7 @@ const StreamView: React.FC = () => {
     watchStatus,
     pipelineNeedsAudio,
     pipelineNeedsVideo,
+    connectingStep,
     errorMessage,
     configLoaded,
     activeSessionId,
@@ -332,6 +333,7 @@ const StreamView: React.FC = () => {
       watchStatus: s.watchStatus,
       pipelineNeedsAudio: s.pipelineNeedsAudio,
       pipelineNeedsVideo: s.pipelineNeedsVideo,
+      connectingStep: s.connectingStep,
       errorMessage: s.errorMessage,
       configLoaded: s.configLoaded,
       activeSessionId: s.activeSessionId,
@@ -558,9 +560,15 @@ const StreamView: React.FC = () => {
       if (status === 'disconnected' && serverUrl.trim()) {
         void (async () => {
           try {
-            await connect();
+            const ok = await connect();
+            if (!ok) {
+              logger.warn('Auto-connect after session creation did not succeed');
+            }
           } catch (error) {
             logger.error('MoQ connection attempt after session creation failed:', error);
+            viewState.setSessionCreationError(
+              error instanceof Error ? error.message : 'Connection failed after session creation'
+            );
           }
         })();
       }
@@ -646,6 +654,12 @@ const StreamView: React.FC = () => {
     offline: 'Watch: offline',
     loading: 'Watch: loading…',
     live: 'Watch: live',
+  };
+
+  const connectingStepText: Record<string, string> = {
+    devices: 'Requesting device access',
+    relay: 'Connecting to relay',
+    pipeline: 'Waiting for pipeline',
   };
 
   return (
@@ -854,8 +868,12 @@ const StreamView: React.FC = () => {
 
             {(status === 'connecting' || status === 'connected') && (
               <div style={{ color: 'var(--sk-text-muted)', fontSize: '13px', padding: '4px 0' }}>
-                {status === 'connected' ? 'Relay: connected' : 'Relay: connecting…'} •{' '}
-                {watchStatusText[watchStatus]}
+                {status === 'connected'
+                  ? 'Relay: connected'
+                  : connectingStep
+                    ? 'Connecting — ' + (connectingStepText[connectingStep] ?? connectingStep)
+                    : 'Connecting…'}{' '}
+                • {watchStatusText[watchStatus]}
                 {pipelineNeedsAudio && <> • {micStatusText[micStatus]}</>}
                 {pipelineNeedsVideo && <> • {cameraStatusText[cameraStatus]}</>}
               </div>

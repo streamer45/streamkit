@@ -99,6 +99,8 @@ describe('streamStore', () => {
       errorMessage: '',
       configLoaded: false,
       configServerUrl: '',
+      connectAbort: null,
+      connectingStep: '',
       activeSessionId: null,
       activeSessionName: null,
       activePipelineName: null,
@@ -148,6 +150,12 @@ describe('streamStore', () => {
       expect(state.activeSessionId).toBeNull();
       expect(state.activeSessionName).toBeNull();
       expect(state.activePipelineName).toBeNull();
+    });
+
+    it('should have null connectAbort and empty connectingStep initially', () => {
+      const state = useStreamStore.getState();
+      expect(state.connectAbort).toBeNull();
+      expect(state.connectingStep).toBe('');
     });
 
     it('should have null MoQ references initially', () => {
@@ -517,6 +525,34 @@ describe('streamStore', () => {
       expect(() => disconnect()).not.toThrow();
 
       expect(useStreamStore.getState().status).toBe('disconnected');
+    });
+
+    it('should abort in-flight connect attempt on disconnect', () => {
+      const abort = new AbortController();
+      const abortSpy = vi.spyOn(abort, 'abort');
+      useStreamStore.setState({
+        status: 'connecting',
+        connectAbort: abort,
+      });
+
+      useStreamStore.getState().disconnect();
+
+      expect(abortSpy).toHaveBeenCalled();
+      const state = useStreamStore.getState();
+      expect(state.status).toBe('disconnected');
+      expect(state.connectAbort).toBeNull();
+      expect(state.connectingStep).toBe('');
+    });
+
+    it('should clear connectingStep on disconnect', () => {
+      useStreamStore.setState({
+        status: 'connecting',
+        connectingStep: 'devices',
+      });
+
+      useStreamStore.getState().disconnect();
+
+      expect(useStreamStore.getState().connectingStep).toBe('');
     });
   });
 
