@@ -22,6 +22,7 @@ import {
   LiveIndicator,
   LogContainer,
   LogLine,
+  PageSizeSelect,
   PaginationInfo,
   PaginationRow,
   SearchInput,
@@ -32,7 +33,7 @@ import {
 
 const logger = getLogger('LogsView');
 
-const PAGE_SIZE = 500;
+const DEFAULT_PAGE_SIZE = 500;
 
 function detectLevel(line: string): string | undefined {
   if (/ ERROR /i.test(line) || /"level":"ERROR"/i.test(line)) return 'error';
@@ -48,92 +49,23 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-interface UseLogViewerResult {
-  lines: string[];
-  isLoading: boolean;
-  error: string | null;
-  fileSize: number;
-  hasMore: boolean;
-  liveTail: boolean;
-  filterText: string;
-  levelFilter: string;
-  logContainerRef: React.RefObject<HTMLDivElement | null>;
-  setFilterText: (v: string) => void;
-  setLevelFilter: (v: string) => void;
-  handleApplyFilters: () => void;
-  handleKeyDown: (e: React.KeyboardEvent) => void;
-  handleLoadNewer: () => void;
-  handleLoadOlder: () => void;
-  handleLoadLatest: () => void;
-  handleToggleLiveTail: () => void;
-  handleScroll: () => void;
-  handleLevelChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
+function useDebouncedValue(value: string, delayMs: number): string {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(timer);
+  }, [value, delayMs]);
+  return debounced;
 }
 
-function useLogViewer(shouldLoad: boolean): UseLogViewerResult {
-  const [lines, setLines] = useState<string[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [fileSize, setFileSize] = useState(0);
-  const [hasMore, setHasMore] = useState(false);
-  const [nextOffset, setNextOffset] = useState(0);
-
-  const [filterText, setFilterText] = useState('');
-  const [levelFilter, setLevelFilter] = useState('');
-  const [appliedFilter, setAppliedFilter] = useState('');
-  const [appliedLevel, setAppliedLevel] = useState('');
-
+function useLiveTail(
+  debouncedFilter: string,
+  levelFilter: string,
+  setLines: React.Dispatch<React.SetStateAction<string[]>>
+) {
   const [liveTail, setLiveTail] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
-  const logContainerRef = useRef<HTMLDivElement | null>(null);
-  const [autoScroll, setAutoScroll] = useState(true);
 
-  const scrollToBottom = useCallback(() => {
-    if (logContainerRef.current && autoScroll) {
-      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
-    }
-  }, [autoScroll]);
-
-  const loadLogs = useCallback(
-    async (direction: 'forward' | 'backward', offset?: number) => {
-      setIsLoading(true);
-      setError(null);
-      try {
-        const response: LogResponse = await fetchLogs({
-          offset,
-          limit: PAGE_SIZE,
-          direction,
-          filter: appliedFilter || undefined,
-          level: appliedLevel || undefined,
-        });
-        setLines(response.lines);
-        setFileSize(response.file_size);
-        setHasMore(response.has_more);
-        setNextOffset(response.next_offset);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Failed to load logs';
-        logger.error('Failed to load logs:', err);
-        setError(message);
-      } finally {
-        setIsLoading(false);
-      }
-    },
-    [appliedFilter, appliedLevel]
-  );
-
-  // Load latest logs on mount
-  useEffect(() => {
-    if (shouldLoad) {
-      loadLogs('backward');
-    }
-  }, [loadLogs, shouldLoad]);
-
-  // Scroll to bottom when lines change
-  useEffect(() => {
-    scrollToBottom();
-  }, [lines, scrollToBottom]);
-
-  // Live tail management
   useEffect(() => {
     if (!liveTail) {
       if (eventSourceRef.current) {
@@ -144,8 +76,8 @@ function useLogViewer(shouldLoad: boolean): UseLogViewerResult {
     }
 
     const es = createLogStream({
-      filter: appliedFilter || undefined,
-      level: appliedLevel || undefined,
+      filter: debouncedFilter || undefined,
+      level: levelFilter || undefined,
     });
 
     es.onmessage = (event: MessageEvent) => {
@@ -153,11 +85,7 @@ function useLogViewer(shouldLoad: boolean): UseLogViewerResult {
       if (newLines.length > 0) {
         setLines((prev) => {
           const combined = [...prev, ...newLines];
-          // Keep a reasonable buffer during live tail
-          if (combined.length > 5000) {
-            return combined.slice(combined.length - 5000);
-          }
-          return combined;
+          return combined.length > 5000 ? combined.slice(combined.length - 5000) : combined;
         });
       }
     };
@@ -176,82 +104,231 @@ function useLogViewer(shouldLoad: boolean): UseLogViewerResult {
       es.close();
       eventSourceRef.current = null;
     };
-  }, [liveTail, appliedFilter, appliedLevel]);
+  }, [liveTail, debouncedFilter, levelFilter, setLines]);
 
-  const handleApplyFilters = useCallback(() => {
-    setAppliedFilter(filterText);
-    setAppliedLevel(levelFilter);
-    setLiveTail(false);
-  }, [filterText, levelFilter]);
+  return { liveTail, setLiveTail };
+}
 
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === 'Enter') {
-        handleApplyFilters();
+interface UseLogViewerResult {
+  lines: string[];
+  isLoading: boolean;
+  error: string | null;
+  fileSize: number;
+  canGoOlder: boolean;
+  canGoNewer: boolean;
+  liveTail: boolean;
+  filterText: string;
+  levelFilter: string;
+  wrapLines: boolean;
+  pageSize: number;
+  logContainerRef: React.RefObject<HTMLDivElement | null>;
+  setFilterText: (v: string) => void;
+  handleLoadNewer: () => void;
+  handleLoadOlder: () => void;
+  handleLoadLatest: () => void;
+  handleToggleLiveTail: () => void;
+  handleToggleWrap: () => void;
+  handlePageSizeChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
+  handleScroll: () => void;
+  handleLevelChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
+}
+
+function useLogViewer(shouldLoad: boolean): UseLogViewerResult {
+  const [lines, setLines] = useState<string[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [fileSize, setFileSize] = useState(0);
+  const [backwardOffset, setBackwardOffset] = useState(0);
+  const [forwardOffset, setForwardOffset] = useState(0);
+  const [isAtLatest, setIsAtLatest] = useState(true);
+  const [filterText, setFilterText] = useState('');
+  const [levelFilter, setLevelFilter] = useState('');
+  const [wrapLines, setWrapLines] = useState(true);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [autoScroll, setAutoScroll] = useState(true);
+  const logContainerRef = useRef<HTMLDivElement | null>(null);
+
+  const debouncedFilter = useDebouncedValue(filterText, 300);
+  const { liveTail, setLiveTail } = useLiveTail(debouncedFilter, levelFilter, setLines);
+
+  const scrollToBottom = useCallback(() => {
+    if (logContainerRef.current && autoScroll) {
+      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+    }
+  }, [autoScroll]);
+
+  const loadLogs = useCallback(
+    async (direction: 'forward' | 'backward', offset?: number) => {
+      setIsLoading(true);
+      setError(null);
+      try {
+        const response: LogResponse = await fetchLogs({
+          offset,
+          limit: pageSize,
+          direction,
+          filter: debouncedFilter || undefined,
+          level: levelFilter || undefined,
+        });
+        setLines(response.lines);
+        setFileSize(response.file_size);
+
+        if (direction === 'backward') {
+          setBackwardOffset(response.next_offset);
+          setForwardOffset(offset ?? response.file_size);
+          setIsAtLatest(offset === undefined || offset >= response.file_size);
+        } else {
+          setForwardOffset(response.next_offset);
+          setBackwardOffset(offset ?? 0);
+          setIsAtLatest(!response.has_more);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to load logs';
+        logger.error('Failed to load logs:', err);
+        setError(message);
+      } finally {
+        setIsLoading(false);
       }
     },
-    [handleApplyFilters]
+    [debouncedFilter, levelFilter, pageSize]
   );
 
-  const handleLoadNewer = useCallback(() => {
-    loadLogs('forward', nextOffset);
-  }, [loadLogs, nextOffset]);
-
-  const handleLoadOlder = useCallback(() => {
-    if (nextOffset > 0) {
-      loadLogs('backward', nextOffset);
+  useEffect(() => {
+    if (shouldLoad) {
+      loadLogs('backward');
     }
-  }, [loadLogs, nextOffset]);
+  }, [loadLogs, shouldLoad]);
 
-  const handleLoadLatest = useCallback(() => {
-    loadLogs('backward');
-  }, [loadLogs]);
-
-  const handleToggleLiveTail = useCallback(() => {
-    if (!liveTail) {
-      // Starting live tail — first load latest, then enable streaming
-      loadLogs('backward').then(() => {
-        setLiveTail(true);
-        setAutoScroll(true);
-      });
-    } else {
-      setLiveTail(false);
-    }
-  }, [liveTail, loadLogs]);
-
-  const handleScroll = useCallback(() => {
-    const container = logContainerRef.current;
-    if (!container) return;
-    const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 50;
-    setAutoScroll(isAtBottom);
-  }, []);
-
-  const handleLevelChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
-    setLevelFilter(e.target.value);
-  }, []);
+  useEffect(() => {
+    scrollToBottom();
+  }, [lines, scrollToBottom]);
 
   return {
     lines,
     isLoading,
     error,
     fileSize,
-    hasMore,
+    canGoOlder: backwardOffset > 0,
+    canGoNewer: !isAtLatest,
     liveTail,
     filterText,
     levelFilter,
+    wrapLines,
+    pageSize,
     logContainerRef,
     setFilterText,
-    setLevelFilter,
-    handleApplyFilters,
-    handleKeyDown,
-    handleLoadNewer,
-    handleLoadOlder,
-    handleLoadLatest,
-    handleToggleLiveTail,
-    handleScroll,
-    handleLevelChange,
+    handleLoadNewer: useCallback(() => {
+      if (forwardOffset < fileSize) loadLogs('forward', forwardOffset);
+    }, [loadLogs, forwardOffset, fileSize]),
+    handleLoadOlder: useCallback(() => {
+      if (backwardOffset > 0) loadLogs('backward', backwardOffset);
+    }, [loadLogs, backwardOffset]),
+    handleLoadLatest: useCallback(() => loadLogs('backward'), [loadLogs]),
+    handleToggleLiveTail: useCallback(() => {
+      if (!liveTail) {
+        loadLogs('backward').then(() => {
+          setLiveTail(true);
+          setAutoScroll(true);
+        });
+      } else {
+        setLiveTail(false);
+      }
+    }, [liveTail, loadLogs, setLiveTail]),
+    handleToggleWrap: useCallback(() => setWrapLines((prev) => !prev), []),
+    handlePageSizeChange: useCallback(
+      (e: React.ChangeEvent<HTMLSelectElement>) => setPageSize(Number(e.target.value)),
+      []
+    ),
+    handleScroll: useCallback(() => {
+      const container = logContainerRef.current;
+      if (!container) return;
+      const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 50;
+      setAutoScroll(nearBottom);
+    }, []),
+    handleLevelChange: useCallback(
+      (e: React.ChangeEvent<HTMLSelectElement>) => setLevelFilter(e.target.value),
+      []
+    ),
   };
 }
+
+const LogsToolbar: React.FC<{ lv: UseLogViewerResult }> = ({ lv }) => (
+  <FilterBar>
+    <SearchInput
+      type="text"
+      placeholder="Filter logs..."
+      value={lv.filterText}
+      onChange={(e) => lv.setFilterText(e.target.value)}
+      data-testid="logs-filter-input"
+    />
+    <LevelSelect
+      value={lv.levelFilter}
+      onChange={lv.handleLevelChange}
+      data-testid="logs-level-select"
+    >
+      <option value="">All levels</option>
+      <option value="error">Error</option>
+      <option value="warn">Warn</option>
+      <option value="info">Info</option>
+      <option value="debug">Debug</option>
+    </LevelSelect>
+    <PageSizeSelect
+      value={lv.pageSize}
+      onChange={lv.handlePageSizeChange}
+      data-testid="logs-page-size"
+    >
+      <option value={100}>100 lines</option>
+      <option value={250}>250 lines</option>
+      <option value={500}>500 lines</option>
+      <option value={1000}>1000 lines</option>
+      <option value={2000}>2000 lines</option>
+    </PageSizeSelect>
+    <Button onClick={lv.handleToggleWrap} variant="ghost" data-testid="logs-wrap-toggle">
+      {lv.wrapLines ? 'No wrap' : 'Wrap'}
+    </Button>
+    <Button
+      onClick={lv.handleToggleLiveTail}
+      variant={lv.liveTail ? 'primary' : 'ghost'}
+      data-testid="logs-live-tail"
+    >
+      {lv.liveTail ? 'Stop tail' : 'Live tail'}
+    </Button>
+  </FilterBar>
+);
+
+const LogsPagination: React.FC<{ lv: UseLogViewerResult }> = ({ lv }) => (
+  <PaginationRow>
+    <div style={{ display: 'flex', gap: '8px' }}>
+      <Button
+        onClick={lv.handleLoadOlder}
+        disabled={lv.isLoading || lv.liveTail || !lv.canGoOlder}
+        variant="ghost"
+        data-testid="logs-load-older"
+      >
+        Older
+      </Button>
+      <Button
+        onClick={lv.handleLoadNewer}
+        disabled={lv.isLoading || lv.liveTail || !lv.canGoNewer}
+        variant="ghost"
+        data-testid="logs-load-newer"
+      >
+        Newer
+      </Button>
+      <Button
+        onClick={lv.handleLoadLatest}
+        disabled={lv.isLoading || lv.liveTail}
+        variant="ghost"
+        data-testid="logs-load-latest"
+      >
+        Latest
+      </Button>
+    </div>
+    <PaginationInfo>
+      {lv.lines.length} lines
+      {lv.fileSize > 0 && ` \u2022 ${formatFileSize(lv.fileSize)}`}
+    </PaginationInfo>
+  </PaginationRow>
+);
 
 const LogsView: React.FC = () => {
   const { role, isAdmin } = usePermissions();
@@ -298,45 +375,12 @@ const LogsView: React.FC = () => {
 
             {lv.error && <ErrorBox>{lv.error}</ErrorBox>}
 
-            <FilterBar>
-              <SearchInput
-                type="text"
-                placeholder="Filter logs..."
-                value={lv.filterText}
-                onChange={(e) => lv.setFilterText(e.target.value)}
-                onKeyDown={lv.handleKeyDown}
-                data-testid="logs-filter-input"
-              />
-              <LevelSelect
-                value={lv.levelFilter}
-                onChange={lv.handleLevelChange}
-                data-testid="logs-level-select"
-              >
-                <option value="">All levels</option>
-                <option value="error">Error</option>
-                <option value="warn">Warn</option>
-                <option value="info">Info</option>
-                <option value="debug">Debug</option>
-              </LevelSelect>
-              <Button
-                onClick={lv.handleApplyFilters}
-                disabled={lv.isLoading}
-                data-testid="logs-apply-filter"
-              >
-                Filter
-              </Button>
-              <Button
-                onClick={lv.handleToggleLiveTail}
-                variant={lv.liveTail ? 'primary' : 'ghost'}
-                data-testid="logs-live-tail"
-              >
-                {lv.liveTail ? 'Stop tail' : 'Live tail'}
-              </Button>
-            </FilterBar>
+            <LogsToolbar lv={lv} />
 
             <LogContainer
               ref={lv.logContainerRef}
               onScroll={lv.handleScroll}
+              $wrap={lv.wrapLines}
               data-testid="logs-container"
             >
               {lv.lines.length === 0 && !lv.isLoading && (
@@ -349,38 +393,7 @@ const LogsView: React.FC = () => {
               ))}
             </LogContainer>
 
-            <PaginationRow>
-              <div style={{ display: 'flex', gap: '8px' }}>
-                <Button
-                  onClick={lv.handleLoadOlder}
-                  disabled={lv.isLoading || lv.liveTail}
-                  variant="ghost"
-                  data-testid="logs-load-older"
-                >
-                  Older
-                </Button>
-                <Button
-                  onClick={lv.handleLoadNewer}
-                  disabled={lv.isLoading || !lv.hasMore || lv.liveTail}
-                  variant="ghost"
-                  data-testid="logs-load-newer"
-                >
-                  Newer
-                </Button>
-                <Button
-                  onClick={lv.handleLoadLatest}
-                  disabled={lv.isLoading || lv.liveTail}
-                  variant="ghost"
-                  data-testid="logs-load-latest"
-                >
-                  Latest
-                </Button>
-              </div>
-              <PaginationInfo>
-                {lv.lines.length} lines
-                {lv.fileSize > 0 && ` \u2022 ${formatFileSize(lv.fileSize)}`}
-              </PaginationInfo>
-            </PaginationRow>
+            <LogsPagination lv={lv} />
           </Card>
         </ContentWrapper>
       </ContentArea>

@@ -40,9 +40,13 @@ test.describe('Log Viewer', () => {
     const levelSelect = page.getByTestId('logs-level-select');
     await expect(levelSelect).toBeVisible();
 
-    // Filter button should be visible
-    const filterButton = page.getByTestId('logs-apply-filter');
-    await expect(filterButton).toBeVisible();
+    // Page size select should be visible
+    const pageSizeSelect = page.getByTestId('logs-page-size');
+    await expect(pageSizeSelect).toBeVisible();
+
+    // Wrap toggle should be visible
+    const wrapToggle = page.getByTestId('logs-wrap-toggle');
+    await expect(wrapToggle).toBeVisible();
 
     // Live tail button should be visible
     const liveTailButton = page.getByTestId('logs-live-tail');
@@ -58,12 +62,11 @@ test.describe('Log Viewer', () => {
     await expect(page.getByTestId('logs-load-latest')).toBeVisible();
   });
 
-  test('level filter can be changed', async ({ page }) => {
+  test('level filter applies immediately on change', async ({ page }) => {
     await expect(page.getByTestId('logs-view')).toBeVisible();
 
-    // Select "Error" level filter
+    // Select "Error" level filter — should reload without needing a button click
     await page.getByTestId('logs-level-select').selectOption('error');
-    await page.getByTestId('logs-apply-filter').click();
 
     // Wait briefly for the filtered results
     await page.waitForTimeout(1000);
@@ -72,14 +75,13 @@ test.describe('Log Viewer', () => {
     await expect(page.getByTestId('logs-container')).toBeVisible();
   });
 
-  test('text filter can be applied', async ({ page }) => {
+  test('text filter updates as user types', async ({ page }) => {
     await expect(page.getByTestId('logs-view')).toBeVisible();
 
-    // Type a filter
+    // Type a filter — should apply after debounce (no button click needed)
     await page.getByTestId('logs-filter-input').fill('skit');
-    await page.getByTestId('logs-apply-filter').click();
 
-    // Wait for filtered results
+    // Wait for debounce + request
     await page.waitForTimeout(1000);
 
     // Container should still be visible
