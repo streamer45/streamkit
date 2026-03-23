@@ -419,6 +419,9 @@ pub async fn stream_logs_handler(
             return;
         }
 
+        // Buffer for incomplete trailing line fragments between polls.
+        let mut tail_carry = String::new();
+
         loop {
             tokio::time::sleep(tokio::time::Duration::from_millis(TAIL_POLL_INTERVAL_MS)).await;
 
@@ -435,6 +438,7 @@ pub async fn stream_logs_handler(
                 };
                 file = new_file;
                 last_size = 0;
+                tail_carry.clear();
                 yield Ok(Event::default().event("truncated").data("Log file was rotated"));
                 continue;
             }
@@ -455,8 +459,29 @@ pub async fn stream_logs_handler(
 
             last_size = current_size;
 
-            let text = String::from_utf8_lossy(&buf);
-            let new_lines: Vec<&str> = text.split('\n')
+            // Prepend any incomplete line fragment from the previous poll.
+            let raw = String::from_utf8_lossy(&buf);
+            let text = if tail_carry.is_empty() {
+                raw.into_owned()
+            } else {
+                let mut combined = std::mem::take(&mut tail_carry);
+                combined.push_str(&raw);
+                combined
+            };
+
+            // Split into segments. The last segment is either empty (data
+            // ended with '\n') or an incomplete line to carry forward.
+            let segments: Vec<&str> = text.split('\n').collect();
+            let (complete, trailing) = segments.split_at(segments.len().saturating_sub(1));
+            if let Some(&last) = trailing.first() {
+                if !last.is_empty() {
+                    tail_carry = last.to_string();
+                }
+            }
+
+            let new_lines: Vec<&str> = complete
+                .iter()
+                .copied()
                 .filter(|line| {
                     !line.is_empty()
                         && line_passes_filters(line, level.as_deref(), filter.as_deref())
