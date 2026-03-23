@@ -96,6 +96,7 @@ export function mapServerLayers(prev: LayerState[], serverLayers: ResolvedLayer[
         cropX: DEFAULT_CROP_X,
         cropY: DEFAULT_CROP_Y,
         cropShape: DEFAULT_CROP_SHAPE,
+        serverOnly: true,
       } satisfies LayerState;
     }
     if (

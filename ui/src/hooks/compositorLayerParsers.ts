@@ -62,6 +62,10 @@ export interface LayerState {
   cropY: number;
   /** Shape clipping applied to the layer. */
   cropShape: 'rect' | 'circle';
+  /** True for layers materialized from server view data with no config entry
+   *  in params (auto-PiP stubs).  These must NOT be serialized back to the
+   *  server — doing so would create explicit config that disables aspect-fit. */
+  serverOnly?: boolean;
 }
 
 /** A text overlay stored in compositor config */
@@ -310,6 +314,9 @@ export function serializeImageOverlays(overlays: ImageOverlayState[]): ImageOver
 export function serializeLayers(layers: LayerState[]): Record<string, LayerConfig> {
   const layersMap: Record<string, LayerConfig> = {};
   for (const layer of layers) {
+    // Skip server-only layers (auto-PiP stubs) — serializing them would
+    // create explicit config that disables aspect-fit on the server.
+    if (layer.serverOnly) continue;
     layersMap[layer.id] = {
       rect: serializeRect(layer),
       ...serializeSpatialFields(layer),
