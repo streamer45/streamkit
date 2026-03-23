@@ -108,6 +108,8 @@ function serverLayer(
     y: 0,
     width: 960,
     height: 720,
+    source_width: null,
+    source_height: null,
     ...overrides,
   };
 }
@@ -589,5 +591,40 @@ describe('Monitor view data flow integration', () => {
     const text1 = getTextOverlaysFromStore(result.current.store);
     expect(text1[0].x).toBe(100);
     expect(text1[0].y).toBe(200);
+  });
+
+  it('server-only layers (auto-PiP) are materialized with default config', () => {
+    seedStore();
+
+    // Params only have in_0, but server reports both in_0 and in_1.
+    const opts = monitorOptions();
+    const { result } = renderHook(
+      (props: UseCompositorLayersOptions) => useCompositorLayers(props),
+      { initialProps: opts }
+    );
+
+    // Server view data includes an auto-PiP layer (in_1) not in params.
+    const layout = makeServerLayout({
+      layers: [
+        serverLayer('in_0'),
+        serverLayer('in_1', { x: 800, y: 400, width: 320, height: 240 }),
+      ],
+    });
+    act(() => pushServerViewData(layout));
+
+    const layers = getLayersFromStore(result.current.store);
+    expect(layers).toHaveLength(2);
+
+    const autoPip = layers.find((l) => l.id === 'in_1')!;
+    expect(autoPip).toBeDefined();
+    expect(autoPip.x).toBe(800);
+    expect(autoPip.y).toBe(400);
+    expect(autoPip.width).toBe(320);
+    expect(autoPip.height).toBe(240);
+    // Default config values for materialized stub
+    expect(autoPip.opacity).toBe(1);
+    expect(autoPip.rotationDegrees).toBe(0);
+    expect(autoPip.zIndex).toBe(0);
+    expect(autoPip.visible).toBe(true);
   });
 });

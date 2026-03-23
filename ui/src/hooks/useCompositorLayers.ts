@@ -67,6 +67,7 @@ import type {
 } from './compositorLayerParsers';
 import { useCompositorOverlays } from './compositorOverlays';
 import { useServerLayoutSync } from './compositorServerSync';
+import type { SourceDimsMap } from './compositorServerSync';
 
 export type {
   LayerState,
@@ -266,6 +267,7 @@ export const useCompositorLayers = (
     horizontal: HTMLDivElement | null;
   }>({ vertical: null, horizontal: null });
   const dragStateRef = useRef<DragState | null>(null);
+  const sourceDimsRef = useRef<SourceDimsMap>(new Map());
 
   // ── Commit / persistence ───────────────────────────────────────────────────
   const { commitAdapter, throttledConfigChange, throttledOverlayCommit } = useCompositorCommit({
@@ -347,7 +349,7 @@ export const useCompositorLayers = (
   }, [params, canvasWidth, canvasHeight, isMonitorView, store]);
 
   // ── Server-driven layout (Monitor view only) ───────────────────────────
-  useServerLayoutSync(sessionId, nodeId, store, dragStateRef);
+  useServerLayoutSync(sessionId, nodeId, store, dragStateRef, sourceDimsRef);
 
   // ── Find layer across all types ─────────────────────────────────────────
   const findAnyLayer = useCallback(

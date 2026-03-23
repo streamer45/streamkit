@@ -472,6 +472,36 @@ export function buildConfig(
   };
 }
 
+// ── Aspect-fit prediction ───────────────────────────────────────────────────
+
+/** Compute a destination rect that fits `srcW × srcH` within `bounds`
+ *  while preserving the source aspect ratio.  The fitted rect is centred
+ *  within the bounds.
+ *
+ *  Port of Rust `fit_rect_preserving_aspect` (mod.rs:249-266).
+ *  JS `Math.round()` and Rust `.round()` produce matching results for
+ *  non-negative values, which is all this function rounds. */
+export function fitRectPreservingAspect(
+  srcW: number,
+  srcH: number,
+  bounds: { x: number; y: number; width: number; height: number }
+): { x: number; y: number; width: number; height: number } {
+  if (srcW === 0 || srcH === 0 || bounds.width === 0 || bounds.height === 0) {
+    return { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
+  }
+  const scaleW = bounds.width / srcW;
+  const scaleH = bounds.height / srcH;
+  const scale = Math.min(scaleW, scaleH);
+  const fitW = Math.round(srcW * scale);
+  const fitH = Math.round(srcH * scale);
+  // Centre within the bounding rect.
+  // Use integer division (Math.floor on the half-difference) to match
+  // Rust's saturating_sub / 2 behaviour for non-negative values.
+  const offsetX = Math.floor((bounds.width - fitW) / 2);
+  const offsetY = Math.floor((bounds.height - fitH) / 2);
+  return { x: bounds.x + offsetX, y: bounds.y + offsetY, width: fitW, height: fitH };
+}
+
 // ── Snap guide detection ────────────────────────────────────────────────────
 
 /** Which centre snap guides are currently active during a drag. */
