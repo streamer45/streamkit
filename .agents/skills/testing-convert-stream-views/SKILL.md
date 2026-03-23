@@ -102,7 +102,7 @@ To test actual pipeline execution (not just UI rendering), install plugins via t
 - Screenshot evidence at each step is valuable for verification
 
 ## Relevant Files
-- `ui/src/components/ConvertView.tsx` — Main convert view component
-- `ui/src/components/StreamView.tsx` — Main stream view component
+- `ui/src/views/ConvertView.tsx` — Main convert view component
+- `ui/src/views/StreamView.tsx` — Main stream view component
 - `samples/pipelines/oneshot/` — Oneshot pipeline YAML templates
 - `samples/pipelines/dynamic/` — Dynamic pipeline YAML templates
