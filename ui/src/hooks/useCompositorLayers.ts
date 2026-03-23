@@ -305,7 +305,7 @@ export const useCompositorLayers = (
     const parsed = parseLayers(params, canvasWidth, canvasHeight);
     const currentLayers = getLayersFromStore(store);
 
-    const merged = mergeOverlayState(
+    let merged = mergeOverlayState(
       currentLayers,
       parsed,
       (a, b) =>
@@ -316,6 +316,21 @@ export const useCompositorLayers = (
       isMonitorView,
       isMonitorView ? prevParsedLayersRef.current : undefined
     );
+
+    // In Monitor view, preserve server-only layers (auto-PiP stubs) that
+    // exist in current state but have no config entry in params.  Without
+    // this, mapServerLayers materializes them from view data, but the next
+    // sync-from-props cycle would drop them because parseLayers(params)
+    // doesn't include server-only layers.
+    if (isMonitorView) {
+      const serverOnly = currentLayers.filter(
+        (l) => !parsed.some((p) => p.id === l.id) && !merged.some((m) => m.id === l.id)
+      );
+      if (serverOnly.length > 0) {
+        merged = [...merged, ...serverOnly];
+      }
+    }
+
     if (merged !== currentLayers) setLayersInStore(store, merged);
     prevParsedLayersRef.current = parsed;
 

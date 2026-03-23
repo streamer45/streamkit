@@ -598,7 +598,7 @@ describe('Monitor view data flow integration', () => {
 
     // Params only have in_0, but server reports both in_0 and in_1.
     const opts = monitorOptions();
-    const { result } = renderHook(
+    const { result, rerender } = renderHook(
       (props: UseCompositorLayersOptions) => useCompositorLayers(props),
       { initialProps: opts }
     );
@@ -626,5 +626,18 @@ describe('Monitor view data flow integration', () => {
     expect(autoPip.rotationDegrees).toBe(0);
     expect(autoPip.zIndex).toBe(0);
     expect(autoPip.visible).toBe(true);
+
+    // Params echo-back: auto-PiP stubs must survive across params syncs.
+    // parseLayers(params) won't include in_1, but it must not be dropped.
+    act(() => rerender({ ...opts, params: makeParams() }));
+
+    const layers2 = getLayersFromStore(result.current.store);
+    expect(layers2).toHaveLength(2);
+    const autoPip2 = layers2.find((l) => l.id === 'in_1')!;
+    expect(autoPip2).toBeDefined();
+    expect(autoPip2.x).toBe(800);
+    expect(autoPip2.y).toBe(400);
+    expect(autoPip2.width).toBe(320);
+    expect(autoPip2.height).toBe(240);
   });
 });
