@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 
 import { Button } from '@/components/ui/Button';
 import { usePermissions } from '@/hooks/usePermissions';
@@ -15,6 +16,7 @@ import {
   Container,
   ContentArea,
   ContentWrapper,
+  CopyToast,
   EmptyState,
   ErrorBox,
   FilterBar,
@@ -121,6 +123,8 @@ interface UseLogViewerResult {
   levelFilter: string;
   wrapLines: boolean;
   pageSize: number;
+  expanded: boolean;
+  copyToastVisible: boolean;
   logContainerRef: React.RefObject<HTMLDivElement | null>;
   setFilterText: (v: string) => void;
   handleLoadNewer: () => void;
@@ -128,6 +132,8 @@ interface UseLogViewerResult {
   handleLoadLatest: () => void;
   handleToggleLiveTail: () => void;
   handleToggleWrap: () => void;
+  handleToggleExpand: () => void;
+  handleCopyLine: (line: string) => void;
   handlePageSizeChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
   handleScroll: () => void;
   handleLevelChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
@@ -146,6 +152,9 @@ function useLogViewer(shouldLoad: boolean): UseLogViewerResult {
   const [wrapLines, setWrapLines] = useState(true);
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [autoScroll, setAutoScroll] = useState(true);
+  const [expanded, setExpanded] = useState(false);
+  const [copyToastVisible, setCopyToastVisible] = useState(false);
+  const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const logContainerRef = useRef<HTMLDivElement | null>(null);
 
   const debouncedFilter = useDebouncedValue(filterText, 300);
@@ -214,6 +223,8 @@ function useLogViewer(shouldLoad: boolean): UseLogViewerResult {
     levelFilter,
     wrapLines,
     pageSize,
+    expanded,
+    copyToastVisible,
     logContainerRef,
     setFilterText,
     handleLoadNewer: useCallback(() => {
@@ -234,6 +245,19 @@ function useLogViewer(shouldLoad: boolean): UseLogViewerResult {
       }
     }, [liveTail, loadLogs, setLiveTail]),
     handleToggleWrap: useCallback(() => setWrapLines((prev) => !prev), []),
+    handleToggleExpand: useCallback(() => setExpanded((prev) => !prev), []),
+    handleCopyLine: useCallback((line: string) => {
+      navigator.clipboard
+        .writeText(line)
+        .then(() => {
+          if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current);
+          flushSync(() => setCopyToastVisible(true));
+          copyTimeoutRef.current = setTimeout(() => setCopyToastVisible(false), 1500);
+        })
+        .catch((err) => {
+          logger.error('Failed to copy log line:', err);
+        });
+    }, []),
     handlePageSizeChange: useCallback(
       (e: React.ChangeEvent<HTMLSelectElement>) => setPageSize(Number(e.target.value)),
       []
@@ -284,6 +308,9 @@ const LogsToolbar: React.FC<{ lv: UseLogViewerResult }> = ({ lv }) => (
     </PageSizeSelect>
     <Button onClick={lv.handleToggleWrap} variant="ghost" data-testid="logs-wrap-toggle">
       {lv.wrapLines ? 'No wrap' : 'Wrap'}
+    </Button>
+    <Button onClick={lv.handleToggleExpand} variant="ghost" data-testid="logs-expand-toggle">
+      {lv.expanded ? 'Collapse' : 'Expand'}
     </Button>
     <Button
       onClick={lv.handleToggleLiveTail}
@@ -359,7 +386,7 @@ const LogsView: React.FC = () => {
   return (
     <Container data-testid="logs-view">
       <ContentArea>
-        <ContentWrapper>
+        <ContentWrapper $expanded={lv.expanded}>
           <Card>
             <TitleRow>
               <div>
@@ -387,7 +414,12 @@ const LogsView: React.FC = () => {
                 <EmptyState>No log lines to display.</EmptyState>
               )}
               {lv.lines.map((line, i) => (
-                <LogLine key={i} $level={detectLevel(line)}>
+                <LogLine
+                  key={i}
+                  $level={detectLevel(line)}
+                  onClick={() => lv.handleCopyLine(line)}
+                  title="Click to copy"
+                >
                   {line}
                 </LogLine>
               ))}
@@ -397,6 +429,7 @@ const LogsView: React.FC = () => {
           </Card>
         </ContentWrapper>
       </ContentArea>
+      <CopyToast $visible={lv.copyToastVisible}>Copied to clipboard</CopyToast>
     </Container>
   );
 };

@@ -48,9 +48,55 @@ test.describe('Log Viewer', () => {
     const wrapToggle = page.getByTestId('logs-wrap-toggle');
     await expect(wrapToggle).toBeVisible();
 
+    // Expand toggle should be visible
+    const expandToggle = page.getByTestId('logs-expand-toggle');
+    await expect(expandToggle).toBeVisible();
+    await expect(expandToggle).toHaveText('Expand');
+
     // Live tail button should be visible
     const liveTailButton = page.getByTestId('logs-live-tail');
     await expect(liveTailButton).toBeVisible();
+  });
+
+  test('expand toggle switches between constrained and full-width layout', async ({ page }) => {
+    await expect(page.getByTestId('logs-view')).toBeVisible();
+
+    const expandToggle = page.getByTestId('logs-expand-toggle');
+
+    // Initially should show "Expand" (constrained width)
+    await expect(expandToggle).toHaveText('Expand');
+
+    // Click to expand
+    await expandToggle.click();
+    await expect(expandToggle).toHaveText('Collapse');
+
+    // Click again to collapse
+    await expandToggle.click();
+    await expect(expandToggle).toHaveText('Expand');
+  });
+
+  test('clicking a log line copies it to clipboard', async ({ page, context }) => {
+    await expect(page.getByTestId('logs-view')).toBeVisible();
+
+    // Grant clipboard permissions
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+
+    // Wait for log lines to load
+    const container = page.getByTestId('logs-container');
+    await expect(container).toBeVisible();
+
+    // Get the first log line and click it
+    const firstLogLine = container.locator('div[title="Click to copy"]').first();
+    const lineCount = await container.locator('div[title="Click to copy"]').count();
+
+    if (lineCount > 0) {
+      const lineText = await firstLogLine.textContent();
+      await firstLogLine.click();
+
+      // Verify the clipboard contents match
+      const clipboardText = await page.evaluate(() => navigator.clipboard.readText());
+      expect(clipboardText).toBe(lineText);
+    }
   });
 
   test('pagination buttons are present', async ({ page }) => {

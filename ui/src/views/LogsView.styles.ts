@@ -24,13 +24,15 @@ export const ContentArea = styled.div`
   overflow: hidden;
 `;
 
-export const ContentWrapper = styled.div`
+export const ContentWrapper = styled.div<{ $expanded?: boolean }>`
   width: 100%;
-  padding: 24px 32px;
+  max-width: ${(props) => (props.$expanded ? 'none' : '1200px')};
+  padding: ${(props) => (props.$expanded ? '24px 32px' : '40px')};
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
   min-height: 0;
+  transition: max-width 0.2s ease;
 
   @media (max-width: 768px) {
     padding: 16px;
@@ -140,6 +142,12 @@ export const LogLine = styled.div<{ $level?: string }>`
   white-space: var(--log-wrap, pre-wrap);
   word-break: var(--log-word-break, break-all);
   padding: 1px 12px;
+  cursor: pointer;
+  position: relative;
+
+  &:hover {
+    background: color-mix(in srgb, var(--sk-primary) 6%, transparent) !important;
+  }
 
   ${(props) => {
     switch (props.$level) {
@@ -191,6 +199,26 @@ export const ErrorBox = styled.div`
   background: color-mix(in srgb, var(--sk-danger) 10%, transparent);
   color: var(--sk-text);
   font-size: 13px;
+`;
+
+export const CopyToast = styled.div<{ $visible: boolean }>`
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  background: var(--sk-panel-bg);
+  border: 1px solid var(--sk-border);
+  color: var(--sk-text);
+  font-size: 13px;
+  font-weight: 500;
+  opacity: ${(props) => (props.$visible ? 1 : 0)};
+  transform: translateY(${(props) => (props.$visible ? '0' : '8px')});
+  transition:
+    opacity 0.2s ease,
+    transform 0.2s ease;
+  pointer-events: none;
+  z-index: 1000;
 `;
 
 export const LiveIndicator = styled.span<{ $active: boolean }>`
