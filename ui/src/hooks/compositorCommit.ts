@@ -65,18 +65,12 @@ export function createCommitAdapter(
     return { ...config, _sender: getClientNonce(), _rev: rev };
   }
 
-  /** Send _sender/_rev as individual params alongside the real param. */
-  function paramChangeWithRev(
-    nid: string,
-    key: string,
-    value: unknown,
-    send: (nodeId: string, key: string, value: unknown) => void
-  ) {
-    const rev = bumpConfigRev(nid);
-    send(nid, key, value);
-    send(nid, '_sender', getClientNonce());
-    send(nid, '_rev', rev);
-  }
+  // NOTE: The onParamChange path (tuneNode) sends each key as a separate
+  // UpdateParams WS message that replaces the server's full node.params.
+  // Sending _sender/_rev as standalone messages would wipe durable params
+  // to {} after stripping.  Only the onConfigChange path (tuneNodeConfig)
+  // can safely carry stamped metadata because it sends the full config
+  // object in a single message.
 
   return {
     commitLayers(layers: LayerState[]) {
@@ -86,7 +80,7 @@ export function createCommitAdapter(
         );
         onConfigChange(nodeId, config);
       } else if (onParamChange) {
-        paramChangeWithRev(nodeId, 'layers', serializeLayers(layers), onParamChange);
+        onParamChange(nodeId, 'layers', serializeLayers(layers));
       }
     },
 
@@ -95,12 +89,8 @@ export function createCommitAdapter(
         const config = stamp(buildConfig(paramsRef.current, layersRef.current, text, img));
         onConfigChange(nodeId, config);
       } else if (onParamChange) {
-        const rev = bumpConfigRev(nodeId);
-        const nonce = getClientNonce();
         onParamChange(nodeId, 'text_overlays', serializeTextOverlays(text));
         onParamChange(nodeId, 'image_overlays', serializeImageOverlays(img));
-        onParamChange(nodeId, '_sender', nonce);
-        onParamChange(nodeId, '_rev', rev);
       }
     },
 
@@ -116,8 +106,6 @@ export function createCommitAdapter(
       } else if (onParamChange) {
         const sendLayers = changed?.layers ?? true;
         const sendOverlays = changed?.overlays ?? true;
-        const rev = bumpConfigRev(nodeId);
-        const nonce = getClientNonce();
         if (sendLayers) {
           onParamChange(nodeId, 'layers', serializeLayers(layers));
         }
@@ -125,8 +113,6 @@ export function createCommitAdapter(
           onParamChange(nodeId, 'text_overlays', serializeTextOverlays(text));
           onParamChange(nodeId, 'image_overlays', serializeImageOverlays(img));
         }
-        onParamChange(nodeId, '_sender', nonce);
-        onParamChange(nodeId, '_rev', rev);
       }
     },
   };

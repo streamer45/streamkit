@@ -81,7 +81,7 @@ describe('CommitAdapter causal-consistency stamping', () => {
     expect(config._rev).toBe(1);
   });
 
-  it('commitLayers via onParamChange sends _sender and _rev as separate params', () => {
+  it('commitLayers via onParamChange does NOT send standalone _sender/_rev (avoids param wipe)', () => {
     const onParamChange = vi.fn();
     const refs = makeRefs();
 
@@ -97,12 +97,10 @@ describe('CommitAdapter causal-consistency stamping', () => {
 
     adapter.commitLayers([makeLayerState('in_0')]);
 
-    // Should have 3 calls: layers, _sender, _rev
-    expect(onParamChange).toHaveBeenCalledTimes(3);
-    expect(onParamChange.mock.calls[1][1]).toBe('_sender');
-    expect(onParamChange.mock.calls[1][2]).toBe('test-nonce-123');
-    expect(onParamChange.mock.calls[2][1]).toBe('_rev');
-    expect(onParamChange.mock.calls[2][2]).toBe(1);
+    // Only the real param is sent — no standalone _sender/_rev messages
+    // because each tuneNode call replaces the server's full node.params.
+    expect(onParamChange).toHaveBeenCalledTimes(1);
+    expect(onParamChange.mock.calls[0][1]).toBe('layers');
   });
 
   it('rev increments monotonically across multiple commits', () => {
@@ -132,7 +130,7 @@ describe('CommitAdapter causal-consistency stamping', () => {
     expect(rev3).toBe(3);
   });
 
-  it('commitOverlays via onParamChange sends _sender/_rev once for the batch', () => {
+  it('commitOverlays via onParamChange does NOT send standalone _sender/_rev', () => {
     const onParamChange = vi.fn();
     const refs = makeRefs();
 
@@ -148,13 +146,11 @@ describe('CommitAdapter causal-consistency stamping', () => {
 
     adapter.commitOverlays([], []);
 
-    // text_overlays, image_overlays, _sender, _rev
-    expect(onParamChange).toHaveBeenCalledTimes(4);
+    // Only real params sent — no _sender/_rev standalone messages
+    expect(onParamChange).toHaveBeenCalledTimes(2);
     const calls = onParamChange.mock.calls;
     expect(calls[0][1]).toBe('text_overlays');
     expect(calls[1][1]).toBe('image_overlays');
-    expect(calls[2][1]).toBe('_sender');
-    expect(calls[3][1]).toBe('_rev');
   });
 
   it('returns null when both callbacks are undefined', () => {

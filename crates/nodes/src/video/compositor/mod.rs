@@ -618,12 +618,15 @@ impl ProcessorNode for CompositorNode {
                         NodeControlMessage::UpdateParams(ref params) => {
                             // Extract transient sync metadata before
                             // deserialization strips unknown fields.
-                            if let Some(sender) = params.get("_sender").and_then(|v| v.as_str()) {
-                                self.config_sender = sender.to_string();
-                            }
-                            if let Some(rev) = params.get("_rev").and_then(serde_json::Value::as_u64) {
-                                self.config_rev = rev;
-                            }
+                            // Always overwrite (not conditionally set) so that
+                            // non-stamped UpdateParams clears stale values.
+                            self.config_sender = params.get("_sender")
+                                .and_then(|v| v.as_str())
+                                .map(str::to_string)
+                                .unwrap_or_default();
+                            self.config_rev = params.get("_rev")
+                                .and_then(serde_json::Value::as_u64)
+                                .unwrap_or(0);
 
                             let old_fps = self.config.fps;
                             Self::apply_update_params(

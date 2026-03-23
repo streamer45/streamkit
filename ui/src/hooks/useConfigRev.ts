@@ -16,8 +16,6 @@
  * and is stable for one WS connection lifetime.
  */
 
-import { useCallback, useRef } from 'react';
-
 import { getWebSocketService } from '@/services/websocket';
 
 // ── Singleton rev counters ──────────────────────────────────────────────────
@@ -47,38 +45,4 @@ export function resetAllConfigRevs(): void {
 /** Get the current client nonce from the WebSocket service. */
 export function getClientNonce(): string {
   return getWebSocketService().getClientNonce();
-}
-
-// ── Hook ────────────────────────────────────────────────────────────────────
-
-export interface UseConfigRevResult {
-  /** Current config revision for this node (read from shared counter). */
-  getConfigRev: () => number;
-  /** Bump the rev counter and return the new value. */
-  bumpRev: () => number;
-  /** Get the sender nonce for the current WS session. */
-  getNonce: () => string;
-}
-
-/** Hook that provides per-node config revision tracking.
- *
- *  Usage:
- *  ```ts
- *  const { bumpRev, getNonce } = useConfigRev(nodeId);
- *  // In a commit path:
- *  const rev = bumpRev();
- *  const params = { ...config, _sender: getNonce(), _rev: rev };
- *  ```
- */
-export function useConfigRev(nodeId: string): UseConfigRevResult {
-  const nodeIdRef = useRef(nodeId);
-  nodeIdRef.current = nodeId;
-
-  const getConfigRev = useCallback(() => getLocalConfigRev(nodeIdRef.current), []);
-
-  const bumpRev = useCallback(() => bumpConfigRev(nodeIdRef.current), []);
-
-  const getNonce = useCallback(() => getClientNonce(), []);
-
-  return { getConfigRev, bumpRev, getNonce };
 }
