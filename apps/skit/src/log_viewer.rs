@@ -223,30 +223,54 @@ async fn read_forward(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    let reader = BufReader::new(file);
-    let mut lines_iter = reader.lines();
+    let mut reader = BufReader::new(file);
     let mut lines = Vec::with_capacity(limit.min(256));
     let mut bytes_read: u64 = 0;
 
-    // If we started mid-file and the offset isn't 0, skip the first partial line
+    // If we started mid-file, check whether the offset lands on a line
+    // boundary. Peek the byte immediately before seek_to: if it's '\n',
+    // we're at the start of a complete line and should NOT skip.
+    // Only skip the first partial line when seek_to is in the middle of a line.
     if seek_to > 0 {
-        if let Some(partial) = lines_iter.next_line().await.map_err(|e| {
-            warn!("Failed to read log line: {e}");
+        let inner = reader.get_mut();
+        inner.seek(std::io::SeekFrom::Start(seek_to - 1)).await.map_err(|e| {
+            warn!("Failed to seek for peek: {e}");
             StatusCode::INTERNAL_SERVER_ERROR
-        })? {
-            bytes_read += partial.len() as u64 + 1; // +1 for newline
+        })?;
+        let mut peek = [0u8; 1];
+        let at_line_boundary = inner.read_exact(&mut peek).await.is_ok() && peek[0] == b'\n';
+
+        // Re-seek to the original position (the peek read 1 byte before + that byte)
+        inner.seek(std::io::SeekFrom::Start(seek_to)).await.map_err(|e| {
+            warn!("Failed to re-seek after peek: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+        if !at_line_boundary {
+            // Skip the partial line fragment
+            let mut partial = String::new();
+            if reader.read_line(&mut partial).await.map_err(|e| {
+                warn!("Failed to read partial line: {e}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })? > 0
+            {
+                bytes_read += partial.len() as u64;
+            }
         }
     }
 
+    let mut line_buf = String::new();
     while lines.len() < limit {
-        match lines_iter.next_line().await {
-            Ok(Some(line)) => {
-                bytes_read += line.len() as u64 + 1;
+        line_buf.clear();
+        match reader.read_line(&mut line_buf).await {
+            Ok(0) => break,
+            Ok(n) => {
+                bytes_read += n as u64;
+                let line = line_buf.trim_end_matches('\n').to_string();
                 if line_passes_filters(&line, level, filter) {
                     lines.push(line);
                 }
             },
-            Ok(None) => break,
             Err(e) => {
                 warn!("Error reading log line: {e}");
                 break;
@@ -699,5 +723,51 @@ mod tests {
         for (i, (got, want)) in resp.lines.iter().zip(expected.iter()).enumerate() {
             assert_eq!(got, want, "line {i} mismatch — possible chunk boundary corruption");
         }
+    }
+
+    /// Verify that paginating forward across multiple requests produces every
+    /// line exactly once with no gaps (no dropped lines at page boundaries).
+    #[tokio::test]
+    async fn test_read_forward_paginated_no_gaps() {
+        use tokio::io::AsyncWriteExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.log");
+
+        let mut f = tokio::fs::File::create(&path).await.unwrap();
+        let mut expected: Vec<String> = Vec::new();
+        for i in 0..12 {
+            let line = format!("2024-01-01T00:00:{i:02}Z  INFO test: forward line {i}");
+            f.write_all(line.as_bytes()).await.unwrap();
+            f.write_all(b"\n").await.unwrap();
+            expected.push(line);
+        }
+        f.flush().await.unwrap();
+        drop(f);
+
+        let file_size = tokio::fs::metadata(&path).await.unwrap().len();
+
+        // Read forward in small pages of 3 and collect all results.
+        let mut all_lines: Vec<String> = Vec::new();
+        let mut offset: u64 = 0;
+        let mut pages = 0;
+
+        loop {
+            let file = tokio::fs::File::open(&path).await.unwrap();
+            let resp = read_forward(file, file_size, offset, 3, None, None).await.unwrap();
+
+            all_lines.extend(resp.lines);
+            pages += 1;
+
+            if !resp.has_more {
+                break;
+            }
+            offset = resp.next_offset;
+
+            assert!(pages <= 10, "too many pages — possible infinite loop");
+        }
+
+        assert_eq!(all_lines, expected, "all lines must appear exactly once across forward pages");
+        assert_eq!(pages, 4, "12 lines / 3 per page = 4 pages");
     }
 }
