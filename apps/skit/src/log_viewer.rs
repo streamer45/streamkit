@@ -328,10 +328,22 @@ async fn read_backward(
             carry.clear();
         }
 
-        // If chunk_start > 0, the first element is a partial line whose beginning
-        // is in an earlier chunk. Save it as carry for the next iteration.
+        // If chunk_start > 0, the first element may be a partial line whose
+        // beginning is in an earlier chunk. Check the byte just before chunk_start:
+        // if it's '\n', the chunk starts at a line boundary and the first segment
+        // is a complete line. Only carry it if the preceding byte is NOT '\n'.
         if chunk_start > 0 && !chunk_lines.is_empty() {
-            carry = chunk_lines.remove(0).1;
+            let mut peek = [0u8; 1];
+            let peek_is_newline =
+                if file.seek(std::io::SeekFrom::Start(chunk_start - 1)).await.is_ok() {
+                    file.read_exact(&mut peek).await.is_ok() && peek[0] == b'\n'
+                } else {
+                    false
+                };
+
+            if !peek_is_newline {
+                carry = chunk_lines.remove(0).1;
+            }
         }
 
         // Collect filtered lines in reverse (newest first).
@@ -643,5 +655,49 @@ mod tests {
 
         assert_eq!(all_lines, expected, "all lines must appear exactly once across pages");
         assert_eq!(pages, 4, "20 lines / 5 per page = 4 pages");
+    }
+
+    /// Verify that read_backward does NOT corrupt lines when a chunk boundary
+    /// aligns exactly with a line boundary (i.e. the byte before chunk_start
+    /// is '\n'). This exercises the peek-byte logic that distinguishes partial
+    /// lines from complete lines at chunk boundaries.
+    #[tokio::test]
+    async fn test_read_backward_chunk_boundary_on_line_boundary() {
+        use tokio::io::AsyncWriteExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.log");
+
+        // Write enough data to force multiple chunks (>32KB).
+        // Each line is exactly 100 bytes (99 chars + '\n') so we can
+        // reason about byte positions precisely.
+        let mut f = tokio::fs::File::create(&path).await.unwrap();
+        let mut expected: Vec<String> = Vec::new();
+        let line_count = 500; // 500 * 100 = 50KB, exceeds the 32KB min chunk
+        for i in 0..line_count {
+            let prefix = format!("2024-01-01T00:00:00Z  INFO test: line {i:04} ");
+            let padding = "X".repeat(99 - prefix.len());
+            let line = format!("{prefix}{padding}");
+            assert_eq!(line.len(), 99, "each line should be 99 chars");
+            f.write_all(line.as_bytes()).await.unwrap();
+            f.write_all(b"\n").await.unwrap();
+            expected.push(line);
+        }
+        f.flush().await.unwrap();
+        drop(f);
+
+        let file = tokio::fs::File::open(&path).await.unwrap();
+        let file_size = file.metadata().await.unwrap().len();
+        assert_eq!(file_size, line_count as u64 * 100);
+
+        // Read all lines backward in one request.
+        let resp = read_backward(file, file_size, None, line_count + 10, None, None).await.unwrap();
+
+        assert_eq!(resp.lines.len(), expected.len(), "should return all {line_count} lines");
+
+        // Verify no line merging happened — each line should match exactly.
+        for (i, (got, want)) in resp.lines.iter().zip(expected.iter()).enumerate() {
+            assert_eq!(got, want, "line {i} mismatch — possible chunk boundary corruption");
+        }
     }
 }
