@@ -130,8 +130,8 @@ export function useMonitorPreview(
     if (client) {
       gatewayPath = client.gateway_path ?? undefined;
       outputBroadcast = client.watch?.broadcast;
-      outputsAudio = client.watch?.audio ?? true;
-      outputsVideo = client.watch?.video ?? true;
+      outputsAudio = client.watch?.audio ?? false;
+      outputsVideo = client.watch?.video ?? false;
     } else if (pipeline) {
       const fallback = deriveMoqConfigFromNodes(pipeline);
       gatewayPath = fallback.gatewayPath;
