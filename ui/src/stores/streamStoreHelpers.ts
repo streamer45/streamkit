@@ -64,6 +64,9 @@ export interface ConnectableState {
   micStatus: MicStatus;
   cameraStatus: CameraStatus;
   watchStatus: WatchStatus;
+  /** Human-readable label for the current phase of a connect attempt
+   *  (e.g. 'devices', 'relay', 'pipeline').  Empty when idle. */
+  connectingStep: string;
 }
 
 type StateSetter = (partial: Partial<ConnectableState>) => void;
@@ -89,8 +92,13 @@ export function waitForSignalValue<T>(
   signal: Getter<T>,
   predicate: (value: T) => boolean,
   timeoutMs: number,
-  timeoutMessage: string
+  timeoutMessage: string,
+  abortSignal?: AbortSignal
 ): Promise<T> {
+  if (abortSignal?.aborted) {
+    return Promise.reject(new DOMException('Aborted', 'AbortError'));
+  }
+
   const initial = signal.peek();
   if (predicate(initial)) {
     return Promise.resolve(initial);
@@ -98,15 +106,31 @@ export function waitForSignalValue<T>(
 
   return new Promise((resolve, reject) => {
     let dispose: () => void = () => {};
-    const timeoutId = setTimeout(() => {
+
+    const cleanup = () => {
+      clearTimeout(timeoutId);
       dispose();
+    };
+
+    const timeoutId = setTimeout(() => {
+      cleanup();
       reject(new Error(timeoutMessage));
     }, timeoutMs);
 
+    if (abortSignal) {
+      abortSignal.addEventListener(
+        'abort',
+        () => {
+          cleanup();
+          reject(new DOMException('Aborted', 'AbortError'));
+        },
+        { once: true }
+      );
+    }
+
     dispose = signal.subscribe((value) => {
       if (predicate(value)) {
-        clearTimeout(timeoutId);
-        dispose();
+        cleanup();
         resolve(value);
       }
     });
@@ -122,20 +146,39 @@ export function waitForSignalValue<T>(
 async function waitForBroadcastAnnouncement(
   connection: Hang.Moq.Connection.Reload,
   broadcastName: string,
-  timeoutMs = 15_000
+  timeoutMs = 15_000,
+  abortSignal?: AbortSignal
 ): Promise<void> {
+  if (abortSignal?.aborted) throw new DOMException('Aborted', 'AbortError');
   const conn = connection.established.peek();
   if (!conn) return;
   logger.info(`Waiting for broadcast '${broadcastName}' announcement...`);
   const announcements = conn.announced();
   const deadline = Date.now() + timeoutMs;
   try {
+    // Build a promise that rejects when the abort signal fires so the
+    // Promise.race below reacts immediately instead of polling.
+    const abortPromise = abortSignal
+      ? new Promise<never>((_, reject) => {
+          abortSignal.addEventListener(
+            'abort',
+            () => reject(new DOMException('Aborted', 'AbortError')),
+            { once: true }
+          );
+        })
+      : null;
+
     while (Date.now() < deadline) {
       const remaining = deadline - Date.now();
-      const entry = await Promise.race([
+      const racers: Promise<unknown>[] = [
         announcements.next(),
         new Promise<null>((r) => setTimeout(() => r(null), remaining)),
-      ]);
+      ];
+      if (abortPromise) racers.push(abortPromise);
+
+      const entry = (await Promise.race(racers)) as Awaited<
+        ReturnType<typeof announcements.next>
+      > | null;
       if (!entry) break;
       if (entry.active && entry.path.toString() === broadcastName) {
         logger.info(`Broadcast '${broadcastName}' announced`);
@@ -320,7 +363,8 @@ async function setupMediaSources(
   healthEffect: Effect,
   needsAudio: boolean,
   needsVideo: boolean,
-  set: StateSetter
+  set: StateSetter,
+  abortSignal?: AbortSignal
 ): Promise<{
   microphone: Publish.Source.Microphone | null;
   camera: Publish.Source.Camera | null;
@@ -346,7 +390,8 @@ async function setupMediaSources(
           camera.source,
           (v) => v !== undefined,
           15_000,
-          'Camera not available'
+          'Camera not available',
+          abortSignal
         );
       } catch (e) {
         shutdownMediaSource(camera);
@@ -364,13 +409,20 @@ async function setupPublishPath(
   inputBroadcast: string,
   needsAudio: boolean,
   needsVideo: boolean,
-  set: StateSetter
+  set: StateSetter,
+  abortSignal?: AbortSignal
 ): Promise<{
   microphone: Publish.Source.Microphone | null;
   camera: Publish.Source.Camera | null;
   publish: Publish.Broadcast;
 }> {
-  const { microphone, camera } = await setupMediaSources(healthEffect, needsAudio, needsVideo, set);
+  const { microphone, camera } = await setupMediaSources(
+    healthEffect,
+    needsAudio,
+    needsVideo,
+    set,
+    abortSignal
+  );
 
   logger.info('Step 5: Creating publish broadcast');
   const broadcastConfig: ConstructorParameters<typeof Publish.Broadcast>[0] = {
@@ -398,7 +450,8 @@ async function setupPublishPath(
         publish.video.catalog,
         (v) => v !== undefined,
         10_000,
-        'Video encoder failed to initialize'
+        'Video encoder failed to initialize',
+        abortSignal
       );
     } catch (e) {
       publish.close();
@@ -499,32 +552,102 @@ function applyPublishResult(
   attempt.publish = result.publish;
 }
 
+/** Create the MoQ connection and wire up the health-status sync effect. */
+function createConnectionAndHealth(
+  serverUrl: string,
+  moqToken: string,
+  get: () => ConnectableState,
+  set: StateSetter
+): { connection: Hang.Moq.Connection.Reload; healthEffect: Effect } {
+  logger.info('Step 1: Creating connection to relay server');
+  const url = new URL(serverUrl);
+  const jwt = moqToken.trim();
+  if (jwt) {
+    url.searchParams.set('jwt', jwt);
+  }
+
+  const connection = new Hang.Moq.Connection.Reload({ url, enabled: true });
+  const healthEffect = new Effect();
+  setupConnectionStatusSync(healthEffect, connection, get, set);
+  return { connection, healthEffect };
+}
+
+/** Wait for relay connection, optionally wait for broadcast announcement, then set up watch. */
+async function connectWatchPath(
+  attempt: ConnectAttempt,
+  state: ConnectableState,
+  decision: Extract<ConnectDecision, { ok: true }>,
+  set: StateSetter,
+  abortSignal: AbortSignal
+): Promise<void> {
+  set({ connectingStep: 'relay' });
+  await waitForSignalValue(
+    attempt.connection!.established,
+    (value) => value !== undefined,
+    12_000,
+    'Timed out connecting to MoQ gateway.',
+    abortSignal
+  );
+
+  if (decision.shouldWatch) {
+    // When publishing to an external relay, the skit pipeline needs time to
+    // discover input tracks, build the graph, and start publishing output.
+    // Wait for the output broadcast to be announced on the relay before
+    // subscribing, otherwise the catalog subscribe gets RESET_STREAM.
+    // In gateway mode the skit server manages the peer connection directly,
+    // so no announcement polling is needed.
+    if (decision.shouldPublish && state.isExternalRelay) {
+      set({ connectingStep: 'pipeline' });
+      await waitForBroadcastAnnouncement(
+        attempt.connection!,
+        state.outputBroadcast,
+        15_000,
+        abortSignal
+      );
+    }
+
+    applyWatchResult(
+      attempt,
+      setupWatchPath(
+        attempt.healthEffect!,
+        attempt.connection!,
+        state.outputBroadcast,
+        state.pipelineOutputsAudio,
+        state.pipelineOutputsVideo,
+        set
+      )
+    );
+  }
+}
+
 /** Core connection logic extracted from the store for reduced complexity. */
 export async function performConnect(
   state: ConnectableState,
   decision: Extract<ConnectDecision, { ok: true }>,
   get: () => ConnectableState & { outputBroadcast: string },
-  set: StateSetter
+  set: StateSetter,
+  abortSignal: AbortSignal
 ): Promise<boolean> {
   const attempt: ConnectAttempt = { ...NULL_MOQ_REFS };
 
   try {
-    logger.info('Step 1: Creating connection to relay server');
-    const url = new URL(decision.trimmedServerUrl);
-    const jwt = state.moqToken.trim();
-    if (jwt) {
-      url.searchParams.set('jwt', jwt);
-    }
+    if (abortSignal.aborted) throw new DOMException('Aborted', 'AbortError');
 
-    attempt.connection = new Hang.Moq.Connection.Reload({ url, enabled: true });
-    attempt.healthEffect = new Effect();
-    setupConnectionStatusSync(attempt.healthEffect, attempt.connection, get, set);
+    const { connection, healthEffect } = createConnectionAndHealth(
+      decision.trimmedServerUrl,
+      state.moqToken,
+      get,
+      set
+    );
+    attempt.connection = connection;
+    attempt.healthEffect = healthEffect;
 
     // Set up publish BEFORE watch. For external relay pipelines (pub/sub),
     // the skit pipeline needs input data before it can publish output.
     // If we watch first, the subscribe to output/catalog.json fails with
     // RESET_STREAM because skit hasn't started publishing yet.
     if (decision.shouldPublish) {
+      set({ connectingStep: 'devices' });
       applyPublishResult(
         attempt,
         await setupPublishPath(
@@ -533,40 +656,19 @@ export async function performConnect(
           state.inputBroadcast,
           state.pipelineNeedsAudio,
           state.pipelineNeedsVideo,
-          set
+          set,
+          abortSignal
         )
       );
     }
 
-    await waitForSignalValue(
-      attempt.connection.established,
-      (value) => value !== undefined,
-      12_000,
-      'Timed out connecting to MoQ gateway.'
-    );
+    await connectWatchPath(attempt, state, decision, set, abortSignal);
 
-    if (decision.shouldWatch) {
-      // When publishing to an external relay, the skit pipeline needs time to
-      // discover input tracks, build the graph, and start publishing output.
-      // Wait for the output broadcast to be announced on the relay before
-      // subscribing, otherwise the catalog subscribe gets RESET_STREAM.
-      // In gateway mode the skit server manages the peer connection directly,
-      // so no announcement polling is needed.
-      if (decision.shouldPublish && state.isExternalRelay) {
-        await waitForBroadcastAnnouncement(attempt.connection, state.outputBroadcast);
-      }
-
-      applyWatchResult(
-        attempt,
-        setupWatchPath(
-          attempt.healthEffect,
-          attempt.connection,
-          state.outputBroadcast,
-          state.pipelineOutputsAudio,
-          state.pipelineOutputsVideo,
-          set
-        )
-      );
+    // If aborted between the last await and now, discard this attempt
+    // so we don't overwrite a newer connect's state.
+    if (abortSignal.aborted) {
+      cleanupConnectAttempt(attempt);
+      return false;
     }
 
     schedulePostConnectWarnings(decision, attempt, get, set);
@@ -574,6 +676,7 @@ export async function performConnect(
     set({
       ...attempt,
       status: 'connected',
+      connectingStep: '',
       isMicEnabled: decision.shouldPublish && state.pipelineNeedsAudio,
       isCameraEnabled: decision.shouldPublish && state.pipelineNeedsVideo,
     });
@@ -584,11 +687,18 @@ export async function performConnect(
     logger.info(`Connection established: ${modes.join(' and ')}`);
     return true;
   } catch (error) {
-    logger.error('Connection failed:', error);
     cleanupConnectAttempt(attempt);
 
+    // If this attempt was aborted (superseded by disconnect or a newer
+    // connect), silently discard — don't overwrite the store.
+    if (abortSignal.aborted) {
+      return false;
+    }
+
+    logger.error('Connection failed:', error);
     set({
       status: 'disconnected',
+      connectingStep: '',
       watchStatus: 'disabled',
       micStatus: 'disabled',
       cameraStatus: 'disabled',

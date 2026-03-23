@@ -1,6 +1,12 @@
 name: Text-to-Speech (Supertonic)
 description: Synthesizes speech from text using Supertonic (5 languages, 10 voice styles)
 mode: oneshot
+client:
+  input:
+    type: text
+    placeholder: "Enter text to synthesize"
+  output:
+    type: audio
 steps:
   - kind: streamkit::http_input
   - kind: core::text_chunker

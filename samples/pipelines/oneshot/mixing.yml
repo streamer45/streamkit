@@ -1,9 +1,14 @@
-#
-# skit:input_asset_tags=speech
-
 name: Audio Mixing (Upload + Music Track)
 description: Mixes uploaded audio with a built-in music track and returns Opus/WebM
 mode: oneshot
+client:
+  input:
+    type: file_upload
+    accept: "audio/opus"
+    asset_tags:
+      - speech
+  output:
+    type: audio
 nodes:
   # ============================================================
   # INPUTS: HTTP upload + local music file

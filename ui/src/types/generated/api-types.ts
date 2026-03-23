@@ -363,7 +363,12 @@ export type Node = { kind: string, params: JsonValue,
  */
 state: NodeState | null, };
 
-export type Pipeline = { name: string | null, description: string | null, mode: EngineMode, nodes: Record<string, Node>, connections: Array<Connection>, 
+export type Pipeline = { name: string | null, description: string | null, mode: EngineMode, 
+/**
+ * Declarative UI metadata — forwarded unchanged from `UserPipeline`,
+ * ignored by the engine for execution.
+ */
+client?: ClientSection | null, nodes: Record<string, Node>, connections: Array<Connection>, 
 /**
  * Resolved per-node view data (e.g., compositor layout).
  * Only populated in API responses; absent from pipeline definitions.
@@ -419,3 +424,107 @@ export type ValidationError = { error_type: ValidationErrorType, message: string
 export type ValidationErrorType = "error" | "warning";
 
 export type PermissionsInfo = { create_sessions: boolean, destroy_sessions: boolean, list_sessions: boolean, modify_sessions: boolean, tune_nodes: boolean, load_plugins: boolean, delete_plugins: boolean, list_nodes: boolean, list_samples: boolean, read_samples: boolean, write_samples: boolean, delete_samples: boolean, access_all_sessions: boolean, upload_assets: boolean, delete_assets: boolean, };
+
+
+// client section
+export type ClientSection = { 
+/**
+ * Direct relay URL for external MoQ relay pattern.
+ */
+relay_url: string | null, 
+/**
+ * Gateway path for gateway-managed MoQ pattern.
+ */
+gateway_path: string | null, 
+/**
+ * Browser-side publish configuration (dynamic pipelines).
+ */
+publish: PublishConfig | null, 
+/**
+ * Browser-side watch configuration (dynamic pipelines).
+ */
+watch: WatchConfig | null, 
+/**
+ * Input UX configuration (oneshot pipelines).
+ */
+input: InputConfig | null, 
+/**
+ * Output rendering configuration (oneshot pipelines).
+ */
+output: OutputConfig | null, };
+
+export type PublishConfig = { 
+/**
+ * Broadcast name the browser publishes to.
+ */
+broadcast: string, 
+/**
+ * Whether the pipeline consumes audio from the browser.
+ */
+audio: boolean, 
+/**
+ * Whether the pipeline consumes video from the browser.
+ */
+video: boolean, };
+
+export type WatchConfig = { 
+/**
+ * Broadcast name the browser subscribes to.
+ */
+broadcast: string, 
+/**
+ * Whether the pipeline outputs audio to subscribers.
+ */
+audio: boolean, 
+/**
+ * Whether the pipeline outputs video to subscribers.
+ */
+video: boolean, };
+
+export type InputConfig = { 
+/**
+ * The kind of input UX to present.
+ */
+type: InputType, 
+/**
+ * MIME filter for file pickers (e.g. `audio/*`).
+ */
+accept: string | null, 
+/**
+ * Tags for filtering the asset picker (e.g. `["speech"]`).
+ */
+asset_tags: Array<string> | null, 
+/**
+ * Placeholder text for text inputs.
+ */
+placeholder: string | null, 
+/**
+ * Per-field UI hints keyed by `http_input` field name.
+ */
+field_hints: Record<string, FieldHint> | null, };
+
+export type InputType = "file_upload" | "text" | "trigger" | "none";
+
+export type OutputConfig = { 
+/**
+ * The media kind the pipeline produces.
+ */
+type: OutputType, };
+
+export type OutputType = "transcription" | "json" | "audio" | "video";
+
+export type FieldHint = { 
+/**
+ * Override the field's input type (default is file upload).
+ */
+type: FieldType | null, 
+/**
+ * MIME filter for file picker.
+ */
+accept: string | null, 
+/**
+ * Placeholder text for text inputs.
+ */
+placeholder: string | null, };
+
+export type FieldType = "file" | "text";

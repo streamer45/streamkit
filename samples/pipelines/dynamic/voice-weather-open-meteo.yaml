@@ -30,6 +30,16 @@
 name: Real-Time Voice Weather (Open-Meteo)
 description: Ask for the weather in a location (STT → Open-Meteo → TTS) via MoQ
 mode: dynamic
+client:
+  gateway_path: /moq/voice-weather-open-meteo
+  publish:
+    broadcast: input
+    audio: true
+    video: false
+  watch:
+    broadcast: output
+    audio: true
+    video: false
 nodes:
   # ============================================================
   # INPUT: Receive audio from MoQ broadcast

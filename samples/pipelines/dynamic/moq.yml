@@ -1,6 +1,16 @@
 name: Real-Time MoQ Transcoder
 description: Decodes a MoQ input broadcast, applies gain, and republishes to MoQ
 mode: dynamic
+client:
+  gateway_path: /moq/transcoder
+  publish:
+    broadcast: input
+    audio: true
+    video: false
+  watch:
+    broadcast: output
+    audio: true
+    video: false
 nodes:
   moq_peer:
     kind: transport::moq::peer

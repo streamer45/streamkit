@@ -2,11 +2,21 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-# skit:input_formats=voice:wav
-
 name: Text-to-Speech (Pocket TTS Voice Clone)
 description: Synthesizes speech from text using Pocket TTS with a voice prompt WAV
 mode: oneshot
+client:
+  input:
+    type: text
+    field_hints:
+      voice:
+        type: file
+        accept: "audio/wav"
+      text:
+        type: text
+        placeholder: "Enter text to synthesize"
+  output:
+    type: audio
 nodes:
   uploads:
     kind: streamkit::http_input

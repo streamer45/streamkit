@@ -4,10 +4,10 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { extractMoqPeerSettings } from './moqPeerSettings';
+import { extractMoqPeerSettings, updateUrlPath } from './moqPeerSettings';
 
 // ---------------------------------------------------------------------------
-// extractMoqPeerSettings — basic parsing
+// extractMoqPeerSettings — reads the declarative `client` section
 // ---------------------------------------------------------------------------
 
 describe('extractMoqPeerSettings', () => {
@@ -15,311 +15,209 @@ describe('extractMoqPeerSettings', () => {
     expect(extractMoqPeerSettings('')).toBeNull();
   });
 
-  it('should return null for YAML without nodes', () => {
+  it('should return null for YAML without client section', () => {
     expect(extractMoqPeerSettings('name: test')).toBeNull();
-  });
-
-  it('should return null when no moq_peer node exists', () => {
-    const yaml = `
-nodes:
-  gain:
-    kind: audio::gain
-    params:
-      gain: 1.0
-`;
-    expect(extractMoqPeerSettings(yaml)).toBeNull();
   });
 
   it('should return null for invalid YAML', () => {
     expect(extractMoqPeerSettings('{{{')).toBeNull();
   });
 
-  it('should return null when moq_peer has no params', () => {
+  it('should return null for oneshot client (input/output only)', () => {
     const yaml = `
+client:
+  input:
+    type: file_upload
+    accept: "audio/*"
+  output:
+    type: audio
 nodes:
-  moq_peer:
-    kind: transport::moq::peer
+  gain:
+    kind: audio::gain
 `;
     expect(extractMoqPeerSettings(yaml)).toBeNull();
   });
 
-  it('should extract basic moq_peer settings', () => {
+  it('should extract gateway-based settings with publish and watch', () => {
     const yaml = `
-nodes:
-  moq_peer:
-    kind: transport::moq::peer
-    params:
-      gateway_path: /moq
-      input_broadcast: input
-      output_broadcast: output
+client:
+  gateway_path: /moq/echo
+  publish:
+    broadcast: echo-demo
+    audio: true
+    video: false
+  watch:
+    broadcast: echo-demo
+    audio: true
+    video: false
 `;
     const result = extractMoqPeerSettings(yaml);
     expect(result).not.toBeNull();
-    expect(result!.gatewayPath).toBe('/moq');
-    expect(result!.inputBroadcast).toBe('input');
-    expect(result!.outputBroadcast).toBe('output');
+    expect(result!.gatewayPath).toBe('/moq/echo');
+    expect(result!.inputBroadcast).toBe('echo-demo');
+    expect(result!.outputBroadcast).toBe('echo-demo');
     expect(result!.hasInputBroadcast).toBe(true);
+    expect(result!.needsAudioInput).toBe(true);
+    expect(result!.needsVideoInput).toBe(false);
+    expect(result!.outputsAudio).toBe(true);
+    expect(result!.outputsVideo).toBe(false);
   });
 
-  it('should report hasInputBroadcast false when input_broadcast is absent', () => {
+  it('should extract relay-based settings', () => {
     const yaml = `
-nodes:
-  moq_peer:
-    kind: transport::moq::peer
-    params:
-      gateway_path: /moq
-      output_broadcast: output
+client:
+  relay_url: "https://relay.example.com"
+  publish:
+    broadcast: input-stream
+    audio: true
+    video: true
+  watch:
+    broadcast: output-stream
+    audio: true
+    video: false
+`;
+    const result = extractMoqPeerSettings(yaml);
+    expect(result).not.toBeNull();
+    expect(result!.relayUrl).toBe('https://relay.example.com');
+    expect(result!.gatewayPath).toBeUndefined();
+    expect(result!.inputBroadcast).toBe('input-stream');
+    expect(result!.outputBroadcast).toBe('output-stream');
+    expect(result!.hasInputBroadcast).toBe(true);
+    expect(result!.needsAudioInput).toBe(true);
+    expect(result!.needsVideoInput).toBe(true);
+    expect(result!.outputsAudio).toBe(true);
+    expect(result!.outputsVideo).toBe(false);
+  });
+
+  it('should report hasInputBroadcast false when publish is absent', () => {
+    const yaml = `
+client:
+  gateway_path: /moq/colorbars
+  watch:
+    broadcast: colorbars
+    audio: false
+    video: true
 `;
     const result = extractMoqPeerSettings(yaml);
     expect(result).not.toBeNull();
     expect(result!.hasInputBroadcast).toBe(false);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// detectPeerInputMediaTypes (exercised through extractMoqPeerSettings)
-// ---------------------------------------------------------------------------
-
-describe('detectPeerInputMediaTypes (via extractMoqPeerSettings)', () => {
-  it('should detect audio input (bare peer reference)', () => {
-    const yaml = `
-nodes:
-  moq_peer:
-    kind: transport::moq::peer
-    params:
-      gateway_path: /moq
-      output_broadcast: output
-  opus_decoder:
-    kind: audio::opus::decoder
-    needs: moq_peer
-`;
-    const result = extractMoqPeerSettings(yaml);
-    expect(result!.needsAudioInput).toBe(true);
-    expect(result!.needsVideoInput).toBe(false);
-  });
-
-  it('should detect audio input (explicit .out pin)', () => {
-    const yaml = `
-nodes:
-  moq_peer:
-    kind: transport::moq::peer
-    params:
-      gateway_path: /moq
-      output_broadcast: output
-  opus_decoder:
-    kind: audio::opus::decoder
-    needs: moq_peer.out
-`;
-    const result = extractMoqPeerSettings(yaml);
-    expect(result!.needsAudioInput).toBe(true);
-    expect(result!.needsVideoInput).toBe(false);
-  });
-
-  it('should detect video input (.out_1 pin)', () => {
-    const yaml = `
-nodes:
-  moq_peer:
-    kind: transport::moq::peer
-    params:
-      gateway_path: /moq
-      output_broadcast: output
-  vp9_decoder:
-    kind: video::vp9::decoder
-    needs: moq_peer.out_1
-`;
-    const result = extractMoqPeerSettings(yaml);
-    expect(result!.needsAudioInput).toBe(false);
-    expect(result!.needsVideoInput).toBe(true);
-  });
-
-  it('should detect both audio and video inputs', () => {
-    const yaml = `
-nodes:
-  moq_peer:
-    kind: transport::moq::peer
-    params:
-      gateway_path: /moq
-      output_broadcast: output
-  opus_decoder:
-    kind: audio::opus::decoder
-    needs: moq_peer.out
-  vp9_decoder:
-    kind: video::vp9::decoder
-    needs: moq_peer.out_1
-`;
-    const result = extractMoqPeerSettings(yaml);
-    expect(result!.needsAudioInput).toBe(true);
-    expect(result!.needsVideoInput).toBe(true);
-  });
-
-  it('should handle needs as array', () => {
-    const yaml = `
-nodes:
-  moq_peer:
-    kind: transport::moq::peer
-    params:
-      gateway_path: /moq
-      output_broadcast: output
-  mixer:
-    kind: audio::mixer
-    needs:
-      - moq_peer
-      - other_source
-`;
-    const result = extractMoqPeerSettings(yaml);
-    expect(result!.needsAudioInput).toBe(true);
-  });
-
-  it('should handle needs as map (record)', () => {
-    const yaml = `
-nodes:
-  moq_peer:
-    kind: transport::moq::peer
-    params:
-      gateway_path: /moq
-      output_broadcast: output
-  compositor:
-    kind: video::compositor
-    needs:
-      in: colorbars
-      in_1: moq_peer.out_1
-`;
-    const result = extractMoqPeerSettings(yaml);
-    expect(result!.needsVideoInput).toBe(true);
-  });
-
-  it('should report no inputs when no downstream nodes reference the peer', () => {
-    const yaml = `
-nodes:
-  moq_peer:
-    kind: transport::moq::peer
-    params:
-      gateway_path: /moq
-      output_broadcast: output
-  gain:
-    kind: audio::gain
-    needs: some_other_node
-`;
-    const result = extractMoqPeerSettings(yaml);
     expect(result!.needsAudioInput).toBe(false);
     expect(result!.needsVideoInput).toBe(false);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// detectPeerOutputMediaTypes (exercised through extractMoqPeerSettings)
-// ---------------------------------------------------------------------------
-
-describe('detectPeerOutputMediaTypes (via extractMoqPeerSettings)', () => {
-  it('should detect audio output when moq_peer needs an audio:: node', () => {
-    const yaml = `
-nodes:
-  opus_encoder:
-    kind: audio::opus::encoder
-    needs: gain
-  gain:
-    kind: audio::gain
-  moq_peer:
-    kind: transport::moq::peer
-    params:
-      gateway_path: /moq
-      input_broadcast: input
-      output_broadcast: output
-    needs: opus_encoder
-`;
-    const result = extractMoqPeerSettings(yaml);
-    expect(result!.outputsAudio).toBe(true);
-    expect(result!.outputsVideo).toBe(false);
-  });
-
-  it('should detect video output when moq_peer needs a video:: node', () => {
-    const yaml = `
-nodes:
-  vp9_encoder:
-    kind: video::vp9::encoder
-    needs: pixel_convert
-  pixel_convert:
-    kind: video::pixel_convert
-  moq_peer:
-    kind: transport::moq::peer
-    params:
-      gateway_path: /moq
-      input_broadcast: input
-      output_broadcast: output
-    needs: vp9_encoder
-`;
-    const result = extractMoqPeerSettings(yaml);
     expect(result!.outputsAudio).toBe(false);
     expect(result!.outputsVideo).toBe(true);
   });
 
-  it('should detect both audio and video outputs', () => {
+  it('should detect audio+video publish and watch', () => {
     const yaml = `
-nodes:
-  opus_encoder:
-    kind: audio::opus::encoder
-  vp9_encoder:
-    kind: video::vp9::encoder
-  moq_peer:
-    kind: transport::moq::peer
-    params:
-      gateway_path: /moq
-      input_broadcast: input
-      output_broadcast: output
-    needs:
-      in: opus_encoder
-      in_1: vp9_encoder
+client:
+  gateway_path: /moq/av
+  publish:
+    broadcast: av-input
+    audio: true
+    video: true
+  watch:
+    broadcast: av-output
+    audio: true
+    video: true
 `;
     const result = extractMoqPeerSettings(yaml);
+    expect(result!.needsAudioInput).toBe(true);
+    expect(result!.needsVideoInput).toBe(true);
     expect(result!.outputsAudio).toBe(true);
     expect(result!.outputsVideo).toBe(true);
   });
 
-  it('should report no outputs when moq_peer has no needs', () => {
+  it('should handle watch-only pipeline (no publish)', () => {
     const yaml = `
-nodes:
-  moq_peer:
-    kind: transport::moq::peer
-    params:
-      gateway_path: /moq
-      output_broadcast: output
+client:
+  gateway_path: /moq/output
+  watch:
+    broadcast: output-stream
+    audio: true
+    video: true
 `;
     const result = extractMoqPeerSettings(yaml);
-    expect(result!.outputsAudio).toBe(false);
-    expect(result!.outputsVideo).toBe(false);
-  });
-
-  it('should handle dotted pin references in moq_peer needs', () => {
-    const yaml = `
-nodes:
-  opus_encoder:
-    kind: audio::opus::encoder
-  moq_peer:
-    kind: transport::moq::peer
-    params:
-      gateway_path: /moq
-      input_broadcast: input
-      output_broadcast: output
-    needs: opus_encoder.out
-`;
-    const result = extractMoqPeerSettings(yaml);
-    // "opus_encoder.out" → nodeName is "opus_encoder" → kind is audio:: → outputsAudio
+    expect(result).not.toBeNull();
+    expect(result!.hasInputBroadcast).toBe(false);
+    expect(result!.needsAudioInput).toBe(false);
+    expect(result!.needsVideoInput).toBe(false);
     expect(result!.outputsAudio).toBe(true);
+    expect(result!.outputsVideo).toBe(true);
   });
 
-  it('should ignore upstream nodes without a kind', () => {
+  it('should return settings when only gateway_path is present', () => {
     const yaml = `
-nodes:
-  unknown_node: {}
-  moq_peer:
-    kind: transport::moq::peer
-    params:
-      gateway_path: /moq
-      output_broadcast: output
-    needs: unknown_node
+client:
+  gateway_path: /moq/peer
 `;
     const result = extractMoqPeerSettings(yaml);
+    expect(result).not.toBeNull();
+    expect(result!.gatewayPath).toBe('/moq/peer');
+    expect(result!.hasInputBroadcast).toBe(false);
     expect(result!.outputsAudio).toBe(false);
     expect(result!.outputsVideo).toBe(false);
+  });
+
+  it('should return settings when only relay_url is present', () => {
+    const yaml = `
+client:
+  relay_url: "https://relay.example.com"
+`;
+    const result = extractMoqPeerSettings(yaml);
+    expect(result).not.toBeNull();
+    expect(result!.relayUrl).toBe('https://relay.example.com');
+    expect(result!.hasInputBroadcast).toBe(false);
+  });
+
+  it('should handle audio-only publish', () => {
+    const yaml = `
+client:
+  gateway_path: /moq/audio
+  publish:
+    broadcast: mic
+    audio: true
+    video: false
+  watch:
+    broadcast: processed
+    audio: true
+    video: false
+`;
+    const result = extractMoqPeerSettings(yaml);
+    expect(result!.needsAudioInput).toBe(true);
+    expect(result!.needsVideoInput).toBe(false);
+    expect(result!.outputsAudio).toBe(true);
+    expect(result!.outputsVideo).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// updateUrlPath — preserves host when applying a gateway path
+// ---------------------------------------------------------------------------
+
+describe('updateUrlPath', () => {
+  it('should replace path on a standard URL', () => {
+    expect(updateUrlPath('http://127.0.0.1:4545/moq', '/moq/echo')).toBe(
+      'http://127.0.0.1:4545/moq/echo'
+    );
+  });
+
+  it('should replace path on a relay URL (regression: gateway→relay→gateway)', () => {
+    // If the caller mistakenly passes a relay URL as baseUrl when switching
+    // back to a gateway pipeline, the result keeps the relay host — which is
+    // the bug.  The fix is for the *caller* to always pass the original
+    // config URL, but this test documents updateUrlPath's expected behaviour.
+    expect(updateUrlPath('http://localhost:4443', '/moq')).toBe('http://localhost:4443/moq');
+  });
+
+  it('should handle URLs with trailing slashes', () => {
+    expect(updateUrlPath('http://example.com:4545/', '/moq/transcoder')).toBe(
+      'http://example.com:4545/moq/transcoder'
+    );
+  });
+
+  it('should preserve protocol and port', () => {
+    expect(updateUrlPath('https://host.example.com:9443/old-path', '/moq/new')).toBe(
+      'https://host.example.com:9443/moq/new'
+    );
   });
 });

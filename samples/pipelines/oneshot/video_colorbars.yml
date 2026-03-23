@@ -5,6 +5,11 @@
 name: Video Color Bars (VP9/WebM)
 description: Generates SMPTE color bars, encodes to VP9, and outputs a WebM file (5 seconds)
 mode: oneshot
+client:
+  input:
+    type: none
+  output:
+    type: video
 
 nodes:
   colorbars:

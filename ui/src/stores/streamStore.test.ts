@@ -98,6 +98,9 @@ describe('streamStore', () => {
       pipelineOutputsVideo: true,
       errorMessage: '',
       configLoaded: false,
+      configServerUrl: '',
+      connectAbort: null,
+      connectingStep: '',
       activeSessionId: null,
       activeSessionName: null,
       activePipelineName: null,
@@ -147,6 +150,12 @@ describe('streamStore', () => {
       expect(state.activeSessionId).toBeNull();
       expect(state.activeSessionName).toBeNull();
       expect(state.activePipelineName).toBeNull();
+    });
+
+    it('should have null connectAbort and empty connectingStep initially', () => {
+      const state = useStreamStore.getState();
+      expect(state.connectAbort).toBeNull();
+      expect(state.connectingStep).toBe('');
     });
 
     it('should have null MoQ references initially', () => {
@@ -276,7 +285,27 @@ describe('streamStore', () => {
 
       const state = useStreamStore.getState();
       expect(state.serverUrl).toBe('http://config-server.com:9000/moq');
+      expect(state.configServerUrl).toBe('http://config-server.com:9000/moq');
       expect(state.configLoaded).toBe(true);
+    });
+
+    it('should preserve configServerUrl when serverUrl is overwritten by relay', async () => {
+      const mockConfig = {
+        moqGatewayUrl: 'http://gateway.example.com:4545/moq',
+      };
+
+      vi.mocked(configService.fetchConfig).mockResolvedValue(mockConfig);
+
+      const { loadConfig } = useStreamStore.getState();
+      await loadConfig();
+
+      // Simulate selecting a relay pipeline which overwrites serverUrl
+      useStreamStore.getState().setServerUrl('http://relay.example.com:4443');
+
+      const state = useStreamStore.getState();
+      expect(state.serverUrl).toBe('http://relay.example.com:4443');
+      // configServerUrl must remain the original gateway URL
+      expect(state.configServerUrl).toBe('http://gateway.example.com:4545/moq');
     });
 
     it('should set configLoaded when no moqGatewayUrl in config', async () => {
@@ -496,6 +525,34 @@ describe('streamStore', () => {
       expect(() => disconnect()).not.toThrow();
 
       expect(useStreamStore.getState().status).toBe('disconnected');
+    });
+
+    it('should abort in-flight connect attempt on disconnect', () => {
+      const abort = new AbortController();
+      const abortSpy = vi.spyOn(abort, 'abort');
+      useStreamStore.setState({
+        status: 'connecting',
+        connectAbort: abort,
+      });
+
+      useStreamStore.getState().disconnect();
+
+      expect(abortSpy).toHaveBeenCalled();
+      const state = useStreamStore.getState();
+      expect(state.status).toBe('disconnected');
+      expect(state.connectAbort).toBeNull();
+      expect(state.connectingStep).toBe('');
+    });
+
+    it('should clear connectingStep on disconnect', () => {
+      useStreamStore.setState({
+        status: 'connecting',
+        connectingStep: 'devices',
+      });
+
+      useStreamStore.getState().disconnect();
+
+      expect(useStreamStore.getState().connectingStep).toBe('');
     });
   });
 

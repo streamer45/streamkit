@@ -5,6 +5,12 @@
 name: Text-to-Speech (Matcha)
 description: Synthesizes speech from text using Matcha
 mode: oneshot
+client:
+  input:
+    type: text
+    placeholder: "Enter text to synthesize"
+  output:
+    type: audio
 steps:
   - kind: streamkit::http_input
   - kind: core::text_chunker

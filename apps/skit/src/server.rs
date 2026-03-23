@@ -1520,6 +1520,12 @@ struct CreateSessionResponse {
 async fn populate_session_pipeline(session: &crate::session::Session, engine_pipeline: &Pipeline) {
     let mut pipeline = session.pipeline.lock().await;
 
+    // Forward top-level metadata so the UI can read it from the session snapshot.
+    pipeline.name.clone_from(&engine_pipeline.name);
+    pipeline.description.clone_from(&engine_pipeline.description);
+    pipeline.mode = engine_pipeline.mode;
+    pipeline.client.clone_from(&engine_pipeline.client);
+
     // Add nodes to in-memory pipeline
     for (node_id, node_spec) in &engine_pipeline.nodes {
         pipeline.nodes.insert(

@@ -1105,7 +1105,7 @@ async fn handle_get_pipeline(
         "Retrieved pipeline"
     );
 
-    Some(ResponsePayload::Pipeline { pipeline: api_pipeline })
+    Some(ResponsePayload::Pipeline { pipeline: Box::new(api_pipeline) })
 }
 
 fn handle_validate_batch(

@@ -299,6 +299,53 @@ describe('waitForSignalValue', () => {
 
     vi.useRealTimers();
   });
+
+  it('should reject immediately when abortSignal is already aborted', async () => {
+    const signal = createMockSignal(0);
+    const abort = new AbortController();
+    abort.abort();
+
+    await expect(
+      waitForSignalValue(signal, (v) => v > 0, 5_000, 'timeout', abort.signal)
+    ).rejects.toThrow('Aborted');
+  });
+
+  it('should reject with AbortError when abortSignal fires during wait', async () => {
+    const signal = createMockSignal(0);
+    const abort = new AbortController();
+
+    const promise = waitForSignalValue(signal, (v) => v > 0, 5_000, 'timeout', abort.signal);
+
+    // Abort before the signal value changes
+    abort.abort();
+
+    await expect(promise).rejects.toThrow('Aborted');
+  });
+
+  it('should not reject on abort if predicate already matched', async () => {
+    const signal = createMockSignal(42);
+    const abort = new AbortController();
+
+    // Predicate matches initial value — resolves synchronously before abort
+    const value = await waitForSignalValue(signal, (v) => v === 42, 5_000, 'timeout', abort.signal);
+    expect(value).toBe(42);
+
+    // Aborting after resolution should be harmless
+    abort.abort();
+  });
+
+  it('should clean up subscription when abortSignal fires', async () => {
+    const signal = createMockSignal<number>(0);
+    const abort = new AbortController();
+
+    const promise = waitForSignalValue(signal, (v) => v > 100, 5_000, 'timeout', abort.signal);
+    abort.abort();
+
+    await expect(promise).rejects.toThrow('Aborted');
+
+    // After abort, emitting new values should be harmless (no dangling listeners)
+    expect(() => signal.set(200)).not.toThrow();
+  });
 });
 
 // ---------------------------------------------------------------------------

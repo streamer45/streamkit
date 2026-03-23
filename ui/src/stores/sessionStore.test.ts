@@ -107,6 +107,7 @@ describe('sessionStore', () => {
         name: null,
         description: null,
         mode: 'dynamic',
+        client: null,
         nodes: {
           'node-1': {
             kind: 'gain',
@@ -129,6 +130,7 @@ describe('sessionStore', () => {
         name: null,
         description: null,
         mode: 'dynamic',
+        client: null,
         nodes: {
           'node-1': {
             kind: 'gain',
@@ -142,6 +144,7 @@ describe('sessionStore', () => {
         name: null,
         description: null,
         mode: 'dynamic',
+        client: null,
         nodes: {
           'node-1': {
             kind: 'gain',
@@ -179,6 +182,7 @@ describe('sessionStore', () => {
         name: null,
         description: null,
         mode: 'dynamic',
+        client: null,
         nodes: {},
         connections: [],
       };
@@ -200,6 +204,7 @@ describe('sessionStore', () => {
         name: null,
         description: null,
         mode: 'dynamic',
+        client: null,
         nodes: {},
         connections: [],
       };
@@ -223,6 +228,7 @@ describe('sessionStore', () => {
         name: null,
         description: null,
         mode: 'dynamic',
+        client: null,
         nodes: {
           'node-1': {
             kind: 'gain',
@@ -254,6 +260,7 @@ describe('sessionStore', () => {
         name: null,
         description: null,
         mode: 'dynamic',
+        client: null,
         nodes: {},
         connections: [],
       };
@@ -279,6 +286,7 @@ describe('sessionStore', () => {
         name: null,
         description: null,
         mode: 'dynamic',
+        client: null,
         nodes: {},
         connections: [
           {
@@ -338,6 +346,7 @@ describe('sessionStore', () => {
         name: null,
         description: null,
         mode: 'dynamic',
+        client: null,
         nodes: {},
         connections: [],
       };
@@ -362,6 +371,7 @@ describe('sessionStore', () => {
         name: null,
         description: null,
         mode: 'dynamic',
+        client: null,
         nodes: {},
         connections: [],
       };
