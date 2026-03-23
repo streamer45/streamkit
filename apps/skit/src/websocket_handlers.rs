@@ -975,9 +975,18 @@ async fn handle_tune_node_fire_and_forget(
             }
 
             {
+                // Store sanitized params: strip transient sync metadata
+                // (_sender, _rev, etc.) from the durable pipeline model.
+                // Top-level keys prefixed with `_` are reserved for
+                // in-flight metadata and must not leak into persistence
+                // or GetPipeline responses.
+                let mut durable_params = params.clone();
+                if let serde_json::Value::Object(ref mut map) = durable_params {
+                    map.retain(|k, _| !k.starts_with('_'));
+                }
                 let mut pipeline = session.pipeline.lock().await;
                 if let Some(node) = pipeline.nodes.get_mut(&node_id) {
-                    node.params = Some(params.clone());
+                    node.params = Some(durable_params);
                 } else {
                     warn!(
                         node_id = %node_id,

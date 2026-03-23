@@ -1,0 +1,84 @@
+// SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+//
+// SPDX-License-Identifier: MPL-2.0
+
+/**
+ * Per-node config revision counter for causal consistency.
+ *
+ * Each node's outgoing config carries a monotonically increasing `_rev`
+ * alongside the WebSocket session's `_sender` nonce.  Consumers
+ * (handleNodeParamsChanged, useServerLayoutSync) compare the incoming
+ * `(_sender, _rev)` against the local counter to detect and discard
+ * stale self-echoes.
+ *
+ * The counter is per-node because different nodes may be edited at
+ * different rates.  The `_sender` nonce comes from WebSocketService
+ * and is stable for one WS connection lifetime.
+ */
+
+import { useCallback, useRef } from 'react';
+
+import { getWebSocketService } from '@/services/websocket';
+
+// ── Singleton rev counters ──────────────────────────────────────────────────
+
+/** Per-node config revision counters, keyed by nodeId.
+ *  Shared across all hook instances — a ref-map so React doesn't
+ *  re-render when the counter bumps. */
+const nodeRevCounters = new Map<string, number>();
+
+/** Get the current local config rev for a node (non-reactive). */
+export function getLocalConfigRev(nodeId: string): number {
+  return nodeRevCounters.get(nodeId) ?? 0;
+}
+
+/** Bump and return the new config rev for a node. */
+export function bumpConfigRev(nodeId: string): number {
+  const next = (nodeRevCounters.get(nodeId) ?? 0) + 1;
+  nodeRevCounters.set(nodeId, next);
+  return next;
+}
+
+/** Reset all config rev counters (e.g. on WS reconnect). */
+export function resetAllConfigRevs(): void {
+  nodeRevCounters.clear();
+}
+
+/** Get the current client nonce from the WebSocket service. */
+export function getClientNonce(): string {
+  return getWebSocketService().getClientNonce();
+}
+
+// ── Hook ────────────────────────────────────────────────────────────────────
+
+export interface UseConfigRevResult {
+  /** Current config revision for this node (read from shared counter). */
+  getConfigRev: () => number;
+  /** Bump the rev counter and return the new value. */
+  bumpRev: () => number;
+  /** Get the sender nonce for the current WS session. */
+  getNonce: () => string;
+}
+
+/** Hook that provides per-node config revision tracking.
+ *
+ *  Usage:
+ *  ```ts
+ *  const { bumpRev, getNonce } = useConfigRev(nodeId);
+ *  // In a commit path:
+ *  const rev = bumpRev();
+ *  const params = { ...config, _sender: getNonce(), _rev: rev };
+ *  ```
+ */
+export function useConfigRev(nodeId: string): UseConfigRevResult {
+  const nodeIdRef = useRef(nodeId);
+  nodeIdRef.current = nodeId;
+
+  const getConfigRev = useCallback(() => getLocalConfigRev(nodeIdRef.current), []);
+
+  const bumpRev = useCallback(() => bumpConfigRev(nodeIdRef.current), []);
+
+  const getNonce = useCallback(() => getClientNonce(), []);
+
+  return { getConfigRev, bumpRev, getNonce };
+}

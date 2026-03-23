@@ -129,6 +129,9 @@ export interface UseCompositorLayersResult {
   /** Atomically reassign z-index values for all layer types in one commit.
    *  Each entry maps a layer id + kind to its new z-index. */
   reorderLayers: (entries: Array<{ id: string; kind: LayerKind; zIndex: number }>) => void;
+  /** Ref flag: true while a live-mode interaction (slider drag, etc.) is in
+   *  progress.  Set by consumers to suppress stale server echo-backs. */
+  activeInteractionRef: React.MutableRefObject<boolean>;
   /** Pre-assembled deps bag for useCompositorKeyboard. */
   keyboardDeps: CompositorKeyboardDeps;
 }
@@ -267,6 +270,11 @@ export const useCompositorLayers = (
   }>({ vertical: null, horizontal: null });
   const dragStateRef = useRef<DragState | null>(null);
 
+  // Per-node flag: true while any live-mode interaction (slider drag, etc.)
+  // is in progress.  Guards useServerLayoutSync so stale server geometry
+  // doesn't overwrite in-flight client state.
+  const activeInteractionRef = useRef(false);
+
   // ── Commit / persistence ───────────────────────────────────────────────────
   const { commitAdapter, throttledConfigChange, throttledOverlayCommit } = useCompositorCommit({
     nodeId,
@@ -347,7 +355,7 @@ export const useCompositorLayers = (
   }, [params, canvasWidth, canvasHeight, isMonitorView, store]);
 
   // ── Server-driven layout (Monitor view only) ───────────────────────────
-  useServerLayoutSync(sessionId, nodeId, store, dragStateRef);
+  useServerLayoutSync(sessionId, nodeId, store, dragStateRef, activeInteractionRef);
 
   // ── Find layer across all types ─────────────────────────────────────────
   const findAnyLayer = useCallback(
@@ -440,6 +448,7 @@ export const useCompositorLayers = (
     updateImageOverlay: overlayOps.updateImageOverlay,
     removeImageOverlay: overlayOps.removeImageOverlay,
     reorderLayers: overlayOps.reorderLayers,
+    activeInteractionRef,
     keyboardDeps: {
       selectedLayerId,
       selectLayer: overlayOps.selectLayer,

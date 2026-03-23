@@ -285,6 +285,12 @@ pub struct CompositorNode {
     input_pins: Vec<InputPin>,
     /// Next input ID for dynamic pin naming.
     next_input_id: usize,
+    /// Sender nonce from the last `UpdateParams` (`_sender` field).
+    /// Stamped into view data so clients can detect stale self-echoes.
+    config_sender: String,
+    /// Config revision from the last `UpdateParams` (`_rev` field).
+    /// Stamped into view data alongside `config_sender`.
+    config_rev: u64,
 }
 
 impl CompositorNode {
@@ -311,7 +317,14 @@ impl CompositorNode {
             },
         );
 
-        Self { config, limits, input_pins, next_input_id }
+        Self {
+            config,
+            limits,
+            input_pins,
+            next_input_id,
+            config_sender: String::new(),
+            config_rev: 0,
+        }
     }
 
     /// The set of video packet types accepted by compositor input pins.
@@ -602,14 +615,23 @@ impl ProcessorNode for CompositorNode {
                             tracing::info!("CompositorNode received shutdown");
                             break;
                         },
-                        NodeControlMessage::UpdateParams(params) => {
+                        NodeControlMessage::UpdateParams(ref params) => {
+                            // Extract transient sync metadata before
+                            // deserialization strips unknown fields.
+                            if let Some(sender) = params.get("_sender").and_then(|v| v.as_str()) {
+                                self.config_sender = sender.to_string();
+                            }
+                            if let Some(rev) = params.get("_rev").and_then(serde_json::Value::as_u64) {
+                                self.config_rev = rev;
+                            }
+
                             let old_fps = self.config.fps;
                             Self::apply_update_params(
                                 &mut self.config,
                                 &self.limits,
                                 &mut image_overlays,
                                 &mut text_overlays,
-                                params,
+                                params.clone(),
                                 &mut stats_tracker,
                             );
                             layer_configs_dirty = true;
@@ -719,7 +741,13 @@ impl ProcessorNode for CompositorNode {
 
                 // Emit layout via view data if it changed.
                 if last_layout.as_ref() != Some(&scene.layout) {
-                    if let Ok(json) = serde_json::to_value(&scene.layout) {
+                    if let Ok(mut json) = serde_json::to_value(&scene.layout) {
+                        // Stamp view data with the sender/rev from the last
+                        // UpdateParams so clients can detect stale self-echoes.
+                        if !self.config_sender.is_empty() {
+                            json["_sender"] = serde_json::Value::from(self.config_sender.as_str());
+                            json["_rev"] = serde_json::Value::from(self.config_rev);
+                        }
                         view_data_helpers::emit_view_data(&view_data_tx, &node_name, || json);
                     }
                     last_layout = Some(scene.layout.clone());

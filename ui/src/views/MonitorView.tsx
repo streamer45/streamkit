@@ -927,7 +927,14 @@ const MonitorViewContent: React.FC = () => {
 
       const paramKey = selectedSessionId ? `${selectedSessionId}\0${nodeName}` : nodeName;
       const overrides = defaultSessionStore.get(nodeParamsAtom(paramKey));
-      const mergedParams = { ...(apiNode.params || {}), ...(overrides || {}) };
+      const rawParams = { ...(apiNode.params || {}), ...(overrides || {}) };
+      // Strip transient sync metadata (_sender, _rev, etc.) from YAML export.
+      const mergedParams: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(rawParams)) {
+        if (!key.startsWith('_')) {
+          mergedParams[key] = value;
+        }
+      }
       if (Object.keys(mergedParams).length > 0) {
         nodeConfig['params'] = mergedParams;
       }

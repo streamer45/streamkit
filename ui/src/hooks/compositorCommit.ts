@@ -20,6 +20,7 @@ import {
   serializeTextOverlays,
 } from './compositorLayerParsers';
 import type { LayerState, TextOverlayState, ImageOverlayState } from './compositorLayerParsers';
+import { bumpConfigRev, getClientNonce } from './useConfigRev';
 
 // ── Commit adapter ──────────────────────────────────────────────────────────
 
@@ -58,28 +59,48 @@ export function createCommitAdapter(
 ): CommitAdapter | null {
   if (!onConfigChange && !onParamChange) return null;
 
+  /** Stamp a config object with causal-consistency metadata. */
+  function stamp(config: Record<string, unknown>): Record<string, unknown> {
+    const rev = bumpConfigRev(nodeId);
+    return { ...config, _sender: getClientNonce(), _rev: rev };
+  }
+
+  /** Send _sender/_rev as individual params alongside the real param. */
+  function paramChangeWithRev(
+    nid: string,
+    key: string,
+    value: unknown,
+    send: (nodeId: string, key: string, value: unknown) => void
+  ) {
+    const rev = bumpConfigRev(nid);
+    send(nid, key, value);
+    send(nid, '_sender', getClientNonce());
+    send(nid, '_rev', rev);
+  }
+
   return {
     commitLayers(layers: LayerState[]) {
       if (onConfigChange) {
-        const config = buildConfig(
-          paramsRef.current,
-          layers,
-          textOverlaysRef.current,
-          imageOverlaysRef.current
+        const config = stamp(
+          buildConfig(paramsRef.current, layers, textOverlaysRef.current, imageOverlaysRef.current)
         );
         onConfigChange(nodeId, config);
       } else if (onParamChange) {
-        onParamChange(nodeId, 'layers', serializeLayers(layers));
+        paramChangeWithRev(nodeId, 'layers', serializeLayers(layers), onParamChange);
       }
     },
 
     commitOverlays(text: TextOverlayState[], img: ImageOverlayState[]) {
       if (onConfigChange) {
-        const config = buildConfig(paramsRef.current, layersRef.current, text, img);
+        const config = stamp(buildConfig(paramsRef.current, layersRef.current, text, img));
         onConfigChange(nodeId, config);
       } else if (onParamChange) {
+        const rev = bumpConfigRev(nodeId);
+        const nonce = getClientNonce();
         onParamChange(nodeId, 'text_overlays', serializeTextOverlays(text));
         onParamChange(nodeId, 'image_overlays', serializeImageOverlays(img));
+        onParamChange(nodeId, '_sender', nonce);
+        onParamChange(nodeId, '_rev', rev);
       }
     },
 
@@ -90,11 +111,13 @@ export function createCommitAdapter(
       changed?: { layers?: boolean; overlays?: boolean }
     ) {
       if (onConfigChange) {
-        const config = buildConfig(paramsRef.current, layers, text, img);
+        const config = stamp(buildConfig(paramsRef.current, layers, text, img));
         onConfigChange(nodeId, config);
       } else if (onParamChange) {
         const sendLayers = changed?.layers ?? true;
         const sendOverlays = changed?.overlays ?? true;
+        const rev = bumpConfigRev(nodeId);
+        const nonce = getClientNonce();
         if (sendLayers) {
           onParamChange(nodeId, 'layers', serializeLayers(layers));
         }
@@ -102,6 +125,8 @@ export function createCommitAdapter(
           onParamChange(nodeId, 'text_overlays', serializeTextOverlays(text));
           onParamChange(nodeId, 'image_overlays', serializeImageOverlays(img));
         }
+        onParamChange(nodeId, '_sender', nonce);
+        onParamChange(nodeId, '_rev', rev);
       }
     },
   };
