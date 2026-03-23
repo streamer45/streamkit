@@ -132,6 +132,7 @@ aws-lc-rs = "1"
 # For MoQ auth path matching (optional, with moq feature)
 moq-lite = { version = "0.15.2", optional = true }
 blake2 = "0.10.6"
+async-stream = "0.3.6"
 
 [features]
 default = ["script", "compositor", "moq"]

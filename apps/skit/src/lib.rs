@@ -7,6 +7,7 @@ pub mod auth;
 pub mod cli;
 pub mod config;
 pub mod file_security;
+pub mod log_viewer;
 pub mod logging;
 pub mod marketplace;
 pub mod marketplace_installer;

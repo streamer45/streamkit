@@ -3115,6 +3115,8 @@ pub fn create_app(
         .route("/api/v1/config", get(get_config_handler))
         .route("/api/v1/schema/nodes", get(list_node_definitions_handler))
         .route("/api/v1/schema/packets", get(list_packet_types_handler))
+        .route("/api/v1/logs", get(crate::log_viewer::get_logs_handler))
+        .route("/api/v1/logs/stream", get(crate::log_viewer::stream_logs_handler))
         .route("/api/v1/sessions", get(list_sessions_handler).post(create_session_handler))
         .route("/api/v1/sessions/{id}", delete(destroy_session_handler))
         .route("/api/v1/sessions/{id}/pipeline", get(get_pipeline_handler))

@@ -66,6 +66,7 @@ export async function ensureLoggedIn(page: Page): Promise<void> {
     page.getByTestId('convert-view'),
     page.getByTestId('stream-view'),
     page.getByTestId('tokens-view'),
+    page.getByTestId('logs-view'),
   ];
 
   // Wait for the app to settle on either:

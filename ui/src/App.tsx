@@ -20,6 +20,7 @@ import { getLogger } from './utils/logger';
 import ConvertView from './views/ConvertView';
 import DesignView from './views/DesignView';
 import LoginView from './views/LoginView';
+import LogsView from './views/LogsView';
 import MonitorView from './views/MonitorView';
 import PluginsView from './views/PluginsView';
 import StreamView from './views/StreamView';
@@ -124,6 +125,7 @@ const App: React.FC = () => {
                     />
                     <Route path="admin/plugins/:tab" element={<PluginsView />} />
                     <Route path="admin/tokens" element={<TokensView />} />
+                    <Route path="admin/logs" element={<LogsView />} />
                   </Route>
                 </Routes>
               </BrowserRouter>
