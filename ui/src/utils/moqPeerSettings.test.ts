@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { extractMoqPeerSettings } from './moqPeerSettings';
+import { extractMoqPeerSettings, updateUrlPath } from './moqPeerSettings';
 
 // ---------------------------------------------------------------------------
 // extractMoqPeerSettings — reads the declarative `client` section
@@ -187,5 +187,37 @@ client:
     expect(result!.needsVideoInput).toBe(false);
     expect(result!.outputsAudio).toBe(true);
     expect(result!.outputsVideo).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// updateUrlPath — preserves host when applying a gateway path
+// ---------------------------------------------------------------------------
+
+describe('updateUrlPath', () => {
+  it('should replace path on a standard URL', () => {
+    expect(updateUrlPath('http://127.0.0.1:4545/moq', '/moq/echo')).toBe(
+      'http://127.0.0.1:4545/moq/echo'
+    );
+  });
+
+  it('should replace path on a relay URL (regression: gateway→relay→gateway)', () => {
+    // If the caller mistakenly passes a relay URL as baseUrl when switching
+    // back to a gateway pipeline, the result keeps the relay host — which is
+    // the bug.  The fix is for the *caller* to always pass the original
+    // config URL, but this test documents updateUrlPath's expected behaviour.
+    expect(updateUrlPath('http://localhost:4443', '/moq')).toBe('http://localhost:4443/moq');
+  });
+
+  it('should handle URLs with trailing slashes', () => {
+    expect(updateUrlPath('http://example.com:4545/', '/moq/transcoder')).toBe(
+      'http://example.com:4545/moq/transcoder'
+    );
+  });
+
+  it('should preserve protocol and port', () => {
+    expect(updateUrlPath('https://host.example.com:9443/old-path', '/moq/new')).toBe(
+      'https://host.example.com:9443/moq/new'
+    );
   });
 });

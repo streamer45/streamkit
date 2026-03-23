@@ -63,6 +63,8 @@ interface StreamState {
 
   // Config state
   configLoaded: boolean;
+  /** The original gateway URL from /api/v1/config, preserved across pipeline switches. */
+  configServerUrl: string;
 
   // Active session state (persisted)
   activeSessionId: string | null;
@@ -148,6 +150,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
   isExternalRelay: false,
   errorMessage: '',
   configLoaded: false,
+  configServerUrl: '',
 
   // Active session state
   activeSessionId: null,
@@ -188,7 +191,11 @@ export const useStreamStore = create<StreamState>((set, get) => ({
     try {
       const config = await fetchConfig();
       if (config.moqGatewayUrl) {
-        set({ serverUrl: config.moqGatewayUrl, configLoaded: true });
+        set({
+          serverUrl: config.moqGatewayUrl,
+          configServerUrl: config.moqGatewayUrl,
+          configLoaded: true,
+        });
       } else {
         set({
           configLoaded: true,

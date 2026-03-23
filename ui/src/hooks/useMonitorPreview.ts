@@ -141,9 +141,12 @@ export function useMonitorPreview(
     }
 
     if (gatewayPath) {
-      const currentUrl = useStreamStore.getState().serverUrl;
-      if (currentUrl) {
-        previewSetServerUrl(updateUrlPath(currentUrl, gatewayPath));
+      // Use the original config URL as the base so that the preview URL
+      // isn't polluted by a relay URL the user previously selected.
+      const baseUrl =
+        useStreamStore.getState().configServerUrl || useStreamStore.getState().serverUrl;
+      if (baseUrl) {
+        previewSetServerUrl(updateUrlPath(baseUrl, gatewayPath));
       }
     }
     if (outputBroadcast) {

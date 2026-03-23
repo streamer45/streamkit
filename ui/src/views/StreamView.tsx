@@ -31,12 +31,35 @@ import { createSession } from '@/services/sessions';
 import { useSchemaStore, ensureSchemasLoaded } from '@/stores/schemaStore';
 import type { Event } from '@/types/types';
 import { getLogger } from '@/utils/logger';
-import { extractMoqPeerSettings, updateUrlPath } from '@/utils/moqPeerSettings';
+import {
+  extractMoqPeerSettings,
+  updateUrlPath,
+  type MoqPeerSettings,
+} from '@/utils/moqPeerSettings';
 import { orderSamplePipelinesSystemFirst } from '@/utils/samplePipelineOrdering';
 
 import { useStreamStore } from '../stores/streamStore';
 
 const logger = getLogger('StreamView');
+
+/**
+ * Resolves the server URL for a pipeline's MoQ settings.
+ *
+ * - Relay pipelines use the relay URL directly.
+ * - Gateway pipelines apply the gateway path to the original config URL
+ *   (not the current serverUrl, which may have been overwritten by a
+ *   previous relay selection).
+ *
+ * Returns the resolved URL or undefined if no update is needed.
+ */
+function resolveServerUrl(settings: MoqPeerSettings): string | undefined {
+  if (settings.relayUrl) return settings.relayUrl;
+  if (settings.gatewayPath) {
+    const baseUrl = useStreamStore.getState().configServerUrl;
+    if (baseUrl) return updateUrlPath(baseUrl, settings.gatewayPath);
+  }
+  return undefined;
+}
 
 const ConnectionControlsRow = styled.div`
   display: flex;
@@ -425,15 +448,8 @@ const StreamView: React.FC = () => {
 
           const moqSettings = extractMoqPeerSettings(first.yaml);
           if (moqSettings) {
-            if (moqSettings.relayUrl) {
-              setServerUrl(moqSettings.relayUrl);
-            } else if (moqSettings.gatewayPath && useStreamStore.getState().serverUrl) {
-              // Read serverUrl directly from the store since this effect
-              // runs on mount and the closure-captured value is still ''.
-              setServerUrl(
-                updateUrlPath(useStreamStore.getState().serverUrl, moqSettings.gatewayPath)
-              );
-            }
+            const resolvedUrl = resolveServerUrl(moqSettings);
+            if (resolvedUrl) setServerUrl(resolvedUrl);
             if (moqSettings.inputBroadcast) {
               setInputBroadcast(moqSettings.inputBroadcast);
             }
@@ -471,13 +487,8 @@ const StreamView: React.FC = () => {
         // Auto-adjust connection settings based on moq_peer node in the pipeline
         const moqSettings = extractMoqPeerSettings(template.yaml);
         if (moqSettings) {
-          // Update server URL: direct relay URL takes priority, otherwise
-          // apply the gateway path to the current server URL.
-          if (moqSettings.relayUrl) {
-            setServerUrl(moqSettings.relayUrl);
-          } else if (moqSettings.gatewayPath && serverUrl) {
-            setServerUrl(updateUrlPath(serverUrl, moqSettings.gatewayPath));
-          }
+          const resolvedUrl = resolveServerUrl(moqSettings);
+          if (resolvedUrl) setServerUrl(resolvedUrl);
           // Update broadcast names if specified
           if (moqSettings.inputBroadcast) {
             setInputBroadcast(moqSettings.inputBroadcast);
@@ -506,7 +517,6 @@ const StreamView: React.FC = () => {
     },
     [
       viewState,
-      serverUrl,
       setServerUrl,
       setInputBroadcast,
       setOutputBroadcast,

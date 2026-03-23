@@ -98,6 +98,7 @@ describe('streamStore', () => {
       pipelineOutputsVideo: true,
       errorMessage: '',
       configLoaded: false,
+      configServerUrl: '',
       activeSessionId: null,
       activeSessionName: null,
       activePipelineName: null,
@@ -276,7 +277,27 @@ describe('streamStore', () => {
 
       const state = useStreamStore.getState();
       expect(state.serverUrl).toBe('http://config-server.com:9000/moq');
+      expect(state.configServerUrl).toBe('http://config-server.com:9000/moq');
       expect(state.configLoaded).toBe(true);
+    });
+
+    it('should preserve configServerUrl when serverUrl is overwritten by relay', async () => {
+      const mockConfig = {
+        moqGatewayUrl: 'http://gateway.example.com:4545/moq',
+      };
+
+      vi.mocked(configService.fetchConfig).mockResolvedValue(mockConfig);
+
+      const { loadConfig } = useStreamStore.getState();
+      await loadConfig();
+
+      // Simulate selecting a relay pipeline which overwrites serverUrl
+      useStreamStore.getState().setServerUrl('http://relay.example.com:4443');
+
+      const state = useStreamStore.getState();
+      expect(state.serverUrl).toBe('http://relay.example.com:4443');
+      // configServerUrl must remain the original gateway URL
+      expect(state.configServerUrl).toBe('http://gateway.example.com:4545/moq');
     });
 
     it('should set configLoaded when no moqGatewayUrl in config', async () => {
