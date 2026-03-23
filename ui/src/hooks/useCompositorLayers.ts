@@ -324,7 +324,8 @@ export const useCompositorLayers = (
     // doesn't include server-only layers.
     if (isMonitorView) {
       const serverOnly = currentLayers.filter(
-        (l) => !parsed.some((p) => p.id === l.id) && !merged.some((m) => m.id === l.id)
+        (l) =>
+          l.serverOnly && !parsed.some((p) => p.id === l.id) && !merged.some((m) => m.id === l.id)
       );
       if (serverOnly.length > 0) {
         merged = [...merged, ...serverOnly];
