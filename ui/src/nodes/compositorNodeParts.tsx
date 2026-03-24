@@ -47,7 +47,7 @@ export const CompositorOuterWrapper = styled.div`
 
 export const CompositorWrapper = styled.div`
   border-top: 1px solid var(--sk-border);
-  padding: 8px 6px 4px;
+  padding: 10px 8px 6px;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -56,6 +56,7 @@ export const CompositorWrapper = styled.div`
 `;
 
 export const CanvasSection = styled.div`
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -497,17 +498,16 @@ export const ResetButton = styled.button`
 
 export const SidePanel = styled.div`
   position: absolute;
-  left: 100%;
-  top: 0;
+  left: calc(100% + 28px);
+  top: 18px;
   width: 280px;
-  margin-left: 8px;
   background: var(--sk-panel-bg);
   border: 1px solid var(--sk-border);
   border-radius: 6px;
-  padding: 8px;
+  padding: 10px;
   display: flex;
   flex-direction: column;
-  gap: 0;
+  gap: 4px;
   box-shadow: 0 2px 8px var(--sk-shadow, rgba(0, 0, 0, 0.15));
   pointer-events: auto;
   z-index: 5;

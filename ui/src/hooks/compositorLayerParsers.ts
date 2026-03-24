@@ -511,17 +511,25 @@ export function fitRectPreservingAspect(
 
 // ── Snap guide detection ────────────────────────────────────────────────────
 
-/** Which centre snap guides are currently active during a drag. */
+/** Which snap guides are currently active during a drag. */
 export interface SnapGuides {
   /** Horizontal centre line (layer centred vertically on canvas). */
   horizontalCenter: boolean;
   /** Vertical centre line (layer centred horizontally on canvas). */
   verticalCenter: boolean;
+  /** Layer left edge aligned with canvas left edge (x ≈ 0). */
+  leftEdge: boolean;
+  /** Layer right edge aligned with canvas right edge (x + w ≈ canvasWidth). */
+  rightEdge: boolean;
+  /** Layer top edge aligned with canvas top edge (y ≈ 0). */
+  topEdge: boolean;
+  /** Layer bottom edge aligned with canvas bottom edge (y + h ≈ canvasHeight). */
+  bottomEdge: boolean;
 }
 
-/** Determine which centre snap guides are active for a given layer position.
+/** Determine which snap guides are active for a given layer position.
  *  Mirrors the snapping logic in `computeDragPosition` — a guide is shown
- *  whenever the layer's midpoint snaps to a canvas centre axis. */
+ *  whenever the layer snaps to a canvas centre axis or edge. */
 export function detectSnapGuides(
   layer: LayerState,
   canvasWidth: number,
@@ -532,6 +540,10 @@ export function detectSnapGuides(
   return {
     verticalCenter: Math.abs(midX - canvasWidth / 2) < 1,
     horizontalCenter: Math.abs(midY - canvasHeight / 2) < 1,
+    leftEdge: Math.abs(layer.x) < 1,
+    rightEdge: Math.abs(layer.x + layer.width - canvasWidth) < 1,
+    topEdge: Math.abs(layer.y) < 1,
+    bottomEdge: Math.abs(layer.y + layer.height - canvasHeight) < 1,
   };
 }
 
@@ -569,6 +581,19 @@ function computeDragPosition(
     nx = Math.round(nx / SNAP_GRID) * SNAP_GRID;
     ny = Math.round(ny / SNAP_GRID) * SNAP_GRID;
 
+    // Snap to canvas edges (layer edges → canvas boundaries)
+    if (Math.abs(nx) < SNAP_THRESHOLD) {
+      nx = 0;
+    } else if (Math.abs(nx + orig.width - canvasWidth) < SNAP_THRESHOLD) {
+      nx = canvasWidth - orig.width;
+    }
+    if (Math.abs(ny) < SNAP_THRESHOLD) {
+      ny = 0;
+    } else if (Math.abs(ny + orig.height - canvasHeight) < SNAP_THRESHOLD) {
+      ny = canvasHeight - orig.height;
+    }
+
+    // Snap to canvas centre (layer midpoint → canvas midpoint)
     const midX = nx + orig.width / 2;
     const midY = ny + orig.height / 2;
     if (Math.abs(midX - canvasWidth / 2) < SNAP_THRESHOLD) {

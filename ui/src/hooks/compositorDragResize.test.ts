@@ -61,7 +61,16 @@ function makeDeps(overrides: Partial<DragResizeDeps> = {}): DragResizeDeps {
     },
     throttledConfigChange: vi.fn(),
     commitOverlaysRef: { current: vi.fn() },
-    snapGuideRefs: { current: { vertical: null, horizontal: null } },
+    snapGuideRefs: {
+      current: {
+        vertical: null,
+        horizontal: null,
+        left: null,
+        right: null,
+        top: null,
+        bottom: null,
+      },
+    },
     ...overrides,
   };
 }

@@ -61,6 +61,10 @@ export interface DragResizeDeps {
   snapGuideRefs: React.MutableRefObject<{
     vertical: HTMLDivElement | null;
     horizontal: HTMLDivElement | null;
+    left: HTMLDivElement | null;
+    right: HTMLDivElement | null;
+    top: HTMLDivElement | null;
+    bottom: HTMLDivElement | null;
   }>;
 }
 
@@ -137,13 +141,38 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
         const updated = computeLayerFromPointer(s, s.currentX, s.currentY);
         applyVisualUpdate(updated, s.type === 'resize');
 
+        // Live font-size scaling for text overlays during resize so the
+        // text visually tracks the handle and there's no snap-back on drop.
+        if (
+          s.type === 'resize' &&
+          s.layerKind === 'text' &&
+          s.origFontSize != null &&
+          s.origLayer.width > 0
+        ) {
+          const el = layerRefs.current.get(s.layerId);
+          if (el) {
+            const newFs = Math.max(
+              8,
+              Math.round(s.origFontSize * (updated.width / s.origLayer.width))
+            );
+            const spans = el.querySelectorAll<HTMLSpanElement>('span');
+            for (const span of spans) {
+              if (span.style.fontSize) span.style.fontSize = `${newFs}px`;
+            }
+          }
+        }
+
         // Show/hide snap guide lines (ref-only, no React state).
         if (s.type === 'drag') {
           const guides = detectSnapGuides(updated, canvasWidth, canvasHeight);
-          const vEl = snapGuideRefs.current.vertical;
-          const hEl = snapGuideRefs.current.horizontal;
-          if (vEl) vEl.style.opacity = guides.verticalCenter ? '0.4' : '0';
-          if (hEl) hEl.style.opacity = guides.horizontalCenter ? '0.4' : '0';
+          const refs = snapGuideRefs.current;
+          const ON = '0.8';
+          if (refs.vertical) refs.vertical.style.opacity = guides.verticalCenter ? ON : '0';
+          if (refs.horizontal) refs.horizontal.style.opacity = guides.horizontalCenter ? ON : '0';
+          if (refs.left) refs.left.style.opacity = guides.leftEdge ? ON : '0';
+          if (refs.right) refs.right.style.opacity = guides.rightEdge ? ON : '0';
+          if (refs.top) refs.top.style.opacity = guides.topEdge ? ON : '0';
+          if (refs.bottom) refs.bottom.style.opacity = guides.bottomEdge ? ON : '0';
         }
       });
     },
@@ -164,11 +193,12 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
 
       if (state.rafId !== null) cancelAnimationFrame(state.rafId);
 
-      // Hide snap guides on drop.
-      const vEl = snapGuideRefs.current.vertical;
-      const hEl = snapGuideRefs.current.horizontal;
-      if (vEl) vEl.style.opacity = '0';
-      if (hEl) hEl.style.opacity = '0';
+      // Hide all snap guides on drop.
+      const refs = snapGuideRefs.current;
+      for (const key of ['vertical', 'horizontal', 'left', 'right', 'top', 'bottom'] as const) {
+        const el = refs[key];
+        if (el) el.style.opacity = '0';
+      }
 
       const updated = computeLayerFromPointer(state, e.clientX, e.clientY);
       setIsDragging(false);
@@ -271,13 +301,22 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
           (Number(container.dataset.canvasWidth) || canvasWidth)
         : 1;
 
+      // For text/image overlays the displayed dimensions may differ from
+      // the stored state due to auto-sizing.  Use the DOM element's actual
+      // dimensions so edge-snap calculations align with what the user sees.
+      const origLayer = { ...found.state };
+      if (el && (found.kind === 'text' || found.kind === 'image')) {
+        origLayer.width = el.offsetWidth;
+        origLayer.height = el.offsetHeight;
+      }
+
       dragStateRef.current = {
         type: 'drag',
         layerId,
         layerKind: found.kind,
         startX: e.clientX,
         startY: e.clientY,
-        origLayer: { ...found.state },
+        origLayer,
         scale,
         rafId: null,
         currentX: e.clientX,
@@ -322,6 +361,16 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
           ? textOverlaysRef.current.find((o) => o.id === layerId)?.fontSize
           : undefined;
 
+      // For text/image overlays the displayed dimensions may differ from the
+      // stored state because of auto-sizing (measuredTextWidth/Height or
+      // browser text measurement).  Use the DOM element's actual dimensions
+      // so the resize handle stays under the cursor from the first frame.
+      const origLayer = { ...found.state };
+      if (el && (found.kind === 'text' || found.kind === 'image')) {
+        origLayer.width = el.offsetWidth;
+        origLayer.height = el.offsetHeight;
+      }
+
       dragStateRef.current = {
         type: 'resize',
         layerId,
@@ -329,7 +378,7 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
         handle,
         startX: e.clientX,
         startY: e.clientY,
-        origLayer: { ...found.state },
+        origLayer,
         scale,
         rafId: null,
         currentX: e.clientX,

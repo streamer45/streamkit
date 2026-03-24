@@ -77,6 +77,16 @@ export type {
 } from './compositorLayerParsers';
 export type { LayerKind } from './compositorConstants';
 
+/** DOM refs for all snap guide line elements (centre + edge). */
+export interface SnapGuideRefs {
+  vertical: HTMLDivElement | null;
+  horizontal: HTMLDivElement | null;
+  left: HTMLDivElement | null;
+  right: HTMLDivElement | null;
+  top: HTMLDivElement | null;
+  bottom: HTMLDivElement | null;
+}
+
 export interface UseCompositorLayersOptions {
   nodeId: string;
   sessionId?: string;
@@ -112,11 +122,9 @@ export interface UseCompositorLayersResult {
   ) => void;
   /** Ref map: layer elements register here for direct DOM manipulation during drag */
   layerRefs: React.MutableRefObject<Map<string, HTMLDivElement>>;
-  /** Refs to the snap guide line DOM elements for direct show/hide during drag */
-  snapGuideRefs: React.MutableRefObject<{
-    vertical: HTMLDivElement | null;
-    horizontal: HTMLDivElement | null;
-  }>;
+  /** Refs to the snap guide line DOM elements for direct show/hide during drag.
+   *  Includes both centre guides (vertical/horizontal) and edge guides. */
+  snapGuideRefs: React.MutableRefObject<SnapGuideRefs>;
   /** Whether a drag/resize is currently in progress */
   isDragging: boolean;
   addTextOverlay: (text: string) => void;
@@ -262,10 +270,14 @@ export const useCompositorLayers = (
   }, [store]);
 
   const layerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
-  const snapGuideRefs = useRef<{
-    vertical: HTMLDivElement | null;
-    horizontal: HTMLDivElement | null;
-  }>({ vertical: null, horizontal: null });
+  const snapGuideRefs = useRef<SnapGuideRefs>({
+    vertical: null,
+    horizontal: null,
+    left: null,
+    right: null,
+    top: null,
+    bottom: null,
+  });
   const dragStateRef = useRef<DragState | null>(null);
   const sourceDimsRef = useRef<SourceDimsMap>(new Map());
 

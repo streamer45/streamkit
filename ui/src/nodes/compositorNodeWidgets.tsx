@@ -188,6 +188,11 @@ export const InspectorHeaderSection: React.FC<{
             className="nodrag nopan"
           />
         </PositionSizeGrid>
+        {dimensionsReadOnly && (
+          <span style={{ fontSize: 9, color: 'var(--sk-text-muted)', marginTop: 2 }}>
+            Auto-sized to text content
+          </span>
+        )}
       </InspectorHeader>
     );
   }
@@ -435,7 +440,7 @@ export const CropZoomControl: React.FC<{
           <ControlValue>{cropX.toFixed(2)}</ControlValue>
         </ControlRow>
         <ControlRow>
-          <ControlLabel>Tilt Y</ControlLabel>
+          <ControlLabel>Pan Y</ControlLabel>
           <CompactSliderRoot
             value={[cropY]}
             onValueChange={([v]) => onChange({ cropY: v })}
