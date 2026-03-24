@@ -61,6 +61,10 @@ export interface DragResizeDeps {
   snapGuideRefs: React.MutableRefObject<{
     vertical: HTMLDivElement | null;
     horizontal: HTMLDivElement | null;
+    left: HTMLDivElement | null;
+    right: HTMLDivElement | null;
+    top: HTMLDivElement | null;
+    bottom: HTMLDivElement | null;
   }>;
 }
 
@@ -140,10 +144,14 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
         // Show/hide snap guide lines (ref-only, no React state).
         if (s.type === 'drag') {
           const guides = detectSnapGuides(updated, canvasWidth, canvasHeight);
-          const vEl = snapGuideRefs.current.vertical;
-          const hEl = snapGuideRefs.current.horizontal;
-          if (vEl) vEl.style.opacity = guides.verticalCenter ? '0.4' : '0';
-          if (hEl) hEl.style.opacity = guides.horizontalCenter ? '0.4' : '0';
+          const refs = snapGuideRefs.current;
+          if (refs.vertical) refs.vertical.style.opacity = guides.verticalCenter ? '0.4' : '0';
+          if (refs.horizontal)
+            refs.horizontal.style.opacity = guides.horizontalCenter ? '0.4' : '0';
+          if (refs.left) refs.left.style.opacity = guides.leftEdge ? '0.4' : '0';
+          if (refs.right) refs.right.style.opacity = guides.rightEdge ? '0.4' : '0';
+          if (refs.top) refs.top.style.opacity = guides.topEdge ? '0.4' : '0';
+          if (refs.bottom) refs.bottom.style.opacity = guides.bottomEdge ? '0.4' : '0';
         }
       });
     },
@@ -164,11 +172,12 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
 
       if (state.rafId !== null) cancelAnimationFrame(state.rafId);
 
-      // Hide snap guides on drop.
-      const vEl = snapGuideRefs.current.vertical;
-      const hEl = snapGuideRefs.current.horizontal;
-      if (vEl) vEl.style.opacity = '0';
-      if (hEl) hEl.style.opacity = '0';
+      // Hide all snap guides on drop.
+      const refs = snapGuideRefs.current;
+      for (const key of ['vertical', 'horizontal', 'left', 'right', 'top', 'bottom'] as const) {
+        const el = refs[key];
+        if (el) el.style.opacity = '0';
+      }
 
       const updated = computeLayerFromPointer(state, e.clientX, e.clientY);
       setIsDragging(false);

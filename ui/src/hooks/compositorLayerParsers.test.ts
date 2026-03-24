@@ -15,7 +15,12 @@
 import { describe, it, expect } from 'vitest';
 
 import type { LayerState, TextOverlayState, ImageOverlayState } from './compositorLayerParsers';
-import { mergeOverlayState, fitRectPreservingAspect } from './compositorLayerParsers';
+import {
+  mergeOverlayState,
+  fitRectPreservingAspect,
+  detectSnapGuides,
+  computeUpdatedLayer,
+} from './compositorLayerParsers';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -482,5 +487,110 @@ describe('fitRectPreservingAspect', () => {
   it('zero bounds height → returns bounds unchanged', () => {
     const bounds = { x: 5, y: 10, width: 200, height: 0 };
     expect(fitRectPreservingAspect(640, 480, bounds)).toEqual(bounds);
+  });
+});
+
+// ── detectSnapGuides — edge-snap detection ──────────────────────────────────
+
+describe('detectSnapGuides', () => {
+  const CW = 1920;
+  const CH = 1080;
+
+  it('detects vertical-centre snap when layer midpoint is at canvas midpoint', () => {
+    const layer = makeLayer({ x: (CW - 640) / 2, y: 100, width: 640, height: 480 });
+    const guides = detectSnapGuides(layer, CW, CH);
+    expect(guides.verticalCenter).toBe(true);
+    expect(guides.horizontalCenter).toBe(false);
+  });
+
+  it('detects horizontal-centre snap when layer midpoint is at canvas midpoint', () => {
+    const layer = makeLayer({ x: 100, y: (CH - 480) / 2, width: 640, height: 480 });
+    const guides = detectSnapGuides(layer, CW, CH);
+    expect(guides.horizontalCenter).toBe(true);
+    expect(guides.verticalCenter).toBe(false);
+  });
+
+  it('detects left-edge snap when layer x ≈ 0', () => {
+    const layer = makeLayer({ x: 0, y: 100 });
+    const guides = detectSnapGuides(layer, CW, CH);
+    expect(guides.leftEdge).toBe(true);
+    expect(guides.rightEdge).toBe(false);
+  });
+
+  it('detects right-edge snap when layer right edge ≈ canvas width', () => {
+    const layer = makeLayer({ x: CW - 640, y: 100, width: 640 });
+    const guides = detectSnapGuides(layer, CW, CH);
+    expect(guides.rightEdge).toBe(true);
+    expect(guides.leftEdge).toBe(false);
+  });
+
+  it('detects top-edge snap when layer y ≈ 0', () => {
+    const layer = makeLayer({ x: 100, y: 0 });
+    const guides = detectSnapGuides(layer, CW, CH);
+    expect(guides.topEdge).toBe(true);
+    expect(guides.bottomEdge).toBe(false);
+  });
+
+  it('detects bottom-edge snap when layer bottom edge ≈ canvas height', () => {
+    const layer = makeLayer({ x: 100, y: CH - 480, height: 480 });
+    const guides = detectSnapGuides(layer, CW, CH);
+    expect(guides.bottomEdge).toBe(true);
+    expect(guides.topEdge).toBe(false);
+  });
+
+  it('returns all false when layer is in the middle with no alignment', () => {
+    const layer = makeLayer({ x: 200, y: 200, width: 100, height: 100 });
+    const guides = detectSnapGuides(layer, CW, CH);
+    expect(guides.verticalCenter).toBe(false);
+    expect(guides.horizontalCenter).toBe(false);
+    expect(guides.leftEdge).toBe(false);
+    expect(guides.rightEdge).toBe(false);
+    expect(guides.topEdge).toBe(false);
+    expect(guides.bottomEdge).toBe(false);
+  });
+});
+
+// ── computeUpdatedLayer — edge-snap in drag ─────────────────────────────────
+
+describe('computeUpdatedLayer edge snapping', () => {
+  const CW = 1920;
+  const CH = 1080;
+
+  it('snaps layer left edge to x=0 when dragged near canvas left', () => {
+    // Layer starts at x=100; drag left by ~97px so it lands within SNAP_THRESHOLD of 0
+    const orig = makeLayer({ x: 100, y: 300, width: 640, height: 480 });
+    const result = computeUpdatedLayer(orig, 'drag', undefined, -97, 0, CW, CH);
+    expect(result.x).toBe(0);
+  });
+
+  it('snaps layer right edge to canvas width when dragged near right boundary', () => {
+    const orig = makeLayer({ x: 1200, y: 300, width: 640, height: 480 });
+    // dx = 78 → raw x = 1278 → grid-snap to 1280 → right edge 1920 = CW → edge snap fires
+    const result = computeUpdatedLayer(orig, 'drag', undefined, 78, 0, CW, CH);
+    expect(result.x).toBe(CW - orig.width);
+  });
+
+  it('snaps layer top edge to y=0 when dragged near canvas top', () => {
+    const orig = makeLayer({ x: 300, y: 100, width: 640, height: 480 });
+    const result = computeUpdatedLayer(orig, 'drag', undefined, 0, -97, CW, CH);
+    expect(result.y).toBe(0);
+  });
+
+  it('snaps layer bottom edge to canvas height when dragged near bottom boundary', () => {
+    const orig = makeLayer({ x: 300, y: 500, width: 640, height: 480 });
+    // dy = 98 → raw y = 598 → grid-snap to 600 → bottom edge 1080 = CH → edge snap fires
+    const result = computeUpdatedLayer(orig, 'drag', undefined, 0, 98, CW, CH);
+    expect(result.y).toBe(CH - orig.height);
+  });
+
+  it('centre snap takes priority over edge snap when both are close', () => {
+    // Place the layer so that centre-snap and edge-snap would both fire:
+    // If the layer is exactly half the canvas width, x=0 means left-edge AND centre at the same time.
+    const w = CW; // layer as wide as canvas
+    const orig = makeLayer({ x: 100, y: 300, width: w, height: 480 });
+    // Drag so x ≈ 0 (left edge snap) — but also midX = 960 = CW/2 (centre snap)
+    // Centre snap should lock x to (CW - w) / 2 = 0
+    const result = computeUpdatedLayer(orig, 'drag', undefined, -97, 0, CW, CH);
+    expect(result.x).toBe((CW - w) / 2); // 0 — both agree
   });
 });

@@ -79,6 +79,12 @@ export const LayerDimensions = styled.div`
 
 const HANDLE_SIZE = 8;
 
+/** Hit-area padding around each resize handle.  The visual handle is
+ *  HANDLE_SIZE but the clickable area extends HIT_PAD further on each
+ *  side, making handles much easier to grab — especially on small layers
+ *  or touch devices. */
+const HIT_PAD = 4;
+
 export const ResizeHandleDiv = styled.div<{ position: ResizeHandle }>`
   position: absolute;
   width: ${HANDLE_SIZE}px;
@@ -88,6 +94,13 @@ export const ResizeHandleDiv = styled.div<{ position: ResizeHandle }>`
   border-radius: 2px;
   z-index: 10;
   touch-action: none;
+
+  /* Invisible expanded hit area so handles are easy to grab. */
+  &::before {
+    content: '';
+    position: absolute;
+    inset: -${HIT_PAD}px;
+  }
 
   ${(props) => {
     const half = -HANDLE_SIZE / 2;
@@ -122,14 +135,17 @@ export const EmptyState = styled.div`
   font-size: 11px;
 `;
 
-/** Thin guide line shown when a layer snaps to the canvas centre axis. */
+/** Guide line shown when a layer snaps to a canvas centre axis or edge.
+ *  Centre guides sit at 50%; edge guides sit at 0 or 100% of each axis. */
 export const SnapGuideLine = styled.div`
   position: absolute;
   pointer-events: none;
   background: var(--sk-primary);
   opacity: 0;
   z-index: 9999;
+  transition: opacity 0.08s ease-out;
 
+  /* ── Centre guides ── */
   &[data-axis='vertical'] {
     width: 1px;
     top: 0;
@@ -142,5 +158,34 @@ export const SnapGuideLine = styled.div`
     left: 0;
     right: 0;
     top: 50%;
+  }
+
+  /* ── Edge guides ── */
+  &[data-axis='left'] {
+    width: 1px;
+    top: 0;
+    bottom: 0;
+    left: 0;
+  }
+
+  &[data-axis='right'] {
+    width: 1px;
+    top: 0;
+    bottom: 0;
+    right: 0;
+  }
+
+  &[data-axis='top'] {
+    height: 1px;
+    left: 0;
+    right: 0;
+    top: 0;
+  }
+
+  &[data-axis='bottom'] {
+    height: 1px;
+    left: 0;
+    right: 0;
+    bottom: 0;
   }
 `;

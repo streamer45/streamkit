@@ -95,7 +95,7 @@ export function layerBoxStyle(
     transform: layerTransform(opts.rotationDegrees),
     zIndex: opts.zIndex,
     outline: `2px ${opts.outlineStyle ?? 'solid'} ${opts.borderColor}`,
-    outlineOffset: '-2px',
+    outlineOffset: '0px',
     background: opts.bgColor,
     filter: opts.visible ? undefined : 'grayscale(0.6)',
   };
@@ -257,15 +257,18 @@ export const TextOverlayLayer: React.FC<{
         ref={layerRef}
         className="nodrag nopan"
         aria-label={`Text overlay: ${friendlyLabel(overlay.id, 'text', index)}`}
-        style={layerBoxStyle(overlay.x, overlay.y, displayWidth, displayHeight, {
-          visible: overlay.visible,
-          opacity: overlay.opacity,
-          zIndex: overlay.zIndex,
-          rotationDegrees: overlay.rotationDegrees,
-          borderColor,
-          bgColor,
-          outlineStyle: 'dashed',
-        })}
+        style={{
+          ...layerBoxStyle(overlay.x, overlay.y, displayWidth, displayHeight, {
+            visible: overlay.visible,
+            opacity: overlay.opacity,
+            zIndex: overlay.zIndex,
+            rotationDegrees: overlay.rotationDegrees,
+            borderColor,
+            bgColor,
+            outlineStyle: 'dashed',
+          }),
+          cursor: 'text',
+        }}
         onPointerDown={handlePointerDown}
         onDoubleClick={handleDoubleClick}
       >

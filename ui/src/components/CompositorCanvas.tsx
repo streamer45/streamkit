@@ -26,7 +26,7 @@ import {
   imageOverlayIdsAtom,
   selectedLayerIdAtom,
 } from '@/hooks/compositorAtoms';
-import type { LayerKind, ResizeHandle } from '@/hooks/useCompositorLayers';
+import type { LayerKind, ResizeHandle, SnapGuideRefs } from '@/hooks/useCompositorLayers';
 
 import { ImageOverlayLayer, TextOverlayLayer, VideoLayer } from './compositorCanvasLayers';
 import { CanvasInner, CanvasOuter, EmptyState, SnapGuideLine } from './compositorCanvasStyles';
@@ -51,10 +51,7 @@ export interface CompositorCanvasProps {
   onTextFocusRequest?: (id: string) => void;
   onLayerContextMenu?: (layerId: string, layerKind: LayerKind, x: number, y: number) => void;
   layerRefs: React.MutableRefObject<Map<string, HTMLDivElement>>;
-  snapGuideRefs: React.MutableRefObject<{
-    vertical: HTMLDivElement | null;
-    horizontal: HTMLDivElement | null;
-  }>;
+  snapGuideRefs: React.MutableRefObject<SnapGuideRefs>;
   disabled?: boolean;
 }
 
@@ -229,6 +226,30 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
             data-axis="horizontal"
             ref={(el: HTMLDivElement | null) => {
               snapGuideRefs.current.horizontal = el;
+            }}
+          />
+          <SnapGuideLine
+            data-axis="left"
+            ref={(el: HTMLDivElement | null) => {
+              snapGuideRefs.current.left = el;
+            }}
+          />
+          <SnapGuideLine
+            data-axis="right"
+            ref={(el: HTMLDivElement | null) => {
+              snapGuideRefs.current.right = el;
+            }}
+          />
+          <SnapGuideLine
+            data-axis="top"
+            ref={(el: HTMLDivElement | null) => {
+              snapGuideRefs.current.top = el;
+            }}
+          />
+          <SnapGuideLine
+            data-axis="bottom"
+            ref={(el: HTMLDivElement | null) => {
+              snapGuideRefs.current.bottom = el;
             }}
           />
         </CanvasInner>
