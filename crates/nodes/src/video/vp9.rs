@@ -437,6 +437,10 @@ impl ProcessorNode for Vp9EncoderNode {
                 match encoder.flush() {
                     Ok(packets) => {
                         for packet in packets {
+                            output_bytes_counter.add(packet.data.len() as u64, &otel_attrs);
+                            if packet.metadata.as_ref().and_then(|m| m.keyframe) == Some(true) {
+                                keyframes_counter.add(1, &otel_attrs);
+                            }
                             if result_tx.blocking_send(Ok(packet)).is_err() {
                                 return;
                             }
