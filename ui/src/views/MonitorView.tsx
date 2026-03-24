@@ -460,11 +460,19 @@ const MonitorViewContent: React.FC = () => {
     [pipeline, nodeDefinitions]
   );
 
+  // Ref indirection: keeps stableOnParamChange identity stable across
+  // pipeline reference changes.  validateParamValue changes whenever the
+  // pipeline object changes (e.g. param echo-back from server), but we
+  // don't want that to cascade into new node data objects and break
+  // React.memo on every node component.
+  const validateParamValueRef = useRef(validateParamValue);
+  validateParamValueRef.current = validateParamValue;
+
   // Memoized param change handler for right pane
   const handleRightPaneParamChange = useCallback(
     (nodeId: string, key: string, value: unknown) => {
       // Validate before sending to server
-      const error = validateParamValue(nodeId, key, value);
+      const error = validateParamValueRef.current(nodeId, key, value);
       if (error) {
         toast.error(`Invalid value for ${key}: ${error}`);
         return;
@@ -472,7 +480,7 @@ const MonitorViewContent: React.FC = () => {
 
       tuneNode(nodeId, key, value);
     },
-    [validateParamValue, toast, tuneNode]
+    [toast, tuneNode]
   );
 
   // Memoized label change handler (currently no-op)
@@ -863,10 +871,12 @@ const MonitorViewContent: React.FC = () => {
   }, [topoKey, defByKind, selectedSessionId, tuneNode]);
 
   // Stable callback for param changes - always sends directly to server
+  // Uses ref indirection for validateParamValue to keep identity stable
+  // across pipeline reference changes (see validateParamValueRef above).
   const stableOnParamChange = useCallback(
     (nodeId: string, paramName: string, value: unknown) => {
       // Validate before sending to server
-      const error = validateParamValue(nodeId, paramName, value);
+      const error = validateParamValueRef.current(nodeId, paramName, value);
       if (error) {
         toast.error(`Invalid value for ${paramName}: ${error}`);
         return;
@@ -874,7 +884,7 @@ const MonitorViewContent: React.FC = () => {
 
       tuneNode(nodeId, paramName, value);
     },
-    [validateParamValue, toast, tuneNode]
+    [toast, tuneNode]
   );
 
   // Stable callback for full-config updates (compositor nodes).
@@ -1014,7 +1024,7 @@ const MonitorViewContent: React.FC = () => {
     setSessionToDelete(sessionId);
   }, []);
 
-  const handleConfirmQuickDelete = async () => {
+  const handleConfirmQuickDelete = useCallback(async () => {
     if (!sessionToDelete) return;
 
     setIsDeletingSession(true);
@@ -1048,9 +1058,9 @@ const MonitorViewContent: React.FC = () => {
     } finally {
       setIsDeletingSession(false);
     }
-  };
+  }, [sessionToDelete, selectedSessionId, toast, clearSessionPositions]);
 
-  const handleDeleteSession = async () => {
+  const handleDeleteSession = useCallback(async () => {
     if (!selectedSessionId) return;
 
     setIsDeletingSession(true);
@@ -1081,7 +1091,10 @@ const MonitorViewContent: React.FC = () => {
     } finally {
       setIsDeletingSession(false);
     }
-  };
+  }, [selectedSessionId, toast, clearSessionPositions]);
+
+  const handleCancelDeleteModal = useCallback(() => setShowDeleteModal(false), []);
+  const handleCancelQuickDelete = useCallback(() => setSessionToDelete(null), []);
 
   // Memoize left panel to prevent ResizableLayout from re-rendering
   const leftPanel = React.useMemo(
@@ -1272,7 +1285,7 @@ const MonitorViewContent: React.FC = () => {
         confirmLabel="Delete"
         cancelLabel="Cancel"
         onConfirm={handleDeleteSession}
-        onCancel={() => setShowDeleteModal(false)}
+        onCancel={handleCancelDeleteModal}
         isLoading={isDeletingSession}
       />
       <ConfirmModal
@@ -1282,7 +1295,7 @@ const MonitorViewContent: React.FC = () => {
         confirmLabel="Delete"
         cancelLabel="Cancel"
         onConfirm={handleConfirmQuickDelete}
-        onCancel={() => setSessionToDelete(null)}
+        onCancel={handleCancelQuickDelete}
         isLoading={isDeletingSession}
       />
     </div>

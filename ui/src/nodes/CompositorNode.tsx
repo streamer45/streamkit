@@ -15,6 +15,7 @@ import { useCompositorKeyboard } from '@/hooks/compositorKeyboard';
 import { useCompositorLayers } from '@/hooks/useCompositorLayers';
 import type { LayerKind } from '@/hooks/useCompositorLayers';
 import { clearCompositorSelection, setCompositorSelection } from '@/hooks/useCompositorSelection';
+import { areNodePropsEqual } from '@/nodes/nodePropsEqual';
 import { perfOnRender } from '@/perf';
 import type { InputPin, OutputPin, NodeState, NodeStats, NodeDefinition } from '@/types/types';
 import { nodesLogger } from '@/utils/logger';
@@ -107,7 +108,11 @@ ConnectedContextMenu.displayName = 'ConnectedContextMenu';
 
 // ── Main compositor node ──────────────────────────────────────────────────────────────
 
-const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, selected }) => {
+const CompositorNode: React.FC<CompositorNodeProps> = React.memo(function CompositorNode({
+  id,
+  data,
+  selected,
+}) {
   nodesLogger.debug('CompositorNode Render:', id);
 
   const canvasWidth = (data.params?.width as number) ?? 1280;
@@ -385,7 +390,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
   }
 
   return nodeContent;
-});
+}, areNodePropsEqual);
 
 CompositorNode.displayName = 'CompositorNode';
 

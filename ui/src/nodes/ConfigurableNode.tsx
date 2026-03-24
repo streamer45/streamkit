@@ -9,6 +9,8 @@ import React from 'react';
 import { NodeFrame } from '@/components/node/NodeFrame';
 import { LiveBadge, LiveDot } from '@/components/ui/LiveIndicator';
 import { useNumericSlider } from '@/hooks/useNumericSlider';
+import { areNodePropsEqual } from '@/nodes/nodePropsEqual';
+import { perfOnRender } from '@/perf';
 import type { InputPin, OutputPin, NodeState, NodeStats, NodeDefinition } from '@/types/types';
 import {
   type JsonSchemaProperty,
@@ -269,7 +271,11 @@ const NumericSliderControl: React.FC<NumericSliderControlProps> = ({
   );
 };
 
-const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(({ id, data, selected }) => {
+const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(function ConfigurableNode({
+  id,
+  data,
+  selected,
+}) {
   nodesLogger.debug(
     'ConfigurableNode Render:',
     id,
@@ -291,7 +297,7 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(({ id, data
   // This prevents the LIVE badge from showing in design view (which has no sessionId)
   const showLiveIndicator = !!data.onParamChange && !!data.sessionId;
 
-  return (
+  const content = (
     <NodeFrame
       id={id}
       label={data.label}
@@ -335,7 +341,17 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(({ id, data
       )}
     </NodeFrame>
   );
-});
+
+  if (import.meta.env.DEV) {
+    return (
+      <React.Profiler id="ConfigurableNode" onRender={perfOnRender}>
+        {content}
+      </React.Profiler>
+    );
+  }
+
+  return content;
+}, areNodePropsEqual);
 
 ConfigurableNode.displayName = 'ConfigurableNode';
 
