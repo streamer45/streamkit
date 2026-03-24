@@ -136,7 +136,9 @@ export const EmptyState = styled.div`
 `;
 
 /** Guide line shown when a layer snaps to a canvas centre axis or edge.
- *  Centre guides sit at 50%; edge guides sit at 0 or 100% of each axis. */
+ *  Centre guides sit at 50%; edge guides sit at 0 or 100% of each axis.
+ *  Uses a glow effect (box-shadow) so guides are unmissable even on busy
+ *  canvases. */
 export const SnapGuideLine = styled.div`
   position: absolute;
   pointer-events: none;
@@ -144,17 +146,20 @@ export const SnapGuideLine = styled.div`
   opacity: 0;
   z-index: 9999;
   transition: opacity 0.08s ease-out;
+  box-shadow:
+    0 0 4px 1px var(--sk-primary),
+    0 0 8px 2px rgba(99, 102, 241, 0.3);
 
   /* ── Centre guides ── */
   &[data-axis='vertical'] {
-    width: 1px;
+    width: 1.5px;
     top: 0;
     bottom: 0;
     left: 50%;
   }
 
   &[data-axis='horizontal'] {
-    height: 1px;
+    height: 1.5px;
     left: 0;
     right: 0;
     top: 50%;
@@ -162,28 +167,28 @@ export const SnapGuideLine = styled.div`
 
   /* ── Edge guides ── */
   &[data-axis='left'] {
-    width: 1px;
+    width: 1.5px;
     top: 0;
     bottom: 0;
     left: 0;
   }
 
   &[data-axis='right'] {
-    width: 1px;
+    width: 1.5px;
     top: 0;
     bottom: 0;
     right: 0;
   }
 
   &[data-axis='top'] {
-    height: 1px;
+    height: 1.5px;
     left: 0;
     right: 0;
     top: 0;
   }
 
   &[data-axis='bottom'] {
-    height: 1px;
+    height: 1.5px;
     left: 0;
     right: 0;
     bottom: 0;

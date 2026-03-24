@@ -141,17 +141,38 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
         const updated = computeLayerFromPointer(s, s.currentX, s.currentY);
         applyVisualUpdate(updated, s.type === 'resize');
 
+        // Live font-size scaling for text overlays during resize so the
+        // text visually tracks the handle and there's no snap-back on drop.
+        if (
+          s.type === 'resize' &&
+          s.layerKind === 'text' &&
+          s.origFontSize != null &&
+          s.origLayer.width > 0
+        ) {
+          const el = layerRefs.current.get(s.layerId);
+          if (el) {
+            const newFs = Math.max(
+              8,
+              Math.round(s.origFontSize * (updated.width / s.origLayer.width))
+            );
+            const spans = el.querySelectorAll<HTMLSpanElement>('span');
+            for (const span of spans) {
+              if (span.style.fontSize) span.style.fontSize = `${newFs}px`;
+            }
+          }
+        }
+
         // Show/hide snap guide lines (ref-only, no React state).
         if (s.type === 'drag') {
           const guides = detectSnapGuides(updated, canvasWidth, canvasHeight);
           const refs = snapGuideRefs.current;
-          if (refs.vertical) refs.vertical.style.opacity = guides.verticalCenter ? '0.4' : '0';
-          if (refs.horizontal)
-            refs.horizontal.style.opacity = guides.horizontalCenter ? '0.4' : '0';
-          if (refs.left) refs.left.style.opacity = guides.leftEdge ? '0.4' : '0';
-          if (refs.right) refs.right.style.opacity = guides.rightEdge ? '0.4' : '0';
-          if (refs.top) refs.top.style.opacity = guides.topEdge ? '0.4' : '0';
-          if (refs.bottom) refs.bottom.style.opacity = guides.bottomEdge ? '0.4' : '0';
+          const ON = '0.8';
+          if (refs.vertical) refs.vertical.style.opacity = guides.verticalCenter ? ON : '0';
+          if (refs.horizontal) refs.horizontal.style.opacity = guides.horizontalCenter ? ON : '0';
+          if (refs.left) refs.left.style.opacity = guides.leftEdge ? ON : '0';
+          if (refs.right) refs.right.style.opacity = guides.rightEdge ? ON : '0';
+          if (refs.top) refs.top.style.opacity = guides.topEdge ? ON : '0';
+          if (refs.bottom) refs.bottom.style.opacity = guides.bottomEdge ? ON : '0';
         }
       });
     },
