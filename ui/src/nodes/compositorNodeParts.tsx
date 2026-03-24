@@ -500,7 +500,7 @@ export const SidePanel = styled.div`
   left: 100%;
   top: 0;
   width: 280px;
-  margin-left: 8px;
+  margin-left: 12px;
   background: var(--sk-panel-bg);
   border: 1px solid var(--sk-border);
   border-radius: 6px;
