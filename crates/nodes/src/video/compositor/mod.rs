@@ -667,6 +667,13 @@ impl ProcessorNode for CompositorNode {
                         &mut slots,
                         &mut clear_conversion_cache,
                     );
+                    // Clear causal-consistency metadata so the resulting
+                    // view data is not stamped with a stale sender/rev
+                    // from a previous UpdateParams.  Without this, the
+                    // client that last edited config would suppress the
+                    // pin-triggered layout update via its echo gate.
+                    self.config_sender.clear();
+                    self.config_rev = 0;
                     layer_configs_dirty = true;
                     continue;
                 }
