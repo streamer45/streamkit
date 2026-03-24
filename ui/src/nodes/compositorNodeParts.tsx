@@ -498,7 +498,7 @@ export const ResetButton = styled.button`
 
 export const SidePanel = styled.div`
   position: absolute;
-  left: calc(100% + 12px);
+  left: calc(100% + 28px);
   top: 18px;
   width: 280px;
   background: var(--sk-panel-bg);
