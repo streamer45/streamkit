@@ -200,13 +200,10 @@ const MonitorViewContent: React.FC = () => {
     createOnConnectEnd,
   } = useReactFlowCommon();
   const rf = React.useRef<ReactFlowInstance | null>(null);
-  const onInit = useCallback(
-    (instance: ReactFlowInstance) => {
-      rf.current = instance;
-      baseOnInit(instance);
-    },
-    [baseOnInit]
-  );
+  const onInit = (instance: ReactFlowInstance) => {
+    rf.current = instance;
+    baseOnInit(instance);
+  };
   const screenToFlow = (pt: { x: number; y: number }) => {
     return rf.current?.screenToFlowPosition(pt) ?? pt;
   };
