@@ -80,6 +80,10 @@ export interface CompositorInspectorProps {
   updateImageOverlay: (id: string, patch: Partial<ImageOverlayState>) => void;
   textInputRef?: React.RefObject<HTMLTextAreaElement | null>;
   disabled: boolean;
+  /** Called when a continuous slider interaction starts (pointer down on slider). */
+  onInteractionStart?: () => void;
+  /** Called when a continuous slider interaction ends (pointer up / value commit). */
+  onInteractionEnd?: () => void;
 }
 
 export const CompositorInspector: React.FC<CompositorInspectorProps> = React.memo(
@@ -93,6 +97,8 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
     updateImageOverlay,
     textInputRef: externalTextInputRef,
     disabled,
+    onInteractionStart,
+    onInteractionEnd,
   }) => {
     // ── Read from atoms ────────────────────────────────────────────────────
     const selectedLayerId = useAtomValue(selectedLayerIdAtom);
@@ -257,6 +263,8 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
                   const [r, g, b] = selectedTextOverlay.color;
                   updateTextOverlay(selectedTextOverlay.id, { color: [r, g, b, v] });
                 }}
+                onPointerDownCapture={onInteractionStart ? () => onInteractionStart() : undefined}
+                onValueCommit={onInteractionEnd ? () => onInteractionEnd() : undefined}
                 min={0}
                 max={255}
                 step={1}
@@ -275,7 +283,7 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
       );
       // textInputRef is a stable useRef — omitted from deps intentionally.
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [selectedTextOverlay, updateTextOverlay, disabled]);
+    }, [selectedTextOverlay, updateTextOverlay, disabled, onInteractionStart, onInteractionEnd]);
 
     // ── Early return after all hooks ───────────────────────────────────────
     const source = selectedLayer ?? selectedTextOverlay ?? selectedImageOverlay;
@@ -315,12 +323,16 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
             selectedLayerKind={selectedLayerKind}
             onChange={handleOpacityChange}
             disabled={disabled}
+            onInteractionStart={onInteractionStart}
+            onInteractionEnd={onInteractionEnd}
           />
           <ConnectedRotationControl
             selectedLayerId={selectedLayerId}
             selectedLayerKind={selectedLayerKind}
             onChange={handleRotationChange}
             disabled={disabled}
+            onInteractionStart={onInteractionStart}
+            onInteractionEnd={onInteractionEnd}
           />
           <MirrorControl
             mirrorHorizontal={source.mirrorHorizontal}
@@ -336,6 +348,8 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
               cropShape={selectedLayer.cropShape}
               onChange={handleCropZoomChange}
               disabled={disabled}
+              onInteractionStart={onInteractionStart}
+              onInteractionEnd={onInteractionEnd}
             />
           )}
         </InspectorControls>
@@ -357,24 +371,43 @@ const ConnectedOpacityControl: React.FC<{
   selectedLayerKind: LayerKind | null;
   onChange: (v: number) => void;
   disabled: boolean;
-}> = React.memo(({ selectedLayerId, selectedLayerKind, onChange, disabled }) => {
-  const videoOpacity = useAtomValue(
-    selectedLayerKind === 'video' ? layerOpacityAtom(selectedLayerId) : nullOpacityAtom
-  );
-  const textOverlay = useAtomValue(
-    selectedLayerKind === 'text' ? textOverlayAtoms(selectedLayerId) : nullTextOverlayAtom
-  );
-  const imageOverlay = useAtomValue(
-    selectedLayerKind === 'image' ? imageOverlayAtoms(selectedLayerId) : nullImageOverlayAtom
-  );
+  onInteractionStart?: () => void;
+  onInteractionEnd?: () => void;
+}> = React.memo(
+  ({
+    selectedLayerId,
+    selectedLayerKind,
+    onChange,
+    disabled,
+    onInteractionStart,
+    onInteractionEnd,
+  }) => {
+    const videoOpacity = useAtomValue(
+      selectedLayerKind === 'video' ? layerOpacityAtom(selectedLayerId) : nullOpacityAtom
+    );
+    const textOverlay = useAtomValue(
+      selectedLayerKind === 'text' ? textOverlayAtoms(selectedLayerId) : nullTextOverlayAtom
+    );
+    const imageOverlay = useAtomValue(
+      selectedLayerKind === 'image' ? imageOverlayAtoms(selectedLayerId) : nullImageOverlayAtom
+    );
 
-  const opacity =
-    selectedLayerKind === 'video'
-      ? videoOpacity
-      : (textOverlay?.opacity ?? imageOverlay?.opacity ?? 1);
+    const opacity =
+      selectedLayerKind === 'video'
+        ? videoOpacity
+        : (textOverlay?.opacity ?? imageOverlay?.opacity ?? 1);
 
-  return <OpacityControl opacity={opacity} onChange={onChange} disabled={disabled} />;
-});
+    return (
+      <OpacityControl
+        opacity={opacity}
+        onChange={onChange}
+        disabled={disabled}
+        onInteractionStart={onInteractionStart}
+        onInteractionEnd={onInteractionEnd}
+      />
+    );
+  }
+);
 ConnectedOpacityControl.displayName = 'ConnectedOpacityControl';
 
 const ConnectedRotationControl: React.FC<{
@@ -382,24 +415,41 @@ const ConnectedRotationControl: React.FC<{
   selectedLayerKind: LayerKind | null;
   onChange: (v: number) => void;
   disabled: boolean;
-}> = React.memo(({ selectedLayerId, selectedLayerKind, onChange, disabled }) => {
-  const videoRotation = useAtomValue(
-    selectedLayerKind === 'video' ? layerRotationAtom(selectedLayerId) : nullRotationAtom
-  );
-  const textOverlay = useAtomValue(
-    selectedLayerKind === 'text' ? textOverlayAtoms(selectedLayerId) : nullTextOverlayAtom
-  );
-  const imageOverlay = useAtomValue(
-    selectedLayerKind === 'image' ? imageOverlayAtoms(selectedLayerId) : nullImageOverlayAtom
-  );
+  onInteractionStart?: () => void;
+  onInteractionEnd?: () => void;
+}> = React.memo(
+  ({
+    selectedLayerId,
+    selectedLayerKind,
+    onChange,
+    disabled,
+    onInteractionStart,
+    onInteractionEnd,
+  }) => {
+    const videoRotation = useAtomValue(
+      selectedLayerKind === 'video' ? layerRotationAtom(selectedLayerId) : nullRotationAtom
+    );
+    const textOverlay = useAtomValue(
+      selectedLayerKind === 'text' ? textOverlayAtoms(selectedLayerId) : nullTextOverlayAtom
+    );
+    const imageOverlay = useAtomValue(
+      selectedLayerKind === 'image' ? imageOverlayAtoms(selectedLayerId) : nullImageOverlayAtom
+    );
 
-  const rotationDegrees =
-    selectedLayerKind === 'video'
-      ? videoRotation
-      : (textOverlay?.rotationDegrees ?? imageOverlay?.rotationDegrees ?? 0);
+    const rotationDegrees =
+      selectedLayerKind === 'video'
+        ? videoRotation
+        : (textOverlay?.rotationDegrees ?? imageOverlay?.rotationDegrees ?? 0);
 
-  return (
-    <RotationControl rotationDegrees={rotationDegrees} onChange={onChange} disabled={disabled} />
-  );
-});
+    return (
+      <RotationControl
+        rotationDegrees={rotationDegrees}
+        onChange={onChange}
+        disabled={disabled}
+        onInteractionStart={onInteractionStart}
+        onInteractionEnd={onInteractionEnd}
+      />
+    );
+  }
+);
 ConnectedRotationControl.displayName = 'ConnectedRotationControl';

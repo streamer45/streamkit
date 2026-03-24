@@ -133,6 +133,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
     updateImageOverlay,
     removeImageOverlay,
     reorderLayers,
+    activeInteractionRef,
     keyboardDeps,
     store,
   } = useCompositorLayers({
@@ -144,6 +145,17 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
     onConfigChange: data.onConfigChange,
     onParamChange: data.onParamChange,
   });
+
+  // Stable interaction callbacks for suppressing stale server view data
+  // during continuous slider drags (opacity, rotation, crop, text alpha).
+  // These set activeInteractionRef.current which gates useServerLayoutSync.
+  // On interaction end, the next server view-data tick (~16-33ms) reconciles.
+  const handleInteractionStart = useCallback(() => {
+    activeInteractionRef.current = true;
+  }, [activeInteractionRef]);
+  const handleInteractionEnd = useCallback(() => {
+    activeInteractionRef.current = false;
+  }, [activeInteractionRef]);
 
   const disabled = !data.onConfigChange && !data.onParamChange;
 
@@ -253,6 +265,8 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
           updateImageOverlay={updateImageOverlay}
           textInputRef={textInputRef}
           disabled={disabled}
+          onInteractionStart={handleInteractionStart}
+          onInteractionEnd={handleInteractionEnd}
         />
       </>
     ),
@@ -273,6 +287,8 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
       updateLayerPositionSize,
       updateTextOverlay,
       updateImageOverlay,
+      handleInteractionStart,
+      handleInteractionEnd,
     ]
   );
 
