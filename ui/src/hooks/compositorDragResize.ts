@@ -301,13 +301,22 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
           (Number(container.dataset.canvasWidth) || canvasWidth)
         : 1;
 
+      // For text/image overlays the displayed dimensions may differ from
+      // the stored state due to auto-sizing.  Use the DOM element's actual
+      // dimensions so edge-snap calculations align with what the user sees.
+      const origLayer = { ...found.state };
+      if (el && (found.kind === 'text' || found.kind === 'image')) {
+        origLayer.width = el.offsetWidth;
+        origLayer.height = el.offsetHeight;
+      }
+
       dragStateRef.current = {
         type: 'drag',
         layerId,
         layerKind: found.kind,
         startX: e.clientX,
         startY: e.clientY,
-        origLayer: { ...found.state },
+        origLayer,
         scale,
         rafId: null,
         currentX: e.clientX,
