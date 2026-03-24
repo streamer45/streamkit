@@ -14,20 +14,14 @@
  *
  * This comparator only checks the props that node components actually
  * consume: `id`, `type`, `data` (by reference), and `selected`.
- *
- * Usage — cast to the concrete props type at the call-site so that
- * TypeScript doesn't widen `data` to `unknown`:
- *
- * ```ts
- * React.memo(function MyNode({ id, data, selected }: MyNodeProps) {
- *   …
- * }, areNodePropsEqual as (a: Readonly<MyNodeProps>, b: Readonly<MyNodeProps>) => boolean);
- * ```
  */
 
 interface NodeComponentProps {
   id: string;
   type?: string;
+  // `any` is intentional: React.memo infers the component's prop types from the
+  // comparator's parameter types.  Using `unknown` here would widen `data` to
+  // `unknown` inside every node component body, breaking property access.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   data: any;
   selected?: boolean;
