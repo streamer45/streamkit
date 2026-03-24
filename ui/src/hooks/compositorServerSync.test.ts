@@ -42,7 +42,17 @@ function makeLayer(id: string, x: number, width: number): LayerState {
 describe('mapServerLayers — pure geometry merge', () => {
   it('updates geometry from server for matching layers', () => {
     const prev = [makeLayer('in_0', 0, 1280)];
-    const serverLayers: ResolvedLayer[] = [{ id: 'in_0', x: 160, y: 0, width: 960, height: 720 }];
+    const serverLayers: ResolvedLayer[] = [
+      {
+        id: 'in_0',
+        x: 160,
+        y: 0,
+        width: 960,
+        height: 720,
+        source_width: 1920,
+        source_height: 1080,
+      },
+    ];
 
     const result = mapServerLayers(prev, serverLayers);
 
@@ -55,23 +65,49 @@ describe('mapServerLayers — pure geometry merge', () => {
 
   it('returns same reference when geometry is unchanged', () => {
     const prev = [makeLayer('in_0', 160, 960)];
-    const serverLayers: ResolvedLayer[] = [{ id: 'in_0', x: 160, y: 0, width: 960, height: 720 }];
+    const serverLayers: ResolvedLayer[] = [
+      {
+        id: 'in_0',
+        x: 160,
+        y: 0,
+        width: 960,
+        height: 720,
+        source_width: 1920,
+        source_height: 1080,
+      },
+    ];
 
     const result = mapServerLayers(prev, serverLayers);
 
     expect(result).toBe(prev); // referential equality
   });
 
-  it('filters out layers not in local state', () => {
+  it('materializes server-only layers with default config', () => {
     const prev = [makeLayer('in_0', 0, 1280)];
     const serverLayers: ResolvedLayer[] = [
-      { id: 'in_0', x: 160, y: 0, width: 960, height: 720 },
-      { id: 'in_1', x: 0, y: 0, width: 320, height: 240 },
+      {
+        id: 'in_0',
+        x: 160,
+        y: 0,
+        width: 960,
+        height: 720,
+        source_width: 1920,
+        source_height: 1080,
+      },
+      { id: 'in_1', x: 0, y: 0, width: 320, height: 240, source_width: 640, source_height: 480 },
     ];
 
     const result = mapServerLayers(prev, serverLayers);
 
-    expect(result).toHaveLength(1);
+    expect(result).toHaveLength(2);
     expect(result[0].id).toBe('in_0');
+    expect(result[0].x).toBe(160);
+    // Server-only layer materialized with defaults
+    expect(result[1].id).toBe('in_1');
+    expect(result[1].x).toBe(0);
+    expect(result[1].width).toBe(320);
+    expect(result[1].opacity).toBe(1.0);
+    expect(result[1].visible).toBe(true);
+    expect(result[1].serverOnly).toBe(true);
   });
 });
