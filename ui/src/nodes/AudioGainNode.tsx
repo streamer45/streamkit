@@ -10,6 +10,8 @@ import React, { useEffect, useRef } from 'react';
 import { NodeFrame } from '@/components/node/NodeFrame';
 import { LiveBadge, LiveDot } from '@/components/ui/LiveIndicator';
 import { useNumericSlider } from '@/hooks/useNumericSlider';
+import { areNodePropsEqual } from '@/nodes/nodePropsEqual';
+import { perfOnRender } from '@/perf';
 import type { InputPin, OutputPin, NodeState, NodeStats } from '@/types/types';
 import { nodesLogger } from '@/utils/logger';
 
@@ -89,7 +91,11 @@ interface AudioGainNodeProps {
   selected?: boolean;
 }
 
-const AudioGainNode: React.FC<AudioGainNodeProps> = React.memo(({ id, data, selected }) => {
+const AudioGainNode: React.FC<AudioGainNodeProps> = React.memo(function AudioGainNode({
+  id,
+  data,
+  selected,
+}) {
   nodesLogger.debug('AudioGainNode Render:', id);
   const propGain = (data.params?.gain as number) ?? 1.0;
 
@@ -140,7 +146,7 @@ const AudioGainNode: React.FC<AudioGainNodeProps> = React.memo(({ id, data, sele
   // This prevents the LIVE badge from showing in design view (which has no sessionId)
   const showLiveIndicator = !!data.onParamChange && !!data.sessionId;
 
-  return (
+  const content = (
     <NodeFrame
       id={id}
       label={data.label}
@@ -198,7 +204,17 @@ const AudioGainNode: React.FC<AudioGainNodeProps> = React.memo(({ id, data, sele
       </GainWrapper>
     </NodeFrame>
   );
-});
+
+  if (import.meta.env.DEV) {
+    return (
+      <React.Profiler id="AudioGainNode" onRender={perfOnRender}>
+        {content}
+      </React.Profiler>
+    );
+  }
+
+  return content;
+}, areNodePropsEqual);
 
 AudioGainNode.displayName = 'AudioGainNode';
 
