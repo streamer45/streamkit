@@ -17,7 +17,7 @@ export const CanvasOuter = styled.div`
   box-sizing: border-box;
   position: relative;
   overflow: hidden;
-  padding: 8px;
+  padding: 12px;
   pointer-events: none;
 `;
 
