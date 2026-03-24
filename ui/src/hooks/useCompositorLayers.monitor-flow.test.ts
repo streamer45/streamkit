@@ -34,6 +34,7 @@ import {
 } from './compositorAtoms';
 import type { UseCompositorLayersOptions } from './useCompositorLayers';
 import { useCompositorLayers } from './useCompositorLayers';
+import { resetAllConfigRevs, bumpConfigRev } from './useConfigRev';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -161,6 +162,7 @@ afterEach(() => {
   // Clean up store between tests
   clearSessionAtoms(SESSION_ID);
   useSessionStore.getState().clearSession(SESSION_ID);
+  resetAllConfigRevs();
 });
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -680,5 +682,157 @@ describe('Monitor view data flow integration', () => {
     // opacity is an OVERLAY_BASE_KEYS field — server-controlled in Monitor
     // view, so the stub's default (1) is preserved, not the parsed value.
     expect(layer1.opacity).toBe(1);
+  });
+});
+
+// ── Causal consistency: stale view-data gating ──────────────────────────────
+
+// Mock the WebSocket service for nonce control in stale-echo tests.
+// The mock must be hoisted so vi.mock runs before imports.
+vi.mock('@/services/websocket', () => ({
+  getWebSocketService: () => ({
+    getClientNonce: () => 'mock-nonce-abc',
+  }),
+}));
+
+describe('Stale view-data gating (causal consistency)', () => {
+  it('view data stamped with own nonce and stale rev is suppressed', () => {
+    seedStore();
+
+    const opts = monitorOptions();
+    const { result } = renderHook(
+      (props: UseCompositorLayersOptions) => useCompositorLayers(props),
+      { initialProps: opts }
+    );
+
+    // Simulate the client having sent 3 config updates
+    bumpConfigRev(NODE_ID); // rev 1
+    bumpConfigRev(NODE_ID); // rev 2
+    bumpConfigRev(NODE_ID); // rev 3
+
+    // Initial state: full canvas fallback
+    const layers0 = getLayersFromStore(result.current.store);
+    expect(layers0[0].x).toBe(0);
+    expect(layers0[0].width).toBe(1280);
+
+    // Server echoes view data stamped with our nonce at rev 2 (strictly stale).
+    const staleLayout = {
+      ...makeServerLayout(),
+      _sender: 'mock-nonce-abc',
+      _rev: 2,
+    };
+    act(() => pushServerViewData(staleLayout));
+
+    // Stale echo should be suppressed — geometry unchanged
+    const layers1 = getLayersFromStore(result.current.store);
+    expect(layers1[0].x).toBe(0);
+    expect(layers1[0].width).toBe(1280);
+  });
+
+  it('view data stamped with own nonce at current rev is applied (server-computed geometry)', () => {
+    seedStore();
+
+    const opts = monitorOptions();
+    const { result } = renderHook(
+      (props: UseCompositorLayersOptions) => useCompositorLayers(props),
+      { initialProps: opts }
+    );
+
+    // Simulate the client having sent 2 config updates
+    bumpConfigRev(NODE_ID); // rev 1
+    bumpConfigRev(NODE_ID); // rev 2
+
+    // Server echoes view data at the current rev (rev == localRev).
+    // This carries server-computed geometry (aspect-fit, text measurements)
+    // that the client cannot compute locally, so it must be accepted.
+    const currentRevLayout = {
+      ...makeServerLayout(),
+      _sender: 'mock-nonce-abc',
+      _rev: 2,
+    };
+    act(() => pushServerViewData(currentRevLayout));
+
+    // Current-rev view data should be applied — geometry updated
+    const layers1 = getLayersFromStore(result.current.store);
+    expect(layers1[0].x).toBe(160);
+    expect(layers1[0].width).toBe(960);
+  });
+
+  it('view data from a different sender is always applied', () => {
+    seedStore();
+
+    const opts = monitorOptions();
+    const { result } = renderHook(
+      (props: UseCompositorLayersOptions) => useCompositorLayers(props),
+      { initialProps: opts }
+    );
+
+    // Bump local rev
+    bumpConfigRev(NODE_ID); // rev 1
+
+    // Server sends view data from a different client
+    const otherClientLayout = {
+      ...makeServerLayout(),
+      _sender: 'other-client-nonce',
+      _rev: 1,
+    };
+    act(() => pushServerViewData(otherClientLayout));
+
+    // Should be applied — different sender
+    const layers1 = getLayersFromStore(result.current.store);
+    expect(layers1[0].x).toBe(160);
+    expect(layers1[0].width).toBe(960);
+  });
+
+  it('view data without _sender/_rev metadata is always applied', () => {
+    seedStore();
+
+    const opts = monitorOptions();
+    const { result } = renderHook(
+      (props: UseCompositorLayersOptions) => useCompositorLayers(props),
+      { initialProps: opts }
+    );
+
+    // Bump local rev
+    bumpConfigRev(NODE_ID);
+
+    // Server sends view data without any causal metadata
+    act(() => pushServerViewData(makeServerLayout()));
+
+    // Should be applied — no metadata means no gating
+    const layers1 = getLayersFromStore(result.current.store);
+    expect(layers1[0].x).toBe(160);
+    expect(layers1[0].width).toBe(960);
+  });
+
+  it('activeInteractionRef suppresses view data during interactions', () => {
+    seedStore();
+
+    const opts = monitorOptions();
+    const { result } = renderHook(
+      (props: UseCompositorLayersOptions) => useCompositorLayers(props),
+      { initialProps: opts }
+    );
+
+    // Simulate an active interaction (slider drag)
+    result.current.activeInteractionRef.current = true;
+
+    // Server sends view data
+    act(() => pushServerViewData(makeServerLayout()));
+
+    // View data should be suppressed during interaction
+    const layers1 = getLayersFromStore(result.current.store);
+    expect(layers1[0].x).toBe(0);
+    expect(layers1[0].width).toBe(1280);
+
+    // End the interaction
+    result.current.activeInteractionRef.current = false;
+
+    // Now view data should be applied
+    act(() => pushServerViewData(makeServerLayout()));
+
+    const layers2 = getLayersFromStore(result.current.store);
+    expect(layers2[0].x).toBe(160);
+    expect(layers2[0].width).toBe(960);
   });
 });

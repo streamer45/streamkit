@@ -56,6 +56,7 @@ import {
   DEFAULT_CROP_SHAPE,
 } from './compositorConstants';
 import type { LayerState, TextOverlayState, OverlayBase } from './compositorLayerParsers';
+import { getLocalConfigRev, getClientNonce } from './useConfigRev';
 
 // ── Source dims ref type ─────────────────────────────────────────────────────
 
@@ -169,7 +170,8 @@ export function useServerLayoutSync(
   nodeId: string,
   store: CompositorStore,
   dragStateRef: React.MutableRefObject<unknown>,
-  sourceDimsRef: React.MutableRefObject<SourceDimsMap>
+  sourceDimsRef: React.MutableRefObject<SourceDimsMap>,
+  activeInteractionRef?: React.MutableRefObject<boolean>
 ): void {
   useEffect(() => {
     if (!sessionId) return;
@@ -179,6 +181,26 @@ export function useServerLayoutSync(
       // Skip during pointer drag/resize to avoid stale server geometry
       // overwriting in-flight DOM positions.
       if (dragStateRef.current) return;
+      // Skip during any active live-mode interaction (slider drag, etc.)
+      // to avoid stale server values overwriting in-flight client state.
+      if (activeInteractionRef?.current) return;
+
+      const vd = viewData as Record<string, unknown>;
+
+      // Stale view-data gate: if this view data originated from our own
+      // config change and the rev is strictly less than our local counter,
+      // skip it.  We use `<` (not `<=`) because the view data for the
+      // current rev carries server-computed geometry (aspect-fit positions,
+      // text measurements) that the client cannot compute locally and
+      // must accept.
+      const sender = typeof vd._sender === 'string' ? vd._sender : undefined;
+      const rev = typeof vd._rev === 'number' ? vd._rev : undefined;
+      if (sender && sender === getClientNonce() && rev !== undefined) {
+        const localRev = getLocalConfigRev(nodeId);
+        if (rev < localRev) {
+          return;
+        }
+      }
 
       const layout = viewData as CompositorLayout;
       if (!Array.isArray(layout.layers)) return;
@@ -226,5 +248,5 @@ export function useServerLayoutSync(
       applyServerLayout(defaultSessionStore.get(viewDataAtom));
     });
     return unsubscribe;
-  }, [sessionId, nodeId, store, dragStateRef, sourceDimsRef]);
+  }, [sessionId, nodeId, store, dragStateRef, sourceDimsRef, activeInteractionRef]);
 }

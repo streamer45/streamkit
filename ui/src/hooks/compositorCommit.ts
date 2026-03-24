@@ -20,6 +20,7 @@ import {
   serializeTextOverlays,
 } from './compositorLayerParsers';
 import type { LayerState, TextOverlayState, ImageOverlayState } from './compositorLayerParsers';
+import { bumpConfigRev, getClientNonce } from './useConfigRev';
 
 // ── Commit adapter ──────────────────────────────────────────────────────────
 
@@ -58,14 +59,24 @@ export function createCommitAdapter(
 ): CommitAdapter | null {
   if (!onConfigChange && !onParamChange) return null;
 
+  /** Stamp a config object with causal-consistency metadata. */
+  function stamp(config: Record<string, unknown>): Record<string, unknown> {
+    const rev = bumpConfigRev(nodeId);
+    return { ...config, _sender: getClientNonce(), _rev: rev };
+  }
+
+  // NOTE: The onParamChange path (tuneNode) sends each key as a separate
+  // UpdateParams WS message that replaces the server's full node.params.
+  // Sending _sender/_rev as standalone messages would wipe durable params
+  // to {} after stripping.  Only the onConfigChange path (tuneNodeConfig)
+  // can safely carry stamped metadata because it sends the full config
+  // object in a single message.
+
   return {
     commitLayers(layers: LayerState[]) {
       if (onConfigChange) {
-        const config = buildConfig(
-          paramsRef.current,
-          layers,
-          textOverlaysRef.current,
-          imageOverlaysRef.current
+        const config = stamp(
+          buildConfig(paramsRef.current, layers, textOverlaysRef.current, imageOverlaysRef.current)
         );
         onConfigChange(nodeId, config);
       } else if (onParamChange) {
@@ -75,7 +86,7 @@ export function createCommitAdapter(
 
     commitOverlays(text: TextOverlayState[], img: ImageOverlayState[]) {
       if (onConfigChange) {
-        const config = buildConfig(paramsRef.current, layersRef.current, text, img);
+        const config = stamp(buildConfig(paramsRef.current, layersRef.current, text, img));
         onConfigChange(nodeId, config);
       } else if (onParamChange) {
         onParamChange(nodeId, 'text_overlays', serializeTextOverlays(text));
@@ -90,7 +101,7 @@ export function createCommitAdapter(
       changed?: { layers?: boolean; overlays?: boolean }
     ) {
       if (onConfigChange) {
-        const config = buildConfig(paramsRef.current, layers, text, img);
+        const config = stamp(buildConfig(paramsRef.current, layers, text, img));
         onConfigChange(nodeId, config);
       } else if (onParamChange) {
         const sendLayers = changed?.layers ?? true;
