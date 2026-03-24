@@ -137,7 +137,7 @@ impl ProcessorNode for MoqPushNode {
         let node_name = context.output_sender.node_name().to_string();
         state_helpers::emit_initializing(&context.state_tx, &node_name);
 
-        let url = match super::parse_moq_url(&self.config.url, self.config.jwt.as_deref()) {
+        let mut url = match super::parse_moq_url(&self.config.url, self.config.jwt.as_deref()) {
             Ok(url) => url,
             Err(e) => {
                 state_helpers::emit_failed(&context.state_tx, &node_name, e.to_string());
@@ -154,6 +154,11 @@ impl ProcessorNode for MoqPushNode {
             initial_delay_ms = self.config.initial_delay_ms,
             "MoqPushNode timing configuration"
         );
+
+        // Pre-resolve hostname to avoid QUIC IPv6 timeout (see resolve_url_for_quic docs)
+        if let Err(e) = super::resolve_url_for_quic(&mut url).await {
+            tracing::warn!(error = %e, "Failed to pre-resolve MoQ URL; proceeding with original");
+        }
 
         let client = match super::shared_insecure_client() {
             Ok(c) => c,

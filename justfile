@@ -1167,8 +1167,9 @@ build-moq-relay:
     #!/usr/bin/env bash
     set -euo pipefail
     RELAY_BIN="target/moq-relay/moq-relay"
-    if [ -f "$RELAY_BIN" ]; then
-        echo "moq-relay binary already exists at $RELAY_BIN — skipping build"
+    COMMIT_FILE="target/moq-relay/.commit"
+    if [ -f "$RELAY_BIN" ] && [ -f "$COMMIT_FILE" ] && [ "$(cat "$COMMIT_FILE")" = "{{moq_relay_commit}}" ]; then
+        echo "moq-relay binary already exists at $RELAY_BIN for commit {{moq_relay_commit}} — skipping build"
         exit 0
     fi
     CLONE_DIR="target/moq-relay-src"
@@ -1184,6 +1185,7 @@ build-moq-relay:
     cd ../..
     mkdir -p target/moq-relay
     cp "$CLONE_DIR/target/release/moq-relay" "$RELAY_BIN"
+    echo "{{moq_relay_commit}}" > "$COMMIT_FILE"
     echo "moq-relay binary ready at $RELAY_BIN"
 
 # Install E2E test dependencies

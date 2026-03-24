@@ -65,6 +65,68 @@ pub(super) fn redact_url_for_logs(url: &Url) -> String {
     url.to_string()
 }
 
+/// Pre-resolve the hostname in a MoQ URL to an explicit IP address.
+///
+/// QUIC (UDP) does not implement Happy Eyeballs (RFC 8305) — unlike TCP, there
+/// is no automatic dual-stack fallback.  When a hostname like `localhost`
+/// resolves to `::1` (IPv6) first but the relay only listens on `127.0.0.1`
+/// (IPv4), the QUIC handshake silently times out (~10 s) before the client
+/// tries the next address.
+///
+/// This function resolves the URL's hostname ahead of time and replaces it with
+/// an explicit IPv4 address (preferred) so that the QUIC connection succeeds
+/// immediately.  If only IPv6 addresses are available, the first one is used
+/// and a warning is logged.
+///
+/// URLs that already contain a literal IP address are returned unchanged.
+pub(super) async fn resolve_url_for_quic(url: &mut Url) -> Result<(), StreamKitError> {
+    let host = match url.host_str() {
+        Some(h) => h.to_string(),
+        None => return Ok(()),
+    };
+
+    // Skip if already an IP literal
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        return Ok(());
+    }
+
+    let port = url.port_or_known_default().unwrap_or(443);
+    let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host(format!("{host}:{port}"))
+        .await
+        .map_err(|e| StreamKitError::Runtime(format!("Failed to resolve MoQ host '{host}': {e}")))?
+        .collect();
+
+    // Prefer IPv4 for QUIC compatibility
+    let preferred =
+        addrs.iter().find(|a| a.is_ipv4()).or_else(|| addrs.first()).ok_or_else(|| {
+            StreamKitError::Runtime(format!("No addresses found for MoQ host '{host}'"))
+        })?;
+
+    if preferred.is_ipv6() {
+        tracing::warn!(
+            host = %host,
+            resolved = %preferred.ip(),
+            "MoQ host resolved to IPv6 only; QUIC connectivity may be affected"
+        );
+    }
+
+    let ip_str = match preferred.ip() {
+        std::net::IpAddr::V4(v4) => v4.to_string(),
+        std::net::IpAddr::V6(v6) => format!("[{v6}]"),
+    };
+
+    url.set_host(Some(&ip_str))
+        .map_err(|e| StreamKitError::Runtime(format!("Failed to set resolved host in URL: {e}")))?;
+
+    tracing::debug!(
+        original_host = %host,
+        resolved = %preferred.ip(),
+        "Pre-resolved MoQ URL hostname for QUIC"
+    );
+
+    Ok(())
+}
+
 pub(super) fn parse_moq_url(raw: &str, jwt: Option<&str>) -> Result<Url, StreamKitError> {
     let mut url: Url = raw.parse().map_err(|e| {
         let redacted = redact_url_str_for_logs(raw);
