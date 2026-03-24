@@ -624,7 +624,7 @@ describe('Stale view-data gating (causal consistency)', () => {
     expect(layers0[0].x).toBe(0);
     expect(layers0[0].width).toBe(1280);
 
-    // Server echoes view data stamped with our nonce at rev 2 (stale).
+    // Server echoes view data stamped with our nonce at rev 2 (strictly stale).
     const staleLayout = {
       ...makeServerLayout(),
       _sender: 'mock-nonce-abc',
@@ -636,6 +636,35 @@ describe('Stale view-data gating (causal consistency)', () => {
     const layers1 = getLayersFromStore(result.current.store);
     expect(layers1[0].x).toBe(0);
     expect(layers1[0].width).toBe(1280);
+  });
+
+  it('view data stamped with own nonce at current rev is applied (server-computed geometry)', () => {
+    seedStore();
+
+    const opts = monitorOptions();
+    const { result } = renderHook(
+      (props: UseCompositorLayersOptions) => useCompositorLayers(props),
+      { initialProps: opts }
+    );
+
+    // Simulate the client having sent 2 config updates
+    bumpConfigRev(NODE_ID); // rev 1
+    bumpConfigRev(NODE_ID); // rev 2
+
+    // Server echoes view data at the current rev (rev == localRev).
+    // This carries server-computed geometry (aspect-fit, text measurements)
+    // that the client cannot compute locally, so it must be accepted.
+    const currentRevLayout = {
+      ...makeServerLayout(),
+      _sender: 'mock-nonce-abc',
+      _rev: 2,
+    };
+    act(() => pushServerViewData(currentRevLayout));
+
+    // Current-rev view data should be applied — geometry updated
+    const layers1 = getLayersFromStore(result.current.store);
+    expect(layers1[0].x).toBe(160);
+    expect(layers1[0].width).toBe(960);
   });
 
   it('view data from a different sender is always applied', () => {

@@ -147,12 +147,16 @@ export function useServerLayoutSync(
       const vd = viewData as Record<string, unknown>;
 
       // Stale view-data gate: if this view data originated from our own
-      // config change and the rev is <= our local counter, skip it.
+      // config change and the rev is strictly less than our local counter,
+      // skip it.  We use `<` (not `<=`) because the view data for the
+      // current rev carries server-computed geometry (aspect-fit positions,
+      // text measurements) that the client cannot compute locally and
+      // must accept.
       const sender = typeof vd._sender === 'string' ? vd._sender : undefined;
       const rev = typeof vd._rev === 'number' ? vd._rev : undefined;
       if (sender && sender === getClientNonce() && rev !== undefined) {
         const localRev = getLocalConfigRev(nodeId);
-        if (rev <= localRev) {
+        if (rev < localRev) {
           return;
         }
       }
