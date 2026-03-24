@@ -40,7 +40,6 @@ pub async fn handle_request_payload(
     perms: &Permissions,
     role_name: &str,
     correlation_id: Option<String>,
-    conn_id: u64,
 ) -> Option<ResponsePayload> {
     match payload {
         RequestPayload::CreateSession { name } => {
@@ -74,12 +73,6 @@ pub async fn handle_request_payload(
         },
         RequestPayload::TuneNodeAsync { session_id, node_id, message } => {
             handle_tune_node_async(session_id, node_id, message, app_state, perms, role_name).await
-        },
-        RequestPayload::TuneNodeSilent { session_id, node_id, message } => {
-            handle_tune_node_silent(
-                session_id, node_id, message, app_state, perms, role_name, conn_id,
-            )
-            .await
         },
         RequestPayload::GetPipeline { session_id } => {
             handle_get_pipeline(session_id, app_state, perms, role_name).await
@@ -845,9 +838,16 @@ async fn handle_tune_node(
         }
 
         {
+            // Store sanitized params: strip transient sync metadata
+            // (_sender, _rev, etc.) for consistency with the
+            // fire-and-forget handler.
+            let mut durable_params = params.clone();
+            if let serde_json::Value::Object(ref mut map) = durable_params {
+                map.retain(|k, _| !k.starts_with('_'));
+            }
             let mut pipeline = session.pipeline.lock().await;
             if let Some(node) = pipeline.nodes.get_mut(&node_id) {
-                node.params = Some(params.clone());
+                node.params = Some(durable_params);
             } else {
                 warn!(
                     node_id = %node_id,
@@ -877,15 +877,56 @@ async fn handle_tune_node(
     Some(ResponsePayload::Success)
 }
 
+/// Validate file/script paths in UpdateParams against security policy.
+///
+/// Returns `true` if the params are allowed, `false` if they should be rejected.
+fn validate_update_params_security(
+    kind: Option<&str>,
+    params: &serde_json::Value,
+    security: &crate::config::SecurityConfig,
+) -> bool {
+    let file_path = params.get("path").and_then(serde_json::Value::as_str);
+    let script_path = params.get("script_path").and_then(serde_json::Value::as_str);
+
+    if kind == Some("core::file_reader") {
+        let Some(path) = file_path else {
+            warn!("Invalid file_reader params: expected params.path to be a string");
+            return false;
+        };
+        if let Err(e) = file_security::validate_file_path(path, security) {
+            warn!("Invalid file path: {e}");
+            return false;
+        }
+    }
+
+    if kind == Some("core::file_writer") {
+        if let Some(path) = file_path {
+            if let Err(e) = file_security::validate_write_path(path, security) {
+                warn!("Invalid write path: {e}");
+                return false;
+            }
+        }
+    }
+
+    if kind == Some("core::script") {
+        if let Some(path) = script_path {
+            if !path.trim().is_empty() {
+                if let Err(e) = file_security::validate_file_path(path, security) {
+                    warn!("Invalid script_path: {e}");
+                    return false;
+                }
+            }
+        }
+    }
+
+    true
+}
+
 /// Shared implementation for fire-and-forget node tuning.
 ///
-/// Both `TuneNodeAsync` and `TuneNodeSilent` delegate here.  The only
-/// behavioural difference is `exclude_conn_id`: `None` broadcasts to all
-/// clients, `Some(id)` skips the sender (echo suppression).
-///
-/// Complexity (37/30) is due to: permission check, session lookup, conditional UpdateParams
-/// handling with pipeline update + event broadcast, engine message sending.
-#[allow(clippy::cognitive_complexity)]
+/// Broadcasts `NodeParamsChanged` to all connected clients.  Stale
+/// echo suppression is handled client-side via the `(_sender, _rev)`
+/// causal-consistency mechanism (see `compositorServerSync.ts`).
 async fn handle_tune_node_fire_and_forget(
     session_id: String,
     node_id: String,
@@ -893,9 +934,8 @@ async fn handle_tune_node_fire_and_forget(
     app_state: &AppState,
     perms: &Permissions,
     role_name: &str,
-    exclude_conn_id: Option<u64>,
 ) -> Option<ResponsePayload> {
-    let action_label = if exclude_conn_id.is_some() { "TuneNodeSilent" } else { "TuneNodeAsync" };
+    let action_label = "TuneNodeAsync";
 
     // Check permission to tune nodes
     if !perms.tune_nodes {
@@ -922,62 +962,29 @@ async fn handle_tune_node_fire_and_forget(
 
         // Handle UpdateParams specially for pipeline model updates and event broadcasting
         if let NodeControlMessage::UpdateParams(ref params) = message {
-            let (kind, file_path, script_path) = {
+            let kind = {
                 let pipeline = session.pipeline.lock().await;
-                let kind = pipeline.nodes.get(&node_id).map(|n| n.kind.clone());
-                let file_path =
-                    params.get("path").and_then(serde_json::Value::as_str).map(str::to_string);
-                let script_path = params
-                    .get("script_path")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string);
-                drop(pipeline);
-                (kind, file_path, script_path)
+                pipeline.nodes.get(&node_id).map(|n| n.kind.clone())
             };
 
-            let file_path = file_path.as_deref();
-            let script_path = script_path.as_deref();
-
-            if kind.as_deref() == Some("core::file_reader") {
-                let Some(path) = file_path else {
-                    warn!("Invalid file_reader params: expected params.path to be a string");
-                    return None;
-                };
-                if let Err(e) = file_security::validate_file_path(path, &app_state.config.security)
-                {
-                    warn!("Invalid file path: {e}");
-                    return None;
-                }
-            }
-
-            if kind.as_deref() == Some("core::file_writer") {
-                if let Some(path) = file_path {
-                    if let Err(e) =
-                        file_security::validate_write_path(path, &app_state.config.security)
-                    {
-                        warn!("Invalid write path: {e}");
-                        return None;
-                    }
-                }
-            }
-
-            if kind.as_deref() == Some("core::script") {
-                if let Some(path) = script_path {
-                    if !path.trim().is_empty() {
-                        if let Err(e) =
-                            file_security::validate_file_path(path, &app_state.config.security)
-                        {
-                            warn!("Invalid script_path: {e}");
-                            return None;
-                        }
-                    }
-                }
+            if !validate_update_params_security(kind.as_deref(), params, &app_state.config.security)
+            {
+                return None;
             }
 
             {
+                // Store sanitized params: strip transient sync metadata
+                // (_sender, _rev, etc.) from the durable pipeline model.
+                // Top-level keys prefixed with `_` are reserved for
+                // in-flight metadata and must not leak into persistence
+                // or GetPipeline responses.
+                let mut durable_params = params.clone();
+                if let serde_json::Value::Object(ref mut map) = durable_params {
+                    map.retain(|k, _| !k.starts_with('_'));
+                }
                 let mut pipeline = session.pipeline.lock().await;
                 if let Some(node) = pipeline.nodes.get_mut(&node_id) {
-                    node.params = Some(params.clone());
+                    node.params = Some(durable_params);
                 } else {
                     warn!(
                         node_id = %node_id,
@@ -986,7 +993,6 @@ async fn handle_tune_node_fire_and_forget(
                 }
             } // Lock released here
 
-            // Broadcast event — exclude_conn_id controls whether the sender is skipped.
             let event = ApiEvent {
                 message_type: MessageType::Event,
                 correlation_id: None,
@@ -996,7 +1002,7 @@ async fn handle_tune_node_fire_and_forget(
                     params: params.clone(),
                 },
             };
-            if let Err(e) = app_state.event_tx.send(BroadcastEvent { event, exclude_conn_id }) {
+            if let Err(e) = app_state.event_tx.send(BroadcastEvent::to_all(event)) {
                 error!("Failed to broadcast NodeParamsChanged event: {}", e);
             }
         }
@@ -1018,35 +1024,8 @@ async fn handle_tune_node_async(
     perms: &Permissions,
     role_name: &str,
 ) -> Option<ResponsePayload> {
-    handle_tune_node_fire_and_forget(
-        session_id, node_id, message, app_state, perms, role_name, None,
-    )
-    .await
-}
-
-/// Handle silent node tuning (fire-and-forget, echo suppression).
-///
-/// Broadcasts `NodeParamsChanged` to all clients *except* the sender,
-/// preventing stale echo-backs during high-frequency slider drags.
-async fn handle_tune_node_silent(
-    session_id: String,
-    node_id: String,
-    message: NodeControlMessage,
-    app_state: &AppState,
-    perms: &Permissions,
-    role_name: &str,
-    conn_id: u64,
-) -> Option<ResponsePayload> {
-    handle_tune_node_fire_and_forget(
-        session_id,
-        node_id,
-        message,
-        app_state,
-        perms,
-        role_name,
-        Some(conn_id),
-    )
-    .await
+    handle_tune_node_fire_and_forget(session_id, node_id, message, app_state, perms, role_name)
+        .await
 }
 
 async fn handle_get_pipeline(

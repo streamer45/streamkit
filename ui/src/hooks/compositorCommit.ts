@@ -20,6 +20,7 @@ import {
   serializeTextOverlays,
 } from './compositorLayerParsers';
 import type { LayerState, TextOverlayState, ImageOverlayState } from './compositorLayerParsers';
+import { bumpConfigRev, getClientNonce } from './useConfigRev';
 
 // ── Commit adapter ──────────────────────────────────────────────────────────
 
@@ -58,14 +59,24 @@ export function createCommitAdapter(
 ): CommitAdapter | null {
   if (!onConfigChange && !onParamChange) return null;
 
+  /** Stamp a config object with causal-consistency metadata. */
+  function stamp(config: Record<string, unknown>): Record<string, unknown> {
+    const rev = bumpConfigRev(nodeId);
+    return { ...config, _sender: getClientNonce(), _rev: rev };
+  }
+
+  // NOTE: The onParamChange path (tuneNode) sends each key as a separate
+  // UpdateParams WS message that replaces the server's full node.params.
+  // Sending _sender/_rev as standalone messages would wipe durable params
+  // to {} after stripping.  Only the onConfigChange path (tuneNodeConfig)
+  // can safely carry stamped metadata because it sends the full config
+  // object in a single message.
+
   return {
     commitLayers(layers: LayerState[]) {
       if (onConfigChange) {
-        const config = buildConfig(
-          paramsRef.current,
-          layers,
-          textOverlaysRef.current,
-          imageOverlaysRef.current
+        const config = stamp(
+          buildConfig(paramsRef.current, layers, textOverlaysRef.current, imageOverlaysRef.current)
         );
         onConfigChange(nodeId, config);
       } else if (onParamChange) {
@@ -75,7 +86,7 @@ export function createCommitAdapter(
 
     commitOverlays(text: TextOverlayState[], img: ImageOverlayState[]) {
       if (onConfigChange) {
-        const config = buildConfig(paramsRef.current, layersRef.current, text, img);
+        const config = stamp(buildConfig(paramsRef.current, layersRef.current, text, img));
         onConfigChange(nodeId, config);
       } else if (onParamChange) {
         onParamChange(nodeId, 'text_overlays', serializeTextOverlays(text));
@@ -90,7 +101,7 @@ export function createCommitAdapter(
       changed?: { layers?: boolean; overlays?: boolean }
     ) {
       if (onConfigChange) {
-        const config = buildConfig(paramsRef.current, layers, text, img);
+        const config = stamp(buildConfig(paramsRef.current, layers, text, img));
         onConfigChange(nodeId, config);
       } else if (onParamChange) {
         const sendLayers = changed?.layers ?? true;
@@ -112,8 +123,6 @@ export function createCommitAdapter(
 export interface UseCompositorCommitOptions {
   nodeId: string;
   onConfigChange?: (nodeId: string, config: Record<string, unknown>) => void;
-  /** Silent config change: broadcasts to other clients only (no NodeParamsChanged echo-back). */
-  onConfigChangeSilent?: (nodeId: string, config: Record<string, unknown>) => void;
   onParamChange?: (nodeId: string, key: string, value: unknown) => void;
   throttleMs: number;
   paramsRef: React.MutableRefObject<Record<string, unknown>>;
@@ -137,7 +146,6 @@ export function useCompositorCommit(opts: UseCompositorCommitOptions): UseCompos
   const {
     nodeId,
     onConfigChange,
-    onConfigChangeSilent,
     onParamChange,
     throttleMs,
     paramsRef,
@@ -160,35 +168,8 @@ export function useCompositorCommit(opts: UseCompositorCommitOptions): UseCompos
     [nodeId, onConfigChange, onParamChange, paramsRef, layersRef, textOverlaysRef, imageOverlaysRef]
   );
 
-  // Silent commit adapter: used by throttled sends during slider drags.
-  // Routes through onConfigChangeSilent so the server skips NodeParamsChanged
-  // echo-back, avoiding redundant param writes on the sender.
-  const silentCommitAdapter = useMemo(
-    () =>
-      createCommitAdapter(
-        nodeId,
-        onConfigChangeSilent,
-        onParamChange,
-        paramsRef,
-        layersRef,
-        textOverlaysRef,
-        imageOverlaysRef
-      ),
-    [
-      nodeId,
-      onConfigChangeSilent,
-      onParamChange,
-      paramsRef,
-      layersRef,
-      textOverlaysRef,
-      imageOverlaysRef,
-    ]
-  );
-
   const throttledConfigChange = useMemo(() => {
-    // Throttled sends use the silent adapter (no echo-back) when available,
-    // falling back to the normal adapter for Design view.
-    const adapter = silentCommitAdapter ?? commitAdapter;
+    const adapter = commitAdapter;
     if (!adapter) return null;
     return throttle(
       (currentLayers: LayerState[]) => {
@@ -197,10 +178,10 @@ export function useCompositorCommit(opts: UseCompositorCommitOptions): UseCompos
       throttleMs,
       { leading: true, trailing: true }
     );
-  }, [silentCommitAdapter, commitAdapter, throttleMs]);
+  }, [commitAdapter, throttleMs]);
 
   const throttledOverlayCommit = useMemo(() => {
-    const adapter = silentCommitAdapter ?? commitAdapter;
+    const adapter = commitAdapter;
     if (!adapter) return null;
     return throttle(
       (nextText: TextOverlayState[], nextImg: ImageOverlayState[]) => {
@@ -209,7 +190,7 @@ export function useCompositorCommit(opts: UseCompositorCommitOptions): UseCompos
       throttleMs,
       { leading: true, trailing: true }
     );
-  }, [silentCommitAdapter, commitAdapter, throttleMs]);
+  }, [commitAdapter, throttleMs]);
 
   useEffect(
     () => () => {

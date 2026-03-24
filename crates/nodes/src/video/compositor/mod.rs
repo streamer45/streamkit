@@ -62,6 +62,10 @@ struct InputSlot {
     name: String,
     rx: mpsc::Receiver<Packet>,
     latest_frame: Option<VideoFrame>,
+    /// Last-seen source dimensions for dirty detection.
+    /// When the frame resolution changes at runtime (e.g. camera switch),
+    /// the compositor sets `layer_configs_dirty` to re-emit view data.
+    last_source_dims: Option<(u32, u32)>,
 }
 
 // ── Cached layer config ─────────────────────────────────────────────────────
@@ -205,7 +209,15 @@ fn resolve_scene(
             rect.as_ref()
                 .map_or((0, 0, config.width, config.height), |r| (r.x, r.y, r.width, r.height))
         };
-        layers.push(ResolvedLayer { id: slot.name.clone(), x: lx, y: ly, width: lw, height: lh });
+        layers.push(ResolvedLayer {
+            id: slot.name.clone(),
+            x: lx,
+            y: ly,
+            width: lw,
+            height: lh,
+            source_width: slot.latest_frame.as_ref().map(|f| f.width),
+            source_height: slot.latest_frame.as_ref().map(|f| f.height),
+        });
 
         configs.push(ResolvedSlotConfig {
             rect,
@@ -285,6 +297,12 @@ pub struct CompositorNode {
     input_pins: Vec<InputPin>,
     /// Next input ID for dynamic pin naming.
     next_input_id: usize,
+    /// Sender nonce from the last `UpdateParams` (`_sender` field).
+    /// Stamped into view data so clients can detect stale self-echoes.
+    config_sender: String,
+    /// Config revision from the last `UpdateParams` (`_rev` field).
+    /// Stamped into view data alongside `config_sender`.
+    config_rev: u64,
 }
 
 impl CompositorNode {
@@ -311,7 +329,14 @@ impl CompositorNode {
             },
         );
 
-        Self { config, limits, input_pins, next_input_id }
+        Self {
+            config,
+            limits,
+            input_pins,
+            next_input_id,
+            config_sender: String::new(),
+            config_rev: 0,
+        }
     }
 
     /// The set of video packet types accepted by compositor input pins.
@@ -481,7 +506,7 @@ impl ProcessorNode for CompositorNode {
         });
         for (name, rx) in pre_inputs {
             tracing::info!("CompositorNode: pre-connected input '{}'", name);
-            slots.push(InputSlot { name, rx, latest_frame: None });
+            slots.push(InputSlot { name, rx, latest_frame: None, last_source_dims: None });
         }
 
         // Pin management channel (optional).
@@ -602,14 +627,26 @@ impl ProcessorNode for CompositorNode {
                             tracing::info!("CompositorNode received shutdown");
                             break;
                         },
-                        NodeControlMessage::UpdateParams(params) => {
+                        NodeControlMessage::UpdateParams(ref params) => {
+                            // Extract transient sync metadata before
+                            // deserialization strips unknown fields.
+                            // Always overwrite (not conditionally set) so that
+                            // non-stamped UpdateParams clears stale values.
+                            self.config_sender = params.get("_sender")
+                                .and_then(|v| v.as_str())
+                                .map(str::to_string)
+                                .unwrap_or_default();
+                            self.config_rev = params.get("_rev")
+                                .and_then(serde_json::Value::as_u64)
+                                .unwrap_or(0);
+
                             let old_fps = self.config.fps;
                             Self::apply_update_params(
                                 &mut self.config,
                                 &self.limits,
                                 &mut image_overlays,
                                 &mut text_overlays,
-                                params,
+                                params.clone(),
                                 &mut stats_tracker,
                             );
                             layer_configs_dirty = true;
@@ -642,6 +679,13 @@ impl ProcessorNode for CompositorNode {
                         &mut slots,
                         &mut clear_conversion_cache,
                     );
+                    // Clear causal-consistency metadata so the resulting
+                    // view data is not stamped with a stale sender/rev
+                    // from a previous UpdateParams.  Without this, the
+                    // client that last edited config would suppress the
+                    // pin-triggered layout update via its echo gate.
+                    self.config_sender.clear();
+                    self.config_rev = 0;
                     layer_configs_dirty = true;
                     continue;
                 }
@@ -675,6 +719,12 @@ impl ProcessorNode for CompositorNode {
             for slot in &mut slots {
                 if is_oneshot {
                     if let Ok(Packet::Video(frame)) = slot.rx.try_recv() {
+                        // Detect source dimension changes → trigger layout re-emission.
+                        let new_dims = (frame.width, frame.height);
+                        if slot.last_source_dims != Some(new_dims) {
+                            slot.last_source_dims = Some(new_dims);
+                            layer_configs_dirty = true;
+                        }
                         slot.latest_frame = Some(frame);
                         any_new_frame = true;
                     }
@@ -692,6 +742,12 @@ impl ProcessorNode for CompositorNode {
                         stats_tracker.discarded_n(dropped);
                     }
                     if let Some(frame) = latest {
+                        // Detect source dimension changes → trigger layout re-emission.
+                        let new_dims = (frame.width, frame.height);
+                        if slot.last_source_dims != Some(new_dims) {
+                            slot.last_source_dims = Some(new_dims);
+                            layer_configs_dirty = true;
+                        }
                         slot.latest_frame = Some(frame);
                     }
                 }
@@ -719,7 +775,13 @@ impl ProcessorNode for CompositorNode {
 
                 // Emit layout via view data if it changed.
                 if last_layout.as_ref() != Some(&scene.layout) {
-                    if let Ok(json) = serde_json::to_value(&scene.layout) {
+                    if let Ok(mut json) = serde_json::to_value(&scene.layout) {
+                        // Stamp view data with the sender/rev from the last
+                        // UpdateParams so clients can detect stale self-echoes.
+                        if !self.config_sender.is_empty() {
+                            json["_sender"] = serde_json::Value::from(self.config_sender.as_str());
+                            json["_rev"] = serde_json::Value::from(self.config_rev);
+                        }
                         view_data_helpers::emit_view_data(&view_data_tx, &node_name, || json);
                     }
                     last_layout = Some(scene.layout.clone());
@@ -1040,7 +1102,12 @@ impl CompositorNode {
             },
             PinManagementMessage::AddedInputPin { pin, channel } => {
                 tracing::info!("CompositorNode: activated input pin '{}'", pin.name);
-                slots.push(InputSlot { name: pin.name, rx: channel, latest_frame: None });
+                slots.push(InputSlot {
+                    name: pin.name,
+                    rx: channel,
+                    latest_frame: None,
+                    last_source_dims: None,
+                });
             },
             PinManagementMessage::RemoveInputPin { pin_name } => {
                 tracing::info!("CompositorNode: removed input pin '{}'", pin_name);

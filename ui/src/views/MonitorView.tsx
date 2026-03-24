@@ -362,7 +362,6 @@ const MonitorViewContent: React.FC = () => {
     isLoading: isLoadingPipeline,
     tuneNode,
     tuneNodeConfig,
-    tuneNodeConfigSilent,
     addNode,
     removeNode,
     connectPins,
@@ -840,7 +839,6 @@ const MonitorViewContent: React.FC = () => {
         nodeDef,
         stableOnParamChange,
         stableOnConfigChange,
-        stableOnConfigChangeSilent,
         selectedSessionId,
       });
 
@@ -887,15 +885,6 @@ const MonitorViewContent: React.FC = () => {
     [tuneNodeConfig]
   );
 
-  // Silent variant: broadcasts to other clients only (no echo-back to sender).
-  // Used by throttled compositor slider drags to avoid stale echo-back overwrites.
-  const stableOnConfigChangeSilent = useCallback(
-    (nodeId: string, config: Record<string, unknown>) => {
-      tuneNodeConfigSilent(nodeId, config);
-    },
-    [tuneNodeConfigSilent]
-  );
-
   // NOTE: fitView is triggered only by:
   // 1. Auto-layout effect (when needsAutoLayout is true)
   // 2. needsFit effect (when needsFit is true)
@@ -927,7 +916,14 @@ const MonitorViewContent: React.FC = () => {
 
       const paramKey = selectedSessionId ? `${selectedSessionId}\0${nodeName}` : nodeName;
       const overrides = defaultSessionStore.get(nodeParamsAtom(paramKey));
-      const mergedParams = { ...(apiNode.params || {}), ...(overrides || {}) };
+      const rawParams = { ...(apiNode.params || {}), ...(overrides || {}) };
+      // Strip transient sync metadata (_sender, _rev, etc.) from YAML export.
+      const mergedParams: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(rawParams)) {
+        if (!key.startsWith('_')) {
+          mergedParams[key] = value;
+        }
+      }
       if (Object.keys(mergedParams).length > 0) {
         nodeConfig['params'] = mergedParams;
       }

@@ -259,18 +259,6 @@ node_id: string,
 /**
  * The control message (typically UpdateParams)
  */
-message: NodeControlMessage, } | { "action": "tunenodesilent", 
-/**
- * The session ID containing the node
- */
-session_id: string, 
-/**
- * The node ID to send the message to
- */
-node_id: string, 
-/**
- * The control message (typically UpdateParams)
- */
 message: NodeControlMessage, } | { "action": "getpipeline", 
 /**
  * The session ID to query

@@ -61,7 +61,9 @@ export function writeNodeParam(
   sessionStore.set(nodeParamsAtom(k), { ...current, [key]: value });
 }
 
-/** Write multiple node params to the Jotai atom. */
+/** Write multiple node params to the Jotai atom.
+ *  Transient sync metadata (`_sender`, `_rev`, etc.) is stripped
+ *  so it doesn't pollute the local store. */
 export function writeNodeParams(
   nodeId: string,
   params: Record<string, unknown>,
@@ -69,7 +71,13 @@ export function writeNodeParams(
 ): void {
   const k = sessionId ? `${sessionId}\0${nodeId}` : nodeId;
   const current = sessionStore.get(nodeParamsAtom(k));
-  sessionStore.set(nodeParamsAtom(k), { ...current, ...params });
+  const cleaned: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(params)) {
+    if (!key.startsWith('_')) {
+      cleaned[key] = value;
+    }
+  }
+  sessionStore.set(nodeParamsAtom(k), { ...current, ...cleaned });
 }
 
 /** Clear node params atom for a specific node. */

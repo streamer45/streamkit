@@ -62,6 +62,10 @@ export interface LayerState {
   cropY: number;
   /** Shape clipping applied to the layer. */
   cropShape: 'rect' | 'circle';
+  /** True for layers materialized from server view data with no config entry
+   *  in params (auto-PiP stubs).  These must NOT be serialized back to the
+   *  server — doing so would create explicit config that disables aspect-fit. */
+  serverOnly?: boolean;
 }
 
 /** A text overlay stored in compositor config */
@@ -310,6 +314,9 @@ export function serializeImageOverlays(overlays: ImageOverlayState[]): ImageOver
 export function serializeLayers(layers: LayerState[]): Record<string, LayerConfig> {
   const layersMap: Record<string, LayerConfig> = {};
   for (const layer of layers) {
+    // Skip server-only layers (auto-PiP stubs) — serializing them would
+    // create explicit config that disables aspect-fit on the server.
+    if (layer.serverOnly) continue;
     layersMap[layer.id] = {
       rect: serializeRect(layer),
       ...serializeSpatialFields(layer),
@@ -470,6 +477,36 @@ export function buildConfig(
       ? serializeTextOverlays(textOverlays)
       : (params.text_overlays ?? []),
   };
+}
+
+// ── Aspect-fit prediction ───────────────────────────────────────────────────
+
+/** Compute a destination rect that fits `srcW × srcH` within `bounds`
+ *  while preserving the source aspect ratio.  The fitted rect is centred
+ *  within the bounds.
+ *
+ *  Port of Rust `fit_rect_preserving_aspect` (mod.rs:249-266).
+ *  JS `Math.round()` and Rust `.round()` produce matching results for
+ *  non-negative values, which is all this function rounds. */
+export function fitRectPreservingAspect(
+  srcW: number,
+  srcH: number,
+  bounds: { x: number; y: number; width: number; height: number }
+): { x: number; y: number; width: number; height: number } {
+  if (srcW === 0 || srcH === 0 || bounds.width === 0 || bounds.height === 0) {
+    return { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
+  }
+  const scaleW = bounds.width / srcW;
+  const scaleH = bounds.height / srcH;
+  const scale = Math.min(scaleW, scaleH);
+  const fitW = Math.round(srcW * scale);
+  const fitH = Math.round(srcH * scale);
+  // Centre within the bounding rect.
+  // Use integer division (Math.floor on the half-difference) to match
+  // Rust's saturating_sub / 2 behaviour for non-negative values.
+  const offsetX = Math.floor((bounds.width - fitW) / 2);
+  const offsetY = Math.floor((bounds.height - fitH) / 2);
+  return { x: bounds.x + offsetX, y: bounds.y + offsetY, width: fitW, height: fitH };
 }
 
 // ── Snap guide detection ────────────────────────────────────────────────────

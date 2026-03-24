@@ -67,6 +67,7 @@ import type {
 } from './compositorLayerParsers';
 import { useCompositorOverlays } from './compositorOverlays';
 import { useServerLayoutSync } from './compositorServerSync';
+import type { SourceDimsMap } from './compositorServerSync';
 
 export type {
   LayerState,
@@ -83,8 +84,6 @@ export interface UseCompositorLayersOptions {
   canvasHeight: number;
   params: Record<string, unknown>;
   onConfigChange?: (nodeId: string, config: Record<string, unknown>) => void;
-  /** Silent config change: broadcasts to other clients only (no echo-back). */
-  onConfigChangeSilent?: (nodeId: string, config: Record<string, unknown>) => void;
   onParamChange?: (nodeId: string, paramName: string, value: unknown) => void;
   throttleMs?: number;
 }
@@ -129,6 +128,9 @@ export interface UseCompositorLayersResult {
   /** Atomically reassign z-index values for all layer types in one commit.
    *  Each entry maps a layer id + kind to its new z-index. */
   reorderLayers: (entries: Array<{ id: string; kind: LayerKind; zIndex: number }>) => void;
+  /** Ref flag: true while a live-mode interaction (slider drag, etc.) is in
+   *  progress.  Set by consumers to suppress stale server echo-backs. */
+  activeInteractionRef: React.MutableRefObject<boolean>;
   /** Pre-assembled deps bag for useCompositorKeyboard. */
   keyboardDeps: CompositorKeyboardDeps;
 }
@@ -143,7 +145,6 @@ export const useCompositorLayers = (
     canvasHeight,
     params,
     onConfigChange,
-    onConfigChangeSilent,
     onParamChange,
     throttleMs = PARAM_THROTTLE_MS,
   } = options;
@@ -266,12 +267,17 @@ export const useCompositorLayers = (
     horizontal: HTMLDivElement | null;
   }>({ vertical: null, horizontal: null });
   const dragStateRef = useRef<DragState | null>(null);
+  const sourceDimsRef = useRef<SourceDimsMap>(new Map());
+
+  // Per-node flag: true while any live-mode interaction (slider drag, etc.)
+  // is in progress.  Guards useServerLayoutSync so stale server geometry
+  // doesn't overwrite in-flight client state.
+  const activeInteractionRef = useRef(false);
 
   // ── Commit / persistence ───────────────────────────────────────────────────
   const { commitAdapter, throttledConfigChange, throttledOverlayCommit } = useCompositorCommit({
     nodeId,
     onConfigChange,
-    onConfigChangeSilent,
     onParamChange,
     throttleMs,
     paramsRef,
@@ -303,7 +309,7 @@ export const useCompositorLayers = (
     const parsed = parseLayers(params, canvasWidth, canvasHeight);
     const currentLayers = getLayersFromStore(store);
 
-    const merged = mergeOverlayState(
+    let merged = mergeOverlayState(
       currentLayers,
       parsed,
       (a, b) =>
@@ -314,6 +320,35 @@ export const useCompositorLayers = (
       isMonitorView,
       isMonitorView ? prevParsedLayersRef.current : undefined
     );
+
+    if (isMonitorView) {
+      // Clear serverOnly on layers that now have explicit config in params.
+      // Without this, a stub materialized by mapServerLayers would keep
+      // serverOnly: true even after another client adds config, causing
+      // serializeLayers to permanently skip user edits on that layer.
+      merged = merged.map((l) => {
+        if (l.serverOnly && parsed.some((p) => p.id === l.id)) {
+          const cleared = { ...l };
+          delete cleared.serverOnly;
+          return cleared;
+        }
+        return l;
+      });
+
+      // Preserve server-only layers (auto-PiP stubs) that exist in current
+      // state but have no config entry in params.  Without this,
+      // mapServerLayers materializes them from view data, but the next
+      // sync-from-props cycle would drop them because parseLayers(params)
+      // doesn't include server-only layers.
+      const serverOnly = currentLayers.filter(
+        (l) =>
+          l.serverOnly && !parsed.some((p) => p.id === l.id) && !merged.some((m) => m.id === l.id)
+      );
+      if (serverOnly.length > 0) {
+        merged = [...merged, ...serverOnly];
+      }
+    }
+
     if (merged !== currentLayers) setLayersInStore(store, merged);
     prevParsedLayersRef.current = parsed;
 
@@ -347,7 +382,7 @@ export const useCompositorLayers = (
   }, [params, canvasWidth, canvasHeight, isMonitorView, store]);
 
   // ── Server-driven layout (Monitor view only) ───────────────────────────
-  useServerLayoutSync(sessionId, nodeId, store, dragStateRef);
+  useServerLayoutSync(sessionId, nodeId, store, dragStateRef, sourceDimsRef, activeInteractionRef);
 
   // ── Find layer across all types ─────────────────────────────────────────
   const findAnyLayer = useCallback(
@@ -440,6 +475,7 @@ export const useCompositorLayers = (
     updateImageOverlay: overlayOps.updateImageOverlay,
     removeImageOverlay: overlayOps.removeImageOverlay,
     reorderLayers: overlayOps.reorderLayers,
+    activeInteractionRef,
     keyboardDeps: {
       selectedLayerId,
       selectLayer: overlayOps.selectLayer,

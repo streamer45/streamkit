@@ -198,7 +198,9 @@ export const OpacityControl: React.FC<{
   opacity: number;
   onChange: (value: number) => void;
   disabled: boolean;
-}> = React.memo(({ opacity, onChange, disabled }) => {
+  onInteractionStart?: () => void;
+  onInteractionEnd?: () => void;
+}> = React.memo(({ opacity, onChange, disabled, onInteractionStart, onInteractionEnd }) => {
   return (
     <InspectorSection>
       <InspectorSectionLabel>Opacity</InspectorSectionLabel>
@@ -208,6 +210,8 @@ export const OpacityControl: React.FC<{
           onValueChange={([v]) => {
             onChange(v);
           }}
+          onPointerDownCapture={onInteractionStart ? () => onInteractionStart() : undefined}
+          onValueCommit={onInteractionEnd ? () => onInteractionEnd() : undefined}
           min={0}
           max={1}
           step={0.01}
@@ -230,7 +234,9 @@ export const RotationControl: React.FC<{
   rotationDegrees: number;
   onChange: (value: number) => void;
   disabled: boolean;
-}> = React.memo(({ rotationDegrees, onChange, disabled }) => {
+  onInteractionStart?: () => void;
+  onInteractionEnd?: () => void;
+}> = React.memo(({ rotationDegrees, onChange, disabled, onInteractionStart, onInteractionEnd }) => {
   const normalisedRotation = ((Math.round(rotationDegrees) % 360) + 360) % 360;
 
   return (
@@ -267,6 +273,8 @@ export const RotationControl: React.FC<{
           onValueChange={([v]) => {
             onChange(v);
           }}
+          onPointerDownCapture={onInteractionStart ? () => onInteractionStart() : undefined}
+          onValueCommit={onInteractionEnd ? () => onInteractionEnd() : undefined}
           min={0}
           max={359}
           step={1}
@@ -333,105 +341,124 @@ export const CropZoomControl: React.FC<{
   cropShape: 'rect' | 'circle';
   onChange: (patch: CropZoomPatch) => void;
   disabled: boolean;
-}> = React.memo(({ cropZoom, cropX, cropY, cropShape, onChange, disabled }) => {
-  const panDisabled = disabled || cropZoom <= 1.0;
+  onInteractionStart?: () => void;
+  onInteractionEnd?: () => void;
+}> = React.memo(
+  ({
+    cropZoom,
+    cropX,
+    cropY,
+    cropShape,
+    onChange,
+    disabled,
+    onInteractionStart,
+    onInteractionEnd,
+  }) => {
+    const panDisabled = disabled || cropZoom <= 1.0;
 
-  return (
-    <InspectorSection data-testid="crop-zoom-section">
-      <CropSectionHeader>
-        <InspectorSectionLabel>Crop &amp; Zoom</InspectorSectionLabel>
-        <SKTooltip content="Reset to defaults">
-          <ResetButton
+    return (
+      <InspectorSection data-testid="crop-zoom-section">
+        <CropSectionHeader>
+          <InspectorSectionLabel>Crop &amp; Zoom</InspectorSectionLabel>
+          <SKTooltip content="Reset to defaults">
+            <ResetButton
+              disabled={disabled}
+              onClick={() => onChange({ cropZoom: 1.0, cropX: 0.5, cropY: 0.5, cropShape: 'rect' })}
+              className="nodrag nopan"
+              data-testid="crop-zoom-reset"
+            >
+              <RotateCcw size={12} />
+            </ResetButton>
+          </SKTooltip>
+        </CropSectionHeader>
+        <ControlRow>
+          <ControlLabel>Shape</ControlLabel>
+          <MirrorToggleRow className="nodrag nopan" style={{ flex: 1 }}>
+            <MirrorButton
+              isActive={cropShape === 'rect'}
+              disabled={disabled}
+              onClick={() => onChange({ cropShape: 'rect' })}
+              data-testid="crop-shape-rect"
+            >
+              ▭ Rect
+            </MirrorButton>
+            <MirrorButton
+              isActive={cropShape === 'circle'}
+              disabled={disabled}
+              onClick={() => onChange({ cropShape: 'circle' })}
+              data-testid="crop-shape-circle"
+            >
+              ● Circle
+            </MirrorButton>
+          </MirrorToggleRow>
+        </ControlRow>
+        <ControlRow>
+          <ControlLabel>Zoom</ControlLabel>
+          <CompactSliderRoot
+            value={[cropZoom]}
+            onValueChange={([v]) => onChange({ cropZoom: v })}
+            onPointerDownCapture={onInteractionStart ? () => onInteractionStart() : undefined}
+            onValueCommit={onInteractionEnd ? () => onInteractionEnd() : undefined}
+            min={1}
+            max={4}
+            step={0.1}
             disabled={disabled}
-            onClick={() => onChange({ cropZoom: 1.0, cropX: 0.5, cropY: 0.5, cropShape: 'rect' })}
             className="nodrag nopan"
-            data-testid="crop-zoom-reset"
+            data-testid="crop-zoom-slider"
           >
-            <RotateCcw size={12} />
-          </ResetButton>
-        </SKTooltip>
-      </CropSectionHeader>
-      <ControlRow>
-        <ControlLabel>Shape</ControlLabel>
-        <MirrorToggleRow className="nodrag nopan" style={{ flex: 1 }}>
-          <MirrorButton
-            isActive={cropShape === 'rect'}
-            disabled={disabled}
-            onClick={() => onChange({ cropShape: 'rect' })}
-            data-testid="crop-shape-rect"
+            <CompactSliderTrack>
+              <CompactSliderRange />
+            </CompactSliderTrack>
+            <CompactSliderThumb />
+          </CompactSliderRoot>
+          <ControlValue data-testid="crop-zoom-value">{cropZoom.toFixed(1)}×</ControlValue>
+        </ControlRow>
+        <ControlRow>
+          <ControlLabel>Pan X</ControlLabel>
+          <CompactSliderRoot
+            value={[cropX]}
+            onValueChange={([v]) => onChange({ cropX: v })}
+            onPointerDownCapture={onInteractionStart ? () => onInteractionStart() : undefined}
+            onValueCommit={onInteractionEnd ? () => onInteractionEnd() : undefined}
+            min={0}
+            max={1}
+            step={0.01}
+            disabled={panDisabled}
+            className="nodrag nopan"
+            data-testid="crop-pan-x-slider"
           >
-            ▭ Rect
-          </MirrorButton>
-          <MirrorButton
-            isActive={cropShape === 'circle'}
-            disabled={disabled}
-            onClick={() => onChange({ cropShape: 'circle' })}
-            data-testid="crop-shape-circle"
+            <CompactSliderTrack>
+              <CompactSliderRange />
+            </CompactSliderTrack>
+            <CompactSliderThumb />
+          </CompactSliderRoot>
+          <ControlValue>{cropX.toFixed(2)}</ControlValue>
+        </ControlRow>
+        <ControlRow>
+          <ControlLabel>Tilt Y</ControlLabel>
+          <CompactSliderRoot
+            value={[cropY]}
+            onValueChange={([v]) => onChange({ cropY: v })}
+            onPointerDownCapture={onInteractionStart ? () => onInteractionStart() : undefined}
+            onValueCommit={onInteractionEnd ? () => onInteractionEnd() : undefined}
+            min={0}
+            max={1}
+            step={0.01}
+            disabled={panDisabled}
+            className="nodrag nopan"
+            data-testid="crop-tilt-y-slider"
           >
-            ● Circle
-          </MirrorButton>
-        </MirrorToggleRow>
-      </ControlRow>
-      <ControlRow>
-        <ControlLabel>Zoom</ControlLabel>
-        <CompactSliderRoot
-          value={[cropZoom]}
-          onValueChange={([v]) => onChange({ cropZoom: v })}
-          min={1}
-          max={4}
-          step={0.1}
-          disabled={disabled}
-          className="nodrag nopan"
-          data-testid="crop-zoom-slider"
-        >
-          <CompactSliderTrack>
-            <CompactSliderRange />
-          </CompactSliderTrack>
-          <CompactSliderThumb />
-        </CompactSliderRoot>
-        <ControlValue data-testid="crop-zoom-value">{cropZoom.toFixed(1)}×</ControlValue>
-      </ControlRow>
-      <ControlRow>
-        <ControlLabel>Pan X</ControlLabel>
-        <CompactSliderRoot
-          value={[cropX]}
-          onValueChange={([v]) => onChange({ cropX: v })}
-          min={0}
-          max={1}
-          step={0.01}
-          disabled={panDisabled}
-          className="nodrag nopan"
-          data-testid="crop-pan-x-slider"
-        >
-          <CompactSliderTrack>
-            <CompactSliderRange />
-          </CompactSliderTrack>
-          <CompactSliderThumb />
-        </CompactSliderRoot>
-        <ControlValue>{cropX.toFixed(2)}</ControlValue>
-      </ControlRow>
-      <ControlRow>
-        <ControlLabel>Tilt Y</ControlLabel>
-        <CompactSliderRoot
-          value={[cropY]}
-          onValueChange={([v]) => onChange({ cropY: v })}
-          min={0}
-          max={1}
-          step={0.01}
-          disabled={panDisabled}
-          className="nodrag nopan"
-          data-testid="crop-tilt-y-slider"
-        >
-          <CompactSliderTrack>
-            <CompactSliderRange />
-          </CompactSliderTrack>
-          <CompactSliderThumb />
-        </CompactSliderRoot>
-        <ControlValue>{cropY.toFixed(2)}</ControlValue>
-      </ControlRow>
-    </InspectorSection>
-  );
-});
+            <CompactSliderTrack>
+              <CompactSliderRange />
+            </CompactSliderTrack>
+            <CompactSliderThumb />
+          </CompactSliderRoot>
+          <ControlValue>{cropY.toFixed(2)}</ControlValue>
+        </ControlRow>
+      </InspectorSection>
+    );
+  }
+);
 CropZoomControl.displayName = 'CropZoomControl';
 
 // ── Unified layer list ──────────────────────────────────────────────────────

@@ -4,6 +4,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 
+import { getLocalConfigRev } from '@/hooks/useConfigRev';
 import {
   batchWriteNodeStates,
   batchWriteNodeStats,
@@ -54,6 +55,12 @@ export class WebSocketService {
   private isIntentionallyClosed = false;
   private subscribedSessions: Set<string> = new Set();
 
+  /** Stable sender nonce for this WebSocket session.
+   *  Generated on connect, reset on reconnect.  Used in `_sender` fields
+   *  so the client can distinguish its own stale echoes from other clients'
+   *  updates.  Exposed via `getClientNonce()`. */
+  private clientNonce: string = uuidv4();
+
   // ── Frame-level batching for high-frequency events ──────────────────
   // Buffer node-state and node-stats updates that arrive in rapid
   // succession (e.g. during session initialisation) and flush them as a
@@ -86,6 +93,9 @@ export class WebSocketService {
       this.ws.onopen = () => {
         logger.info('Connected (onopen fired)');
         this.reconnectAttempts = 0;
+        // Reset sender nonce on each new connection so stale echoes from
+        // previous sessions are never mistaken for the current session's.
+        this.clientNonce = uuidv4();
         this.notifyConnectionStatus(true);
         this.flushMessageQueue();
         this.resubscribeToSessions();
@@ -312,10 +322,29 @@ export class WebSocketService {
     //
     // useSessionStore.getState().updateNodeParams(session_id, node_id, params as Record<string, unknown>);
 
-    // Batch all param updates into a single store update to avoid
-    // N intermediate states and N selector re-evaluations.
     if (params && typeof params === 'object' && !Array.isArray(params)) {
-      writeNodeParams(node_id, params as Record<string, unknown>, session_id);
+      const p = params as Record<string, unknown>;
+
+      // Stale echo-back gate: if this event originated from us and the rev
+      // is <= our local counter, it's a stale echo — skip it.
+      const sender = typeof p._sender === 'string' ? p._sender : undefined;
+      const rev = typeof p._rev === 'number' ? p._rev : undefined;
+      if (sender && sender === this.clientNonce && rev !== undefined) {
+        const localRev = getLocalConfigRev(node_id);
+        if (rev <= localRev) {
+          return;
+        }
+      }
+
+      // Strip transient sync metadata before writing to local state.
+      const cleaned: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(p)) {
+        if (!k.startsWith('_')) {
+          cleaned[k] = v;
+        }
+      }
+
+      writeNodeParams(node_id, cleaned, session_id);
     }
   }
 
@@ -534,6 +563,13 @@ export class WebSocketService {
 
   isConnected(): boolean {
     return this.ws?.readyState === WebSocket.OPEN;
+  }
+
+  /** Return the current sender nonce for this WebSocket session.
+   *  Used by the config revision system to stamp outgoing params with
+   *  `_sender` so the client can identify its own echoes. */
+  getClientNonce(): string {
+    return this.clientNonce;
   }
 }
 

@@ -46,8 +46,6 @@ interface CompositorNodeData {
   definition?: { bidirectional?: boolean };
   onParamChange?: (nodeId: string, paramName: string, value: unknown) => void;
   onConfigChange?: (nodeId: string, config: Record<string, unknown>) => void;
-  /** Silent config change: broadcasts to other clients only (no echo-back). */
-  onConfigChangeSilent?: (nodeId: string, config: Record<string, unknown>) => void;
   sessionId?: string;
 }
 
@@ -135,6 +133,7 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
     updateImageOverlay,
     removeImageOverlay,
     reorderLayers,
+    activeInteractionRef,
     keyboardDeps,
     store,
   } = useCompositorLayers({
@@ -144,9 +143,19 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
     canvasHeight,
     params: data.params ?? {},
     onConfigChange: data.onConfigChange,
-    onConfigChangeSilent: data.onConfigChangeSilent,
     onParamChange: data.onParamChange,
   });
+
+  // Stable interaction callbacks for suppressing stale server view data
+  // during continuous slider drags (opacity, rotation, crop, text alpha).
+  // These set activeInteractionRef.current which gates useServerLayoutSync.
+  // On interaction end, the next server view-data tick (~16-33ms) reconciles.
+  const handleInteractionStart = useCallback(() => {
+    activeInteractionRef.current = true;
+  }, [activeInteractionRef]);
+  const handleInteractionEnd = useCallback(() => {
+    activeInteractionRef.current = false;
+  }, [activeInteractionRef]);
 
   const disabled = !data.onConfigChange && !data.onParamChange;
 
@@ -256,6 +265,8 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
           updateImageOverlay={updateImageOverlay}
           textInputRef={textInputRef}
           disabled={disabled}
+          onInteractionStart={handleInteractionStart}
+          onInteractionEnd={handleInteractionEnd}
         />
       </>
     ),
@@ -276,6 +287,8 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(({ id, data, se
       updateLayerPositionSize,
       updateTextOverlay,
       updateImageOverlay,
+      handleInteractionStart,
+      handleInteractionEnd,
     ]
   );
 

@@ -20,8 +20,6 @@ use crate::permissions::Permissions;
 use crate::state::AppState;
 
 static ACTIVE_CONNECTIONS: AtomicU64 = AtomicU64::new(0);
-/// Monotonically increasing counter for unique connection IDs (never decremented).
-static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(0);
 const DEFAULT_MAX_WS_MESSAGE_BYTES: usize = 1024 * 1024; // 1 MiB
 
 fn max_ws_message_bytes() -> usize {
@@ -104,7 +102,6 @@ async fn handle_client_message(
     perms: &Permissions,
     role_name: &str,
     metrics: &WebSocketMetrics,
-    conn_id: u64,
 ) -> bool {
     metrics.messages_counter.add(1, &[KeyValue::new("direction", "inbound")]);
 
@@ -125,8 +122,7 @@ async fn handle_client_message(
     };
 
     // Handle the request and generate a response
-    if let Some(response) = handle_api_request(request, app_state, perms, role_name, conn_id).await
-    {
+    if let Some(response) = handle_api_request(request, app_state, perms, role_name).await {
         // Send the response back
         metrics.messages_counter.add(1, &[KeyValue::new("direction", "outbound")]);
         if send_json_message(socket, &response, "response").await.is_err() {
@@ -149,10 +145,6 @@ pub async fn handle_websocket(
     info!("WebSocket connection established");
 
     let metrics = WebSocketMetrics::shared();
-    // Unique connection ID used for echo suppression (TuneNodeSilent).
-    // NEXT_CONN_ID is monotonically increasing and never decremented, ensuring
-    // IDs are never reused even after connections disconnect.
-    let conn_id = NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed);
     let active = ACTIVE_CONNECTIONS.fetch_add(1, Ordering::Relaxed) + 1;
     metrics.connections_gauge.record(active, &[]);
 
@@ -204,7 +196,7 @@ pub async fn handle_websocket(
                             break;
                         }
 
-                        if !handle_client_message(&mut socket, text.to_string(), &app_state, &perms, &role_name, &metrics, conn_id).await {
+                        if !handle_client_message(&mut socket, text.to_string(), &app_state, &perms, &role_name, &metrics).await {
                             break;
                         }
                     }
@@ -252,11 +244,6 @@ pub async fn handle_websocket(
                     }
                 };
 
-                // Echo suppression: skip events that exclude this connection
-                // (e.g. NodeParamsChanged from a TuneNodeSilent the sender issued).
-                if broadcast_event.exclude_conn_id == Some(conn_id) {
-                    continue;
-                }
                 let event = broadcast_event.event;
 
                 let should_send = if perms.access_all_sessions {
@@ -320,7 +307,6 @@ async fn handle_api_request(
     app_state: &AppState,
     perms: &Permissions,
     role_name: &str,
-    conn_id: u64,
 ) -> Option<ApiResponse> {
     let correlation_id = request.correlation_id.clone();
 
@@ -330,7 +316,6 @@ async fn handle_api_request(
         perms,
         role_name,
         correlation_id.clone(),
-        conn_id,
     )
     .await?;
 
