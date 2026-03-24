@@ -62,6 +62,10 @@ struct InputSlot {
     name: String,
     rx: mpsc::Receiver<Packet>,
     latest_frame: Option<VideoFrame>,
+    /// Last-seen source dimensions for dirty detection.
+    /// When the frame resolution changes at runtime (e.g. camera switch),
+    /// the compositor sets `layer_configs_dirty` to re-emit view data.
+    last_source_dims: Option<(u32, u32)>,
 }
 
 // ── Cached layer config ─────────────────────────────────────────────────────
@@ -205,7 +209,15 @@ fn resolve_scene(
             rect.as_ref()
                 .map_or((0, 0, config.width, config.height), |r| (r.x, r.y, r.width, r.height))
         };
-        layers.push(ResolvedLayer { id: slot.name.clone(), x: lx, y: ly, width: lw, height: lh });
+        layers.push(ResolvedLayer {
+            id: slot.name.clone(),
+            x: lx,
+            y: ly,
+            width: lw,
+            height: lh,
+            source_width: slot.latest_frame.as_ref().map(|f| f.width),
+            source_height: slot.latest_frame.as_ref().map(|f| f.height),
+        });
 
         configs.push(ResolvedSlotConfig {
             rect,
@@ -481,7 +493,7 @@ impl ProcessorNode for CompositorNode {
         });
         for (name, rx) in pre_inputs {
             tracing::info!("CompositorNode: pre-connected input '{}'", name);
-            slots.push(InputSlot { name, rx, latest_frame: None });
+            slots.push(InputSlot { name, rx, latest_frame: None, last_source_dims: None });
         }
 
         // Pin management channel (optional).
@@ -675,6 +687,12 @@ impl ProcessorNode for CompositorNode {
             for slot in &mut slots {
                 if is_oneshot {
                     if let Ok(Packet::Video(frame)) = slot.rx.try_recv() {
+                        // Detect source dimension changes → trigger layout re-emission.
+                        let new_dims = (frame.width, frame.height);
+                        if slot.last_source_dims != Some(new_dims) {
+                            slot.last_source_dims = Some(new_dims);
+                            layer_configs_dirty = true;
+                        }
                         slot.latest_frame = Some(frame);
                         any_new_frame = true;
                     }
@@ -692,6 +710,12 @@ impl ProcessorNode for CompositorNode {
                         stats_tracker.discarded_n(dropped);
                     }
                     if let Some(frame) = latest {
+                        // Detect source dimension changes → trigger layout re-emission.
+                        let new_dims = (frame.width, frame.height);
+                        if slot.last_source_dims != Some(new_dims) {
+                            slot.last_source_dims = Some(new_dims);
+                            layer_configs_dirty = true;
+                        }
                         slot.latest_frame = Some(frame);
                     }
                 }
@@ -1040,7 +1064,12 @@ impl CompositorNode {
             },
             PinManagementMessage::AddedInputPin { pin, channel } => {
                 tracing::info!("CompositorNode: activated input pin '{}'", pin.name);
-                slots.push(InputSlot { name: pin.name, rx: channel, latest_frame: None });
+                slots.push(InputSlot {
+                    name: pin.name,
+                    rx: channel,
+                    latest_frame: None,
+                    last_source_dims: None,
+                });
             },
             PinManagementMessage::RemoveInputPin { pin_name } => {
                 tracing::info!("CompositorNode: removed input pin '{}'", pin_name);

@@ -332,6 +332,46 @@ fn test_fit_rect_preserving_aspect() {
 }
 
 #[test]
+fn test_resolved_layer_source_dims() {
+    // When a slot has a latest_frame, resolve_scene should populate source dims.
+    let config = CompositorConfig::default();
+    let (_, rx) = mpsc::channel(1);
+    let slots = vec![InputSlot {
+        name: "in_0".to_string(),
+        rx,
+        latest_frame: Some(make_rgba_frame(1920, 1080, 0, 0, 0, 255)),
+        last_source_dims: Some((1920, 1080)),
+    }];
+    let image_overlays: Arc<[Arc<DecodedOverlay>]> = Arc::from(vec![]);
+    let text_overlays: Arc<[Arc<DecodedOverlay>]> = Arc::from(vec![]);
+
+    let scene = resolve_scene(&slots, &config, &image_overlays, &text_overlays);
+    assert_eq!(scene.layout.layers.len(), 1);
+    assert_eq!(scene.layout.layers[0].source_width, Some(1920));
+    assert_eq!(scene.layout.layers[0].source_height, Some(1080));
+}
+
+#[test]
+fn test_resolved_layer_source_dims_none_when_no_frame() {
+    // When a slot has no latest_frame, source dims should be None.
+    let config = CompositorConfig::default();
+    let (_, rx) = mpsc::channel(1);
+    let slots = vec![InputSlot {
+        name: "in_0".to_string(),
+        rx,
+        latest_frame: None,
+        last_source_dims: None,
+    }];
+    let image_overlays: Arc<[Arc<DecodedOverlay>]> = Arc::from(vec![]);
+    let text_overlays: Arc<[Arc<DecodedOverlay>]> = Arc::from(vec![]);
+
+    let scene = resolve_scene(&slots, &config, &image_overlays, &text_overlays);
+    assert_eq!(scene.layout.layers.len(), 1);
+    assert_eq!(scene.layout.layers[0].source_width, None);
+    assert_eq!(scene.layout.layers[0].source_height, None);
+}
+
+#[test]
 fn test_config_validate_ok() {
     let cfg = CompositorConfig::default();
     assert!(cfg.validate(&GlobalCompositorConfig::default()).is_ok());
@@ -1951,7 +1991,7 @@ fn test_composite_frame_crop_shape_circle_skip_clear() {
 /// Helper: build an `InputSlot` with the given name and optional latest frame.
 fn make_slot(name: &str, frame: Option<VideoFrame>) -> InputSlot {
     let (_tx, rx) = mpsc::channel::<Packet>(1);
-    InputSlot { name: name.to_string(), rx, latest_frame: frame }
+    InputSlot { name: name.to_string(), rx, latest_frame: frame, last_source_dims: None }
 }
 
 #[test]

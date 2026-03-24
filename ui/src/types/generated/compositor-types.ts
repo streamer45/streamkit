@@ -222,7 +222,19 @@ export type ResolvedLayer = {
 /**
  * Pin name (e.g. `"in_0"`).
  */
-id: string, x: number, y: number, width: number, height: number, };
+id: string, x: number, y: number, width: number, height: number, 
+/**
+ * Source frame width (from the input slot's latest frame).
+ * The client uses this to compute aspect-fit locally for zero-latency
+ * feedback on auto-PiP layers.
+ * `None` when no frame has been received yet for this input.
+ */
+source_width: number | null, 
+/**
+ * Source frame height (from the input slot's latest frame).
+ * `None` when no frame has been received yet for this input.
+ */
+source_height: number | null, };
 
 export type ResolvedOverlay = { 
 /**

@@ -67,6 +67,7 @@ import type {
 } from './compositorLayerParsers';
 import { useCompositorOverlays } from './compositorOverlays';
 import { useServerLayoutSync } from './compositorServerSync';
+import type { SourceDimsMap } from './compositorServerSync';
 
 export type {
   LayerState,
@@ -266,6 +267,7 @@ export const useCompositorLayers = (
     horizontal: HTMLDivElement | null;
   }>({ vertical: null, horizontal: null });
   const dragStateRef = useRef<DragState | null>(null);
+  const sourceDimsRef = useRef<SourceDimsMap>(new Map());
 
   // ── Commit / persistence ───────────────────────────────────────────────────
   const { commitAdapter, throttledConfigChange, throttledOverlayCommit } = useCompositorCommit({
@@ -303,7 +305,7 @@ export const useCompositorLayers = (
     const parsed = parseLayers(params, canvasWidth, canvasHeight);
     const currentLayers = getLayersFromStore(store);
 
-    const merged = mergeOverlayState(
+    let merged = mergeOverlayState(
       currentLayers,
       parsed,
       (a, b) =>
@@ -314,6 +316,35 @@ export const useCompositorLayers = (
       isMonitorView,
       isMonitorView ? prevParsedLayersRef.current : undefined
     );
+
+    if (isMonitorView) {
+      // Clear serverOnly on layers that now have explicit config in params.
+      // Without this, a stub materialized by mapServerLayers would keep
+      // serverOnly: true even after another client adds config, causing
+      // serializeLayers to permanently skip user edits on that layer.
+      merged = merged.map((l) => {
+        if (l.serverOnly && parsed.some((p) => p.id === l.id)) {
+          const cleared = { ...l };
+          delete cleared.serverOnly;
+          return cleared;
+        }
+        return l;
+      });
+
+      // Preserve server-only layers (auto-PiP stubs) that exist in current
+      // state but have no config entry in params.  Without this,
+      // mapServerLayers materializes them from view data, but the next
+      // sync-from-props cycle would drop them because parseLayers(params)
+      // doesn't include server-only layers.
+      const serverOnly = currentLayers.filter(
+        (l) =>
+          l.serverOnly && !parsed.some((p) => p.id === l.id) && !merged.some((m) => m.id === l.id)
+      );
+      if (serverOnly.length > 0) {
+        merged = [...merged, ...serverOnly];
+      }
+    }
+
     if (merged !== currentLayers) setLayersInStore(store, merged);
     prevParsedLayersRef.current = parsed;
 
@@ -347,7 +378,7 @@ export const useCompositorLayers = (
   }, [params, canvasWidth, canvasHeight, isMonitorView, store]);
 
   // ── Server-driven layout (Monitor view only) ───────────────────────────
-  useServerLayoutSync(sessionId, nodeId, store, dragStateRef);
+  useServerLayoutSync(sessionId, nodeId, store, dragStateRef, sourceDimsRef);
 
   // ── Find layer across all types ─────────────────────────────────────────
   const findAnyLayer = useCallback(

@@ -108,6 +108,8 @@ function serverLayer(
     y: 0,
     width: 960,
     height: 720,
+    source_width: null,
+    source_height: null,
     ...overrides,
   };
 }
@@ -589,5 +591,94 @@ describe('Monitor view data flow integration', () => {
     const text1 = getTextOverlaysFromStore(result.current.store);
     expect(text1[0].x).toBe(100);
     expect(text1[0].y).toBe(200);
+  });
+
+  it('server-only layers (auto-PiP) are materialized with default config', () => {
+    seedStore();
+
+    // Params only have in_0, but server reports both in_0 and in_1.
+    const opts = monitorOptions();
+    const { result, rerender } = renderHook(
+      (props: UseCompositorLayersOptions) => useCompositorLayers(props),
+      { initialProps: opts }
+    );
+
+    // Server view data includes an auto-PiP layer (in_1) not in params.
+    const layout = makeServerLayout({
+      layers: [
+        serverLayer('in_0'),
+        serverLayer('in_1', { x: 800, y: 400, width: 320, height: 240 }),
+      ],
+    });
+    act(() => pushServerViewData(layout));
+
+    const layers = getLayersFromStore(result.current.store);
+    expect(layers).toHaveLength(2);
+
+    const autoPip = layers.find((l) => l.id === 'in_1')!;
+    expect(autoPip).toBeDefined();
+    expect(autoPip.x).toBe(800);
+    expect(autoPip.y).toBe(400);
+    expect(autoPip.width).toBe(320);
+    expect(autoPip.height).toBe(240);
+    // Default config values for materialized stub
+    expect(autoPip.opacity).toBe(1);
+    expect(autoPip.rotationDegrees).toBe(0);
+    expect(autoPip.zIndex).toBe(0);
+    expect(autoPip.visible).toBe(true);
+
+    // Params echo-back: auto-PiP stubs must survive across params syncs.
+    // parseLayers(params) won't include in_1, but it must not be dropped.
+    act(() => rerender({ ...opts, params: makeParams() }));
+
+    const layers2 = getLayersFromStore(result.current.store);
+    expect(layers2).toHaveLength(2);
+    const autoPip2 = layers2.find((l) => l.id === 'in_1')!;
+    expect(autoPip2).toBeDefined();
+    expect(autoPip2.x).toBe(800);
+    expect(autoPip2.y).toBe(400);
+    expect(autoPip2.width).toBe(320);
+    expect(autoPip2.height).toBe(240);
+  });
+
+  it('serverOnly flag is cleared when layer gains explicit config in params', () => {
+    seedStore();
+
+    const opts = monitorOptions();
+    const { result, rerender } = renderHook(
+      (props: UseCompositorLayersOptions) => useCompositorLayers(props),
+      { initialProps: opts }
+    );
+
+    // Server view data includes auto-PiP layer in_1 (not in params).
+    const layout = makeServerLayout({
+      layers: [
+        serverLayer('in_0'),
+        serverLayer('in_1', { x: 800, y: 400, width: 320, height: 240 }),
+      ],
+    });
+    act(() => pushServerViewData(layout));
+
+    const layers = getLayersFromStore(result.current.store);
+    const autoPip = layers.find((l) => l.id === 'in_1')!;
+    expect(autoPip.serverOnly).toBe(true);
+
+    // Another client adds explicit config for in_1 → params now include it.
+    const paramsWithIn1 = makeParams({
+      layers: {
+        in_0: { opacity: 1.0, z_index: 0 },
+        in_1: { opacity: 0.8, z_index: 1 },
+      },
+    });
+    act(() => rerender({ ...opts, params: paramsWithIn1 }));
+
+    const layers2 = getLayersFromStore(result.current.store);
+    const layer1 = layers2.find((l) => l.id === 'in_1')!;
+    expect(layer1).toBeDefined();
+    // serverOnly must be cleared so serializeLayers includes this layer.
+    expect(layer1.serverOnly).toBeUndefined();
+    // opacity is an OVERLAY_BASE_KEYS field — server-controlled in Monitor
+    // view, so the stub's default (1) is preserved, not the parsed value.
+    expect(layer1.opacity).toBe(1);
   });
 });

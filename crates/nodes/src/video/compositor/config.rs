@@ -322,6 +322,16 @@ pub struct ResolvedLayer {
     pub y: i32,
     pub width: u32,
     pub height: u32,
+    /// Source frame width (from the input slot's latest frame).
+    /// The client uses this to compute aspect-fit locally for zero-latency
+    /// feedback on auto-PiP layers.
+    /// `None` when no frame has been received yet for this input.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_width: Option<u32>,
+    /// Source frame height (from the input slot's latest frame).
+    /// `None` when no frame has been received yet for this input.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_height: Option<u32>,
 }
 
 /// Server-computed geometry for a single overlay (text or image).

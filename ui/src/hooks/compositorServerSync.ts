@@ -43,32 +43,72 @@ import {
   setLayersInStore,
   setTextOverlaysInStore,
 } from './compositorAtoms';
+import {
+  DEFAULT_OPACITY,
+  DEFAULT_ROTATION_DEGREES,
+  DEFAULT_Z_INDEX,
+  DEFAULT_MIRROR_HORIZONTAL,
+  DEFAULT_MIRROR_VERTICAL,
+  DEFAULT_VISIBLE,
+  DEFAULT_CROP_ZOOM,
+  DEFAULT_CROP_X,
+  DEFAULT_CROP_Y,
+  DEFAULT_CROP_SHAPE,
+} from './compositorConstants';
 import type { LayerState, TextOverlayState, OverlayBase } from './compositorLayerParsers';
+
+// ── Source dims ref type ─────────────────────────────────────────────────────
+
+/** Per-layer source frame dimensions, keyed by layer id.
+ *  Populated from `ResolvedLayer.source_width`/`source_height` in server
+ *  view data.  Kept separate from `LayerState` so prediction inputs
+ *  (runtime server metadata) don't mix with config/geometry state. */
+export type SourceDimsMap = Map<string, { width: number; height: number }>;
 
 // ── Pure helpers ────────────────────────────────────────────────────────────
 
 /** Map server geometry onto existing client LayerState[], preserving all
- *  config-driven fields (opacity, rotation, z_index, mirror, crop, visible). */
+ *  config-driven fields (opacity, rotation, z_index, mirror, crop, visible).
+ *
+ *  For server-only layers (e.g. auto-PiP layers with no explicit config in
+ *  params), a stub LayerState is created with server geometry + default config
+ *  values.  This ensures the client has a LayerState entry for every layer the
+ *  server reports, which is a precondition for client-side prediction. */
 export function mapServerLayers(prev: LayerState[], serverLayers: ResolvedLayer[]): LayerState[] {
-  const next: LayerState[] = serverLayers
-    .map((sl) => {
-      const existing = prev.find((l) => l.id === sl.id);
-      if (!existing) {
-        // New layer from server with no local counterpart — should be rare.
-        // Return a stub; sync-from-props will fill in the config fields.
-        return undefined;
-      }
-      if (
-        existing.x === sl.x &&
-        existing.y === sl.y &&
-        existing.width === sl.width &&
-        existing.height === sl.height
-      ) {
-        return existing;
-      }
-      return { ...existing, x: sl.x, y: sl.y, width: sl.width, height: sl.height };
-    })
-    .filter((l): l is LayerState => l !== undefined);
+  const next: LayerState[] = serverLayers.map((sl) => {
+    const existing = prev.find((l) => l.id === sl.id);
+    if (!existing) {
+      // Server-only layer (auto-PiP) with no local counterpart.
+      // Materialize a stub with server geometry + default config values.
+      return {
+        id: sl.id,
+        x: sl.x,
+        y: sl.y,
+        width: sl.width,
+        height: sl.height,
+        opacity: DEFAULT_OPACITY,
+        zIndex: DEFAULT_Z_INDEX,
+        rotationDegrees: DEFAULT_ROTATION_DEGREES,
+        mirrorHorizontal: DEFAULT_MIRROR_HORIZONTAL,
+        mirrorVertical: DEFAULT_MIRROR_VERTICAL,
+        visible: DEFAULT_VISIBLE,
+        cropZoom: DEFAULT_CROP_ZOOM,
+        cropX: DEFAULT_CROP_X,
+        cropY: DEFAULT_CROP_Y,
+        cropShape: DEFAULT_CROP_SHAPE,
+        serverOnly: true,
+      } satisfies LayerState;
+    }
+    if (
+      existing.x === sl.x &&
+      existing.y === sl.y &&
+      existing.width === sl.width &&
+      existing.height === sl.height
+    ) {
+      return existing;
+    }
+    return { ...existing, x: sl.x, y: sl.y, width: sl.width, height: sl.height };
+  });
 
   return next.length !== prev.length || next.some((s, i) => s !== prev[i]) ? next : prev;
 }
@@ -128,7 +168,8 @@ export function useServerLayoutSync(
   sessionId: string | undefined,
   nodeId: string,
   store: CompositorStore,
-  dragStateRef: React.MutableRefObject<unknown>
+  dragStateRef: React.MutableRefObject<unknown>,
+  sourceDimsRef: React.MutableRefObject<SourceDimsMap>
 ): void {
   useEffect(() => {
     if (!sessionId) return;
@@ -141,6 +182,19 @@ export function useServerLayoutSync(
 
       const layout = viewData as CompositorLayout;
       if (!Array.isArray(layout.layers)) return;
+
+      // Update source dims ref from server view data (prediction inputs).
+      for (const sl of layout.layers) {
+        if (sl.source_width != null && sl.source_height != null) {
+          const prev = sourceDimsRef.current.get(sl.id);
+          if (!prev || prev.width !== sl.source_width || prev.height !== sl.source_height) {
+            sourceDimsRef.current.set(sl.id, {
+              width: sl.source_width,
+              height: sl.source_height,
+            });
+          }
+        }
+      }
 
       const prevLayers = getLayersFromStore(store);
       const newLayers = mapServerLayers(prevLayers, layout.layers);
@@ -172,5 +226,5 @@ export function useServerLayoutSync(
       applyServerLayout(defaultSessionStore.get(viewDataAtom));
     });
     return unsubscribe;
-  }, [sessionId, nodeId, store, dragStateRef]);
+  }, [sessionId, nodeId, store, dragStateRef, sourceDimsRef]);
 }

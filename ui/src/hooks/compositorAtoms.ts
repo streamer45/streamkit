@@ -149,7 +149,8 @@ function layerEqual(a: LayerState, b: LayerState): boolean {
     a.cropZoom === b.cropZoom &&
     a.cropX === b.cropX &&
     a.cropY === b.cropY &&
-    a.cropShape === b.cropShape
+    a.cropShape === b.cropShape &&
+    a.serverOnly === b.serverOnly
   );
 }
 

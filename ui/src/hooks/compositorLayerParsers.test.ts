@@ -15,7 +15,7 @@
 import { describe, it, expect } from 'vitest';
 
 import type { LayerState, TextOverlayState, ImageOverlayState } from './compositorLayerParsers';
-import { mergeOverlayState } from './compositorLayerParsers';
+import { mergeOverlayState, fitRectPreservingAspect } from './compositorLayerParsers';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -429,5 +429,58 @@ describe('mergeOverlayState', () => {
       // Design view takes all fields from parsed
       expect(result[0].color).toEqual([255, 255, 255, 255]);
     });
+  });
+});
+
+// ── fitRectPreservingAspect ─────────────────────────────────────────────────
+// Test vectors mirror Rust tests in compositor/tests.rs:test_fit_rect_preserving_aspect
+
+describe('fitRectPreservingAspect', () => {
+  it('4:3 source into 16:9 bounds → pillarboxed', () => {
+    // Scale = min(426/640, 240/480) = min(0.666, 0.5) = 0.5
+    // Fitted: 320×240, centred within 426×240
+    const result = fitRectPreservingAspect(640, 480, { x: 100, y: 50, width: 426, height: 240 });
+    expect(result.width).toBe(320);
+    expect(result.height).toBe(240);
+    expect(result.x).toBe(100 + Math.floor((426 - 320) / 2));
+    expect(result.y).toBe(50);
+  });
+
+  it('16:9 source into 4:3 bounds → letterboxed', () => {
+    // Scale = min(400/1280, 400/720) = min(0.3125, 0.555) = 0.3125
+    // Fitted: 400×225, centred within 400×400
+    const result = fitRectPreservingAspect(1280, 720, { x: 0, y: 0, width: 400, height: 400 });
+    expect(result.width).toBe(400);
+    expect(result.height).toBe(225);
+    expect(result.x).toBe(0);
+    expect(result.y).toBe(Math.floor((400 - 225) / 2));
+  });
+
+  it('exact match → no change', () => {
+    const result = fitRectPreservingAspect(640, 480, { x: 10, y: 20, width: 640, height: 480 });
+    expect(result.width).toBe(640);
+    expect(result.height).toBe(480);
+    expect(result.x).toBe(10);
+    expect(result.y).toBe(20);
+  });
+
+  it('zero source width → returns bounds unchanged', () => {
+    const bounds = { x: 5, y: 10, width: 200, height: 100 };
+    expect(fitRectPreservingAspect(0, 480, bounds)).toEqual(bounds);
+  });
+
+  it('zero source height → returns bounds unchanged', () => {
+    const bounds = { x: 5, y: 10, width: 200, height: 100 };
+    expect(fitRectPreservingAspect(640, 0, bounds)).toEqual(bounds);
+  });
+
+  it('zero bounds width → returns bounds unchanged', () => {
+    const bounds = { x: 5, y: 10, width: 0, height: 100 };
+    expect(fitRectPreservingAspect(640, 480, bounds)).toEqual(bounds);
+  });
+
+  it('zero bounds height → returns bounds unchanged', () => {
+    const bounds = { x: 5, y: 10, width: 200, height: 0 };
+    expect(fitRectPreservingAspect(640, 480, bounds)).toEqual(bounds);
   });
 });
