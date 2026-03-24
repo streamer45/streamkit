@@ -504,10 +504,10 @@ export const SidePanel = styled.div`
   background: var(--sk-panel-bg);
   border: 1px solid var(--sk-border);
   border-radius: 6px;
-  padding: 8px;
+  padding: 10px;
   display: flex;
   flex-direction: column;
-  gap: 0;
+  gap: 4px;
   box-shadow: 0 2px 8px var(--sk-shadow, rgba(0, 0, 0, 0.15));
   pointer-events: auto;
   z-index: 5;

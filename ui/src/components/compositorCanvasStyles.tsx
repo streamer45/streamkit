@@ -14,6 +14,7 @@ import type { ResizeHandle } from '@/hooks/useCompositorLayers';
 
 export const CanvasOuter = styled.div`
   width: 100%;
+  box-sizing: border-box;
   position: relative;
   overflow: hidden;
   border: 1px solid var(--sk-border);

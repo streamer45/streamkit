@@ -352,6 +352,16 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
           ? textOverlaysRef.current.find((o) => o.id === layerId)?.fontSize
           : undefined;
 
+      // For text/image overlays the displayed dimensions may differ from the
+      // stored state because of auto-sizing (measuredTextWidth/Height or
+      // browser text measurement).  Use the DOM element's actual dimensions
+      // so the resize handle stays under the cursor from the first frame.
+      const origLayer = { ...found.state };
+      if (el && (found.kind === 'text' || found.kind === 'image')) {
+        origLayer.width = el.offsetWidth;
+        origLayer.height = el.offsetHeight;
+      }
+
       dragStateRef.current = {
         type: 'resize',
         layerId,
@@ -359,7 +369,7 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
         handle,
         startX: e.clientX,
         startY: e.clientY,
-        origLayer: { ...found.state },
+        origLayer,
         scale,
         rafId: null,
         currentX: e.clientX,

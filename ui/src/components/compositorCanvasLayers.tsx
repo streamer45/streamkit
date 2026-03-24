@@ -267,7 +267,7 @@ export const TextOverlayLayer: React.FC<{
             bgColor,
             outlineStyle: 'dashed',
           }),
-          cursor: 'text',
+          cursor: 'grab',
         }}
         onPointerDown={handlePointerDown}
         onDoubleClick={handleDoubleClick}
