@@ -56,6 +56,7 @@ export const CompositorWrapper = styled.div`
 `;
 
 export const CanvasSection = styled.div`
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -498,9 +499,9 @@ export const ResetButton = styled.button`
 export const SidePanel = styled.div`
   position: absolute;
   left: 100%;
-  top: 0;
+  top: 18px;
   width: 280px;
-  margin-left: 12px;
+  margin-left: 16px;
   background: var(--sk-panel-bg);
   border: 1px solid var(--sk-border);
   border-radius: 6px;

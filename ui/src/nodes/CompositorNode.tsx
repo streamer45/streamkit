@@ -365,14 +365,15 @@ const CompositorNode: React.FC<CompositorNodeProps> = React.memo(function Compos
           tabIndex={-1}
           data-testid="compositor-keyboard-target"
         >
-          {/* Side panel rendered first in DOM order so that layer-list text
-              (e.g. "Text 0") is matched before identically-named canvas labels
-              by Playwright's getByText().first(). The panel uses position:absolute
-              so DOM order has no effect on visual layout. */}
-          <SidePanel className="nodrag nopan">{sidePanelContent}</SidePanel>
-
           <CompositorWrapper>
-            <CanvasSection>{canvasSectionContent}</CanvasSection>
+            <CanvasSection>
+              {/* Side panel rendered first in DOM order so that layer-list text
+                  (e.g. "Text 0") is matched before identically-named canvas labels
+                  by Playwright's getByText().first(). The panel uses position:absolute
+                  so DOM order has no effect on visual layout. */}
+              <SidePanel className="nodrag nopan">{sidePanelContent}</SidePanel>
+              {canvasSectionContent}
+            </CanvasSection>
           </CompositorWrapper>
         </CompositorOuterWrapper>
       </Provider>
