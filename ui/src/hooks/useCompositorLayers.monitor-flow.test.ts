@@ -333,9 +333,9 @@ describe('Monitor view data flow integration', () => {
   it('opacity slider changes are never overwritten by server view-data', () => {
     seedStore();
 
-    const onConfigChangeSilent = vi.fn();
+    const onConfigChange = vi.fn();
     const opts = monitorOptions({
-      onConfigChangeSilent,
+      onConfigChange,
       params: makeParams({
         layers: {
           in_0: { opacity: 0.8, z_index: 0 },
@@ -355,7 +355,7 @@ describe('Monitor view data flow integration', () => {
 
     // User changes opacity locally via the slider
     act(() => result.current.updateLayerOpacity('in_0', 0.5));
-    expect(onConfigChangeSilent).toHaveBeenCalled();
+    expect(onConfigChange).toHaveBeenCalled();
 
     // Local atom now has the user's value
     const layers1 = getLayersFromStore(result.current.store);

@@ -174,8 +174,6 @@ export interface BuildNodeParams {
   nodeDef: NodeDefinition | undefined;
   stableOnParamChange: (nodeId: string, paramName: string, value: unknown) => void;
   stableOnConfigChange?: (nodeId: string, config: Record<string, unknown>) => void;
-  /** Silent config change: broadcasts to other clients only (no echo-back). */
-  stableOnConfigChangeSilent?: (nodeId: string, config: Record<string, unknown>) => void;
   selectedSessionId: string | null;
 }
 
@@ -207,7 +205,6 @@ export const buildNodeObject = (params: BuildNodeParams): RFNode => {
       onParamChange: params.stableOnParamChange,
       // Full-config change callback for compositor nodes
       onConfigChange: params.stableOnConfigChange,
-      onConfigChangeSilent: params.stableOnConfigChangeSilent,
       sessionId: params.selectedSessionId || undefined,
     },
   };

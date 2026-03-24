@@ -123,8 +123,6 @@ export function createCommitAdapter(
 export interface UseCompositorCommitOptions {
   nodeId: string;
   onConfigChange?: (nodeId: string, config: Record<string, unknown>) => void;
-  /** Silent config change: broadcasts to other clients only (no NodeParamsChanged echo-back). */
-  onConfigChangeSilent?: (nodeId: string, config: Record<string, unknown>) => void;
   onParamChange?: (nodeId: string, key: string, value: unknown) => void;
   throttleMs: number;
   paramsRef: React.MutableRefObject<Record<string, unknown>>;
@@ -148,7 +146,6 @@ export function useCompositorCommit(opts: UseCompositorCommitOptions): UseCompos
   const {
     nodeId,
     onConfigChange,
-    onConfigChangeSilent,
     onParamChange,
     throttleMs,
     paramsRef,
@@ -171,35 +168,8 @@ export function useCompositorCommit(opts: UseCompositorCommitOptions): UseCompos
     [nodeId, onConfigChange, onParamChange, paramsRef, layersRef, textOverlaysRef, imageOverlaysRef]
   );
 
-  // Silent commit adapter: used by throttled sends during slider drags.
-  // Routes through onConfigChangeSilent so the server skips NodeParamsChanged
-  // echo-back, avoiding redundant param writes on the sender.
-  const silentCommitAdapter = useMemo(
-    () =>
-      createCommitAdapter(
-        nodeId,
-        onConfigChangeSilent,
-        onParamChange,
-        paramsRef,
-        layersRef,
-        textOverlaysRef,
-        imageOverlaysRef
-      ),
-    [
-      nodeId,
-      onConfigChangeSilent,
-      onParamChange,
-      paramsRef,
-      layersRef,
-      textOverlaysRef,
-      imageOverlaysRef,
-    ]
-  );
-
   const throttledConfigChange = useMemo(() => {
-    // Throttled sends use the silent adapter (no echo-back) when available,
-    // falling back to the normal adapter for Design view.
-    const adapter = silentCommitAdapter ?? commitAdapter;
+    const adapter = commitAdapter;
     if (!adapter) return null;
     return throttle(
       (currentLayers: LayerState[]) => {
@@ -208,10 +178,10 @@ export function useCompositorCommit(opts: UseCompositorCommitOptions): UseCompos
       throttleMs,
       { leading: true, trailing: true }
     );
-  }, [silentCommitAdapter, commitAdapter, throttleMs]);
+  }, [commitAdapter, throttleMs]);
 
   const throttledOverlayCommit = useMemo(() => {
-    const adapter = silentCommitAdapter ?? commitAdapter;
+    const adapter = commitAdapter;
     if (!adapter) return null;
     return throttle(
       (nextText: TextOverlayState[], nextImg: ImageOverlayState[]) => {
@@ -220,7 +190,7 @@ export function useCompositorCommit(opts: UseCompositorCommitOptions): UseCompos
       throttleMs,
       { leading: true, trailing: true }
     );
-  }, [silentCommitAdapter, commitAdapter, throttleMs]);
+  }, [commitAdapter, throttleMs]);
 
   useEffect(
     () => () => {
