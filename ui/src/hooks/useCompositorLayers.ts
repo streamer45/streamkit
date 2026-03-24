@@ -84,8 +84,6 @@ export interface UseCompositorLayersOptions {
   canvasHeight: number;
   params: Record<string, unknown>;
   onConfigChange?: (nodeId: string, config: Record<string, unknown>) => void;
-  /** Silent config change: broadcasts to other clients only (no echo-back). */
-  onConfigChangeSilent?: (nodeId: string, config: Record<string, unknown>) => void;
   onParamChange?: (nodeId: string, paramName: string, value: unknown) => void;
   throttleMs?: number;
 }
@@ -147,7 +145,6 @@ export const useCompositorLayers = (
     canvasHeight,
     params,
     onConfigChange,
-    onConfigChangeSilent,
     onParamChange,
     throttleMs = PARAM_THROTTLE_MS,
   } = options;
@@ -281,7 +278,6 @@ export const useCompositorLayers = (
   const { commitAdapter, throttledConfigChange, throttledOverlayCommit } = useCompositorCommit({
     nodeId,
     onConfigChange,
-    onConfigChangeSilent,
     onParamChange,
     throttleMs,
     paramsRef,

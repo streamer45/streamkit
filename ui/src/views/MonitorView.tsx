@@ -362,7 +362,6 @@ const MonitorViewContent: React.FC = () => {
     isLoading: isLoadingPipeline,
     tuneNode,
     tuneNodeConfig,
-    tuneNodeConfigSilent,
     addNode,
     removeNode,
     connectPins,
@@ -840,7 +839,6 @@ const MonitorViewContent: React.FC = () => {
         nodeDef,
         stableOnParamChange,
         stableOnConfigChange,
-        stableOnConfigChangeSilent,
         selectedSessionId,
       });
 
@@ -885,15 +883,6 @@ const MonitorViewContent: React.FC = () => {
       tuneNodeConfig(nodeId, config);
     },
     [tuneNodeConfig]
-  );
-
-  // Silent variant: broadcasts to other clients only (no echo-back to sender).
-  // Used by throttled compositor slider drags to avoid stale echo-back overwrites.
-  const stableOnConfigChangeSilent = useCallback(
-    (nodeId: string, config: Record<string, unknown>) => {
-      tuneNodeConfigSilent(nodeId, config);
-    },
-    [tuneNodeConfigSilent]
   );
 
   // NOTE: fitView is triggered only by:
