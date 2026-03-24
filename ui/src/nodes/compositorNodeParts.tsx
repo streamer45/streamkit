@@ -47,7 +47,7 @@ export const CompositorOuterWrapper = styled.div`
 
 export const CompositorWrapper = styled.div`
   border-top: 1px solid var(--sk-border);
-  padding: 8px 6px 4px;
+  padding: 10px 8px 6px;
   display: flex;
   flex-direction: column;
   gap: 6px;
