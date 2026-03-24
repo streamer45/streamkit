@@ -6,7 +6,7 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use opentelemetry::global;
+use opentelemetry::{global, KeyValue};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::borrow::Cow;
@@ -212,7 +212,9 @@ impl ProcessorNode for Vp9DecoderNode {
             mpsc::channel::<Result<VideoFrame, String>>(get_codec_channel_capacity());
 
         let decoder_threads = self.config.threads;
+        let otel_node_name = node_name.clone();
         let decode_task = tokio::task::spawn_blocking(move || {
+            let otel_attrs = [KeyValue::new("node", otel_node_name)];
             let mut decoder = match Vp9Decoder::new(decoder_threads) {
                 Ok(decoder) => decoder,
                 Err(err) => {
@@ -224,7 +226,8 @@ impl ProcessorNode for Vp9DecoderNode {
             while let Some((data, metadata)) = decode_rx.blocking_recv() {
                 let decode_start_time = Instant::now();
                 let result = decoder.decode_packet(&data, metadata, video_pool.as_ref());
-                decode_duration_histogram.record(decode_start_time.elapsed().as_secs_f64(), &[]);
+                decode_duration_histogram
+                    .record(decode_start_time.elapsed().as_secs_f64(), &otel_attrs);
 
                 match result {
                     Ok(frames) => {
@@ -359,7 +362,21 @@ impl ProcessorNode for Vp9EncoderNode {
             mpsc::channel::<Result<EncodedPacket, String>>(get_codec_channel_capacity());
 
         let encoder_config = self.config;
+        let otel_node_name = node_name.clone();
         let encode_task = tokio::task::spawn_blocking(move || {
+            let otel_attrs = [KeyValue::new("node", otel_node_name)];
+
+            // Per-encode-thread metrics for keyframe and output byte tracking.
+            let meter = global::meter("skit_nodes");
+            let keyframes_counter = meter
+                .u64_counter("vp9.keyframes_encoded")
+                .with_description("VP9 keyframes produced by the encoder")
+                .build();
+            let output_bytes_counter = meter
+                .u64_counter("vp9.encode_output_bytes")
+                .with_description("Total bytes of VP9 encoded output")
+                .build();
+
             let mut encoder: Option<Vp9Encoder> = None;
             let mut current_dimensions: Option<(u32, u32)> = None;
 
@@ -395,11 +412,16 @@ impl ProcessorNode for Vp9EncoderNode {
 
                 let encode_start_time = Instant::now();
                 let result = encoder.encode_frame(&encode_frame, metadata);
-                encode_duration_histogram.record(encode_start_time.elapsed().as_secs_f64(), &[]);
+                encode_duration_histogram
+                    .record(encode_start_time.elapsed().as_secs_f64(), &otel_attrs);
 
                 match result {
                     Ok(packets) => {
                         for packet in packets {
+                            output_bytes_counter.add(packet.data.len() as u64, &otel_attrs);
+                            if packet.metadata.as_ref().and_then(|m| m.keyframe) == Some(true) {
+                                keyframes_counter.add(1, &otel_attrs);
+                            }
                             if result_tx.blocking_send(Ok(packet)).is_err() {
                                 return;
                             }

@@ -40,6 +40,7 @@ use schemars::schema_for;
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 use streamkit_core::control::NodeControlMessage;
 use streamkit_core::pins::PinManagementMessage;
 use streamkit_core::registry::StaticPins;
@@ -527,10 +528,22 @@ impl ProcessorNode for CompositorNode {
         let (work_tx, mut work_rx) = tokio::sync::mpsc::channel::<CompositeWorkItem>(2);
         let (result_tx, mut result_rx) = tokio::sync::mpsc::channel::<CompositeResult>(2);
 
+        let otel_composite_node_name = node_name.clone();
         let composite_thread = tokio::task::spawn_blocking(move || {
             // Per-slot cache for YUV→RGBA conversions. Avoids redundant
             // conversion when the source Arc hasn't changed between frames.
             let mut conversion_cache = ConversionCache::new();
+
+            // Per-thread OTel metric for the blocking composite duration.
+            let meter = global::meter("skit_nodes");
+            let composite_duration_histogram = meter
+                .f64_histogram("compositor.composite_duration")
+                .with_description("Seconds per compositor frame render")
+                .with_boundaries(
+                    streamkit_core::metrics::HISTOGRAM_BOUNDARIES_CODEC_PACKET.to_vec(),
+                )
+                .build();
+            let composite_otel_attrs = [KeyValue::new("node", otel_composite_node_name)];
 
             while let Some(work) = work_rx.blocking_recv() {
                 // Clear the entire conversion cache when the slot
@@ -539,6 +552,7 @@ impl ProcessorNode for CompositorNode {
                     conversion_cache.clear();
                 }
 
+                let composite_start = Instant::now();
                 let rgba_buf = composite_frame(
                     work.canvas_w,
                     work.canvas_h,
@@ -548,6 +562,8 @@ impl ProcessorNode for CompositorNode {
                     work.video_pool.as_deref(),
                     &mut conversion_cache,
                 );
+                composite_duration_histogram
+                    .record(composite_start.elapsed().as_secs_f64(), &composite_otel_attrs);
                 let result = CompositeResult { rgba_data: rgba_buf };
                 if result_tx.blocking_send(result).is_err() {
                     break;
@@ -576,6 +592,14 @@ impl ProcessorNode for CompositorNode {
         let frames_dropped_counter = meter
             .u64_counter("compositor.frames_dropped")
             .with_description("Frames dropped by the compositor to keep up with real-time input")
+            .build();
+        let frames_composited_counter = meter
+            .u64_counter("compositor.frames_composited")
+            .with_description("Total composited frames emitted")
+            .build();
+        let input_layers_gauge = meter
+            .u64_gauge("compositor.input_layers")
+            .with_description("Number of active compositor input layers")
             .build();
         let otel_attrs = [KeyValue::new("node", node_name.clone())];
 
@@ -773,6 +797,10 @@ impl ProcessorNode for CompositorNode {
                 scene = resolve_scene(&slots, &self.config, &image_overlays, &text_overlays);
                 layer_configs_dirty = false;
 
+                // Update active layer count gauge.
+                #[allow(clippy::cast_possible_truncation)]
+                input_layers_gauge.record(slots.len() as u64, &otel_attrs);
+
                 // Emit layout via view data if it changed.
                 if last_layout.as_ref() != Some(&scene.layout) {
                     if let Ok(mut json) = serde_json::to_value(&scene.layout) {
@@ -906,6 +934,7 @@ impl ProcessorNode for CompositorNode {
             // gone), so we stop the node.
             match context.output_sender.try_send("out", Packet::Video(out_frame)) {
                 Ok(()) => {
+                    frames_composited_counter.add(1, &otel_attrs);
                     stats_tracker.sent();
                     stats_tracker.maybe_send();
                 },
