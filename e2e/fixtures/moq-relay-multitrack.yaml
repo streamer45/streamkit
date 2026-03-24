@@ -1,0 +1,112 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Self-contained multitrack relay test: publishes both audio (from file) and
+# video (colorbars) to an external moq-relay, subscribes back to both tracks,
+# and republishes.  Validates the full multi-track relay pub/sub path without
+# a browser or webcam.
+#
+# The relay URL is substituted at runtime by the test harness.
+name: MoQ Relay Multitrack (Self-Contained)
+description: Publishes audio+video to a MoQ relay, subscribes, transcodes, and republishes — validates multitrack relay pub/sub
+mode: dynamic
+nodes:
+  # --- Publish side: audio from file + video from colorbars ---
+
+  file_reader:
+    kind: core::file_reader
+    params:
+      path: samples/audio/system/speech_10m.opus
+      chunk_size: 8192
+  demuxer:
+    kind: containers::ogg::demuxer
+    needs: file_reader
+  pacer:
+    kind: core::pacer
+    params:
+      speed: 1
+      buffer_size: 16
+    needs: demuxer
+
+  colorbars:
+    kind: video::colorbars
+    params:
+      width: 320
+      height: 240
+      fps: 15
+      pixel_format: nv12
+      draw_time: true
+
+  vp9_encoder_src:
+    kind: video::vp9::encoder
+    params:
+      keyframe_interval: 15
+    needs: colorbars
+
+  moq_av_publisher:
+    kind: transport::moq::publisher
+    params:
+      url: ${RELAY_URL}
+      broadcast: e2e-relay-av-input
+      channels: 1
+      group_duration_ms: 40
+      audio: true
+      video: true
+    needs:
+      in: pacer
+      in_1: vp9_encoder_src
+
+  # --- Subscribe side: receive both tracks from relay ---
+
+  moq_av_subscriber:
+    kind: transport::moq::subscriber
+    params:
+      url: ${RELAY_URL}
+      broadcast: e2e-relay-av-input
+
+  # Audio path: decode → gain → encode
+  opus_decoder:
+    kind: audio::opus::decoder
+    needs: moq_av_subscriber
+
+  gain:
+    kind: audio::gain
+    params:
+      gain: 1.0
+    needs: opus_decoder
+
+  opus_encoder:
+    kind: audio::opus::encoder
+    needs: gain
+
+  # Video path: decode → encode
+  vp9_decoder:
+    kind: video::vp9::decoder
+    needs:
+      in: moq_av_subscriber.video/data
+
+  pixel_convert:
+    kind: video::pixel_convert
+    params:
+      output_format: nv12
+    needs: vp9_decoder
+
+  vp9_encoder_out:
+    kind: video::vp9::encoder
+    params:
+      keyframe_interval: 15
+    needs: pixel_convert
+
+  moq_av_output:
+    kind: transport::moq::publisher
+    params:
+      url: ${RELAY_URL}
+      broadcast: e2e-relay-av-output
+      channels: 1
+      group_duration_ms: 40
+      audio: true
+      video: true
+    needs:
+      in: opus_encoder
+      in_1: vp9_encoder_out

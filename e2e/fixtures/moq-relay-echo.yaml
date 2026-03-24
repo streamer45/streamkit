@@ -1,0 +1,61 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Self-contained audio relay test: reads Opus from a file, publishes to an
+# external moq-relay, subscribes back, applies unity gain, and republishes.
+# Used by e2e tests to validate the full relay pub/sub path without a browser.
+#
+# The relay URL is substituted at runtime by the test harness.
+name: MoQ Relay Echo (Self-Contained)
+description: Publishes file audio to a MoQ relay, subscribes, transcodes, and republishes — validates relay pub/sub
+mode: dynamic
+nodes:
+  file_reader:
+    kind: core::file_reader
+    params:
+      path: samples/audio/system/speech_10m.opus
+      chunk_size: 8192
+  demuxer:
+    kind: containers::ogg::demuxer
+    needs: file_reader
+  pacer:
+    kind: core::pacer
+    params:
+      speed: 1
+      buffer_size: 16
+    needs: demuxer
+  moq_input_publisher:
+    kind: transport::moq::publisher
+    params:
+      url: ${RELAY_URL}
+      broadcast: e2e-relay-input
+      audio: true
+    needs: pacer
+
+  moq_subscriber:
+    kind: transport::moq::subscriber
+    params:
+      url: ${RELAY_URL}
+      broadcast: e2e-relay-input
+  opus_decoder:
+    kind: audio::opus::decoder
+    needs: moq_subscriber
+  gain:
+    kind: audio::gain
+    params:
+      gain: 1.0
+    needs: opus_decoder
+  opus_encoder:
+    kind: audio::opus::encoder
+    needs: gain
+  moq_output_publisher:
+    kind: transport::moq::publisher
+    params:
+      url: ${RELAY_URL}
+      broadcast: e2e-relay-output
+      channels: 1
+      group_duration_ms: 40
+      initial_delay_ms: 250
+      audio: true
+    needs: opus_encoder

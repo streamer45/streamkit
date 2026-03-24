@@ -15,6 +15,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { findFreePort } from './port';
 import { waitForHealth } from './health';
+import { startRelay, stopRelay, type RelayInfo } from './relay';
 
 const ROOT_DIR = path.resolve(import.meta.dirname, '../../..');
 const MAX_LOG_BYTES = 256 * 1024;
@@ -262,15 +263,20 @@ async function main(): Promise<void> {
     process.exit(exitCode);
   }
 
-  // Start local server
+  // Start moq-relay (optional — tests skip gracefully if unavailable)
+  let relayInfo: RelayInfo | null = null;
   let serverInfo: ServerInfo | null = null;
   let exitCode = 1;
 
   try {
+    relayInfo = await startRelay();
     serverInfo = await startServer();
     const envOverrides: Record<string, string> = {};
     if (serverInfo.adminToken) {
       envOverrides.E2E_ADMIN_TOKEN = serverInfo.adminToken;
+    }
+    if (relayInfo) {
+      envOverrides.E2E_RELAY_URL = relayInfo.url;
     }
     exitCode = await runPlaywright(serverInfo.baseUrl, playwrightArgs, envOverrides);
   } catch (error) {
@@ -279,6 +285,9 @@ async function main(): Promise<void> {
   } finally {
     if (serverInfo) {
       await stopServer(serverInfo);
+    }
+    if (relayInfo) {
+      await stopRelay(relayInfo);
     }
   }
 
