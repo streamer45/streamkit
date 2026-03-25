@@ -308,28 +308,6 @@ describe('sessionStore edge cases', () => {
       const session = useSessionStore.getState().getSession(sessionId);
       expect(session?.nodeViewData).toEqual({});
     });
-
-    it('should extract view_data in batchSetPipelines', () => {
-      const pipelines = [
-        {
-          sessionId: 'session-a',
-          pipeline: {
-            name: null,
-            description: null,
-            mode: 'dynamic' as const,
-            client: null,
-            nodes: {},
-            connections: [],
-            view_data: { comp: { layers: { in_0: { x: 10 } } } },
-          },
-        },
-      ];
-
-      useSessionStore.getState().batchSetPipelines(pipelines);
-
-      const session = useSessionStore.getState().getSession('session-a');
-      expect(session?.nodeViewData.comp).toEqual({ layers: { in_0: { x: 10 } } });
-    });
   });
 
   describe('Pipeline Updates with Missing Nodes', () => {

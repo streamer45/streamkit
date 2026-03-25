@@ -48,7 +48,6 @@ import { useReactFlowCommon } from '@/hooks/useReactFlowCommon';
 import { useResolvedColorMode } from '@/hooks/useResolvedColorMode';
 import { useSession } from '@/hooks/useSession';
 import { useSessionList } from '@/hooks/useSessionList';
-import { useSessionsPrefetch } from '@/hooks/useSessionsPrefetch';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { getWebSocketService } from '@/services/websocket';
 import { useLayoutStore } from '@/stores/layoutStore';
@@ -61,6 +60,7 @@ import {
   nodeParamsAtom,
   nodeKey,
 } from '@/stores/sessionAtoms';
+import { useSessionStore } from '@/stores/sessionStore';
 import type {
   NodeDefinition,
   Connection,
@@ -308,6 +308,18 @@ const MonitorViewContent: React.FC = () => {
   // Fetch session list
   const { data: sessions = [], isLoading: isLoadingSessions } = useSessionList();
 
+  // Ensure every known session has a Zustand store entry so that
+  // WS state events (which the server broadcasts for all visible
+  // sessions) are persisted and drive the session-list status badges.
+  useEffect(() => {
+    const store = useSessionStore.getState();
+    for (const s of sessions) {
+      if (!store.getSession(s.id)) {
+        store.initSession(s.id, true);
+      }
+    }
+  }, [sessions]);
+
   // Memoize the selected session to prevent unnecessary re-renders
   // Uses a ref to store previous value and only updates when data actually changes (deep comparison)
   const prevSelectedSessionRef = React.useRef<
@@ -349,8 +361,11 @@ const MonitorViewContent: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- setNeedsAutoLayout/setNeedsFit are stable useState setters declared later
   }, [selectedSessionId, isLoadingSessions, sessions, getNodePositions]);
 
-  // Prefetch pipeline data for all sessions to enable status display
-  useSessionsPrefetch(sessions);
+  // Pipeline data for the selected session is fetched once by useSession
+  // (staleTime: Infinity) and kept current by live WebSocket events
+  // (nodeadded, noderemoved, connectionadded, connectionremoved).
+  // No periodic polling is needed — it would only introduce stale REST
+  // data that overwrites live state and reverts local edits.
 
   // Subscribe to selected session.
   // nodeStates is intentionally NOT consumed from this hook — see the
@@ -359,7 +374,6 @@ const MonitorViewContent: React.FC = () => {
     pipeline,
     // nodeStats not used here - NodeStateIndicator fetches directly from session store
     isConnected: sessionIsConnected,
-    isLoading: isLoadingPipeline,
     tuneNode,
     tuneNodeConfig,
     addNode,
@@ -1183,7 +1197,7 @@ const MonitorViewContent: React.FC = () => {
           </>
         ) : (
           <EmptyMonitorState>
-            {isLoadingPipeline ? (
+            {selectedSessionId && !pipeline ? (
               <p>Loading pipeline...</p>
             ) : (
               <p>Select a session from the left panel to inspect its pipeline.</p>
@@ -1202,9 +1216,9 @@ const MonitorViewContent: React.FC = () => {
       selectedSession,
       isConnected,
       nodes.length,
+      !!pipeline,
       colorMode,
       onInit,
-      isLoadingPipeline,
       handleStartPreview,
       isPreviewConnected,
     ]

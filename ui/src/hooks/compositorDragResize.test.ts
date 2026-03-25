@@ -75,6 +75,105 @@ function makeDeps(overrides: Partial<DragResizeDeps> = {}): DragResizeDeps {
   };
 }
 
+// ── applyVisualUpdate — circle clip-path during resize ──────────────────────
+
+describe('useCompositorDragResize circle crop resize', () => {
+  it('updates clipPath on the DOM element when resizing a circle-crop layer', () => {
+    // Enable fake timers BEFORE dispatching events so rAF (shimmed as
+    // setTimeout in jsdom) is captured by the fake clock.
+    vi.useFakeTimers();
+
+    const circleLayer: LayerState = {
+      ...makeLayer('layer-circle'),
+      cropShape: 'circle' as const,
+    };
+    const el = document.createElement('div');
+    const layerRefs = { current: new Map<string, HTMLDivElement>() };
+    layerRefs.current.set('layer-circle', el);
+
+    const deps = makeDeps({
+      layerRefs,
+      layersRef: { current: [circleLayer] },
+      findAnyLayer: (id: string) => {
+        if (id === 'layer-circle') return { state: circleLayer, kind: 'video' as const };
+        return null;
+      },
+    });
+    const { result } = renderHook(() => useCompositorDragResize(deps));
+
+    // Simulate pointer-down on a resize handle
+    act(() => {
+      result.current.handleResizePointerDown('layer-circle', 'se', {
+        button: 0,
+        clientX: 300,
+        clientY: 250,
+        stopPropagation: vi.fn(),
+        preventDefault: vi.fn(),
+      } as unknown as React.PointerEvent);
+    });
+
+    // Simulate pointer-move to trigger resize + flush rAF
+    act(() => {
+      const moveEvent = new PointerEvent('pointermove', {
+        clientX: 350,
+        clientY: 300,
+      });
+      document.dispatchEvent(moveEvent);
+      vi.runAllTimers();
+    });
+
+    vi.useRealTimers();
+
+    // The clipPath should have been set to a circle() value
+    expect(el.style.clipPath).toMatch(/^circle\(/);
+  });
+
+  it('does NOT set clipPath on rect-crop layers during resize', () => {
+    vi.useFakeTimers();
+
+    const rectLayer = makeLayer('layer-rect');
+    const el = document.createElement('div');
+    const layerRefs = { current: new Map<string, HTMLDivElement>() };
+    layerRefs.current.set('layer-rect', el);
+
+    const deps = makeDeps({
+      layerRefs,
+      layersRef: { current: [rectLayer] },
+      findAnyLayer: (id: string) => {
+        if (id === 'layer-rect') return { state: rectLayer, kind: 'video' as const };
+        return null;
+      },
+    });
+    const { result } = renderHook(() => useCompositorDragResize(deps));
+
+    act(() => {
+      result.current.handleResizePointerDown('layer-rect', 'se', {
+        button: 0,
+        clientX: 300,
+        clientY: 250,
+        stopPropagation: vi.fn(),
+        preventDefault: vi.fn(),
+      } as unknown as React.PointerEvent);
+    });
+
+    act(() => {
+      const moveEvent = new PointerEvent('pointermove', {
+        clientX: 350,
+        clientY: 300,
+      });
+      document.dispatchEvent(moveEvent);
+      vi.runAllTimers();
+    });
+
+    vi.useRealTimers();
+
+    // clipPath should remain empty for rect crops
+    expect(el.style.clipPath).toBe('');
+  });
+});
+
+// ── zero-delta guard ────────────────────────────────────────────────────────
+
 describe('useCompositorDragResize zero-delta guard', () => {
   let deps: DragResizeDeps;
 

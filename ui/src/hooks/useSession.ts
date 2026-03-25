@@ -2,34 +2,23 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import { useQuery } from '@tanstack/react-query';
 import { useAtomValue } from 'jotai/react';
 import { useEffect, useCallback } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 
-import { fetchApi } from '@/services/base';
 import { getWebSocketService } from '@/services/websocket';
-import {
-  sessionConnectedAtom,
-  seedPipelineAtoms,
-  writeNodeParam,
-  writeNodeParams,
-} from '@/stores/sessionAtoms';
+import { sessionConnectedAtom, writeNodeParam, writeNodeParams } from '@/stores/sessionAtoms';
 import { useSessionStore } from '@/stores/sessionStore';
-import type { Pipeline, Request, MessageType, BatchOperation } from '@/types/types';
-
-async function fetchPipeline(sessionId: string): Promise<Pipeline> {
-  const response = await fetchApi(`/api/v1/sessions/${sessionId}/pipeline`);
-  if (!response.ok) {
-    throw new Error(`Failed to fetch pipeline: ${response.statusText}`);
-  }
-  return response.json();
-}
+import type { Request, MessageType, BatchOperation } from '@/types/types';
 
 export function useSession(sessionId: string | null) {
   const wsService = getWebSocketService();
 
-  // Subscribe to session updates via WebSocket
+  // Subscribe to session updates via WebSocket.
+  // subscribeToSession also fetches the initial pipeline state over WS
+  // (getpipeline), populating the session store and Jotai atoms.  This
+  // eliminates the HTTP/WS race that caused stale REST data to overwrite
+  // live state.
   useEffect(() => {
     if (!sessionId) return;
 
@@ -39,22 +28,6 @@ export function useSession(sessionId: string | null) {
       wsService.unsubscribeFromSession(sessionId);
     };
   }, [sessionId, wsService]);
-
-  // Fetch initial pipeline data
-  const pipelineQuery = useQuery({
-    queryKey: ['pipeline', sessionId],
-    queryFn: () => fetchPipeline(sessionId!),
-    enabled: !!sessionId,
-    staleTime: Infinity, // WebSocket keeps it fresh
-  });
-
-  // Update Zustand store and seed Jotai atoms when pipeline data is fetched
-  useEffect(() => {
-    if (pipelineQuery.data && sessionId) {
-      useSessionStore.getState().setPipeline(sessionId, pipelineQuery.data);
-      seedPipelineAtoms(sessionId, pipelineQuery.data);
-    }
-  }, [pipelineQuery.data, sessionId]);
 
   // Get real-time state from Zustand with granular selectors to minimize re-renders.
   // nodeStates is intentionally NOT subscribed here — it changes on every WS
@@ -224,10 +197,8 @@ export function useSession(sessionId: string | null) {
   );
 
   return {
-    pipeline: pipeline ?? pipelineQuery.data,
+    pipeline: pipeline ?? null,
     isConnected: isConnectedFromStore,
-    isLoading: pipelineQuery.isLoading,
-    error: pipelineQuery.error,
     tuneNode,
     tuneNodeConfig,
     addNode,

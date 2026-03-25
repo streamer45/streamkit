@@ -40,7 +40,6 @@ interface SessionStore {
   // the number of store notifications and subscriber re-renders.
   batchUpdateNodeStates: (sessionId: string, updates: Record<string, NodeState>) => void;
   batchUpdateNodeStats: (sessionId: string, updates: Record<string, NodeStats>) => void;
-  batchSetPipelines: (pipelines: Array<{ sessionId: string; pipeline: Pipeline }>) => void;
 
   // Combined batch: merge node states AND stats for multiple sessions in a
   // single set() call.  Used by the RAF-based WebSocket flush to ensure
@@ -314,40 +313,6 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
         ...session,
         nodeStats: { ...session.nodeStats, ...updates },
       });
-      return { sessions: newSessions };
-    }),
-
-  batchSetPipelines: (pipelines) =>
-    set((prev) => {
-      const newSessions = new Map(prev.sessions);
-
-      for (const { sessionId, pipeline } of pipelines) {
-        const session = prev.sessions.get(sessionId);
-
-        const nodeStates: Record<string, NodeState> = {};
-        if (pipeline.nodes) {
-          for (const [nodeId, node] of Object.entries(pipeline.nodes)) {
-            if (node.state) {
-              nodeStates[nodeId] = node.state;
-            }
-          }
-        }
-
-        // Extract view data snapshot so useServerLayoutSync finds it on mount.
-        const incomingViewData =
-          pipeline.view_data && typeof pipeline.view_data === 'object'
-            ? (pipeline.view_data as Record<string, unknown>)
-            : {};
-
-        newSessions.set(sessionId, {
-          pipeline,
-          nodeStates: session ? { ...session.nodeStates, ...nodeStates } : nodeStates,
-          nodeStats: session?.nodeStats ?? {},
-          nodeViewData: { ...(session?.nodeViewData ?? {}), ...incomingViewData },
-          isConnected: session?.isConnected ?? false,
-        });
-      }
-
       return { sessions: newSessions };
     }),
 

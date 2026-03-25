@@ -122,6 +122,12 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
       if (sizeChanged) {
         el.style.width = `${layer.width}px`;
         el.style.height = `${layer.height}px`;
+        // Keep circle clip-path in sync during resize so the crop
+        // shape tracks the handle instead of showing a clipped rectangle.
+        if (layer.cropShape === 'circle') {
+          const r = Math.min(layer.width, layer.height) / 2;
+          el.style.clipPath = `circle(${r}px at 50% 50%)`;
+        }
       }
     },
     [layerRefs]
@@ -163,17 +169,17 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
         }
 
         // Show/hide snap guide lines (ref-only, no React state).
-        if (s.type === 'drag') {
-          const guides = detectSnapGuides(updated, canvasWidth, canvasHeight);
-          const refs = snapGuideRefs.current;
-          const ON = '0.8';
-          if (refs.vertical) refs.vertical.style.opacity = guides.verticalCenter ? ON : '0';
-          if (refs.horizontal) refs.horizontal.style.opacity = guides.horizontalCenter ? ON : '0';
-          if (refs.left) refs.left.style.opacity = guides.leftEdge ? ON : '0';
-          if (refs.right) refs.right.style.opacity = guides.rightEdge ? ON : '0';
-          if (refs.top) refs.top.style.opacity = guides.topEdge ? ON : '0';
-          if (refs.bottom) refs.bottom.style.opacity = guides.bottomEdge ? ON : '0';
-        }
+        // Guides are shown for both drag and resize — during resize the
+        // relevant edge guides fire when a handle snaps to a canvas boundary.
+        const guides = detectSnapGuides(updated, canvasWidth, canvasHeight);
+        const refs = snapGuideRefs.current;
+        const ON = '0.8';
+        if (refs.vertical) refs.vertical.style.opacity = guides.verticalCenter ? ON : '0';
+        if (refs.horizontal) refs.horizontal.style.opacity = guides.horizontalCenter ? ON : '0';
+        if (refs.left) refs.left.style.opacity = guides.leftEdge ? ON : '0';
+        if (refs.right) refs.right.style.opacity = guides.rightEdge ? ON : '0';
+        if (refs.top) refs.top.style.opacity = guides.topEdge ? ON : '0';
+        if (refs.bottom) refs.bottom.style.opacity = guides.bottomEdge ? ON : '0';
       });
     },
     [

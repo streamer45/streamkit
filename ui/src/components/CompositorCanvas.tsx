@@ -149,6 +149,7 @@ export const CompositorCanvas: React.FC<CompositorCanvasProps> = React.memo(
         }
         if (!hitId) return;
         e.preventDefault();
+        e.stopPropagation(); // Prevent React Flow's node context menu from also appearing
         onSelectLayer(hitId);
         let kind: LayerKind = 'video';
         if (textOverlayIds.includes(hitId)) kind = 'text';

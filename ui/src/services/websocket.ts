@@ -8,6 +8,7 @@ import { getLocalConfigRev } from '@/hooks/useConfigRev';
 import {
   batchWriteNodeStates,
   batchWriteNodeStats,
+  seedPipelineAtoms,
   writeNodeViewData,
   writeSessionConnected,
   clearSessionAtoms,
@@ -159,15 +160,31 @@ export class WebSocketService {
       logger.info('Re-subscribing to session:', sessionId);
       writeSessionConnected(sessionId, true);
       useSessionStore.getState().initSession(sessionId, true);
-      this.send({
-        type: 'request' as MessageType,
-        correlation_id: uuidv4(),
-        payload: {
-          action: 'getpipeline' as const,
-          session_id: sessionId,
-        },
-      });
+      this.fetchPipeline(sessionId);
     });
+  }
+
+  /** Fetch the pipeline for a session via WS and populate the session store
+   *  + Jotai atoms.  Used on initial subscribe and on reconnect. */
+  private fetchPipeline(sessionId: string): void {
+    this.send({
+      type: 'request' as MessageType,
+      correlation_id: uuidv4(),
+      payload: {
+        action: 'getpipeline' as const,
+        session_id: sessionId,
+      },
+    })
+      .then((response) => {
+        const payload = response.payload as import('@/types/types').ResponsePayload;
+        if ('pipeline' in payload && payload.pipeline) {
+          useSessionStore.getState().setPipeline(sessionId, payload.pipeline);
+          seedPipelineAtoms(sessionId, payload.pipeline);
+        }
+      })
+      .catch((err) => {
+        logger.error('Failed to fetch pipeline for session', sessionId, ':', err);
+      });
   }
 
   private handleMessage(message: Response | Event): void {
@@ -474,6 +491,11 @@ export class WebSocketService {
     );
     writeSessionConnected(sessionId, isConnected);
     useSessionStore.getState().initSession(sessionId, isConnected);
+
+    // Fetch the initial pipeline state over the same WS connection.
+    // This avoids the HTTP/WS race where REST returns stale data that
+    // the WS event stream has already superseded.
+    this.fetchPipeline(sessionId);
   }
 
   unsubscribeFromSession(sessionId: string): void {
