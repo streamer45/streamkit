@@ -405,6 +405,40 @@ license: string | null,
  */
 is_system: boolean, };
 
+export type ImageAsset = { 
+/**
+ * Unique identifier (filename, including extension)
+ */
+id: string, 
+/**
+ * Display name
+ */
+name: string, 
+/**
+ * Server-relative path suitable for compositor `asset_path` (e.g., `samples/images/system/logo.png`)
+ */
+path: string, 
+/**
+ * File extension/format (png, jpg, jpeg, webp, gif)
+ */
+format: string, 
+/**
+ * Image width in pixels
+ */
+width: number, 
+/**
+ * Image height in pixels
+ */
+height: number, 
+/**
+ * File size in bytes
+ */
+size_bytes: bigint, 
+/**
+ * Whether this is a system asset (true) or user asset (false)
+ */
+is_system: boolean, };
+
 export type BatchOperation = { "action": "addnode", node_id: string, kind: string, params: JsonValue, } | { "action": "removenode", node_id: string, } | { "action": "connect", from_node: string, from_pin: string, to_node: string, to_pin: string, mode: ConnectionMode, } | { "action": "disconnect", from_node: string, from_pin: string, to_node: string, to_pin: string, };
 
 export type ValidationError = { error_type: ValidationErrorType, message: string, node_id: string | null, connection_id: string | null, };

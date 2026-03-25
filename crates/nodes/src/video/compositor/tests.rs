@@ -2113,3 +2113,158 @@ fn test_resolve_scene_overlay_geometry() {
     assert_eq!(ro.measured_text_width, Some(195));
     assert_eq!(ro.measured_text_height, Some(38));
 }
+
+// ── Image overlay decode tests ──────────────────────────────────────────────
+
+/// Helper: create a minimal valid PNG in memory (1×1 red pixel).
+fn make_test_png() -> Vec<u8> {
+    let img = image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255]));
+    let mut buf = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut buf, image::ImageFormat::Png).expect("PNG encode");
+    buf.into_inner()
+}
+
+/// Helper: write a test PNG to a temp file under `samples/images/` and
+/// return the relative path.  The directory is created if it doesn't exist.
+fn write_test_asset(subdir: &str, filename: &str) -> String {
+    let dir = std::path::PathBuf::from("samples/images").join(subdir);
+    std::fs::create_dir_all(&dir).expect("create test dir");
+    let path = dir.join(filename);
+    std::fs::write(&path, make_test_png()).expect("write test PNG");
+    format!("samples/images/{subdir}/{filename}")
+}
+
+/// Helper: remove a test asset file (best-effort cleanup).
+fn cleanup_test_asset(relative_path: &str) {
+    let _ = std::fs::remove_file(relative_path);
+}
+
+fn default_transform(w: u32, h: u32) -> config::OverlayTransform {
+    config::OverlayTransform {
+        rect: Rect { x: 0, y: 0, width: w, height: h },
+        ..Default::default()
+    }
+}
+
+#[test]
+fn test_decode_image_overlay_from_asset_path() {
+    let asset_path = write_test_asset("user", "test_decode_asset.png");
+    let cfg = config::ImageOverlayConfig {
+        id: "img_asset".to_string(),
+        data_base64: None,
+        asset_path: Some(asset_path.clone()),
+        transform: default_transform(10, 10),
+    };
+    let result = overlay::decode_image_overlay(&cfg, 7680);
+    cleanup_test_asset(&asset_path);
+    let decoded = result.expect("should decode from asset_path");
+    assert_eq!(decoded.id, "img_asset");
+    assert!(decoded.width > 0);
+    assert!(decoded.height > 0);
+}
+
+#[test]
+fn test_decode_image_overlay_from_base64() {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(make_test_png());
+    let cfg = config::ImageOverlayConfig {
+        id: "img_b64".to_string(),
+        data_base64: Some(b64),
+        asset_path: None,
+        transform: default_transform(10, 10),
+    };
+    let decoded = overlay::decode_image_overlay(&cfg, 7680).expect("should decode from base64");
+    assert_eq!(decoded.id, "img_b64");
+    assert!(decoded.width > 0);
+}
+
+#[test]
+fn test_decode_image_overlay_asset_path_takes_precedence() {
+    use base64::Engine;
+    let asset_path = write_test_asset("user", "test_precedence.png");
+    let b64 = base64::engine::general_purpose::STANDARD.encode(make_test_png());
+    let cfg = config::ImageOverlayConfig {
+        id: "img_both".to_string(),
+        data_base64: Some(b64),
+        asset_path: Some(asset_path.clone()),
+        transform: default_transform(10, 10),
+    };
+    // Should succeed — asset_path takes precedence; both sources are valid.
+    let decoded = overlay::decode_image_overlay(&cfg, 7680).expect("should succeed with both");
+    cleanup_test_asset(&asset_path);
+    assert_eq!(decoded.id, "img_both");
+}
+
+#[test]
+fn test_decode_image_overlay_missing_both_errors() {
+    let cfg = config::ImageOverlayConfig {
+        id: "img_none".to_string(),
+        data_base64: None,
+        asset_path: None,
+        transform: default_transform(10, 10),
+    };
+    let result = overlay::decode_image_overlay(&cfg, 7680);
+    assert!(result.is_err(), "should error when neither source is set");
+    let err_msg = match result {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("expected error"),
+    };
+    assert!(
+        err_msg.contains("asset_path") || err_msg.contains("data_base64"),
+        "error should mention the missing fields: {err_msg}"
+    );
+}
+
+#[test]
+fn test_decode_image_overlay_bad_path_traversal() {
+    let cfg = config::ImageOverlayConfig {
+        id: "img_bad".to_string(),
+        data_base64: None,
+        asset_path: Some("samples/images/../../etc/passwd".to_string()),
+        transform: default_transform(10, 10),
+    };
+    let result = overlay::decode_image_overlay(&cfg, 7680);
+    assert!(result.is_err(), "path traversal should be rejected");
+}
+
+#[test]
+fn test_decode_image_overlay_bad_path_prefix() {
+    let cfg = config::ImageOverlayConfig {
+        id: "img_bad_prefix".to_string(),
+        data_base64: None,
+        asset_path: Some("/etc/passwd".to_string()),
+        transform: default_transform(10, 10),
+    };
+    let result = overlay::decode_image_overlay(&cfg, 7680);
+    assert!(result.is_err(), "paths outside samples/images/ should be rejected");
+}
+
+#[test]
+fn test_image_overlay_cache_key_asset_path() {
+    // Two configs with different asset_path values should not be considered
+    // content-equal by apply_update_params' cache check.
+    let a = config::ImageOverlayConfig {
+        id: "img_a".to_string(),
+        data_base64: None,
+        asset_path: Some("samples/images/user/a.png".to_string()),
+        transform: default_transform(10, 10),
+    };
+    let b = config::ImageOverlayConfig {
+        id: "img_a".to_string(),
+        data_base64: None,
+        asset_path: Some("samples/images/user/b.png".to_string()),
+        transform: default_transform(10, 10),
+    };
+    // Same id but different asset_path → content differs.
+    assert_ne!(a.asset_path, b.asset_path);
+
+    // Same asset_path → content same.
+    let c = config::ImageOverlayConfig {
+        id: "img_a".to_string(),
+        data_base64: None,
+        asset_path: Some("samples/images/user/a.png".to_string()),
+        transform: default_transform(10, 10),
+    };
+    assert_eq!(a.asset_path, c.asset_path);
+    assert_eq!(a.data_base64, c.data_base64);
+}

@@ -38,9 +38,15 @@ export type ImageOverlayConfig = {
 id: string, 
 /**
  * Base64-encoded image data (PNG or JPEG). Decoded once during
- * initialization, not per-frame.
+ * initialization, not per-frame.  Optional when `asset_path` is set.
  */
-data_base64: string, 
+data_base64: string | null, 
+/**
+ * Server-relative path to an uploaded image asset
+ * (e.g. `samples/images/user/logo.png`).  Takes precedence over
+ * `data_base64` when both are present.
+ */
+asset_path: string | null, 
 /**
  * Destination rectangle on the output canvas.
  */

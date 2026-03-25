@@ -19,6 +19,7 @@ use crate::permissions::Permissions as RolePermissions;
 use crate::role_extractor::get_permissions;
 use crate::state::AppState;
 use streamkit_api::AudioAsset;
+use streamkit_api::ImageAsset;
 
 // Security limits
 const MAX_AUDIO_FILE_SIZE: usize = 100 * 1024 * 1024; // 100MB
@@ -468,6 +469,436 @@ pub fn assets_router() -> Router<Arc<AppState>> {
                 .layer(DefaultBodyLimit::max(MAX_AUDIO_FILE_SIZE)),
         )
         .route("/api/v1/assets/audio/{id}", delete(delete_asset_handler))
+}
+
+// ── Image Assets ────────────────────────────────────────────────────────────
+
+// Security limits for image assets
+const MAX_IMAGE_FILE_SIZE: usize = 10 * 1024 * 1024; // 10MB
+
+// Allowed image formats
+const ALLOWED_IMAGE_FORMATS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif"];
+
+/// Validates a filename for image asset security
+fn validate_image_filename(filename: &str) -> Result<String, AssetsError> {
+    if filename.len() > MAX_FILENAME_LENGTH {
+        return Err(AssetsError::InvalidFilename("Filename too long".to_string()));
+    }
+
+    if filename.is_empty() {
+        return Err(AssetsError::InvalidFilename("Filename cannot be empty".to_string()));
+    }
+
+    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
+        return Err(AssetsError::InvalidFilename("Invalid characters in filename".to_string()));
+    }
+
+    let extension = filename
+        .rsplit('.')
+        .next()
+        .ok_or_else(|| AssetsError::InvalidFilename("File must have an extension".to_string()))?
+        .to_lowercase();
+
+    if !ALLOWED_IMAGE_FORMATS.contains(&extension.as_str()) {
+        return Err(AssetsError::InvalidFormat(format!(
+            "Unsupported image format: {}. Allowed: {}",
+            extension,
+            ALLOWED_IMAGE_FORMATS.join(", ")
+        )));
+    }
+
+    Ok(extension)
+}
+
+/// Process a single directory entry and convert it to an ImageAsset if valid
+async fn process_image_entry(
+    path: std::path::PathBuf,
+    is_system: bool,
+    perms: &RolePermissions,
+) -> Option<ImageAsset> {
+    if path.is_dir() || path.extension().and_then(|s| s.to_str()) == Some("license") {
+        return None;
+    }
+
+    let filename = path.file_name().and_then(|s| s.to_str())?.to_string();
+
+    let extension = path.extension().and_then(|s| s.to_str()).map(str::to_lowercase)?;
+
+    if !ALLOWED_IMAGE_FORMATS.contains(&extension.as_str()) {
+        return None;
+    }
+
+    let metadata = fs::metadata(&path).await.ok()?;
+    let size_bytes = metadata.len();
+
+    let id = filename.clone();
+
+    let name_without_ext = filename.trim_end_matches(&format!(".{extension}"));
+    let display_name = name_without_ext.replace(['_', '-'], " ");
+
+    let asset_path_str = if is_system {
+        format!("samples/images/system/{filename}")
+    } else {
+        format!("samples/images/user/{filename}")
+    };
+
+    if !perms.is_asset_allowed(&asset_path_str) {
+        debug!("Image asset filtered by permissions: {}", asset_path_str);
+        return None;
+    }
+
+    // Decode image to get dimensions
+    let file_data = fs::read(&path).await.ok()?;
+    let (width, height) = match image::load_from_memory(&file_data) {
+        Ok(img) => {
+            use image::GenericImageView;
+            img.dimensions()
+        },
+        Err(e) => {
+            warn!("Failed to decode image for dimensions {}: {}", filename, e);
+            return None;
+        },
+    };
+
+    Some(ImageAsset {
+        id,
+        name: display_name,
+        path: asset_path_str,
+        format: extension,
+        width,
+        height,
+        size_bytes,
+        is_system,
+    })
+}
+
+/// Scan a directory for image assets
+async fn scan_image_directory(
+    dir_path: &PathBuf,
+    is_system: bool,
+    perms: &RolePermissions,
+) -> Result<Vec<ImageAsset>, AssetsError> {
+    let mut assets = Vec::new();
+
+    if !dir_path.exists() {
+        warn!("Image directory does not exist: {:?}", dir_path);
+        return Ok(assets);
+    }
+
+    let mut entries = fs::read_dir(dir_path)
+        .await
+        .map_err(|e| AssetsError::IoError(format!("Failed to read directory: {e}")))?;
+
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .map_err(|e| AssetsError::IoError(format!("Failed to read entry: {e}")))?
+    {
+        if let Some(asset) = process_image_entry(entry.path(), is_system, perms).await {
+            assets.push(asset);
+        }
+    }
+
+    Ok(assets)
+}
+
+/// List all image assets (system + user) with permission filtering
+pub async fn list_image_assets_handler(
+    State(app_state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let perms = get_permissions(&headers, &app_state);
+
+    match list_image_assets(&perms).await {
+        Ok(assets) => {
+            info!("Listed {} image assets", assets.len());
+            Json(assets).into_response()
+        },
+        Err(e) => {
+            error!("Failed to list image assets: {}", e);
+            e.into_response()
+        },
+    }
+}
+
+async fn list_image_assets(perms: &RolePermissions) -> Result<Vec<ImageAsset>, AssetsError> {
+    let base_path = PathBuf::from("samples/images");
+    let system_path = base_path.join("system");
+    let user_path = base_path.join("user");
+
+    let mut all_assets = Vec::new();
+
+    let system_assets = scan_image_directory(&system_path, true, perms).await?;
+    all_assets.extend(system_assets);
+
+    let user_assets = scan_image_directory(&user_path, false, perms).await?;
+    all_assets.extend(user_assets);
+
+    all_assets.sort_by(|a, b| a.name.cmp(&b.name));
+
+    Ok(all_assets)
+}
+
+/// Stream an uploaded multipart image field to disk with size enforcement.
+async fn write_image_upload_to_disk(
+    mut field: axum::extract::multipart::Field<'_>,
+    file_path: &std::path::Path,
+) -> Result<usize, AssetsError> {
+    use tokio::fs::OpenOptions;
+
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(file_path)
+        .await
+        .map_err(|e| AssetsError::IoError(format!("Failed to create file: {e}")))?;
+
+    let mut total_bytes: usize = 0;
+    loop {
+        match field.chunk().await {
+            Ok(Some(chunk)) => {
+                total_bytes = total_bytes.saturating_add(chunk.len());
+                if total_bytes > MAX_IMAGE_FILE_SIZE {
+                    let _ = fs::remove_file(file_path).await;
+                    return Err(AssetsError::FileTooLarge(MAX_IMAGE_FILE_SIZE));
+                }
+
+                if let Err(e) = file.write_all(&chunk).await {
+                    let _ = fs::remove_file(file_path).await;
+                    return Err(AssetsError::IoError(format!("Failed to write file: {e}")));
+                }
+            },
+            Ok(None) => break,
+            Err(e) => {
+                let _ = fs::remove_file(file_path).await;
+                return Err(AssetsError::InvalidRequest(format!(
+                    "Failed to read upload stream: {e}"
+                )));
+            },
+        }
+    }
+
+    Ok(total_bytes)
+}
+
+/// Core image upload logic after permission check
+async fn process_image_upload(
+    filename: String,
+    extension: String,
+    field: axum::extract::multipart::Field<'_>,
+) -> Result<ImageAsset, AssetsError> {
+    let base_path = PathBuf::from("samples/images");
+    let user_dir = base_path.join("user");
+
+    fs::create_dir_all(&user_dir)
+        .await
+        .map_err(|e| AssetsError::IoError(format!("Failed to create directory: {e}")))?;
+
+    let file_path = user_dir.join(&filename);
+
+    if file_path.exists() {
+        return Err(AssetsError::FileExists(filename));
+    }
+
+    let written_bytes = write_image_upload_to_disk(field, &file_path).await?;
+
+    // Validate that the file is a decodable image and extract dimensions
+    let file_data = fs::read(&file_path)
+        .await
+        .map_err(|e| AssetsError::IoError(format!("Failed to read uploaded file: {e}")))?;
+
+    let (width, height) = match image::load_from_memory(&file_data) {
+        Ok(img) => {
+            use image::GenericImageView;
+            img.dimensions()
+        },
+        Err(e) => {
+            // Clean up the invalid file
+            let _ = fs::remove_file(&file_path).await;
+            return Err(AssetsError::InvalidFormat(format!(
+                "Uploaded file is not a valid image: {e}"
+            )));
+        },
+    };
+
+    let name_without_ext = filename.trim_end_matches(&format!(".{extension}"));
+    let display_name = name_without_ext.replace(['_', '-'], " ");
+    let relative_path = format!("samples/images/user/{filename}");
+
+    info!("Uploaded image asset: {} ({}x{})", filename, width, height);
+
+    Ok(ImageAsset {
+        id: filename,
+        name: display_name,
+        path: relative_path,
+        format: extension,
+        width,
+        height,
+        size_bytes: written_bytes as u64,
+        is_system: false,
+    })
+}
+
+/// Upload a new image asset (user directory only)
+pub async fn upload_image_asset_handler(
+    State(app_state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> impl IntoResponse {
+    let perms = get_permissions(&headers, &app_state);
+
+    if !perms.upload_assets {
+        return AssetsError::Forbidden.into_response();
+    }
+
+    let field = match multipart.next_field().await {
+        Ok(Some(field)) => field,
+        Ok(None) => {
+            return AssetsError::InvalidRequest("No file provided".to_string()).into_response()
+        },
+        Err(e) => {
+            return AssetsError::InvalidRequest(format!("Failed to read multipart: {e}"))
+                .into_response()
+        },
+    };
+
+    let filename = match field.file_name() {
+        Some(name) => sanitize_filename(name),
+        None => {
+            return AssetsError::InvalidRequest("No filename provided".to_string()).into_response()
+        },
+    };
+    let extension = match validate_image_filename(&filename) {
+        Ok(ext) => ext,
+        Err(e) => return e.into_response(),
+    };
+
+    match process_image_upload(filename, extension, field).await {
+        Ok(asset) => Json(asset).into_response(),
+        Err(e) => {
+            error!("Failed to process image upload: {}", e);
+            e.into_response()
+        },
+    }
+}
+
+/// Delete an image asset (user directory only)
+pub async fn delete_image_asset_handler(
+    State(app_state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let perms = get_permissions(&headers, &app_state);
+
+    if !perms.delete_assets {
+        return AssetsError::Forbidden.into_response();
+    }
+
+    let base_path = PathBuf::from("samples/images");
+    let user_dir = base_path.join("user");
+    let file_path = user_dir.join(&id);
+
+    if !file_path.exists() {
+        return AssetsError::NotFound(id).into_response();
+    }
+
+    if let Err(e) = validate_file_in_user_directory(&file_path, &user_dir) {
+        return e.into_response();
+    }
+
+    if let Err(e) = fs::remove_file(&file_path)
+        .await
+        .map_err(|e| AssetsError::IoError(format!("Failed to delete file: {e}")))
+    {
+        error!("Failed to delete image file: {}", e);
+        return e.into_response();
+    }
+
+    info!("Deleted image asset: {}", id);
+    StatusCode::NO_CONTENT.into_response()
+}
+
+/// Serve an image asset file by ID (filename).
+///
+/// Returns the raw image bytes with an appropriate `Content-Type` header so
+/// the browser can render it directly (e.g. in an `<img>` tag or on a canvas).
+/// Looks in both the user and system directories.
+async fn serve_image_asset_handler(
+    State(app_state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    use axum::http::header;
+
+    let perms = get_permissions(&headers, &app_state);
+
+    // Basic filename validation to prevent path traversal
+    if id.contains("..") || id.contains('/') || id.contains('\\') {
+        return AssetsError::InvalidFilename("Invalid characters in filename".to_string())
+            .into_response();
+    }
+
+    let base_path = PathBuf::from("samples/images");
+
+    // Try user directory first, then system
+    let file_path = {
+        let user_path = base_path.join("user").join(&id);
+        let system_path = base_path.join("system").join(&id);
+        if user_path.exists() {
+            let asset_path_str = format!("samples/images/user/{id}");
+            if !perms.is_asset_allowed(&asset_path_str) {
+                return AssetsError::Forbidden.into_response();
+            }
+            user_path
+        } else if system_path.exists() {
+            let asset_path_str = format!("samples/images/system/{id}");
+            if !perms.is_asset_allowed(&asset_path_str) {
+                return AssetsError::Forbidden.into_response();
+            }
+            system_path
+        } else {
+            return AssetsError::NotFound(id).into_response();
+        }
+    };
+
+    let extension = file_path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+
+    let content_type = match extension.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        _ => "application/octet-stream",
+    };
+
+    match fs::read(&file_path).await {
+        Ok(data) => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, content_type.to_string()),
+                (header::CACHE_CONTROL, "public, max-age=3600".to_string()),
+            ],
+            data,
+        )
+            .into_response(),
+        Err(e) => {
+            error!("Failed to read image file {:?}: {}", file_path, e);
+            AssetsError::IoError(format!("Failed to read file: {e}")).into_response()
+        },
+    }
+}
+
+/// Create router for image asset endpoints
+pub fn image_assets_router() -> Router<Arc<AppState>> {
+    Router::new()
+        .route(
+            "/api/v1/assets/images",
+            get(list_image_assets_handler)
+                .post(upload_image_asset_handler)
+                .layer(DefaultBodyLimit::max(MAX_IMAGE_FILE_SIZE)),
+        )
+        .route("/api/v1/assets/images/file/{id}", get(serve_image_asset_handler))
+        .route("/api/v1/assets/images/{id}", delete(delete_image_asset_handler))
 }
 
 // Error types

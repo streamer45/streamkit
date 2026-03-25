@@ -20,6 +20,8 @@ import {
   fitRectPreservingAspect,
   detectSnapGuides,
   computeUpdatedLayer,
+  parseImageOverlays,
+  serializeImageOverlays,
 } from './compositorLayerParsers';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -664,5 +666,121 @@ describe('computeUpdatedLayer resize edge snapping', () => {
     // The snapped edge must not be pushed past the canvas boundary
     expect(result.x).toBeGreaterThanOrEqual(0);
     expect(result.y).toBeGreaterThanOrEqual(0);
+  });
+});
+
+// ── parseImageOverlays / serializeImageOverlays ─────────────────────────────
+
+describe('parseImageOverlays', () => {
+  it('parses overlays with asset_path', () => {
+    const params = {
+      image_overlays: [
+        {
+          id: 'img_0',
+          asset_path: 'samples/images/user/logo.png',
+          rect: { x: 10, y: 20, width: 100, height: 50 },
+          opacity: 0.8,
+          rotation_degrees: 0,
+          z_index: 200,
+          mirror_horizontal: false,
+          mirror_vertical: false,
+        },
+      ],
+    };
+    const result = parseImageOverlays(params);
+    expect(result).toHaveLength(1);
+    expect(result[0].assetPath).toBe('samples/images/user/logo.png');
+    expect(result[0].dataBase64).toBeUndefined();
+    expect(result[0].x).toBe(10);
+    expect(result[0].width).toBe(100);
+  });
+
+  it('parses overlays with data_base64 (legacy)', () => {
+    const params = {
+      image_overlays: [
+        {
+          id: 'img_0',
+          data_base64: 'iVBORfakedata',
+          rect: { x: 0, y: 0, width: 200, height: 200 },
+          opacity: 1,
+          rotation_degrees: 0,
+          z_index: 200,
+          mirror_horizontal: false,
+          mirror_vertical: false,
+        },
+      ],
+    };
+    const result = parseImageOverlays(params);
+    expect(result).toHaveLength(1);
+    expect(result[0].dataBase64).toBe('iVBORfakedata');
+    expect(result[0].assetPath).toBeUndefined();
+  });
+
+  it('parses overlays with both asset_path and data_base64', () => {
+    const params = {
+      image_overlays: [
+        {
+          id: 'img_0',
+          asset_path: 'samples/images/user/logo.png',
+          data_base64: 'iVBORfakedata',
+          rect: { x: 0, y: 0, width: 200, height: 200 },
+          opacity: 1,
+          rotation_degrees: 0,
+          z_index: 200,
+          mirror_horizontal: false,
+          mirror_vertical: false,
+        },
+      ],
+    };
+    const result = parseImageOverlays(params);
+    expect(result).toHaveLength(1);
+    expect(result[0].assetPath).toBe('samples/images/user/logo.png');
+    expect(result[0].dataBase64).toBe('iVBORfakedata');
+  });
+
+  it('returns empty array for missing image_overlays', () => {
+    expect(parseImageOverlays({})).toEqual([]);
+  });
+});
+
+describe('serializeImageOverlays', () => {
+  it('serializes overlay with assetPath', () => {
+    const overlays: ImageOverlayState[] = [
+      makeImageOverlay({ assetPath: 'samples/images/user/logo.png', dataBase64: undefined }),
+    ];
+    const result = serializeImageOverlays(overlays);
+    expect(result).toHaveLength(1);
+    expect(result[0].asset_path).toBe('samples/images/user/logo.png');
+    expect(result[0].data_base64).toBeUndefined();
+  });
+
+  it('serializes overlay with dataBase64 (legacy)', () => {
+    const overlays: ImageOverlayState[] = [
+      makeImageOverlay({ dataBase64: 'iVBORfakedata', assetPath: undefined }),
+    ];
+    const result = serializeImageOverlays(overlays);
+    expect(result).toHaveLength(1);
+    expect(result[0].data_base64).toBe('iVBORfakedata');
+    expect(result[0].asset_path).toBeUndefined();
+  });
+
+  it('serializes overlay with both assetPath and dataBase64', () => {
+    const overlays: ImageOverlayState[] = [
+      makeImageOverlay({ assetPath: 'samples/images/user/logo.png', dataBase64: 'iVBORfakedata' }),
+    ];
+    const result = serializeImageOverlays(overlays);
+    expect(result).toHaveLength(1);
+    expect(result[0].asset_path).toBe('samples/images/user/logo.png');
+    expect(result[0].data_base64).toBe('iVBORfakedata');
+  });
+
+  it('omits neither field when both are absent', () => {
+    const overlays: ImageOverlayState[] = [
+      makeImageOverlay({ dataBase64: undefined, assetPath: undefined }),
+    ];
+    const result = serializeImageOverlays(overlays);
+    expect(result).toHaveLength(1);
+    expect(result[0].asset_path).toBeUndefined();
+    expect(result[0].data_base64).toBeUndefined();
   });
 });

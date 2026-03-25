@@ -100,8 +100,11 @@ export interface TextOverlayState {
 export interface ImageOverlayState {
   /** Stable unique identifier (UUID, assigned by backend or frontend). */
   id: string;
-  /** Base64-encoded image data */
-  dataBase64: string;
+  /** Base64-encoded image data (legacy, optional when assetPath is set) */
+  dataBase64?: string;
+  /** Server-relative path to an uploaded image asset (e.g. `samples/images/user/logo.png`).
+   *  Takes precedence over `dataBase64` when both are present. */
+  assetPath?: string;
   x: number;
   y: number;
   width: number;
@@ -250,16 +253,20 @@ export function parseTextOverlays(params: Record<string, unknown>): TextOverlayS
 export function parseImageOverlays(params: Record<string, unknown>): ImageOverlayState[] {
   const overlays = params.image_overlays as ImageOverlayConfig[] | undefined;
   if (!Array.isArray(overlays)) return [];
-  return overlays.map((o, i) => ({
-    id: o.id ?? `img_${i}`,
-    dataBase64: o.data_base64 ?? '',
-    ...parseTransformFields(o as unknown as Record<string, unknown>, {
-      width: 200,
-      height: 200,
-      zIndex: 200 + i,
-    }),
-    visible: DEFAULT_VISIBLE,
-  }));
+  return overlays.map((o, i) => {
+    const raw = o as unknown as Record<string, unknown>;
+    return {
+      id: o.id ?? `img_${i}`,
+      dataBase64: (raw.data_base64 as string | undefined) ?? undefined,
+      assetPath: (raw.asset_path as string | undefined) ?? undefined,
+      ...parseTransformFields(raw, {
+        width: 200,
+        height: 200,
+        zIndex: 200 + i,
+      }),
+      visible: DEFAULT_VISIBLE,
+    };
+  });
 }
 
 // ── Serialization ───────────────────────────────────────────────────────────
@@ -300,14 +307,24 @@ export function serializeTextOverlays(
   }));
 }
 
-/** Serialize image overlays back to config format */
-export function serializeImageOverlays(overlays: ImageOverlayState[]): ImageOverlayConfig[] {
-  return overlays.map((o) => ({
-    id: o.id,
-    data_base64: o.dataBase64,
-    rect: serializeRect(o),
-    ...serializeSpatialFields(o),
-  }));
+/** Serialize image overlays back to config format.
+ *  Sends `asset_path` when present (new upload flow), otherwise falls back
+ *  to `data_base64` (legacy inline base64). */
+export function serializeImageOverlays(overlays: ImageOverlayState[]): Record<string, unknown>[] {
+  return overlays.map((o) => {
+    const base: Record<string, unknown> = {
+      id: o.id,
+      rect: serializeRect(o),
+      ...serializeSpatialFields(o),
+    };
+    if (o.assetPath) {
+      base.asset_path = o.assetPath;
+    }
+    if (o.dataBase64) {
+      base.data_base64 = o.dataBase64;
+    }
+    return base;
+  });
 }
 
 /** Serialize video layers to the wire format used by the backend. */

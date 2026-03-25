@@ -121,6 +121,9 @@ async-trait = { workspace = true }
 # For glob pattern matching in permissions
 glob = "0.3"
 
+# For image asset validation (decode + dimension extraction on upload)
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+
 # For built-in authentication
 jsonwebtoken = { version = "10.2.0", default-features = false, features = ["aws_lc_rs"] }
 sha2 = "0.10"

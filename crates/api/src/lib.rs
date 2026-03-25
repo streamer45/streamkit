@@ -595,3 +595,26 @@ pub struct AudioAsset {
     /// Whether this is a system asset (true) or user asset (false)
     pub is_system: bool,
 }
+
+// --- Image Assets ---
+
+#[derive(Serialize, Deserialize, Debug, Clone, TS)]
+#[ts(export)]
+pub struct ImageAsset {
+    /// Unique identifier (filename, including extension)
+    pub id: String,
+    /// Display name
+    pub name: String,
+    /// Server-relative path suitable for compositor `asset_path` (e.g., `samples/images/system/logo.png`)
+    pub path: String,
+    /// File extension/format (png, jpg, jpeg, webp, gif)
+    pub format: String,
+    /// Image width in pixels
+    pub width: u32,
+    /// Image height in pixels
+    pub height: u32,
+    /// File size in bytes
+    pub size_bytes: u64,
+    /// Whether this is a system asset (true) or user asset (false)
+    pub is_system: bool,
+}

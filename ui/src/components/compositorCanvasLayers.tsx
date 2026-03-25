@@ -371,10 +371,25 @@ export const ImageOverlayLayer: React.FC<{
   const [imgSrc, setImgSrc] = useState<string | undefined>();
 
   useEffect(() => {
-    if (!overlay?.dataBase64) {
+    if (!overlay) {
       setImgSrc(undefined);
       return;
     }
+
+    // Prefer asset_path (new upload flow) over data_base64 (legacy).
+    if (overlay.assetPath) {
+      // Extract the filename from the asset path (e.g. "samples/images/user/photo.png" → "photo.png")
+      const filename = overlay.assetPath.split('/').pop() ?? '';
+      const url = `/api/v1/assets/images/file/${encodeURIComponent(filename)}`;
+      setImgSrc(url);
+      return; // No cleanup needed for static URLs
+    }
+
+    if (!overlay.dataBase64) {
+      setImgSrc(undefined);
+      return;
+    }
+
     let mime = 'image/jpeg'; // default fallback
     // MIME detection via base64 magic-byte prefixes.  Covers the most common
     // web formats; unrecognised formats (AVIF, BMP, TIFF, …) fall back to
@@ -401,7 +416,7 @@ export const ImageOverlayLayer: React.FC<{
       cancelled = true;
       if (url) URL.revokeObjectURL(url);
     };
-  }, [overlay?.dataBase64]);
+  }, [overlay?.assetPath, overlay?.dataBase64]);
 
   if (!overlay) return null;
 
