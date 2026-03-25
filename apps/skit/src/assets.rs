@@ -720,9 +720,13 @@ async fn process_image_upload(
     let written_bytes = write_image_upload_to_disk(field, &file_path).await?;
 
     // Read the file once — used for both header-only dimension check and full decode.
-    let file_data = fs::read(&file_path)
-        .await
-        .map_err(|e| AssetsError::IoError(format!("Failed to read uploaded file: {e}")))?;
+    let file_data = match fs::read(&file_path).await {
+        Ok(data) => data,
+        Err(e) => {
+            let _ = fs::remove_file(&file_path).await;
+            return Err(AssetsError::IoError(format!("Failed to read uploaded file: {e}")));
+        },
+    };
 
     // Header-only dimension check to catch decompression bombs early
     // (e.g. a tiny PNG that decompresses to a 50000×50000 pixel buffer),
