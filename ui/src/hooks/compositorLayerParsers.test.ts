@@ -647,4 +647,22 @@ describe('computeUpdatedLayer resize edge snapping', () => {
     expect(result.x + result.width).not.toBe(CW);
     expect(result.y + result.height).not.toBe(CH);
   });
+
+  it('corner handle nw near both edges snaps only the closer axis', () => {
+    // Layer at x=5, y=5 — both within SNAP_THRESHOLD of 0.
+    // The closer axis (equal distance → horizontal wins by order) should snap
+    // without the second axis undoing it.
+    const orig = makeLayer({ x: 5, y: 5, width: 640, height: 480 });
+    const ar = orig.width / orig.height;
+    const result = computeUpdatedLayer(orig, 'resize', 'nw', -3, -3, CW, CH);
+    // At least one edge should be snapped to 0
+    const snappedLeft = result.x === 0;
+    const snappedTop = result.y === 0;
+    expect(snappedLeft || snappedTop).toBe(true);
+    // Aspect ratio must be preserved
+    expect(result.width / result.height).toBeCloseTo(ar, 5);
+    // The snapped edge must not be pushed past the canvas boundary
+    expect(result.x).toBeGreaterThanOrEqual(0);
+    expect(result.y).toBeGreaterThanOrEqual(0);
+  });
 });

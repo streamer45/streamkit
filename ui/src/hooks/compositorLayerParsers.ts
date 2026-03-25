@@ -655,25 +655,47 @@ function computeResizePosition(
 
   // Snap resize edges to canvas boundaries, re-applying the aspect ratio
   // constraint after each snap so the layer isn't distorted.
+  // For corner handles, only snap the axis closest to a boundary to avoid
+  // the second snap's AR correction undoing the first snap's alignment.
   const ar = orig.width > 0 && orig.height > 0 ? orig.width / orig.height : 0;
 
-  if (handle.includes('e') && Math.abs(newX + newW - canvasWidth) < SNAP_THRESHOLD) {
+  let snappedH = false; // true once an east/west snap has been applied
+  let snappedV = false; // true once a north/south snap has been applied
+
+  const deltaE = handle.includes('e') ? Math.abs(newX + newW - canvasWidth) : Infinity;
+  const deltaW = handle.includes('w') ? Math.abs(newX) : Infinity;
+  const deltaS = handle.includes('s') ? Math.abs(newY + newH - canvasHeight) : Infinity;
+  const deltaN = handle.includes('n') ? Math.abs(newY) : Infinity;
+
+  // For corner handles, only snap the closer axis to avoid conflicts.
+  const isCorner =
+    (handle.includes('n') || handle.includes('s')) &&
+    (handle.includes('e') || handle.includes('w'));
+  const bestH = Math.min(deltaE, deltaW);
+  const bestV = Math.min(deltaN, deltaS);
+  const skipH = isCorner && bestH < SNAP_THRESHOLD && bestV < SNAP_THRESHOLD && bestH > bestV;
+  const skipV = isCorner && bestH < SNAP_THRESHOLD && bestV < SNAP_THRESHOLD && bestV > bestH;
+
+  if (!skipH && deltaE < SNAP_THRESHOLD) {
     newW = canvasWidth - newX;
     if (ar > 0) newH = newW / ar;
     if (handle.includes('n')) newY = orig.y + (orig.height - newH);
+    snappedH = true;
   }
-  if (handle.includes('w') && Math.abs(newX) < SNAP_THRESHOLD) {
+  if (!skipH && !snappedH && deltaW < SNAP_THRESHOLD) {
     newW += newX;
     newX = 0;
     if (ar > 0) newH = newW / ar;
     if (handle.includes('n')) newY = orig.y + (orig.height - newH);
+    snappedH = true;
   }
-  if (handle.includes('s') && Math.abs(newY + newH - canvasHeight) < SNAP_THRESHOLD) {
+  if (!skipV && deltaS < SNAP_THRESHOLD && !snappedH) {
     newH = canvasHeight - newY;
     if (ar > 0) newW = newH * ar;
     if (handle.includes('w')) newX = orig.x + (orig.width - newW);
+    snappedV = true;
   }
-  if (handle.includes('n') && Math.abs(newY) < SNAP_THRESHOLD) {
+  if (!skipV && !snappedV && deltaN < SNAP_THRESHOLD && !snappedH) {
     newH += newY;
     newY = 0;
     if (ar > 0) newW = newH * ar;
