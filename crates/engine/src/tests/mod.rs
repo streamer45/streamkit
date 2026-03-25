@@ -11,3 +11,5 @@ mod dynamic_initialize;
 mod oneshot_linear;
 #[cfg(feature = "dynamic")]
 mod pin_distributor;
+#[cfg(feature = "dynamic")]
+mod pipeline_activation;

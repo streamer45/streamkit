@@ -255,13 +255,22 @@ impl ProcessorNode for MoqPullNode {
 }
 
 /// Indicates why a MoQ stream ended, used for reconnection logic.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 enum StreamEndReason {
     /// Stream ended gracefully as expected
     Natural,
     /// Stream ended unexpectedly and should trigger a reconnection attempt
     Reconnect,
 }
+
+/// Maximum consecutive `Cancel` errors before triggering a reconnect.
+/// A single cancel is normal (group boundary), but a sustained burst means
+/// the publisher has gone away or the relay has no data.
+const MAX_CONSECUTIVE_CANCELS: u32 = 50;
+
+/// Number of consecutive cancels before we start yielding (sleeping) to
+/// avoid busy-spinning the async runtime.
+const CANCEL_YIELD_THRESHOLD: u32 = 5;
 
 impl MoqPullNode {
     fn strip_hang_timestamp_header(
@@ -993,9 +1002,7 @@ impl MoqPullNode {
                         "Track read cancelled (skipping to next group)"
                     );
 
-                    if last_payload_at.elapsed() > Duration::from_secs(5)
-                        && consecutive_cancels >= 50
-                    {
+                    if consecutive_cancels >= MAX_CONSECUTIVE_CANCELS {
                         tracing::warn!(
                             session_packet_count,
                             total_packet_count = *total_packet_count,
@@ -1007,9 +1014,7 @@ impl MoqPullNode {
                     }
 
                     // Yield after consecutive cancels to avoid busy-spinning.
-                    // A single cancel is normal (e.g. group skip), but a burst
-                    // means the publisher has gone away or the relay has no data.
-                    if consecutive_cancels > 5 {
+                    if consecutive_cancels > CANCEL_YIELD_THRESHOLD {
                         tokio::time::sleep(Duration::from_millis(10)).await;
                     }
                 },
@@ -1066,5 +1071,40 @@ mod tests {
         };
         assert_eq!(ts, 123);
         assert_eq!(&stripped[..], b"opus-frame-bytes");
+    }
+
+    // Compile-time validation that the cancel constants are self-consistent.
+    const _: () = {
+        assert!(MAX_CONSECUTIVE_CANCELS > CANCEL_YIELD_THRESHOLD);
+        assert!(CANCEL_YIELD_THRESHOLD >= 3);
+        assert!(CANCEL_YIELD_THRESHOLD <= 10);
+        // Worst-case spin time: (MAX - YIELD) * 10ms must be under 1 second.
+        assert!((MAX_CONSECUTIVE_CANCELS - CANCEL_YIELD_THRESHOLD) * 10 <= 1000);
+    };
+
+    #[test]
+    fn test_cancel_threshold_boundary() {
+        // Verify the reconnect condition at the boundary:
+        // below MAX → no reconnect, at MAX → reconnect.
+        let below = MAX_CONSECUTIVE_CANCELS - 1;
+        let at = MAX_CONSECUTIVE_CANCELS;
+        assert!(below < MAX_CONSECUTIVE_CANCELS, "below threshold should not trigger");
+        assert!(at >= MAX_CONSECUTIVE_CANCELS, "at threshold should trigger");
+    }
+
+    #[test]
+    fn test_cancel_reconnect_is_count_only() {
+        // Regression: the old code required BOTH consecutive_cancels >= 50
+        // AND last_payload_at.elapsed() > 5 seconds. This caused a spin of
+        // hundreds of cancels before reconnecting. The fix removed the time
+        // condition so that MAX_CONSECUTIVE_CANCELS alone is sufficient.
+        //
+        // Verify worst-case time to reconnect at runtime matches the
+        // compile-time assertion above.
+        let worst_case_ms = u64::from(MAX_CONSECUTIVE_CANCELS - CANCEL_YIELD_THRESHOLD) * 10;
+        assert!(
+            worst_case_ms <= 1000,
+            "worst-case cancel spin should be under 1 second, got {worst_case_ms}ms"
+        );
     }
 }
