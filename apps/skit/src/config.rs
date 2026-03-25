@@ -664,7 +664,7 @@ pub struct CompositorServerConfig {
 
     /// Maximum allowed image overlay dimension (width or height) in pixels.
     /// Uploads exceeding this limit are rejected before full decode to prevent
-    /// decompression bombs.  Default: 8192.
+    /// decompression bombs.  Default: 7680.
     #[serde(default = "default_compositor_max_image_dimension")]
     pub max_image_dimension: u32,
 }
