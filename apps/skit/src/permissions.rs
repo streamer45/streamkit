@@ -195,6 +195,9 @@ impl Permissions {
                 // Users can access system and user audio assets
                 "samples/audio/system/*".to_string(),
                 "samples/audio/user/*".to_string(),
+                // Users can access system and user image assets
+                "samples/images/system/*".to_string(),
+                "samples/images/user/*".to_string(),
             ],
         }
     }
@@ -236,6 +239,8 @@ impl Permissions {
             allowed_assets: vec![
                 // Viewers can see system audio assets
                 "samples/audio/system/*".to_string(),
+                // Viewers can see system image assets
+                "samples/images/system/*".to_string(),
             ],
         }
     }

@@ -49,6 +49,8 @@ Thumbs.db
 samples/pipelines/user
 samples/audio/user/*
 !samples/audio/user/.gitkeep
+samples/images/user/*
+!samples/images/user/.gitkeep
 
 # StreamKit runtime state (keys/tokens/config caches)
 .streamkit
