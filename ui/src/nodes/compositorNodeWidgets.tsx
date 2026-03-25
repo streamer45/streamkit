@@ -15,6 +15,9 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 import { SKTooltip } from '@/components/Tooltip';
 import type { LayerKind } from '@/hooks/useCompositorLayers';
+import { uploadImageAsset } from '@/services/imageAssets';
+import { showToast } from '@/stores/toastStore';
+import { getLogger } from '@/utils/logger';
 
 import {
   AddMenu,
@@ -49,6 +52,8 @@ import {
 
 // ── Re-export slider parts for downstream consumers ────────────────────────
 export { CompactSliderRange, CompactSliderRoot, CompactSliderThumb, CompactSliderTrack };
+
+const logger = getLogger('compositorNodeWidgets');
 
 // ── Position / size input grid ──────────────────────────────────────────────
 
@@ -475,7 +480,7 @@ export const CompositorEntryList: React.FC<{
   onToggleVisibility: (layerId: string) => void;
   onAddText: (text: string) => void;
   onRemoveText: (id: string) => void;
-  onAddImage: (dataBase64: string, naturalWidth?: number, naturalHeight?: number) => void;
+  onAddImage: (assetPath: string, naturalWidth?: number, naturalHeight?: number) => void;
   onRemoveImage: (id: string) => void;
   onReorderLayers: (entries: Array<{ id: string; kind: LayerKind; zIndex: number }>) => void;
   disabled: boolean;
@@ -523,18 +528,18 @@ export const CompositorEntryList: React.FC<{
         if (!file) return;
         if (!file.type.startsWith('image/')) return;
 
-        const reader = new FileReader();
-        reader.onload = () => {
-          const result = reader.result as string;
-          const base64 = result.split(',')[1];
-          if (!base64) return;
-          const img = new window.Image();
-          img.onload = () => onAddImage(base64, img.naturalWidth, img.naturalHeight);
-          img.onerror = () => onAddImage(base64);
-          img.src = result;
-        };
-        reader.readAsDataURL(file);
-        e.target.value = '';
+        uploadImageAsset(file)
+          .then((asset) => {
+            onAddImage(asset.path, asset.width, asset.height);
+          })
+          .catch((err) => {
+            logger.error('Failed to upload image asset:', err);
+            const msg = err instanceof Error ? err.message : String(err);
+            showToast(`Image upload failed: ${msg}`, 'error');
+          })
+          .finally(() => {
+            e.target.value = '';
+          });
       },
       [onAddImage]
     );

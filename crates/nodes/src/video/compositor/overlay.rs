@@ -40,7 +40,26 @@ pub struct DecodedOverlay {
     pub measured_text_height: Option<u32>,
 }
 
-/// Decode a base64-encoded image (PNG/JPEG) into an RGBA8 bitmap.
+/// Validates that an asset path is safe to read.
+///
+/// # Errors
+///
+/// Returns an error if the path contains traversal sequences or does not
+/// start with `samples/images/`.
+pub fn validate_asset_path(path: &str) -> Result<(), StreamKitError> {
+    if path.contains("..") || !path.starts_with("samples/images/") {
+        return Err(StreamKitError::Configuration(format!(
+            "Invalid asset_path: must start with 'samples/images/' and not contain '..': {path}"
+        )));
+    }
+    Ok(())
+}
+
+/// Decode an image overlay from raw bytes into an RGBA8 bitmap.
+///
+/// The caller is responsible for reading the file (e.g. via
+/// `tokio::fs::read`) and passing the bytes here.  This keeps the
+/// function synchronous and free of blocking I/O.
 ///
 /// The decoded image is pre-scaled (bilinear filter) to fit within the
 /// config's target rect while preserving aspect ratio, so the per-frame
@@ -50,21 +69,15 @@ pub struct DecodedOverlay {
 ///
 /// # Errors
 ///
-/// Returns an error if the base64 data is invalid or the image cannot be
-/// decoded.
+/// Returns an error if the image bytes cannot be decoded.
 pub fn decode_image_overlay(
     config: &ImageOverlayConfig,
+    bytes: &[u8],
     max_dimension: u32,
 ) -> Result<DecodedOverlay, StreamKitError> {
     use image::GenericImageView;
 
-    use base64::Engine;
-    let bytes =
-        base64::engine::general_purpose::STANDARD.decode(&config.data_base64).map_err(|e| {
-            StreamKitError::Configuration(format!("Invalid base64 in image overlay: {e}"))
-        })?;
-
-    let img = image::load_from_memory(&bytes).map_err(|e| {
+    let img = image::load_from_memory(bytes).map_err(|e| {
         StreamKitError::Configuration(format!("Failed to decode image overlay: {e}"))
     })?;
 

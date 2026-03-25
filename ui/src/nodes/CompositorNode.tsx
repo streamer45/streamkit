@@ -67,7 +67,7 @@ interface ConnectedEntryListProps {
   onToggleVisibility: (layerId: string) => void;
   onAddText: (text: string) => void;
   onRemoveText: (id: string) => void;
-  onAddImage: (dataBase64: string, naturalWidth?: number, naturalHeight?: number) => void;
+  onAddImage: (assetPath: string, naturalWidth?: number, naturalHeight?: number) => void;
   onRemoveImage: (id: string) => void;
   onReorderLayers: (entries: Array<{ id: string; kind: LayerKind; zIndex: number }>) => void;
   disabled: boolean;

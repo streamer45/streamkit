@@ -395,11 +395,45 @@ format: string,
 /**
  * File size in bytes
  */
-size_bytes: bigint, 
+size_bytes: number, 
 /**
  * License information from .license file
  */
 license: string | null, 
+/**
+ * Whether this is a system asset (true) or user asset (false)
+ */
+is_system: boolean, };
+
+export type ImageAsset = { 
+/**
+ * Unique identifier (filename, including extension)
+ */
+id: string, 
+/**
+ * Display name
+ */
+name: string, 
+/**
+ * Server-relative path suitable for compositor `asset_path` (e.g., `samples/images/system/logo.png`)
+ */
+path: string, 
+/**
+ * File extension/format (png, jpg, jpeg, webp, gif)
+ */
+format: string, 
+/**
+ * Image width in pixels
+ */
+width: number, 
+/**
+ * Image height in pixels
+ */
+height: number, 
+/**
+ * File size in bytes
+ */
+size_bytes: number, 
 /**
  * Whether this is a system asset (true) or user asset (false)
  */

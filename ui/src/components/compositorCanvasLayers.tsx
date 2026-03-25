@@ -10,7 +10,7 @@
  */
 
 import { useAtomValue } from 'jotai/react';
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import { layerAtoms, textOverlayAtoms, imageOverlayAtoms } from '@/hooks/compositorAtoms';
 import type { ResizeHandle } from '@/hooks/useCompositorLayers';
@@ -360,48 +360,17 @@ export const ImageOverlayLayer: React.FC<{
     [overlayId, onPointerDown]
   );
 
-  // Build a blob URL for the image thumbnail.  Using fetch() with a
-  // data-URI lets the browser decode the base64 natively, which is
-  // more efficient than the manual atob() + byte-by-byte Uint8Array
-  // copy for large images.
-  //
-  // MIME detection: we inspect the base64-encoded magic bytes at the
-  // start of the string to pick the correct MIME type.  The fallback
-  // is JPEG, which covers the common `/9j/` prefix and variants.
-  const [imgSrc, setImgSrc] = useState<string | undefined>();
+  // Build a serve URL for the image overlay preview.
+  const imgSrc = useMemo(() => {
+    if (!overlay?.assetPath) return undefined;
 
-  useEffect(() => {
-    if (!overlay?.dataBase64) {
-      setImgSrc(undefined);
-      return;
-    }
-    let mime = 'image/jpeg'; // default fallback
-    // MIME detection via base64 magic-byte prefixes.  Covers the most common
-    // web formats; unrecognised formats (AVIF, BMP, TIFF, …) fall back to
-    // JPEG which the browser may still decode correctly via content sniffing.
-    if (overlay.dataBase64.startsWith('iVBOR')) mime = 'image/png';
-    else if (overlay.dataBase64.startsWith('R0lGOD')) mime = 'image/gif';
-    else if (overlay.dataBase64.startsWith('UklGR')) mime = 'image/webp';
-
-    let cancelled = false;
-    let url: string | undefined;
-
-    fetch(`data:${mime};base64,${overlay.dataBase64}`)
-      .then((r) => r.blob())
-      .then((blob) => {
-        if (cancelled) return;
-        url = URL.createObjectURL(blob);
-        setImgSrc(url);
-      })
-      .catch(() => {
-        // Ignore decode failures — no thumbnail shown.
-      });
-
-    return () => {
-      cancelled = true;
-      if (url) URL.revokeObjectURL(url);
-    };
-  }, [overlay?.dataBase64]);
+    // Extract scope (user/system) and filename from the path
+    // (e.g. "samples/images/user/photo.png" → scope="user", filename="photo.png")
+    const parts = overlay.assetPath.split('/');
+    const filename = parts.pop() ?? '';
+    const scope = parts.pop() ?? 'user';
+    return `/api/v1/assets/images/file/${encodeURIComponent(scope)}/${encodeURIComponent(filename)}`;
+  }, [overlay?.assetPath]);
 
   if (!overlay) return null;
 

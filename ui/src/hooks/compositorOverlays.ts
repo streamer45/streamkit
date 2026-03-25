@@ -397,7 +397,7 @@ export function useCompositorOverlays(deps: OverlayDeps) {
   // ── Image overlay CRUD ─────────────────────────────────────────────
 
   const addImageOverlay = useCallback(
-    (dataBase64: string, naturalWidth?: number, naturalHeight?: number) => {
+    (assetPath: string, naturalWidth?: number, naturalHeight?: number) => {
       setImageOverlays((prev) => {
         const maxDim = 200;
         let w = maxDim;
@@ -412,7 +412,7 @@ export function useCompositorOverlays(deps: OverlayDeps) {
           ...prev,
           {
             id: newId,
-            dataBase64,
+            assetPath,
             x: DEFAULT_OVERLAY_X,
             y: DEFAULT_OVERLAY_Y_BASE + prev.length * 60,
             width: w,

@@ -106,9 +106,9 @@ pub struct ImageOverlayConfig {
     /// Stable unique identifier.  Auto-generated (UUID v4) when omitted.
     #[serde(default = "generate_overlay_id")]
     pub id: String,
-    /// Base64-encoded image data (PNG or JPEG). Decoded once during
-    /// initialization, not per-frame.
-    pub data_base64: String,
+    /// Server-relative path to an uploaded image asset
+    /// (e.g. `samples/images/user/logo.png`).
+    pub asset_path: String,
     /// Spatial and visual properties (rect, opacity, rotation, z_index).
     #[serde(flatten)]
     pub transform: OverlayTransform,

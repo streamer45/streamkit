@@ -172,7 +172,7 @@ function textOverlayEqual(a: TextOverlayState, b: TextOverlayState): boolean {
 
 /** Field-level equality for ImageOverlayState. */
 function imageOverlayEqual(a: ImageOverlayState, b: ImageOverlayState): boolean {
-  return baseFieldsEqual(a, b) && a.dataBase64 === b.dataBase64;
+  return baseFieldsEqual(a, b) && a.assetPath === b.assetPath;
 }
 
 // ── Bulk helpers ────────────────────────────────────────────────────────────

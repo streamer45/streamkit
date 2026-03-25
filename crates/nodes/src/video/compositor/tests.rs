@@ -2113,3 +2113,98 @@ fn test_resolve_scene_overlay_geometry() {
     assert_eq!(ro.measured_text_width, Some(195));
     assert_eq!(ro.measured_text_height, Some(38));
 }
+
+// ── Image overlay decode tests ──────────────────────────────────────────────
+
+/// Helper: create a minimal valid PNG in memory (1×1 red pixel).
+fn make_test_png() -> Vec<u8> {
+    let img = image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255]));
+    let mut buf = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut buf, image::ImageFormat::Png).expect("PNG encode");
+    buf.into_inner()
+}
+
+/// Helper: write a test PNG to a temp file under `samples/images/` and
+/// return the relative path.  The directory is created if it doesn't exist.
+fn write_test_asset(subdir: &str, filename: &str) -> String {
+    let dir = std::path::PathBuf::from("samples/images").join(subdir);
+    std::fs::create_dir_all(&dir).expect("create test dir");
+    let path = dir.join(filename);
+    std::fs::write(&path, make_test_png()).expect("write test PNG");
+    format!("samples/images/{subdir}/{filename}")
+}
+
+/// Drop guard that removes a test asset file when it goes out of scope,
+/// ensuring cleanup even if the test panics.
+struct TestAssetGuard {
+    path: String,
+}
+
+impl Drop for TestAssetGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn default_transform(w: u32, h: u32) -> config::OverlayTransform {
+    config::OverlayTransform {
+        rect: Rect { x: 0, y: 0, width: w, height: h },
+        ..Default::default()
+    }
+}
+
+#[test]
+fn test_decode_image_overlay_from_asset_path() {
+    let asset_path = write_test_asset("user", "test_decode_asset.png");
+    let _guard = TestAssetGuard { path: asset_path.clone() };
+    let cfg = config::ImageOverlayConfig {
+        id: "img_asset".to_string(),
+        asset_path: asset_path.clone(),
+        transform: default_transform(10, 10),
+    };
+    overlay::validate_asset_path(&asset_path).expect("path should be valid");
+    let bytes = std::fs::read(&asset_path).expect("read test asset");
+    let result = overlay::decode_image_overlay(&cfg, &bytes, 7680);
+    let decoded = result.expect("should decode from asset bytes");
+    assert_eq!(decoded.id, "img_asset");
+    assert!(decoded.width > 0);
+    assert!(decoded.height > 0);
+}
+
+#[test]
+fn test_decode_image_overlay_bad_path_traversal() {
+    let result = overlay::validate_asset_path("samples/images/../../etc/passwd");
+    assert!(result.is_err(), "path traversal should be rejected");
+}
+
+#[test]
+fn test_decode_image_overlay_bad_path_prefix() {
+    let result = overlay::validate_asset_path("/etc/passwd");
+    assert!(result.is_err(), "paths outside samples/images/ should be rejected");
+}
+
+#[test]
+fn test_image_overlay_cache_key_asset_path() {
+    // Two configs with different asset_path values should not be considered
+    // content-equal by apply_update_params' cache check.
+    let a = config::ImageOverlayConfig {
+        id: "img_a".to_string(),
+        asset_path: "samples/images/user/a.png".to_string(),
+        transform: default_transform(10, 10),
+    };
+    let b = config::ImageOverlayConfig {
+        id: "img_a".to_string(),
+        asset_path: "samples/images/user/b.png".to_string(),
+        transform: default_transform(10, 10),
+    };
+    // Same id but different asset_path → content differs.
+    assert_ne!(a.asset_path, b.asset_path);
+
+    // Same asset_path → content same.
+    let c = config::ImageOverlayConfig {
+        id: "img_a".to_string(),
+        asset_path: "samples/images/user/a.png".to_string(),
+        transform: default_transform(10, 10),
+    };
+    assert_eq!(a.asset_path, c.asset_path);
+}

@@ -491,14 +491,14 @@ describe('Monitor view data flow integration', () => {
     expect(text1[0].measuredTextHeight).toBe(44);
   });
 
-  it('image overlay dataBase64 changes are picked up in Monitor view', () => {
+  it('image overlay assetPath changes are picked up in Monitor view', () => {
     seedStore();
 
     const params = makeParams({
       image_overlays: [
         {
           id: 'img_0',
-          data_base64: 'aW1hZ2UtZGF0YQ==', // "image-data"
+          asset_path: 'samples/images/user/logo.png',
           rect: { x: 10, y: 20, width: 100, height: 80 },
           opacity: 1.0,
           rotation_degrees: 0,
@@ -530,16 +530,16 @@ describe('Monitor view data flow integration', () => {
     const img0 = getImageOverlaysFromStore(result.current.store);
     expect(img0[0].x).toBe(500);
     expect(img0[0].y).toBe(300);
-    expect(img0[0].dataBase64).toBe('aW1hZ2UtZGF0YQ==');
+    expect(img0[0].assetPath).toBe('samples/images/user/logo.png');
     // Config-driven opacity preserved (not in view data)
     expect(img0[0].opacity).toBe(1.0);
 
-    // Another client changes the image data via params
+    // Another client changes the image asset via params
     const updatedParams = makeParams({
       image_overlays: [
         {
           id: 'img_0',
-          data_base64: 'bmV3LWltYWdl', // "new-image"
+          asset_path: 'samples/images/user/new-logo.png',
           rect: { x: 10, y: 20, width: 100, height: 80 },
           opacity: 1.0,
           rotation_degrees: 0,
@@ -551,9 +551,9 @@ describe('Monitor view data flow integration', () => {
     });
     act(() => rerender({ ...opts, params: updatedParams }));
 
-    // dataBase64 must be updated (config field)
+    // assetPath must be updated (config field)
     const img1 = getImageOverlaysFromStore(result.current.store);
-    expect(img1[0].dataBase64).toBe('bmV3LWltYWdl');
+    expect(img1[0].assetPath).toBe('samples/images/user/new-logo.png');
     // Server-resolved position must be preserved
     expect(img1[0].x).toBe(500);
     expect(img1[0].y).toBe(300);

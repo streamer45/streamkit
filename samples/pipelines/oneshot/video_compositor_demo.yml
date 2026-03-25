@@ -2,19 +2,20 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-# Demonstrates the video::compositor node with three layers:
-#   1. A full-size 640x480 background colorbars (RGBA8)
+# Demonstrates the video::compositor node with four layers:
+#   1. A full-size 1280x720 background colorbars (RGBA8)
 #   2. A smaller 320x240 PiP colorbars overlay (RGBA8) with explicit
 #      positioning and 15° clockwise rotation
 #   3. A text overlay ("StreamKit Demo") rendered with the bundled
 #      DejaVu Sans font (embedded in the binary)
+#   4. The StreamKit logo as a semi-transparent image overlay (watermark)
 #
 # Per-layer rect, opacity, rotation_degrees, and text overlays can be
 # updated at runtime via UpdateParams (JSON) — changes take effect on
 # the very next composited frame.
 
 name: Video Compositor Demo
-description: Composites two colorbars sources (main + PiP) with a text overlay through the compositor node, encodes to VP9, and streams a WebM via http_output with real-time pacing (3 seconds)
+description: Composites two colorbars sources (main + PiP) with a text overlay and the StreamKit logo watermark through the compositor node, encodes to VP9, and streams a WebM via http_output with real-time pacing (3 seconds)
 mode: oneshot
 client:
   input:
@@ -91,6 +92,16 @@ nodes:
           rotation_degrees: 0.0
           z_index: 2
           font_name: dejavu-sans
+      image_overlays:
+        - id: logo
+          asset_path: samples/images/system/streamkit-logo.png
+          rect:
+            x: 1190
+            y: 630
+            width: 46
+            height: 80
+          opacity: 0.7
+          z_index: 3
     needs:
       - colorbars_bg
       - colorbars_pip

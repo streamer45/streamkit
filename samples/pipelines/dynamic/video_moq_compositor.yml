@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MPL-2.0
 
 name: Video Compositor (MoQ Stream)
-description: Composites two colorbars sources through the compositor node and streams via MoQ
+description: Composites two colorbars sources with the StreamKit logo watermark through the compositor node and streams via MoQ
 mode: dynamic
 client:
   gateway_path: /moq/video
@@ -50,6 +50,16 @@ nodes:
           opacity: 0.9
           z_index: 1
           rotation_degrees: 15.0
+      image_overlays:
+        - id: logo
+          asset_path: samples/images/system/streamkit-logo.png
+          rect:
+            x: 1190
+            y: 630
+            width: 46
+            height: 80
+          opacity: 0.7
+          z_index: 3
     needs:
       - colorbars_bg
       - colorbars_pip

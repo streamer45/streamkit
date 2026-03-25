@@ -130,7 +130,7 @@ export interface UseCompositorLayersResult {
   addTextOverlay: (text: string) => void;
   updateTextOverlay: (id: string, updates: Partial<Omit<TextOverlayState, 'id'>>) => void;
   removeTextOverlay: (id: string) => void;
-  addImageOverlay: (dataBase64: string, naturalWidth?: number, naturalHeight?: number) => void;
+  addImageOverlay: (assetPath: string, naturalWidth?: number, naturalHeight?: number) => void;
   updateImageOverlay: (id: string, updates: Partial<Omit<ImageOverlayState, 'id'>>) => void;
   removeImageOverlay: (id: string) => void;
   /** Atomically reassign z-index values for all layer types in one commit.
@@ -385,7 +385,7 @@ export const useCompositorLayers = (
     const mergedImg = mergeOverlayState(
       currentImg,
       parsedImg,
-      (a, b) => a.dataBase64 !== b.dataBase64,
+      (a, b) => a.assetPath !== b.assetPath,
       isMonitorView,
       isMonitorView ? prevParsedImgRef.current : undefined
     );

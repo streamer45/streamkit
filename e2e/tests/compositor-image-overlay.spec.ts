@@ -17,6 +17,10 @@
  * - Image overlay can be deleted via context menu
  */
 
+import { readFileSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { test, expect, request, type Page } from '@playwright/test';
 
 import { ensureLoggedIn, getAuthHeaders } from './auth-helpers';
@@ -37,14 +41,20 @@ async function setupCompositorView(page: Page) {
   if (!page.url().includes('/monitor')) {
     await page.goto('/monitor');
   }
-  await expect(page.getByTestId('monitor-view')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('monitor-view')).toBeVisible({
+    timeout: 15_000,
+  });
 
-  await expect(page.getByTestId('sessions-list')).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByTestId('sessions-list')).toBeVisible({
+    timeout: 10_000,
+  });
   const sessionItem = page.getByTestId('session-item').first();
   await expect(sessionItem).toBeVisible({ timeout: 10_000 });
   await sessionItem.click();
 
-  await expect(page.locator('.react-flow__node').first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('.react-flow__node').first()).toBeVisible({
+    timeout: 15_000,
+  });
 
   const compositorNode = page.locator('.react-flow__node').filter({ hasText: 'Compositor' });
   await expect(compositorNode).toBeVisible({ timeout: 10_000 });
@@ -55,30 +65,18 @@ async function setupCompositorView(page: Page) {
   return { compositorNode, canvasInner };
 }
 
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const repoRoot = resolve(__dirname, '..', '..');
+
 /**
- * Generate a valid 200×200 solid-red PNG buffer.
+ * Read the bundled StreamKit logo PNG (293x512 RGBA with transparency).
  *
- * Using a reasonably-sized image ensures the compositor creates a canvas
- * overlay box large enough to be visible and clickable during tests.
- * (A 1×1 PNG would produce a 1×1-pixel layer box that Playwright can't
- * reliably interact with.)
+ * Uses the system image asset shipped under `samples/images/system/`
+ * instead of an inline base64 blob.  The logo's transparency makes it
+ * a realistic overlay test case.
  */
-function createTestPngBuffer(): Buffer {
-  const base64 =
-    'iVBORw0KGgoAAAANSUhEUgAAAMgAAADICAIAAAAiOjnJAAACcklEQVR4nO3OAQkAMBDE' +
-    'sPNvejPxUCiFCMjelpzjB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1Hi' +
-    'B1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1Hi' +
-    'B1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1Hi' +
-    'B1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1Hi' +
-    'B1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1Hi' +
-    'B1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1Hi' +
-    'B1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1Hi' +
-    'B1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1Hi' +
-    'B1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1Hi' +
-    'B1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1Hi' +
-    'B1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1Hi' +
-    'B1HiB1HiB1HiB1HiB1HiB1HiB1H60Yes1qIoPaoAAAAASUVORK5CYII=';
-  return Buffer.from(base64, 'base64');
+function readSystemLogoPng(): Buffer {
+  return readFileSync(resolve(repoRoot, 'samples/images/system/streamkit-logo.png'));
 }
 
 // ---------------------------------------------------------------------------
@@ -156,9 +154,9 @@ test.describe('Compositor Image Overlay Lifecycle', () => {
     ]);
 
     await fileChooser.setFiles({
-      name: 'test-image.png',
+      name: 'streamkit-logo.png',
       mimeType: 'image/png',
-      buffer: createTestPngBuffer(),
+      buffer: readSystemLogoPng(),
     });
 
     // ── 5. Verify image layer appears in layer list ──────────────────────
@@ -182,7 +180,9 @@ test.describe('Compositor Image Overlay Lifecycle', () => {
     await imageLayerBox.click();
 
     // Wait for the inspector panel to render (slider becomes visible).
-    await expect(compositorNode.getByRole('slider').first()).toBeVisible({ timeout: 5_000 });
+    await expect(compositorNode.getByRole('slider').first()).toBeVisible({
+      timeout: 5_000,
+    });
 
     // Opacity section: contains the "Opacity" label and a slider.
     const opacitySection = compositorNode
@@ -235,6 +235,119 @@ test.describe('Compositor Image Overlay Lifecycle', () => {
     if (unexpected.length > 0) {
       console.warn('Unexpected console errors (non-fatal):', unexpected);
     }
+  });
+
+  test('image asset upload happy path: upload, list, serve, duplicate 409, delete', async ({
+    baseURL,
+  }) => {
+    test.setTimeout(60_000);
+
+    const apiContext = await request.newContext({
+      baseURL: baseURL!,
+      extraHTTPHeaders: getAuthHeaders(),
+    });
+
+    const testFileName = `e2e-test-${Date.now()}.png`;
+    const pngBuffer = readSystemLogoPng();
+
+    // ── 1. Upload image asset via multipart POST ─────────────────────────
+
+    const uploadResponse = await apiContext.post('/api/v1/assets/images', {
+      multipart: {
+        file: {
+          name: testFileName,
+          mimeType: 'image/png',
+          buffer: pngBuffer,
+        },
+      },
+    });
+
+    expect(uploadResponse.ok(), `Upload failed: ${await uploadResponse.text()}`).toBeTruthy();
+
+    const asset = (await uploadResponse.json()) as {
+      id: string;
+      name: string;
+      path: string;
+      format: string;
+      width: number;
+      height: number;
+      size_bytes: number;
+      is_system: boolean;
+    };
+
+    expect(asset.id).toBe(testFileName);
+    // The server builds a display name by stripping the extension and
+    // replacing '_'/'-' with spaces.
+    expect(asset.name).toBe(testFileName.replace(/\.png$/, '').replaceAll('-', ' '));
+    expect(asset.path).toContain('samples/images/user/');
+    expect(asset.format).toBe('png');
+    expect(asset.width).toBe(293);
+    expect(asset.height).toBe(512);
+    expect(asset.size_bytes).toBeGreaterThan(0);
+    expect(asset.is_system).toBe(false);
+
+    // ── 2. List assets — uploaded image and system logo should appear ────
+
+    const listResponse = await apiContext.get('/api/v1/assets/images');
+    expect(listResponse.ok()).toBeTruthy();
+
+    const assets = (await listResponse.json()) as Array<{
+      id: string;
+      path: string;
+      is_system: boolean;
+    }>;
+    const found = assets.find((a) => a.id === testFileName);
+    expect(found, `Uploaded asset ${testFileName} not found in list`).toBeTruthy();
+
+    // The bundled system logo should also appear in the list.
+    const systemLogo = assets.find((a) => a.id === 'streamkit-logo.png');
+    expect(systemLogo, 'Bundled system logo not found in list').toBeTruthy();
+    expect(systemLogo!.is_system).toBe(true);
+
+    // ── 3. Serve image file — GET /api/v1/assets/images/file/{scope}/{id} ─
+
+    const serveResponse = await apiContext.get(
+      `/api/v1/assets/images/file/user/${encodeURIComponent(testFileName)}`
+    );
+    expect(serveResponse.ok(), `Serve failed: ${serveResponse.status()}`).toBeTruthy();
+
+    const contentType = serveResponse.headers()['content-type'] ?? '';
+    expect(contentType).toContain('image/png');
+
+    const servedBytes = await serveResponse.body();
+    expect(servedBytes.length).toBe(pngBuffer.length);
+
+    // ── 4. Duplicate upload — expect 409 Conflict ────────────────────────
+
+    const dupResponse = await apiContext.post('/api/v1/assets/images', {
+      multipart: {
+        file: {
+          name: testFileName,
+          mimeType: 'image/png',
+          buffer: pngBuffer,
+        },
+      },
+    });
+
+    expect(dupResponse.status()).toBe(409);
+
+    // ── 5. Delete asset ──────────────────────────────────────────────────
+
+    const deleteResponse = await apiContext.delete(
+      `/api/v1/assets/images/${encodeURIComponent(testFileName)}`
+    );
+    expect(deleteResponse.ok(), `Delete failed: ${deleteResponse.status()}`).toBeTruthy();
+
+    // ── 6. Verify asset is gone from list ────────────────────────────────
+
+    const listAfterDelete = await apiContext.get('/api/v1/assets/images');
+    expect(listAfterDelete.ok()).toBeTruthy();
+
+    const assetsAfter = (await listAfterDelete.json()) as Array<{ id: string }>;
+    const stillExists = assetsAfter.find((a) => a.id === testFileName);
+    expect(stillExists, `Asset ${testFileName} should be deleted`).toBeFalsy();
+
+    await apiContext.dispose();
   });
 
   // ── Cleanup ─────────────────────────────────────────────────────────────
