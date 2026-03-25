@@ -210,12 +210,21 @@ impl DynamicEngine {
             return;
         }
 
-        // Check if all nodes are in an active state (anything past Initializing).
+        // Check if all nodes are in an active state.
         // Degraded and Recovering count as activatable because nodes like the mixer
         // enter Degraded while waiting for input, and transport nodes enter Recovering
         // on transient connection failures — neither should block source node activation.
-        let all_ready =
-            self.node_states.values().all(|state| !matches!(state, NodeState::Initializing));
+        // Failed and Stopped nodes are excluded: starting sources into a broken pipeline
+        // would just produce packets that go nowhere.
+        let all_ready = self.node_states.values().all(|state| {
+            matches!(
+                state,
+                NodeState::Ready
+                    | NodeState::Running
+                    | NodeState::Degraded { .. }
+                    | NodeState::Recovering { .. }
+            )
+        });
 
         if !all_ready {
             return;

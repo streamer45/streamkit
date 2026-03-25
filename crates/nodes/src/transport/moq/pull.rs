@@ -1073,16 +1073,19 @@ mod tests {
         assert_eq!(&stripped[..], b"opus-frame-bytes");
     }
 
-    #[test]
-    fn test_cancel_threshold_triggers_at_max() {
-        // The reconnect threshold must trigger at exactly MAX_CONSECUTIVE_CANCELS.
-        // Below threshold: no reconnect. At threshold: reconnect.
-        assert!(
-            MAX_CONSECUTIVE_CANCELS > CANCEL_YIELD_THRESHOLD,
-            "reconnect threshold must be above yield threshold"
-        );
+    // Compile-time validation that the cancel constants are self-consistent.
+    const _: () = {
+        assert!(MAX_CONSECUTIVE_CANCELS > CANCEL_YIELD_THRESHOLD);
+        assert!(CANCEL_YIELD_THRESHOLD >= 3);
+        assert!(CANCEL_YIELD_THRESHOLD <= 10);
+        // Worst-case spin time: (MAX - YIELD) * 10ms must be under 1 second.
+        assert!((MAX_CONSECUTIVE_CANCELS - CANCEL_YIELD_THRESHOLD) * 10 <= 1000);
+    };
 
-        // Simulate the check at boundary values
+    #[test]
+    fn test_cancel_threshold_boundary() {
+        // Verify the reconnect condition at the boundary:
+        // below MAX → no reconnect, at MAX → reconnect.
         let below = MAX_CONSECUTIVE_CANCELS - 1;
         let at = MAX_CONSECUTIVE_CANCELS;
         assert!(below < MAX_CONSECUTIVE_CANCELS, "below threshold should not trigger");
@@ -1090,35 +1093,18 @@ mod tests {
     }
 
     #[test]
-    fn test_cancel_threshold_does_not_require_elapsed_time() {
+    fn test_cancel_reconnect_is_count_only() {
         // Regression: the old code required BOTH consecutive_cancels >= 50
         // AND last_payload_at.elapsed() > 5 seconds. This caused a spin of
         // hundreds of cancels before reconnecting. The fix removed the time
         // condition so that MAX_CONSECUTIVE_CANCELS alone is sufficient.
         //
-        // Verify the threshold is purely count-based by checking the constant
-        // is reasonable (not so high it causes a visible spin loop).
-        // At ~10ms sleep per cancel after CANCEL_YIELD_THRESHOLD, the worst-case
-        // time to reconnect is roughly:
-        //   CANCEL_YIELD_THRESHOLD * 0ms + (MAX - YIELD) * 10ms
-        let worst_case_ms = (MAX_CONSECUTIVE_CANCELS - CANCEL_YIELD_THRESHOLD) as u64 * 10;
+        // Verify worst-case time to reconnect at runtime matches the
+        // compile-time assertion above.
+        let worst_case_ms = u64::from(MAX_CONSECUTIVE_CANCELS - CANCEL_YIELD_THRESHOLD) * 10;
         assert!(
             worst_case_ms <= 1000,
             "worst-case cancel spin should be under 1 second, got {worst_case_ms}ms"
-        );
-    }
-
-    #[test]
-    fn test_yield_threshold_is_reasonable() {
-        // The yield threshold should be small enough to avoid busy-spinning
-        // but large enough to allow normal group-skip cancels without sleeping.
-        assert!(
-            CANCEL_YIELD_THRESHOLD >= 3,
-            "yield threshold should tolerate a few normal group skips"
-        );
-        assert!(
-            CANCEL_YIELD_THRESHOLD <= 10,
-            "yield threshold should kick in quickly to avoid busy-spinning"
         );
     }
 }
