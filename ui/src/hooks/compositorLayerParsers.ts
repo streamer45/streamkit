@@ -563,7 +563,7 @@ export function computeUpdatedLayer(
   if (type === 'drag') {
     return computeDragPosition(orig, rawDx, rawDy, canvasWidth, canvasHeight);
   }
-  return computeResizePosition(orig, handle!, rawDx, rawDy);
+  return computeResizePosition(orig, handle!, rawDx, rawDy, canvasWidth, canvasHeight);
 }
 
 function computeDragPosition(
@@ -611,7 +611,9 @@ function computeResizePosition(
   orig: LayerState,
   handle: ResizeHandle,
   rawDx: number,
-  rawDy: number
+  rawDy: number,
+  canvasWidth: number,
+  canvasHeight: number
 ): LayerState {
   // Transform mouse delta into the layer's local coordinate system so
   // resize handles behave naturally on rotated layers.
@@ -649,6 +651,22 @@ function computeResizePosition(
 
     if (handle.includes('w')) newX = orig.x + (orig.width - newW);
     if (handle.includes('n')) newY = orig.y + (orig.height - newH);
+  }
+
+  // Snap resize edges to canvas boundaries
+  if (handle.includes('e') && Math.abs(newX + newW - canvasWidth) < SNAP_THRESHOLD) {
+    newW = canvasWidth - newX;
+  }
+  if (handle.includes('w') && Math.abs(newX) < SNAP_THRESHOLD) {
+    newW += newX;
+    newX = 0;
+  }
+  if (handle.includes('s') && Math.abs(newY + newH - canvasHeight) < SNAP_THRESHOLD) {
+    newH = canvasHeight - newY;
+  }
+  if (handle.includes('n') && Math.abs(newY) < SNAP_THRESHOLD) {
+    newH += newY;
+    newY = 0;
   }
 
   return { ...orig, x: newX, y: newY, width: newW, height: newH };

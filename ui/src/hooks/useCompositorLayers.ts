@@ -317,6 +317,10 @@ export const useCompositorLayers = (
     // value and the sync would be a no-op in Monitor view (preserveGeometry
     // keeps OverlayBase fields from existing state).
     if (dragStateRef.current) return;
+    // Skip during active slider interactions (opacity, rotation, crop, etc.)
+    // to prevent stale server echo-backs from overwriting in-flight local
+    // state.  The next sync after the interaction ends will reconcile.
+    if (activeInteractionRef.current) return;
 
     const parsed = parseLayers(params, canvasWidth, canvasHeight);
     const currentLayers = getLayersFromStore(store);

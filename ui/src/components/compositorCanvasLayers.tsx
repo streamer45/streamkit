@@ -316,13 +316,19 @@ export const TextOverlayLayer: React.FC<{
               // above the first line.  The server renders glyphs from origin
               // y=0 with no leading, so pull the text up to match.
               marginTop: -overlay.fontSize * 0.1,
-              // When the server provides measured text dimensions, apply a
-              // CSS transform so the browser-rendered text matches the
+              // When the server provides measured text dimensions, apply CSS
+              // transforms so the browser-rendered text matches the
               // server's fontdue measurements pixel-precisely.
-              transform:
-                overlay.measuredTextWidth && browserTextSize.w > 0
-                  ? `scaleX(${overlay.measuredTextWidth / browserTextSize.w})`
-                  : undefined,
+              transform: (() => {
+                const parts: string[] = [];
+                if (overlay.measuredTextWidth && browserTextSize.w > 0) {
+                  parts.push(`scaleX(${overlay.measuredTextWidth / browserTextSize.w})`);
+                }
+                if (overlay.measuredTextHeight && browserTextSize.h > 0) {
+                  parts.push(`scaleY(${overlay.measuredTextHeight / browserTextSize.h})`);
+                }
+                return parts.length > 0 ? parts.join(' ') : undefined;
+              })(),
               transformOrigin: 'top left',
             }}
           >
