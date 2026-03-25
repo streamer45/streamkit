@@ -22,12 +22,34 @@ export interface MoqPeerSettings {
   outputsAudio: boolean;
   /** Whether the pipeline outputs video to subscribers via the moq_peer. */
   outputsVideo: boolean;
+  /**
+   * Whether the pipeline uses an external MoQ relay (separate publisher/subscriber
+   * nodes) rather than the built-in gateway (`transport::moq::peer`).
+   *
+   * True when `relay_url` is set explicitly, OR when the pipeline declares both
+   * `publish` and `watch` without a `gateway_path` — indicating that skit nodes
+   * connect directly to a relay and the browser must wait for the output broadcast
+   * to be announced before subscribing.
+   */
+  isExternalRelay: boolean;
 }
 
 /**
  * Derives `MoqPeerSettings` from a declarative `ClientSection`.
  */
 export function deriveSettingsFromClient(client: ClientSection): MoqPeerSettings {
+  const hasRelayUrl = Boolean(client.relay_url);
+  const hasGatewayPath = Boolean(client.gateway_path);
+
+  // External relay pattern: relay_url is explicit, OR the pipeline declares
+  // both publish and watch without a gateway_path.  Gateway pipelines always
+  // set gateway_path; its absence with pub+watch means nodes connect to a
+  // standalone relay and the browser must wait for the output broadcast
+  // announcement before subscribing (otherwise the catalog subscribe gets
+  // RESET_STREAM because skit hasn't published yet).
+  const isExternalRelay =
+    hasRelayUrl || (!hasGatewayPath && Boolean(client.publish) && Boolean(client.watch));
+
   return {
     gatewayPath: client.gateway_path ?? undefined,
     relayUrl: client.relay_url ?? undefined,
@@ -38,6 +60,7 @@ export function deriveSettingsFromClient(client: ClientSection): MoqPeerSettings
     needsVideoInput: client.publish?.video ?? false,
     outputsAudio: client.watch?.audio ?? false,
     outputsVideo: client.watch?.video ?? false,
+    isExternalRelay,
   };
 }
 
