@@ -660,20 +660,24 @@ function computeResizePosition(
   if (handle.includes('e') && Math.abs(newX + newW - canvasWidth) < SNAP_THRESHOLD) {
     newW = canvasWidth - newX;
     if (ar > 0) newH = newW / ar;
+    if (handle.includes('n')) newY = orig.y + (orig.height - newH);
   }
   if (handle.includes('w') && Math.abs(newX) < SNAP_THRESHOLD) {
     newW += newX;
     newX = 0;
     if (ar > 0) newH = newW / ar;
+    if (handle.includes('n')) newY = orig.y + (orig.height - newH);
   }
   if (handle.includes('s') && Math.abs(newY + newH - canvasHeight) < SNAP_THRESHOLD) {
     newH = canvasHeight - newY;
     if (ar > 0) newW = newH * ar;
+    if (handle.includes('w')) newX = orig.x + (orig.width - newW);
   }
   if (handle.includes('n') && Math.abs(newY) < SNAP_THRESHOLD) {
     newH += newY;
     newY = 0;
     if (ar > 0) newW = newH * ar;
+    if (handle.includes('w')) newX = orig.x + (orig.width - newW);
   }
 
   return { ...orig, x: newX, y: newY, width: newW, height: newH };
