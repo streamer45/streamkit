@@ -6,8 +6,6 @@
  * Service for managing image assets
  */
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-
 import type { ImageAsset } from '@/types/generated/api-types';
 import { getLogger } from '@/utils/logger';
 
@@ -115,46 +113,4 @@ export async function deleteImageAsset(id: string): Promise<void> {
   logger.info('Deleted image asset:', id);
 }
 
-// React Query hooks
 
-/**
- * Hook to fetch image assets with caching
- */
-export function useImageAssets() {
-  return useQuery({
-    queryKey: ['imageAssets'],
-    queryFn: listImageAssets,
-    staleTime: 30000, // Consider data fresh for 30 seconds
-    refetchOnWindowFocus: true,
-  });
-}
-
-/**
- * Hook to upload an image asset
- */
-export function useUploadImageAsset() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
-    mutationFn: uploadImageAsset,
-    onSuccess: () => {
-      // Invalidate and refetch image assets list
-      queryClient.invalidateQueries({ queryKey: ['imageAssets'] });
-    },
-  });
-}
-
-/**
- * Hook to delete an image asset
- */
-export function useDeleteImageAsset() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
-    mutationFn: deleteImageAsset,
-    onSuccess: () => {
-      // Invalidate and refetch image assets list
-      queryClient.invalidateQueries({ queryKey: ['imageAssets'] });
-    },
-  });
-}
