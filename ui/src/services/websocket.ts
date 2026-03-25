@@ -176,11 +176,10 @@ export class WebSocketService {
       },
     })
       .then((response) => {
-        const payload = response.payload as { action: string; pipeline?: unknown };
-        if (payload.action === 'pipeline' && payload.pipeline) {
-          const pipeline = payload.pipeline as import('@/types/types').Pipeline;
-          useSessionStore.getState().setPipeline(sessionId, pipeline);
-          seedPipelineAtoms(sessionId, pipeline);
+        const payload = response.payload as import('@/types/types').ResponsePayload;
+        if ('pipeline' in payload && payload.pipeline) {
+          useSessionStore.getState().setPipeline(sessionId, payload.pipeline);
+          seedPipelineAtoms(sessionId, payload.pipeline);
         }
       })
       .catch((err) => {

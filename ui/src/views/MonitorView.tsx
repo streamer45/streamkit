@@ -60,6 +60,7 @@ import {
   nodeParamsAtom,
   nodeKey,
 } from '@/stores/sessionAtoms';
+import { useSessionStore } from '@/stores/sessionStore';
 import type {
   NodeDefinition,
   Connection,
@@ -306,6 +307,18 @@ const MonitorViewContent: React.FC = () => {
 
   // Fetch session list
   const { data: sessions = [], isLoading: isLoadingSessions } = useSessionList();
+
+  // Ensure every known session has a Zustand store entry so that
+  // WS state events (which the server broadcasts for all visible
+  // sessions) are persisted and drive the session-list status badges.
+  useEffect(() => {
+    const store = useSessionStore.getState();
+    for (const s of sessions) {
+      if (!store.getSession(s.id)) {
+        store.initSession(s.id, true);
+      }
+    }
+  }, [sessions]);
 
   // Memoize the selected session to prevent unnecessary re-renders
   // Uses a ref to store previous value and only updates when data actually changes (deep comparison)
