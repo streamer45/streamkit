@@ -612,6 +612,10 @@ const fn default_compositor_max_canvas_dimension() -> u32 {
     7680
 }
 
+const fn default_compositor_max_image_dimension() -> u32 {
+    8192
+}
+
 const fn default_compositor_max_font_size() -> u32 {
     4096
 }
@@ -657,6 +661,12 @@ pub struct CompositorServerConfig {
     /// Default: 10000.
     #[serde(default = "default_compositor_max_text_length")]
     pub max_text_length: usize,
+
+    /// Maximum allowed image overlay dimension (width or height) in pixels.
+    /// Uploads exceeding this limit are rejected before full decode to prevent
+    /// decompression bombs.  Default: 8192.
+    #[serde(default = "default_compositor_max_image_dimension")]
+    pub max_image_dimension: u32,
 }
 
 impl Default for CompositorServerConfig {
@@ -665,6 +675,7 @@ impl Default for CompositorServerConfig {
             max_canvas_dimension: default_compositor_max_canvas_dimension(),
             max_font_size: default_compositor_max_font_size(),
             max_text_length: default_compositor_max_text_length(),
+            max_image_dimension: default_compositor_max_image_dimension(),
         }
     }
 }

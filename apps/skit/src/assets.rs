@@ -67,7 +67,9 @@ fn validate_audio_filename(filename: &str) -> Result<String, AssetsError> {
 fn sanitize_filename(filename: &str) -> String {
     filename
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' })
+        .map(
+            |c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' },
+        )
         .collect()
 }
 
@@ -547,22 +549,28 @@ async fn process_image_entry(
         return None;
     }
 
-    // Read only the image header to extract dimensions (avoids full decode)
-    let file_data = fs::read(&path).await.ok()?;
-    let (width, height) =
-        match image::ImageReader::new(std::io::Cursor::new(&file_data)).with_guessed_format() {
-            Ok(reader) => match reader.into_dimensions() {
-                Ok(dims) => dims,
-                Err(e) => {
-                    warn!("Failed to read image dimensions {}: {}", filename, e);
-                    return None;
-                },
-            },
-            Err(e) => {
-                warn!("Failed to guess image format {}: {}", filename, e);
-                return None;
-            },
-        };
+    // Read only the image header to extract dimensions (avoids full pixel decode).
+    // Use ImageReader::open() which reads directly from file rather than
+    // loading the entire file into memory first.
+    let path_clone = path.clone();
+    let (width, height) = match tokio::task::spawn_blocking(move || {
+        image::ImageReader::open(&path_clone)
+            .and_then(image::ImageReader::with_guessed_format)
+            .map_err(|e| e.to_string())
+            .and_then(|r| r.into_dimensions().map_err(|e| e.to_string()))
+    })
+    .await
+    {
+        Ok(Ok(dims)) => dims,
+        Ok(Err(e)) => {
+            warn!("Failed to read image dimensions {}: {}", filename, e);
+            return None;
+        },
+        Err(e) => {
+            warn!("Failed to read image dimensions {}: {}", filename, e);
+            return None;
+        },
+    };
 
     Some(ImageAsset {
         id,
@@ -690,6 +698,7 @@ async fn process_image_upload(
     filename: String,
     extension: String,
     field: axum::extract::multipart::Field<'_>,
+    max_image_dimension: u32,
 ) -> Result<ImageAsset, AssetsError> {
     let base_path = PathBuf::from("samples/images");
     let user_dir = base_path.join("user");
@@ -706,7 +715,37 @@ async fn process_image_upload(
 
     let written_bytes = write_image_upload_to_disk(field, &file_path).await?;
 
-    // Validate that the file is a decodable image and extract dimensions
+    // Quick header-only dimension check to catch decompression bombs early
+    // (e.g. a tiny PNG that decompresses to a 50000×50000 pixel buffer).
+    let file_path_clone = file_path.clone();
+    let header_dims = tokio::task::spawn_blocking(move || {
+        image::ImageReader::open(&file_path_clone)
+            .and_then(image::ImageReader::with_guessed_format)
+            .map_err(|e| e.to_string())
+            .and_then(|r| r.into_dimensions().map_err(|e| e.to_string()))
+    })
+    .await;
+    match header_dims {
+        Ok(Ok((w, h))) if w > max_image_dimension || h > max_image_dimension => {
+            let _ = fs::remove_file(&file_path).await;
+            return Err(AssetsError::InvalidFormat(format!(
+                "Image dimensions {w}x{h} exceed maximum {max_image_dimension}x{max_image_dimension}"
+            )));
+        },
+        Ok(Err(e)) => {
+            let _ = fs::remove_file(&file_path).await;
+            return Err(AssetsError::InvalidFormat(format!(
+                "Uploaded file is not a valid image: {e}"
+            )));
+        },
+        Err(e) => {
+            let _ = fs::remove_file(&file_path).await;
+            return Err(AssetsError::IoError(format!("Failed to read image dimensions: {e}")));
+        },
+        _ => {},
+    }
+
+    // Full decode validates the entire image is well-formed (not just the header).
     let file_data = fs::read(&file_path)
         .await
         .map_err(|e| AssetsError::IoError(format!("Failed to read uploaded file: {e}")))?;
@@ -777,7 +816,8 @@ pub async fn upload_image_asset_handler(
         Err(e) => return e.into_response(),
     };
 
-    match process_image_upload(filename, extension, field).await {
+    let max_dim = app_state.config.compositor.max_image_dimension;
+    match process_image_upload(filename, extension, field, max_dim).await {
         Ok(asset) => Json(asset).into_response(),
         Err(e) => {
             error!("Failed to process image upload: {}", e);
@@ -830,7 +870,7 @@ pub async fn delete_image_asset_handler(
 async fn serve_image_asset_handler(
     State(app_state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    Path((scope, id)): Path<(String, String)>,
 ) -> impl IntoResponse {
     use axum::http::header;
 
@@ -842,28 +882,24 @@ async fn serve_image_asset_handler(
             .into_response();
     }
 
-    let base_path = PathBuf::from("samples/images");
+    // Validate scope
+    if scope != "user" && scope != "system" {
+        return AssetsError::InvalidFilename(
+            "Invalid scope: must be 'user' or 'system'".to_string(),
+        )
+        .into_response();
+    }
 
-    // Try user directory first, then system
-    let file_path = {
-        let user_path = base_path.join("user").join(&id);
-        let system_path = base_path.join("system").join(&id);
-        if user_path.exists() {
-            let asset_path_str = format!("samples/images/user/{id}");
-            if !perms.is_asset_allowed(&asset_path_str) {
-                return AssetsError::Forbidden.into_response();
-            }
-            user_path
-        } else if system_path.exists() {
-            let asset_path_str = format!("samples/images/system/{id}");
-            if !perms.is_asset_allowed(&asset_path_str) {
-                return AssetsError::Forbidden.into_response();
-            }
-            system_path
-        } else {
-            return AssetsError::NotFound(id).into_response();
-        }
-    };
+    let file_path = PathBuf::from("samples/images").join(&scope).join(&id);
+    let asset_path_str = format!("samples/images/{scope}/{id}");
+
+    if !perms.is_asset_allowed(&asset_path_str) {
+        return AssetsError::Forbidden.into_response();
+    }
+
+    if !file_path.exists() {
+        return AssetsError::NotFound(id).into_response();
+    }
 
     let extension = file_path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
 
@@ -880,7 +916,7 @@ async fn serve_image_asset_handler(
             StatusCode::OK,
             [
                 (header::CONTENT_TYPE, content_type.to_string()),
-                (header::CACHE_CONTROL, "public, max-age=3600".to_string()),
+                (header::CACHE_CONTROL, "public, must-revalidate".to_string()),
             ],
             data,
         )
@@ -901,7 +937,7 @@ pub fn image_assets_router() -> Router<Arc<AppState>> {
                 .post(upload_image_asset_handler)
                 .layer(DefaultBodyLimit::max(MAX_IMAGE_FILE_SIZE)),
         )
-        .route("/api/v1/assets/images/file/{id}", get(serve_image_asset_handler))
+        .route("/api/v1/assets/images/file/{scope}/{id}", get(serve_image_asset_handler))
         .route("/api/v1/assets/images/{id}", delete(delete_image_asset_handler))
 }
 

@@ -2151,8 +2151,7 @@ fn test_decode_image_overlay_from_asset_path() {
     let asset_path = write_test_asset("user", "test_decode_asset.png");
     let cfg = config::ImageOverlayConfig {
         id: "img_asset".to_string(),
-        data_base64: None,
-        asset_path: Some(asset_path.clone()),
+        asset_path: asset_path.clone(),
         transform: default_transform(10, 10),
     };
     let result = overlay::decode_image_overlay(&cfg, 7680);
@@ -2164,63 +2163,10 @@ fn test_decode_image_overlay_from_asset_path() {
 }
 
 #[test]
-fn test_decode_image_overlay_from_base64() {
-    use base64::Engine;
-    let b64 = base64::engine::general_purpose::STANDARD.encode(make_test_png());
-    let cfg = config::ImageOverlayConfig {
-        id: "img_b64".to_string(),
-        data_base64: Some(b64),
-        asset_path: None,
-        transform: default_transform(10, 10),
-    };
-    let decoded = overlay::decode_image_overlay(&cfg, 7680).expect("should decode from base64");
-    assert_eq!(decoded.id, "img_b64");
-    assert!(decoded.width > 0);
-}
-
-#[test]
-fn test_decode_image_overlay_asset_path_takes_precedence() {
-    use base64::Engine;
-    let asset_path = write_test_asset("user", "test_precedence.png");
-    let b64 = base64::engine::general_purpose::STANDARD.encode(make_test_png());
-    let cfg = config::ImageOverlayConfig {
-        id: "img_both".to_string(),
-        data_base64: Some(b64),
-        asset_path: Some(asset_path.clone()),
-        transform: default_transform(10, 10),
-    };
-    // Should succeed — asset_path takes precedence; both sources are valid.
-    let decoded = overlay::decode_image_overlay(&cfg, 7680).expect("should succeed with both");
-    cleanup_test_asset(&asset_path);
-    assert_eq!(decoded.id, "img_both");
-}
-
-#[test]
-fn test_decode_image_overlay_missing_both_errors() {
-    let cfg = config::ImageOverlayConfig {
-        id: "img_none".to_string(),
-        data_base64: None,
-        asset_path: None,
-        transform: default_transform(10, 10),
-    };
-    let result = overlay::decode_image_overlay(&cfg, 7680);
-    assert!(result.is_err(), "should error when neither source is set");
-    let err_msg = match result {
-        Err(e) => e.to_string(),
-        Ok(_) => panic!("expected error"),
-    };
-    assert!(
-        err_msg.contains("asset_path") || err_msg.contains("data_base64"),
-        "error should mention the missing fields: {err_msg}"
-    );
-}
-
-#[test]
 fn test_decode_image_overlay_bad_path_traversal() {
     let cfg = config::ImageOverlayConfig {
         id: "img_bad".to_string(),
-        data_base64: None,
-        asset_path: Some("samples/images/../../etc/passwd".to_string()),
+        asset_path: "samples/images/../../etc/passwd".to_string(),
         transform: default_transform(10, 10),
     };
     let result = overlay::decode_image_overlay(&cfg, 7680);
@@ -2231,8 +2177,7 @@ fn test_decode_image_overlay_bad_path_traversal() {
 fn test_decode_image_overlay_bad_path_prefix() {
     let cfg = config::ImageOverlayConfig {
         id: "img_bad_prefix".to_string(),
-        data_base64: None,
-        asset_path: Some("/etc/passwd".to_string()),
+        asset_path: "/etc/passwd".to_string(),
         transform: default_transform(10, 10),
     };
     let result = overlay::decode_image_overlay(&cfg, 7680);
@@ -2245,14 +2190,12 @@ fn test_image_overlay_cache_key_asset_path() {
     // content-equal by apply_update_params' cache check.
     let a = config::ImageOverlayConfig {
         id: "img_a".to_string(),
-        data_base64: None,
-        asset_path: Some("samples/images/user/a.png".to_string()),
+        asset_path: "samples/images/user/a.png".to_string(),
         transform: default_transform(10, 10),
     };
     let b = config::ImageOverlayConfig {
         id: "img_a".to_string(),
-        data_base64: None,
-        asset_path: Some("samples/images/user/b.png".to_string()),
+        asset_path: "samples/images/user/b.png".to_string(),
         transform: default_transform(10, 10),
     };
     // Same id but different asset_path → content differs.
@@ -2261,10 +2204,8 @@ fn test_image_overlay_cache_key_asset_path() {
     // Same asset_path → content same.
     let c = config::ImageOverlayConfig {
         id: "img_a".to_string(),
-        data_base64: None,
-        asset_path: Some("samples/images/user/a.png".to_string()),
+        asset_path: "samples/images/user/a.png".to_string(),
         transform: default_transform(10, 10),
     };
     assert_eq!(a.asset_path, c.asset_path);
-    assert_eq!(a.data_base64, c.data_base64);
 }

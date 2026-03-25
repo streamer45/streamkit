@@ -100,11 +100,8 @@ export interface TextOverlayState {
 export interface ImageOverlayState {
   /** Stable unique identifier (UUID, assigned by backend or frontend). */
   id: string;
-  /** Base64-encoded image data (legacy, optional when assetPath is set) */
-  dataBase64?: string;
-  /** Server-relative path to an uploaded image asset (e.g. `samples/images/user/logo.png`).
-   *  Takes precedence over `dataBase64` when both are present. */
-  assetPath?: string;
+  /** Server-relative path to an uploaded image asset (e.g. `samples/images/user/logo.png`). */
+  assetPath: string;
   x: number;
   y: number;
   width: number;
@@ -257,8 +254,7 @@ export function parseImageOverlays(params: Record<string, unknown>): ImageOverla
     const raw = o as unknown as Record<string, unknown>;
     return {
       id: o.id ?? `img_${i}`,
-      dataBase64: (raw.data_base64 as string | undefined) ?? undefined,
-      assetPath: (raw.asset_path as string | undefined) ?? undefined,
+      assetPath: (raw.asset_path as string | undefined) ?? '',
       ...parseTransformFields(raw, {
         width: 200,
         height: 200,
@@ -307,24 +303,14 @@ export function serializeTextOverlays(
   }));
 }
 
-/** Serialize image overlays back to config format.
- *  Sends `asset_path` when present (new upload flow), otherwise falls back
- *  to `data_base64` (legacy inline base64). */
+/** Serialize image overlays back to config format. */
 export function serializeImageOverlays(overlays: ImageOverlayState[]): Record<string, unknown>[] {
-  return overlays.map((o) => {
-    const base: Record<string, unknown> = {
-      id: o.id,
-      rect: serializeRect(o),
-      ...serializeSpatialFields(o),
-    };
-    if (o.assetPath) {
-      base.asset_path = o.assetPath;
-    }
-    if (o.dataBase64) {
-      base.data_base64 = o.dataBase64;
-    }
-    return base;
-  });
+  return overlays.map((o) => ({
+    id: o.id,
+    asset_path: o.assetPath,
+    rect: serializeRect(o),
+    ...serializeSpatialFields(o),
+  }));
 }
 
 /** Serialize video layers to the wire format used by the backend. */
@@ -350,7 +336,7 @@ export function serializeLayers(layers: LayerState[]): Record<string, LayerConfi
 
 /** Keys that belong to OverlayBase and are resolved by the server.
  *  Used by `mergeOverlayState` to separate server-owned fields from
- *  type-specific config fields (text, fontSize, dataBase64, etc.). */
+ *  type-specific config fields (text, fontSize, assetPath, etc.). */
 const OVERLAY_BASE_KEYS: ReadonlySet<string> = new Set([
   'id',
   'x',
@@ -367,7 +353,7 @@ const OVERLAY_BASE_KEYS: ReadonlySet<string> = new Set([
 
 /** Extract type-specific config fields from a parsed overlay by removing
  *  all OverlayBase keys.  The result contains only fields like `text`,
- *  `fontSize`, `fontName`, `color`, `dataBase64`, etc. */
+ *  `fontSize`, `fontName`, `color`, `assetPath`, etc. */
 function pickConfigFields<T extends OverlayBase>(parsed: T): Partial<T> {
   const config: Record<string, unknown> = {};
   for (const key of Object.keys(parsed)) {
@@ -414,7 +400,7 @@ function pickChangedConfigFields<T extends OverlayBase>(
  *  When `preserveGeometry` is true (Monitor view), ALL server-resolved fields
  *  are kept from `current` — not just positions but also opacity, rotation,
  *  z-index, mirror flags, and any runtime-only fields (e.g. measuredTextWidth).
- *  Only type-specific config fields (text, fontSize, color, dataBase64, …) are
+ *  Only type-specific config fields (text, fontSize, color, assetPath, …) are
  *  taken from `parsed`.  This prevents config-derived values from clobbering the
  *  server's resolved layout that useServerLayoutSync applied.
  *

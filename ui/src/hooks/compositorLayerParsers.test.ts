@@ -9,7 +9,7 @@
  * ALL server-resolved OverlayBase fields (position, opacity, rotation, etc.)
  * plus runtime-only fields (measuredTextWidth, measuredTextHeight) must be
  * kept from `current`, with only type-specific config fields (text, fontSize,
- * fontName, color, dataBase64) taken from `parsed`.
+ * fontName, color, assetPath) taken from `parsed`.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -50,7 +50,7 @@ function makeTextOverlay(overrides: Partial<TextOverlayState> = {}): TextOverlay
 function makeImageOverlay(overrides: Partial<ImageOverlayState> = {}): ImageOverlayState {
   return {
     id: 'img_0',
-    dataBase64: 'abc123',
+    assetPath: 'samples/images/user/test.png',
     x: 0,
     y: 0,
     width: 200,
@@ -215,7 +215,7 @@ describe('mergeOverlayState', () => {
       expect(result[0].text).toBe('New');
     });
 
-    it('works with image overlays (preserves OverlayBase, takes dataBase64)', () => {
+    it('works with image overlays (preserves OverlayBase, takes assetPath)', () => {
       const current = [
         makeImageOverlay({
           x: 50,
@@ -223,7 +223,7 @@ describe('mergeOverlayState', () => {
           width: 400,
           height: 300,
           rotationDegrees: 90,
-          dataBase64: 'old-data',
+          assetPath: 'samples/images/user/old.png',
         }),
       ];
       const parsed = [
@@ -233,12 +233,12 @@ describe('mergeOverlayState', () => {
           width: 200,
           height: 200,
           rotationDegrees: 0,
-          dataBase64: 'new-data',
+          assetPath: 'samples/images/user/new.png',
         }),
       ];
 
       const imageHasExtraChanges = (a: ImageOverlayState, b: ImageOverlayState) =>
-        a.dataBase64 !== b.dataBase64;
+        a.assetPath !== b.assetPath;
 
       const result = mergeOverlayState(current, parsed, imageHasExtraChanges, true);
 
@@ -249,7 +249,7 @@ describe('mergeOverlayState', () => {
       expect(result[0].height).toBe(300);
       expect(result[0].rotationDegrees).toBe(90);
       // Config field from parsed
-      expect(result[0].dataBase64).toBe('new-data');
+      expect(result[0].assetPath).toBe('samples/images/user/new.png');
     });
 
     it('handles new overlays (not in current) by using parsed values', () => {
@@ -411,17 +411,17 @@ describe('mergeOverlayState', () => {
       expect(result[0].fontName).toBe('mono');
     });
 
-    it('does NOT overwrite image dataBase64 when parsed params are unchanged', () => {
-      const current = [makeImageOverlay({ dataBase64: 'local-edit' })];
-      const parsed = [makeImageOverlay({ dataBase64: 'stale-server' })];
-      const previousParsed = [makeImageOverlay({ dataBase64: 'stale-server' })];
+    it('does NOT overwrite image assetPath when parsed params are unchanged', () => {
+      const current = [makeImageOverlay({ assetPath: 'samples/images/user/local.png' })];
+      const parsed = [makeImageOverlay({ assetPath: 'samples/images/user/stale.png' })];
+      const previousParsed = [makeImageOverlay({ assetPath: 'samples/images/user/stale.png' })];
 
       const imageHasExtraChanges = (a: ImageOverlayState, b: ImageOverlayState) =>
-        a.dataBase64 !== b.dataBase64;
+        a.assetPath !== b.assetPath;
 
       const result = mergeOverlayState(current, parsed, imageHasExtraChanges, true, previousParsed);
 
-      expect(result[0].dataBase64).toBe('local-edit');
+      expect(result[0].assetPath).toBe('samples/images/user/local.png');
       expect(result).toBe(current);
     });
 
@@ -690,17 +690,15 @@ describe('parseImageOverlays', () => {
     const result = parseImageOverlays(params);
     expect(result).toHaveLength(1);
     expect(result[0].assetPath).toBe('samples/images/user/logo.png');
-    expect(result[0].dataBase64).toBeUndefined();
     expect(result[0].x).toBe(10);
     expect(result[0].width).toBe(100);
   });
 
-  it('parses overlays with data_base64 (legacy)', () => {
+  it('parses overlays without asset_path as empty string', () => {
     const params = {
       image_overlays: [
         {
           id: 'img_0',
-          data_base64: 'iVBORfakedata',
           rect: { x: 0, y: 0, width: 200, height: 200 },
           opacity: 1,
           rotation_degrees: 0,
@@ -712,30 +710,7 @@ describe('parseImageOverlays', () => {
     };
     const result = parseImageOverlays(params);
     expect(result).toHaveLength(1);
-    expect(result[0].dataBase64).toBe('iVBORfakedata');
-    expect(result[0].assetPath).toBeUndefined();
-  });
-
-  it('parses overlays with both asset_path and data_base64', () => {
-    const params = {
-      image_overlays: [
-        {
-          id: 'img_0',
-          asset_path: 'samples/images/user/logo.png',
-          data_base64: 'iVBORfakedata',
-          rect: { x: 0, y: 0, width: 200, height: 200 },
-          opacity: 1,
-          rotation_degrees: 0,
-          z_index: 200,
-          mirror_horizontal: false,
-          mirror_vertical: false,
-        },
-      ],
-    };
-    const result = parseImageOverlays(params);
-    expect(result).toHaveLength(1);
-    expect(result[0].assetPath).toBe('samples/images/user/logo.png');
-    expect(result[0].dataBase64).toBe('iVBORfakedata');
+    expect(result[0].assetPath).toBe('');
   });
 
   it('returns empty array for missing image_overlays', () => {
@@ -746,41 +721,33 @@ describe('parseImageOverlays', () => {
 describe('serializeImageOverlays', () => {
   it('serializes overlay with assetPath', () => {
     const overlays: ImageOverlayState[] = [
-      makeImageOverlay({ assetPath: 'samples/images/user/logo.png', dataBase64: undefined }),
+      makeImageOverlay({ assetPath: 'samples/images/user/logo.png' }),
     ];
     const result = serializeImageOverlays(overlays);
     expect(result).toHaveLength(1);
     expect(result[0].asset_path).toBe('samples/images/user/logo.png');
-    expect(result[0].data_base64).toBeUndefined();
   });
 
-  it('serializes overlay with dataBase64 (legacy)', () => {
+  it('includes all spatial fields', () => {
     const overlays: ImageOverlayState[] = [
-      makeImageOverlay({ dataBase64: 'iVBORfakedata', assetPath: undefined }),
-    ];
-    const result = serializeImageOverlays(overlays);
-    expect(result).toHaveLength(1);
-    expect(result[0].data_base64).toBe('iVBORfakedata');
-    expect(result[0].asset_path).toBeUndefined();
-  });
-
-  it('serializes overlay with both assetPath and dataBase64', () => {
-    const overlays: ImageOverlayState[] = [
-      makeImageOverlay({ assetPath: 'samples/images/user/logo.png', dataBase64: 'iVBORfakedata' }),
+      makeImageOverlay({
+        assetPath: 'samples/images/user/logo.png',
+        x: 10,
+        y: 20,
+        width: 300,
+        height: 200,
+        opacity: 0.5,
+        rotationDegrees: 45,
+        zIndex: 210,
+      }),
     ];
     const result = serializeImageOverlays(overlays);
     expect(result).toHaveLength(1);
     expect(result[0].asset_path).toBe('samples/images/user/logo.png');
-    expect(result[0].data_base64).toBe('iVBORfakedata');
-  });
-
-  it('omits neither field when both are absent', () => {
-    const overlays: ImageOverlayState[] = [
-      makeImageOverlay({ dataBase64: undefined, assetPath: undefined }),
-    ];
-    const result = serializeImageOverlays(overlays);
-    expect(result).toHaveLength(1);
-    expect(result[0].asset_path).toBeUndefined();
-    expect(result[0].data_base64).toBeUndefined();
+    expect((result[0].rect as { x: number }).x).toBe(10);
+    expect((result[0].rect as { y: number }).y).toBe(20);
+    expect(result[0].opacity).toBe(0.5);
+    expect(result[0].rotation_degrees).toBe(45);
+    expect(result[0].z_index).toBe(210);
   });
 });

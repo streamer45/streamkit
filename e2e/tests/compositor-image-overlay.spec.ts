@@ -304,10 +304,10 @@ test.describe('Compositor Image Overlay Lifecycle', () => {
     expect(systemLogo, 'Bundled system logo not found in list').toBeTruthy();
     expect(systemLogo!.is_system).toBe(true);
 
-    // ── 3. Serve image file — GET /api/v1/assets/images/file/{id} ────────
+    // ── 3. Serve image file — GET /api/v1/assets/images/file/{scope}/{id} ─
 
     const serveResponse = await apiContext.get(
-      `/api/v1/assets/images/file/${encodeURIComponent(testFileName)}`
+      `/api/v1/assets/images/file/user/${encodeURIComponent(testFileName)}`
     );
     expect(serveResponse.ok(), `Serve failed: ${serveResponse.status()}`).toBeTruthy();
 

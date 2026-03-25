@@ -1021,7 +1021,6 @@ impl CompositorNode {
                                     config.image_overlays.iter().find(|c| c.id == img_cfg.id);
                                 let content_same = old_cfg.is_some_and(|oc| {
                                     oc.asset_path == img_cfg.asset_path
-                                        && oc.data_base64 == img_cfg.data_base64
                                         && oc.transform.rect.width == img_cfg.transform.rect.width
                                         && oc.transform.rect.height == img_cfg.transform.rect.height
                                 });

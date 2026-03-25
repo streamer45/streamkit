@@ -40,46 +40,35 @@ pub struct DecodedOverlay {
     pub measured_text_height: Option<u32>,
 }
 
-/// Decode an image overlay into an RGBA8 bitmap, reading from either
-/// `asset_path` (file on disk) or `data_base64` (inline base64).
+/// Decode an image overlay into an RGBA8 bitmap, reading from the
+/// `asset_path` file on disk.
 ///
-/// `asset_path` takes precedence when both are set.  The decoded image
-/// is pre-scaled (bilinear filter) to fit within the config's target
-/// rect while preserving aspect ratio, so the per-frame blit hits the
-/// identity-scale fast path (direct memcpy).  The returned
+/// The decoded image is pre-scaled (bilinear filter) to fit within the
+/// config's target rect while preserving aspect ratio, so the per-frame
+/// blit hits the identity-scale fast path (direct memcpy).  The returned
 /// [`DecodedOverlay::rect`] is adjusted to centre the fitted image within
 /// the originally requested area.
 ///
 /// # Errors
 ///
-/// Returns an error if neither source is set, the base64 data is invalid,
-/// the file cannot be read, or the image cannot be decoded.
+/// Returns an error if the file cannot be read or the image cannot be
+/// decoded.
 pub fn decode_image_overlay(
     config: &ImageOverlayConfig,
     max_dimension: u32,
 ) -> Result<DecodedOverlay, StreamKitError> {
     use image::GenericImageView;
 
-    let bytes = if let Some(ref path) = config.asset_path {
-        // Security: reject path traversal and restrict to samples/images/
-        if path.contains("..") || !path.starts_with("samples/images/") {
-            return Err(StreamKitError::Configuration(format!(
-                "Invalid asset_path: must start with 'samples/images/' and not contain '..': {path}"
-            )));
-        }
-        std::fs::read(path).map_err(|e| {
-            StreamKitError::Configuration(format!("Failed to read image asset '{path}': {e}"))
-        })?
-    } else if let Some(ref b64) = config.data_base64 {
-        use base64::Engine;
-        base64::engine::general_purpose::STANDARD.decode(b64).map_err(|e| {
-            StreamKitError::Configuration(format!("Invalid base64 in image overlay: {e}"))
-        })?
-    } else {
-        return Err(StreamKitError::Configuration(
-            "Image overlay requires either 'asset_path' or 'data_base64'".to_string(),
-        ));
-    };
+    let path = &config.asset_path;
+    // Security: reject path traversal and restrict to samples/images/
+    if path.contains("..") || !path.starts_with("samples/images/") {
+        return Err(StreamKitError::Configuration(format!(
+            "Invalid asset_path: must start with 'samples/images/' and not contain '..': {path}"
+        )));
+    }
+    let bytes = std::fs::read(path).map_err(|e| {
+        StreamKitError::Configuration(format!("Failed to read image asset '{path}': {e}"))
+    })?;
 
     let img = image::load_from_memory(&bytes).map_err(|e| {
         StreamKitError::Configuration(format!("Failed to decode image overlay: {e}"))

@@ -385,7 +385,7 @@ export const useCompositorLayers = (
     const mergedImg = mergeOverlayState(
       currentImg,
       parsedImg,
-      (a, b) => a.dataBase64 !== b.dataBase64 || a.assetPath !== b.assetPath,
+      (a, b) => a.assetPath !== b.assetPath,
       isMonitorView,
       isMonitorView ? prevParsedImgRef.current : undefined
     );
