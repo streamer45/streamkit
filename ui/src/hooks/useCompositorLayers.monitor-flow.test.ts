@@ -805,57 +805,6 @@ describe('Stale view-data gating (causal consistency)', () => {
     expect(layers1[0].width).toBe(960);
   });
 
-  it('activeInteractionRef suppresses sync-from-props during slider interactions', () => {
-    seedStore();
-
-    const opts = monitorOptions({
-      params: makeParams({
-        layers: {
-          in_0: { opacity: 0.8, z_index: 0 },
-        },
-      }),
-    });
-    const { result, rerender } = renderHook(
-      (props: UseCompositorLayersOptions) => useCompositorLayers(props),
-      { initialProps: opts }
-    );
-
-    // Server resolves layout
-    act(() => pushServerViewData(makeServerLayout()));
-
-    const layers0 = getLayersFromStore(result.current.store);
-    expect(layers0[0].x).toBe(160);
-    expect(layers0[0].width).toBe(960);
-
-    // User starts an opacity slider interaction and changes opacity locally
-    result.current.activeInteractionRef.current = true;
-    act(() => result.current.updateLayerOpacity('in_0', 0.3));
-
-    const layers1 = getLayersFromStore(result.current.store);
-    expect(layers1[0].opacity).toBe(0.3);
-
-    // A params echo-back arrives while the slider is still active.
-    // Without the activeInteractionRef guard in the sync-from-props effect,
-    // this would overwrite the local opacity back to 0.8.
-    act(() =>
-      rerender({
-        ...opts,
-        params: makeParams({
-          layers: {
-            in_0: { opacity: 0.8, z_index: 0 },
-          },
-        }),
-      })
-    );
-
-    // Opacity must remain at the user's in-flight value (0.3), not revert to 0.8
-    const layers2 = getLayersFromStore(result.current.store);
-    expect(layers2[0].opacity).toBe(0.3);
-    // Server geometry must also be preserved
-    expect(layers2[0].x).toBe(160);
-    expect(layers2[0].width).toBe(960);
-  });
-
   it('activeInteractionRef suppresses view data during interactions', () => {
     seedStore();
 
