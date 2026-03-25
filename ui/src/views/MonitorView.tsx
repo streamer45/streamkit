@@ -48,7 +48,6 @@ import { useReactFlowCommon } from '@/hooks/useReactFlowCommon';
 import { useResolvedColorMode } from '@/hooks/useResolvedColorMode';
 import { useSession } from '@/hooks/useSession';
 import { useSessionList } from '@/hooks/useSessionList';
-import { useSessionsPrefetch } from '@/hooks/useSessionsPrefetch';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { getWebSocketService } from '@/services/websocket';
 import { useLayoutStore } from '@/stores/layoutStore';
@@ -349,8 +348,11 @@ const MonitorViewContent: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- setNeedsAutoLayout/setNeedsFit are stable useState setters declared later
   }, [selectedSessionId, isLoadingSessions, sessions, getNodePositions]);
 
-  // Prefetch pipeline data for all sessions to enable status display
-  useSessionsPrefetch(sessions);
+  // Pipeline data for the selected session is fetched once by useSession
+  // (staleTime: Infinity) and kept current by live WebSocket events
+  // (nodeadded, noderemoved, connectionadded, connectionremoved).
+  // No periodic polling is needed — it would only introduce stale REST
+  // data that overwrites live state and reverts local edits.
 
   // Subscribe to selected session.
   // nodeStates is intentionally NOT consumed from this hook — see the
@@ -359,7 +361,6 @@ const MonitorViewContent: React.FC = () => {
     pipeline,
     // nodeStats not used here - NodeStateIndicator fetches directly from session store
     isConnected: sessionIsConnected,
-    isLoading: isLoadingPipeline,
     tuneNode,
     tuneNodeConfig,
     addNode,
@@ -1183,7 +1184,7 @@ const MonitorViewContent: React.FC = () => {
           </>
         ) : (
           <EmptyMonitorState>
-            {isLoadingPipeline ? (
+            {selectedSessionId && !pipeline ? (
               <p>Loading pipeline...</p>
             ) : (
               <p>Select a session from the left panel to inspect its pipeline.</p>
@@ -1204,7 +1205,6 @@ const MonitorViewContent: React.FC = () => {
       nodes.length,
       colorMode,
       onInit,
-      isLoadingPipeline,
       handleStartPreview,
       isPreviewConnected,
     ]
