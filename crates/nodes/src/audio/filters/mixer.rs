@@ -2036,11 +2036,16 @@ mod tests {
 
         let (context, mock_sender, mut state_rx) = create_test_context(inputs, 10);
 
+        // Use 960 samples/channel (20 ms tick at 48 kHz) so that both input
+        // drainer tasks have enough wall-clock time to push their frames into
+        // the ring buffer before the first tick fires.  With the previous
+        // value of 10 (~208 µs tick) the second drainer could lose the race
+        // on slow CI runners, causing only one input to be mixed.
         let node = AudioMixerNode::new(AudioMixerConfig {
             sync_timeout_ms: Some(50),
             clocked: Some(ClockedMixerConfig {
                 sample_rate: 48_000,
-                frame_samples_per_channel: 10,
+                frame_samples_per_channel: 960,
                 jitter_buffer_frames: 2,
                 generate_silence: false,
             }),
@@ -2052,8 +2057,8 @@ mod tests {
         assert_state_initializing(&mut state_rx).await;
         assert_state_running(&mut state_rx).await;
 
-        input1_tx.send(create_test_audio_packet(48_000, 2, 10, 0.5)).await.unwrap();
-        input2_tx.send(create_test_audio_packet(48_000, 2, 10, 0.3)).await.unwrap();
+        input1_tx.send(create_test_audio_packet(48_000, 2, 960, 0.5)).await.unwrap();
+        input2_tx.send(create_test_audio_packet(48_000, 2, 960, 0.3)).await.unwrap();
 
         let (_node, pin, packet) = mock_sender
             .recv_timeout(std::time::Duration::from_secs(2))
@@ -2063,7 +2068,7 @@ mod tests {
 
         let Packet::Audio(frame) = packet else { panic!("Expected audio packet") };
         assert_eq!(frame.channels, 2);
-        assert_eq!(frame.samples.len(), 20);
+        assert_eq!(frame.samples.len(), 1920); // 960 samples * 2 channels
         for &sample in frame.samples.as_slice() {
             assert!((sample - 0.8).abs() < 0.001, "Expected ~0.8, got {}", sample);
         }
