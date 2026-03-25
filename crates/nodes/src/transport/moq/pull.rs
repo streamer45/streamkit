@@ -323,7 +323,12 @@ impl MoqPullNode {
             "Connecting to MoQ server to discover tracks"
         );
 
-        let url = super::parse_moq_url(&self.config.url, self.config.jwt.as_deref())?;
+        let mut url = super::parse_moq_url(&self.config.url, self.config.jwt.as_deref())?;
+
+        // Pre-resolve hostname to avoid QUIC IPv6 timeout (see resolve_url_for_quic docs)
+        if let Err(e) = super::resolve_url_for_quic(&mut url).await {
+            tracing::warn!(error = %e, "Failed to pre-resolve MoQ URL; proceeding with original");
+        }
 
         let client = super::shared_insecure_client()?;
 
@@ -524,7 +529,12 @@ impl MoqPullNode {
         /// re-subscribed track immediately ends again.
         const MAX_RESUBSCRIBE_ATTEMPTS: u32 = 3;
 
-        let url = super::parse_moq_url(&self.config.url, self.config.jwt.as_deref())?;
+        let mut url = super::parse_moq_url(&self.config.url, self.config.jwt.as_deref())?;
+
+        // Pre-resolve hostname to avoid QUIC IPv6 timeout (see resolve_url_for_quic docs)
+        if let Err(e) = super::resolve_url_for_quic(&mut url).await {
+            tracing::warn!(error = %e, "Failed to pre-resolve MoQ URL; proceeding with original");
+        }
 
         let client = super::shared_insecure_client()?;
 

@@ -461,7 +461,7 @@ const StreamView: React.FC = () => {
             setEnablePublish(moqSettings.hasInputBroadcast);
             setPipelineMediaTypes(moqSettings.needsAudioInput, moqSettings.needsVideoInput);
             setPipelineOutputTypes(moqSettings.outputsAudio, moqSettings.outputsVideo);
-            setIsExternalRelay(Boolean(moqSettings.relayUrl));
+            setIsExternalRelay(moqSettings.isExternalRelay);
           }
         }
       } catch (error) {
@@ -513,7 +513,7 @@ const StreamView: React.FC = () => {
           // Flag whether this pipeline uses an external relay so that
           // performConnect can skip the broadcast-announcement wait in
           // gateway mode.
-          setIsExternalRelay(Boolean(moqSettings.relayUrl));
+          setIsExternalRelay(moqSettings.isExternalRelay);
         }
       }
     },

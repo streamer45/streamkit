@@ -98,6 +98,7 @@ describe('deriveSettingsFromClient', () => {
       needsVideoInput: true,
       outputsAudio: true,
       outputsVideo: true,
+      isExternalRelay: false,
     });
   });
 
@@ -123,6 +124,7 @@ describe('deriveSettingsFromClient', () => {
       needsVideoInput: false,
       outputsAudio: false,
       outputsVideo: true,
+      isExternalRelay: true,
     });
   });
 
@@ -148,6 +150,7 @@ describe('deriveSettingsFromClient', () => {
       needsVideoInput: false,
       outputsAudio: false,
       outputsVideo: true,
+      isExternalRelay: false,
     });
   });
 
@@ -179,6 +182,7 @@ describe('deriveSettingsFromClient', () => {
       needsVideoInput: false,
       outputsAudio: false,
       outputsVideo: false,
+      isExternalRelay: false,
     });
   });
 });

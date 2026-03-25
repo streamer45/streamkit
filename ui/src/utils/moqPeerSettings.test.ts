@@ -61,6 +61,7 @@ client:
     expect(result!.needsVideoInput).toBe(false);
     expect(result!.outputsAudio).toBe(true);
     expect(result!.outputsVideo).toBe(false);
+    expect(result!.isExternalRelay).toBe(false);
   });
 
   it('should extract relay-based settings', () => {
@@ -87,6 +88,7 @@ client:
     expect(result!.needsVideoInput).toBe(true);
     expect(result!.outputsAudio).toBe(true);
     expect(result!.outputsVideo).toBe(false);
+    expect(result!.isExternalRelay).toBe(true);
   });
 
   it('should report hasInputBroadcast false when publish is absent', () => {
@@ -105,6 +107,7 @@ client:
     expect(result!.needsVideoInput).toBe(false);
     expect(result!.outputsAudio).toBe(false);
     expect(result!.outputsVideo).toBe(true);
+    expect(result!.isExternalRelay).toBe(false);
   });
 
   it('should detect audio+video publish and watch', () => {
@@ -167,6 +170,47 @@ client:
     expect(result).not.toBeNull();
     expect(result!.relayUrl).toBe('https://relay.example.com');
     expect(result!.hasInputBroadcast).toBe(false);
+    expect(result!.isExternalRelay).toBe(true);
+  });
+
+  it('should detect isExternalRelay from pub+watch without gateway_path', () => {
+    // When relay_url is absent but the pipeline declares both publish and watch
+    // without a gateway_path, it must be an external relay pattern — the browser
+    // needs to wait for the output broadcast announcement before subscribing.
+    const yaml = `
+client:
+  publish:
+    broadcast: input
+    audio: true
+    video: true
+  watch:
+    broadcast: output
+    audio: true
+    video: true
+`;
+    const result = extractMoqPeerSettings(yaml);
+    expect(result).not.toBeNull();
+    expect(result!.isExternalRelay).toBe(true);
+    expect(result!.relayUrl).toBeUndefined();
+    expect(result!.gatewayPath).toBeUndefined();
+  });
+
+  it('should not flag isExternalRelay for gateway pub+watch', () => {
+    const yaml = `
+client:
+  gateway_path: /moq/av
+  publish:
+    broadcast: input
+    audio: true
+    video: true
+  watch:
+    broadcast: output
+    audio: true
+    video: true
+`;
+    const result = extractMoqPeerSettings(yaml);
+    expect(result).not.toBeNull();
+    expect(result!.isExternalRelay).toBe(false);
   });
 
   it('should handle audio-only publish', () => {
