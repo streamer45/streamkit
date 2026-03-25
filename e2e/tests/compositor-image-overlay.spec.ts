@@ -17,58 +17,56 @@
  * - Image overlay can be deleted via context menu
  */
 
-import { readFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { readFileSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-import { test, expect, request, type Page } from "@playwright/test";
+import { test, expect, request, type Page } from '@playwright/test';
 
-import { ensureLoggedIn, getAuthHeaders } from "./auth-helpers";
+import { ensureLoggedIn, getAuthHeaders } from './auth-helpers';
 import {
   type ConsoleErrorCollector,
   MOQ_BENIGN_PATTERNS,
   createConsoleErrorCollector,
-} from "./test-helpers";
-import { WEBCAM_PIP_YAML } from "./compositor-fixtures";
+} from './test-helpers';
+import { WEBCAM_PIP_YAML } from './compositor-fixtures';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 async function setupCompositorView(page: Page) {
-  await page.goto("/monitor");
+  await page.goto('/monitor');
   await ensureLoggedIn(page);
-  if (!page.url().includes("/monitor")) {
-    await page.goto("/monitor");
+  if (!page.url().includes('/monitor')) {
+    await page.goto('/monitor');
   }
-  await expect(page.getByTestId("monitor-view")).toBeVisible({
+  await expect(page.getByTestId('monitor-view')).toBeVisible({
     timeout: 15_000,
   });
 
-  await expect(page.getByTestId("sessions-list")).toBeVisible({
+  await expect(page.getByTestId('sessions-list')).toBeVisible({
     timeout: 10_000,
   });
-  const sessionItem = page.getByTestId("session-item").first();
+  const sessionItem = page.getByTestId('session-item').first();
   await expect(sessionItem).toBeVisible({ timeout: 10_000 });
   await sessionItem.click();
 
-  await expect(page.locator(".react-flow__node").first()).toBeVisible({
+  await expect(page.locator('.react-flow__node').first()).toBeVisible({
     timeout: 15_000,
   });
 
-  const compositorNode = page
-    .locator(".react-flow__node")
-    .filter({ hasText: "Compositor" });
+  const compositorNode = page.locator('.react-flow__node').filter({ hasText: 'Compositor' });
   await expect(compositorNode).toBeVisible({ timeout: 10_000 });
 
-  const canvasInner = compositorNode.locator("[data-canvas-width]");
+  const canvasInner = compositorNode.locator('[data-canvas-width]');
   await expect(canvasInner).toBeVisible({ timeout: 5_000 });
 
   return { compositorNode, canvasInner };
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(__dirname, "..", "..");
+const repoRoot = resolve(__dirname, '..', '..');
 
 /**
  * Read the bundled StreamKit logo PNG (293x512 RGBA with transparency).
@@ -78,16 +76,14 @@ const repoRoot = resolve(__dirname, "..", "..");
  * a realistic overlay test case.
  */
 function readSystemLogoPng(): Buffer {
-  return readFileSync(
-    resolve(repoRoot, "samples/images/system/streamkit-logo.png"),
-  );
+  return readFileSync(resolve(repoRoot, 'samples/images/system/streamkit-logo.png'));
 }
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
-test.describe("Compositor Image Overlay Lifecycle", () => {
+test.describe('Compositor Image Overlay Lifecycle', () => {
   let collector: ConsoleErrorCollector;
   let sessionId: string | null = null;
 
@@ -95,7 +91,7 @@ test.describe("Compositor Image Overlay Lifecycle", () => {
     collector = createConsoleErrorCollector(page);
   });
 
-  test("add image overlay, inspect controls, delete via context menu", async ({
+  test('add image overlay, inspect controls, delete via context menu', async ({
     page,
     baseURL,
   }) => {
@@ -108,7 +104,7 @@ test.describe("Compositor Image Overlay Lifecycle", () => {
       extraHTTPHeaders: getAuthHeaders(),
     });
 
-    const createResponse = await apiContext.post("/api/v1/sessions", {
+    const createResponse = await apiContext.post('/api/v1/sessions', {
       data: {
         name: `image-overlay-test-${Date.now()}`,
         yaml: WEBCAM_PIP_YAML,
@@ -116,10 +112,7 @@ test.describe("Compositor Image Overlay Lifecycle", () => {
     });
 
     const responseText = await createResponse.text();
-    expect(
-      createResponse.ok(),
-      `Failed to create session: ${responseText}`,
-    ).toBeTruthy();
+    expect(createResponse.ok(), `Failed to create session: ${responseText}`).toBeTruthy();
 
     const createData = JSON.parse(responseText) as { session_id: string };
     sessionId = createData.session_id;
@@ -131,30 +124,22 @@ test.describe("Compositor Image Overlay Lifecycle", () => {
     const { compositorNode, canvasInner } = await setupCompositorView(page);
 
     // Verify baseline layers exist.
-    await expect(
-      compositorNode.getByText("Input 0", { exact: true }).first(),
-    ).toBeVisible({
+    await expect(compositorNode.getByText('Input 0', { exact: true }).first()).toBeVisible({
       timeout: 5_000,
     });
-    await expect(
-      compositorNode.getByText("Text 0", { exact: true }).first(),
-    ).toBeVisible({
+    await expect(compositorNode.getByText('Text 0', { exact: true }).first()).toBeVisible({
       timeout: 5_000,
     });
 
     // ── 3. Open Add menu — verify Text and Image options ─────────────────
 
-    const addButton = compositorNode.getByRole("button", { name: /Add/i });
+    const addButton = compositorNode.getByRole('button', { name: /Add/i });
     await expect(addButton).toBeVisible({ timeout: 5_000 });
     await addButton.click();
 
     // The add menu should show "Text" and "Image" options.
-    const textMenuItem = compositorNode
-      .getByText("Text", { exact: true })
-      .last();
-    const imageMenuItem = compositorNode
-      .getByText("Image", { exact: true })
-      .last();
+    const textMenuItem = compositorNode.getByText('Text', { exact: true }).last();
+    const imageMenuItem = compositorNode.getByText('Image', { exact: true }).last();
     await expect(textMenuItem).toBeVisible({ timeout: 3_000 });
     await expect(imageMenuItem).toBeVisible({ timeout: 3_000 });
 
@@ -164,13 +149,13 @@ test.describe("Compositor Image Overlay Lifecycle", () => {
     // click.  We use Playwright's filechooser event to intercept the native
     // file dialog and supply a test PNG.
     const [fileChooser] = await Promise.all([
-      page.waitForEvent("filechooser"),
+      page.waitForEvent('filechooser'),
       imageMenuItem.click(),
     ]);
 
     await fileChooser.setFiles({
-      name: "streamkit-logo.png",
-      mimeType: "image/png",
+      name: 'streamkit-logo.png',
+      mimeType: 'image/png',
       buffer: readSystemLogoPng(),
     });
 
@@ -179,17 +164,13 @@ test.describe("Compositor Image Overlay Lifecycle", () => {
     // Wait for the image layer to appear.  The layer list and the canvas
     // both render "Image 0" text.  We target the layer list item which is
     // NOT inside the canvas [data-canvas-width] area.
-    const imageLayer = compositorNode
-      .getByText("Image 0", { exact: true })
-      .first();
+    const imageLayer = compositorNode.getByText('Image 0', { exact: true }).first();
     await expect(imageLayer).toBeVisible({ timeout: 5_000 });
 
     // ── 6. Verify image layer box appears on canvas ──────────────────────
 
     // The image overlay box on the canvas has a unique aria-label.
-    const imageLayerBox = canvasInner
-      .locator('[aria-label*="Image overlay"]')
-      .first();
+    const imageLayerBox = canvasInner.locator('[aria-label*="Image overlay"]').first();
     await expect(imageLayerBox).toBeVisible({ timeout: 5_000 });
 
     // ── 7. Select image layer — inspector controls appear ────────────────
@@ -199,54 +180,52 @@ test.describe("Compositor Image Overlay Lifecycle", () => {
     await imageLayerBox.click();
 
     // Wait for the inspector panel to render (slider becomes visible).
-    await expect(compositorNode.getByRole("slider").first()).toBeVisible({
+    await expect(compositorNode.getByRole('slider').first()).toBeVisible({
       timeout: 5_000,
     });
 
     // Opacity section: contains the "Opacity" label and a slider.
     const opacitySection = compositorNode
-      .locator("div")
+      .locator('div')
       .filter({ hasText: /^Opacity/ })
-      .filter({ has: page.getByRole("slider") })
+      .filter({ has: page.getByRole('slider') })
       .first();
     await expect(opacitySection).toBeVisible({ timeout: 5_000 });
 
     // Rotation section should be visible.
     const rotationSection = compositorNode
-      .locator("div")
+      .locator('div')
       .filter({ hasText: /^Rotation/ })
       .first();
     await expect(rotationSection).toBeVisible({ timeout: 5_000 });
 
     // Mirror section should be visible.
     const mirrorSection = compositorNode
-      .locator("div")
+      .locator('div')
       .filter({ hasText: /^Mirror/ })
       .first();
     await expect(mirrorSection).toBeVisible({ timeout: 5_000 });
 
     // ── 8. Crop & Zoom should NOT appear for image layers ────────────────
 
-    const cropSection = compositorNode.getByTestId("crop-zoom-section");
+    const cropSection = compositorNode.getByTestId('crop-zoom-section');
     await expect(cropSection).not.toBeVisible({ timeout: 3_000 });
 
     // ── 9. Delete image overlay via context menu ─────────────────────────
 
     // Right-click the image layer box on the canvas to open context menu.
-    await imageLayerBox.click({ button: "right" });
+    await imageLayerBox.click({ button: 'right' });
 
-    const contextMenu = page.getByTestId("compositor-context-menu");
+    const contextMenu = page.getByTestId('compositor-context-menu');
     await expect(contextMenu).toBeVisible({ timeout: 3_000 });
 
     // Image overlays should have a "Delete" option.
-    const deleteOption = page.getByTestId("ctx-delete");
+    const deleteOption = page.getByTestId('ctx-delete');
     await expect(deleteOption).toBeVisible();
     await deleteOption.click();
 
     // "Image 0" should be removed from the layer list.
-    await expect(
-      compositorNode.getByText("Image 0", { exact: true }).first(),
-    ).not.toBeVisible({
+    await expect(compositorNode.getByText('Image 0', { exact: true }).first()).not.toBeVisible({
       timeout: 5_000,
     });
 
@@ -254,11 +233,11 @@ test.describe("Compositor Image Overlay Lifecycle", () => {
 
     const unexpected = collector.getUnexpected(MOQ_BENIGN_PATTERNS);
     if (unexpected.length > 0) {
-      console.warn("Unexpected console errors (non-fatal):", unexpected);
+      console.warn('Unexpected console errors (non-fatal):', unexpected);
     }
   });
 
-  test("image asset upload happy path: upload, list, serve, duplicate 409, delete", async ({
+  test('image asset upload happy path: upload, list, serve, duplicate 409, delete', async ({
     baseURL,
   }) => {
     test.setTimeout(60_000);
@@ -273,20 +252,17 @@ test.describe("Compositor Image Overlay Lifecycle", () => {
 
     // ── 1. Upload image asset via multipart POST ─────────────────────────
 
-    const uploadResponse = await apiContext.post("/api/v1/assets/images", {
+    const uploadResponse = await apiContext.post('/api/v1/assets/images', {
       multipart: {
         file: {
           name: testFileName,
-          mimeType: "image/png",
+          mimeType: 'image/png',
           buffer: pngBuffer,
         },
       },
     });
 
-    expect(
-      uploadResponse.ok(),
-      `Upload failed: ${await uploadResponse.text()}`,
-    ).toBeTruthy();
+    expect(uploadResponse.ok(), `Upload failed: ${await uploadResponse.text()}`).toBeTruthy();
 
     const asset = (await uploadResponse.json()) as {
       id: string;
@@ -302,11 +278,9 @@ test.describe("Compositor Image Overlay Lifecycle", () => {
     expect(asset.id).toBe(testFileName);
     // The server builds a display name by stripping the extension and
     // replacing '_'/'-' with spaces.
-    expect(asset.name).toBe(
-      testFileName.replace(/\.png$/, "").replaceAll("-", " "),
-    );
-    expect(asset.path).toContain("samples/images/user/");
-    expect(asset.format).toBe("png");
+    expect(asset.name).toBe(testFileName.replace(/\.png$/, '').replaceAll('-', ' '));
+    expect(asset.path).toContain('samples/images/user/');
+    expect(asset.format).toBe('png');
     expect(asset.width).toBe(293);
     expect(asset.height).toBe(512);
     expect(asset.size_bytes).toBeGreaterThan(0);
@@ -314,7 +288,7 @@ test.describe("Compositor Image Overlay Lifecycle", () => {
 
     // ── 2. List assets — uploaded image and system logo should appear ────
 
-    const listResponse = await apiContext.get("/api/v1/assets/images");
+    const listResponse = await apiContext.get('/api/v1/assets/images');
     expect(listResponse.ok()).toBeTruthy();
 
     const assets = (await listResponse.json()) as Array<{
@@ -323,39 +297,33 @@ test.describe("Compositor Image Overlay Lifecycle", () => {
       is_system: boolean;
     }>;
     const found = assets.find((a) => a.id === testFileName);
-    expect(
-      found,
-      `Uploaded asset ${testFileName} not found in list`,
-    ).toBeTruthy();
+    expect(found, `Uploaded asset ${testFileName} not found in list`).toBeTruthy();
 
     // The bundled system logo should also appear in the list.
-    const systemLogo = assets.find((a) => a.id === "streamkit-logo.png");
-    expect(systemLogo, "Bundled system logo not found in list").toBeTruthy();
+    const systemLogo = assets.find((a) => a.id === 'streamkit-logo.png');
+    expect(systemLogo, 'Bundled system logo not found in list').toBeTruthy();
     expect(systemLogo!.is_system).toBe(true);
 
     // ── 3. Serve image file — GET /api/v1/assets/images/file/{id} ────────
 
     const serveResponse = await apiContext.get(
-      `/api/v1/assets/images/file/${encodeURIComponent(testFileName)}`,
+      `/api/v1/assets/images/file/${encodeURIComponent(testFileName)}`
     );
-    expect(
-      serveResponse.ok(),
-      `Serve failed: ${serveResponse.status()}`,
-    ).toBeTruthy();
+    expect(serveResponse.ok(), `Serve failed: ${serveResponse.status()}`).toBeTruthy();
 
-    const contentType = serveResponse.headers()["content-type"] ?? "";
-    expect(contentType).toContain("image/png");
+    const contentType = serveResponse.headers()['content-type'] ?? '';
+    expect(contentType).toContain('image/png');
 
     const servedBytes = await serveResponse.body();
     expect(servedBytes.length).toBe(pngBuffer.length);
 
     // ── 4. Duplicate upload — expect 409 Conflict ────────────────────────
 
-    const dupResponse = await apiContext.post("/api/v1/assets/images", {
+    const dupResponse = await apiContext.post('/api/v1/assets/images', {
       multipart: {
         file: {
           name: testFileName,
-          mimeType: "image/png",
+          mimeType: 'image/png',
           buffer: pngBuffer,
         },
       },
@@ -366,16 +334,13 @@ test.describe("Compositor Image Overlay Lifecycle", () => {
     // ── 5. Delete asset ──────────────────────────────────────────────────
 
     const deleteResponse = await apiContext.delete(
-      `/api/v1/assets/images/${encodeURIComponent(testFileName)}`,
+      `/api/v1/assets/images/${encodeURIComponent(testFileName)}`
     );
-    expect(
-      deleteResponse.ok(),
-      `Delete failed: ${deleteResponse.status()}`,
-    ).toBeTruthy();
+    expect(deleteResponse.ok(), `Delete failed: ${deleteResponse.status()}`).toBeTruthy();
 
     // ── 6. Verify asset is gone from list ────────────────────────────────
 
-    const listAfterDelete = await apiContext.get("/api/v1/assets/images");
+    const listAfterDelete = await apiContext.get('/api/v1/assets/images');
     expect(listAfterDelete.ok()).toBeTruthy();
 
     const assetsAfter = (await listAfterDelete.json()) as Array<{ id: string }>;
