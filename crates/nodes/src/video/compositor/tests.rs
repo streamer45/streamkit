@@ -2159,11 +2159,13 @@ fn test_decode_image_overlay_from_asset_path() {
     let _guard = TestAssetGuard { path: asset_path.clone() };
     let cfg = config::ImageOverlayConfig {
         id: "img_asset".to_string(),
-        asset_path,
+        asset_path: asset_path.clone(),
         transform: default_transform(10, 10),
     };
-    let result = overlay::decode_image_overlay(&cfg, 7680);
-    let decoded = result.expect("should decode from asset_path");
+    overlay::validate_asset_path(&asset_path).expect("path should be valid");
+    let bytes = std::fs::read(&asset_path).expect("read test asset");
+    let result = overlay::decode_image_overlay(&cfg, &bytes, 7680);
+    let decoded = result.expect("should decode from asset bytes");
     assert_eq!(decoded.id, "img_asset");
     assert!(decoded.width > 0);
     assert!(decoded.height > 0);
@@ -2171,23 +2173,13 @@ fn test_decode_image_overlay_from_asset_path() {
 
 #[test]
 fn test_decode_image_overlay_bad_path_traversal() {
-    let cfg = config::ImageOverlayConfig {
-        id: "img_bad".to_string(),
-        asset_path: "samples/images/../../etc/passwd".to_string(),
-        transform: default_transform(10, 10),
-    };
-    let result = overlay::decode_image_overlay(&cfg, 7680);
+    let result = overlay::validate_asset_path("samples/images/../../etc/passwd");
     assert!(result.is_err(), "path traversal should be rejected");
 }
 
 #[test]
 fn test_decode_image_overlay_bad_path_prefix() {
-    let cfg = config::ImageOverlayConfig {
-        id: "img_bad_prefix".to_string(),
-        asset_path: "/etc/passwd".to_string(),
-        transform: default_transform(10, 10),
-    };
-    let result = overlay::decode_image_overlay(&cfg, 7680);
+    let result = overlay::validate_asset_path("/etc/passwd");
     assert!(result.is_err(), "paths outside samples/images/ should be rejected");
 }
 

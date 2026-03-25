@@ -719,64 +719,53 @@ async fn process_image_upload(
 
     let written_bytes = write_image_upload_to_disk(field, &file_path).await?;
 
-    // Quick header-only dimension check to catch decompression bombs early
-    // (e.g. a tiny PNG that decompresses to a 50000×50000 pixel buffer).
-    let file_path_clone = file_path.clone();
-    let header_dims = tokio::task::spawn_blocking(move || {
-        image::ImageReader::open(&file_path_clone)
-            .and_then(image::ImageReader::with_guessed_format)
-            .map_err(|e| e.to_string())
-            .and_then(|r| r.into_dimensions().map_err(|e| e.to_string()))
-    })
-    .await;
-    match header_dims {
-        Ok(Ok((w, h))) if w > max_image_dimension || h > max_image_dimension => {
-            let _ = fs::remove_file(&file_path).await;
-            return Err(AssetsError::InvalidFormat(format!(
-                "Image dimensions {w}x{h} exceed maximum {max_image_dimension}x{max_image_dimension}"
-            )));
-        },
-        Ok(Ok((w, h))) if u64::from(w) * u64::from(h) > MAX_IMAGE_PIXELS => {
-            let _ = fs::remove_file(&file_path).await;
-            return Err(AssetsError::InvalidFormat(format!(
-                "Image pixel count {}x{} = {} exceeds maximum {MAX_IMAGE_PIXELS}",
-                w,
-                h,
-                u64::from(w) * u64::from(h),
-            )));
-        },
-        Ok(Err(e)) => {
-            let _ = fs::remove_file(&file_path).await;
-            return Err(AssetsError::InvalidFormat(format!(
-                "Uploaded file is not a valid image: {e}"
-            )));
-        },
-        Err(e) => {
-            let _ = fs::remove_file(&file_path).await;
-            return Err(AssetsError::IoError(format!("Failed to read image dimensions: {e}")));
-        },
-        _ => {},
-    }
-
-    // Full decode validates the entire image is well-formed (not just the header).
+    // Read the file once — used for both header-only dimension check and full decode.
     let file_data = fs::read(&file_path)
         .await
         .map_err(|e| AssetsError::IoError(format!("Failed to read uploaded file: {e}")))?;
 
+    // Header-only dimension check to catch decompression bombs early
+    // (e.g. a tiny PNG that decompresses to a 50000×50000 pixel buffer),
+    // then full decode to validate the entire image is well-formed.
     let decode_result = tokio::task::spawn_blocking(move || {
-        image::load_from_memory(&file_data).map(|img| {
-            use image::GenericImageView;
-            img.dimensions()
-        })
+        use image::GenericImageView;
+
+        // Header-only pass — cheap dimension extraction without full decode.
+        let header_dims = image::ImageReader::new(std::io::Cursor::new(&file_data))
+            .with_guessed_format()
+            .map_err(|e| e.to_string())
+            .and_then(|r| r.into_dimensions().map_err(|e| e.to_string()));
+
+        match header_dims {
+            Ok((w, h)) if w > max_image_dimension || h > max_image_dimension => {
+                return Err(format!(
+                    "Image dimensions {w}x{h} exceed maximum \
+                     {max_image_dimension}x{max_image_dimension}"
+                ));
+            },
+            Ok((w, h)) if u64::from(w) * u64::from(h) > MAX_IMAGE_PIXELS => {
+                return Err(format!(
+                    "Image pixel count {}x{} = {} exceeds maximum {MAX_IMAGE_PIXELS}",
+                    w,
+                    h,
+                    u64::from(w) * u64::from(h),
+                ));
+            },
+            Err(e) => return Err(format!("Uploaded file is not a valid image: {e}")),
+            _ => {},
+        }
+
+        // Full decode — validates the entire image is well-formed, not just the header.
+        image::load_from_memory(&file_data)
+            .map(|img| img.dimensions())
+            .map_err(|e| format!("Uploaded file is not a valid image: {e}"))
     })
     .await;
     let (width, height) = match decode_result {
         Ok(Ok(dims)) => dims,
         Ok(Err(e)) => {
             let _ = fs::remove_file(&file_path).await;
-            return Err(AssetsError::InvalidFormat(format!(
-                "Uploaded file is not a valid image: {e}"
-            )));
+            return Err(AssetsError::InvalidFormat(e));
         },
         Err(e) => {
             let _ = fs::remove_file(&file_path).await;
