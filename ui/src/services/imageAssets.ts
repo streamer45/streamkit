@@ -22,9 +22,6 @@ async function listImageAssets(): Promise<ImageAsset[]> {
 
   const response = await fetchApi('/api/v1/assets/images', {
     method: 'GET',
-    headers: {
-      'Content-Type': 'application/json',
-    },
   });
 
   if (!response.ok) {

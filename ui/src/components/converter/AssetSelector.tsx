@@ -122,8 +122,8 @@ export const AssetSelector: React.FC<AssetSelectorProps> = ({
     );
   }
 
-  const formatFileSize = (bytes: bigint): string => {
-    const kb = Number(bytes) / 1024;
+  const formatFileSize = (bytes: number): string => {
+    const kb = bytes / 1024;
     if (kb < 1024) {
       return `${kb.toFixed(1)} KB`;
     }

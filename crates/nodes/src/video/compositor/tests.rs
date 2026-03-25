@@ -2134,9 +2134,16 @@ fn write_test_asset(subdir: &str, filename: &str) -> String {
     format!("samples/images/{subdir}/{filename}")
 }
 
-/// Helper: remove a test asset file (best-effort cleanup).
-fn cleanup_test_asset(relative_path: &str) {
-    let _ = std::fs::remove_file(relative_path);
+/// Drop guard that removes a test asset file when it goes out of scope,
+/// ensuring cleanup even if the test panics.
+struct TestAssetGuard {
+    path: String,
+}
+
+impl Drop for TestAssetGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 fn default_transform(w: u32, h: u32) -> config::OverlayTransform {
@@ -2149,13 +2156,13 @@ fn default_transform(w: u32, h: u32) -> config::OverlayTransform {
 #[test]
 fn test_decode_image_overlay_from_asset_path() {
     let asset_path = write_test_asset("user", "test_decode_asset.png");
+    let _guard = TestAssetGuard { path: asset_path.clone() };
     let cfg = config::ImageOverlayConfig {
         id: "img_asset".to_string(),
-        asset_path: asset_path.clone(),
+        asset_path,
         transform: default_transform(10, 10),
     };
     let result = overlay::decode_image_overlay(&cfg, 7680);
-    cleanup_test_asset(&asset_path);
     let decoded = result.expect("should decode from asset_path");
     assert_eq!(decoded.id, "img_asset");
     assert!(decoded.width > 0);

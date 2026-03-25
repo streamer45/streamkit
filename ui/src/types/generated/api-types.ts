@@ -395,7 +395,7 @@ format: string,
 /**
  * File size in bytes
  */
-size_bytes: bigint, 
+size_bytes: number, 
 /**
  * License information from .license file
  */
@@ -433,7 +433,7 @@ height: number,
 /**
  * File size in bytes
  */
-size_bytes: bigint, 
+size_bytes: number, 
 /**
  * Whether this is a system asset (true) or user asset (false)
  */

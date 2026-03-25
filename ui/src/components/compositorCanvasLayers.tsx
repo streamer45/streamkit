@@ -10,7 +10,7 @@
  */
 
 import { useAtomValue } from 'jotai/react';
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import { layerAtoms, textOverlayAtoms, imageOverlayAtoms } from '@/hooks/compositorAtoms';
 import type { ResizeHandle } from '@/hooks/useCompositorLayers';
@@ -361,22 +361,15 @@ export const ImageOverlayLayer: React.FC<{
   );
 
   // Build a serve URL for the image overlay preview.
-  const [imgSrc, setImgSrc] = useState<string | undefined>();
+  const imgSrc = useMemo(() => {
+    if (!overlay?.assetPath) return undefined;
 
-  useEffect(() => {
-    if (!overlay?.assetPath) {
-      setImgSrc(undefined);
-      return;
-    }
-
-    // Build the serve URL from the asset path.
     // Extract scope (user/system) and filename from the path
     // (e.g. "samples/images/user/photo.png" → scope="user", filename="photo.png")
     const parts = overlay.assetPath.split('/');
     const filename = parts.pop() ?? '';
     const scope = parts.pop() ?? 'user';
-    const url = `/api/v1/assets/images/file/${encodeURIComponent(scope)}/${encodeURIComponent(filename)}`;
-    setImgSrc(url);
+    return `/api/v1/assets/images/file/${encodeURIComponent(scope)}/${encodeURIComponent(filename)}`;
   }, [overlay?.assetPath]);
 
   if (!overlay) return null;

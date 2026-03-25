@@ -251,10 +251,10 @@ export function parseImageOverlays(params: Record<string, unknown>): ImageOverla
   const overlays = params.image_overlays as ImageOverlayConfig[] | undefined;
   if (!Array.isArray(overlays)) return [];
   return overlays.map((o, i) => {
-    const raw = o as unknown as Record<string, unknown>;
+    const raw = o as Record<string, unknown>;
     return {
       id: o.id ?? `img_${i}`,
-      assetPath: (raw.asset_path as string | undefined) ?? '',
+      assetPath: o.asset_path ?? '',
       ...parseTransformFields(raw, {
         width: 200,
         height: 200,
@@ -304,7 +304,16 @@ export function serializeTextOverlays(
 }
 
 /** Serialize image overlays back to config format. */
-export function serializeImageOverlays(overlays: ImageOverlayState[]): Record<string, unknown>[] {
+export function serializeImageOverlays(overlays: ImageOverlayState[]): {
+  id: string;
+  asset_path: string;
+  rect: Rect;
+  opacity: number;
+  rotation_degrees: number;
+  z_index: number;
+  mirror_horizontal: boolean;
+  mirror_vertical: boolean;
+}[] {
   return overlays.map((o) => ({
     id: o.id,
     asset_path: o.assetPath,

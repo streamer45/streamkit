@@ -477,6 +477,7 @@ pub fn assets_router() -> Router<Arc<AppState>> {
 
 // Security limits for image assets
 const MAX_IMAGE_FILE_SIZE: usize = 10 * 1024 * 1024; // 10MB
+const MAX_IMAGE_PIXELS: u64 = 40_000_000; // ~40 MP — bounds decoded RGBA to ~160 MB
 
 // Allowed image formats
 const ALLOWED_IMAGE_FORMATS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif"];
@@ -495,11 +496,11 @@ fn validate_image_filename(filename: &str) -> Result<String, AssetsError> {
         return Err(AssetsError::InvalidFilename("Invalid characters in filename".to_string()));
     }
 
-    let extension = filename
-        .rsplit('.')
-        .next()
-        .ok_or_else(|| AssetsError::InvalidFilename("File must have an extension".to_string()))?
-        .to_lowercase();
+    // Require at least one '.' so the rsplit produces a real extension.
+    let extension = match filename.rsplit('.').next() {
+        Some(ext) if filename.contains('.') => ext.to_lowercase(),
+        _ => return Err(AssetsError::InvalidFilename("File must have an extension".to_string())),
+    };
 
     if !ALLOWED_IMAGE_FORMATS.contains(&extension.as_str()) {
         return Err(AssetsError::InvalidFormat(format!(
@@ -652,18 +653,25 @@ async fn list_image_assets(perms: &RolePermissions) -> Result<Vec<ImageAsset>, A
 }
 
 /// Stream an uploaded multipart image field to disk with size enforcement.
+///
+/// Uses `create_new(true)` so the call fails atomically if the file already
+/// exists, avoiding the TOCTOU race of a separate `exists()` pre-check.
 async fn write_image_upload_to_disk(
     mut field: axum::extract::multipart::Field<'_>,
     file_path: &std::path::Path,
 ) -> Result<usize, AssetsError> {
     use tokio::fs::OpenOptions;
 
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(file_path)
-        .await
-        .map_err(|e| AssetsError::IoError(format!("Failed to create file: {e}")))?;
+    let mut file =
+        OpenOptions::new().create_new(true).write(true).open(file_path).await.map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                AssetsError::FileExists(
+                    file_path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown").to_string(),
+                )
+            } else {
+                AssetsError::IoError(format!("Failed to create file: {e}"))
+            }
+        })?;
 
     let mut total_bytes: usize = 0;
     loop {
@@ -709,10 +717,6 @@ async fn process_image_upload(
 
     let file_path = user_dir.join(&filename);
 
-    if file_path.exists() {
-        return Err(AssetsError::FileExists(filename));
-    }
-
     let written_bytes = write_image_upload_to_disk(field, &file_path).await?;
 
     // Quick header-only dimension check to catch decompression bombs early
@@ -730,6 +734,15 @@ async fn process_image_upload(
             let _ = fs::remove_file(&file_path).await;
             return Err(AssetsError::InvalidFormat(format!(
                 "Image dimensions {w}x{h} exceed maximum {max_image_dimension}x{max_image_dimension}"
+            )));
+        },
+        Ok(Ok((w, h))) if u64::from(w) * u64::from(h) > MAX_IMAGE_PIXELS => {
+            let _ = fs::remove_file(&file_path).await;
+            return Err(AssetsError::InvalidFormat(format!(
+                "Image pixel count {}x{} = {} exceeds maximum {MAX_IMAGE_PIXELS}",
+                w,
+                h,
+                u64::from(w) * u64::from(h),
             )));
         },
         Ok(Err(e)) => {
@@ -899,6 +912,13 @@ async fn serve_image_asset_handler(
 
     let file_path = PathBuf::from("samples/images").join(&scope).join(&id);
     let asset_path_str = format!("samples/images/{scope}/{id}");
+
+    // Reject files without an allowed image extension
+    let extension = file_path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+    if !ALLOWED_IMAGE_FORMATS.contains(&extension.as_str()) {
+        return AssetsError::InvalidFormat(format!("Not an allowed image format: {extension}"))
+            .into_response();
+    }
 
     if !perms.is_asset_allowed(&asset_path_str) {
         return AssetsError::Forbidden.into_response();
