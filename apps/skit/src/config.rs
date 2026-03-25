@@ -613,7 +613,7 @@ const fn default_compositor_max_canvas_dimension() -> u32 {
 }
 
 const fn default_compositor_max_image_dimension() -> u32 {
-    8192
+    7680
 }
 
 const fn default_compositor_max_font_size() -> u32 {

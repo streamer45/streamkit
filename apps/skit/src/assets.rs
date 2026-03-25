@@ -750,17 +750,24 @@ async fn process_image_upload(
         .await
         .map_err(|e| AssetsError::IoError(format!("Failed to read uploaded file: {e}")))?;
 
-    let (width, height) = match image::load_from_memory(&file_data) {
-        Ok(img) => {
+    let decode_result = tokio::task::spawn_blocking(move || {
+        image::load_from_memory(&file_data).map(|img| {
             use image::GenericImageView;
             img.dimensions()
-        },
-        Err(e) => {
-            // Clean up the invalid file
+        })
+    })
+    .await;
+    let (width, height) = match decode_result {
+        Ok(Ok(dims)) => dims,
+        Ok(Err(e)) => {
             let _ = fs::remove_file(&file_path).await;
             return Err(AssetsError::InvalidFormat(format!(
                 "Uploaded file is not a valid image: {e}"
             )));
+        },
+        Err(e) => {
+            let _ = fs::remove_file(&file_path).await;
+            return Err(AssetsError::IoError(format!("Image decode task failed: {e}")));
         },
     };
 

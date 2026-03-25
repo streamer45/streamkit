@@ -16,6 +16,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { SKTooltip } from '@/components/Tooltip';
 import type { LayerKind } from '@/hooks/useCompositorLayers';
 import { uploadImageAsset } from '@/services/imageAssets';
+import { showToast } from '@/stores/toastStore';
 import { getLogger } from '@/utils/logger';
 
 import {
@@ -533,8 +534,12 @@ export const CompositorEntryList: React.FC<{
           })
           .catch((err) => {
             logger.error('Failed to upload image asset:', err);
+            const msg = err instanceof Error ? err.message : String(err);
+            showToast(`Image upload failed: ${msg}`, 'error');
+          })
+          .finally(() => {
+            e.target.value = '';
           });
-        e.target.value = '';
       },
       [onAddImage]
     );
