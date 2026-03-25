@@ -602,35 +602,42 @@ describe('computeUpdatedLayer resize edge snapping', () => {
   const CH = 1080;
 
   it('snaps right edge to canvas width when resizing east handle near boundary', () => {
-    // Layer at x=1200, w=640 → right edge = 1840.  Stretch east by 75px → 1915,
-    // which is within SNAP_THRESHOLD of 1920.
+    // Layer at x=1200, w=640, h=480 (AR=4:3). Stretch east by 75px → right edge 1915,
+    // within SNAP_THRESHOLD of 1920 → snaps to canvas width.
     const orig = makeLayer({ x: 1200, y: 100, width: 640, height: 480 });
+    const ar = orig.width / orig.height;
     const result = computeUpdatedLayer(orig, 'resize', 'e', 75, 0, CW, CH);
     expect(result.x + result.width).toBe(CW);
+    // Aspect ratio must be preserved after snapping
+    expect(result.width / result.height).toBeCloseTo(ar, 5);
   });
 
   it('snaps left edge to x=0 when resizing west handle near canvas left', () => {
-    // Layer at x=5, w=640.  Expand west by 2px → newX = 7 but that's > threshold.
-    // Instead start at x=6: expand west by 1px → newX = 5 → still > 1.
-    // Use layer at x=3: expand west by 0px (no movement). Use direct: orig.x=5, dx=-3 → newX=2 < 8.
     const orig = makeLayer({ x: 5, y: 100, width: 640, height: 480 });
+    const ar = orig.width / orig.height;
     const result = computeUpdatedLayer(orig, 'resize', 'w', -3, 0, CW, CH);
-    // After resize: newW = 640 - (-3) = 643, newX = 5 + (640 - 643) = 2
-    // 2 < SNAP_THRESHOLD (8) → snaps to 0
     expect(result.x).toBe(0);
+    // Aspect ratio must be preserved after snapping
+    expect(result.width / result.height).toBeCloseTo(ar, 5);
   });
 
   it('snaps bottom edge to canvas height when resizing south handle near boundary', () => {
     const orig = makeLayer({ x: 100, y: 500, width: 640, height: 480 });
+    const ar = orig.width / orig.height;
     // bottom = 500 + 480 = 980, stretch south by 96 → 1076, within threshold of 1080
     const result = computeUpdatedLayer(orig, 'resize', 's', 0, 96, CW, CH);
     expect(result.y + result.height).toBe(CH);
+    // Aspect ratio must be preserved after snapping
+    expect(result.width / result.height).toBeCloseTo(ar, 5);
   });
 
   it('snaps top edge to y=0 when resizing north handle near canvas top', () => {
     const orig = makeLayer({ x: 100, y: 5, width: 640, height: 480 });
+    const ar = orig.width / orig.height;
     const result = computeUpdatedLayer(orig, 'resize', 'n', 0, -3, CW, CH);
     expect(result.y).toBe(0);
+    // Aspect ratio must be preserved after snapping
+    expect(result.width / result.height).toBeCloseTo(ar, 5);
   });
 
   it('does NOT snap edges that are far from canvas boundaries', () => {

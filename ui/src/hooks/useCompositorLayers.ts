@@ -320,7 +320,14 @@ export const useCompositorLayers = (
     // Skip during active slider interactions (opacity, rotation, crop, etc.)
     // to prevent stale server echo-backs from overwriting in-flight local
     // state.  The next sync after the interaction ends will reconcile.
-    if (activeInteractionRef.current) return;
+    // We still update the prevParsed refs so the diff baseline stays current
+    // and the next non-skipped run doesn't compare against a stale snapshot.
+    if (activeInteractionRef.current) {
+      prevParsedLayersRef.current = parseLayers(params, canvasWidth, canvasHeight);
+      prevParsedTextRef.current = parseTextOverlays(params);
+      prevParsedImgRef.current = parseImageOverlays(params);
+      return;
+    }
 
     const parsed = parseLayers(params, canvasWidth, canvasHeight);
     const currentLayers = getLayersFromStore(store);

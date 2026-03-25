@@ -653,20 +653,27 @@ function computeResizePosition(
     if (handle.includes('n')) newY = orig.y + (orig.height - newH);
   }
 
-  // Snap resize edges to canvas boundaries
+  // Snap resize edges to canvas boundaries, re-applying the aspect ratio
+  // constraint after each snap so the layer isn't distorted.
+  const ar = orig.width > 0 && orig.height > 0 ? orig.width / orig.height : 0;
+
   if (handle.includes('e') && Math.abs(newX + newW - canvasWidth) < SNAP_THRESHOLD) {
     newW = canvasWidth - newX;
+    if (ar > 0) newH = newW / ar;
   }
   if (handle.includes('w') && Math.abs(newX) < SNAP_THRESHOLD) {
     newW += newX;
     newX = 0;
+    if (ar > 0) newH = newW / ar;
   }
   if (handle.includes('s') && Math.abs(newY + newH - canvasHeight) < SNAP_THRESHOLD) {
     newH = canvasHeight - newY;
+    if (ar > 0) newW = newH * ar;
   }
   if (handle.includes('n') && Math.abs(newY) < SNAP_THRESHOLD) {
     newH += newY;
     newY = 0;
+    if (ar > 0) newW = newH * ar;
   }
 
   return { ...orig, x: newX, y: newY, width: newW, height: newH };
