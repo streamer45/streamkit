@@ -17,7 +17,7 @@ const logger = getLogger('imageAssets');
  * Lists all available image assets (system + user)
  * @returns A promise that resolves to an array of image assets
  */
-export async function listImageAssets(): Promise<ImageAsset[]> {
+async function listImageAssets(): Promise<ImageAsset[]> {
   logger.info('Fetching image assets');
 
   const response = await fetchApi('/api/v1/assets/images', {
@@ -86,31 +86,3 @@ export async function uploadImageAsset(file: File): Promise<ImageAsset> {
 
   return asset;
 }
-
-/**
- * Deletes an image asset
- * @param id - The asset ID to delete
- * @returns A promise that resolves when the asset is deleted
- */
-export async function deleteImageAsset(id: string): Promise<void> {
-  logger.info('Deleting image asset:', id);
-
-  const response = await fetchApi(`/api/v1/assets/images/${encodeURIComponent(id)}`, {
-    method: 'DELETE',
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    logger.error('Failed to delete image asset:', {
-      id,
-      status: response.status,
-      statusText: response.statusText,
-      error: errorText,
-    });
-    throw new Error(`Failed to delete image asset: ${errorText || response.statusText}`);
-  }
-
-  logger.info('Deleted image asset:', id);
-}
-
-
