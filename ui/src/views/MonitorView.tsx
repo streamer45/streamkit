@@ -1203,6 +1203,7 @@ const MonitorViewContent: React.FC = () => {
       selectedSession,
       isConnected,
       nodes.length,
+      !!pipeline,
       colorMode,
       onInit,
       handleStartPreview,
