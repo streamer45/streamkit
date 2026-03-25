@@ -17,6 +17,10 @@
  * - Image overlay can be deleted via context menu
  */
 
+import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { test, expect, request, type Page } from "@playwright/test";
 
 import { ensureLoggedIn, getAuthHeaders } from "./auth-helpers";
@@ -63,30 +67,20 @@ async function setupCompositorView(page: Page) {
   return { compositorNode, canvasInner };
 }
 
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const repoRoot = resolve(__dirname, "..", "..");
+
 /**
- * Generate a valid 200×200 solid-red PNG buffer.
+ * Read the bundled StreamKit logo PNG (293x512 RGBA with transparency).
  *
- * Using a reasonably-sized image ensures the compositor creates a canvas
- * overlay box large enough to be visible and clickable during tests.
- * (A 1×1 PNG would produce a 1×1-pixel layer box that Playwright can't
- * reliably interact with.)
+ * Uses the system image asset shipped under `samples/images/system/`
+ * instead of an inline base64 blob.  The logo's transparency makes it
+ * a realistic overlay test case.
  */
-function createTestPngBuffer(): Buffer {
-  const base64 =
-    "iVBORw0KGgoAAAANSUhEUgAAAMgAAADICAIAAAAiOjnJAAACcklEQVR4nO3OAQkAMBDE" +
-    "sPNvejPxUCiFCMjelpzjB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1Hi" +
-    "B1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1Hi" +
-    "B1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1Hi" +
-    "B1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1Hi" +
-    "B1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1Hi" +
-    "B1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1Hi" +
-    "B1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1Hi" +
-    "B1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1Hi" +
-    "B1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1Hi" +
-    "B1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1Hi" +
-    "B1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1HiB1Hi" +
-    "B1HiB1HiB1HiB1HiB1HiB1HiB1H60Yes1qIoPaoAAAAASUVORK5CYII=";
-  return Buffer.from(base64, "base64");
+function readSystemLogoPng(): Buffer {
+  return readFileSync(
+    resolve(repoRoot, "samples/images/system/streamkit-logo.png"),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -175,9 +169,9 @@ test.describe("Compositor Image Overlay Lifecycle", () => {
     ]);
 
     await fileChooser.setFiles({
-      name: "test-image.png",
+      name: "streamkit-logo.png",
       mimeType: "image/png",
-      buffer: createTestPngBuffer(),
+      buffer: readSystemLogoPng(),
     });
 
     // ── 5. Verify image layer appears in layer list ──────────────────────
@@ -275,7 +269,7 @@ test.describe("Compositor Image Overlay Lifecycle", () => {
     });
 
     const testFileName = `e2e-test-${Date.now()}.png`;
-    const pngBuffer = createTestPngBuffer();
+    const pngBuffer = readSystemLogoPng();
 
     // ── 1. Upload image asset via multipart POST ─────────────────────────
 
@@ -309,12 +303,12 @@ test.describe("Compositor Image Overlay Lifecycle", () => {
     expect(asset.name).toBe(testFileName);
     expect(asset.path).toContain("samples/images/user/");
     expect(asset.format).toBe("png");
-    expect(asset.width).toBe(200);
-    expect(asset.height).toBe(200);
+    expect(asset.width).toBe(293);
+    expect(asset.height).toBe(512);
     expect(asset.size_bytes).toBeGreaterThan(0);
     expect(asset.is_system).toBe(false);
 
-    // ── 2. List assets — uploaded image should appear ─────────────────────
+    // ── 2. List assets — uploaded image and system logo should appear ────
 
     const listResponse = await apiContext.get("/api/v1/assets/images");
     expect(listResponse.ok()).toBeTruthy();
@@ -322,12 +316,18 @@ test.describe("Compositor Image Overlay Lifecycle", () => {
     const assets = (await listResponse.json()) as Array<{
       id: string;
       path: string;
+      is_system: boolean;
     }>;
     const found = assets.find((a) => a.id === testFileName);
     expect(
       found,
       `Uploaded asset ${testFileName} not found in list`,
     ).toBeTruthy();
+
+    // The bundled system logo should also appear in the list.
+    const systemLogo = assets.find((a) => a.id === "streamkit-logo.png");
+    expect(systemLogo, "Bundled system logo not found in list").toBeTruthy();
+    expect(systemLogo!.is_system).toBe(true);
 
     // ── 3. Serve image file — GET /api/v1/assets/images/file/{id} ────────
 
