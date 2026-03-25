@@ -300,7 +300,11 @@ test.describe("Compositor Image Overlay Lifecycle", () => {
     };
 
     expect(asset.id).toBe(testFileName);
-    expect(asset.name).toBe(testFileName);
+    // The server builds a display name by stripping the extension and
+    // replacing '_'/'-' with spaces.
+    expect(asset.name).toBe(
+      testFileName.replace(/\.png$/, "").replaceAll("-", " "),
+    );
     expect(asset.path).toContain("samples/images/user/");
     expect(asset.format).toBe("png");
     expect(asset.width).toBe(293);

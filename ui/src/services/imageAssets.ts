@@ -61,8 +61,11 @@ export async function uploadImageAsset(file: File): Promise<ImageAsset> {
 
   if (response.status === 409) {
     // Conflict — file already exists. Fetch existing assets to find the match.
+    // The server sanitizes filenames (spaces → underscores, etc.), so match
+    // against the sanitized name rather than the raw file.name.
+    const sanitized = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
     const assets = await listImageAssets();
-    const existing = assets.find((a) => a.id === file.name);
+    const existing = assets.find((a) => a.id === sanitized);
     if (existing) {
       logger.info('Image asset already exists, reusing:', existing.path);
       return existing;

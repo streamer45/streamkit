@@ -547,18 +547,22 @@ async fn process_image_entry(
         return None;
     }
 
-    // Decode image to get dimensions
+    // Read only the image header to extract dimensions (avoids full decode)
     let file_data = fs::read(&path).await.ok()?;
-    let (width, height) = match image::load_from_memory(&file_data) {
-        Ok(img) => {
-            use image::GenericImageView;
-            img.dimensions()
-        },
-        Err(e) => {
-            warn!("Failed to decode image for dimensions {}: {}", filename, e);
-            return None;
-        },
-    };
+    let (width, height) =
+        match image::ImageReader::new(std::io::Cursor::new(&file_data)).with_guessed_format() {
+            Ok(reader) => match reader.into_dimensions() {
+                Ok(dims) => dims,
+                Err(e) => {
+                    warn!("Failed to read image dimensions {}: {}", filename, e);
+                    return None;
+                },
+            },
+            Err(e) => {
+                warn!("Failed to guess image format {}: {}", filename, e);
+                return None;
+            },
+        };
 
     Some(ImageAsset {
         id,
