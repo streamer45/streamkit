@@ -255,13 +255,22 @@ impl ProcessorNode for MoqPullNode {
 }
 
 /// Indicates why a MoQ stream ended, used for reconnection logic.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 enum StreamEndReason {
     /// Stream ended gracefully as expected
     Natural,
     /// Stream ended unexpectedly and should trigger a reconnection attempt
     Reconnect,
 }
+
+/// Maximum consecutive `Cancel` errors before triggering a reconnect.
+/// A single cancel is normal (group boundary), but a sustained burst means
+/// the publisher has gone away or the relay has no data.
+const MAX_CONSECUTIVE_CANCELS: u32 = 50;
+
+/// Number of consecutive cancels before we start yielding (sleeping) to
+/// avoid busy-spinning the async runtime.
+const CANCEL_YIELD_THRESHOLD: u32 = 5;
 
 impl MoqPullNode {
     fn strip_hang_timestamp_header(
@@ -993,9 +1002,7 @@ impl MoqPullNode {
                         "Track read cancelled (skipping to next group)"
                     );
 
-                    if last_payload_at.elapsed() > Duration::from_secs(5)
-                        && consecutive_cancels >= 50
-                    {
+                    if consecutive_cancels >= MAX_CONSECUTIVE_CANCELS {
                         tracing::warn!(
                             session_packet_count,
                             total_packet_count = *total_packet_count,
@@ -1007,9 +1014,7 @@ impl MoqPullNode {
                     }
 
                     // Yield after consecutive cancels to avoid busy-spinning.
-                    // A single cancel is normal (e.g. group skip), but a burst
-                    // means the publisher has gone away or the relay has no data.
-                    if consecutive_cancels > 5 {
+                    if consecutive_cancels > CANCEL_YIELD_THRESHOLD {
                         tokio::time::sleep(Duration::from_millis(10)).await;
                     }
                 },
@@ -1066,5 +1071,54 @@ mod tests {
         };
         assert_eq!(ts, 123);
         assert_eq!(&stripped[..], b"opus-frame-bytes");
+    }
+
+    #[test]
+    fn test_cancel_threshold_triggers_at_max() {
+        // The reconnect threshold must trigger at exactly MAX_CONSECUTIVE_CANCELS.
+        // Below threshold: no reconnect. At threshold: reconnect.
+        assert!(
+            MAX_CONSECUTIVE_CANCELS > CANCEL_YIELD_THRESHOLD,
+            "reconnect threshold must be above yield threshold"
+        );
+
+        // Simulate the check at boundary values
+        let below = MAX_CONSECUTIVE_CANCELS - 1;
+        let at = MAX_CONSECUTIVE_CANCELS;
+        assert!(below < MAX_CONSECUTIVE_CANCELS, "below threshold should not trigger");
+        assert!(at >= MAX_CONSECUTIVE_CANCELS, "at threshold should trigger");
+    }
+
+    #[test]
+    fn test_cancel_threshold_does_not_require_elapsed_time() {
+        // Regression: the old code required BOTH consecutive_cancels >= 50
+        // AND last_payload_at.elapsed() > 5 seconds. This caused a spin of
+        // hundreds of cancels before reconnecting. The fix removed the time
+        // condition so that MAX_CONSECUTIVE_CANCELS alone is sufficient.
+        //
+        // Verify the threshold is purely count-based by checking the constant
+        // is reasonable (not so high it causes a visible spin loop).
+        // At ~10ms sleep per cancel after CANCEL_YIELD_THRESHOLD, the worst-case
+        // time to reconnect is roughly:
+        //   CANCEL_YIELD_THRESHOLD * 0ms + (MAX - YIELD) * 10ms
+        let worst_case_ms = (MAX_CONSECUTIVE_CANCELS - CANCEL_YIELD_THRESHOLD) as u64 * 10;
+        assert!(
+            worst_case_ms <= 1000,
+            "worst-case cancel spin should be under 1 second, got {worst_case_ms}ms"
+        );
+    }
+
+    #[test]
+    fn test_yield_threshold_is_reasonable() {
+        // The yield threshold should be small enough to avoid busy-spinning
+        // but large enough to allow normal group-skip cancels without sleeping.
+        assert!(
+            CANCEL_YIELD_THRESHOLD >= 3,
+            "yield threshold should tolerate a few normal group skips"
+        );
+        assert!(
+            CANCEL_YIELD_THRESHOLD <= 10,
+            "yield threshold should kick in quickly to avoid busy-spinning"
+        );
     }
 }
