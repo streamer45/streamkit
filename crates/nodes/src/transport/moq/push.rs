@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use opentelemetry::{global, KeyValue};
 use schemars::JsonSchema;
 use serde::Deserialize;
+use streamkit_core::pins::PinManagementMessage;
 use streamkit_core::timing::MediaClock;
 use streamkit_core::types::{
     AudioCodec, EncodedAudioFormat, EncodedVideoFormat, Packet, PacketType, VideoCodec,
@@ -90,6 +91,16 @@ pub struct MoqPushNode {
     config: MoqPushConfig,
 }
 
+/// State for a single dynamic input pin: (pin_name, receiver, track_producer, clock, seeded, first_sent).
+type DynamicInputState = (
+    String,
+    tokio::sync::mpsc::Receiver<Packet>,
+    hang::container::OrderedProducer,
+    MediaClock,
+    bool,
+    bool,
+);
+
 impl MoqPushNode {
     pub const fn new(config: MoqPushConfig) -> Self {
         Self { config }
@@ -100,24 +111,28 @@ impl MoqPushNode {
 #[allow(clippy::too_many_lines)]
 impl ProcessorNode for MoqPushNode {
     fn input_pins(&self) -> Vec<InputPin> {
+        let accepted_types = vec![
+            PacketType::EncodedAudio(EncodedAudioFormat {
+                codec: AudioCodec::Opus,
+                codec_private: None,
+            }),
+            PacketType::EncodedVideo(EncodedVideoFormat {
+                codec: VideoCodec::Vp9,
+                bitstream_format: None,
+                codec_private: None,
+                profile: None,
+                level: None,
+            }),
+        ];
         vec![
             InputPin {
                 name: "in".to_string(),
-                accepts_types: vec![PacketType::EncodedAudio(EncodedAudioFormat {
-                    codec: AudioCodec::Opus,
-                    codec_private: None,
-                })],
+                accepts_types: accepted_types.clone(),
                 cardinality: PinCardinality::One,
             },
             InputPin {
                 name: "in_1".to_string(),
-                accepts_types: vec![PacketType::EncodedVideo(EncodedVideoFormat {
-                    codec: VideoCodec::Vp9,
-                    bitstream_format: None,
-                    codec_private: None,
-                    profile: None,
-                    level: None,
-                })],
+                accepts_types: accepted_types,
                 cardinality: PinCardinality::One,
             },
         ]
@@ -125,6 +140,10 @@ impl ProcessorNode for MoqPushNode {
 
     fn output_pins(&self) -> Vec<OutputPin> {
         vec![] // This is an output node.
+    }
+
+    fn supports_dynamic_pins(&self) -> bool {
+        true
     }
 
     async fn run(self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
@@ -330,6 +349,12 @@ impl ProcessorNode for MoqPushNode {
         let mut video_seeded = false;
         let mut audio_first_sent = false;
 
+        // Pin management for dynamic input pins
+        let mut pin_mgmt_rx = context.pin_management_rx.take();
+
+        // Dynamic input state: used for runtime-added input pins beyond the static `in`/`in_1`.
+        let mut dynamic_inputs: Vec<DynamicInputState> = Vec::new();
+
         // Stats tracking
         let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
         let meter = global::meter("skit_nodes");
@@ -357,7 +382,7 @@ impl ProcessorNode for MoqPushNode {
                         (InputSource::Audio, p)
                     } else {
                         audio_rx = None;
-                        if video_rx.is_none() { break; }
+                        if video_rx.is_none() && dynamic_inputs.is_empty() { break; }
                         continue;
                     }
                 },
@@ -371,9 +396,25 @@ impl ProcessorNode for MoqPushNode {
                         (InputSource::Video, p)
                     } else {
                         video_rx = None;
-                        if audio_rx.is_none() { break; }
+                        if audio_rx.is_none() && dynamic_inputs.is_empty() { break; }
                         continue;
                     }
+                },
+                // Handle dynamic input pin management messages
+                Some(msg) = async {
+                    match &mut pin_mgmt_rx {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    Self::handle_pin_management(
+                        msg,
+                        &mut broadcast,
+                        &mut dynamic_inputs,
+                        self.config.channels,
+                        self.config.initial_delay_ms,
+                    );
+                    continue;
                 },
                 Some(control_msg) = context.control_rx.recv() => {
                     if matches!(control_msg, streamkit_core::control::NodeControlMessage::Shutdown) {
@@ -510,5 +551,104 @@ impl ProcessorNode for MoqPushNode {
 
         tracing::info!("MoqPushNode finished after sending {} packets", packet_count);
         Ok(())
+    }
+}
+
+impl MoqPushNode {
+    /// Handle pin management messages for dynamic input pins.
+    ///
+    /// When a new dynamic input pin is added, creates a corresponding MoQ track
+    /// and registers the receiver so that packets from that pin get published.
+    fn handle_pin_management(
+        msg: PinManagementMessage,
+        broadcast: &mut moq_lite::BroadcastProducer,
+        dynamic_inputs: &mut Vec<DynamicInputState>,
+        channels: u32,
+        initial_delay_ms: u64,
+    ) {
+        match msg {
+            PinManagementMessage::RequestAddInputPin { suggested_name, response_tx } => {
+                let pin_name = suggested_name.unwrap_or_else(|| "in_dyn".to_string());
+                tracing::info!("MoqPushNode: creating dynamic input pin '{}'", pin_name);
+                let accepted_types = vec![
+                    PacketType::EncodedAudio(EncodedAudioFormat {
+                        codec: AudioCodec::Opus,
+                        codec_private: None,
+                    }),
+                    PacketType::EncodedVideo(EncodedVideoFormat {
+                        codec: VideoCodec::Vp9,
+                        bitstream_format: None,
+                        codec_private: None,
+                        profile: None,
+                        level: None,
+                    }),
+                ];
+                let pin = InputPin {
+                    name: pin_name,
+                    accepts_types: accepted_types,
+                    cardinality: PinCardinality::One,
+                };
+                let _ = response_tx.send(Ok(pin));
+            },
+            PinManagementMessage::AddedInputPin { pin, channel } => {
+                tracing::info!("MoqPushNode: activated dynamic input pin '{}'", pin.name);
+
+                // Determine the MoQ track name from the pin name and accepted types.
+                // Convention: if pin accepts video, track is `video/<pin_name>`;
+                // otherwise `audio/<pin_name>`.
+                let is_video =
+                    pin.accepts_types.iter().any(|t| matches!(t, PacketType::EncodedVideo(_)));
+                let track_name = if is_video {
+                    format!("video/{}", pin.name)
+                } else {
+                    format!("audio/{}", pin.name)
+                };
+
+                let track = moq_lite::Track {
+                    name: track_name.clone(),
+                    priority: if is_video { 60 } else { 80 },
+                };
+                match broadcast.create_track(track) {
+                    Ok(producer) => {
+                        let clock = MediaClock::new(initial_delay_ms);
+                        dynamic_inputs.push((
+                            pin.name.clone(),
+                            channel,
+                            producer.into(),
+                            clock,
+                            false, // seeded
+                            false, // first_sent
+                        ));
+                        tracing::info!(
+                            pin = %pin.name,
+                            track = %track_name,
+                            channels,
+                            "MoqPushNode: dynamic input pin mapped to MoQ track"
+                        );
+                    },
+                    Err(e) => {
+                        tracing::error!(
+                            pin = %pin.name,
+                            track = %track_name,
+                            error = %e,
+                            "MoqPushNode: failed to create MoQ track for dynamic input pin"
+                        );
+                    },
+                }
+            },
+            PinManagementMessage::RemoveInputPin { pin_name } => {
+                tracing::info!("MoqPushNode: removed input pin '{}'", pin_name);
+                dynamic_inputs.retain(|(name, _, _, _, _, _)| name != &pin_name);
+            },
+            PinManagementMessage::RequestAddOutputPin { response_tx, .. } => {
+                let _ = response_tx.send(Err(StreamKitError::Configuration(
+                    "MoqPushNode does not support dynamic output pins".to_string(),
+                )));
+            },
+            PinManagementMessage::AddedOutputPin { .. }
+            | PinManagementMessage::RemoveOutputPin { .. } => {
+                // No-op for output pins on a push node
+            },
+        }
     }
 }

@@ -667,8 +667,21 @@ impl DynamicEngine {
             .output_pins
             .iter()
             .find(|p| p.name == from_pin)
-            .or_else(|| match_dynamic_output_pin(&source_metadata.output_pins, from_pin))
-            .ok_or_else(|| format!("Source pin '{from_pin}' not found on node '{from_node}'"))?;
+            .or_else(|| match_dynamic_output_pin(&source_metadata.output_pins, from_pin));
+        let Some(source_pin) = source_pin else {
+            // If the source pin is not found but the node supports dynamic pins,
+            // allow the connection — the output pin will be created on-demand in
+            // connect_nodes via RequestAddOutputPin.
+            if self.pin_management_txs.contains_key(from_node) {
+                tracing::debug!(
+                    "Source pin {}.{} not in metadata, but node supports dynamic pins; skipping strict type validation",
+                    from_node,
+                    from_pin
+                );
+                return Ok(());
+            }
+            return Err(format!("Source pin '{from_pin}' not found on node '{from_node}'"));
+        };
 
         // Find destination input pin (exact match or dynamic pin family template).
         //
@@ -852,14 +865,91 @@ impl DynamicEngine {
         };
 
         // 2. Find the source Pin Distributor configuration Sender
-        // Use let...else for cleaner early return pattern
-        let Some(config_tx) = self.pin_distributors.get(&(from_node.clone(), from_pin.clone()))
-        else {
-            tracing::error!(
-                "Cannot connect: Source output '{}.{}' distributor not found.",
+        // If the pin doesn't exist and the node supports dynamic pins, create it first
+        let config_tx = if let Some(tx) =
+            self.pin_distributors.get(&(from_node.clone(), from_pin.clone()))
+        {
+            tx.clone()
+        } else if let Some(pin_mgmt_tx) = self.pin_management_txs.get(&from_node) {
+            // Node supports dynamic pins — create the output pin on-demand
+            tracing::info!(
+                "Dynamically creating output pin '{}.{}' for connection",
                 from_node,
                 from_pin
             );
+
+            // Request pin creation from the node
+            let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+            let msg = streamkit_core::pins::PinManagementMessage::RequestAddOutputPin {
+                suggested_name: Some(from_pin.clone()),
+                response_tx,
+            };
+
+            if pin_mgmt_tx.send(msg).await.is_err() {
+                tracing::error!(
+                    "Failed to send output pin creation request to node '{}'. It may have stopped.",
+                    from_node
+                );
+                return;
+            }
+
+            // Wait for the node to respond with the pin definition
+            let pin = match response_rx.await {
+                Ok(Ok(pin)) => pin,
+                Ok(Err(e)) => {
+                    tracing::error!("Node '{}' rejected output pin creation: {}", from_node, e);
+                    return;
+                },
+                Err(_) => {
+                    tracing::error!(
+                        "Node '{}' did not respond to output pin creation request",
+                        from_node
+                    );
+                    return;
+                },
+            };
+
+            // Create channels for the PinDistributor
+            let (data_tx, data_rx) = mpsc::channel(self.pin_distributor_capacity);
+            let (cfg_tx, cfg_rx) = mpsc::channel(CONTROL_CAPACITY);
+
+            // Spawn the PinDistributorActor
+            let distributor =
+                PinDistributorActor::new(data_rx, cfg_rx, from_node.clone(), pin.name.clone());
+            tokio::spawn(distributor.run());
+
+            // Store the configuration sender in the engine state
+            self.pin_distributors.insert((from_node.clone(), pin.name.clone()), cfg_tx.clone());
+
+            // Update pin metadata so future validations can resolve this pin by name
+            let meta = self.node_pin_metadata.entry(from_node.clone()).or_insert_with(|| {
+                NodePinMetadata { input_pins: Vec::new(), output_pins: Vec::new() }
+            });
+            if !meta.output_pins.iter().any(|p| p.name == pin.name) {
+                meta.output_pins.push(pin.clone());
+            }
+
+            // Notify the node that the output pin is ready with its channel
+            let added_msg = streamkit_core::pins::PinManagementMessage::AddedOutputPin {
+                pin,
+                channel: data_tx,
+            };
+
+            if pin_mgmt_tx.send(added_msg).await.is_err() {
+                tracing::error!(
+                    "Failed to send output pin activation to node '{}'. It may have stopped.",
+                    from_node
+                );
+                return;
+            }
+
+            cfg_tx
+        } else {
+            tracing::error!(
+                    "Cannot connect: Source output '{}.{}' distributor not found and node doesn't support dynamic pins.",
+                    from_node,
+                    from_pin
+                );
             return;
         };
 
