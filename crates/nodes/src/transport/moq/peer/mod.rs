@@ -967,10 +967,10 @@ impl MoqPeerNode {
                         if let Some(frame) = make_broadcast_frame(packet, k) {
                             let _ = stats_tx
                                 .try_send(NodeStatsDelta { received: 1, ..Default::default() });
-                            if tx.send(frame).is_err() {
-                                // All subscriber receivers dropped
-                                break;
-                            }
+                            // No active subscribers — discard the frame but keep
+                            // the forwarder alive so future subscribers receive
+                            // data (matches the static input path behaviour).
+                            let _ = tx.send(frame);
                             let _ =
                                 stats_tx.try_send(NodeStatsDelta { sent: 1, ..Default::default() });
                         }
