@@ -868,7 +868,7 @@ impl ProcessorNode for MoqPeerNode {
                         None => std::future::pending().await,
                     }
                 } => {
-                    Self::handle_pin_management(msg, &dynamic_outputs, &subscriber_broadcast_tx);
+                    Self::handle_pin_management(msg, &dynamic_outputs, &subscriber_broadcast_tx, &stats_delta_tx);
                 }
 
                 // Check for shutdown signal
@@ -942,6 +942,7 @@ impl MoqPeerNode {
         msg: PinManagementMessage,
         dynamic_outputs: &DynamicOutputs,
         subscriber_broadcast_tx: &broadcast::Sender<BroadcastFrame>,
+        stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
     ) {
         match msg {
             PinManagementMessage::RequestAddOutputPin { suggested_name, response_tx } => {
@@ -986,16 +987,21 @@ impl MoqPeerNode {
                 // pin into the subscriber broadcast channel, mirroring the
                 // behaviour of the static `in`/`in_1` pins.
                 let tx = subscriber_broadcast_tx.clone();
+                let stats_tx = stats_delta_tx.clone();
                 let pin_name = pin.name;
                 tokio::spawn(async move {
                     let mut kind: Option<MediaKind> = None;
                     while let Some(packet) = channel.recv().await {
                         let k = *kind.get_or_insert_with(|| infer_kind_from_packet(&packet));
                         if let Some(frame) = make_broadcast_frame(packet, k) {
+                            let _ = stats_tx
+                                .try_send(NodeStatsDelta { received: 1, ..Default::default() });
                             if tx.send(frame).is_err() {
                                 // All subscriber receivers dropped
                                 break;
                             }
+                            let _ =
+                                stats_tx.try_send(NodeStatsDelta { sent: 1, ..Default::default() });
                         }
                     }
                     tracing::info!(pin = %pin_name, "Dynamic input pin forwarding task ended");
@@ -2391,13 +2397,15 @@ mod tests {
         let dynamic_outputs: DynamicOutputs = Arc::default();
         let (broadcast_tx, _broadcast_rx) = broadcast::channel::<BroadcastFrame>(16);
 
+        let (stats_delta_tx, _stats_delta_rx) = mpsc::channel::<NodeStatsDelta>(16);
+
         let pin = InputPin {
             name: "audio/extra".to_string(),
             accepts_types: vec![],
             cardinality: PinCardinality::One,
         };
         let msg = PinManagementMessage::AddedInputPin { pin, channel: rx };
-        MoqPeerNode::handle_pin_management(msg, &dynamic_outputs, &broadcast_tx);
+        MoqPeerNode::handle_pin_management(msg, &dynamic_outputs, &broadcast_tx, &stats_delta_tx);
 
         // If the channel was dropped, try_send would return a closed error.
         // A successful send (or full-buffer error) means the receiver is alive.

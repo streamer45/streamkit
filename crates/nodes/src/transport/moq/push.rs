@@ -700,7 +700,17 @@ impl MoqPushNode {
             },
             PinManagementMessage::RemoveInputPin { pin_name } => {
                 tracing::info!("MoqPushNode: removed input pin '{}'", pin_name);
-                dynamic_inputs.retain(|state| state.pin_name != pin_name);
+                // Extract removed entries so we can finish their track producers
+                // before dropping them (retain cannot call &mut self methods).
+                let mut kept = Vec::with_capacity(dynamic_inputs.len());
+                for mut state in dynamic_inputs.drain(..) {
+                    if state.pin_name == pin_name {
+                        let _ = state.producer.track.finish();
+                    } else {
+                        kept.push(state);
+                    }
+                }
+                *dynamic_inputs = kept;
             },
             PinManagementMessage::RequestAddOutputPin { response_tx, .. } => {
                 let _ = response_tx.send(Err(StreamKitError::Configuration(
