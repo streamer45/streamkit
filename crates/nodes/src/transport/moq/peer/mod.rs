@@ -202,6 +202,11 @@ pub struct MoqPeerConfig {
     /// Additional input broadcasts (optional).
     /// Each broadcast contributes its own tracks to the pipeline.
     /// Output pins are namespaced: `{broadcast_name}/{track_name}`.
+    ///
+    /// **Note:** Multi-broadcast only works via bidirectional (base path)
+    /// connections where all broadcasts arrive on the same `OriginConsumer`.
+    /// The dedicated `/input` publisher path handles only the primary
+    /// `input_broadcast`.
     #[serde(default)]
     pub input_broadcasts: Vec<String>,
 }
