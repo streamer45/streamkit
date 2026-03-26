@@ -29,7 +29,7 @@ nodes:
   vp9_decoder:
     kind: video::vp9::decoder
     needs:
-      in: moq_peer.out_1
+      in: moq_peer.video/data
 
   compositor:
     kind: video::compositor
@@ -83,7 +83,8 @@ nodes:
 
   opus_decoder:
     kind: audio::opus::decoder
-    needs: moq_peer
+    needs:
+      in: moq_peer.audio/data
 
   gain:
     kind: audio::gain

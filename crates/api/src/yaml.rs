@@ -1145,7 +1145,8 @@ nodes:
       output_broadcast: output
   ogg_muxer:
     kind: containers::ogg::muxer
-    needs: moq_peer
+    needs:
+      in: moq_peer.audio/data
   file_writer:
     kind: core::file_writer
     params:
@@ -1176,7 +1177,8 @@ mode: dynamic
 nodes:
   decoder:
     kind: audio::opus::decoder
-    needs: moq_peer
+    needs:
+      in: moq_peer.audio/data
   encoder:
     kind: audio::opus::encoder
     needs: mixer
