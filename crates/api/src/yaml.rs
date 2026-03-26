@@ -660,8 +660,9 @@ pub fn lint_client_section(client: &ClientSection, mode: EngineMode) -> Vec<Clie
     if mode == EngineMode::OneShot && has_dynamic_fields {
         warnings.push(ClientLintWarning {
             rule: "mode-mismatch-oneshot",
-            message: "Oneshot pipeline declares `publish`, `watch`, `gateway_path`, or \
-                      `relay_url` — these are dynamic-only fields and will be ignored."
+            message: "Oneshot pipeline declares `publish`, `watch`, `secondary_publish`, \
+                      `gateway_path`, or `relay_url` — these are dynamic-only fields and \
+                      will be ignored."
                 .into(),
         });
     }
