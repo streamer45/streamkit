@@ -527,6 +527,11 @@ impl ProcessorNode for MoqPeerNode {
         // Pin management channel for runtime pin creation
         let mut pin_mgmt_rx = context.pin_management_rx.take();
 
+        // Track JoinHandles for dynamic input forwarder tasks so they can be
+        // aborted promptly when the corresponding pin is removed.
+        let mut forwarder_handles: std::collections::HashMap<String, tokio::task::JoinHandle<()>> =
+            std::collections::HashMap::new();
+
         state_helpers::emit_running(&context.state_tx, &node_name);
         tracing::info!(
             "MoqPeerNode ready - connect clients at: {} (or {} / {})",
@@ -846,7 +851,7 @@ impl ProcessorNode for MoqPeerNode {
                         None => std::future::pending().await,
                     }
                 } => {
-                    Self::handle_pin_management(msg, &dynamic_outputs, &subscriber_broadcast_tx, &stats_delta_tx, &shutdown_tx);
+                    Self::handle_pin_management(msg, &dynamic_outputs, &subscriber_broadcast_tx, &stats_delta_tx, &shutdown_tx, &mut forwarder_handles);
                 }
 
                 // Check for shutdown signal
@@ -921,13 +926,15 @@ impl MoqPeerNode {
     /// Packets arriving on `channel` are forwarded into the subscriber
     /// broadcast channel.  The task shuts down cleanly when `shutdown_tx`
     /// fires or the channel closes.
+    ///
+    /// Returns the [`JoinHandle`] so the caller can abort the task on pin removal.
     fn spawn_dynamic_input_forwarder(
         pin_name: String,
         mut channel: mpsc::Receiver<Packet>,
         subscriber_broadcast_tx: &broadcast::Sender<BroadcastFrame>,
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
         shutdown_tx: &broadcast::Sender<()>,
-    ) {
+    ) -> tokio::task::JoinHandle<()> {
         let tx = subscriber_broadcast_tx.clone();
         let stats_tx = stats_delta_tx.clone();
         let mut task_shutdown = shutdown_tx.subscribe();
@@ -957,35 +964,28 @@ impl MoqPeerNode {
                 }
             }
             tracing::info!(pin = %pin_name, "Dynamic input pin forwarding task ended");
-        });
+        })
     }
 
-    /// Insert a channel into the dynamic outputs map, logging on lock poison.
+    /// Insert a channel into the dynamic outputs map.
+    ///
+    /// Recovers from lock poisoning — see [`DynamicOutputs`] doc comment.
     fn insert_dynamic_output(
         dynamic_outputs: &DynamicOutputs,
         name: String,
         channel: mpsc::Sender<Packet>,
     ) {
-        match dynamic_outputs.write() {
-            Ok(mut map) => {
-                map.insert(name, channel);
-            },
-            Err(e) => {
-                tracing::error!("dynamic_outputs lock poisoned on AddedOutputPin: {e}");
-            },
-        }
+        dynamic_outputs
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(name, channel);
     }
 
-    /// Remove a channel from the dynamic outputs map, logging on lock poison.
+    /// Remove a channel from the dynamic outputs map.
+    ///
+    /// Recovers from lock poisoning — see [`DynamicOutputs`] doc comment.
     fn remove_dynamic_output(dynamic_outputs: &DynamicOutputs, name: &str) {
-        match dynamic_outputs.write() {
-            Ok(mut map) => {
-                map.remove(name);
-            },
-            Err(e) => {
-                tracing::error!("dynamic_outputs lock poisoned on RemoveOutputPin: {e}");
-            },
-        }
+        dynamic_outputs.write().unwrap_or_else(std::sync::PoisonError::into_inner).remove(name);
     }
 
     /// Handle a dynamic pin management message from the engine.
@@ -1001,6 +1001,7 @@ impl MoqPeerNode {
         subscriber_broadcast_tx: &broadcast::Sender<BroadcastFrame>,
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
         shutdown_tx: &broadcast::Sender<()>,
+        forwarder_handles: &mut std::collections::HashMap<String, tokio::task::JoinHandle<()>>,
     ) {
         match msg {
             PinManagementMessage::RequestAddOutputPin { suggested_name, response_tx } => {
@@ -1014,22 +1015,26 @@ impl MoqPeerNode {
                 Self::insert_dynamic_output(dynamic_outputs, pin.name, channel);
             },
             PinManagementMessage::RequestAddInputPin { suggested_name, response_tx } => {
-                let pin_name = suggested_name.unwrap_or_else(|| "in_dyn".to_string());
+                let pin_name = suggested_name.unwrap_or_else(|| "dynamic_in".to_string());
                 tracing::info!("MoqPeerNode: creating dynamic input pin '{}'", pin_name);
                 let _ = response_tx.send(Ok(make_dynamic_input_pin(&pin_name)));
             },
             PinManagementMessage::AddedInputPin { pin, channel } => {
                 tracing::info!("MoqPeerNode: activated dynamic input pin '{}'", pin.name);
-                Self::spawn_dynamic_input_forwarder(
-                    pin.name,
+                let handle = Self::spawn_dynamic_input_forwarder(
+                    pin.name.clone(),
                     channel,
                     subscriber_broadcast_tx,
                     stats_delta_tx,
                     shutdown_tx,
                 );
+                forwarder_handles.insert(pin.name, handle);
             },
             PinManagementMessage::RemoveInputPin { pin_name } => {
                 tracing::info!("MoqPeerNode: removed input pin '{}'", pin_name);
+                if let Some(handle) = forwarder_handles.remove(&pin_name) {
+                    handle.abort();
+                }
             },
             PinManagementMessage::RemoveOutputPin { pin_name } => {
                 tracing::info!("MoqPeerNode: removed output pin '{}'", pin_name);
@@ -1736,31 +1741,37 @@ impl MoqPeerNode {
         //
         // The enum tracks what happened so we can act after releasing the lock:
         //   Sent       — packet was forwarded to the dynamic channel
+        //   Dropped    — channel full, packet dropped (real-time media trade-off)
         //   Closed     — dynamic channel exists but is closed (stale entry)
         //   NoEntry(p) — no dynamic channel; packet returned for static path
         enum RouteOutcome {
             Sent,
+            Dropped,
             Closed,
             NoEntry(Packet),
         }
 
-        let outcome = match dynamic_outputs.read() {
-            Ok(map) => match map.get(output_pin) {
+        let outcome = {
+            // Recover from poisoning — the HashMap data is still valid even if
+            // another thread panicked while holding the lock.
+            let map = dynamic_outputs.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+            match map.get(output_pin) {
                 Some(dyn_tx) if dyn_tx.is_closed() => RouteOutcome::Closed,
-                Some(dyn_tx) => {
-                    let _ = dyn_tx.try_send(packet);
-                    RouteOutcome::Sent
+                Some(dyn_tx) => match dyn_tx.try_send(packet) {
+                    Ok(()) => RouteOutcome::Sent,
+                    Err(mpsc::error::TrySendError::Full(_)) => RouteOutcome::Dropped,
+                    Err(mpsc::error::TrySendError::Closed(_)) => RouteOutcome::Closed,
                 },
                 None => RouteOutcome::NoEntry(packet),
-            },
-            Err(e) => {
-                tracing::error!(output_pin, "dynamic_outputs lock poisoned: {e}");
-                return false;
-            },
+            }
         };
 
         match outcome {
             RouteOutcome::Sent => true,
+            RouteOutcome::Dropped => {
+                tracing::debug!(output_pin, "Dynamic output channel full, packet dropped");
+                true
+            },
             RouteOutcome::Closed => {
                 // Downstream consumer disconnected — remove the stale entry
                 // but keep the track processor alive so other consumers (or a
@@ -2444,12 +2455,14 @@ mod tests {
             cardinality: PinCardinality::One,
         };
         let msg = PinManagementMessage::AddedInputPin { pin, channel: rx };
+        let mut forwarder_handles = std::collections::HashMap::new();
         MoqPeerNode::handle_pin_management(
             msg,
             &dynamic_outputs,
             &broadcast_tx,
             &stats_delta_tx,
             &shutdown_tx,
+            &mut forwarder_handles,
         );
 
         // If the channel was dropped, try_send would return a closed error.

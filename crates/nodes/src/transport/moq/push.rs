@@ -438,8 +438,10 @@ impl ProcessorNode for MoqPushNode {
                     if let Some(p) = maybe_pkt {
                         (InputSource::Dynamic(idx), p)
                     } else {
-                        // Dynamic receiver closed — remove it
-                        let mut removed = dynamic_inputs.remove(idx);
+                        // Dynamic receiver closed — remove it (swap_remove is
+                        // O(1); order doesn't matter since indices are recomputed
+                        // each poll iteration).
+                        let mut removed = dynamic_inputs.swap_remove(idx);
                         tracing::info!(pin = %removed.pin_name, "Dynamic input pin closed");
                         let _ = removed.producer.track.finish();
                         if audio_rx.is_none() && video_rx.is_none() && dynamic_inputs.is_empty() { break; }
@@ -647,7 +649,7 @@ impl MoqPushNode {
     ) {
         match msg {
             PinManagementMessage::RequestAddInputPin { suggested_name, response_tx } => {
-                let pin_name = suggested_name.unwrap_or_else(|| "in_dyn".to_string());
+                let pin_name = suggested_name.unwrap_or_else(|| "dynamic_in".to_string());
                 tracing::info!("MoqPushNode: creating dynamic input pin '{}'", pin_name);
                 let pin = InputPin {
                     name: pin_name,
@@ -657,81 +659,16 @@ impl MoqPushNode {
                 let _ = response_tx.send(Ok(pin));
             },
             PinManagementMessage::AddedInputPin { pin, channel } => {
-                tracing::info!("MoqPushNode: activated dynamic input pin '{}'", pin.name);
-
-                let is_video = is_video_pin(&pin.name);
-                let track_name = track_name_from_pin(&pin.name);
-
-                let track = moq_lite::Track {
-                    name: track_name.clone(),
-                    priority: if is_video { 60 } else { 80 },
-                };
-                match broadcast.create_track(track) {
-                    Ok(producer) => {
-                        // Update the catalog with the new track rendition.
-                        if is_video {
-                            catalog.video.renditions.insert(
-                                track_name.clone(),
-                                hang::catalog::VideoConfig {
-                                    codec: hang::catalog::VideoCodec::VP9(hang::catalog::VP9 {
-                                        profile: VP9_PROFILE,
-                                        level: VP9_LEVEL,
-                                        bit_depth: VP9_BIT_DEPTH,
-                                        ..hang::catalog::VP9::default()
-                                    }),
-                                    coded_width: None,
-                                    coded_height: None,
-                                    display_ratio_width: None,
-                                    display_ratio_height: None,
-                                    framerate: Some(30.0),
-                                    bitrate: None,
-                                    description: None,
-                                    optimize_for_latency: Some(true),
-                                    container: hang::catalog::Container::default(),
-                                    jitter: None,
-                                },
-                            );
-                        } else {
-                            catalog.audio.renditions.insert(
-                                track_name.clone(),
-                                hang::catalog::AudioConfig {
-                                    codec: hang::catalog::AudioCodec::Opus,
-                                    sample_rate: 48000,
-                                    channel_count: channels,
-                                    bitrate: Some(128_000),
-                                    description: None,
-                                    container: hang::catalog::Container::default(),
-                                    jitter: None,
-                                },
-                            );
-                        }
-                        Self::republish_catalog(catalog, catalog_producer);
-
-                        let clock = MediaClock::new(initial_delay_ms);
-                        dynamic_inputs.push(DynamicInputState {
-                            pin_name: pin.name.clone(),
-                            receiver: channel,
-                            producer: producer.into(),
-                            clock,
-                            seeded: false,
-                            first_sent: false,
-                            is_video,
-                        });
-                        tracing::info!(
-                            pin = %pin.name,
-                            track = %track_name,
-                            "MoqPushNode: dynamic input pin mapped to MoQ track"
-                        );
-                    },
-                    Err(e) => {
-                        tracing::error!(
-                            pin = %pin.name,
-                            track = %track_name,
-                            error = %e,
-                            "MoqPushNode: failed to create MoQ track for dynamic input pin"
-                        );
-                    },
-                }
+                Self::activate_dynamic_input(
+                    &pin,
+                    channel,
+                    broadcast,
+                    dynamic_inputs,
+                    initial_delay_ms,
+                    catalog,
+                    catalog_producer,
+                    channels,
+                );
             },
             PinManagementMessage::RemoveInputPin { pin_name } => {
                 tracing::info!("MoqPushNode: removed input pin '{}'", pin_name);
@@ -748,8 +685,7 @@ impl MoqPushNode {
                 }
                 *dynamic_inputs = kept;
                 // Remove the track from the catalog and re-publish.
-                catalog.audio.renditions.remove(&track_name);
-                catalog.video.renditions.remove(&track_name);
+                Self::remove_catalog_rendition(catalog, &track_name);
                 Self::republish_catalog(catalog, catalog_producer);
             },
             PinManagementMessage::RequestAddOutputPin { response_tx, .. } => {
@@ -765,22 +701,139 @@ impl MoqPushNode {
     }
 
     /// Re-serialize and publish the current catalog state.
+    ///
+    /// Returns `true` if the catalog was successfully published, `false` on
+    /// serialization or write failure (logged at error level).
     fn republish_catalog(
         catalog: &hang::catalog::Catalog,
         catalog_producer: &mut moq_lite::TrackProducer,
-    ) {
+    ) -> bool {
         match catalog.to_string() {
             Ok(json) => {
                 if let Err(e) = catalog_producer.write_frame(json.into_bytes()) {
                     tracing::error!("Failed to re-publish catalog: {e}");
+                    false
                 } else {
                     tracing::debug!("MoqPushNode: catalog re-published after dynamic track change");
+                    true
                 }
             },
             Err(e) => {
                 tracing::error!("Failed to serialize updated catalog: {e}");
+                false
             },
         }
+    }
+
+    /// Create a MoQ track for a newly added dynamic input pin, update the
+    /// catalog, and register the receiver for packet forwarding.
+    #[allow(clippy::too_many_arguments)]
+    fn activate_dynamic_input(
+        pin: &InputPin,
+        channel: tokio::sync::mpsc::Receiver<Packet>,
+        broadcast: &mut moq_lite::BroadcastProducer,
+        dynamic_inputs: &mut Vec<DynamicInputState>,
+        initial_delay_ms: u64,
+        catalog: &mut hang::catalog::Catalog,
+        catalog_producer: &mut moq_lite::TrackProducer,
+        channels: u32,
+    ) {
+        tracing::info!("MoqPushNode: activated dynamic input pin '{}'", pin.name);
+
+        let is_video = is_video_pin(&pin.name);
+        let track_name = track_name_from_pin(&pin.name);
+
+        let track =
+            moq_lite::Track { name: track_name.clone(), priority: if is_video { 60 } else { 80 } };
+        let producer = match broadcast.create_track(track) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!(
+                    pin = %pin.name, track = %track_name, error = %e,
+                    "MoqPushNode: failed to create MoQ track for dynamic input pin"
+                );
+                return;
+            },
+        };
+
+        // Update the catalog with the new track rendition.
+        Self::insert_catalog_rendition(catalog, &track_name, is_video, channels);
+
+        if !Self::republish_catalog(catalog, catalog_producer) {
+            // Roll back — subscribers won't discover this track.
+            Self::remove_catalog_rendition(catalog, &track_name);
+            tracing::error!(
+                pin = %pin.name, track = %track_name,
+                "Skipping dynamic input — catalog republish failed"
+            );
+            return;
+        }
+
+        let clock = MediaClock::new(initial_delay_ms);
+        dynamic_inputs.push(DynamicInputState {
+            pin_name: pin.name.clone(),
+            receiver: channel,
+            producer: producer.into(),
+            clock,
+            seeded: false,
+            first_sent: false,
+            is_video,
+        });
+        tracing::info!(
+            pin = %pin.name, track = %track_name,
+            "MoqPushNode: dynamic input pin mapped to MoQ track"
+        );
+    }
+
+    /// Insert a rendition into the catalog for a dynamic track.
+    fn insert_catalog_rendition(
+        catalog: &mut hang::catalog::Catalog,
+        track_name: &str,
+        is_video: bool,
+        channels: u32,
+    ) {
+        if is_video {
+            catalog.video.renditions.insert(
+                track_name.to_string(),
+                hang::catalog::VideoConfig {
+                    codec: hang::catalog::VideoCodec::VP9(hang::catalog::VP9 {
+                        profile: VP9_PROFILE,
+                        level: VP9_LEVEL,
+                        bit_depth: VP9_BIT_DEPTH,
+                        ..hang::catalog::VP9::default()
+                    }),
+                    coded_width: None,
+                    coded_height: None,
+                    display_ratio_width: None,
+                    display_ratio_height: None,
+                    framerate: Some(30.0),
+                    bitrate: None,
+                    description: None,
+                    optimize_for_latency: Some(true),
+                    container: hang::catalog::Container::default(),
+                    jitter: None,
+                },
+            );
+        } else {
+            catalog.audio.renditions.insert(
+                track_name.to_string(),
+                hang::catalog::AudioConfig {
+                    codec: hang::catalog::AudioCodec::Opus,
+                    sample_rate: 48000,
+                    channel_count: channels,
+                    bitrate: Some(128_000),
+                    description: None,
+                    container: hang::catalog::Container::default(),
+                    jitter: None,
+                },
+            );
+        }
+    }
+
+    /// Remove a rendition from the catalog (both audio and video maps).
+    fn remove_catalog_rendition(catalog: &mut hang::catalog::Catalog, track_name: &str) {
+        catalog.audio.renditions.remove(track_name);
+        catalog.video.renditions.remove(track_name);
     }
 }
 

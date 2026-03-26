@@ -929,6 +929,29 @@ impl DynamicEngine {
                 meta.output_pins.push(pin.clone());
             }
 
+            // Now that we have the concrete pin definition, validate type
+            // compatibility against the destination.  This catches YAML typos
+            // like `moq_peer.nonexistent/garbage` that were previously allowed
+            // through the early-return in validate_connection_types.
+            if let Some(dest_meta) = self.node_pin_metadata.get(&to_node) {
+                let dest_pin_def = dest_meta.input_pins.iter().find(|p| p.name == to_pin);
+                if let Some(dest_pin_def) = dest_pin_def {
+                    let registry = streamkit_core::packet_meta::packet_type_registry();
+                    if !streamkit_core::packet_meta::can_connect_any(
+                        &pin.produces_type,
+                        &dest_pin_def.accepts_types,
+                        registry,
+                    ) {
+                        tracing::error!(
+                            "Type mismatch after dynamic pin creation: {}.{} produces {:?}, but {}.{} accepts {:?}",
+                            from_node, pin.name, pin.produces_type,
+                            to_node, to_pin, dest_pin_def.accepts_types
+                        );
+                        return;
+                    }
+                }
+            }
+
             // Notify the node that the output pin is ready with its channel
             let added_msg = streamkit_core::pins::PinManagementMessage::AddedOutputPin {
                 pin,
