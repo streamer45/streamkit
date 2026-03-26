@@ -487,7 +487,12 @@ audio: boolean,
 /**
  * Whether the pipeline consumes video from the browser.
  */
-video: boolean, };
+video: boolean, 
+/**
+ * Whether the browser should use screen capture (getDisplayMedia)
+ * instead of the default camera (getUserMedia).
+ */
+screen: boolean, };
 
 export type WatchConfig = { 
 /**

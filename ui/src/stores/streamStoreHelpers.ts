@@ -7,10 +7,16 @@
 import * as Hang from '@moq/hang';
 import * as Publish from '@moq/publish';
 import type { Getter } from '@moq/signals';
-import { Effect } from '@moq/signals';
+import { Effect, Signal } from '@moq/signals';
 import * as Watch from '@moq/watch';
 
-import type { CameraStatus, ConnectionStatus, MicStatus, WatchStatus } from './streamStore';
+import type {
+  CameraStatus,
+  ConnectionStatus,
+  MicStatus,
+  VideoSourceType,
+  WatchStatus,
+} from './streamStore';
 import { getLogger } from '../utils/logger';
 
 const logger = getLogger('streamStore');
@@ -37,6 +43,7 @@ export type ConnectAttempt = {
   videoRenderer: Watch.Video.Renderer | null;
   microphone: Publish.Source.Microphone | null;
   camera: Publish.Source.Camera | null;
+  screen: Publish.Source.Screen | null;
   publish: Publish.Broadcast | null;
 };
 
@@ -57,6 +64,8 @@ export interface ConnectableState {
    *  external MoQ relay, as opposed to a gateway `transport::moq::peer` node
    *  managed directly by skit. */
   isExternalRelay: boolean;
+  /** The video capture source: 'camera' (getUserMedia) or 'screen' (getDisplayMedia). */
+  videoSourceType: VideoSourceType;
   status: ConnectionStatus;
   errorMessage: string;
   isMicEnabled: boolean;
@@ -85,6 +94,7 @@ export const NULL_MOQ_REFS = {
   connection: null,
   microphone: null,
   camera: null,
+  screen: null,
   healthEffect: null,
 } as const;
 
@@ -224,7 +234,7 @@ export function formatConnectError(error: unknown): string {
 
 /** Shut down a media source that may expose `.close()` or only `.enabled`. */
 function shutdownMediaSource(
-  source: Publish.Source.Microphone | Publish.Source.Camera | null
+  source: Publish.Source.Microphone | Publish.Source.Camera | Publish.Source.Screen | null
 ): void {
   if (!source) return;
   if (typeof source.close === 'function') {
@@ -258,6 +268,7 @@ export function cleanupConnectAttempt(attempt: ConnectAttempt): void {
   }
   shutdownMediaSource(attempt.microphone);
   shutdownMediaSource(attempt.camera);
+  shutdownMediaSource(attempt.screen);
 }
 
 function setupConnectionStatusSync(
@@ -358,19 +369,22 @@ function setupWatchPath(
   };
 }
 
-/** Create media sources and wait for camera permission if needed. */
+/** Create media sources and wait for device permission if needed. */
 async function setupMediaSources(
   healthEffect: Effect,
   needsAudio: boolean,
   needsVideo: boolean,
+  videoSourceType: VideoSourceType,
   set: StateSetter,
   abortSignal?: AbortSignal
 ): Promise<{
   microphone: Publish.Source.Microphone | null;
   camera: Publish.Source.Camera | null;
+  screen: Publish.Source.Screen | null;
 }> {
   let microphone: Publish.Source.Microphone | null = null;
   let camera: Publish.Source.Camera | null = null;
+  let screen: Publish.Source.Screen | null = null;
   if (needsAudio) {
     microphone = new Publish.Source.Microphone({ enabled: true });
     set({ micStatus: microphone.source.peek() ? 'ready' : 'requesting' });
@@ -379,28 +393,53 @@ async function setupMediaSources(
     );
   }
   if (needsVideo) {
-    camera = new Publish.Source.Camera({ enabled: true });
-    set({ cameraStatus: camera.source.peek() ? 'ready' : 'requesting' });
-    healthEffect.subscribe(camera.source, (v) => set({ cameraStatus: v ? 'ready' : 'requesting' }));
-    // Wait for camera before creating the broadcast — the MoQ catalog is
-    // published immediately and downstream subscribers only read it once.
-    if (!camera.source.peek()) {
-      try {
-        await waitForSignalValue(
-          camera.source,
-          (v) => v !== undefined,
-          15_000,
-          'Camera not available',
-          abortSignal
-        );
-      } catch (e) {
-        shutdownMediaSource(camera);
-        shutdownMediaSource(microphone);
-        throw e;
+    if (videoSourceType === 'screen') {
+      // Screen capture — the OS picker dialog may take a while, use 30s timeout.
+      screen = new Publish.Source.Screen({ enabled: true });
+      set({ cameraStatus: screen.source.peek()?.video ? 'ready' : 'requesting' });
+      healthEffect.subscribe(screen.source, (v) =>
+        set({ cameraStatus: v?.video ? 'ready' : 'requesting' })
+      );
+      if (!screen.source.peek()?.video) {
+        try {
+          await waitForSignalValue(
+            screen.source,
+            (v) => v?.video !== undefined,
+            30_000,
+            'Screen capture not available',
+            abortSignal
+          );
+        } catch (e) {
+          shutdownMediaSource(screen);
+          shutdownMediaSource(microphone);
+          throw e;
+        }
+      }
+    } else {
+      // Camera capture — standard 15s timeout for permission dialog.
+      camera = new Publish.Source.Camera({ enabled: true });
+      set({ cameraStatus: camera.source.peek() ? 'ready' : 'requesting' });
+      healthEffect.subscribe(camera.source, (v) =>
+        set({ cameraStatus: v ? 'ready' : 'requesting' })
+      );
+      if (!camera.source.peek()) {
+        try {
+          await waitForSignalValue(
+            camera.source,
+            (v) => v !== undefined,
+            15_000,
+            'Camera not available',
+            abortSignal
+          );
+        } catch (e) {
+          shutdownMediaSource(camera);
+          shutdownMediaSource(microphone);
+          throw e;
+        }
       }
     }
   }
-  return { microphone, camera };
+  return { microphone, camera, screen };
 }
 
 async function setupPublishPath(
@@ -409,17 +448,20 @@ async function setupPublishPath(
   inputBroadcast: string,
   needsAudio: boolean,
   needsVideo: boolean,
+  videoSourceType: VideoSourceType,
   set: StateSetter,
   abortSignal?: AbortSignal
 ): Promise<{
   microphone: Publish.Source.Microphone | null;
   camera: Publish.Source.Camera | null;
+  screen: Publish.Source.Screen | null;
   publish: Publish.Broadcast;
 }> {
-  const { microphone, camera } = await setupMediaSources(
+  const { microphone, camera, screen } = await setupMediaSources(
     healthEffect,
     needsAudio,
     needsVideo,
+    videoSourceType,
     set,
     abortSignal
   );
@@ -433,11 +475,26 @@ async function setupPublishPath(
   if (needsAudio && microphone) {
     broadcastConfig.audio = { enabled: true, source: microphone.source };
   }
-  if (needsVideo && camera) {
-    broadcastConfig.video = {
-      source: camera.source,
-      hd: { enabled: true, config: { codec: 'vp09' } },
-    };
+  if (needsVideo) {
+    if (videoSourceType === 'screen' && screen) {
+      // Screen capture: derive a video-only signal from the composite
+      // Screen.source signal ({ audio?, video? } | undefined).
+      // System audio from screen capture is ignored — mic remains the
+      // sole audio source.
+      const videoOnlySignal = new Signal<Publish.Video.Source | undefined>(
+        screen.source.peek()?.video
+      );
+      healthEffect.subscribe(screen.source, (v) => videoOnlySignal.set(v?.video));
+      broadcastConfig.video = {
+        source: videoOnlySignal,
+        hd: { enabled: true, config: { codec: 'vp09' } },
+      };
+    } else if (camera) {
+      broadcastConfig.video = {
+        source: camera.source,
+        hd: { enabled: true, config: { codec: 'vp09' } },
+      };
+    }
   }
 
   const publish = new Publish.Broadcast(broadcastConfig);
@@ -455,6 +512,7 @@ async function setupPublishPath(
       );
     } catch (e) {
       publish.close();
+      shutdownMediaSource(screen);
       shutdownMediaSource(camera);
       shutdownMediaSource(microphone);
       throw e;
@@ -462,7 +520,7 @@ async function setupPublishPath(
     logger.info('Step 5b: Video catalog ready');
   }
 
-  return { microphone, camera, publish };
+  return { microphone, camera, screen, publish };
 }
 
 function schedulePostConnectWarnings(
@@ -525,6 +583,28 @@ function schedulePostConnectWarnings(
       });
     }, 10_000);
   }
+
+  // Screen source warning — analogous to the camera warning above.
+  // Screen.source has shape { audio?, video? } | undefined, so we
+  // check for the presence of the video track.
+  if (decision.shouldPublish && attempt.screen) {
+    const screenRef = attempt.screen;
+
+    let wasEverReady = Boolean(screenRef.source.peek()?.video);
+    attempt.healthEffect.subscribe(screenRef.source, (value) => {
+      if (value?.video) wasEverReady = true;
+    });
+
+    setTimeout(() => {
+      if (get().status !== 'connected') return;
+      if (wasEverReady) return;
+      set({
+        cameraStatus: 'error',
+        errorMessage:
+          'Connected to relay, but screen capture is not available. The user may have stopped sharing.',
+      });
+    }, 10_000);
+  }
 }
 
 /** Apply watch-path results to the attempt object in a type-safe manner. */
@@ -549,6 +629,7 @@ function applyPublishResult(
 ): void {
   attempt.microphone = result.microphone;
   attempt.camera = result.camera;
+  attempt.screen = result.screen;
   attempt.publish = result.publish;
 }
 
@@ -656,6 +737,7 @@ export async function performConnect(
           state.inputBroadcast,
           state.pipelineNeedsAudio,
           state.pipelineNeedsVideo,
+          state.videoSourceType,
           set,
           abortSignal
         )
