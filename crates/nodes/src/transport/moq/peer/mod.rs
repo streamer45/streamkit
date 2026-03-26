@@ -907,12 +907,13 @@ fn make_dynamic_input_pin(name: &str) -> InputPin {
     }
 }
 
-/// Pin names containing `"video/"` produce [`PacketType::EncodedVideo`] (VP9);
-/// all others produce [`PacketType::EncodedAudio`] (Opus). This matches the
-/// convention in `MoqPullNode::output_pins_for_tracks` and supports
-/// namespaced multi-broadcast pins (e.g. `screen-input/video/hd`).
+/// Pin names starting with `"video/"` or containing `"/video/"` produce
+/// [`PacketType::EncodedVideo`] (VP9); all others produce
+/// [`PacketType::EncodedAudio`] (Opus). This matches the convention in
+/// `MoqPullNode::output_pins_for_tracks` and supports namespaced
+/// multi-broadcast pins (e.g. `screen-input/video/hd`).
 fn make_dynamic_output_pin(name: &str) -> OutputPin {
-    let produces_type = if name.contains("video/") {
+    let produces_type = if name.starts_with("video/") || name.contains("/video/") {
         PacketType::EncodedVideo(EncodedVideoFormat {
             codec: VideoCodec::Vp9,
             bitstream_format: None,
@@ -2877,7 +2878,7 @@ mod tests {
         // Multi-broadcast pins use "{broadcast}/{track}" format
         let pin = make_dynamic_output_pin("screen-input/video/hd");
         assert_eq!(pin.name, "screen-input/video/hd");
-        // Contains "video/" so should produce EncodedVideo
+        // Contains "/video/" so should produce EncodedVideo
         assert!(
             matches!(pin.produces_type, PacketType::EncodedVideo(_)),
             "namespaced video pin should produce EncodedVideo"
@@ -2889,6 +2890,14 @@ mod tests {
         assert!(
             matches!(pin.produces_type, PacketType::EncodedAudio(_)),
             "namespaced audio pin should produce EncodedAudio"
+        );
+
+        // Edge case: broadcast name ending in "video" should NOT misclassify
+        // audio pins (e.g. "myvideo/audio/data" must remain EncodedAudio)
+        let pin = make_dynamic_output_pin("myvideo/audio/data");
+        assert!(
+            matches!(pin.produces_type, PacketType::EncodedAudio(_)),
+            "broadcast named 'myvideo' audio pin must not be misclassified as video"
         );
     }
 }
