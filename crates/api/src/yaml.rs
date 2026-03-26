@@ -120,18 +120,6 @@ pub struct ClientSection {
     pub output: Option<OutputConfig>,
 }
 
-/// The video capture source the browser should use when publishing.
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, TS)]
-#[ts(export)]
-#[serde(rename_all = "snake_case")]
-pub enum VideoSourceType {
-    /// Use the device camera (getUserMedia).
-    #[default]
-    Camera,
-    /// Use screen/window capture (getDisplayMedia).
-    Screen,
-}
-
 /// Browser-side publish configuration for dynamic pipelines.
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]
 #[ts(export)]
@@ -144,9 +132,10 @@ pub struct PublishConfig {
     /// Whether the pipeline consumes video from the browser.
     #[serde(default)]
     pub video: bool,
-    /// The video capture source type (camera or screen).
+    /// Whether the browser should use screen capture (getDisplayMedia)
+    /// instead of the default camera (getUserMedia).
     #[serde(default)]
-    pub video_source: VideoSourceType,
+    pub screen: bool,
 }
 
 /// Browser-side watch configuration for dynamic pipelines.
@@ -629,7 +618,7 @@ pub struct ClientLintWarning {
 ///     is an empty string.
 /// 12. **`duplicate-broadcast`** — `publish.broadcast` equals
 ///     `watch.broadcast` (would cause a loop).
-/// 13. **`screen-source-no-video`** — `publish.video_source` is `screen`
+/// 13. **`screen-source-no-video`** — `publish.screen` is `true`
 ///     but `video` is `false` (screen sharing requires video).
 pub fn lint_client_section(client: &ClientSection, mode: EngineMode) -> Vec<ClientLintWarning> {
     let mut warnings = Vec::new();
@@ -685,11 +674,11 @@ pub fn lint_client_section(client: &ClientSection, mode: EngineMode) -> Vec<Clie
             });
         }
 
-        // Rule 4b: video_source is screen but video is false
-        if matches!(publish.video_source, VideoSourceType::Screen) && !publish.video {
+        // Rule 4b: screen is true but video is false
+        if publish.screen && !publish.video {
             warnings.push(ClientLintWarning {
                 rule: "screen-source-no-video",
-                message: "publish.video_source is `screen` but `video` is false — screen sharing \
+                message: "publish.screen is `true` but `video` is false — screen sharing \
                           requires video to be enabled."
                     .into(),
             });
@@ -1787,7 +1776,7 @@ client:
                 broadcast: "input".into(),
                 audio: true,
                 video: false,
-                video_source: VideoSourceType::default(),
+                screen: false,
             }),
             watch: Some(WatchConfig { broadcast: "output".into(), audio: true, video: true }),
             input: None,
@@ -1856,7 +1845,7 @@ client:
                 broadcast: "x".into(),
                 audio: true,
                 video: false,
-                video_source: VideoSourceType::default(),
+                screen: false,
             }),
             watch: None,
             input: None,
@@ -1873,7 +1862,7 @@ client:
             broadcast: "x".into(),
             audio: false,
             video: false,
-            video_source: VideoSourceType::default(),
+            screen: false,
         });
         let warnings = lint_client_section(&c, EngineMode::Dynamic);
         assert!(warnings.iter().any(|w| w.rule == "publish-no-media"));
@@ -1894,7 +1883,7 @@ client:
             broadcast: String::new(),
             audio: true,
             video: false,
-            video_source: VideoSourceType::default(),
+            screen: false,
         });
         let warnings = lint_client_section(&c, EngineMode::Dynamic);
         assert!(warnings.iter().any(|w| w.rule == "empty-broadcast"));
@@ -1907,7 +1896,7 @@ client:
             broadcast: "same".into(),
             audio: true,
             video: false,
-            video_source: VideoSourceType::default(),
+            screen: false,
         });
         c.watch = Some(WatchConfig { broadcast: "same".into(), audio: true, video: true });
         let warnings = lint_client_section(&c, EngineMode::Dynamic);
@@ -2216,7 +2205,7 @@ client:
                 broadcast: "input".into(),
                 audio: true,
                 video: false,
-                video_source: VideoSourceType::default(),
+                screen: false,
             }),
             ..Default::default()
         };
@@ -2257,7 +2246,7 @@ client:
                 broadcast: "input".into(),
                 audio: true,
                 video: false,
-                video_source: VideoSourceType::default(),
+                screen: false,
             }),
             ..Default::default()
         };
@@ -2281,7 +2270,7 @@ client:
                 broadcast: "input".into(),
                 audio: true,
                 video: false,
-                video_source: VideoSourceType::default(),
+                screen: false,
             }),
             ..Default::default()
         };
@@ -2306,7 +2295,7 @@ client:
                 broadcast: "wrong_name".into(),
                 audio: true,
                 video: false,
-                video_source: VideoSourceType::default(),
+                screen: false,
             }),
             ..Default::default()
         };
@@ -2360,12 +2349,12 @@ client:
     }
 
     // -----------------------------------------------------------------------
-    // VideoSourceType tests
+    // Screen capture boolean tests
     // -----------------------------------------------------------------------
 
     #[test]
     #[allow(clippy::unwrap_used)]
-    fn test_video_source_type_defaults_to_camera() {
+    fn test_screen_defaults_to_false() {
         let yaml = r#"
 mode: dynamic
 nodes:
@@ -2386,12 +2375,12 @@ client:
         let compiled = compile(pipeline).unwrap();
         let client = compiled.client.expect("client section should be present");
         let publish = client.publish.expect("publish config should be present");
-        assert!(matches!(publish.video_source, VideoSourceType::Camera));
+        assert!(!publish.screen);
     }
 
     #[test]
     #[allow(clippy::unwrap_used)]
-    fn test_video_source_type_screen_parsed() {
+    fn test_screen_true_parsed() {
         let yaml = r#"
 mode: dynamic
 nodes:
@@ -2403,7 +2392,7 @@ client:
     broadcast: input
     audio: true
     video: true
-    video_source: screen
+    screen: true
   watch:
     broadcast: output
     audio: true
@@ -2413,12 +2402,12 @@ client:
         let compiled = compile(pipeline).unwrap();
         let client = compiled.client.expect("client section should be present");
         let publish = client.publish.expect("publish config should be present");
-        assert!(matches!(publish.video_source, VideoSourceType::Screen));
+        assert!(publish.screen);
     }
 
     #[test]
     #[allow(clippy::unwrap_used)]
-    fn test_video_source_type_camera_explicit() {
+    fn test_screen_false_explicit() {
         let yaml = r#"
 mode: dynamic
 nodes:
@@ -2430,7 +2419,7 @@ client:
     broadcast: input
     audio: true
     video: true
-    video_source: camera
+    screen: false
   watch:
     broadcast: output
     audio: true
@@ -2440,24 +2429,20 @@ client:
         let compiled = compile(pipeline).unwrap();
         let client = compiled.client.expect("client section should be present");
         let publish = client.publish.expect("publish config should be present");
-        assert!(matches!(publish.video_source, VideoSourceType::Camera));
+        assert!(!publish.screen);
     }
 
     #[test]
     #[allow(clippy::unwrap_used)]
-    fn test_video_source_type_roundtrip() {
+    fn test_screen_roundtrip() {
         // Verify serde round-trip: serialize → deserialize preserves the value.
-        let config = PublishConfig {
-            broadcast: "test".into(),
-            audio: true,
-            video: true,
-            video_source: VideoSourceType::Screen,
-        };
+        let config =
+            PublishConfig { broadcast: "test".into(), audio: true, video: true, screen: true };
         let json = serde_json::to_string(&config).unwrap();
-        assert!(json.contains("\"video_source\":\"screen\""));
+        assert!(json.contains("\"screen\":true"));
 
         let deserialized: PublishConfig = serde_json::from_str(&json).unwrap();
-        assert!(matches!(deserialized.video_source, VideoSourceType::Screen));
+        assert!(deserialized.screen);
     }
 
     #[test]
@@ -2467,12 +2452,12 @@ client:
             broadcast: "input".into(),
             audio: true,
             video: false,
-            video_source: VideoSourceType::Screen,
+            screen: true,
         });
         let warnings = lint_client_section(&c, EngineMode::Dynamic);
         assert!(
             warnings.iter().any(|w| w.rule == "screen-source-no-video"),
-            "Should warn when video_source is screen but video is false: {warnings:?}"
+            "Should warn when screen is true but video is false: {warnings:?}"
         );
     }
 
@@ -2483,24 +2468,24 @@ client:
             broadcast: "input".into(),
             audio: true,
             video: true,
-            video_source: VideoSourceType::Screen,
+            screen: true,
         });
         let warnings = lint_client_section(&c, EngineMode::Dynamic);
         assert!(
             !warnings.iter().any(|w| w.rule == "screen-source-no-video"),
-            "Should not warn when video_source is screen and video is true: {warnings:?}"
+            "Should not warn when screen is true and video is true: {warnings:?}"
         );
     }
 
     #[test]
     fn test_lint_camera_source_no_video_no_warning() {
-        // video_source: camera with video: false should NOT trigger screen-source-no-video
+        // screen: false with video: false should NOT trigger screen-source-no-video
         let mut c = dynamic_client();
         c.publish = Some(PublishConfig {
             broadcast: "input".into(),
             audio: true,
             video: false,
-            video_source: VideoSourceType::Camera,
+            screen: false,
         });
         let warnings = lint_client_section(&c, EngineMode::Dynamic);
         assert!(

@@ -10,9 +10,13 @@ import type { Getter } from '@moq/signals';
 import { Effect, Signal } from '@moq/signals';
 import * as Watch from '@moq/watch';
 
-import type { VideoSourceType } from '@/types/types';
-
-import type { CameraStatus, ConnectionStatus, MicStatus, WatchStatus } from './streamStore';
+import type {
+  CameraStatus,
+  ConnectionStatus,
+  MicStatus,
+  VideoSourceType,
+  WatchStatus,
+} from './streamStore';
 import { getLogger } from '../utils/logger';
 
 const logger = getLogger('streamStore');

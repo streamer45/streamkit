@@ -10,8 +10,6 @@ import { Effect } from '@moq/signals';
 import * as Watch from '@moq/watch';
 import { create } from 'zustand';
 
-import type { VideoSourceType } from '@/types/types';
-
 import {
   cleanupConnectAttempt,
   decideConnect,
@@ -20,6 +18,9 @@ import {
 } from './streamStoreHelpers';
 import { fetchConfig } from '../services/config';
 import { getLogger } from '../utils/logger';
+
+/** The video capture source type: 'camera' (getUserMedia) or 'screen' (getDisplayMedia). */
+export type VideoSourceType = 'camera' | 'screen';
 
 const logger = getLogger('streamStore');
 

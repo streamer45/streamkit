@@ -489,11 +489,10 @@ audio: boolean,
  */
 video: boolean, 
 /**
- * The video capture source type (camera or screen).
+ * Whether the browser should use screen capture (getDisplayMedia)
+ * instead of the default camera (getUserMedia).
  */
-video_source: VideoSourceType, };
-
-export type VideoSourceType = "camera" | "screen";
+screen: boolean, };
 
 export type WatchConfig = { 
 /**

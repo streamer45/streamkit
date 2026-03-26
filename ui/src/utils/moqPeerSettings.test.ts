@@ -263,7 +263,7 @@ client:
     broadcast: input
     audio: true
     video: true
-    video_source: screen
+    screen: true
   watch:
     broadcast: output
     audio: true
@@ -282,7 +282,7 @@ client:
     broadcast: input
     audio: true
     video: true
-    video_source: camera
+    screen: false
   watch:
     broadcast: output
     audio: true
