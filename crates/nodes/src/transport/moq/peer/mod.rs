@@ -135,8 +135,6 @@ struct BidirectionalTaskConfig {
     stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
     media: SubscriberMediaConfig,
     media_state_rx: watch::Receiver<MediaTypeState>,
-    audio_output_pin: &'static str,
-    video_output_pin: &'static str,
     dynamic_outputs: DynamicOutputs,
 }
 
@@ -148,8 +146,6 @@ struct PublisherReceiveLoopWithSlotConfig {
     publisher_events: mpsc::UnboundedSender<PublisherEvent>,
     publisher_path: String,
     stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
-    audio_output_pin: &'static str,
-    video_output_pin: &'static str,
     dynamic_outputs: DynamicOutputs,
 }
 
@@ -349,13 +345,22 @@ impl ProcessorNode for MoqPeerNode {
     fn output_pins(&self) -> Vec<OutputPin> {
         vec![
             OutputPin {
-                name: "out".to_string(),
-                produces_type: PacketType::Any,
+                name: "audio/data".to_string(),
+                produces_type: PacketType::EncodedAudio(EncodedAudioFormat {
+                    codec: AudioCodec::Opus,
+                    codec_private: None,
+                }),
                 cardinality: PinCardinality::Broadcast,
             },
             OutputPin {
-                name: "out_1".to_string(),
-                produces_type: PacketType::Any,
+                name: "video/data".to_string(),
+                produces_type: PacketType::EncodedVideo(EncodedVideoFormat {
+                    codec: VideoCodec::Vp9,
+                    bitstream_format: None,
+                    codec_private: None,
+                    profile: None,
+                    level: None,
+                }),
                 cardinality: PinCardinality::Broadcast,
             },
         ]
@@ -495,26 +500,11 @@ impl ProcessorNode for MoqPeerNode {
             }
         }
 
-        // Symmetric output pin mapping: in ↔ out, in_1 ↔ out_1.
-        // When pin types are known the mapping is exact; otherwise we fall
-        // back to the convention audio → "out", video → "out_1".
-        let audio_output_pin: &str = match (pin_0_kind, pin_1_kind) {
-            (Some(MediaKind::Audio), _) => "out",
-            (_, Some(MediaKind::Audio)) | (Some(MediaKind::Video), _) => "out_1",
-            _ => "out",
-        };
-        let video_output_pin: &str = match (pin_0_kind, pin_1_kind) {
-            (Some(MediaKind::Video), _) => "out",
-            _ => "out_1",
-        };
-
         tracing::info!(
             has_audio,
             has_video,
             ?pin_0_kind,
             ?pin_1_kind,
-            audio_output_pin,
-            video_output_pin,
             "MoQ peer input pins (types inferred at runtime)"
         );
 
@@ -605,8 +595,6 @@ impl ProcessorNode for MoqPeerNode {
                                 output_initial_delay_ms: self.config.output_initial_delay_ms,
                             },
                             media_state_rx: media_state_rx.clone(),
-                            audio_output_pin,
-                            video_output_pin,
                             dynamic_outputs: dynamic_outputs.clone(),
                         },
                     ).await {
@@ -660,8 +648,6 @@ impl ProcessorNode for MoqPeerNode {
                         shutdown_tx.subscribe(),
                         publisher_events_tx.clone(),
                         stats_delta_tx.clone(),
-                        audio_output_pin,
-                        video_output_pin,
                         dynamic_outputs.clone(),
                     ).await {
                         Ok(_handle) => {
@@ -1030,8 +1016,6 @@ impl MoqPeerNode {
         mut shutdown_rx: broadcast::Receiver<()>,
         publisher_events: mpsc::UnboundedSender<PublisherEvent>,
         stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
-        audio_output_pin: &'static str,
-        video_output_pin: &'static str,
         dynamic_outputs: DynamicOutputs,
     ) -> Result<tokio::task::JoinHandle<Result<(), StreamKitError>>, StreamKitError> {
         let path = moq_connection.path.clone();
@@ -1068,8 +1052,6 @@ impl MoqPeerNode {
                 output_sender,
                 &mut shutdown_rx,
                 stats_delta_tx,
-                audio_output_pin,
-                video_output_pin,
                 dynamic_outputs,
             )
             .await;
@@ -1139,8 +1121,6 @@ impl MoqPeerNode {
                         publisher_events: config.publisher_events,
                         publisher_path: path.clone(),
                         stats_delta_tx: publisher_stats_delta_tx,
-                        audio_output_pin: config.audio_output_pin,
-                        video_output_pin: config.video_output_pin,
                         dynamic_outputs: config.dynamic_outputs.clone(),
                     },
                     &mut publisher_shutdown_rx,
@@ -1217,8 +1197,6 @@ impl MoqPeerNode {
             config.output_sender,
             shutdown_rx,
             &config.stats_delta_tx,
-            config.audio_output_pin,
-            config.video_output_pin,
             &config.dynamic_outputs,
         )
         .await;
@@ -1233,16 +1211,12 @@ impl MoqPeerNode {
     }
 
     /// Publisher receive loop - receives audio/video from client and sends to pipeline
-    // Dynamic output routing adds one parameter beyond the static-pin version.
-    #[allow(clippy::too_many_arguments)]
     async fn publisher_receive_loop(
         subscribe: moq_lite::OriginConsumer,
         broadcast_name: String,
         output_sender: streamkit_core::OutputSender,
         shutdown_rx: &mut broadcast::Receiver<()>,
         stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
-        audio_output_pin: &'static str,
-        video_output_pin: &'static str,
         dynamic_outputs: DynamicOutputs,
     ) -> Result<(), StreamKitError> {
         tracing::info!("Waiting for publisher to announce broadcast: {}", broadcast_name);
@@ -1261,8 +1235,6 @@ impl MoqPeerNode {
             output_sender,
             shutdown_rx,
             &stats_delta_tx,
-            audio_output_pin,
-            video_output_pin,
             &dynamic_outputs,
         )
         .await
@@ -1334,8 +1306,6 @@ impl MoqPeerNode {
         output_sender: streamkit_core::OutputSender,
         shutdown_rx: &mut broadcast::Receiver<()>,
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
-        audio_output_pin: &'static str,
-        video_output_pin: &'static str,
         dynamic_outputs: &DynamicOutputs,
     ) -> Result<(), StreamKitError> {
         let catalog_track =
@@ -1369,13 +1339,11 @@ impl MoqPeerNode {
                     if audio_handle.is_none() {
                         if let Some(track_name) = catalog.audio.renditions.keys().next() {
                             tracing::info!("Found audio track in catalog: {}", track_name);
-                            // track_name from catalog already includes the prefix (e.g. "audio/data")
-                            let dynamic_pin_name = track_name.clone();
                             audio_handle = Some(Self::spawn_track_processor(
-                                broadcast_consumer, track_name, audio_output_pin,
+                                broadcast_consumer, track_name,
                                 false,
                                 &output_sender, shutdown_rx, stats_delta_tx,
-                                dynamic_outputs, &dynamic_pin_name,
+                                dynamic_outputs,
                             ));
                         }
                     }
@@ -1384,13 +1352,11 @@ impl MoqPeerNode {
                     if video_handle.is_none() {
                         if let Some(track_name) = catalog.video.renditions.keys().next() {
                             tracing::info!("Found video track in catalog: {}", track_name);
-                            // track_name from catalog already includes the prefix (e.g. "video/data")
-                            let dynamic_pin_name = track_name.clone();
                             video_handle = Some(Self::spawn_track_processor(
-                                broadcast_consumer, track_name, video_output_pin,
+                                broadcast_consumer, track_name,
                                 true,
                                 &output_sender, shutdown_rx, stats_delta_tx,
-                                dynamic_outputs, &dynamic_pin_name,
+                                dynamic_outputs,
                             ));
                         }
                     }
@@ -1417,18 +1383,14 @@ impl MoqPeerNode {
     /// `TrackProducer`/`TrackConsumer` pair (the old producer is evicted from
     /// moq-lite's dedup map once unused). This makes the pipeline resilient
     /// to brief client-side track flaps regardless of `@moq/hang` version.
-    // Dynamic output routing adds parameters beyond the static-pin version.
-    #[allow(clippy::too_many_arguments)]
     fn spawn_track_processor(
         broadcast_consumer: &moq_lite::BroadcastConsumer,
         track_name: &str,
-        output_pin: &'static str,
         is_video: bool,
         output_sender: &streamkit_core::OutputSender,
         shutdown_rx: &broadcast::Receiver<()>,
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
         dynamic_outputs: &DynamicOutputs,
-        dynamic_pin_name: &str,
     ) -> tokio::task::JoinHandle<Result<(), StreamKitError>> {
         // How many times to re-subscribe after a publisher-side cancellation
         // before giving up. The browser's camera-source flap during the
@@ -1437,20 +1399,17 @@ impl MoqPeerNode {
         const MAX_RESUBSCRIBE_ATTEMPTS: u32 = 10;
         const RESUBSCRIBE_INITIAL_BACKOFF: Duration = Duration::from_millis(100);
 
-        // BroadcastConsumer is Clone (Arc-like state + watch::Receiver +
-        // async_channel::Sender). Cloning into the task lets us re-subscribe
-        // after a cancellation without holding a reference across the spawn.
         let broadcast = broadcast_consumer.clone();
         let track = moq_lite::Track { name: track_name.to_string(), priority: 2 };
         let sender = output_sender.clone();
         let mut task_shutdown = shutdown_rx.resubscribe();
         let stats = stats_delta_tx.clone();
-        let pin_name = output_pin;
+        // Use the track name directly as the output pin name (e.g. "audio/data", "video/data")
+        let output_pin = track_name.to_string();
         let dyn_outputs = dynamic_outputs.clone();
-        let dyn_pin = dynamic_pin_name.to_string();
 
         tokio::spawn(async move {
-            tracing::info!(output_pin = pin_name, track = %track.name, "Track processor task started");
+            tracing::info!(output_pin = %output_pin, track = %track.name, "Track processor task started");
 
             let mut attempt: u32 = 0;
             loop {
@@ -1463,26 +1422,25 @@ impl MoqPeerNode {
                 let exit = Self::process_publisher_frames(
                     consumer,
                     sender.clone(),
-                    pin_name,
+                    &output_pin,
                     is_video,
                     &mut task_shutdown,
                     &stats,
                     &dyn_outputs,
-                    &dyn_pin,
                 )
                 .await;
 
                 match exit {
                     TrackExit::Finished => {
                         tracing::info!(
-                            output_pin = pin_name,
+                            output_pin = %output_pin,
                             "Track processor task finished normally"
                         );
                         return Ok(());
                     },
                     TrackExit::Error(e) => {
                         tracing::warn!(
-                            output_pin = pin_name,
+                            output_pin = %output_pin,
                             error = %e,
                             "Track processor task finished with error"
                         );
@@ -1492,7 +1450,7 @@ impl MoqPeerNode {
                         attempt += 1;
                         if attempt > MAX_RESUBSCRIBE_ATTEMPTS {
                             tracing::warn!(
-                                output_pin = pin_name,
+                                output_pin = %output_pin,
                                 attempts = attempt,
                                 "Publisher track cancelled; retry budget exhausted"
                             );
@@ -1504,18 +1462,16 @@ impl MoqPeerNode {
                         let backoff =
                             RESUBSCRIBE_INITIAL_BACKOFF * 2u32.saturating_pow(attempt - 1);
                         tracing::info!(
-                            output_pin = pin_name,
+                            output_pin = %output_pin,
                             attempt,
                             max = MAX_RESUBSCRIBE_ATTEMPTS,
                             backoff_ms = backoff.as_millis(),
                             "Publisher track cancelled; re-subscribing after backoff"
                         );
-                        // Yield to shutdown during backoff so we don't delay
-                        // teardown if the pipeline is stopping.
                         tokio::select! {
                             biased;
                             _ = task_shutdown.recv() => {
-                                tracing::info!(output_pin = pin_name, "Shutdown during re-subscribe backoff");
+                                tracing::info!(output_pin = %output_pin, "Shutdown during re-subscribe backoff");
                                 return Ok(());
                             }
                             () = tokio::time::sleep(backoff) => {}
@@ -1637,7 +1593,6 @@ impl MoqPeerNode {
         shutdown_rx: &mut broadcast::Receiver<()>,
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
         dynamic_outputs: &DynamicOutputs,
-        dynamic_pin_name: &str,
     ) -> TrackExit {
         let mut frame_count = 0u64;
         let mut last_log = std::time::Instant::now();
@@ -1679,7 +1634,6 @@ impl MoqPeerNode {
                     stats_delta_tx,
                     keyframe,
                     dynamic_outputs,
-                    dynamic_pin_name,
                 )
                 .await
                 {
@@ -1745,7 +1699,6 @@ impl MoqPeerNode {
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
         is_keyframe: bool,
         dynamic_outputs: &DynamicOutputs,
-        dynamic_pin_name: &str,
     ) -> Result<FrameResult, StreamKitError> {
         tokio::select! {
             biased;
@@ -1791,14 +1744,14 @@ impl MoqPeerNode {
                             }),
                         };
 
-                        // Send to the dynamic (track-named) output pin if available
+                        // Send to the dynamic output channel if available (for dynamic pins)
                         if let Ok(map) = dynamic_outputs.read() {
-                            if let Some(dyn_tx) = map.get(dynamic_pin_name) {
+                            if let Some(dyn_tx) = map.get(output_pin) {
                                 let _ = dyn_tx.try_send(packet.clone());
                             }
                         }
 
-                        // Always send to legacy pin for backward compatibility
+                        // Send to the static output pin
                         if output_sender.send(output_pin, packet).await.is_err() {
                             tracing::info!(output_pin, "Output channel closed for pin");
                             let _ = stats_delta_tx

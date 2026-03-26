@@ -52,7 +52,8 @@ nodes:
   # Decode Opus audio (48kHz stereo -> PCM)
   opus_decoder:
     kind: audio::opus::decoder
-    needs: moq_peer
+    needs:
+      in: moq_peer.audio/data
 
   # ============================================================
   # STT: Convert English speech to text
