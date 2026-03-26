@@ -55,7 +55,8 @@ nodes:
 
   opus_decoder:
     kind: audio::opus::decoder
-    needs: moq_peer
+    needs:
+      in: moq_peer.audio/data
 
   gain:
     kind: audio::gain
@@ -127,7 +128,8 @@ nodes:
 
   opus_decoder:
     kind: audio::opus::decoder
-    needs: moq_peer
+    needs:
+      in: moq_peer.audio/data
 
   opus_encoder:
     kind: audio::opus::encoder

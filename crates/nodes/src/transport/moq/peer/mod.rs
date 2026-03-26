@@ -20,6 +20,7 @@ use serde::Deserialize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use streamkit_core::pins::PinManagementMessage;
 use streamkit_core::timing::MediaClock;
 use streamkit_core::types::{
     AudioCodec, EncodedAudioFormat, EncodedVideoFormat, Packet, PacketType, VideoCodec,
@@ -134,8 +135,7 @@ struct BidirectionalTaskConfig {
     stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
     media: SubscriberMediaConfig,
     media_state_rx: watch::Receiver<MediaTypeState>,
-    audio_output_pin: &'static str,
-    video_output_pin: &'static str,
+    dynamic_outputs: DynamicOutputs,
 }
 
 struct PublisherReceiveLoopWithSlotConfig {
@@ -146,8 +146,7 @@ struct PublisherReceiveLoopWithSlotConfig {
     publisher_events: mpsc::UnboundedSender<PublisherEvent>,
     publisher_path: String,
     stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
-    audio_output_pin: &'static str,
-    video_output_pin: &'static str,
+    dynamic_outputs: DynamicOutputs,
 }
 
 fn normalize_gateway_path(path: &str) -> String {
@@ -290,6 +289,20 @@ fn make_broadcast_frame(packet: Packet, kind: MediaKind) -> Option<BroadcastFram
     }
 }
 
+/// Shared map of dynamically created output pin senders.
+///
+/// When downstream nodes connect to track-named pins (e.g. `moq_peer.audio/data`),
+/// the engine creates the pin on-demand and sends the channel via
+/// [`PinManagementMessage::AddedOutputPin`]. Track processors check this map
+/// and forward frames to the corresponding downstream channel.
+///
+/// Uses [`std::sync::RwLock`] rather than [`tokio::sync::RwLock`] because the
+/// lock is never held across an `.await` point — only brief synchronous reads
+/// in [`route_packet`] and occasional writes when pins are added/removed.
+/// This avoids the overhead of the async lock on every packet in the hot path.
+type DynamicOutputs =
+    Arc<std::sync::RwLock<std::collections::HashMap<String, mpsc::Sender<Packet>>>>;
+
 /// A MoQ server node that supports one publisher and multiple subscribers.
 /// - Publisher connects to `{gateway_path}/input` and sends media to the pipeline
 /// - Subscribers connect to `{gateway_path}/output` and receive processed media
@@ -307,19 +320,7 @@ impl MoqPeerNode {
 #[allow(clippy::too_many_lines)]
 impl ProcessorNode for MoqPeerNode {
     fn input_pins(&self) -> Vec<InputPin> {
-        let accepted_types = vec![
-            PacketType::EncodedAudio(EncodedAudioFormat {
-                codec: AudioCodec::Opus,
-                codec_private: None,
-            }),
-            PacketType::EncodedVideo(EncodedVideoFormat {
-                codec: VideoCodec::Vp9,
-                bitstream_format: None,
-                codec_private: None,
-                profile: None,
-                level: None,
-            }),
-        ];
+        let accepted_types = super::constants::moq_accepted_media_types();
         vec![
             InputPin {
                 name: "in".to_string(),
@@ -335,18 +336,11 @@ impl ProcessorNode for MoqPeerNode {
     }
 
     fn output_pins(&self) -> Vec<OutputPin> {
-        vec![
-            OutputPin {
-                name: "out".to_string(),
-                produces_type: PacketType::Any,
-                cardinality: PinCardinality::Broadcast,
-            },
-            OutputPin {
-                name: "out_1".to_string(),
-                produces_type: PacketType::Any,
-                cardinality: PinCardinality::Broadcast,
-            },
-        ]
+        vec![make_dynamic_output_pin("audio/data"), make_dynamic_output_pin("video/data")]
+    }
+
+    fn supports_dynamic_pins(&self) -> bool {
+        true
     }
 
     async fn run(self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
@@ -479,26 +473,11 @@ impl ProcessorNode for MoqPeerNode {
             }
         }
 
-        // Symmetric output pin mapping: in ↔ out, in_1 ↔ out_1.
-        // When pin types are known the mapping is exact; otherwise we fall
-        // back to the convention audio → "out", video → "out_1".
-        let audio_output_pin: &str = match (pin_0_kind, pin_1_kind) {
-            (Some(MediaKind::Audio), _) => "out",
-            (_, Some(MediaKind::Audio)) | (Some(MediaKind::Video), _) => "out_1",
-            _ => "out",
-        };
-        let video_output_pin: &str = match (pin_0_kind, pin_1_kind) {
-            (Some(MediaKind::Video), _) => "out",
-            _ => "out_1",
-        };
-
         tracing::info!(
             has_audio,
             has_video,
             ?pin_0_kind,
             ?pin_1_kind,
-            audio_output_pin,
-            video_output_pin,
             "MoQ peer input pins (types inferred at runtime)"
         );
 
@@ -520,6 +499,18 @@ impl ProcessorNode for MoqPeerNode {
         let publisher_slot = Arc::new(Semaphore::new(1));
         let (publisher_events_tx, mut publisher_events_rx) =
             mpsc::unbounded_channel::<PublisherEvent>();
+
+        // Dynamic output pin channels — populated when the engine creates
+        // track-named output pins (e.g. `audio/data`, `video/hd`) on demand.
+        let dynamic_outputs: DynamicOutputs = Arc::default();
+
+        // Pin management channel for runtime pin creation
+        let mut pin_mgmt_rx = context.pin_management_rx.take();
+
+        // Track JoinHandles for dynamic input forwarder tasks so they can be
+        // aborted promptly when the corresponding pin is removed.
+        let mut forwarder_handles: std::collections::HashMap<String, tokio::task::JoinHandle<()>> =
+            std::collections::HashMap::new();
 
         state_helpers::emit_running(&context.state_tx, &node_name);
         tracing::info!(
@@ -581,8 +572,7 @@ impl ProcessorNode for MoqPeerNode {
                                 output_initial_delay_ms: self.config.output_initial_delay_ms,
                             },
                             media_state_rx: media_state_rx.clone(),
-                            audio_output_pin,
-                            video_output_pin,
+                            dynamic_outputs: dynamic_outputs.clone(),
                         },
                     ).await {
                         Ok(_handle) => {
@@ -635,8 +625,7 @@ impl ProcessorNode for MoqPeerNode {
                         shutdown_tx.subscribe(),
                         publisher_events_tx.clone(),
                         stats_delta_tx.clone(),
-                        audio_output_pin,
-                        video_output_pin,
+                        dynamic_outputs.clone(),
                     ).await {
                         Ok(_handle) => {
                             tracing::info!("Publisher connected and streaming");
@@ -834,6 +823,17 @@ impl ProcessorNode for MoqPeerNode {
                     }
                 }
 
+                // Dynamic pin management — handle engine requests for
+                // track-named output pins (e.g. `audio/data`, `video/hd`).
+                Some(msg) = async {
+                    match &mut pin_mgmt_rx {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    Self::handle_pin_management(msg, &dynamic_outputs, &subscriber_broadcast_tx, &stats_delta_tx, &shutdown_tx, &mut forwarder_handles);
+                }
+
                 // Check for shutdown signal
                 Some(control_msg) = context.control_rx.recv() => {
                     match control_msg {
@@ -852,6 +852,13 @@ impl ProcessorNode for MoqPeerNode {
         // Cleanup: signal all tasks to shutdown
         let _ = shutdown_tx.send(());
 
+        // Abort any lingering dynamic input forwarder tasks and wait briefly
+        // for them to finish so the node is fully stopped before we return.
+        for (name, handle) in forwarder_handles.drain() {
+            handle.abort();
+            tracing::debug!(pin = %name, "Aborted dynamic input forwarder");
+        }
+
         // Unregister routes from gateway
         tracing::info!("Unregistering MoQ routes from gateway");
         gateway.unregister_route(&base_path).await;
@@ -864,13 +871,194 @@ impl ProcessorNode for MoqPeerNode {
         state_helpers::emit_stopped(&context.state_tx, &node_name, "shutdown");
         tracing::info!(
             "MoqPeerNode finished with {} active subscribers",
-            subscriber_count.load(Ordering::SeqCst)
+            subscriber_count.load(Ordering::Relaxed)
         );
         final_result
     }
 }
 
+/// Create a dynamic input pin that accepts both Opus audio and VP9 video.
+fn make_dynamic_input_pin(name: &str) -> InputPin {
+    InputPin {
+        name: name.to_string(),
+        accepts_types: super::constants::moq_accepted_media_types(),
+        cardinality: PinCardinality::One,
+    }
+}
+
+/// Pin names starting with `"video/"` produce [`PacketType::EncodedVideo`] (VP9);
+/// all others produce [`PacketType::EncodedAudio`] (Opus). This matches the
+/// convention in `MoqPullNode::output_pins_for_tracks`.
+fn make_dynamic_output_pin(name: &str) -> OutputPin {
+    let produces_type = if name.starts_with("video/") {
+        PacketType::EncodedVideo(EncodedVideoFormat {
+            codec: VideoCodec::Vp9,
+            bitstream_format: None,
+            codec_private: None,
+            profile: None,
+            level: None,
+        })
+    } else {
+        PacketType::EncodedAudio(EncodedAudioFormat {
+            codec: AudioCodec::Opus,
+            codec_private: None,
+        })
+    };
+    OutputPin { name: name.to_string(), produces_type, cardinality: PinCardinality::Broadcast }
+}
+
 impl MoqPeerNode {
+    /// Spawn a forwarding task for a newly added dynamic input pin.
+    ///
+    /// Packets arriving on `channel` are forwarded into the subscriber
+    /// broadcast channel.  The task shuts down cleanly when `shutdown_tx`
+    /// fires or the channel closes.
+    ///
+    /// Returns the [`JoinHandle`] so the caller can abort the task on pin removal.
+    fn spawn_dynamic_input_forwarder(
+        pin_name: String,
+        mut channel: mpsc::Receiver<Packet>,
+        subscriber_broadcast_tx: &broadcast::Sender<BroadcastFrame>,
+        stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
+        shutdown_tx: &broadcast::Sender<()>,
+    ) -> tokio::task::JoinHandle<()> {
+        let tx = subscriber_broadcast_tx.clone();
+        let stats_tx = stats_delta_tx.clone();
+        let mut task_shutdown = shutdown_tx.subscribe();
+        tokio::spawn(async move {
+            let mut kind: Option<MediaKind> = None;
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = task_shutdown.recv() => {
+                        tracing::info!(pin = %pin_name, "Dynamic input forwarding task shutting down");
+                        break;
+                    }
+                    maybe_packet = channel.recv() => {
+                        let Some(packet) = maybe_packet else { break };
+                        let k = *kind.get_or_insert_with(|| infer_kind_from_packet(&packet));
+                        if let Some(frame) = make_broadcast_frame(packet, k) {
+                            let _ = stats_tx
+                                .try_send(NodeStatsDelta { received: 1, ..Default::default() });
+                            // No active subscribers — discard the frame but keep
+                            // the forwarder alive so future subscribers receive
+                            // data (matches the static input path behaviour).
+                            let _ = tx.send(frame);
+                            let _ =
+                                stats_tx.try_send(NodeStatsDelta { sent: 1, ..Default::default() });
+                        }
+                    }
+                }
+            }
+            tracing::info!(pin = %pin_name, "Dynamic input pin forwarding task ended");
+        })
+    }
+
+    /// Insert a channel into the dynamic outputs map.
+    ///
+    /// Recovers from lock poisoning — see [`DynamicOutputs`] doc comment.
+    fn insert_dynamic_output(
+        dynamic_outputs: &DynamicOutputs,
+        name: String,
+        channel: mpsc::Sender<Packet>,
+    ) {
+        dynamic_outputs
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(name, channel);
+    }
+
+    /// Remove a channel from the dynamic outputs map.
+    ///
+    /// Recovers from lock poisoning — see [`DynamicOutputs`] doc comment.
+    fn remove_dynamic_output(dynamic_outputs: &DynamicOutputs, name: &str) {
+        dynamic_outputs.write().unwrap_or_else(std::sync::PoisonError::into_inner).remove(name);
+    }
+
+    /// Handle a dynamic pin management message from the engine.
+    ///
+    /// - [`PinManagementMessage::RequestAddOutputPin`]: the engine is creating a
+    ///   track-named output pin because a downstream node connected to it. We
+    ///   respond with an appropriate pin definition.
+    /// - [`PinManagementMessage::AddedOutputPin`]: the engine has set up the pin
+    ///   distributor and sends us the channel to write frames to.
+    fn handle_pin_management(
+        msg: PinManagementMessage,
+        dynamic_outputs: &DynamicOutputs,
+        subscriber_broadcast_tx: &broadcast::Sender<BroadcastFrame>,
+        stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
+        shutdown_tx: &broadcast::Sender<()>,
+        forwarder_handles: &mut std::collections::HashMap<String, tokio::task::JoinHandle<()>>,
+    ) {
+        match msg {
+            PinManagementMessage::RequestAddOutputPin { suggested_name, response_tx } => {
+                let pin_name = suggested_name.unwrap_or_else(|| "dynamic_out".to_string());
+                tracing::info!("MoqPeerNode: creating dynamic output pin '{}'", pin_name);
+                let pin = make_dynamic_output_pin(&pin_name);
+                let _ = response_tx.send(Ok(pin));
+            },
+            PinManagementMessage::AddedOutputPin { pin, channel } => {
+                tracing::info!("MoqPeerNode: activated dynamic output pin '{}'", pin.name);
+                Self::insert_dynamic_output(dynamic_outputs, pin.name, channel);
+            },
+            PinManagementMessage::RequestAddInputPin { suggested_name, response_tx } => {
+                let pin_name = suggested_name.unwrap_or_else(|| "dynamic_in".to_string());
+                tracing::info!("MoqPeerNode: creating dynamic input pin '{}'", pin_name);
+                let _ = response_tx.send(Ok(make_dynamic_input_pin(&pin_name)));
+            },
+            PinManagementMessage::AddedInputPin { pin, channel } => {
+                Self::activate_dynamic_input_forwarder(
+                    pin,
+                    channel,
+                    subscriber_broadcast_tx,
+                    stats_delta_tx,
+                    shutdown_tx,
+                    forwarder_handles,
+                );
+            },
+            PinManagementMessage::RemoveInputPin { pin_name } => {
+                tracing::info!("MoqPeerNode: removed input pin '{}'", pin_name);
+                if let Some(handle) = forwarder_handles.remove(&pin_name) {
+                    handle.abort();
+                }
+            },
+            PinManagementMessage::RemoveOutputPin { pin_name } => {
+                tracing::info!("MoqPeerNode: removed output pin '{}'", pin_name);
+                Self::remove_dynamic_output(dynamic_outputs, &pin_name);
+            },
+        }
+    }
+
+    /// Activate a dynamic input pin by spawning a forwarder task and
+    /// registering its handle. Prunes finished handles and aborts any
+    /// existing forwarder for the same pin name to prevent leaks.
+    #[allow(clippy::too_many_arguments)]
+    fn activate_dynamic_input_forwarder(
+        pin: InputPin,
+        channel: mpsc::Receiver<Packet>,
+        subscriber_broadcast_tx: &broadcast::Sender<BroadcastFrame>,
+        stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
+        shutdown_tx: &broadcast::Sender<()>,
+        forwarder_handles: &mut std::collections::HashMap<String, tokio::task::JoinHandle<()>>,
+    ) {
+        tracing::info!("MoqPeerNode: activated dynamic input pin '{}'", pin.name);
+        // Prune finished forwarder handles to avoid unbounded growth
+        // from naturally-closed channels whose handles were never
+        // explicitly removed via RemoveInputPin.
+        forwarder_handles.retain(|_, h| !h.is_finished());
+        let handle = Self::spawn_dynamic_input_forwarder(
+            pin.name.clone(),
+            channel,
+            subscriber_broadcast_tx,
+            stats_delta_tx,
+            shutdown_tx,
+        );
+        if let Some(old) = forwarder_handles.insert(pin.name, handle) {
+            old.abort();
+            tracing::debug!("Aborted previous forwarder for re-added pin");
+        }
+    }
+
     /// Start a task to handle publisher connection (receives media from client)
     // Pin-specific output routing requires per-pin parameters; bundling into a config struct is a future cleanup.
     #[allow(clippy::too_many_arguments)]
@@ -882,8 +1070,7 @@ impl MoqPeerNode {
         mut shutdown_rx: broadcast::Receiver<()>,
         publisher_events: mpsc::UnboundedSender<PublisherEvent>,
         stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
-        audio_output_pin: &'static str,
-        video_output_pin: &'static str,
+        dynamic_outputs: DynamicOutputs,
     ) -> Result<tokio::task::JoinHandle<Result<(), StreamKitError>>, StreamKitError> {
         let path = moq_connection.path.clone();
 
@@ -919,8 +1106,7 @@ impl MoqPeerNode {
                 output_sender,
                 &mut shutdown_rx,
                 stats_delta_tx,
-                audio_output_pin,
-                video_output_pin,
+                dynamic_outputs,
             )
             .await;
 
@@ -969,7 +1155,7 @@ impl MoqPeerNode {
             .map_err(|e| StreamKitError::Runtime(format!("Failed to accept session: {e}")))?;
 
         let handle = tokio::spawn(async move {
-            let count = config.subscriber_count.fetch_add(1, Ordering::SeqCst) + 1;
+            let count = config.subscriber_count.fetch_add(1, Ordering::Relaxed) + 1;
             tracing::info!(path = %path, "Peer connected (total: {})", count);
 
             let mut publisher_shutdown_rx = config.shutdown_rx.resubscribe();
@@ -989,8 +1175,7 @@ impl MoqPeerNode {
                         publisher_events: config.publisher_events,
                         publisher_path: path.clone(),
                         stats_delta_tx: publisher_stats_delta_tx,
-                        audio_output_pin: config.audio_output_pin,
-                        video_output_pin: config.video_output_pin,
+                        dynamic_outputs: config.dynamic_outputs.clone(),
                     },
                     &mut publisher_shutdown_rx,
                 )
@@ -1020,7 +1205,7 @@ impl MoqPeerNode {
                 tracing::warn!(path = %path, error = %e, "Peer subscriber task error");
             }
 
-            let count = config.subscriber_count.fetch_sub(1, Ordering::SeqCst).saturating_sub(1);
+            let count = config.subscriber_count.fetch_sub(1, Ordering::Relaxed).saturating_sub(1);
             tracing::info!(path = %path, "Peer disconnected (remaining: {})", count);
 
             drop(session);
@@ -1066,8 +1251,7 @@ impl MoqPeerNode {
             config.output_sender,
             shutdown_rx,
             &config.stats_delta_tx,
-            config.audio_output_pin,
-            config.video_output_pin,
+            &config.dynamic_outputs,
         )
         .await;
 
@@ -1087,8 +1271,7 @@ impl MoqPeerNode {
         output_sender: streamkit_core::OutputSender,
         shutdown_rx: &mut broadcast::Receiver<()>,
         stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
-        audio_output_pin: &'static str,
-        video_output_pin: &'static str,
+        dynamic_outputs: DynamicOutputs,
     ) -> Result<(), StreamKitError> {
         tracing::info!("Waiting for publisher to announce broadcast: {}", broadcast_name);
 
@@ -1106,8 +1289,7 @@ impl MoqPeerNode {
             output_sender,
             shutdown_rx,
             &stats_delta_tx,
-            audio_output_pin,
-            video_output_pin,
+            &dynamic_outputs,
         )
         .await
     }
@@ -1178,8 +1360,7 @@ impl MoqPeerNode {
         output_sender: streamkit_core::OutputSender,
         shutdown_rx: &mut broadcast::Receiver<()>,
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
-        audio_output_pin: &'static str,
-        video_output_pin: &'static str,
+        dynamic_outputs: &DynamicOutputs,
     ) -> Result<(), StreamKitError> {
         let catalog_track =
             broadcast_consumer.subscribe_track(&hang::catalog::Catalog::default_track()).map_err(
@@ -1213,9 +1394,10 @@ impl MoqPeerNode {
                         if let Some(track_name) = catalog.audio.renditions.keys().next() {
                             tracing::info!("Found audio track in catalog: {}", track_name);
                             audio_handle = Some(Self::spawn_track_processor(
-                                broadcast_consumer, track_name, audio_output_pin,
+                                broadcast_consumer, track_name,
                                 false,
                                 &output_sender, shutdown_rx, stats_delta_tx,
+                                dynamic_outputs,
                             ));
                         }
                     }
@@ -1225,9 +1407,10 @@ impl MoqPeerNode {
                         if let Some(track_name) = catalog.video.renditions.keys().next() {
                             tracing::info!("Found video track in catalog: {}", track_name);
                             video_handle = Some(Self::spawn_track_processor(
-                                broadcast_consumer, track_name, video_output_pin,
+                                broadcast_consumer, track_name,
                                 true,
                                 &output_sender, shutdown_rx, stats_delta_tx,
+                                dynamic_outputs,
                             ));
                         }
                     }
@@ -1257,11 +1440,11 @@ impl MoqPeerNode {
     fn spawn_track_processor(
         broadcast_consumer: &moq_lite::BroadcastConsumer,
         track_name: &str,
-        output_pin: &'static str,
         is_video: bool,
         output_sender: &streamkit_core::OutputSender,
         shutdown_rx: &broadcast::Receiver<()>,
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
+        dynamic_outputs: &DynamicOutputs,
     ) -> tokio::task::JoinHandle<Result<(), StreamKitError>> {
         // How many times to re-subscribe after a publisher-side cancellation
         // before giving up. The browser's camera-source flap during the
@@ -1270,18 +1453,17 @@ impl MoqPeerNode {
         const MAX_RESUBSCRIBE_ATTEMPTS: u32 = 10;
         const RESUBSCRIBE_INITIAL_BACKOFF: Duration = Duration::from_millis(100);
 
-        // BroadcastConsumer is Clone (Arc-like state + watch::Receiver +
-        // async_channel::Sender). Cloning into the task lets us re-subscribe
-        // after a cancellation without holding a reference across the spawn.
         let broadcast = broadcast_consumer.clone();
         let track = moq_lite::Track { name: track_name.to_string(), priority: 2 };
         let sender = output_sender.clone();
         let mut task_shutdown = shutdown_rx.resubscribe();
         let stats = stats_delta_tx.clone();
-        let pin_name = output_pin;
+        // Use the track name directly as the output pin name (e.g. "audio/data", "video/data")
+        let output_pin = track_name.to_string();
+        let dyn_outputs = dynamic_outputs.clone();
 
         tokio::spawn(async move {
-            tracing::info!(output_pin = pin_name, track = %track.name, "Track processor task started");
+            tracing::info!(output_pin = %output_pin, track = %track.name, "Track processor task started");
 
             let mut attempt: u32 = 0;
             loop {
@@ -1294,24 +1476,25 @@ impl MoqPeerNode {
                 let exit = Self::process_publisher_frames(
                     consumer,
                     sender.clone(),
-                    pin_name,
+                    &output_pin,
                     is_video,
                     &mut task_shutdown,
                     &stats,
+                    &dyn_outputs,
                 )
                 .await;
 
                 match exit {
                     TrackExit::Finished => {
                         tracing::info!(
-                            output_pin = pin_name,
+                            output_pin = %output_pin,
                             "Track processor task finished normally"
                         );
                         return Ok(());
                     },
                     TrackExit::Error(e) => {
                         tracing::warn!(
-                            output_pin = pin_name,
+                            output_pin = %output_pin,
                             error = %e,
                             "Track processor task finished with error"
                         );
@@ -1321,7 +1504,7 @@ impl MoqPeerNode {
                         attempt += 1;
                         if attempt > MAX_RESUBSCRIBE_ATTEMPTS {
                             tracing::warn!(
-                                output_pin = pin_name,
+                                output_pin = %output_pin,
                                 attempts = attempt,
                                 "Publisher track cancelled; retry budget exhausted"
                             );
@@ -1333,18 +1516,16 @@ impl MoqPeerNode {
                         let backoff =
                             RESUBSCRIBE_INITIAL_BACKOFF * 2u32.saturating_pow(attempt - 1);
                         tracing::info!(
-                            output_pin = pin_name,
+                            output_pin = %output_pin,
                             attempt,
                             max = MAX_RESUBSCRIBE_ATTEMPTS,
                             backoff_ms = backoff.as_millis(),
                             "Publisher track cancelled; re-subscribing after backoff"
                         );
-                        // Yield to shutdown during backoff so we don't delay
-                        // teardown if the pipeline is stopping.
                         tokio::select! {
                             biased;
                             _ = task_shutdown.recv() => {
-                                tracing::info!(output_pin = pin_name, "Shutdown during re-subscribe backoff");
+                                tracing::info!(output_pin = %output_pin, "Shutdown during re-subscribe backoff");
                                 return Ok(());
                             }
                             () = tokio::time::sleep(backoff) => {}
@@ -1456,6 +1637,8 @@ impl MoqPeerNode {
     /// Returns [`TrackExit`] so the caller can distinguish a transient
     /// publisher-side cancellation (retryable via re-subscribe) from clean
     /// completion and fatal errors.
+    // Dynamic output routing adds parameters beyond the static-pin version.
+    #[allow(clippy::too_many_arguments)]
     async fn process_publisher_frames(
         mut track_consumer: moq_lite::TrackConsumer,
         mut output_sender: streamkit_core::OutputSender,
@@ -1463,6 +1646,7 @@ impl MoqPeerNode {
         is_video: bool,
         shutdown_rx: &mut broadcast::Receiver<()>,
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
+        dynamic_outputs: &DynamicOutputs,
     ) -> TrackExit {
         let mut frame_count = 0u64;
         let mut last_log = std::time::Instant::now();
@@ -1503,6 +1687,7 @@ impl MoqPeerNode {
                     shutdown_rx,
                     stats_delta_tx,
                     keyframe,
+                    dynamic_outputs,
                 )
                 .await
                 {
@@ -1552,6 +1737,72 @@ impl MoqPeerNode {
         }
     }
 
+    /// Route a packet to the appropriate output channel.
+    ///
+    /// If a dynamic output channel exists for `output_pin` (created on-demand
+    /// by the engine when a downstream node connects to a track-named pin),
+    /// the packet is sent there exclusively.  Otherwise it falls through to the
+    /// static `output_sender` which handles declared output pins.
+    ///
+    /// Returns `true` if the send succeeded (or was handled dynamically),
+    /// `false` if the static output channel is closed (caller should shut down).
+    async fn route_packet(
+        packet: Packet,
+        output_pin: &str,
+        output_sender: &mut streamkit_core::OutputSender,
+        dynamic_outputs: &DynamicOutputs,
+    ) -> bool {
+        // Acquire the lock once and perform both the existence check and the
+        // send under the same guard to avoid double acquisition on every packet.
+        //
+        // The enum tracks what happened so we can act after releasing the lock:
+        //   Sent       — packet was forwarded to the dynamic channel
+        //   Dropped    — channel full, packet dropped (real-time media trade-off)
+        //   Closed     — dynamic channel exists but is closed (stale entry)
+        //   NoEntry(p) — no dynamic channel; packet returned for static path
+        enum RouteOutcome {
+            Sent,
+            Dropped,
+            Closed,
+            NoEntry(Packet),
+        }
+
+        let outcome = {
+            // Recover from poisoning — the HashMap data is still valid even if
+            // another thread panicked while holding the lock.
+            let map = dynamic_outputs.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+            match map.get(output_pin) {
+                Some(dyn_tx) if dyn_tx.is_closed() => RouteOutcome::Closed,
+                Some(dyn_tx) => match dyn_tx.try_send(packet) {
+                    Ok(()) => RouteOutcome::Sent,
+                    Err(mpsc::error::TrySendError::Full(_)) => RouteOutcome::Dropped,
+                    Err(mpsc::error::TrySendError::Closed(_)) => RouteOutcome::Closed,
+                },
+                None => RouteOutcome::NoEntry(packet),
+            }
+        };
+
+        match outcome {
+            RouteOutcome::Sent => true,
+            RouteOutcome::Dropped => {
+                tracing::debug!(output_pin, "Dynamic output channel full, packet dropped");
+                true
+            },
+            RouteOutcome::Closed => {
+                // Downstream consumer disconnected — remove the stale entry
+                // but keep the track processor alive so other consumers (or a
+                // reconnecting one) can still receive frames.
+                tracing::info!(output_pin, "Dynamic output channel closed, removing stale entry");
+                Self::remove_dynamic_output(dynamic_outputs, output_pin);
+                true
+            },
+            RouteOutcome::NoEntry(packet) => {
+                // No dynamic channel — fall through to the static output sender.
+                output_sender.send(output_pin, packet).await.is_ok()
+            },
+        }
+    }
+
     /// Process a single frame from the current group.
     ///
     /// `is_keyframe` indicates whether this is the first frame of a new MoQ
@@ -1567,6 +1818,7 @@ impl MoqPeerNode {
         shutdown_rx: &mut broadcast::Receiver<()>,
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
         is_keyframe: bool,
+        dynamic_outputs: &DynamicOutputs,
     ) -> Result<FrameResult, StreamKitError> {
         tokio::select! {
             biased;
@@ -1612,7 +1864,7 @@ impl MoqPeerNode {
                             }),
                         };
 
-                        if output_sender.send(output_pin, packet).await.is_err() {
+                        if !Self::route_packet(packet, output_pin, output_sender, dynamic_outputs).await {
                             tracing::info!(output_pin, "Output channel closed for pin");
                             let _ = stats_delta_tx
                                 .try_send(NodeStatsDelta { received: 1, ..Default::default() });
@@ -1672,7 +1924,7 @@ impl MoqPeerNode {
             .map_err(|e| StreamKitError::Runtime(format!("Failed to accept session: {e}")))?;
 
         let handle = tokio::spawn(async move {
-            let count = subscriber_count.fetch_add(1, Ordering::SeqCst) + 1;
+            let count = subscriber_count.fetch_add(1, Ordering::Relaxed) + 1;
             tracing::info!("Subscriber connected (total: {})", count);
 
             let result = Self::subscriber_send_loop(
@@ -1688,7 +1940,7 @@ impl MoqPeerNode {
             .await;
 
             // Decrement subscriber count
-            let count = subscriber_count.fetch_sub(1, Ordering::SeqCst).saturating_sub(1);
+            let count = subscriber_count.fetch_sub(1, Ordering::Relaxed).saturating_sub(1);
             tracing::info!("Subscriber disconnected (remaining: {})", count);
 
             // Keep session alive until task ends
@@ -2164,4 +2416,105 @@ struct SubscriberSendCtx<'a> {
     last_audio_ts_ms: Option<u64>,
     last_video_ts_ms: Option<u64>,
     stats_delta_tx: &'a mpsc::Sender<NodeStatsDelta>,
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn make_dynamic_output_pin_video_prefix() {
+        let pin = make_dynamic_output_pin("video/hd");
+        assert_eq!(pin.name, "video/hd");
+        assert!(
+            matches!(pin.produces_type, PacketType::EncodedVideo(_)),
+            "video/ prefix should produce EncodedVideo"
+        );
+    }
+
+    #[test]
+    fn make_dynamic_output_pin_audio_prefix() {
+        let pin = make_dynamic_output_pin("audio/data");
+        assert_eq!(pin.name, "audio/data");
+        assert!(
+            matches!(pin.produces_type, PacketType::EncodedAudio(_)),
+            "audio/ prefix should produce EncodedAudio"
+        );
+    }
+
+    #[test]
+    fn make_dynamic_output_pin_bare_name_defaults_to_audio() {
+        let pin = make_dynamic_output_pin("some_track");
+        assert_eq!(pin.name, "some_track");
+        assert!(
+            matches!(pin.produces_type, PacketType::EncodedAudio(_)),
+            "bare name without video/ prefix should default to EncodedAudio"
+        );
+    }
+
+    /// Regression: `AddedInputPin` previously used `..` to discard the channel,
+    /// causing it to be immediately dropped and closing the sender side.
+    /// Verify that `handle_pin_management` keeps the channel alive.
+    #[tokio::test]
+    async fn added_input_pin_channel_not_dropped() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<Packet>(4);
+        let dynamic_outputs: DynamicOutputs = Arc::default();
+        let (broadcast_tx, _broadcast_rx) = broadcast::channel::<BroadcastFrame>(16);
+
+        let (stats_delta_tx, _stats_delta_rx) = mpsc::channel::<NodeStatsDelta>(16);
+        let (shutdown_tx, _) = broadcast::channel::<()>(1);
+
+        let pin = InputPin {
+            name: "audio/extra".to_string(),
+            accepts_types: vec![],
+            cardinality: PinCardinality::One,
+        };
+        let msg = PinManagementMessage::AddedInputPin { pin, channel: rx };
+        let mut forwarder_handles = std::collections::HashMap::new();
+        MoqPeerNode::handle_pin_management(
+            msg,
+            &dynamic_outputs,
+            &broadcast_tx,
+            &stats_delta_tx,
+            &shutdown_tx,
+            &mut forwarder_handles,
+        );
+
+        // If the channel was dropped, try_send would return a closed error.
+        // A successful send (or full-buffer error) means the receiver is alive.
+        assert!(!tx.is_closed(), "channel should remain open after AddedInputPin is handled");
+    }
+
+    /// Regression: dynamic pin names were double-prefixed (e.g. "audio/audio/data")
+    /// because catalog rendition keys already include the prefix. Verify that
+    /// `make_dynamic_output_pin` and `output_pins()` produce correct names.
+    #[test]
+    fn catalog_track_names_not_double_prefixed() {
+        // Verify static output pins use track-named format
+        let node = MoqPeerNode::new(MoqPeerConfig {
+            gateway_path: "/moq".to_string(),
+            input_broadcast: "input".to_string(),
+            output_broadcast: "output".to_string(),
+            allow_reconnect: false,
+            output_group_duration_ms: 0,
+            output_initial_delay_ms: 0,
+            video_width: 640,
+            video_height: 480,
+        });
+        let pins = node.output_pins();
+        assert_eq!(pins[0].name, "audio/data");
+        assert_eq!(pins[1].name, "video/data");
+        assert!(!pins[0].name.starts_with("audio/audio/"), "audio pin must not be double-prefixed");
+        assert!(!pins[1].name.starts_with("video/video/"), "video pin must not be double-prefixed");
+
+        // Verify make_dynamic_output_pin preserves catalog track names as-is
+        let audio_pin = make_dynamic_output_pin("audio/data");
+        assert_eq!(audio_pin.name, "audio/data");
+        assert!(matches!(audio_pin.produces_type, PacketType::EncodedAudio(_)));
+
+        let video_pin = make_dynamic_output_pin("video/hd");
+        assert_eq!(video_pin.name, "video/hd");
+        assert!(matches!(video_pin.produces_type, PacketType::EncodedVideo(_)));
+    }
 }

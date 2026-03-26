@@ -18,7 +18,8 @@ client:
 
 nodes:
   # Bidirectional node that accepts WebTransport connections and provides:
-  # - `out`: OpusAudio from the publishing client
+  # - `audio/data`: OpusAudio from the publishing client
+  # - `video/data`: EncodedVideo (VP9) from the publishing client (when enabled)
   # - `in`:  OpusAudio to send to subscribing clients
   moq_peer:
     kind: transport::moq::peer
@@ -33,7 +34,8 @@ nodes:
 
   opus_decoder:
     kind: audio::opus::decoder
-    needs: moq_peer
+    needs:
+      in: moq_peer.audio/data
 
   gain:
     kind: audio::gain

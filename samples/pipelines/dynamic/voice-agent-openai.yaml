@@ -40,7 +40,8 @@ nodes:
   # Decode Opus audio (48kHz stereo)
   opus_decoder:
     kind: audio::opus::decoder
-    needs: moq_peer
+    needs:
+      in: moq_peer.audio/data
 
   # ============================================================
   # STT: Convert audio to text

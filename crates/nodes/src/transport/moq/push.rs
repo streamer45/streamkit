@@ -4,16 +4,16 @@
 
 //! MoQ Push Node - publishes packets to a MoQ broadcast
 
-use super::constants::DEFAULT_AUDIO_FRAME_DURATION_US;
+use super::constants::{moq_accepted_media_types, DEFAULT_AUDIO_FRAME_DURATION_US};
 use crate::video::{VP9_BIT_DEPTH, VP9_LEVEL, VP9_PROFILE};
 use async_trait::async_trait;
+use futures::future::poll_fn;
 use opentelemetry::{global, KeyValue};
 use schemars::JsonSchema;
 use serde::Deserialize;
+use streamkit_core::pins::PinManagementMessage;
 use streamkit_core::timing::MediaClock;
-use streamkit_core::types::{
-    AudioCodec, EncodedAudioFormat, EncodedVideoFormat, Packet, PacketType, VideoCodec,
-};
+use streamkit_core::types::{Packet, PacketType};
 use streamkit_core::{
     state_helpers, stats::NodeStatsTracker, InputPin, NodeContext, OutputPin, PinCardinality,
     ProcessorNode, StreamKitError,
@@ -90,6 +90,17 @@ pub struct MoqPushNode {
     config: MoqPushConfig,
 }
 
+/// State for a single dynamic input pin.
+struct DynamicInputState {
+    pin_name: String,
+    receiver: tokio::sync::mpsc::Receiver<Packet>,
+    producer: hang::container::OrderedProducer,
+    clock: MediaClock,
+    seeded: bool,
+    first_sent: bool,
+    is_video: bool,
+}
+
 impl MoqPushNode {
     pub const fn new(config: MoqPushConfig) -> Self {
         Self { config }
@@ -100,24 +111,16 @@ impl MoqPushNode {
 #[allow(clippy::too_many_lines)]
 impl ProcessorNode for MoqPushNode {
     fn input_pins(&self) -> Vec<InputPin> {
+        let accepted_types = moq_accepted_media_types();
         vec![
             InputPin {
                 name: "in".to_string(),
-                accepts_types: vec![PacketType::EncodedAudio(EncodedAudioFormat {
-                    codec: AudioCodec::Opus,
-                    codec_private: None,
-                })],
+                accepts_types: accepted_types.clone(),
                 cardinality: PinCardinality::One,
             },
             InputPin {
                 name: "in_1".to_string(),
-                accepts_types: vec![PacketType::EncodedVideo(EncodedVideoFormat {
-                    codec: VideoCodec::Vp9,
-                    bitstream_format: None,
-                    codec_private: None,
-                    profile: None,
-                    level: None,
-                })],
+                accepts_types: accepted_types,
                 cardinality: PinCardinality::One,
             },
         ]
@@ -127,11 +130,17 @@ impl ProcessorNode for MoqPushNode {
         vec![] // This is an output node.
     }
 
+    fn supports_dynamic_pins(&self) -> bool {
+        true
+    }
+
     async fn run(self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
         /// Identifies which input produced the packet.
         enum InputSource {
             Audio,
             Video,
+            /// A dynamic input pin, identified by index into `dynamic_inputs`.
+            Dynamic(usize),
         }
 
         let node_name = context.output_sender.node_name().to_string();
@@ -282,7 +291,7 @@ impl ProcessorNode for MoqPushNode {
             );
         }
 
-        let catalog = hang::catalog::Catalog {
+        let mut catalog = hang::catalog::Catalog {
             audio: hang::catalog::Audio { renditions: audio_renditions },
             video: hang::catalog::Video {
                 renditions: video_renditions,
@@ -315,7 +324,8 @@ impl ProcessorNode for MoqPushNode {
         catalog_producer
             .write_frame(catalog_data)
             .map_err(|e| StreamKitError::Runtime(format!("Failed to write catalog frame: {e}")))?;
-        let _catalog_producer = catalog_producer;
+        // Keep catalog producer and state alive so we can re-publish when
+        // dynamic tracks are added at runtime.
 
         tracing::info!(has_video, "published catalog for broadcast");
 
@@ -329,6 +339,13 @@ impl ProcessorNode for MoqPushNode {
         let mut audio_seeded = false;
         let mut video_seeded = false;
         let mut audio_first_sent = false;
+        let mut video_first_sent = false;
+
+        // Pin management for dynamic input pins
+        let mut pin_mgmt_rx = context.pin_management_rx.take();
+
+        // Dynamic input state: used for runtime-added input pins beyond the static `in`/`in_1`.
+        let mut dynamic_inputs: Vec<DynamicInputState> = Vec::new();
 
         // Stats tracking
         let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
@@ -357,7 +374,7 @@ impl ProcessorNode for MoqPushNode {
                         (InputSource::Audio, p)
                     } else {
                         audio_rx = None;
-                        if video_rx.is_none() { break; }
+                        if video_rx.is_none() && dynamic_inputs.is_empty() { break; }
                         continue;
                     }
                 },
@@ -371,7 +388,67 @@ impl ProcessorNode for MoqPushNode {
                         (InputSource::Video, p)
                     } else {
                         video_rx = None;
-                        if audio_rx.is_none() { break; }
+                        if audio_rx.is_none() && dynamic_inputs.is_empty() { break; }
+                        continue;
+                    }
+                },
+                // Handle dynamic input pin management messages
+                Some(msg) = async {
+                    match &mut pin_mgmt_rx {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    Self::handle_pin_management(
+                        msg,
+                        &mut broadcast,
+                        &mut dynamic_inputs,
+                        self.config.initial_delay_ms,
+                        &mut catalog,
+                        &mut catalog_producer,
+                        self.config.channels,
+                    );
+                    continue;
+                },
+                // Poll all dynamic input pin receivers.
+                // NOTE: iteration always starts from index 0, so under sustained
+                // load the first ready receiver wins. This is an accepted
+                // trade-off for simplicity — in practice dynamic inputs carry
+                // independent media tracks at moderate frame rates, making
+                // starvation unlikely.
+                //
+                // Safety w.r.t. select!: the poll_fn closure borrows
+                // `&mut dynamic_inputs`, and the pin-management branch also
+                // mutates it. This is safe because select! drops the losing
+                // future *before* executing the winning branch, so the mutable
+                // borrow from poll_fn is released before pin-management runs.
+                result = async {
+                    if dynamic_inputs.is_empty() {
+                        return std::future::pending().await;
+                    }
+                    poll_fn(|cx| {
+                        for (idx, state) in dynamic_inputs.iter_mut().enumerate() {
+                            match state.receiver.poll_recv(cx) {
+                                std::task::Poll::Ready(result) => {
+                                    return std::task::Poll::Ready((idx, result));
+                                },
+                                std::task::Poll::Pending => {},
+                            }
+                        }
+                        std::task::Poll::Pending
+                    }).await
+                } => {
+                    let (idx, maybe_pkt) = result;
+                    if let Some(p) = maybe_pkt {
+                        (InputSource::Dynamic(idx), p)
+                    } else {
+                        // Dynamic receiver closed — remove it (swap_remove is
+                        // O(1); order doesn't matter since indices are recomputed
+                        // each poll iteration).
+                        let mut removed = dynamic_inputs.swap_remove(idx);
+                        tracing::info!(pin = %removed.pin_name, "Dynamic input pin closed");
+                        let _ = removed.producer.track.finish();
+                        if audio_rx.is_none() && video_rx.is_none() && dynamic_inputs.is_empty() { break; }
                         continue;
                     }
                 },
@@ -394,16 +471,26 @@ impl ProcessorNode for MoqPushNode {
                     tracing::debug!(packet = packet_count, "MoQ publisher sending packet");
                 }
 
-                let (clock, seeded, default_dur, producer) = match input_source {
+                // Determine which clock/producer/flags to use based on input source
+                let is_video_source;
+                let (clock, seeded, default_dur, first_sent, producer) = match input_source {
                     InputSource::Audio => {
+                        is_video_source = false;
                         let Some(ap) = audio_producer.as_mut() else {
                             tracing::warn!("audio producer missing for audio packet");
                             stats_tracker.discarded();
                             continue;
                         };
-                        (&mut audio_clock, &mut audio_seeded, DEFAULT_AUDIO_FRAME_DURATION_US, ap)
+                        (
+                            &mut audio_clock,
+                            &mut audio_seeded,
+                            DEFAULT_AUDIO_FRAME_DURATION_US,
+                            &mut audio_first_sent,
+                            ap,
+                        )
                     },
                     InputSource::Video => {
+                        is_video_source = true;
                         let Some(vp) = video_producer.as_mut() else {
                             tracing::warn!("video producer missing for video packet");
                             stats_tracker.discarded();
@@ -413,7 +500,24 @@ impl ProcessorNode for MoqPushNode {
                             &mut video_clock,
                             &mut video_seeded,
                             crate::video::DEFAULT_VIDEO_FRAME_DURATION_US,
+                            &mut video_first_sent,
                             vp,
+                        )
+                    },
+                    InputSource::Dynamic(idx) => {
+                        let state = &mut dynamic_inputs[idx];
+                        is_video_source = state.is_video;
+                        let dur = if state.is_video {
+                            crate::video::DEFAULT_VIDEO_FRAME_DURATION_US
+                        } else {
+                            DEFAULT_AUDIO_FRAME_DURATION_US
+                        };
+                        (
+                            &mut state.clock,
+                            &mut state.seeded,
+                            dur,
+                            &mut state.first_sent,
+                            &mut state.producer,
                         )
                     },
                 };
@@ -431,17 +535,14 @@ impl ProcessorNode for MoqPushNode {
                         clock.timestamp_ms()
                     };
 
-                let keyframe = match input_source {
-                    InputSource::Audio => {
-                        let first = !audio_first_sent;
-                        audio_first_sent = true;
-                        first || clock.is_group_boundary_ms(self.config.group_duration_ms)
-                    },
-                    InputSource::Video => {
-                        // Default to true when keyframe metadata is missing to ensure
-                        // the OrderedProducer opens an initial MoQ group.
-                        metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(true)
-                    },
+                let keyframe = if is_video_source {
+                    // Default to true when keyframe metadata is missing to ensure
+                    // the OrderedProducer opens an initial MoQ group.
+                    metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(true)
+                } else {
+                    let first = !*first_sent;
+                    *first_sent = true;
+                    first || clock.is_group_boundary_ms(self.config.group_duration_ms)
                 };
 
                 let timestamp =
@@ -507,8 +608,280 @@ impl ProcessorNode for MoqPushNode {
         if let Some(mut vp) = video_producer {
             let _ = vp.track.finish();
         }
+        for mut state in dynamic_inputs {
+            let _ = state.producer.track.finish();
+        }
 
         tracing::info!("MoqPushNode finished after sending {} packets", packet_count);
         Ok(())
+    }
+}
+
+/// Derive the MoQ track name from a pin name.
+///
+/// Names starting with `"video/"` or `"audio/"` are used as-is (they already
+/// follow the hang protocol convention).  Bare names without a prefix default
+/// to audio tracks by prepending `"audio/"`.
+fn track_name_from_pin(pin_name: &str) -> String {
+    if pin_name.starts_with("video/") || pin_name.starts_with("audio/") {
+        pin_name.to_string()
+    } else {
+        format!("audio/{pin_name}")
+    }
+}
+
+/// Return `true` if a pin name denotes a video track (i.e. starts with `"video/"`).
+fn is_video_pin(pin_name: &str) -> bool {
+    pin_name.starts_with("video/")
+}
+
+impl MoqPushNode {
+    /// Handle pin management messages for dynamic input pins.
+    ///
+    /// When a new dynamic input pin is added, creates a corresponding MoQ track,
+    /// registers the receiver so that packets from that pin get published, and
+    /// re-publishes the catalog so downstream MoQ subscribers can discover it.
+    #[allow(clippy::too_many_arguments)]
+    fn handle_pin_management(
+        msg: PinManagementMessage,
+        broadcast: &mut moq_lite::BroadcastProducer,
+        dynamic_inputs: &mut Vec<DynamicInputState>,
+        initial_delay_ms: u64,
+        catalog: &mut hang::catalog::Catalog,
+        catalog_producer: &mut moq_lite::TrackProducer,
+        channels: u32,
+    ) {
+        match msg {
+            PinManagementMessage::RequestAddInputPin { suggested_name, response_tx } => {
+                let pin_name = suggested_name.unwrap_or_else(|| "dynamic_in".to_string());
+                tracing::info!("MoqPushNode: creating dynamic input pin '{}'", pin_name);
+                let pin = InputPin {
+                    name: pin_name,
+                    accepts_types: moq_accepted_media_types(),
+                    cardinality: PinCardinality::One,
+                };
+                let _ = response_tx.send(Ok(pin));
+            },
+            PinManagementMessage::AddedInputPin { pin, channel } => {
+                Self::activate_dynamic_input(
+                    &pin,
+                    channel,
+                    broadcast,
+                    dynamic_inputs,
+                    initial_delay_ms,
+                    catalog,
+                    catalog_producer,
+                    channels,
+                );
+            },
+            PinManagementMessage::RemoveInputPin { pin_name } => {
+                tracing::info!("MoqPushNode: removed input pin '{}'", pin_name);
+                let track_name = track_name_from_pin(&pin_name);
+                // Remove the matching entry — swap_remove is O(1) and order
+                // doesn't matter since indices are recomputed each poll iteration.
+                if let Some(pos) = dynamic_inputs.iter().position(|s| s.pin_name == pin_name) {
+                    let mut removed = dynamic_inputs.swap_remove(pos);
+                    let _ = removed.producer.track.finish();
+                }
+                // Remove the track from the catalog and re-publish.
+                Self::remove_catalog_rendition(catalog, &track_name);
+                Self::republish_catalog(catalog, catalog_producer);
+            },
+            PinManagementMessage::RequestAddOutputPin { response_tx, .. } => {
+                let _ = response_tx.send(Err(StreamKitError::Configuration(
+                    "MoqPushNode does not support dynamic output pins".to_string(),
+                )));
+            },
+            PinManagementMessage::AddedOutputPin { .. }
+            | PinManagementMessage::RemoveOutputPin { .. } => {
+                // No-op for output pins on a push node
+            },
+        }
+    }
+
+    /// Re-serialize and publish the current catalog state.
+    ///
+    /// Returns `true` if the catalog was successfully published, `false` on
+    /// serialization or write failure (logged at error level).
+    fn republish_catalog(
+        catalog: &hang::catalog::Catalog,
+        catalog_producer: &mut moq_lite::TrackProducer,
+    ) -> bool {
+        match catalog.to_string() {
+            Ok(json) => {
+                if let Err(e) = catalog_producer.write_frame(json.into_bytes()) {
+                    tracing::error!("Failed to re-publish catalog: {e}");
+                    false
+                } else {
+                    tracing::debug!("MoqPushNode: catalog re-published after dynamic track change");
+                    true
+                }
+            },
+            Err(e) => {
+                tracing::error!("Failed to serialize updated catalog: {e}");
+                false
+            },
+        }
+    }
+
+    /// Create a MoQ track for a newly added dynamic input pin, update the
+    /// catalog, and register the receiver for packet forwarding.
+    #[allow(clippy::too_many_arguments)]
+    fn activate_dynamic_input(
+        pin: &InputPin,
+        channel: tokio::sync::mpsc::Receiver<Packet>,
+        broadcast: &mut moq_lite::BroadcastProducer,
+        dynamic_inputs: &mut Vec<DynamicInputState>,
+        initial_delay_ms: u64,
+        catalog: &mut hang::catalog::Catalog,
+        catalog_producer: &mut moq_lite::TrackProducer,
+        channels: u32,
+    ) {
+        tracing::info!("MoqPushNode: activated dynamic input pin '{}'", pin.name);
+
+        let is_video = is_video_pin(&pin.name);
+        let track_name = track_name_from_pin(&pin.name);
+
+        let track =
+            moq_lite::Track { name: track_name.clone(), priority: if is_video { 60 } else { 80 } };
+        let producer = match broadcast.create_track(track) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!(
+                    pin = %pin.name, track = %track_name, error = %e,
+                    "MoqPushNode: failed to create MoQ track for dynamic input pin"
+                );
+                return;
+            },
+        };
+
+        // Update the catalog with the new track rendition.
+        Self::insert_catalog_rendition(catalog, &track_name, is_video, channels);
+
+        if !Self::republish_catalog(catalog, catalog_producer) {
+            // Roll back — subscribers won't discover this track.
+            Self::remove_catalog_rendition(catalog, &track_name);
+            // Finish the producer so the broadcast doesn't retain a dangling track.
+            let mut tp: hang::container::OrderedProducer = producer.into();
+            let _ = tp.track.finish();
+            tracing::error!(
+                pin = %pin.name, track = %track_name,
+                "Skipping dynamic input — catalog republish failed"
+            );
+            return;
+        }
+
+        let clock = MediaClock::new(initial_delay_ms);
+        // Guard against duplicate pin names — if a pin with the same name
+        // already exists, replace it rather than pushing a second entry
+        // (which would leak when RemoveInputPin only removes the first).
+        if let Some(pos) = dynamic_inputs.iter().position(|s| s.pin_name == pin.name) {
+            let mut old = dynamic_inputs.swap_remove(pos);
+            let _ = old.producer.track.finish();
+            tracing::warn!(
+                pin = %pin.name,
+                "Replacing existing dynamic input with same name"
+            );
+        }
+        dynamic_inputs.push(DynamicInputState {
+            pin_name: pin.name.clone(),
+            receiver: channel,
+            producer: producer.into(),
+            clock,
+            seeded: false,
+            first_sent: false,
+            is_video,
+        });
+        tracing::info!(
+            pin = %pin.name, track = %track_name,
+            "MoqPushNode: dynamic input pin mapped to MoQ track"
+        );
+    }
+
+    /// Insert a rendition into the catalog for a dynamic track.
+    fn insert_catalog_rendition(
+        catalog: &mut hang::catalog::Catalog,
+        track_name: &str,
+        is_video: bool,
+        channels: u32,
+    ) {
+        if is_video {
+            catalog.video.renditions.insert(
+                track_name.to_string(),
+                hang::catalog::VideoConfig {
+                    codec: hang::catalog::VideoCodec::VP9(hang::catalog::VP9 {
+                        profile: VP9_PROFILE,
+                        level: VP9_LEVEL,
+                        bit_depth: VP9_BIT_DEPTH,
+                        ..hang::catalog::VP9::default()
+                    }),
+                    coded_width: None,
+                    coded_height: None,
+                    display_ratio_width: None,
+                    display_ratio_height: None,
+                    framerate: Some(30.0),
+                    bitrate: None,
+                    description: None,
+                    optimize_for_latency: Some(true),
+                    container: hang::catalog::Container::default(),
+                    jitter: None,
+                },
+            );
+        } else {
+            catalog.audio.renditions.insert(
+                track_name.to_string(),
+                hang::catalog::AudioConfig {
+                    codec: hang::catalog::AudioCodec::Opus,
+                    sample_rate: 48000,
+                    channel_count: channels,
+                    bitrate: Some(128_000),
+                    description: None,
+                    container: hang::catalog::Container::default(),
+                    jitter: None,
+                },
+            );
+        }
+    }
+
+    /// Remove a rendition from the catalog (both audio and video maps).
+    fn remove_catalog_rendition(catalog: &mut hang::catalog::Catalog, track_name: &str) {
+        catalog.audio.renditions.remove(track_name);
+        catalog.video.renditions.remove(track_name);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::{is_video_pin, track_name_from_pin};
+
+    /// Regression: `is_video` was previously determined by checking
+    /// `pin.accepts_types` for `EncodedVideo`, but since all dynamic pins
+    /// accept both audio and video types, it was always `true`. The fix
+    /// uses the pin name prefix convention instead.
+    #[test]
+    fn is_video_from_pin_name_convention() {
+        // video/ prefix → video
+        assert!(is_video_pin("video/hd"));
+        assert!(is_video_pin("video/data"));
+
+        // audio/ prefix → not video
+        assert!(!is_video_pin("audio/data"));
+        assert!(!is_video_pin("audio/extra"));
+
+        // bare name → not video (defaults to audio)
+        assert!(!is_video_pin("in_2"));
+        assert!(!is_video_pin("custom_track"));
+    }
+
+    /// Verify track name derivation from pin names: pins with an existing
+    /// `audio/` or `video/` prefix keep their name; bare names get `audio/`
+    /// prepended.
+    #[test]
+    fn track_name_from_pin_name() {
+        assert_eq!(track_name_from_pin("video/hd"), "video/hd");
+        assert_eq!(track_name_from_pin("audio/data"), "audio/data");
+        assert_eq!(track_name_from_pin("in_2"), "audio/in_2");
+        assert_eq!(track_name_from_pin("extra"), "audio/extra");
     }
 }
