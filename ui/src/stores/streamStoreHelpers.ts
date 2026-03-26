@@ -477,7 +477,9 @@ async function setupPublishPath(
       // Screen.source signal ({ audio?, video? } | undefined).
       // System audio from screen capture is ignored — mic remains the
       // sole audio source.
-      const videoOnlySignal = new Signal<Publish.Video.Source | undefined>(undefined);
+      const videoOnlySignal = new Signal<Publish.Video.Source | undefined>(
+        screen.source.peek()?.video
+      );
       healthEffect.subscribe(screen.source, (v) => videoOnlySignal.set(v?.video));
       broadcastConfig.video = {
         source: videoOnlySignal,
