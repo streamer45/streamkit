@@ -416,12 +416,16 @@ impl ProcessorNode for MoqPushNode {
                         msg,
                         &mut broadcast,
                         &mut dynamic_inputs,
-                        self.config.channels,
                         self.config.initial_delay_ms,
                     );
                     continue;
                 },
-                // Poll all dynamic input pin receivers
+                // Poll all dynamic input pin receivers.
+                // NOTE: iteration always starts from index 0, so under sustained
+                // load the first ready receiver wins. This is an accepted
+                // trade-off for simplicity — in practice dynamic inputs carry
+                // independent media tracks at moderate frame rates, making
+                // starvation unlikely.
                 result = async {
                     if dynamic_inputs.is_empty() {
                         return std::future::pending().await;
@@ -624,7 +628,6 @@ impl MoqPushNode {
         msg: PinManagementMessage,
         broadcast: &mut moq_lite::BroadcastProducer,
         dynamic_inputs: &mut Vec<DynamicInputState>,
-        channels: u32,
         initial_delay_ms: u64,
     ) {
         match msg {
@@ -684,7 +687,6 @@ impl MoqPushNode {
                         tracing::info!(
                             pin = %pin.name,
                             track = %track_name,
-                            channels,
                             "MoqPushNode: dynamic input pin mapped to MoQ track"
                         );
                     },
