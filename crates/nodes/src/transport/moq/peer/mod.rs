@@ -1752,24 +1752,24 @@ impl MoqPeerNode {
         output_sender: &mut streamkit_core::OutputSender,
         dynamic_outputs: &DynamicOutputs,
     ) -> bool {
-        let sent_dynamic = match dynamic_outputs.read() {
-            Ok(map) => map.contains_key(output_pin),
-            Err(e) => {
-                tracing::error!(output_pin, "dynamic_outputs lock poisoned: {e}");
-                false
-            },
-        };
-
-        if sent_dynamic {
-            if let Ok(map) = dynamic_outputs.read() {
+        // Hold a single read lock for both the existence check and the send
+        // to avoid a TOCTOU race where a concurrent RemoveOutputPin could
+        // remove the entry between two separate lock acquisitions.
+        match dynamic_outputs.read() {
+            Ok(map) => {
                 if let Some(dyn_tx) = map.get(output_pin) {
                     let _ = dyn_tx.try_send(packet);
+                    return true;
                 }
-            }
-            true
-        } else {
-            output_sender.send(output_pin, packet).await.is_ok()
+            },
+            Err(e) => {
+                tracing::error!(output_pin, "dynamic_outputs lock poisoned: {e}");
+                return false;
+            },
         }
+
+        // No dynamic channel — fall through to the static output sender.
+        output_sender.send(output_pin, packet).await.is_ok()
     }
 
     /// Process a single frame from the current group.
