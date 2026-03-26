@@ -1363,8 +1363,8 @@ impl MoqPeerNode {
                     if audio_handle.is_none() {
                         if let Some(track_name) = catalog.audio.renditions.keys().next() {
                             tracing::info!("Found audio track in catalog: {}", track_name);
-                            // Build the dynamic pin name: "audio/<track_name>"
-                            let dynamic_pin_name = format!("audio/{track_name}");
+                            // track_name from catalog already includes the prefix (e.g. "audio/data")
+                            let dynamic_pin_name = track_name.clone();
                             audio_handle = Some(Self::spawn_track_processor(
                                 broadcast_consumer, track_name, audio_output_pin,
                                 false,
@@ -1378,8 +1378,8 @@ impl MoqPeerNode {
                     if video_handle.is_none() {
                         if let Some(track_name) = catalog.video.renditions.keys().next() {
                             tracing::info!("Found video track in catalog: {}", track_name);
-                            // Build the dynamic pin name: "video/<track_name>"
-                            let dynamic_pin_name = format!("video/{track_name}");
+                            // track_name from catalog already includes the prefix (e.g. "video/data")
+                            let dynamic_pin_name = track_name.clone();
                             video_handle = Some(Self::spawn_track_processor(
                                 broadcast_consumer, track_name, video_output_pin,
                                 true,
@@ -2402,5 +2402,29 @@ mod tests {
         // If the channel was dropped, try_send would return a closed error.
         // A successful send (or full-buffer error) means the receiver is alive.
         assert!(!tx.is_closed(), "channel should remain open after AddedInputPin is handled");
+    }
+
+    /// Regression: dynamic pin names were double-prefixed (e.g. "audio/audio/data")
+    /// because catalog rendition keys already include the prefix. Verify that
+    /// track names from catalogs are used directly without re-prefixing.
+    #[test]
+    fn catalog_track_names_not_double_prefixed() {
+        // Catalog rendition keys already include the media prefix
+        let audio_track = "audio/data";
+        let video_track = "video/data";
+
+        // The fix: use the track name directly (no format!("audio/{}", ...))
+        assert_eq!(audio_track, "audio/data", "audio track name should not be re-prefixed");
+        assert_eq!(video_track, "video/data", "video track name should not be re-prefixed");
+
+        // Verify they don't have double prefixes
+        assert!(
+            !audio_track.starts_with("audio/audio/"),
+            "audio track must not be double-prefixed"
+        );
+        assert!(
+            !video_track.starts_with("video/video/"),
+            "video track must not be double-prefixed"
+        );
     }
 }

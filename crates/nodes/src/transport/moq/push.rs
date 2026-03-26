@@ -606,6 +606,9 @@ impl ProcessorNode for MoqPushNode {
         if let Some(mut vp) = video_producer {
             let _ = vp.track.finish();
         }
+        for mut state in dynamic_inputs {
+            let _ = state.producer.track.finish();
+        }
 
         tracing::info!("MoqPushNode finished after sending {} packets", packet_count);
         Ok(())
