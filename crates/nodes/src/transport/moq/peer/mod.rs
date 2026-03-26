@@ -1758,8 +1758,10 @@ impl MoqPeerNode {
         match dynamic_outputs.read() {
             Ok(map) => {
                 if let Some(dyn_tx) = map.get(output_pin) {
-                    let _ = dyn_tx.try_send(packet);
-                    return true;
+                    match dyn_tx.try_send(packet) {
+                        Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => return true,
+                        Err(mpsc::error::TrySendError::Closed(_)) => return false,
+                    }
                 }
             },
             Err(e) => {
