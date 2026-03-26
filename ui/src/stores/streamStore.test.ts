@@ -500,6 +500,8 @@ describe('streamStore', () => {
         videoRenderer: { close: vi.fn() } as MockCloseable,
         connection: { close: vi.fn() } as MockCloseable,
         microphone: { close: vi.fn() } as MockCloseable,
+        camera: { close: vi.fn() } as MockCloseable,
+        screen: { close: vi.fn() } as MockCloseable,
       };
       useStreamStore.setState({
         status: 'connected',
@@ -516,6 +518,8 @@ describe('streamStore', () => {
         videoRenderer: mocks.videoRenderer as never,
         connection: mocks.connection as never,
         microphone: mocks.microphone as never,
+        camera: mocks.camera as never,
+        screen: mocks.screen as never,
       });
       return mocks;
     }
@@ -551,6 +555,8 @@ describe('streamStore', () => {
       expect(state.videoRenderer).toBeNull();
       expect(state.connection).toBeNull();
       expect(state.microphone).toBeNull();
+      expect(state.camera).toBeNull();
+      expect(state.screen).toBeNull();
     });
 
     it('should handle microphone without close method', () => {
