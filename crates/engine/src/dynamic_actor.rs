@@ -673,7 +673,7 @@ impl DynamicEngine {
             // allow the connection — the output pin will be created on-demand in
             // connect_nodes via RequestAddOutputPin.
             if self.pin_management_txs.contains_key(from_node) {
-                tracing::warn!(
+                tracing::debug!(
                     "Source pin {}.{} not in metadata, but node supports dynamic pins; skipping strict type validation",
                     from_node,
                     from_pin

@@ -4,7 +4,7 @@
 
 //! MoQ Push Node - publishes packets to a MoQ broadcast
 
-use super::constants::DEFAULT_AUDIO_FRAME_DURATION_US;
+use super::constants::{moq_accepted_media_types, DEFAULT_AUDIO_FRAME_DURATION_US};
 use crate::video::{VP9_BIT_DEPTH, VP9_LEVEL, VP9_PROFILE};
 use async_trait::async_trait;
 use futures::future::poll_fn;
@@ -13,9 +13,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use streamkit_core::pins::PinManagementMessage;
 use streamkit_core::timing::MediaClock;
-use streamkit_core::types::{
-    AudioCodec, EncodedAudioFormat, EncodedVideoFormat, Packet, PacketType, VideoCodec,
-};
+use streamkit_core::types::{Packet, PacketType};
 use streamkit_core::{
     state_helpers, stats::NodeStatsTracker, InputPin, NodeContext, OutputPin, PinCardinality,
     ProcessorNode, StreamKitError,
@@ -113,19 +111,7 @@ impl MoqPushNode {
 #[allow(clippy::too_many_lines)]
 impl ProcessorNode for MoqPushNode {
     fn input_pins(&self) -> Vec<InputPin> {
-        let accepted_types = vec![
-            PacketType::EncodedAudio(EncodedAudioFormat {
-                codec: AudioCodec::Opus,
-                codec_private: None,
-            }),
-            PacketType::EncodedVideo(EncodedVideoFormat {
-                codec: VideoCodec::Vp9,
-                bitstream_format: None,
-                codec_private: None,
-                profile: None,
-                level: None,
-            }),
-        ];
+        let accepted_types = super::constants::moq_accepted_media_types();
         vec![
             InputPin {
                 name: "in".to_string(),
@@ -338,7 +324,10 @@ impl ProcessorNode for MoqPushNode {
         catalog_producer
             .write_frame(catalog_data)
             .map_err(|e| StreamKitError::Runtime(format!("Failed to write catalog frame: {e}")))?;
-        let _catalog_producer = catalog_producer;
+        // Keep catalog producer and state alive so we can re-publish when
+        // dynamic tracks are added at runtime.
+        let mut catalog_producer = catalog_producer;
+        let mut catalog = catalog;
 
         tracing::info!(has_video, "published catalog for broadcast");
 
@@ -417,6 +406,9 @@ impl ProcessorNode for MoqPushNode {
                         &mut broadcast,
                         &mut dynamic_inputs,
                         self.config.initial_delay_ms,
+                        &mut catalog,
+                        &mut catalog_producer,
+                        self.config.channels,
                     );
                     continue;
                 },
@@ -640,34 +632,26 @@ fn is_video_pin(pin_name: &str) -> bool {
 impl MoqPushNode {
     /// Handle pin management messages for dynamic input pins.
     ///
-    /// When a new dynamic input pin is added, creates a corresponding MoQ track
-    /// and registers the receiver so that packets from that pin get published.
+    /// When a new dynamic input pin is added, creates a corresponding MoQ track,
+    /// registers the receiver so that packets from that pin get published, and
+    /// re-publishes the catalog so downstream MoQ subscribers can discover it.
+    #[allow(clippy::too_many_arguments)]
     fn handle_pin_management(
         msg: PinManagementMessage,
         broadcast: &mut moq_lite::BroadcastProducer,
         dynamic_inputs: &mut Vec<DynamicInputState>,
         initial_delay_ms: u64,
+        catalog: &mut hang::catalog::Catalog,
+        catalog_producer: &mut moq_lite::TrackProducer,
+        channels: u32,
     ) {
         match msg {
             PinManagementMessage::RequestAddInputPin { suggested_name, response_tx } => {
                 let pin_name = suggested_name.unwrap_or_else(|| "in_dyn".to_string());
                 tracing::info!("MoqPushNode: creating dynamic input pin '{}'", pin_name);
-                let accepted_types = vec![
-                    PacketType::EncodedAudio(EncodedAudioFormat {
-                        codec: AudioCodec::Opus,
-                        codec_private: None,
-                    }),
-                    PacketType::EncodedVideo(EncodedVideoFormat {
-                        codec: VideoCodec::Vp9,
-                        bitstream_format: None,
-                        codec_private: None,
-                        profile: None,
-                        level: None,
-                    }),
-                ];
                 let pin = InputPin {
                     name: pin_name,
-                    accepts_types: accepted_types,
+                    accepts_types: moq_accepted_media_types(),
                     cardinality: PinCardinality::One,
                 };
                 let _ = response_tx.send(Ok(pin));
@@ -684,6 +668,45 @@ impl MoqPushNode {
                 };
                 match broadcast.create_track(track) {
                     Ok(producer) => {
+                        // Update the catalog with the new track rendition.
+                        if is_video {
+                            catalog.video.renditions.insert(
+                                track_name.clone(),
+                                hang::catalog::VideoConfig {
+                                    codec: hang::catalog::VideoCodec::VP9(hang::catalog::VP9 {
+                                        profile: VP9_PROFILE,
+                                        level: VP9_LEVEL,
+                                        bit_depth: VP9_BIT_DEPTH,
+                                        ..hang::catalog::VP9::default()
+                                    }),
+                                    coded_width: None,
+                                    coded_height: None,
+                                    display_ratio_width: None,
+                                    display_ratio_height: None,
+                                    framerate: Some(30.0),
+                                    bitrate: None,
+                                    description: None,
+                                    optimize_for_latency: Some(true),
+                                    container: hang::catalog::Container::default(),
+                                    jitter: None,
+                                },
+                            );
+                        } else {
+                            catalog.audio.renditions.insert(
+                                track_name.clone(),
+                                hang::catalog::AudioConfig {
+                                    codec: hang::catalog::AudioCodec::Opus,
+                                    sample_rate: 48000,
+                                    channel_count: channels,
+                                    bitrate: Some(128_000),
+                                    description: None,
+                                    container: hang::catalog::Container::default(),
+                                    jitter: None,
+                                },
+                            );
+                        }
+                        Self::republish_catalog(catalog, catalog_producer);
+
                         let clock = MediaClock::new(initial_delay_ms);
                         dynamic_inputs.push(DynamicInputState {
                             pin_name: pin.name.clone(),
@@ -712,6 +735,7 @@ impl MoqPushNode {
             },
             PinManagementMessage::RemoveInputPin { pin_name } => {
                 tracing::info!("MoqPushNode: removed input pin '{}'", pin_name);
+                let track_name = track_name_from_pin(&pin_name);
                 // Extract removed entries so we can finish their track producers
                 // before dropping them (retain cannot call &mut self methods).
                 let mut kept = Vec::with_capacity(dynamic_inputs.len());
@@ -723,6 +747,10 @@ impl MoqPushNode {
                     }
                 }
                 *dynamic_inputs = kept;
+                // Remove the track from the catalog and re-publish.
+                catalog.audio.renditions.remove(&track_name);
+                catalog.video.renditions.remove(&track_name);
+                Self::republish_catalog(catalog, catalog_producer);
             },
             PinManagementMessage::RequestAddOutputPin { response_tx, .. } => {
                 let _ = response_tx.send(Err(StreamKitError::Configuration(
@@ -732,6 +760,25 @@ impl MoqPushNode {
             PinManagementMessage::AddedOutputPin { .. }
             | PinManagementMessage::RemoveOutputPin { .. } => {
                 // No-op for output pins on a push node
+            },
+        }
+    }
+
+    /// Re-serialize and publish the current catalog state.
+    fn republish_catalog(
+        catalog: &hang::catalog::Catalog,
+        catalog_producer: &mut moq_lite::TrackProducer,
+    ) {
+        match catalog.to_string() {
+            Ok(json) => {
+                if let Err(e) = catalog_producer.write_frame(json.into_bytes()) {
+                    tracing::error!("Failed to re-publish catalog: {e}");
+                } else {
+                    tracing::info!("MoqPushNode: catalog re-published after dynamic track change");
+                }
+            },
+            Err(e) => {
+                tracing::error!("Failed to serialize updated catalog: {e}");
             },
         }
     }

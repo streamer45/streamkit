@@ -295,6 +295,11 @@ fn make_broadcast_frame(packet: Packet, kind: MediaKind) -> Option<BroadcastFram
 /// the engine creates the pin on-demand and sends the channel via
 /// [`PinManagementMessage::AddedOutputPin`]. Track processors check this map
 /// and forward frames to the corresponding downstream channel.
+///
+/// Uses [`std::sync::RwLock`] rather than [`tokio::sync::RwLock`] because the
+/// lock is never held across an `.await` point — only brief synchronous reads
+/// in [`route_packet`] and occasional writes when pins are added/removed.
+/// This avoids the overhead of the async lock on every packet in the hot path.
 type DynamicOutputs =
     Arc<std::sync::RwLock<std::collections::HashMap<String, mpsc::Sender<Packet>>>>;
 
@@ -315,19 +320,7 @@ impl MoqPeerNode {
 #[allow(clippy::too_many_lines)]
 impl ProcessorNode for MoqPeerNode {
     fn input_pins(&self) -> Vec<InputPin> {
-        let accepted_types = vec![
-            PacketType::EncodedAudio(EncodedAudioFormat {
-                codec: AudioCodec::Opus,
-                codec_private: None,
-            }),
-            PacketType::EncodedVideo(EncodedVideoFormat {
-                codec: VideoCodec::Vp9,
-                bitstream_format: None,
-                codec_private: None,
-                profile: None,
-                level: None,
-            }),
-        ];
+        let accepted_types = super::constants::moq_accepted_media_types();
         vec![
             InputPin {
                 name: "in".to_string(),
@@ -529,8 +522,7 @@ impl ProcessorNode for MoqPeerNode {
 
         // Dynamic output pin channels — populated when the engine creates
         // track-named output pins (e.g. `audio/data`, `video/hd`) on demand.
-        let dynamic_outputs: DynamicOutputs =
-            std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
+        let dynamic_outputs: DynamicOutputs = Arc::default();
 
         // Pin management channel for runtime pin creation
         let mut pin_mgmt_rx = context.pin_management_rx.take();
@@ -895,22 +887,9 @@ impl ProcessorNode for MoqPeerNode {
 
 /// Create a dynamic input pin that accepts both Opus audio and VP9 video.
 fn make_dynamic_input_pin(name: &str) -> InputPin {
-    let accepted_types = vec![
-        PacketType::EncodedAudio(EncodedAudioFormat {
-            codec: AudioCodec::Opus,
-            codec_private: None,
-        }),
-        PacketType::EncodedVideo(EncodedVideoFormat {
-            codec: VideoCodec::Vp9,
-            bitstream_format: None,
-            codec_private: None,
-            profile: None,
-            level: None,
-        }),
-    ];
     InputPin {
         name: name.to_string(),
-        accepts_types: accepted_types,
+        accepts_types: super::constants::moq_accepted_media_types(),
         cardinality: PinCardinality::One,
     }
 }
@@ -1752,38 +1731,45 @@ impl MoqPeerNode {
         output_sender: &mut streamkit_core::OutputSender,
         dynamic_outputs: &DynamicOutputs,
     ) -> bool {
-        // Check whether a dynamic output channel exists and, if so, whether
-        // it is still open.  We need to know *before* consuming the packet
-        // so the static fallback path can still use it.
-        let dyn_status = match dynamic_outputs.read() {
-            Ok(map) => map.get(output_pin).map(|dyn_tx| !dyn_tx.is_closed()),
+        // Acquire the lock once and perform both the existence check and the
+        // send under the same guard to avoid double acquisition on every packet.
+        //
+        // The enum tracks what happened so we can act after releasing the lock:
+        //   Sent       — packet was forwarded to the dynamic channel
+        //   Closed     — dynamic channel exists but is closed (stale entry)
+        //   NoEntry(p) — no dynamic channel; packet returned for static path
+        enum RouteOutcome {
+            Sent,
+            Closed,
+            NoEntry(Packet),
+        }
+
+        let outcome = match dynamic_outputs.read() {
+            Ok(map) => match map.get(output_pin) {
+                Some(dyn_tx) if dyn_tx.is_closed() => RouteOutcome::Closed,
+                Some(dyn_tx) => {
+                    let _ = dyn_tx.try_send(packet);
+                    RouteOutcome::Sent
+                },
+                None => RouteOutcome::NoEntry(packet),
+            },
             Err(e) => {
                 tracing::error!(output_pin, "dynamic_outputs lock poisoned: {e}");
                 return false;
             },
         };
 
-        match dyn_status {
-            Some(true) => {
-                // Re-acquire the lock to send.  The channel was open a moment
-                // ago; if it closed in the meantime try_send returns Closed
-                // and the packet is dropped (acceptable for real-time media).
-                if let Ok(map) = dynamic_outputs.read() {
-                    if let Some(dyn_tx) = map.get(output_pin) {
-                        let _ = dyn_tx.try_send(packet);
-                    }
-                }
-                true
-            },
-            Some(false) => {
+        match outcome {
+            RouteOutcome::Sent => true,
+            RouteOutcome::Closed => {
                 // Downstream consumer disconnected — remove the stale entry
                 // but keep the track processor alive so other consumers (or a
                 // reconnecting one) can still receive frames.
-                tracing::warn!(output_pin, "Dynamic output channel closed, removing stale entry");
+                tracing::debug!(output_pin, "Dynamic output channel closed, removing stale entry");
                 Self::remove_dynamic_output(dynamic_outputs, output_pin);
                 true
             },
-            None => {
+            RouteOutcome::NoEntry(packet) => {
                 // No dynamic channel — fall through to the static output sender.
                 output_sender.send(output_pin, packet).await.is_ok()
             },
