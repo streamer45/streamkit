@@ -774,7 +774,7 @@ impl MoqPushNode {
                 if let Err(e) = catalog_producer.write_frame(json.into_bytes()) {
                     tracing::error!("Failed to re-publish catalog: {e}");
                 } else {
-                    tracing::info!("MoqPushNode: catalog re-published after dynamic track change");
+                    tracing::debug!("MoqPushNode: catalog re-published after dynamic track change");
                 }
             },
             Err(e) => {
