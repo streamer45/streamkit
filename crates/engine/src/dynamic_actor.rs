@@ -955,7 +955,11 @@ impl DynamicEngine {
                         // Clean up the distributor actor and metadata that were
                         // just created — leaving them would leak an orphaned
                         // task and stale metadata for the session.
-                        self.pin_distributors.remove(&(from_node.clone(), pin.name.clone()));
+                        if let Some(cfg) =
+                            self.pin_distributors.remove(&(from_node.clone(), pin.name.clone()))
+                        {
+                            let _ = cfg.send(PinConfigMsg::Shutdown).await;
+                        }
                         if let Some(meta) = self.node_pin_metadata.get_mut(&from_node) {
                             meta.output_pins.retain(|p| p.name != pin.name);
                         }
@@ -978,7 +982,11 @@ impl DynamicEngine {
                 );
                 // Clean up the distributor and metadata — the node never
                 // received AddedOutputPin so nothing will produce into this pin.
-                self.pin_distributors.remove(&(from_node.clone(), pin_name_for_cleanup.clone()));
+                if let Some(cfg) =
+                    self.pin_distributors.remove(&(from_node.clone(), pin_name_for_cleanup.clone()))
+                {
+                    let _ = cfg.send(PinConfigMsg::Shutdown).await;
+                }
                 if let Some(meta) = self.node_pin_metadata.get_mut(&from_node) {
                     meta.output_pins.retain(|p| p.name != pin_name_for_cleanup);
                 }

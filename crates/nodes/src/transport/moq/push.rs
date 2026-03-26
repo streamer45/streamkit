@@ -326,7 +326,6 @@ impl ProcessorNode for MoqPushNode {
             .map_err(|e| StreamKitError::Runtime(format!("Failed to write catalog frame: {e}")))?;
         // Keep catalog producer and state alive so we can re-publish when
         // dynamic tracks are added at runtime.
-        let mut catalog_producer = catalog_producer;
         let mut catalog = catalog;
 
         tracing::info!(has_video, "published catalog for broadcast");
@@ -763,6 +762,9 @@ impl MoqPushNode {
         if !Self::republish_catalog(catalog, catalog_producer) {
             // Roll back — subscribers won't discover this track.
             Self::remove_catalog_rendition(catalog, &track_name);
+            // Finish the producer so the broadcast doesn't retain a dangling track.
+            let mut tp: hang::container::OrderedProducer = producer.into();
+            let _ = tp.track.finish();
             tracing::error!(
                 pin = %pin.name, track = %track_name,
                 "Skipping dynamic input — catalog republish failed"

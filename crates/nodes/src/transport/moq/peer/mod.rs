@@ -852,6 +852,13 @@ impl ProcessorNode for MoqPeerNode {
         // Cleanup: signal all tasks to shutdown
         let _ = shutdown_tx.send(());
 
+        // Abort any lingering dynamic input forwarder tasks and wait briefly
+        // for them to finish so the node is fully stopped before we return.
+        for (name, handle) in forwarder_handles.drain() {
+            handle.abort();
+            tracing::debug!(pin = %name, "Aborted dynamic input forwarder");
+        }
+
         // Unregister routes from gateway
         tracing::info!("Unregistering MoQ routes from gateway");
         gateway.unregister_route(&base_path).await;
@@ -864,7 +871,7 @@ impl ProcessorNode for MoqPeerNode {
         state_helpers::emit_stopped(&context.state_tx, &node_name, "shutdown");
         tracing::info!(
             "MoqPeerNode finished with {} active subscribers",
-            subscriber_count.load(Ordering::SeqCst)
+            subscriber_count.load(Ordering::Relaxed)
         );
         final_result
     }
@@ -1123,7 +1130,7 @@ impl MoqPeerNode {
             .map_err(|e| StreamKitError::Runtime(format!("Failed to accept session: {e}")))?;
 
         let handle = tokio::spawn(async move {
-            let count = config.subscriber_count.fetch_add(1, Ordering::SeqCst) + 1;
+            let count = config.subscriber_count.fetch_add(1, Ordering::Relaxed) + 1;
             tracing::info!(path = %path, "Peer connected (total: {})", count);
 
             let mut publisher_shutdown_rx = config.shutdown_rx.resubscribe();
@@ -1173,7 +1180,7 @@ impl MoqPeerNode {
                 tracing::warn!(path = %path, error = %e, "Peer subscriber task error");
             }
 
-            let count = config.subscriber_count.fetch_sub(1, Ordering::SeqCst).saturating_sub(1);
+            let count = config.subscriber_count.fetch_sub(1, Ordering::Relaxed).saturating_sub(1);
             tracing::info!(path = %path, "Peer disconnected (remaining: {})", count);
 
             drop(session);
@@ -1892,7 +1899,7 @@ impl MoqPeerNode {
             .map_err(|e| StreamKitError::Runtime(format!("Failed to accept session: {e}")))?;
 
         let handle = tokio::spawn(async move {
-            let count = subscriber_count.fetch_add(1, Ordering::SeqCst) + 1;
+            let count = subscriber_count.fetch_add(1, Ordering::Relaxed) + 1;
             tracing::info!("Subscriber connected (total: {})", count);
 
             let result = Self::subscriber_send_loop(
@@ -1908,7 +1915,7 @@ impl MoqPeerNode {
             .await;
 
             // Decrement subscriber count
-            let count = subscriber_count.fetch_sub(1, Ordering::SeqCst).saturating_sub(1);
+            let count = subscriber_count.fetch_sub(1, Ordering::Relaxed).saturating_sub(1);
             tracing::info!("Subscriber disconnected (remaining: {})", count);
 
             // Keep session alive until task ends
