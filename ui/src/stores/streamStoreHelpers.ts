@@ -577,6 +577,28 @@ function schedulePostConnectWarnings(
       });
     }, 10_000);
   }
+
+  // Screen source warning — analogous to the camera warning above.
+  // Screen.source has shape { audio?, video? } | undefined, so we
+  // check for the presence of the video track.
+  if (decision.shouldPublish && attempt.screen) {
+    const screenRef = attempt.screen;
+
+    let wasEverReady = Boolean(screenRef.source.peek()?.video) || get().cameraStatus === 'ready';
+    attempt.healthEffect.subscribe(screenRef.source, (value) => {
+      if (value?.video) wasEverReady = true;
+    });
+
+    setTimeout(() => {
+      if (get().status !== 'connected') return;
+      if (wasEverReady) return;
+      set({
+        cameraStatus: 'error',
+        errorMessage:
+          'Connected to relay, but screen capture is not available. The user may have stopped sharing.',
+      });
+    }, 10_000);
+  }
 }
 
 /** Apply watch-path results to the attempt object in a type-safe manner. */

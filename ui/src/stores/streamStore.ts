@@ -316,9 +316,13 @@ export const useStreamStore = create<StreamState>((set, get) => ({
   toggleCamera: () => {
     const state = get();
 
-    if (state.camera) {
+    // Handle both camera and screen sources — the active source depends
+    // on videoSourceType.  When screen sharing, `state.camera` is null
+    // and `state.screen` holds the capture source.
+    const source = state.camera ?? state.screen;
+    if (source) {
       const newState = !state.isCameraEnabled;
-      state.camera.enabled.set(newState);
+      source.enabled.set(newState);
       set({ isCameraEnabled: newState });
     }
   },
