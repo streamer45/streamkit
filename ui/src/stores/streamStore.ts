@@ -64,6 +64,9 @@ interface StreamState {
   // Video source type — 'camera' (getUserMedia) or 'screen' (getDisplayMedia)
   videoSourceType: VideoSourceType;
 
+  // Secondary publish config for dual-source pipelines
+  secondaryPublishConfig: { broadcast: string; videoSourceType: VideoSourceType } | null;
+
   // Error state
   errorMessage: string;
 
@@ -84,6 +87,7 @@ interface StreamState {
 
   // MoQ references (stored but not serialized)
   publish: Publish.Broadcast | null;
+  secondaryPublish: Publish.Broadcast | null;
   watch: Watch.Broadcast | null;
   watchSync: Watch.Sync | null;
   audioSource: Watch.Audio.Source | null;
@@ -113,6 +117,9 @@ interface StreamState {
   setPipelineOutputTypes: (audio: boolean, video: boolean) => void;
   setIsExternalRelay: (v: boolean) => void;
   setVideoSourceType: (v: VideoSourceType) => void;
+  setSecondaryPublishConfig: (
+    v: { broadcast: string; videoSourceType: VideoSourceType } | null
+  ) => void;
   loadConfig: () => Promise<void>;
 
   // Session actions
@@ -163,6 +170,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
   pipelineOutputsVideo: true,
   isExternalRelay: false,
   videoSourceType: 'camera',
+  secondaryPublishConfig: null,
   errorMessage: '',
   configLoaded: false,
   configServerUrl: '',
@@ -194,6 +202,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
     set({ pipelineOutputsAudio: audio, pipelineOutputsVideo: video }),
   setIsExternalRelay: (v) => set({ isExternalRelay: v }),
   setVideoSourceType: (v) => set({ videoSourceType: v }),
+  setSecondaryPublishConfig: (v) => set({ secondaryPublishConfig: v }),
 
   // Session setters
   setActiveSession: (sessionId, sessionName, pipelineName) =>

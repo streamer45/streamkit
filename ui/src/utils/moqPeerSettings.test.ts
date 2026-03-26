@@ -306,6 +306,71 @@ client:
     expect(result).not.toBeNull();
     expect(result!.videoSourceType).toBe('camera');
   });
+
+  it('should extract secondaryPublish config for dual-source pipeline', () => {
+    const yaml = `
+client:
+  gateway_path: /moq/screenshare
+  publish:
+    broadcast: screen-input
+    audio: true
+    video: true
+    screen: true
+  secondary_publish:
+    broadcast: cam-input
+  watch:
+    broadcast: output
+    audio: true
+    video: true
+`;
+    const result = extractMoqPeerSettings(yaml);
+    expect(result).not.toBeNull();
+    expect(result!.videoSourceType).toBe('screen');
+    expect(result!.secondaryPublish).toBeDefined();
+    expect(result!.secondaryPublish!.broadcast).toBe('cam-input');
+    expect(result!.secondaryPublish!.videoSourceType).toBe('camera');
+  });
+
+  it('should set secondaryPublish videoSourceType to screen when screen is true', () => {
+    const yaml = `
+client:
+  gateway_path: /moq/dual-screen
+  publish:
+    broadcast: primary
+    audio: true
+    video: true
+  secondary_publish:
+    broadcast: secondary
+    screen: true
+  watch:
+    broadcast: output
+    audio: true
+    video: true
+`;
+    const result = extractMoqPeerSettings(yaml);
+    expect(result).not.toBeNull();
+    expect(result!.secondaryPublish).toBeDefined();
+    expect(result!.secondaryPublish!.broadcast).toBe('secondary');
+    expect(result!.secondaryPublish!.videoSourceType).toBe('screen');
+  });
+
+  it('should have undefined secondaryPublish when not configured', () => {
+    const yaml = `
+client:
+  gateway_path: /moq/echo
+  publish:
+    broadcast: input
+    audio: true
+    video: true
+  watch:
+    broadcast: output
+    audio: true
+    video: true
+`;
+    const result = extractMoqPeerSettings(yaml);
+    expect(result).not.toBeNull();
+    expect(result!.secondaryPublish).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------

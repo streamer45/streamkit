@@ -112,6 +112,8 @@ pub struct ClientSection {
     pub gateway_path: Option<String>,
     /// Browser-side publish configuration (dynamic pipelines).
     pub publish: Option<PublishConfig>,
+    /// Secondary browser-side publish for dual-source pipelines.
+    pub secondary_publish: Option<SecondaryPublishConfig>,
     /// Browser-side watch configuration (dynamic pipelines).
     pub watch: Option<WatchConfig>,
     /// Input UX configuration (oneshot pipelines).
@@ -134,6 +136,19 @@ pub struct PublishConfig {
     pub video: bool,
     /// Whether the browser should use screen capture (getDisplayMedia)
     /// instead of the default camera (getUserMedia).
+    #[serde(default)]
+    pub screen: bool,
+}
+
+/// Secondary browser-side publish for dual-source pipelines.
+/// Declares an additional video source that the browser publishes
+/// on the same WebTransport connection as the primary broadcast.
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+#[ts(export)]
+pub struct SecondaryPublishConfig {
+    /// Broadcast name for the secondary source.
+    pub broadcast: String,
+    /// Whether the secondary source uses screen capture.
     #[serde(default)]
     pub screen: bool,
 }
@@ -1772,7 +1787,6 @@ client:
     /// Helper to build a minimal valid dynamic client section.
     fn dynamic_client() -> ClientSection {
         ClientSection {
-            relay_url: None,
             gateway_path: Some("/moq/test".into()),
             publish: Some(PublishConfig {
                 broadcast: "input".into(),
@@ -1781,18 +1795,13 @@ client:
                 screen: false,
             }),
             watch: Some(WatchConfig { broadcast: "output".into(), audio: true, video: true }),
-            input: None,
-            output: None,
+            ..Default::default()
         }
     }
 
     /// Helper to build a minimal valid oneshot client section.
     fn oneshot_client() -> ClientSection {
         ClientSection {
-            relay_url: None,
-            gateway_path: None,
-            publish: None,
-            watch: None,
             input: Some(InputConfig {
                 input_type: InputType::FileUpload,
                 accept: Some("audio/*".into()),
@@ -1801,6 +1810,7 @@ client:
                 field_hints: None,
             }),
             output: Some(OutputConfig { output_type: OutputType::Audio }),
+            ..Default::default()
         }
     }
 
@@ -1841,17 +1851,13 @@ client:
     #[test]
     fn test_lint_missing_gateway() {
         let c = ClientSection {
-            relay_url: None,
-            gateway_path: None,
             publish: Some(PublishConfig {
                 broadcast: "x".into(),
                 audio: true,
                 video: false,
                 screen: false,
             }),
-            watch: None,
-            input: None,
-            output: None,
+            ..Default::default()
         };
         let warnings = lint_client_section(&c, EngineMode::Dynamic);
         assert!(warnings.iter().any(|w| w.rule == "missing-gateway"));
@@ -1908,10 +1914,6 @@ client:
     #[test]
     fn test_lint_input_none_with_accept() {
         let c = ClientSection {
-            relay_url: None,
-            gateway_path: None,
-            publish: None,
-            watch: None,
             input: Some(InputConfig {
                 input_type: InputType::None,
                 accept: Some("audio/*".into()),
@@ -1920,6 +1922,7 @@ client:
                 field_hints: None,
             }),
             output: Some(OutputConfig { output_type: OutputType::Video }),
+            ..Default::default()
         };
         let warnings = lint_client_section(&c, EngineMode::OneShot);
         assert!(warnings.iter().any(|w| w.rule == "input-none-with-accept"));
@@ -1928,10 +1931,6 @@ client:
     #[test]
     fn test_lint_input_trigger_with_accept() {
         let c = ClientSection {
-            relay_url: None,
-            gateway_path: None,
-            publish: None,
-            watch: None,
             input: Some(InputConfig {
                 input_type: InputType::Trigger,
                 accept: Some("audio/*".into()),
@@ -1940,6 +1939,7 @@ client:
                 field_hints: None,
             }),
             output: Some(OutputConfig { output_type: OutputType::Audio }),
+            ..Default::default()
         };
         let warnings = lint_client_section(&c, EngineMode::OneShot);
         assert!(warnings.iter().any(|w| w.rule == "input-trigger-with-accept"));
@@ -1953,10 +1953,6 @@ client:
             FieldHint { field_type: Some(FieldType::File), accept: None, placeholder: None },
         );
         let c = ClientSection {
-            relay_url: None,
-            gateway_path: None,
-            publish: None,
-            watch: None,
             input: Some(InputConfig {
                 input_type: InputType::None,
                 accept: None,
@@ -1965,6 +1961,7 @@ client:
                 field_hints: Some(hints),
             }),
             output: Some(OutputConfig { output_type: OutputType::Video }),
+            ..Default::default()
         };
         let warnings = lint_client_section(&c, EngineMode::OneShot);
         assert!(warnings.iter().any(|w| w.rule == "field-hints-no-input"));
@@ -1973,10 +1970,6 @@ client:
     #[test]
     fn test_lint_asset_tags_text_input() {
         let c = ClientSection {
-            relay_url: None,
-            gateway_path: None,
-            publish: None,
-            watch: None,
             input: Some(InputConfig {
                 input_type: InputType::Text,
                 accept: None,
@@ -1985,6 +1978,7 @@ client:
                 field_hints: None,
             }),
             output: Some(OutputConfig { output_type: OutputType::Audio }),
+            ..Default::default()
         };
         let warnings = lint_client_section(&c, EngineMode::OneShot);
         assert!(warnings.iter().any(|w| w.rule == "asset-tags-no-input"));
@@ -1993,10 +1987,6 @@ client:
     #[test]
     fn test_lint_text_no_placeholder() {
         let c = ClientSection {
-            relay_url: None,
-            gateway_path: None,
-            publish: None,
-            watch: None,
             input: Some(InputConfig {
                 input_type: InputType::Text,
                 accept: None,
@@ -2005,6 +1995,7 @@ client:
                 field_hints: None,
             }),
             output: Some(OutputConfig { output_type: OutputType::Audio }),
+            ..Default::default()
         };
         let warnings = lint_client_section(&c, EngineMode::OneShot);
         assert!(warnings.iter().any(|w| w.rule == "text-no-placeholder"));
@@ -2494,5 +2485,108 @@ client:
             !warnings.iter().any(|w| w.rule == "screen-source-no-video"),
             "Should not warn for camera source without video: {warnings:?}"
         );
+    }
+
+    #[test]
+    fn test_secondary_publish_deserialization() {
+        let yaml = r#"
+name: Dual Source Test
+mode: dynamic
+client:
+  gateway_path: /moq/screenshare
+  publish:
+    broadcast: screen-input
+    audio: true
+    video: true
+    screen: true
+  secondary_publish:
+    broadcast: cam-input
+  watch:
+    broadcast: output
+    audio: true
+    video: true
+nodes:
+  peer:
+    kind: transport::moq::peer
+    params:
+      gateway_path: /moq/screenshare
+      input_broadcast: screen-input
+      output_broadcast: output
+"#;
+        let pipeline = parse_yaml(yaml).unwrap();
+        let client = match pipeline {
+            UserPipeline::Dag { client, .. } => client.unwrap(),
+            _ => panic!("expected Dag variant"),
+        };
+        let secondary = client.secondary_publish.unwrap();
+        assert_eq!(secondary.broadcast, "cam-input");
+        assert!(!secondary.screen, "screen should default to false");
+    }
+
+    #[test]
+    fn test_secondary_publish_screen_true() {
+        let yaml = r#"
+name: Dual Screen Test
+mode: dynamic
+client:
+  gateway_path: /moq/test
+  publish:
+    broadcast: primary
+    audio: true
+    video: true
+  secondary_publish:
+    broadcast: secondary
+    screen: true
+  watch:
+    broadcast: output
+    audio: true
+    video: true
+nodes:
+  peer:
+    kind: transport::moq::peer
+    params:
+      gateway_path: /moq/test
+      input_broadcast: primary
+      output_broadcast: output
+"#;
+        let pipeline = parse_yaml(yaml).unwrap();
+        let client = match pipeline {
+            UserPipeline::Dag { client, .. } => client.unwrap(),
+            _ => panic!("expected Dag variant"),
+        };
+        let secondary = client.secondary_publish.unwrap();
+        assert_eq!(secondary.broadcast, "secondary");
+        assert!(secondary.screen, "screen should be true when explicitly set");
+    }
+
+    #[test]
+    fn test_secondary_publish_absent_defaults_to_none() {
+        let yaml = r#"
+name: Normal Pipeline
+mode: dynamic
+client:
+  gateway_path: /moq/echo
+  publish:
+    broadcast: input
+    audio: true
+    video: true
+  watch:
+    broadcast: output
+    audio: true
+    video: true
+nodes:
+  peer:
+    kind: transport::moq::peer
+    params:
+      gateway_path: /moq/echo
+      input_broadcast: input
+      output_broadcast: output
+"#;
+        let pipeline = parse_yaml(yaml).unwrap();
+        let client = match pipeline {
+            UserPipeline::Dag { client, .. } => client.unwrap(),
+            _ => panic!("expected Dag variant"),
+        };
+        assert!(client.secondary_publish.is_none(), "secondary_publish should default to None");
     }
 }

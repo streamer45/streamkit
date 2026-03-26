@@ -312,6 +312,7 @@ const StreamView: React.FC = () => {
     setPipelineOutputTypes,
     setIsExternalRelay,
     setVideoSourceType,
+    setSecondaryPublishConfig,
     setActiveSession,
     clearActiveSession,
     loadConfig,
@@ -355,6 +356,7 @@ const StreamView: React.FC = () => {
       setPipelineOutputTypes: s.setPipelineOutputTypes,
       setIsExternalRelay: s.setIsExternalRelay,
       setVideoSourceType: s.setVideoSourceType,
+      setSecondaryPublishConfig: s.setSecondaryPublishConfig,
       setActiveSession: s.setActiveSession,
       clearActiveSession: s.clearActiveSession,
       loadConfig: s.loadConfig,
@@ -468,6 +470,7 @@ const StreamView: React.FC = () => {
             setPipelineOutputTypes(moqSettings.outputsAudio, moqSettings.outputsVideo);
             setIsExternalRelay(moqSettings.isExternalRelay);
             setVideoSourceType(moqSettings.videoSourceType);
+            setSecondaryPublishConfig(moqSettings.secondaryPublish ?? null);
           }
         }
       } catch (error) {
@@ -524,6 +527,9 @@ const StreamView: React.FC = () => {
           // Set the video source type so the connect flow creates the right
           // capture source (camera vs screen).
           setVideoSourceType(moqSettings.videoSourceType);
+
+          // Set secondary publish config for dual-source pipelines
+          setSecondaryPublishConfig(moqSettings.secondaryPublish ?? null);
         }
       }
     },
@@ -537,6 +543,7 @@ const StreamView: React.FC = () => {
       setPipelineOutputTypes,
       setIsExternalRelay,
       setVideoSourceType,
+      setSecondaryPublishConfig,
     ]
   );
 

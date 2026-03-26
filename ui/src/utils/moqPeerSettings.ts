@@ -35,6 +35,11 @@ export interface MoqPeerSettings {
   isExternalRelay: boolean;
   /** The video capture source type: 'camera' (getUserMedia) or 'screen' (getDisplayMedia). */
   videoSourceType: VideoSourceType;
+  /** Secondary publish config for dual-source pipelines (e.g. screen bg + camera PiP). */
+  secondaryPublish?: {
+    broadcast: string;
+    videoSourceType: VideoSourceType;
+  };
 }
 
 /**
@@ -65,6 +70,12 @@ export function deriveSettingsFromClient(client: ClientSection): MoqPeerSettings
     outputsVideo: client.watch?.video ?? false,
     isExternalRelay,
     videoSourceType: client.publish?.screen ? 'screen' : 'camera',
+    secondaryPublish: client.secondary_publish
+      ? {
+          broadcast: client.secondary_publish.broadcast,
+          videoSourceType: client.secondary_publish.screen ? 'screen' : 'camera',
+        }
+      : undefined,
   };
 }
 

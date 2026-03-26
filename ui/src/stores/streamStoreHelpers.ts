@@ -45,6 +45,7 @@ export type ConnectAttempt = {
   camera: Publish.Source.Camera | null;
   screen: Publish.Source.Screen | null;
   publish: Publish.Broadcast | null;
+  secondaryPublish: Publish.Broadcast | null;
 };
 
 /** Minimal slice of StreamState needed by helper functions. */
@@ -66,6 +67,8 @@ export interface ConnectableState {
   isExternalRelay: boolean;
   /** The video capture source: 'camera' (getUserMedia) or 'screen' (getDisplayMedia). */
   videoSourceType: VideoSourceType;
+  /** Secondary publish config for dual-source pipelines. */
+  secondaryPublishConfig: { broadcast: string; videoSourceType: VideoSourceType } | null;
   status: ConnectionStatus;
   errorMessage: string;
   isMicEnabled: boolean;
@@ -83,6 +86,7 @@ type StateSetter = (partial: Partial<ConnectableState>) => void;
 /** All MoQ resource references reset to null — used when disconnecting or on error. */
 export const NULL_MOQ_REFS = {
   publish: null,
+  secondaryPublish: null,
   watch: null,
   watchSync: null,
   audioSource: null,
@@ -247,6 +251,7 @@ function shutdownMediaSource(
 /** Ordered list of ConnectAttempt keys whose values expose `.close()`. */
 const CLOSEABLE_KEYS: ReadonlyArray<keyof ConnectAttempt> = [
   'healthEffect',
+  'secondaryPublish',
   'publish',
   'videoRenderer',
   'videoDecoder',
@@ -742,6 +747,70 @@ export async function performConnect(
           abortSignal
         )
       );
+
+      // Secondary publish: create a second broadcast on the same connection
+      // for dual-source pipelines (e.g., screen bg + camera PiP)
+      if (state.secondaryPublishConfig) {
+        logger.info(
+          'Setting up secondary publish broadcast:',
+          state.secondaryPublishConfig.broadcast
+        );
+        const secConfig = state.secondaryPublishConfig;
+        const secSourceType = secConfig.videoSourceType;
+
+        // Set up media source for the secondary broadcast (video only, no audio)
+        const { camera: secCamera, screen: secScreen } = await setupMediaSources(
+          attempt.healthEffect,
+          false, // no audio on secondary
+          true, // video always needed
+          secSourceType,
+          set,
+          abortSignal
+        );
+
+        const secBroadcastConfig: ConstructorParameters<typeof Publish.Broadcast>[0] = {
+          connection: connection.established,
+          enabled: true,
+          name: Publish.Lite.Path.from(secConfig.broadcast),
+        };
+
+        if (secSourceType === 'screen' && secScreen) {
+          const videoOnlySignal = new Signal<Publish.Video.Source | undefined>(
+            secScreen.source.peek()?.video
+          );
+          attempt.healthEffect.subscribe(secScreen.source, (v) => videoOnlySignal.set(v?.video));
+          secBroadcastConfig.video = {
+            source: videoOnlySignal,
+            hd: { enabled: true, config: { codec: 'vp09' } },
+          };
+        } else if (secCamera) {
+          secBroadcastConfig.video = {
+            source: secCamera.source,
+            hd: { enabled: true, config: { codec: 'vp09' } },
+          };
+        }
+
+        attempt.secondaryPublish = new Publish.Broadcast(secBroadcastConfig);
+
+        // Wait for secondary video catalog
+        logger.info('Waiting for secondary video catalog...');
+        try {
+          await waitForSignalValue(
+            attempt.secondaryPublish.video.catalog,
+            (v) => v !== undefined,
+            10_000,
+            'Secondary video encoder failed to initialize',
+            abortSignal
+          );
+        } catch (e) {
+          attempt.secondaryPublish.close();
+          attempt.secondaryPublish = null;
+          shutdownMediaSource(secScreen);
+          shutdownMediaSource(secCamera);
+          throw e;
+        }
+        logger.info('Secondary video catalog ready');
+      }
     }
 
     await connectWatchPath(attempt, state, decision, set, abortSignal);

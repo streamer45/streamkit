@@ -463,6 +463,10 @@ gateway_path: string | null,
  */
 publish: PublishConfig | null, 
 /**
+ * Secondary browser-side publish for dual-source pipelines.
+ */
+secondary_publish: SecondaryPublishConfig | null, 
+/**
  * Browser-side watch configuration (dynamic pipelines).
  */
 watch: WatchConfig | null, 
@@ -491,6 +495,16 @@ video: boolean,
 /**
  * Whether the browser should use screen capture (getDisplayMedia)
  * instead of the default camera (getUserMedia).
+ */
+screen: boolean, };
+
+export type SecondaryPublishConfig = { 
+/**
+ * Broadcast name for the secondary source.
+ */
+broadcast: string, 
+/**
+ * Whether the secondary source uses screen capture.
  */
 screen: boolean, };
 

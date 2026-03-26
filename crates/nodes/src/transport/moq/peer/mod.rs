@@ -124,6 +124,7 @@ struct SubscriberMediaConfig {
 
 struct BidirectionalTaskConfig {
     input_broadcast: String,
+    input_broadcasts: Vec<String>,
     output_broadcast: String,
     node_id: String,
     output_sender: streamkit_core::OutputSender,
@@ -141,6 +142,7 @@ struct BidirectionalTaskConfig {
 struct PublisherReceiveLoopWithSlotConfig {
     subscribe: moq_lite::OriginConsumer,
     broadcast_name: String,
+    input_broadcasts: Vec<String>,
     output_sender: streamkit_core::OutputSender,
     publisher_slot: Arc<Semaphore>,
     publisher_events: mpsc::UnboundedSender<PublisherEvent>,
@@ -197,6 +199,11 @@ pub struct MoqPeerConfig {
     /// Used to advertise the video resolution to subscribers.
     /// Default: 480.
     pub video_height: u32,
+    /// Additional input broadcasts (optional).
+    /// Each broadcast contributes its own tracks to the pipeline.
+    /// Output pins are namespaced: `{broadcast_name}/{track_name}`.
+    #[serde(default)]
+    pub input_broadcasts: Vec<String>,
 }
 
 impl Default for MoqPeerConfig {
@@ -210,6 +217,7 @@ impl Default for MoqPeerConfig {
             output_initial_delay_ms: 0,
             video_width: 640,
             video_height: 480,
+            input_broadcasts: Vec::new(),
         }
     }
 }
@@ -554,6 +562,7 @@ impl ProcessorNode for MoqPeerNode {
                         conn,
                         BidirectionalTaskConfig {
                             input_broadcast: self.config.input_broadcast.clone(),
+                            input_broadcasts: self.config.input_broadcasts.clone(),
                             output_broadcast: self.config.output_broadcast.clone(),
                             node_id: node_name.clone(),
                             output_sender: context.output_sender.clone(),
@@ -886,11 +895,12 @@ fn make_dynamic_input_pin(name: &str) -> InputPin {
     }
 }
 
-/// Pin names starting with `"video/"` produce [`PacketType::EncodedVideo`] (VP9);
+/// Pin names containing `"video/"` produce [`PacketType::EncodedVideo`] (VP9);
 /// all others produce [`PacketType::EncodedAudio`] (Opus). This matches the
-/// convention in `MoqPullNode::output_pins_for_tracks`.
+/// convention in `MoqPullNode::output_pins_for_tracks` and supports
+/// namespaced multi-broadcast pins (e.g. `screen-input/video/hd`).
 fn make_dynamic_output_pin(name: &str) -> OutputPin {
-    let produces_type = if name.starts_with("video/") {
+    let produces_type = if name.contains("video/") {
         PacketType::EncodedVideo(EncodedVideoFormat {
             codec: VideoCodec::Vp9,
             bitstream_format: None,
@@ -1170,6 +1180,7 @@ impl MoqPeerNode {
                     PublisherReceiveLoopWithSlotConfig {
                         subscribe: receive_origin,
                         broadcast_name: config.input_broadcast,
+                        input_broadcasts: config.input_broadcasts,
                         output_sender: config.output_sender,
                         publisher_slot: config.publisher_slot,
                         publisher_events: config.publisher_events,
@@ -1218,6 +1229,90 @@ impl MoqPeerNode {
         config: PublisherReceiveLoopWithSlotConfig,
         shutdown_rx: &mut broadcast::Receiver<()>,
     ) -> Result<(), StreamKitError> {
+        // Multi-broadcast mode: wait for ALL expected broadcasts on the same connection
+        if !config.input_broadcasts.is_empty() {
+            let mut all_broadcasts: Vec<&str> = vec![config.broadcast_name.as_str()];
+            for b in &config.input_broadcasts {
+                all_broadcasts.push(b.as_str());
+            }
+            tracing::info!(
+                path = %config.publisher_path,
+                "Waiting for peer publisher to announce {} broadcasts: {:?}",
+                all_broadcasts.len(), all_broadcasts
+            );
+
+            let Some(broadcast_map) =
+                Self::wait_for_broadcasts(config.subscribe, &all_broadcasts, shutdown_rx).await?
+            else {
+                return Ok(());
+            };
+
+            let Ok(permit) = config.publisher_slot.try_acquire_owned() else {
+                tracing::warn!(
+                    path = %config.publisher_path,
+                    "Ignoring peer publisher broadcast - publisher already connected"
+                );
+                return Ok(());
+            };
+
+            let _ = config
+                .publisher_events
+                .send(PublisherEvent::Connected { path: config.publisher_path.clone() });
+
+            // Spawn namespaced catalog watchers for each broadcast
+            let mut handles: Vec<tokio::task::JoinHandle<Result<(), StreamKitError>>> = Vec::new();
+            for (broadcast_name, broadcast_consumer) in &broadcast_map {
+                let sender = config.output_sender.clone();
+                let mut bcast_shutdown = shutdown_rx.resubscribe();
+                let stats = config.stats_delta_tx.clone();
+                let dyn_out = config.dynamic_outputs.clone();
+                let bname = broadcast_name.clone();
+                let bcons = broadcast_consumer.clone();
+                handles.push(tokio::spawn(async move {
+                    Self::watch_catalog_and_process_namespaced(
+                        &bcons,
+                        &bname,
+                        sender,
+                        &mut bcast_shutdown,
+                        &stats,
+                        &dyn_out,
+                    )
+                    .await
+                }));
+            }
+
+            // Wait for all broadcast watchers to finish
+            let mut first_error: Option<StreamKitError> = None;
+            for handle in handles {
+                match handle.await {
+                    Ok(Ok(())) => {},
+                    Ok(Err(e)) => {
+                        tracing::warn!("Multi-broadcast watcher error: {e}");
+                        if first_error.is_none() {
+                            first_error = Some(e);
+                        }
+                    },
+                    Err(e) => {
+                        tracing::warn!("Multi-broadcast watcher panicked: {e}");
+                        if first_error.is_none() {
+                            first_error = Some(StreamKitError::Runtime(format!(
+                                "Multi-broadcast watcher panicked: {e}"
+                            )));
+                        }
+                    },
+                }
+            }
+
+            drop(permit);
+            let result = first_error.map_or(Ok(()), Err);
+            let _ = config.publisher_events.send(PublisherEvent::Disconnected {
+                path: config.publisher_path,
+                error: result.as_ref().err().map(std::string::ToString::to_string),
+            });
+            return result;
+        }
+
+        // Single-broadcast mode (backward compatible)
         tracing::info!(
             path = %config.publisher_path,
             "Waiting for peer publisher to announce broadcast: {}",
@@ -1326,6 +1421,51 @@ impl MoqPeerNode {
         }
     }
 
+    /// Wait for ALL expected broadcasts to be announced on the same
+    /// `OriginConsumer`.  Returns a map from broadcast name to its consumer,
+    /// or `None` when a shutdown was requested before all broadcasts arrived.
+    async fn wait_for_broadcasts(
+        mut subscribe: moq_lite::OriginConsumer,
+        expected: &[&str],
+        shutdown_rx: &mut broadcast::Receiver<()>,
+    ) -> Result<
+        Option<std::collections::HashMap<String, moq_lite::BroadcastConsumer>>,
+        StreamKitError,
+    > {
+        let mut found: std::collections::HashMap<String, moq_lite::BroadcastConsumer> =
+            std::collections::HashMap::new();
+        let expected_set: std::collections::HashSet<&str> = expected.iter().copied().collect();
+
+        loop {
+            if found.len() == expected_set.len() {
+                return Ok(Some(found));
+            }
+            tokio::select! {
+                announcement = subscribe.announced() => {
+                    match announcement {
+                        Some((path, Some(consumer))) => {
+                            let name = path.as_str().to_string();
+                            tracing::info!("Publisher announced broadcast: {}", name);
+                            if expected_set.contains(name.as_str()) && !found.contains_key(&name) {
+                                found.insert(name, consumer);
+                            }
+                        }
+                        Some((path, None)) => {
+                            tracing::info!("Publisher unannounced broadcast: {}", path.as_str());
+                        }
+                        None => {
+                            return Err(StreamKitError::Runtime("Origin consumer closed".to_string()));
+                        }
+                    }
+                }
+                _ = shutdown_rx.recv() => {
+                    tracing::info!("Publisher task shutting down (multi-broadcast wait)");
+                    return Ok(None);
+                }
+            }
+        }
+    }
+
     /// Unwrap a catalog read result, returning `Some(catalog)` on success,
     /// or `None` when the caller should break (closed / timeout / error).
     fn unwrap_catalog_result<E: std::fmt::Display>(
@@ -1428,6 +1568,81 @@ impl MoqPeerNode {
         Self::await_track_tasks(audio_handle, video_handle).await
     }
 
+    /// Like [`watch_catalog_and_process`], but output pin names are
+    /// namespaced: `{broadcast_name}/{track_name}` (e.g. `cam-input/video/hd`).
+    /// Used for secondary broadcasts in multi-broadcast mode.
+    async fn watch_catalog_and_process_namespaced(
+        broadcast_consumer: &moq_lite::BroadcastConsumer,
+        broadcast_name: &str,
+        output_sender: streamkit_core::OutputSender,
+        shutdown_rx: &mut broadcast::Receiver<()>,
+        stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
+        dynamic_outputs: &DynamicOutputs,
+    ) -> Result<(), StreamKitError> {
+        let catalog_track =
+            broadcast_consumer.subscribe_track(&hang::catalog::Catalog::default_track()).map_err(
+                |e| StreamKitError::Runtime(format!("Failed to subscribe to catalog track: {e}")),
+            )?;
+        let mut catalog_consumer = hang::catalog::CatalogConsumer::new(catalog_track);
+
+        let mut audio_handle: Option<tokio::task::JoinHandle<Result<(), StreamKitError>>> = None;
+        let mut video_handle: Option<tokio::task::JoinHandle<Result<(), StreamKitError>>> = None;
+
+        loop {
+            tokio::select! {
+                biased;
+                _ = shutdown_rx.recv() => {
+                    tracing::info!(broadcast = %broadcast_name, "Namespaced catalog watch shutting down");
+                    break;
+                }
+                catalog_result = tokio::time::timeout(Duration::from_secs(30), catalog_consumer.next()) => {
+                    let Some(catalog) = Self::unwrap_catalog_result(catalog_result) else {
+                        break;
+                    };
+
+                    tracing::info!(
+                        broadcast = %broadcast_name,
+                        "Received catalog: audio={:?}, video renditions={}",
+                        catalog.audio, catalog.video.renditions.len()
+                    );
+
+                    if audio_handle.is_none() {
+                        if let Some(track_name) = catalog.audio.renditions.keys().next() {
+                            let namespaced_pin = format!("{broadcast_name}/{track_name}");
+                            tracing::info!(broadcast = %broadcast_name, "Found audio track: {} -> pin {}", track_name, namespaced_pin);
+                            audio_handle = Some(Self::spawn_track_processor_with_pin(
+                                broadcast_consumer, track_name, &namespaced_pin,
+                                false,
+                                &output_sender, shutdown_rx, stats_delta_tx,
+                                dynamic_outputs,
+                            ));
+                        }
+                    }
+
+                    if video_handle.is_none() {
+                        if let Some(track_name) = catalog.video.renditions.keys().next() {
+                            let namespaced_pin = format!("{broadcast_name}/{track_name}");
+                            tracing::info!(broadcast = %broadcast_name, "Found video track: {} -> pin {}", track_name, namespaced_pin);
+                            video_handle = Some(Self::spawn_track_processor_with_pin(
+                                broadcast_consumer, track_name, &namespaced_pin,
+                                true,
+                                &output_sender, shutdown_rx, stats_delta_tx,
+                                dynamic_outputs,
+                            ));
+                        }
+                    }
+
+                    if audio_handle.is_some() && video_handle.is_some() {
+                        tracing::info!(broadcast = %broadcast_name, "All tracks discovered, stopping catalog watch");
+                        break;
+                    }
+                }
+            }
+        }
+
+        Self::await_track_tasks(audio_handle, video_handle).await
+    }
+
     /// Spawn a task that processes frames from a single publisher track.
     ///
     /// The subscription is created *inside* the spawned task and wrapped in a
@@ -1497,6 +1712,105 @@ impl MoqPeerNode {
                             output_pin = %output_pin,
                             error = %e,
                             "Track processor task finished with error"
+                        );
+                        return Err(e);
+                    },
+                    TrackExit::Cancelled => {
+                        attempt += 1;
+                        if attempt > MAX_RESUBSCRIBE_ATTEMPTS {
+                            tracing::warn!(
+                                output_pin = %output_pin,
+                                attempts = attempt,
+                                "Publisher track cancelled; retry budget exhausted"
+                            );
+                            return Err(StreamKitError::Runtime(format!(
+                                "publisher track '{}' cancelled {} times; giving up",
+                                track.name, attempt
+                            )));
+                        }
+                        let backoff =
+                            RESUBSCRIBE_INITIAL_BACKOFF * 2u32.saturating_pow(attempt - 1);
+                        tracing::info!(
+                            output_pin = %output_pin,
+                            attempt,
+                            max = MAX_RESUBSCRIBE_ATTEMPTS,
+                            backoff_ms = backoff.as_millis(),
+                            "Publisher track cancelled; re-subscribing after backoff"
+                        );
+                        tokio::select! {
+                            biased;
+                            _ = task_shutdown.recv() => {
+                                tracing::info!(output_pin = %output_pin, "Shutdown during re-subscribe backoff");
+                                return Ok(());
+                            }
+                            () = tokio::time::sleep(backoff) => {}
+                        }
+                    },
+                }
+            }
+        })
+    }
+
+    /// Like [`spawn_track_processor`], but uses a custom output pin name
+    /// instead of the track name. Used for namespaced multi-broadcast pins
+    /// (e.g. `cam-input/video/hd`).
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_track_processor_with_pin(
+        broadcast_consumer: &moq_lite::BroadcastConsumer,
+        track_name: &str,
+        output_pin_name: &str,
+        is_video: bool,
+        output_sender: &streamkit_core::OutputSender,
+        shutdown_rx: &broadcast::Receiver<()>,
+        stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
+        dynamic_outputs: &DynamicOutputs,
+    ) -> tokio::task::JoinHandle<Result<(), StreamKitError>> {
+        const MAX_RESUBSCRIBE_ATTEMPTS: u32 = 10;
+        const RESUBSCRIBE_INITIAL_BACKOFF: Duration = Duration::from_millis(100);
+
+        let broadcast = broadcast_consumer.clone();
+        let track = moq_lite::Track { name: track_name.to_string(), priority: 2 };
+        let sender = output_sender.clone();
+        let mut task_shutdown = shutdown_rx.resubscribe();
+        let stats = stats_delta_tx.clone();
+        let output_pin = output_pin_name.to_string();
+        let dyn_outputs = dynamic_outputs.clone();
+
+        tokio::spawn(async move {
+            tracing::info!(output_pin = %output_pin, track = %track.name, "Namespaced track processor task started");
+
+            let mut attempt: u32 = 0;
+            loop {
+                let consumer = broadcast.subscribe_track(&track).map_err(|e| {
+                    StreamKitError::Runtime(format!(
+                        "Failed to subscribe to track '{}': {e}",
+                        track.name
+                    ))
+                })?;
+                let exit = Self::process_publisher_frames(
+                    consumer,
+                    sender.clone(),
+                    &output_pin,
+                    is_video,
+                    &mut task_shutdown,
+                    &stats,
+                    &dyn_outputs,
+                )
+                .await;
+
+                match exit {
+                    TrackExit::Finished => {
+                        tracing::info!(
+                            output_pin = %output_pin,
+                            "Namespaced track processor task finished normally"
+                        );
+                        return Ok(());
+                    },
+                    TrackExit::Error(e) => {
+                        tracing::warn!(
+                            output_pin = %output_pin,
+                            error = %e,
+                            "Namespaced track processor task finished with error"
                         );
                         return Err(e);
                     },
@@ -2501,6 +2815,7 @@ mod tests {
             output_initial_delay_ms: 0,
             video_width: 640,
             video_height: 480,
+            input_broadcasts: Vec::new(),
         });
         let pins = node.output_pins();
         assert_eq!(pins[0].name, "audio/data");
@@ -2516,5 +2831,52 @@ mod tests {
         let video_pin = make_dynamic_output_pin("video/hd");
         assert_eq!(video_pin.name, "video/hd");
         assert!(matches!(video_pin.produces_type, PacketType::EncodedVideo(_)));
+    }
+
+    #[test]
+    fn input_broadcasts_defaults_to_empty() {
+        let config: MoqPeerConfig = serde_json::from_str(
+            r#"{
+            "input_broadcast": "input",
+            "output_broadcast": "output",
+            "gateway_path": "/moq"
+        }"#,
+        )
+        .unwrap();
+        assert!(config.input_broadcasts.is_empty(), "input_broadcasts should default to empty vec");
+    }
+
+    #[test]
+    fn input_broadcasts_deserializes() {
+        let config: MoqPeerConfig = serde_json::from_str(
+            r#"{
+            "input_broadcast": "screen-input",
+            "output_broadcast": "output",
+            "gateway_path": "/moq",
+            "input_broadcasts": ["cam-input"]
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(config.input_broadcasts, vec!["cam-input"]);
+    }
+
+    #[test]
+    fn make_dynamic_output_pin_namespaced_broadcast() {
+        // Multi-broadcast pins use "{broadcast}/{track}" format
+        let pin = make_dynamic_output_pin("screen-input/video/hd");
+        assert_eq!(pin.name, "screen-input/video/hd");
+        // Contains "video/" so should produce EncodedVideo
+        assert!(
+            matches!(pin.produces_type, PacketType::EncodedVideo(_)),
+            "namespaced video pin should produce EncodedVideo"
+        );
+
+        let pin = make_dynamic_output_pin("cam-input/audio/data");
+        assert_eq!(pin.name, "cam-input/audio/data");
+        // Contains "audio/" so should produce EncodedAudio
+        assert!(
+            matches!(pin.produces_type, PacketType::EncodedAudio(_)),
+            "namespaced audio pin should produce EncodedAudio"
+        );
     }
 }

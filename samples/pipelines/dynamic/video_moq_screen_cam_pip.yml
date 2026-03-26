@@ -1,0 +1,104 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+name: Screen Share + Camera PiP (MoQ Stream)
+description: >
+  Composites the user's screen capture as the background with webcam as
+  picture-in-picture overlay, loops microphone audio, and streams via MoQ
+mode: dynamic
+client:
+  gateway_path: /moq/screenshare
+  publish:
+    broadcast: screen-input
+    audio: true
+    video: true
+    screen: true
+  secondary_publish:
+    broadcast: cam-input
+  watch:
+    broadcast: output
+    audio: true
+    video: true
+
+nodes:
+  moq_peer:
+    kind: transport::moq::peer
+    params:
+      gateway_path: /moq/screenshare
+      input_broadcast: screen-input
+      input_broadcasts:
+        - cam-input
+      output_broadcast: output
+      allow_reconnect: true
+      video_width: 1920
+      video_height: 1080
+    needs:
+      in: opus_encoder
+      in_1: vp9_encoder
+
+  vp9_decoder_screen:
+    kind: video::vp9::decoder
+    needs:
+      in: moq_peer.screen-input/video/hd
+
+  vp9_decoder_cam:
+    kind: video::vp9::decoder
+    needs:
+      in: moq_peer.cam-input/video/hd
+
+  compositor:
+    kind: video::compositor
+    params:
+      width: 1920
+      height: 1080
+      num_inputs: 2
+      layers:
+        in_0:
+          rect: { x: 0, y: 0, width: 1920, height: 1080 }
+          opacity: 1
+          z_index: 0
+        in_1:
+          rect: { x: 1520, y: 760, width: 380, height: 285 }
+          opacity: 0.9
+          z_index: 1
+          crop_zoom: 2.2
+          crop_x: 0.5
+          crop_y: 0.5
+      text_overlays:
+        - id: label
+          text: Live Screen Share
+          rect: { x: 30, y: 30, width: 400, height: 50 }
+          color: [255, 255, 255, 180]
+          font_size: 40
+          font_name: dejavu-sans-bold
+          z_index: 2
+    needs:
+      - vp9_decoder_screen
+      - vp9_decoder_cam
+
+  pixel_convert:
+    kind: video::pixel_convert
+    params:
+      output_format: nv12
+    needs: compositor
+
+  vp9_encoder:
+    kind: video::vp9::encoder
+    params:
+      keyframe_interval: 30
+    needs: pixel_convert
+
+  opus_decoder:
+    kind: audio::opus::decoder
+    needs: moq_peer.screen-input/audio/data
+
+  gain:
+    kind: audio::gain
+    params:
+      gain: 1.0
+    needs: opus_decoder
+
+  opus_encoder:
+    kind: audio::opus::encoder
+    needs: gain
