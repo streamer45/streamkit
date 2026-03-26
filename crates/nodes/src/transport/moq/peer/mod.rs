@@ -1007,19 +1007,14 @@ impl MoqPeerNode {
                 let _ = response_tx.send(Ok(make_dynamic_input_pin(&pin_name)));
             },
             PinManagementMessage::AddedInputPin { pin, channel } => {
-                tracing::info!("MoqPeerNode: activated dynamic input pin '{}'", pin.name);
-                // Prune finished forwarder handles to avoid unbounded growth
-                // from naturally-closed channels whose handles were never
-                // explicitly removed via RemoveInputPin.
-                forwarder_handles.retain(|_, h| !h.is_finished());
-                let handle = Self::spawn_dynamic_input_forwarder(
-                    pin.name.clone(),
+                Self::activate_dynamic_input_forwarder(
+                    pin,
                     channel,
                     subscriber_broadcast_tx,
                     stats_delta_tx,
                     shutdown_tx,
+                    forwarder_handles,
                 );
-                forwarder_handles.insert(pin.name, handle);
             },
             PinManagementMessage::RemoveInputPin { pin_name } => {
                 tracing::info!("MoqPeerNode: removed input pin '{}'", pin_name);
@@ -1031,6 +1026,36 @@ impl MoqPeerNode {
                 tracing::info!("MoqPeerNode: removed output pin '{}'", pin_name);
                 Self::remove_dynamic_output(dynamic_outputs, &pin_name);
             },
+        }
+    }
+
+    /// Activate a dynamic input pin by spawning a forwarder task and
+    /// registering its handle. Prunes finished handles and aborts any
+    /// existing forwarder for the same pin name to prevent leaks.
+    #[allow(clippy::too_many_arguments)]
+    fn activate_dynamic_input_forwarder(
+        pin: InputPin,
+        channel: mpsc::Receiver<Packet>,
+        subscriber_broadcast_tx: &broadcast::Sender<BroadcastFrame>,
+        stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
+        shutdown_tx: &broadcast::Sender<()>,
+        forwarder_handles: &mut std::collections::HashMap<String, tokio::task::JoinHandle<()>>,
+    ) {
+        tracing::info!("MoqPeerNode: activated dynamic input pin '{}'", pin.name);
+        // Prune finished forwarder handles to avoid unbounded growth
+        // from naturally-closed channels whose handles were never
+        // explicitly removed via RemoveInputPin.
+        forwarder_handles.retain(|_, h| !h.is_finished());
+        let handle = Self::spawn_dynamic_input_forwarder(
+            pin.name.clone(),
+            channel,
+            subscriber_broadcast_tx,
+            stats_delta_tx,
+            shutdown_tx,
+        );
+        if let Some(old) = forwarder_handles.insert(pin.name, handle) {
+            old.abort();
+            tracing::debug!("Aborted previous forwarder for re-added pin");
         }
     }
 
@@ -1767,7 +1792,7 @@ impl MoqPeerNode {
                 // Downstream consumer disconnected — remove the stale entry
                 // but keep the track processor alive so other consumers (or a
                 // reconnecting one) can still receive frames.
-                tracing::debug!(output_pin, "Dynamic output channel closed, removing stale entry");
+                tracing::info!(output_pin, "Dynamic output channel closed, removing stale entry");
                 Self::remove_dynamic_output(dynamic_outputs, output_pin);
                 true
             },

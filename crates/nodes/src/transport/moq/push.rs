@@ -111,7 +111,7 @@ impl MoqPushNode {
 #[allow(clippy::too_many_lines)]
 impl ProcessorNode for MoqPushNode {
     fn input_pins(&self) -> Vec<InputPin> {
-        let accepted_types = super::constants::moq_accepted_media_types();
+        let accepted_types = moq_accepted_media_types();
         vec![
             InputPin {
                 name: "in".to_string(),
@@ -291,7 +291,7 @@ impl ProcessorNode for MoqPushNode {
             );
         }
 
-        let catalog = hang::catalog::Catalog {
+        let mut catalog = hang::catalog::Catalog {
             audio: hang::catalog::Audio { renditions: audio_renditions },
             video: hang::catalog::Video {
                 renditions: video_renditions,
@@ -326,7 +326,6 @@ impl ProcessorNode for MoqPushNode {
             .map_err(|e| StreamKitError::Runtime(format!("Failed to write catalog frame: {e}")))?;
         // Keep catalog producer and state alive so we can re-publish when
         // dynamic tracks are added at runtime.
-        let mut catalog = catalog;
 
         tracing::info!(has_video, "published catalog for broadcast");
 
@@ -773,6 +772,17 @@ impl MoqPushNode {
         }
 
         let clock = MediaClock::new(initial_delay_ms);
+        // Guard against duplicate pin names — if a pin with the same name
+        // already exists, replace it rather than pushing a second entry
+        // (which would leak when RemoveInputPin only removes the first).
+        if let Some(pos) = dynamic_inputs.iter().position(|s| s.pin_name == pin.name) {
+            let mut old = dynamic_inputs.swap_remove(pos);
+            let _ = old.producer.track.finish();
+            tracing::warn!(
+                pin = %pin.name,
+                "Replacing existing dynamic input with same name"
+            );
+        }
         dynamic_inputs.push(DynamicInputState {
             pin_name: pin.name.clone(),
             receiver: channel,
