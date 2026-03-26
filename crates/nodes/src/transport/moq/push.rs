@@ -7,6 +7,7 @@
 use super::constants::DEFAULT_AUDIO_FRAME_DURATION_US;
 use crate::video::{VP9_BIT_DEPTH, VP9_LEVEL, VP9_PROFILE};
 use async_trait::async_trait;
+use futures::future::poll_fn;
 use opentelemetry::{global, KeyValue};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -91,15 +92,16 @@ pub struct MoqPushNode {
     config: MoqPushConfig,
 }
 
-/// State for a single dynamic input pin: (pin_name, receiver, track_producer, clock, seeded, first_sent).
-type DynamicInputState = (
-    String,
-    tokio::sync::mpsc::Receiver<Packet>,
-    hang::container::OrderedProducer,
-    MediaClock,
-    bool,
-    bool,
-);
+/// State for a single dynamic input pin.
+struct DynamicInputState {
+    pin_name: String,
+    receiver: tokio::sync::mpsc::Receiver<Packet>,
+    producer: hang::container::OrderedProducer,
+    clock: MediaClock,
+    seeded: bool,
+    first_sent: bool,
+    is_video: bool,
+}
 
 impl MoqPushNode {
     pub const fn new(config: MoqPushConfig) -> Self {
@@ -151,6 +153,8 @@ impl ProcessorNode for MoqPushNode {
         enum InputSource {
             Audio,
             Video,
+            /// A dynamic input pin, identified by index into `dynamic_inputs`.
+            Dynamic(usize),
         }
 
         let node_name = context.output_sender.node_name().to_string();
@@ -348,6 +352,7 @@ impl ProcessorNode for MoqPushNode {
         let mut audio_seeded = false;
         let mut video_seeded = false;
         let mut audio_first_sent = false;
+        let mut video_first_sent = false;
 
         // Pin management for dynamic input pins
         let mut pin_mgmt_rx = context.pin_management_rx.take();
@@ -416,6 +421,35 @@ impl ProcessorNode for MoqPushNode {
                     );
                     continue;
                 },
+                // Poll all dynamic input pin receivers
+                result = async {
+                    if dynamic_inputs.is_empty() {
+                        return std::future::pending().await;
+                    }
+                    poll_fn(|cx| {
+                        for (idx, state) in dynamic_inputs.iter_mut().enumerate() {
+                            match state.receiver.poll_recv(cx) {
+                                std::task::Poll::Ready(result) => {
+                                    return std::task::Poll::Ready((idx, result));
+                                },
+                                std::task::Poll::Pending => {},
+                            }
+                        }
+                        std::task::Poll::Pending
+                    }).await
+                } => {
+                    let (idx, maybe_pkt) = result;
+                    if let Some(p) = maybe_pkt {
+                        (InputSource::Dynamic(idx), p)
+                    } else {
+                        // Dynamic receiver closed — remove it
+                        let mut removed = dynamic_inputs.remove(idx);
+                        tracing::info!(pin = %removed.pin_name, "Dynamic input pin closed");
+                        let _ = removed.producer.track.finish();
+                        if audio_rx.is_none() && video_rx.is_none() && dynamic_inputs.is_empty() { break; }
+                        continue;
+                    }
+                },
                 Some(control_msg) = context.control_rx.recv() => {
                     if matches!(control_msg, streamkit_core::control::NodeControlMessage::Shutdown) {
                         tracing::info!("MoqPushNode received shutdown signal after {} packets", packet_count);
@@ -435,16 +469,26 @@ impl ProcessorNode for MoqPushNode {
                     tracing::debug!(packet = packet_count, "MoQ publisher sending packet");
                 }
 
-                let (clock, seeded, default_dur, producer) = match input_source {
+                // Determine which clock/producer/flags to use based on input source
+                let is_video_source;
+                let (clock, seeded, default_dur, first_sent, producer) = match input_source {
                     InputSource::Audio => {
+                        is_video_source = false;
                         let Some(ap) = audio_producer.as_mut() else {
                             tracing::warn!("audio producer missing for audio packet");
                             stats_tracker.discarded();
                             continue;
                         };
-                        (&mut audio_clock, &mut audio_seeded, DEFAULT_AUDIO_FRAME_DURATION_US, ap)
+                        (
+                            &mut audio_clock,
+                            &mut audio_seeded,
+                            DEFAULT_AUDIO_FRAME_DURATION_US,
+                            &mut audio_first_sent,
+                            ap,
+                        )
                     },
                     InputSource::Video => {
+                        is_video_source = true;
                         let Some(vp) = video_producer.as_mut() else {
                             tracing::warn!("video producer missing for video packet");
                             stats_tracker.discarded();
@@ -454,7 +498,24 @@ impl ProcessorNode for MoqPushNode {
                             &mut video_clock,
                             &mut video_seeded,
                             crate::video::DEFAULT_VIDEO_FRAME_DURATION_US,
+                            &mut video_first_sent,
                             vp,
+                        )
+                    },
+                    InputSource::Dynamic(idx) => {
+                        let state = &mut dynamic_inputs[idx];
+                        is_video_source = state.is_video;
+                        let dur = if state.is_video {
+                            crate::video::DEFAULT_VIDEO_FRAME_DURATION_US
+                        } else {
+                            DEFAULT_AUDIO_FRAME_DURATION_US
+                        };
+                        (
+                            &mut state.clock,
+                            &mut state.seeded,
+                            dur,
+                            &mut state.first_sent,
+                            &mut state.producer,
                         )
                     },
                 };
@@ -472,17 +533,14 @@ impl ProcessorNode for MoqPushNode {
                         clock.timestamp_ms()
                     };
 
-                let keyframe = match input_source {
-                    InputSource::Audio => {
-                        let first = !audio_first_sent;
-                        audio_first_sent = true;
-                        first || clock.is_group_boundary_ms(self.config.group_duration_ms)
-                    },
-                    InputSource::Video => {
-                        // Default to true when keyframe metadata is missing to ensure
-                        // the OrderedProducer opens an initial MoQ group.
-                        metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(true)
-                    },
+                let keyframe = if is_video_source {
+                    // Default to true when keyframe metadata is missing to ensure
+                    // the OrderedProducer opens an initial MoQ group.
+                    metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(true)
+                } else {
+                    let first = !*first_sent;
+                    *first_sent = true;
+                    first || clock.is_group_boundary_ms(self.config.group_duration_ms)
                 };
 
                 let timestamp =
@@ -593,13 +651,13 @@ impl MoqPushNode {
             PinManagementMessage::AddedInputPin { pin, channel } => {
                 tracing::info!("MoqPushNode: activated dynamic input pin '{}'", pin.name);
 
-                // Determine the MoQ track name from the pin name and accepted types.
-                // Convention: if pin accepts video, track is `video/<pin_name>`;
-                // otherwise `audio/<pin_name>`.
-                let is_video =
-                    pin.accepts_types.iter().any(|t| matches!(t, PacketType::EncodedVideo(_)));
-                let track_name = if is_video {
-                    format!("video/{}", pin.name)
+                // Determine the MoQ track name from the pin name prefix convention.
+                // Names starting with "video/" map to video tracks; "audio/" to audio tracks.
+                // Bare names (no prefix) default to audio tracks.
+                let is_video = pin.name.starts_with("video/");
+                let track_name = if pin.name.starts_with("video/") || pin.name.starts_with("audio/")
+                {
+                    pin.name.clone()
                 } else {
                     format!("audio/{}", pin.name)
                 };
@@ -611,14 +669,15 @@ impl MoqPushNode {
                 match broadcast.create_track(track) {
                     Ok(producer) => {
                         let clock = MediaClock::new(initial_delay_ms);
-                        dynamic_inputs.push((
-                            pin.name.clone(),
-                            channel,
-                            producer.into(),
+                        dynamic_inputs.push(DynamicInputState {
+                            pin_name: pin.name.clone(),
+                            receiver: channel,
+                            producer: producer.into(),
                             clock,
-                            false, // seeded
-                            false, // first_sent
-                        ));
+                            seeded: false,
+                            first_sent: false,
+                            is_video,
+                        });
                         tracing::info!(
                             pin = %pin.name,
                             track = %track_name,
@@ -638,7 +697,7 @@ impl MoqPushNode {
             },
             PinManagementMessage::RemoveInputPin { pin_name } => {
                 tracing::info!("MoqPushNode: removed input pin '{}'", pin_name);
-                dynamic_inputs.retain(|(name, _, _, _, _, _)| name != &pin_name);
+                dynamic_inputs.retain(|state| state.pin_name != pin_name);
             },
             PinManagementMessage::RequestAddOutputPin { response_tx, .. } => {
                 let _ = response_tx.send(Err(StreamKitError::Configuration(

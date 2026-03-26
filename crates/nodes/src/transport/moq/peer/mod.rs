@@ -868,7 +868,7 @@ impl ProcessorNode for MoqPeerNode {
                         None => std::future::pending().await,
                     }
                 } => {
-                    Self::handle_pin_management(msg, &dynamic_outputs);
+                    Self::handle_pin_management(msg, &dynamic_outputs, &subscriber_broadcast_tx);
                 }
 
                 // Check for shutdown signal
@@ -938,7 +938,11 @@ impl MoqPeerNode {
     ///   respond with an appropriate pin definition.
     /// - [`PinManagementMessage::AddedOutputPin`]: the engine has set up the pin
     ///   distributor and sends us the channel to write frames to.
-    fn handle_pin_management(msg: PinManagementMessage, dynamic_outputs: &DynamicOutputs) {
+    fn handle_pin_management(
+        msg: PinManagementMessage,
+        dynamic_outputs: &DynamicOutputs,
+        subscriber_broadcast_tx: &broadcast::Sender<BroadcastFrame>,
+    ) {
         match msg {
             PinManagementMessage::RequestAddOutputPin { suggested_name, response_tx } => {
                 let pin_name = suggested_name.unwrap_or_else(|| "dynamic_out".to_string());
@@ -976,9 +980,26 @@ impl MoqPeerNode {
                 };
                 let _ = response_tx.send(Ok(pin));
             },
-            PinManagementMessage::AddedInputPin { pin, .. } => {
+            PinManagementMessage::AddedInputPin { pin, mut channel } => {
                 tracing::info!("MoqPeerNode: activated dynamic input pin '{}'", pin.name);
-                // Dynamic input pins will be handled in a future iteration
+                // Spawn a task that forwards packets from this dynamic input
+                // pin into the subscriber broadcast channel, mirroring the
+                // behaviour of the static `in`/`in_1` pins.
+                let tx = subscriber_broadcast_tx.clone();
+                let pin_name = pin.name;
+                tokio::spawn(async move {
+                    let mut kind: Option<MediaKind> = None;
+                    while let Some(packet) = channel.recv().await {
+                        let k = *kind.get_or_insert_with(|| infer_kind_from_packet(&packet));
+                        if let Some(frame) = make_broadcast_frame(packet, k) {
+                            if tx.send(frame).is_err() {
+                                // All subscriber receivers dropped
+                                break;
+                            }
+                        }
+                    }
+                    tracing::info!(pin = %pin_name, "Dynamic input pin forwarding task ended");
+                });
             },
             PinManagementMessage::RemoveInputPin { pin_name } => {
                 tracing::info!("MoqPeerNode: removed input pin '{}'", pin_name);
