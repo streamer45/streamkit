@@ -1045,6 +1045,13 @@ pub fn lint_client_against_nodes(
                     if let Some(b) = params.get("output_broadcast").and_then(|v| v.as_str()) {
                         node_broadcasts.push(b);
                     }
+                    if let Some(arr) = params.get("input_broadcasts").and_then(|v| v.as_array()) {
+                        for entry in arr {
+                            if let Some(b) = entry.as_str() {
+                                node_broadcasts.push(b);
+                            }
+                        }
+                    }
                 },
                 "transport::moq::publisher" | "transport::moq::subscriber" => {
                     if let Some(b) = params.get("broadcast").and_then(|v| v.as_str()) {
@@ -1081,6 +1088,21 @@ pub fn lint_client_against_nodes(
                         "watch.broadcast is `{}` but no MoQ transport node declares \
                          that broadcast name. Node broadcasts: {}.",
                         watch.broadcast,
+                        node_broadcasts.join(", ")
+                    ),
+                });
+            }
+        }
+        if let Some(ref secondary) = client.secondary_publish {
+            if !secondary.broadcast.is_empty()
+                && !node_broadcasts.iter().any(|b| *b == secondary.broadcast)
+            {
+                warnings.push(ClientLintWarning {
+                    rule: "broadcast-mismatch",
+                    message: format!(
+                        "secondary_publish.broadcast is `{}` but no MoQ transport node declares \
+                         that broadcast name. Node broadcasts: {}.",
+                        secondary.broadcast,
                         node_broadcasts.join(", ")
                     ),
                 });
