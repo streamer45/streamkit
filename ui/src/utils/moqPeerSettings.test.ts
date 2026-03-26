@@ -232,6 +232,80 @@ client:
     expect(result!.outputsAudio).toBe(true);
     expect(result!.outputsVideo).toBe(false);
   });
+
+  // ---------------------------------------------------------------------------
+  // videoSourceType extraction
+  // ---------------------------------------------------------------------------
+
+  it('should default videoSourceType to camera when not specified', () => {
+    const yaml = `
+client:
+  gateway_path: /moq/echo
+  publish:
+    broadcast: input
+    audio: true
+    video: true
+  watch:
+    broadcast: output
+    audio: true
+    video: true
+`;
+    const result = extractMoqPeerSettings(yaml);
+    expect(result).not.toBeNull();
+    expect(result!.videoSourceType).toBe('camera');
+  });
+
+  it('should extract videoSourceType as screen when specified', () => {
+    const yaml = `
+client:
+  gateway_path: /moq/screen
+  publish:
+    broadcast: input
+    audio: true
+    video: true
+    video_source: screen
+  watch:
+    broadcast: output
+    audio: true
+    video: true
+`;
+    const result = extractMoqPeerSettings(yaml);
+    expect(result).not.toBeNull();
+    expect(result!.videoSourceType).toBe('screen');
+  });
+
+  it('should extract videoSourceType as camera when explicitly set', () => {
+    const yaml = `
+client:
+  gateway_path: /moq/cam
+  publish:
+    broadcast: input
+    audio: true
+    video: true
+    video_source: camera
+  watch:
+    broadcast: output
+    audio: true
+    video: true
+`;
+    const result = extractMoqPeerSettings(yaml);
+    expect(result).not.toBeNull();
+    expect(result!.videoSourceType).toBe('camera');
+  });
+
+  it('should default videoSourceType to camera when publish is absent', () => {
+    const yaml = `
+client:
+  gateway_path: /moq/output
+  watch:
+    broadcast: output
+    audio: true
+    video: true
+`;
+    const result = extractMoqPeerSettings(yaml);
+    expect(result).not.toBeNull();
+    expect(result!.videoSourceType).toBe('camera');
+  });
 });
 
 // ---------------------------------------------------------------------------

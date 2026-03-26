@@ -292,6 +292,7 @@ const StreamView: React.FC = () => {
     watchStatus,
     pipelineNeedsAudio,
     pipelineNeedsVideo,
+    videoSourceType,
     connectingStep,
     errorMessage,
     configLoaded,
@@ -309,6 +310,7 @@ const StreamView: React.FC = () => {
     setPipelineMediaTypes,
     setPipelineOutputTypes,
     setIsExternalRelay,
+    setVideoSourceType,
     setActiveSession,
     clearActiveSession,
     loadConfig,
@@ -333,6 +335,7 @@ const StreamView: React.FC = () => {
       watchStatus: s.watchStatus,
       pipelineNeedsAudio: s.pipelineNeedsAudio,
       pipelineNeedsVideo: s.pipelineNeedsVideo,
+      videoSourceType: s.videoSourceType,
       connectingStep: s.connectingStep,
       errorMessage: s.errorMessage,
       configLoaded: s.configLoaded,
@@ -350,6 +353,7 @@ const StreamView: React.FC = () => {
       setPipelineMediaTypes: s.setPipelineMediaTypes,
       setPipelineOutputTypes: s.setPipelineOutputTypes,
       setIsExternalRelay: s.setIsExternalRelay,
+      setVideoSourceType: s.setVideoSourceType,
       setActiveSession: s.setActiveSession,
       clearActiveSession: s.clearActiveSession,
       loadConfig: s.loadConfig,
@@ -462,6 +466,7 @@ const StreamView: React.FC = () => {
             setPipelineMediaTypes(moqSettings.needsAudioInput, moqSettings.needsVideoInput);
             setPipelineOutputTypes(moqSettings.outputsAudio, moqSettings.outputsVideo);
             setIsExternalRelay(moqSettings.isExternalRelay);
+            setVideoSourceType(moqSettings.videoSourceType);
           }
         }
       } catch (error) {
@@ -514,6 +519,10 @@ const StreamView: React.FC = () => {
           // performConnect can skip the broadcast-announcement wait in
           // gateway mode.
           setIsExternalRelay(moqSettings.isExternalRelay);
+
+          // Set the video source type so the connect flow creates the right
+          // capture source (camera vs screen).
+          setVideoSourceType(moqSettings.videoSourceType);
         }
       }
     },
@@ -526,6 +535,7 @@ const StreamView: React.FC = () => {
       setPipelineMediaTypes,
       setPipelineOutputTypes,
       setIsExternalRelay,
+      setVideoSourceType,
     ]
   );
 
@@ -642,12 +652,20 @@ const StreamView: React.FC = () => {
     error: 'Mic: error',
   };
 
-  const cameraStatusText: Record<string, string> = {
-    disabled: 'Camera: disabled',
-    requesting: 'Camera: requesting permission…',
-    ready: 'Camera: ready',
-    error: 'Camera: error',
-  };
+  const cameraStatusText: Record<string, string> =
+    videoSourceType === 'screen'
+      ? {
+          disabled: 'Screen: disabled',
+          requesting: 'Screen: requesting permission…',
+          ready: 'Screen: ready',
+          error: 'Screen: error',
+        }
+      : {
+          disabled: 'Camera: disabled',
+          requesting: 'Camera: requesting permission…',
+          ready: 'Camera: ready',
+          error: 'Camera: error',
+        };
 
   const watchStatusText = {
     disabled: 'Watch: disabled',
@@ -757,6 +775,8 @@ const StreamView: React.FC = () => {
                   // Direct mode connects to a relay without a skit pipeline,
                   // so there is no external relay announcement to wait for.
                   setIsExternalRelay(false);
+                  // Direct mode always uses camera (no pipeline to specify screen).
+                  setVideoSourceType('camera');
                 }}
                 disabled={status !== 'disconnected'}
               >
@@ -826,7 +846,13 @@ const StreamView: React.FC = () => {
                   )}
                   {pipelineNeedsVideo && (
                     <ControlButton active={isCameraEnabled} onClick={toggleCamera}>
-                      {isCameraEnabled ? '📷 Camera On' : '📷 Camera Off'}
+                      {videoSourceType === 'screen'
+                        ? isCameraEnabled
+                          ? '🖥️ Screen Share On'
+                          : '🖥️ Screen Share Off'
+                        : isCameraEnabled
+                          ? '📷 Camera On'
+                          : '📷 Camera Off'}
                     </ControlButton>
                   )}
                 </>

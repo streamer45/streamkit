@@ -394,6 +394,7 @@ describe('streamStore', () => {
         connection: { close: vi.fn() } as never,
         microphone: { close: vi.fn() } as never,
         camera: { close: vi.fn() } as never,
+        screen: null,
       };
 
       const { setMoqRefs } = useStreamStore.getState();

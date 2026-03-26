@@ -487,7 +487,13 @@ audio: boolean,
 /**
  * Whether the pipeline consumes video from the browser.
  */
-video: boolean, };
+video: boolean, 
+/**
+ * The video capture source type (camera or screen).
+ */
+video_source: VideoSourceType, };
+
+export type VideoSourceType = "camera" | "screen";
 
 export type WatchConfig = { 
 /**

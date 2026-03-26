@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import type { ClientSection } from '@/types/types';
+import type { ClientSection, VideoSourceType } from '@/types/types';
 
 import { parseClientFromYaml } from './clientSection';
 
@@ -32,6 +32,8 @@ export interface MoqPeerSettings {
    * to be announced before subscribing.
    */
   isExternalRelay: boolean;
+  /** The video capture source type: 'camera' (getUserMedia) or 'screen' (getDisplayMedia). */
+  videoSourceType: VideoSourceType;
 }
 
 /**
@@ -61,6 +63,7 @@ export function deriveSettingsFromClient(client: ClientSection): MoqPeerSettings
     outputsAudio: client.watch?.audio ?? false,
     outputsVideo: client.watch?.video ?? false,
     isExternalRelay,
+    videoSourceType: client.publish?.video_source ?? 'camera',
   };
 }
 

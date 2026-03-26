@@ -80,7 +80,7 @@ describe('deriveSettingsFromClient', () => {
     const client: ClientSection = {
       relay_url: null,
       gateway_path: '/moq/compositor',
-      publish: { broadcast: 'camera-feed', audio: true, video: true },
+      publish: { broadcast: 'camera-feed', audio: true, video: true, video_source: 'camera' },
       watch: { broadcast: 'composited-output', audio: true, video: true },
       input: null,
       output: null,
@@ -99,6 +99,7 @@ describe('deriveSettingsFromClient', () => {
       outputsAudio: true,
       outputsVideo: true,
       isExternalRelay: false,
+      videoSourceType: 'camera',
     });
   });
 
@@ -106,7 +107,7 @@ describe('deriveSettingsFromClient', () => {
     const client: ClientSection = {
       relay_url: 'https://relay.example.com',
       gateway_path: null,
-      publish: { broadcast: 'input', audio: true, video: false },
+      publish: { broadcast: 'input', audio: true, video: false, video_source: 'camera' },
       watch: { broadcast: 'output', audio: false, video: true },
       input: null,
       output: null,
@@ -125,6 +126,7 @@ describe('deriveSettingsFromClient', () => {
       outputsAudio: false,
       outputsVideo: true,
       isExternalRelay: true,
+      videoSourceType: 'camera',
     });
   });
 
@@ -151,6 +153,7 @@ describe('deriveSettingsFromClient', () => {
       outputsAudio: false,
       outputsVideo: true,
       isExternalRelay: false,
+      videoSourceType: 'camera',
     });
   });
 
@@ -183,6 +186,7 @@ describe('deriveSettingsFromClient', () => {
       outputsAudio: false,
       outputsVideo: false,
       isExternalRelay: false,
+      videoSourceType: 'camera',
     });
   });
 });
@@ -323,7 +327,7 @@ describe('deriveSettingsFromClient — monitor preview scenarios', () => {
     const client: ClientSection = {
       relay_url: null,
       gateway_path: '/moq/compositor',
-      publish: { broadcast: 'camera', audio: true, video: true },
+      publish: { broadcast: 'camera', audio: true, video: true, video_source: 'camera' },
       watch: { broadcast: 'composited', audio: true, video: true },
       input: null,
       output: null,

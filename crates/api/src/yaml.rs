@@ -120,6 +120,18 @@ pub struct ClientSection {
     pub output: Option<OutputConfig>,
 }
 
+/// The video capture source the browser should use when publishing.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum VideoSourceType {
+    /// Use the device camera (getUserMedia).
+    #[default]
+    Camera,
+    /// Use screen/window capture (getDisplayMedia).
+    Screen,
+}
+
 /// Browser-side publish configuration for dynamic pipelines.
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]
 #[ts(export)]
@@ -132,6 +144,9 @@ pub struct PublishConfig {
     /// Whether the pipeline consumes video from the browser.
     #[serde(default)]
     pub video: bool,
+    /// The video capture source type (camera or screen).
+    #[serde(default)]
+    pub video_source: VideoSourceType,
 }
 
 /// Browser-side watch configuration for dynamic pipelines.
@@ -614,6 +629,8 @@ pub struct ClientLintWarning {
 ///     is an empty string.
 /// 12. **`duplicate-broadcast`** — `publish.broadcast` equals
 ///     `watch.broadcast` (would cause a loop).
+/// 13. **`screen-source-no-video`** — `publish.video_source` is `screen`
+///     but `video` is `false` (screen sharing requires video).
 pub fn lint_client_section(client: &ClientSection, mode: EngineMode) -> Vec<ClientLintWarning> {
     let mut warnings = Vec::new();
 
@@ -664,6 +681,16 @@ pub fn lint_client_section(client: &ClientSection, mode: EngineMode) -> Vec<Clie
                 rule: "publish-no-media",
                 message: "publish block sets both `audio` and `video` to false — nothing will be \
                           sent from the browser."
+                    .into(),
+            });
+        }
+
+        // Rule 4b: video_source is screen but video is false
+        if matches!(publish.video_source, VideoSourceType::Screen) && !publish.video {
+            warnings.push(ClientLintWarning {
+                rule: "screen-source-no-video",
+                message: "publish.video_source is `screen` but `video` is false — screen sharing \
+                          requires video to be enabled."
                     .into(),
             });
         }
@@ -1756,7 +1783,12 @@ client:
         ClientSection {
             relay_url: None,
             gateway_path: Some("/moq/test".into()),
-            publish: Some(PublishConfig { broadcast: "input".into(), audio: true, video: false }),
+            publish: Some(PublishConfig {
+                broadcast: "input".into(),
+                audio: true,
+                video: false,
+                video_source: VideoSourceType::default(),
+            }),
             watch: Some(WatchConfig { broadcast: "output".into(), audio: true, video: true }),
             input: None,
             output: None,
@@ -1820,7 +1852,12 @@ client:
         let c = ClientSection {
             relay_url: None,
             gateway_path: None,
-            publish: Some(PublishConfig { broadcast: "x".into(), audio: true, video: false }),
+            publish: Some(PublishConfig {
+                broadcast: "x".into(),
+                audio: true,
+                video: false,
+                video_source: VideoSourceType::default(),
+            }),
             watch: None,
             input: None,
             output: None,
@@ -1832,7 +1869,12 @@ client:
     #[test]
     fn test_lint_publish_no_media() {
         let mut c = dynamic_client();
-        c.publish = Some(PublishConfig { broadcast: "x".into(), audio: false, video: false });
+        c.publish = Some(PublishConfig {
+            broadcast: "x".into(),
+            audio: false,
+            video: false,
+            video_source: VideoSourceType::default(),
+        });
         let warnings = lint_client_section(&c, EngineMode::Dynamic);
         assert!(warnings.iter().any(|w| w.rule == "publish-no-media"));
     }
@@ -1848,7 +1890,12 @@ client:
     #[test]
     fn test_lint_empty_broadcast() {
         let mut c = dynamic_client();
-        c.publish = Some(PublishConfig { broadcast: String::new(), audio: true, video: false });
+        c.publish = Some(PublishConfig {
+            broadcast: String::new(),
+            audio: true,
+            video: false,
+            video_source: VideoSourceType::default(),
+        });
         let warnings = lint_client_section(&c, EngineMode::Dynamic);
         assert!(warnings.iter().any(|w| w.rule == "empty-broadcast"));
     }
@@ -1856,7 +1903,12 @@ client:
     #[test]
     fn test_lint_duplicate_broadcast() {
         let mut c = dynamic_client();
-        c.publish = Some(PublishConfig { broadcast: "same".into(), audio: true, video: false });
+        c.publish = Some(PublishConfig {
+            broadcast: "same".into(),
+            audio: true,
+            video: false,
+            video_source: VideoSourceType::default(),
+        });
         c.watch = Some(WatchConfig { broadcast: "same".into(), audio: true, video: true });
         let warnings = lint_client_section(&c, EngineMode::Dynamic);
         assert!(warnings.iter().any(|w| w.rule == "duplicate-broadcast"));
@@ -2160,7 +2212,12 @@ client:
     fn test_lint_gateway_path_mismatch() {
         let c = ClientSection {
             gateway_path: Some("/moq/wrong".into()),
-            publish: Some(PublishConfig { broadcast: "input".into(), audio: true, video: false }),
+            publish: Some(PublishConfig {
+                broadcast: "input".into(),
+                audio: true,
+                video: false,
+                video_source: VideoSourceType::default(),
+            }),
             ..Default::default()
         };
         let params = serde_json::json!({
@@ -2196,7 +2253,12 @@ client:
     fn test_lint_relay_url_mismatch() {
         let c = ClientSection {
             relay_url: Some("https://relay.example.com".into()),
-            publish: Some(PublishConfig { broadcast: "input".into(), audio: true, video: false }),
+            publish: Some(PublishConfig {
+                broadcast: "input".into(),
+                audio: true,
+                video: false,
+                video_source: VideoSourceType::default(),
+            }),
             ..Default::default()
         };
         let params = serde_json::json!({
@@ -2215,7 +2277,12 @@ client:
     fn test_lint_relay_url_match_clean() {
         let c = ClientSection {
             relay_url: Some("https://relay.example.com".into()),
-            publish: Some(PublishConfig { broadcast: "input".into(), audio: true, video: false }),
+            publish: Some(PublishConfig {
+                broadcast: "input".into(),
+                audio: true,
+                video: false,
+                video_source: VideoSourceType::default(),
+            }),
             ..Default::default()
         };
         let params = serde_json::json!({
@@ -2239,6 +2306,7 @@ client:
                 broadcast: "wrong_name".into(),
                 audio: true,
                 video: false,
+                video_source: VideoSourceType::default(),
             }),
             ..Default::default()
         };
@@ -2288,6 +2356,156 @@ client:
         assert!(
             !warnings.iter().any(|w| w.rule == "broadcast-mismatch"),
             "Should not warn when broadcast names match: {warnings:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // VideoSourceType tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn test_video_source_type_defaults_to_camera() {
+        let yaml = r#"
+mode: dynamic
+nodes:
+  peer:
+    kind: transport::moq::peer
+client:
+  gateway_path: /moq/test
+  publish:
+    broadcast: input
+    audio: true
+    video: true
+  watch:
+    broadcast: output
+    audio: true
+    video: true
+"#;
+        let pipeline = parse_yaml(yaml).unwrap();
+        let compiled = compile(pipeline).unwrap();
+        let client = compiled.client.expect("client section should be present");
+        let publish = client.publish.expect("publish config should be present");
+        assert!(matches!(publish.video_source, VideoSourceType::Camera));
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn test_video_source_type_screen_parsed() {
+        let yaml = r#"
+mode: dynamic
+nodes:
+  peer:
+    kind: transport::moq::peer
+client:
+  gateway_path: /moq/test
+  publish:
+    broadcast: input
+    audio: true
+    video: true
+    video_source: screen
+  watch:
+    broadcast: output
+    audio: true
+    video: true
+"#;
+        let pipeline = parse_yaml(yaml).unwrap();
+        let compiled = compile(pipeline).unwrap();
+        let client = compiled.client.expect("client section should be present");
+        let publish = client.publish.expect("publish config should be present");
+        assert!(matches!(publish.video_source, VideoSourceType::Screen));
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn test_video_source_type_camera_explicit() {
+        let yaml = r#"
+mode: dynamic
+nodes:
+  peer:
+    kind: transport::moq::peer
+client:
+  gateway_path: /moq/test
+  publish:
+    broadcast: input
+    audio: true
+    video: true
+    video_source: camera
+  watch:
+    broadcast: output
+    audio: true
+    video: true
+"#;
+        let pipeline = parse_yaml(yaml).unwrap();
+        let compiled = compile(pipeline).unwrap();
+        let client = compiled.client.expect("client section should be present");
+        let publish = client.publish.expect("publish config should be present");
+        assert!(matches!(publish.video_source, VideoSourceType::Camera));
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn test_video_source_type_roundtrip() {
+        // Verify serde round-trip: serialize → deserialize preserves the value.
+        let config = PublishConfig {
+            broadcast: "test".into(),
+            audio: true,
+            video: true,
+            video_source: VideoSourceType::Screen,
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("\"video_source\":\"screen\""));
+
+        let deserialized: PublishConfig = serde_json::from_str(&json).unwrap();
+        assert!(matches!(deserialized.video_source, VideoSourceType::Screen));
+    }
+
+    #[test]
+    fn test_lint_screen_source_no_video() {
+        let mut c = dynamic_client();
+        c.publish = Some(PublishConfig {
+            broadcast: "input".into(),
+            audio: true,
+            video: false,
+            video_source: VideoSourceType::Screen,
+        });
+        let warnings = lint_client_section(&c, EngineMode::Dynamic);
+        assert!(
+            warnings.iter().any(|w| w.rule == "screen-source-no-video"),
+            "Should warn when video_source is screen but video is false: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_lint_screen_source_with_video_clean() {
+        let mut c = dynamic_client();
+        c.publish = Some(PublishConfig {
+            broadcast: "input".into(),
+            audio: true,
+            video: true,
+            video_source: VideoSourceType::Screen,
+        });
+        let warnings = lint_client_section(&c, EngineMode::Dynamic);
+        assert!(
+            !warnings.iter().any(|w| w.rule == "screen-source-no-video"),
+            "Should not warn when video_source is screen and video is true: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_lint_camera_source_no_video_no_warning() {
+        // video_source: camera with video: false should NOT trigger screen-source-no-video
+        let mut c = dynamic_client();
+        c.publish = Some(PublishConfig {
+            broadcast: "input".into(),
+            audio: true,
+            video: false,
+            video_source: VideoSourceType::Camera,
+        });
+        let warnings = lint_client_section(&c, EngineMode::Dynamic);
+        assert!(
+            !warnings.iter().any(|w| w.rule == "screen-source-no-video"),
+            "Should not warn for camera source without video: {warnings:?}"
         );
     }
 }

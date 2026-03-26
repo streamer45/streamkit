@@ -10,6 +10,8 @@ import { Effect } from '@moq/signals';
 import * as Watch from '@moq/watch';
 import { create } from 'zustand';
 
+import type { VideoSourceType } from '@/types/types';
+
 import {
   cleanupConnectAttempt,
   decideConnect,
@@ -58,6 +60,9 @@ interface StreamState {
   // Pipeline topology flag — true when using separate pub/sub nodes via external relay
   isExternalRelay: boolean;
 
+  // Video source type — 'camera' (getUserMedia) or 'screen' (getDisplayMedia)
+  videoSourceType: VideoSourceType;
+
   // Error state
   errorMessage: string;
 
@@ -89,6 +94,7 @@ interface StreamState {
   connection: Hang.Moq.Connection.Reload | null;
   microphone: Publish.Source.Microphone | null;
   camera: Publish.Source.Camera | null;
+  screen: Publish.Source.Screen | null;
   healthEffect: Effect | null;
 
   // Actions
@@ -105,6 +111,7 @@ interface StreamState {
   setPipelineMediaTypes: (audio: boolean, video: boolean) => void;
   setPipelineOutputTypes: (audio: boolean, video: boolean) => void;
   setIsExternalRelay: (v: boolean) => void;
+  setVideoSourceType: (v: VideoSourceType) => void;
   loadConfig: () => Promise<void>;
 
   // Session actions
@@ -130,6 +137,7 @@ interface StreamState {
     connection: Hang.Moq.Connection.Reload;
     microphone: Publish.Source.Microphone;
     camera: Publish.Source.Camera;
+    screen: Publish.Source.Screen | null;
   }) => void;
 }
 
@@ -153,6 +161,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
   pipelineOutputsAudio: true,
   pipelineOutputsVideo: true,
   isExternalRelay: false,
+  videoSourceType: 'camera' as VideoSourceType,
   errorMessage: '',
   configLoaded: false,
   configServerUrl: '',
@@ -183,6 +192,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
   setPipelineOutputTypes: (audio, video) =>
     set({ pipelineOutputsAudio: audio, pipelineOutputsVideo: video }),
   setIsExternalRelay: (v) => set({ isExternalRelay: v }),
+  setVideoSourceType: (v) => set({ videoSourceType: v }),
 
   // Session setters
   setActiveSession: (sessionId, sessionName, pipelineName) =>
@@ -234,6 +244,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       connection: refs.connection,
       microphone: refs.microphone,
       camera: refs.camera,
+      screen: refs.screen,
     }),
 
   connect: async () => {
