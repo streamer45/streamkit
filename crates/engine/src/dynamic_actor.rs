@@ -955,6 +955,15 @@ impl DynamicEngine {
                 return;
             };
 
+            // The engine uses `from_pin` as the connection key while the
+            // distributor is stored under `pin.name`.  These must match;
+            // a divergence would cause disconnect_nodes to miss the entry.
+            debug_assert_eq!(
+                pin.name, from_pin,
+                "Node returned pin name '{}' but engine expected '{}'",
+                pin.name, from_pin
+            );
+
             // Create channels for the PinDistributor
             let (data_tx, data_rx) = mpsc::channel(self.pin_distributor_capacity);
             let (cfg_tx, cfg_rx) = mpsc::channel(CONTROL_CAPACITY);
