@@ -46,6 +46,8 @@ export type ConnectAttempt = {
   screen: Publish.Source.Screen | null;
   publish: Publish.Broadcast | null;
   secondaryPublish: Publish.Broadcast | null;
+  secondaryCamera: Publish.Source.Camera | null;
+  secondaryScreen: Publish.Source.Screen | null;
 };
 
 /** Minimal slice of StreamState needed by helper functions. */
@@ -87,6 +89,8 @@ type StateSetter = (partial: Partial<ConnectableState>) => void;
 export const NULL_MOQ_REFS = {
   publish: null,
   secondaryPublish: null,
+  secondaryCamera: null,
+  secondaryScreen: null,
   watch: null,
   watchSync: null,
   audioSource: null,
@@ -274,6 +278,8 @@ export function cleanupConnectAttempt(attempt: ConnectAttempt): void {
   shutdownMediaSource(attempt.microphone);
   shutdownMediaSource(attempt.camera);
   shutdownMediaSource(attempt.screen);
+  shutdownMediaSource(attempt.secondaryCamera);
+  shutdownMediaSource(attempt.secondaryScreen);
 }
 
 function setupConnectionStatusSync(
@@ -758,15 +764,43 @@ export async function performConnect(
         const secConfig = state.secondaryPublishConfig;
         const secSourceType = secConfig.videoSourceType;
 
-        // Set up media source for the secondary broadcast (video only, no audio)
-        const { camera: secCamera, screen: secScreen } = await setupMediaSources(
-          attempt.healthEffect,
-          false, // no audio on secondary
-          true, // video always needed
-          secSourceType,
-          set,
-          abortSignal
-        );
+        // Inline media source creation for the secondary broadcast to avoid
+        // overwriting the primary source's cameraStatus via setupMediaSources.
+        if (secSourceType === 'screen') {
+          attempt.secondaryScreen = new Publish.Source.Screen({ enabled: true });
+          if (!attempt.secondaryScreen.source.peek()?.video) {
+            try {
+              await waitForSignalValue(
+                attempt.secondaryScreen.source,
+                (v) => v?.video !== undefined,
+                30_000,
+                'Secondary screen capture not available',
+                abortSignal
+              );
+            } catch (e) {
+              shutdownMediaSource(attempt.secondaryScreen);
+              attempt.secondaryScreen = null;
+              throw e;
+            }
+          }
+        } else {
+          attempt.secondaryCamera = new Publish.Source.Camera({ enabled: true });
+          if (!attempt.secondaryCamera.source.peek()) {
+            try {
+              await waitForSignalValue(
+                attempt.secondaryCamera.source,
+                (v) => v !== undefined,
+                15_000,
+                'Secondary camera not available',
+                abortSignal
+              );
+            } catch (e) {
+              shutdownMediaSource(attempt.secondaryCamera);
+              attempt.secondaryCamera = null;
+              throw e;
+            }
+          }
+        }
 
         const secBroadcastConfig: ConstructorParameters<typeof Publish.Broadcast>[0] = {
           connection: connection.established,
@@ -774,18 +808,20 @@ export async function performConnect(
           name: Publish.Lite.Path.from(secConfig.broadcast),
         };
 
-        if (secSourceType === 'screen' && secScreen) {
+        if (secSourceType === 'screen' && attempt.secondaryScreen) {
           const videoOnlySignal = new Signal<Publish.Video.Source | undefined>(
-            secScreen.source.peek()?.video
+            attempt.secondaryScreen.source.peek()?.video
           );
-          attempt.healthEffect.subscribe(secScreen.source, (v) => videoOnlySignal.set(v?.video));
+          attempt.healthEffect.subscribe(attempt.secondaryScreen.source, (v) =>
+            videoOnlySignal.set(v?.video)
+          );
           secBroadcastConfig.video = {
             source: videoOnlySignal,
             hd: { enabled: true, config: { codec: 'vp09' } },
           };
-        } else if (secCamera) {
+        } else if (attempt.secondaryCamera) {
           secBroadcastConfig.video = {
-            source: secCamera.source,
+            source: attempt.secondaryCamera.source,
             hd: { enabled: true, config: { codec: 'vp09' } },
           };
         }
@@ -805,8 +841,10 @@ export async function performConnect(
         } catch (e) {
           attempt.secondaryPublish.close();
           attempt.secondaryPublish = null;
-          shutdownMediaSource(secScreen);
-          shutdownMediaSource(secCamera);
+          shutdownMediaSource(attempt.secondaryScreen);
+          attempt.secondaryScreen = null;
+          shutdownMediaSource(attempt.secondaryCamera);
+          attempt.secondaryCamera = null;
           throw e;
         }
         logger.info('Secondary video catalog ready');

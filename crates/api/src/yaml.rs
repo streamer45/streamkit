@@ -641,7 +641,8 @@ pub fn lint_client_section(client: &ClientSection, mode: EngineMode) -> Vec<Clie
     let has_dynamic_fields = client.gateway_path.is_some()
         || client.relay_url.is_some()
         || client.publish.is_some()
-        || client.watch.is_some();
+        || client.watch.is_some()
+        || client.secondary_publish.is_some();
 
     let has_oneshot_fields = client.input.is_some() || client.output.is_some();
 
@@ -739,6 +740,45 @@ pub fn lint_client_section(client: &ClientSection, mode: EngineMode) -> Vec<Clie
                     publish.broadcast
                 ),
             });
+        }
+    }
+
+    // secondary_publish validation
+    if let Some(ref secondary) = client.secondary_publish {
+        // Rule 11c: empty secondary broadcast
+        if secondary.broadcast.is_empty() {
+            warnings.push(ClientLintWarning {
+                rule: "empty-broadcast",
+                message: "secondary_publish.broadcast is an empty string.".into(),
+            });
+        }
+
+        // Rule 12b: secondary broadcast collides with publish or watch
+        if !secondary.broadcast.is_empty() {
+            if let Some(ref publish) = client.publish {
+                if secondary.broadcast == publish.broadcast {
+                    warnings.push(ClientLintWarning {
+                        rule: "duplicate-broadcast",
+                        message: format!(
+                            "secondary_publish.broadcast and publish.broadcast are both '{}' — \
+                             they must be distinct.",
+                            secondary.broadcast
+                        ),
+                    });
+                }
+            }
+            if let Some(ref watch) = client.watch {
+                if secondary.broadcast == watch.broadcast {
+                    warnings.push(ClientLintWarning {
+                        rule: "duplicate-broadcast",
+                        message: format!(
+                            "secondary_publish.broadcast and watch.broadcast are both '{}' — \
+                             this would cause a feedback loop.",
+                            secondary.broadcast
+                        ),
+                    });
+                }
+            }
         }
     }
 

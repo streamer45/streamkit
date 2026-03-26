@@ -537,17 +537,29 @@ impl ProcessorNode for MoqPeerNode {
                         let input_bc = &self.config.input_broadcast;
                         let output_bc = &self.config.output_broadcast;
 
-                        if !auth.can_publish(input_bc) || !auth.can_subscribe(output_bc) {
+                        let rejection_reason = if !auth.can_publish(input_bc) || !auth.can_subscribe(output_bc) {
                             tracing::warn!(
                                 path = %conn.path,
                                 input_broadcast = %input_bc,
                                 output_broadcast = %output_bc,
                                 "Rejecting bidirectional connection - missing publish or subscribe permission"
                             );
+                            Some("Bidirectional requires both publish and subscribe permission".to_string())
+                        } else {
+                            // Also check publish permission for additional input broadcasts
+                            self.config.input_broadcasts.iter().find(|bc| !auth.can_publish(bc)).map(|bc| {
+                                tracing::warn!(
+                                    path = %conn.path,
+                                    broadcast = %bc,
+                                    "Rejecting bidirectional connection - missing publish permission for additional broadcast"
+                                );
+                                format!("Missing publish permission for broadcast '{bc}'")
+                            })
+                        };
+
+                        if let Some(reason) = rejection_reason {
                             let _ = conn.response_tx.send(
-                                streamkit_core::moq_gateway::MoqConnectionResult::Rejected(
-                                    "Bidirectional requires both publish and subscribe permission".to_string()
-                                )
+                                streamkit_core::moq_gateway::MoqConnectionResult::Rejected(reason)
                             );
                             continue;
                         }

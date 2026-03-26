@@ -88,6 +88,8 @@ interface StreamState {
   // MoQ references (stored but not serialized)
   publish: Publish.Broadcast | null;
   secondaryPublish: Publish.Broadcast | null;
+  secondaryCamera: Publish.Source.Camera | null;
+  secondaryScreen: Publish.Source.Screen | null;
   watch: Watch.Broadcast | null;
   watchSync: Watch.Sync | null;
   audioSource: Watch.Audio.Source | null;
