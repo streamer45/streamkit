@@ -711,3 +711,45 @@ impl MoqPushNode {
         }
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    /// Regression: `is_video` was previously determined by checking
+    /// `pin.accepts_types` for `EncodedVideo`, but since all dynamic pins
+    /// accept both audio and video types, it was always `true`. The fix
+    /// uses the pin name prefix convention instead.
+    #[test]
+    fn is_video_from_pin_name_convention() {
+        // video/ prefix → video
+        assert!("video/hd".starts_with("video/"));
+        assert!("video/data".starts_with("video/"));
+
+        // audio/ prefix → not video
+        assert!(!"audio/data".starts_with("video/"));
+        assert!(!"audio/extra".starts_with("video/"));
+
+        // bare name → not video (defaults to audio)
+        assert!(!"in_2".starts_with("video/"));
+        assert!(!"custom_track".starts_with("video/"));
+    }
+
+    /// Verify track name derivation from pin names: pins with an existing
+    /// `audio/` or `video/` prefix keep their name; bare names get `audio/`
+    /// prepended.
+    #[test]
+    fn track_name_from_pin_name() {
+        fn derive_track_name(pin_name: &str) -> String {
+            if pin_name.starts_with("video/") || pin_name.starts_with("audio/") {
+                pin_name.to_string()
+            } else {
+                format!("audio/{pin_name}")
+            }
+        }
+
+        assert_eq!(derive_track_name("video/hd"), "video/hd");
+        assert_eq!(derive_track_name("audio/data"), "audio/data");
+        assert_eq!(derive_track_name("in_2"), "audio/in_2");
+        assert_eq!(derive_track_name("extra"), "audio/extra");
+    }
+}

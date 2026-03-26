@@ -2346,3 +2346,61 @@ struct SubscriberSendCtx<'a> {
     last_video_ts_ms: Option<u64>,
     stats_delta_tx: &'a mpsc::Sender<NodeStatsDelta>,
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn make_dynamic_output_pin_video_prefix() {
+        let pin = make_dynamic_output_pin("video/hd");
+        assert_eq!(pin.name, "video/hd");
+        assert!(
+            matches!(pin.produces_type, PacketType::EncodedVideo(_)),
+            "video/ prefix should produce EncodedVideo"
+        );
+    }
+
+    #[test]
+    fn make_dynamic_output_pin_audio_prefix() {
+        let pin = make_dynamic_output_pin("audio/data");
+        assert_eq!(pin.name, "audio/data");
+        assert!(
+            matches!(pin.produces_type, PacketType::EncodedAudio(_)),
+            "audio/ prefix should produce EncodedAudio"
+        );
+    }
+
+    #[test]
+    fn make_dynamic_output_pin_bare_name_defaults_to_audio() {
+        let pin = make_dynamic_output_pin("some_track");
+        assert_eq!(pin.name, "some_track");
+        assert!(
+            matches!(pin.produces_type, PacketType::EncodedAudio(_)),
+            "bare name without video/ prefix should default to EncodedAudio"
+        );
+    }
+
+    /// Regression: `AddedInputPin` previously used `..` to discard the channel,
+    /// causing it to be immediately dropped and closing the sender side.
+    /// Verify that `handle_pin_management` keeps the channel alive.
+    #[tokio::test]
+    async fn added_input_pin_channel_not_dropped() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<Packet>(4);
+        let dynamic_outputs: DynamicOutputs = Arc::default();
+        let (broadcast_tx, _broadcast_rx) = broadcast::channel::<BroadcastFrame>(16);
+
+        let pin = InputPin {
+            name: "audio/extra".to_string(),
+            accepts_types: vec![],
+            cardinality: PinCardinality::One,
+        };
+        let msg = PinManagementMessage::AddedInputPin { pin, channel: rx };
+        MoqPeerNode::handle_pin_management(msg, &dynamic_outputs, &broadcast_tx);
+
+        // If the channel was dropped, try_send would return a closed error.
+        // A successful send (or full-buffer error) means the receiver is alive.
+        assert!(!tx.is_closed(), "channel should remain open after AddedInputPin is handled");
+    }
+}
