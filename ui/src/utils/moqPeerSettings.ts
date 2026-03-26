@@ -2,12 +2,10 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+import type { VideoSourceType } from '@/stores/streamStore';
 import type { ClientSection } from '@/types/types';
 
 import { parseClientFromYaml } from './clientSection';
-
-/** The video capture source type: 'camera' (getUserMedia) or 'screen' (getDisplayMedia). */
-type VideoSourceType = 'camera' | 'screen';
 
 export interface MoqPeerSettings {
   gatewayPath?: string;

@@ -590,7 +590,7 @@ function schedulePostConnectWarnings(
   if (decision.shouldPublish && attempt.screen) {
     const screenRef = attempt.screen;
 
-    let wasEverReady = Boolean(screenRef.source.peek()?.video) || get().cameraStatus === 'ready';
+    let wasEverReady = Boolean(screenRef.source.peek()?.video);
     attempt.healthEffect.subscribe(screenRef.source, (value) => {
       if (value?.video) wasEverReady = true;
     });

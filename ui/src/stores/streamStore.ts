@@ -162,7 +162,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
   pipelineOutputsAudio: true,
   pipelineOutputsVideo: true,
   isExternalRelay: false,
-  videoSourceType: 'camera' as VideoSourceType,
+  videoSourceType: 'camera',
   errorMessage: '',
   configLoaded: false,
   configServerUrl: '',

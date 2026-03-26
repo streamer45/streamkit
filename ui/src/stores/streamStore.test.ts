@@ -379,6 +379,75 @@ describe('streamStore', () => {
     });
   });
 
+  describe('toggleCamera', () => {
+    it('should not do anything when both camera and screen are null', () => {
+      useStreamStore.setState({ camera: null, screen: null, isCameraEnabled: false });
+      const { toggleCamera } = useStreamStore.getState();
+
+      expect(() => toggleCamera()).not.toThrow();
+      expect(useStreamStore.getState().isCameraEnabled).toBe(false);
+    });
+
+    it('should toggle camera source when camera is set', () => {
+      const mockCamera = { enabled: { set: vi.fn() }, close: vi.fn() };
+      useStreamStore.setState({
+        camera: mockCamera as never,
+        screen: null,
+        isCameraEnabled: false,
+      });
+
+      const { toggleCamera } = useStreamStore.getState();
+
+      // Toggle on
+      toggleCamera();
+      expect(mockCamera.enabled.set).toHaveBeenCalledWith(true);
+      expect(useStreamStore.getState().isCameraEnabled).toBe(true);
+
+      // Toggle off
+      toggleCamera();
+      expect(mockCamera.enabled.set).toHaveBeenCalledWith(false);
+      expect(useStreamStore.getState().isCameraEnabled).toBe(false);
+    });
+
+    it('should toggle screen source when camera is null and screen is set', () => {
+      const mockScreen = { enabled: { set: vi.fn() }, close: vi.fn() };
+      useStreamStore.setState({
+        camera: null,
+        screen: mockScreen as never,
+        isCameraEnabled: false,
+      });
+
+      const { toggleCamera } = useStreamStore.getState();
+
+      // Toggle on — should fall through to screen
+      toggleCamera();
+      expect(mockScreen.enabled.set).toHaveBeenCalledWith(true);
+      expect(useStreamStore.getState().isCameraEnabled).toBe(true);
+
+      // Toggle off
+      toggleCamera();
+      expect(mockScreen.enabled.set).toHaveBeenCalledWith(false);
+      expect(useStreamStore.getState().isCameraEnabled).toBe(false);
+    });
+
+    it('should prefer camera over screen when both are set', () => {
+      const mockCamera = { enabled: { set: vi.fn() }, close: vi.fn() };
+      const mockScreen = { enabled: { set: vi.fn() }, close: vi.fn() };
+      useStreamStore.setState({
+        camera: mockCamera as never,
+        screen: mockScreen as never,
+        isCameraEnabled: false,
+      });
+
+      const { toggleCamera } = useStreamStore.getState();
+
+      toggleCamera();
+      expect(mockCamera.enabled.set).toHaveBeenCalledWith(true);
+      expect(mockScreen.enabled.set).not.toHaveBeenCalled();
+      expect(useStreamStore.getState().isCameraEnabled).toBe(true);
+    });
+  });
+
   describe('setMoqRefs', () => {
     it('should store MoQ object references', () => {
       const mockRefs = {

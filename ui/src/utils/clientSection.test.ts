@@ -340,6 +340,33 @@ describe('deriveSettingsFromClient — monitor preview scenarios', () => {
     expect(settings.outputBroadcast).toBe('composited');
   });
 
+  it('derives videoSourceType as screen when screen is true', () => {
+    const client: ClientSection = {
+      relay_url: null,
+      gateway_path: '/moq/screen',
+      publish: { broadcast: 'input', audio: true, video: true, screen: true },
+      watch: { broadcast: 'output', audio: true, video: true },
+      input: null,
+      output: null,
+    };
+
+    const settings = deriveSettingsFromClient(client);
+
+    expect(settings).toEqual({
+      gatewayPath: '/moq/screen',
+      relayUrl: undefined,
+      inputBroadcast: 'input',
+      outputBroadcast: 'output',
+      hasInputBroadcast: true,
+      needsAudioInput: true,
+      needsVideoInput: true,
+      outputsAudio: true,
+      outputsVideo: true,
+      isExternalRelay: false,
+      videoSourceType: 'screen',
+    });
+  });
+
   it('derives relay-url settings for external relay preview', () => {
     const client: ClientSection = {
       relay_url: 'https://relay.example.com',

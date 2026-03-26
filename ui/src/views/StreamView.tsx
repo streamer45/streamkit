@@ -38,6 +38,7 @@ import {
 } from '@/utils/moqPeerSettings';
 import { orderSamplePipelinesSystemFirst } from '@/utils/samplePipelineOrdering';
 
+import type { CameraStatus } from '../stores/streamStore';
 import { useStreamStore } from '../stores/streamStore';
 
 const logger = getLogger('StreamView');
@@ -652,7 +653,7 @@ const StreamView: React.FC = () => {
     error: 'Mic: error',
   };
 
-  const cameraStatusText: Record<string, string> =
+  const cameraStatusText: Record<CameraStatus, string> =
     videoSourceType === 'screen'
       ? {
           disabled: 'Screen: disabled',
