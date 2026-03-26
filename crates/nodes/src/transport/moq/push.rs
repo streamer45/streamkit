@@ -418,6 +418,12 @@ impl ProcessorNode for MoqPushNode {
                 // trade-off for simplicity — in practice dynamic inputs carry
                 // independent media tracks at moderate frame rates, making
                 // starvation unlikely.
+                //
+                // Safety w.r.t. select!: the poll_fn closure borrows
+                // `&mut dynamic_inputs`, and the pin-management branch also
+                // mutates it. This is safe because select! drops the losing
+                // future *before* executing the winning branch, so the mutable
+                // borrow from poll_fn is released before pin-management runs.
                 result = async {
                     if dynamic_inputs.is_empty() {
                         return std::future::pending().await;
@@ -673,17 +679,12 @@ impl MoqPushNode {
             PinManagementMessage::RemoveInputPin { pin_name } => {
                 tracing::info!("MoqPushNode: removed input pin '{}'", pin_name);
                 let track_name = track_name_from_pin(&pin_name);
-                // Extract removed entries so we can finish their track producers
-                // before dropping them (retain cannot call &mut self methods).
-                let mut kept = Vec::with_capacity(dynamic_inputs.len());
-                for mut state in dynamic_inputs.drain(..) {
-                    if state.pin_name == pin_name {
-                        let _ = state.producer.track.finish();
-                    } else {
-                        kept.push(state);
-                    }
+                // Remove the matching entry — swap_remove is O(1) and order
+                // doesn't matter since indices are recomputed each poll iteration.
+                if let Some(pos) = dynamic_inputs.iter().position(|s| s.pin_name == pin_name) {
+                    let mut removed = dynamic_inputs.swap_remove(pos);
+                    let _ = removed.producer.track.finish();
                 }
-                *dynamic_inputs = kept;
                 // Remove the track from the catalog and re-publish.
                 Self::remove_catalog_rendition(catalog, &track_name);
                 Self::republish_catalog(catalog, catalog_producer);

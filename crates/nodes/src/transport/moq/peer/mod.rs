@@ -336,27 +336,7 @@ impl ProcessorNode for MoqPeerNode {
     }
 
     fn output_pins(&self) -> Vec<OutputPin> {
-        vec![
-            OutputPin {
-                name: "audio/data".to_string(),
-                produces_type: PacketType::EncodedAudio(EncodedAudioFormat {
-                    codec: AudioCodec::Opus,
-                    codec_private: None,
-                }),
-                cardinality: PinCardinality::Broadcast,
-            },
-            OutputPin {
-                name: "video/data".to_string(),
-                produces_type: PacketType::EncodedVideo(EncodedVideoFormat {
-                    codec: VideoCodec::Vp9,
-                    bitstream_format: None,
-                    codec_private: None,
-                    profile: None,
-                    level: None,
-                }),
-                cardinality: PinCardinality::Broadcast,
-            },
-        ]
+        vec![make_dynamic_output_pin("audio/data"), make_dynamic_output_pin("video/data")]
     }
 
     fn supports_dynamic_pins(&self) -> bool {
@@ -1021,6 +1001,10 @@ impl MoqPeerNode {
             },
             PinManagementMessage::AddedInputPin { pin, channel } => {
                 tracing::info!("MoqPeerNode: activated dynamic input pin '{}'", pin.name);
+                // Prune finished forwarder handles to avoid unbounded growth
+                // from naturally-closed channels whose handles were never
+                // explicitly removed via RemoveInputPin.
+                forwarder_handles.retain(|_, h| !h.is_finished());
                 let handle = Self::spawn_dynamic_input_forwarder(
                     pin.name.clone(),
                     channel,

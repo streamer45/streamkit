@@ -672,6 +672,11 @@ impl DynamicEngine {
             // If the source pin is not found but the node supports dynamic pins,
             // allow the connection — the output pin will be created on-demand in
             // connect_nodes via RequestAddOutputPin.
+            //
+            // NOTE: this skips destination-pin validation too.  When both nodes
+            // support dynamic pins and neither pin exists yet, no compile-time
+            // type checking occurs — mismatches will only surface at runtime
+            // (or via the post-creation check in connect_nodes).
             if self.pin_management_txs.contains_key(from_node) {
                 tracing::debug!(
                     "Source pin {}.{} not in metadata, but node supports dynamic pins; skipping strict type validation",
@@ -947,12 +952,20 @@ impl DynamicEngine {
                             from_node, pin.name, pin.produces_type,
                             to_node, to_pin, dest_pin_def.accepts_types
                         );
+                        // Clean up the distributor actor and metadata that were
+                        // just created — leaving them would leak an orphaned
+                        // task and stale metadata for the session.
+                        self.pin_distributors.remove(&(from_node.clone(), pin.name.clone()));
+                        if let Some(meta) = self.node_pin_metadata.get_mut(&from_node) {
+                            meta.output_pins.retain(|p| p.name != pin.name);
+                        }
                         return;
                     }
                 }
             }
 
             // Notify the node that the output pin is ready with its channel
+            let pin_name_for_cleanup = pin.name.clone();
             let added_msg = streamkit_core::pins::PinManagementMessage::AddedOutputPin {
                 pin,
                 channel: data_tx,
@@ -963,6 +976,12 @@ impl DynamicEngine {
                     "Failed to send output pin activation to node '{}'. It may have stopped.",
                     from_node
                 );
+                // Clean up the distributor and metadata — the node never
+                // received AddedOutputPin so nothing will produce into this pin.
+                self.pin_distributors.remove(&(from_node.clone(), pin_name_for_cleanup.clone()));
+                if let Some(meta) = self.node_pin_metadata.get_mut(&from_node) {
+                    meta.output_pins.retain(|p| p.name != pin_name_for_cleanup);
+                }
                 return;
             }
 
