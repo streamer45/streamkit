@@ -1752,26 +1752,42 @@ impl MoqPeerNode {
         output_sender: &mut streamkit_core::OutputSender,
         dynamic_outputs: &DynamicOutputs,
     ) -> bool {
-        // Hold a single read lock for both the existence check and the send
-        // to avoid a TOCTOU race where a concurrent RemoveOutputPin could
-        // remove the entry between two separate lock acquisitions.
-        match dynamic_outputs.read() {
-            Ok(map) => {
-                if let Some(dyn_tx) = map.get(output_pin) {
-                    match dyn_tx.try_send(packet) {
-                        Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => return true,
-                        Err(mpsc::error::TrySendError::Closed(_)) => return false,
-                    }
-                }
-            },
+        // Check whether a dynamic output channel exists and, if so, whether
+        // it is still open.  We need to know *before* consuming the packet
+        // so the static fallback path can still use it.
+        let dyn_status = match dynamic_outputs.read() {
+            Ok(map) => map.get(output_pin).map(|dyn_tx| !dyn_tx.is_closed()),
             Err(e) => {
                 tracing::error!(output_pin, "dynamic_outputs lock poisoned: {e}");
                 return false;
             },
-        }
+        };
 
-        // No dynamic channel — fall through to the static output sender.
-        output_sender.send(output_pin, packet).await.is_ok()
+        match dyn_status {
+            Some(true) => {
+                // Re-acquire the lock to send.  The channel was open a moment
+                // ago; if it closed in the meantime try_send returns Closed
+                // and the packet is dropped (acceptable for real-time media).
+                if let Ok(map) = dynamic_outputs.read() {
+                    if let Some(dyn_tx) = map.get(output_pin) {
+                        let _ = dyn_tx.try_send(packet);
+                    }
+                }
+                true
+            },
+            Some(false) => {
+                // Downstream consumer disconnected — remove the stale entry
+                // but keep the track processor alive so other consumers (or a
+                // reconnecting one) can still receive frames.
+                tracing::warn!(output_pin, "Dynamic output channel closed, removing stale entry");
+                Self::remove_dynamic_output(dynamic_outputs, output_pin);
+                true
+            },
+            None => {
+                // No dynamic channel — fall through to the static output sender.
+                output_sender.send(output_pin, packet).await.is_ok()
+            },
+        }
     }
 
     /// Process a single frame from the current group.
