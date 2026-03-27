@@ -47,11 +47,14 @@ export type ConnectAttempt = {
   camera: Publish.Source.Camera | null;
   screen: Publish.Source.Screen | null;
   publish: Publish.Broadcast | null;
-  /** Secondary publish broadcast for multi-broadcast mode (e.g. camera PiP). */
+  /** Secondary publish broadcast for multi-broadcast mode (e.g. camera PiP).
+   *  TODO: Not yet populated during connect — only cleanup paths are wired. */
   secondaryPublish: Publish.Broadcast | null;
-  /** Secondary camera source for multi-broadcast mode. */
+  /** Secondary camera source for multi-broadcast mode.
+   *  TODO: Not yet populated during connect — only cleanup paths are wired. */
   secondaryCamera: Publish.Source.Camera | null;
-  /** Secondary screen source for multi-broadcast mode. */
+  /** Secondary screen source for multi-broadcast mode.
+   *  TODO: Not yet populated during connect — only cleanup paths are wired. */
   secondaryScreen: Publish.Source.Screen | null;
 };
 

@@ -223,6 +223,10 @@ impl Default for MoqPeerConfig {
 
 impl MoqPeerConfig {
     /// The primary (first) input broadcast name.
+    ///
+    /// Falls back to `"input"` if the vec is empty, but this should never
+    /// happen in practice because [`MoqPeerNode::run`] validates that
+    /// `input_broadcasts` is non-empty at startup.
     fn primary_input_broadcast(&self) -> &str {
         self.input_broadcasts.first().map_or("input", |s| s.as_str())
     }
@@ -369,6 +373,13 @@ impl ProcessorNode for MoqPeerNode {
     async fn run(self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
         let node_name = context.output_sender.node_name().to_string();
         state_helpers::emit_initializing(&context.state_tx, &node_name);
+
+        // Validate that at least one input broadcast is configured.
+        if self.config.input_broadcasts.is_empty() {
+            return Err(StreamKitError::Configuration(
+                "input_broadcasts must contain at least one broadcast name".to_string(),
+            ));
+        }
 
         let gateway_path = normalize_gateway_path(&self.config.gateway_path);
         let base_path = gateway_path.clone();
@@ -929,6 +940,13 @@ fn make_dynamic_input_pin(name: &str) -> InputPin {
 /// Handles both unprefixed names (`video/hd`) and broadcast-prefixed names
 /// (`screen-input/video/hd`) by checking `starts_with("video/")` OR
 /// `contains("/video/")`.
+///
+/// The string-based inference relies on the naming convention enforced by
+/// [`watch_catalog_and_process_inner`], which constructs pin names as
+/// `{prefix}/{track_name}` where `track_name` always begins with `audio/`
+/// or `video/`.  Broadcast prefixes are simple identifiers (e.g.
+/// `screen-input`, `cam-input`) so a false-positive match on `/video/` in
+/// the prefix portion is not possible in practice.
 fn make_dynamic_output_pin(name: &str) -> OutputPin {
     let is_video = name.starts_with("video/") || name.contains("/video/");
     let produces_type = if is_video {
@@ -1224,7 +1242,7 @@ impl MoqPeerNode {
                 // Primary broadcast receive loop
                 let primary_broadcast =
                     config.input_broadcasts.first().cloned().unwrap_or_else(|| "input".to_string());
-                let primary_result = Self::publisher_receive_loop_with_slot(
+                Self::publisher_receive_loop_with_slot(
                     PublisherReceiveLoopWithSlotConfig {
                         subscribe: receive_origin,
                         broadcast_name: primary_broadcast,
@@ -1237,19 +1255,14 @@ impl MoqPeerNode {
                     },
                     &mut publisher_shutdown_rx,
                 )
-                .await;
-
-                primary_result
+                .await
             };
 
             // Spawn additional broadcast watchers for multi-broadcast mode.
             // Each additional broadcast gets its own catalog watcher with
             // namespaced output pins ({broadcast_name}/{track_name}).
-            let extra_broadcasts_fut = async {
-                if extra_consumers.is_empty() {
-                    return Ok(());
-                }
-
+            // Task handles are kept so we can abort them when the session ends.
+            let extra_handles: Vec<tokio::task::JoinHandle<Result<(), StreamKitError>>> = {
                 let mut handles = Vec::new();
                 for (bc_name, consumer) in extra_consumers {
                     let output_sender = config.output_sender.clone();
@@ -1284,29 +1297,7 @@ impl MoqPeerNode {
                         .await
                     }));
                 }
-
-                // Use join_all for concurrent waiting (consistent with await_track_tasks_map)
-                let results = futures::future::join_all(handles).await;
-                let mut first_error: Option<StreamKitError> = None;
-                for result in results {
-                    match result {
-                        Err(e) => {
-                            if first_error.is_none() {
-                                first_error = Some(StreamKitError::Runtime(format!(
-                                    "Multi-broadcast task panicked: {e}"
-                                )));
-                            }
-                        },
-                        Ok(Err(e)) => {
-                            if first_error.is_none() {
-                                first_error = Some(e);
-                            }
-                        },
-                        Ok(Ok(())) => {},
-                    }
-                }
-
-                first_error.map_or(Ok(()), Err)
+                handles
             };
 
             let subscriber_fut = async {
@@ -1323,8 +1314,39 @@ impl MoqPeerNode {
                 .await
             };
 
-            let (publisher_result, subscriber_result, extra_result) =
-                tokio::join!(publisher_fut, subscriber_fut, extra_broadcasts_fut);
+            // Run publisher and subscriber concurrently — they define the
+            // session lifetime.  Extra broadcast tasks run alongside but are
+            // cancelled when the session ends to prevent zombie accumulation
+            // across reconnections (allow_reconnect: true).
+            let (publisher_result, subscriber_result) = tokio::join!(publisher_fut, subscriber_fut);
+
+            // Session ended — abort any still-running extra broadcast tasks.
+            for handle in &extra_handles {
+                handle.abort();
+            }
+
+            // Collect extra broadcast results (cancelled tasks are expected).
+            let mut extra_first_error: Option<StreamKitError> = None;
+            for handle in extra_handles {
+                match handle.await {
+                    Err(e) if e.is_cancelled() => {
+                        tracing::debug!("Extra broadcast task cancelled (session ended)");
+                    },
+                    Err(e) => {
+                        if extra_first_error.is_none() {
+                            extra_first_error = Some(StreamKitError::Runtime(format!(
+                                "Multi-broadcast task panicked: {e}"
+                            )));
+                        }
+                    },
+                    Ok(Err(e)) => {
+                        if extra_first_error.is_none() {
+                            extra_first_error = Some(e);
+                        }
+                    },
+                    Ok(Ok(())) => {},
+                }
+            }
 
             if let Err(e) = publisher_result {
                 tracing::warn!(path = %path, error = %e, "Peer publisher task error");
@@ -1332,7 +1354,7 @@ impl MoqPeerNode {
             if let Err(e) = subscriber_result {
                 tracing::warn!(path = %path, error = %e, "Peer subscriber task error");
             }
-            if let Err(e) = extra_result {
+            if let Some(e) = extra_first_error {
                 tracing::warn!(path = %path, error = %e, "Peer multi-broadcast task error");
             }
 
@@ -1483,27 +1505,34 @@ impl MoqPeerNode {
     ///
     /// In multi-broadcast mode (`is_additional == true`), each additional broadcast
     /// may carry only one media type (e.g. video-only camera input), so we exit as
-    /// soon as any track is found. For the primary broadcast we wait for both audio
-    /// and video before stopping.
+    /// soon as any track is found.  For the primary broadcast we wait until we
+    /// have subscribed to every media type the catalog advertises — i.e. audio
+    /// tracks if `catalog_has_audio` is true, video tracks if `catalog_has_video`
+    /// is true.  This avoids a 30-second timeout when the primary publishes only
+    /// one media type (e.g. audio-only).
     fn has_expected_tracks(
         track_handles: &std::collections::HashMap<
             String,
             tokio::task::JoinHandle<Result<(), StreamKitError>>,
         >,
         is_additional: bool,
+        catalog_has_audio: bool,
+        catalog_has_video: bool,
     ) -> bool {
+        if track_handles.is_empty() {
+            return false;
+        }
         if is_additional {
-            if !track_handles.is_empty() {
-                tracing::info!("Additional broadcast tracks discovered, stopping catalog watch");
-                return true;
-            }
-        } else {
-            let has_audio = track_handles.keys().any(|k| k.starts_with("audio/"));
-            let has_video = track_handles.keys().any(|k| k.starts_with("video/"));
-            if has_audio && has_video {
-                tracing::info!("All expected tracks discovered, stopping catalog watch");
-                return true;
-            }
+            tracing::info!("Additional broadcast tracks discovered, stopping catalog watch");
+            return true;
+        }
+        let need_audio = catalog_has_audio;
+        let need_video = catalog_has_video;
+        let has_audio = track_handles.keys().any(|k| k.starts_with("audio/"));
+        let has_video = track_handles.keys().any(|k| k.starts_with("video/"));
+        if (!need_audio || has_audio) && (!need_video || has_video) {
+            tracing::info!("All expected tracks discovered, stopping catalog watch");
+            return true;
         }
         false
     }
@@ -1626,7 +1655,10 @@ impl MoqPeerNode {
                         }
                     }
 
-                    if Self::has_expected_tracks(&track_handles, pin_prefix.is_some()) {
+                    let is_additional_broadcast = pin_prefix.is_some();
+                    let catalog_has_audio = !catalog.audio.renditions.is_empty();
+                    let catalog_has_video = !catalog.video.renditions.is_empty();
+                    if Self::has_expected_tracks(&track_handles, is_additional_broadcast, catalog_has_audio, catalog_has_video) {
                         break;
                     }
                 }
@@ -2683,6 +2715,77 @@ mod tests {
         assert!(
             matches!(prefixed_audio.produces_type, PacketType::EncodedAudio(_)),
             "Broadcast-prefixed audio pin must be EncodedAudio"
+        );
+    }
+
+    // --- has_expected_tracks tests ---
+
+    /// Helper: build a dummy track_handles map with the given track names.
+    fn dummy_track_handles(
+        names: &[&str],
+    ) -> std::collections::HashMap<String, tokio::task::JoinHandle<Result<(), StreamKitError>>>
+    {
+        names.iter().map(|n| (n.to_string(), tokio::spawn(async { Ok(()) }))).collect()
+    }
+
+    #[tokio::test]
+    async fn has_expected_tracks_primary_audio_and_video() {
+        let handles = dummy_track_handles(&["audio/data", "video/hd"]);
+        assert!(
+            MoqPeerNode::has_expected_tracks(&handles, false, true, true),
+            "Primary with both audio and video should be satisfied"
+        );
+    }
+
+    #[tokio::test]
+    async fn has_expected_tracks_primary_audio_only_catalog() {
+        // Audio-only catalog: should be satisfied with just audio tracks.
+        let handles = dummy_track_handles(&["audio/data"]);
+        assert!(
+            MoqPeerNode::has_expected_tracks(&handles, false, true, false),
+            "Audio-only catalog should be satisfied with audio track"
+        );
+    }
+
+    #[tokio::test]
+    async fn has_expected_tracks_primary_video_only_catalog() {
+        // Video-only catalog: should be satisfied with just video tracks.
+        let handles = dummy_track_handles(&["video/hd"]);
+        assert!(
+            MoqPeerNode::has_expected_tracks(&handles, false, false, true),
+            "Video-only catalog should be satisfied with video track"
+        );
+    }
+
+    #[tokio::test]
+    async fn has_expected_tracks_primary_missing_video() {
+        // Catalog has both but we only have audio — not satisfied yet.
+        let handles = dummy_track_handles(&["audio/data"]);
+        assert!(
+            !MoqPeerNode::has_expected_tracks(&handles, false, true, true),
+            "Primary should not be satisfied when catalog has video but we don't"
+        );
+    }
+
+    #[tokio::test]
+    async fn has_expected_tracks_additional_any_track() {
+        let handles = dummy_track_handles(&["video/hd"]);
+        assert!(
+            MoqPeerNode::has_expected_tracks(&handles, true, false, false),
+            "Additional broadcast should be satisfied with any track"
+        );
+    }
+
+    #[tokio::test]
+    async fn has_expected_tracks_empty_handles() {
+        let handles = dummy_track_handles(&[]);
+        assert!(
+            !MoqPeerNode::has_expected_tracks(&handles, false, true, true),
+            "Empty handles should never be satisfied"
+        );
+        assert!(
+            !MoqPeerNode::has_expected_tracks(&handles, true, false, false),
+            "Empty handles should never be satisfied for additional either"
         );
     }
 }

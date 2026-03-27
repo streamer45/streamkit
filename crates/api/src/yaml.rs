@@ -168,6 +168,25 @@ pub enum CaptureSource {
     Microphone,
 }
 
+impl std::fmt::Display for TrackKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TrackKind::Audio => write!(f, "audio"),
+            TrackKind::Video => write!(f, "video"),
+        }
+    }
+}
+
+impl std::fmt::Display for CaptureSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CaptureSource::Camera => write!(f, "camera"),
+            CaptureSource::Screen => write!(f, "screen"),
+            CaptureSource::Microphone => write!(f, "microphone"),
+        }
+    }
+}
+
 /// Browser-side watch configuration for dynamic pipelines.
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]
 #[ts(export)]
@@ -651,7 +670,8 @@ pub struct ClientLintWarning {
 /// 13. **`empty-tracks`** — `publish.tracks` is an empty array.
 ///     14a. **`kind-source-mismatch`** — Track kind and source are incompatible
 ///     (e.g. `kind: audio` with `source: camera`).
-///     14b. **`duplicate-source`** — Multiple tracks use the same capture source.
+///     14b. **`duplicate-source`** — Multiple tracks use the same kind and capture
+///     source combination.
 ///     14c. **`empty-track-broadcast`** — A track-level `broadcast` override is
 ///     an empty string.
 pub fn lint_client_section(client: &ClientSection, mode: EngineMode) -> Vec<ClientLintWarning> {
@@ -744,22 +764,30 @@ pub fn lint_client_section(client: &ClientSection, mode: EngineMode) -> Vec<Clie
         }
 
         // Rule 14b: duplicate sources (scoped per effective broadcast)
+        // We check (kind, source) tuples rather than source alone, so that
+        // e.g. (audio, microphone) and (video, microphone) — the latter of
+        // which is already caught by kind-source-mismatch — don't trigger a
+        // false-positive duplicate warning.
         {
-            let mut seen_per_broadcast: std::collections::HashMap<&str, Vec<CaptureSource>> =
-                std::collections::HashMap::new();
+            let mut seen_per_broadcast: std::collections::HashMap<
+                &str,
+                Vec<(TrackKind, CaptureSource)>,
+            > = std::collections::HashMap::new();
             for track in &publish.tracks {
                 let effective_bc = track.broadcast.as_deref().unwrap_or(&publish.broadcast);
                 let seen = seen_per_broadcast.entry(effective_bc).or_default();
-                if seen.contains(&track.source) {
+                let key = (track.kind, track.source);
+                if seen.contains(&key) {
                     warnings.push(ClientLintWarning {
                         rule: "duplicate-source",
                         message: format!(
-                            "Multiple tracks in broadcast '{}' use the same capture source `{:?}`.",
-                            effective_bc, track.source
+                            "Multiple tracks in broadcast '{}' use the same kind `{}` and capture \
+                             source `{}`.",
+                            effective_bc, track.kind, track.source
                         ),
                     });
                 } else {
-                    seen.push(track.source);
+                    seen.push(key);
                 }
             }
         }
@@ -2724,6 +2752,41 @@ client:
         assert!(
             !warnings.iter().any(|w| w.rule == "duplicate-source"),
             "Should not warn when same source is in different broadcasts: {warnings:?}"
+        );
+    }
+
+    /// Regression: duplicate-source lint used to check CaptureSource alone,
+    /// causing a false positive when different track kinds shared the same
+    /// source (e.g. audio+microphone and video+microphone).  The latter is
+    /// already caught by kind-source-mismatch, so duplicate-source should
+    /// only fire on identical (kind, source) pairs.
+    #[test]
+    fn test_lint_duplicate_source_different_kind_same_source_no_false_positive() {
+        let mut c = dynamic_client();
+        c.publish = Some(PublishConfig {
+            broadcast: "input".into(),
+            tracks: vec![
+                PublishTrackConfig {
+                    kind: TrackKind::Audio,
+                    source: CaptureSource::Microphone,
+                    broadcast: None,
+                },
+                PublishTrackConfig {
+                    kind: TrackKind::Video,
+                    source: CaptureSource::Microphone,
+                    broadcast: None,
+                },
+            ],
+        });
+        let warnings = lint_client_section(&c, EngineMode::Dynamic);
+        assert!(
+            !warnings.iter().any(|w| w.rule == "duplicate-source"),
+            "Should not warn when different kinds share the same source: {warnings:?}"
+        );
+        // The (video, microphone) track should trigger kind-source-mismatch instead
+        assert!(
+            warnings.iter().any(|w| w.rule == "kind-source-mismatch"),
+            "Should warn about kind-source mismatch for (video, microphone): {warnings:?}"
         );
     }
 }
