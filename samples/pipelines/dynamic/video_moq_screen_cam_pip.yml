@@ -45,12 +45,12 @@ nodes:
   vp9_decoder_screen:
     kind: video::vp9::decoder
     needs:
-      in: moq_peer.screen-input/video/hd
+      in: moq_peer.video/data
 
   vp9_decoder_cam:
     kind: video::vp9::decoder
     needs:
-      in: moq_peer.cam-input/video/hd
+      in: moq_peer.cam-input/video/data
 
   compositor:
     kind: video::compositor
@@ -96,7 +96,7 @@ nodes:
 
   opus_decoder:
     kind: audio::opus::decoder
-    needs: moq_peer.screen-input/audio/data
+    needs: moq_peer.audio/data
 
   gain:
     kind: audio::gain
