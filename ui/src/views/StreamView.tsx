@@ -191,6 +191,10 @@ const ControlButton = styled.button<{ active?: boolean }>`
 const VideoContainer = styled.div`
   position: relative;
 
+  &:hover .sk-fullscreen-btn {
+    opacity: 1;
+  }
+
   &:fullscreen {
     display: flex;
     align-items: center;
@@ -218,10 +222,6 @@ const FullscreenButton = styled.button`
   opacity: 0;
   transition: opacity 0.2s;
   z-index: 1;
-
-  ${VideoContainer}:hover & {
-    opacity: 1;
-  }
 
   &:hover {
     background: rgba(0, 0, 0, 0.8);
@@ -1048,6 +1048,7 @@ const StreamView: React.FC = () => {
               <SectionTitle>Video</SectionTitle>
               <VideoContainer ref={videoContainerRef}>
                 <FullscreenButton
+                  className="sk-fullscreen-btn"
                   onClick={() => {
                     const el = videoContainerRef.current;
                     if (!el) return;
