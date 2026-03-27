@@ -783,16 +783,37 @@ pub fn lint_client_section(client: &ClientSection, mode: EngineMode) -> Vec<Clie
     }
 
     // Rule 12: duplicate broadcast
+    // Check top-level publish.broadcast AND per-track broadcast overrides
+    // against watch.broadcast to detect feedback loops.
     if let (Some(ref publish), Some(ref watch)) = (&client.publish, &client.watch) {
-        if !publish.broadcast.is_empty() && publish.broadcast == watch.broadcast {
-            warnings.push(ClientLintWarning {
-                rule: "duplicate-broadcast",
-                message: format!(
-                    "publish.broadcast and watch.broadcast are both '{}' — this would \
-                     cause a feedback loop.",
-                    publish.broadcast
-                ),
-            });
+        let watch_bc = &watch.broadcast;
+        if !watch_bc.is_empty() {
+            // Collect all effective publish broadcast names
+            let mut publish_broadcasts: Vec<&str> = Vec::new();
+            if !publish.broadcast.is_empty() {
+                publish_broadcasts.push(&publish.broadcast);
+            }
+            for track in &publish.tracks {
+                if let Some(ref bc) = track.broadcast {
+                    if !bc.is_empty() {
+                        publish_broadcasts.push(bc);
+                    }
+                }
+            }
+            publish_broadcasts.sort_unstable();
+            publish_broadcasts.dedup();
+
+            for bc in publish_broadcasts {
+                if bc == watch_bc {
+                    warnings.push(ClientLintWarning {
+                        rule: "duplicate-broadcast",
+                        message: format!(
+                            "Publish broadcast '{bc}' matches watch.broadcast '{watch_bc}' \
+                             — this would cause a feedback loop.",
+                        ),
+                    });
+                }
+            }
         }
     }
 
@@ -1999,6 +2020,32 @@ client:
         c.watch = Some(WatchConfig { broadcast: "same".into(), audio: true, video: true });
         let warnings = lint_client_section(&c, EngineMode::Dynamic);
         assert!(warnings.iter().any(|w| w.rule == "duplicate-broadcast"));
+    }
+
+    #[test]
+    fn test_lint_duplicate_broadcast_track_override() {
+        let mut c = dynamic_client();
+        c.publish = Some(PublishConfig {
+            broadcast: "input".into(),
+            tracks: vec![
+                PublishTrackConfig {
+                    kind: TrackKind::Audio,
+                    source: CaptureSource::Microphone,
+                    broadcast: None,
+                },
+                PublishTrackConfig {
+                    kind: TrackKind::Video,
+                    source: CaptureSource::Camera,
+                    broadcast: Some("output".into()), // overrides to match watch
+                },
+            ],
+        });
+        c.watch = Some(WatchConfig { broadcast: "output".into(), audio: true, video: true });
+        let warnings = lint_client_section(&c, EngineMode::Dynamic);
+        assert!(
+            warnings.iter().any(|w| w.rule == "duplicate-broadcast"),
+            "Should warn when a track-level broadcast override matches watch.broadcast: {warnings:?}"
+        );
     }
 
     #[test]

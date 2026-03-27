@@ -1593,6 +1593,12 @@ impl MoqPeerNode {
                     // which covers the common case. Additional tracks from later catalog updates
                     // won't be picked up — this is a pragmatic trade-off matching the browser's
                     // incremental permission grant pattern.
+                    //
+                    // TODO: For multi-broadcast mode with audio-only broadcasts, this heuristic
+                    // will wait 30s for a video track that never arrives. When the full
+                    // multi-broadcast receive is wired, consider accepting media-type hints
+                    // from the caller (e.g. from PublishTrackConfig) to determine the expected
+                    // track set per broadcast.
                     let has_audio = track_handles.keys().any(|k| k.starts_with("audio/"));
                     let has_video = track_handles.keys().any(|k| k.starts_with("video/"));
                     if has_audio && has_video {
