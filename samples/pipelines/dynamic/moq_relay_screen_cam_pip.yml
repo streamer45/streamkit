@@ -2,15 +2,18 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-name: Screen Share + Camera PiP (MoQ Stream)
+name: MoQ Relay Screen + Camera PiP (Audio + Video)
 description: >
-  Composites the user's screen capture as the background with webcam as
-  picture-in-picture overlay, loops microphone audio, and streams via MoQ.
-  Uses multi-broadcast subscription to receive screen and camera inputs on
-  separate broadcasts with namespaced output pins.
+  Subscribes screen and camera inputs from separate broadcasts on an external
+  MoQ relay, composites screen as background with webcam PiP overlay, and
+  republishes to the relay.  This is the external-relay counterpart of
+  video_moq_screen_cam_pip.yml (which uses the built-in moq_peer transport).
+# NOTE: The publisher (browser) must already be streaming to the 'screen-input'
+# and 'cam-input' broadcasts before starting this pipeline, otherwise track
+# discovery will miss the video/hd pins.
 mode: dynamic
 client:
-  gateway_path: /moq/screenshare
+  relay_url: http://127.0.0.1:4443
   publish:
     broadcast: screen-input
     tracks:
@@ -27,36 +30,34 @@ client:
     video: true
 
 nodes:
-  moq_peer:
-    kind: transport::moq::peer
+  moq_screen_input:
+    kind: transport::moq::subscriber
     params:
-      gateway_path: /moq/screenshare
-      # The first broadcast is the "primary" — its output pins are unprefixed
-      # (e.g. video/hd, audio/data).  Additional broadcasts get their pins
-      # namespaced as {broadcast}/{track} (e.g. cam-input/video/hd) so that
-      # downstream nodes can wire to each source independently.
-      # NOTE: @moq/publish uses "video/hd" (not "video/data") as the track name.
-      input_broadcasts:
-        - screen-input
-        - cam-input
-      output_broadcast: output
-      allow_reconnect: true
-      video_width: 1280
-      video_height: 720
-    needs:
-      in: opus_encoder
-      in_1: vp9_encoder
+      url: http://127.0.0.1:4443
+      broadcast: screen-input
+      backoff_cap: 4
+      max_retries: 10
+
+  moq_cam_input:
+    kind: transport::moq::subscriber
+    params:
+      url: http://127.0.0.1:4443
+      broadcast: cam-input
+      backoff_cap: 4
+      max_retries: 10
+
+  # --- Video path: decode both sources → composite → encode ---
 
   vp9_decoder_screen:
     kind: video::vp9::decoder
     needs:
-      # @moq/publish uses "video/hd" as the track name (not "video/data")
-      in: moq_peer.video/hd
+      # @moq/publish uses "video/hd" as the track name
+      in: moq_screen_input.video/hd
 
   vp9_decoder_cam:
     kind: video::vp9::decoder
     needs:
-      in: moq_peer.cam-input/video/hd
+      in: moq_cam_input.video/hd
 
   compositor:
     kind: video::compositor
@@ -100,9 +101,11 @@ nodes:
       keyframe_interval: 30
     needs: pixel_convert
 
+  # --- Audio path: decode → gain → encode ---
+
   opus_decoder:
     kind: audio::opus::decoder
-    needs: moq_peer.audio/data
+    needs: moq_screen_input.audio/data
 
   gain:
     kind: audio::gain
@@ -113,3 +116,17 @@ nodes:
   opus_encoder:
     kind: audio::opus::encoder
     needs: gain
+
+  moq_output:
+    kind: transport::moq::publisher
+    params:
+      url: http://127.0.0.1:4443
+      broadcast: output
+      channels: 1
+      group_duration_ms: 40
+      initial_delay_ms: 250
+      audio: true
+      video: true
+    needs:
+      in: opus_encoder
+      in_1: vp9_encoder

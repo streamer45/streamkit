@@ -328,7 +328,8 @@ export const useCompositorLayers = (
         a.cropZoom !== b.cropZoom ||
         a.cropX !== b.cropX ||
         a.cropY !== b.cropY ||
-        a.cropShape !== b.cropShape,
+        a.cropShape !== b.cropShape ||
+        a.aspectFit !== b.aspectFit,
       isMonitorView,
       isMonitorView ? prevParsedLayersRef.current : undefined
     );
@@ -410,6 +411,7 @@ export const useCompositorLayers = (
             cropX: DEFAULT_CROP_X,
             cropY: DEFAULT_CROP_Y,
             cropShape: DEFAULT_CROP_SHAPE,
+            aspectFit: true,
           },
           kind: 'text',
         };
@@ -422,6 +424,7 @@ export const useCompositorLayers = (
             cropX: DEFAULT_CROP_X,
             cropY: DEFAULT_CROP_Y,
             cropShape: DEFAULT_CROP_SHAPE,
+            aspectFit: true,
           },
           kind: 'image',
         };

@@ -47,14 +47,11 @@ export type ConnectAttempt = {
   camera: Publish.Source.Camera | null;
   screen: Publish.Source.Screen | null;
   publish: Publish.Broadcast | null;
-  /** Secondary publish broadcast for multi-broadcast mode (e.g. camera PiP).
-   *  TODO: Not yet populated during connect — only cleanup paths are wired. */
+  /** Secondary publish broadcast for multi-broadcast mode (e.g. camera PiP). */
   secondaryPublish: Publish.Broadcast | null;
-  /** Secondary camera source for multi-broadcast mode.
-   *  TODO: Not yet populated during connect — only cleanup paths are wired. */
+  /** Secondary camera source for multi-broadcast mode. */
   secondaryCamera: Publish.Source.Camera | null;
-  /** Secondary screen source for multi-broadcast mode.
-   *  TODO: Not yet populated during connect — only cleanup paths are wired. */
+  /** Secondary screen source for multi-broadcast mode. */
   secondaryScreen: Publish.Source.Screen | null;
 };
 
@@ -544,6 +541,177 @@ async function setupPublishPath(
   return { microphone, camera, screen, publish };
 }
 
+/** Create a video capture source for a secondary broadcast and wait for device readiness. */
+async function createSecondaryVideoSource(
+  sourceType: 'camera' | 'screen',
+  abortSignal?: AbortSignal
+): Promise<{
+  camera: Publish.Source.Camera | null;
+  screen: Publish.Source.Screen | null;
+}> {
+  if (sourceType === 'screen') {
+    logger.info(
+      'Creating secondary screen capture source — the OS may show an additional picker dialog'
+    );
+    const screen = new Publish.Source.Screen({ enabled: true });
+    if (!screen.source.peek()?.video) {
+      try {
+        await waitForSignalValue(
+          screen.source,
+          (v) => v?.video !== undefined,
+          30_000,
+          'Secondary screen capture not available',
+          abortSignal
+        );
+      } catch (e) {
+        shutdownMediaSource(screen);
+        throw e;
+      }
+    }
+    return { camera: null, screen };
+  }
+
+  const camera = new Publish.Source.Camera({ enabled: true });
+  if (!camera.source.peek()) {
+    try {
+      await waitForSignalValue(
+        camera.source,
+        (v) => v !== undefined,
+        15_000,
+        'Secondary camera not available',
+        abortSignal
+      );
+    } catch (e) {
+      shutdownMediaSource(camera);
+      throw e;
+    }
+  }
+  return { camera, screen: null };
+}
+
+/** Create a secondary publish broadcast for multi-broadcast mode.
+ *  Each broadcast gets its own media sources — sources cannot be shared
+ *  between broadcasts. */
+/** Analyze secondary broadcast tracks and return video source info + warnings.
+ *  Pure function — no side effects, no logger calls. Warnings are collected
+ *  for the caller to log. */
+export function analyzeSecondaryBroadcastTracks(
+  broadcastName: string,
+  broadcastTracks: PublishTrackConfig[]
+): {
+  needsVideo: boolean;
+  videoSourceType: VideoSourceType;
+  warnings: string[];
+} {
+  const warnings: string[] = [];
+
+  const hasAudio = broadcastTracks.some((t) => t.kind === 'audio');
+  if (hasAudio) {
+    warnings.push(
+      `Secondary broadcast '${broadcastName}' has audio tracks which are not yet supported; ` +
+        'audio will be silently dropped'
+    );
+  }
+
+  const videoTracks = broadcastTracks.filter((t) => t.kind === 'video');
+  const needsVideo = videoTracks.length > 0;
+  if (videoTracks.length > 1) {
+    warnings.push(
+      `Secondary broadcast '${broadcastName}' has ${videoTracks.length} video tracks ` +
+        'but only the first is used; additional video tracks are ignored'
+    );
+  }
+  const videoSourceType: VideoSourceType =
+    videoTracks[0]?.source === 'screen' ? 'screen' : 'camera';
+
+  return { needsVideo, videoSourceType, warnings };
+}
+
+/** Filter tracks that belong to a secondary broadcast.
+ *  Tracks without an explicit `broadcast` field default to `primaryBroadcast`. */
+export function filterSecondaryTracks(
+  tracks: PublishTrackConfig[],
+  primaryBroadcast: string,
+  secondaryBroadcast: string
+): PublishTrackConfig[] {
+  return tracks.filter((t) => (t.broadcast ?? primaryBroadcast) === secondaryBroadcast);
+}
+
+async function setupSecondaryPublishPath(
+  healthEffect: Effect,
+  connection: Hang.Moq.Connection.Reload,
+  broadcastName: string,
+  broadcastTracks: PublishTrackConfig[],
+  abortSignal?: AbortSignal
+): Promise<{
+  secondaryPublish: Publish.Broadcast;
+  secondaryCamera: Publish.Source.Camera | null;
+  secondaryScreen: Publish.Source.Screen | null;
+}> {
+  const { needsVideo, videoSourceType, warnings } = analyzeSecondaryBroadcastTracks(
+    broadcastName,
+    broadcastTracks
+  );
+  for (const w of warnings) logger.warn(w);
+
+  let secondaryCamera: Publish.Source.Camera | null = null;
+  let secondaryScreen: Publish.Source.Screen | null = null;
+
+  if (needsVideo) {
+    const sources = await createSecondaryVideoSource(videoSourceType, abortSignal);
+    secondaryCamera = sources.camera;
+    secondaryScreen = sources.screen;
+  }
+
+  logger.info(`Setting up secondary publish broadcast '${broadcastName}'`);
+  const broadcastConfig: ConstructorParameters<typeof Publish.Broadcast>[0] = {
+    connection: connection.established,
+    enabled: true,
+    name: Publish.Lite.Path.from(broadcastName),
+  };
+
+  if (needsVideo) {
+    if (secondaryScreen) {
+      const videoOnlySignal = new Signal<Publish.Video.Source | undefined>(
+        secondaryScreen.source.peek()?.video
+      );
+      healthEffect.subscribe(secondaryScreen.source, (v) => videoOnlySignal.set(v?.video));
+      broadcastConfig.video = {
+        source: videoOnlySignal,
+        hd: { enabled: true, config: { codec: 'vp09' } },
+      };
+    } else if (secondaryCamera) {
+      broadcastConfig.video = {
+        source: secondaryCamera.source,
+        hd: { enabled: true, config: { codec: 'vp09' } },
+      };
+    }
+  }
+
+  const secondaryPublish = new Publish.Broadcast(broadcastConfig);
+
+  if (needsVideo) {
+    logger.info(`Waiting for secondary broadcast '${broadcastName}' video catalog...`);
+    try {
+      await waitForSignalValue(
+        secondaryPublish.video.catalog,
+        (v) => v !== undefined,
+        10_000,
+        `Secondary broadcast '${broadcastName}' video encoder failed to initialize`,
+        abortSignal
+      );
+    } catch (e) {
+      secondaryPublish.close();
+      shutdownMediaSource(secondaryScreen);
+      shutdownMediaSource(secondaryCamera);
+      throw e;
+    }
+    logger.info(`Secondary broadcast '${broadcastName}' video catalog ready`);
+  }
+
+  return { secondaryPublish, secondaryCamera, secondaryScreen };
+}
+
 function schedulePostConnectWarnings(
   decision: Extract<ConnectDecision, { ok: true }>,
   attempt: ConnectAttempt,
@@ -652,6 +820,16 @@ function applyPublishResult(
   attempt.camera = result.camera;
   attempt.screen = result.screen;
   attempt.publish = result.publish;
+}
+
+/** Apply secondary publish-path results to the attempt object. */
+function applySecondaryPublishResult(
+  attempt: ConnectAttempt,
+  result: Awaited<ReturnType<typeof setupSecondaryPublishPath>>
+): void {
+  attempt.secondaryPublish = result.secondaryPublish;
+  attempt.secondaryCamera = result.secondaryCamera;
+  attempt.secondaryScreen = result.secondaryScreen;
 }
 
 /** Create the MoQ connection and wire up the health-status sync effect. */
@@ -763,6 +941,48 @@ export async function performConnect(
           abortSignal
         )
       );
+
+      // Secondary broadcast (multi-broadcast mode).
+      // Currently supports at most one secondary; additional broadcasts are
+      // ignored with a warning.
+      if (state.publishBroadcasts.length > 1) {
+        if (state.publishBroadcasts.length > 2) {
+          logger.warn(
+            `Pipeline declares ${state.publishBroadcasts.length} broadcasts but only 2 are supported; ` +
+              `ignoring: ${state.publishBroadcasts.slice(2).join(', ')}`
+          );
+        }
+        const primaryBroadcast = state.publishBroadcasts[0];
+        const secondaryName = state.publishBroadcasts[1];
+        const secondaryTracks = filterSecondaryTracks(
+          state.tracks,
+          primaryBroadcast,
+          secondaryName
+        );
+
+        if (secondaryTracks.length > 0) {
+          // Secondary setup runs after the primary because both share the same
+          // connection: if the secondary fails, the primary resources must already
+          // be on `attempt` so cleanupConnectAttempt can tear them down.
+          // setupSecondaryPublishPath owns cleanup of its resources on failure;
+          // on success, ownership transfers to `attempt` via applySecondaryPublishResult,
+          // and the outer catch block handles cleanup through cleanupConnectAttempt.
+          applySecondaryPublishResult(
+            attempt,
+            await setupSecondaryPublishPath(
+              attempt.healthEffect!,
+              attempt.connection!,
+              secondaryName,
+              secondaryTracks,
+              abortSignal
+            )
+          );
+        } else {
+          logger.warn(
+            `Secondary broadcast '${secondaryName}' declared but no tracks matched; skipping`
+          );
+        }
+      }
     }
 
     await connectWatchPath(attempt, state, decision, set, abortSignal);

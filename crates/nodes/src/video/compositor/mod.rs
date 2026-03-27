@@ -160,7 +160,7 @@ fn resolve_scene(
                 lc.opacity,
                 lc.z_index,
                 lc.rotation_degrees,
-                false,
+                lc.aspect_fit,
                 lc.mirror_horizontal,
                 lc.mirror_vertical,
                 lc.crop_zoom,
@@ -191,6 +191,9 @@ fn resolve_scene(
                 config::CropShape::Rect,
             )
         } else {
+            // Single slot, no explicit config → stretch to fill the entire canvas.
+            // aspect_fit is false here (unlike LayerConfig::default which is true)
+            // because there is no user-defined rect to letterbox into.
             (None, 1.0, 0, 0.0, false, false, false, 1.0, 0.5, 0.5, config::CropShape::Rect)
         };
 

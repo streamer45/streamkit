@@ -66,7 +66,7 @@ function makeImageOverlay(overrides: Partial<ImageOverlayState> = {}): ImageOver
 }
 
 function makeLayer(overrides: Partial<LayerState> = {}): LayerState {
-  return {
+  const defaults: LayerState = {
     id: 'in_0',
     x: 0,
     y: 0,
@@ -81,9 +81,10 @@ function makeLayer(overrides: Partial<LayerState> = {}): LayerState {
     cropZoom: 1.0,
     cropX: 0.5,
     cropY: 0.5,
-    cropShape: 'rect' as const,
-    ...overrides,
+    cropShape: 'rect',
+    aspectFit: true,
   };
+  return { ...defaults, ...overrides };
 }
 
 const textHasExtraChanges = (a: TextOverlayState, b: TextOverlayState) =>
@@ -96,7 +97,8 @@ const layerHasExtraChanges = (a: LayerState, b: LayerState) =>
   a.cropZoom !== b.cropZoom ||
   a.cropX !== b.cropX ||
   a.cropY !== b.cropY ||
-  a.cropShape !== b.cropShape;
+  a.cropShape !== b.cropShape ||
+  a.aspectFit !== b.aspectFit;
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
