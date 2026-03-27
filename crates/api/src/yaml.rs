@@ -746,7 +746,7 @@ pub fn lint_client_section(client: &ClientSection, mode: EngineMode) -> Vec<Clie
                 warnings.push(ClientLintWarning {
                     rule: "kind-source-mismatch",
                     message: format!(
-                        "Track has kind `{:?}` with source `{:?}` — these are incompatible.",
+                        "Track has kind `{}` with source `{}` — these are incompatible.",
                         track.kind, track.source
                     ),
                 });

@@ -1505,19 +1505,16 @@ impl MoqPeerNode {
     ///
     /// In multi-broadcast mode (`is_additional == true`), each additional broadcast
     /// may carry only one media type (e.g. video-only camera input), so we exit as
-    /// soon as any track is found.  For the primary broadcast we wait until we
-    /// have subscribed to every media type the catalog advertises — i.e. audio
-    /// tracks if `catalog_has_audio` is true, video tracks if `catalog_has_video`
-    /// is true.  This avoids a 30-second timeout when the primary publishes only
-    /// one media type (e.g. audio-only).
+    /// soon as any track is found.  For the primary broadcast we wait for both
+    /// audio and video tracks before stopping.  If the catalog genuinely only
+    /// carries one media type the caller handles this via a shortened grace
+    /// timeout (see [`Self::watch_catalog_and_process_inner`]).
     fn has_expected_tracks(
         track_handles: &std::collections::HashMap<
             String,
             tokio::task::JoinHandle<Result<(), StreamKitError>>,
         >,
         is_additional: bool,
-        catalog_has_audio: bool,
-        catalog_has_video: bool,
     ) -> bool {
         if track_handles.is_empty() {
             return false;
@@ -1526,11 +1523,9 @@ impl MoqPeerNode {
             tracing::info!("Additional broadcast tracks discovered, stopping catalog watch");
             return true;
         }
-        let need_audio = catalog_has_audio;
-        let need_video = catalog_has_video;
         let has_audio = track_handles.keys().any(|k| k.starts_with("audio/"));
         let has_video = track_handles.keys().any(|k| k.starts_with("video/"));
-        if (!need_audio || has_audio) && (!need_video || has_video) {
+        if has_audio && has_video {
             tracing::info!("All expected tracks discovered, stopping catalog watch");
             return true;
         }
@@ -1589,15 +1584,26 @@ impl MoqPeerNode {
             tokio::task::JoinHandle<Result<(), StreamKitError>>,
         > = std::collections::HashMap::new();
 
+        // After the first tracks are discovered we switch from the initial 30s
+        // timeout to a shorter 5s grace period.  This handles the common case
+        // where the browser grants mic and camera permissions at different
+        // times: the first catalog arrives with audio only, and we keep
+        // watching briefly for the second catalog that adds video.  If no
+        // additional catalog arrives within the grace period we conclude that
+        // the publisher genuinely only has one media type, avoiding the full
+        // 30-second wait that the old code suffered.
+        let mut tracks_discovered = false;
+
         // Monitor the catalog for new tracks, subscribing to each as it appears
         loop {
+            let timeout_secs = if tracks_discovered { 5 } else { 30 };
             tokio::select! {
                 biased;
                 _ = shutdown_rx.recv() => {
                     tracing::info!("Catalog watch shutting down");
                     break;
                 }
-                catalog_result = tokio::time::timeout(Duration::from_secs(30), catalog_consumer.next()) => {
+                catalog_result = tokio::time::timeout(Duration::from_secs(timeout_secs), catalog_consumer.next()) => {
                     let Some(catalog) = Self::unwrap_catalog_result(catalog_result) else {
                         break;
                     };
@@ -1656,10 +1662,21 @@ impl MoqPeerNode {
                     }
 
                     let is_additional_broadcast = pin_prefix.is_some();
-                    let catalog_has_audio = !catalog.audio.renditions.is_empty();
-                    let catalog_has_video = !catalog.video.renditions.is_empty();
-                    if Self::has_expected_tracks(&track_handles, is_additional_broadcast, catalog_has_audio, catalog_has_video) {
+                    if Self::has_expected_tracks(&track_handles, is_additional_broadcast) {
                         break;
+                    }
+
+                    // Not all media types found yet — if we have some tracks,
+                    // switch to the shorter grace timeout for the next iteration
+                    // so we don't wait the full 30s for a genuinely single-media
+                    // pipeline.
+                    if !track_handles.is_empty() && !tracks_discovered {
+                        tracks_discovered = true;
+                        tracing::info!(
+                            "Tracks discovered but not all media types present — \
+                             switching to {}s grace period for incremental catalogs",
+                            5
+                        );
                     }
                 }
             }
@@ -2732,38 +2749,28 @@ mod tests {
     async fn has_expected_tracks_primary_audio_and_video() {
         let handles = dummy_track_handles(&["audio/data", "video/hd"]);
         assert!(
-            MoqPeerNode::has_expected_tracks(&handles, false, true, true),
+            MoqPeerNode::has_expected_tracks(&handles, false),
             "Primary with both audio and video should be satisfied"
         );
     }
 
     #[tokio::test]
-    async fn has_expected_tracks_primary_audio_only_catalog() {
-        // Audio-only catalog: should be satisfied with just audio tracks.
+    async fn has_expected_tracks_primary_audio_only() {
+        // Audio-only: should NOT be satisfied — caller uses grace timeout instead.
         let handles = dummy_track_handles(&["audio/data"]);
         assert!(
-            MoqPeerNode::has_expected_tracks(&handles, false, true, false),
-            "Audio-only catalog should be satisfied with audio track"
+            !MoqPeerNode::has_expected_tracks(&handles, false),
+            "Audio-only should not satisfy primary (grace timeout handles single-media)"
         );
     }
 
     #[tokio::test]
-    async fn has_expected_tracks_primary_video_only_catalog() {
-        // Video-only catalog: should be satisfied with just video tracks.
+    async fn has_expected_tracks_primary_video_only() {
+        // Video-only: should NOT be satisfied — caller uses grace timeout instead.
         let handles = dummy_track_handles(&["video/hd"]);
         assert!(
-            MoqPeerNode::has_expected_tracks(&handles, false, false, true),
-            "Video-only catalog should be satisfied with video track"
-        );
-    }
-
-    #[tokio::test]
-    async fn has_expected_tracks_primary_missing_video() {
-        // Catalog has both but we only have audio — not satisfied yet.
-        let handles = dummy_track_handles(&["audio/data"]);
-        assert!(
-            !MoqPeerNode::has_expected_tracks(&handles, false, true, true),
-            "Primary should not be satisfied when catalog has video but we don't"
+            !MoqPeerNode::has_expected_tracks(&handles, false),
+            "Video-only should not satisfy primary (grace timeout handles single-media)"
         );
     }
 
@@ -2771,7 +2778,7 @@ mod tests {
     async fn has_expected_tracks_additional_any_track() {
         let handles = dummy_track_handles(&["video/hd"]);
         assert!(
-            MoqPeerNode::has_expected_tracks(&handles, true, false, false),
+            MoqPeerNode::has_expected_tracks(&handles, true),
             "Additional broadcast should be satisfied with any track"
         );
     }
@@ -2780,11 +2787,11 @@ mod tests {
     async fn has_expected_tracks_empty_handles() {
         let handles = dummy_track_handles(&[]);
         assert!(
-            !MoqPeerNode::has_expected_tracks(&handles, false, true, true),
+            !MoqPeerNode::has_expected_tracks(&handles, false),
             "Empty handles should never be satisfied"
         );
         assert!(
-            !MoqPeerNode::has_expected_tracks(&handles, true, false, false),
+            !MoqPeerNode::has_expected_tracks(&handles, true),
             "Empty handles should never be satisfied for additional either"
         );
     }
