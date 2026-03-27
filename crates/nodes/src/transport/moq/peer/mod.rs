@@ -17,6 +17,7 @@ use async_trait::async_trait;
 use bytes::Buf;
 use schemars::JsonSchema;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,6 +31,14 @@ use streamkit_core::{
     ProcessorNode, StreamKitError,
 };
 use tokio::sync::{broadcast, mpsc, watch, OwnedSemaphorePermit, Semaphore};
+
+/// Initial timeout (seconds) for the first catalog update to arrive.
+const CATALOG_INITIAL_TIMEOUT_SECS: u64 = 30;
+/// Grace timeout (seconds) after the first tracks are discovered,
+/// allowing time for a second media type (e.g. mic then camera)
+/// without waiting the full initial timeout for genuinely
+/// single-media pipelines.
+const CATALOG_GRACE_TIMEOUT_SECS: u64 = 5;
 
 /// Capacity for the broadcast channel (subscribers).
 ///
@@ -327,8 +336,7 @@ fn make_broadcast_frame(packet: Packet, kind: MediaKind) -> Option<BroadcastFram
 /// lock is never held across an `.await` point — only brief synchronous reads
 /// in [`route_packet`] and occasional writes when pins are added/removed.
 /// This avoids the overhead of the async lock on every packet in the hot path.
-type DynamicOutputs =
-    Arc<std::sync::RwLock<std::collections::HashMap<String, mpsc::Sender<Packet>>>>;
+type DynamicOutputs = Arc<std::sync::RwLock<HashMap<String, mpsc::Sender<Packet>>>>;
 
 /// A MoQ server node that supports one publisher and multiple subscribers.
 /// - Publisher connects to `{gateway_path}/input` and sends media to the pipeline
@@ -543,8 +551,7 @@ impl ProcessorNode for MoqPeerNode {
 
         // Track JoinHandles for dynamic input forwarder tasks so they can be
         // aborted promptly when the corresponding pin is removed.
-        let mut forwarder_handles: std::collections::HashMap<String, tokio::task::JoinHandle<()>> =
-            std::collections::HashMap::new();
+        let mut forwarder_handles: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
 
         state_helpers::emit_running(&context.state_tx, &node_name);
         tracing::info!(
@@ -1047,7 +1054,7 @@ impl MoqPeerNode {
         subscriber_broadcast_tx: &broadcast::Sender<BroadcastFrame>,
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
         shutdown_tx: &broadcast::Sender<()>,
-        forwarder_handles: &mut std::collections::HashMap<String, tokio::task::JoinHandle<()>>,
+        forwarder_handles: &mut HashMap<String, tokio::task::JoinHandle<()>>,
     ) {
         match msg {
             PinManagementMessage::RequestAddOutputPin { suggested_name, response_tx } => {
@@ -1098,7 +1105,7 @@ impl MoqPeerNode {
         subscriber_broadcast_tx: &broadcast::Sender<BroadcastFrame>,
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
         shutdown_tx: &broadcast::Sender<()>,
-        forwarder_handles: &mut std::collections::HashMap<String, tokio::task::JoinHandle<()>>,
+        forwarder_handles: &mut HashMap<String, tokio::task::JoinHandle<()>>,
     ) {
         tracing::info!("MoqPeerNode: activated dynamic input pin '{}'", pin.name);
         // Prune finished forwarder handles to avoid unbounded growth
@@ -1326,6 +1333,10 @@ impl MoqPeerNode {
             }
 
             // Collect extra broadcast results (cancelled tasks are expected).
+            // Errors are logged but intentionally NOT propagated: a secondary
+            // broadcast failure (e.g. catalog timeout, network blip) should not
+            // tear down the primary publish/subscribe session.  The primary
+            // session already ran to completion via `tokio::join!` above.
             let mut extra_first_error: Option<StreamKitError> = None;
             for handle in extra_handles {
                 match handle.await {
@@ -1510,10 +1521,7 @@ impl MoqPeerNode {
     /// carries one media type the caller handles this via a shortened grace
     /// timeout (see [`Self::watch_catalog_and_process_inner`]).
     fn has_expected_tracks(
-        track_handles: &std::collections::HashMap<
-            String,
-            tokio::task::JoinHandle<Result<(), StreamKitError>>,
-        >,
+        track_handles: &HashMap<String, tokio::task::JoinHandle<Result<(), StreamKitError>>>,
         is_additional: bool,
     ) -> bool {
         if track_handles.is_empty() {
@@ -1560,6 +1568,10 @@ impl MoqPeerNode {
     /// For each audio and video rendition in the catalog that isn't already
     /// being handled, spawns a track processor task with the appropriate
     /// output pin name (optionally prefixed for multi-broadcast mode).
+    ///
+    /// **Important:** `track_handles` is scoped to a single broadcast.
+    /// Each broadcast must use its own map — sharing a map across broadcasts
+    /// would cause track-name collisions (e.g. two `"video/hd"` entries).
     #[allow(clippy::too_many_arguments)]
     fn subscribe_catalog_tracks(
         catalog: &hang::catalog::Catalog,
@@ -1569,10 +1581,7 @@ impl MoqPeerNode {
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
         dynamic_outputs: &DynamicOutputs,
         pin_prefix: Option<&str>,
-        track_handles: &mut std::collections::HashMap<
-            String,
-            tokio::task::JoinHandle<Result<(), StreamKitError>>,
-        >,
+        track_handles: &mut HashMap<String, tokio::task::JoinHandle<Result<(), StreamKitError>>>,
     ) {
         // Subscribe to all audio tracks not yet being handled
         for track_name in catalog.audio.renditions.keys() {
@@ -1638,24 +1647,20 @@ impl MoqPeerNode {
             )?;
         let mut catalog_consumer = hang::catalog::CatalogConsumer::new(catalog_track);
 
-        let mut track_handles: std::collections::HashMap<
+        let mut track_handles: HashMap<
             String,
             tokio::task::JoinHandle<Result<(), StreamKitError>>,
-        > = std::collections::HashMap::new();
+        > = HashMap::new();
 
-        // After the first tracks are discovered we switch from the initial 30s
-        // timeout to a shorter 5s grace period.  This handles the common case
-        // where the browser grants mic and camera permissions at different
-        // times: the first catalog arrives with audio only, and we keep
-        // watching briefly for the second catalog that adds video.  If no
-        // additional catalog arrives within the grace period we conclude that
-        // the publisher genuinely only has one media type, avoiding the full
-        // 30-second wait that the old code suffered.
         let mut tracks_discovered = false;
 
         // Monitor the catalog for new tracks, subscribing to each as it appears
         loop {
-            let timeout_secs = if tracks_discovered { 5 } else { 30 };
+            let timeout_secs = if tracks_discovered {
+                CATALOG_GRACE_TIMEOUT_SECS
+            } else {
+                CATALOG_INITIAL_TIMEOUT_SECS
+            };
             tokio::select! {
                 biased;
                 _ = shutdown_rx.recv() => {
@@ -1818,10 +1823,7 @@ impl MoqPeerNode {
     /// `HashMap`.  Uses `futures::future::join_all` to wait for all tasks
     /// concurrently and returns the first error encountered (if any).
     async fn await_track_tasks_map(
-        track_handles: std::collections::HashMap<
-            String,
-            tokio::task::JoinHandle<Result<(), StreamKitError>>,
-        >,
+        track_handles: HashMap<String, tokio::task::JoinHandle<Result<(), StreamKitError>>>,
     ) -> Result<(), StreamKitError> {
         if track_handles.is_empty() {
             tracing::warn!("Publisher catalog had no audio or video tracks");
@@ -2699,7 +2701,7 @@ mod tests {
             cardinality: PinCardinality::One,
         };
         let msg = PinManagementMessage::AddedInputPin { pin, channel: rx };
-        let mut forwarder_handles = std::collections::HashMap::new();
+        let mut forwarder_handles = HashMap::new();
         MoqPeerNode::handle_pin_management(
             msg,
             &dynamic_outputs,
@@ -2766,8 +2768,7 @@ mod tests {
     /// Helper: build a dummy track_handles map with the given track names.
     fn dummy_track_handles(
         names: &[&str],
-    ) -> std::collections::HashMap<String, tokio::task::JoinHandle<Result<(), StreamKitError>>>
-    {
+    ) -> HashMap<String, tokio::task::JoinHandle<Result<(), StreamKitError>>> {
         names.iter().map(|n| (n.to_string(), tokio::spawn(async { Ok(()) }))).collect()
     }
 

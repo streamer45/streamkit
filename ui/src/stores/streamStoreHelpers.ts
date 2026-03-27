@@ -589,9 +589,6 @@ async function createSecondaryVideoSource(
   return { camera, screen: null };
 }
 
-/** Create a secondary publish broadcast for multi-broadcast mode.
- *  Each broadcast gets its own media sources — sources cannot be shared
- *  between broadcasts. */
 /** Analyze secondary broadcast tracks and return video source info + warnings.
  *  Pure function — no side effects, no logger calls. Warnings are collected
  *  for the caller to log. */
@@ -943,8 +940,10 @@ export async function performConnect(
       );
 
       // Secondary broadcast (multi-broadcast mode).
-      // Currently supports at most one secondary; additional broadcasts are
-      // ignored with a warning.
+      // UI limitation: at most 2 broadcasts total (1 primary + 1 secondary).
+      // The Rust backend (`MoqPeerNode`) supports N broadcasts, but the UI
+      // currently only wires a single secondary.  Extending to N would require
+      // dynamic `ConnectAttempt` fields and per-broadcast cleanup tracking.
       if (state.publishBroadcasts.length > 1) {
         if (state.publishBroadcasts.length > 2) {
           logger.warn(
