@@ -160,7 +160,7 @@ fn resolve_scene(
                 lc.opacity,
                 lc.z_index,
                 lc.rotation_degrees,
-                false,
+                lc.aspect_fit,
                 lc.mirror_horizontal,
                 lc.mirror_vertical,
                 lc.crop_zoom,

@@ -410,6 +410,7 @@ export const useCompositorLayers = (
             cropX: DEFAULT_CROP_X,
             cropY: DEFAULT_CROP_Y,
             cropShape: DEFAULT_CROP_SHAPE,
+            aspectFit: true,
           },
           kind: 'text',
         };
@@ -422,6 +423,7 @@ export const useCompositorLayers = (
             cropX: DEFAULT_CROP_X,
             cropY: DEFAULT_CROP_Y,
             cropShape: DEFAULT_CROP_SHAPE,
+            aspectFit: true,
           },
           kind: 'image',
         };
