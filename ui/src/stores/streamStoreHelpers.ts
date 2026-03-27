@@ -1162,6 +1162,8 @@ export async function performConnect(
       watchStatus: 'disabled',
       micStatus: 'disabled',
       cameraStatus: 'disabled',
+      isSecondaryCameraEnabled: false,
+      secondaryCameraStatus: 'disabled',
       errorMessage: formatConnectError(error),
       ...NULL_MOQ_REFS,
     });
