@@ -1,0 +1,132 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+name: MoQ Relay Screen + Camera PiP (Audio + Video)
+description: >
+  Subscribes screen and camera inputs from separate broadcasts on an external
+  MoQ relay, composites screen as background with webcam PiP overlay, and
+  republishes to the relay.  This is the external-relay counterpart of
+  video_moq_screen_cam_pip.yml (which uses the built-in moq_peer transport).
+# NOTE: The publisher (browser) must already be streaming to the 'screen-input'
+# and 'cam-input' broadcasts before starting this pipeline, otherwise track
+# discovery will miss the video/data pins.
+mode: dynamic
+client:
+  relay_url: http://127.0.0.1:4443
+  publish:
+    broadcast: screen-input
+    tracks:
+      - kind: audio
+        source: microphone
+      - kind: video
+        source: screen
+      - kind: video
+        source: camera
+        broadcast: cam-input
+  watch:
+    broadcast: output
+    audio: true
+    video: true
+
+nodes:
+  moq_screen_input:
+    kind: transport::moq::subscriber
+    params:
+      url: http://127.0.0.1:4443
+      broadcast: screen-input
+      backoff_cap: 4
+      max_retries: 10
+
+  moq_cam_input:
+    kind: transport::moq::subscriber
+    params:
+      url: http://127.0.0.1:4443
+      broadcast: cam-input
+      backoff_cap: 4
+      max_retries: 10
+
+  # --- Video path: decode both sources → composite → encode ---
+
+  vp9_decoder_screen:
+    kind: video::vp9::decoder
+    needs:
+      # @moq/publish uses "video/hd" as the track name
+      in: moq_screen_input.video/hd
+
+  vp9_decoder_cam:
+    kind: video::vp9::decoder
+    needs:
+      in: moq_cam_input.video/hd
+
+  compositor:
+    kind: video::compositor
+    params:
+      width: 1920
+      height: 1080
+      num_inputs: 2
+      layers:
+        in_0:
+          rect: { x: 0, y: 0, width: 1920, height: 1080 }
+          opacity: 1
+          z_index: 0
+        in_1:
+          rect: { x: 1520, y: 760, width: 380, height: 285 }
+          opacity: 0.9
+          z_index: 1
+          crop_zoom: 2.2
+          crop_x: 0.5
+          crop_y: 0.5
+      text_overlays:
+        - id: label
+          text: Live Screen Share
+          rect: { x: 30, y: 30, width: 400, height: 50 }
+          color: [255, 255, 255, 180]
+          font_size: 40
+          font_name: dejavu-sans-bold
+          z_index: 2
+    needs:
+      - vp9_decoder_screen
+      - vp9_decoder_cam
+
+  pixel_convert:
+    kind: video::pixel_convert
+    params:
+      output_format: nv12
+    needs: compositor
+
+  vp9_encoder:
+    kind: video::vp9::encoder
+    params:
+      keyframe_interval: 30
+    needs: pixel_convert
+
+  # --- Audio path: decode → gain → encode ---
+
+  opus_decoder:
+    kind: audio::opus::decoder
+    needs: moq_screen_input
+
+  gain:
+    kind: audio::gain
+    params:
+      gain: 1.0
+    needs: opus_decoder
+
+  opus_encoder:
+    kind: audio::opus::encoder
+    needs: gain
+
+  moq_output:
+    kind: transport::moq::publisher
+    params:
+      url: http://127.0.0.1:4443
+      broadcast: output
+      channels: 1
+      group_duration_ms: 40
+      initial_delay_ms: 250
+      audio: true
+      video: true
+    needs:
+      in: opus_encoder
+      in_1: vp9_encoder

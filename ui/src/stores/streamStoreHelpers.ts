@@ -550,6 +550,9 @@ async function createSecondaryVideoSource(
   screen: Publish.Source.Screen | null;
 }> {
   if (sourceType === 'screen') {
+    logger.info(
+      'Creating secondary screen capture source — the OS may show an additional picker dialog'
+    );
     const screen = new Publish.Source.Screen({ enabled: true });
     if (!screen.source.peek()?.video) {
       try {
@@ -600,6 +603,14 @@ async function setupSecondaryPublishPath(
   secondaryCamera: Publish.Source.Camera | null;
   secondaryScreen: Publish.Source.Screen | null;
 }> {
+  const hasAudio = broadcastTracks.some((t) => t.kind === 'audio');
+  if (hasAudio) {
+    logger.warn(
+      `Secondary broadcast '${broadcastName}' has audio tracks which are not yet supported; ` +
+        'audio will be silently dropped'
+    );
+  }
+
   const needsVideo = broadcastTracks.some((t) => t.kind === 'video');
   const videoTrack = broadcastTracks.find((t) => t.kind === 'video');
   const videoSourceType = videoTrack?.source === 'screen' ? 'screen' : 'camera';
@@ -892,10 +903,24 @@ export async function performConnect(
         )
       );
 
-      // Secondary broadcast (multi-broadcast mode)
+      // Secondary broadcast (multi-broadcast mode).
+      // Currently supports at most one secondary; additional broadcasts are
+      // ignored with a warning.
+      if (state.publishBroadcasts.length > 2) {
+        logger.warn(
+          `Pipeline declares ${state.publishBroadcasts.length} broadcasts but only 2 are supported; ` +
+            `ignoring: ${state.publishBroadcasts.slice(2).join(', ')}`
+        );
+      }
       if (state.publishBroadcasts.length > 1) {
+        const primaryBroadcast = state.publishBroadcasts[0];
         const secondaryName = state.publishBroadcasts[1];
-        const secondaryTracks = state.tracks.filter((t) => t.broadcast === secondaryName);
+        const secondaryTracks = state.tracks.filter(
+          (t) => (t.broadcast ?? primaryBroadcast) === secondaryName
+        );
+        // setupSecondaryPublishPath owns cleanup of its resources on failure;
+        // on success, ownership transfers to `attempt` via applySecondaryPublishResult,
+        // and the outer catch block handles cleanup through cleanupConnectAttempt.
         applySecondaryPublishResult(
           attempt,
           await setupSecondaryPublishPath(
