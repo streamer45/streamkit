@@ -10,7 +10,7 @@ description: >
   video_moq_screen_cam_pip.yml (which uses the built-in moq_peer transport).
 # NOTE: The publisher (browser) must already be streaming to the 'screen-input'
 # and 'cam-input' broadcasts before starting this pipeline, otherwise track
-# discovery will miss the video/data pins.
+# discovery will miss the video/hd pins.
 mode: dynamic
 client:
   relay_url: http://127.0.0.1:4443
@@ -62,16 +62,16 @@ nodes:
   compositor:
     kind: video::compositor
     params:
-      width: 1920
-      height: 1080
+      width: 1280
+      height: 720
       num_inputs: 2
       layers:
         in_0:
-          rect: { x: 0, y: 0, width: 1920, height: 1080 }
+          rect: { x: 0, y: 0, width: 1280, height: 720 }
           opacity: 1
           z_index: 0
         in_1:
-          rect: { x: 1520, y: 760, width: 380, height: 285 }
+          rect: { x: 880, y: 415, width: 380, height: 285 }
           opacity: 0.9
           z_index: 1
           crop_zoom: 2.2

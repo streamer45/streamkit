@@ -32,16 +32,17 @@ nodes:
     params:
       gateway_path: /moq/screenshare
       # The first broadcast is the "primary" — its output pins are unprefixed
-      # (e.g. video/data, audio/data).  Additional broadcasts get their pins
-      # namespaced as {broadcast}/{track} (e.g. cam-input/video/data) so that
+      # (e.g. video/hd, audio/data).  Additional broadcasts get their pins
+      # namespaced as {broadcast}/{track} (e.g. cam-input/video/hd) so that
       # downstream nodes can wire to each source independently.
+      # NOTE: @moq/publish uses "video/hd" (not "video/data") as the track name.
       input_broadcasts:
         - screen-input
         - cam-input
       output_broadcast: output
       allow_reconnect: true
-      video_width: 1920
-      video_height: 1080
+      video_width: 1280
+      video_height: 720
     needs:
       in: opus_encoder
       in_1: vp9_encoder
@@ -49,26 +50,27 @@ nodes:
   vp9_decoder_screen:
     kind: video::vp9::decoder
     needs:
-      in: moq_peer.video/data
+      # @moq/publish uses "video/hd" as the track name (not "video/data")
+      in: moq_peer.video/hd
 
   vp9_decoder_cam:
     kind: video::vp9::decoder
     needs:
-      in: moq_peer.cam-input/video/data
+      in: moq_peer.cam-input/video/hd
 
   compositor:
     kind: video::compositor
     params:
-      width: 1920
-      height: 1080
+      width: 1280
+      height: 720
       num_inputs: 2
       layers:
         in_0:
-          rect: { x: 0, y: 0, width: 1920, height: 1080 }
+          rect: { x: 0, y: 0, width: 1280, height: 720 }
           opacity: 1
           z_index: 0
         in_1:
-          rect: { x: 1520, y: 760, width: 380, height: 285 }
+          rect: { x: 880, y: 415, width: 380, height: 285 }
           opacity: 0.9
           z_index: 1
           crop_zoom: 2.2
