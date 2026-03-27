@@ -275,7 +275,7 @@ test.describe('Stream View - Video MoQ Color Bars Pipeline', () => {
       });
 
       // Scroll the canvas into view so the IntersectionObserver fires and
-      // the video decoder subscribes to the video/data track.
+      // the video decoder subscribes to the video/hd track.
       const canvas = page.locator('canvas');
       await expect(canvas).toBeVisible({ timeout: 5_000 });
       await canvas.scrollIntoViewIfNeeded();
@@ -417,7 +417,7 @@ test.describe('Stream View - Webcam PiP Pipeline', () => {
       });
 
       // Scroll the canvas into view so the IntersectionObserver fires and
-      // the video decoder subscribes to the video/data track.
+      // the video decoder subscribes to the video/hd track.
       const canvas = page.locator('canvas');
       await expect(canvas).toBeVisible({ timeout: 5_000 });
       await canvas.scrollIntoViewIfNeeded();

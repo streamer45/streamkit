@@ -37,7 +37,8 @@ nodes:
   vp9_decoder:
     kind: video::vp9::decoder
     needs:
-      in: moq_peer.video/data
+      # @moq/publish uses "video/hd" as the track name (not "video/data")
+      in: moq_peer.video/hd
 
   compositor:
     kind: video::compositor

@@ -83,8 +83,24 @@ describe('deriveSettingsFromClient', () => {
       publish: {
         broadcast: 'camera-feed',
         tracks: [
-          { kind: 'audio', source: 'microphone', broadcast: null },
-          { kind: 'video', source: 'camera', broadcast: null },
+          {
+            kind: 'audio',
+            source: 'microphone',
+            broadcast: null,
+            width: null,
+            height: null,
+            codec: null,
+            max_bitrate: null,
+          },
+          {
+            kind: 'video',
+            source: 'camera',
+            broadcast: null,
+            width: null,
+            height: null,
+            codec: null,
+            max_bitrate: null,
+          },
         ],
       },
       watch: { broadcast: 'composited-output', audio: true, video: true },
@@ -107,8 +123,24 @@ describe('deriveSettingsFromClient', () => {
       isExternalRelay: false,
       videoSourceType: 'camera',
       tracks: [
-        { kind: 'audio', source: 'microphone', broadcast: null },
-        { kind: 'video', source: 'camera', broadcast: null },
+        {
+          kind: 'audio',
+          source: 'microphone',
+          broadcast: null,
+          width: null,
+          height: null,
+          codec: null,
+          max_bitrate: null,
+        },
+        {
+          kind: 'video',
+          source: 'camera',
+          broadcast: null,
+          width: null,
+          height: null,
+          codec: null,
+          max_bitrate: null,
+        },
       ],
       publishBroadcasts: ['camera-feed'],
     });
@@ -120,7 +152,17 @@ describe('deriveSettingsFromClient', () => {
       gateway_path: null,
       publish: {
         broadcast: 'input',
-        tracks: [{ kind: 'audio', source: 'microphone', broadcast: null }],
+        tracks: [
+          {
+            kind: 'audio',
+            source: 'microphone',
+            broadcast: null,
+            width: null,
+            height: null,
+            codec: null,
+            max_bitrate: null,
+          },
+        ],
       },
       watch: { broadcast: 'output', audio: false, video: true },
       input: null,
@@ -141,7 +183,17 @@ describe('deriveSettingsFromClient', () => {
       outputsVideo: true,
       isExternalRelay: true,
       videoSourceType: 'camera',
-      tracks: [{ kind: 'audio', source: 'microphone', broadcast: null }],
+      tracks: [
+        {
+          kind: 'audio',
+          source: 'microphone',
+          broadcast: null,
+          width: null,
+          height: null,
+          codec: null,
+          max_bitrate: null,
+        },
+      ],
       publishBroadcasts: ['input'],
     });
   });
@@ -353,8 +405,24 @@ describe('deriveSettingsFromClient — monitor preview scenarios', () => {
       publish: {
         broadcast: 'camera',
         tracks: [
-          { kind: 'audio', source: 'microphone', broadcast: null },
-          { kind: 'video', source: 'camera', broadcast: null },
+          {
+            kind: 'audio',
+            source: 'microphone',
+            broadcast: null,
+            width: null,
+            height: null,
+            codec: null,
+            max_bitrate: null,
+          },
+          {
+            kind: 'video',
+            source: 'camera',
+            broadcast: null,
+            width: null,
+            height: null,
+            codec: null,
+            max_bitrate: null,
+          },
         ],
       },
       watch: { broadcast: 'composited', audio: true, video: true },
@@ -376,8 +444,24 @@ describe('deriveSettingsFromClient — monitor preview scenarios', () => {
       publish: {
         broadcast: 'input',
         tracks: [
-          { kind: 'audio', source: 'microphone', broadcast: null },
-          { kind: 'video', source: 'screen', broadcast: null },
+          {
+            kind: 'audio',
+            source: 'microphone',
+            broadcast: null,
+            width: null,
+            height: null,
+            codec: null,
+            max_bitrate: null,
+          },
+          {
+            kind: 'video',
+            source: 'screen',
+            broadcast: null,
+            width: null,
+            height: null,
+            codec: null,
+            max_bitrate: null,
+          },
         ],
       },
       watch: { broadcast: 'output', audio: true, video: true },
@@ -400,8 +484,24 @@ describe('deriveSettingsFromClient — monitor preview scenarios', () => {
       isExternalRelay: false,
       videoSourceType: 'screen',
       tracks: [
-        { kind: 'audio', source: 'microphone', broadcast: null },
-        { kind: 'video', source: 'screen', broadcast: null },
+        {
+          kind: 'audio',
+          source: 'microphone',
+          broadcast: null,
+          width: null,
+          height: null,
+          codec: null,
+          max_bitrate: null,
+        },
+        {
+          kind: 'video',
+          source: 'screen',
+          broadcast: null,
+          width: null,
+          height: null,
+          codec: null,
+          max_bitrate: null,
+        },
       ],
       publishBroadcasts: ['input'],
     });

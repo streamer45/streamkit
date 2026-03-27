@@ -498,7 +498,29 @@ source: CaptureSource,
  * Override broadcast name for this track.
  * When omitted, uses the parent `PublishConfig.broadcast`.
  */
-broadcast: string | null, };
+broadcast: string | null, 
+/**
+ * Desired encode width in pixels (e.g. 1280).
+ * Applied as a capture constraint and used to compute `maxPixels` for
+ * the `@moq/publish` video encoder.
+ */
+width: number | null, 
+/**
+ * Desired encode height in pixels (e.g. 720).
+ */
+height: number | null, 
+/**
+ * Codec identifier.  Supported values: `"vp9"` (video), `"opus"` (audio).
+ * Defaults to `"vp9"` for video tracks when omitted.
+ */
+codec: string | null, 
+/**
+ * Maximum bitrate in kilobits per second (1 kbps = 1000 bps).  For video
+ * tracks, converted to bps and passed as `maxBitrate` to the `@moq/publish`
+ * encoder.  Audio track bitrate is parsed and validated but not yet wired
+ * to the audio encoder.
+ */
+max_bitrate: number | null, };
 
 export type TrackKind = "audio" | "video";
 
