@@ -816,11 +816,15 @@ describe('buildVideoEncoderConfig', () => {
   it('skips maxPixels when width is zero', () => {
     const result = buildVideoEncoderConfig(makeTrack({ width: 0, height: 720 }));
     expect(result.encoderConfig.maxPixels).toBeUndefined();
+    // Zero-valued dimensions should also be excluded from capture constraints
+    // to avoid OverconstrainedError in getUserMedia/getDisplayMedia.
+    expect(result.constraints).toEqual({ height: 720 });
   });
 
   it('skips maxPixels when height is zero', () => {
     const result = buildVideoEncoderConfig(makeTrack({ width: 1280, height: 0 }));
     expect(result.encoderConfig.maxPixels).toBeUndefined();
+    expect(result.constraints).toEqual({ width: 1280 });
   });
 
   it('skips maxBitrate when max_bitrate is zero', () => {

@@ -86,8 +86,8 @@ export function buildVideoEncoderConfig(track?: PublishTrackConfig | null): {
   }
 
   const constraints: { width?: number; height?: number } = {};
-  if (width != null) constraints.width = width;
-  if (height != null) constraints.height = height;
+  if (width != null && width > 0) constraints.width = width;
+  if (height != null && height > 0) constraints.height = height;
 
   return {
     encoderConfig,
