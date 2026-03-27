@@ -1208,6 +1208,18 @@ impl MoqPeerNode {
             let subscriber_stats_delta_tx = config.stats_delta_tx.clone();
             let extra_stats_delta_tx = config.stats_delta_tx;
 
+            // Create per-broadcast OriginConsumer clones BEFORE moving
+            // receive_origin into the primary loop.
+            let extra_consumers: Vec<(String, moq_lite::OriginConsumer)> =
+                if config.input_broadcasts.len() > 1 {
+                    config.input_broadcasts[1..]
+                        .iter()
+                        .map(|bc| (bc.clone(), receive_origin.consume()))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+
             let publisher_fut = async {
                 // Primary broadcast receive loop
                 let primary_broadcast =
@@ -1233,60 +1245,51 @@ impl MoqPeerNode {
             // Spawn additional broadcast watchers for multi-broadcast mode.
             // Each additional broadcast gets its own catalog watcher with
             // namespaced output pins ({broadcast_name}/{track_name}).
-            let additional_broadcasts: Vec<String> = if config.input_broadcasts.len() > 1 {
-                config.input_broadcasts[1..].to_vec()
-            } else {
-                Vec::new()
-            };
             let extra_broadcasts_fut = async {
-                if additional_broadcasts.is_empty() {
+                if extra_consumers.is_empty() {
                     return Ok(());
                 }
 
-                // Wait for the primary broadcast to be announced first so
-                // the OriginConsumer is populated, then subscribe to each
-                // additional broadcast.
-                // The additional broadcasts share the same OriginConsumer
-                // that was created for the bidirectional session.
-                // We need to wait a moment for the catalogs to become available.
-                tokio::time::sleep(Duration::from_millis(500)).await;
-
                 let mut handles = Vec::new();
-                for bc_name in &additional_broadcasts {
-                    let _output_sender = config.output_sender.clone();
-                    let _shutdown = extra_shutdown_rx.resubscribe();
-                    let _stats = extra_stats_delta_tx.clone();
-                    let _dyn_out = config.dynamic_outputs.clone();
-                    let bc = bc_name.clone();
+                for (bc_name, consumer) in extra_consumers {
+                    let output_sender = config.output_sender.clone();
+                    let mut shutdown = extra_shutdown_rx.resubscribe();
+                    let stats = extra_stats_delta_tx.clone();
+                    let dyn_out = config.dynamic_outputs.clone();
 
                     handles.push(tokio::spawn(async move {
-                        // Subscribe to the additional broadcast via the same connection
-                        // The OriginConsumer should already have this broadcast available
-                        // since the browser publishes multiple broadcasts on one connection.
-                        tracing::info!(broadcast = %bc, "Watching additional broadcast for multi-broadcast mode");
+                        tracing::info!(broadcast = %bc_name, "Subscribing to additional broadcast");
 
-                        // We need to get a BroadcastConsumer for this broadcast from the
-                        // existing OriginConsumer. However, the OriginConsumer is consumed
-                        // by the primary receive loop. For multi-broadcast, the additional
-                        // broadcasts come through the same session — but we need access to
-                        // the receive_origin to subscribe.
-                        //
-                        // For now, log that multi-broadcast subscription was requested.
-                        // The actual subscription will happen when the browser publishes
-                        // additional broadcasts on the same connection — the primary
-                        // receive loop's OriginConsumer will see them.
-                        tracing::info!(
-                            broadcast = %bc,
-                            "Additional broadcast registered for multi-broadcast mode"
-                        );
+                        let Some(broadcast_consumer) =
+                            Self::wait_for_broadcast_announcement(
+                                consumer,
+                                &bc_name,
+                                &mut shutdown,
+                            )
+                            .await?
+                        else {
+                            return Ok(());
+                        };
 
-                        Ok::<(), StreamKitError>(())
+                        tracing::info!(broadcast = %bc_name, "Additional broadcast announced, watching catalog");
+
+                        Self::watch_catalog_and_process_inner(
+                            &broadcast_consumer,
+                            output_sender,
+                            &mut shutdown,
+                            &stats,
+                            &dyn_out,
+                            Some(&bc_name),
+                        )
+                        .await
                     }));
                 }
 
+                // Use join_all for concurrent waiting (consistent with await_track_tasks_map)
+                let results = futures::future::join_all(handles).await;
                 let mut first_error: Option<StreamKitError> = None;
-                for handle in handles {
-                    match handle.await {
+                for result in results {
+                    match result {
                         Err(e) => {
                             if first_error.is_none() {
                                 first_error = Some(StreamKitError::Runtime(format!(
@@ -1476,6 +1479,35 @@ impl MoqPeerNode {
         }
     }
 
+    /// Check whether the catalog watch loop has discovered enough tracks to stop.
+    ///
+    /// In multi-broadcast mode (`is_additional == true`), each additional broadcast
+    /// may carry only one media type (e.g. video-only camera input), so we exit as
+    /// soon as any track is found. For the primary broadcast we wait for both audio
+    /// and video before stopping.
+    fn has_expected_tracks(
+        track_handles: &std::collections::HashMap<
+            String,
+            tokio::task::JoinHandle<Result<(), StreamKitError>>,
+        >,
+        is_additional: bool,
+    ) -> bool {
+        if is_additional {
+            if !track_handles.is_empty() {
+                tracing::info!("Additional broadcast tracks discovered, stopping catalog watch");
+                return true;
+            }
+        } else {
+            let has_audio = track_handles.keys().any(|k| k.starts_with("audio/"));
+            let has_video = track_handles.keys().any(|k| k.starts_with("video/"));
+            if has_audio && has_video {
+                tracing::info!("All expected tracks discovered, stopping catalog watch");
+                return true;
+            }
+        }
+        false
+    }
+
     /// Watch the catalog continuously and process publisher tracks as they appear.
     ///
     /// Instead of waiting for all tracks upfront, this subscribes to and starts
@@ -1594,20 +1626,7 @@ impl MoqPeerNode {
                         }
                     }
 
-                    // Stop watching catalog once we have at least one audio and one video track,
-                    // which covers the common case. Additional tracks from later catalog updates
-                    // won't be picked up — this is a pragmatic trade-off matching the browser's
-                    // incremental permission grant pattern.
-                    //
-                    // TODO: For multi-broadcast mode with audio-only broadcasts, this heuristic
-                    // will wait 30s for a video track that never arrives. When the full
-                    // multi-broadcast receive is wired, consider accepting media-type hints
-                    // from the caller (e.g. from PublishTrackConfig) to determine the expected
-                    // track set per broadcast.
-                    let has_audio = track_handles.keys().any(|k| k.starts_with("audio/"));
-                    let has_video = track_handles.keys().any(|k| k.starts_with("video/"));
-                    if has_audio && has_video {
-                        tracing::info!("All expected tracks discovered, stopping catalog watch");
+                    if Self::has_expected_tracks(&track_handles, pin_prefix.is_some()) {
                         break;
                     }
                 }
