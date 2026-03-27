@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import styled from '@emotion/styled';
-import React, { useEffect, useCallback } from 'react';
+import React, { useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useShallow } from 'zustand/shallow';
 
@@ -188,6 +188,46 @@ const ControlButton = styled.button<{ active?: boolean }>`
   }
 `;
 
+const VideoContainer = styled.div`
+  position: relative;
+
+  &:fullscreen {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #000;
+  }
+
+  &:fullscreen canvas {
+    max-width: 100vw;
+    max-height: 100vh;
+  }
+`;
+
+const FullscreenButton = styled.button`
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 4px 8px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  opacity: 0;
+  transition: opacity 0.2s;
+  z-index: 1;
+
+  ${VideoContainer}:hover & {
+    opacity: 1;
+  }
+
+  &:hover {
+    background: rgba(0, 0, 0, 0.8);
+  }
+`;
+
 const ErrorMessage = styled.div`
   padding: 12px 16px;
   background: rgba(244, 67, 54, 0.1);
@@ -301,6 +341,9 @@ const StreamView: React.FC = () => {
     activeSessionName,
     activePipelineName,
     videoRenderer,
+    publishBroadcasts,
+    isSecondaryCameraEnabled,
+    secondaryCameraStatus,
     setServerUrl,
     setMoqToken,
     setInputBroadcast,
@@ -320,6 +363,7 @@ const StreamView: React.FC = () => {
     disconnect,
     toggleMicrophone,
     toggleCamera,
+    toggleSecondaryCamera,
   } = useStreamStore(
     useShallow((s) => ({
       status: s.status,
@@ -345,6 +389,9 @@ const StreamView: React.FC = () => {
       activeSessionName: s.activeSessionName,
       activePipelineName: s.activePipelineName,
       videoRenderer: s.videoRenderer,
+      publishBroadcasts: s.publishBroadcasts,
+      isSecondaryCameraEnabled: s.isSecondaryCameraEnabled,
+      secondaryCameraStatus: s.secondaryCameraStatus,
       setServerUrl: s.setServerUrl,
       setMoqToken: s.setMoqToken,
       setInputBroadcast: s.setInputBroadcast,
@@ -364,10 +411,13 @@ const StreamView: React.FC = () => {
       disconnect: s.disconnect,
       toggleMicrophone: s.toggleMicrophone,
       toggleCamera: s.toggleCamera,
+      toggleSecondaryCamera: s.toggleSecondaryCamera,
     }))
   );
 
   const isStreaming = status === 'connected';
+
+  const videoContainerRef = useRef<HTMLDivElement>(null);
 
   // Get node definitions for YAML autocomplete
   const nodeDefinitions = useSchemaStore((s) => s.nodeDefinitions);
@@ -863,6 +913,14 @@ const StreamView: React.FC = () => {
                           : '📷 Camera Off'}
                     </ControlButton>
                   )}
+                  {publishBroadcasts.length > 1 && secondaryCameraStatus !== 'disabled' && (
+                    <ControlButton
+                      active={isSecondaryCameraEnabled}
+                      onClick={toggleSecondaryCamera}
+                    >
+                      {isSecondaryCameraEnabled ? '📷 Camera On' : '📷 Camera Off'}
+                    </ControlButton>
+                  )}
                 </>
               )}
             </ConnectionControlsRow>
@@ -910,6 +968,17 @@ const StreamView: React.FC = () => {
                 • {watchStatusText[watchStatus]}
                 {pipelineNeedsAudio && <> • {micStatusText[micStatus]}</>}
                 {pipelineNeedsVideo && <> • {cameraStatusText[cameraStatus]}</>}
+                {secondaryCameraStatus !== 'disabled' && (
+                  <>
+                    {' '}
+                    • Camera 2:{' '}
+                    {secondaryCameraStatus === 'ready'
+                      ? 'ready'
+                      : secondaryCameraStatus === 'requesting'
+                        ? 'requesting…'
+                        : secondaryCameraStatus}
+                  </>
+                )}
               </div>
             )}
 
@@ -977,19 +1046,34 @@ const StreamView: React.FC = () => {
           {isStreaming && videoRenderer && (
             <Section>
               <SectionTitle>Video</SectionTitle>
-              <canvas
-                ref={videoCanvasRef}
-                style={{
-                  display: 'block',
-                  width: 'auto',
-                  maxWidth: '100%',
-                  maxHeight: 480,
-                  margin: '0 auto',
-                  borderRadius: 6,
-                  background: '#000',
-                  aspectRatio: canvasAspectRatio,
-                }}
-              />
+              <VideoContainer ref={videoContainerRef}>
+                <FullscreenButton
+                  onClick={() => {
+                    const el = videoContainerRef.current;
+                    if (!el) return;
+                    if (document.fullscreenElement) {
+                      document.exitFullscreen();
+                    } else {
+                      el.requestFullscreen();
+                    }
+                  }}
+                >
+                  Fullscreen
+                </FullscreenButton>
+                <canvas
+                  ref={videoCanvasRef}
+                  style={{
+                    display: 'block',
+                    width: 'auto',
+                    maxWidth: '100%',
+                    maxHeight: 480,
+                    margin: '0 auto',
+                    borderRadius: 6,
+                    background: '#000',
+                    aspectRatio: canvasAspectRatio,
+                  }}
+                />
+              </VideoContainer>
             </Section>
           )}
 

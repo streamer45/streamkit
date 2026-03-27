@@ -59,11 +59,30 @@ export function buildVideoEncoderConfig(track?: PublishTrackConfig | null): {
   const height = track?.height ?? undefined;
 
   if (width != null && height != null) {
-    encoderConfig.maxPixels = width * height;
+    if (width === 0 || height === 0) {
+      logger.warn(
+        `Track (source=${track?.source}) has zero dimension (${width}x${height}) — skipping maxPixels`
+      );
+    } else {
+      encoderConfig.maxPixels = width * height;
+    }
+  } else if (width != null || height != null) {
+    // Partial dimensions: capture constraint is applied but maxPixels cannot
+    // be computed.  The Rust linter warns about this; log here too for
+    // runtime visibility.
+    logger.warn(
+      `Track (source=${track?.source}) has partial dimensions ` +
+        `(width=${width ?? 'unset'}, height=${height ?? 'unset'}) — ` +
+        `maxPixels will not be computed; set both for correct resolution control`
+    );
   }
   if (track?.max_bitrate != null) {
-    // Convert kilobits per second → bits per second for the encoder.
-    encoderConfig.maxBitrate = track.max_bitrate * 1000;
+    if (track.max_bitrate === 0) {
+      logger.warn(`Track (source=${track.source}) has max_bitrate: 0 — skipping maxBitrate`);
+    } else {
+      // Convert kilobits per second → bits per second for the encoder.
+      encoderConfig.maxBitrate = track.max_bitrate * 1000;
+    }
   }
 
   const constraints: { width?: number; height?: number } = {};
@@ -155,6 +174,8 @@ export interface ConnectableState {
   micStatus: MicStatus;
   cameraStatus: CameraStatus;
   watchStatus: WatchStatus;
+  isSecondaryCameraEnabled: boolean;
+  secondaryCameraStatus: CameraStatus;
   /** Human-readable label for the current phase of a connect attempt
    *  (e.g. 'devices', 'relay', 'pipeline').  Empty when idle. */
   connectingStep: string;
@@ -484,6 +505,9 @@ async function setupMediaSources(
   if (needsVideo) {
     if (videoSourceType === 'screen') {
       // Screen capture — the OS picker dialog may take a while, use 30s timeout.
+      // NOTE: Screen uses `screenProps.video` for constraints while Camera uses
+      // `cameraProps.constraints` — this asymmetry is correct per the @moq/publish
+      // types (Publish.Source.Screen vs Publish.Source.Camera have different APIs).
       const screenProps: ConstructorParameters<typeof Publish.Source.Screen>[0] = { enabled: true };
       if (videoConstraints) {
         screenProps.video = videoConstraints;
@@ -1112,6 +1136,9 @@ export async function performConnect(
       connectingStep: '',
       isMicEnabled: decision.shouldPublish && state.pipelineNeedsAudio,
       isCameraEnabled: decision.shouldPublish && state.pipelineNeedsVideo,
+      isSecondaryCameraEnabled: Boolean(attempt.secondaryCamera ?? attempt.secondaryScreen),
+      secondaryCameraStatus:
+        (attempt.secondaryCamera ?? attempt.secondaryScreen) ? 'ready' : 'disabled',
     });
 
     const modes = [];

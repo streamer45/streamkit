@@ -821,11 +821,47 @@ pub fn lint_client_section(client: &ClientSection, mode: EngineMode) -> Vec<Clie
                         rule: "unrecognized-codec",
                         message: format!(
                             "Track (kind=`{}`, source=`{}`) has unrecognized codec \
-                             `{codec}` — supported: {supported}.",
+                             `{codec}` — supported: {supported}. Unrecognized codecs \
+                             will hard-fail at encoder init.",
                             track.kind, track.source
                         ),
                     });
                 }
+            }
+
+            // Rule 14g: zero-value dimensions or bitrate
+            if track.width == Some(0) || track.height == Some(0) {
+                warnings.push(ClientLintWarning {
+                    rule: "zero-dimension",
+                    message: format!(
+                        "Track (kind=`{}`, source=`{}`) has zero width or height — \
+                         this will produce degenerate encoder output.",
+                        track.kind, track.source
+                    ),
+                });
+            }
+            if track.max_bitrate == Some(0) {
+                warnings.push(ClientLintWarning {
+                    rule: "zero-bitrate",
+                    message: format!(
+                        "Track (kind=`{}`, source=`{}`) has max_bitrate: 0 — \
+                         this will likely cause the encoder to fail.",
+                        track.kind, track.source
+                    ),
+                });
+            }
+
+            // Rule 14h: max_bitrate on audio tracks (not yet wired)
+            if track.kind == TrackKind::Audio && track.max_bitrate.is_some() {
+                warnings.push(ClientLintWarning {
+                    rule: "bitrate-on-audio",
+                    message: format!(
+                        "Audio track (source=`{}`) sets max_bitrate — audio bitrate \
+                         is parsed but not yet wired to the audio encoder and will \
+                         have no effect.",
+                        track.source
+                    ),
+                });
             }
         }
 
@@ -3133,6 +3169,94 @@ client:
         assert!(
             !warnings.iter().any(|w| w.rule == "unrecognized-codec"),
             "Should not warn for recognized codecs: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_lint_zero_dimension() {
+        let mut c = dynamic_client();
+        c.publish = Some(PublishConfig {
+            broadcast: "input".into(),
+            tracks: vec![PublishTrackConfig {
+                kind: TrackKind::Video,
+                source: CaptureSource::Camera,
+                broadcast: None,
+                width: Some(0),
+                height: Some(720),
+                codec: None,
+                max_bitrate: None,
+            }],
+        });
+        let warnings = lint_client_section(&c, EngineMode::Dynamic);
+        assert!(
+            warnings.iter().any(|w| w.rule == "zero-dimension"),
+            "Should warn for zero-value width: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_lint_zero_bitrate() {
+        let mut c = dynamic_client();
+        c.publish = Some(PublishConfig {
+            broadcast: "input".into(),
+            tracks: vec![PublishTrackConfig {
+                kind: TrackKind::Video,
+                source: CaptureSource::Camera,
+                broadcast: None,
+                width: None,
+                height: None,
+                codec: None,
+                max_bitrate: Some(0),
+            }],
+        });
+        let warnings = lint_client_section(&c, EngineMode::Dynamic);
+        assert!(
+            warnings.iter().any(|w| w.rule == "zero-bitrate"),
+            "Should warn for zero-value max_bitrate: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_lint_bitrate_on_audio() {
+        let mut c = dynamic_client();
+        c.publish = Some(PublishConfig {
+            broadcast: "input".into(),
+            tracks: vec![PublishTrackConfig {
+                kind: TrackKind::Audio,
+                source: CaptureSource::Microphone,
+                broadcast: None,
+                width: None,
+                height: None,
+                codec: None,
+                max_bitrate: Some(32),
+            }],
+        });
+        let warnings = lint_client_section(&c, EngineMode::Dynamic);
+        assert!(
+            warnings.iter().any(|w| w.rule == "bitrate-on-audio"),
+            "Should warn for max_bitrate on audio track: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_lint_no_bitrate_on_audio_when_absent() {
+        let mut c = dynamic_client();
+        c.publish = Some(PublishConfig {
+            broadcast: "input".into(),
+            tracks: vec![PublishTrackConfig {
+                kind: TrackKind::Audio,
+                source: CaptureSource::Microphone,
+                broadcast: None,
+                width: None,
+                height: None,
+                codec: None,
+                max_bitrate: None,
+            }],
+        });
+        let warnings = lint_client_section(&c, EngineMode::Dynamic);
+        assert!(
+            !warnings.iter().any(|w| w.rule == "bitrate-on-audio"),
+            "Should not warn when audio track has no max_bitrate: {warnings:?}"
         );
     }
 }

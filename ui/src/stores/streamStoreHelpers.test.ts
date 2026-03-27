@@ -5,6 +5,8 @@
 import type { Getter } from '@moq/signals';
 import { describe, expect, it, vi } from 'vitest';
 
+import type { PublishTrackConfig } from '@/types/types';
+
 import {
   decideConnect,
   cleanupConnectAttempt,
@@ -17,6 +19,20 @@ import {
   NULL_MOQ_REFS,
   type ConnectAttempt,
 } from './streamStoreHelpers';
+
+/** Factory helper to reduce boilerplate in track-related tests. */
+function makeTrack(overrides: Partial<PublishTrackConfig> = {}): PublishTrackConfig {
+  return {
+    kind: 'video',
+    source: 'camera',
+    broadcast: null,
+    width: null,
+    height: null,
+    codec: null,
+    max_bitrate: null,
+    ...overrides,
+  };
+}
 
 // Mock the MoQ libraries to avoid ESM resolution errors in the test environment.
 vi.mock('@moq/hang', () => ({
@@ -796,6 +812,31 @@ describe('buildVideoEncoderConfig', () => {
     expect(result.encoderConfig.codec).toBe('vp09');
     expect(result.constraints).toBeUndefined();
   });
+
+  it('skips maxPixels when width is zero', () => {
+    const result = buildVideoEncoderConfig(makeTrack({ width: 0, height: 720 }));
+    expect(result.encoderConfig.maxPixels).toBeUndefined();
+  });
+
+  it('skips maxPixels when height is zero', () => {
+    const result = buildVideoEncoderConfig(makeTrack({ width: 1280, height: 0 }));
+    expect(result.encoderConfig.maxPixels).toBeUndefined();
+  });
+
+  it('skips maxBitrate when max_bitrate is zero', () => {
+    const result = buildVideoEncoderConfig(makeTrack({ max_bitrate: 0 }));
+    expect(result.encoderConfig.maxBitrate).toBeUndefined();
+  });
+
+  it('logs warning for partial dimensions (width only)', () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    buildVideoEncoderConfig(makeTrack({ width: 1280 }));
+    const partialCalls = logSpy.mock.calls.filter((args) =>
+      args.some((a) => typeof a === 'string' && a.includes('partial dimensions'))
+    );
+    expect(partialCalls).toHaveLength(1);
+    logSpy.mockRestore();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -808,17 +849,7 @@ describe('buildVideoEncoderConfig', () => {
 describe('validateTrackCodecs', () => {
   it('does not warn for recognized video codec vp9', () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    validateTrackCodecs([
-      {
-        kind: 'video',
-        source: 'camera',
-        broadcast: null,
-        width: null,
-        height: null,
-        codec: 'vp9',
-        max_bitrate: null,
-      },
-    ]);
+    validateTrackCodecs([makeTrack({ codec: 'vp9' })]);
     const unrecognizedCalls = logSpy.mock.calls.filter((args) =>
       args.some((a) => typeof a === 'string' && a.includes('unrecognized'))
     );
@@ -828,17 +859,7 @@ describe('validateTrackCodecs', () => {
 
   it('does not warn for recognized audio codec opus', () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    validateTrackCodecs([
-      {
-        kind: 'audio',
-        source: 'microphone',
-        broadcast: null,
-        width: null,
-        height: null,
-        codec: 'opus',
-        max_bitrate: null,
-      },
-    ]);
+    validateTrackCodecs([makeTrack({ kind: 'audio', source: 'microphone', codec: 'opus' })]);
     const unrecognizedCalls = logSpy.mock.calls.filter((args) =>
       args.some((a) => typeof a === 'string' && a.includes('unrecognized'))
     );
@@ -848,17 +869,7 @@ describe('validateTrackCodecs', () => {
 
   it('does not warn when codec is null', () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    validateTrackCodecs([
-      {
-        kind: 'video',
-        source: 'camera',
-        broadcast: null,
-        width: null,
-        height: null,
-        codec: null,
-        max_bitrate: null,
-      },
-    ]);
+    validateTrackCodecs([makeTrack()]);
     const unrecognizedCalls = logSpy.mock.calls.filter((args) =>
       args.some((a) => typeof a === 'string' && a.includes('unrecognized'))
     );
@@ -868,17 +879,7 @@ describe('validateTrackCodecs', () => {
 
   it('warns for unrecognized video codec', () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    validateTrackCodecs([
-      {
-        kind: 'video',
-        source: 'screen',
-        broadcast: null,
-        width: null,
-        height: null,
-        codec: 'h264',
-        max_bitrate: null,
-      },
-    ]);
+    validateTrackCodecs([makeTrack({ source: 'screen', codec: 'h264' })]);
     const unrecognizedCalls = logSpy.mock.calls.filter((args) =>
       args.some((a) => typeof a === 'string' && a.includes('unrecognized'))
     );
@@ -891,17 +892,7 @@ describe('validateTrackCodecs', () => {
 
   it('warns for unrecognized audio codec', () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    validateTrackCodecs([
-      {
-        kind: 'audio',
-        source: 'microphone',
-        broadcast: null,
-        width: null,
-        height: null,
-        codec: 'aac',
-        max_bitrate: null,
-      },
-    ]);
+    validateTrackCodecs([makeTrack({ kind: 'audio', source: 'microphone', codec: 'aac' })]);
     const unrecognizedCalls = logSpy.mock.calls.filter((args) =>
       args.some((a) => typeof a === 'string' && a.includes('unrecognized'))
     );

@@ -50,6 +50,10 @@ interface StreamState {
   cameraStatus: CameraStatus;
   watchStatus: WatchStatus;
 
+  // Secondary camera state (multi-broadcast: e.g. cam-input broadcast)
+  isSecondaryCameraEnabled: boolean;
+  secondaryCameraStatus: CameraStatus;
+
   // Pipeline media-type flags (which devices the pipeline expects from the client)
   pipelineNeedsAudio: boolean;
   pipelineNeedsVideo: boolean;
@@ -133,6 +137,7 @@ interface StreamState {
   disconnect: () => void;
   toggleMicrophone: () => void;
   toggleCamera: () => void;
+  toggleSecondaryCamera: () => void;
 
   // Store references to MoQ objects
   setMoqRefs: (refs: {
@@ -167,6 +172,8 @@ export const useStreamStore = create<StreamState>((set, get) => ({
   isCameraEnabled: false,
   cameraStatus: 'disabled',
   watchStatus: 'disabled',
+  isSecondaryCameraEnabled: false,
+  secondaryCameraStatus: 'disabled',
   pipelineNeedsAudio: true,
   pipelineNeedsVideo: true,
   pipelineOutputsAudio: true,
@@ -288,6 +295,8 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       watchStatus: decision.shouldWatch ? 'loading' : 'disabled',
       micStatus: decision.shouldPublish && state.pipelineNeedsAudio ? 'requesting' : 'disabled',
       cameraStatus: decision.shouldPublish && state.pipelineNeedsVideo ? 'requesting' : 'disabled',
+      secondaryCameraStatus:
+        decision.shouldPublish && state.publishBroadcasts.length > 1 ? 'requesting' : 'disabled',
     });
 
     return performConnect(state, decision, get, set, abort.signal);
@@ -311,6 +320,8 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       micStatus: 'disabled',
       isCameraEnabled: false,
       cameraStatus: 'disabled',
+      isSecondaryCameraEnabled: false,
+      secondaryCameraStatus: 'disabled',
       watchStatus: 'disabled',
       errorMessage: '',
       ...NULL_MOQ_REFS,
@@ -338,6 +349,17 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       const newState = !state.isCameraEnabled;
       source.enabled.set(newState);
       set({ isCameraEnabled: newState });
+    }
+  },
+
+  toggleSecondaryCamera: () => {
+    const state = get();
+
+    const source = state.secondaryCamera ?? state.secondaryScreen;
+    if (source) {
+      const newState = !state.isSecondaryCameraEnabled;
+      source.enabled.set(newState);
+      set({ isSecondaryCameraEnabled: newState });
     }
   },
 }));
