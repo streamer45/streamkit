@@ -32,6 +32,10 @@ function mapCodecToWebCodecs(codec: string): string {
   switch (codec) {
     case 'vp9':
       return 'vp09';
+    // NOTE: h264 requires a full profile string (e.g. "avc1.42E01E") for
+    // WebCodecs — a bare "h264" will fail at encoder init.  av1 maps to
+    // "av01" but is not yet validated.  For now only vp9 is officially
+    // supported; other values pass through verbatim.
     default:
       return codec;
   }
@@ -58,14 +62,18 @@ export function buildVideoEncoderConfig(track?: PublishTrackConfig | null): {
     encoderConfig.maxPixels = width * height;
   }
   if (track?.max_bitrate != null) {
-    // Convert kbps → bps for the encoder.
+    // Convert kilobits per second → bits per second for the encoder.
     encoderConfig.maxBitrate = track.max_bitrate * 1000;
   }
 
-  const hasConstraints = width != null || height != null;
-  const constraints = hasConstraints ? { width: width, height: height } : undefined;
+  const constraints: { width?: number; height?: number } = {};
+  if (width != null) constraints.width = width;
+  if (height != null) constraints.height = height;
 
-  return { encoderConfig, constraints };
+  return {
+    encoderConfig,
+    constraints: Object.keys(constraints).length > 0 ? constraints : undefined,
+  };
 }
 
 /**

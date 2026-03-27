@@ -770,7 +770,7 @@ describe('buildVideoEncoderConfig', () => {
       codec: null,
       max_bitrate: null,
     });
-    expect(result.constraints).toEqual({ width: 1920, height: undefined });
+    expect(result.constraints).toEqual({ width: 1920 });
   });
 
   it('handles all fields set together', () => {

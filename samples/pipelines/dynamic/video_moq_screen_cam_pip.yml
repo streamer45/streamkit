@@ -17,7 +17,7 @@ client:
       - kind: audio
         source: microphone
         codec: opus
-        max_bitrate: 32
+        max_bitrate: 32  # parsed but not yet wired to the audio encoder
       - kind: video
         source: screen
         width: 1280

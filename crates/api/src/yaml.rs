@@ -159,9 +159,10 @@ pub struct PublishTrackConfig {
     /// Defaults to `"vp9"` for video tracks when omitted.
     #[serde(default)]
     pub codec: Option<String>,
-    /// Maximum bitrate in kbps.  For video tracks, converted to bps and passed
-    /// as `maxBitrate` to the `@moq/publish` encoder.  Audio track bitrate is
-    /// parsed and validated but not yet wired to the audio encoder.
+    /// Maximum bitrate in kilobits per second (1 kbps = 1000 bps).  For video
+    /// tracks, converted to bps and passed as `maxBitrate` to the `@moq/publish`
+    /// encoder.  Audio track bitrate is parsed and validated but not yet wired
+    /// to the audio encoder.
     #[serde(default)]
     pub max_bitrate: Option<u32>,
 }
@@ -775,6 +776,54 @@ pub fn lint_client_section(client: &ClientSection, mode: EngineMode) -> Vec<Clie
                     warnings.push(ClientLintWarning {
                         rule: "empty-track-broadcast",
                         message: "A track-level `broadcast` override is an empty string.".into(),
+                    });
+                }
+            }
+
+            // Rule 14d: width/height on audio tracks (video-only fields)
+            if track.kind == TrackKind::Audio && (track.width.is_some() || track.height.is_some()) {
+                warnings.push(ClientLintWarning {
+                    rule: "dimensions-on-audio",
+                    message: format!(
+                        "Audio track (source=`{}`) sets width/height — these fields \
+                         only apply to video tracks and will be ignored.",
+                        track.source
+                    ),
+                });
+            }
+
+            // Rule 14e: partial width/height (both should be set, or neither)
+            if track.kind == TrackKind::Video && (track.width.is_some() != track.height.is_some()) {
+                let has = if track.width.is_some() { "width" } else { "height" };
+                let missing = if track.width.is_some() { "height" } else { "width" };
+                warnings.push(ClientLintWarning {
+                    rule: "partial-dimensions",
+                    message: format!(
+                        "Video track (source=`{}`) sets {has} but not {missing} — \
+                         both should be specified together for correct maxPixels computation.",
+                        track.source,
+                    ),
+                });
+            }
+
+            // Rule 14f: unrecognized codec
+            if let Some(ref codec) = track.codec {
+                let recognized = match track.kind {
+                    TrackKind::Video => ["vp9"].contains(&codec.as_str()),
+                    TrackKind::Audio => ["opus"].contains(&codec.as_str()),
+                };
+                if !recognized {
+                    let supported = match track.kind {
+                        TrackKind::Video => "vp9",
+                        TrackKind::Audio => "opus",
+                    };
+                    warnings.push(ClientLintWarning {
+                        rule: "unrecognized-codec",
+                        message: format!(
+                            "Track (kind=`{}`, source=`{}`) has unrecognized codec \
+                             `{codec}` — supported: {supported}.",
+                            track.kind, track.source
+                        ),
                     });
                 }
             }
@@ -2888,6 +2937,202 @@ client:
         assert!(
             warnings.iter().any(|w| w.rule == "kind-source-mismatch"),
             "Should warn about kind-source mismatch for (video, microphone): {warnings:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Per-track media hint fields
+    // -----------------------------------------------------------------------
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn test_tracks_media_hints_parsed() {
+        let yaml = r#"
+mode: dynamic
+nodes:
+  peer:
+    kind: transport::moq::peer
+client:
+  gateway_path: /moq/test
+  publish:
+    broadcast: input
+    tracks:
+      - kind: video
+        source: screen
+        width: 1280
+        height: 720
+        codec: vp9
+        max_bitrate: 2500
+      - kind: audio
+        source: microphone
+        codec: opus
+        max_bitrate: 32
+  watch:
+    broadcast: output
+    audio: true
+    video: true
+"#;
+        let pipeline = parse_yaml(yaml).unwrap();
+        let compiled = compile(pipeline).unwrap();
+        let client = compiled.client.expect("client section should be present");
+        let publish = client.publish.expect("publish config should be present");
+        assert_eq!(publish.tracks.len(), 2);
+
+        let video = &publish.tracks[0];
+        assert_eq!(video.kind, TrackKind::Video);
+        assert_eq!(video.width, Some(1280));
+        assert_eq!(video.height, Some(720));
+        assert_eq!(video.codec.as_deref(), Some("vp9"));
+        assert_eq!(video.max_bitrate, Some(2500));
+
+        let audio = &publish.tracks[1];
+        assert_eq!(audio.kind, TrackKind::Audio);
+        assert!(audio.width.is_none());
+        assert!(audio.height.is_none());
+        assert_eq!(audio.codec.as_deref(), Some("opus"));
+        assert_eq!(audio.max_bitrate, Some(32));
+    }
+
+    #[test]
+    fn test_lint_dimensions_on_audio_track() {
+        let mut c = dynamic_client();
+        c.publish = Some(PublishConfig {
+            broadcast: "input".into(),
+            tracks: vec![PublishTrackConfig {
+                kind: TrackKind::Audio,
+                source: CaptureSource::Microphone,
+                broadcast: None,
+                width: Some(1280),
+                height: None,
+                codec: None,
+                max_bitrate: None,
+            }],
+        });
+        let warnings = lint_client_section(&c, EngineMode::Dynamic);
+        assert!(
+            warnings.iter().any(|w| w.rule == "dimensions-on-audio"),
+            "Should warn when audio track sets width/height: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_lint_partial_dimensions() {
+        let mut c = dynamic_client();
+        c.publish = Some(PublishConfig {
+            broadcast: "input".into(),
+            tracks: vec![PublishTrackConfig {
+                kind: TrackKind::Video,
+                source: CaptureSource::Camera,
+                broadcast: None,
+                width: Some(1280),
+                height: None,
+                codec: None,
+                max_bitrate: None,
+            }],
+        });
+        let warnings = lint_client_section(&c, EngineMode::Dynamic);
+        assert!(
+            warnings.iter().any(|w| w.rule == "partial-dimensions"),
+            "Should warn when video track sets width without height: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_lint_partial_dimensions_clean() {
+        let mut c = dynamic_client();
+        c.publish = Some(PublishConfig {
+            broadcast: "input".into(),
+            tracks: vec![PublishTrackConfig {
+                kind: TrackKind::Video,
+                source: CaptureSource::Screen,
+                broadcast: None,
+                width: Some(1280),
+                height: Some(720),
+                codec: None,
+                max_bitrate: None,
+            }],
+        });
+        let warnings = lint_client_section(&c, EngineMode::Dynamic);
+        assert!(
+            !warnings.iter().any(|w| w.rule == "partial-dimensions"),
+            "Should not warn when both width and height are set: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_lint_unrecognized_video_codec() {
+        let mut c = dynamic_client();
+        c.publish = Some(PublishConfig {
+            broadcast: "input".into(),
+            tracks: vec![PublishTrackConfig {
+                kind: TrackKind::Video,
+                source: CaptureSource::Camera,
+                broadcast: None,
+                width: None,
+                height: None,
+                codec: Some("h264".into()),
+                max_bitrate: None,
+            }],
+        });
+        let warnings = lint_client_section(&c, EngineMode::Dynamic);
+        assert!(
+            warnings.iter().any(|w| w.rule == "unrecognized-codec"),
+            "Should warn for unrecognized video codec: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_lint_unrecognized_audio_codec() {
+        let mut c = dynamic_client();
+        c.publish = Some(PublishConfig {
+            broadcast: "input".into(),
+            tracks: vec![PublishTrackConfig {
+                kind: TrackKind::Audio,
+                source: CaptureSource::Microphone,
+                broadcast: None,
+                width: None,
+                height: None,
+                codec: Some("aac".into()),
+                max_bitrate: None,
+            }],
+        });
+        let warnings = lint_client_section(&c, EngineMode::Dynamic);
+        assert!(
+            warnings.iter().any(|w| w.rule == "unrecognized-codec"),
+            "Should warn for unrecognized audio codec: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_lint_recognized_codecs_clean() {
+        let mut c = dynamic_client();
+        c.publish = Some(PublishConfig {
+            broadcast: "input".into(),
+            tracks: vec![
+                PublishTrackConfig {
+                    kind: TrackKind::Video,
+                    source: CaptureSource::Camera,
+                    broadcast: None,
+                    width: None,
+                    height: None,
+                    codec: Some("vp9".into()),
+                    max_bitrate: None,
+                },
+                PublishTrackConfig {
+                    kind: TrackKind::Audio,
+                    source: CaptureSource::Microphone,
+                    broadcast: None,
+                    width: None,
+                    height: None,
+                    codec: Some("opus".into()),
+                    max_bitrate: None,
+                },
+            ],
+        });
+        let warnings = lint_client_section(&c, EngineMode::Dynamic);
+        assert!(
+            !warnings.iter().any(|w| w.rule == "unrecognized-codec"),
+            "Should not warn for recognized codecs: {warnings:?}"
         );
     }
 }
