@@ -515,8 +515,9 @@ height: number | null,
  */
 codec: string | null, 
 /**
- * Maximum bitrate in kbps.  Converted to bps and passed as `maxBitrate`
- * to the `@moq/publish` encoder.
+ * Maximum bitrate in kbps.  For video tracks, converted to bps and passed
+ * as `maxBitrate` to the `@moq/publish` encoder.  Audio track bitrate is
+ * parsed and validated but not yet wired to the audio encoder.
  */
 max_bitrate: number | null, };
 

@@ -159,8 +159,9 @@ pub struct PublishTrackConfig {
     /// Defaults to `"vp9"` for video tracks when omitted.
     #[serde(default)]
     pub codec: Option<String>,
-    /// Maximum bitrate in kbps.  Converted to bps and passed as `maxBitrate`
-    /// to the `@moq/publish` encoder.
+    /// Maximum bitrate in kbps.  For video tracks, converted to bps and passed
+    /// as `maxBitrate` to the `@moq/publish` encoder.  Audio track bitrate is
+    /// parsed and validated but not yet wired to the audio encoder.
     #[serde(default)]
     pub max_bitrate: Option<u32>,
 }
