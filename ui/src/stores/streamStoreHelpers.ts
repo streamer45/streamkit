@@ -27,26 +27,32 @@ const logger = getLogger('streamStore');
 const SUPPORTED_VIDEO_CODECS = ['vp9'];
 const SUPPORTED_AUDIO_CODECS = ['opus'];
 
-/** Map user-facing codec name to WebCodecs codec string. */
+/**
+ * Map user-facing codec name to WebCodecs codec string.
+ *
+ * Throws for unrecognized codecs so pipeline authors get a clear error
+ * instead of a cryptic WebCodecs encoder failure.
+ */
 function mapCodecToWebCodecs(codec: string): string {
   switch (codec) {
     case 'vp9':
       return 'vp09';
-    // NOTE: h264 requires a full profile string (e.g. "avc1.42E01E") for
-    // WebCodecs — a bare "h264" will fail at encoder init.  av1 maps to
-    // "av01" but is not yet validated.  For now only vp9 is officially
-    // supported; other values pass through verbatim.
     default:
-      return codec;
+      throw new Error(
+        `Unsupported video codec '${codec}'. Supported codecs: ${SUPPORTED_VIDEO_CODECS.join(', ')}. ` +
+          `h264 requires a full WebCodecs profile string (e.g. "avc1.42E01E"); ` +
+          `av1 maps to "av01" but is not yet validated.`
+      );
   }
 }
 
 /**
  * Build `@moq/publish` encoder config and capture constraints from per-track
- * media hints.  Pure function — no side effects.
+ * media hints.  Deterministic — logs warnings for invalid configurations.
  *
  * @param track - The track config containing optional width/height/codec/max_bitrate.
  * @returns encoderConfig for `Publish.Broadcast` and optional capture constraints.
+ * @throws {Error} If the track specifies an unsupported codec.
  */
 export function buildVideoEncoderConfig(track?: PublishTrackConfig | null): {
   encoderConfig: { codec: string; maxPixels?: number; maxBitrate?: number };

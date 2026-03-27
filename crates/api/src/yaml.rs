@@ -830,7 +830,10 @@ pub fn lint_client_section(client: &ClientSection, mode: EngineMode) -> Vec<Clie
             }
 
             // Rule 14g: zero-value dimensions or bitrate
-            if track.width == Some(0) || track.height == Some(0) {
+            // Only fire on video tracks; audio tracks already get
+            // `dimensions-on-audio` above, so a duplicate warning is noise.
+            if track.kind == TrackKind::Video && (track.width == Some(0) || track.height == Some(0))
+            {
                 warnings.push(ClientLintWarning {
                     rule: "zero-dimension",
                     message: format!(
@@ -3191,6 +3194,34 @@ client:
         assert!(
             warnings.iter().any(|w| w.rule == "zero-dimension"),
             "Should warn for zero-value width: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_lint_zero_dimension_skipped_for_audio() {
+        // Audio tracks with width: 0 should fire `dimensions-on-audio` but
+        // NOT `zero-dimension` — the latter is video-only.
+        let mut c = dynamic_client();
+        c.publish = Some(PublishConfig {
+            broadcast: "input".into(),
+            tracks: vec![PublishTrackConfig {
+                kind: TrackKind::Audio,
+                source: CaptureSource::Microphone,
+                broadcast: None,
+                width: Some(0),
+                height: Some(720),
+                codec: None,
+                max_bitrate: None,
+            }],
+        });
+        let warnings = lint_client_section(&c, EngineMode::Dynamic);
+        assert!(
+            warnings.iter().any(|w| w.rule == "dimensions-on-audio"),
+            "Should warn for dimensions on audio: {warnings:?}"
+        );
+        assert!(
+            !warnings.iter().any(|w| w.rule == "zero-dimension"),
+            "Should NOT fire zero-dimension for audio tracks: {warnings:?}"
         );
     }
 

@@ -195,6 +195,11 @@ const VideoContainer = styled.div`
     opacity: 1;
   }
 
+  /* Normal (non-fullscreen) canvas preview cap. */
+  canvas {
+    max-height: 480px;
+  }
+
   &:fullscreen {
     display: flex;
     align-items: center;
@@ -918,7 +923,7 @@ const StreamView: React.FC = () => {
                       active={isSecondaryCameraEnabled}
                       onClick={toggleSecondaryCamera}
                     >
-                      {isSecondaryCameraEnabled ? '📷 Camera On' : '📷 Camera Off'}
+                      {isSecondaryCameraEnabled ? '📷 Camera 2 On' : '📷 Camera 2 Off'}
                     </ControlButton>
                   )}
                 </>
@@ -1053,9 +1058,16 @@ const StreamView: React.FC = () => {
                     const el = videoContainerRef.current;
                     if (!el) return;
                     if (document.fullscreenElement) {
-                      document.exitFullscreen();
+                      document.exitFullscreen().catch(() => {});
                     } else {
-                      el.requestFullscreen();
+                      // requestFullscreen can reject in background tabs or
+                      // outside a user gesture; swallow to avoid unhandled
+                      // promise rejection.
+                      const rfs =
+                        el.requestFullscreen ??
+                        (el as unknown as { webkitRequestFullscreen?: () => Promise<void> })
+                          .webkitRequestFullscreen;
+                      rfs?.call(el).catch(() => {});
                     }
                   }}
                 >
@@ -1067,7 +1079,6 @@ const StreamView: React.FC = () => {
                     display: 'block',
                     width: 'auto',
                     maxWidth: '100%',
-                    maxHeight: 480,
                     margin: '0 auto',
                     borderRadius: 6,
                     background: '#000',

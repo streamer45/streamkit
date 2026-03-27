@@ -673,132 +673,66 @@ describe('buildVideoEncoderConfig', () => {
   });
 
   it('returns default vp09 codec when track has no codec set', () => {
-    const result = buildVideoEncoderConfig({
-      kind: 'video',
-      source: 'camera',
-      broadcast: null,
-      width: null,
-      height: null,
-      codec: null,
-      max_bitrate: null,
-    });
+    const result = buildVideoEncoderConfig(makeTrack());
     expect(result.encoderConfig.codec).toBe('vp09');
   });
 
   it('maps vp9 to vp09 WebCodecs codec string', () => {
-    const result = buildVideoEncoderConfig({
-      kind: 'video',
-      source: 'screen',
-      broadcast: null,
-      width: null,
-      height: null,
-      codec: 'vp9',
-      max_bitrate: null,
-    });
+    const result = buildVideoEncoderConfig(makeTrack({ codec: 'vp9' }));
     expect(result.encoderConfig.codec).toBe('vp09');
   });
 
-  it('passes through unrecognized codec values as-is', () => {
-    const result = buildVideoEncoderConfig({
-      kind: 'video',
-      source: 'camera',
-      broadcast: null,
-      width: null,
-      height: null,
-      codec: 'h264',
-      max_bitrate: null,
-    });
-    expect(result.encoderConfig.codec).toBe('h264');
+  it('throws for unrecognized codec values', () => {
+    expect(() => buildVideoEncoderConfig(makeTrack({ codec: 'h264' }))).toThrow(
+      /Unsupported video codec 'h264'/
+    );
   });
 
   it('computes maxPixels from width × height', () => {
-    const result = buildVideoEncoderConfig({
-      kind: 'video',
-      source: 'screen',
-      broadcast: null,
-      width: 1280,
-      height: 720,
-      codec: null,
-      max_bitrate: null,
-    });
+    const result = buildVideoEncoderConfig(
+      makeTrack({ source: 'screen', width: 1280, height: 720 })
+    );
     expect(result.encoderConfig.maxPixels).toBe(1280 * 720);
   });
 
   it('does not set maxPixels when only width is provided', () => {
-    const result = buildVideoEncoderConfig({
-      kind: 'video',
-      source: 'camera',
-      broadcast: null,
-      width: 1280,
-      height: null,
-      codec: null,
-      max_bitrate: null,
-    });
+    const result = buildVideoEncoderConfig(makeTrack({ width: 1280 }));
     expect(result.encoderConfig.maxPixels).toBeUndefined();
   });
 
   it('does not set maxPixels when only height is provided', () => {
-    const result = buildVideoEncoderConfig({
-      kind: 'video',
-      source: 'camera',
-      broadcast: null,
-      width: null,
-      height: 720,
-      codec: null,
-      max_bitrate: null,
-    });
+    const result = buildVideoEncoderConfig(makeTrack({ height: 720 }));
     expect(result.encoderConfig.maxPixels).toBeUndefined();
   });
 
   it('converts max_bitrate from kbps to bps', () => {
-    const result = buildVideoEncoderConfig({
-      kind: 'video',
-      source: 'camera',
-      broadcast: null,
-      width: null,
-      height: null,
-      codec: null,
-      max_bitrate: 2500,
-    });
+    const result = buildVideoEncoderConfig(makeTrack({ max_bitrate: 2500 }));
     expect(result.encoderConfig.maxBitrate).toBe(2_500_000);
   });
 
   it('returns capture constraints with width and height', () => {
-    const result = buildVideoEncoderConfig({
-      kind: 'video',
-      source: 'screen',
-      broadcast: null,
-      width: 640,
-      height: 480,
-      codec: 'vp9',
-      max_bitrate: null,
-    });
+    const result = buildVideoEncoderConfig(
+      makeTrack({ source: 'screen', width: 640, height: 480, codec: 'vp9' })
+    );
     expect(result.constraints).toEqual({ width: 640, height: 480 });
   });
 
   it('returns constraints with only width when height is null', () => {
-    const result = buildVideoEncoderConfig({
-      kind: 'video',
-      source: 'camera',
-      broadcast: null,
-      width: 1920,
-      height: null,
-      codec: null,
-      max_bitrate: null,
-    });
+    const result = buildVideoEncoderConfig(makeTrack({ width: 1920 }));
     expect(result.constraints).toEqual({ width: 1920 });
   });
 
   it('handles all fields set together', () => {
-    const result = buildVideoEncoderConfig({
-      kind: 'video',
-      source: 'screen',
-      broadcast: 'my-broadcast',
-      width: 1920,
-      height: 1080,
-      codec: 'vp9',
-      max_bitrate: 5000,
-    });
+    const result = buildVideoEncoderConfig(
+      makeTrack({
+        source: 'screen',
+        broadcast: 'my-broadcast',
+        width: 1920,
+        height: 1080,
+        codec: 'vp9',
+        max_bitrate: 5000,
+      })
+    );
     expect(result.encoderConfig).toEqual({
       codec: 'vp09',
       maxPixels: 1920 * 1080,
