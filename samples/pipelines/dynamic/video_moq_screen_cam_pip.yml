@@ -77,13 +77,15 @@ nodes:
           rect: { x: 0, y: 0, width: 1280, height: 720 }
           opacity: 1
           z_index: 0
+        # Camera PiP: small circle crop, top-right corner
         in_1:
-          rect: { x: 880, y: 415, width: 380, height: 285 }
-          opacity: 0.9
+          rect: { x: 1040, y: 30, width: 200, height: 200 }
+          opacity: 1
           z_index: 1
-          crop_zoom: 2.2
+          crop_zoom: 1.8
           crop_x: 0.5
-          crop_y: 0.5
+          crop_y: 0.4
+          crop_shape: circle
       text_overlays:
         - id: label
           text: Live Screen Share
