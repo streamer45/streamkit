@@ -1520,16 +1520,11 @@ impl MoqPeerNode {
             return false;
         }
         if is_additional {
-            tracing::info!("Additional broadcast tracks discovered, stopping catalog watch");
             return true;
         }
         let has_audio = track_handles.keys().any(|k| k.starts_with("audio/"));
         let has_video = track_handles.keys().any(|k| k.starts_with("video/"));
-        if has_audio && has_video {
-            tracing::info!("All expected tracks discovered, stopping catalog watch");
-            return true;
-        }
-        false
+        has_audio && has_video
     }
 
     /// Watch the catalog continuously and process publisher tracks as they appear.
@@ -1558,6 +1553,70 @@ impl MoqPeerNode {
             None, // no pin prefix for single-broadcast mode
         )
         .await
+    }
+
+    /// Subscribe to newly discovered tracks from a catalog update.
+    ///
+    /// For each audio and video rendition in the catalog that isn't already
+    /// being handled, spawns a track processor task with the appropriate
+    /// output pin name (optionally prefixed for multi-broadcast mode).
+    #[allow(clippy::too_many_arguments)]
+    fn subscribe_catalog_tracks(
+        catalog: &hang::catalog::Catalog,
+        broadcast_consumer: &moq_lite::BroadcastConsumer,
+        output_sender: &streamkit_core::OutputSender,
+        shutdown_rx: &broadcast::Receiver<()>,
+        stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
+        dynamic_outputs: &DynamicOutputs,
+        pin_prefix: Option<&str>,
+        track_handles: &mut std::collections::HashMap<
+            String,
+            tokio::task::JoinHandle<Result<(), StreamKitError>>,
+        >,
+    ) {
+        // Subscribe to all audio tracks not yet being handled
+        for track_name in catalog.audio.renditions.keys() {
+            if !track_handles.contains_key(track_name) {
+                tracing::info!("Found audio track in catalog: {}", track_name);
+                let output_pin = pin_prefix
+                    .map_or_else(|| track_name.clone(), |prefix| format!("{prefix}/{track_name}"));
+                track_handles.insert(
+                    track_name.clone(),
+                    Self::spawn_track_processor_with_pin(
+                        broadcast_consumer,
+                        track_name,
+                        false,
+                        output_sender,
+                        shutdown_rx,
+                        stats_delta_tx,
+                        dynamic_outputs,
+                        &output_pin,
+                    ),
+                );
+            }
+        }
+
+        // Subscribe to all video tracks not yet being handled
+        for track_name in catalog.video.renditions.keys() {
+            if !track_handles.contains_key(track_name) {
+                tracing::info!("Found video track in catalog: {}", track_name);
+                let output_pin = pin_prefix
+                    .map_or_else(|| track_name.clone(), |prefix| format!("{prefix}/{track_name}"));
+                track_handles.insert(
+                    track_name.clone(),
+                    Self::spawn_track_processor_with_pin(
+                        broadcast_consumer,
+                        track_name,
+                        true,
+                        output_sender,
+                        shutdown_rx,
+                        stats_delta_tx,
+                        dynamic_outputs,
+                        &output_pin,
+                    ),
+                );
+            }
+        }
     }
 
     /// Inner catalog watch loop shared by single- and multi-broadcast modes.
@@ -1613,56 +1672,23 @@ impl MoqPeerNode {
                         catalog.audio, catalog.video.renditions.len()
                     );
 
-                    // Start processing for all audio tracks not yet being handled
-                    for track_name in catalog.audio.renditions.keys() {
-                        if !track_handles.contains_key(track_name) {
-                            tracing::info!("Found audio track in catalog: {}", track_name);
-                            let output_pin = pin_prefix.map_or_else(
-                                || track_name.clone(),
-                                |prefix| format!("{prefix}/{track_name}"),
-                            );
-                            track_handles.insert(
-                                track_name.clone(),
-                                Self::spawn_track_processor_with_pin(
-                                    broadcast_consumer,
-                                    track_name,
-                                    false,
-                                    &output_sender,
-                                    shutdown_rx,
-                                    stats_delta_tx,
-                                    dynamic_outputs,
-                                    &output_pin,
-                                ),
-                            );
-                        }
-                    }
-
-                    // Start processing for all video tracks not yet being handled
-                    for track_name in catalog.video.renditions.keys() {
-                        if !track_handles.contains_key(track_name) {
-                            tracing::info!("Found video track in catalog: {}", track_name);
-                            let output_pin = pin_prefix.map_or_else(
-                                || track_name.clone(),
-                                |prefix| format!("{prefix}/{track_name}"),
-                            );
-                            track_handles.insert(
-                                track_name.clone(),
-                                Self::spawn_track_processor_with_pin(
-                                    broadcast_consumer,
-                                    track_name,
-                                    true,
-                                    &output_sender,
-                                    shutdown_rx,
-                                    stats_delta_tx,
-                                    dynamic_outputs,
-                                    &output_pin,
-                                ),
-                            );
-                        }
-                    }
+                    Self::subscribe_catalog_tracks(
+                        &catalog,
+                        broadcast_consumer,
+                        &output_sender,
+                        shutdown_rx,
+                        stats_delta_tx,
+                        dynamic_outputs,
+                        pin_prefix,
+                        &mut track_handles,
+                    );
 
                     let is_additional_broadcast = pin_prefix.is_some();
                     if Self::has_expected_tracks(&track_handles, is_additional_broadcast) {
+                        tracing::info!(
+                            additional = is_additional_broadcast,
+                            "Expected tracks discovered, stopping catalog watch"
+                        );
                         break;
                     }
 

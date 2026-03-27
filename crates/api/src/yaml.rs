@@ -668,11 +668,11 @@ pub struct ClientLintWarning {
 /// 12. **`duplicate-broadcast`** — `publish.broadcast` equals
 ///     `watch.broadcast` (would cause a loop).
 /// 13. **`empty-tracks`** — `publish.tracks` is an empty array.
-///     14a. **`kind-source-mismatch`** — Track kind and source are incompatible
+/// 14. **`kind-source-mismatch`** — Track kind and source are incompatible
 ///     (e.g. `kind: audio` with `source: camera`).
-///     14b. **`duplicate-source`** — Multiple tracks use the same kind and capture
+/// 15. **`duplicate-source`** — Multiple tracks use the same kind and capture
 ///     source combination.
-///     14c. **`empty-track-broadcast`** — A track-level `broadcast` override is
+/// 16. **`empty-track-broadcast`** — A track-level `broadcast` override is
 ///     an empty string.
 pub fn lint_client_section(client: &ClientSection, mode: EngineMode) -> Vec<ClientLintWarning> {
     let mut warnings = Vec::new();

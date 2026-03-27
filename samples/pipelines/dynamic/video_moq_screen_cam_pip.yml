@@ -31,6 +31,10 @@ nodes:
     kind: transport::moq::peer
     params:
       gateway_path: /moq/screenshare
+      # The first broadcast is the "primary" — its output pins are unprefixed
+      # (e.g. video/data, audio/data).  Additional broadcasts get their pins
+      # namespaced as {broadcast}/{track} (e.g. cam-input/video/data) so that
+      # downstream nodes can wire to each source independently.
       input_broadcasts:
         - screen-input
         - cam-input
