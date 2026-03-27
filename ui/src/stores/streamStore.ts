@@ -103,9 +103,6 @@ interface StreamState {
   healthEffect: Effect | null;
 
   // Secondary broadcast references (multi-broadcast support)
-  // TODO: These fields are scaffolding for future multi-broadcast UI.
-  // Currently only cleanup paths (in shutdownConnectAttempt) are wired;
-  // population during connect is not yet implemented.
   secondaryPublish: Publish.Broadcast | null;
   secondaryCamera: Publish.Source.Camera | null;
   secondaryScreen: Publish.Source.Screen | null;

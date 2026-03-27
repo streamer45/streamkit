@@ -237,6 +237,24 @@ describe('cleanupConnectAttempt', () => {
   it('should handle all-null attempt gracefully', () => {
     expect(() => cleanupConnectAttempt(makeAttempt())).not.toThrow();
   });
+
+  it('should call close() on secondaryPublish when available', () => {
+    const secondaryPub = { close: vi.fn() };
+    cleanupConnectAttempt(makeAttempt({ secondaryPublish: secondaryPub as never }));
+    expect(secondaryPub.close).toHaveBeenCalledOnce();
+  });
+
+  it('should call close() on secondaryCamera when available', () => {
+    const secondaryCam = { close: vi.fn() };
+    cleanupConnectAttempt(makeAttempt({ secondaryCamera: secondaryCam as never }));
+    expect(secondaryCam.close).toHaveBeenCalledOnce();
+  });
+
+  it('should call close() on secondaryScreen when available', () => {
+    const secondaryScr = { close: vi.fn() };
+    cleanupConnectAttempt(makeAttempt({ secondaryScreen: secondaryScr as never }));
+    expect(secondaryScr.close).toHaveBeenCalledOnce();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -367,7 +385,11 @@ describe('NULL_MOQ_REFS', () => {
       'connection',
       'microphone',
       'camera',
+      'screen',
       'healthEffect',
+      'secondaryPublish',
+      'secondaryCamera',
+      'secondaryScreen',
     ];
 
     for (const key of expectedKeys) {
