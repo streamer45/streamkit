@@ -922,11 +922,16 @@ fn make_dynamic_input_pin(name: &str) -> InputPin {
     }
 }
 
-/// Pin names starting with `"video/"` produce [`PacketType::EncodedVideo`] (VP9);
+/// Pin names containing a `video/` segment produce [`PacketType::EncodedVideo`] (VP9);
 /// all others produce [`PacketType::EncodedAudio`] (Opus). This matches the
 /// convention in `MoqPullNode::output_pins_for_tracks`.
+///
+/// Handles both unprefixed names (`video/hd`) and broadcast-prefixed names
+/// (`screen-input/video/hd`) by checking `starts_with("video/")` OR
+/// `contains("/video/")`.
 fn make_dynamic_output_pin(name: &str) -> OutputPin {
-    let produces_type = if name.starts_with("video/") {
+    let is_video = name.starts_with("video/") || name.contains("/video/");
+    let produces_type = if is_video {
         PacketType::EncodedVideo(EncodedVideoFormat {
             codec: VideoCodec::Vp9,
             bitstream_format: None,
@@ -1729,10 +1734,15 @@ impl MoqPeerNode {
             return Ok(());
         }
 
-        let mut first_error: Option<StreamKitError> = None;
+        let names_and_handles: Vec<(String, tokio::task::JoinHandle<Result<(), StreamKitError>>)> =
+            track_handles.into_iter().collect();
+        let (names, handles): (Vec<_>, Vec<_>) = names_and_handles.into_iter().unzip();
 
-        for (track_name, handle) in track_handles {
-            match handle.await {
+        let results = futures::future::join_all(handles).await;
+
+        let mut first_error: Option<StreamKitError> = None;
+        for (track_name, result) in names.into_iter().zip(results) {
+            match result {
                 Err(e) => {
                     tracing::warn!(track = %track_name, "Track task panicked: {e}");
                     if first_error.is_none() {
@@ -2640,5 +2650,20 @@ mod tests {
         let video_pin = make_dynamic_output_pin("video/hd");
         assert_eq!(video_pin.name, "video/hd");
         assert!(matches!(video_pin.produces_type, PacketType::EncodedVideo(_)));
+
+        // Verify broadcast-prefixed pin names are classified correctly
+        let prefixed_video = make_dynamic_output_pin("screen-input/video/hd");
+        assert_eq!(prefixed_video.name, "screen-input/video/hd");
+        assert!(
+            matches!(prefixed_video.produces_type, PacketType::EncodedVideo(_)),
+            "Broadcast-prefixed video pin must be EncodedVideo, not EncodedAudio"
+        );
+
+        let prefixed_audio = make_dynamic_output_pin("cam-input/audio/data");
+        assert_eq!(prefixed_audio.name, "cam-input/audio/data");
+        assert!(
+            matches!(prefixed_audio.produces_type, PacketType::EncodedAudio(_)),
+            "Broadcast-prefixed audio pin must be EncodedAudio"
+        );
     }
 }

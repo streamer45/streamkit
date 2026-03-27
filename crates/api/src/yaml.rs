@@ -743,20 +743,23 @@ pub fn lint_client_section(client: &ClientSection, mode: EngineMode) -> Vec<Clie
             }
         }
 
-        // Rule 14b: duplicate sources
+        // Rule 14b: duplicate sources (scoped per effective broadcast)
         {
-            let mut seen_sources = Vec::new();
+            let mut seen_per_broadcast: std::collections::HashMap<&str, Vec<CaptureSource>> =
+                std::collections::HashMap::new();
             for track in &publish.tracks {
-                if seen_sources.contains(&track.source) {
+                let effective_bc = track.broadcast.as_deref().unwrap_or(&publish.broadcast);
+                let seen = seen_per_broadcast.entry(effective_bc).or_default();
+                if seen.contains(&track.source) {
                     warnings.push(ClientLintWarning {
                         rule: "duplicate-source",
                         message: format!(
-                            "Multiple tracks use the same capture source `{:?}`.",
-                            track.source
+                            "Multiple tracks in broadcast '{}' use the same capture source `{:?}`.",
+                            effective_bc, track.source
                         ),
                     });
                 } else {
-                    seen_sources.push(track.source);
+                    seen.push(track.source);
                 }
             }
         }
@@ -2696,6 +2699,31 @@ client:
         assert!(
             warnings.iter().any(|w| w.rule == "duplicate-source"),
             "Should warn when same source appears twice in same broadcast: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_lint_duplicate_source_different_broadcast_clean() {
+        let mut c = dynamic_client();
+        c.publish = Some(PublishConfig {
+            broadcast: "input".into(),
+            tracks: vec![
+                PublishTrackConfig {
+                    kind: TrackKind::Audio,
+                    source: CaptureSource::Microphone,
+                    broadcast: None,
+                },
+                PublishTrackConfig {
+                    kind: TrackKind::Audio,
+                    source: CaptureSource::Microphone,
+                    broadcast: Some("other-input".into()),
+                },
+            ],
+        });
+        let warnings = lint_client_section(&c, EngineMode::Dynamic);
+        assert!(
+            !warnings.iter().any(|w| w.rule == "duplicate-source"),
+            "Should not warn when same source is in different broadcasts: {warnings:?}"
         );
     }
 }
