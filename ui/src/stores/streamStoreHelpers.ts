@@ -23,6 +23,68 @@ import { getLogger } from '../utils/logger';
 
 const logger = getLogger('streamStore');
 
+/** Recognized codec values for validation. */
+const SUPPORTED_VIDEO_CODECS = ['vp9'];
+const SUPPORTED_AUDIO_CODECS = ['opus'];
+
+/** Map user-facing codec name to WebCodecs codec string. */
+function mapCodecToWebCodecs(codec: string): string {
+  switch (codec) {
+    case 'vp9':
+      return 'vp09';
+    default:
+      return codec;
+  }
+}
+
+/**
+ * Build `@moq/publish` encoder config and capture constraints from per-track
+ * media hints.  Pure function — no side effects.
+ *
+ * @param track - The track config containing optional width/height/codec/max_bitrate.
+ * @returns encoderConfig for `Publish.Broadcast` and optional capture constraints.
+ */
+export function buildVideoEncoderConfig(track?: PublishTrackConfig | null): {
+  encoderConfig: { codec: string; maxPixels?: number; maxBitrate?: number };
+  constraints?: { width?: number; height?: number };
+} {
+  const codec = mapCodecToWebCodecs(track?.codec ?? 'vp9');
+  const encoderConfig: { codec: string; maxPixels?: number; maxBitrate?: number } = { codec };
+
+  const width = track?.width ?? undefined;
+  const height = track?.height ?? undefined;
+
+  if (width != null && height != null) {
+    encoderConfig.maxPixels = width * height;
+  }
+  if (track?.max_bitrate != null) {
+    // Convert kbps → bps for the encoder.
+    encoderConfig.maxBitrate = track.max_bitrate * 1000;
+  }
+
+  const hasConstraints = width != null || height != null;
+  const constraints = hasConstraints ? { width: width, height: height } : undefined;
+
+  return { encoderConfig, constraints };
+}
+
+/**
+ * Emit `logger.warn` for each track whose codec is not in the recognized set.
+ * Pure validation — does not throw or modify state.
+ */
+export function validateTrackCodecs(tracks: PublishTrackConfig[]): void {
+  for (const track of tracks) {
+    if (track.codec == null) continue;
+    const supported = track.kind === 'video' ? SUPPORTED_VIDEO_CODECS : SUPPORTED_AUDIO_CODECS;
+    if (!supported.includes(track.codec)) {
+      logger.warn(
+        `Track (kind=${track.kind}, source=${track.source}) has unrecognized ` +
+          `codec '${track.codec}'; supported: ${supported.join(', ')}`
+      );
+    }
+  }
+}
+
 export type ConnectDecision =
   | {
       ok: true;
@@ -394,7 +456,8 @@ async function setupMediaSources(
   needsVideo: boolean,
   videoSourceType: VideoSourceType,
   set: StateSetter,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  videoConstraints?: { width?: number; height?: number }
 ): Promise<{
   microphone: Publish.Source.Microphone | null;
   camera: Publish.Source.Camera | null;
@@ -413,7 +476,11 @@ async function setupMediaSources(
   if (needsVideo) {
     if (videoSourceType === 'screen') {
       // Screen capture — the OS picker dialog may take a while, use 30s timeout.
-      screen = new Publish.Source.Screen({ enabled: true });
+      const screenProps: ConstructorParameters<typeof Publish.Source.Screen>[0] = { enabled: true };
+      if (videoConstraints) {
+        screenProps.video = videoConstraints;
+      }
+      screen = new Publish.Source.Screen(screenProps);
       set({ cameraStatus: screen.source.peek()?.video ? 'ready' : 'requesting' });
       healthEffect.subscribe(screen.source, (v) =>
         set({ cameraStatus: v?.video ? 'ready' : 'requesting' })
@@ -435,7 +502,11 @@ async function setupMediaSources(
       }
     } else {
       // Camera capture — standard 15s timeout for permission dialog.
-      camera = new Publish.Source.Camera({ enabled: true });
+      const cameraProps: ConstructorParameters<typeof Publish.Source.Camera>[0] = { enabled: true };
+      if (videoConstraints) {
+        cameraProps.constraints = videoConstraints;
+      }
+      camera = new Publish.Source.Camera(cameraProps);
       set({ cameraStatus: camera.source.peek() ? 'ready' : 'requesting' });
       healthEffect.subscribe(camera.source, (v) =>
         set({ cameraStatus: v ? 'ready' : 'requesting' })
@@ -467,6 +538,7 @@ async function setupPublishPath(
   needsAudio: boolean,
   needsVideo: boolean,
   videoSourceType: VideoSourceType,
+  tracks: PublishTrackConfig[],
   set: StateSetter,
   abortSignal?: AbortSignal
 ): Promise<{
@@ -475,13 +547,18 @@ async function setupPublishPath(
   screen: Publish.Source.Screen | null;
   publish: Publish.Broadcast;
 }> {
+  // Resolve per-track media hints for the primary video track.
+  const videoTrack = tracks.find((t) => t.kind === 'video') ?? null;
+  const { encoderConfig, constraints: videoConstraints } = buildVideoEncoderConfig(videoTrack);
+
   const { microphone, camera, screen } = await setupMediaSources(
     healthEffect,
     needsAudio,
     needsVideo,
     videoSourceType,
     set,
-    abortSignal
+    abortSignal,
+    videoConstraints
   );
 
   logger.info('Step 5: Creating publish broadcast');
@@ -505,12 +582,12 @@ async function setupPublishPath(
       healthEffect.subscribe(screen.source, (v) => videoOnlySignal.set(v?.video));
       broadcastConfig.video = {
         source: videoOnlySignal,
-        hd: { enabled: true, config: { codec: 'vp09' } },
+        hd: { enabled: true, config: encoderConfig },
       };
     } else if (camera) {
       broadcastConfig.video = {
         source: camera.source,
-        hd: { enabled: true, config: { codec: 'vp09' } },
+        hd: { enabled: true, config: encoderConfig },
       };
     }
   }
@@ -544,7 +621,8 @@ async function setupPublishPath(
 /** Create a video capture source for a secondary broadcast and wait for device readiness. */
 async function createSecondaryVideoSource(
   sourceType: 'camera' | 'screen',
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  videoConstraints?: { width?: number; height?: number }
 ): Promise<{
   camera: Publish.Source.Camera | null;
   screen: Publish.Source.Screen | null;
@@ -553,7 +631,11 @@ async function createSecondaryVideoSource(
     logger.info(
       'Creating secondary screen capture source — the OS may show an additional picker dialog'
     );
-    const screen = new Publish.Source.Screen({ enabled: true });
+    const screenProps: ConstructorParameters<typeof Publish.Source.Screen>[0] = { enabled: true };
+    if (videoConstraints) {
+      screenProps.video = videoConstraints;
+    }
+    const screen = new Publish.Source.Screen(screenProps);
     if (!screen.source.peek()?.video) {
       try {
         await waitForSignalValue(
@@ -571,7 +653,11 @@ async function createSecondaryVideoSource(
     return { camera: null, screen };
   }
 
-  const camera = new Publish.Source.Camera({ enabled: true });
+  const cameraProps: ConstructorParameters<typeof Publish.Source.Camera>[0] = { enabled: true };
+  if (videoConstraints) {
+    cameraProps.constraints = videoConstraints;
+  }
+  const camera = new Publish.Source.Camera(cameraProps);
   if (!camera.source.peek()) {
     try {
       await waitForSignalValue(
@@ -651,11 +737,19 @@ async function setupSecondaryPublishPath(
   );
   for (const w of warnings) logger.warn(w);
 
+  // Resolve per-track media hints for the secondary video track.
+  const videoTrack = broadcastTracks.find((t) => t.kind === 'video') ?? null;
+  const { encoderConfig, constraints: videoConstraints } = buildVideoEncoderConfig(videoTrack);
+
   let secondaryCamera: Publish.Source.Camera | null = null;
   let secondaryScreen: Publish.Source.Screen | null = null;
 
   if (needsVideo) {
-    const sources = await createSecondaryVideoSource(videoSourceType, abortSignal);
+    const sources = await createSecondaryVideoSource(
+      videoSourceType,
+      abortSignal,
+      videoConstraints
+    );
     secondaryCamera = sources.camera;
     secondaryScreen = sources.screen;
   }
@@ -675,12 +769,12 @@ async function setupSecondaryPublishPath(
       healthEffect.subscribe(secondaryScreen.source, (v) => videoOnlySignal.set(v?.video));
       broadcastConfig.video = {
         source: videoOnlySignal,
-        hd: { enabled: true, config: { codec: 'vp09' } },
+        hd: { enabled: true, config: encoderConfig },
       };
     } else if (secondaryCamera) {
       broadcastConfig.video = {
         source: secondaryCamera.source,
-        hd: { enabled: true, config: { codec: 'vp09' } },
+        hd: { enabled: true, config: encoderConfig },
       };
     }
   }
@@ -924,7 +1018,15 @@ export async function performConnect(
     // If we watch first, the subscribe to output/catalog.json fails with
     // RESET_STREAM because skit hasn't started publishing yet.
     if (decision.shouldPublish) {
+      validateTrackCodecs(state.tracks);
       set({ connectingStep: 'devices' });
+
+      // Filter tracks belonging to the primary broadcast for setupPublishPath.
+      const primaryBroadcast = state.publishBroadcasts[0] ?? state.inputBroadcast;
+      const primaryTracks = state.tracks.filter(
+        (t) => (t.broadcast ?? primaryBroadcast) === primaryBroadcast
+      );
+
       applyPublishResult(
         attempt,
         await setupPublishPath(
@@ -934,6 +1036,7 @@ export async function performConnect(
           state.pipelineNeedsAudio,
           state.pipelineNeedsVideo,
           state.videoSourceType,
+          primaryTracks,
           set,
           abortSignal
         )

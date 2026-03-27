@@ -12,6 +12,8 @@ import {
   formatConnectError,
   analyzeSecondaryBroadcastTracks,
   filterSecondaryTracks,
+  buildVideoEncoderConfig,
+  validateTrackCodecs,
   NULL_MOQ_REFS,
   type ConnectAttempt,
 } from './streamStoreHelpers';
@@ -419,7 +421,15 @@ describe('NULL_MOQ_REFS', () => {
 describe('analyzeSecondaryBroadcastTracks', () => {
   it('returns needsVideo=true and camera source for a single camera video track', () => {
     const result = analyzeSecondaryBroadcastTracks('cam-input', [
-      { kind: 'video', source: 'camera', broadcast: 'cam-input' },
+      {
+        kind: 'video',
+        source: 'camera',
+        broadcast: 'cam-input',
+        width: null,
+        height: null,
+        codec: null,
+        max_bitrate: null,
+      },
     ]);
     expect(result.needsVideo).toBe(true);
     expect(result.videoSourceType).toBe('camera');
@@ -428,7 +438,15 @@ describe('analyzeSecondaryBroadcastTracks', () => {
 
   it('returns needsVideo=true and screen source for a screen video track', () => {
     const result = analyzeSecondaryBroadcastTracks('screen2', [
-      { kind: 'video', source: 'screen', broadcast: 'screen2' },
+      {
+        kind: 'video',
+        source: 'screen',
+        broadcast: 'screen2',
+        width: null,
+        height: null,
+        codec: null,
+        max_bitrate: null,
+      },
     ]);
     expect(result.needsVideo).toBe(true);
     expect(result.videoSourceType).toBe('screen');
@@ -437,7 +455,15 @@ describe('analyzeSecondaryBroadcastTracks', () => {
 
   it('returns needsVideo=false when only audio tracks are present', () => {
     const result = analyzeSecondaryBroadcastTracks('audio-only', [
-      { kind: 'audio', source: 'microphone', broadcast: 'audio-only' },
+      {
+        kind: 'audio',
+        source: 'microphone',
+        broadcast: 'audio-only',
+        width: null,
+        height: null,
+        codec: null,
+        max_bitrate: null,
+      },
     ]);
     expect(result.needsVideo).toBe(false);
     expect(result.videoSourceType).toBe('camera'); // default fallback
@@ -447,8 +473,24 @@ describe('analyzeSecondaryBroadcastTracks', () => {
 
   it('warns when audio tracks are present alongside video', () => {
     const result = analyzeSecondaryBroadcastTracks('mixed', [
-      { kind: 'video', source: 'camera', broadcast: 'mixed' },
-      { kind: 'audio', source: 'microphone', broadcast: 'mixed' },
+      {
+        kind: 'video',
+        source: 'camera',
+        broadcast: 'mixed',
+        width: null,
+        height: null,
+        codec: null,
+        max_bitrate: null,
+      },
+      {
+        kind: 'audio',
+        source: 'microphone',
+        broadcast: 'mixed',
+        width: null,
+        height: null,
+        codec: null,
+        max_bitrate: null,
+      },
     ]);
     expect(result.needsVideo).toBe(true);
     expect(result.warnings).toHaveLength(1);
@@ -457,8 +499,24 @@ describe('analyzeSecondaryBroadcastTracks', () => {
 
   it('warns when multiple video tracks are present', () => {
     const result = analyzeSecondaryBroadcastTracks('multi-video', [
-      { kind: 'video', source: 'camera', broadcast: 'multi-video' },
-      { kind: 'video', source: 'screen', broadcast: 'multi-video' },
+      {
+        kind: 'video',
+        source: 'camera',
+        broadcast: 'multi-video',
+        width: null,
+        height: null,
+        codec: null,
+        max_bitrate: null,
+      },
+      {
+        kind: 'video',
+        source: 'screen',
+        broadcast: 'multi-video',
+        width: null,
+        height: null,
+        codec: null,
+        max_bitrate: null,
+      },
     ]);
     expect(result.needsVideo).toBe(true);
     expect(result.videoSourceType).toBe('camera'); // first track wins
@@ -469,9 +527,33 @@ describe('analyzeSecondaryBroadcastTracks', () => {
 
   it('collects both audio and multi-video warnings', () => {
     const result = analyzeSecondaryBroadcastTracks('all-warnings', [
-      { kind: 'video', source: 'camera', broadcast: 'all-warnings' },
-      { kind: 'video', source: 'screen', broadcast: 'all-warnings' },
-      { kind: 'audio', source: 'microphone', broadcast: 'all-warnings' },
+      {
+        kind: 'video',
+        source: 'camera',
+        broadcast: 'all-warnings',
+        width: null,
+        height: null,
+        codec: null,
+        max_bitrate: null,
+      },
+      {
+        kind: 'video',
+        source: 'screen',
+        broadcast: 'all-warnings',
+        width: null,
+        height: null,
+        codec: null,
+        max_bitrate: null,
+      },
+      {
+        kind: 'audio',
+        source: 'microphone',
+        broadcast: 'all-warnings',
+        width: null,
+        height: null,
+        codec: null,
+        max_bitrate: null,
+      },
     ]);
     expect(result.warnings).toHaveLength(2);
   });
@@ -489,9 +571,33 @@ describe('analyzeSecondaryBroadcastTracks', () => {
 
 describe('filterSecondaryTracks', () => {
   const allTracks = [
-    { kind: 'audio' as const, source: 'microphone' as const, broadcast: null },
-    { kind: 'video' as const, source: 'screen' as const, broadcast: null },
-    { kind: 'video' as const, source: 'camera' as const, broadcast: 'cam-input' },
+    {
+      kind: 'audio' as const,
+      source: 'microphone' as const,
+      broadcast: null,
+      width: null,
+      height: null,
+      codec: null,
+      max_bitrate: null,
+    },
+    {
+      kind: 'video' as const,
+      source: 'screen' as const,
+      broadcast: null,
+      width: null,
+      height: null,
+      codec: null,
+      max_bitrate: null,
+    },
+    {
+      kind: 'video' as const,
+      source: 'camera' as const,
+      broadcast: 'cam-input',
+      width: null,
+      height: null,
+      codec: null,
+      max_bitrate: null,
+    },
   ];
 
   it('returns tracks whose broadcast matches the secondary name', () => {
@@ -513,10 +619,296 @@ describe('filterSecondaryTracks', () => {
 
   it('handles all-explicit broadcasts correctly', () => {
     const explicitTracks = [
-      { kind: 'video' as const, source: 'screen' as const, broadcast: 'a' },
-      { kind: 'video' as const, source: 'camera' as const, broadcast: 'b' },
+      {
+        kind: 'video' as const,
+        source: 'screen' as const,
+        broadcast: 'a',
+        width: null,
+        height: null,
+        codec: null,
+        max_bitrate: null,
+      },
+      {
+        kind: 'video' as const,
+        source: 'camera' as const,
+        broadcast: 'b',
+        width: null,
+        height: null,
+        codec: null,
+        max_bitrate: null,
+      },
     ];
     expect(filterSecondaryTracks(explicitTracks, 'a', 'b')).toHaveLength(1);
     expect(filterSecondaryTracks(explicitTracks, 'a', 'a')).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildVideoEncoderConfig
+// ---------------------------------------------------------------------------
+
+describe('buildVideoEncoderConfig', () => {
+  it('returns default vp09 codec when no track is provided', () => {
+    const result = buildVideoEncoderConfig();
+    expect(result.encoderConfig.codec).toBe('vp09');
+    expect(result.encoderConfig.maxPixels).toBeUndefined();
+    expect(result.encoderConfig.maxBitrate).toBeUndefined();
+    expect(result.constraints).toBeUndefined();
+  });
+
+  it('returns default vp09 codec when track has no codec set', () => {
+    const result = buildVideoEncoderConfig({
+      kind: 'video',
+      source: 'camera',
+      broadcast: null,
+      width: null,
+      height: null,
+      codec: null,
+      max_bitrate: null,
+    });
+    expect(result.encoderConfig.codec).toBe('vp09');
+  });
+
+  it('maps vp9 to vp09 WebCodecs codec string', () => {
+    const result = buildVideoEncoderConfig({
+      kind: 'video',
+      source: 'screen',
+      broadcast: null,
+      width: null,
+      height: null,
+      codec: 'vp9',
+      max_bitrate: null,
+    });
+    expect(result.encoderConfig.codec).toBe('vp09');
+  });
+
+  it('passes through unrecognized codec values as-is', () => {
+    const result = buildVideoEncoderConfig({
+      kind: 'video',
+      source: 'camera',
+      broadcast: null,
+      width: null,
+      height: null,
+      codec: 'h264',
+      max_bitrate: null,
+    });
+    expect(result.encoderConfig.codec).toBe('h264');
+  });
+
+  it('computes maxPixels from width × height', () => {
+    const result = buildVideoEncoderConfig({
+      kind: 'video',
+      source: 'screen',
+      broadcast: null,
+      width: 1280,
+      height: 720,
+      codec: null,
+      max_bitrate: null,
+    });
+    expect(result.encoderConfig.maxPixels).toBe(1280 * 720);
+  });
+
+  it('does not set maxPixels when only width is provided', () => {
+    const result = buildVideoEncoderConfig({
+      kind: 'video',
+      source: 'camera',
+      broadcast: null,
+      width: 1280,
+      height: null,
+      codec: null,
+      max_bitrate: null,
+    });
+    expect(result.encoderConfig.maxPixels).toBeUndefined();
+  });
+
+  it('does not set maxPixels when only height is provided', () => {
+    const result = buildVideoEncoderConfig({
+      kind: 'video',
+      source: 'camera',
+      broadcast: null,
+      width: null,
+      height: 720,
+      codec: null,
+      max_bitrate: null,
+    });
+    expect(result.encoderConfig.maxPixels).toBeUndefined();
+  });
+
+  it('converts max_bitrate from kbps to bps', () => {
+    const result = buildVideoEncoderConfig({
+      kind: 'video',
+      source: 'camera',
+      broadcast: null,
+      width: null,
+      height: null,
+      codec: null,
+      max_bitrate: 2500,
+    });
+    expect(result.encoderConfig.maxBitrate).toBe(2_500_000);
+  });
+
+  it('returns capture constraints with width and height', () => {
+    const result = buildVideoEncoderConfig({
+      kind: 'video',
+      source: 'screen',
+      broadcast: null,
+      width: 640,
+      height: 480,
+      codec: 'vp9',
+      max_bitrate: null,
+    });
+    expect(result.constraints).toEqual({ width: 640, height: 480 });
+  });
+
+  it('returns constraints with only width when height is null', () => {
+    const result = buildVideoEncoderConfig({
+      kind: 'video',
+      source: 'camera',
+      broadcast: null,
+      width: 1920,
+      height: null,
+      codec: null,
+      max_bitrate: null,
+    });
+    expect(result.constraints).toEqual({ width: 1920, height: undefined });
+  });
+
+  it('handles all fields set together', () => {
+    const result = buildVideoEncoderConfig({
+      kind: 'video',
+      source: 'screen',
+      broadcast: 'my-broadcast',
+      width: 1920,
+      height: 1080,
+      codec: 'vp9',
+      max_bitrate: 5000,
+    });
+    expect(result.encoderConfig).toEqual({
+      codec: 'vp09',
+      maxPixels: 1920 * 1080,
+      maxBitrate: 5_000_000,
+    });
+    expect(result.constraints).toEqual({ width: 1920, height: 1080 });
+  });
+
+  it('handles null track', () => {
+    const result = buildVideoEncoderConfig(null);
+    expect(result.encoderConfig.codec).toBe('vp09');
+    expect(result.constraints).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validateTrackCodecs
+// ---------------------------------------------------------------------------
+
+// validateTrackCodecs uses `logger.warn` from tslog. In this test environment,
+// tslog routes all output through `console.log` (not `console.warn`), so we
+// spy on `console.log` and filter for the 'unrecognized' substring.
+describe('validateTrackCodecs', () => {
+  it('does not warn for recognized video codec vp9', () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    validateTrackCodecs([
+      {
+        kind: 'video',
+        source: 'camera',
+        broadcast: null,
+        width: null,
+        height: null,
+        codec: 'vp9',
+        max_bitrate: null,
+      },
+    ]);
+    const unrecognizedCalls = logSpy.mock.calls.filter((args) =>
+      args.some((a) => typeof a === 'string' && a.includes('unrecognized'))
+    );
+    expect(unrecognizedCalls).toHaveLength(0);
+    logSpy.mockRestore();
+  });
+
+  it('does not warn for recognized audio codec opus', () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    validateTrackCodecs([
+      {
+        kind: 'audio',
+        source: 'microphone',
+        broadcast: null,
+        width: null,
+        height: null,
+        codec: 'opus',
+        max_bitrate: null,
+      },
+    ]);
+    const unrecognizedCalls = logSpy.mock.calls.filter((args) =>
+      args.some((a) => typeof a === 'string' && a.includes('unrecognized'))
+    );
+    expect(unrecognizedCalls).toHaveLength(0);
+    logSpy.mockRestore();
+  });
+
+  it('does not warn when codec is null', () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    validateTrackCodecs([
+      {
+        kind: 'video',
+        source: 'camera',
+        broadcast: null,
+        width: null,
+        height: null,
+        codec: null,
+        max_bitrate: null,
+      },
+    ]);
+    const unrecognizedCalls = logSpy.mock.calls.filter((args) =>
+      args.some((a) => typeof a === 'string' && a.includes('unrecognized'))
+    );
+    expect(unrecognizedCalls).toHaveLength(0);
+    logSpy.mockRestore();
+  });
+
+  it('warns for unrecognized video codec', () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    validateTrackCodecs([
+      {
+        kind: 'video',
+        source: 'screen',
+        broadcast: null,
+        width: null,
+        height: null,
+        codec: 'h264',
+        max_bitrate: null,
+      },
+    ]);
+    const unrecognizedCalls = logSpy.mock.calls.filter((args) =>
+      args.some((a) => typeof a === 'string' && a.includes('unrecognized'))
+    );
+    expect(unrecognizedCalls).toHaveLength(1);
+    expect(
+      unrecognizedCalls[0]?.some((a: unknown) => typeof a === 'string' && a.includes('h264'))
+    ).toBe(true);
+    logSpy.mockRestore();
+  });
+
+  it('warns for unrecognized audio codec', () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    validateTrackCodecs([
+      {
+        kind: 'audio',
+        source: 'microphone',
+        broadcast: null,
+        width: null,
+        height: null,
+        codec: 'aac',
+        max_bitrate: null,
+      },
+    ]);
+    const unrecognizedCalls = logSpy.mock.calls.filter((args) =>
+      args.some((a) => typeof a === 'string' && a.includes('unrecognized'))
+    );
+    expect(unrecognizedCalls).toHaveLength(1);
+    expect(
+      unrecognizedCalls[0]?.some((a: unknown) => typeof a === 'string' && a.includes('aac'))
+    ).toBe(true);
+    logSpy.mockRestore();
   });
 });

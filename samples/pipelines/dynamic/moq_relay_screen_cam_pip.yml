@@ -19,11 +19,19 @@ client:
     tracks:
       - kind: audio
         source: microphone
+        codec: opus
+        max_bitrate: 32
       - kind: video
         source: screen
+        width: 1280
+        height: 720
+        codec: vp9
       - kind: video
         source: camera
         broadcast: cam-input
+        width: 640
+        height: 480
+        codec: vp9
   watch:
     broadcast: output
     audio: true

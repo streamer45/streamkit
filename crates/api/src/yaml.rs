@@ -147,6 +147,22 @@ pub struct PublishTrackConfig {
     /// When omitted, uses the parent `PublishConfig.broadcast`.
     #[serde(default)]
     pub broadcast: Option<String>,
+    /// Desired encode width in pixels (e.g. 1280).
+    /// Applied as a capture constraint and used to compute `maxPixels` for
+    /// the `@moq/publish` video encoder.
+    #[serde(default)]
+    pub width: Option<u32>,
+    /// Desired encode height in pixels (e.g. 720).
+    #[serde(default)]
+    pub height: Option<u32>,
+    /// Codec identifier.  Supported values: `"vp9"` (video), `"opus"` (audio).
+    /// Defaults to `"vp9"` for video tracks when omitted.
+    #[serde(default)]
+    pub codec: Option<String>,
+    /// Maximum bitrate in kbps.  Converted to bps and passed as `maxBitrate`
+    /// to the `@moq/publish` encoder.
+    #[serde(default)]
+    pub max_bitrate: Option<u32>,
 }
 
 /// Media kind for a publish track.
@@ -1925,6 +1941,10 @@ client:
                     kind: TrackKind::Audio,
                     source: CaptureSource::Microphone,
                     broadcast: None,
+                    width: None,
+                    height: None,
+                    codec: None,
+                    max_bitrate: None,
                 }],
             }),
             watch: Some(WatchConfig { broadcast: "output".into(), audio: true, video: true }),
@@ -1996,6 +2016,10 @@ client:
                     kind: TrackKind::Audio,
                     source: CaptureSource::Microphone,
                     broadcast: None,
+                    width: None,
+                    height: None,
+                    codec: None,
+                    max_bitrate: None,
                 }],
             }),
             watch: None,
@@ -2031,6 +2055,10 @@ client:
                 kind: TrackKind::Audio,
                 source: CaptureSource::Microphone,
                 broadcast: None,
+                width: None,
+                height: None,
+                codec: None,
+                max_bitrate: None,
             }],
         });
         let warnings = lint_client_section(&c, EngineMode::Dynamic);
@@ -2046,6 +2074,10 @@ client:
                 kind: TrackKind::Audio,
                 source: CaptureSource::Microphone,
                 broadcast: None,
+                width: None,
+                height: None,
+                codec: None,
+                max_bitrate: None,
             }],
         });
         c.watch = Some(WatchConfig { broadcast: "same".into(), audio: true, video: true });
@@ -2063,11 +2095,19 @@ client:
                     kind: TrackKind::Audio,
                     source: CaptureSource::Microphone,
                     broadcast: None,
+                    width: None,
+                    height: None,
+                    codec: None,
+                    max_bitrate: None,
                 },
                 PublishTrackConfig {
                     kind: TrackKind::Video,
                     source: CaptureSource::Camera,
                     broadcast: Some("output".into()), // overrides to match watch
+                    width: None,
+                    height: None,
+                    codec: None,
+                    max_bitrate: None,
                 },
             ],
         });
@@ -2383,6 +2423,10 @@ client:
                     kind: TrackKind::Audio,
                     source: CaptureSource::Microphone,
                     broadcast: None,
+                    width: None,
+                    height: None,
+                    codec: None,
+                    max_bitrate: None,
                 }],
             }),
             ..Default::default()
@@ -2426,6 +2470,10 @@ client:
                     kind: TrackKind::Audio,
                     source: CaptureSource::Microphone,
                     broadcast: None,
+                    width: None,
+                    height: None,
+                    codec: None,
+                    max_bitrate: None,
                 }],
             }),
             ..Default::default()
@@ -2452,6 +2500,10 @@ client:
                     kind: TrackKind::Audio,
                     source: CaptureSource::Microphone,
                     broadcast: None,
+                    width: None,
+                    height: None,
+                    codec: None,
+                    max_bitrate: None,
                 }],
             }),
             ..Default::default()
@@ -2479,6 +2531,10 @@ client:
                     kind: TrackKind::Audio,
                     source: CaptureSource::Microphone,
                     broadcast: None,
+                    width: None,
+                    height: None,
+                    codec: None,
+                    max_bitrate: None,
                 }],
             }),
             ..Default::default()
@@ -2644,11 +2700,19 @@ client:
                     kind: TrackKind::Audio,
                     source: CaptureSource::Microphone,
                     broadcast: None,
+                    width: None,
+                    height: None,
+                    codec: None,
+                    max_bitrate: None,
                 },
                 PublishTrackConfig {
                     kind: TrackKind::Video,
                     source: CaptureSource::Screen,
                     broadcast: Some("screen-input".into()),
+                    width: None,
+                    height: None,
+                    codec: None,
+                    max_bitrate: None,
                 },
             ],
         };
@@ -2671,6 +2735,10 @@ client:
                 kind: TrackKind::Audio,
                 source: CaptureSource::Screen,
                 broadcast: None,
+                width: None,
+                height: None,
+                codec: None,
+                max_bitrate: None,
             }],
         });
         let warnings = lint_client_section(&c, EngineMode::Dynamic);
@@ -2690,11 +2758,19 @@ client:
                     kind: TrackKind::Audio,
                     source: CaptureSource::Microphone,
                     broadcast: None,
+                    width: None,
+                    height: None,
+                    codec: None,
+                    max_bitrate: None,
                 },
                 PublishTrackConfig {
                     kind: TrackKind::Video,
                     source: CaptureSource::Screen,
                     broadcast: None,
+                    width: None,
+                    height: None,
+                    codec: None,
+                    max_bitrate: None,
                 },
             ],
         });
@@ -2715,11 +2791,19 @@ client:
                     kind: TrackKind::Audio,
                     source: CaptureSource::Microphone,
                     broadcast: None,
+                    width: None,
+                    height: None,
+                    codec: None,
+                    max_bitrate: None,
                 },
                 PublishTrackConfig {
                     kind: TrackKind::Audio,
                     source: CaptureSource::Microphone,
                     broadcast: None,
+                    width: None,
+                    height: None,
+                    codec: None,
+                    max_bitrate: None,
                 },
             ],
         });
@@ -2740,11 +2824,19 @@ client:
                     kind: TrackKind::Audio,
                     source: CaptureSource::Microphone,
                     broadcast: None,
+                    width: None,
+                    height: None,
+                    codec: None,
+                    max_bitrate: None,
                 },
                 PublishTrackConfig {
                     kind: TrackKind::Audio,
                     source: CaptureSource::Microphone,
                     broadcast: Some("other-input".into()),
+                    width: None,
+                    height: None,
+                    codec: None,
+                    max_bitrate: None,
                 },
             ],
         });
@@ -2770,11 +2862,19 @@ client:
                     kind: TrackKind::Audio,
                     source: CaptureSource::Microphone,
                     broadcast: None,
+                    width: None,
+                    height: None,
+                    codec: None,
+                    max_bitrate: None,
                 },
                 PublishTrackConfig {
                     kind: TrackKind::Video,
                     source: CaptureSource::Microphone,
                     broadcast: None,
+                    width: None,
+                    height: None,
+                    codec: None,
+                    max_bitrate: None,
                 },
             ],
         });
