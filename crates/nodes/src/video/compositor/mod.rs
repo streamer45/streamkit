@@ -723,6 +723,12 @@ impl ProcessorNode for CompositorNode {
                                 );
                                 tracing::info!("Compositor fps changed: {} → {}", old_fps, self.config.fps);
                             }
+                            // Re-resolve output_format from the updated config.
+                            self.output_format = self
+                                .config
+                                .output_format
+                                .as_deref()
+                                .and_then(|s| crate::video::parse_pixel_format(s).ok());
                         },
                         NodeControlMessage::Start => {},
                     }
