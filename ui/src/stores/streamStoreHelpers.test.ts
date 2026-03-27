@@ -222,6 +222,36 @@ describe('cleanupConnectAttempt', () => {
     expect(cam.close).toHaveBeenCalledOnce();
   });
 
+  it('should call close() on secondaryPublish when available', () => {
+    const pub = { close: vi.fn() };
+    cleanupConnectAttempt(makeAttempt({ secondaryPublish: pub as never }));
+    expect(pub.close).toHaveBeenCalledOnce();
+  });
+
+  it('should call close() on secondaryCamera when available', () => {
+    const cam = { close: vi.fn() };
+    cleanupConnectAttempt(makeAttempt({ secondaryCamera: cam as never }));
+    expect(cam.close).toHaveBeenCalledOnce();
+  });
+
+  it('should call close() on secondaryScreen when available', () => {
+    const scr = { close: vi.fn() };
+    cleanupConnectAttempt(makeAttempt({ secondaryScreen: scr as never }));
+    expect(scr.close).toHaveBeenCalledOnce();
+  });
+
+  it('should disable secondaryCamera via enabled.set(false) when close() is unavailable', () => {
+    const cam = { enabled: { set: vi.fn() } };
+    cleanupConnectAttempt(makeAttempt({ secondaryCamera: cam as never }));
+    expect(cam.enabled.set).toHaveBeenCalledWith(false);
+  });
+
+  it('should disable secondaryScreen via enabled.set(false) when close() is unavailable', () => {
+    const scr = { enabled: { set: vi.fn() } };
+    cleanupConnectAttempt(makeAttempt({ secondaryScreen: scr as never }));
+    expect(scr.enabled.set).toHaveBeenCalledWith(false);
+  });
+
   it('should disable microphone via enabled.set(false) when close() is unavailable', () => {
     const mic = { enabled: { set: vi.fn() } };
     cleanupConnectAttempt(makeAttempt({ microphone: mic as never }));
@@ -367,7 +397,11 @@ describe('NULL_MOQ_REFS', () => {
       'connection',
       'microphone',
       'camera',
+      'screen',
       'healthEffect',
+      'secondaryPublish',
+      'secondaryCamera',
+      'secondaryScreen',
     ];
 
     for (const key of expectedKeys) {
