@@ -36,6 +36,7 @@ function makeLayer(id: string, x: number, width: number): LayerState {
     cropY: 0.5,
     cropZoom: 1.0,
     cropShape: 'rect',
+    aspectFit: true,
   };
 }
 

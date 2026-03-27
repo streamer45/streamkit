@@ -80,7 +80,13 @@ describe('deriveSettingsFromClient', () => {
     const client: ClientSection = {
       relay_url: null,
       gateway_path: '/moq/compositor',
-      publish: { broadcast: 'camera-feed', audio: true, video: true, screen: false },
+      publish: {
+        broadcast: 'camera-feed',
+        tracks: [
+          { kind: 'audio', source: 'microphone', broadcast: null },
+          { kind: 'video', source: 'camera', broadcast: null },
+        ],
+      },
       watch: { broadcast: 'composited-output', audio: true, video: true },
       input: null,
       output: null,
@@ -100,6 +106,11 @@ describe('deriveSettingsFromClient', () => {
       outputsVideo: true,
       isExternalRelay: false,
       videoSourceType: 'camera',
+      tracks: [
+        { kind: 'audio', source: 'microphone', broadcast: null },
+        { kind: 'video', source: 'camera', broadcast: null },
+      ],
+      publishBroadcasts: ['camera-feed'],
     });
   });
 
@@ -107,7 +118,10 @@ describe('deriveSettingsFromClient', () => {
     const client: ClientSection = {
       relay_url: 'https://relay.example.com',
       gateway_path: null,
-      publish: { broadcast: 'input', audio: true, video: false, screen: false },
+      publish: {
+        broadcast: 'input',
+        tracks: [{ kind: 'audio', source: 'microphone', broadcast: null }],
+      },
       watch: { broadcast: 'output', audio: false, video: true },
       input: null,
       output: null,
@@ -127,6 +141,8 @@ describe('deriveSettingsFromClient', () => {
       outputsVideo: true,
       isExternalRelay: true,
       videoSourceType: 'camera',
+      tracks: [{ kind: 'audio', source: 'microphone', broadcast: null }],
+      publishBroadcasts: ['input'],
     });
   });
 
@@ -154,6 +170,8 @@ describe('deriveSettingsFromClient', () => {
       outputsVideo: true,
       isExternalRelay: false,
       videoSourceType: 'camera',
+      tracks: [],
+      publishBroadcasts: [],
     });
   });
 
@@ -187,6 +205,8 @@ describe('deriveSettingsFromClient', () => {
       outputsVideo: false,
       isExternalRelay: false,
       videoSourceType: 'camera',
+      tracks: [],
+      publishBroadcasts: [],
     });
   });
 });
@@ -277,8 +297,11 @@ client:
   gateway_path: /moq/compositor
   publish:
     broadcast: camera-feed
-    audio: true
-    video: true
+    tracks:
+      - kind: audio
+        source: microphone
+      - kind: video
+        source: camera
   watch:
     broadcast: composited-output
     audio: true
@@ -327,7 +350,13 @@ describe('deriveSettingsFromClient — monitor preview scenarios', () => {
     const client: ClientSection = {
       relay_url: null,
       gateway_path: '/moq/compositor',
-      publish: { broadcast: 'camera', audio: true, video: true, screen: false },
+      publish: {
+        broadcast: 'camera',
+        tracks: [
+          { kind: 'audio', source: 'microphone', broadcast: null },
+          { kind: 'video', source: 'camera', broadcast: null },
+        ],
+      },
       watch: { broadcast: 'composited', audio: true, video: true },
       input: null,
       output: null,
@@ -340,11 +369,17 @@ describe('deriveSettingsFromClient — monitor preview scenarios', () => {
     expect(settings.outputBroadcast).toBe('composited');
   });
 
-  it('derives videoSourceType as screen when screen is true', () => {
+  it('derives videoSourceType as screen when screen source is used', () => {
     const client: ClientSection = {
       relay_url: null,
       gateway_path: '/moq/screen',
-      publish: { broadcast: 'input', audio: true, video: true, screen: true },
+      publish: {
+        broadcast: 'input',
+        tracks: [
+          { kind: 'audio', source: 'microphone', broadcast: null },
+          { kind: 'video', source: 'screen', broadcast: null },
+        ],
+      },
       watch: { broadcast: 'output', audio: true, video: true },
       input: null,
       output: null,
@@ -364,6 +399,11 @@ describe('deriveSettingsFromClient — monitor preview scenarios', () => {
       outputsVideo: true,
       isExternalRelay: false,
       videoSourceType: 'screen',
+      tracks: [
+        { kind: 'audio', source: 'microphone', broadcast: null },
+        { kind: 'video', source: 'screen', broadcast: null },
+      ],
+      publishBroadcasts: ['input'],
     });
   });
 

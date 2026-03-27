@@ -44,8 +44,9 @@ client:
   gateway_path: /moq/echo
   publish:
     broadcast: echo-demo
-    audio: true
-    video: false
+    tracks:
+      - kind: audio
+        source: microphone
   watch:
     broadcast: echo-demo
     audio: true
@@ -70,8 +71,11 @@ client:
   relay_url: "https://relay.example.com"
   publish:
     broadcast: input-stream
-    audio: true
-    video: true
+    tracks:
+      - kind: audio
+        source: microphone
+      - kind: video
+        source: camera
   watch:
     broadcast: output-stream
     audio: true
@@ -116,8 +120,11 @@ client:
   gateway_path: /moq/av
   publish:
     broadcast: av-input
-    audio: true
-    video: true
+    tracks:
+      - kind: audio
+        source: microphone
+      - kind: video
+        source: camera
   watch:
     broadcast: av-output
     audio: true
@@ -181,8 +188,11 @@ client:
 client:
   publish:
     broadcast: input
-    audio: true
-    video: true
+    tracks:
+      - kind: audio
+        source: microphone
+      - kind: video
+        source: camera
   watch:
     broadcast: output
     audio: true
@@ -201,8 +211,11 @@ client:
   gateway_path: /moq/av
   publish:
     broadcast: input
-    audio: true
-    video: true
+    tracks:
+      - kind: audio
+        source: microphone
+      - kind: video
+        source: camera
   watch:
     broadcast: output
     audio: true
@@ -219,8 +232,9 @@ client:
   gateway_path: /moq/audio
   publish:
     broadcast: mic
-    audio: true
-    video: false
+    tracks:
+      - kind: audio
+        source: microphone
   watch:
     broadcast: processed
     audio: true
@@ -243,8 +257,11 @@ client:
   gateway_path: /moq/echo
   publish:
     broadcast: input
-    audio: true
-    video: true
+    tracks:
+      - kind: audio
+        source: microphone
+      - kind: video
+        source: camera
   watch:
     broadcast: output
     audio: true
@@ -261,9 +278,11 @@ client:
   gateway_path: /moq/screen
   publish:
     broadcast: input
-    audio: true
-    video: true
-    screen: true
+    tracks:
+      - kind: audio
+        source: microphone
+      - kind: video
+        source: screen
   watch:
     broadcast: output
     audio: true
@@ -280,9 +299,11 @@ client:
   gateway_path: /moq/cam
   publish:
     broadcast: input
-    audio: true
-    video: true
-    screen: false
+    tracks:
+      - kind: audio
+        source: microphone
+      - kind: video
+        source: camera
   watch:
     broadcast: output
     audio: true
@@ -305,6 +326,53 @@ client:
     const result = extractMoqPeerSettings(yaml);
     expect(result).not.toBeNull();
     expect(result!.videoSourceType).toBe('camera');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Multi-broadcast track grouping
+  // ---------------------------------------------------------------------------
+
+  it('should extract multi-broadcast tracks and publishBroadcasts', () => {
+    const yaml = `
+client:
+  gateway_path: /moq/screenshare
+  publish:
+    broadcast: screen-input
+    tracks:
+      - kind: audio
+        source: microphone
+      - kind: video
+        source: screen
+      - kind: video
+        source: camera
+        broadcast: cam-input
+  watch:
+    broadcast: output
+    audio: true
+    video: true
+`;
+    const result = extractMoqPeerSettings(yaml);
+    expect(result).not.toBeNull();
+    expect(result!.tracks).toHaveLength(3);
+    expect(result!.publishBroadcasts).toEqual(['screen-input', 'cam-input']);
+    expect(result!.videoSourceType).toBe('screen');
+    expect(result!.needsAudioInput).toBe(true);
+    expect(result!.needsVideoInput).toBe(true);
+  });
+
+  it('should return empty tracks and publishBroadcasts when no publish', () => {
+    const yaml = `
+client:
+  gateway_path: /moq/output
+  watch:
+    broadcast: output
+    audio: true
+    video: true
+`;
+    const result = extractMoqPeerSettings(yaml);
+    expect(result).not.toBeNull();
+    expect(result!.tracks).toEqual([]);
+    expect(result!.publishBroadcasts).toEqual([]);
   });
 });
 

@@ -9,9 +9,11 @@ client:
   gateway_path: /moq/screen
   publish:
     broadcast: input
-    audio: true
-    video: true
-    screen: true
+    tracks:
+      - kind: audio
+        source: microphone
+      - kind: video
+        source: screen
   watch:
     broadcast: output
     audio: true
@@ -22,7 +24,8 @@ nodes:
     kind: transport::moq::peer
     params:
       gateway_path: /moq/screen
-      input_broadcast: input
+      input_broadcasts:
+        - input
       output_broadcast: output
       allow_reconnect: true
     needs:

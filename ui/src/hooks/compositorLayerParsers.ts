@@ -62,6 +62,10 @@ export interface LayerState {
   cropY: number;
   /** Shape clipping applied to the layer. */
   cropShape: 'rect' | 'circle';
+  /** When true, the source is fitted within the rect preserving its native
+   *  aspect ratio (letterbox/pillarbox).  When false, the source is stretched
+   *  to fill the rect exactly.  Default true. */
+  aspectFit: boolean;
   /** True for layers materialized from server view data with no config entry
    *  in params (auto-PiP stubs).  These must NOT be serialized back to the
    *  server — doing so would create explicit config that disables aspect-fit. */
@@ -208,6 +212,7 @@ function layerConfigToState(
     cropX: cfg.crop_x ?? DEFAULT_CROP_X,
     cropY: cfg.crop_y ?? DEFAULT_CROP_Y,
     cropShape: cfg.crop_shape ?? DEFAULT_CROP_SHAPE,
+    aspectFit: cfg.aspect_fit ?? true,
   };
 }
 
@@ -331,6 +336,7 @@ export function serializeLayers(layers: LayerState[]): Record<string, LayerConfi
     if (layer.serverOnly) continue;
     layersMap[layer.id] = {
       rect: serializeRect(layer),
+      aspect_fit: layer.aspectFit,
       ...serializeSpatialFields(layer),
       crop_zoom: Math.round(layer.cropZoom * 100) / 100,
       crop_x: Math.round(layer.cropX * 100) / 100,

@@ -16,8 +16,9 @@ client:
   gateway_path: /moq/voice-agent-openai
   publish:
     broadcast: input
-    audio: true
-    video: false
+    tracks:
+      - kind: audio
+        source: microphone
   watch:
     broadcast: output
     audio: true
@@ -30,7 +31,8 @@ nodes:
     kind: transport::moq::peer
     params:
       gateway_path: /moq/voice-agent-openai
-      input_broadcast: input
+      input_broadcasts:
+        - input
       output_broadcast: output
       allow_reconnect: true
       output_group_duration_ms: 40  # 2 Opus frames per group for low latency

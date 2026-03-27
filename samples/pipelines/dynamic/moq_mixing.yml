@@ -5,8 +5,9 @@ client:
   gateway_path: /moq/mixing
   publish:
     broadcast: input
-    audio: true
-    video: false
+    tracks:
+      - kind: audio
+        source: microphone
   watch:
     broadcast: output
     audio: true
@@ -19,7 +20,8 @@ nodes:
     kind: transport::moq::peer
     params:
       gateway_path: /moq/mixing
-      input_broadcast: input
+      input_broadcasts:
+        - input
       output_broadcast: output
       allow_reconnect: true
     needs: opus_encoder

@@ -9,8 +9,9 @@ client:
   relay_url: http://127.0.0.1:4443
   publish:
     broadcast: input
-    audio: true
-    video: false
+    tracks:
+      - kind: audio
+        source: microphone
   watch:
     broadcast: output
     audio: true

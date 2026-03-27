@@ -9,8 +9,9 @@ client:
   gateway_path: /moq
   publish:
     broadcast: input
-    audio: true
-    video: false
+    tracks:
+      - kind: audio
+        source: microphone
   watch:
     broadcast: output
     audio: true
@@ -25,7 +26,8 @@ nodes:
     kind: transport::moq::peer
     params:
       gateway_path: /moq
-      input_broadcast: input
+      input_broadcasts:
+        - input
       output_broadcast: output
       allow_reconnect: true
     # Loopback: send processed audio back into the peer for distribution to subscribers.

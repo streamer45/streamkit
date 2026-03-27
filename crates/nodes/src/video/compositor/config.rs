@@ -188,6 +188,10 @@ fn generate_overlay_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+const fn default_aspect_fit() -> bool {
+    true
+}
+
 /// Layer configuration for a single compositing input.
 #[derive(Deserialize, Debug, Clone, JsonSchema)]
 #[cfg_attr(feature = "codegen", derive(ts_rs::TS))]
@@ -195,6 +199,12 @@ pub struct LayerConfig {
     /// Destination rectangle on the output canvas. If `None`, the input is
     /// scaled to fill the entire canvas.
     pub rect: Option<Rect>,
+    /// When `true` (the default), the source is fitted within the
+    /// destination rect while preserving its native aspect ratio
+    /// (letterbox / pillarbox).  Set to `false` to stretch the source
+    /// to fill the rect exactly.
+    #[serde(default = "default_aspect_fit")]
+    pub aspect_fit: bool,
     /// Opacity (0.0 .. 1.0). Default 1.0.
     #[serde(default = "default_opacity")]
     pub opacity: f32,
@@ -237,6 +247,7 @@ impl Default for LayerConfig {
     fn default() -> Self {
         Self {
             rect: None,
+            aspect_fit: default_aspect_fit(),
             opacity: default_opacity(),
             z_index: default_z_index(),
             rotation_degrees: 0.0,

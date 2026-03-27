@@ -137,6 +137,13 @@ export type LayerConfig = {
  */
 rect: Rect | null, 
 /**
+ * When `true` (the default), the source is fitted within the
+ * destination rect while preserving its native aspect ratio
+ * (letterbox / pillarbox).  Set to `false` to stretch the source
+ * to fill the rect exactly.
+ */
+aspect_fit: boolean, 
+/**
  * Opacity (0.0 .. 1.0). Default 1.0.
  */
 opacity: number, 
