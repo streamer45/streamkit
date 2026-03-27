@@ -37,11 +37,12 @@ function mapCodecToWebCodecs(codec: string): string {
   switch (codec) {
     case 'vp9':
       return 'vp09';
+    // Future codecs (h264 → "avc1.42E01E", av1 → "av01") need full
+    // WebCodecs profile strings and additional validation before they
+    // can be added here.
     default:
       throw new Error(
-        `Unsupported video codec '${codec}'. Supported codecs: ${SUPPORTED_VIDEO_CODECS.join(', ')}. ` +
-          `h264 requires a full WebCodecs profile string (e.g. "avc1.42E01E"); ` +
-          `av1 maps to "av01" but is not yet validated.`
+        `Unsupported video codec '${codec}'. Supported codecs: ${SUPPORTED_VIDEO_CODECS.join(', ')}.`
       );
   }
 }
@@ -920,6 +921,47 @@ function schedulePostConnectWarnings(
         cameraStatus: 'error',
         errorMessage:
           'Connected to relay, but screen capture is not available. The user may have stopped sharing.',
+      });
+    }, 10_000);
+  }
+
+  // Secondary camera / screen health — mirrors the primary camera and
+  // screen blocks above so that `secondaryCameraStatus` doesn't go stale
+  // when the user stops sharing via OS controls.
+  if (decision.shouldPublish && attempt.secondaryCamera) {
+    const cameraRef = attempt.secondaryCamera;
+
+    let wasEverReady = Boolean(cameraRef.source.peek()) || get().secondaryCameraStatus === 'ready';
+    attempt.healthEffect.subscribe(cameraRef.source, (value) => {
+      if (value) wasEverReady = true;
+    });
+
+    setTimeout(() => {
+      if (get().status !== 'connected') return;
+      if (wasEverReady) return;
+      set({
+        secondaryCameraStatus: 'error',
+        errorMessage:
+          'Connected to relay, but secondary camera is not available. Check browser permissions.',
+      });
+    }, 10_000);
+  }
+
+  if (decision.shouldPublish && attempt.secondaryScreen) {
+    const screenRef = attempt.secondaryScreen;
+
+    let wasEverReady = Boolean(screenRef.source.peek()?.video);
+    attempt.healthEffect.subscribe(screenRef.source, (value) => {
+      if (value?.video) wasEverReady = true;
+    });
+
+    setTimeout(() => {
+      if (get().status !== 'connected') return;
+      if (wasEverReady) return;
+      set({
+        secondaryCameraStatus: 'error',
+        errorMessage:
+          'Connected to relay, but secondary screen capture is not available. The user may have stopped sharing.',
       });
     }, 10_000);
   }

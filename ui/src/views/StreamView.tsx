@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import styled from '@emotion/styled';
-import React, { useEffect, useCallback, useRef } from 'react';
+import React, { useEffect, useCallback, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useShallow } from 'zustand/shallow';
 
@@ -205,6 +205,14 @@ const VideoContainer = styled.div`
     align-items: center;
     justify-content: center;
     background: #000;
+  }
+
+  &:fullscreen .sk-fullscreen-btn {
+    opacity: 0.5;
+  }
+
+  &:fullscreen .sk-fullscreen-btn:hover {
+    opacity: 1;
   }
 
   &:fullscreen canvas {
@@ -423,6 +431,18 @@ const StreamView: React.FC = () => {
   const isStreaming = status === 'connected';
 
   const videoContainerRef = useRef<HTMLDivElement>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // Track fullscreen state so the button label can reflect it.
+  useEffect(() => {
+    const handler = () => setIsFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener('fullscreenchange', handler);
+    document.addEventListener('webkitfullscreenchange', handler);
+    return () => {
+      document.removeEventListener('fullscreenchange', handler);
+      document.removeEventListener('webkitfullscreenchange', handler);
+    };
+  }, []);
 
   // Get node definitions for YAML autocomplete
   const nodeDefinitions = useSchemaStore((s) => s.nodeDefinitions);
@@ -1071,7 +1091,7 @@ const StreamView: React.FC = () => {
                     }
                   }}
                 >
-                  Fullscreen
+                  {isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
                 </FullscreenButton>
                 <canvas
                   ref={videoCanvasRef}

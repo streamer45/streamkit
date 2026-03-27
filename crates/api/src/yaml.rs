@@ -157,6 +157,11 @@ pub struct PublishTrackConfig {
     pub height: Option<u32>,
     /// Codec identifier.  Supported values: `"vp9"` (video), `"opus"` (audio).
     /// Defaults to `"vp9"` for video tracks when omitted.
+    ///
+    /// Stored as `String` (rather than an enum) for forward compatibility — new
+    /// codecs can be added without a breaking schema change.  The Rust linter
+    /// and the TS `mapCodecToWebCodecs` function validate the value at compile
+    /// and runtime respectively.
     #[serde(default)]
     pub codec: Option<String>,
     /// Maximum bitrate in kilobits per second (1 kbps = 1000 bps).  For video
