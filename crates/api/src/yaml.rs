@@ -121,21 +121,51 @@ pub struct ClientSection {
 }
 
 /// Browser-side publish configuration for dynamic pipelines.
+///
+/// Uses a generic `tracks` array where each entry declares a media source
+/// the browser should capture and publish.  Tracks are grouped by their
+/// effective broadcast name (track-level override or top-level default)
+/// and each group becomes a separate `Publish.Broadcast` instance.
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]
 #[ts(export)]
 pub struct PublishConfig {
-    /// Broadcast name the browser publishes to.
+    /// Default broadcast name for all tracks.
     pub broadcast: String,
-    /// Whether the pipeline consumes audio from the browser.
+    /// Media tracks to capture and publish.
+    pub tracks: Vec<PublishTrackConfig>,
+}
+
+/// A single media track to capture and publish from the browser.
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+#[ts(export)]
+pub struct PublishTrackConfig {
+    /// Media kind: "audio" or "video"
+    pub kind: TrackKind,
+    /// Capture source: "camera", "screen", "microphone"
+    pub source: CaptureSource,
+    /// Override broadcast name for this track.
+    /// When omitted, uses the parent `PublishConfig.broadcast`.
     #[serde(default)]
-    pub audio: bool,
-    /// Whether the pipeline consumes video from the browser.
-    #[serde(default)]
-    pub video: bool,
-    /// Whether the browser should use screen capture (getDisplayMedia)
-    /// instead of the default camera (getUserMedia).
-    #[serde(default)]
-    pub screen: bool,
+    pub broadcast: Option<String>,
+}
+
+/// Media kind for a publish track.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "lowercase")]
+pub enum TrackKind {
+    Audio,
+    Video,
+}
+
+/// Capture source for a publish track.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "lowercase")]
+pub enum CaptureSource {
+    Camera,
+    Screen,
+    Microphone,
 }
 
 /// Browser-side watch configuration for dynamic pipelines.
@@ -618,8 +648,12 @@ pub struct ClientLintWarning {
 ///     is an empty string.
 /// 12. **`duplicate-broadcast`** — `publish.broadcast` equals
 ///     `watch.broadcast` (would cause a loop).
-/// 13. **`screen-source-no-video`** — `publish.screen` is `true`
-///     but `video` is `false` (screen sharing requires video).
+/// 13. **`empty-tracks`** — `publish.tracks` is an empty array.
+///     14a. **`kind-source-mismatch`** — Track kind and source are incompatible
+///     (e.g. `kind: audio` with `source: camera`).
+///     14b. **`duplicate-source`** — Multiple tracks use the same capture source.
+///     14c. **`empty-track-broadcast`** — A track-level `broadcast` override is
+///     an empty string.
 pub fn lint_client_section(client: &ClientSection, mode: EngineMode) -> Vec<ClientLintWarning> {
     let mut warnings = Vec::new();
 
@@ -663,33 +697,68 @@ pub fn lint_client_section(client: &ClientSection, mode: EngineMode) -> Vec<Clie
         });
     }
 
-    // Rule 4: publish with no media
+    // Rule 4: publish with no media (empty tracks)
     if let Some(ref publish) = client.publish {
-        if !publish.audio && !publish.video {
+        if publish.tracks.is_empty() {
             warnings.push(ClientLintWarning {
-                rule: "publish-no-media",
-                message: "publish block sets both `audio` and `video` to false — nothing will be \
-                          sent from the browser."
+                rule: "empty-tracks",
+                message: "publish.tracks is empty — nothing will be captured from the browser."
                     .into(),
             });
         }
 
-        // Rule 4b: screen is true but video is false
-        if publish.screen && !publish.video {
-            warnings.push(ClientLintWarning {
-                rule: "screen-source-no-video",
-                message: "publish.screen is `true` but `video` is false — screen sharing \
-                          requires video to be enabled."
-                    .into(),
-            });
-        }
-
-        // Rule 11a: empty broadcast
+        // Rule 11a: empty top-level broadcast
         if publish.broadcast.is_empty() {
             warnings.push(ClientLintWarning {
                 rule: "empty-broadcast",
                 message: "publish.broadcast is an empty string.".into(),
             });
+        }
+
+        // Rule 14a: kind/source mismatches
+        for track in &publish.tracks {
+            let mismatch = matches!(
+                (track.kind, track.source),
+                (TrackKind::Audio, CaptureSource::Camera | CaptureSource::Screen)
+                    | (TrackKind::Video, CaptureSource::Microphone)
+            );
+            if mismatch {
+                warnings.push(ClientLintWarning {
+                    rule: "kind-source-mismatch",
+                    message: format!(
+                        "Track has kind `{:?}` with source `{:?}` — these are incompatible.",
+                        track.kind, track.source
+                    ),
+                });
+            }
+
+            // Rule 14c: empty track-level broadcast override
+            if let Some(ref bc) = track.broadcast {
+                if bc.is_empty() {
+                    warnings.push(ClientLintWarning {
+                        rule: "empty-track-broadcast",
+                        message: "A track-level `broadcast` override is an empty string.".into(),
+                    });
+                }
+            }
+        }
+
+        // Rule 14b: duplicate sources
+        {
+            let mut seen_sources = Vec::new();
+            for track in &publish.tracks {
+                if seen_sources.contains(&track.source) {
+                    warnings.push(ClientLintWarning {
+                        rule: "duplicate-source",
+                        message: format!(
+                            "Multiple tracks use the same capture source `{:?}`.",
+                            track.source
+                        ),
+                    });
+                } else {
+                    seen_sources.push(track.source);
+                }
+            }
         }
     }
 
@@ -990,6 +1059,14 @@ pub fn lint_client_against_nodes(
                     if let Some(b) = params.get("output_broadcast").and_then(|v| v.as_str()) {
                         node_broadcasts.push(b);
                     }
+                    // Also collect input_broadcasts (multi-broadcast)
+                    if let Some(arr) = params.get("input_broadcasts").and_then(|v| v.as_array()) {
+                        for item in arr {
+                            if let Some(b) = item.as_str() {
+                                node_broadcasts.push(b);
+                            }
+                        }
+                    }
                 },
                 "transport::moq::publisher" | "transport::moq::subscriber" => {
                     if let Some(b) = params.get("broadcast").and_then(|v| v.as_str()) {
@@ -1003,18 +1080,28 @@ pub fn lint_client_against_nodes(
 
     if !node_broadcasts.is_empty() {
         if let Some(ref publish) = client.publish {
-            if !publish.broadcast.is_empty()
-                && !node_broadcasts.iter().any(|b| *b == publish.broadcast)
-            {
-                warnings.push(ClientLintWarning {
-                    rule: "broadcast-mismatch",
-                    message: format!(
-                        "publish.broadcast is `{}` but no MoQ transport node declares \
-                         that broadcast name. Node broadcasts: {}.",
-                        publish.broadcast,
-                        node_broadcasts.join(", ")
-                    ),
-                });
+            // Collect all unique broadcast names from publish tracks
+            // (top-level default + any track-level overrides).
+            let mut publish_broadcasts: Vec<&str> = vec![publish.broadcast.as_str()];
+            for track in &publish.tracks {
+                if let Some(ref bc) = track.broadcast {
+                    if !publish_broadcasts.contains(&bc.as_str()) {
+                        publish_broadcasts.push(bc.as_str());
+                    }
+                }
+            }
+
+            for bc in &publish_broadcasts {
+                if !bc.is_empty() && !node_broadcasts.iter().any(|b| b == bc) {
+                    warnings.push(ClientLintWarning {
+                        rule: "broadcast-mismatch",
+                        message: format!(
+                            "publish broadcast `{bc}` does not match any MoQ transport node \
+                             broadcast name. Node broadcasts: {}.",
+                            node_broadcasts.join(", ")
+                        ),
+                    });
+                }
             }
         }
         if let Some(ref watch) = client.watch {
@@ -1642,8 +1729,11 @@ client:
   gateway_path: /moq/test
   publish:
     broadcast: camera
-    audio: true
-    video: true
+    tracks:
+      - kind: audio
+        source: microphone
+      - kind: video
+        source: camera
   watch:
     broadcast: output
     audio: true
@@ -1657,8 +1747,11 @@ client:
 
         let publish = client.publish.expect("publish config should be present");
         assert_eq!(publish.broadcast, "camera");
-        assert!(publish.audio);
-        assert!(publish.video);
+        assert_eq!(publish.tracks.len(), 2);
+        assert_eq!(publish.tracks[0].kind, TrackKind::Audio);
+        assert_eq!(publish.tracks[0].source, CaptureSource::Microphone);
+        assert_eq!(publish.tracks[1].kind, TrackKind::Video);
+        assert_eq!(publish.tracks[1].source, CaptureSource::Camera);
 
         let watch = client.watch.expect("watch config should be present");
         assert_eq!(watch.broadcast, "output");
@@ -1776,9 +1869,11 @@ client:
             gateway_path: Some("/moq/test".into()),
             publish: Some(PublishConfig {
                 broadcast: "input".into(),
-                audio: true,
-                video: false,
-                screen: false,
+                tracks: vec![PublishTrackConfig {
+                    kind: TrackKind::Audio,
+                    source: CaptureSource::Microphone,
+                    broadcast: None,
+                }],
             }),
             watch: Some(WatchConfig { broadcast: "output".into(), audio: true, video: true }),
             input: None,
@@ -1845,9 +1940,11 @@ client:
             gateway_path: None,
             publish: Some(PublishConfig {
                 broadcast: "x".into(),
-                audio: true,
-                video: false,
-                screen: false,
+                tracks: vec![PublishTrackConfig {
+                    kind: TrackKind::Audio,
+                    source: CaptureSource::Microphone,
+                    broadcast: None,
+                }],
             }),
             watch: None,
             input: None,
@@ -1860,14 +1957,9 @@ client:
     #[test]
     fn test_lint_publish_no_media() {
         let mut c = dynamic_client();
-        c.publish = Some(PublishConfig {
-            broadcast: "x".into(),
-            audio: false,
-            video: false,
-            screen: false,
-        });
+        c.publish = Some(PublishConfig { broadcast: "x".into(), tracks: vec![] });
         let warnings = lint_client_section(&c, EngineMode::Dynamic);
-        assert!(warnings.iter().any(|w| w.rule == "publish-no-media"));
+        assert!(warnings.iter().any(|w| w.rule == "empty-tracks"));
     }
 
     #[test]
@@ -1883,9 +1975,11 @@ client:
         let mut c = dynamic_client();
         c.publish = Some(PublishConfig {
             broadcast: String::new(),
-            audio: true,
-            video: false,
-            screen: false,
+            tracks: vec![PublishTrackConfig {
+                kind: TrackKind::Audio,
+                source: CaptureSource::Microphone,
+                broadcast: None,
+            }],
         });
         let warnings = lint_client_section(&c, EngineMode::Dynamic);
         assert!(warnings.iter().any(|w| w.rule == "empty-broadcast"));
@@ -1896,9 +1990,11 @@ client:
         let mut c = dynamic_client();
         c.publish = Some(PublishConfig {
             broadcast: "same".into(),
-            audio: true,
-            video: false,
-            screen: false,
+            tracks: vec![PublishTrackConfig {
+                kind: TrackKind::Audio,
+                source: CaptureSource::Microphone,
+                broadcast: None,
+            }],
         });
         c.watch = Some(WatchConfig { broadcast: "same".into(), audio: true, video: true });
         let warnings = lint_client_section(&c, EngineMode::Dynamic);
@@ -2205,9 +2301,11 @@ client:
             gateway_path: Some("/moq/wrong".into()),
             publish: Some(PublishConfig {
                 broadcast: "input".into(),
-                audio: true,
-                video: false,
-                screen: false,
+                tracks: vec![PublishTrackConfig {
+                    kind: TrackKind::Audio,
+                    source: CaptureSource::Microphone,
+                    broadcast: None,
+                }],
             }),
             ..Default::default()
         };
@@ -2246,9 +2344,11 @@ client:
             relay_url: Some("https://relay.example.com".into()),
             publish: Some(PublishConfig {
                 broadcast: "input".into(),
-                audio: true,
-                video: false,
-                screen: false,
+                tracks: vec![PublishTrackConfig {
+                    kind: TrackKind::Audio,
+                    source: CaptureSource::Microphone,
+                    broadcast: None,
+                }],
             }),
             ..Default::default()
         };
@@ -2270,9 +2370,11 @@ client:
             relay_url: Some("https://relay.example.com".into()),
             publish: Some(PublishConfig {
                 broadcast: "input".into(),
-                audio: true,
-                video: false,
-                screen: false,
+                tracks: vec![PublishTrackConfig {
+                    kind: TrackKind::Audio,
+                    source: CaptureSource::Microphone,
+                    broadcast: None,
+                }],
             }),
             ..Default::default()
         };
@@ -2295,9 +2397,11 @@ client:
             gateway_path: Some("/moq/test".into()),
             publish: Some(PublishConfig {
                 broadcast: "wrong_name".into(),
-                audio: true,
-                video: false,
-                screen: false,
+                tracks: vec![PublishTrackConfig {
+                    kind: TrackKind::Audio,
+                    source: CaptureSource::Microphone,
+                    broadcast: None,
+                }],
             }),
             ..Default::default()
         };
@@ -2351,12 +2455,12 @@ client:
     }
 
     // -----------------------------------------------------------------------
-    // Screen capture boolean tests
+    // Tracks-based publish config tests
     // -----------------------------------------------------------------------
 
     #[test]
     #[allow(clippy::unwrap_used)]
-    fn test_screen_defaults_to_false() {
+    fn test_tracks_audio_only_parsed() {
         let yaml = r#"
 mode: dynamic
 nodes:
@@ -2366,8 +2470,9 @@ client:
   gateway_path: /moq/test
   publish:
     broadcast: input
-    audio: true
-    video: true
+    tracks:
+      - kind: audio
+        source: microphone
   watch:
     broadcast: output
     audio: true
@@ -2377,12 +2482,15 @@ client:
         let compiled = compile(pipeline).unwrap();
         let client = compiled.client.expect("client section should be present");
         let publish = client.publish.expect("publish config should be present");
-        assert!(!publish.screen);
+        assert_eq!(publish.tracks.len(), 1);
+        assert_eq!(publish.tracks[0].kind, TrackKind::Audio);
+        assert_eq!(publish.tracks[0].source, CaptureSource::Microphone);
+        assert!(publish.tracks[0].broadcast.is_none());
     }
 
     #[test]
     #[allow(clippy::unwrap_used)]
-    fn test_screen_true_parsed() {
+    fn test_tracks_screen_source_parsed() {
         let yaml = r#"
 mode: dynamic
 nodes:
@@ -2392,9 +2500,11 @@ client:
   gateway_path: /moq/test
   publish:
     broadcast: input
-    audio: true
-    video: true
-    screen: true
+    tracks:
+      - kind: audio
+        source: microphone
+      - kind: video
+        source: screen
   watch:
     broadcast: output
     audio: true
@@ -2404,12 +2514,14 @@ client:
         let compiled = compile(pipeline).unwrap();
         let client = compiled.client.expect("client section should be present");
         let publish = client.publish.expect("publish config should be present");
-        assert!(publish.screen);
+        assert_eq!(publish.tracks.len(), 2);
+        assert_eq!(publish.tracks[1].kind, TrackKind::Video);
+        assert_eq!(publish.tracks[1].source, CaptureSource::Screen);
     }
 
     #[test]
     #[allow(clippy::unwrap_used)]
-    fn test_screen_false_explicit() {
+    fn test_tracks_multi_broadcast_parsed() {
         let yaml = r#"
 mode: dynamic
 nodes:
@@ -2418,10 +2530,15 @@ nodes:
 client:
   gateway_path: /moq/test
   publish:
-    broadcast: input
-    audio: true
-    video: true
-    screen: false
+    broadcast: screen-input
+    tracks:
+      - kind: audio
+        source: microphone
+      - kind: video
+        source: screen
+      - kind: video
+        source: camera
+        broadcast: cam-input
   watch:
     broadcast: output
     audio: true
@@ -2431,68 +2548,107 @@ client:
         let compiled = compile(pipeline).unwrap();
         let client = compiled.client.expect("client section should be present");
         let publish = client.publish.expect("publish config should be present");
-        assert!(!publish.screen);
+        assert_eq!(publish.tracks.len(), 3);
+        assert_eq!(publish.tracks[0].source, CaptureSource::Microphone);
+        assert_eq!(publish.tracks[1].source, CaptureSource::Screen);
+        assert_eq!(publish.tracks[2].source, CaptureSource::Camera);
+        assert_eq!(publish.tracks[2].broadcast.as_deref(), Some("cam-input"));
     }
 
     #[test]
     #[allow(clippy::unwrap_used)]
-    fn test_screen_roundtrip() {
+    fn test_tracks_roundtrip() {
         // Verify serde round-trip: serialize → deserialize preserves the value.
-        let config =
-            PublishConfig { broadcast: "test".into(), audio: true, video: true, screen: true };
+        let config = PublishConfig {
+            broadcast: "test".into(),
+            tracks: vec![
+                PublishTrackConfig {
+                    kind: TrackKind::Audio,
+                    source: CaptureSource::Microphone,
+                    broadcast: None,
+                },
+                PublishTrackConfig {
+                    kind: TrackKind::Video,
+                    source: CaptureSource::Screen,
+                    broadcast: Some("screen-input".into()),
+                },
+            ],
+        };
         let json = serde_json::to_string(&config).unwrap();
-        assert!(json.contains("\"screen\":true"));
+        assert!(json.contains("\"source\":\"screen\""));
+        assert!(json.contains("\"screen-input\""));
 
         let deserialized: PublishConfig = serde_json::from_str(&json).unwrap();
-        assert!(deserialized.screen);
+        assert_eq!(deserialized.tracks.len(), 2);
+        assert_eq!(deserialized.tracks[1].source, CaptureSource::Screen);
+        assert_eq!(deserialized.tracks[1].broadcast.as_deref(), Some("screen-input"));
     }
 
     #[test]
-    fn test_lint_screen_source_no_video() {
+    fn test_lint_track_kind_source_mismatch() {
         let mut c = dynamic_client();
         c.publish = Some(PublishConfig {
             broadcast: "input".into(),
-            audio: true,
-            video: false,
-            screen: true,
+            tracks: vec![PublishTrackConfig {
+                kind: TrackKind::Audio,
+                source: CaptureSource::Screen,
+                broadcast: None,
+            }],
         });
         let warnings = lint_client_section(&c, EngineMode::Dynamic);
         assert!(
-            warnings.iter().any(|w| w.rule == "screen-source-no-video"),
-            "Should warn when screen is true but video is false: {warnings:?}"
+            warnings.iter().any(|w| w.rule == "kind-source-mismatch"),
+            "Should warn when audio track uses screen source: {warnings:?}"
         );
     }
 
     #[test]
-    fn test_lint_screen_source_with_video_clean() {
+    fn test_lint_track_kind_source_valid_clean() {
         let mut c = dynamic_client();
         c.publish = Some(PublishConfig {
             broadcast: "input".into(),
-            audio: true,
-            video: true,
-            screen: true,
+            tracks: vec![
+                PublishTrackConfig {
+                    kind: TrackKind::Audio,
+                    source: CaptureSource::Microphone,
+                    broadcast: None,
+                },
+                PublishTrackConfig {
+                    kind: TrackKind::Video,
+                    source: CaptureSource::Screen,
+                    broadcast: None,
+                },
+            ],
         });
         let warnings = lint_client_section(&c, EngineMode::Dynamic);
         assert!(
-            !warnings.iter().any(|w| w.rule == "screen-source-no-video"),
-            "Should not warn when screen is true and video is true: {warnings:?}"
+            !warnings.iter().any(|w| w.rule == "kind-source-mismatch"),
+            "Should not warn for valid kind/source combinations: {warnings:?}"
         );
     }
 
     #[test]
-    fn test_lint_camera_source_no_video_no_warning() {
-        // screen: false with video: false should NOT trigger screen-source-no-video
+    fn test_lint_duplicate_source() {
         let mut c = dynamic_client();
         c.publish = Some(PublishConfig {
             broadcast: "input".into(),
-            audio: true,
-            video: false,
-            screen: false,
+            tracks: vec![
+                PublishTrackConfig {
+                    kind: TrackKind::Audio,
+                    source: CaptureSource::Microphone,
+                    broadcast: None,
+                },
+                PublishTrackConfig {
+                    kind: TrackKind::Audio,
+                    source: CaptureSource::Microphone,
+                    broadcast: None,
+                },
+            ],
         });
         let warnings = lint_client_section(&c, EngineMode::Dynamic);
         assert!(
-            !warnings.iter().any(|w| w.rule == "screen-source-no-video"),
-            "Should not warn for camera source without video: {warnings:?}"
+            warnings.iter().any(|w| w.rule == "duplicate-source"),
+            "Should warn when same source appears twice in same broadcast: {warnings:?}"
         );
     }
 }

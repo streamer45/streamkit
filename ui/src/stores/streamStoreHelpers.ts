@@ -10,6 +10,8 @@ import type { Getter } from '@moq/signals';
 import { Effect, Signal } from '@moq/signals';
 import * as Watch from '@moq/watch';
 
+import type { PublishTrackConfig } from '@/types/types';
+
 import type {
   CameraStatus,
   ConnectionStatus,
@@ -45,6 +47,12 @@ export type ConnectAttempt = {
   camera: Publish.Source.Camera | null;
   screen: Publish.Source.Screen | null;
   publish: Publish.Broadcast | null;
+  /** Secondary publish broadcast for multi-broadcast mode (e.g. camera PiP). */
+  secondaryPublish: Publish.Broadcast | null;
+  /** Secondary camera source for multi-broadcast mode. */
+  secondaryCamera: Publish.Source.Camera | null;
+  /** Secondary screen source for multi-broadcast mode. */
+  secondaryScreen: Publish.Source.Screen | null;
 };
 
 /** Minimal slice of StreamState needed by helper functions. */
@@ -66,6 +74,10 @@ export interface ConnectableState {
   isExternalRelay: boolean;
   /** The video capture source: 'camera' (getUserMedia) or 'screen' (getDisplayMedia). */
   videoSourceType: VideoSourceType;
+  /** Parsed publish tracks from the client section (for multi-broadcast). */
+  tracks: PublishTrackConfig[];
+  /** All unique broadcast names derived from tracks. */
+  publishBroadcasts: string[];
   status: ConnectionStatus;
   errorMessage: string;
   isMicEnabled: boolean;
@@ -96,6 +108,9 @@ export const NULL_MOQ_REFS = {
   camera: null,
   screen: null,
   healthEffect: null,
+  secondaryPublish: null,
+  secondaryCamera: null,
+  secondaryScreen: null,
 } as const;
 
 export function waitForSignalValue<T>(
@@ -247,6 +262,7 @@ function shutdownMediaSource(
 /** Ordered list of ConnectAttempt keys whose values expose `.close()`. */
 const CLOSEABLE_KEYS: ReadonlyArray<keyof ConnectAttempt> = [
   'healthEffect',
+  'secondaryPublish',
   'publish',
   'videoRenderer',
   'videoDecoder',
@@ -269,6 +285,8 @@ export function cleanupConnectAttempt(attempt: ConnectAttempt): void {
   shutdownMediaSource(attempt.microphone);
   shutdownMediaSource(attempt.camera);
   shutdownMediaSource(attempt.screen);
+  shutdownMediaSource(attempt.secondaryCamera);
+  shutdownMediaSource(attempt.secondaryScreen);
 }
 
 function setupConnectionStatusSync(

@@ -477,22 +477,32 @@ output: OutputConfig | null, };
 
 export type PublishConfig = { 
 /**
- * Broadcast name the browser publishes to.
+ * Default broadcast name for all tracks.
  */
 broadcast: string, 
 /**
- * Whether the pipeline consumes audio from the browser.
+ * Media tracks to capture and publish.
  */
-audio: boolean, 
+tracks: Array<PublishTrackConfig>, };
+
+export type PublishTrackConfig = { 
 /**
- * Whether the pipeline consumes video from the browser.
+ * Media kind: "audio" or "video"
  */
-video: boolean, 
+kind: TrackKind, 
 /**
- * Whether the browser should use screen capture (getDisplayMedia)
- * instead of the default camera (getUserMedia).
+ * Capture source: "camera", "screen", "microphone"
  */
-screen: boolean, };
+source: CaptureSource, 
+/**
+ * Override broadcast name for this track.
+ * When omitted, uses the parent `PublishConfig.broadcast`.
+ */
+broadcast: string | null, };
+
+export type TrackKind = "audio" | "video";
+
+export type CaptureSource = "camera" | "screen" | "microphone";
 
 export type WatchConfig = { 
 /**

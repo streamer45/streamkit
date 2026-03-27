@@ -9,12 +9,18 @@ client:
   gateway_path: /moq/video
   publish:
     broadcast: input
-    audio: true
-    video: true
+    tracks:
+      - kind: audio
+        source: microphone
+      - kind: video
+        source: camera
   watch:
     broadcast: output
-    audio: true
-    video: true
+    tracks:
+      - kind: audio
+        source: microphone
+      - kind: video
+        source: camera
 
 nodes:
   colorbars_bg:

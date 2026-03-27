@@ -67,6 +67,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Declarative client section types
         format!("\n// client section\nexport {}", streamkit_api::yaml::ClientSection::decl(&cfg)),
         format!("export {}", streamkit_api::yaml::PublishConfig::decl(&cfg)),
+        format!("export {}", streamkit_api::yaml::PublishTrackConfig::decl(&cfg)),
+        format!("export {}", streamkit_api::yaml::TrackKind::decl(&cfg)),
+        format!("export {}", streamkit_api::yaml::CaptureSource::decl(&cfg)),
         format!("export {}", streamkit_api::yaml::WatchConfig::decl(&cfg)),
         format!("export {}", streamkit_api::yaml::InputConfig::decl(&cfg)),
         format!("export {}", streamkit_api::yaml::InputType::decl(&cfg)),

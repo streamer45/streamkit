@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import type { VideoSourceType } from '@/stores/streamStore';
-import type { ClientSection } from '@/types/types';
+import type { ClientSection, PublishTrackConfig } from '@/types/types';
 
 import { parseClientFromYaml } from './clientSection';
 
@@ -35,6 +35,10 @@ export interface MoqPeerSettings {
   isExternalRelay: boolean;
   /** The video capture source type: 'camera' (getUserMedia) or 'screen' (getDisplayMedia). */
   videoSourceType: VideoSourceType;
+  /** Parsed tracks from the publish config. */
+  tracks: PublishTrackConfig[];
+  /** All unique broadcast names derived from tracks (for multi-broadcast). */
+  publishBroadcasts: string[];
 }
 
 /**
@@ -53,18 +57,46 @@ export function deriveSettingsFromClient(client: ClientSection): MoqPeerSettings
   const isExternalRelay =
     hasRelayUrl || (!hasGatewayPath && Boolean(client.publish) && Boolean(client.watch));
 
+  // Derive media needs from tracks array
+  const tracks: PublishTrackConfig[] = client.publish?.tracks ?? [];
+  const needsAudioInput = tracks.some((t) => t.kind === 'audio');
+  const needsVideoInput = tracks.some((t) => t.kind === 'video');
+
+  // Determine the video source type from the primary broadcast's video track.
+  // A track with source: 'screen' means getDisplayMedia, otherwise getUserMedia.
+  const defaultBroadcast = client.publish?.broadcast;
+  const primaryVideoTrack = tracks.find(
+    (t) => t.kind === 'video' && (t.broadcast ?? defaultBroadcast) === defaultBroadcast
+  );
+  const videoSourceType: VideoSourceType =
+    primaryVideoTrack?.source === 'screen' ? 'screen' : 'camera';
+
+  // Collect all unique broadcast names from tracks
+  const publishBroadcasts: string[] = [];
+  if (defaultBroadcast) {
+    publishBroadcasts.push(defaultBroadcast);
+  }
+  for (const track of tracks) {
+    const bc = track.broadcast ?? defaultBroadcast;
+    if (bc && !publishBroadcasts.includes(bc)) {
+      publishBroadcasts.push(bc);
+    }
+  }
+
   return {
     gatewayPath: client.gateway_path ?? undefined,
     relayUrl: client.relay_url ?? undefined,
     inputBroadcast: client.publish?.broadcast,
     outputBroadcast: client.watch?.broadcast,
     hasInputBroadcast: Boolean(client.publish),
-    needsAudioInput: client.publish?.audio ?? false,
-    needsVideoInput: client.publish?.video ?? false,
+    needsAudioInput,
+    needsVideoInput,
     outputsAudio: client.watch?.audio ?? false,
     outputsVideo: client.watch?.video ?? false,
     isExternalRelay,
-    videoSourceType: client.publish?.screen ? 'screen' : 'camera',
+    videoSourceType,
+    tracks,
+    publishBroadcasts,
   };
 }
 

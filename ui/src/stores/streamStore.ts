@@ -64,6 +64,10 @@ interface StreamState {
   // Video source type — 'camera' (getUserMedia) or 'screen' (getDisplayMedia)
   videoSourceType: VideoSourceType;
 
+  // Multi-broadcast publish tracks configuration
+  tracks: import('@/types/types').PublishTrackConfig[];
+  publishBroadcasts: string[];
+
   // Error state
   errorMessage: string;
 
@@ -98,6 +102,11 @@ interface StreamState {
   screen: Publish.Source.Screen | null;
   healthEffect: Effect | null;
 
+  // Secondary broadcast references (multi-broadcast support)
+  secondaryPublish: Publish.Broadcast | null;
+  secondaryCamera: Publish.Source.Camera | null;
+  secondaryScreen: Publish.Source.Screen | null;
+
   // Actions
   setServerUrl: (url: string) => void;
   setMoqToken: (token: string) => void;
@@ -113,6 +122,7 @@ interface StreamState {
   setPipelineOutputTypes: (audio: boolean, video: boolean) => void;
   setIsExternalRelay: (v: boolean) => void;
   setVideoSourceType: (v: VideoSourceType) => void;
+  setTracks: (tracks: import('@/types/types').PublishTrackConfig[], broadcasts: string[]) => void;
   loadConfig: () => Promise<void>;
 
   // Session actions
@@ -163,6 +173,8 @@ export const useStreamStore = create<StreamState>((set, get) => ({
   pipelineOutputsVideo: true,
   isExternalRelay: false,
   videoSourceType: 'camera',
+  tracks: [],
+  publishBroadcasts: [],
   errorMessage: '',
   configLoaded: false,
   configServerUrl: '',
@@ -194,6 +206,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
     set({ pipelineOutputsAudio: audio, pipelineOutputsVideo: video }),
   setIsExternalRelay: (v) => set({ isExternalRelay: v }),
   setVideoSourceType: (v) => set({ videoSourceType: v }),
+  setTracks: (tracks, broadcasts) => set({ tracks, publishBroadcasts: broadcasts }),
 
   // Session setters
   setActiveSession: (sessionId, sessionName, pipelineName) =>

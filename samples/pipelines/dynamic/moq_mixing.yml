@@ -5,12 +5,14 @@ client:
   gateway_path: /moq/mixing
   publish:
     broadcast: input
-    audio: true
-    video: false
+    tracks:
+      - kind: audio
+        source: microphone
   watch:
     broadcast: output
-    audio: true
-    video: false
+    tracks:
+      - kind: audio
+        source: microphone
 nodes:
   # ============================================================
   # INPUTS: MoQ mic input + local music file

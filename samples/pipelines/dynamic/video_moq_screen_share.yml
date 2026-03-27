@@ -9,9 +9,11 @@ client:
   gateway_path: /moq/screen
   publish:
     broadcast: input
-    audio: true
-    video: true
-    screen: true
+    tracks:
+      - kind: audio
+        source: microphone
+      - kind: video
+        source: screen
   watch:
     broadcast: output
     audio: true

@@ -9,12 +9,14 @@ client:
   gateway_path: /moq
   publish:
     broadcast: input
-    audio: true
-    video: false
+    tracks:
+      - kind: audio
+        source: microphone
   watch:
     broadcast: output
-    audio: true
-    video: false
+    tracks:
+      - kind: audio
+        source: microphone
 
 nodes:
   # Bidirectional node that accepts WebTransport connections and provides:

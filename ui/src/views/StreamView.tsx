@@ -312,6 +312,7 @@ const StreamView: React.FC = () => {
     setPipelineOutputTypes,
     setIsExternalRelay,
     setVideoSourceType,
+    setTracks,
     setActiveSession,
     clearActiveSession,
     loadConfig,
@@ -355,6 +356,7 @@ const StreamView: React.FC = () => {
       setPipelineOutputTypes: s.setPipelineOutputTypes,
       setIsExternalRelay: s.setIsExternalRelay,
       setVideoSourceType: s.setVideoSourceType,
+      setTracks: s.setTracks,
       setActiveSession: s.setActiveSession,
       clearActiveSession: s.clearActiveSession,
       loadConfig: s.loadConfig,
@@ -468,6 +470,7 @@ const StreamView: React.FC = () => {
             setPipelineOutputTypes(moqSettings.outputsAudio, moqSettings.outputsVideo);
             setIsExternalRelay(moqSettings.isExternalRelay);
             setVideoSourceType(moqSettings.videoSourceType);
+            setTracks(moqSettings.tracks, moqSettings.publishBroadcasts);
           }
         }
       } catch (error) {
@@ -524,6 +527,9 @@ const StreamView: React.FC = () => {
           // Set the video source type so the connect flow creates the right
           // capture source (camera vs screen).
           setVideoSourceType(moqSettings.videoSourceType);
+
+          // Pass tracks and broadcast names for multi-broadcast support.
+          setTracks(moqSettings.tracks, moqSettings.publishBroadcasts);
         }
       }
     },
@@ -537,6 +543,7 @@ const StreamView: React.FC = () => {
       setPipelineOutputTypes,
       setIsExternalRelay,
       setVideoSourceType,
+      setTracks,
     ]
   );
 
