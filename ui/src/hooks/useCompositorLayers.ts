@@ -328,7 +328,8 @@ export const useCompositorLayers = (
         a.cropZoom !== b.cropZoom ||
         a.cropX !== b.cropX ||
         a.cropY !== b.cropY ||
-        a.cropShape !== b.cropShape,
+        a.cropShape !== b.cropShape ||
+        a.aspectFit !== b.aspectFit,
       isMonitorView,
       isMonitorView ? prevParsedLayersRef.current : undefined
     );
