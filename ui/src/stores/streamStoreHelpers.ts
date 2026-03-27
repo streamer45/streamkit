@@ -592,6 +592,51 @@ async function createSecondaryVideoSource(
 /** Create a secondary publish broadcast for multi-broadcast mode.
  *  Each broadcast gets its own media sources — sources cannot be shared
  *  between broadcasts. */
+/** Analyze secondary broadcast tracks and return video source info + warnings.
+ *  Pure function — no side effects, no logger calls. Warnings are collected
+ *  for the caller to log. */
+export function analyzeSecondaryBroadcastTracks(
+  broadcastName: string,
+  broadcastTracks: PublishTrackConfig[]
+): {
+  needsVideo: boolean;
+  videoSourceType: VideoSourceType;
+  warnings: string[];
+} {
+  const warnings: string[] = [];
+
+  const hasAudio = broadcastTracks.some((t) => t.kind === 'audio');
+  if (hasAudio) {
+    warnings.push(
+      `Secondary broadcast '${broadcastName}' has audio tracks which are not yet supported; ` +
+        'audio will be silently dropped'
+    );
+  }
+
+  const videoTracks = broadcastTracks.filter((t) => t.kind === 'video');
+  const needsVideo = videoTracks.length > 0;
+  if (videoTracks.length > 1) {
+    warnings.push(
+      `Secondary broadcast '${broadcastName}' has ${videoTracks.length} video tracks ` +
+        'but only the first is used; additional video tracks are ignored'
+    );
+  }
+  const videoSourceType: VideoSourceType =
+    videoTracks[0]?.source === 'screen' ? 'screen' : 'camera';
+
+  return { needsVideo, videoSourceType, warnings };
+}
+
+/** Filter tracks that belong to a secondary broadcast.
+ *  Tracks without an explicit `broadcast` field default to `primaryBroadcast`. */
+export function filterSecondaryTracks(
+  tracks: PublishTrackConfig[],
+  primaryBroadcast: string,
+  secondaryBroadcast: string
+): PublishTrackConfig[] {
+  return tracks.filter((t) => (t.broadcast ?? primaryBroadcast) === secondaryBroadcast);
+}
+
 async function setupSecondaryPublishPath(
   healthEffect: Effect,
   connection: Hang.Moq.Connection.Reload,
@@ -603,23 +648,11 @@ async function setupSecondaryPublishPath(
   secondaryCamera: Publish.Source.Camera | null;
   secondaryScreen: Publish.Source.Screen | null;
 }> {
-  const hasAudio = broadcastTracks.some((t) => t.kind === 'audio');
-  if (hasAudio) {
-    logger.warn(
-      `Secondary broadcast '${broadcastName}' has audio tracks which are not yet supported; ` +
-        'audio will be silently dropped'
-    );
-  }
-
-  const videoTracks = broadcastTracks.filter((t) => t.kind === 'video');
-  const needsVideo = videoTracks.length > 0;
-  if (videoTracks.length > 1) {
-    logger.warn(
-      `Secondary broadcast '${broadcastName}' has ${videoTracks.length} video tracks ` +
-        'but only the first is used; additional video tracks are ignored'
-    );
-  }
-  const videoSourceType = videoTracks[0]?.source === 'screen' ? 'screen' : 'camera';
+  const { needsVideo, videoSourceType, warnings } = analyzeSecondaryBroadcastTracks(
+    broadcastName,
+    broadcastTracks
+  );
+  for (const w of warnings) logger.warn(w);
 
   let secondaryCamera: Publish.Source.Camera | null = null;
   let secondaryScreen: Publish.Source.Screen | null = null;
@@ -921,8 +954,10 @@ export async function performConnect(
         }
         const primaryBroadcast = state.publishBroadcasts[0];
         const secondaryName = state.publishBroadcasts[1];
-        const secondaryTracks = state.tracks.filter(
-          (t) => (t.broadcast ?? primaryBroadcast) === secondaryName
+        const secondaryTracks = filterSecondaryTracks(
+          state.tracks,
+          primaryBroadcast,
+          secondaryName
         );
 
         if (secondaryTracks.length > 0) {

@@ -10,6 +10,8 @@ import {
   cleanupConnectAttempt,
   waitForSignalValue,
   formatConnectError,
+  analyzeSecondaryBroadcastTracks,
+  filterSecondaryTracks,
   NULL_MOQ_REFS,
   type ConnectAttempt,
 } from './streamStoreHelpers';
@@ -407,5 +409,114 @@ describe('NULL_MOQ_REFS', () => {
     for (const key of expectedKeys) {
       expect(NULL_MOQ_REFS).toHaveProperty(key, null);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// analyzeSecondaryBroadcastTracks
+// ---------------------------------------------------------------------------
+
+describe('analyzeSecondaryBroadcastTracks', () => {
+  it('returns needsVideo=true and camera source for a single camera video track', () => {
+    const result = analyzeSecondaryBroadcastTracks('cam-input', [
+      { kind: 'video', source: 'camera', broadcast: 'cam-input' },
+    ]);
+    expect(result.needsVideo).toBe(true);
+    expect(result.videoSourceType).toBe('camera');
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  it('returns needsVideo=true and screen source for a screen video track', () => {
+    const result = analyzeSecondaryBroadcastTracks('screen2', [
+      { kind: 'video', source: 'screen', broadcast: 'screen2' },
+    ]);
+    expect(result.needsVideo).toBe(true);
+    expect(result.videoSourceType).toBe('screen');
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  it('returns needsVideo=false when only audio tracks are present', () => {
+    const result = analyzeSecondaryBroadcastTracks('audio-only', [
+      { kind: 'audio', source: 'microphone', broadcast: 'audio-only' },
+    ]);
+    expect(result.needsVideo).toBe(false);
+    expect(result.videoSourceType).toBe('camera'); // default fallback
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain('audio tracks which are not yet supported');
+  });
+
+  it('warns when audio tracks are present alongside video', () => {
+    const result = analyzeSecondaryBroadcastTracks('mixed', [
+      { kind: 'video', source: 'camera', broadcast: 'mixed' },
+      { kind: 'audio', source: 'microphone', broadcast: 'mixed' },
+    ]);
+    expect(result.needsVideo).toBe(true);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain('audio tracks which are not yet supported');
+  });
+
+  it('warns when multiple video tracks are present', () => {
+    const result = analyzeSecondaryBroadcastTracks('multi-video', [
+      { kind: 'video', source: 'camera', broadcast: 'multi-video' },
+      { kind: 'video', source: 'screen', broadcast: 'multi-video' },
+    ]);
+    expect(result.needsVideo).toBe(true);
+    expect(result.videoSourceType).toBe('camera'); // first track wins
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain('2 video tracks');
+    expect(result.warnings[0]).toContain('only the first is used');
+  });
+
+  it('collects both audio and multi-video warnings', () => {
+    const result = analyzeSecondaryBroadcastTracks('all-warnings', [
+      { kind: 'video', source: 'camera', broadcast: 'all-warnings' },
+      { kind: 'video', source: 'screen', broadcast: 'all-warnings' },
+      { kind: 'audio', source: 'microphone', broadcast: 'all-warnings' },
+    ]);
+    expect(result.warnings).toHaveLength(2);
+  });
+
+  it('returns needsVideo=false for empty tracks', () => {
+    const result = analyzeSecondaryBroadcastTracks('empty', []);
+    expect(result.needsVideo).toBe(false);
+    expect(result.warnings).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// filterSecondaryTracks
+// ---------------------------------------------------------------------------
+
+describe('filterSecondaryTracks', () => {
+  const allTracks = [
+    { kind: 'audio' as const, source: 'microphone' as const, broadcast: null },
+    { kind: 'video' as const, source: 'screen' as const, broadcast: null },
+    { kind: 'video' as const, source: 'camera' as const, broadcast: 'cam-input' },
+  ];
+
+  it('returns tracks whose broadcast matches the secondary name', () => {
+    const result = filterSecondaryTracks(allTracks, 'screen-input', 'cam-input');
+    expect(result).toHaveLength(1);
+    expect(result[0].source).toBe('camera');
+  });
+
+  it('defaults null-broadcast tracks to primaryBroadcast', () => {
+    const result = filterSecondaryTracks(allTracks, 'screen-input', 'screen-input');
+    expect(result).toHaveLength(2);
+    expect(result.map((t) => t.source)).toEqual(['microphone', 'screen']);
+  });
+
+  it('returns empty array when no tracks match', () => {
+    const result = filterSecondaryTracks(allTracks, 'screen-input', 'nonexistent');
+    expect(result).toHaveLength(0);
+  });
+
+  it('handles all-explicit broadcasts correctly', () => {
+    const explicitTracks = [
+      { kind: 'video' as const, source: 'screen' as const, broadcast: 'a' },
+      { kind: 'video' as const, source: 'camera' as const, broadcast: 'b' },
+    ];
+    expect(filterSecondaryTracks(explicitTracks, 'a', 'b')).toHaveLength(1);
+    expect(filterSecondaryTracks(explicitTracks, 'a', 'a')).toHaveLength(1);
   });
 });
