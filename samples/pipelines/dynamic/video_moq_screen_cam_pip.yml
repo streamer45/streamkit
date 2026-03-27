@@ -5,7 +5,10 @@
 name: Screen Share + Camera PiP (MoQ Stream)
 description: >
   Composites the user's screen capture as the background with webcam as
-  picture-in-picture overlay, loops microphone audio, and streams via MoQ
+  picture-in-picture overlay, loops microphone audio, and streams via MoQ.
+  NOTE: Multi-broadcast subscription (input_broadcasts with >1 entry) is
+  scaffolded but not yet fully wired — this pipeline serves as the target
+  configuration for the upcoming multi-broadcast receive implementation.
 mode: dynamic
 client:
   gateway_path: /moq/screenshare
@@ -29,8 +32,8 @@ nodes:
     kind: transport::moq::peer
     params:
       gateway_path: /moq/screenshare
-      input_broadcast: screen-input
       input_broadcasts:
+        - screen-input
         - cam-input
       output_broadcast: output
       allow_reconnect: true

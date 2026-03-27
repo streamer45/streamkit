@@ -18,13 +18,16 @@ client:
     broadcast: output
     audio: true
     video: true
+    audio: true
+    video: true
 
 nodes:
   moq_peer:
     kind: transport::moq::peer
     params:
       gateway_path: /moq/screen
-      input_broadcast: input
+      input_broadcasts:
+        - input
       output_broadcast: output
       allow_reconnect: true
     needs:

@@ -10,9 +10,8 @@ client:
         source: microphone
   watch:
     broadcast: output
-    tracks:
-      - kind: audio
-        source: microphone
+    audio: true
+    video: false
 nodes:
   # ============================================================
   # INPUTS: MoQ mic input + local music file
@@ -21,7 +20,8 @@ nodes:
     kind: transport::moq::peer
     params:
       gateway_path: /moq/mixing
-      input_broadcast: input
+      input_broadcasts:
+        - input
       output_broadcast: output
       allow_reconnect: true
     needs: opus_encoder

@@ -14,9 +14,8 @@ client:
         source: microphone
   watch:
     broadcast: output
-    tracks:
-      - kind: audio
-        source: microphone
+    audio: true
+    video: false
 nodes:
   moq_input:
     kind: transport::moq::subscriber

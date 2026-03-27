@@ -14,9 +14,8 @@ client:
         source: microphone
   watch:
     broadcast: output
-    tracks:
-      - kind: audio
-        source: microphone
+    audio: true
+    video: false
 
 nodes:
   # Bidirectional node that accepts WebTransport connections and provides:
@@ -27,7 +26,8 @@ nodes:
     kind: transport::moq::peer
     params:
       gateway_path: /moq
-      input_broadcast: input
+      input_broadcasts:
+        - input
       output_broadcast: output
       allow_reconnect: true
     # Loopback: send processed audio back into the peer for distribution to subscribers.

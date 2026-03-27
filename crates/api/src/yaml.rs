@@ -1053,19 +1053,16 @@ pub fn lint_client_against_nodes(
         if let Some(params) = node.params {
             match node.kind {
                 "transport::moq::peer" => {
-                    if let Some(b) = params.get("input_broadcast").and_then(|v| v.as_str()) {
-                        node_broadcasts.push(b);
-                    }
-                    if let Some(b) = params.get("output_broadcast").and_then(|v| v.as_str()) {
-                        node_broadcasts.push(b);
-                    }
-                    // Also collect input_broadcasts (multi-broadcast)
+                    // input_broadcasts is a vec — collect all entries
                     if let Some(arr) = params.get("input_broadcasts").and_then(|v| v.as_array()) {
                         for item in arr {
                             if let Some(b) = item.as_str() {
                                 node_broadcasts.push(b);
                             }
                         }
+                    }
+                    if let Some(b) = params.get("output_broadcast").and_then(|v| v.as_str()) {
+                        node_broadcasts.push(b);
                     }
                 },
                 "transport::moq::publisher" | "transport::moq::subscriber" => {
@@ -1228,7 +1225,8 @@ nodes:
   moq_peer:
     kind: transport::moq::peer
     params:
-      input_broadcast: input
+      input_broadcasts:
+        - input
       output_broadcast: output
   ogg_muxer:
     kind: containers::ogg::muxer
@@ -1278,7 +1276,8 @@ nodes:
   moq_peer:
     kind: transport::moq::peer
     params:
-      input_broadcast: input
+      input_broadcasts:
+        - input
       output_broadcast: output
     needs: encoder
 ";
@@ -1723,7 +1722,8 @@ nodes:
     kind: transport::moq::peer
     params:
       gateway_path: /moq/test
-      input_broadcast: camera
+      input_broadcasts:
+        - camera
       output_broadcast: output
 client:
   gateway_path: /moq/test
@@ -2270,7 +2270,7 @@ client:
         let c = dynamic_client();
         let params = serde_json::json!({
             "gateway_path": "/moq/test",
-            "input_broadcast": "input",
+            "input_broadcasts": ["input"],
             "output_broadcast": "output"
         });
         let nodes = vec![node("transport::moq::peer", Some(&params))];
@@ -2311,7 +2311,7 @@ client:
         };
         let params = serde_json::json!({
             "gateway_path": "/moq/correct",
-            "input_broadcast": "input"
+            "input_broadcasts": ["input"]
         });
         let nodes = vec![node("transport::moq::peer", Some(&params))];
         let warnings = lint_client_against_nodes(&c, EngineMode::Dynamic, &nodes);
@@ -2326,7 +2326,7 @@ client:
         let c = dynamic_client(); // gateway_path = /moq/test
         let params = serde_json::json!({
             "gateway_path": "/moq/test",
-            "input_broadcast": "input",
+            "input_broadcasts": ["input"],
             "output_broadcast": "output"
         });
         let nodes = vec![node("transport::moq::peer", Some(&params))];
@@ -2407,7 +2407,7 @@ client:
         };
         let params = serde_json::json!({
             "gateway_path": "/moq/test",
-            "input_broadcast": "camera",
+            "input_broadcasts": ["camera"],
             "output_broadcast": "output"
         });
         let nodes = vec![node("transport::moq::peer", Some(&params))];
@@ -2427,7 +2427,7 @@ client:
         };
         let params = serde_json::json!({
             "gateway_path": "/moq/test",
-            "input_broadcast": "camera",
+            "input_broadcasts": ["camera"],
             "output_broadcast": "output"
         });
         let nodes = vec![node("transport::moq::peer", Some(&params))];
@@ -2443,7 +2443,7 @@ client:
         let c = dynamic_client(); // publish=input, watch=output
         let params = serde_json::json!({
             "gateway_path": "/moq/test",
-            "input_broadcast": "input",
+            "input_broadcasts": ["input"],
             "output_broadcast": "output"
         });
         let nodes = vec![node("transport::moq::peer", Some(&params))];

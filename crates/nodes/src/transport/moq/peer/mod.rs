@@ -123,10 +123,9 @@ struct SubscriberMediaConfig {
 }
 
 struct BidirectionalTaskConfig {
-    input_broadcast: String,
-    output_broadcast: String,
-    /// Additional broadcasts to subscribe to (multi-broadcast mode).
+    /// All input broadcast names — first is primary, rest are additional.
     input_broadcasts: Vec<String>,
+    output_broadcast: String,
     node_id: String,
     output_sender: streamkit_core::OutputSender,
     broadcast_rx: broadcast::Receiver<BroadcastFrame>,
@@ -174,19 +173,16 @@ fn join_gateway_path(base: &str, suffix: &str) -> String {
 #[derive(Deserialize, Debug, JsonSchema, Clone)]
 #[serde(default)]
 pub struct MoqPeerConfig {
-    /// Broadcast name to receive from publisher client
-    pub input_broadcast: String,
+    /// Broadcast names to receive from the publisher client.
+    ///
+    /// The first element is the primary broadcast (used for the dedicated
+    /// `/input` sub-path).  Additional elements are only supported via
+    /// bidirectional (base path) connections.  Output pins for tracks from
+    /// non-primary broadcasts are namespaced as
+    /// `{broadcast_name}/{track_name}` (e.g. `screen-input/video/hd`).
+    pub input_broadcasts: Vec<String>,
     /// Broadcast name to send to subscriber clients
     pub output_broadcast: String,
-    /// Additional broadcast names to subscribe to from the publisher client.
-    ///
-    /// When non-empty, the node subscribes to these broadcasts alongside
-    /// `input_broadcast`.  Output pins for tracks from these broadcasts are
-    /// namespaced as `{broadcast_name}/{track_name}` (e.g. `screen-input/video/hd`).
-    ///
-    /// **Note:** Only works via bidirectional (base path) connections — not
-    /// the dedicated `/input` sub-path.
-    pub input_broadcasts: Vec<String>,
     /// Base path for gateway routing (e.g., "/moq")
     /// Publishers connect to "{gateway_path}/input", subscribers to "{gateway_path}/output"
     pub gateway_path: String,
@@ -213,15 +209,30 @@ pub struct MoqPeerConfig {
 impl Default for MoqPeerConfig {
     fn default() -> Self {
         Self {
-            input_broadcast: "input".to_string(),
+            input_broadcasts: vec!["input".to_string()],
             output_broadcast: "output".to_string(),
-            input_broadcasts: Vec::new(),
             gateway_path: "/moq".to_string(),
             allow_reconnect: false,
             output_group_duration_ms: 40,
             output_initial_delay_ms: 0,
             video_width: 640,
             video_height: 480,
+        }
+    }
+}
+
+impl MoqPeerConfig {
+    /// The primary (first) input broadcast name.
+    fn primary_input_broadcast(&self) -> &str {
+        self.input_broadcasts.first().map_or("input", |s| s.as_str())
+    }
+
+    /// Additional input broadcast names beyond the primary.
+    fn extra_input_broadcasts(&self) -> &[String] {
+        if self.input_broadcasts.len() > 1 {
+            &self.input_broadcasts[1..]
+        } else {
+            &[]
         }
     }
 }
@@ -369,7 +380,7 @@ impl ProcessorNode for MoqPeerNode {
             base_path = %base_path,
             input_path = %input_path,
             output_path = %output_path,
-            input_broadcast = %self.config.input_broadcast,
+            input_broadcast = %self.config.primary_input_broadcast(),
             output_broadcast = %self.config.output_broadcast,
             allow_reconnect = %self.config.allow_reconnect,
             output_group_duration_ms = self.config.output_group_duration_ms,
@@ -538,7 +549,7 @@ impl ProcessorNode for MoqPeerNode {
                 Some(conn) = base_connection_rx.recv() => {
                     // Auth check: bidirectional needs both publish and subscribe permissions
                     if let Some(auth) = &conn.auth {
-                        let input_bc = &self.config.input_broadcast;
+                        let input_bc = self.config.primary_input_broadcast();
                         let output_bc = &self.config.output_broadcast;
 
                         // Check auth for all input broadcasts (primary + additional)
@@ -547,7 +558,7 @@ impl ProcessorNode for MoqPeerNode {
                         } else if !auth.can_subscribe(output_bc) {
                             Some(format!("Subscribe permission denied for broadcast '{output_bc}'"))
                         } else {
-                            self.config.input_broadcasts.iter().find_map(|bc| {
+                            self.config.extra_input_broadcasts().iter().find_map(|bc| {
                                 if auth.can_publish(bc) {
                                     None
                                 } else {
@@ -578,9 +589,8 @@ impl ProcessorNode for MoqPeerNode {
                     match Self::start_bidirectional_task(
                         conn,
                         BidirectionalTaskConfig {
-                            input_broadcast: self.config.input_broadcast.clone(),
-                            output_broadcast: self.config.output_broadcast.clone(),
                             input_broadcasts: self.config.input_broadcasts.clone(),
+                            output_broadcast: self.config.output_broadcast.clone(),
                             node_id: node_name.clone(),
                             output_sender: context.output_sender.clone(),
                             broadcast_rx,
@@ -614,7 +624,7 @@ impl ProcessorNode for MoqPeerNode {
                 Some(conn) = input_connection_rx.recv() => {
                     // Auth check: publisher needs publish permission
                     if let Some(auth) = &conn.auth {
-                        let input_bc = &self.config.input_broadcast;
+                        let input_bc = self.config.primary_input_broadcast();
 
                         if !auth.can_publish(input_bc) {
                             tracing::warn!(
@@ -646,7 +656,7 @@ impl ProcessorNode for MoqPeerNode {
                     match Self::start_publisher_task_with_permit(
                         conn,
                         permit,
-                        self.config.input_broadcast.clone(),
+                        self.config.primary_input_broadcast().to_string(),
                         context.output_sender.clone(),
                         shutdown_tx.subscribe(),
                         publisher_events_tx.clone(),
@@ -1195,10 +1205,12 @@ impl MoqPeerNode {
 
             let publisher_fut = async {
                 // Primary broadcast receive loop
+                let primary_broadcast =
+                    config.input_broadcasts.first().cloned().unwrap_or_else(|| "input".to_string());
                 let primary_result = Self::publisher_receive_loop_with_slot(
                     PublisherReceiveLoopWithSlotConfig {
                         subscribe: receive_origin,
-                        broadcast_name: config.input_broadcast,
+                        broadcast_name: primary_broadcast,
                         output_sender: config.output_sender.clone(),
                         publisher_slot: config.publisher_slot,
                         publisher_events: config.publisher_events,
@@ -1216,7 +1228,11 @@ impl MoqPeerNode {
             // Spawn additional broadcast watchers for multi-broadcast mode.
             // Each additional broadcast gets its own catalog watcher with
             // namespaced output pins ({broadcast_name}/{track_name}).
-            let additional_broadcasts = config.input_broadcasts;
+            let additional_broadcasts: Vec<String> = if config.input_broadcasts.len() > 1 {
+                config.input_broadcasts[1..].to_vec()
+            } else {
+                Vec::new()
+            };
             let extra_broadcasts_fut = async {
                 if additional_broadcasts.is_empty() {
                     return Ok(());
@@ -2596,14 +2612,13 @@ mod tests {
         // Verify static output pins use track-named format
         let node = MoqPeerNode::new(MoqPeerConfig {
             gateway_path: "/moq".to_string(),
-            input_broadcast: "input".to_string(),
+            input_broadcasts: vec!["input".to_string()],
             output_broadcast: "output".to_string(),
             allow_reconnect: false,
             output_group_duration_ms: 0,
             output_initial_delay_ms: 0,
             video_width: 640,
             video_height: 480,
-            input_broadcasts: vec![],
         });
         let pins = node.output_pins();
         assert_eq!(pins[0].name, "audio/data");

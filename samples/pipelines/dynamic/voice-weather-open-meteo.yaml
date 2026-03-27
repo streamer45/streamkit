@@ -39,9 +39,8 @@ client:
         source: microphone
   watch:
     broadcast: output
-    tracks:
-      - kind: audio
-        source: microphone
+    audio: true
+    video: false
 nodes:
   # ============================================================
   # INPUT: Receive audio from MoQ broadcast
@@ -50,7 +49,8 @@ nodes:
     kind: transport::moq::peer
     params:
       gateway_path: /moq/voice-weather-open-meteo
-      input_broadcast: input
+      input_broadcasts:
+        - input
       output_broadcast: output
       allow_reconnect: true
       output_group_duration_ms: 40

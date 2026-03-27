@@ -18,11 +18,8 @@ client:
         source: camera
   watch:
     broadcast: output
-    tracks:
-      - kind: audio
-        source: microphone
-      - kind: video
-        source: camera
+    audio: true
+    video: true
 
 nodes:
   colorbars_bg:
