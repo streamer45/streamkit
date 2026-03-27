@@ -2208,3 +2208,123 @@ fn test_image_overlay_cache_key_asset_path() {
     };
     assert_eq!(a.asset_path, c.asset_path);
 }
+
+#[test]
+fn test_text_overlay_cache_reuses_arc_on_unchanged_config() {
+    let txt_cfg = config::TextOverlayConfig {
+        id: "cached".to_string(),
+        text: "Hello".to_string(),
+        transform: config::OverlayTransform::default(),
+        color: [255, 255, 255, 255],
+        font_size: 24,
+        font_path: None,
+        font_data_base64: None,
+        font_name: None,
+    };
+    let limits = GlobalCompositorConfig::default();
+    let mut config =
+        CompositorConfig { text_overlays: vec![txt_cfg.clone()], ..Default::default() };
+
+    // Initial rasterize.
+    let initial = Arc::new(rasterize_text_overlay(
+        &txt_cfg,
+        limits.max_canvas_dimension,
+        limits.max_text_length,
+    ));
+    let mut text_overlays: Arc<[Arc<DecodedOverlay>]> = Arc::from(vec![initial]);
+    let mut image_overlays: Arc<[Arc<DecodedOverlay>]> = Arc::from(vec![]);
+    let original_ptr = Arc::as_ptr(&text_overlays[0]);
+
+    // Send identical UpdateParams — should reuse the same Arc.
+    let params = serde_json::json!({
+        "text_overlays": [{
+            "id": "cached",
+            "text": "Hello",
+            "rect": { "x": 0, "y": 0, "width": 0, "height": 0 },
+            "color": [255, 255, 255, 255],
+            "font_size": 24
+        }]
+    });
+    let mut stats = NodeStatsTracker::new("test".to_string(), None);
+    CompositorNode::apply_update_params(
+        &mut config,
+        &limits,
+        &mut image_overlays,
+        &mut text_overlays,
+        params,
+        &mut stats,
+    );
+    assert_eq!(
+        Arc::as_ptr(&text_overlays[0]),
+        original_ptr,
+        "Unchanged text overlay should reuse the same Arc"
+    );
+
+    // Change the text — should produce a new Arc.
+    let params = serde_json::json!({
+        "text_overlays": [{
+            "id": "cached",
+            "text": "World",
+            "rect": { "x": 0, "y": 0, "width": 0, "height": 0 },
+            "color": [255, 255, 255, 255],
+            "font_size": 24
+        }]
+    });
+    CompositorNode::apply_update_params(
+        &mut config,
+        &limits,
+        &mut image_overlays,
+        &mut text_overlays,
+        params,
+        &mut stats,
+    );
+    assert_ne!(
+        Arc::as_ptr(&text_overlays[0]),
+        original_ptr,
+        "Changed text overlay should produce a new Arc"
+    );
+}
+
+#[tokio::test]
+async fn test_compositor_output_format_nv12() {
+    let (input_tx, input_rx) = mpsc::channel(10);
+    let mut inputs = HashMap::new();
+    inputs.insert("in_0".to_string(), input_rx);
+
+    let (context, mock_sender, mut state_rx) = create_test_context(inputs, 10);
+
+    let config = CompositorConfig {
+        width: 4,
+        height: 4,
+        output_format: Some("nv12".to_string()),
+        ..Default::default()
+    };
+    let node = CompositorNode::new(config, GlobalCompositorConfig::default());
+
+    let node_handle = tokio::spawn(async move { Box::new(node).run(context).await });
+
+    assert_state_initializing(&mut state_rx).await;
+    assert_state_running(&mut state_rx).await;
+
+    let frame = make_rgba_frame(2, 2, 255, 0, 0, 255);
+    input_tx.send(Packet::Video(frame)).await.unwrap();
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    drop(input_tx);
+
+    assert_state_stopped(&mut state_rx).await;
+    node_handle.await.unwrap().unwrap();
+
+    let output_packets = mock_sender.get_packets_for_pin("out").await;
+    assert!(!output_packets.is_empty(), "Expected at least 1 output frame");
+
+    if let Packet::Video(ref out_frame) = output_packets[0] {
+        assert_eq!(out_frame.width, 4);
+        assert_eq!(out_frame.height, 4);
+        assert_eq!(out_frame.pixel_format, PixelFormat::Nv12);
+        // NV12: Y plane (4*4) + interleaved UV plane (2*2*2) = 24 bytes.
+        assert_eq!(out_frame.data().len(), 24);
+    } else {
+        panic!("Expected video packet");
+    }
+}

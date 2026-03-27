@@ -241,15 +241,19 @@ pub struct CompositeWorkItem {
     /// conversion cache before compositing this frame.  Set when
     /// slots are added or removed.
     pub clear_conversion_cache: bool,
+    /// Optional output pixel format.  When `Some`, the compositing thread
+    /// converts the RGBA8 canvas to this format while data is cache-hot.
+    pub output_format: Option<streamkit_core::types::PixelFormat>,
 }
 
 /// Result sent back from the compositing thread to the async loop.
 ///
-/// Contains the fully-composited RGBA8 canvas buffer, ready to be
+/// Contains the fully-composited canvas buffer, ready to be
 /// wrapped in a [`VideoFrame`](streamkit_core::types::VideoFrame) and
 /// forwarded downstream.
 pub struct CompositeResult {
     pub rgba_data: streamkit_core::frame_pool::PooledVideoData,
+    pub pixel_format: streamkit_core::types::PixelFormat,
 }
 
 /// A resolved, ready-to-composite item.  Unifies video layers and decoded

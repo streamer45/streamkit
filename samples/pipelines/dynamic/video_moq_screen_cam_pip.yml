@@ -94,21 +94,16 @@ nodes:
           font_size: 40
           font_name: dejavu-sans-bold
           z_index: 2
+      output_format: nv12
     needs:
       - vp9_decoder_screen
       - vp9_decoder_cam
-
-  pixel_convert:
-    kind: video::pixel_convert
-    params:
-      output_format: nv12
-    needs: compositor
 
   vp9_encoder:
     kind: video::vp9::encoder
     params:
       keyframe_interval: 30
-    needs: pixel_convert
+    needs: compositor
 
   opus_decoder:
     kind: audio::opus::decoder
