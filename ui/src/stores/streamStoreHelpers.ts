@@ -611,9 +611,15 @@ async function setupSecondaryPublishPath(
     );
   }
 
-  const needsVideo = broadcastTracks.some((t) => t.kind === 'video');
-  const videoTrack = broadcastTracks.find((t) => t.kind === 'video');
-  const videoSourceType = videoTrack?.source === 'screen' ? 'screen' : 'camera';
+  const videoTracks = broadcastTracks.filter((t) => t.kind === 'video');
+  const needsVideo = videoTracks.length > 0;
+  if (videoTracks.length > 1) {
+    logger.warn(
+      `Secondary broadcast '${broadcastName}' has ${videoTracks.length} video tracks ` +
+        'but only the first is used; additional video tracks are ignored'
+    );
+  }
+  const videoSourceType = videoTracks[0]?.source === 'screen' ? 'screen' : 'camera';
 
   let secondaryCamera: Publish.Source.Camera | null = null;
   let secondaryScreen: Publish.Source.Screen | null = null;
@@ -906,31 +912,41 @@ export async function performConnect(
       // Secondary broadcast (multi-broadcast mode).
       // Currently supports at most one secondary; additional broadcasts are
       // ignored with a warning.
-      if (state.publishBroadcasts.length > 2) {
-        logger.warn(
-          `Pipeline declares ${state.publishBroadcasts.length} broadcasts but only 2 are supported; ` +
-            `ignoring: ${state.publishBroadcasts.slice(2).join(', ')}`
-        );
-      }
       if (state.publishBroadcasts.length > 1) {
+        if (state.publishBroadcasts.length > 2) {
+          logger.warn(
+            `Pipeline declares ${state.publishBroadcasts.length} broadcasts but only 2 are supported; ` +
+              `ignoring: ${state.publishBroadcasts.slice(2).join(', ')}`
+          );
+        }
         const primaryBroadcast = state.publishBroadcasts[0];
         const secondaryName = state.publishBroadcasts[1];
         const secondaryTracks = state.tracks.filter(
           (t) => (t.broadcast ?? primaryBroadcast) === secondaryName
         );
-        // setupSecondaryPublishPath owns cleanup of its resources on failure;
-        // on success, ownership transfers to `attempt` via applySecondaryPublishResult,
-        // and the outer catch block handles cleanup through cleanupConnectAttempt.
-        applySecondaryPublishResult(
-          attempt,
-          await setupSecondaryPublishPath(
-            attempt.healthEffect!,
-            attempt.connection!,
-            secondaryName,
-            secondaryTracks,
-            abortSignal
-          )
-        );
+
+        if (secondaryTracks.length > 0) {
+          // Secondary setup runs after the primary because both share the same
+          // connection: if the secondary fails, the primary resources must already
+          // be on `attempt` so cleanupConnectAttempt can tear them down.
+          // setupSecondaryPublishPath owns cleanup of its resources on failure;
+          // on success, ownership transfers to `attempt` via applySecondaryPublishResult,
+          // and the outer catch block handles cleanup through cleanupConnectAttempt.
+          applySecondaryPublishResult(
+            attempt,
+            await setupSecondaryPublishPath(
+              attempt.healthEffect!,
+              attempt.connection!,
+              secondaryName,
+              secondaryTracks,
+              abortSignal
+            )
+          );
+        } else {
+          logger.warn(
+            `Secondary broadcast '${secondaryName}' declared but no tracks matched; skipping`
+          );
+        }
       }
     }
 
