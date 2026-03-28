@@ -29,11 +29,23 @@ export interface UseMonitorPreviewReturn {
   handleStopPreview: () => Promise<void>;
 }
 
-/** Tear down the server-side preview and disconnect the MoQ subscription. */
-async function cleanupPreview(
+/**
+ * Tear down the server-side preview and, if the preview owns the MoQ
+ * connection, disconnect it.
+ *
+ * When the StreamView already holds an active connection and the preview
+ * merely piggybacks on it (or was never started at all), calling
+ * `disconnect()` would tear down the StreamView's inputs (mic, camera,
+ * screen).  The `ownsConnectionRef` flag prevents that: only a preview
+ * that transitioned the store from `disconnected` → `connected` is
+ * allowed to disconnect on cleanup.
+ */
+/** @internal — exported for unit testing */
+export async function cleanupPreview(
   previewIdRef: React.MutableRefObject<string | null>,
   previewSessionIdRef: React.MutableRefObject<string | null>,
-  previewDisconnect: () => void
+  previewDisconnect: () => void,
+  ownsConnectionRef: React.MutableRefObject<boolean>
 ) {
   if (previewIdRef.current && previewSessionIdRef.current) {
     try {
@@ -44,9 +56,13 @@ async function cleanupPreview(
     previewIdRef.current = null;
     previewSessionIdRef.current = null;
   }
-  // Always call disconnect — it's safe when already disconnected and
-  // avoids stale-closure bugs with previewStatus.
-  previewDisconnect();
+  // Only disconnect the MoQ connection if the preview created it.
+  // Disconnecting unconditionally would kill StreamView inputs (mic,
+  // camera, screen) that are still publishing to the pipeline.
+  if (ownsConnectionRef.current) {
+    previewDisconnect();
+    ownsConnectionRef.current = false;
+  }
 }
 
 export function useMonitorPreview(selectedSessionId: string | null): UseMonitorPreviewReturn {
@@ -91,6 +107,11 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
   // Track the session the preview belongs to.
   const previewSessionIdRef = useRef<string | null>(null);
 
+  // True when the preview itself transitioned the stream store from
+  // 'disconnected' → 'connected'.  When false, the connection belongs
+  // to the StreamView and must not be torn down by preview cleanup.
+  const previewOwnsConnectionRef = useRef(false);
+
   // AbortController cancels an in-flight startPreview API call when the
   // user switches sessions before the call completes.
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -107,18 +128,27 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
       abortControllerRef.current?.abort();
       abortControllerRef.current = null;
 
-      void cleanupPreview(previewIdRef, previewSessionIdRef, previewDisconnect);
+      void cleanupPreview(
+        previewIdRef,
+        previewSessionIdRef,
+        previewDisconnect,
+        previewOwnsConnectionRef
+      );
       setPreviewError(null);
       setIsPreviewLoading(false);
     }
 
-    // Cleanup on unmount — always disconnect since previewStatus may be
-    // stale in this closure and disconnect() is safe to call when already
-    // disconnected.
+    // Cleanup on unmount — only disconnect if the preview owns the
+    // connection; otherwise the StreamView's inputs stay alive.
     return () => {
       abortControllerRef.current?.abort();
       abortControllerRef.current = null;
-      void cleanupPreview(previewIdRef, previewSessionIdRef, previewDisconnect);
+      void cleanupPreview(
+        previewIdRef,
+        previewSessionIdRef,
+        previewDisconnect,
+        previewOwnsConnectionRef
+      );
     };
   }, [selectedSessionId, previewDisconnect]);
 
@@ -185,7 +215,13 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
       previewSetOutputBroadcast(result.broadcast);
       previewSetPipelineOutputTypes(result.audio, result.video);
 
+      // Remember whether we are creating a fresh connection or piggybacking
+      // on an existing StreamView connection.  Only a preview that creates
+      // its own connection should tear it down on cleanup.
+      const wasDisconnected = useStreamStore.getState().status === 'disconnected';
       await previewConnect();
+      previewOwnsConnectionRef.current =
+        wasDisconnected && useStreamStore.getState().status === 'connected';
     } catch (err) {
       // Ignore abort errors — cleanup already happened
       if (controller.signal.aborted) return;
@@ -230,9 +266,11 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
       previewIdRef.current = null;
       previewSessionIdRef.current = null;
     }
-    // Disconnect the MoQ watch subscription — always call disconnect;
-    // it's safe when already disconnected and avoids stale-closure bugs.
-    previewDisconnect();
+    // Only disconnect the MoQ connection if the preview created it.
+    if (previewOwnsConnectionRef.current) {
+      previewDisconnect();
+      previewOwnsConnectionRef.current = false;
+    }
     setPreviewError(null);
   }, [previewDisconnect]);
 
