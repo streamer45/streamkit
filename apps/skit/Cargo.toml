@@ -115,7 +115,7 @@ jemalloc_pprof = { version = "0.8", features = ["symbolize"], optional = true }
 dhat = { version = "0.3", optional = true }
 
 # MoQ support (optional)
-moq-native = { version = "0.13.4", optional = true }
+moq-native = { version = "0.13.6", optional = true }
 async-trait = { workspace = true }
 
 # For glob pattern matching in permissions
@@ -133,7 +133,7 @@ getrandom = "0.4"
 aws-lc-rs = "1"
 
 # For MoQ auth path matching (optional, with moq feature)
-moq-lite = { version = "0.15.2", optional = true }
+moq-lite = { version = "0.15.5", optional = true }
 blake2 = "0.10.6"
 async-stream = "0.3.6"
 
