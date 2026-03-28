@@ -31,7 +31,6 @@ COPY apps ./apps
 COPY crates ./crates
 COPY sdks ./sdks
 COPY wit ./wit
-COPY assets ./assets
 
 # Create dummy ui/dist directory so server's RustEmbed doesn't fail
 # (will be replaced with real UI in Stage 3)
@@ -85,7 +84,6 @@ COPY apps ./apps
 COPY crates ./crates
 COPY sdks ./sdks
 COPY wit ./wit
-COPY assets ./assets
 
 # Copy built UI from stage 2
 COPY --from=ui-builder /build/ui/dist ./ui/dist
