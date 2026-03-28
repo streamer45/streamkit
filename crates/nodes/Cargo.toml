@@ -46,9 +46,9 @@ url = { version = "2.5.8", optional = true, features = ["serde"] }
 rquickjs = { version = "0.11", features = ["array-buffer", "futures", "loader", "parallel"], optional = true }
 wildmatch = { version = "2.6", optional = true }
 
-moq-native = { version = "0.13.4", optional = true }
-moq-lite = { version = "0.15.2", optional = true }
-hang = { version = "0.15.2", optional = true }
+moq-native = { version = "0.13.6", optional = true }
+moq-lite = { version = "0.15.5", optional = true }
+hang = { version = "0.15.4", optional = true }
 
 # For local dev, debugging moq stuff
 # moq-native = { path = "../../moq/rs/moq-native", optional = true }
