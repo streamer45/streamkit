@@ -1961,7 +1961,7 @@ async fn get_pipeline_handler(
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "moq")]
-pub(crate) mod preview;
+pub mod preview;
 
 /// Binding between a multipart field and an http_input node.
 struct HttpInputBinding {
