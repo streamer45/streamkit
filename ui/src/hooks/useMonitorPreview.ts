@@ -106,7 +106,7 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
   // so there's an intermediate "connecting" state that should still
   // show a loading indicator to avoid a brief flicker back to the
   // "Preview" button.
-  const isMoqConnecting = previewStatus === 'connecting';
+  const isMoqConnecting = previewStatus === 'connecting' && !previewDismissed;
 
   // Track the active preview ID so we can tear it down on the server.
   const previewIdRef = useRef<string | null>(null);
@@ -303,6 +303,7 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
     // For borrowed connections, mark the preview as dismissed so the
     // MonitorView hides the panel even though the store is still connected.
     setPreviewDismissed(true);
+    setIsPreviewLoading(false);
     setPreviewError(null);
   }, [previewDisconnect]);
 
