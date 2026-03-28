@@ -33,17 +33,16 @@ export interface UseMonitorPreviewReturn {
 function cleanupPreview(
   previewIdRef: React.MutableRefObject<string | null>,
   previewSessionIdRef: React.MutableRefObject<string | null>,
-  previewDisconnect: () => void,
-  previewStatus: string
+  previewDisconnect: () => void
 ) {
   if (previewIdRef.current && previewSessionIdRef.current) {
     stopPreview(previewSessionIdRef.current, previewIdRef.current).catch(() => {});
     previewIdRef.current = null;
     previewSessionIdRef.current = null;
   }
-  if (previewStatus !== 'disconnected') {
-    previewDisconnect();
-  }
+  // Always call disconnect — it's safe when already disconnected and
+  // avoids stale-closure bugs with previewStatus.
+  previewDisconnect();
 }
 
 export function useMonitorPreview(selectedSessionId: string | null): UseMonitorPreviewReturn {
@@ -77,6 +76,11 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
   const [previewError, setPreviewError] = useState<string | null>(null);
 
   const isPreviewConnected = previewStatus === 'connected';
+  // MoQ connection establishment happens after the API call returns,
+  // so there's an intermediate "connecting" state that should still
+  // show a loading indicator to avoid a brief flicker back to the
+  // "Preview" button.
+  const isMoqConnecting = previewStatus === 'connecting';
 
   // Track the active preview ID so we can tear it down on the server.
   const previewIdRef = useRef<string | null>(null);
@@ -99,7 +103,7 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
       abortControllerRef.current?.abort();
       abortControllerRef.current = null;
 
-      cleanupPreview(previewIdRef, previewSessionIdRef, previewDisconnect, previewStatus);
+      cleanupPreview(previewIdRef, previewSessionIdRef, previewDisconnect);
       setPreviewError(null);
       setIsPreviewLoading(false);
     }
@@ -142,8 +146,11 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
       // Check for cancellation after the config load await
       if (controller.signal.aborted) return;
 
-      // Ask the server to inject a preview subgraph
-      const result = await startPreview(selectedSessionId);
+      // Ask the server to inject a preview subgraph.
+      // Pass the abort signal so the HTTP request is cancelled immediately
+      // when the user switches sessions, avoiding a server-side subgraph
+      // that we'd have to tear down after the fact.
+      const result = await startPreview(selectedSessionId, undefined, undefined, controller.signal);
 
       // Check for cancellation after the API await — if the session
       // changed while we were waiting, tear down the just-created preview.
@@ -209,16 +216,15 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
       previewIdRef.current = null;
       previewSessionIdRef.current = null;
     }
-    // Disconnect the MoQ watch subscription
-    if (previewStatus !== 'disconnected') {
-      previewDisconnect();
-    }
+    // Disconnect the MoQ watch subscription — always call disconnect;
+    // it's safe when already disconnected and avoids stale-closure bugs.
+    previewDisconnect();
     setPreviewError(null);
-  }, [previewStatus, previewDisconnect]);
+  }, [previewDisconnect]);
 
   return {
     isPreviewConnected,
-    isPreviewLoading,
+    isPreviewLoading: isPreviewLoading || isMoqConnecting,
     previewError,
     handleStartPreview,
     handleStopPreview,

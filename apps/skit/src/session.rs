@@ -135,6 +135,16 @@ fn redact_telemetry_data(value: &mut serde_json::Value, max_chars: usize) {
 /// Maximum number of concurrent previews per session.
 pub const MAX_PREVIEWS_PER_SESSION: usize = 2;
 
+/// A single tap point in a pipeline (node + output pin + media classification).
+#[derive(Clone, Debug)]
+pub struct TapPoint {
+    pub node: String,
+    pub pin: String,
+    pub is_encoded: bool,
+    pub is_audio: bool,
+    pub is_video: bool,
+}
+
 /// Tracks a single active preview tap on a session.
 ///
 /// A preview dynamically injects a subgraph (encoding chain + MoQ peer) into
@@ -144,8 +154,9 @@ pub const MAX_PREVIEWS_PER_SESSION: usize = 2;
 #[derive(Clone, Debug)]
 pub struct PreviewState {
     pub preview_id: String,
-    pub tap_node: String,
-    pub tap_pin: String,
+    /// Tap points this preview is connected to (may be multiple for
+    /// pipelines with separate audio and video encoder chains).
+    pub tap_points: Vec<TapPoint>,
     /// Node IDs injected for this preview (teardown in reverse order).
     pub injected_node_ids: Vec<String>,
     /// Connections injected for this preview `(from_node, from_pin, to_node, to_pin)`.
@@ -179,6 +190,21 @@ impl Session {
         if let Err(e) = self.engine_handle.send_control(msg).await {
             tracing::error!(session_id = %self.id, error = %e, "Failed to send control message");
         }
+    }
+
+    /// Forwards a control message to this session's engine actor, returning
+    /// the error instead of logging it.  Used by preview injection where a
+    /// failure must trigger rollback.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error string if the engine actor has shut down and the
+    /// message cannot be delivered.
+    pub async fn try_send_control_message(&self, msg: EngineControlMessage) -> Result<(), String> {
+        self.engine_handle
+            .send_control(msg)
+            .await
+            .map_err(|e| format!("Engine control message failed: {e}"))
     }
 
     /// Shuts down the session's engine actor and waits for it to complete.

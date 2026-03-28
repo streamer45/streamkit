@@ -105,7 +105,8 @@ export async function createSession(
 export async function startPreview(
   sessionId: string,
   tapNode?: string,
-  tapPin?: string
+  tapPin?: string,
+  signal?: AbortSignal
 ): Promise<PreviewResponse> {
   const body: Record<string, string> = {};
   if (tapNode) body.tap_node = tapNode;
@@ -115,6 +116,7 @@ export async function startPreview(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal,
   });
 
   if (!response.ok) {
