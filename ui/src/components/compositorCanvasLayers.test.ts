@@ -2,9 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import fs from 'node:fs';
-import path from 'node:path';
-
 import { describe, it, expect } from 'vitest';
 
 import { cssFontFamily, isBoldFont } from './compositorCanvasLayers';
@@ -52,12 +49,14 @@ describe('isBoldFont', () => {
 });
 
 describe('index.css font override guard', () => {
-  it('must not use !important on a wildcard descendant selector inside .react-flow', () => {
+  it('must not use !important on a wildcard descendant selector inside .react-flow', async () => {
     // This test prevents a regression where `.react-flow *` with `!important`
     // overrides inline font-family on compositor canvas text overlays,
     // making all text render in the UI font regardless of the selected asset font.
-    const cssPath = path.resolve(__dirname, '../index.css');
-    const css = fs.readFileSync(cssPath, 'utf-8');
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    const cssPath = resolve(__dirname, '../index.css');
+    const css = readFileSync(cssPath, 'utf-8');
 
     // Match patterns like `.react-flow *` or `.react-flow, .react-flow *`
     // followed by a block containing `font-family: ... !important`.
