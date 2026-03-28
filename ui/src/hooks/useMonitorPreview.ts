@@ -9,8 +9,9 @@
  * Encapsulates:
  * - Calling the preview REST API (start / stop)
  * - Stream store configuration for watch-only MoQ connection
- * - Preview teardown when the selected session is deselected
+ * - Preview teardown when the selected session changes or the component unmounts
  * - Loading and error states
+ * - Cancellation of in-flight startPreview requests on session switch
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -26,6 +27,23 @@ export interface UseMonitorPreviewReturn {
   previewError: string | null;
   handleStartPreview: () => Promise<void>;
   handleStopPreview: () => Promise<void>;
+}
+
+/** Tear down the server-side preview and disconnect the MoQ subscription. */
+function cleanupPreview(
+  previewIdRef: React.MutableRefObject<string | null>,
+  previewSessionIdRef: React.MutableRefObject<string | null>,
+  previewDisconnect: () => void,
+  previewStatus: string
+) {
+  if (previewIdRef.current && previewSessionIdRef.current) {
+    stopPreview(previewSessionIdRef.current, previewIdRef.current).catch(() => {});
+    previewIdRef.current = null;
+    previewSessionIdRef.current = null;
+  }
+  if (previewStatus !== 'disconnected') {
+    previewDisconnect();
+  }
 }
 
 export function useMonitorPreview(selectedSessionId: string | null): UseMonitorPreviewReturn {
@@ -65,29 +83,43 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
   // Track the session the preview belongs to.
   const previewSessionIdRef = useRef<string | null>(null);
 
-  // Tear down the MoQ preview when the selected session is deselected
-  // (transitions from a value to null).
+  // AbortController cancels an in-flight startPreview API call when the
+  // user switches sessions before the call completes.
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Session-change cleanup: fires when selectedSessionId changes to a
+  // different value (including null). Also handles component unmount.
   const prevSelectedSessionIdRef = useRef(selectedSessionId);
   useEffect(() => {
     const prev = prevSelectedSessionIdRef.current;
     prevSelectedSessionIdRef.current = selectedSessionId;
 
     if (prev && prev !== selectedSessionId) {
-      // Session changed or deselected — clean up server-side preview and MoQ connection
-      if (previewIdRef.current && previewSessionIdRef.current) {
-        stopPreview(previewSessionIdRef.current, previewIdRef.current).catch(() => {});
-        previewIdRef.current = null;
-        previewSessionIdRef.current = null;
-      }
-      if (previewStatus !== 'disconnected') {
-        previewDisconnect();
-      }
+      // Abort any in-flight startPreview request
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
+
+      cleanupPreview(previewIdRef, previewSessionIdRef, previewDisconnect, previewStatus);
       setPreviewError(null);
+      setIsPreviewLoading(false);
     }
-  }, [selectedSessionId, previewStatus, previewDisconnect]);
+
+    // Cleanup on unmount
+    return () => {
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
+      cleanupPreview(previewIdRef, previewSessionIdRef, previewDisconnect, previewStatus);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- cleanup only needs stable refs
+  }, [selectedSessionId, previewDisconnect]);
 
   const handleStartPreview = useCallback(async () => {
     if (!selectedSessionId) return;
+
+    // Cancel any previous in-flight request
+    abortControllerRef.current?.abort();
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
 
     setIsPreviewLoading(true);
     setPreviewError(null);
@@ -100,8 +132,18 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
         await previewLoadConfig();
       }
 
+      // Check for cancellation after the config load await
+      if (controller.signal.aborted) return;
+
       // Ask the server to inject a preview subgraph
       const result = await startPreview(selectedSessionId);
+
+      // Check for cancellation after the API await — if the session
+      // changed while we were waiting, tear down the just-created preview.
+      if (controller.signal.aborted) {
+        stopPreview(selectedSessionId, result.preview_id).catch(() => {});
+        return;
+      }
 
       previewIdRef.current = result.preview_id;
       previewSessionIdRef.current = selectedSessionId;
@@ -117,6 +159,9 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
 
       await previewConnect();
     } catch (err) {
+      // Ignore abort errors — cleanup already happened
+      if (controller.signal.aborted) return;
+
       const message = err instanceof Error ? err.message : 'Failed to start preview';
       setPreviewError(message);
       // Clean up partial state
@@ -126,7 +171,9 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
         previewSessionIdRef.current = null;
       }
     } finally {
-      setIsPreviewLoading(false);
+      if (!controller.signal.aborted) {
+        setIsPreviewLoading(false);
+      }
     }
   }, [
     selectedSessionId,
@@ -141,6 +188,10 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
   ]);
 
   const handleStopPreview = useCallback(async () => {
+    // Cancel any in-flight start request
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+
     // Tear down server-side preview
     if (previewIdRef.current && previewSessionIdRef.current) {
       try {

@@ -1972,7 +1972,7 @@ mod preview {
     use serde::{Deserialize, Serialize};
     use tracing::info;
 
-    use crate::session::{system_time_to_rfc3339, PreviewState};
+    use crate::session::{system_time_to_rfc3339, PreviewState, MAX_PREVIEWS_PER_SESSION};
     use crate::state::AppState;
     use streamkit_api::Pipeline;
     use streamkit_core::control::EngineControlMessage;
@@ -2462,10 +2462,10 @@ mod preview {
         }
 
         // Check preview limit
-        if session.preview_count().await >= 2 {
+        if session.preview_count().await >= MAX_PREVIEWS_PER_SESSION {
             return Err((
                 StatusCode::CONFLICT,
-                "Maximum of 2 concurrent previews per session".to_string(),
+                format!("Maximum of {MAX_PREVIEWS_PER_SESSION} concurrent previews per session"),
             ));
         }
 

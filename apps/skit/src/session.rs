@@ -133,7 +133,7 @@ fn redact_telemetry_data(value: &mut serde_json::Value, max_chars: usize) {
 }
 
 /// Maximum number of concurrent previews per session.
-const MAX_PREVIEWS_PER_SESSION: usize = 2;
+pub const MAX_PREVIEWS_PER_SESSION: usize = 2;
 
 /// Tracks a single active preview tap on a session.
 ///
