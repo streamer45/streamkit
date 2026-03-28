@@ -768,21 +768,33 @@ describe('computeUpdatedLayer text overlay free resize', () => {
     expect(result.y).toBe(80);
   });
 
-  it('clamps text overlay dimensions to canvas size', () => {
+  it('clamps text overlay so right edge cannot exceed canvas width', () => {
     const orig = makeLayer({ x: 100, y: 100, width: 300, height: 36 });
     // Drag east handle far enough to exceed canvas width
     const result = computeUpdatedLayer(orig, 'resize', 'e', 2000, 0, CW, CH, 'text');
-    expect(result.width).toBeLessThanOrEqual(CW);
+    // Right edge (x + width) must not exceed canvas width
+    expect(result.x + result.width).toBeLessThanOrEqual(CW);
+    expect(result.x).toBe(100); // left edge stays anchored
     expect(result.height).toBe(36);
   });
 
-  it('clamps all layer types to canvas dimensions on resize while preserving AR', () => {
+  it('clamps text overlay so bottom edge cannot exceed canvas height', () => {
+    const orig = makeLayer({ x: 100, y: 100, width: 300, height: 36 });
+    // Drag south handle far enough to exceed canvas height
+    const result = computeUpdatedLayer(orig, 'resize', 's', 0, 2000, CW, CH, 'text');
+    // Bottom edge (y + height) must not exceed canvas height
+    expect(result.y + result.height).toBeLessThanOrEqual(CH);
+    expect(result.y).toBe(100); // top edge stays anchored
+    expect(result.width).toBe(300);
+  });
+
+  it('clamps all layer types to canvas edges on resize while preserving AR', () => {
     const orig = makeLayer({ x: 100, y: 100, width: 640, height: 480 });
     const ar = orig.width / orig.height;
-    // Even AR-constrained layers should not exceed canvas size
+    // Even AR-constrained layers should not extend past canvas edges
     const result = computeUpdatedLayer(orig, 'resize', 'e', 5000, 0, CW, CH, 'video');
-    expect(result.width).toBeLessThanOrEqual(CW);
-    expect(result.height).toBeLessThanOrEqual(CH);
+    expect(result.x + result.width).toBeLessThanOrEqual(CW);
+    expect(result.y + result.height).toBeLessThanOrEqual(CH);
     // AR must be preserved after clamping
     expect(result.width / result.height).toBeCloseTo(ar, 5);
   });
