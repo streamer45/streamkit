@@ -580,6 +580,29 @@ fn bench_compositor(c: &mut Criterion) {
             });
         });
 
+        // Fused composite + NV12 conversion (cache-hot data path).
+        // Simulates the fused output_format: "nv12" codepath where the
+        // RGBA→NV12 conversion happens on the compositor thread immediately
+        // after compositing, while data is still in L2/L3 cache.
+        group.bench_function("composite+nv12-fused", |b| {
+            let pool = VideoFramePool::video_default();
+            let mut cache = ConversionCache::new();
+            let bg_layer =
+                make_layer(generate_rgba_frame(w, h), w, h, PixelFormat::Rgba8, None, 1.0, 0, 0.0);
+            let layers = vec![bg_layer];
+            let nv12_size =
+                (w as usize * h as usize) + (w as usize).div_ceil(2) * 2 * (h as usize).div_ceil(2);
+            let mut nv12 = vec![0u8; nv12_size];
+
+            // Warm up.
+            let _ = composite_frame(w, h, &layers, &[], &[], Some(&pool), &mut cache);
+
+            b.iter(|| {
+                let rgba_buf = composite_frame(w, h, &layers, &[], &[], Some(&pool), &mut cache);
+                rgba8_to_nv12_buf(rgba_buf.as_slice(), w, h, &mut nv12);
+            });
+        });
+
         group.finish();
     }
 }

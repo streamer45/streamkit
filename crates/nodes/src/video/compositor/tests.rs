@@ -2206,3 +2206,351 @@ fn test_image_overlay_cache_key_asset_path() {
     };
     assert_eq!(a.asset_path, c.asset_path);
 }
+
+#[test]
+fn test_text_overlay_cache_reuses_arc_on_unchanged_config() {
+    let txt_cfg = config::TextOverlayConfig {
+        id: "cached".to_string(),
+        text: "Hello".to_string(),
+        transform: config::OverlayTransform::default(),
+        color: [255, 255, 255, 255],
+        font_size: 24,
+        font_path: None,
+        font_data_base64: None,
+        font_name: None,
+    };
+    let limits = GlobalCompositorConfig::default();
+    let mut config =
+        CompositorConfig { text_overlays: vec![txt_cfg.clone()], ..Default::default() };
+
+    // Initial rasterize.
+    let initial = Arc::new(rasterize_text_overlay(
+        &txt_cfg,
+        limits.max_canvas_dimension,
+        limits.max_text_length,
+    ));
+    let mut text_overlays: Arc<[Arc<DecodedOverlay>]> = Arc::from(vec![initial]);
+    let mut image_overlays: Arc<[Arc<DecodedOverlay>]> = Arc::from(vec![]);
+    let original_ptr = Arc::as_ptr(&text_overlays[0]);
+
+    // Send identical UpdateParams — should reuse the same Arc.
+    let params = serde_json::json!({
+        "text_overlays": [{
+            "id": "cached",
+            "text": "Hello",
+            "rect": { "x": 0, "y": 0, "width": 0, "height": 0 },
+            "color": [255, 255, 255, 255],
+            "font_size": 24
+        }]
+    });
+    let mut stats = NodeStatsTracker::new("test".to_string(), None);
+    CompositorNode::apply_update_params(
+        &mut config,
+        &limits,
+        &mut image_overlays,
+        &mut text_overlays,
+        params,
+        &mut stats,
+    );
+    assert_eq!(
+        Arc::as_ptr(&text_overlays[0]),
+        original_ptr,
+        "Unchanged text overlay should reuse the same Arc"
+    );
+
+    // Change the text — should produce a new Arc.
+    let params = serde_json::json!({
+        "text_overlays": [{
+            "id": "cached",
+            "text": "World",
+            "rect": { "x": 0, "y": 0, "width": 0, "height": 0 },
+            "color": [255, 255, 255, 255],
+            "font_size": 24
+        }]
+    });
+    CompositorNode::apply_update_params(
+        &mut config,
+        &limits,
+        &mut image_overlays,
+        &mut text_overlays,
+        params,
+        &mut stats,
+    );
+    assert_ne!(
+        Arc::as_ptr(&text_overlays[0]),
+        original_ptr,
+        "Changed text overlay should produce a new Arc"
+    );
+}
+
+#[tokio::test]
+async fn test_compositor_output_format_nv12() {
+    let (input_tx, input_rx) = mpsc::channel(10);
+    let mut inputs = HashMap::new();
+    inputs.insert("in_0".to_string(), input_rx);
+
+    let (context, mock_sender, mut state_rx) = create_test_context(inputs, 10);
+
+    let config = CompositorConfig {
+        width: 4,
+        height: 4,
+        output_format: Some("nv12".to_string()),
+        ..Default::default()
+    };
+    let node = CompositorNode::new(config, GlobalCompositorConfig::default());
+
+    let node_handle = tokio::spawn(async move { Box::new(node).run(context).await });
+
+    assert_state_initializing(&mut state_rx).await;
+    assert_state_running(&mut state_rx).await;
+
+    let frame = make_rgba_frame(2, 2, 255, 0, 0, 255);
+    input_tx.send(Packet::Video(frame)).await.unwrap();
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    drop(input_tx);
+
+    assert_state_stopped(&mut state_rx).await;
+    node_handle.await.unwrap().unwrap();
+
+    let output_packets = mock_sender.get_packets_for_pin("out").await;
+    assert!(!output_packets.is_empty(), "Expected at least 1 output frame");
+
+    if let Packet::Video(ref out_frame) = output_packets[0] {
+        assert_eq!(out_frame.width, 4);
+        assert_eq!(out_frame.height, 4);
+        assert_eq!(out_frame.pixel_format, PixelFormat::Nv12);
+        // NV12: Y plane (4*4) + interleaved UV plane (2*2*2) = 24 bytes.
+        assert_eq!(out_frame.data().len(), 24);
+    } else {
+        panic!("Expected video packet");
+    }
+}
+
+#[test]
+fn test_text_overlay_cache_handles_length_changes() {
+    let make_txt = |id: &str, text: &str| config::TextOverlayConfig {
+        id: id.to_string(),
+        text: text.to_string(),
+        transform: config::OverlayTransform::default(),
+        color: [255, 255, 255, 255],
+        font_size: 24,
+        font_path: None,
+        font_data_base64: None,
+        font_name: None,
+    };
+    let limits = GlobalCompositorConfig::default();
+    let mut stats = NodeStatsTracker::new("test".to_string(), None);
+
+    // Start with 2 overlays.
+    let txt_a = make_txt("a", "Alpha");
+    let txt_b = make_txt("b", "Beta");
+    let mut config = CompositorConfig {
+        text_overlays: vec![txt_a.clone(), txt_b.clone()],
+        ..Default::default()
+    };
+    let initial_a = Arc::new(rasterize_text_overlay(
+        &txt_a,
+        limits.max_canvas_dimension,
+        limits.max_text_length,
+    ));
+    let initial_b = Arc::new(rasterize_text_overlay(
+        &txt_b,
+        limits.max_canvas_dimension,
+        limits.max_text_length,
+    ));
+    let mut text_overlays: Arc<[Arc<DecodedOverlay>]> = Arc::from(vec![initial_a, initial_b]);
+    let mut image_overlays: Arc<[Arc<DecodedOverlay>]> = Arc::from(vec![]);
+    let ptr_a = Arc::as_ptr(&text_overlays[0]);
+
+    // Shrink to 1 overlay (keep "a" unchanged).
+    let params = serde_json::json!({
+        "text_overlays": [{
+            "id": "a", "text": "Alpha",
+            "rect": { "x": 0, "y": 0, "width": 0, "height": 0 },
+            "color": [255, 255, 255, 255], "font_size": 24
+        }]
+    });
+    CompositorNode::apply_update_params(
+        &mut config,
+        &limits,
+        &mut image_overlays,
+        &mut text_overlays,
+        params,
+        &mut stats,
+    );
+    assert_eq!(text_overlays.len(), 1, "Should have 1 overlay after shrink");
+    assert_eq!(
+        Arc::as_ptr(&text_overlays[0]),
+        ptr_a,
+        "Unchanged overlay 'a' should reuse the same Arc"
+    );
+
+    // Grow to 3 overlays (keep "a", add "c" and "d").
+    let params = serde_json::json!({
+        "text_overlays": [
+            { "id": "a", "text": "Alpha",
+              "rect": { "x": 0, "y": 0, "width": 0, "height": 0 },
+              "color": [255, 255, 255, 255], "font_size": 24 },
+            { "id": "c", "text": "Charlie",
+              "rect": { "x": 0, "y": 0, "width": 0, "height": 0 },
+              "color": [255, 0, 0, 255], "font_size": 32 },
+            { "id": "d", "text": "Delta",
+              "rect": { "x": 0, "y": 0, "width": 0, "height": 0 },
+              "color": [0, 255, 0, 255], "font_size": 16 }
+        ]
+    });
+    CompositorNode::apply_update_params(
+        &mut config,
+        &limits,
+        &mut image_overlays,
+        &mut text_overlays,
+        params,
+        &mut stats,
+    );
+    assert_eq!(text_overlays.len(), 3, "Should have 3 overlays after grow");
+    assert_eq!(
+        Arc::as_ptr(&text_overlays[0]),
+        ptr_a,
+        "Unchanged overlay 'a' should still reuse the same Arc"
+    );
+    // New overlays 'c' and 'd' were freshly rasterized (we just verify they exist
+    // and are valid — pointer comparison is unreliable since the allocator may
+    // reuse freed addresses).
+    assert!(!text_overlays[1].rgba_data.is_empty(), "New overlay 'c' should have pixels");
+    assert!(!text_overlays[2].rgba_data.is_empty(), "New overlay 'd' should have pixels");
+}
+
+#[tokio::test]
+async fn test_compositor_output_format_i420() {
+    let (input_tx, input_rx) = mpsc::channel(10);
+    let mut inputs = HashMap::new();
+    inputs.insert("in_0".to_string(), input_rx);
+
+    let (context, mock_sender, mut state_rx) = create_test_context(inputs, 10);
+
+    let config = CompositorConfig {
+        width: 4,
+        height: 4,
+        output_format: Some("i420".to_string()),
+        ..Default::default()
+    };
+    let node = CompositorNode::new(config, GlobalCompositorConfig::default());
+
+    let node_handle = tokio::spawn(async move { Box::new(node).run(context).await });
+
+    assert_state_initializing(&mut state_rx).await;
+    assert_state_running(&mut state_rx).await;
+
+    let frame = make_rgba_frame(2, 2, 0, 255, 0, 255);
+    input_tx.send(Packet::Video(frame)).await.unwrap();
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    drop(input_tx);
+
+    assert_state_stopped(&mut state_rx).await;
+    node_handle.await.unwrap().unwrap();
+
+    let output_packets = mock_sender.get_packets_for_pin("out").await;
+    assert!(!output_packets.is_empty(), "Expected at least 1 output frame");
+
+    if let Packet::Video(ref out_frame) = output_packets[0] {
+        assert_eq!(out_frame.width, 4);
+        assert_eq!(out_frame.height, 4);
+        assert_eq!(out_frame.pixel_format, PixelFormat::I420);
+        // I420: Y plane (4*4) + U plane (2*2) + V plane (2*2) = 24 bytes.
+        assert_eq!(out_frame.data().len(), 24);
+    } else {
+        panic!("Expected video packet");
+    }
+}
+
+#[tokio::test]
+async fn test_compositor_output_format_runtime_change() {
+    let (input_tx, input_rx) = mpsc::channel(10);
+    let mut inputs = HashMap::new();
+    inputs.insert("in_0".to_string(), input_rx);
+
+    // Build context manually so we keep a handle to the control channel.
+    let (ctrl_tx, control_rx) = mpsc::channel(10);
+    let (state_tx, mut state_rx) = mpsc::channel(10);
+    let (stats_tx, _stats_rx) = mpsc::channel(10);
+    let (pin_mgmt_tx, pin_mgmt_rx) = mpsc::channel(10);
+    drop(pin_mgmt_tx);
+
+    let mock_sender = crate::test_utils::MockOutputSender::new();
+    let output_sender = mock_sender.to_output_sender("test_node".to_string());
+
+    let context = streamkit_core::node::NodeContext {
+        inputs,
+        input_types: HashMap::new(),
+        control_rx,
+        output_sender,
+        batch_size: 10,
+        state_tx,
+        stats_tx: Some(stats_tx),
+        telemetry_tx: None,
+        session_id: None,
+        cancellation_token: None,
+        pin_management_rx: Some(pin_mgmt_rx),
+        audio_pool: None,
+        video_pool: None,
+        pipeline_mode: streamkit_core::node::PipelineMode::Dynamic,
+        view_data_tx: None,
+    };
+
+    // Start with no output_format (RGBA8).
+    let config = CompositorConfig { width: 4, height: 4, ..Default::default() };
+    let node = CompositorNode::new(config, GlobalCompositorConfig::default());
+
+    let node_handle = tokio::spawn(async move { Box::new(node).run(context).await });
+
+    assert_state_initializing(&mut state_rx).await;
+    assert_state_running(&mut state_rx).await;
+
+    // Send a frame — should come out as RGBA8.
+    let frame = make_rgba_frame(2, 2, 255, 0, 0, 255);
+    input_tx.send(Packet::Video(frame)).await.unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    // Send UpdateParams to switch output_format to NV12.
+    let update = serde_json::json!({ "output_format": "nv12" });
+    ctrl_tx.send(NodeControlMessage::UpdateParams(update)).await.unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Send another frame — should come out as NV12.
+    let frame2 = make_rgba_frame(2, 2, 0, 255, 0, 255);
+    input_tx.send(Packet::Video(frame2)).await.unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    drop(input_tx);
+    drop(ctrl_tx);
+    assert_state_stopped(&mut state_rx).await;
+    node_handle.await.unwrap().unwrap();
+
+    let output_packets = mock_sender.get_packets_for_pin("out").await;
+    assert!(
+        output_packets.len() >= 2,
+        "Expected at least 2 output frames, got {}",
+        output_packets.len()
+    );
+
+    // First frame should be RGBA8.
+    if let Packet::Video(ref f) = output_packets[0] {
+        assert_eq!(f.pixel_format, PixelFormat::Rgba8, "First frame should be RGBA8");
+    } else {
+        panic!("Expected video packet");
+    }
+
+    // Last frame should be NV12 (after the UpdateParams took effect).
+    let last = &output_packets[output_packets.len() - 1];
+    if let Packet::Video(ref f) = last {
+        assert_eq!(
+            f.pixel_format,
+            PixelFormat::Nv12,
+            "Last frame should be NV12 after UpdateParams"
+        );
+    } else {
+        panic!("Expected video packet");
+    }
+}
