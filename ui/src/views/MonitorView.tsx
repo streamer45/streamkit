@@ -1050,9 +1050,13 @@ const MonitorViewContent: React.FC = () => {
     setIsDeletingSession(true);
 
     try {
-      // Tear down preview/MoQ connection BEFORE destroying the session
-      // to avoid SIGSEGV from WebCodecs operating on a dead stream.
-      await handleStopPreview();
+      // Only tear down the preview when deleting the session that is
+      // actually being previewed.  sessionToDelete can be any session
+      // from the sidebar; stopping the preview unconditionally would
+      // kill an unrelated active stream.
+      if (sessionToDelete === selectedSessionId) {
+        await handleStopPreview();
+      }
 
       const wsService = getWebSocketService();
 
@@ -1221,7 +1225,9 @@ const MonitorViewContent: React.FC = () => {
             )}
           </EmptyMonitorState>
         )}
-        <OutputPreviewPanel hasSession={selectedSessionId != null} conditionalRender />
+        {(isPreviewConnected || isPreviewLoading) && (
+          <OutputPreviewPanel hasSession={selectedSessionId != null} conditionalRender />
+        )}
       </CenterPanelContainer>
     ),
     // Intentional sparse dependencies for performance optimization:

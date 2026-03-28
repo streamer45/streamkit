@@ -95,7 +95,13 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
 
-  const isPreviewConnected = previewStatus === 'connected';
+  // When the user explicitly stops a borrowed preview, the shared store
+  // still reports 'connected' (the StreamView's connection stays alive).
+  // This flag lets the hook report isPreviewConnected=false so the
+  // MonitorView hides the panel and shows the "Preview" button again.
+  const [previewDismissed, setPreviewDismissed] = useState(false);
+
+  const isPreviewConnected = previewStatus === 'connected' && !previewDismissed;
   // MoQ connection establishment happens after the API call returns,
   // so there's an intermediate "connecting" state that should still
   // show a loading indicator to avoid a brief flicker back to the
@@ -184,6 +190,7 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
 
     setIsPreviewLoading(true);
     setPreviewError(null);
+    setPreviewDismissed(false);
 
     try {
       // Configure for watch-only mode
@@ -272,11 +279,16 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
       previewIdRef.current = null;
       previewSessionIdRef.current = null;
     }
-    // Always disconnect — the user explicitly requested "Stop Preview".
-    // If the connection was borrowed from StreamView, the stream will also
-    // be disconnected; the user can reconnect from StreamView if needed.
-    previewDisconnect();
-    previewOwnsConnectionRef.current = false;
+    // Only disconnect the MoQ connection if the preview created it.
+    // Disconnecting unconditionally would kill StreamView inputs (mic,
+    // camera, screen) that are still publishing to the pipeline.
+    if (previewOwnsConnectionRef.current) {
+      previewDisconnect();
+      previewOwnsConnectionRef.current = false;
+    }
+    // For borrowed connections, mark the preview as dismissed so the
+    // MonitorView hides the panel even though the store is still connected.
+    setPreviewDismissed(true);
     setPreviewError(null);
   }, [previewDisconnect]);
 

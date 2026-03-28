@@ -192,18 +192,27 @@ export const VideoLayer: React.FC<{
           }}
         />
       )}
-      {layer.cropShape === 'circle' && isSelected && (
-        <div
-          style={{
-            position: 'absolute',
-            inset: 0,
-            borderRadius: '50%',
-            outline: `2px dashed ${borderColor}`,
-            outlineOffset: '-1px',
-            pointerEvents: 'none',
-          }}
-        />
-      )}
+      {layer.cropShape === 'circle' &&
+        isSelected &&
+        (() => {
+          const r = Math.min(layer.width, layer.height) / 2;
+          const d = r * 2;
+          return (
+            <div
+              style={{
+                position: 'absolute',
+                width: d,
+                height: d,
+                top: '50%',
+                left: '50%',
+                transform: 'translate(-50%, -50%)',
+                borderRadius: '50%',
+                border: `2px dashed ${borderColor}`,
+                pointerEvents: 'none',
+              }}
+            />
+          );
+        })()}
       <LayerLabel>{layer.id}</LayerLabel>
       <LayerDimensions>
         {Math.round(layer.width)}&times;{Math.round(layer.height)}

@@ -445,15 +445,18 @@ const PreviewBody: React.FC<{
     // Show the canvas during both ‘loading’ and ‘live’ so video frames
     // appear immediately.  A buffering overlay is added during loading so
     // the user knows data is still arriving (especially when audio starts
-    // before video).
+    // before video).  We also show it during early ‘live’ if no video
+    // frames have been decoded yet (canvasAspectRatio is undefined until
+    // the renderer writes the first frame).
     const Canvas = isFullscreen ? FullscreenCanvas : PreviewCanvas;
+    const isBuffering = ws === 'loading' || (ws === 'live' && canvasAspectRatio === undefined);
     return (
       <CanvasWrapper>
         <Canvas ref={canvasRef} style={{ aspectRatio: canvasAspectRatio }} />
-        {ws === 'loading' && (
+        {isBuffering && (
           <BufferingOverlay>
             <OverlaySpinner />
-            Buffering…
+            {ws === 'loading' ? 'Buffering…' : 'Waiting for first frame…'}
           </BufferingOverlay>
         )}
       </CanvasWrapper>
