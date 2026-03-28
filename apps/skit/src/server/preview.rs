@@ -698,7 +698,7 @@ pub async fn start_preview_handler(
 ) -> Result<(StatusCode, Json<PreviewResponse>), (StatusCode, String)> {
     let (role_name, perms) = crate::role_extractor::get_role_and_permissions(&headers, &app_state);
 
-    if !perms.create_sessions {
+    if !perms.modify_sessions {
         return Err((
             StatusCode::FORBIDDEN,
             "Permission denied: cannot create previews".to_string(),
@@ -977,7 +977,7 @@ pub async fn stop_preview_handler(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let (role_name, perms) = crate::role_extractor::get_role_and_permissions(&headers, &app_state);
 
-    if !perms.create_sessions {
+    if !perms.modify_sessions {
         return Err((StatusCode::FORBIDDEN, "Permission denied: cannot stop previews".to_string()));
     }
 
