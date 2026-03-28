@@ -83,7 +83,7 @@ export interface TextOverlayState {
   height: number;
   color: [number, number, number, number];
   fontSize: number;
-  /** Named font from the server's curated set (e.g. "dejavu-sans"). */
+  /** Font asset path (e.g. "samples/fonts/system/DejaVuSans.ttf"). */
   fontName: string;
   opacity: number;
   rotationDegrees: number;

@@ -36,7 +36,7 @@ function makeTextOverlay(overrides: Partial<TextOverlayState> = {}): TextOverlay
     height: 40,
     color: [255, 255, 255, 255],
     fontSize: 32,
-    fontName: 'dejavu-sans',
+    fontName: 'samples/fonts/system/DejaVuSans.ttf',
     opacity: 1,
     rotationDegrees: 0,
     zIndex: 100,
@@ -166,13 +166,19 @@ describe('mergeOverlayState', () => {
 
     it('takes type-specific config fields from parsed', () => {
       const current = [makeTextOverlay({ text: 'Old', fontSize: 24, fontName: 'mono' })];
-      const parsed = [makeTextOverlay({ text: 'New', fontSize: 48, fontName: 'dejavu-sans' })];
+      const parsed = [
+        makeTextOverlay({
+          text: 'New',
+          fontSize: 48,
+          fontName: 'samples/fonts/system/DejaVuSans.ttf',
+        }),
+      ];
 
       const result = mergeOverlayState(current, parsed, textHasExtraChanges, true);
 
       expect(result[0].text).toBe('New');
       expect(result[0].fontSize).toBe(48);
-      expect(result[0].fontName).toBe('dejavu-sans');
+      expect(result[0].fontName).toBe('samples/fonts/system/DejaVuSans.ttf');
     });
 
     it('preserves runtime-only fields like measuredTextWidth/measuredTextHeight', () => {
@@ -398,9 +404,19 @@ describe('mergeOverlayState', () => {
     it('handles mix of changed and unchanged config fields', () => {
       const current = [makeTextOverlay({ text: 'Local', fontSize: 48, fontName: 'mono' })];
       // Only text changed in parsed, fontSize and fontName stayed the same
-      const parsed = [makeTextOverlay({ text: 'New', fontSize: 32, fontName: 'dejavu-sans' })];
+      const parsed = [
+        makeTextOverlay({
+          text: 'New',
+          fontSize: 32,
+          fontName: 'samples/fonts/system/DejaVuSans.ttf',
+        }),
+      ];
       const previousParsed = [
-        makeTextOverlay({ text: 'Old', fontSize: 32, fontName: 'dejavu-sans' }),
+        makeTextOverlay({
+          text: 'Old',
+          fontSize: 32,
+          fontName: 'samples/fonts/system/DejaVuSans.ttf',
+        }),
       ];
 
       const result = mergeOverlayState(current, parsed, textHasExtraChanges, true, previousParsed);

@@ -41,7 +41,7 @@ import { listFontAssets } from '@/services/fontAssets';
 import type { FontAsset } from '@/types/generated/api-types';
 
 import {
-  BUNDLED_FONT_OPTIONS,
+  DEFAULT_FONT_OPTIONS,
   ColorInput,
   ControlRow,
   ControlValue,
@@ -131,7 +131,7 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
           if (!cancelled) setFontAssets(assets);
         })
         .catch(() => {
-          // Silently fall back to bundled-only fonts on error.
+          // Silently fall back to default font options on error.
         });
       return () => {
         cancelled = true;
@@ -254,30 +254,36 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
                 disabled={disabled}
                 className="nodrag nopan"
               >
-                <optgroup label="Bundled">
-                  {BUNDLED_FONT_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </optgroup>
-                {systemFonts.length > 0 && (
+                {fontAssets.length === 0 ? (
+                  // Fallback when API hasn't loaded yet
                   <optgroup label="System">
-                    {systemFonts.map((font) => (
-                      <option key={font.path} value={font.path}>
-                        {font.name}
+                    {DEFAULT_FONT_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
                       </option>
                     ))}
                   </optgroup>
-                )}
-                {userFonts.length > 0 && (
-                  <optgroup label="User">
-                    {userFonts.map((font) => (
-                      <option key={font.path} value={font.path}>
-                        {font.name}
-                      </option>
-                    ))}
-                  </optgroup>
+                ) : (
+                  <>
+                    {systemFonts.length > 0 && (
+                      <optgroup label="System">
+                        {systemFonts.map((font) => (
+                          <option key={font.path} value={font.path}>
+                            {font.name}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+                    {userFonts.length > 0 && (
+                      <optgroup label="User">
+                        {userFonts.map((font) => (
+                          <option key={font.path} value={font.path}>
+                            {font.name}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+                  </>
                 )}
               </FontSelect>
             </OverlayEditRow>

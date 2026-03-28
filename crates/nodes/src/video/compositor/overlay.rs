@@ -178,29 +178,23 @@ fn prescale_rgba(src: &[u8], sw: u32, sh: u32, dw: u32, dh: u32) -> Vec<u8> {
     resized.into_raw()
 }
 
-// ── Bundled font data ────────────────────────────────────────────────────────
+// ── Font helpers ─────────────────────────────────────────────────────────────
 
 use crate::video::fonts;
 
 // ── Parsed-font cache ───────────────────────────────────────────────────────
 
-/// Cache key identifying a font source.
+/// Cache key identifying a font source by its asset path.
 ///
-/// Bundled fonts are keyed by their static name.  Asset fonts (managed via
-/// the `/api/v1/assets/fonts` REST API) are keyed by their filesystem path.
+/// All fonts (system and user) are loaded from disk as assets under
+/// `samples/fonts/`.
 #[derive(Clone, Hash, Eq, PartialEq)]
-enum FontKey {
-    /// A font from the compile-time bundled set (keyed by name).
-    Bundled(&'static str),
-    /// A font asset loaded from `samples/fonts/{system,user}/`.
-    Asset(String),
-}
+struct FontKey(String);
 
 /// Maximum number of distinct fonts kept in [`FONT_CACHE`].
 ///
-/// The 6 bundled DejaVu fonts plus a generous allowance for font assets
-/// via `samples/fonts/`.  When the limit is reached, the oldest
-/// non-bundled entry is evicted (see [`load_font`]).
+/// A generous allowance for system + user font assets via `samples/fonts/`.
+/// When the limit is reached, the oldest entry is evicted (see [`load_font`]).
 const FONT_CACHE_MAX_ENTRIES: usize = 64;
 
 /// Process-wide cache of parsed `fontdue::Font` objects.
@@ -217,6 +211,17 @@ const FONT_CACHE_MAX_ENTRIES: usize = 64;
 /// the parse itself.
 static FONT_CACHE: LazyLock<Mutex<HashMap<FontKey, Arc<fontdue::Font>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Remove a font from the process-wide cache by its asset path.
+///
+/// Called when a font asset is deleted via the REST API so that a
+/// subsequent re-upload with the same filename triggers a fresh parse
+/// instead of serving stale cached data.
+pub fn invalidate_font_cache_entry(path: &str) {
+    if let Ok(mut cache) = FONT_CACHE.lock() {
+        cache.remove(&FontKey(path.to_owned()));
+    }
+}
 
 /// Lazy loader for raw font bytes.  Constructed cheaply by
 /// [`resolve_font_source`] so that file I/O is deferred until after a
@@ -242,36 +247,25 @@ fn validate_font_asset_path(path: &str) -> Result<(), String> {
 /// lazy byte loader.
 ///
 /// Resolution order:
-/// 1. If `font_name` matches a bundled font name → use compiled-in data.
-/// 2. If `font_name` starts with `samples/fonts/` → load from filesystem as a
-///    font asset.
-/// 3. Unknown name → warn and fall back to the bundled default (DejaVu Sans).
-/// 4. `font_name` absent → bundled default (DejaVu Sans).
+/// 1. If `font_name` is a valid font asset path (`samples/fonts/...`) → load
+///    from filesystem.
+/// 2. Unknown or invalid name → warn and fall back to the default system font
+///    (DejaVu Sans at `samples/fonts/system/DejaVuSans.ttf`).
+/// 3. `font_name` absent → default system font.
 ///
 /// Returning a boxed closure lets the caller skip file I/O entirely on a cache
 /// hit.
 fn resolve_font_source(config: &TextOverlayConfig) -> (FontKey, FontBytesLoader<'_>) {
     if let Some(ref name) = config.font_name {
-        // 1. Check bundled fonts first.
-        if let Some(data) = fonts::bundled_font_by_name(name) {
-            let bundled = fonts::BUNDLED_FONTS
-                .iter()
-                .find(|f| f.name == name.as_str())
-                .map_or("dejavu-sans", |f| f.name);
-            let key = FontKey::Bundled(bundled);
-            let loader = move || Ok(data.to_vec());
-            return (key, Box::new(loader));
-        }
-
-        // 2. Check if it's a font asset path (samples/fonts/...).
+        // Check if it's a font asset path (samples/fonts/...).
         if name.starts_with("samples/fonts/") {
             if let Err(e) = validate_font_asset_path(name) {
-                tracing::warn!("{e}, falling back to default (dejavu-sans)");
-                let key = FontKey::Bundled("dejavu-sans");
-                let loader = || Ok(fonts::DEFAULT_FONT_DATA.to_vec());
+                tracing::warn!("{e}, falling back to default system font");
+                let key = FontKey(fonts::DEFAULT_FONT_PATH.to_owned());
+                let loader = || fonts::load_default_font();
                 return (key, Box::new(loader));
             }
-            let key = FontKey::Asset(name.clone());
+            let key = FontKey(name.clone());
             let path = name.clone();
             let loader = move || {
                 std::fs::read(&path).map_err(|e| format!("Failed to read font asset '{path}': {e}"))
@@ -279,27 +273,25 @@ fn resolve_font_source(config: &TextOverlayConfig) -> (FontKey, FontBytesLoader<
             return (key, Box::new(loader));
         }
 
-        // 3. Unknown font name — fall back to default with a warning.
+        // Unknown font name — fall back to default with a warning.
         tracing::warn!(
-            "Unknown font name '{name}', falling back to default (dejavu-sans). \
-             Available bundled: {}",
-            fonts::bundled_font_names()
+            "Unknown font name '{name}', falling back to default system font (DejaVu Sans). \
+             Use a font asset path like 'samples/fonts/system/Inter.ttf'."
         );
-        let key = FontKey::Bundled("dejavu-sans");
-        let loader = || Ok(fonts::DEFAULT_FONT_DATA.to_vec());
+        let key = FontKey(fonts::DEFAULT_FONT_PATH.to_owned());
+        let loader = || fonts::load_default_font();
         return (key, Box::new(loader));
     }
 
-    // 4. Default: embedded DejaVu Sans.
-    let key = FontKey::Bundled("dejavu-sans");
-    let loader = || Ok(fonts::DEFAULT_FONT_DATA.to_vec());
+    // Default: DejaVu Sans system font asset.
+    let key = FontKey(fonts::DEFAULT_FONT_PATH.to_owned());
+    let loader = || fonts::load_default_font();
     (key, Box::new(loader))
 }
 
-/// Load font data, trying (in order):
-/// 1. `font_name` matching a bundled font name
-/// 2. `font_name` as a font asset path (`samples/fonts/...`)
-/// 3. Bundled default (DejaVu Sans, embedded at compile time)
+/// Load font data from disk:
+/// 1. `font_name` as a font asset path (`samples/fonts/...`)
+/// 2. Default system font (DejaVu Sans at `samples/fonts/system/DejaVuSans.ttf`)
 ///
 /// Parsed fonts are cached in [`FONT_CACHE`] keyed by the resolved source
 /// identity, so repeated calls for the same font are an `Arc::clone` rather
@@ -324,13 +316,9 @@ fn load_font(config: &TextOverlayConfig) -> Result<Arc<fontdue::Font>, String> {
     // Insert.  If the mutex is poisoned we simply skip caching — the caller
     // still gets a valid font, just without the memoisation benefit.
     if let Ok(mut cache) = FONT_CACHE.lock() {
-        // Evict a non-bundled entry if we've hit the capacity limit.
-        // Bundled fonts are never evicted since they are always available
-        // and essentially free (static data, no I/O).
+        // Evict an arbitrary entry if we've hit the capacity limit.
         if cache.len() >= FONT_CACHE_MAX_ENTRIES && !cache.contains_key(&key) {
-            if let Some(evict_key) =
-                cache.keys().find(|k| !matches!(k, FontKey::Bundled(_))).cloned()
-            {
+            if let Some(evict_key) = cache.keys().next().cloned() {
                 cache.remove(&evict_key);
             }
         }

@@ -1211,6 +1211,9 @@ async fn process_font_upload(
 
     if !is_valid_font {
         let _ = fs::remove_file(&file_path).await;
+        // Also remove the license sidecar created by write_font_upload_to_disk.
+        let license_path = file_path.with_extension(format!("{extension}.license"));
+        let _ = fs::remove_file(&license_path).await;
         return Err(AssetsError::InvalidFormat(
             "Uploaded file is not a valid TTF/OTF font (invalid magic bytes)".to_string(),
         ));
@@ -1315,6 +1318,10 @@ pub async fn delete_font_asset_handler(
             warn!("Failed to delete font license file: {}", e);
         }
     }
+
+    // Invalidate the font cache entry so re-uploads with the same name get a fresh parse.
+    let asset_path = format!("samples/fonts/user/{id}");
+    streamkit_nodes::video::compositor::overlay::invalidate_font_cache_entry(&asset_path);
 
     info!("Deleted font asset: {}", id);
     StatusCode::NO_CONTENT.into_response()

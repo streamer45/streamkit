@@ -2,61 +2,32 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-//! Compile-time embedded font data for the bundled font set.
+//! Default font paths for the compositor and colorbars nodes.
 //!
-//! All fonts in [`BUNDLED_FONTS`] are included in the binary via
-//! `include_bytes!` so they work without any system font packages
-//! installed.  The DejaVu family is distributed under the permissive
-//! Bitstream Vera / DejaVu license (see `assets/fonts/LICENSE-DejaVu.txt`).
+//! Fonts are loaded from disk at runtime as system font assets rather than
+//! being embedded in the binary via `include_bytes!`.  The default fonts
+//! (DejaVu family) ship as system assets in `samples/fonts/system/`.
 
-/// A font embedded in the binary at compile time.
-pub struct BundledFont {
-    /// User-facing name used in `font_name` config fields.
-    pub name: &'static str,
-    /// Raw TTF bytes baked into the binary.
-    pub data: &'static [u8],
-}
-
-// ── Raw font data constants (single `include_bytes!` per file) ──────────────
-
-static DEJAVU_SANS: &[u8] = include_bytes!("../../../../assets/fonts/DejaVuSans.ttf");
-static DEJAVU_SANS_BOLD: &[u8] = include_bytes!("../../../../assets/fonts/DejaVuSans-Bold.ttf");
-static DEJAVU_SANS_MONO: &[u8] = include_bytes!("../../../../assets/fonts/DejaVuSansMono.ttf");
-static DEJAVU_SANS_MONO_BOLD: &[u8] =
-    include_bytes!("../../../../assets/fonts/DejaVuSansMono-Bold.ttf");
-static DEJAVU_SERIF: &[u8] = include_bytes!("../../../../assets/fonts/DejaVuSerif.ttf");
-static DEJAVU_SERIF_BOLD: &[u8] = include_bytes!("../../../../assets/fonts/DejaVuSerif-Bold.ttf");
-
-/// Bundled font set — always available, no filesystem dependency.
-///
-/// Order matters: the first entry is the default proportional font and
-/// the third entry is the default monospace font (see [`DEFAULT_FONT_DATA`]
-/// and [`DEFAULT_MONO_FONT_DATA`]).
-pub static BUNDLED_FONTS: &[BundledFont] = &[
-    BundledFont { name: "dejavu-sans", data: DEJAVU_SANS },
-    BundledFont { name: "dejavu-sans-bold", data: DEJAVU_SANS_BOLD },
-    BundledFont { name: "dejavu-sans-mono", data: DEJAVU_SANS_MONO },
-    BundledFont { name: "dejavu-sans-mono-bold", data: DEJAVU_SANS_MONO_BOLD },
-    BundledFont { name: "dejavu-serif", data: DEJAVU_SERIF },
-    BundledFont { name: "dejavu-serif-bold", data: DEJAVU_SERIF_BOLD },
-];
-
-/// Default proportional font bytes (DejaVu Sans) — used when no font is
+/// Default proportional font asset path (DejaVu Sans) — used when no font is
 /// specified in compositor text overlays.
-pub static DEFAULT_FONT_DATA: &[u8] = DEJAVU_SANS;
+pub const DEFAULT_FONT_PATH: &str = "samples/fonts/system/DejaVuSans.ttf";
 
-/// Default monospace font bytes (DejaVu Sans Mono) — used by the colorbars
-/// `draw_time` overlay.
-pub static DEFAULT_MONO_FONT_DATA: &[u8] = DEJAVU_SANS_MONO;
+/// Default monospace font asset path (DejaVu Sans Mono) — used by the
+/// colorbars `draw_time` overlay.
+pub const DEFAULT_MONO_FONT_PATH: &str = "samples/fonts/system/DejaVuSansMono.ttf";
 
-/// Look up a bundled font by its user-facing name.
+/// Load the default proportional font bytes from disk.
 ///
-/// Returns `None` if the name is not in the bundled set.
-pub fn bundled_font_by_name(name: &str) -> Option<&'static [u8]> {
-    BUNDLED_FONTS.iter().find(|f| f.name == name).map(|f| f.data)
+/// Returns an error if the file cannot be read.
+pub fn load_default_font() -> Result<Vec<u8>, String> {
+    std::fs::read(DEFAULT_FONT_PATH)
+        .map_err(|e| format!("Failed to read default font '{DEFAULT_FONT_PATH}': {e}"))
 }
 
-/// Comma-separated list of bundled font names (for error messages).
-pub fn bundled_font_names() -> String {
-    BUNDLED_FONTS.iter().map(|f| f.name).collect::<Vec<_>>().join(", ")
+/// Load the default monospace font bytes from disk.
+///
+/// Returns an error if the file cannot be read.
+pub fn load_default_mono_font() -> Result<Vec<u8>, String> {
+    std::fs::read(DEFAULT_MONO_FONT_PATH)
+        .map_err(|e| format!("Failed to read default mono font '{DEFAULT_MONO_FONT_PATH}': {e}"))
 }

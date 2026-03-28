@@ -132,17 +132,14 @@ pub struct TextOverlayConfig {
     /// Font size in pixels.
     #[serde(default = "default_font_size")]
     pub font_size: u32,
-    /// Font identifier: either a bundled font name (e.g. `"dejavu-sans"`)
-    /// or a font asset path (e.g. `"samples/fonts/system/Inter.ttf"`).
-    ///
-    /// Bundled names: "dejavu-sans", "dejavu-sans-bold",
-    /// "dejavu-sans-mono", "dejavu-sans-mono-bold",
-    /// "dejavu-serif", "dejavu-serif-bold".
+    /// Font identifier: a font asset path under `samples/fonts/`, e.g.
+    /// `"samples/fonts/system/DejaVuSans.ttf"` or
+    /// `"samples/fonts/system/Inter.ttf"`.
     ///
     /// Font assets are TTF/OTF files managed via the `/api/v1/assets/fonts`
     /// REST API and stored under `samples/fonts/{system,user}/`.
     ///
-    /// When omitted, the bundled default font (DejaVu Sans) is used.
+    /// When omitted, the default system font (DejaVu Sans) is used.
     #[serde(default)]
     pub font_name: Option<String>,
 }

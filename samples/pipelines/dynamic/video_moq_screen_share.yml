@@ -75,7 +75,7 @@ nodes:
             - 255
             - 200
           font_size: 60
-          font_name: dejavu-sans-bold
+          font_name: samples/fonts/system/DejaVuSans-Bold.ttf
           opacity: 1
           rotation_degrees: 0
           z_index: 1

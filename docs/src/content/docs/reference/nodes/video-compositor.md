@@ -72,7 +72,7 @@ Composites multiple raw video inputs (RGBA8) onto a single canvas with image and
 | Name | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `color` | `array<integer (uint8)>` | no | `[255,255,255,255]` | RGBA colour, e.g. `[255, 255, 255, 255]`. |
-| `font_name` | `null | string` | no | `null` | Font identifier: either a bundled font name or a font asset path.<br />Bundled names: "dejavu-sans", "dejavu-sans-bold",<br />"dejavu-sans-mono", "dejavu-sans-mono-bold",<br />"dejavu-serif", "dejavu-serif-bold".<br />Font asset paths (e.g. `"samples/fonts/system/Inter.ttf"`) are<br />managed via the `/api/v1/assets/fonts` REST API.<br />When omitted, the bundled default font (DejaVu Sans) is used. |
+| `font_name` | `null | string` | no | `null` | Font asset path, e.g. `"samples/fonts/system/DejaVuSans.ttf"` or `"samples/fonts/system/Inter.ttf"`.<br />Font assets are TTF/OTF files managed via the `/api/v1/assets/fonts` REST API<br />and stored under `samples/fonts/{system,user}/`.<br />When omitted, the default system font (DejaVu Sans) is used. |
 | `font_size` | `integer (uint32)` | no | `24` | Font size in pixels.<br />min: `0` |
 | `id` | `string` | no | *(auto-generated UUID v4)* | Stable unique identifier.  Auto-generated (UUID v4) when omitted. |
 | `mirror_horizontal` | `boolean` | no | `false` | Mirror the layer horizontally (flip left ↔ right).  Default `false`. |
@@ -372,7 +372,7 @@ Composites multiple raw video inputs (RGBA8) onto a single canvas with image and
           "default": 24
         },
         "font_name": {
-          "description": "Font identifier: either a bundled font name (e.g. \"dejavu-sans\") or a font asset path (e.g. \"samples/fonts/system/Inter.ttf\").\nBundled names: \"dejavu-sans\", \"dejavu-sans-bold\",\n\"dejavu-sans-mono\", \"dejavu-sans-mono-bold\",\n\"dejavu-serif\", \"dejavu-serif-bold\".\nFont asset paths are managed via the /api/v1/assets/fonts REST API.\nWhen omitted, the bundled default font (DejaVu Sans) is used.",
+          "description": "Font asset path, e.g. \"samples/fonts/system/DejaVuSans.ttf\" or \"samples/fonts/system/Inter.ttf\".\nFont assets are TTF/OTF files managed via the /api/v1/assets/fonts REST API\nand stored under samples/fonts/{system,user}/.\nWhen omitted, the default system font (DejaVu Sans) is used.",
           "type": [
             "string",
             "null"

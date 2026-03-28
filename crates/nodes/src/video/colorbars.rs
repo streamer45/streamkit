@@ -160,9 +160,14 @@ impl ProcessorNode for ColorBarsNode {
         // Pre-load the monospace font for draw_time (once, if enabled).
         let draw_time_font = if self.config.draw_time {
             // If the user specified a custom font path, try that first;
-            // otherwise use the compile-time embedded DejaVu Sans Mono.
+            // otherwise use the default system monospace font (DejaVu Sans Mono).
             let font_bytes = self.config.draw_time_font_path.as_ref().map_or_else(
-                || crate::video::fonts::DEFAULT_MONO_FONT_DATA.to_vec(),
+                || {
+                    crate::video::fonts::load_default_mono_font().unwrap_or_else(|e| {
+                        tracing::warn!("draw_time: {e}, text overlay will be unavailable");
+                        Vec::new()
+                    })
+                },
                 |path| match std::fs::read(path) {
                     Ok(bytes) => {
                         tracing::info!("draw_time: loaded custom font from {path}");
@@ -171,9 +176,12 @@ impl ProcessorNode for ColorBarsNode {
                     Err(e) => {
                         tracing::warn!(
                             "draw_time: failed to read custom font '{path}': {e}, \
-                             falling back to bundled DejaVu Sans Mono"
+                             falling back to default system monospace font"
                         );
-                        crate::video::fonts::DEFAULT_MONO_FONT_DATA.to_vec()
+                        crate::video::fonts::load_default_mono_font().unwrap_or_else(|e2| {
+                            tracing::warn!("draw_time: {e2}, text overlay will be unavailable");
+                            Vec::new()
+                        })
                     },
                 },
             );

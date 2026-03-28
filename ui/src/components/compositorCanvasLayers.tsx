@@ -34,16 +34,16 @@ export function layerHue(index: number): number {
 // ── Font mapping ────────────────────────────────────────────────────────────
 
 export const FONT_FAMILY_MAP: Record<string, string> = {
-  'dejavu-sans': '"DejaVu Sans", "Verdana", sans-serif',
-  'dejavu-serif': '"DejaVu Serif", "Georgia", serif',
-  'dejavu-sans-mono': '"DejaVu Sans Mono", "Courier New", monospace',
-  'dejavu-sans-bold': '"DejaVu Sans", "Verdana", sans-serif',
-  'dejavu-serif-bold': '"DejaVu Serif", "Georgia", serif',
-  'dejavu-sans-mono-bold': '"DejaVu Sans Mono", "Courier New", monospace',
+  'samples/fonts/system/DejaVuSans.ttf': '"DejaVu Sans", "Verdana", sans-serif',
+  'samples/fonts/system/DejaVuSerif.ttf': '"DejaVu Serif", "Georgia", serif',
+  'samples/fonts/system/DejaVuSansMono.ttf': '"DejaVu Sans Mono", "Courier New", monospace',
+  'samples/fonts/system/DejaVuSans-Bold.ttf': '"DejaVu Sans", "Verdana", sans-serif',
+  'samples/fonts/system/DejaVuSerif-Bold.ttf': '"DejaVu Serif", "Georgia", serif',
+  'samples/fonts/system/DejaVuSansMono-Bold.ttf': '"DejaVu Sans Mono", "Courier New", monospace',
 };
 
 export function isBoldFont(fontName: string): boolean {
-  return fontName.endsWith('-bold');
+  return fontName.includes('-Bold') || fontName.includes('Bold');
 }
 
 export function cssFontFamily(fontName: string): string {

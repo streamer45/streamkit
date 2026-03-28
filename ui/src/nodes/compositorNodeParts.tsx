@@ -337,14 +337,14 @@ export function hexToRgba(hex: string, alpha: number): [number, number, number, 
   return [r, g, b, alpha];
 }
 
-/** Bundled fonts that are always available (compiled into the server binary). */
-export const BUNDLED_FONT_OPTIONS = [
-  { value: 'dejavu-sans', label: 'DejaVu Sans' },
-  { value: 'dejavu-serif', label: 'DejaVu Serif' },
-  { value: 'dejavu-sans-mono', label: 'DejaVu Mono' },
-  { value: 'dejavu-sans-bold', label: 'DejaVu Sans Bold' },
-  { value: 'dejavu-serif-bold', label: 'DejaVu Serif Bold' },
-  { value: 'dejavu-sans-mono-bold', label: 'DejaVu Mono Bold' },
+/** Default DejaVu fonts that ship as system font assets on disk. */
+export const DEFAULT_FONT_OPTIONS = [
+  { value: 'samples/fonts/system/DejaVuSans.ttf', label: 'DejaVu Sans' },
+  { value: 'samples/fonts/system/DejaVuSerif.ttf', label: 'DejaVu Serif' },
+  { value: 'samples/fonts/system/DejaVuSansMono.ttf', label: 'DejaVu Mono' },
+  { value: 'samples/fonts/system/DejaVuSans-Bold.ttf', label: 'DejaVu Sans Bold' },
+  { value: 'samples/fonts/system/DejaVuSerif-Bold.ttf', label: 'DejaVu Serif Bold' },
+  { value: 'samples/fonts/system/DejaVuSansMono-Bold.ttf', label: 'DejaVu Mono Bold' },
 ] as const;
 
 export const FontSelect = styled.select`

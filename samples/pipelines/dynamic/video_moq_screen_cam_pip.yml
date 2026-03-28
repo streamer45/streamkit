@@ -92,7 +92,7 @@ nodes:
           rect: { x: 30, y: 30, width: 400, height: 50 }
           color: [255, 255, 255, 180]
           font_size: 40
-          font_name: dejavu-sans-bold
+          font_name: samples/fonts/system/DejaVuSans-Bold.ttf
           z_index: 2
     needs:
       - vp9_decoder_screen
