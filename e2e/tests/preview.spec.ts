@@ -14,13 +14,13 @@
  * interaction is required.
  */
 
-import { test, expect, request } from "@playwright/test";
-import * as fs from "fs";
-import * as path from "path";
+import { test, expect, request } from '@playwright/test';
+import * as fs from 'fs';
+import * as path from 'path';
 
-import { getAuthHeaders } from "./auth-helpers";
+import { getAuthHeaders } from './auth-helpers';
 
-const FIXTURES_DIR = path.resolve(import.meta.dirname, "../fixtures");
+const FIXTURES_DIR = path.resolve(import.meta.dirname, '../fixtures');
 
 interface NodeInfo {
   kind?: string;
@@ -72,17 +72,14 @@ async function pollPipeline(
   sessionId: string,
   predicate: (pipeline: PipelineResponse) => boolean,
   timeoutMs: number = 30_000,
-  intervalMs: number = 1_000,
+  intervalMs: number = 1_000
 ): Promise<PipelineResponse> {
   const deadline = Date.now() + timeoutMs;
   const headers = getAuthHeaders();
 
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(
-        `${apiUrl}/api/v1/sessions/${sessionId}/pipeline`,
-        { headers },
-      );
+      const response = await fetch(`${apiUrl}/api/v1/sessions/${sessionId}/pipeline`, { headers });
       if (response.ok) {
         const pipeline = (await response.json()) as PipelineResponse;
         if (predicate(pipeline)) {
@@ -102,14 +99,14 @@ async function pollPipeline(
 function allNodesRunning(pipeline: PipelineResponse): boolean {
   const nodes = Object.values(pipeline.nodes);
   if (nodes.length === 0) return false;
-  return nodes.every((n) => n.state === "Running");
+  return nodes.every((n) => n.state === 'Running');
 }
 
 // ---------------------------------------------------------------------------
 // Test: Preview API with a video-only pipeline
 // ---------------------------------------------------------------------------
 
-test.describe("Preview API — Video-Only Pipeline", () => {
+test.describe('Preview API — Video-Only Pipeline', () => {
   let sessionId: string | null = null;
 
   // A minimal video pipeline: colorbars → pixel_convert → vp9_encoder → sink.
@@ -140,9 +137,7 @@ nodes:
     needs: vp9_encoder
 `;
 
-  test("creates preview, verifies injected nodes, lists it, then stops it", async ({
-    baseURL,
-  }) => {
+  test('creates preview, verifies injected nodes, lists it, then stops it', async ({ baseURL }) => {
     test.setTimeout(90_000);
 
     const apiContext = await request.newContext({
@@ -153,14 +148,11 @@ nodes:
     try {
       // ── 1. Create session ────────────────────────────────────────────────
       const sessionName = `preview-video-test-${Date.now()}`;
-      const createResponse = await apiContext.post("/api/v1/sessions", {
+      const createResponse = await apiContext.post('/api/v1/sessions', {
         data: { name: sessionName, yaml: videoOnlyPipelineYaml },
       });
       const createText = await createResponse.text();
-      expect(
-        createResponse.ok(),
-        `Failed to create session: ${createText}`,
-      ).toBeTruthy();
+      expect(createResponse.ok(), `Failed to create session: ${createText}`).toBeTruthy();
 
       const createData = JSON.parse(createText) as { session_id: string };
       sessionId = createData.session_id;
@@ -169,20 +161,19 @@ nodes:
       await pollPipeline(baseURL!, sessionId!, allNodesRunning, 30_000);
 
       // ── 2. Start preview (auto-detect tap point) ─────────────────────────
-      const previewResponse = await apiContext.post(
-        `/api/v1/sessions/${sessionId}/preview`,
-        { data: {} },
-      );
+      const previewResponse = await apiContext.post(`/api/v1/sessions/${sessionId}/preview`, {
+        data: {},
+      });
       const previewText = await previewResponse.text();
       expect(
         previewResponse.status(),
-        `Expected 201 Created, got ${previewResponse.status()}: ${previewText}`,
+        `Expected 201 Created, got ${previewResponse.status()}: ${previewText}`
       ).toBe(201);
 
       const preview = JSON.parse(previewText) as PreviewResponse;
       expect(preview.preview_id).toBeTruthy();
-      expect(preview.gateway_path).toContain("/_preview/");
-      expect(preview.broadcast).toBe("output");
+      expect(preview.gateway_path).toContain('/_preview/');
+      expect(preview.broadcast).toBe('output');
       // Video-only pipeline should detect video
       expect(preview.video).toBe(true);
 
@@ -195,33 +186,31 @@ nodes:
           const previewPeerId = `_preview_${preview.preview_id}_peer`;
           return previewPeerId in p.nodes;
         },
-        15_000,
+        15_000
       );
 
       const previewPeerId = `_preview_${preview.preview_id}_peer`;
       expect(pipeline.nodes[previewPeerId]).toBeDefined();
-      expect(pipeline.nodes[previewPeerId].kind).toBe("transport::moq::peer");
+      expect(pipeline.nodes[previewPeerId].kind).toBe('transport::moq::peer');
 
       // Verify there's a BestEffort connection into the preview subgraph
       const previewConnections = pipeline.connections.filter(
         (c) =>
           c.to_node.startsWith(`_preview_${preview.preview_id}_`) ||
-          c.from_node.startsWith(`_preview_${preview.preview_id}_`),
+          c.from_node.startsWith(`_preview_${preview.preview_id}_`)
       );
       expect(previewConnections.length).toBeGreaterThan(0);
 
       // The tap connection (from the existing pipeline into the preview)
       // should use BestEffort mode
       const tapConnection = previewConnections.find(
-        (c) => !c.from_node.startsWith(`_preview_${preview.preview_id}_`),
+        (c) => !c.from_node.startsWith(`_preview_${preview.preview_id}_`)
       );
       expect(tapConnection).toBeDefined();
-      expect(tapConnection!.mode).toBe("BestEffort");
+      expect(tapConnection!.mode).toBe('BestEffort');
 
       // ── 4. List previews ─────────────────────────────────────────────────
-      const listResponse = await apiContext.get(
-        `/api/v1/sessions/${sessionId}/preview`,
-      );
+      const listResponse = await apiContext.get(`/api/v1/sessions/${sessionId}/preview`);
       expect(listResponse.ok()).toBeTruthy();
       const previews = (await listResponse.json()) as PreviewInfo[];
       expect(previews.length).toBe(1);
@@ -229,7 +218,7 @@ nodes:
 
       // ── 5. Stop preview ──────────────────────────────────────────────────
       const stopResponse = await apiContext.delete(
-        `/api/v1/sessions/${sessionId}/preview/${preview.preview_id}`,
+        `/api/v1/sessions/${sessionId}/preview/${preview.preview_id}`
       );
       expect(stopResponse.ok()).toBeTruthy();
 
@@ -238,14 +227,12 @@ nodes:
         baseURL!,
         sessionId!,
         (p) => !(previewPeerId in p.nodes),
-        15_000,
+        15_000
       );
       expect(cleanedPipeline.nodes[previewPeerId]).toBeUndefined();
 
       // ── 6. Verify no previews remain ─────────────────────────────────────
-      const listAfterStop = await apiContext.get(
-        `/api/v1/sessions/${sessionId}/preview`,
-      );
+      const listAfterStop = await apiContext.get(`/api/v1/sessions/${sessionId}/preview`);
       const previewsAfterStop = (await listAfterStop.json()) as PreviewInfo[];
       expect(previewsAfterStop.length).toBe(0);
     } finally {
@@ -274,10 +261,10 @@ nodes:
 // Test: Preview API with audio + video pipeline (MoQ peer pipeline)
 // ---------------------------------------------------------------------------
 
-test.describe("Preview API — Audio + Video Pipeline", () => {
+test.describe('Preview API — Audio + Video Pipeline', () => {
   let sessionId: string | null = null;
 
-  test("auto-detects both audio and video tap points in a full MoQ pipeline", async ({
+  test('auto-detects both audio and video tap points in a full MoQ pipeline', async ({
     baseURL,
   }) => {
     test.setTimeout(120_000);
@@ -285,8 +272,8 @@ test.describe("Preview API — Audio + Video Pipeline", () => {
     // Use the compositor-colorbars fixture — it has video but no audio
     // encoding chain. We'll create a pipeline with both.
     const fullPipelineYaml = fs.readFileSync(
-      path.join(FIXTURES_DIR, "compositor-colorbars.yaml"),
-      "utf8",
+      path.join(FIXTURES_DIR, 'compositor-colorbars.yaml'),
+      'utf8'
     );
 
     const apiContext = await request.newContext({
@@ -297,14 +284,11 @@ test.describe("Preview API — Audio + Video Pipeline", () => {
     try {
       // ── 1. Create session ────────────────────────────────────────────────
       const sessionName = `preview-av-test-${Date.now()}`;
-      const createResponse = await apiContext.post("/api/v1/sessions", {
+      const createResponse = await apiContext.post('/api/v1/sessions', {
         data: { name: sessionName, yaml: fullPipelineYaml },
       });
       const createText = await createResponse.text();
-      expect(
-        createResponse.ok(),
-        `Failed to create session: ${createText}`,
-      ).toBeTruthy();
+      expect(createResponse.ok(), `Failed to create session: ${createText}`).toBeTruthy();
 
       const createData = JSON.parse(createText) as { session_id: string };
       sessionId = createData.session_id;
@@ -313,14 +297,13 @@ test.describe("Preview API — Audio + Video Pipeline", () => {
       await pollPipeline(baseURL!, sessionId!, allNodesRunning, 60_000);
 
       // ── 2. Start preview ─────────────────────────────────────────────────
-      const previewResponse = await apiContext.post(
-        `/api/v1/sessions/${sessionId}/preview`,
-        { data: {} },
-      );
+      const previewResponse = await apiContext.post(`/api/v1/sessions/${sessionId}/preview`, {
+        data: {},
+      });
       const previewText = await previewResponse.text();
       expect(
         previewResponse.status(),
-        `Expected 201 Created, got ${previewResponse.status()}: ${previewText}`,
+        `Expected 201 Created, got ${previewResponse.status()}: ${previewText}`
       ).toBe(201);
 
       const preview = JSON.parse(previewText) as PreviewResponse;
@@ -330,25 +313,15 @@ test.describe("Preview API — Audio + Video Pipeline", () => {
 
       // ── 3. Verify preview nodes appear ───────────────────────────────────
       const previewPeerId = `_preview_${preview.preview_id}_peer`;
-      await pollPipeline(
-        baseURL!,
-        sessionId!,
-        (p) => previewPeerId in p.nodes,
-        15_000,
-      );
+      await pollPipeline(baseURL!, sessionId!, (p) => previewPeerId in p.nodes, 15_000);
 
       // ── 4. Stop preview and verify cleanup ───────────────────────────────
       const stopResponse = await apiContext.delete(
-        `/api/v1/sessions/${sessionId}/preview/${preview.preview_id}`,
+        `/api/v1/sessions/${sessionId}/preview/${preview.preview_id}`
       );
       expect(stopResponse.ok()).toBeTruthy();
 
-      await pollPipeline(
-        baseURL!,
-        sessionId!,
-        (p) => !(previewPeerId in p.nodes),
-        15_000,
-      );
+      await pollPipeline(baseURL!, sessionId!, (p) => !(previewPeerId in p.nodes), 15_000);
     } finally {
       await apiContext.dispose();
     }
@@ -375,7 +348,7 @@ test.describe("Preview API — Audio + Video Pipeline", () => {
 // Test: Preview API error cases
 // ---------------------------------------------------------------------------
 
-test.describe("Preview API — Error Cases", () => {
+test.describe('Preview API — Error Cases', () => {
   let sessionId: string | null = null;
 
   const minimalPipelineYaml = `mode: dynamic
@@ -391,24 +364,23 @@ nodes:
     needs: colorbars
 `;
 
-  test("returns 404 for non-existent session", async ({ baseURL }) => {
+  test('returns 404 for non-existent session', async ({ baseURL }) => {
     const apiContext = await request.newContext({
       baseURL: baseURL!,
       extraHTTPHeaders: getAuthHeaders(),
     });
 
     try {
-      const response = await apiContext.post(
-        "/api/v1/sessions/nonexistent-session-id/preview",
-        { data: {} },
-      );
+      const response = await apiContext.post('/api/v1/sessions/nonexistent-session-id/preview', {
+        data: {},
+      });
       expect(response.status()).toBe(404);
     } finally {
       await apiContext.dispose();
     }
   });
 
-  test("returns 400 for non-existent tap node", async ({ baseURL }) => {
+  test('returns 400 for non-existent tap node', async ({ baseURL }) => {
     const apiContext = await request.newContext({
       baseURL: baseURL!,
       extraHTTPHeaders: getAuthHeaders(),
@@ -416,7 +388,7 @@ nodes:
 
     try {
       const sessionName = `preview-error-test-${Date.now()}`;
-      const createResponse = await apiContext.post("/api/v1/sessions", {
+      const createResponse = await apiContext.post('/api/v1/sessions', {
         data: { name: sessionName, yaml: minimalPipelineYaml },
       });
       expect(createResponse.ok()).toBeTruthy();
@@ -427,17 +399,16 @@ nodes:
 
       await pollPipeline(baseURL!, sessionId!, allNodesRunning, 30_000);
 
-      const response = await apiContext.post(
-        `/api/v1/sessions/${sessionId}/preview`,
-        { data: { tap_node: "nonexistent_node", tap_pin: "out" } },
-      );
+      const response = await apiContext.post(`/api/v1/sessions/${sessionId}/preview`, {
+        data: { tap_node: 'nonexistent_node', tap_pin: 'out' },
+      });
       expect(response.status()).toBe(400);
     } finally {
       await apiContext.dispose();
     }
   });
 
-  test("returns 409 when preview limit is exceeded", async ({ baseURL }) => {
+  test('returns 409 when preview limit is exceeded', async ({ baseURL }) => {
     test.setTimeout(90_000);
 
     const apiContext = await request.newContext({
@@ -447,7 +418,7 @@ nodes:
 
     try {
       const sessionName = `preview-limit-test-${Date.now()}`;
-      const createResponse = await apiContext.post("/api/v1/sessions", {
+      const createResponse = await apiContext.post('/api/v1/sessions', {
         data: { name: sessionName, yaml: minimalPipelineYaml },
       });
       expect(createResponse.ok()).toBeTruthy();
@@ -459,33 +430,22 @@ nodes:
       await pollPipeline(baseURL!, sessionId!, allNodesRunning, 30_000);
 
       // Create first preview — should succeed
-      const preview1 = await apiContext.post(
-        `/api/v1/sessions/${sessionId}/preview`,
-        { data: {} },
-      );
+      const preview1 = await apiContext.post(`/api/v1/sessions/${sessionId}/preview`, { data: {} });
       expect(preview1.status()).toBe(201);
 
       // Create second preview — should succeed
-      const preview2 = await apiContext.post(
-        `/api/v1/sessions/${sessionId}/preview`,
-        { data: {} },
-      );
+      const preview2 = await apiContext.post(`/api/v1/sessions/${sessionId}/preview`, { data: {} });
       expect(preview2.status()).toBe(201);
 
       // Create third preview — should fail with 409
-      const preview3 = await apiContext.post(
-        `/api/v1/sessions/${sessionId}/preview`,
-        { data: {} },
-      );
+      const preview3 = await apiContext.post(`/api/v1/sessions/${sessionId}/preview`, { data: {} });
       expect(preview3.status()).toBe(409);
     } finally {
       await apiContext.dispose();
     }
   });
 
-  test("returns 404 when stopping non-existent preview", async ({
-    baseURL,
-  }) => {
+  test('returns 404 when stopping non-existent preview', async ({ baseURL }) => {
     const apiContext = await request.newContext({
       baseURL: baseURL!,
       extraHTTPHeaders: getAuthHeaders(),
@@ -493,7 +453,7 @@ nodes:
 
     try {
       const sessionName = `preview-stop-404-test-${Date.now()}`;
-      const createResponse = await apiContext.post("/api/v1/sessions", {
+      const createResponse = await apiContext.post('/api/v1/sessions', {
         data: { name: sessionName, yaml: minimalPipelineYaml },
       });
       expect(createResponse.ok()).toBeTruthy();
@@ -503,7 +463,7 @@ nodes:
       sessionId = createData.session_id;
 
       const response = await apiContext.delete(
-        `/api/v1/sessions/${sessionId}/preview/nonexistent-preview-id`,
+        `/api/v1/sessions/${sessionId}/preview/nonexistent-preview-id`
       );
       expect(response.status()).toBe(404);
     } finally {
@@ -511,7 +471,7 @@ nodes:
     }
   });
 
-  test("session destroy cleans up active previews", async ({ baseURL }) => {
+  test('session destroy cleans up active previews', async ({ baseURL }) => {
     test.setTimeout(60_000);
 
     const apiContext = await request.newContext({
@@ -521,7 +481,7 @@ nodes:
 
     try {
       const sessionName = `preview-cleanup-test-${Date.now()}`;
-      const createResponse = await apiContext.post("/api/v1/sessions", {
+      const createResponse = await apiContext.post('/api/v1/sessions', {
         data: { name: sessionName, yaml: minimalPipelineYaml },
       });
       expect(createResponse.ok()).toBeTruthy();
@@ -533,21 +493,18 @@ nodes:
       await pollPipeline(baseURL!, sessionId!, allNodesRunning, 30_000);
 
       // Start a preview
-      const previewResponse = await apiContext.post(
-        `/api/v1/sessions/${sessionId}/preview`,
-        { data: {} },
-      );
+      const previewResponse = await apiContext.post(`/api/v1/sessions/${sessionId}/preview`, {
+        data: {},
+      });
       expect(previewResponse.status()).toBe(201);
 
       // Delete the session — should clean up preview automatically
-      const deleteResponse = await apiContext.delete(
-        `/api/v1/sessions/${sessionId}`,
-      );
+      const deleteResponse = await apiContext.delete(`/api/v1/sessions/${sessionId}`);
       expect(deleteResponse.ok()).toBeTruthy();
       sessionId = null; // Already deleted
 
       // Verify session is gone
-      const listResponse = await apiContext.get("/api/v1/sessions");
+      const listResponse = await apiContext.get('/api/v1/sessions');
       const sessions = (await listResponse.json()) as Array<{ id: string }>;
       const found = sessions.find((s) => s.id === createData.session_id);
       expect(found).toBeUndefined();
