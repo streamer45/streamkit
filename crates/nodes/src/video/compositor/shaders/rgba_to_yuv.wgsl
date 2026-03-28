@@ -11,18 +11,30 @@
 //
 // Y plane: one thread per pixel.
 // Chroma: computed for every 2×2 block by the thread at the top-left corner.
+//
+// Outputs are storage buffers (not storage textures) because R8Unorm and
+// Rg8Unorm don't universally support STORAGE_BINDING across GPU vendors.
 
 struct Params {
     width: u32,
     height: u32,
     // 0 = NV12, 1 = I420
     format: u32,
+    // Padded row stride for the Y buffer (in bytes), aligned to 4 for
+    // u32 packing.
+    y_stride: u32,
+    // Padded row stride for the UV buffer (in bytes).
+    uv_stride: u32,
+    // Chroma width (width / 2).
+    chroma_w: u32,
+    // Chroma height (height / 2).
+    chroma_h: u32,
     _pad: u32,
 }
 
 @group(0) @binding(0) var input: texture_2d<f32>;
-@group(0) @binding(1) var y_output: texture_storage_2d<r8unorm, write>;
-@group(0) @binding(2) var uv_output: texture_storage_2d<rg8unorm, write>;
+@group(0) @binding(1) var<storage, read_write> y_buf: array<u32>;
+@group(0) @binding(2) var<storage, read_write> uv_buf: array<u32>;
 @group(0) @binding(3) var<uniform> params: Params;
 
 // Convert a single RGBA pixel to YUV.
@@ -43,6 +55,22 @@ fn rgb_to_yuv(rgb: vec3<f32>) -> vec3<f32> {
     );
 }
 
+// Write a single byte into a u32 storage buffer at byte offset `byte_idx`.
+// Uses atomicOr-style packing: 4 bytes per u32, little-endian.
+fn write_byte(buf: ptr<storage, array<u32>, read_write>, byte_idx: u32, value: u32) {
+    let word_idx = byte_idx / 4u;
+    let lane = byte_idx % 4u;
+    let shift = lane * 8u;
+    // Use atomicOr to allow concurrent writes to different bytes in the
+    // same u32.  The buffer must be zero-initialised before dispatch.
+    let packed = value << shift;
+    // Note: WGSL doesn't have atomics on storage buffers of array<u32>.
+    // Instead we rely on the fact that each byte position within a u32 is
+    // written by exactly one thread (Y: one thread per pixel, UV: one
+    // thread per 2×2 block), so no race.  We read-modify-write:
+    (*buf)[word_idx] = (*buf)[word_idx] | packed;
+}
+
 @compute @workgroup_size(16, 16)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x = gid.x;
@@ -56,7 +84,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let yuv = rgb_to_yuv(rgba.rgb);
 
     // Write Y for every pixel.
-    textureStore(y_output, coord, vec4<f32>(yuv.x, 0.0, 0.0, 1.0));
+    let y_val = u32(yuv.x * 255.0 + 0.5);
+    let y_byte_idx = y * params.y_stride + x;
+    write_byte(&y_buf, y_byte_idx, y_val);
 
     // Write chroma for top-left pixel of each 2×2 block only.
     if (x % 2u) == 0u && (y % 2u) == 0u {
@@ -72,17 +102,25 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let avg_cb = (yuv.y + yuv01.y + yuv10.y + yuv11.y) * 0.25;
         let avg_cr = (yuv.z + yuv01.z + yuv10.z + yuv11.z) * 0.25;
 
-        let chroma_coord = vec2<i32>(i32(x / 2u), i32(y / 2u));
+        let cb_val = u32(clamp(avg_cb, 0.0, 1.0) * 255.0 + 0.5);
+        let cr_val = u32(clamp(avg_cr, 0.0, 1.0) * 255.0 + 0.5);
+
+        let cx = x / 2u;
+        let cy = y / 2u;
 
         if params.format == 0u {
-            // NV12: interleaved UV in rg8unorm.
-            textureStore(uv_output, chroma_coord, vec4<f32>(avg_cb, avg_cr, 0.0, 1.0));
+            // NV12: interleaved UV.  Two bytes per chroma sample.
+            let uv_byte_idx = cy * params.uv_stride + cx * 2u;
+            write_byte(&uv_buf, uv_byte_idx, cb_val);
+            write_byte(&uv_buf, uv_byte_idx + 1u, cr_val);
         } else {
-            // I420: U and V planes packed vertically.
-            // U in rows [0, height/2), V in rows [height/2, height).
-            let chroma_h = i32(params.height / 2u);
-            textureStore(uv_output, chroma_coord, vec4<f32>(avg_cb, 0.0, 0.0, 1.0));
-            textureStore(uv_output, vec2<i32>(chroma_coord.x, chroma_coord.y + chroma_h), vec4<f32>(avg_cr, 0.0, 0.0, 1.0));
+            // I420: separate U and V planes, packed sequentially.
+            // U plane: rows [0, chroma_h)
+            // V plane: rows [chroma_h, 2*chroma_h)
+            let u_byte_idx = cy * params.uv_stride + cx;
+            let v_byte_idx = (cy + params.chroma_h) * params.uv_stride + cx;
+            write_byte(&uv_buf, u_byte_idx, cb_val);
+            write_byte(&uv_buf, v_byte_idx, cr_val);
         }
     }
 }

@@ -40,14 +40,36 @@ struct LayerUniforms {
     _pad: [f32; 2],
 }
 
-/// Uniform params for the YUV↔RGBA compute shaders.
+/// Uniform params for the YUV→RGBA compute shader.
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
-struct YuvParams {
+struct YuvToRgbaParams {
     width: u32,
     height: u32,
     /// 0 = NV12, 1 = I420.
     format: u32,
+    _pad: u32,
+}
+
+/// Uniform params for the RGBA→YUV compute shader.
+///
+/// Uses storage buffers (not storage textures) for output because
+/// `R8Unorm`/`Rg8Unorm` don't universally support `STORAGE_BINDING`.
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+struct RgbaToYuvParams {
+    width: u32,
+    height: u32,
+    /// 0 = NV12, 1 = I420.
+    format: u32,
+    /// Row stride (bytes) for the Y output buffer.
+    y_stride: u32,
+    /// Row stride (bytes) for the UV output buffer.
+    uv_stride: u32,
+    /// Chroma width  (width / 2).
+    chroma_w: u32,
+    /// Chroma height (height / 2).
+    chroma_h: u32,
     _pad: u32,
 }
 
@@ -244,10 +266,28 @@ impl GpuContext {
             entries: &[
                 // Input RGBA texture
                 bgl_texture_entry(0, wgpu::TextureSampleType::Float { filterable: false }),
-                // Y output
-                bgl_storage_texture_entry(1, wgpu::TextureFormat::R8Unorm),
-                // UV output (rg8unorm for NV12, r8unorm for I420 — use rg8unorm as superset)
-                bgl_storage_texture_entry(2, wgpu::TextureFormat::Rg8Unorm),
+                // Y output storage buffer
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // UV output storage buffer
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
                 // Params uniform
                 bgl_uniform_entry(3),
             ],
@@ -318,7 +358,7 @@ impl GpuContext {
 
             // Readback buffer: RGBA8 = 4 bytes per pixel, rows padded to
             // COPY_BYTES_PER_ROW_ALIGNMENT (256).
-            let padded_row = padded_bytes_per_row(width);
+            let padded_row = padded_bytes_per_row(width, 4);
             let buf_size = (padded_row as u64) * u64::from(height);
             self.readback_buffer = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("compositor_readback"),
@@ -363,6 +403,9 @@ impl GpuContext {
     /// Upload a YUV frame (I420 or NV12) and convert to RGBA8 on the GPU.
     ///
     /// Returns an RGBA8 texture ready for sampling in the compositing pass.
+    ///
+    /// TODO(phase-3): accept an external `CommandEncoder` so multiple YUV
+    /// layer conversions can be batched into a single `queue.submit()`.
     fn upload_yuv_layer(
         &self,
         data: &[u8],
@@ -432,14 +475,14 @@ impl GpuContext {
 
         let params_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("yuv_params"),
-            size: std::mem::size_of::<YuvParams>() as u64,
+            size: std::mem::size_of::<YuvToRgbaParams>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         self.queue.write_buffer(
             &params_buf,
             0,
-            bytemuck::bytes_of(&YuvParams { width, height, format: format_id, _pad: 0 }),
+            bytemuck::bytes_of(&YuvToRgbaParams { width, height, format: format_id, _pad: 0 }),
         );
 
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -515,6 +558,10 @@ impl GpuContext {
     ///    the layer's transform + opacity.
     /// 4. Optionally convert RGBA→YUV on GPU.
     /// 5. Copy output texture → staging buffer → CPU.
+    ///
+    /// TODO(phase-3): pool per-layer textures and uniform buffers instead
+    /// of creating new ones each frame.  At 30fps with 2 layers + 2
+    /// overlays this is ~120 texture + ~120 buffer allocations/sec.
     #[allow(clippy::too_many_lines)]
     pub fn composite_frame_gpu(
         &mut self,
@@ -691,7 +738,7 @@ impl GpuContext {
                 // Read back RGBA8 directly.
                 let readback_buf =
                     self.readback_buffer.as_ref().expect("readback buffer was just ensured");
-                let padded_row = padded_bytes_per_row(canvas_w);
+                let padded_row = padded_bytes_per_row(canvas_w, 4);
                 encoder.copy_texture_to_buffer(
                     wgpu::TexelCopyTextureInfo {
                         texture: &canvas.texture,
@@ -729,25 +776,34 @@ impl GpuContext {
         let readback_buf = self.readback_buffer.as_ref().expect("readback buffer exists");
         let buf_slice = readback_buf.slice(..);
 
-        // Block until the GPU finishes and the buffer is mapped.
-        let (tx, rx) = std::sync::mpsc::channel();
-        buf_slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = tx.send(result);
-        });
-        let _ = self.device.poll(wgpu::PollType::Wait);
-        if let Err(e) = rx.recv() {
-            tracing::error!("GPU readback channel error: {e}");
-        }
-
-        let mapped = buf_slice.get_mapped_range();
         let unpadded_row = (width as usize) * 4;
-        let padded_row = padded_bytes_per_row(width);
         let total_bytes = unpadded_row * (height as usize);
 
         let mut pooled = video_pool.map_or_else(
             || PooledVideoData::from_vec(vec![0u8; total_bytes]),
             |pool| pool.get(total_bytes),
         );
+
+        // Block until the GPU finishes and the buffer is mapped.
+        let (tx, rx) = std::sync::mpsc::channel();
+        buf_slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+        let _ = self.device.poll(wgpu::PollType::Wait);
+        match rx.recv() {
+            Ok(Ok(())) => {},
+            Ok(Err(e)) => {
+                tracing::error!("GPU buffer mapping failed: {e}");
+                return pooled;
+            },
+            Err(e) => {
+                tracing::error!("GPU readback channel error: {e}");
+                return pooled;
+            },
+        }
+
+        let mapped = buf_slice.get_mapped_range();
+        let padded_row = padded_bytes_per_row(width, 4);
 
         // Copy rows, stripping padding.
         let out = pooled.as_mut_slice();
@@ -781,48 +837,52 @@ impl GpuContext {
         let chroma_w = width / 2;
         let chroma_h = height / 2;
 
-        // Y output texture (R8).
-        let y_tex = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("y_output"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R8Unorm,
-            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
+        // Y buffer: one byte per pixel, rows padded to 4 bytes for u32 packing.
+        let y_stride = align_up(width as usize, 4) as u32;
+        let y_buf_size = (y_stride as u64) * u64::from(height);
+        // Round up to 4 bytes for u32 array.
+        let y_buf_size_aligned = align_up(y_buf_size as usize, 4) as u64;
+
+        let y_gpu_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("y_output_buf"),
+            size: y_buf_size_aligned,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
         });
 
-        // UV output texture.
-        let uv_height = if format == PixelFormat::I420 { chroma_h * 2 } else { chroma_h };
-        let uv_format = if format == PixelFormat::I420 {
-            wgpu::TextureFormat::R8Unorm
-        } else {
-            wgpu::TextureFormat::Rg8Unorm
-        };
-        let uv_tex = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("uv_output"),
-            size: wgpu::Extent3d { width: chroma_w, height: uv_height, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: uv_format,
-            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
+        // UV buffer: for NV12, 2 bytes per chroma sample; for I420, 1 byte per
+        // sample but U and V planes stacked vertically (2× chroma_h rows).
+        let uv_row_bytes: u32 = if format == PixelFormat::I420 { chroma_w } else { chroma_w * 2 };
+        let uv_stride = align_up(uv_row_bytes as usize, 4) as u32;
+        let uv_rows: u32 = if format == PixelFormat::I420 { chroma_h * 2 } else { chroma_h };
+        let uv_buf_size = (uv_stride as u64) * u64::from(uv_rows);
+        let uv_buf_size_aligned = align_up(uv_buf_size as usize, 4) as u64;
+
+        let uv_gpu_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("uv_output_buf"),
+            size: uv_buf_size_aligned,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
         });
 
         let format_id: u32 = if format == PixelFormat::I420 { 1 } else { 0 };
+        let params = RgbaToYuvParams {
+            width,
+            height,
+            format: format_id,
+            y_stride,
+            uv_stride,
+            chroma_w,
+            chroma_h,
+            _pad: 0,
+        };
         let params_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("rgba_to_yuv_params"),
-            size: std::mem::size_of::<YuvParams>() as u64,
+            size: std::mem::size_of::<RgbaToYuvParams>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        self.queue.write_buffer(
-            &params_buf,
-            0,
-            bytemuck::bytes_of(&YuvParams { width, height, format: format_id, _pad: 0 }),
-        );
+        self.queue.write_buffer(&params_buf, 0, bytemuck::bytes_of(&params));
 
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("rgba_to_yuv_bg"),
@@ -834,25 +894,19 @@ impl GpuContext {
                         &canvas.texture.create_view(&wgpu::TextureViewDescriptor::default()),
                     ),
                 },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(
-                        &y_tex.create_view(&wgpu::TextureViewDescriptor::default()),
-                    ),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(
-                        &uv_tex.create_view(&wgpu::TextureViewDescriptor::default()),
-                    ),
-                },
+                wgpu::BindGroupEntry { binding: 1, resource: y_gpu_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: uv_gpu_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: params_buf.as_entire_binding() },
             ],
         });
 
+        // Zero-fill the output buffers before dispatch (the shader uses
+        // read-modify-write OR packing).
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("rgba_to_yuv_encoder"),
         });
+        encoder.clear_buffer(&y_gpu_buf, 0, None);
+        encoder.clear_buffer(&uv_gpu_buf, 0, None);
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("rgba_to_yuv_pass"),
@@ -863,72 +917,34 @@ impl GpuContext {
             pass.dispatch_workgroups(width.div_ceil(16), height.div_ceil(16), 1);
         }
 
-        // Copy Y and UV textures to staging buffers.
-        let y_padded_row = padded_bytes_per_row_single(width);
-        let y_buf_size = (y_padded_row as u64) * u64::from(height);
+        // Copy GPU storage buffers to staging buffers for CPU readback.
         let y_staging = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("y_staging"),
-            size: y_buf_size,
+            size: y_buf_size_aligned,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
-
-        let uv_bytes_per_pixel: u32 = if format == PixelFormat::I420 { 1 } else { 2 };
-        let uv_padded_row = padded_bytes_per_row_generic(chroma_w, uv_bytes_per_pixel);
-        let uv_buf_size = (uv_padded_row as u64) * u64::from(uv_height);
         let uv_staging = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("uv_staging"),
-            size: uv_buf_size,
+            size: uv_buf_size_aligned,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
 
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: &y_tex,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &y_staging,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(y_padded_row as u32),
-                    rows_per_image: Some(height),
-                },
-            },
-            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-        );
-
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: &uv_tex,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &uv_staging,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(uv_padded_row as u32),
-                    rows_per_image: Some(uv_height),
-                },
-            },
-            wgpu::Extent3d { width: chroma_w, height: uv_height, depth_or_array_layers: 1 },
-        );
+        encoder.copy_buffer_to_buffer(&y_gpu_buf, 0, &y_staging, 0, y_buf_size_aligned);
+        encoder.copy_buffer_to_buffer(&uv_gpu_buf, 0, &uv_staging, 0, uv_buf_size_aligned);
 
         self.queue.submit(std::iter::once(encoder.finish()));
 
-        // Map and read back Y plane.
-        let y_data = self.map_and_read_buffer(&y_staging, width as usize, height as usize, 1);
-        // Map and read back UV plane(s).
+        // Read back Y plane, stripping row-stride padding.
+        let y_data =
+            self.map_and_read_buffer(&y_staging, width as usize, height as usize, y_stride);
+        // Read back UV plane(s), stripping row-stride padding.
         let uv_data = self.map_and_read_buffer(
             &uv_staging,
-            (chroma_w as usize) * (uv_bytes_per_pixel as usize),
-            uv_height as usize,
-            1,
+            uv_row_bytes as usize,
+            uv_rows as usize,
+            uv_stride,
         );
 
         // Assemble the final YUV buffer.
@@ -943,12 +959,15 @@ impl GpuContext {
     }
 
     /// Map a staging buffer, strip row padding, and return the unpadded data.
+    ///
+    /// `unpadded_row_bytes` is the number of useful bytes per row.
+    /// `padded_row_stride` is the GPU-side stride (>= unpadded_row_bytes).
     fn map_and_read_buffer(
         &self,
         buffer: &wgpu::Buffer,
         unpadded_row_bytes: usize,
         rows: usize,
-        _bytes_per_element: usize,
+        padded_row_stride: u32,
     ) -> Vec<u8> {
         let slice = buffer.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
@@ -956,12 +975,20 @@ impl GpuContext {
             let _ = tx.send(result);
         });
         let _ = self.device.poll(wgpu::PollType::Wait);
-        if let Err(e) = rx.recv() {
-            tracing::error!("GPU readback channel error: {e}");
+        match rx.recv() {
+            Ok(Ok(())) => {},
+            Ok(Err(e)) => {
+                tracing::error!("GPU buffer mapping failed: {e}");
+                return vec![0u8; unpadded_row_bytes * rows];
+            },
+            Err(e) => {
+                tracing::error!("GPU readback channel error: {e}");
+                return vec![0u8; unpadded_row_bytes * rows];
+            },
         }
 
         let mapped = slice.get_mapped_range();
-        let padded_row = align_up(unpadded_row_bytes, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);
+        let padded_row = padded_row_stride as usize;
         let total = unpadded_row_bytes * rows;
         let mut data = vec![0u8; total];
 
@@ -1184,18 +1211,10 @@ fn uniform_bg_resource(buffer: &wgpu::Buffer) -> wgpu::BindingResource<'_> {
 
 // ── Row-padding helpers ─────────────────────────────────────────────────────
 
-/// Compute the padded bytes-per-row for RGBA8 (4 bytes/pixel).
-fn padded_bytes_per_row(width: u32) -> usize {
-    align_up((width as usize) * 4, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize)
-}
-
-/// Compute the padded bytes-per-row for a single-channel (1 byte/pixel) texture.
-fn padded_bytes_per_row_single(width: u32) -> usize {
-    align_up(width as usize, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize)
-}
-
 /// Compute the padded bytes-per-row for a texture with `bytes_per_pixel` bytes per texel.
-fn padded_bytes_per_row_generic(width: u32, bytes_per_pixel: u32) -> usize {
+///
+/// wgpu requires rows to be aligned to [`wgpu::COPY_BYTES_PER_ROW_ALIGNMENT`].
+fn padded_bytes_per_row(width: u32, bytes_per_pixel: u32) -> usize {
     align_up(
         (width as usize) * (bytes_per_pixel as usize),
         wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize,
@@ -1214,7 +1233,7 @@ const fn align_up(value: usize, alignment: usize) -> usize {
 pub enum GpuMode {
     /// Use GPU when available and beneficial (default).
     Auto,
-    /// Force GPU compositing (fail startup if unavailable).
+    /// Force GPU compositing (log warning and fall back to CPU if unavailable).
     ForceGpu,
     /// Force CPU compositing (ignore GPU even if available).
     ForceCpu,
@@ -1236,6 +1255,10 @@ impl GpuMode {
 ///
 /// GPU wins for: multi-layer, high-resolution, effects (rotation/crop).
 /// CPU wins for: single opaque layer at identity scale (memcpy fast path).
+///
+/// TODO(phase-3): add hysteresis — prefer the same path as last frame
+/// unless the scene complexity delta is large, to avoid thrashing between
+/// GPU/CPU when the scene oscillates around the threshold.
 pub fn should_use_gpu(
     canvas_w: u32,
     canvas_h: u32,

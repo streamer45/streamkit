@@ -90,11 +90,22 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         if dist > 1.0 {
             discard;
         }
-        // Optional: smooth edge (anti-aliasing)
-        // let alpha_mask = 1.0 - smoothstep(0.98, 1.0, dist);
     }
 
     var color = textureSample(layer_texture, layer_sampler, in.uv);
+
+    // Apply circle-crop anti-aliasing via smoothstep on the edge.
+    if layer.circle_crop > 0.5 {
+        let centre = vec2<f32>(0.5, 0.5);
+        let dist = length(in.uv - centre) * 2.0;
+        let alpha_mask = 1.0 - smoothstep(0.98, 1.0, dist);
+        color.a *= alpha_mask;
+    }
+
+    // Multiply alpha by layer opacity.  The pipeline blend state is
+    // SrcAlpha / OneMinusSrcAlpha (Porter-Duff "over" for straight
+    // alpha).  This assumes input textures use straight (non-premultiplied)
+    // alpha, which is the case for RGBA8 video frames and overlay bitmaps.
     color.a *= layer.opacity;
 
     return color;

@@ -300,6 +300,10 @@ pub struct CompositorConfig {
     /// - `"gpu"`: force GPU compositing (fall back to CPU if unavailable)
     /// - `"cpu"`: force CPU compositing (ignore GPU even if available)
     ///
+    /// **Note:** this is read once at compositor startup and cannot be
+    /// changed at runtime via `UpdateParams` (GPU context init/teardown
+    /// is too expensive to toggle per-frame).
+    ///
     /// Requires the `gpu` Cargo feature to be enabled; without it this
     /// field is accepted but ignored.
     #[serde(default)]
