@@ -32,6 +32,7 @@ import {
   DEFAULT_CROP_X,
   DEFAULT_CROP_Y,
   DEFAULT_CROP_SHAPE,
+  type LayerKind,
 } from './compositorConstants';
 
 export type { LayerKind } from './compositorConstants';
@@ -576,12 +577,13 @@ export function computeUpdatedLayer(
   rawDx: number,
   rawDy: number,
   canvasWidth: number,
-  canvasHeight: number
+  canvasHeight: number,
+  layerKind?: LayerKind
 ): LayerState {
   if (type === 'drag') {
     return computeDragPosition(orig, rawDx, rawDy, canvasWidth, canvasHeight);
   }
-  return computeResizePosition(orig, handle!, rawDx, rawDy, canvasWidth, canvasHeight);
+  return computeResizePosition(orig, handle!, rawDx, rawDy, canvasWidth, canvasHeight, layerKind);
 }
 
 function computeDragPosition(
@@ -631,7 +633,8 @@ function computeResizePosition(
   rawDx: number,
   rawDy: number,
   canvasWidth: number,
-  canvasHeight: number
+  canvasHeight: number,
+  layerKind?: LayerKind
 ): LayerState {
   // Transform mouse delta into the layer's local coordinate system so
   // resize handles behave naturally on rotated layers.
@@ -661,8 +664,13 @@ function computeResizePosition(
     newY = orig.y + (orig.height - newH);
   }
 
-  // Constrain resize to maintain aspect ratio for all layer types.
-  if (orig.width > 0 && orig.height > 0) {
+  // Constrain resize to maintain aspect ratio for video and image layers.
+  // Text overlays resize freely — their dimensions are auto-measured from
+  // text content and don't carry a meaningful aspect ratio.  Enforcing AR
+  // on text causes small cursor movements to produce large dimension jumps
+  // (e.g. a 300×36 single-line overlay has an 8:1 ratio).
+  const enforceAR = layerKind !== 'text';
+  if (enforceAR && orig.width > 0 && orig.height > 0) {
     const result = constrainAspectRatio(orig, handle, newW, newH);
     newW = result.width;
     newH = result.height;
@@ -675,7 +683,8 @@ function computeResizePosition(
   // constraint after each snap so the layer isn't distorted.
   // For corner handles, only snap the axis closest to a boundary to avoid
   // the second snap's AR correction undoing the first snap's alignment.
-  const ar = orig.width > 0 && orig.height > 0 ? orig.width / orig.height : 0;
+  // Text overlays skip AR correction (ar=0) so edge snaps don't cascade.
+  const ar = enforceAR && orig.width > 0 && orig.height > 0 ? orig.width / orig.height : 0;
 
   let snappedH = false; // true once an east/west snap has been applied
   let snappedV = false; // true once a north/south snap has been applied
@@ -719,6 +728,38 @@ function computeResizePosition(
     if (ar > 0) newW = newH * ar;
     if (handle.includes('w')) newX = orig.x + (orig.width - newW);
   }
+
+  // Clamp so layers cannot extend past the canvas edges.
+  // For AR-constrained layers, re-derive the complementary dimension after
+  // each clamp so the aspect ratio is preserved.  For text overlays (no AR),
+  // independent clamping is fine.
+  //
+  // Right/bottom edge: x + width ≤ canvasWidth, y + height ≤ canvasHeight.
+  // Left/top edge (for w/n handles): x ≥ 0, y ≥ 0.
+  const maxW = handle.includes('w')
+    ? orig.x + orig.width // west handle: right edge is anchored at orig.x + orig.width
+    : canvasWidth - newX; // east handle: left edge is anchored at newX
+  const maxH = handle.includes('n')
+    ? orig.y + orig.height // north handle: bottom edge is anchored
+    : canvasHeight - newY; // south handle: top edge is anchored
+
+  if (newW > maxW) {
+    newW = maxW;
+    if (ar > 0) newH = newW / ar;
+  }
+  if (newH > maxH) {
+    newH = maxH;
+    if (ar > 0) {
+      newW = newH * ar;
+      // Guard: the height-clamp AR correction may have pushed width back
+      // above maxW (possible when the layer sits near both the right and
+      // bottom edges with an extreme AR).  Re-clamp to keep it in bounds.
+      newW = Math.min(newW, maxW);
+    }
+  }
+  // Re-anchor position for handles that move the origin edge.
+  if (handle.includes('w')) newX = orig.x + (orig.width - newW);
+  if (handle.includes('n')) newY = orig.y + (orig.height - newH);
 
   return { ...orig, x: newX, y: newY, width: newW, height: newH };
 }

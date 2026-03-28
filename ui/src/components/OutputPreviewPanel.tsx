@@ -19,7 +19,7 @@ import { useVideoCanvas } from '@/hooks/useVideoCanvas';
 import { useStreamStore } from '@/stores/streamStore';
 import type { WatchStatus } from '@/stores/streamStore';
 
-import { usePreviewPanelInteraction } from './usePreviewPanelInteraction';
+import { usePreviewPanelInteraction, type ResizeEdge } from './usePreviewPanelInteraction';
 
 // ---------------------------------------------------------------------------
 // Styled components
@@ -82,6 +82,29 @@ const ResizeEdgeBottom = styled.div`
   height: 6px;
   cursor: ns-resize;
   z-index: 25;
+`;
+
+/** Invisible resize handle on a panel corner.  Position and cursor are
+ *  derived from the `corner` prop to avoid four near-identical components. */
+const ResizeCorner = styled.div<{
+  corner: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
+}>`
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  z-index: 26;
+  ${({ corner }) => {
+    switch (corner) {
+      case 'top-left':
+        return 'top: -3px; left: -3px; cursor: nwse-resize;';
+      case 'top-right':
+        return 'top: -3px; right: -3px; cursor: nesw-resize;';
+      case 'bottom-left':
+        return 'bottom: -3px; left: -3px; cursor: nesw-resize;';
+      case 'bottom-right':
+        return 'bottom: -3px; right: -3px; cursor: nwse-resize;';
+    }
+  }}
 `;
 
 const DragHeader = styled.div`
@@ -160,6 +183,11 @@ const PanelBody = styled.div`
   padding: 6px;
   background: #0a0a0f;
   cursor: grab;
+  /* Fill remaining space below the header so the panel's explicit height
+     controls the body size.  min-height: 0 allows the flex child to
+     shrink below its content height for proper letterboxing. */
+  flex: 1;
+  min-height: 0;
 
   &:active {
     cursor: grabbing;
@@ -175,11 +203,16 @@ const EmptyMessage = styled.div`
   max-width: 220px;
 `;
 
+/** The preview canvas uses max-width + max-height + aspect-ratio to
+ *  letterbox/pillarbox naturally within the freely-resizable panel body.
+ *  object-fit: contain ensures the drawn bitmap scales correctly. */
 const PreviewCanvas = styled.canvas`
-  width: 100%;
+  max-width: 100%;
+  max-height: 100%;
   border-radius: 3px;
   background: #000;
   display: block;
+  object-fit: contain;
 `;
 
 /** In fullscreen the canvas must fit inside the viewport without clipping.
@@ -274,15 +307,35 @@ const PanelHeaderButtons: React.FC<{
 ));
 PanelHeaderButtons.displayName = 'PanelHeaderButtons';
 
-/** Resize edge handles shown around the panel when not collapsed/fullscreen. */
+/** Resize edge and corner handles shown around the panel when not collapsed/fullscreen. */
 const ResizeEdges: React.FC<{
-  onResizeStart: (edge: 'left' | 'top' | 'right' | 'bottom', e: React.PointerEvent) => void;
+  onResizeStart: (edge: ResizeEdge, e: React.PointerEvent) => void;
 }> = React.memo(({ onResizeStart }) => (
   <>
     <ResizeEdgeLeft className="nodrag nopan" onPointerDown={(e) => onResizeStart('left', e)} />
     <ResizeEdgeTop className="nodrag nopan" onPointerDown={(e) => onResizeStart('top', e)} />
     <ResizeEdgeRight className="nodrag nopan" onPointerDown={(e) => onResizeStart('right', e)} />
     <ResizeEdgeBottom className="nodrag nopan" onPointerDown={(e) => onResizeStart('bottom', e)} />
+    <ResizeCorner
+      corner="top-left"
+      className="nodrag nopan"
+      onPointerDown={(e) => onResizeStart('top-left', e)}
+    />
+    <ResizeCorner
+      corner="top-right"
+      className="nodrag nopan"
+      onPointerDown={(e) => onResizeStart('top-right', e)}
+    />
+    <ResizeCorner
+      corner="bottom-left"
+      className="nodrag nopan"
+      onPointerDown={(e) => onResizeStart('bottom-left', e)}
+    />
+    <ResizeCorner
+      corner="bottom-right"
+      className="nodrag nopan"
+      onPointerDown={(e) => onResizeStart('bottom-right', e)}
+    />
   </>
 ));
 ResizeEdges.displayName = 'ResizeEdges';
