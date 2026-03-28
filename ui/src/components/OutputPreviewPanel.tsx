@@ -12,9 +12,10 @@
 
 import styled from '@emotion/styled';
 import { Maximize2, Minimize2, Volume2, VolumeX } from 'lucide-react';
-import React, { useCallback, useEffect, useState } from 'react';
+import React from 'react';
 import { useShallow } from 'zustand/shallow';
 
+import { useAudioControls } from '@/hooks/useAudioControls';
 import { useVideoCanvas } from '@/hooks/useVideoCanvas';
 import { useStreamStore } from '@/stores/streamStore';
 import type { ConnectionStatus, WatchStatus } from '@/stores/streamStore';
@@ -221,8 +222,10 @@ const BufferingOverlay = styled.div`
   position: absolute;
   inset: 0;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 6px;
   background: rgba(0, 0, 0, 0.55);
   color: var(--sk-text-muted);
   font-size: 11px;
@@ -230,7 +233,28 @@ const BufferingOverlay = styled.div`
   border-radius: 3px;
 `;
 
-const VolumeSlider = styled.input`
+/** Variant of BufferingOverlay used when no canvas is mounted yet (connecting
+ *  state).  Uses `position: relative` so it occupies layout space. */
+const ConnectingOverlay = styled(BufferingOverlay)`
+  position: relative;
+`;
+
+/** Small inline spinner for the buffering/connecting overlay. */
+const OverlaySpinner = styled.div`
+  @keyframes preview-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--sk-border);
+  border-top-color: var(--sk-primary);
+  border-radius: 50%;
+  animation: preview-spin 0.8s linear infinite;
+`;
+
+export const VolumeSlider = styled.input`
   -webkit-appearance: none;
   appearance: none;
   width: 56px;
@@ -284,58 +308,11 @@ const FullscreenCanvas = styled.canvas`
 `;
 
 // ---------------------------------------------------------------------------
-// Hooks
+// Hooks — re-exported from dedicated module for backward compatibility
 // ---------------------------------------------------------------------------
 
-/** Subscribe to an audioEmitter's muted/volume signals and return React state. */
-function useAudioControls(
-  audioEmitter: {
-    muted: {
-      peek(): boolean;
-      set(v: boolean): void;
-      subscribe(fn: (v: boolean) => void): () => void;
-    };
-    volume: {
-      peek(): number;
-      set(v: number): void;
-      subscribe(fn: (v: number) => void): () => void;
-    };
-  } | null
-) {
-  const [muted, setMuted] = useState(() => audioEmitter?.muted.peek() ?? true);
-  const [volume, setVolume] = useState(() => audioEmitter?.volume.peek() ?? 0.5);
-
-  useEffect(() => {
-    if (!audioEmitter) return;
-    setMuted(audioEmitter.muted.peek());
-    setVolume(audioEmitter.volume.peek());
-    const unsubMuted = audioEmitter.muted.subscribe(setMuted);
-    const unsubVolume = audioEmitter.volume.subscribe(setVolume);
-    return () => {
-      unsubMuted();
-      unsubVolume();
-    };
-  }, [audioEmitter]);
-
-  const toggleMute = useCallback(() => {
-    if (!audioEmitter) return;
-    audioEmitter.muted.set(!audioEmitter.muted.peek());
-  }, [audioEmitter]);
-
-  const changeVolume = useCallback(
-    (v: number) => {
-      if (!audioEmitter) return;
-      audioEmitter.volume.set(v);
-      // Un-mute when the user drags the slider up from zero.
-      if (v > 0 && audioEmitter.muted.peek()) {
-        audioEmitter.muted.set(false);
-      }
-    },
-    [audioEmitter]
-  );
-
-  return { muted, volume, toggleMute, changeVolume };
-}
+// Re-export so existing imports from this file continue to work.
+export { useAudioControls } from '@/hooks/useAudioControls';
 
 // ---------------------------------------------------------------------------
 // Sub-components
@@ -375,6 +352,7 @@ function statusLabel(
 const PreviewBody: React.FC<{
   hasSession: boolean;
   isConnected: boolean;
+  isConnecting: boolean;
   hasVideoRenderer: boolean;
   watchStatus: WatchStatus;
   activeSessionId: string | null;
@@ -385,6 +363,7 @@ const PreviewBody: React.FC<{
   ({
     hasSession,
     isConnected,
+    isConnecting,
     hasVideoRenderer,
     watchStatus: ws,
     activeSessionId,
@@ -394,6 +373,16 @@ const PreviewBody: React.FC<{
   }) => {
     if (!hasSession) {
       return <EmptyMessage>Select a session to preview output.</EmptyMessage>;
+    }
+    if (isConnecting) {
+      return (
+        <CanvasWrapper>
+          <ConnectingOverlay>
+            <OverlaySpinner />
+            Connecting…
+          </ConnectingOverlay>
+        </CanvasWrapper>
+      );
     }
     if (!isConnected) {
       return (
@@ -416,12 +405,20 @@ const PreviewBody: React.FC<{
     // Show the canvas during both ‘loading’ and ‘live’ so video frames
     // appear immediately.  A buffering overlay is added during loading so
     // the user knows data is still arriving (especially when audio starts
-    // before video).
+    // before video).  We also show it during early ‘live’ if no video
+    // frames have been decoded yet (canvasAspectRatio is undefined until
+    // the renderer writes the first frame).
     const Canvas = isFullscreen ? FullscreenCanvas : PreviewCanvas;
+    const isBuffering = ws === 'loading' || (ws === 'live' && canvasAspectRatio === undefined);
     return (
       <CanvasWrapper>
         <Canvas ref={canvasRef} style={{ aspectRatio: canvasAspectRatio }} />
-        {ws === 'loading' && <BufferingOverlay>Buffering…</BufferingOverlay>}
+        {isBuffering && (
+          <BufferingOverlay>
+            <OverlaySpinner />
+            {ws === 'loading' ? 'Buffering…' : 'Waiting for first frame…'}
+          </BufferingOverlay>
+        )}
       </CanvasWrapper>
     );
   }
@@ -566,10 +563,13 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
     } = usePreviewPanelInteraction(canvasAspectRatio);
 
     const isConnected = status === 'connected';
+    const isConnecting = status === 'connecting';
     const isLive = watchStatus === 'live';
 
     // Conditional rendering: placed after all hooks to satisfy rules-of-hooks.
-    const shouldShow = !conditionalRender || (isConnected && (isLive || watchStatus === 'loading'));
+    // Also show during 'connecting' so the user sees a spinner instead of nothing.
+    const shouldShow =
+      !conditionalRender || isConnecting || (isConnected && (isLive || watchStatus === 'loading'));
     if (!shouldShow) return null;
 
     const label = statusLabel(status, watchStatus, connectingStep);
@@ -604,6 +604,7 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
             <PreviewBody
               hasSession={hasSession}
               isConnected={isConnected}
+              isConnecting={isConnecting}
               hasVideoRenderer={!!videoRenderer}
               watchStatus={watchStatus}
               activeSessionId={activeSessionId}

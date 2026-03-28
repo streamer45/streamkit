@@ -157,7 +157,12 @@ test.describe('Compositor Crop Shape Controls', () => {
     const videoLayerBox = canvasInner.locator('.nodrag.nopan').filter({ hasText: 'in_1' }).first();
     await expect(videoLayerBox).toBeVisible({ timeout: 5_000 });
 
-    const clipPath = await videoLayerBox.evaluate((el) => window.getComputedStyle(el).clipPath);
+    // clipPath lives on the inner [data-crop-circle] div, not the LayerBox
+    // itself (the outer box stays unclipped so resize handles remain visible).
+    const clipPath = await videoLayerBox.evaluate((el) => {
+      const inner = el.querySelector('[data-crop-circle]');
+      return inner ? window.getComputedStyle(inner).clipPath : 'none';
+    });
     expect(clipPath).toMatch(/^circle\(/);
 
     // ── 6. Switch to Rect ────────────────────────────────────────────────
@@ -168,9 +173,10 @@ test.describe('Compositor Crop Shape Controls', () => {
     await expectButtonActive(circleButton, false);
 
     // Canvas preview should no longer have circular clip-path.
-    const clipPathAfterRect = await videoLayerBox.evaluate(
-      (el) => window.getComputedStyle(el).clipPath
-    );
+    const clipPathAfterRect = await videoLayerBox.evaluate((el) => {
+      const inner = el.querySelector('[data-crop-circle]');
+      return inner ? window.getComputedStyle(inner).clipPath : 'none';
+    });
     expect(clipPathAfterRect).toBe('none');
 
     // ── 7. Switch back to Circle ─────────────────────────────────────────
@@ -179,9 +185,10 @@ test.describe('Compositor Crop Shape Controls', () => {
 
     await expectButtonActive(circleButton, true);
 
-    const clipPathAfterCircle = await videoLayerBox.evaluate(
-      (el) => window.getComputedStyle(el).clipPath
-    );
+    const clipPathAfterCircle = await videoLayerBox.evaluate((el) => {
+      const inner = el.querySelector('[data-crop-circle]');
+      return inner ? window.getComputedStyle(inner).clipPath : 'none';
+    });
     expect(clipPathAfterCircle).toMatch(/^circle\(/);
 
     // ── 8. Reset restores shape to Rect ──────────────────────────────────
@@ -198,9 +205,10 @@ test.describe('Compositor Crop Shape Controls', () => {
     await expect(zoomValue).toHaveText('1.0×', { timeout: 3_000 });
 
     // Canvas preview should have no circular clip-path after reset.
-    const clipPathAfterReset = await videoLayerBox.evaluate(
-      (el) => window.getComputedStyle(el).clipPath
-    );
+    const clipPathAfterReset = await videoLayerBox.evaluate((el) => {
+      const inner = el.querySelector('[data-crop-circle]');
+      return inner ? window.getComputedStyle(inner).clipPath : 'none';
+    });
     expect(clipPathAfterReset).toBe('none');
 
     // ── 9. Select text overlay — Crop & Zoom should NOT appear ───────────

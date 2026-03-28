@@ -147,7 +147,12 @@ test.describe('Webcam Circle PiP Pipeline — E2E Validation', () => {
     const videoLayerBox = canvasInner.locator('.nodrag.nopan').filter({ hasText: 'in_1' }).first();
     await expect(videoLayerBox).toBeVisible({ timeout: 5_000 });
 
-    const clipPath = await videoLayerBox.evaluate((el) => window.getComputedStyle(el).clipPath);
+    // clipPath lives on the inner [data-crop-circle] div, not the LayerBox
+    // itself (the outer box stays unclipped so resize handles remain visible).
+    const clipPath = await videoLayerBox.evaluate((el) => {
+      const inner = el.querySelector('[data-crop-circle]');
+      return inner ? window.getComputedStyle(inner).clipPath : 'none';
+    });
     expect(clipPath).toMatch(/^circle\(/);
 
     // ── 6. Verify in_0 does NOT have circular preview ────────────────────

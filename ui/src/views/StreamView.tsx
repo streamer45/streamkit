@@ -3,11 +3,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import styled from '@emotion/styled';
+import { Volume2, VolumeX } from 'lucide-react';
 import React, { useEffect, useCallback, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useShallow } from 'zustand/shallow';
 
 import ConfirmModal from '@/components/ConfirmModal';
+import { VolumeSlider } from '@/components/OutputPreviewPanel';
 import { PipelineSelectionSection } from '@/components/stream/PipelineSelectionSection';
 import { TelemetryTimeline as TelemetryTimelineComponent } from '@/components/TelemetryTimeline';
 import {
@@ -23,6 +25,7 @@ import {
   TechnicalDetailsToggle,
   TechnicalDetails,
 } from '@/components/ui/ViewLayout';
+import { useAudioControls } from '@/hooks/useAudioControls';
 import { useStreamViewState } from '@/hooks/useStreamViewState';
 import { useVideoCanvas } from '@/hooks/useVideoCanvas';
 import { useWebSocket } from '@/hooks/useWebSocket';
@@ -354,6 +357,7 @@ const StreamView: React.FC = () => {
     activeSessionName,
     activePipelineName,
     videoRenderer,
+    audioEmitter,
     publishBroadcasts,
     isSecondaryCameraEnabled,
     secondaryCameraStatus,
@@ -402,6 +406,7 @@ const StreamView: React.FC = () => {
       activeSessionName: s.activeSessionName,
       activePipelineName: s.activePipelineName,
       videoRenderer: s.videoRenderer,
+      audioEmitter: s.audioEmitter,
       publishBroadcasts: s.publishBroadcasts,
       isSecondaryCameraEnabled: s.isSecondaryCameraEnabled,
       secondaryCameraStatus: s.secondaryCameraStatus,
@@ -449,6 +454,8 @@ const StreamView: React.FC = () => {
 
   const { canvasRef: videoCanvasRef, aspectRatio: canvasAspectRatio } =
     useVideoCanvas(videoRenderer);
+
+  const { muted, volume, toggleMute, changeVolume } = useAudioControls(audioEmitter);
 
   // Ensure schemas are loaded for autocomplete
   useEffect(() => {
@@ -1105,6 +1112,35 @@ const StreamView: React.FC = () => {
                     aspectRatio: canvasAspectRatio,
                   }}
                 />
+                {audioEmitter && (
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      marginTop: 8,
+                      padding: '4px 0',
+                    }}
+                  >
+                    <ControlButton
+                      onClick={toggleMute}
+                      title={muted ? 'Unmute' : 'Mute'}
+                      style={{ padding: '4px 8px', fontSize: 12 }}
+                    >
+                      {muted ? <VolumeX size={14} /> : <Volume2 size={14} />}
+                    </ControlButton>
+                    <VolumeSlider
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={muted ? 0 : volume}
+                      onChange={(e) => changeVolume(Number(e.target.value))}
+                      style={{ width: 120 }}
+                      title={`Volume: ${Math.round((muted ? 0 : volume) * 100)}%`}
+                    />
+                  </div>
+                )}
               </VideoContainer>
             </Section>
           )}

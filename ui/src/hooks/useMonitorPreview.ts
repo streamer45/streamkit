@@ -95,12 +95,18 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
 
-  const isPreviewConnected = previewStatus === 'connected';
+  // When the user explicitly stops a borrowed preview, the shared store
+  // still reports 'connected' (the StreamView's connection stays alive).
+  // This flag lets the hook report isPreviewConnected=false so the
+  // MonitorView hides the panel and shows the "Preview" button again.
+  const [previewDismissed, setPreviewDismissed] = useState(false);
+
+  const isPreviewConnected = previewStatus === 'connected' && !previewDismissed;
   // MoQ connection establishment happens after the API call returns,
   // so there's an intermediate "connecting" state that should still
   // show a loading indicator to avoid a brief flicker back to the
   // "Preview" button.
-  const isMoqConnecting = previewStatus === 'connecting';
+  const isMoqConnecting = previewStatus === 'connecting' && !previewDismissed;
 
   // Track the active preview ID so we can tear it down on the server.
   const previewIdRef = useRef<string | null>(null);
@@ -141,6 +147,7 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
       );
       setPreviewError(null);
       setIsPreviewLoading(false);
+      setPreviewDismissed(false);
     }
 
     // Cleanup on unmount — fire-and-forget for the same reason as above.
@@ -184,6 +191,7 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
 
     setIsPreviewLoading(true);
     setPreviewError(null);
+    setPreviewDismissed(false);
 
     try {
       // Configure for watch-only mode
@@ -262,10 +270,15 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
     abortControllerRef.current?.abort();
     abortControllerRef.current = null;
 
+    // Track whether a preview was actually running so we only mute audio
+    // for genuine borrowed-preview teardowns, not defensive cleanup calls
+    // (e.g. from handleDeleteSession when no preview was started).
+    const hadActivePreview = !!(previewIdRef.current && previewSessionIdRef.current);
+
     // Tear down server-side preview
-    if (previewIdRef.current && previewSessionIdRef.current) {
+    if (hadActivePreview) {
       try {
-        await stopPreview(previewSessionIdRef.current, previewIdRef.current);
+        await stopPreview(previewSessionIdRef.current!, previewIdRef.current!);
       } catch {
         // Best-effort teardown; the server may have already cleaned up
       }
@@ -273,10 +286,24 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
       previewSessionIdRef.current = null;
     }
     // Only disconnect the MoQ connection if the preview created it.
+    // Disconnecting unconditionally would kill StreamView inputs (mic,
+    // camera, screen) that are still publishing to the pipeline.
     if (previewOwnsConnectionRef.current) {
       previewDisconnect();
       previewOwnsConnectionRef.current = false;
+    } else if (hadActivePreview) {
+      // For borrowed connections we keep the MoQ connection alive, but
+      // must silence the audio emitter so the user doesn't hear audio
+      // playing in the background after dismissing the preview.
+      const emitter = useStreamStore.getState().audioEmitter;
+      if (emitter) {
+        emitter.muted.set(true);
+      }
     }
+    // For borrowed connections, mark the preview as dismissed so the
+    // MonitorView hides the panel even though the store is still connected.
+    setPreviewDismissed(true);
+    setIsPreviewLoading(false);
     setPreviewError(null);
   }, [previewDisconnect]);
 
