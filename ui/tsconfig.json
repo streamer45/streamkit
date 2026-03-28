@@ -6,8 +6,7 @@
     "module": "ESNext",
     "lib": [
       "ES2022",
-      "DOM",
-      "DOM.Iterable"
+      "DOM"
     ],
     "skipLibCheck": true,
     /* Bundler mode */
@@ -25,7 +24,6 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true,
     /* Path aliases for shadcn */
-    "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"]
     }
