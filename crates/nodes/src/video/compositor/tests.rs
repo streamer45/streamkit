@@ -285,8 +285,6 @@ fn test_rasterize_text_overlay_produces_pixels() {
         },
         color: [255, 255, 0, 255],
         font_size: 24,
-        font_path: None,
-        font_data_base64: None,
         font_name: None,
     };
     let overlay = rasterize_text_overlay(&cfg, 7680, 10_000);

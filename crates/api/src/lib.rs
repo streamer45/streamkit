@@ -597,6 +597,27 @@ pub struct AudioAsset {
     pub is_system: bool,
 }
 
+// --- Font Assets ---
+
+#[derive(Serialize, Deserialize, Debug, Clone, TS)]
+#[ts(export)]
+pub struct FontAsset {
+    /// Unique identifier (filename, including extension)
+    pub id: String,
+    /// Display name (e.g. "Inter", "Roboto Bold")
+    pub name: String,
+    /// Server-relative path suitable for compositor `font_name`
+    /// (e.g. `samples/fonts/system/Inter.ttf`)
+    pub path: String,
+    /// File extension/format (ttf, otf)
+    pub format: String,
+    /// File size in bytes
+    #[ts(type = "number")]
+    pub size_bytes: u64,
+    /// Whether this is a system asset (true) or user upload (false)
+    pub is_system: bool,
+}
+
 // --- Image Assets ---
 
 #[derive(Serialize, Deserialize, Debug, Clone, TS)]

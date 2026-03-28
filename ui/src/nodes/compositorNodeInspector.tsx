@@ -17,7 +17,9 @@
  */
 
 import { useAtomValue } from 'jotai/react';
-import React, { useCallback, useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+
+import type { FontAsset } from '@/types/generated/api-types';
 
 import {
   selectedLayerIdAtom,
@@ -38,11 +40,13 @@ import {
 import type { LayerKind } from '@/hooks/compositorConstants';
 import type { TextOverlayState, ImageOverlayState } from '@/hooks/compositorLayerParsers';
 
+import { listFontAssets } from '@/services/fontAssets';
+
 import {
+  BUNDLED_FONT_OPTIONS,
   ColorInput,
   ControlRow,
   ControlValue,
-  FONT_OPTIONS,
   FontSelect,
   InspectorControls,
   InspectorSection,
@@ -119,6 +123,23 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
     const internalTextInputRef = useRef<HTMLTextAreaElement>(null);
     const textInputRef = externalTextInputRef ?? internalTextInputRef;
 
+    // ── Font assets from API ───────────────────────────────────────────────
+    const [fontAssets, setFontAssets] = useState<FontAsset[]>([]);
+
+    useEffect(() => {
+      let cancelled = false;
+      listFontAssets()
+        .then((assets) => {
+          if (!cancelled) setFontAssets(assets);
+        })
+        .catch(() => {
+          // Silently fall back to bundled-only fonts on error.
+        });
+      return () => {
+        cancelled = true;
+      };
+    }, []);
+
     // ── Stable callbacks (must be before early return) ─────────────────────
 
     const handleOpacityChange = useCallback(
@@ -187,6 +208,15 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
     );
 
     // ── Text inspector children ────────────────────────────────────────────
+    const systemFonts = useMemo(
+      () => fontAssets.filter((a) => a.is_system),
+      [fontAssets]
+    );
+    const userFonts = useMemo(
+      () => fontAssets.filter((a) => !a.is_system),
+      [fontAssets]
+    );
+
     const textInspectorChildren = useMemo(() => {
       if (!selectedTextOverlay) return null;
       return (
@@ -232,11 +262,31 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
                 disabled={disabled}
                 className="nodrag nopan"
               >
-                {FONT_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
+                <optgroup label="Bundled">
+                  {BUNDLED_FONT_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </optgroup>
+                {systemFonts.length > 0 && (
+                  <optgroup label="System">
+                    {systemFonts.map((font) => (
+                      <option key={font.path} value={font.path}>
+                        {font.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {userFonts.length > 0 && (
+                  <optgroup label="User">
+                    {userFonts.map((font) => (
+                      <option key={font.path} value={font.path}>
+                        {font.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
               </FontSelect>
             </OverlayEditRow>
             <OverlayEditRow>
@@ -283,7 +333,7 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
       );
       // textInputRef is a stable useRef — omitted from deps intentionally.
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [selectedTextOverlay, updateTextOverlay, disabled, onInteractionStart, onInteractionEnd]);
+    }, [selectedTextOverlay, updateTextOverlay, disabled, onInteractionStart, onInteractionEnd, systemFonts, userFonts]);
 
     // ── Early return after all hooks ───────────────────────────────────────
     const source = selectedLayer ?? selectedTextOverlay ?? selectedImageOverlay;

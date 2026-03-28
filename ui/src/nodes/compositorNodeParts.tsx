@@ -337,15 +337,20 @@ export function hexToRgba(hex: string, alpha: number): [number, number, number, 
   return [r, g, b, alpha];
 }
 
-/** Available named fonts matching the server's bundled font set. */
-export const FONT_OPTIONS = [
-  { value: 'dejavu-sans', label: 'Sans' },
-  { value: 'dejavu-serif', label: 'Serif' },
-  { value: 'dejavu-sans-mono', label: 'Monospace' },
-  { value: 'dejavu-sans-bold', label: 'Sans Bold' },
-  { value: 'dejavu-serif-bold', label: 'Serif Bold' },
-  { value: 'dejavu-sans-mono-bold', label: 'Monospace Bold' },
+/** Bundled fonts that are always available (compiled into the server binary). */
+export const BUNDLED_FONT_OPTIONS = [
+  { value: 'dejavu-sans', label: 'DejaVu Sans' },
+  { value: 'dejavu-serif', label: 'DejaVu Serif' },
+  { value: 'dejavu-sans-mono', label: 'DejaVu Mono' },
+  { value: 'dejavu-sans-bold', label: 'DejaVu Sans Bold' },
+  { value: 'dejavu-serif-bold', label: 'DejaVu Serif Bold' },
+  { value: 'dejavu-sans-mono-bold', label: 'DejaVu Mono Bold' },
 ] as const;
+
+/**
+ * @deprecated Use BUNDLED_FONT_OPTIONS instead. Kept for backward compatibility.
+ */
+export const FONT_OPTIONS = BUNDLED_FONT_OPTIONS;
 
 export const FontSelect = styled.select`
   flex: 1;

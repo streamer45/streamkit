@@ -296,7 +296,7 @@ function serializeSpatialFields(o: OverlayBase) {
 /** Serialize text overlays back to config format */
 export function serializeTextOverlays(
   overlays: TextOverlayState[]
-): Omit<TextOverlayConfig, 'font_path' | 'font_data_base64'>[] {
+): Omit<TextOverlayConfig, 'transform'>[] {
   return overlays.map((o) => ({
     id: o.id,
     text: o.text,
