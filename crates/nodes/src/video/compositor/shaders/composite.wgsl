@@ -38,7 +38,10 @@ struct LayerUniforms {
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
+    /// Source-remapped UV for texture sampling (after crop/zoom).
     @location(0) uv: vec2<f32>,
+    /// Original quad-space UV [0,1] for geometry tests (circle crop).
+    @location(1) quad_uv: vec2<f32>,
 }
 
 // Fullscreen quad: two triangles from 6 vertices (no index buffer needed).
@@ -70,6 +73,8 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
     // Remap UVs to the source sub-region (crop/zoom).
     let uv = uvs[vi];
     out.uv = mix(layer.src_region.xy, layer.src_region.zw, uv);
+    // Pass original quad-space UV for circle-crop (unaffected by crop/zoom).
+    out.quad_uv = uv;
 
     return out;
 }
@@ -83,10 +88,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     // Circle-crop: discard fragments outside the unit circle inscribed
-    // in the quad.  Uses smoothstep for 1px anti-aliased edges.
+    // in the quad.  Uses quad_uv (original [0,1] space) so the circle
+    // mask is independent of crop/zoom remapping.
     if layer.circle_crop > 0.5 {
         let centre = vec2<f32>(0.5, 0.5);
-        let dist = length(in.uv - centre) * 2.0;
+        let dist = length(in.quad_uv - centre) * 2.0;
         if dist > 1.0 {
             discard;
         }
