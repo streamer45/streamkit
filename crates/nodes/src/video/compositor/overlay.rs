@@ -274,8 +274,7 @@ fn resolve_font_source(config: &TextOverlayConfig) -> (FontKey, FontBytesLoader<
             let key = FontKey::Asset(name.clone());
             let path = name.clone();
             let loader = move || {
-                std::fs::read(&path)
-                    .map_err(|e| format!("Failed to read font asset '{path}': {e}"))
+                std::fs::read(&path).map_err(|e| format!("Failed to read font asset '{path}': {e}"))
             };
             return (key, Box::new(loader));
         }
