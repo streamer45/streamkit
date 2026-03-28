@@ -440,10 +440,7 @@ async fn inject_subgraph_inner(
 
     // The caller guarantees at least one media type is present
     // (it returns Err before reaching here if both are false).
-    debug_assert!(
-        has_audio || has_video,
-        "inject_subgraph_inner called with no media types"
-    );
+    debug_assert!(has_audio || has_video, "inject_subgraph_inner called with no media types");
 
     Ok(())
 }
