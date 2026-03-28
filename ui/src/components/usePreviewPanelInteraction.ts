@@ -29,6 +29,17 @@ const CHROME_HEIGHT = 41;
 const MIN_HEIGHT = 100;
 const MAX_HEIGHT = 800;
 
+/** All resize edges and corners supported by the preview panel. */
+export type ResizeEdge =
+  | 'left'
+  | 'top'
+  | 'right'
+  | 'bottom'
+  | 'top-left'
+  | 'top-right'
+  | 'bottom-left'
+  | 'bottom-right';
+
 interface PanelInteraction {
   pos: { right: number; bottom: number };
   panelWidth: number;
@@ -39,7 +50,7 @@ interface PanelInteraction {
   toggleCollapsed: () => void;
   toggleFullscreen: () => void;
   panelStyle: React.CSSProperties;
-  handleResizeStart: (edge: 'left' | 'top' | 'right' | 'bottom', e: React.PointerEvent) => void;
+  handleResizeStart: (edge: ResizeEdge, e: React.PointerEvent) => void;
   handleDragStart: (e: React.PointerEvent) => void;
 }
 
@@ -98,7 +109,7 @@ export function usePreviewPanelInteraction(aspectRatio?: string): PanelInteracti
     origHeight: number;
     origRight: number;
     origBottom: number;
-    edge: 'left' | 'top' | 'right' | 'bottom';
+    edge: ResizeEdge;
   } | null>(null);
 
   // Track active document listeners so the cleanup effect can remove them on unmount.
@@ -108,7 +119,7 @@ export function usePreviewPanelInteraction(aspectRatio?: string): PanelInteracti
   } | null>(null);
 
   const handleResizeStart = useCallback(
-    (edge: 'left' | 'top' | 'right' | 'bottom', e: React.PointerEvent) => {
+    (edge: ResizeEdge, e: React.PointerEvent) => {
       e.preventDefault();
       e.stopPropagation();
       resizeRef.current = {
@@ -136,41 +147,43 @@ export function usePreviewPanelInteraction(aspectRatio?: string): PanelInteracti
         const dx = ev.clientX - startX;
         const dy = ev.clientY - startY;
 
-        switch (curEdge) {
-          case 'left': {
-            // Panel extends left, right stays fixed.
-            const newW = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, origWidth - dx));
-            setPanelWidth(newW);
-            break;
-          }
-          case 'right': {
-            // Right edge moves right, left edge stays fixed.
-            const newW = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, origWidth + dx));
-            setPanelWidth(newW);
-            setPos((prev) => ({
-              ...prev,
-              right: Math.max(0, origRight - (newW - origWidth)),
-            }));
-            break;
-          }
-          case 'top': {
-            // Panel extends up, bottom stays fixed.
-            const newH = Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, origHeight - dy));
-            setPanelHeight(newH);
-            userResizedVertically.current = true;
-            break;
-          }
-          case 'bottom': {
-            // Bottom edge moves down, top edge stays fixed.
-            const newH = Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, origHeight + dy));
-            setPanelHeight(newH);
-            setPos((prev) => ({
-              ...prev,
-              bottom: Math.max(0, origBottom - (newH - origHeight)),
-            }));
-            userResizedVertically.current = true;
-            break;
-          }
+        // Determine which axes this edge/corner affects.
+        const touchesLeft =
+          curEdge === 'left' || curEdge === 'top-left' || curEdge === 'bottom-left';
+        const touchesRight =
+          curEdge === 'right' || curEdge === 'top-right' || curEdge === 'bottom-right';
+        const touchesTop = curEdge === 'top' || curEdge === 'top-left' || curEdge === 'top-right';
+        const touchesBottom =
+          curEdge === 'bottom' || curEdge === 'bottom-left' || curEdge === 'bottom-right';
+
+        if (touchesLeft) {
+          // Panel extends left, right stays fixed.
+          const newW = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, origWidth - dx));
+          setPanelWidth(newW);
+        } else if (touchesRight) {
+          // Right edge moves right, left edge stays fixed.
+          const newW = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, origWidth + dx));
+          setPanelWidth(newW);
+          setPos((prev) => ({
+            ...prev,
+            right: Math.max(0, origRight - (newW - origWidth)),
+          }));
+        }
+
+        if (touchesTop) {
+          // Panel extends up, bottom stays fixed.
+          const newH = Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, origHeight - dy));
+          setPanelHeight(newH);
+          userResizedVertically.current = true;
+        } else if (touchesBottom) {
+          // Bottom edge moves down, top edge stays fixed.
+          const newH = Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, origHeight + dy));
+          setPanelHeight(newH);
+          setPos((prev) => ({
+            ...prev,
+            bottom: Math.max(0, origBottom - (newH - origHeight)),
+          }));
+          userResizedVertically.current = true;
         }
       };
 

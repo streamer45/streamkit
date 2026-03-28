@@ -729,6 +729,10 @@ function computeResizePosition(
     if (handle.includes('w')) newX = orig.x + (orig.width - newW);
   }
 
+  // Clamp dimensions so layers cannot grow larger than the canvas.
+  newW = Math.min(newW, canvasWidth);
+  newH = Math.min(newH, canvasHeight);
+
   return { ...orig, x: newX, y: newY, width: newW, height: newH };
 }
 

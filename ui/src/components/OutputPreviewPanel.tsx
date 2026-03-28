@@ -19,7 +19,7 @@ import { useVideoCanvas } from '@/hooks/useVideoCanvas';
 import { useStreamStore } from '@/stores/streamStore';
 import type { WatchStatus } from '@/stores/streamStore';
 
-import { usePreviewPanelInteraction } from './usePreviewPanelInteraction';
+import { usePreviewPanelInteraction, type ResizeEdge } from './usePreviewPanelInteraction';
 
 // ---------------------------------------------------------------------------
 // Styled components
@@ -82,6 +82,50 @@ const ResizeEdgeBottom = styled.div`
   height: 6px;
   cursor: ns-resize;
   z-index: 25;
+`;
+
+/** Invisible resize handle on the top-left corner. */
+const ResizeCornerTopLeft = styled.div`
+  position: absolute;
+  top: -3px;
+  left: -3px;
+  width: 12px;
+  height: 12px;
+  cursor: nwse-resize;
+  z-index: 26;
+`;
+
+/** Invisible resize handle on the top-right corner. */
+const ResizeCornerTopRight = styled.div`
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 12px;
+  height: 12px;
+  cursor: nesw-resize;
+  z-index: 26;
+`;
+
+/** Invisible resize handle on the bottom-left corner. */
+const ResizeCornerBottomLeft = styled.div`
+  position: absolute;
+  bottom: -3px;
+  left: -3px;
+  width: 12px;
+  height: 12px;
+  cursor: nesw-resize;
+  z-index: 26;
+`;
+
+/** Invisible resize handle on the bottom-right corner. */
+const ResizeCornerBottomRight = styled.div`
+  position: absolute;
+  bottom: -3px;
+  right: -3px;
+  width: 12px;
+  height: 12px;
+  cursor: nwse-resize;
+  z-index: 26;
 `;
 
 const DragHeader = styled.div`
@@ -284,15 +328,31 @@ const PanelHeaderButtons: React.FC<{
 ));
 PanelHeaderButtons.displayName = 'PanelHeaderButtons';
 
-/** Resize edge handles shown around the panel when not collapsed/fullscreen. */
+/** Resize edge and corner handles shown around the panel when not collapsed/fullscreen. */
 const ResizeEdges: React.FC<{
-  onResizeStart: (edge: 'left' | 'top' | 'right' | 'bottom', e: React.PointerEvent) => void;
+  onResizeStart: (edge: ResizeEdge, e: React.PointerEvent) => void;
 }> = React.memo(({ onResizeStart }) => (
   <>
     <ResizeEdgeLeft className="nodrag nopan" onPointerDown={(e) => onResizeStart('left', e)} />
     <ResizeEdgeTop className="nodrag nopan" onPointerDown={(e) => onResizeStart('top', e)} />
     <ResizeEdgeRight className="nodrag nopan" onPointerDown={(e) => onResizeStart('right', e)} />
     <ResizeEdgeBottom className="nodrag nopan" onPointerDown={(e) => onResizeStart('bottom', e)} />
+    <ResizeCornerTopLeft
+      className="nodrag nopan"
+      onPointerDown={(e) => onResizeStart('top-left', e)}
+    />
+    <ResizeCornerTopRight
+      className="nodrag nopan"
+      onPointerDown={(e) => onResizeStart('top-right', e)}
+    />
+    <ResizeCornerBottomLeft
+      className="nodrag nopan"
+      onPointerDown={(e) => onResizeStart('bottom-left', e)}
+    />
+    <ResizeCornerBottomRight
+      className="nodrag nopan"
+      onPointerDown={(e) => onResizeStart('bottom-right', e)}
+    />
   </>
 ));
 ResizeEdges.displayName = 'ResizeEdges';

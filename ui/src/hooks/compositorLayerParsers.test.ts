@@ -767,6 +767,22 @@ describe('computeUpdatedLayer text overlay free resize', () => {
     expect(result.x).toBe(60);
     expect(result.y).toBe(80);
   });
+
+  it('clamps text overlay dimensions to canvas size', () => {
+    const orig = makeLayer({ x: 100, y: 100, width: 300, height: 36 });
+    // Drag east handle far enough to exceed canvas width
+    const result = computeUpdatedLayer(orig, 'resize', 'e', 2000, 0, CW, CH, 'text');
+    expect(result.width).toBeLessThanOrEqual(CW);
+    expect(result.height).toBe(36);
+  });
+
+  it('clamps all layer types to canvas dimensions on resize', () => {
+    const orig = makeLayer({ x: 100, y: 100, width: 640, height: 480 });
+    // Even AR-constrained layers should not exceed canvas size
+    const result = computeUpdatedLayer(orig, 'resize', 'e', 5000, 0, CW, CH, 'video');
+    expect(result.width).toBeLessThanOrEqual(CW);
+    expect(result.height).toBeLessThanOrEqual(CH);
+  });
 });
 
 // ── parseImageOverlays / serializeImageOverlays ─────────────────────────────
