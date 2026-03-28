@@ -66,9 +66,9 @@ struct RgbaToYuvParams {
     y_stride: u32,
     /// Row stride (bytes) for the UV output buffer.
     uv_stride: u32,
-    /// Chroma width  (width / 2).
+    /// Chroma width  (width.div_ceil(2)).
     chroma_w: u32,
-    /// Chroma height (height / 2).
+    /// Chroma height (height.div_ceil(2)).
     chroma_h: u32,
     _pad: u32,
 }
@@ -422,8 +422,8 @@ impl GpuContext {
                     height,
                     &data[..y_size],
                 );
-                let chroma_w = width / 2;
-                let chroma_h = height / 2;
+                let chroma_w = width.div_ceil(2);
+                let chroma_h = height.div_ceil(2);
                 let uv_tex = self.create_and_write_rg8_texture(
                     "uv_plane_nv12",
                     chroma_w,
@@ -442,8 +442,8 @@ impl GpuContext {
                 );
                 // Pack U and V planes vertically into a single R8 texture:
                 // rows [0, chroma_h) = U, rows [chroma_h, 2*chroma_h) = V.
-                let chroma_w = width / 2;
-                let chroma_h = height / 2;
+                let chroma_w = width.div_ceil(2);
+                let chroma_h = height.div_ceil(2);
                 let u_size = (chroma_w as usize) * (chroma_h as usize);
                 let u_data = &data[y_size..y_size + u_size];
                 let v_data = &data[y_size + u_size..y_size + 2 * u_size];
@@ -834,8 +834,8 @@ impl GpuContext {
     ) -> PooledVideoData {
         let canvas = self.canvas.as_ref().expect("canvas exists");
 
-        let chroma_w = width / 2;
-        let chroma_h = height / 2;
+        let chroma_w = width.div_ceil(2);
+        let chroma_h = height.div_ceil(2);
 
         // Y buffer: one byte per pixel, rows padded to 4 bytes for u32 packing.
         let y_stride = align_up(width as usize, 4) as u32;
