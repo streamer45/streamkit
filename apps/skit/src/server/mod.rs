@@ -1892,6 +1892,10 @@ async fn destroy_session_handler(
     let shutdown_id = destroyed_id.clone();
     let tracker = app_state.shutdown_tracker.clone();
     let handle = tokio::spawn(async move {
+        // Tear down any active previews before shutting down the engine.
+        #[cfg(feature = "moq")]
+        preview::teardown_all_previews(&session).await;
+
         if let Err(e) = session.shutdown_and_wait().await {
             warn!(session_id = %shutdown_id, error = %e, "Error during engine shutdown");
             global::meter("skit_server").u64_counter("session.shutdown.errors").build().add(1, &[]);
@@ -1951,6 +1955,13 @@ async fn get_pipeline_handler(
     info!("Fetched pipeline with states for session '{}' via HTTP", session_id);
     Ok(Json(api_pipeline))
 }
+
+// ---------------------------------------------------------------------------
+// Preview API — engine-native pipeline tap
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "moq")]
+pub mod preview;
 
 /// Binding between a multipart field and an http_input node.
 struct HttpInputBinding {
@@ -3125,7 +3136,23 @@ pub fn create_app(
         .route("/api/v1/logs/stream", get(crate::log_viewer::stream_logs_handler))
         .route("/api/v1/sessions", get(list_sessions_handler).post(create_session_handler))
         .route("/api/v1/sessions/{id}", delete(destroy_session_handler))
-        .route("/api/v1/sessions/{id}/pipeline", get(get_pipeline_handler))
+        .route("/api/v1/sessions/{id}/pipeline", get(get_pipeline_handler));
+
+    // Preview routes are only available when the MoQ feature is enabled.
+    #[cfg(feature = "moq")]
+    {
+        router = router
+            .route(
+                "/api/v1/sessions/{id}/preview",
+                get(preview::list_previews_handler).post(preview::start_preview_handler),
+            )
+            .route(
+                "/api/v1/sessions/{id}/preview/{preview_id}",
+                delete(preview::stop_preview_handler),
+            );
+    }
+
+    router = router
         .route(
             "/api/v1/profile/cpu",
             get({

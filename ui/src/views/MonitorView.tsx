@@ -386,7 +386,13 @@ const MonitorViewContent: React.FC = () => {
   const isConnected = selectedSessionId ? sessionIsConnected : globalIsConnected;
 
   // Preview: watch-only MoQ connection from Monitor view.
-  const { isPreviewConnected, handleStartPreview } = useMonitorPreview(selectedSessionId, pipeline);
+  const {
+    isPreviewConnected,
+    isPreviewLoading,
+    previewError,
+    handleStartPreview,
+    handleStopPreview,
+  } = useMonitorPreview(selectedSessionId);
 
   // Use ref to avoid recreating callback when pipeline changes
   const pipelineRef = useRef(pipeline);
@@ -1155,7 +1161,10 @@ const MonitorViewContent: React.FC = () => {
             selectedSessionId={selectedSessionId}
             onDelete={handleDeleteModalOpen}
             onStartPreview={handleStartPreview}
+            onStopPreview={handleStopPreview}
             isPreviewConnected={isPreviewConnected}
+            isPreviewLoading={isPreviewLoading}
+            previewError={previewError}
           />
         </CanvasTopBar>
         {selectedSessionId && nodes.length > 0 ? (
@@ -1220,7 +1229,10 @@ const MonitorViewContent: React.FC = () => {
       colorMode,
       onInit,
       handleStartPreview,
+      handleStopPreview,
       isPreviewConnected,
+      isPreviewLoading,
+      previewError,
     ]
   );
 
