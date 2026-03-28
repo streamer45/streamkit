@@ -217,7 +217,7 @@ nodes:
         (c) => !c.from_node.startsWith(`_preview_${preview.preview_id}_`)
       );
       expect(tapConnection).toBeDefined();
-      expect(tapConnection!.mode).toBe('BestEffort');
+      expect(tapConnection!.mode).toBe('best_effort');
 
       // ── 4. List previews ─────────────────────────────────────────────────
       const listResponse = await apiContext.get(`/api/v1/sessions/${sessionId}/preview`);
