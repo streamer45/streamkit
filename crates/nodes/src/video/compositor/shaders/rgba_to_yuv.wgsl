@@ -15,9 +15,10 @@
 // Outputs are storage buffers (not storage textures) because R8Unorm and
 // Rg8Unorm don't universally support STORAGE_BINDING across GPU vendors.
 //
-// Byte packing: each u32 in the buffer holds 4 packed bytes (little-endian).
-// Each byte position is written by exactly one thread, so there is no race
-// and we can safely use read-modify-write (OR) on a zero-initialised buffer.
+// Byte packing: each atomic<u32> in the buffer holds 4 packed bytes
+// (little-endian).  Multiple threads may contribute different bytes to
+// the same u32, so we use atomicOr to merge them without data races.
+// The buffer must be zero-filled before dispatch.
 
 struct Params {
     width: u32,
@@ -37,8 +38,8 @@ struct Params {
 }
 
 @group(0) @binding(0) var input: texture_2d<f32>;
-@group(0) @binding(1) var<storage, read_write> y_buf: array<u32>;
-@group(0) @binding(2) var<storage, read_write> uv_buf: array<u32>;
+@group(0) @binding(1) var<storage, read_write> y_buf: array<atomic<u32>>;
+@group(0) @binding(2) var<storage, read_write> uv_buf: array<atomic<u32>>;
 @group(0) @binding(3) var<uniform> params: Params;
 
 // Convert a single RGBA pixel to YUV.
@@ -71,14 +72,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let rgba = textureLoad(input, coord, 0);
     let yuv = rgb_to_yuv(rgba.rgb);
 
-    // Write Y for every pixel.
-    // Inline byte-packing: naga disallows ptr<storage, read_write> as fn arg.
+    // Write Y for every pixel using atomicOr to avoid data races.
+    // Multiple threads contribute different byte lanes to the same u32.
     {
         let y_val = u32(yuv.x * 255.0 + 0.5);
         let byte_idx = y * params.y_stride + x;
         let word_idx = byte_idx / 4u;
         let lane = byte_idx % 4u;
-        y_buf[word_idx] = y_buf[word_idx] | (y_val << (lane * 8u));
+        atomicOr(&y_buf[word_idx], y_val << (lane * 8u));
     }
 
     // Write chroma for top-left pixel of each 2×2 block only.
@@ -108,11 +109,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
             let w0 = uv_byte_0 / 4u;
             let l0 = uv_byte_0 % 4u;
-            uv_buf[w0] = uv_buf[w0] | (cb_val << (l0 * 8u));
+            atomicOr(&uv_buf[w0], cb_val << (l0 * 8u));
 
             let w1 = uv_byte_1 / 4u;
             let l1 = uv_byte_1 % 4u;
-            uv_buf[w1] = uv_buf[w1] | (cr_val << (l1 * 8u));
+            atomicOr(&uv_buf[w1], cr_val << (l1 * 8u));
         } else {
             // I420: separate U and V planes, packed sequentially.
             // U plane: rows [0, chroma_h)
@@ -122,11 +123,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
             let uw = u_byte / 4u;
             let ul = u_byte % 4u;
-            uv_buf[uw] = uv_buf[uw] | (cb_val << (ul * 8u));
+            atomicOr(&uv_buf[uw], cb_val << (ul * 8u));
 
             let vw = v_byte / 4u;
             let vl = v_byte % 4u;
-            uv_buf[vw] = uv_buf[vw] | (cr_val << (vl * 8u));
+            atomicOr(&uv_buf[vw], cr_val << (vl * 8u));
         }
     }
 }
