@@ -127,6 +127,15 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
   const handleStartPreview = useCallback(async () => {
     if (!selectedSessionId) return;
 
+    // Clean up any existing server-side preview before creating a new one.
+    // This handles the case where the MoQ connection dropped but the
+    // server-side preview subgraph is still active.
+    if (previewIdRef.current && previewSessionIdRef.current) {
+      stopPreview(previewSessionIdRef.current, previewIdRef.current).catch(() => {});
+      previewIdRef.current = null;
+      previewSessionIdRef.current = null;
+    }
+
     // Cancel any previous in-flight request
     abortControllerRef.current?.abort();
     const controller = new AbortController();
