@@ -164,6 +164,9 @@ export const VideoLayer: React.FC<{
   const borderColor = isSelected ? 'var(--sk-primary)' : `hsla(${hue}, 70%, 65%, 0.8)`;
   const bgColor = isSelected ? `hsla(${hue}, 60%, 50%, 0.25)` : `hsla(${hue}, 60%, 50%, 0.15)`;
 
+  // Circle crop indicator dimensions — computed once, used in JSX below.
+  const circleDiameter = layer.cropShape === 'circle' ? Math.min(layer.width, layer.height) : 0;
+
   return (
     <LayerBox
       ref={layerRef}
@@ -186,33 +189,27 @@ export const VideoLayer: React.FC<{
           style={{
             position: 'absolute',
             inset: 0,
-            clipPath: `circle(${Math.min(layer.width, layer.height) / 2}px at 50% 50%)`,
+            clipPath: `circle(${circleDiameter / 2}px at 50% 50%)`,
             background: bgColor,
             pointerEvents: 'none',
           }}
         />
       )}
-      {layer.cropShape === 'circle' &&
-        isSelected &&
-        (() => {
-          const r = Math.min(layer.width, layer.height) / 2;
-          const d = r * 2;
-          return (
-            <div
-              style={{
-                position: 'absolute',
-                width: d,
-                height: d,
-                top: '50%',
-                left: '50%',
-                transform: 'translate(-50%, -50%)',
-                borderRadius: '50%',
-                border: `2px dashed ${borderColor}`,
-                pointerEvents: 'none',
-              }}
-            />
-          );
-        })()}
+      {layer.cropShape === 'circle' && isSelected && (
+        <div
+          style={{
+            position: 'absolute',
+            width: circleDiameter,
+            height: circleDiameter,
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            borderRadius: '50%',
+            border: `2px dashed ${borderColor}`,
+            pointerEvents: 'none',
+          }}
+        />
+      )}
       <LayerLabel>{layer.id}</LayerLabel>
       <LayerDimensions>
         {Math.round(layer.width)}&times;{Math.round(layer.height)}

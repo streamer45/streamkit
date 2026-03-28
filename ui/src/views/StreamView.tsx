@@ -3,12 +3,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import styled from '@emotion/styled';
+import { Volume2, VolumeX } from 'lucide-react';
 import React, { useEffect, useCallback, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useShallow } from 'zustand/shallow';
 
 import ConfirmModal from '@/components/ConfirmModal';
-import { useAudioControls } from '@/components/OutputPreviewPanel';
+import { VolumeSlider } from '@/components/OutputPreviewPanel';
 import { PipelineSelectionSection } from '@/components/stream/PipelineSelectionSection';
 import { TelemetryTimeline as TelemetryTimelineComponent } from '@/components/TelemetryTimeline';
 import {
@@ -24,6 +25,7 @@ import {
   TechnicalDetailsToggle,
   TechnicalDetails,
 } from '@/components/ui/ViewLayout';
+import { useAudioControls } from '@/hooks/useAudioControls';
 import { useStreamViewState } from '@/hooks/useStreamViewState';
 import { useVideoCanvas } from '@/hooks/useVideoCanvas';
 import { useWebSocket } from '@/hooks/useWebSocket';
@@ -1125,16 +1127,16 @@ const StreamView: React.FC = () => {
                       title={muted ? 'Unmute' : 'Mute'}
                       style={{ padding: '4px 8px', fontSize: 12 }}
                     >
-                      {muted ? '🔇' : '🔊'}
+                      {muted ? <VolumeX size={14} /> : <Volume2 size={14} />}
                     </ControlButton>
-                    <input
+                    <VolumeSlider
                       type="range"
                       min={0}
                       max={1}
                       step={0.05}
                       value={muted ? 0 : volume}
                       onChange={(e) => changeVolume(Number(e.target.value))}
-                      style={{ flex: 1, maxWidth: 120, accentColor: 'var(--sk-primary)' }}
+                      style={{ width: 120 }}
                       title={`Volume: ${Math.round((muted ? 0 : volume) * 100)}%`}
                     />
                   </div>

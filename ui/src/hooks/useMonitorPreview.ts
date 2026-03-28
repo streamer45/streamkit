@@ -147,6 +147,7 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
       );
       setPreviewError(null);
       setIsPreviewLoading(false);
+      setPreviewDismissed(false);
     }
 
     // Cleanup on unmount — fire-and-forget for the same reason as above.

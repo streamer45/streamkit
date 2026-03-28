@@ -12,9 +12,10 @@
 
 import styled from '@emotion/styled';
 import { Maximize2, Minimize2, Volume2, VolumeX } from 'lucide-react';
-import React, { useCallback, useEffect, useState } from 'react';
+import React from 'react';
 import { useShallow } from 'zustand/shallow';
 
+import { useAudioControls } from '@/hooks/useAudioControls';
 import { useVideoCanvas } from '@/hooks/useVideoCanvas';
 import { useStreamStore } from '@/stores/streamStore';
 import type { ConnectionStatus, WatchStatus } from '@/stores/streamStore';
@@ -232,6 +233,12 @@ const BufferingOverlay = styled.div`
   border-radius: 3px;
 `;
 
+/** Variant of BufferingOverlay used when no canvas is mounted yet (connecting
+ *  state).  Uses `position: relative` so it occupies layout space. */
+const ConnectingOverlay = styled(BufferingOverlay)`
+  position: relative;
+`;
+
 /** Small inline spinner for the buffering/connecting overlay. */
 const OverlaySpinner = styled.div`
   @keyframes preview-spin {
@@ -247,7 +254,7 @@ const OverlaySpinner = styled.div`
   animation: preview-spin 0.8s linear infinite;
 `;
 
-const VolumeSlider = styled.input`
+export const VolumeSlider = styled.input`
   -webkit-appearance: none;
   appearance: none;
   width: 56px;
@@ -301,58 +308,11 @@ const FullscreenCanvas = styled.canvas`
 `;
 
 // ---------------------------------------------------------------------------
-// Hooks
+// Hooks — re-exported from dedicated module for backward compatibility
 // ---------------------------------------------------------------------------
 
-/** Subscribe to an audioEmitter's muted/volume signals and return React state. */
-export function useAudioControls(
-  audioEmitter: {
-    muted: {
-      peek(): boolean;
-      set(v: boolean): void;
-      subscribe(fn: (v: boolean) => void): () => void;
-    };
-    volume: {
-      peek(): number;
-      set(v: number): void;
-      subscribe(fn: (v: number) => void): () => void;
-    };
-  } | null
-) {
-  const [muted, setMuted] = useState(() => audioEmitter?.muted.peek() ?? true);
-  const [volume, setVolume] = useState(() => audioEmitter?.volume.peek() ?? 0.5);
-
-  useEffect(() => {
-    if (!audioEmitter) return;
-    setMuted(audioEmitter.muted.peek());
-    setVolume(audioEmitter.volume.peek());
-    const unsubMuted = audioEmitter.muted.subscribe(setMuted);
-    const unsubVolume = audioEmitter.volume.subscribe(setVolume);
-    return () => {
-      unsubMuted();
-      unsubVolume();
-    };
-  }, [audioEmitter]);
-
-  const toggleMute = useCallback(() => {
-    if (!audioEmitter) return;
-    audioEmitter.muted.set(!audioEmitter.muted.peek());
-  }, [audioEmitter]);
-
-  const changeVolume = useCallback(
-    (v: number) => {
-      if (!audioEmitter) return;
-      audioEmitter.volume.set(v);
-      // Un-mute when the user drags the slider up from zero.
-      if (v > 0 && audioEmitter.muted.peek()) {
-        audioEmitter.muted.set(false);
-      }
-    },
-    [audioEmitter]
-  );
-
-  return { muted, volume, toggleMute, changeVolume };
-}
+// Re-export so existing imports from this file continue to work.
+export { useAudioControls } from '@/hooks/useAudioControls';
 
 // ---------------------------------------------------------------------------
 // Sub-components
@@ -417,10 +377,10 @@ const PreviewBody: React.FC<{
     if (isConnecting) {
       return (
         <CanvasWrapper>
-          <BufferingOverlay style={{ position: 'relative' }}>
+          <ConnectingOverlay>
             <OverlaySpinner />
             Connecting…
-          </BufferingOverlay>
+          </ConnectingOverlay>
         </CanvasWrapper>
       );
     }
