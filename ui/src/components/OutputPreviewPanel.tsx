@@ -451,6 +451,7 @@ const PanelHeaderButtons: React.FC<{
             step={0.05}
             value={muted ? 0 : volume}
             onChange={(e) => onVolumeChange(Number(e.target.value))}
+            onPointerDown={(e) => e.stopPropagation()}
             className="nodrag nopan"
             title={`Volume: ${Math.round((muted ? 0 : volume) * 100)}%`}
           />
