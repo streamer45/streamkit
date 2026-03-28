@@ -2203,7 +2203,8 @@ mod preview {
         tap_points: &[TapPoint],
         gateway_path: &str,
         pipeline: &Pipeline,
-    ) -> Result<(Vec<(String, String)>, Vec<(String, String, String, String)>, bool, bool), String> {
+    ) -> Result<(Vec<(String, String)>, Vec<(String, String, String, String)>, bool, bool), String>
+    {
         let prefix = format!("_preview_{preview_id}_");
 
         // Validate all tap points exist in the pipeline.
@@ -2704,9 +2705,7 @@ mod preview {
                         .map_err(|status| (status, "Engine registry unavailable".to_string()))?;
                     let node_kind = &pipeline.nodes[&node].kind;
                     let pin_name = if let Some(def) = registry.get_definition(node_kind) {
-                        def.outputs
-                            .first()
-                            .map_or_else(|| "out".to_string(), |p| p.name.clone())
+                        def.outputs.first().map_or_else(|| "out".to_string(), |p| p.name.clone())
                     } else {
                         "out".to_string()
                     };
