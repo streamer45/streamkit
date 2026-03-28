@@ -11,13 +11,13 @@
  */
 
 import styled from '@emotion/styled';
-import { Maximize2, Minimize2 } from 'lucide-react';
-import React from 'react';
+import { Maximize2, Minimize2, Volume2, VolumeX } from 'lucide-react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useShallow } from 'zustand/shallow';
 
 import { useVideoCanvas } from '@/hooks/useVideoCanvas';
 import { useStreamStore } from '@/stores/streamStore';
-import type { WatchStatus } from '@/stores/streamStore';
+import type { ConnectionStatus, WatchStatus } from '@/stores/streamStore';
 
 import { usePreviewPanelInteraction, type ResizeEdge } from './usePreviewPanelInteraction';
 
@@ -203,6 +203,63 @@ const EmptyMessage = styled.div`
   max-width: 220px;
 `;
 
+/** Wrapper around the canvas + optional overlay.  Fills the PanelBody so the
+ *  canvas can letterbox naturally via max-width / max-height / object-fit. */
+const CanvasWrapper = styled.div`
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 0;
+`;
+
+/** Semi-transparent overlay shown on the canvas while media is buffering. */
+const BufferingOverlay = styled.div`
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  color: var(--sk-text-muted);
+  font-size: 11px;
+  pointer-events: none;
+  border-radius: 3px;
+`;
+
+const VolumeSlider = styled.input`
+  -webkit-appearance: none;
+  appearance: none;
+  width: 56px;
+  height: 3px;
+  background: var(--sk-border);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+
+  &::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--sk-text);
+    cursor: pointer;
+  }
+
+  &::-moz-range-thumb {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--sk-text);
+    cursor: pointer;
+    border: none;
+  }
+`;
+
 /** The preview canvas uses max-width + max-height + aspect-ratio to
  *  letterbox/pillarbox naturally within the freely-resizable panel body.
  *  object-fit: contain ensures the drawn bitmap scales correctly. */
@@ -227,21 +284,97 @@ const FullscreenCanvas = styled.canvas`
 `;
 
 // ---------------------------------------------------------------------------
+// Hooks
+// ---------------------------------------------------------------------------
+
+/** Subscribe to an audioEmitter's muted/volume signals and return React state. */
+function useAudioControls(
+  audioEmitter: {
+    muted: {
+      peek(): boolean;
+      set(v: boolean): void;
+      subscribe(fn: (v: boolean) => void): () => void;
+    };
+    volume: {
+      peek(): number;
+      set(v: number): void;
+      subscribe(fn: (v: number) => void): () => void;
+    };
+  } | null
+) {
+  const [muted, setMuted] = useState(() => audioEmitter?.muted.peek() ?? true);
+  const [volume, setVolume] = useState(() => audioEmitter?.volume.peek() ?? 0.5);
+
+  useEffect(() => {
+    if (!audioEmitter) return;
+    setMuted(audioEmitter.muted.peek());
+    setVolume(audioEmitter.volume.peek());
+    const unsubMuted = audioEmitter.muted.subscribe(setMuted);
+    const unsubVolume = audioEmitter.volume.subscribe(setVolume);
+    return () => {
+      unsubMuted();
+      unsubVolume();
+    };
+  }, [audioEmitter]);
+
+  const toggleMute = useCallback(() => {
+    if (!audioEmitter) return;
+    audioEmitter.muted.set(!audioEmitter.muted.peek());
+  }, [audioEmitter]);
+
+  const changeVolume = useCallback(
+    (v: number) => {
+      if (!audioEmitter) return;
+      audioEmitter.volume.set(v);
+      // Un-mute when the user drags the slider up from zero.
+      if (v > 0 && audioEmitter.muted.peek()) {
+        audioEmitter.muted.set(false);
+      }
+    },
+    [audioEmitter]
+  );
+
+  return { muted, volume, toggleMute, changeVolume };
+}
+
+// ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
 
-/** Resolve the textual status label from watch/connection status. */
-function statusLabel(watchStatus: WatchStatus, isConnected: boolean): string {
+/** Human-readable connecting-step labels (mirrors StreamView). */
+const CONNECTING_STEP_TEXT: Record<string, string> = {
+  devices: 'Requesting devices',
+  relay: 'Connecting to relay',
+  pipeline: 'Waiting for pipeline',
+};
+
+/** Resolve the textual status label from connection/watch state. */
+function statusLabel(
+  connectionStatus: ConnectionStatus,
+  watchStatus: WatchStatus,
+  connectingStep: string
+): string {
+  if (connectionStatus === 'connecting') {
+    return connectingStep
+      ? (CONNECTING_STEP_TEXT[connectingStep] ?? 'Connecting...')
+      : 'Connecting...';
+  }
   if (watchStatus === 'live') return 'Live';
-  if (watchStatus === 'loading') return 'Loading...';
-  return isConnected ? 'Connected' : 'Off';
+  if (watchStatus === 'loading') return 'Buffering...';
+  return connectionStatus === 'connected' ? 'Connected' : 'Off';
 }
 
-/** Preview body – renders the appropriate canvas or empty-state message. */
+/** Preview body – renders the canvas with optional buffering overlay, or an
+ *  empty-state message when no media is available.
+ *
+ *  The canvas is mounted as soon as a video renderer exists and the store is
+ *  connected (even during the ‘loading’ phase) so that the first decoded
+ *  frame appears immediately without waiting for the watch status to reach
+ *  ‘live’.  A semi-transparent overlay covers the canvas while media is
+ *  still buffering, giving the user clear feedback about progress. */
 const PreviewBody: React.FC<{
   hasSession: boolean;
   isConnected: boolean;
-  isLive: boolean;
   hasVideoRenderer: boolean;
   watchStatus: WatchStatus;
   activeSessionId: string | null;
@@ -252,7 +385,6 @@ const PreviewBody: React.FC<{
   ({
     hasSession,
     isConnected,
-    isLive,
     hasVideoRenderer,
     watchStatus: ws,
     activeSessionId,
@@ -274,38 +406,82 @@ const PreviewBody: React.FC<{
     if (!hasVideoRenderer) {
       return <EmptyMessage>No video renderer. Enable Watch mode.</EmptyMessage>;
     }
-    if (!isLive && ws !== 'loading') {
+    if (ws !== 'loading' && ws !== 'live') {
       return (
         <EmptyMessage>
-          Waiting for video stream{activeSessionId ? ' from session' : ''}...
+          Waiting for video stream{activeSessionId ? ' from session' : ''}…
         </EmptyMessage>
       );
     }
+    // Show the canvas during both ‘loading’ and ‘live’ so video frames
+    // appear immediately.  A buffering overlay is added during loading so
+    // the user knows data is still arriving (especially when audio starts
+    // before video).
     const Canvas = isFullscreen ? FullscreenCanvas : PreviewCanvas;
-    return <Canvas ref={canvasRef} style={{ aspectRatio: canvasAspectRatio }} />;
+    return (
+      <CanvasWrapper>
+        <Canvas ref={canvasRef} style={{ aspectRatio: canvasAspectRatio }} />
+        {ws === 'loading' && <BufferingOverlay>Buffering…</BufferingOverlay>}
+      </CanvasWrapper>
+    );
   }
 );
 PreviewBody.displayName = 'PreviewBody';
 
-/** Header action buttons (fullscreen toggle + collapse toggle). */
+/** Header action buttons (audio controls + fullscreen toggle + collapse). */
 const PanelHeaderButtons: React.FC<{
   isFullscreen: boolean;
   collapsed: boolean;
   toggleFullscreen: () => void;
   toggleCollapsed: () => void;
-}> = React.memo(({ isFullscreen, collapsed, toggleFullscreen, toggleCollapsed }) => (
-  <span style={{ display: 'flex', gap: 2 }}>
-    <HeaderButton
-      onClick={toggleFullscreen}
-      title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
-    >
-      {isFullscreen ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
-    </HeaderButton>
-    <HeaderButton onClick={toggleCollapsed} title={collapsed ? 'Expand' : 'Collapse'}>
-      {collapsed ? '\u25B3' : '\u25BD'}
-    </HeaderButton>
-  </span>
-));
+  hasAudio: boolean;
+  muted: boolean;
+  volume: number;
+  onToggleMute: () => void;
+  onVolumeChange: (v: number) => void;
+}> = React.memo(
+  ({
+    isFullscreen,
+    collapsed,
+    toggleFullscreen,
+    toggleCollapsed,
+    hasAudio,
+    muted,
+    volume,
+    onToggleMute,
+    onVolumeChange,
+  }) => (
+    <span style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+      {hasAudio && (
+        <>
+          <HeaderButton onClick={onToggleMute} title={muted ? 'Unmute preview' : 'Mute preview'}>
+            {muted ? <VolumeX size={12} /> : <Volume2 size={12} />}
+          </HeaderButton>
+          <VolumeSlider
+            type="range"
+            min={0}
+            max={1}
+            step={0.05}
+            value={muted ? 0 : volume}
+            onChange={(e) => onVolumeChange(Number(e.target.value))}
+            onPointerDown={(e) => e.stopPropagation()}
+            className="nodrag nopan"
+            title={`Volume: ${Math.round((muted ? 0 : volume) * 100)}%`}
+          />
+        </>
+      )}
+      <HeaderButton
+        onClick={toggleFullscreen}
+        title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+      >
+        {isFullscreen ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
+      </HeaderButton>
+      <HeaderButton onClick={toggleCollapsed} title={collapsed ? 'Expand' : 'Collapse'}>
+        {collapsed ? '\u25B3' : '\u25BD'}
+      </HeaderButton>
+    </span>
+  )
+);
 PanelHeaderButtons.displayName = 'PanelHeaderButtons';
 
 /** Resize edge and corner handles shown around the panel when not collapsed/fullscreen. */
@@ -363,16 +539,20 @@ const FULLSCREEN_BODY_STYLE: React.CSSProperties = {
 
 const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
   ({ hasSession, conditionalRender = false }) => {
-    const { status, watchStatus, videoRenderer, activeSessionId } = useStreamStore(
-      useShallow((s) => ({
-        status: s.status,
-        watchStatus: s.watchStatus,
-        videoRenderer: s.videoRenderer,
-        activeSessionId: s.activeSessionId,
-      }))
-    );
+    const { status, watchStatus, videoRenderer, audioEmitter, activeSessionId, connectingStep } =
+      useStreamStore(
+        useShallow((s) => ({
+          status: s.status,
+          watchStatus: s.watchStatus,
+          videoRenderer: s.videoRenderer,
+          audioEmitter: s.audioEmitter,
+          activeSessionId: s.activeSessionId,
+          connectingStep: s.connectingStep,
+        }))
+      );
 
     const { canvasRef, aspectRatio: canvasAspectRatio } = useVideoCanvas(videoRenderer);
+    const { muted, volume, toggleMute, changeVolume } = useAudioControls(audioEmitter);
 
     const {
       panelRef,
@@ -392,6 +572,8 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
     const shouldShow = !conditionalRender || (isConnected && (isLive || watchStatus === 'loading'));
     if (!shouldShow) return null;
 
+    const label = statusLabel(status, watchStatus, connectingStep);
+
     return (
       <FloatingPanel ref={panelRef} style={panelStyle}>
         {!isFullscreen && !collapsed && <ResizeEdges onResizeStart={handleResizeStart} />}
@@ -399,13 +581,18 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
           <HeaderLeft>
             <StatusDot status={watchStatus} />
             Preview
-            {isConnected && ` \u2014 ${statusLabel(watchStatus, isConnected)}`}
+            {(isConnected || status === 'connecting') && ` \u2014 ${label}`}
           </HeaderLeft>
           <PanelHeaderButtons
             isFullscreen={isFullscreen}
             collapsed={collapsed}
             toggleFullscreen={toggleFullscreen}
             toggleCollapsed={toggleCollapsed}
+            hasAudio={!!audioEmitter}
+            muted={muted}
+            volume={volume}
+            onToggleMute={toggleMute}
+            onVolumeChange={changeVolume}
           />
         </DragHeader>
         {!collapsed && (
@@ -417,7 +604,6 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
             <PreviewBody
               hasSession={hasSession}
               isConnected={isConnected}
-              isLive={isLive}
               hasVideoRenderer={!!videoRenderer}
               watchStatus={watchStatus}
               activeSessionId={activeSessionId}
