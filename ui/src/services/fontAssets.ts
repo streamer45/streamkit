@@ -42,6 +42,7 @@ export async function listFontAssets(): Promise<FontAsset[]> {
 
 /**
  * Uploads a new font asset
+ * @public
  * @param file - The font file to upload
  * @returns A promise that resolves to the created font asset
  */
@@ -86,6 +87,7 @@ export async function uploadFontAsset(file: File): Promise<FontAsset> {
 
 /**
  * Deletes a font asset by ID
+ * @public
  * @param id - The font asset ID to delete
  */
 export async function deleteFontAsset(id: string): Promise<void> {

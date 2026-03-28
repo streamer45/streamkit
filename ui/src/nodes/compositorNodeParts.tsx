@@ -347,11 +347,6 @@ export const BUNDLED_FONT_OPTIONS = [
   { value: 'dejavu-sans-mono-bold', label: 'DejaVu Mono Bold' },
 ] as const;
 
-/**
- * @deprecated Use BUNDLED_FONT_OPTIONS instead. Kept for backward compatibility.
- */
-export const FONT_OPTIONS = BUNDLED_FONT_OPTIONS;
-
 export const FontSelect = styled.select`
   flex: 1;
   padding: 2px 4px;
