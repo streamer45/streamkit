@@ -99,7 +99,7 @@ nodes:
             - 220
           font_size: 55
           font_name: samples/fonts/system/DejaVuSans-Bold.ttf
-          font_weight: 700
+          bold: true
           opacity: 1
           rotation_degrees: 0
           z_index: 2

@@ -37,7 +37,7 @@ function makeTextOverlay(overrides: Partial<TextOverlayState> = {}): TextOverlay
     color: [255, 255, 255, 255],
     fontSize: 32,
     fontName: 'samples/fonts/system/DejaVuSans.ttf',
-    fontWeight: 400,
+    bold: false,
     opacity: 1,
     rotationDegrees: 0,
     zIndex: 100,

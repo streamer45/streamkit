@@ -96,14 +96,14 @@ font_size: number,
  */
 font_name: string | null, 
 /**
- * CSS-style font weight (100–900).  400 = normal, 700 = bold.
+ * Whether to use the bold variant of the font.
  *
- * Controls the visual thickness of the text in the UI canvas preview.
- * On the backend the weight is baked into the chosen font file, so
- * this field is primarily used by the frontend `@font-face` preview
- * to match the rasterized output.  Default 400 (normal).
+ * When `true`, the backend selects the Bold variant of the font file
+ * if one exists on disk (e.g. `DejaVuSans.ttf` → `DejaVuSans-Bold.ttf`).
+ * The UI canvas preview mirrors this by setting CSS `font-weight: 700`.
+ * Default `false` (normal weight).
  */
-font_weight: number, 
+bold: boolean, 
 /**
  * Destination rectangle on the output canvas.
  */

@@ -62,7 +62,7 @@ nodes:
           color: [255, 255, 255, 220]
           font_size: 28
           font_name: samples/fonts/system/DejaVuSans-Bold.ttf
-          font_weight: 700
+          bold: true
     needs:
       - colorbars_bg
       - vp9_decoder

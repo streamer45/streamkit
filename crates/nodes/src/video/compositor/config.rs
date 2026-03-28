@@ -142,14 +142,14 @@ pub struct TextOverlayConfig {
     /// When omitted, the default system font (DejaVu Sans) is used.
     #[serde(default)]
     pub font_name: Option<String>,
-    /// CSS-style font weight (100–900).  400 = normal, 700 = bold.
+    /// Whether to use the bold variant of the font.
     ///
-    /// Controls the visual thickness of the text in the UI canvas preview.
-    /// On the backend the weight is baked into the chosen font file, so
-    /// this field is primarily used by the frontend `@font-face` preview
-    /// to match the rasterized output.  Default 400 (normal).
-    #[serde(default = "default_font_weight")]
-    pub font_weight: u16,
+    /// When `true`, the backend selects the Bold variant of the font file
+    /// if one exists on disk (e.g. `DejaVuSans.ttf` → `DejaVuSans-Bold.ttf`).
+    /// The UI canvas preview mirrors this by setting CSS `font-weight: 700`.
+    /// Default `false` (normal weight).
+    #[serde(default)]
+    pub bold: bool,
 }
 
 pub(crate) const fn default_opacity() -> f32 {
@@ -176,10 +176,6 @@ const fn default_text_color() -> [u8; 4] {
 
 const fn default_font_size() -> u32 {
     24
-}
-
-const fn default_font_weight() -> u16 {
-    400
 }
 
 /// Generate a random UUID v4 string for overlay identity.

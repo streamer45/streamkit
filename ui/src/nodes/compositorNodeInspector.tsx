@@ -292,27 +292,16 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
               </FontSelect>
             </OverlayEditRow>
             <OverlayEditRow>
-              <span style={{ color: 'var(--sk-text-muted)', fontSize: 10 }}>Weight</span>
-              <FontSelect
-                value={selectedTextOverlay.fontWeight}
-                onChange={(e) => {
-                  const v = Number.parseInt(e.target.value, 10);
-                  if (!Number.isNaN(v))
-                    updateTextOverlay(selectedTextOverlay.id, { fontWeight: v });
-                }}
+              <span style={{ color: 'var(--sk-text-muted)', fontSize: 10 }}>Bold</span>
+              <input
+                type="checkbox"
+                checked={selectedTextOverlay.bold}
+                onChange={(e) =>
+                  updateTextOverlay(selectedTextOverlay.id, { bold: e.target.checked })
+                }
                 disabled={disabled}
                 className="nodrag nopan"
-              >
-                <option value={100}>Thin (100)</option>
-                <option value={200}>Extra Light (200)</option>
-                <option value={300}>Light (300)</option>
-                <option value={400}>Normal (400)</option>
-                <option value={500}>Medium (500)</option>
-                <option value={600}>Semi Bold (600)</option>
-                <option value={700}>Bold (700)</option>
-                <option value={800}>Extra Bold (800)</option>
-                <option value={900}>Black (900)</option>
-              </FontSelect>
+              />
             </OverlayEditRow>
             <OverlayEditRow>
               <span style={{ color: 'var(--sk-text-muted)', fontSize: 10 }}>Color</span>
