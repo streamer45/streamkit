@@ -104,11 +104,18 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
       setIsPreviewLoading(false);
     }
 
-    // Cleanup on unmount
+    // Cleanup on unmount — always disconnect since previewStatus may be
+    // stale in this closure and disconnect() is safe to call when already
+    // disconnected.
     return () => {
       abortControllerRef.current?.abort();
       abortControllerRef.current = null;
-      cleanupPreview(previewIdRef, previewSessionIdRef, previewDisconnect, previewStatus);
+      if (previewIdRef.current && previewSessionIdRef.current) {
+        stopPreview(previewSessionIdRef.current, previewIdRef.current).catch(() => {});
+        previewIdRef.current = null;
+        previewSessionIdRef.current = null;
+      }
+      previewDisconnect();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- cleanup only needs stable refs
   }, [selectedSessionId, previewDisconnect]);
