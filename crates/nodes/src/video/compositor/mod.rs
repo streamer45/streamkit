@@ -9,7 +9,7 @@
 //!
 //! ## Inputs / Outputs
 //! - Inputs: dynamic `in_*` pins (raw video, RGBA8/I420/NV12 auto-converted)
-//! - Output: `out` (composited RGBA8 frame)
+//! - Output: `out` (composited frame, RGBA8 by default or NV12/I420 via `output_format`)
 //!
 //! ## Key config fields
 //! - `width`, `height`, `fps`: output canvas dimensions and frame rate
@@ -289,9 +289,8 @@ fn fit_rect_preserving_aspect(src_w: u32, src_h: u32, bounds: &config::Rect) -> 
 /// runtime. Each input accepts `RawVideo(RGBA8)` or `RawVideo(I420)` with
 /// wildcard dimensions.
 ///
-/// Output `"out"` always produces `RawVideo(RGBA8)` at the configured canvas
-/// size.  Downstream nodes (e.g. the VP9 encoder) are responsible for any
-/// further format conversion.
+/// Output `"out"` produces `RawVideo` at the configured canvas size.  The
+/// pixel format is RGBA8 by default, or NV12/I420 when `output_format` is set.
 pub struct CompositorNode {
     config: CompositorConfig,
     /// Server-level resource limits (from `skit.toml`).
@@ -608,7 +607,13 @@ impl ProcessorNode for CompositorNode {
                         );
                         (i420_buf, PixelFormat::I420)
                     },
-                    _ => (rgba_buf, PixelFormat::Rgba8),
+                    None | Some(PixelFormat::Rgba8) => (rgba_buf, PixelFormat::Rgba8),
+                    Some(other) => {
+                        tracing::warn!(
+                            "Unsupported fused output format {other:?}, falling back to RGBA8"
+                        );
+                        (rgba_buf, PixelFormat::Rgba8)
+                    },
                 };
 
                 let result = CompositeResult { rgba_data: output_data, pixel_format };
@@ -1106,8 +1111,9 @@ impl CompositorNode {
     /// Image overlays are cached by stable overlay ID: when the asset path
     /// and target dimensions are unchanged, the previously decoded
     /// bitmap is reused (only transform fields like position, opacity, and
-    /// rotation are updated).  Text overlays are always re-rasterized
-    /// because font rendering parameters may have changed.
+    /// rotation are updated).  Text overlays are cached by config equality:
+    /// when the `TextOverlayConfig` is unchanged, the existing
+    /// `Arc<DecodedOverlay>` is reused to avoid fontdue allocation churn.
     fn apply_update_params(
         config: &mut CompositorConfig,
         limits: &GlobalCompositorConfig,
@@ -1151,7 +1157,9 @@ impl CompositorNode {
                             .map(|(i, txt_cfg)| {
                                 if let Some(old_cfg) = config.text_overlays.get(i) {
                                     if old_cfg == txt_cfg {
-                                        return Arc::clone(&text_overlays[i]);
+                                        if let Some(existing) = text_overlays.get(i) {
+                                            return Arc::clone(existing);
+                                        }
                                     }
                                 }
                                 Arc::new(rasterize_text_overlay(
