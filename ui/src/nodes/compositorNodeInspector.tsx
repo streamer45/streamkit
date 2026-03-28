@@ -19,8 +19,6 @@
 import { useAtomValue } from 'jotai/react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import type { FontAsset } from '@/types/generated/api-types';
-
 import {
   selectedLayerIdAtom,
   selectedLayerKindAtom,
@@ -39,8 +37,8 @@ import {
 } from '@/hooks/compositorAtoms';
 import type { LayerKind } from '@/hooks/compositorConstants';
 import type { TextOverlayState, ImageOverlayState } from '@/hooks/compositorLayerParsers';
-
 import { listFontAssets } from '@/services/fontAssets';
+import type { FontAsset } from '@/types/generated/api-types';
 
 import {
   BUNDLED_FONT_OPTIONS,
