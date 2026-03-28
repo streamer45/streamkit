@@ -93,7 +93,6 @@ nodes:
           color: [255, 255, 255, 180]
           font_size: 40
           font_name: samples/fonts/system/DejaVuSans-Bold.ttf
-          font_weight: 700
           z_index: 2
       output_format: nv12
     needs:

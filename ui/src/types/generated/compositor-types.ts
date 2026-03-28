@@ -96,15 +96,6 @@ font_size: number,
  */
 font_name: string | null, 
 /**
- * CSS-style font weight (100–900).  400 = normal, 700 = bold.
- *
- * Controls the visual thickness of the text in the UI canvas preview.
- * On the backend the weight is baked into the chosen font file, so
- * this field is primarily used by the frontend `@font-face` preview
- * to match the rasterized output.  Default 400 (normal).
- */
-font_weight: number, 
-/**
  * Destination rectangle on the output canvas.
  */
 rect: Rect, 
@@ -223,14 +214,7 @@ image_overlays: Array<ImageOverlayConfig>,
 /**
  * Text overlays (rasterized once per `UpdateParams`).
  */
-text_overlays: Array<TextOverlayConfig>, 
-/**
- * Optional output pixel format conversion.  When set to `"nv12"` or
- * `"i420"`, the compositor converts its RGBA8 canvas to the target
- * format on the compositing thread while data is still cache-hot.
- * Default: `None` (output RGBA8).
- */
-output_format: string | null, };
+text_overlays: Array<TextOverlayConfig>, };
 
 export type ResolvedLayer = { 
 /**
