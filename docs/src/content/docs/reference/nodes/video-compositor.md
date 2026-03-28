@@ -72,9 +72,7 @@ Composites multiple raw video inputs (RGBA8) onto a single canvas with image and
 | Name | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `color` | `array<integer (uint8)>` | no | `[255,255,255,255]` | RGBA colour, e.g. `[255, 255, 255, 255]`. |
-| `font_data_base64` | `null | string` | no | `null` | Optional base64-encoded TTF/OTF font data.<br />Takes precedence over `font_path` when both are provided. |
-| `font_name` | `null | string` | no | `null` | Named font from the bundled set (embedded in the binary at compile<br />time — guaranteed to work without system font packages).<br />Takes precedence over `font_path` but not `font_data_base64`.<br />Available names: "dejavu-sans", "dejavu-sans-bold",<br />"dejavu-sans-mono", "dejavu-sans-mono-bold",<br />"dejavu-serif", "dejavu-serif-bold". |
-| `font_path` | `null | string` | no | `null` | Optional filesystem path to a TTF/OTF font file.<br />Use this for external or system-installed fonts not in the bundled set.<br />When omitted, a bundled default font (DejaVu Sans) is used. |
+| `font_name` | `null | string` | no | `null` | Font asset path, e.g. `"samples/fonts/system/DejaVuSans.ttf"` or `"samples/fonts/system/Inter.ttf"`.<br />Font assets are TTF/OTF files managed via the `/api/v1/assets/fonts` REST API<br />and stored under `samples/fonts/{system,user}/`.<br />When omitted, the default system font (DejaVu Sans) is used. |
 | `font_size` | `integer (uint32)` | no | `24` | Font size in pixels.<br />min: `0` |
 | `id` | `string` | no | *(auto-generated UUID v4)* | Stable unique identifier.  Auto-generated (UUID v4) when omitted. |
 | `mirror_horizontal` | `boolean` | no | `false` | Mirror the layer horizontally (flip left ↔ right).  Default `false`. |
@@ -373,24 +371,8 @@ Composites multiple raw video inputs (RGBA8) onto a single canvas with image and
           "minimum": 0,
           "default": 24
         },
-        "font_path": {
-          "description": "Optional filesystem path to a TTF/OTF font file.\nUse this for external or system-installed fonts not in the bundled set.\nWhen omitted, a bundled default font (DejaVu Sans) is used.",
-          "type": [
-            "string",
-            "null"
-          ],
-          "default": null
-        },
-        "font_data_base64": {
-          "description": "Optional base64-encoded TTF/OTF font data.\nTakes precedence over `font_path` when both are provided.",
-          "type": [
-            "string",
-            "null"
-          ],
-          "default": null
-        },
         "font_name": {
-          "description": "Named font from the bundled set (embedded in the binary at compile\ntime — guaranteed to work without system font packages).\nTakes precedence over `font_path` but not `font_data_base64`.\nAvailable names: \"dejavu-sans\", \"dejavu-sans-bold\",\n\"dejavu-sans-mono\", \"dejavu-sans-mono-bold\",\n\"dejavu-serif\", \"dejavu-serif-bold\".",
+          "description": "Font asset path, e.g. \"samples/fonts/system/DejaVuSans.ttf\" or \"samples/fonts/system/Inter.ttf\".\nFont assets are TTF/OTF files managed via the /api/v1/assets/fonts REST API\nand stored under samples/fonts/{system,user}/.\nWhen omitted, the default system font (DejaVu Sans) is used.",
           "type": [
             "string",
             "null"

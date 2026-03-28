@@ -85,23 +85,14 @@ color: [number, number, number, number],
  */
 font_size: number, 
 /**
- * Optional filesystem path to a TTF/OTF font file.
- * Use this for external or system-installed fonts not in the bundled set.
- * When omitted, a bundled default font (DejaVu Sans) is used.
- */
-font_path: string | null, 
-/**
- * Optional base64-encoded TTF/OTF font data.
- * Takes precedence over `font_path` when both are provided.
- */
-font_data_base64: string | null, 
-/**
- * Named font from the bundled set (embedded in the binary at compile
- * time — guaranteed to work without system font packages).
- * Takes precedence over `font_path` but not `font_data_base64`.
- * Available names: "dejavu-sans", "dejavu-sans-bold",
- * "dejavu-sans-mono", "dejavu-sans-mono-bold",
- * "dejavu-serif", "dejavu-serif-bold".
+ * Font identifier: a font asset path under `samples/fonts/`, e.g.
+ * `"samples/fonts/system/DejaVuSans.ttf"` or
+ * `"samples/fonts/system/Inter.ttf"`.
+ *
+ * Font assets are TTF/OTF files managed via the `/api/v1/assets/fonts`
+ * REST API and stored under `samples/fonts/{system,user}/`.
+ *
+ * When omitted, the default system font (DejaVu Sans) is used.
  */
 font_name: string | null, 
 /**

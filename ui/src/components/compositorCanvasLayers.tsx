@@ -15,6 +15,7 @@ import React, { useCallback, useLayoutEffect, useMemo, useRef, useState } from '
 import { layerAtoms, textOverlayAtoms, imageOverlayAtoms } from '@/hooks/compositorAtoms';
 import type { ResizeHandle } from '@/hooks/useCompositorLayers';
 import { friendlyLabel } from '@/nodes/compositorNodeParts';
+import { fontFamilyForAsset } from '@/services/fontAssets';
 
 import {
   LayerBox,
@@ -33,21 +34,31 @@ export function layerHue(index: number): number {
 
 // ── Font mapping ────────────────────────────────────────────────────────────
 
-export const FONT_FAMILY_MAP: Record<string, string> = {
-  'dejavu-sans': '"DejaVu Sans", "Verdana", sans-serif',
-  'dejavu-serif': '"DejaVu Serif", "Georgia", serif',
-  'dejavu-sans-mono': '"DejaVu Sans Mono", "Courier New", monospace',
-  'dejavu-sans-bold': '"DejaVu Sans", "Verdana", sans-serif',
-  'dejavu-serif-bold': '"DejaVu Serif", "Georgia", serif',
-  'dejavu-sans-mono-bold': '"DejaVu Sans Mono", "Courier New", monospace',
+/** CSS fallback stacks for fonts that haven't been loaded via @font-face yet. */
+const FONT_FALLBACK_MAP: Record<string, string> = {
+  'samples/fonts/system/DejaVuSans.ttf': '"DejaVu Sans", "Verdana", sans-serif',
+  'samples/fonts/system/DejaVuSerif.ttf': '"DejaVu Serif", "Georgia", serif',
+  'samples/fonts/system/DejaVuSansMono.ttf': '"DejaVu Sans Mono", "Courier New", monospace',
+  'samples/fonts/system/DejaVuSans-Bold.ttf': '"DejaVu Sans", "Verdana", sans-serif',
+  'samples/fonts/system/DejaVuSerif-Bold.ttf': '"DejaVu Serif", "Georgia", serif',
+  'samples/fonts/system/DejaVuSansMono-Bold.ttf': '"DejaVu Sans Mono", "Courier New", monospace',
 };
 
 export function isBoldFont(fontName: string): boolean {
-  return fontName.endsWith('-bold');
+  return fontName.includes('-Bold') || fontName.includes('Bold');
 }
 
+/**
+ * Return the CSS `font-family` value for a font asset path.
+ *
+ * Uses the `@font-face` family registered by {@link loadFontAssets} when
+ * available, with a static fallback stack for known system fonts.
+ */
 export function cssFontFamily(fontName: string): string {
-  return FONT_FAMILY_MAP[fontName] ?? 'sans-serif';
+  // Primary: the custom @font-face family loaded from the server asset.
+  const custom = fontFamilyForAsset(fontName);
+  const fallback = FONT_FALLBACK_MAP[fontName] ?? 'sans-serif';
+  return `"${custom}", ${fallback}`;
 }
 
 /** Build a CSS transform string for rotation only.
@@ -290,7 +301,7 @@ export const TextOverlayLayer: React.FC<{
             left: 0,
             fontSize: overlay.fontSize,
             fontFamily: cssFontFamily(overlay.fontName),
-            fontWeight: isBoldFont(overlay.fontName) ? 700 : 600,
+            fontWeight: isBoldFont(overlay.fontName) ? 700 : 400,
             lineHeight: 1.2,
             whiteSpace: 'pre',
             marginTop: -overlay.fontSize * 0.1,
@@ -308,7 +319,7 @@ export const TextOverlayLayer: React.FC<{
               fontSize: overlay.fontSize,
               color: textColor,
               fontFamily: cssFontFamily(overlay.fontName),
-              fontWeight: isBoldFont(overlay.fontName) ? 700 : 600,
+              fontWeight: isBoldFont(overlay.fontName) ? 700 : 400,
               textShadow: '0 1px 3px rgba(0,0,0,0.7)',
               lineHeight: 1.2,
               whiteSpace: 'pre',

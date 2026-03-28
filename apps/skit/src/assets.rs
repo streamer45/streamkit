@@ -19,6 +19,7 @@ use crate::permissions::Permissions as RolePermissions;
 use crate::role_extractor::get_permissions;
 use crate::state::AppState;
 use streamkit_api::AudioAsset;
+use streamkit_api::FontAsset;
 use streamkit_api::ImageAsset;
 
 // Security limits
@@ -959,6 +960,446 @@ pub fn image_assets_router() -> Router<Arc<AppState>> {
         )
         .route("/api/v1/assets/images/file/{scope}/{id}", get(serve_image_asset_handler))
         .route("/api/v1/assets/images/{id}", delete(delete_image_asset_handler))
+}
+
+// ── Font Assets ─────────────────────────────────────────────────────────────
+
+// Security limits for font assets
+const MAX_FONT_FILE_SIZE: usize = 10 * 1024 * 1024; // 10MB
+
+// Allowed font formats
+const ALLOWED_FONT_FORMATS: &[&str] = &["ttf", "otf"];
+
+/// Validates a filename for font asset security
+fn validate_font_filename(filename: &str) -> Result<String, AssetsError> {
+    if filename.len() > MAX_FILENAME_LENGTH {
+        return Err(AssetsError::InvalidFilename("Filename too long".to_string()));
+    }
+
+    if filename.is_empty() {
+        return Err(AssetsError::InvalidFilename("Filename cannot be empty".to_string()));
+    }
+
+    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
+        return Err(AssetsError::InvalidFilename("Invalid characters in filename".to_string()));
+    }
+
+    let extension = match filename.rsplit('.').next() {
+        Some(ext) if filename.contains('.') => ext.to_lowercase(),
+        _ => return Err(AssetsError::InvalidFilename("File must have an extension".to_string())),
+    };
+
+    if !ALLOWED_FONT_FORMATS.contains(&extension.as_str()) {
+        return Err(AssetsError::InvalidFormat(format!(
+            "Unsupported font format: {}. Allowed: {}",
+            extension,
+            ALLOWED_FONT_FORMATS.join(", ")
+        )));
+    }
+
+    Ok(extension)
+}
+
+/// Process a single directory entry and convert it to a FontAsset if valid
+async fn process_font_entry(
+    path: std::path::PathBuf,
+    is_system: bool,
+    perms: &RolePermissions,
+) -> Option<FontAsset> {
+    if path.is_dir() || path.extension().and_then(|s| s.to_str()) == Some("license") {
+        return None;
+    }
+
+    let filename = path.file_name().and_then(|s| s.to_str())?.to_string();
+
+    let extension = path.extension().and_then(|s| s.to_str()).map(str::to_lowercase)?;
+
+    if !ALLOWED_FONT_FORMATS.contains(&extension.as_str()) {
+        return None;
+    }
+
+    let metadata = fs::metadata(&path).await.ok()?;
+    let size_bytes = metadata.len();
+
+    let id = filename.clone();
+
+    let name_without_ext = filename.trim_end_matches(&format!(".{extension}"));
+    let display_name = name_without_ext.replace(['_', '-'], " ");
+
+    let asset_path_str = if is_system {
+        format!("samples/fonts/system/{filename}")
+    } else {
+        format!("samples/fonts/user/{filename}")
+    };
+
+    if !perms.is_asset_allowed(&asset_path_str) {
+        debug!("Font asset filtered by permissions: {}", asset_path_str);
+        return None;
+    }
+
+    Some(FontAsset {
+        id,
+        name: display_name,
+        path: asset_path_str,
+        format: extension,
+        size_bytes,
+        is_system,
+    })
+}
+
+/// Scan a directory for font assets
+async fn scan_font_directory(
+    dir_path: &PathBuf,
+    is_system: bool,
+    perms: &RolePermissions,
+) -> Result<Vec<FontAsset>, AssetsError> {
+    let mut assets = Vec::new();
+
+    if !dir_path.exists() {
+        warn!("Font directory does not exist: {:?}", dir_path);
+        return Ok(assets);
+    }
+
+    let mut entries = fs::read_dir(dir_path)
+        .await
+        .map_err(|e| AssetsError::IoError(format!("Failed to read directory: {e}")))?;
+
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .map_err(|e| AssetsError::IoError(format!("Failed to read entry: {e}")))?
+    {
+        if let Some(asset) = process_font_entry(entry.path(), is_system, perms).await {
+            assets.push(asset);
+        }
+    }
+
+    Ok(assets)
+}
+
+/// List all font assets (system + user) with permission filtering
+pub async fn list_font_assets_handler(
+    State(app_state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let perms = get_permissions(&headers, &app_state);
+
+    match list_font_assets(&perms).await {
+        Ok(assets) => {
+            info!("Listed {} font assets", assets.len());
+            Json(assets).into_response()
+        },
+        Err(e) => {
+            error!("Failed to list font assets: {}", e);
+            e.into_response()
+        },
+    }
+}
+
+async fn list_font_assets(perms: &RolePermissions) -> Result<Vec<FontAsset>, AssetsError> {
+    let base_path = PathBuf::from("samples/fonts");
+    let system_path = base_path.join("system");
+    let user_path = base_path.join("user");
+
+    let mut all_assets = Vec::new();
+
+    let system_assets = scan_font_directory(&system_path, true, perms).await?;
+    all_assets.extend(system_assets);
+
+    let user_assets = scan_font_directory(&user_path, false, perms).await?;
+    all_assets.extend(user_assets);
+
+    all_assets.sort_by(|a, b| a.name.cmp(&b.name));
+
+    Ok(all_assets)
+}
+
+/// Stream an uploaded multipart font field to disk with size enforcement.
+async fn write_font_upload_to_disk(
+    mut field: axum::extract::multipart::Field<'_>,
+    file_path: &std::path::Path,
+    extension: &str,
+) -> Result<usize, AssetsError> {
+    use tokio::fs::OpenOptions;
+
+    let mut file =
+        OpenOptions::new().create_new(true).write(true).open(file_path).await.map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                AssetsError::FileExists(
+                    file_path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown").to_string(),
+                )
+            } else {
+                AssetsError::IoError(format!("Failed to create file: {e}"))
+            }
+        })?;
+
+    let mut total_bytes: usize = 0;
+    loop {
+        match field.chunk().await {
+            Ok(Some(chunk)) => {
+                total_bytes = total_bytes.saturating_add(chunk.len());
+                if total_bytes > MAX_FONT_FILE_SIZE {
+                    let _ = fs::remove_file(file_path).await;
+                    return Err(AssetsError::FileTooLarge(MAX_FONT_FILE_SIZE));
+                }
+
+                if let Err(e) = file.write_all(&chunk).await {
+                    let _ = fs::remove_file(file_path).await;
+                    return Err(AssetsError::IoError(format!("Failed to write file: {e}")));
+                }
+            },
+            Ok(None) => break,
+            Err(e) => {
+                let _ = fs::remove_file(file_path).await;
+                return Err(AssetsError::InvalidRequest(format!(
+                    "Failed to read upload stream: {e}"
+                )));
+            },
+        }
+    }
+
+    // Create default license file (best-effort).
+    let license_path = file_path.with_extension(format!("{extension}.license"));
+    // REUSE-IgnoreStart
+    let default_license =
+        "SPDX-FileCopyrightText: © 2025 User Upload\n\nSPDX-License-Identifier: CC0-1.0\n";
+    // REUSE-IgnoreEnd
+    if let Err(e) = fs::write(&license_path, default_license).await {
+        warn!("Failed to create license file: {}", e);
+    }
+
+    Ok(total_bytes)
+}
+
+/// Core font upload logic after permission check
+async fn process_font_upload(
+    filename: String,
+    extension: String,
+    field: axum::extract::multipart::Field<'_>,
+) -> Result<FontAsset, AssetsError> {
+    let base_path = PathBuf::from("samples/fonts");
+    let user_dir = base_path.join("user");
+
+    fs::create_dir_all(&user_dir)
+        .await
+        .map_err(|e| AssetsError::IoError(format!("Failed to create directory: {e}")))?;
+
+    let file_path = user_dir.join(&filename);
+
+    let written_bytes = write_font_upload_to_disk(field, &file_path, &extension).await?;
+
+    // Validate that the uploaded file is actually a font by checking magic bytes.
+    let header = match fs::read(&file_path).await {
+        Ok(data) if data.len() >= 4 => data[..4].to_vec(),
+        Ok(_) => {
+            let _ = fs::remove_file(&file_path).await;
+            return Err(AssetsError::InvalidFormat("File too small to be a font".to_string()));
+        },
+        Err(e) => {
+            let _ = fs::remove_file(&file_path).await;
+            return Err(AssetsError::IoError(format!("Failed to read uploaded file: {e}")));
+        },
+    };
+
+    // TTF: starts with 0x00010000 or 'true' (0x74727565)
+    // OTF/CFF: starts with 'OTTO' (0x4F54544F)
+    // TTC: starts with 'ttcf' (0x74746366)
+    let is_valid_font = header == [0x00, 0x01, 0x00, 0x00]
+        || header == [0x4F, 0x54, 0x54, 0x4F] // OTTO
+        || header == [0x74, 0x72, 0x75, 0x65] // true
+        || header == [0x74, 0x74, 0x63, 0x66]; // ttcf
+
+    if !is_valid_font {
+        let _ = fs::remove_file(&file_path).await;
+        // Also remove the license sidecar created by write_font_upload_to_disk.
+        let license_path = file_path.with_extension(format!("{extension}.license"));
+        let _ = fs::remove_file(&license_path).await;
+        return Err(AssetsError::InvalidFormat(
+            "Uploaded file is not a valid TTF/OTF font (invalid magic bytes)".to_string(),
+        ));
+    }
+
+    let name_without_ext = filename.trim_end_matches(&format!(".{extension}"));
+    let display_name = name_without_ext.replace(['_', '-'], " ");
+    let relative_path = format!("samples/fonts/user/{filename}");
+
+    info!("Uploaded font asset: {}", filename);
+
+    Ok(FontAsset {
+        id: filename,
+        name: display_name,
+        path: relative_path,
+        format: extension,
+        size_bytes: written_bytes as u64,
+        is_system: false,
+    })
+}
+
+/// Upload a new font asset (user directory only)
+pub async fn upload_font_asset_handler(
+    State(app_state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> impl IntoResponse {
+    let perms = get_permissions(&headers, &app_state);
+
+    if !perms.upload_assets {
+        return AssetsError::Forbidden.into_response();
+    }
+
+    let field = match multipart.next_field().await {
+        Ok(Some(field)) => field,
+        Ok(None) => {
+            return AssetsError::InvalidRequest("No file provided".to_string()).into_response()
+        },
+        Err(e) => {
+            return AssetsError::InvalidRequest(format!("Failed to read multipart: {e}"))
+                .into_response()
+        },
+    };
+
+    let filename = match field.file_name() {
+        Some(name) => sanitize_filename(name),
+        None => {
+            return AssetsError::InvalidRequest("No filename provided".to_string()).into_response()
+        },
+    };
+    let extension = match validate_font_filename(&filename) {
+        Ok(ext) => ext,
+        Err(e) => return e.into_response(),
+    };
+
+    match process_font_upload(filename, extension, field).await {
+        Ok(asset) => Json(asset).into_response(),
+        Err(e) => {
+            error!("Failed to process font upload: {}", e);
+            e.into_response()
+        },
+    }
+}
+
+/// Delete a font asset (user directory only)
+pub async fn delete_font_asset_handler(
+    State(app_state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let perms = get_permissions(&headers, &app_state);
+
+    if !perms.delete_assets {
+        return AssetsError::Forbidden.into_response();
+    }
+
+    let base_path = PathBuf::from("samples/fonts");
+    let user_dir = base_path.join("user");
+    let file_path = user_dir.join(&id);
+
+    if !file_path.exists() {
+        return AssetsError::NotFound(id).into_response();
+    }
+
+    if let Err(e) = validate_file_in_user_directory(&file_path, &user_dir) {
+        return e.into_response();
+    }
+
+    if let Err(e) = fs::remove_file(&file_path)
+        .await
+        .map_err(|e| AssetsError::IoError(format!("Failed to delete file: {e}")))
+    {
+        error!("Failed to delete font file: {}", e);
+        return e.into_response();
+    }
+
+    // Also remove associated license file if present
+    let extension = id.rsplit('.').next().unwrap_or("");
+    let license_path = file_path.with_extension(format!("{extension}.license"));
+    if license_path.exists() {
+        if let Err(e) = fs::remove_file(&license_path).await {
+            warn!("Failed to delete font license file: {}", e);
+        }
+    }
+
+    // Invalidate the font cache entry so re-uploads with the same name get a fresh parse.
+    let asset_path = format!("samples/fonts/user/{id}");
+    streamkit_nodes::video::compositor::overlay::invalidate_font_cache_entry(&asset_path);
+
+    info!("Deleted font asset: {}", id);
+    StatusCode::NO_CONTENT.into_response()
+}
+
+/// Serve a font asset file by scope and ID.
+async fn serve_font_asset_handler(
+    State(app_state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((scope, id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    use axum::http::header;
+
+    let perms = get_permissions(&headers, &app_state);
+
+    if id.contains("..") || id.contains('/') || id.contains('\\') {
+        return AssetsError::InvalidFilename("Invalid characters in filename".to_string())
+            .into_response();
+    }
+
+    if scope != "user" && scope != "system" {
+        return AssetsError::InvalidFilename(
+            "Invalid scope: must be 'user' or 'system'".to_string(),
+        )
+        .into_response();
+    }
+
+    let file_path = PathBuf::from("samples/fonts").join(&scope).join(&id);
+    let asset_path_str = format!("samples/fonts/{scope}/{id}");
+
+    let extension = file_path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+    if !ALLOWED_FONT_FORMATS.contains(&extension.as_str()) {
+        return AssetsError::InvalidFormat(format!("Not an allowed font format: {extension}"))
+            .into_response();
+    }
+
+    if !perms.is_asset_allowed(&asset_path_str) {
+        return AssetsError::Forbidden.into_response();
+    }
+
+    if !file_path.exists() {
+        return AssetsError::NotFound(id).into_response();
+    }
+
+    let content_type = match extension.as_str() {
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
+        _ => "application/octet-stream",
+    };
+
+    match fs::read(&file_path).await {
+        Ok(data) => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, content_type.to_string()),
+                (header::CACHE_CONTROL, "public, must-revalidate".to_string()),
+            ],
+            data,
+        )
+            .into_response(),
+        Err(e) => {
+            error!("Failed to read font file {:?}: {}", file_path, e);
+            AssetsError::IoError(format!("Failed to read file: {e}")).into_response()
+        },
+    }
+}
+
+/// Create router for font asset endpoints
+pub fn font_assets_router() -> Router<Arc<AppState>> {
+    Router::new()
+        .route(
+            "/api/v1/assets/fonts",
+            get(list_font_assets_handler)
+                .post(upload_font_asset_handler)
+                .layer(DefaultBodyLimit::max(MAX_FONT_FILE_SIZE)),
+        )
+        .route("/api/v1/assets/fonts/file/{scope}/{id}", get(serve_font_asset_handler))
+        .route("/api/v1/assets/fonts/{id}", delete(delete_font_asset_handler))
 }
 
 // Error types

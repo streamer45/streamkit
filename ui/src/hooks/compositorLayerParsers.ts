@@ -83,7 +83,7 @@ export interface TextOverlayState {
   height: number;
   color: [number, number, number, number];
   fontSize: number;
-  /** Named font from the server's curated set (e.g. "dejavu-sans"). */
+  /** Font asset path (e.g. "samples/fonts/system/DejaVuSans.ttf"). */
   fontName: string;
   opacity: number;
   rotationDegrees: number;
@@ -296,7 +296,7 @@ function serializeSpatialFields(o: OverlayBase) {
 /** Serialize text overlays back to config format */
 export function serializeTextOverlays(
   overlays: TextOverlayState[]
-): Omit<TextOverlayConfig, 'font_path' | 'font_data_base64'>[] {
+): Omit<TextOverlayConfig, 'transform'>[] {
   return overlays.map((o) => ({
     id: o.id,
     text: o.text,

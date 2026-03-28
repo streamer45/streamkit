@@ -204,9 +204,19 @@ textarea {
   font-family: var(--sk-font-ui);
 }
 
-.react-flow,
-.react-flow * {
+.react-flow {
   font-family: var(--sk-font-ui) !important;
+}
+
+/* React Flow UI chrome (controls, panels, edge labels) should use the app
+   font.  We intentionally do NOT apply !important to all descendants
+   because compositor canvas text overlays set an explicit inline
+   font-family to preview the selected asset font. */
+.react-flow__controls,
+.react-flow__panel,
+.react-flow__edge-text,
+.react-flow__node {
+  font-family: inherit;
 }
 
 /* React Flow UI polish for theme */

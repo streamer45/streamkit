@@ -34,7 +34,7 @@ export const DEFAULT_CROP_SHAPE: 'rect' | 'circle' = 'rect';
 // ── Default text overlay values ─────────────────────────────────────────────
 
 export const DEFAULT_FONT_SIZE = 24;
-export const DEFAULT_FONT_NAME = 'dejavu-sans';
+export const DEFAULT_FONT_NAME = 'samples/fonts/system/DejaVuSans.ttf';
 export const DEFAULT_TEXT_COLOR: [number, number, number, number] = [255, 255, 255, 255];
 
 // ── Default overlay positioning ─────────────────────────────────────────────

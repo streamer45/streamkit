@@ -91,7 +91,7 @@ nodes:
           opacity: 1.0
           rotation_degrees: 0.0
           z_index: 2
-          font_name: dejavu-sans
+          font_name: samples/fonts/system/DejaVuSans.ttf
       image_overlays:
         - id: logo
           asset_path: samples/images/system/streamkit-logo.png

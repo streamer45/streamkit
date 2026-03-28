@@ -61,7 +61,7 @@ nodes:
           z_index: 2
           color: [255, 255, 255, 220]
           font_size: 28
-          font_name: dejavu-sans-bold
+          font_name: samples/fonts/system/DejaVuSans-Bold.ttf
     needs:
       - colorbars_bg
       - vp9_decoder

@@ -69,18 +69,7 @@ precedence = "aggregate"
 SPDX-FileCopyrightText = "© 2025 StreamKit Contributors"
 SPDX-License-Identifier = "MPL-2.0"
 
-# Bundled DejaVu fonts (Bitstream Vera / DejaVu permissive license)
-[[annotations]]
-path = "assets/fonts/*.ttf"
-precedence = "override"
-SPDX-FileCopyrightText = "© 2003 Bitstream, Inc. All Rights Reserved. DejaVu changes are in public domain."
-SPDX-License-Identifier = "Bitstream-Vera"
-
-[[annotations]]
-path = "assets/fonts/LICENSE-DejaVu.txt"
-precedence = "override"
-SPDX-FileCopyrightText = "© 2003 Bitstream, Inc. All Rights Reserved. DejaVu changes are in public domain."
-SPDX-License-Identifier = "Bitstream-Vera"
+# Bundled DejaVu fonts are now in samples/fonts/system/ with per-file .license sidecars.
 
 # Lock files (auto-generated, licensed as MPL-2.0 for simplicity)
 [[annotations]]

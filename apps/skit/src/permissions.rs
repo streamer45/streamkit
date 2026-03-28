@@ -198,6 +198,9 @@ impl Permissions {
                 // Users can access system and user image assets
                 "samples/images/system/*".to_string(),
                 "samples/images/user/*".to_string(),
+                // Users can access system and user font assets
+                "samples/fonts/system/*".to_string(),
+                "samples/fonts/user/*".to_string(),
             ],
         }
     }
@@ -241,6 +244,8 @@ impl Permissions {
                 "samples/audio/system/*".to_string(),
                 // Viewers can see system image assets
                 "samples/images/system/*".to_string(),
+                // Viewers can see system font assets
+                "samples/fonts/system/*".to_string(),
             ],
         }
     }

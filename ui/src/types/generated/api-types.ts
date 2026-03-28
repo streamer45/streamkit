@@ -439,6 +439,33 @@ size_bytes: number,
  */
 is_system: boolean, };
 
+export type FontAsset = { 
+/**
+ * Unique identifier (filename, including extension)
+ */
+id: string, 
+/**
+ * Display name (e.g. "Inter", "Roboto Bold")
+ */
+name: string, 
+/**
+ * Server-relative path suitable for compositor `font_name`
+ * (e.g. `samples/fonts/system/Inter.ttf`)
+ */
+path: string, 
+/**
+ * File extension/format (ttf, otf)
+ */
+format: string, 
+/**
+ * File size in bytes
+ */
+size_bytes: number, 
+/**
+ * Whether this is a system asset (true) or user upload (false)
+ */
+is_system: boolean, };
+
 export type BatchOperation = { "action": "addnode", node_id: string, kind: string, params: JsonValue, } | { "action": "removenode", node_id: string, } | { "action": "connect", from_node: string, from_pin: string, to_node: string, to_pin: string, mode: ConnectionMode, } | { "action": "disconnect", from_node: string, from_pin: string, to_node: string, to_pin: string, };
 
 export type ValidationError = { error_type: ValidationErrorType, message: string, node_id: string | null, connection_id: string | null, };
@@ -512,6 +539,11 @@ height: number | null,
 /**
  * Codec identifier.  Supported values: `"vp9"` (video), `"opus"` (audio).
  * Defaults to `"vp9"` for video tracks when omitted.
+ *
+ * Stored as `String` (rather than an enum) for forward compatibility — new
+ * codecs can be added without a breaking schema change.  The Rust linter
+ * and the TS `mapCodecToWebCodecs` function validate the value at compile
+ * and runtime respectively.
  */
 codec: string | null, 
 /**
