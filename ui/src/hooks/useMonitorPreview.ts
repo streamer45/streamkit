@@ -72,8 +72,8 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
     const prev = prevSelectedSessionIdRef.current;
     prevSelectedSessionIdRef.current = selectedSessionId;
 
-    if (prev && !selectedSessionId) {
-      // Session deselected — clean up server-side preview and MoQ connection
+    if (prev && prev !== selectedSessionId) {
+      // Session changed or deselected — clean up server-side preview and MoQ connection
       if (previewIdRef.current && previewSessionIdRef.current) {
         stopPreview(previewSessionIdRef.current, previewIdRef.current).catch(() => {});
         previewIdRef.current = null;

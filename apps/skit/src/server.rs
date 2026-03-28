@@ -2529,7 +2529,11 @@ mod preview {
             created_at: std::time::SystemTime::now(),
         };
 
-        session.add_preview(state).await.map_err(|e| (StatusCode::CONFLICT, e))?;
+        if let Err(e) = session.add_preview(state.clone()).await {
+            // Another request won the race — clean up the nodes we just injected.
+            teardown_preview(&session, &state).await;
+            return Err((StatusCode::CONFLICT, e));
+        }
 
         info!(
             session_id = %session.id,

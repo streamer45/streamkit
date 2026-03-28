@@ -34,12 +34,6 @@ export interface PreviewResponse {
   video: boolean;
 }
 
-export interface PreviewInfo extends PreviewResponse {
-  tap_node: string;
-  tap_pin: string;
-  created_at: string;
-}
-
 /**
  * Lists all active sessions
  * @returns A promise that resolves to an array of sessions
@@ -126,22 +120,6 @@ export async function startPreview(
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(errorText || `Failed to start preview: ${response.statusText}`);
-  }
-
-  return response.json();
-}
-
-/**
- * Lists active previews for a session.
- */
-export async function listPreviews(sessionId: string): Promise<PreviewInfo[]> {
-  const response = await fetchApi(`/api/v1/sessions/${encodeURIComponent(sessionId)}/preview`, {
-    method: 'GET',
-    headers: { 'Content-Type': 'application/json' },
-  });
-
-  if (!response.ok) {
-    throw new Error(`Failed to list previews: ${response.statusText}`);
   }
 
   return response.json();
