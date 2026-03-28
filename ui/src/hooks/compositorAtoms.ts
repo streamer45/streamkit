@@ -162,7 +162,7 @@ function textOverlayEqual(a: TextOverlayState, b: TextOverlayState): boolean {
     a.text === b.text &&
     a.fontSize === b.fontSize &&
     a.fontName === b.fontName &&
-    a.bold === b.bold &&
+    a.fontWeight === b.fontWeight &&
     a.color[0] === b.color[0] &&
     a.color[1] === b.color[1] &&
     a.color[2] === b.color[2] &&

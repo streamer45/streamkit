@@ -25,7 +25,7 @@ import {
   DEFAULT_VISIBLE,
   DEFAULT_FONT_SIZE,
   DEFAULT_FONT_NAME,
-  DEFAULT_BOLD,
+  DEFAULT_FONT_WEIGHT,
   DEFAULT_TEXT_COLOR,
   DEFAULT_TEXT_WIDTH,
   DEFAULT_TEXT_HEIGHT,
@@ -86,8 +86,8 @@ export interface TextOverlayState {
   fontSize: number;
   /** Font asset path (e.g. "samples/fonts/system/DejaVuSans.ttf"). */
   fontName: string;
-  /** Whether to use the bold variant of the font. */
-  bold: boolean;
+  /** CSS font weight (100–900). 400 = normal, 700 = bold. */
+  fontWeight: number;
   opacity: number;
   rotationDegrees: number;
   zIndex: number;
@@ -243,7 +243,7 @@ export function parseTextOverlays(params: Record<string, unknown>): TextOverlayS
     color: o.color ?? DEFAULT_TEXT_COLOR,
     fontSize: o.font_size ?? DEFAULT_FONT_SIZE,
     fontName: o.font_name ?? DEFAULT_FONT_NAME,
-    bold: o.bold ?? DEFAULT_BOLD,
+    fontWeight: o.font_weight ?? DEFAULT_FONT_WEIGHT,
     ...parseTransformFields(o as unknown as Record<string, unknown>, {
       width: DEFAULT_TEXT_WIDTH,
       height: DEFAULT_TEXT_HEIGHT,
@@ -308,7 +308,7 @@ export function serializeTextOverlays(
     color: o.color,
     font_size: o.fontSize,
     font_name: o.fontName,
-    bold: o.bold,
+    font_weight: o.fontWeight,
     ...serializeSpatialFields(o),
   }));
 }

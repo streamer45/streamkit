@@ -374,7 +374,7 @@ export const useCompositorLayers = (
         a.text !== b.text ||
         a.fontSize !== b.fontSize ||
         a.fontName !== b.fontName ||
-        a.bold !== b.bold ||
+        a.fontWeight !== b.fontWeight ||
         a.color.some((v, i) => v !== b.color[i]),
       isMonitorView,
       isMonitorView ? prevParsedTextRef.current : undefined

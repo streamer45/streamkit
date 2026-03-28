@@ -244,19 +244,20 @@ fn validate_font_asset_path(path: &str) -> Result<(), String> {
 }
 
 /// Derive a weight-appropriate font asset path from the base path and
-/// the `bold` flag.
+/// the requested `font_weight`.
 ///
-/// When `bold` is `true` and the current path does NOT already contain a
-/// Bold variant, try to resolve a sibling Bold file.  For example
-/// `samples/fonts/system/DejaVuSans.ttf` →
+/// When `font_weight >= 700` (bold) and the current path does NOT already
+/// contain a Bold variant, try to resolve a sibling Bold file.  For
+/// example `samples/fonts/system/DejaVuSans.ttf` →
 /// `samples/fonts/system/DejaVuSans-Bold.ttf`.
 ///
 /// Returns the original path unchanged if:
 /// - the path already references a Bold variant,
 /// - no Bold sibling exists on disk, or
-/// - `bold` is `false`.
-fn weight_adjusted_path(base: &str, bold: bool) -> String {
-    if !bold {
+/// - the weight is below the bold threshold.
+fn weight_adjusted_path(base: &str, font_weight: u16) -> String {
+    // Only adjust for bold (700+).
+    if font_weight < 700 {
         return base.to_owned();
     }
     // Already a Bold variant — nothing to do.
@@ -273,13 +274,13 @@ fn weight_adjusted_path(base: &str, bold: bool) -> String {
     base.to_owned()
 }
 
-/// Resolve a [`TextOverlayConfig`]'s `font_name` and `bold` fields to a
-/// [`FontKey`] and a lazy byte loader.
+/// Resolve a [`TextOverlayConfig`]'s `font_name` and `font_weight` fields
+/// to a [`FontKey`] and a lazy byte loader.
 ///
 /// Resolution order:
 /// 1. If `font_name` is a valid font asset path (`samples/fonts/...`) → load
-///    from filesystem.  When `bold` is `true`, automatically substitute the
-///    Bold variant of the font file if one exists on disk.
+///    from filesystem.  When `font_weight >= 700`, automatically substitute
+///    the Bold variant of the font file if one exists on disk.
 /// 2. Unknown or invalid name → warn and fall back to the default system font
 ///    (DejaVu Sans at `samples/fonts/system/DejaVuSans.ttf`).
 /// 3. `font_name` absent → default system font.
@@ -296,7 +297,7 @@ fn resolve_font_source(config: &TextOverlayConfig) -> (FontKey, FontBytesLoader<
                 let loader = || fonts::load_default_font();
                 return (key, Box::new(loader));
             }
-            let path = weight_adjusted_path(name, config.bold);
+            let path = weight_adjusted_path(name, config.font_weight);
             let key = FontKey(path.clone());
             let loader = move || {
                 std::fs::read(&path).map_err(|e| format!("Failed to read font asset '{path}': {e}"))
@@ -315,7 +316,7 @@ fn resolve_font_source(config: &TextOverlayConfig) -> (FontKey, FontBytesLoader<
     }
 
     // Default: DejaVu Sans system font asset, weight-adjusted.
-    let path = weight_adjusted_path(fonts::DEFAULT_FONT_PATH, config.bold);
+    let path = weight_adjusted_path(fonts::DEFAULT_FONT_PATH, config.font_weight);
     let key = FontKey(path.clone());
     let loader = move || {
         std::fs::read(&path).map_err(|e| format!("Failed to read font asset '{path}': {e}"))
