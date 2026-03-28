@@ -14,6 +14,10 @@
 //
 // Outputs are storage buffers (not storage textures) because R8Unorm and
 // Rg8Unorm don't universally support STORAGE_BINDING across GPU vendors.
+//
+// Byte packing: each u32 in the buffer holds 4 packed bytes (little-endian).
+// Each byte position is written by exactly one thread, so there is no race
+// and we can safely use read-modify-write (OR) on a zero-initialised buffer.
 
 struct Params {
     width: u32,
@@ -55,22 +59,6 @@ fn rgb_to_yuv(rgb: vec3<f32>) -> vec3<f32> {
     );
 }
 
-// Write a single byte into a u32 storage buffer at byte offset `byte_idx`.
-// Uses atomicOr-style packing: 4 bytes per u32, little-endian.
-fn write_byte(buf: ptr<storage, array<u32>, read_write>, byte_idx: u32, value: u32) {
-    let word_idx = byte_idx / 4u;
-    let lane = byte_idx % 4u;
-    let shift = lane * 8u;
-    // Use atomicOr to allow concurrent writes to different bytes in the
-    // same u32.  The buffer must be zero-initialised before dispatch.
-    let packed = value << shift;
-    // Note: WGSL doesn't have atomics on storage buffers of array<u32>.
-    // Instead we rely on the fact that each byte position within a u32 is
-    // written by exactly one thread (Y: one thread per pixel, UV: one
-    // thread per 2×2 block), so no race.  We read-modify-write:
-    (*buf)[word_idx] = (*buf)[word_idx] | packed;
-}
-
 @compute @workgroup_size(16, 16)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x = gid.x;
@@ -84,9 +72,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let yuv = rgb_to_yuv(rgba.rgb);
 
     // Write Y for every pixel.
-    let y_val = u32(yuv.x * 255.0 + 0.5);
-    let y_byte_idx = y * params.y_stride + x;
-    write_byte(&y_buf, y_byte_idx, y_val);
+    // Inline byte-packing: naga disallows ptr<storage, read_write> as fn arg.
+    {
+        let y_val = u32(yuv.x * 255.0 + 0.5);
+        let byte_idx = y * params.y_stride + x;
+        let word_idx = byte_idx / 4u;
+        let lane = byte_idx % 4u;
+        y_buf[word_idx] = y_buf[word_idx] | (y_val << (lane * 8u));
+    }
 
     // Write chroma for top-left pixel of each 2×2 block only.
     if (x % 2u) == 0u && (y % 2u) == 0u {
@@ -110,17 +103,30 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
         if params.format == 0u {
             // NV12: interleaved UV.  Two bytes per chroma sample.
-            let uv_byte_idx = cy * params.uv_stride + cx * 2u;
-            write_byte(&uv_buf, uv_byte_idx, cb_val);
-            write_byte(&uv_buf, uv_byte_idx + 1u, cr_val);
+            let uv_byte_0 = cy * params.uv_stride + cx * 2u;
+            let uv_byte_1 = uv_byte_0 + 1u;
+
+            let w0 = uv_byte_0 / 4u;
+            let l0 = uv_byte_0 % 4u;
+            uv_buf[w0] = uv_buf[w0] | (cb_val << (l0 * 8u));
+
+            let w1 = uv_byte_1 / 4u;
+            let l1 = uv_byte_1 % 4u;
+            uv_buf[w1] = uv_buf[w1] | (cr_val << (l1 * 8u));
         } else {
             // I420: separate U and V planes, packed sequentially.
             // U plane: rows [0, chroma_h)
             // V plane: rows [chroma_h, 2*chroma_h)
-            let u_byte_idx = cy * params.uv_stride + cx;
-            let v_byte_idx = (cy + params.chroma_h) * params.uv_stride + cx;
-            write_byte(&uv_buf, u_byte_idx, cb_val);
-            write_byte(&uv_buf, v_byte_idx, cr_val);
+            let u_byte = cy * params.uv_stride + cx;
+            let v_byte = (cy + params.chroma_h) * params.uv_stride + cx;
+
+            let uw = u_byte / 4u;
+            let ul = u_byte % 4u;
+            uv_buf[uw] = uv_buf[uw] | (cb_val << (ul * 8u));
+
+            let vw = v_byte / 4u;
+            let vl = v_byte % 4u;
+            uv_buf[vw] = uv_buf[vw] | (cr_val << (vl * 8u));
         }
     }
 }
