@@ -285,6 +285,14 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
     if (previewOwnsConnectionRef.current) {
       previewDisconnect();
       previewOwnsConnectionRef.current = false;
+    } else {
+      // For borrowed connections we keep the MoQ connection alive, but
+      // must silence the audio emitter so the user doesn't hear audio
+      // playing in the background after dismissing the preview.
+      const emitter = useStreamStore.getState().audioEmitter;
+      if (emitter) {
+        emitter.muted.set(true);
+      }
     }
     // For borrowed connections, mark the preview as dismissed so the
     // MonitorView hides the panel even though the store is still connected.
