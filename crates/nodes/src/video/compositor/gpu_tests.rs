@@ -84,11 +84,14 @@ fn make_layer_with_props(
 }
 
 /// Create a solid-colour I420 buffer.
+///
+/// Uses ceiling division for chroma dimensions to match
+/// `VideoLayout::packed` and the GPU upload path.
 fn solid_i420(width: u32, height: u32, y: u8, u: u8, v: u8) -> Vec<u8> {
     let w = width as usize;
     let h = height as usize;
-    let cw = w / 2;
-    let ch = h / 2;
+    let cw = (w + 1) / 2;
+    let ch = (h + 1) / 2;
     let mut buf = vec![0u8; w * h + 2 * cw * ch];
     // Y plane
     buf[..w * h].fill(y);
@@ -561,6 +564,97 @@ fn gpu_z_ordering() {
     let (r, g, _b, _a) = avg_centre_pixel(buf, canvas_w, canvas_h);
     assert!(g > r, "Green (z=1) should be on top of red (z=0): R={r}, G={g}");
     assert!(g > 240.0, "Expected solid green on top, got G={g}");
+}
+
+/// Regression test: I420 layer with odd height.
+///
+/// Before the fix (2ff012f), the YUV→RGBA shader used floor division
+/// (`height / 2`) for the V-plane offset, but the Rust packing uses
+/// `div_ceil(2)`.  For odd heights the shader read U data as V data,
+/// producing wrong chroma.
+#[test]
+fn gpu_i420_odd_height() {
+    let mut ctx = require_gpu();
+    // Odd height: 321×241.
+    let w = 321_u32;
+    let h = 241_u32;
+
+    // Solid green in YUV: Y≈149, U≈43, V≈21 (BT.601).
+    let data = solid_i420(w, h, 149, 43, 21);
+    let layer = LayerSnapshot {
+        data: Arc::new(PooledVideoData::from_vec(data)),
+        width: w,
+        height: h,
+        pixel_format: PixelFormat::I420,
+        rect: None,
+        opacity: 1.0,
+        z_index: 0,
+        rotation_degrees: 0.0,
+        mirror_horizontal: false,
+        mirror_vertical: false,
+        crop_zoom: 1.0,
+        crop_x: 0.5,
+        crop_y: 0.5,
+        crop_shape: CropShape::Rect,
+    };
+
+    let layers = vec![Some(layer)];
+    let (result, fmt) = ctx.composite_frame_gpu(w, h, &layers, &[], &[], None, None);
+
+    assert_eq!(fmt, PixelFormat::Rgba8);
+    let buf = result.as_slice();
+    let (r, g, b, _a) = avg_centre_pixel(buf, w, h);
+
+    // Should be approximately green — if V-plane offset is wrong,
+    // chroma will be wildly off.
+    assert!(g > r && g > b, "Odd-height I420 should produce green: R={r}, G={g}, B={b}");
+    assert!(g > 100.0, "Green channel should be strong for odd-height I420, got {g}");
+}
+
+/// Regression test: circle crop combined with crop_zoom > 1.0.
+///
+/// Before the fix (b74cfa7), the circle distance was computed in
+/// source-remapped UV space.  With crop_zoom > 1.0 the UV range is
+/// compressed, making the circle mask too large and failing to clip
+/// corner pixels.
+#[test]
+fn gpu_circle_crop_with_zoom() {
+    let mut ctx = require_gpu();
+    let canvas_w = 320_u32;
+    let canvas_h = 320_u32;
+
+    // Solid green layer with circle crop AND 2× crop zoom.
+    let layer = make_layer_with_props(
+        solid_rgba(canvas_w, canvas_h, 0, 255, 0, 255),
+        canvas_w,
+        canvas_h,
+        None,
+        1.0,
+        0.0,
+        0,
+        false,
+        false,
+        2.0, // crop_zoom > 1.0
+        CropShape::Circle,
+    );
+
+    let layers = vec![Some(layer)];
+    let (result, _) = ctx.composite_frame_gpu(canvas_w, canvas_h, &layers, &[], &[], None, None);
+    let buf = result.as_slice();
+
+    // Centre should be green (inside the circle).
+    let mid = ((canvas_h as usize / 2) * canvas_w as usize + canvas_w as usize / 2) * 4;
+    assert!(buf[mid + 1] > 200, "Centre should be green with circle+zoom, G={}", buf[mid + 1],);
+
+    // Corner should be transparent (outside the circle).  Before the
+    // fix, the compressed UV range made the circle too large and the
+    // corner would be green instead of transparent.
+    let corner = 4; // pixel (1, 0)
+    assert!(
+        buf[corner + 3] < 30,
+        "Corner should be transparent with circle+zoom, A={}",
+        buf[corner + 3],
+    );
 }
 
 #[test]
