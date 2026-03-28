@@ -2215,8 +2215,6 @@ fn test_text_overlay_cache_reuses_arc_on_unchanged_config() {
         transform: config::OverlayTransform::default(),
         color: [255, 255, 255, 255],
         font_size: 24,
-        font_path: None,
-        font_data_base64: None,
         font_name: None,
     };
     let limits = GlobalCompositorConfig::default();
@@ -2335,8 +2333,6 @@ fn test_text_overlay_cache_handles_length_changes() {
         transform: config::OverlayTransform::default(),
         color: [255, 255, 255, 255],
         font_size: 24,
-        font_path: None,
-        font_data_base64: None,
         font_name: None,
     };
     let limits = GlobalCompositorConfig::default();
