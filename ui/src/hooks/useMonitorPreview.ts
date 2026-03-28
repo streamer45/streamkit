@@ -107,14 +107,18 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
       abortControllerRef.current?.abort();
       abortControllerRef.current = null;
 
+      // Fire-and-forget: React effect cleanup cannot return a Promise, so
+      // we intentionally void the async cleanup here.  The user-facing
+      // handleStartPreview path correctly awaits its own cleanup before
+      // starting a new preview — this path only runs on session switch
+      // where the old session is no longer relevant.
       void cleanupPreview(previewIdRef, previewSessionIdRef, previewDisconnect);
       setPreviewError(null);
       setIsPreviewLoading(false);
     }
 
-    // Cleanup on unmount — always disconnect since previewStatus may be
-    // stale in this closure and disconnect() is safe to call when already
-    // disconnected.
+    // Cleanup on unmount — fire-and-forget for the same reason as above.
+    // disconnect() is safe when already disconnected.
     return () => {
       abortControllerRef.current?.abort();
       abortControllerRef.current = null;

@@ -104,7 +104,7 @@ fn classify_by_kind(kind: &str) -> (bool, bool, bool) {
             (false, true, false)
         },
         _ => {
-            tracing::trace!(kind = %kind, "classify_by_kind: unknown node kind, skipping");
+            tracing::debug!(kind = %kind, "classify_by_kind: unknown node kind, skipping");
             (false, false, false)
         },
     }
@@ -327,6 +327,12 @@ pub async fn inject_preview_subgraph(
 
 /// Inner implementation of subgraph injection. Separated so that the
 /// caller can roll back `node_ids` and `connections` on error.
+///
+/// **Assumption**: `tap_points` contains at most one audio and one video
+/// tap point. Multiple same-type taps would collide on node IDs (e.g.
+/// two raw video taps would both create `{prefix}pixconv`). The public
+/// `inject_preview_subgraph` upholds this via `detect_tap_points`
+/// deduplication.
 #[allow(clippy::too_many_arguments)]
 async fn inject_subgraph_inner(
     session: &crate::session::Session,
@@ -432,11 +438,12 @@ async fn inject_subgraph_inner(
         }
     }
 
-    // Verify the peer node registered successfully by checking if
-    // has_audio/has_video are consistent (basic sanity check).
-    if !has_audio && !has_video {
-        return Err("Preview subgraph injection failed: no media types detected".to_string());
-    }
+    // The caller guarantees at least one media type is present
+    // (it returns Err before reaching here if both are false).
+    debug_assert!(
+        has_audio || has_video,
+        "inject_subgraph_inner called with no media types"
+    );
 
     Ok(())
 }
