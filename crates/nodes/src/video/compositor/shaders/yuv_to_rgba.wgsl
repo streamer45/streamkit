@@ -48,8 +48,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         v_val = uv.g;
     } else {
         // I420: U and V are packed vertically in a single r8unorm texture.
-        // U plane occupies rows [0, height/2), V plane occupies rows [height/2, height).
-        let chroma_h = i32(params.height / 2u);
+        // U plane occupies rows [0, chroma_h), V plane occupies rows [chroma_h, 2*chroma_h).
+        // Use ceiling division to match the Rust-side packing (height.div_ceil(2)).
+        let chroma_h = i32((params.height + 1u) / 2u);
         u_val = textureLoad(uv_tex, vec2<i32>(chroma_coord.x, chroma_coord.y), 0).r;
         v_val = textureLoad(uv_tex, vec2<i32>(chroma_coord.x, chroma_coord.y + chroma_h), 0).r;
     }
