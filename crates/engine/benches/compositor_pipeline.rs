@@ -9,7 +9,7 @@
 //! Runs the same graph as `samples/pipelines/oneshot/video_compositor_demo.yml`:
 //!
 //!   colorbars_bg (NV12) ──┐
-//!                        ├─► compositor ──► vp9_encoder ──► http_output
+//!                        ├─► compositor (fused NV12 output) ──► vp9_encoder ──► http_output
 //!   colorbars_pip (NV12) ┘
 //!
 //! The benchmark drives the pipeline through [`Engine::run_oneshot_pipeline`]
@@ -152,7 +152,7 @@ fn build_pipeline(width: u32, height: u32, fps: u32, frame_count: u32) -> stream
         },
     );
 
-    // --- compositor ---
+    // --- compositor (with fused NV12 output) ---
     nodes.insert(
         "compositor".to_string(),
         Node {
@@ -161,17 +161,8 @@ fn build_pipeline(width: u32, height: u32, fps: u32, frame_count: u32) -> stream
                 "width": width,
                 "height": height,
                 "num_inputs": 2,
+                "output_format": "nv12",
             })),
-            state: None,
-        },
-    );
-
-    // --- pixel_convert (RGBA8 → NV12) ---
-    nodes.insert(
-        "pixel_convert".to_string(),
-        Node {
-            kind: "video::pixel_convert".to_string(),
-            params: Some(serde_json::json!({ "output_format": "nv12" })),
             state: None,
         },
     );
@@ -219,13 +210,6 @@ fn build_pipeline(width: u32, height: u32, fps: u32, frame_count: u32) -> stream
         },
         Connection {
             from_node: "compositor".to_string(),
-            from_pin: "out".to_string(),
-            to_node: "pixel_convert".to_string(),
-            to_pin: "in".to_string(),
-            mode: streamkit_api::ConnectionMode::Reliable,
-        },
-        Connection {
-            from_node: "pixel_convert".to_string(),
             from_pin: "out".to_string(),
             to_node: "vp9_encoder".to_string(),
             to_pin: "in".to_string(),

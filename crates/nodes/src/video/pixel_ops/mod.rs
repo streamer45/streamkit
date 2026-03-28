@@ -47,7 +47,7 @@ const RAYON_ROW_THRESHOLD: usize = 64;
 /// wider or taller frames produce fewer, larger chunks, keeping
 /// scheduling cost proportional to the actual parallelism available.
 ///
-/// Formula: `max(8, total_rows / (num_cpus * 4))`, clamped to `[8, 64]`.
+/// Formula: `max(16, total_rows / (num_cpus * 4))`, clamped to `[16, 128]`.
 /// This keeps chunk counts proportional to hardware parallelism while
 /// avoiding both excessive scheduling overhead (too many tiny chunks)
 /// and poor load-balancing (too few large chunks).
@@ -59,7 +59,7 @@ fn rayon_chunk_rows(total_rows: usize) -> usize {
         std::thread::available_parallelism().map(std::num::NonZero::get).unwrap_or(1)
     });
     let ideal = total_rows.div_ceil(*CPUS * 4);
-    ideal.clamp(8, 64)
+    ideal.clamp(16, 128)
 }
 
 /// Fixed-point alpha blend: `(src * alpha + dst * (255 - alpha) + 128) / 255`

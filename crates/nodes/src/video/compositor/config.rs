@@ -50,7 +50,7 @@ const fn default_fps() -> u32 {
 ///
 /// `x` and `y` are signed to allow off-screen positioning (e.g. for
 /// slide-in effects or rotation around the rect centre).
-#[derive(Deserialize, Debug, Clone, Copy, JsonSchema)]
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
 #[cfg_attr(feature = "codegen", derive(ts_rs::TS))]
 pub struct Rect {
     pub x: i32,
@@ -63,7 +63,7 @@ pub struct Rect {
 ///
 /// Flattened into each overlay config via `#[serde(flatten)]` so the JSON
 /// shape stays identical (fields remain at the top level).
-#[derive(Deserialize, Debug, Clone, JsonSchema)]
+#[derive(Deserialize, Debug, Clone, PartialEq, JsonSchema)]
 #[cfg_attr(feature = "codegen", derive(ts_rs::TS))]
 pub struct OverlayTransform {
     /// Destination rectangle on the output canvas.
@@ -115,7 +115,7 @@ pub struct ImageOverlayConfig {
 }
 
 /// Configuration for a text overlay (rasterized once per `UpdateParams`).
-#[derive(Deserialize, Debug, Clone, JsonSchema)]
+#[derive(Deserialize, Debug, Clone, PartialEq, JsonSchema)]
 #[cfg_attr(feature = "codegen", derive(ts_rs::TS))]
 pub struct TextOverlayConfig {
     /// Stable unique identifier.  Auto-generated (UUID v4) when omitted.
@@ -296,6 +296,12 @@ pub struct CompositorConfig {
     /// Text overlays (rasterized once per `UpdateParams`).
     #[serde(default)]
     pub text_overlays: Vec<TextOverlayConfig>,
+    /// Optional output pixel format conversion.  When set to `"nv12"` or
+    /// `"i420"`, the compositor converts its RGBA8 canvas to the target
+    /// format on the compositing thread while data is still cache-hot.
+    /// Default: `None` (output RGBA8).
+    #[serde(default)]
+    pub output_format: Option<String>,
 }
 
 impl Default for CompositorConfig {
@@ -308,6 +314,7 @@ impl Default for CompositorConfig {
             layers: HashMap::new(),
             image_overlays: Vec::new(),
             text_overlays: Vec::new(),
+            output_format: None,
         }
     }
 }
@@ -501,6 +508,10 @@ impl CompositorConfig {
                     limits.max_text_length
                 ));
             }
+        }
+        if let Some(ref fmt) = self.output_format {
+            crate::video::parse_pixel_format(fmt)
+                .map_err(|e| format!("Invalid output_format: {e}"))?;
         }
         Ok(())
     }

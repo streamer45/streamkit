@@ -9,7 +9,7 @@
 //!
 //! ## Inputs / Outputs
 //! - Inputs: dynamic `in_*` pins (raw video, RGBA8/I420/NV12 auto-converted)
-//! - Output: `out` (composited RGBA8 frame)
+//! - Output: `out` (composited frame, RGBA8 by default or NV12/I420 via `output_format`)
 //!
 //! ## Key config fields
 //! - `width`, `height`, `fps`: output canvas dimensions and frame rate
@@ -49,7 +49,7 @@ use streamkit_core::types::{
 };
 use streamkit_core::{
     config_helpers, state_helpers, view_data_helpers, InputPin, NodeContext, NodeRegistry,
-    OutputPin, PinCardinality, ProcessorNode, StreamKitError,
+    OutputPin, PinCardinality, PooledVideoData, ProcessorNode, StreamKitError,
 };
 use tokio::sync::mpsc;
 
@@ -289,9 +289,8 @@ fn fit_rect_preserving_aspect(src_w: u32, src_h: u32, bounds: &config::Rect) -> 
 /// runtime. Each input accepts `RawVideo(RGBA8)` or `RawVideo(I420)` with
 /// wildcard dimensions.
 ///
-/// Output `"out"` always produces `RawVideo(RGBA8)` at the configured canvas
-/// size.  Downstream nodes (e.g. the VP9 encoder) are responsible for any
-/// further format conversion.
+/// Output `"out"` produces `RawVideo` at the configured canvas size.  The
+/// pixel format is RGBA8 by default, or NV12/I420 when `output_format` is set.
 pub struct CompositorNode {
     config: CompositorConfig,
     /// Server-level resource limits (from `skit.toml`).
@@ -306,6 +305,8 @@ pub struct CompositorNode {
     /// Config revision from the last `UpdateParams` (`_rev` field).
     /// Stamped into view data alongside `config_sender`.
     config_rev: u64,
+    /// Resolved output pixel format.  `None` means RGBA8 pass-through.
+    output_format: Option<PixelFormat>,
 }
 
 impl CompositorNode {
@@ -332,6 +333,9 @@ impl CompositorNode {
             },
         );
 
+        let output_format =
+            config.output_format.as_deref().and_then(|s| crate::video::parse_pixel_format(s).ok());
+
         Self {
             config,
             limits,
@@ -339,6 +343,7 @@ impl CompositorNode {
             next_input_id,
             config_sender: String::new(),
             config_rev: 0,
+            output_format,
         }
     }
 
@@ -401,12 +406,13 @@ impl ProcessorNode for CompositorNode {
     }
 
     fn output_pins(&self) -> Vec<OutputPin> {
+        let pixel_format = self.output_format.unwrap_or(PixelFormat::Rgba8);
         vec![OutputPin {
             name: "out".to_string(),
             produces_type: PacketType::RawVideo(RawVideoFormat {
                 width: Some(self.config.width),
                 height: Some(self.config.height),
-                pixel_format: PixelFormat::Rgba8,
+                pixel_format,
             }),
             cardinality: PinCardinality::Broadcast,
         }]
@@ -562,7 +568,55 @@ impl ProcessorNode for CompositorNode {
                     work.video_pool.as_deref(),
                     &mut conversion_cache,
                 );
-                let result = CompositeResult { rgba_data: rgba_buf };
+
+                // Fused pixel format conversion while data is cache-hot.
+                let (output_data, pixel_format) = match work.output_format {
+                    Some(PixelFormat::Nv12) => {
+                        let w = work.canvas_w as usize;
+                        let h = work.canvas_h as usize;
+                        let chroma_w = w.div_ceil(2);
+                        let chroma_h = h.div_ceil(2);
+                        let nv12_size = w * h + chroma_w * 2 * chroma_h;
+                        let mut nv12_buf = work.video_pool.as_deref().map_or_else(
+                            || PooledVideoData::from_vec(vec![0u8; nv12_size]),
+                            |pool| pool.get(nv12_size),
+                        );
+                        crate::video::pixel_ops::rgba8_to_nv12_buf(
+                            rgba_buf.as_slice(),
+                            work.canvas_w,
+                            work.canvas_h,
+                            nv12_buf.as_mut_slice(),
+                        );
+                        (nv12_buf, PixelFormat::Nv12)
+                    },
+                    Some(PixelFormat::I420) => {
+                        let w = work.canvas_w as usize;
+                        let h = work.canvas_h as usize;
+                        let chroma_w = w.div_ceil(2);
+                        let chroma_h = h.div_ceil(2);
+                        let i420_size = w * h + 2 * chroma_w * chroma_h;
+                        let mut i420_buf = work.video_pool.as_deref().map_or_else(
+                            || PooledVideoData::from_vec(vec![0u8; i420_size]),
+                            |pool| pool.get(i420_size),
+                        );
+                        crate::video::pixel_ops::rgba8_to_i420_buf(
+                            rgba_buf.as_slice(),
+                            work.canvas_w,
+                            work.canvas_h,
+                            i420_buf.as_mut_slice(),
+                        );
+                        (i420_buf, PixelFormat::I420)
+                    },
+                    None | Some(PixelFormat::Rgba8) => (rgba_buf, PixelFormat::Rgba8),
+                    Some(other) => {
+                        tracing::warn!(
+                            "Unsupported fused output format {other:?}, falling back to RGBA8"
+                        );
+                        (rgba_buf, PixelFormat::Rgba8)
+                    },
+                };
+
+                let result = CompositeResult { rgba_data: output_data, pixel_format };
                 if result_tx.blocking_send(result).is_err() {
                     break;
                 }
@@ -674,6 +728,12 @@ impl ProcessorNode for CompositorNode {
                                 );
                                 tracing::info!("Compositor fps changed: {} → {}", old_fps, self.config.fps);
                             }
+                            // Re-resolve output_format from the updated config.
+                            self.output_format = self
+                                .config
+                                .output_format
+                                .as_deref()
+                                .and_then(|s| crate::video::parse_pixel_format(s).ok());
                         },
                         NodeControlMessage::Start => {},
                     }
@@ -851,6 +911,7 @@ impl ProcessorNode for CompositorNode {
                 text_overlays: text_overlays.clone(),
                 video_pool: video_pool.clone(),
                 clear_conversion_cache,
+                output_format: self.output_format,
             };
 
             // Send work to the compositing thread.  The work channel has
@@ -909,7 +970,7 @@ impl ProcessorNode for CompositorNode {
             let out_frame = VideoFrame::from_pooled(
                 self.config.width,
                 self.config.height,
-                PixelFormat::Rgba8,
+                composite_result.pixel_format,
                 composite_result.rgba_data,
                 metadata,
             )?;
@@ -1050,8 +1111,9 @@ impl CompositorNode {
     /// Image overlays are cached by stable overlay ID: when the asset path
     /// and target dimensions are unchanged, the previously decoded
     /// bitmap is reused (only transform fields like position, opacity, and
-    /// rotation are updated).  Text overlays are always re-rasterized
-    /// because font rendering parameters may have changed.
+    /// rotation are updated).  Text overlays are cached by config equality:
+    /// when the `TextOverlayConfig` is unchanged, the existing
+    /// `Arc<DecodedOverlay>` is reused to avoid fontdue allocation churn.
     fn apply_update_params(
         config: &mut CompositorConfig,
         limits: &GlobalCompositorConfig,
@@ -1085,11 +1147,21 @@ impl CompositorNode {
                         );
                         *image_overlays = Arc::from(new_image_overlays);
 
-                        // Re-rasterize text overlays.
+                        // Re-rasterize only changed text overlays; reuse
+                        // existing Arc<DecodedOverlay> when the config is
+                        // identical (avoids ~65 MB fontdue allocation churn).
                         let new_text_overlays: Vec<Arc<DecodedOverlay>> = new_config
                             .text_overlays
                             .iter()
-                            .map(|txt_cfg| {
+                            .enumerate()
+                            .map(|(i, txt_cfg)| {
+                                if let Some(old_cfg) = config.text_overlays.get(i) {
+                                    if old_cfg == txt_cfg {
+                                        if let Some(existing) = text_overlays.get(i) {
+                                            return Arc::clone(existing);
+                                        }
+                                    }
+                                }
                                 Arc::new(rasterize_text_overlay(
                                     txt_cfg,
                                     limits.max_canvas_dimension,
