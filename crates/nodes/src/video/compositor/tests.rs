@@ -286,7 +286,6 @@ fn test_rasterize_text_overlay_produces_pixels() {
         color: [255, 255, 0, 255],
         font_size: 24,
         font_name: None,
-        font_weight: 400,
     };
     let overlay = rasterize_text_overlay(&cfg, 7680, 10_000);
     // Bitmap is sized to the measured text extent, not the config rect.
@@ -2217,7 +2216,6 @@ fn test_text_overlay_cache_reuses_arc_on_unchanged_config() {
         color: [255, 255, 255, 255],
         font_size: 24,
         font_name: None,
-        font_weight: 400,
     };
     let limits = GlobalCompositorConfig::default();
     let mut config =
@@ -2336,7 +2334,6 @@ fn test_text_overlay_cache_handles_length_changes() {
         color: [255, 255, 255, 255],
         font_size: 24,
         font_name: None,
-        font_weight: 400,
     };
     let limits = GlobalCompositorConfig::default();
     let mut stats = NodeStatsTracker::new("test".to_string(), None);
