@@ -846,7 +846,9 @@ impl GpuContext {
         let y_gpu_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("y_output_buf"),
             size: y_buf_size_aligned,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
@@ -861,7 +863,9 @@ impl GpuContext {
         let uv_gpu_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("uv_output_buf"),
             size: uv_buf_size_aligned,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
