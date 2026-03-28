@@ -2025,7 +2025,7 @@ mod preview {
         &["transport::moq::publisher", "transport::moq::peer", "core::sink", "io::file_writer"];
 
     fn is_terminal_kind(kind: &str) -> bool {
-        TERMINAL_KINDS.iter().any(|t| kind.ends_with(t) || *t == kind)
+        TERMINAL_KINDS.contains(&kind)
     }
 
     // ── Output pin classification ────────────────────────────────────────
@@ -2065,7 +2065,10 @@ mod preview {
             k if k.contains("mixer") || k.contains("resampler") || k.contains("gain") => {
                 (false, true, false)
             },
-            _ => (false, false, false),
+            _ => {
+                tracing::trace!(kind = %kind, "classify_by_kind: unknown node kind, skipping");
+                (false, false, false)
+            },
         }
     }
 
@@ -2192,14 +2195,15 @@ mod preview {
     /// On failure, rolls back any nodes/connections that were successfully
     /// created before the error.
     ///
-    /// Returns `(injected_node_ids, injected_connections, has_audio, has_video)`.
+    /// Returns `(injected_nodes, injected_connections, has_audio, has_video)`
+    /// where each injected node is a `(node_id, kind)` tuple.
     pub async fn inject_preview_subgraph(
         session: &crate::session::Session,
         preview_id: &str,
         tap_points: &[TapPoint],
         gateway_path: &str,
         pipeline: &Pipeline,
-    ) -> Result<(Vec<String>, Vec<(String, String, String, String)>, bool, bool), String> {
+    ) -> Result<(Vec<(String, String)>, Vec<(String, String, String, String)>, bool, bool), String> {
         let prefix = format!("_preview_{preview_id}_");
 
         // Validate all tap points exist in the pipeline.
@@ -2216,7 +2220,7 @@ mod preview {
             return Err("Tap points do not produce audio or video".to_string());
         }
 
-        let mut node_ids: Vec<String> = Vec::new();
+        let mut node_ids: Vec<(String, String)> = Vec::new();
         let mut connections: Vec<(String, String, String, String)> = Vec::new();
 
         // Determine moq_peer input pin names.
@@ -2249,7 +2253,7 @@ mod preview {
             let partial = PreviewState {
                 preview_id: preview_id.to_string(),
                 tap_points: tap_points.to_vec(),
-                injected_node_ids: node_ids,
+                injected_nodes: node_ids,
                 injected_connections: connections,
                 gateway_path: gateway_path.to_string(),
                 has_audio,
@@ -2261,7 +2265,8 @@ mod preview {
                 error = %e,
                 "Rolling back partially-injected preview subgraph"
             );
-            teardown_preview(session, &partial).await;
+            // Best-effort rollback — ignore teardown errors.
+            let _ = teardown_preview(session, &partial).await;
             return Err(e);
         }
 
@@ -2281,7 +2286,7 @@ mod preview {
         peer_video_input: &str,
         has_audio: bool,
         has_video: bool,
-        node_ids: &mut Vec<String>,
+        node_ids: &mut Vec<(String, String)>,
         connections: &mut Vec<(String, String, String, String)>,
     ) -> Result<(), String> {
         // Add encoder chains for each tap point BEFORE adding the moq_peer
@@ -2295,10 +2300,10 @@ mod preview {
                 let vp9enc_id = format!("{prefix}vp9enc");
 
                 add_pixel_convert_node(session, &pixconv_id).await?;
-                node_ids.push(pixconv_id.clone());
+                node_ids.push((pixconv_id.clone(), "video::pixel_convert".to_string()));
 
                 add_vp9_encoder_node(session, &vp9enc_id).await?;
-                node_ids.push(vp9enc_id.clone());
+                node_ids.push((vp9enc_id.clone(), "vp9::encoder".to_string()));
 
                 // tap → pixconv
                 connect_best_effort(session, &tp.node, &tp.pin, &pixconv_id, "in", connections)
@@ -2311,7 +2316,7 @@ mod preview {
                 let opusenc_id = format!("{prefix}opusenc");
 
                 add_opus_encoder_node(session, &opusenc_id).await?;
-                node_ids.push(opusenc_id.clone());
+                node_ids.push((opusenc_id.clone(), "audio::opus::encoder".to_string()));
 
                 // tap → opusenc
                 connect_best_effort(session, &tp.node, &tp.pin, &opusenc_id, "in", connections)
@@ -2321,7 +2326,7 @@ mod preview {
 
         // Add moq_peer node
         add_moq_peer_node(session, peer_node_id, gateway_path).await?;
-        node_ids.push(peer_node_id.to_string());
+        node_ids.push((peer_node_id.to_string(), "transport::moq::peer".to_string()));
 
         // Connect encoder outputs (or direct taps) to moq_peer
         for tp in tap_points {
@@ -2513,24 +2518,68 @@ mod preview {
     // ── Teardown ─────────────────────────────────────────────────────────
 
     /// Tear down the preview subgraph (disconnect, then remove nodes in reverse).
-    pub async fn teardown_preview(session: &crate::session::Session, state: &PreviewState) {
+    /// Also removes the preview nodes and connections from `session.pipeline`
+    /// so the pipeline API stays in sync.
+    ///
+    /// Uses fallible sends so the caller can detect partial teardown failures.
+    /// Returns `Ok(())` on full success, or `Err(msg)` if any engine message
+    /// failed (the pipeline model is still cleaned up regardless).
+    pub async fn teardown_preview(
+        session: &crate::session::Session,
+        state: &PreviewState,
+    ) -> Result<(), String> {
+        let mut first_error: Option<String> = None;
+
         // Disconnect in reverse order
         for (from_node, from_pin, to_node, to_pin) in state.injected_connections.iter().rev() {
-            session
-                .send_control_message(EngineControlMessage::Disconnect {
+            if let Err(e) = session
+                .try_send_control_message(EngineControlMessage::Disconnect {
                     from_node: from_node.clone(),
                     from_pin: from_pin.clone(),
                     to_node: to_node.clone(),
                     to_pin: to_pin.clone(),
                 })
-                .await;
+                .await
+            {
+                tracing::warn!(error = %e, "Failed to disconnect preview node");
+                if first_error.is_none() {
+                    first_error = Some(e);
+                }
+            }
         }
         // Remove nodes in reverse order (peer first, then encoders)
-        for node_id in state.injected_node_ids.iter().rev() {
-            session
-                .send_control_message(EngineControlMessage::RemoveNode { node_id: node_id.clone() })
-                .await;
+        for (node_id, _kind) in state.injected_nodes.iter().rev() {
+            if let Err(e) = session
+                .try_send_control_message(EngineControlMessage::RemoveNode {
+                    node_id: node_id.clone(),
+                })
+                .await
+            {
+                tracing::warn!(error = %e, node_id = %node_id, "Failed to remove preview node");
+                if first_error.is_none() {
+                    first_error = Some(e);
+                }
+            }
         }
+
+        // Sync the pipeline model: remove preview nodes and connections
+        // regardless of engine errors.
+        {
+            let mut pipeline = session.pipeline.lock().await;
+            for (node_id, _kind) in &state.injected_nodes {
+                pipeline.nodes.shift_remove(node_id);
+            }
+            pipeline.connections.retain(|conn| {
+                !state.injected_connections.iter().any(|(f, fp, t, tp)| {
+                    conn.from_node == *f
+                        && conn.from_pin == *fp
+                        && conn.to_node == *t
+                        && conn.to_pin == *tp
+                })
+            });
+        }
+
+        first_error.map_or(Ok(()), Err)
     }
 
     /// Tear down all active previews for a session.
@@ -2542,7 +2591,8 @@ mod preview {
                 preview_id = %preview.preview_id,
                 "Tearing down preview on session destroy"
             );
-            teardown_preview(session, preview).await;
+            // Best-effort teardown on session destroy.
+            let _ = teardown_preview(session, preview).await;
         }
     }
 
@@ -2626,6 +2676,13 @@ mod preview {
                             format!("Pin '{pin}' not found on node '{node}'"),
                         ));
                     }
+                } else {
+                    tracing::warn!(
+                        node = %node,
+                        kind = %pipeline.nodes[&node].kind,
+                        pin = %pin,
+                        "Node kind not found in registry — skipping pin validation"
+                    );
                 }
                 let classification =
                     classify_output_pin_from_registry(&pipeline, &node, &pin, &registry);
@@ -2640,11 +2697,23 @@ mod preview {
                         format!("Tap node '{node}' not found in pipeline"),
                     ));
                 }
-                let pin = "out".to_string();
-                let classification = {
+                // Look up the node's first output pin from the registry
+                // instead of blindly assuming "out".
+                let (pin, classification) = {
                     let registry = read_registry(&app_state)
                         .map_err(|status| (status, "Engine registry unavailable".to_string()))?;
-                    classify_output_pin_from_registry(&pipeline, &node, &pin, &registry)
+                    let node_kind = &pipeline.nodes[&node].kind;
+                    let pin_name = if let Some(def) = registry.get_definition(node_kind) {
+                        def.outputs
+                            .first()
+                            .map_or_else(|| "out".to_string(), |p| p.name.clone())
+                    } else {
+                        "out".to_string()
+                    };
+                    let cls =
+                        classify_output_pin_from_registry(&pipeline, &node, &pin_name, &registry);
+                    drop(registry);
+                    (pin_name, cls)
                 };
                 let (is_encoded, is_audio, is_video) = classification;
                 vec![TapPoint { node, pin, is_encoded, is_audio, is_video }]
@@ -2659,15 +2728,35 @@ mod preview {
         let preview_id = uuid::Uuid::new_v4().to_string();
         let gateway_path = format!("/_preview/{}/{}", session.id, preview_id);
 
-        let (node_ids, connections, has_audio, has_video) =
+        let (nodes, connections, has_audio, has_video) =
             inject_preview_subgraph(&session, &preview_id, &tap_points, &gateway_path, &pipeline)
                 .await
                 .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
+        // Sync the pipeline model so the pipeline API includes preview nodes.
+        {
+            let mut pip = session.pipeline.lock().await;
+            for (node_id, kind) in &nodes {
+                pip.nodes.insert(
+                    node_id.clone(),
+                    streamkit_api::Node { kind: kind.clone(), params: None, state: None },
+                );
+            }
+            for (from_node, from_pin, to_node, to_pin) in &connections {
+                pip.connections.push(streamkit_api::Connection {
+                    from_node: from_node.clone(),
+                    from_pin: from_pin.clone(),
+                    to_node: to_node.clone(),
+                    to_pin: to_pin.clone(),
+                    mode: streamkit_core::control::ConnectionMode::BestEffort,
+                });
+            }
+        }
+
         let state = PreviewState {
             preview_id: preview_id.clone(),
             tap_points,
-            injected_node_ids: node_ids,
+            injected_nodes: nodes,
             injected_connections: connections,
             gateway_path: gateway_path.clone(),
             has_audio,
@@ -2677,7 +2766,8 @@ mod preview {
 
         if let Err(e) = session.add_preview(state.clone()).await {
             // Another request won the race — clean up the nodes we just injected.
-            teardown_preview(&session, &state).await;
+            // Best-effort teardown for TOCTOU race loser.
+            let _ = teardown_preview(&session, &state).await;
             return Err((StatusCode::CONFLICT, e));
         }
 
@@ -2816,7 +2906,14 @@ mod preview {
             ));
         };
 
-        teardown_preview(&session, &preview_state).await;
+        if let Err(e) = teardown_preview(&session, &preview_state).await {
+            tracing::warn!(
+                session_id = %session.id,
+                preview_id = %preview_id,
+                error = %e,
+                "Partial teardown failure during explicit stop"
+            );
+        }
 
         info!(
             session_id = %session.id,

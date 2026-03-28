@@ -157,8 +157,9 @@ pub struct PreviewState {
     /// Tap points this preview is connected to (may be multiple for
     /// pipelines with separate audio and video encoder chains).
     pub tap_points: Vec<TapPoint>,
-    /// Node IDs injected for this preview (teardown in reverse order).
-    pub injected_node_ids: Vec<String>,
+    /// Node IDs and kinds injected for this preview (teardown in reverse order).
+    /// Each entry is `(node_id, node_kind)`.
+    pub injected_nodes: Vec<(String, String)>,
     /// Connections injected for this preview `(from_node, from_pin, to_node, to_pin)`.
     pub injected_connections: Vec<(String, String, String, String)>,
     pub gateway_path: String,

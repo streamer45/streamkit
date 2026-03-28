@@ -121,7 +121,6 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
       }
       previewDisconnect();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- cleanup only needs stable refs
   }, [selectedSessionId, previewDisconnect]);
 
   const handleStartPreview = useCallback(async () => {
@@ -130,8 +129,15 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
     // Clean up any existing server-side preview before creating a new one.
     // This handles the case where the MoQ connection dropped but the
     // server-side preview subgraph is still active.
+    // Await the stop to avoid racing with the new startPreview — if the
+    // server processes start before stop, the old preview could count
+    // toward the limit and cause a spurious 409.
     if (previewIdRef.current && previewSessionIdRef.current) {
-      stopPreview(previewSessionIdRef.current, previewIdRef.current).catch(() => {});
+      try {
+        await stopPreview(previewSessionIdRef.current, previewIdRef.current);
+      } catch {
+        // Best-effort cleanup — proceed even if the old preview is gone.
+      }
       previewIdRef.current = null;
       previewSessionIdRef.current = null;
     }
