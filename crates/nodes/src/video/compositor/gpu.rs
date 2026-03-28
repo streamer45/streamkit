@@ -113,7 +113,6 @@ pub struct GpuContext {
 
     /// Staging buffer for GPU→CPU readback — sized to canvas.
     readback_buffer: Option<wgpu::Buffer>,
-    readback_buffer_size: u64,
 }
 
 impl GpuContext {
@@ -159,13 +158,21 @@ impl GpuContext {
             label: Some("yuv_to_rgba_bgl"),
             entries: &[
                 // Y texture
-                bgl_texture_entry(0, wgpu::TextureSampleType::Float { filterable: false }),
+                bgl_texture_entry(
+                    0,
+                    wgpu::TextureSampleType::Float { filterable: false },
+                    wgpu::ShaderStages::COMPUTE,
+                ),
                 // UV texture
-                bgl_texture_entry(1, wgpu::TextureSampleType::Float { filterable: false }),
+                bgl_texture_entry(
+                    1,
+                    wgpu::TextureSampleType::Float { filterable: false },
+                    wgpu::ShaderStages::COMPUTE,
+                ),
                 // Output storage texture
                 bgl_storage_texture_entry(2, wgpu::TextureFormat::Rgba8Unorm),
                 // Params uniform
-                bgl_uniform_entry(3),
+                bgl_uniform_entry(3, wgpu::ShaderStages::COMPUTE),
             ],
         });
 
@@ -192,13 +199,17 @@ impl GpuContext {
         let layer_uniforms_bgl =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("layer_uniforms_bgl"),
-                entries: &[bgl_uniform_entry(0)],
+                entries: &[bgl_uniform_entry(0, wgpu::ShaderStages::VERTEX_FRAGMENT)],
             });
 
         let layer_texture_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("layer_texture_bgl"),
             entries: &[
-                bgl_texture_entry(0, wgpu::TextureSampleType::Float { filterable: true }),
+                bgl_texture_entry(
+                    0,
+                    wgpu::TextureSampleType::Float { filterable: true },
+                    wgpu::ShaderStages::FRAGMENT,
+                ),
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -265,7 +276,11 @@ impl GpuContext {
             label: Some("rgba_to_yuv_bgl"),
             entries: &[
                 // Input RGBA texture
-                bgl_texture_entry(0, wgpu::TextureSampleType::Float { filterable: false }),
+                bgl_texture_entry(
+                    0,
+                    wgpu::TextureSampleType::Float { filterable: false },
+                    wgpu::ShaderStages::COMPUTE,
+                ),
                 // Y output storage buffer
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
@@ -289,7 +304,7 @@ impl GpuContext {
                     count: None,
                 },
                 // Params uniform
-                bgl_uniform_entry(3),
+                bgl_uniform_entry(3, wgpu::ShaderStages::COMPUTE),
             ],
         });
 
@@ -330,7 +345,6 @@ impl GpuContext {
             sampler,
             canvas: None,
             readback_buffer: None,
-            readback_buffer_size: 0,
         })
     }
 
@@ -366,7 +380,6 @@ impl GpuContext {
                 usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
                 mapped_at_creation: false,
             }));
-            self.readback_buffer_size = buf_size;
         }
     }
 
@@ -907,8 +920,10 @@ impl GpuContext {
             ],
         });
 
-        // Zero-fill the output buffers before dispatch (the shader uses
-        // read-modify-write OR packing).
+        // INVARIANT: output buffers MUST be zero-filled before dispatch.
+        // The shader uses atomicOr to pack individual bytes into u32 words;
+        // if the buffers contain stale data the OR will silently corrupt
+        // the output.  Do not remove or reorder this clear.
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("rgba_to_yuv_encoder"),
         });
@@ -925,6 +940,9 @@ impl GpuContext {
         }
 
         // Copy GPU storage buffers to staging buffers for CPU readback.
+        // TODO(phase-3): cache these staging buffers on GpuContext (keyed on
+        // canvas size + format) instead of creating them every frame — the
+        // output format rarely changes between frames.
         let y_staging = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("y_staging"),
             size: y_buf_size_aligned,
@@ -1173,10 +1191,11 @@ fn build_layer_uniforms(
 fn bgl_texture_entry(
     binding: u32,
     sample_type: wgpu::TextureSampleType,
+    visibility: wgpu::ShaderStages,
 ) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
-        visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
+        visibility,
         ty: wgpu::BindingType::Texture {
             sample_type,
             view_dimension: wgpu::TextureViewDimension::D2,
@@ -1202,10 +1221,10 @@ fn bgl_storage_texture_entry(
     }
 }
 
-fn bgl_uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+fn bgl_uniform_entry(binding: u32, visibility: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
-        visibility: wgpu::ShaderStages::all(),
+        visibility,
         ty: wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Uniform,
             has_dynamic_offset: false,
