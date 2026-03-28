@@ -118,6 +118,10 @@ fn classify_by_kind(kind: &str) -> (bool, bool, bool) {
 /// pipelines with separate audio and video encoder chains feeding the
 /// same terminal node, this returns both. Prefers tapping after
 /// encoders (encoded output) to skip re-encoding.
+///
+/// # Errors
+///
+/// Returns an error if the pipeline has no suitable output nodes to tap.
 pub fn detect_tap_points(
     pipeline: &Pipeline,
     registry: &streamkit_core::NodeRegistry,
@@ -235,6 +239,11 @@ fn classify_output_pin_from_registry(
 ///
 /// Returns `(injected_nodes, injected_connections, has_audio, has_video)`
 /// where each injected node is a `(node_id, kind)` tuple.
+///
+/// # Errors
+///
+/// Returns an error if a tap node is missing from the pipeline, if no
+/// media types are detected, or if any engine control message fails.
 pub async fn inject_preview_subgraph(
     session: &crate::session::Session,
     preview_id: &str,
@@ -599,6 +608,11 @@ async fn connect_reliable(
 /// Uses fallible sends so the caller can detect partial teardown failures.
 /// Returns `Ok(())` on full success, or `Err(msg)` if any engine message
 /// failed (the pipeline model is still cleaned up regardless).
+///
+/// # Errors
+///
+/// Returns the first engine control message error encountered during
+/// teardown. The pipeline model is cleaned up regardless of errors.
 pub async fn teardown_preview(
     session: &crate::session::Session,
     state: &PreviewState,
@@ -672,6 +686,10 @@ pub async fn teardown_all_previews(session: &crate::session::Session) {
 // ── Route handlers ───────────────────────────────────────────────────
 
 /// POST /api/v1/sessions/{id}/preview
+///
+/// # Errors
+///
+/// Returns HTTP error status codes for permission, validation, or engine failures.
 pub async fn start_preview_handler(
     State(app_state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -880,6 +898,10 @@ pub async fn start_preview_handler(
 }
 
 /// GET /api/v1/sessions/{id}/preview
+///
+/// # Errors
+///
+/// Returns HTTP 403 if the caller lacks permission.
 pub async fn list_previews_handler(
     State(app_state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -943,6 +965,11 @@ pub async fn list_previews_handler(
 }
 
 /// DELETE /api/v1/sessions/{id}/preview/{preview_id}
+///
+/// # Errors
+///
+/// Returns HTTP 404 if the session or preview is not found, or 403 on
+/// permission denial. Returns 500 if teardown partially fails.
 pub async fn stop_preview_handler(
     State(app_state): State<Arc<AppState>>,
     headers: HeaderMap,
