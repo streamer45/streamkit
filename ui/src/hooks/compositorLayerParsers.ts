@@ -749,7 +749,13 @@ function computeResizePosition(
   }
   if (newH > maxH) {
     newH = maxH;
-    if (ar > 0) newW = newH * ar;
+    if (ar > 0) {
+      newW = newH * ar;
+      // Guard: the height-clamp AR correction may have pushed width back
+      // above maxW (possible when the layer sits near both the right and
+      // bottom edges with an extreme AR).  Re-clamp to keep it in bounds.
+      newW = Math.min(newW, maxW);
+    }
   }
   // Re-anchor position for handles that move the origin edge.
   if (handle.includes('w')) newX = orig.x + (orig.width - newW);

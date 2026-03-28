@@ -380,6 +380,12 @@ export function useCompositorOverlays(deps: OverlayDeps) {
           updates = { ...updates, width: minWidth };
         }
       }
+      // Clear stale server text measurements when font-affecting fields
+      // change so the UI falls back to live browser measurement instead
+      // of showing a bounding box sized for the old font metrics.
+      if ('fontSize' in updates || 'fontName' in updates || 'text' in updates) {
+        updates = { ...updates, measuredTextWidth: undefined, measuredTextHeight: undefined };
+      }
       updateOverlay(id, updates, setTextOverlays, (next) => [next, imageOverlaysRef.current]);
     },
     [updateOverlay, textOverlaysRef, setTextOverlays, imageOverlaysRef]

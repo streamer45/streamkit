@@ -84,48 +84,27 @@ const ResizeEdgeBottom = styled.div`
   z-index: 25;
 `;
 
-/** Invisible resize handle on the top-left corner. */
-const ResizeCornerTopLeft = styled.div`
+/** Invisible resize handle on a panel corner.  Position and cursor are
+ *  derived from the `corner` prop to avoid four near-identical components. */
+const ResizeCorner = styled.div<{
+  corner: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
+}>`
   position: absolute;
-  top: -3px;
-  left: -3px;
   width: 12px;
   height: 12px;
-  cursor: nwse-resize;
   z-index: 26;
-`;
-
-/** Invisible resize handle on the top-right corner. */
-const ResizeCornerTopRight = styled.div`
-  position: absolute;
-  top: -3px;
-  right: -3px;
-  width: 12px;
-  height: 12px;
-  cursor: nesw-resize;
-  z-index: 26;
-`;
-
-/** Invisible resize handle on the bottom-left corner. */
-const ResizeCornerBottomLeft = styled.div`
-  position: absolute;
-  bottom: -3px;
-  left: -3px;
-  width: 12px;
-  height: 12px;
-  cursor: nesw-resize;
-  z-index: 26;
-`;
-
-/** Invisible resize handle on the bottom-right corner. */
-const ResizeCornerBottomRight = styled.div`
-  position: absolute;
-  bottom: -3px;
-  right: -3px;
-  width: 12px;
-  height: 12px;
-  cursor: nwse-resize;
-  z-index: 26;
+  ${({ corner }) => {
+    switch (corner) {
+      case 'top-left':
+        return 'top: -3px; left: -3px; cursor: nwse-resize;';
+      case 'top-right':
+        return 'top: -3px; right: -3px; cursor: nesw-resize;';
+      case 'bottom-left':
+        return 'bottom: -3px; left: -3px; cursor: nesw-resize;';
+      case 'bottom-right':
+        return 'bottom: -3px; right: -3px; cursor: nwse-resize;';
+    }
+  }}
 `;
 
 const DragHeader = styled.div`
@@ -337,19 +316,23 @@ const ResizeEdges: React.FC<{
     <ResizeEdgeTop className="nodrag nopan" onPointerDown={(e) => onResizeStart('top', e)} />
     <ResizeEdgeRight className="nodrag nopan" onPointerDown={(e) => onResizeStart('right', e)} />
     <ResizeEdgeBottom className="nodrag nopan" onPointerDown={(e) => onResizeStart('bottom', e)} />
-    <ResizeCornerTopLeft
+    <ResizeCorner
+      corner="top-left"
       className="nodrag nopan"
       onPointerDown={(e) => onResizeStart('top-left', e)}
     />
-    <ResizeCornerTopRight
+    <ResizeCorner
+      corner="top-right"
       className="nodrag nopan"
       onPointerDown={(e) => onResizeStart('top-right', e)}
     />
-    <ResizeCornerBottomLeft
+    <ResizeCorner
+      corner="bottom-left"
       className="nodrag nopan"
       onPointerDown={(e) => onResizeStart('bottom-left', e)}
     />
-    <ResizeCornerBottomRight
+    <ResizeCorner
+      corner="bottom-right"
       className="nodrag nopan"
       onPointerDown={(e) => onResizeStart('bottom-right', e)}
     />

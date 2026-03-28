@@ -241,6 +241,10 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
                   8,
                   Math.round(origFontSize * (updated.width / state.origLayer.width))
                 );
+                // Clear stale server measurements — fontSize changed so the
+                // old fontdue metrics no longer match the new size.
+                patch.measuredTextWidth = undefined;
+                patch.measuredTextHeight = undefined;
               }
               return { ...o, ...patch };
             });

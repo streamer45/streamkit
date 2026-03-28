@@ -121,27 +121,6 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
     const internalTextInputRef = useRef<HTMLTextAreaElement>(null);
     const textInputRef = externalTextInputRef ?? internalTextInputRef;
 
-    // ── Font assets from API ───────────────────────────────────────────────
-    const [fontAssets, setFontAssets] = useState<FontAsset[]>([]);
-
-    useEffect(() => {
-      let cancelled = false;
-      listFontAssets()
-        .then(async (assets) => {
-          if (cancelled) return;
-          setFontAssets(assets);
-          // Load font files into the browser so canvas preview uses the
-          // actual font rather than a generic CSS fallback.
-          await loadFontAssets(assets);
-        })
-        .catch(() => {
-          // Silently fall back to default font options on error.
-        });
-      return () => {
-        cancelled = true;
-      };
-    }, []);
-
     // ── Stable callbacks (must be before early return) ─────────────────────
 
     const handleOpacityChange = useCallback(
@@ -209,142 +188,6 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
       ]
     );
 
-    // ── Text inspector children ────────────────────────────────────────────
-    const systemFonts = useMemo(() => fontAssets.filter((a) => a.is_system), [fontAssets]);
-    const userFonts = useMemo(() => fontAssets.filter((a) => !a.is_system), [fontAssets]);
-
-    const textInspectorChildren = useMemo(() => {
-      if (!selectedTextOverlay) return null;
-      return (
-        <>
-          <InspectorSection>
-            <InspectorSectionLabel>Content</InspectorSectionLabel>
-            <OverlayEditRow>
-              <OverlayTextInput
-                ref={textInputRef}
-                value={selectedTextOverlay.text}
-                onChange={(e) =>
-                  updateTextOverlay(selectedTextOverlay.id, { text: e.target.value })
-                }
-                placeholder="Text content"
-                disabled={disabled}
-                className="nodrag nopan"
-              />
-            </OverlayEditRow>
-          </InspectorSection>
-          <InspectorSection>
-            <InspectorSectionLabel>Style</InspectorSectionLabel>
-            <OverlayEditRow>
-              <span style={{ color: 'var(--sk-text-muted)', fontSize: 10 }}>Size</span>
-              <OverlayNumInput
-                type="number"
-                value={selectedTextOverlay.fontSize}
-                onChange={(e) => {
-                  const v = Number.parseInt(e.target.value, 10);
-                  if (!Number.isNaN(v) && v > 0)
-                    updateTextOverlay(selectedTextOverlay.id, { fontSize: v });
-                }}
-                disabled={disabled}
-                className="nodrag nopan"
-              />
-            </OverlayEditRow>
-            <OverlayEditRow>
-              <span style={{ color: 'var(--sk-text-muted)', fontSize: 10 }}>Font</span>
-              <FontSelect
-                value={selectedTextOverlay.fontName}
-                onChange={(e) =>
-                  updateTextOverlay(selectedTextOverlay.id, { fontName: e.target.value })
-                }
-                disabled={disabled}
-                className="nodrag nopan"
-              >
-                {fontAssets.length === 0 ? (
-                  // Fallback when API hasn't loaded yet
-                  <optgroup label="System">
-                    {DEFAULT_FONT_OPTIONS.map((opt) => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </optgroup>
-                ) : (
-                  <>
-                    {systemFonts.length > 0 && (
-                      <optgroup label="System">
-                        {systemFonts.map((font) => (
-                          <option key={font.path} value={font.path}>
-                            {font.name}
-                          </option>
-                        ))}
-                      </optgroup>
-                    )}
-                    {userFonts.length > 0 && (
-                      <optgroup label="User">
-                        {userFonts.map((font) => (
-                          <option key={font.path} value={font.path}>
-                            {font.name}
-                          </option>
-                        ))}
-                      </optgroup>
-                    )}
-                  </>
-                )}
-              </FontSelect>
-            </OverlayEditRow>
-            <OverlayEditRow>
-              <span style={{ color: 'var(--sk-text-muted)', fontSize: 10 }}>Color</span>
-              <ColorInput
-                type="color"
-                value={rgbaToHex(selectedTextOverlay.color)}
-                onChange={(e) =>
-                  updateTextOverlay(selectedTextOverlay.id, {
-                    color: hexToRgba(e.target.value, selectedTextOverlay.color[3]),
-                  })
-                }
-                disabled={disabled}
-                className="nodrag nopan"
-              />
-            </OverlayEditRow>
-            <OverlayEditRow>
-              <span style={{ color: 'var(--sk-text-muted)', fontSize: 10 }}>Alpha</span>
-            </OverlayEditRow>
-            <ControlRow>
-              <CompactSliderRoot
-                value={[selectedTextOverlay.color[3]]}
-                onValueChange={([v]) => {
-                  const [r, g, b] = selectedTextOverlay.color;
-                  updateTextOverlay(selectedTextOverlay.id, { color: [r, g, b, v] });
-                }}
-                onPointerDownCapture={onInteractionStart ? () => onInteractionStart() : undefined}
-                onValueCommit={onInteractionEnd ? () => onInteractionEnd() : undefined}
-                min={0}
-                max={255}
-                step={1}
-                disabled={disabled}
-                className="nodrag nopan"
-              >
-                <CompactSliderTrack>
-                  <CompactSliderRange />
-                </CompactSliderTrack>
-                <CompactSliderThumb />
-              </CompactSliderRoot>
-              <ControlValue>{Math.round((selectedTextOverlay.color[3] / 255) * 100)}%</ControlValue>
-            </ControlRow>
-          </InspectorSection>
-        </>
-      );
-      // textInputRef is a stable useRef — omitted from deps intentionally.
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [
-      selectedTextOverlay,
-      updateTextOverlay,
-      disabled,
-      onInteractionStart,
-      onInteractionEnd,
-      systemFonts,
-      userFonts,
-    ]);
-
     // ── Early return after all hooks ───────────────────────────────────────
     const source = selectedLayer ?? selectedTextOverlay ?? selectedImageOverlay;
     if (!source || !selectedLayerId) return null;
@@ -377,7 +220,16 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
             disabled={disabled}
             dimensionsReadOnly={dimensionsReadOnly}
           />
-          {textInspectorChildren}
+          {selectedLayerKind === 'text' && (
+            <TextStyleSection
+              selectedLayerId={selectedLayerId}
+              updateTextOverlay={updateTextOverlay}
+              disabled={disabled}
+              onInteractionStart={onInteractionStart}
+              onInteractionEnd={onInteractionEnd}
+              textInputRef={textInputRef}
+            />
+          )}
           <ConnectedOpacityControl
             selectedLayerId={selectedLayerId}
             selectedLayerKind={selectedLayerKind}
@@ -418,6 +270,210 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
   }
 );
 CompositorInspector.displayName = 'CompositorInspector';
+
+// ── Text style section with own atom subscription ───────────────────────────
+//
+// Extracted from CompositorInspector so that text-style changes (color, font,
+// etc.) only re-render this section — not the entire inspector tree.  The
+// component subscribes to textOverlayAtoms internally and uses ref-based
+// callbacks so that onChange handlers have stable references across renders.
+
+const TextStyleSection: React.FC<{
+  selectedLayerId: string;
+  updateTextOverlay: (id: string, patch: Partial<TextOverlayState>) => void;
+  disabled: boolean;
+  onInteractionStart?: () => void;
+  onInteractionEnd?: () => void;
+  textInputRef: React.RefObject<HTMLTextAreaElement | null>;
+}> = React.memo(
+  ({
+    selectedLayerId,
+    updateTextOverlay,
+    disabled,
+    onInteractionStart,
+    onInteractionEnd,
+    textInputRef,
+  }) => {
+    const overlay = useAtomValue(textOverlayAtoms(selectedLayerId));
+
+    // ── Font assets (owned here — only text overlays need them) ───────────
+    const [fontAssets, setFontAssets] = useState<FontAsset[]>([]);
+
+    useEffect(() => {
+      let cancelled = false;
+      listFontAssets()
+        .then(async (assets) => {
+          if (cancelled) return;
+          setFontAssets(assets);
+          await loadFontAssets(assets);
+        })
+        .catch(() => {
+          // Silently fall back to default font options on error.
+        });
+      return () => {
+        cancelled = true;
+      };
+    }, []);
+
+    const systemFonts = useMemo(() => fontAssets.filter((a) => a.is_system), [fontAssets]);
+    const userFonts = useMemo(() => fontAssets.filter((a) => !a.is_system), [fontAssets]);
+
+    // ── Ref for overlay so callbacks stay stable ──────────────────────────
+    const overlayRef = useRef(overlay);
+    overlayRef.current = overlay;
+
+    // ── Stable callbacks (deps are primitives / stable parent refs) ───────
+
+    const handleTextChange = useCallback(
+      (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+        updateTextOverlay(selectedLayerId, { text: e.target.value });
+      },
+      [selectedLayerId, updateTextOverlay]
+    );
+
+    const handleFontSizeChange = useCallback(
+      (e: React.ChangeEvent<HTMLInputElement>) => {
+        const v = Number.parseInt(e.target.value, 10);
+        if (!Number.isNaN(v) && v > 0) updateTextOverlay(selectedLayerId, { fontSize: v });
+      },
+      [selectedLayerId, updateTextOverlay]
+    );
+
+    const handleFontChange = useCallback(
+      (e: React.ChangeEvent<HTMLSelectElement>) => {
+        updateTextOverlay(selectedLayerId, { fontName: e.target.value });
+      },
+      [selectedLayerId, updateTextOverlay]
+    );
+
+    const handleColorChange = useCallback(
+      (e: React.ChangeEvent<HTMLInputElement>) => {
+        const ov = overlayRef.current;
+        if (!ov) return;
+        updateTextOverlay(selectedLayerId, {
+          color: hexToRgba(e.target.value, ov.color[3]),
+        });
+      },
+      [selectedLayerId, updateTextOverlay]
+    );
+
+    const handleAlphaChange = useCallback(
+      ([v]: number[]) => {
+        const ov = overlayRef.current;
+        if (!ov) return;
+        const [r, g, b] = ov.color;
+        updateTextOverlay(selectedLayerId, { color: [r, g, b, v] });
+      },
+      [selectedLayerId, updateTextOverlay]
+    );
+
+    if (!overlay) return null;
+
+    return (
+      <>
+        <InspectorSection>
+          <InspectorSectionLabel>Content</InspectorSectionLabel>
+          <OverlayEditRow>
+            <OverlayTextInput
+              ref={textInputRef}
+              value={overlay.text}
+              onChange={handleTextChange}
+              placeholder="Text content"
+              disabled={disabled}
+              className="nodrag nopan"
+            />
+          </OverlayEditRow>
+        </InspectorSection>
+        <InspectorSection>
+          <InspectorSectionLabel>Style</InspectorSectionLabel>
+          <OverlayEditRow>
+            <span style={{ color: 'var(--sk-text-muted)', fontSize: 10 }}>Size</span>
+            <OverlayNumInput
+              type="number"
+              value={overlay.fontSize}
+              onChange={handleFontSizeChange}
+              disabled={disabled}
+              className="nodrag nopan"
+            />
+          </OverlayEditRow>
+          <OverlayEditRow>
+            <span style={{ color: 'var(--sk-text-muted)', fontSize: 10 }}>Font</span>
+            <FontSelect
+              value={overlay.fontName}
+              onChange={handleFontChange}
+              disabled={disabled}
+              className="nodrag nopan"
+            >
+              {fontAssets.length === 0 ? (
+                <optgroup label="System">
+                  {DEFAULT_FONT_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </optgroup>
+              ) : (
+                <>
+                  {systemFonts.length > 0 && (
+                    <optgroup label="System">
+                      {systemFonts.map((font) => (
+                        <option key={font.path} value={font.path}>
+                          {font.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                  {userFonts.length > 0 && (
+                    <optgroup label="User">
+                      {userFonts.map((font) => (
+                        <option key={font.path} value={font.path}>
+                          {font.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                </>
+              )}
+            </FontSelect>
+          </OverlayEditRow>
+          <OverlayEditRow>
+            <span style={{ color: 'var(--sk-text-muted)', fontSize: 10 }}>Color</span>
+            <ColorInput
+              type="color"
+              value={rgbaToHex(overlay.color)}
+              onChange={handleColorChange}
+              disabled={disabled}
+              className="nodrag nopan"
+            />
+          </OverlayEditRow>
+          <OverlayEditRow>
+            <span style={{ color: 'var(--sk-text-muted)', fontSize: 10 }}>Alpha</span>
+          </OverlayEditRow>
+          <ControlRow>
+            <CompactSliderRoot
+              value={[overlay.color[3]]}
+              onValueChange={handleAlphaChange}
+              onPointerDownCapture={onInteractionStart ? () => onInteractionStart() : undefined}
+              onValueCommit={onInteractionEnd ? () => onInteractionEnd() : undefined}
+              min={0}
+              max={255}
+              step={1}
+              disabled={disabled}
+              className="nodrag nopan"
+            >
+              <CompactSliderTrack>
+                <CompactSliderRange />
+              </CompactSliderTrack>
+              <CompactSliderThumb />
+            </CompactSliderRoot>
+            <ControlValue>{Math.round((overlay.color[3] / 255) * 100)}%</ControlValue>
+          </ControlRow>
+        </InspectorSection>
+      </>
+    );
+  }
+);
+TextStyleSection.displayName = 'TextStyleSection';
 
 // ── Connected controls with field-level atom subscriptions ───────────────────
 //

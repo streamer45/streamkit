@@ -24,7 +24,11 @@ const MIN_WIDTH = 180;
 const MAX_WIDTH = 800;
 const DEFAULT_ASPECT_RATIO = 16 / 9;
 
-/** Chrome height: header (28px) + header border (1px) + body padding (12px). */
+/**
+ * Non-content vertical space: DragHeader height (28px) + header
+ * border-bottom (1px) + PanelBody padding (2 × 6px = 12px).
+ * Keep in sync with the styled components below.
+ */
 const CHROME_HEIGHT = 41;
 const MIN_HEIGHT = 100;
 const MAX_HEIGHT = 800;
@@ -43,7 +47,6 @@ export type ResizeEdge =
 interface PanelInteraction {
   pos: { right: number; bottom: number };
   panelWidth: number;
-  panelHeight: number;
   panelRef: React.RefObject<HTMLDivElement | null>;
   collapsed: boolean;
   isFullscreen: boolean;
@@ -94,13 +97,22 @@ export function usePreviewPanelInteraction(aspectRatio?: string): PanelInteracti
     return DEFAULT_ASPECT_RATIO;
   }, [aspectRatio]);
 
-  // Auto-adjust panel height when the stream aspect ratio is first detected,
-  // but only if the user hasn't manually resized yet.
+  // Keep a ref to the current width so the AR-change effect below can read
+  // the latest value without depending on it (which would cause the height
+  // to auto-adjust on every horizontal resize).
+  const panelWidthRef = useRef(panelWidth);
+  panelWidthRef.current = panelWidth;
+
+  // Auto-adjust panel height when the stream aspect ratio changes (e.g. the
+  // first frame arrives or a different session is selected), but only if the
+  // user hasn't manually resized vertically yet.  We intentionally omit
+  // panelWidth from the deps — horizontal-only resizes should NOT override
+  // the height; that's what free resize + letterboxing is for.
   useEffect(() => {
     if (!userResizedVertically.current) {
-      setPanelHeight(defaultPanelHeight(panelWidth, numericRatio));
+      setPanelHeight(defaultPanelHeight(panelWidthRef.current, numericRatio));
     }
-  }, [numericRatio, panelWidth]);
+  }, [numericRatio]);
 
   const resizeRef = useRef<{
     startX: number;
@@ -118,17 +130,25 @@ export function usePreviewPanelInteraction(aspectRatio?: string): PanelInteracti
     up: (e: PointerEvent) => void;
   } | null>(null);
 
+  // Snapshot refs for the resize/drag handlers so the callbacks don't need
+  // panelWidth / panelHeight / pos in their dependency arrays.  Values are
+  // captured at pointer-down via resizeRef/dragRef, so the closures only
+  // need the refs — not fresh state on every render.
+  const stateRef = useRef({ panelWidth, panelHeight, pos });
+  stateRef.current = { panelWidth, panelHeight, pos };
+
   const handleResizeStart = useCallback(
     (edge: ResizeEdge, e: React.PointerEvent) => {
       e.preventDefault();
       e.stopPropagation();
+      const { panelWidth: w, panelHeight: h, pos: p } = stateRef.current;
       resizeRef.current = {
         startX: e.clientX,
         startY: e.clientY,
-        origWidth: panelWidth,
-        origHeight: panelHeight,
-        origRight: pos.right,
-        origBottom: pos.bottom,
+        origWidth: w,
+        origHeight: h,
+        origRight: p.right,
+        origBottom: p.bottom,
         edge,
       };
 
@@ -198,7 +218,7 @@ export function usePreviewPanelInteraction(aspectRatio?: string): PanelInteracti
       document.addEventListener('pointerup', handleResizeUp);
       activeListenersRef.current = { move: handleResizeMove, up: handleResizeUp };
     },
-    [panelWidth, panelHeight, pos]
+    [] // stable — reads from resizeRef / stateRef at pointer-down
   );
 
   const handleDragStart = useCallback(
@@ -206,11 +226,12 @@ export function usePreviewPanelInteraction(aspectRatio?: string): PanelInteracti
       if ((e.target as HTMLElement).closest('button')) return;
       e.preventDefault();
       e.stopPropagation();
+      const { pos: p, panelWidth: w } = stateRef.current;
       dragRef.current = {
         startX: e.clientX,
         startY: e.clientY,
-        origX: pos.right,
-        origY: pos.bottom,
+        origX: p.right,
+        origY: p.bottom,
       };
 
       const handleMove = (ev: PointerEvent) => {
@@ -218,7 +239,7 @@ export function usePreviewPanelInteraction(aspectRatio?: string): PanelInteracti
         const newRight = dragRef.current.origX - (ev.clientX - dragRef.current.startX);
         const newBottom = dragRef.current.origY - (ev.clientY - dragRef.current.startY);
         // Clamp so the panel stays within the viewport.
-        const maxRight = window.innerWidth - panelWidth;
+        const maxRight = window.innerWidth - w;
         const maxBottom = window.innerHeight - 40; // leave at least 40px visible
         setPos({
           right: Math.max(0, Math.min(maxRight, newRight)),
@@ -237,7 +258,7 @@ export function usePreviewPanelInteraction(aspectRatio?: string): PanelInteracti
       document.addEventListener('pointerup', handleUp);
       activeListenersRef.current = { move: handleMove, up: handleUp };
     },
-    [pos, panelWidth]
+    [] // stable — reads from stateRef / dragRef at pointer-down
   );
 
   const toggleCollapsed = useCallback(() => setCollapsed((prev) => !prev), []);
@@ -291,7 +312,6 @@ export function usePreviewPanelInteraction(aspectRatio?: string): PanelInteracti
   return {
     pos,
     panelWidth,
-    panelHeight,
     panelRef,
     collapsed,
     isFullscreen,

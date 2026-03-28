@@ -63,6 +63,7 @@ export const TextContent = styled.div`
   justify-content: flex-start;
   pointer-events: none;
   z-index: 1;
+  overflow: hidden;
 `;
 
 export const LayerDimensions = styled.div`
