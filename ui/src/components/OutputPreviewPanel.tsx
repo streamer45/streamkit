@@ -160,6 +160,11 @@ const PanelBody = styled.div`
   padding: 6px;
   background: #0a0a0f;
   cursor: grab;
+  /* Fill remaining space below the header so the panel's explicit height
+     controls the body size.  min-height: 0 allows the flex child to
+     shrink below its content height for proper letterboxing. */
+  flex: 1;
+  min-height: 0;
 
   &:active {
     cursor: grabbing;
@@ -175,11 +180,16 @@ const EmptyMessage = styled.div`
   max-width: 220px;
 `;
 
+/** The preview canvas uses max-width + max-height + aspect-ratio to
+ *  letterbox/pillarbox naturally within the freely-resizable panel body.
+ *  object-fit: contain ensures the drawn bitmap scales correctly. */
 const PreviewCanvas = styled.canvas`
-  width: 100%;
+  max-width: 100%;
+  max-height: 100%;
   border-radius: 3px;
   background: #000;
   display: block;
+  object-fit: contain;
 `;
 
 /** In fullscreen the canvas must fit inside the viewport without clipping.

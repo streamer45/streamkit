@@ -32,6 +32,7 @@ import {
   DEFAULT_CROP_X,
   DEFAULT_CROP_Y,
   DEFAULT_CROP_SHAPE,
+  type LayerKind,
 } from './compositorConstants';
 
 export type { LayerKind } from './compositorConstants';
@@ -576,12 +577,13 @@ export function computeUpdatedLayer(
   rawDx: number,
   rawDy: number,
   canvasWidth: number,
-  canvasHeight: number
+  canvasHeight: number,
+  layerKind?: LayerKind
 ): LayerState {
   if (type === 'drag') {
     return computeDragPosition(orig, rawDx, rawDy, canvasWidth, canvasHeight);
   }
-  return computeResizePosition(orig, handle!, rawDx, rawDy, canvasWidth, canvasHeight);
+  return computeResizePosition(orig, handle!, rawDx, rawDy, canvasWidth, canvasHeight, layerKind);
 }
 
 function computeDragPosition(
@@ -631,7 +633,8 @@ function computeResizePosition(
   rawDx: number,
   rawDy: number,
   canvasWidth: number,
-  canvasHeight: number
+  canvasHeight: number,
+  layerKind?: LayerKind
 ): LayerState {
   // Transform mouse delta into the layer's local coordinate system so
   // resize handles behave naturally on rotated layers.
@@ -661,8 +664,13 @@ function computeResizePosition(
     newY = orig.y + (orig.height - newH);
   }
 
-  // Constrain resize to maintain aspect ratio for all layer types.
-  if (orig.width > 0 && orig.height > 0) {
+  // Constrain resize to maintain aspect ratio for video and image layers.
+  // Text overlays resize freely — their dimensions are auto-measured from
+  // text content and don't carry a meaningful aspect ratio.  Enforcing AR
+  // on text causes small cursor movements to produce large dimension jumps
+  // (e.g. a 300×36 single-line overlay has an 8:1 ratio).
+  const enforceAR = layerKind !== 'text';
+  if (enforceAR && orig.width > 0 && orig.height > 0) {
     const result = constrainAspectRatio(orig, handle, newW, newH);
     newW = result.width;
     newH = result.height;
@@ -675,7 +683,8 @@ function computeResizePosition(
   // constraint after each snap so the layer isn't distorted.
   // For corner handles, only snap the axis closest to a boundary to avoid
   // the second snap's AR correction undoing the first snap's alignment.
-  const ar = orig.width > 0 && orig.height > 0 ? orig.width / orig.height : 0;
+  // Text overlays skip AR correction (ar=0) so edge snaps don't cascade.
+  const ar = enforceAR && orig.width > 0 && orig.height > 0 ? orig.width / orig.height : 0;
 
   let snappedH = false; // true once an east/west snap has been applied
   let snappedV = false; // true once a north/south snap has been applied

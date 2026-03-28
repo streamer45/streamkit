@@ -107,7 +107,8 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
         rawDx,
         rawDy,
         canvasWidth,
-        canvasHeight
+        canvasHeight,
+        state.layerKind
       );
     },
     [canvasWidth, canvasHeight]

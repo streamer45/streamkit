@@ -8,6 +8,11 @@
  *
  * Extracted from OutputPreviewPanel to reduce the main component's
  * cyclomatic complexity below the ESLint threshold.
+ *
+ * The panel supports free resizing from any edge — width and height are
+ * tracked independently.  The video canvas inside the panel uses
+ * `object-fit: contain` for natural letterboxing/pillarboxing, so the
+ * stream's aspect ratio is always preserved regardless of panel shape.
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -19,9 +24,15 @@ const MIN_WIDTH = 180;
 const MAX_WIDTH = 800;
 const DEFAULT_ASPECT_RATIO = 16 / 9;
 
+/** Chrome height: header (28px) + header border (1px) + body padding (12px). */
+const CHROME_HEIGHT = 41;
+const MIN_HEIGHT = 100;
+const MAX_HEIGHT = 800;
+
 interface PanelInteraction {
   pos: { right: number; bottom: number };
   panelWidth: number;
+  panelHeight: number;
   panelRef: React.RefObject<HTMLDivElement | null>;
   collapsed: boolean;
   isFullscreen: boolean;
@@ -32,14 +43,29 @@ interface PanelInteraction {
   handleDragStart: (e: React.PointerEvent) => void;
 }
 
+/** Compute the default total panel height from a width and aspect ratio. */
+function defaultPanelHeight(width: number, ar: number): number {
+  return Math.round(width / ar) + CHROME_HEIGHT;
+}
+
 /** @param aspectRatio  CSS aspect-ratio string from the video stream (e.g. "640 / 480").
- *  Used to scale vertical resizes proportionally.  Falls back to 16:9 when unknown. */
+ *  Only used to compute the initial panel height.  Once the user resizes,
+ *  their chosen dimensions are preserved and letterboxing handles any AR
+ *  mismatch. */
 export function usePreviewPanelInteraction(aspectRatio?: string): PanelInteraction {
   const [pos, setPos] = useState({ right: 16, bottom: 16 });
   const [panelWidth, setPanelWidth] = useState(DEFAULT_WIDTH);
+  const [panelHeight, setPanelHeight] = useState(() =>
+    defaultPanelHeight(DEFAULT_WIDTH, DEFAULT_ASPECT_RATIO)
+  );
   const [collapsed, setCollapsed] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
+
+  // Track whether the user has explicitly resized vertically.  Before the
+  // first manual resize the height auto-adjusts to match the stream AR so
+  // the initial layout looks correct.
+  const userResizedVertically = useRef(false);
 
   const dragRef = useRef<{
     startX: number;
@@ -57,11 +83,21 @@ export function usePreviewPanelInteraction(aspectRatio?: string): PanelInteracti
     return DEFAULT_ASPECT_RATIO;
   }, [aspectRatio]);
 
+  // Auto-adjust panel height when the stream aspect ratio is first detected,
+  // but only if the user hasn't manually resized yet.
+  useEffect(() => {
+    if (!userResizedVertically.current) {
+      setPanelHeight(defaultPanelHeight(panelWidth, numericRatio));
+    }
+  }, [numericRatio, panelWidth]);
+
   const resizeRef = useRef<{
     startX: number;
     startY: number;
     origWidth: number;
-    origY: number;
+    origHeight: number;
+    origRight: number;
+    origBottom: number;
     edge: 'left' | 'top' | 'right' | 'bottom';
   } | null>(null);
 
@@ -79,25 +115,62 @@ export function usePreviewPanelInteraction(aspectRatio?: string): PanelInteracti
         startX: e.clientX,
         startY: e.clientY,
         origWidth: panelWidth,
-        origY: pos.bottom,
+        origHeight: panelHeight,
+        origRight: pos.right,
+        origBottom: pos.bottom,
         edge,
       };
 
       const handleResizeMove = (ev: PointerEvent) => {
         if (!resizeRef.current) return;
-        const { edge: curEdge, startX, startY, origWidth, origY } = resizeRef.current;
-        const isHorizontal = curEdge === 'left' || curEdge === 'right';
-        const sign = curEdge === 'left' || curEdge === 'top' ? -1 : 1;
-        const rawDelta = isHorizontal
-          ? sign * (ev.clientX - startX)
-          : sign * (ev.clientY - startY) * numericRatio;
+        const {
+          edge: curEdge,
+          startX,
+          startY,
+          origWidth,
+          origHeight,
+          origRight,
+          origBottom,
+        } = resizeRef.current;
 
-        const newWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, origWidth + rawDelta));
-        setPanelWidth(newWidth);
+        const dx = ev.clientX - startX;
+        const dy = ev.clientY - startY;
 
-        if (curEdge === 'bottom') {
-          const widthDelta = newWidth - origWidth;
-          setPos((prev) => ({ ...prev, bottom: Math.max(0, origY - widthDelta / numericRatio) }));
+        switch (curEdge) {
+          case 'left': {
+            // Panel extends left, right stays fixed.
+            const newW = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, origWidth - dx));
+            setPanelWidth(newW);
+            break;
+          }
+          case 'right': {
+            // Right edge moves right, left edge stays fixed.
+            const newW = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, origWidth + dx));
+            setPanelWidth(newW);
+            setPos((prev) => ({
+              ...prev,
+              right: Math.max(0, origRight - (newW - origWidth)),
+            }));
+            break;
+          }
+          case 'top': {
+            // Panel extends up, bottom stays fixed.
+            const newH = Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, origHeight - dy));
+            setPanelHeight(newH);
+            userResizedVertically.current = true;
+            break;
+          }
+          case 'bottom': {
+            // Bottom edge moves down, top edge stays fixed.
+            const newH = Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, origHeight + dy));
+            setPanelHeight(newH);
+            setPos((prev) => ({
+              ...prev,
+              bottom: Math.max(0, origBottom - (newH - origHeight)),
+            }));
+            userResizedVertically.current = true;
+            break;
+          }
         }
       };
 
@@ -112,7 +185,7 @@ export function usePreviewPanelInteraction(aspectRatio?: string): PanelInteracti
       document.addEventListener('pointerup', handleResizeUp);
       activeListenersRef.current = { move: handleResizeMove, up: handleResizeUp };
     },
-    [panelWidth, pos, numericRatio]
+    [panelWidth, panelHeight, pos]
   );
 
   const handleDragStart = useCallback(
@@ -195,11 +268,17 @@ export function usePreviewPanelInteraction(aspectRatio?: string): PanelInteracti
 
   const panelStyle: React.CSSProperties = isFullscreen
     ? { right: 0, bottom: 0, width: '100%', height: '100%', borderRadius: 0 }
-    : { right: pos.right, bottom: pos.bottom, width: collapsed ? undefined : panelWidth };
+    : {
+        right: pos.right,
+        bottom: pos.bottom,
+        width: collapsed ? undefined : panelWidth,
+        height: collapsed ? undefined : panelHeight,
+      };
 
   return {
     pos,
     panelWidth,
+    panelHeight,
     panelRef,
     collapsed,
     isFullscreen,

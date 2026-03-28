@@ -687,6 +687,88 @@ describe('computeUpdatedLayer resize edge snapping', () => {
   });
 });
 
+// ── computeUpdatedLayer — text overlay free resize (no AR constraint) ────────
+
+describe('computeUpdatedLayer text overlay free resize', () => {
+  const CW = 1920;
+  const CH = 1080;
+
+  // Text overlays have auto-measured dimensions with extreme aspect ratios
+  // (e.g. 300×36 for a single line).  Enforcing AR on text causes small
+  // cursor movements to produce large dimension jumps.  layerKind='text'
+  // disables the AR constraint for a smooth resize experience.
+
+  it('resizes text overlay width independently of height (east handle)', () => {
+    const orig = makeLayer({ x: 100, y: 100, width: 300, height: 36 });
+    const result = computeUpdatedLayer(orig, 'resize', 'e', 50, 0, CW, CH, 'text');
+    expect(result.width).toBe(350);
+    // Height must stay unchanged — no AR correction
+    expect(result.height).toBe(36);
+  });
+
+  it('resizes text overlay height independently of width (south handle)', () => {
+    const orig = makeLayer({ x: 100, y: 100, width: 300, height: 36 });
+    const result = computeUpdatedLayer(orig, 'resize', 's', 0, 30, CW, CH, 'text');
+    expect(result.height).toBe(66);
+    // Width must stay unchanged — no AR correction
+    expect(result.width).toBe(300);
+  });
+
+  it('resizes text overlay corner without AR constraint (se handle)', () => {
+    const orig = makeLayer({ x: 100, y: 100, width: 300, height: 36 });
+    // Drag SE corner 50px right and 20px down — both dimensions change independently
+    const result = computeUpdatedLayer(orig, 'resize', 'se', 50, 20, CW, CH, 'text');
+    expect(result.width).toBe(350);
+    expect(result.height).toBe(56);
+    // AR is NOT preserved for text
+    expect(result.width / result.height).not.toBeCloseTo(300 / 36, 1);
+  });
+
+  it('video layers still enforce AR constraint (control test)', () => {
+    const orig = makeLayer({ x: 100, y: 100, width: 640, height: 480 });
+    const ar = orig.width / orig.height;
+    // Drag east handle 50px — AR should be preserved
+    const result = computeUpdatedLayer(orig, 'resize', 'e', 50, 0, CW, CH, 'video');
+    expect(result.width / result.height).toBeCloseTo(ar, 5);
+  });
+
+  it('image layers still enforce AR constraint (control test)', () => {
+    const orig = makeLayer({ x: 100, y: 100, width: 200, height: 200 });
+    const ar = orig.width / orig.height;
+    const result = computeUpdatedLayer(orig, 'resize', 'se', 50, 30, CW, CH, 'image');
+    expect(result.width / result.height).toBeCloseTo(ar, 5);
+  });
+
+  it('text overlay edge snap does NOT re-apply AR correction', () => {
+    // Layer right edge near canvas boundary — should snap without AR cascade
+    const orig = makeLayer({ x: 1600, y: 100, width: 300, height: 36 });
+    const result = computeUpdatedLayer(orig, 'resize', 'e', 15, 0, CW, CH, 'text');
+    // Right edge should snap to canvas width
+    expect(result.x + result.width).toBe(CW);
+    // Height must NOT change (no AR correction after snap)
+    expect(result.height).toBe(36);
+  });
+
+  it('omitting layerKind defaults to AR-constrained (backward compat)', () => {
+    const orig = makeLayer({ x: 100, y: 100, width: 640, height: 480 });
+    const ar = orig.width / orig.height;
+    // No layerKind → should behave like video (AR enforced)
+    const result = computeUpdatedLayer(orig, 'resize', 'e', 50, 0, CW, CH);
+    expect(result.width / result.height).toBeCloseTo(ar, 5);
+  });
+
+  it('nw resize on text overlay adjusts position without AR jump', () => {
+    const orig = makeLayer({ x: 100, y: 100, width: 300, height: 60 });
+    // Drag NW corner: -40px x, -20px y → width grows by 40, height grows by 20
+    const result = computeUpdatedLayer(orig, 'resize', 'nw', -40, -20, CW, CH, 'text');
+    expect(result.width).toBe(340);
+    expect(result.height).toBe(80);
+    // Position should shift to keep the SE corner anchored
+    expect(result.x).toBe(60);
+    expect(result.y).toBe(80);
+  });
+});
+
 // ── parseImageOverlays / serializeImageOverlays ─────────────────────────────
 
 describe('parseImageOverlays', () => {
