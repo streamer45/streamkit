@@ -30,13 +30,17 @@ export interface UseMonitorPreviewReturn {
 }
 
 /** Tear down the server-side preview and disconnect the MoQ subscription. */
-function cleanupPreview(
+async function cleanupPreview(
   previewIdRef: React.MutableRefObject<string | null>,
   previewSessionIdRef: React.MutableRefObject<string | null>,
   previewDisconnect: () => void
 ) {
   if (previewIdRef.current && previewSessionIdRef.current) {
-    stopPreview(previewSessionIdRef.current, previewIdRef.current).catch(() => {});
+    try {
+      await stopPreview(previewSessionIdRef.current, previewIdRef.current);
+    } catch {
+      // Best-effort cleanup — the preview may already be gone.
+    }
     previewIdRef.current = null;
     previewSessionIdRef.current = null;
   }
@@ -103,7 +107,7 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
       abortControllerRef.current?.abort();
       abortControllerRef.current = null;
 
-      cleanupPreview(previewIdRef, previewSessionIdRef, previewDisconnect);
+      void cleanupPreview(previewIdRef, previewSessionIdRef, previewDisconnect);
       setPreviewError(null);
       setIsPreviewLoading(false);
     }
@@ -114,12 +118,7 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
     return () => {
       abortControllerRef.current?.abort();
       abortControllerRef.current = null;
-      if (previewIdRef.current && previewSessionIdRef.current) {
-        stopPreview(previewSessionIdRef.current, previewIdRef.current).catch(() => {});
-        previewIdRef.current = null;
-        previewSessionIdRef.current = null;
-      }
-      previewDisconnect();
+      void cleanupPreview(previewIdRef, previewSessionIdRef, previewDisconnect);
     };
   }, [selectedSessionId, previewDisconnect]);
 

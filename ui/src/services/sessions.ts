@@ -109,8 +109,8 @@ export async function startPreview(
   signal?: AbortSignal
 ): Promise<PreviewResponse> {
   const body: Record<string, string> = {};
-  if (tapNode) body.tap_node = tapNode;
-  if (tapPin) body.tap_pin = tapPin;
+  if (tapNode !== undefined) body.tap_node = tapNode;
+  if (tapPin !== undefined) body.tap_pin = tapPin;
 
   const response = await fetchApi(`/api/v1/sessions/${encodeURIComponent(sessionId)}/preview`, {
     method: 'POST',

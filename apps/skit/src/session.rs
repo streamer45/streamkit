@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use streamkit_api::{Event as ApiEvent, EventPayload, MessageType, Pipeline};
-use streamkit_core::control::EngineControlMessage;
+use streamkit_core::control::{ConnectionMode, EngineControlMessage};
 use streamkit_core::state::NodeState;
 use streamkit_core::stats::NodeStats;
 use streamkit_core::telemetry::TelemetryEvent;
@@ -160,8 +160,9 @@ pub struct PreviewState {
     /// Node IDs and kinds injected for this preview (teardown in reverse order).
     /// Each entry is `(node_id, node_kind)`.
     pub injected_nodes: Vec<(String, String)>,
-    /// Connections injected for this preview `(from_node, from_pin, to_node, to_pin)`.
-    pub injected_connections: Vec<(String, String, String, String)>,
+    /// Connections injected for this preview
+    /// `(from_node, from_pin, to_node, to_pin, mode)`.
+    pub injected_connections: Vec<(String, String, String, String, ConnectionMode)>,
     pub gateway_path: String,
     pub has_audio: bool,
     pub has_video: bool,
