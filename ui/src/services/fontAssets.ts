@@ -3,7 +3,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Service for managing font assets
+ * Service for managing font assets and loading them into the browser
+ * via the CSS Font Loading API for accurate canvas previews.
  */
 
 import type { FontAsset } from '@/types/generated/api-types';
@@ -12,6 +13,74 @@ import { getLogger } from '@/utils/logger';
 import { fetchApi } from './base';
 
 const logger = getLogger('fontAssets');
+
+// ── Font loading for canvas preview ─────────────────────────────────────────
+
+/** Set of font asset paths that have already been loaded into the browser. */
+const loadedFonts = new Set<string>();
+
+/**
+ * Derive a unique CSS font-family name from a font asset path.
+ *
+ * E.g. `"samples/fonts/system/Inter.ttf"` → `"sk-Inter"`.
+ * The `sk-` prefix avoids collisions with system fonts.
+ */
+export function fontFamilyForAsset(assetPath: string): string {
+  const filename = assetPath.split('/').pop() ?? assetPath;
+  const nameWithoutExt = filename.replace(/\.[^.]+$/, '');
+  return `sk-${nameWithoutExt}`;
+}
+
+/**
+ * Build the serve URL for a font asset.
+ *
+ * E.g. `"samples/fonts/system/Inter.ttf"` →
+ *      `"/api/v1/assets/fonts/file/system/Inter.ttf"`.
+ */
+function fontServeUrl(assetPath: string): string {
+  const parts = assetPath.split('/');
+  const filename = parts.pop() ?? '';
+  const scope = parts.pop() ?? 'system';
+  return `/api/v1/assets/fonts/file/${encodeURIComponent(scope)}/${encodeURIComponent(filename)}`;
+}
+
+/**
+ * Load a single font asset into the browser using the CSS Font Loading API.
+ *
+ * Once loaded, text rendered with `font-family: fontFamilyForAsset(path)`
+ * will use the actual font file from the server.  No-ops if the font has
+ * already been loaded.
+ */
+async function loadFontFace(asset: FontAsset): Promise<void> {
+  if (loadedFonts.has(asset.path)) return;
+
+  const family = fontFamilyForAsset(asset.path);
+  const url = fontServeUrl(asset.path);
+  const isBold = asset.id.includes('-Bold') || asset.id.includes('Bold');
+
+  try {
+    const face = new FontFace(family, `url(${url})`, {
+      weight: isBold ? '700' : '400',
+      style: 'normal',
+    });
+    await face.load();
+    document.fonts.add(face);
+    loadedFonts.add(asset.path);
+  } catch (e) {
+    logger.warn(`Failed to load font '${asset.name}':`, e);
+  }
+}
+
+/**
+ * Load all font assets into the browser for canvas preview rendering.
+ *
+ * Call this after fetching the font asset list so that compositor canvas
+ * text overlays render with the actual server-side font rather than a
+ * generic CSS fallback.
+ */
+export async function loadFontAssets(assets: FontAsset[]): Promise<void> {
+  await Promise.allSettled(assets.map(loadFontFace));
+}
 
 /**
  * Lists all available font assets (system + user)

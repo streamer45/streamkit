@@ -37,7 +37,7 @@ import {
 } from '@/hooks/compositorAtoms';
 import type { LayerKind } from '@/hooks/compositorConstants';
 import type { TextOverlayState, ImageOverlayState } from '@/hooks/compositorLayerParsers';
-import { listFontAssets } from '@/services/fontAssets';
+import { listFontAssets, loadFontAssets } from '@/services/fontAssets';
 import type { FontAsset } from '@/types/generated/api-types';
 
 import {
@@ -127,8 +127,12 @@ export const CompositorInspector: React.FC<CompositorInspectorProps> = React.mem
     useEffect(() => {
       let cancelled = false;
       listFontAssets()
-        .then((assets) => {
-          if (!cancelled) setFontAssets(assets);
+        .then(async (assets) => {
+          if (cancelled) return;
+          setFontAssets(assets);
+          // Load font files into the browser so canvas preview uses the
+          // actual font rather than a generic CSS fallback.
+          await loadFontAssets(assets);
         })
         .catch(() => {
           // Silently fall back to default font options on error.
