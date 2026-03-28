@@ -41,6 +41,8 @@ use overlay::{decode_image_overlay, rasterize_text_overlay, validate_asset_path,
 use schemars::schema_for;
 use smallvec::SmallVec;
 use std::collections::HashMap;
+#[cfg(feature = "gpu")]
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use streamkit_core::control::NodeControlMessage;
 use streamkit_core::pins::PinManagementMessage;
@@ -550,8 +552,13 @@ impl ProcessorNode for CompositorNode {
         let (result_tx, mut result_rx) = tokio::sync::mpsc::channel::<CompositeResult>(2);
 
         // Resolve GPU mode from config (used by the compositing thread).
+        // Shared via atomic so UpdateParams can change it at runtime.
         #[cfg(feature = "gpu")]
-        let gpu_mode = gpu::GpuMode::from_config(self.config.gpu_mode.as_deref());
+        let gpu_mode_atomic = Arc::new(AtomicU8::new(gpu::GpuMode::from_config(
+            self.config.gpu_mode.as_deref(),
+        ) as u8));
+        #[cfg(feature = "gpu")]
+        let gpu_mode_thread = Arc::clone(&gpu_mode_atomic);
 
         let composite_thread = tokio::task::spawn_blocking(move || {
             // Per-slot cache for YUV→RGBA conversions. Avoids redundant
@@ -561,7 +568,10 @@ impl ProcessorNode for CompositorNode {
             // Attempt GPU initialization when the feature is enabled and
             // the config doesn't force CPU mode.
             #[cfg(feature = "gpu")]
-            let mut gpu_ctx: Option<gpu::GpuContext> = if gpu_mode == gpu::GpuMode::ForceCpu {
+            let initial_gpu_mode = gpu::GpuMode::from_u8(gpu_mode_thread.load(Ordering::Relaxed));
+            #[cfg(feature = "gpu")]
+            let mut gpu_ctx: Option<gpu::GpuContext> = if initial_gpu_mode == gpu::GpuMode::ForceCpu
+            {
                 tracing::info!("GPU compositing disabled by config (gpu_mode=cpu)");
                 None
             } else {
@@ -571,7 +581,7 @@ impl ProcessorNode for CompositorNode {
                         Some(ctx)
                     },
                     None => {
-                        if gpu_mode == gpu::GpuMode::ForceGpu {
+                        if initial_gpu_mode == gpu::GpuMode::ForceGpu {
                             tracing::warn!(
                                 "GPU compositing requested (gpu_mode=gpu) but no GPU available; \
                                  falling back to CPU"
@@ -584,6 +594,9 @@ impl ProcessorNode for CompositorNode {
                 }
             };
 
+            #[cfg(feature = "gpu")]
+            let mut gpu_path_state = gpu::GpuPathState::new();
+
             while let Some(work) = work_rx.blocking_recv() {
                 // Clear the entire conversion cache when the slot
                 // layout changed so that stale RGBA buffers are freed.
@@ -594,11 +607,27 @@ impl ProcessorNode for CompositorNode {
                 // ── Choose GPU or CPU compositing path ──────────────
                 #[cfg(feature = "gpu")]
                 let (output_data, pixel_format) = {
+                    let current_gpu_mode =
+                        gpu::GpuMode::from_u8(gpu_mode_thread.load(Ordering::Relaxed));
+
+                    // If mode changed to ForceCpu at runtime, skip GPU.
+                    // If mode changed away from ForceCpu and we haven't
+                    // initialized the GPU yet, try now.
+                    if current_gpu_mode != gpu::GpuMode::ForceCpu && gpu_ctx.is_none() {
+                        if let Some(ctx) = gpu::GpuContext::try_init() {
+                            tracing::info!(
+                                "GPU compositing backend initialized after runtime mode change"
+                            );
+                            gpu_ctx = Some(ctx);
+                        }
+                    }
+
                     let use_gpu = gpu_ctx.is_some()
-                        && match gpu_mode {
+                        && match current_gpu_mode {
                             gpu::GpuMode::ForceGpu => true,
                             gpu::GpuMode::ForceCpu => false,
-                            gpu::GpuMode::Auto => gpu::should_use_gpu(
+                            gpu::GpuMode::Auto => gpu::should_use_gpu_with_state(
+                                &mut gpu_path_state,
                                 work.canvas_w,
                                 work.canvas_h,
                                 &work.layers,
@@ -747,6 +776,16 @@ impl ProcessorNode for CompositorNode {
                                 .output_format
                                 .as_deref()
                                 .and_then(|s| crate::video::parse_pixel_format(s).ok());
+
+                            // Update runtime gpu_mode so the compositing
+                            // thread picks up the change on the next frame.
+                            #[cfg(feature = "gpu")]
+                            {
+                                let new_mode = gpu::GpuMode::from_config(
+                                    self.config.gpu_mode.as_deref(),
+                                );
+                                gpu_mode_atomic.store(new_mode as u8, Ordering::Relaxed);
+                            }
                         },
                         NodeControlMessage::Start => {},
                     }

@@ -83,6 +83,130 @@ struct CanvasTexture {
     height: u32,
 }
 
+/// Cached staging buffers for RGBA→YUV GPU readback.
+/// Recreated only when the canvas size or output format changes.
+struct YuvStagingCache {
+    y_staging: wgpu::Buffer,
+    uv_staging: wgpu::Buffer,
+    width: u32,
+    height: u32,
+    format: PixelFormat,
+}
+
+// ── Resource pools ──────────────────────────────────────────────────────────
+
+/// Key for texture pool lookup — textures with identical keys are
+/// interchangeable and can be reused across frames.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct TextureKey {
+    width: u32,
+    height: u32,
+    format: wgpu::TextureFormat,
+    usage: wgpu::TextureUsages,
+}
+
+/// Per-frame texture pool.  Textures are "checked out" during a frame
+/// and reclaimed at the start of the next frame for reuse.  New
+/// textures are only allocated on a cache miss.
+///
+/// Returns indices rather than references so callers can interleave
+/// multiple `get` calls without borrow-checker conflicts on `&mut self`.
+struct TexturePool {
+    available: Vec<(TextureKey, wgpu::Texture)>,
+    in_use: Vec<(TextureKey, wgpu::Texture)>,
+}
+
+impl TexturePool {
+    fn new() -> Self {
+        Self { available: Vec::new(), in_use: Vec::new() }
+    }
+
+    /// Get a texture matching `key`, reusing a cached one when possible.
+    /// Returns the index into `in_use` for later lookup via [`texture`].
+    fn get(&mut self, device: &wgpu::Device, key: TextureKey, label: &str) -> usize {
+        // Search for a reusable texture with matching key.
+        if let Some(idx) = self.available.iter().position(|(k, _)| *k == key) {
+            let entry = self.available.swap_remove(idx);
+            self.in_use.push(entry);
+        } else {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: key.width,
+                    height: key.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: key.format,
+                usage: key.usage,
+                view_formats: &[],
+            });
+            self.in_use.push((key, texture));
+        }
+        self.in_use.len() - 1
+    }
+
+    /// Look up a texture by the index returned from [`get`].
+    fn texture(&self, idx: usize) -> &wgpu::Texture {
+        &self.in_use[idx].1
+    }
+
+    /// Move all in-use textures back to the available pool.
+    /// Called once at the start of each frame.
+    fn reclaim(&mut self) {
+        self.available.append(&mut self.in_use);
+    }
+}
+
+/// Key for buffer pool lookup.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct BufferKey {
+    size: u64,
+    usage: wgpu::BufferUsages,
+}
+
+/// Per-frame buffer pool, analogous to [`TexturePool`].
+struct BufferPool {
+    available: Vec<(BufferKey, wgpu::Buffer)>,
+    in_use: Vec<(BufferKey, wgpu::Buffer)>,
+}
+
+impl BufferPool {
+    fn new() -> Self {
+        Self { available: Vec::new(), in_use: Vec::new() }
+    }
+
+    /// Get a buffer matching `key`, reusing a cached one when possible.
+    /// Returns the index into `in_use` for later lookup via [`buffer`].
+    fn get(&mut self, device: &wgpu::Device, key: BufferKey, label: &str) -> usize {
+        if let Some(idx) = self.available.iter().position(|(k, _)| *k == key) {
+            let entry = self.available.swap_remove(idx);
+            self.in_use.push(entry);
+        } else {
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: key.size,
+                usage: key.usage,
+                mapped_at_creation: false,
+            });
+            self.in_use.push((key, buffer));
+        }
+        self.in_use.len() - 1
+    }
+
+    /// Look up a buffer by the index returned from [`get`].
+    fn buffer(&self, idx: usize) -> &wgpu::Buffer {
+        &self.in_use[idx].1
+    }
+
+    /// Move all in-use buffers back to the available pool.
+    fn reclaim(&mut self) {
+        self.available.append(&mut self.in_use);
+    }
+}
+
 // ── GPU context ─────────────────────────────────────────────────────────────
 
 /// GPU compositing context — owns the wgpu device, queue, and
@@ -113,6 +237,16 @@ pub struct GpuContext {
 
     /// Staging buffer for GPU→CPU readback — sized to canvas.
     readback_buffer: Option<wgpu::Buffer>,
+
+    /// Per-frame texture pool — reuses GPU textures across frames.
+    texture_pool: TexturePool,
+
+    /// Per-frame buffer pool — reuses GPU buffers across frames.
+    buffer_pool: BufferPool,
+
+    /// Cached YUV staging buffers — reused across frames when canvas
+    /// size and output format are unchanged.
+    yuv_staging: Option<YuvStagingCache>,
 }
 
 impl GpuContext {
@@ -345,6 +479,9 @@ impl GpuContext {
             sampler,
             canvas: None,
             readback_buffer: None,
+            texture_pool: TexturePool::new(),
+            buffer_pool: BufferPool::new(),
+            yuv_staging: None,
         })
     }
 
@@ -383,21 +520,53 @@ impl GpuContext {
         }
     }
 
-    /// Upload an RGBA8 buffer to a GPU texture suitable for sampling.
-    fn upload_rgba_texture(&self, data: &[u8], width: u32, height: u32) -> wgpu::Texture {
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("layer_rgba"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
+    /// Ensure YUV staging buffers match the requested dimensions and
+    /// format.  Recreates them only when the canvas size or output
+    /// pixel format changes.
+    fn ensure_yuv_staging(
+        &mut self,
+        width: u32,
+        height: u32,
+        format: PixelFormat,
+        y_size: u64,
+        uv_size: u64,
+    ) {
+        let needs_recreate = self
+            .yuv_staging
+            .as_ref()
+            .is_none_or(|s| s.width != width || s.height != height || s.format != format);
+
+        if needs_recreate {
+            let y_staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("y_staging_cached"),
+                size: y_size,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            let uv_staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("uv_staging_cached"),
+                size: uv_size,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            self.yuv_staging =
+                Some(YuvStagingCache { y_staging, uv_staging, width, height, format });
+        }
+    }
+
+    /// Upload an RGBA8 buffer to a pooled GPU texture suitable for sampling.
+    /// Returns the texture pool index for later lookup.
+    fn upload_rgba_texture(&mut self, data: &[u8], width: u32, height: u32) -> usize {
+        let key = TextureKey {
+            width,
+            height,
             format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
+        };
+        let idx = self.texture_pool.get(&self.device, key, "layer_rgba");
         self.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
-                texture: &texture,
+                texture: self.texture_pool.texture(idx),
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
@@ -410,26 +579,26 @@ impl GpuContext {
             },
             wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
         );
-        texture
+        idx
     }
 
     /// Upload a YUV frame (I420 or NV12) and convert to RGBA8 on the GPU.
     ///
-    /// Returns an RGBA8 texture ready for sampling in the compositing pass.
-    ///
-    /// TODO(phase-3): accept an external `CommandEncoder` so multiple YUV
-    /// layer conversions can be batched into a single `queue.submit()`.
+    /// Returns the texture pool index of the RGBA8 output texture.
+    /// Appends the YUV→RGBA compute dispatch to `encoder` so the caller
+    /// can batch multiple conversions into a single `queue.submit()`.
     fn upload_yuv_layer(
-        &self,
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
         data: &[u8],
         width: u32,
         height: u32,
         pixel_format: PixelFormat,
-    ) -> wgpu::Texture {
-        let (y_tex, uv_tex, format_id) = match pixel_format {
+    ) -> usize {
+        let (y_tex_idx, uv_tex_idx, format_id) = match pixel_format {
             PixelFormat::Nv12 => {
                 let y_size = (width as usize) * (height as usize);
-                let y_tex = self.create_and_write_r8_texture(
+                let y_idx = self.create_and_write_r8_texture(
                     "y_plane_nv12",
                     width,
                     height,
@@ -437,17 +606,17 @@ impl GpuContext {
                 );
                 let chroma_w = width.div_ceil(2);
                 let chroma_h = height.div_ceil(2);
-                let uv_tex = self.create_and_write_rg8_texture(
+                let uv_idx = self.create_and_write_rg8_texture(
                     "uv_plane_nv12",
                     chroma_w,
                     chroma_h,
                     &data[y_size..y_size + (chroma_w as usize) * (chroma_h as usize) * 2],
                 );
-                (y_tex, uv_tex, 0u32)
+                (y_idx, uv_idx, 0u32)
             },
             PixelFormat::I420 => {
                 let y_size = (width as usize) * (height as usize);
-                let y_tex = self.create_and_write_r8_texture(
+                let y_idx = self.create_and_write_r8_texture(
                     "y_plane_i420",
                     width,
                     height,
@@ -463,40 +632,49 @@ impl GpuContext {
                 let mut packed = Vec::with_capacity(u_size + u_size);
                 packed.extend_from_slice(u_data);
                 packed.extend_from_slice(v_data);
-                let uv_tex = self.create_and_write_r8_texture(
+                let uv_idx = self.create_and_write_r8_texture(
                     "uv_plane_i420",
                     chroma_w,
                     chroma_h * 2,
                     &packed,
                 );
-                (y_tex, uv_tex, 1u32)
+                (y_idx, uv_idx, 1u32)
             },
             _ => unreachable!("upload_yuv_layer called with non-YUV format"),
         };
 
         // Output RGBA8 texture (written by compute shader).
-        let output_tex = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("yuv_to_rgba_output"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
+        let output_key = TextureKey {
+            width,
+            height,
             format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
+        };
+        let output_idx = self.texture_pool.get(&self.device, output_key, "yuv_to_rgba_output");
 
-        let params_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("yuv_params"),
+        let params_key = BufferKey {
             size: std::mem::size_of::<YuvToRgbaParams>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        };
+        let params_idx = self.buffer_pool.get(&self.device, params_key, "yuv_params");
         self.queue.write_buffer(
-            &params_buf,
+            self.buffer_pool.buffer(params_idx),
             0,
             bytemuck::bytes_of(&YuvToRgbaParams { width, height, format: format_id, _pad: 0 }),
         );
+
+        let y_view = self
+            .texture_pool
+            .texture(y_tex_idx)
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let uv_view = self
+            .texture_pool
+            .texture(uv_tex_idx)
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let output_view = self
+            .texture_pool
+            .texture(output_idx)
+            .create_view(&wgpu::TextureViewDescriptor::default());
 
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("yuv_to_rgba_bg"),
@@ -504,29 +682,23 @@ impl GpuContext {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(
-                        &y_tex.create_view(&wgpu::TextureViewDescriptor::default()),
-                    ),
+                    resource: wgpu::BindingResource::TextureView(&y_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(
-                        &uv_tex.create_view(&wgpu::TextureViewDescriptor::default()),
-                    ),
+                    resource: wgpu::BindingResource::TextureView(&uv_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::TextureView(
-                        &output_tex.create_view(&wgpu::TextureViewDescriptor::default()),
-                    ),
+                    resource: wgpu::BindingResource::TextureView(&output_view),
                 },
-                wgpu::BindGroupEntry { binding: 3, resource: params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.buffer_pool.buffer(params_idx).as_entire_binding(),
+                },
             ],
         });
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("yuv_to_rgba_encoder"),
-        });
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("yuv_to_rgba_pass"),
@@ -536,24 +708,25 @@ impl GpuContext {
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups(width.div_ceil(16), height.div_ceil(16), 1);
         }
-        self.queue.submit(std::iter::once(encoder.finish()));
 
-        output_tex
+        output_idx
     }
 
     /// Upload a single layer to a GPU texture.
-    /// Returns the RGBA8 texture (after YUV conversion if needed).
+    /// Returns the texture pool index (after YUV conversion if needed).
+    /// YUV conversions are appended to `encoder` for batched submission.
     fn upload_layer_texture(
-        &self,
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
         data: &[u8],
         width: u32,
         height: u32,
         pixel_format: PixelFormat,
-    ) -> wgpu::Texture {
+    ) -> usize {
         match pixel_format {
             PixelFormat::Rgba8 => self.upload_rgba_texture(data, width, height),
             PixelFormat::I420 | PixelFormat::Nv12 => {
-                self.upload_yuv_layer(data, width, height, pixel_format)
+                self.upload_yuv_layer(encoder, data, width, height, pixel_format)
             },
             _ => {
                 tracing::warn!("Unsupported pixel format for GPU upload: {pixel_format:?}");
@@ -565,19 +738,15 @@ impl GpuContext {
 
     /// GPU-accelerated equivalent of `kernel::composite_frame()`.
     ///
-    /// 1. Upload each visible layer/overlay to a GPU texture.
+    /// 1. Upload each visible layer/overlay to a GPU texture (YUV
+    ///    conversions are batched into a single `queue.submit()`).
     /// 2. Clear the canvas.
     /// 3. For each item in z-sorted order, draw a textured quad with
     ///    the layer's transform + opacity.
     /// 4. Optionally convert RGBA→YUV on GPU.
     /// 5. Copy output texture → staging buffer → CPU.
-    ///
-    /// TODO(phase-3): pool per-layer textures and uniform buffers instead
-    /// of creating new ones each frame.  At 30fps with 2 layers + 2
-    /// overlays this is ~120 texture + ~120 buffer allocations/sec.
     // Allow: GPU compositing coordinates upload → render pass → readback in a
     // single function; splitting would add complexity without improving clarity.
-    // Will shrink naturally when per-layer texture pooling is added (phase-3).
     #[allow(clippy::too_many_lines)]
     pub fn composite_frame_gpu(
         &mut self,
@@ -589,14 +758,26 @@ impl GpuContext {
         video_pool: Option<&streamkit_core::VideoFramePool>,
         output_format: Option<PixelFormat>,
     ) -> (PooledVideoData, PixelFormat) {
+        // Reclaim pooled resources from the previous frame.
+        self.texture_pool.reclaim();
+        self.buffer_pool.reclaim();
+
         self.ensure_canvas(canvas_w, canvas_h);
 
         // ── Build z-sorted draw list ────────────────────────────────
+        // A single encoder collects all YUV→RGBA compute dispatches so
+        // they are submitted in one batch before the render pass.
         struct DrawItem {
-            texture: wgpu::Texture,
+            /// Index into `texture_pool.in_use`.
+            tex_idx: usize,
             uniforms: LayerUniforms,
             sort_key: (i32, usize),
         }
+
+        let mut yuv_encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("yuv_batch_encoder"),
+        });
+        let mut has_yuv_work = false;
 
         let mut items: Vec<DrawItem> =
             Vec::with_capacity(layers.len() + image_overlays.len() + text_overlays.len());
@@ -605,7 +786,11 @@ impl GpuContext {
         // Video layers.
         for layer_opt in layers {
             if let Some(layer) = layer_opt {
-                let texture = self.upload_layer_texture(
+                if matches!(layer.pixel_format, PixelFormat::I420 | PixelFormat::Nv12) {
+                    has_yuv_work = true;
+                }
+                let tex_idx = self.upload_layer_texture(
+                    &mut yuv_encoder,
                     layer.data.as_slice(),
                     layer.width,
                     layer.height,
@@ -627,7 +812,7 @@ impl GpuContext {
                     layer.crop_shape,
                 );
                 items.push(DrawItem {
-                    texture,
+                    tex_idx,
                     uniforms,
                     sort_key: (layer.z_index, insertion_order),
                 });
@@ -637,7 +822,7 @@ impl GpuContext {
 
         // Image overlays.
         for ov in image_overlays {
-            let texture = self.upload_rgba_texture(&ov.rgba_data, ov.width, ov.height);
+            let tex_idx = self.upload_rgba_texture(&ov.rgba_data, ov.width, ov.height);
             let uniforms = build_layer_uniforms(
                 canvas_w,
                 canvas_h,
@@ -651,13 +836,13 @@ impl GpuContext {
                 0.5,
                 CropShape::Rect,
             );
-            items.push(DrawItem { texture, uniforms, sort_key: (ov.z_index, insertion_order) });
+            items.push(DrawItem { tex_idx, uniforms, sort_key: (ov.z_index, insertion_order) });
             insertion_order += 1;
         }
 
         // Text overlays.
         for ov in text_overlays {
-            let texture = self.upload_rgba_texture(&ov.rgba_data, ov.width, ov.height);
+            let tex_idx = self.upload_rgba_texture(&ov.rgba_data, ov.width, ov.height);
             let uniforms = build_layer_uniforms(
                 canvas_w,
                 canvas_h,
@@ -671,15 +856,71 @@ impl GpuContext {
                 0.5,
                 CropShape::Rect,
             );
-            items.push(DrawItem { texture, uniforms, sort_key: (ov.z_index, insertion_order) });
+            items.push(DrawItem { tex_idx, uniforms, sort_key: (ov.z_index, insertion_order) });
             insertion_order += 1;
         }
 
         // Stable sort: lower z_index drawn first (bottom).
         items.sort_by_key(|item| item.sort_key);
 
+        // Submit all batched YUV→RGBA conversions before the render pass.
+        if has_yuv_work {
+            self.queue.submit(std::iter::once(yuv_encoder.finish()));
+        }
+
         // ── Render pass: composite all layers onto the canvas ────────
         let canvas = self.canvas.as_ref().expect("canvas was just ensured");
+
+        // Pre-create per-layer uniform buffers and bind groups so the
+        // render pass loop only needs to set them.
+        let uniform_buf_size = std::mem::size_of::<LayerUniforms>() as u64;
+        let uniform_usage = wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST;
+
+        struct PreparedDraw {
+            uniform_bg: wgpu::BindGroup,
+            texture_bg: wgpu::BindGroup,
+        }
+
+        let prepared: Vec<PreparedDraw> = items
+            .iter()
+            .map(|item| {
+                let buf_key = BufferKey { size: uniform_buf_size, usage: uniform_usage };
+                let buf_idx = self.buffer_pool.get(&self.device, buf_key, "layer_uniform_buf");
+                let uniform_buf = self.buffer_pool.buffer(buf_idx);
+                self.queue.write_buffer(uniform_buf, 0, bytemuck::bytes_of(&item.uniforms));
+
+                let uniform_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("layer_uniform_bg"),
+                    layout: &self.layer_uniforms_bgl,
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: uniform_buf.as_entire_binding(),
+                    }],
+                });
+
+                let tex_view = self
+                    .texture_pool
+                    .texture(item.tex_idx)
+                    .create_view(&wgpu::TextureViewDescriptor::default());
+                let texture_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("layer_texture_bg"),
+                    layout: &self.layer_texture_bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&tex_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&self.sampler),
+                        },
+                    ],
+                });
+
+                PreparedDraw { uniform_bg, texture_bg }
+            })
+            .collect();
+
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("composite_encoder"),
         });
@@ -701,43 +942,9 @@ impl GpuContext {
             });
             pass.set_pipeline(&self.composite_pipeline);
 
-            for item in &items {
-                // Per-layer uniform buffer.
-                let uniform_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("layer_uniform_buf"),
-                    size: std::mem::size_of::<LayerUniforms>() as u64,
-                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                });
-                self.queue.write_buffer(&uniform_buf, 0, bytemuck::bytes_of(&item.uniforms));
-
-                let uniform_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("layer_uniform_bg"),
-                    layout: &self.layer_uniforms_bgl,
-                    entries: &[wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: uniform_bg_resource(&uniform_buf),
-                    }],
-                });
-
-                let tex_view = item.texture.create_view(&wgpu::TextureViewDescriptor::default());
-                let texture_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("layer_texture_bg"),
-                    layout: &self.layer_texture_bgl,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(&tex_view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::Sampler(&self.sampler),
-                        },
-                    ],
-                });
-
-                pass.set_bind_group(0, &uniform_bg, &[]);
-                pass.set_bind_group(1, &texture_bg, &[]);
+            for draw in &prepared {
+                pass.set_bind_group(0, &draw.uniform_bg, &[]);
+                pass.set_bind_group(1, &draw.texture_bg, &[]);
                 pass.draw(0..6, 0..1); // 6 vertices = fullscreen quad
             }
         }
@@ -842,7 +1049,7 @@ impl GpuContext {
     /// Convert the canvas RGBA8 texture to NV12/I420 on the GPU and read
     /// back the resulting YUV planes.
     fn convert_and_readback_yuv(
-        &self,
+        &mut self,
         width: u32,
         height: u32,
         format: PixelFormat,
@@ -859,14 +1066,13 @@ impl GpuContext {
         // Round up to 4 bytes for u32 array.
         let y_buf_size_aligned = align_up(y_buf_size as usize, 4) as u64;
 
-        let y_gpu_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("y_output_buf"),
+        let y_buf_key = BufferKey {
             size: y_buf_size_aligned,
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_SRC
                 | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        };
+        let y_buf_idx = self.buffer_pool.get(&self.device, y_buf_key, "y_output_buf");
 
         // UV buffer: for NV12, 2 bytes per chroma sample; for I420, 1 byte per
         // sample but U and V planes stacked vertically (2× chroma_h rows).
@@ -876,14 +1082,13 @@ impl GpuContext {
         let uv_buf_size = (uv_stride as u64) * u64::from(uv_rows);
         let uv_buf_size_aligned = align_up(uv_buf_size as usize, 4) as u64;
 
-        let uv_gpu_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("uv_output_buf"),
+        let uv_buf_key = BufferKey {
             size: uv_buf_size_aligned,
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_SRC
                 | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        };
+        let uv_buf_idx = self.buffer_pool.get(&self.device, uv_buf_key, "uv_output_buf");
 
         let format_id: u32 = if format == PixelFormat::I420 { 1 } else { 0 };
         let params = RgbaToYuvParams {
@@ -896,27 +1101,38 @@ impl GpuContext {
             chroma_h,
             _pad: 0,
         };
-        let params_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("rgba_to_yuv_params"),
+        let params_key = BufferKey {
             size: std::mem::size_of::<RgbaToYuvParams>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        self.queue.write_buffer(&params_buf, 0, bytemuck::bytes_of(&params));
+        };
+        let params_idx = self.buffer_pool.get(&self.device, params_key, "rgba_to_yuv_params");
+        self.queue.write_buffer(
+            self.buffer_pool.buffer(params_idx),
+            0,
+            bytemuck::bytes_of(&params),
+        );
 
+        let canvas_view = canvas.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("rgba_to_yuv_bg"),
             layout: &self.rgba_to_yuv_bgl,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(
-                        &canvas.texture.create_view(&wgpu::TextureViewDescriptor::default()),
-                    ),
+                    resource: wgpu::BindingResource::TextureView(&canvas_view),
                 },
-                wgpu::BindGroupEntry { binding: 1, resource: y_gpu_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: uv_gpu_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.buffer_pool.buffer(y_buf_idx).as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.buffer_pool.buffer(uv_buf_idx).as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.buffer_pool.buffer(params_idx).as_entire_binding(),
+                },
             ],
         });
 
@@ -927,8 +1143,8 @@ impl GpuContext {
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("rgba_to_yuv_encoder"),
         });
-        encoder.clear_buffer(&y_gpu_buf, 0, None);
-        encoder.clear_buffer(&uv_gpu_buf, 0, None);
+        encoder.clear_buffer(self.buffer_pool.buffer(y_buf_idx), 0, None);
+        encoder.clear_buffer(self.buffer_pool.buffer(uv_buf_idx), 0, None);
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("rgba_to_yuv_pass"),
@@ -940,33 +1156,34 @@ impl GpuContext {
         }
 
         // Copy GPU storage buffers to staging buffers for CPU readback.
-        // TODO(phase-3): cache these staging buffers on GpuContext (keyed on
-        // canvas size + format) instead of creating them every frame — the
-        // output format rarely changes between frames.
-        let y_staging = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("y_staging"),
-            size: y_buf_size_aligned,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        let uv_staging = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("uv_staging"),
-            size: uv_buf_size_aligned,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
+        // Staging buffers are cached on GpuContext and only recreated
+        // when the canvas size or output format changes.
+        self.ensure_yuv_staging(width, height, format, y_buf_size_aligned, uv_buf_size_aligned);
+        let staging = self.yuv_staging.as_ref().expect("just ensured");
 
-        encoder.copy_buffer_to_buffer(&y_gpu_buf, 0, &y_staging, 0, y_buf_size_aligned);
-        encoder.copy_buffer_to_buffer(&uv_gpu_buf, 0, &uv_staging, 0, uv_buf_size_aligned);
+        encoder.copy_buffer_to_buffer(
+            self.buffer_pool.buffer(y_buf_idx),
+            0,
+            &staging.y_staging,
+            0,
+            y_buf_size_aligned,
+        );
+        encoder.copy_buffer_to_buffer(
+            self.buffer_pool.buffer(uv_buf_idx),
+            0,
+            &staging.uv_staging,
+            0,
+            uv_buf_size_aligned,
+        );
 
         self.queue.submit(std::iter::once(encoder.finish()));
 
         // Read back Y plane, stripping row-stride padding.
+        let staging = self.yuv_staging.as_ref().expect("staging exists");
         let y_data =
-            self.map_and_read_buffer(&y_staging, width as usize, height as usize, y_stride);
-        // Read back UV plane(s), stripping row-stride padding.
+            self.map_and_read_buffer(&staging.y_staging, width as usize, height as usize, y_stride);
         let uv_data = self.map_and_read_buffer(
-            &uv_staging,
+            &staging.uv_staging,
             uv_row_bytes as usize,
             uv_rows as usize,
             uv_stride,
@@ -1036,25 +1253,22 @@ impl GpuContext {
     // ── Texture creation helpers ────────────────────────────────────
 
     fn create_and_write_r8_texture(
-        &self,
+        &mut self,
         label: &str,
         width: u32,
         height: u32,
         data: &[u8],
-    ) -> wgpu::Texture {
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some(label),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
+    ) -> usize {
+        let key = TextureKey {
+            width,
+            height,
             format: wgpu::TextureFormat::R8Unorm,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
+        };
+        let idx = self.texture_pool.get(&self.device, key, label);
         self.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
-                texture: &texture,
+                texture: self.texture_pool.texture(idx),
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
@@ -1067,29 +1281,26 @@ impl GpuContext {
             },
             wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
         );
-        texture
+        idx
     }
 
     fn create_and_write_rg8_texture(
-        &self,
+        &mut self,
         label: &str,
         width: u32,
         height: u32,
         data: &[u8],
-    ) -> wgpu::Texture {
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some(label),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
+    ) -> usize {
+        let key = TextureKey {
+            width,
+            height,
             format: wgpu::TextureFormat::Rg8Unorm,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
+        };
+        let idx = self.texture_pool.get(&self.device, key, label);
         self.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
-                texture: &texture,
+                texture: self.texture_pool.texture(idx),
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
@@ -1102,7 +1313,7 @@ impl GpuContext {
             },
             wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
         );
-        texture
+        idx
     }
 }
 
@@ -1234,10 +1445,6 @@ fn bgl_uniform_entry(binding: u32, visibility: wgpu::ShaderStages) -> wgpu::Bind
     }
 }
 
-fn uniform_bg_resource(buffer: &wgpu::Buffer) -> wgpu::BindingResource<'_> {
-    buffer.as_entire_binding()
-}
-
 // ── Row-padding helpers ─────────────────────────────────────────────────────
 
 /// Compute the padded bytes-per-row for a texture with `bytes_per_pixel` bytes per texel.
@@ -1259,13 +1466,14 @@ const fn align_up(value: usize, alignment: usize) -> usize {
 
 /// GPU compositing preference parsed from config.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 pub enum GpuMode {
     /// Use GPU when available and beneficial (default).
-    Auto,
+    Auto = 0,
     /// Force GPU compositing (log warning and fall back to CPU if unavailable).
-    ForceGpu,
+    ForceGpu = 1,
     /// Force CPU compositing (ignore GPU even if available).
-    ForceCpu,
+    ForceCpu = 2,
 }
 
 impl GpuMode {
@@ -1277,6 +1485,16 @@ impl GpuMode {
             _ => Self::Auto,
         }
     }
+
+    /// Reconstruct from a `u8` stored in an atomic.
+    /// Unknown values map to `Auto`.
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Self::ForceGpu,
+            2 => Self::ForceCpu,
+            _ => Self::Auto,
+        }
+    }
 }
 
 /// Decide whether to use GPU compositing for this frame based on scene
@@ -1284,10 +1502,6 @@ impl GpuMode {
 ///
 /// GPU wins for: multi-layer, high-resolution, effects (rotation/crop).
 /// CPU wins for: single opaque layer at identity scale (memcpy fast path).
-///
-/// TODO(phase-3): add hysteresis — prefer the same path as last frame
-/// unless the scene complexity delta is large, to avoid thrashing between
-/// GPU/CPU when the scene oscillates around the threshold.
 pub fn should_use_gpu(
     canvas_w: u32,
     canvas_h: u32,
@@ -1305,4 +1519,60 @@ pub fn should_use_gpu(
     // GPU is worthwhile when there's enough work to amortise
     // the upload + readback overhead (~0.5ms for 1080p).
     total_items >= 2 || total_pixels >= 1920 * 1080 || has_effects
+}
+
+// ── GPU/CPU path hysteresis ─────────────────────────────────────────────────
+
+/// Number of consecutive frames that must vote for the opposite path
+/// before the compositor actually switches.  Prevents thrashing when
+/// scene complexity oscillates near the GPU/CPU threshold.
+const HYSTERESIS_FRAMES: u32 = 5;
+
+/// Hysteresis state for `GpuMode::Auto` path selection.
+///
+/// Tracks the last path used and counts how many consecutive frames
+/// have voted for the opposite path.  The switch only happens after
+/// [`HYSTERESIS_FRAMES`] consecutive votes.
+pub struct GpuPathState {
+    /// `true` when the GPU path was used last frame.
+    last_used_gpu: bool,
+    /// Number of consecutive frames voting opposite to `last_used_gpu`.
+    consecutive_flip_votes: u32,
+}
+
+impl GpuPathState {
+    pub fn new() -> Self {
+        Self { last_used_gpu: false, consecutive_flip_votes: 0 }
+    }
+}
+
+/// Wrapper around [`should_use_gpu`] that adds hysteresis.
+///
+/// The raw heuristic is evaluated each frame, but the path only flips
+/// after [`HYSTERESIS_FRAMES`] consecutive frames vote for the other
+/// path.  This avoids per-frame GPU↔CPU thrashing when the scene
+/// oscillates around the complexity threshold.
+pub fn should_use_gpu_with_state(
+    state: &mut GpuPathState,
+    canvas_w: u32,
+    canvas_h: u32,
+    layers: &[Option<LayerSnapshot>],
+    image_overlays: &[Arc<DecodedOverlay>],
+    text_overlays: &[Arc<DecodedOverlay>],
+) -> bool {
+    let vote_gpu = should_use_gpu(canvas_w, canvas_h, layers, image_overlays, text_overlays);
+
+    if vote_gpu == state.last_used_gpu {
+        // Same path as last frame — reset the flip counter.
+        state.consecutive_flip_votes = 0;
+    } else {
+        state.consecutive_flip_votes += 1;
+        if state.consecutive_flip_votes >= HYSTERESIS_FRAMES {
+            // Enough consecutive votes to flip.
+            state.last_used_gpu = vote_gpu;
+            state.consecutive_flip_votes = 0;
+        }
+    }
+
+    state.last_used_gpu
 }
