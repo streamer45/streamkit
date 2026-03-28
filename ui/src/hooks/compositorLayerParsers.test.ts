@@ -776,12 +776,15 @@ describe('computeUpdatedLayer text overlay free resize', () => {
     expect(result.height).toBe(36);
   });
 
-  it('clamps all layer types to canvas dimensions on resize', () => {
+  it('clamps all layer types to canvas dimensions on resize while preserving AR', () => {
     const orig = makeLayer({ x: 100, y: 100, width: 640, height: 480 });
+    const ar = orig.width / orig.height;
     // Even AR-constrained layers should not exceed canvas size
     const result = computeUpdatedLayer(orig, 'resize', 'e', 5000, 0, CW, CH, 'video');
     expect(result.width).toBeLessThanOrEqual(CW);
     expect(result.height).toBeLessThanOrEqual(CH);
+    // AR must be preserved after clamping
+    expect(result.width / result.height).toBeCloseTo(ar, 5);
   });
 });
 

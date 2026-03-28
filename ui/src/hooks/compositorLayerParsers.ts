@@ -730,8 +730,20 @@ function computeResizePosition(
   }
 
   // Clamp dimensions so layers cannot grow larger than the canvas.
-  newW = Math.min(newW, canvasWidth);
-  newH = Math.min(newH, canvasHeight);
+  // For AR-constrained layers, re-derive the other dimension after each
+  // clamp so the aspect ratio is preserved.  For text overlays (no AR),
+  // independent clamping is fine.
+  if (newW > canvasWidth) {
+    newW = canvasWidth;
+    if (ar > 0) newH = newW / ar;
+  }
+  if (newH > canvasHeight) {
+    newH = canvasHeight;
+    if (ar > 0) newW = newH * ar;
+  }
+  // Re-anchor position for handles that move the origin edge.
+  if (handle.includes('w')) newX = orig.x + (orig.width - newW);
+  if (handle.includes('n')) newY = orig.y + (orig.height - newH);
 
   return { ...orig, x: newX, y: newY, width: newW, height: newH };
 }
