@@ -272,11 +272,11 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
       previewIdRef.current = null;
       previewSessionIdRef.current = null;
     }
-    // Only disconnect the MoQ connection if the preview created it.
-    if (previewOwnsConnectionRef.current) {
-      previewDisconnect();
-      previewOwnsConnectionRef.current = false;
-    }
+    // Always disconnect — the user explicitly requested "Stop Preview".
+    // If the connection was borrowed from StreamView, the stream will also
+    // be disconnected; the user can reconnect from StreamView if needed.
+    previewDisconnect();
+    previewOwnsConnectionRef.current = false;
     setPreviewError(null);
   }, [previewDisconnect]);
 

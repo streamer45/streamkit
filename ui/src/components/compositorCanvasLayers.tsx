@@ -116,12 +116,18 @@ export function layerBoxStyle(
 
 const HANDLES: ResizeHandle[] = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
 
+/** Handles available for text overlays — excludes pure-vertical `n`/`s`
+ *  handles because text font scaling is width-based; resizing only the
+ *  height would produce an oversized box with unchanged text. */
+const TEXT_HANDLES: ResizeHandle[] = ['nw', 'ne', 'e', 'se', 'sw', 'w'];
+
 export const ResizeHandles: React.FC<{
   layerId: string;
   onResizeStart: (layerId: string, handle: ResizeHandle, e: React.PointerEvent) => void;
-}> = React.memo(({ layerId, onResizeStart }) => (
+  handles?: ResizeHandle[];
+}> = React.memo(({ layerId, onResizeStart, handles }) => (
   <>
-    {HANDLES.map((h) => (
+    {(handles ?? HANDLES).map((h) => (
       <ResizeHandleDiv
         key={h}
         position={h}
@@ -163,23 +169,41 @@ export const VideoLayer: React.FC<{
       ref={layerRef}
       className="nodrag nopan"
       aria-label={`Video layer: ${layer.id}`}
-      style={{
-        ...layerBoxStyle(layer.x, layer.y, layer.width, layer.height, {
-          visible: layer.visible,
-          opacity: layer.opacity,
-          zIndex: layer.zIndex,
-          rotationDegrees: layer.rotationDegrees,
-          borderColor,
-          bgColor,
-          outlineStyle: layer.visible ? 'solid' : 'dashed',
-        }),
-        clipPath:
-          layer.cropShape === 'circle'
-            ? `circle(${Math.min(layer.width, layer.height) / 2}px at 50% 50%)`
-            : undefined,
-      }}
+      style={layerBoxStyle(layer.x, layer.y, layer.width, layer.height, {
+        visible: layer.visible,
+        opacity: layer.opacity,
+        zIndex: layer.zIndex,
+        rotationDegrees: layer.rotationDegrees,
+        borderColor,
+        bgColor: layer.cropShape === 'circle' ? 'transparent' : bgColor,
+        outlineStyle: layer.cropShape === 'circle' ? 'dashed' : layer.visible ? 'solid' : 'dashed',
+      })}
       onPointerDown={handlePointerDown}
     >
+      {layer.cropShape === 'circle' && (
+        <div
+          data-crop-circle
+          style={{
+            position: 'absolute',
+            inset: 0,
+            clipPath: `circle(${Math.min(layer.width, layer.height) / 2}px at 50% 50%)`,
+            background: bgColor,
+            pointerEvents: 'none',
+          }}
+        />
+      )}
+      {layer.cropShape === 'circle' && isSelected && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            borderRadius: '50%',
+            outline: `2px dashed ${borderColor}`,
+            outlineOffset: '-1px',
+            pointerEvents: 'none',
+          }}
+        />
+      )}
       <LayerLabel>{layer.id}</LayerLabel>
       <LayerDimensions>
         {Math.round(layer.width)}&times;{Math.round(layer.height)}
@@ -287,7 +311,13 @@ export const TextOverlayLayer: React.FC<{
         <LayerDimensions>
           {Math.round(displayWidth)}&times;{Math.round(displayHeight)}
         </LayerDimensions>
-        {isSelected && <ResizeHandles layerId={overlay.id} onResizeStart={onResizeStart} />}
+        {isSelected && (
+          <ResizeHandles
+            layerId={overlay.id}
+            onResizeStart={onResizeStart}
+            handles={TEXT_HANDLES}
+          />
+        )}
         {/* Hidden measurement span — no wrapping (white-space: pre) so
           offsetWidth / offsetHeight reflect the natural text extent.
           Text only breaks on explicit newlines. */}

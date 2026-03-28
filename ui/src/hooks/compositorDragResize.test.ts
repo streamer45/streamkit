@@ -89,6 +89,10 @@ describe('useCompositorDragResize circle crop resize', () => {
       cropShape: 'circle' as const,
     };
     const el = document.createElement('div');
+    // Add the inner crop element that applyVisualUpdate targets
+    const cropEl = document.createElement('div');
+    cropEl.setAttribute('data-crop-circle', '');
+    el.appendChild(cropEl);
     const layerRefs = { current: new Map<string, HTMLDivElement>() };
     layerRefs.current.set('layer-circle', el);
 
@@ -125,8 +129,9 @@ describe('useCompositorDragResize circle crop resize', () => {
 
     vi.useRealTimers();
 
-    // The clipPath should have been set to a circle() value
-    expect(el.style.clipPath).toMatch(/^circle\(/);
+    // The clipPath should have been set on the inner [data-crop-circle] element
+    const innerCrop = el.querySelector('[data-crop-circle]') as HTMLElement;
+    expect(innerCrop.style.clipPath).toMatch(/^circle\(/);
   });
 
   it('does NOT set clipPath on rect-crop layers during resize', () => {

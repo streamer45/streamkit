@@ -123,11 +123,14 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
       if (sizeChanged) {
         el.style.width = `${layer.width}px`;
         el.style.height = `${layer.height}px`;
-        // Keep circle clip-path in sync during resize so the crop
-        // shape tracks the handle instead of showing a clipped rectangle.
+        // Keep circle clip-path in sync during resize.  The clip is on
+        // an inner `[data-crop-circle]` div so resize handles stay visible.
         if (layer.cropShape === 'circle') {
           const r = Math.min(layer.width, layer.height) / 2;
-          el.style.clipPath = `circle(${r}px at 50% 50%)`;
+          const cropEl = el.querySelector<HTMLElement>('[data-crop-circle]');
+          if (cropEl) {
+            cropEl.style.clipPath = `circle(${r}px at 50% 50%)`;
+          }
         }
       }
     },

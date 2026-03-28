@@ -1050,6 +1050,10 @@ const MonitorViewContent: React.FC = () => {
     setIsDeletingSession(true);
 
     try {
+      // Tear down preview/MoQ connection BEFORE destroying the session
+      // to avoid SIGSEGV from WebCodecs operating on a dead stream.
+      await handleStopPreview();
+
       const wsService = getWebSocketService();
 
       const response = await wsService.send({
@@ -1078,7 +1082,7 @@ const MonitorViewContent: React.FC = () => {
     } finally {
       setIsDeletingSession(false);
     }
-  }, [sessionToDelete, selectedSessionId, toast, clearSessionPositions]);
+  }, [sessionToDelete, selectedSessionId, toast, clearSessionPositions, handleStopPreview]);
 
   const handleDeleteSession = useCallback(async () => {
     if (!selectedSessionId) return;
@@ -1086,6 +1090,10 @@ const MonitorViewContent: React.FC = () => {
     setIsDeletingSession(true);
 
     try {
+      // Tear down preview/MoQ connection BEFORE destroying the session
+      // to avoid SIGSEGV from WebCodecs operating on a dead stream.
+      await handleStopPreview();
+
       const wsService = getWebSocketService();
 
       const response = await wsService.send({
@@ -1111,7 +1119,7 @@ const MonitorViewContent: React.FC = () => {
     } finally {
       setIsDeletingSession(false);
     }
-  }, [selectedSessionId, toast, clearSessionPositions]);
+  }, [selectedSessionId, toast, clearSessionPositions, handleStopPreview]);
 
   const handleCancelDeleteModal = useCallback(() => setShowDeleteModal(false), []);
   const handleCancelQuickDelete = useCallback(() => setSessionToDelete(null), []);

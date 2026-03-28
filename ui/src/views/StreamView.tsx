@@ -8,6 +8,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { useShallow } from 'zustand/shallow';
 
 import ConfirmModal from '@/components/ConfirmModal';
+import { useAudioControls } from '@/components/OutputPreviewPanel';
 import { PipelineSelectionSection } from '@/components/stream/PipelineSelectionSection';
 import { TelemetryTimeline as TelemetryTimelineComponent } from '@/components/TelemetryTimeline';
 import {
@@ -354,6 +355,7 @@ const StreamView: React.FC = () => {
     activeSessionName,
     activePipelineName,
     videoRenderer,
+    audioEmitter,
     publishBroadcasts,
     isSecondaryCameraEnabled,
     secondaryCameraStatus,
@@ -402,6 +404,7 @@ const StreamView: React.FC = () => {
       activeSessionName: s.activeSessionName,
       activePipelineName: s.activePipelineName,
       videoRenderer: s.videoRenderer,
+      audioEmitter: s.audioEmitter,
       publishBroadcasts: s.publishBroadcasts,
       isSecondaryCameraEnabled: s.isSecondaryCameraEnabled,
       secondaryCameraStatus: s.secondaryCameraStatus,
@@ -449,6 +452,8 @@ const StreamView: React.FC = () => {
 
   const { canvasRef: videoCanvasRef, aspectRatio: canvasAspectRatio } =
     useVideoCanvas(videoRenderer);
+
+  const { muted, volume, toggleMute, changeVolume } = useAudioControls(audioEmitter);
 
   // Ensure schemas are loaded for autocomplete
   useEffect(() => {
@@ -1105,6 +1110,35 @@ const StreamView: React.FC = () => {
                     aspectRatio: canvasAspectRatio,
                   }}
                 />
+                {audioEmitter && (
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      marginTop: 8,
+                      padding: '4px 0',
+                    }}
+                  >
+                    <ControlButton
+                      onClick={toggleMute}
+                      title={muted ? 'Unmute' : 'Mute'}
+                      style={{ padding: '4px 8px', fontSize: 12 }}
+                    >
+                      {muted ? '🔇' : '🔊'}
+                    </ControlButton>
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={muted ? 0 : volume}
+                      onChange={(e) => changeVolume(Number(e.target.value))}
+                      style={{ flex: 1, maxWidth: 120, accentColor: 'var(--sk-primary)' }}
+                      title={`Volume: ${Math.round((muted ? 0 : volume) * 100)}%`}
+                    />
+                  </div>
+                )}
               </VideoContainer>
             </Section>
           )}

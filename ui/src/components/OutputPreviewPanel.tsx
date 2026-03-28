@@ -221,13 +221,30 @@ const BufferingOverlay = styled.div`
   position: absolute;
   inset: 0;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 6px;
   background: rgba(0, 0, 0, 0.55);
   color: var(--sk-text-muted);
   font-size: 11px;
   pointer-events: none;
   border-radius: 3px;
+`;
+
+/** Small inline spinner for the buffering/connecting overlay. */
+const OverlaySpinner = styled.div`
+  @keyframes preview-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--sk-border);
+  border-top-color: var(--sk-primary);
+  border-radius: 50%;
+  animation: preview-spin 0.8s linear infinite;
 `;
 
 const VolumeSlider = styled.input`
@@ -288,7 +305,7 @@ const FullscreenCanvas = styled.canvas`
 // ---------------------------------------------------------------------------
 
 /** Subscribe to an audioEmitter's muted/volume signals and return React state. */
-function useAudioControls(
+export function useAudioControls(
   audioEmitter: {
     muted: {
       peek(): boolean;
@@ -375,6 +392,7 @@ function statusLabel(
 const PreviewBody: React.FC<{
   hasSession: boolean;
   isConnected: boolean;
+  isConnecting: boolean;
   hasVideoRenderer: boolean;
   watchStatus: WatchStatus;
   activeSessionId: string | null;
@@ -385,6 +403,7 @@ const PreviewBody: React.FC<{
   ({
     hasSession,
     isConnected,
+    isConnecting,
     hasVideoRenderer,
     watchStatus: ws,
     activeSessionId,
@@ -394,6 +413,16 @@ const PreviewBody: React.FC<{
   }) => {
     if (!hasSession) {
       return <EmptyMessage>Select a session to preview output.</EmptyMessage>;
+    }
+    if (isConnecting) {
+      return (
+        <CanvasWrapper>
+          <BufferingOverlay style={{ position: 'relative' }}>
+            <OverlaySpinner />
+            Connecting…
+          </BufferingOverlay>
+        </CanvasWrapper>
+      );
     }
     if (!isConnected) {
       return (
@@ -421,7 +450,12 @@ const PreviewBody: React.FC<{
     return (
       <CanvasWrapper>
         <Canvas ref={canvasRef} style={{ aspectRatio: canvasAspectRatio }} />
-        {ws === 'loading' && <BufferingOverlay>Buffering…</BufferingOverlay>}
+        {ws === 'loading' && (
+          <BufferingOverlay>
+            <OverlaySpinner />
+            Buffering…
+          </BufferingOverlay>
+        )}
       </CanvasWrapper>
     );
   }
@@ -566,10 +600,13 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
     } = usePreviewPanelInteraction(canvasAspectRatio);
 
     const isConnected = status === 'connected';
+    const isConnecting = status === 'connecting';
     const isLive = watchStatus === 'live';
 
     // Conditional rendering: placed after all hooks to satisfy rules-of-hooks.
-    const shouldShow = !conditionalRender || (isConnected && (isLive || watchStatus === 'loading'));
+    // Also show during 'connecting' so the user sees a spinner instead of nothing.
+    const shouldShow =
+      !conditionalRender || isConnecting || (isConnected && (isLive || watchStatus === 'loading'));
     if (!shouldShow) return null;
 
     const label = statusLabel(status, watchStatus, connectingStep);
@@ -604,6 +641,7 @@ const OutputPreviewPanel: React.FC<OutputPreviewPanelProps> = React.memo(
             <PreviewBody
               hasSession={hasSession}
               isConnected={isConnected}
+              isConnecting={isConnecting}
               hasVideoRenderer={!!videoRenderer}
               watchStatus={watchStatus}
               activeSessionId={activeSessionId}
