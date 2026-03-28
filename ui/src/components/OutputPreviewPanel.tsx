@@ -203,6 +203,19 @@ const EmptyMessage = styled.div`
   max-width: 220px;
 `;
 
+/** Wrapper around the canvas + optional overlay.  Fills the PanelBody so the
+ *  canvas can letterbox naturally via max-width / max-height / object-fit. */
+const CanvasWrapper = styled.div`
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 0;
+`;
+
 /** Semi-transparent overlay shown on the canvas while media is buffering. */
 const BufferingOverlay = styled.div`
   position: absolute;
@@ -406,10 +419,10 @@ const PreviewBody: React.FC<{
     // before video).
     const Canvas = isFullscreen ? FullscreenCanvas : PreviewCanvas;
     return (
-      <div style={{ position: 'relative', maxWidth: '100%', maxHeight: '100%' }}>
+      <CanvasWrapper>
         <Canvas ref={canvasRef} style={{ aspectRatio: canvasAspectRatio }} />
         {ws === 'loading' && <BufferingOverlay>Buffering…</BufferingOverlay>}
-      </div>
+      </CanvasWrapper>
     );
   }
 );
