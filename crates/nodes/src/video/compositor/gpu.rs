@@ -562,6 +562,9 @@ impl GpuContext {
     /// TODO(phase-3): pool per-layer textures and uniform buffers instead
     /// of creating new ones each frame.  At 30fps with 2 layers + 2
     /// overlays this is ~120 texture + ~120 buffer allocations/sec.
+    // Allow: GPU compositing coordinates upload → render pass → readback in a
+    // single function; splitting would add complexity without improving clarity.
+    // Will shrink naturally when per-layer texture pooling is added (phase-3).
     #[allow(clippy::too_many_lines)]
     pub fn composite_frame_gpu(
         &mut self,
@@ -1092,6 +1095,9 @@ impl GpuContext {
 /// The matrix maps a `[-1, 1]` unit quad to the layer's destination
 /// position on the canvas in NDC space, applying scale, rotation, mirror,
 /// and translation.
+// Allow: arguments mirror LayerSnapshot fields 1:1 — wrapping in a struct
+// would just add indirection.  Precision loss is inherent in u32 → f32
+// canvas/rect conversions (lossless up to 2^24 pixels).
 #[allow(clippy::too_many_arguments, clippy::cast_precision_loss)]
 fn build_layer_uniforms(
     canvas_w: u32,
