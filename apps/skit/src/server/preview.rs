@@ -104,7 +104,7 @@ fn classify_by_kind(kind: &str) -> (bool, bool, bool) {
             (false, true, false)
         },
         _ => {
-            tracing::trace!(kind = %kind, "classify_by_kind: unknown node kind, skipping");
+            tracing::debug!(kind = %kind, "classify_by_kind: unknown node kind, skipping");
             (false, false, false)
         },
     }
@@ -118,6 +118,10 @@ fn classify_by_kind(kind: &str) -> (bool, bool, bool) {
 /// pipelines with separate audio and video encoder chains feeding the
 /// same terminal node, this returns both. Prefers tapping after
 /// encoders (encoded output) to skip re-encoding.
+///
+/// # Errors
+///
+/// Returns an error if the pipeline has no suitable output nodes to tap.
 pub fn detect_tap_points(
     pipeline: &Pipeline,
     registry: &streamkit_core::NodeRegistry,
@@ -235,6 +239,11 @@ fn classify_output_pin_from_registry(
 ///
 /// Returns `(injected_nodes, injected_connections, has_audio, has_video)`
 /// where each injected node is a `(node_id, kind)` tuple.
+///
+/// # Errors
+///
+/// Returns an error if a tap node is missing from the pipeline, if no
+/// media types are detected, or if any engine control message fails.
 pub async fn inject_preview_subgraph(
     session: &crate::session::Session,
     preview_id: &str,
@@ -327,6 +336,12 @@ pub async fn inject_preview_subgraph(
 
 /// Inner implementation of subgraph injection. Separated so that the
 /// caller can roll back `node_ids` and `connections` on error.
+///
+/// **Assumption**: `tap_points` contains at most one audio and one video
+/// tap point. Multiple same-type taps would collide on node IDs (e.g.
+/// two raw video taps would both create `{prefix}pixconv`). The public
+/// `inject_preview_subgraph` upholds this via `detect_tap_points`
+/// deduplication.
 #[allow(clippy::too_many_arguments)]
 async fn inject_subgraph_inner(
     session: &crate::session::Session,
@@ -432,11 +447,9 @@ async fn inject_subgraph_inner(
         }
     }
 
-    // Verify the peer node registered successfully by checking if
-    // has_audio/has_video are consistent (basic sanity check).
-    if !has_audio && !has_video {
-        return Err("Preview subgraph injection failed: no media types detected".to_string());
-    }
+    // The caller guarantees at least one media type is present
+    // (it returns Err before reaching here if both are false).
+    debug_assert!(has_audio || has_video, "inject_subgraph_inner called with no media types");
 
     Ok(())
 }
@@ -595,6 +608,11 @@ async fn connect_reliable(
 /// Uses fallible sends so the caller can detect partial teardown failures.
 /// Returns `Ok(())` on full success, or `Err(msg)` if any engine message
 /// failed (the pipeline model is still cleaned up regardless).
+///
+/// # Errors
+///
+/// Returns the first engine control message error encountered during
+/// teardown. The pipeline model is cleaned up regardless of errors.
 pub async fn teardown_preview(
     session: &crate::session::Session,
     state: &PreviewState,
@@ -668,6 +686,10 @@ pub async fn teardown_all_previews(session: &crate::session::Session) {
 // ── Route handlers ───────────────────────────────────────────────────
 
 /// POST /api/v1/sessions/{id}/preview
+///
+/// # Errors
+///
+/// Returns HTTP error status codes for permission, validation, or engine failures.
 pub async fn start_preview_handler(
     State(app_state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -876,6 +898,10 @@ pub async fn start_preview_handler(
 }
 
 /// GET /api/v1/sessions/{id}/preview
+///
+/// # Errors
+///
+/// Returns HTTP 403 if the caller lacks permission.
 pub async fn list_previews_handler(
     State(app_state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -939,6 +965,11 @@ pub async fn list_previews_handler(
 }
 
 /// DELETE /api/v1/sessions/{id}/preview/{preview_id}
+///
+/// # Errors
+///
+/// Returns HTTP 404 if the session or preview is not found, or 403 on
+/// permission denial. Returns 500 if teardown partially fails.
 pub async fn stop_preview_handler(
     State(app_state): State<Arc<AppState>>,
     headers: HeaderMap,
