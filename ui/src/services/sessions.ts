@@ -24,6 +24,22 @@ interface CreateSessionResponse {
   created_at: string;
 }
 
+// ── Preview types ──────────────────────────────────────────────────────
+
+export interface PreviewResponse {
+  preview_id: string;
+  gateway_path: string;
+  broadcast: string;
+  audio: boolean;
+  video: boolean;
+}
+
+export interface PreviewInfo extends PreviewResponse {
+  tap_node: string;
+  tap_pin: string;
+  created_at: string;
+}
+
 /**
  * Lists all active sessions
  * @returns A promise that resolves to an array of sessions
@@ -84,4 +100,67 @@ export async function createSession(
   logger.info('Created session:', result.session_id, result.name || '(unnamed)');
 
   return result;
+}
+
+// ── Preview API ────────────────────────────────────────────────────────
+
+/**
+ * Starts an engine-native preview for a session by injecting a preview
+ * subgraph into the running pipeline.
+ */
+export async function startPreview(
+  sessionId: string,
+  tapNode?: string,
+  tapPin?: string
+): Promise<PreviewResponse> {
+  const body: Record<string, string> = {};
+  if (tapNode) body.tap_node = tapNode;
+  if (tapPin) body.tap_pin = tapPin;
+
+  const response = await fetchApi(`/api/v1/sessions/${encodeURIComponent(sessionId)}/preview`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(errorText || `Failed to start preview: ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Lists active previews for a session.
+ */
+export async function listPreviews(sessionId: string): Promise<PreviewInfo[]> {
+  const response = await fetchApi(`/api/v1/sessions/${encodeURIComponent(sessionId)}/preview`, {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to list previews: ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Stops and tears down an active preview.
+ */
+export async function stopPreview(sessionId: string, previewId: string): Promise<void> {
+  const response = await fetchApi(
+    `/api/v1/sessions/${encodeURIComponent(sessionId)}/preview/${encodeURIComponent(previewId)}`,
+    {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(errorText || `Failed to stop preview: ${response.statusText}`);
+  }
 }

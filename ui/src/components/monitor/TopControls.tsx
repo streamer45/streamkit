@@ -25,7 +25,10 @@ export interface TopControlsProps {
   selectedSessionId: string | null;
   onDelete: () => void;
   onStartPreview: () => void;
+  onStopPreview: () => void;
   isPreviewConnected: boolean;
+  isPreviewLoading: boolean;
+  previewError: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -39,16 +42,37 @@ export const TopControls = React.memo(
     selectedSessionId,
     onDelete,
     onStartPreview,
+    onStopPreview,
     isPreviewConnected,
+    isPreviewLoading,
+    previewError,
   }: TopControlsProps) => {
     return (
       <TopRightControls>
         <ButtonGroup>
           <ConnectionStatus connected={isConnected} />
+          {selectedSessionId && isPreviewConnected && (
+            <SKTooltip content="Stop the preview and tear down the preview subgraph">
+              <Button variant="ghost" size="small" onClick={onStopPreview}>
+                Stop Preview
+              </Button>
+            </SKTooltip>
+          )}
           {selectedSessionId && !isPreviewConnected && (
-            <SKTooltip content="Connect to MoQ gateway and start watching the output preview">
-              <Button variant="ghost" size="small" onClick={onStartPreview}>
-                Preview
+            <SKTooltip
+              content={
+                previewError
+                  ? `Preview failed: ${previewError}`
+                  : 'Inject a preview tap into the pipeline and start watching'
+              }
+            >
+              <Button
+                variant="ghost"
+                size="small"
+                onClick={onStartPreview}
+                disabled={isPreviewLoading}
+              >
+                {isPreviewLoading ? 'Starting...' : 'Preview'}
               </Button>
             </SKTooltip>
           )}

@@ -398,6 +398,40 @@ impl NodeRegistry {
         defs
     }
 
+    /// Returns the definition for a single registered node kind, if it exists.
+    ///
+    /// More efficient than [`definitions()`](Self::definitions) when only one
+    /// node type is needed, since it avoids iterating (and potentially
+    /// instantiating) every registered node.
+    pub fn get_definition(&self, kind: &str) -> Option<NodeDefinition> {
+        let info = self.info.get(kind)?;
+
+        let (inputs, outputs) = match &info.static_pins {
+            Some(pins) => (pins.inputs.clone(), pins.outputs.clone()),
+            None => match (info.factory)(None) {
+                Ok(node_instance) => (node_instance.input_pins(), node_instance.output_pins()),
+                Err(e) => {
+                    tracing::error!(
+                        kind = %kind,
+                        error = %e,
+                        "Failed to create temporary node instance for definition lookup"
+                    );
+                    return None;
+                },
+            },
+        };
+
+        Some(NodeDefinition {
+            kind: kind.to_string(),
+            description: info.description.clone(),
+            param_schema: info.param_schema.clone(),
+            inputs,
+            outputs,
+            categories: info.categories.clone(),
+            bidirectional: info.bidirectional,
+        })
+    }
+
     /// Removes a node definition from the registry.
     /// Returns true if a definition with the provided name was present.
     pub fn unregister(&mut self, name: &str) -> bool {

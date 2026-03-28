@@ -132,6 +132,30 @@ fn redact_telemetry_data(value: &mut serde_json::Value, max_chars: usize) {
     }
 }
 
+/// Maximum number of concurrent previews per session.
+const MAX_PREVIEWS_PER_SESSION: usize = 2;
+
+/// Tracks a single active preview tap on a session.
+///
+/// A preview dynamically injects a subgraph (encoding chain + MoQ peer) into
+/// the running pipeline so an admin can "peek" at any point in the graph.
+/// The subgraph is torn down when the preview is stopped or the session is
+/// destroyed.
+#[derive(Clone, Debug)]
+pub struct PreviewState {
+    pub preview_id: String,
+    pub tap_node: String,
+    pub tap_pin: String,
+    /// Node IDs injected for this preview (teardown in reverse order).
+    pub injected_node_ids: Vec<String>,
+    /// Connections injected for this preview `(from_node, from_pin, to_node, to_pin)`.
+    pub injected_connections: Vec<(String, String, String, String)>,
+    pub gateway_path: String,
+    pub has_audio: bool,
+    pub has_video: bool,
+    pub created_at: SystemTime,
+}
+
 /// Represents a single, stateful, dynamic pipeline session.
 #[derive(Clone)]
 pub struct Session {
@@ -144,6 +168,9 @@ pub struct Session {
     pub created_at: SystemTime,
     /// User/role who created this session (for permission filtering)
     pub created_by: Option<String>,
+    /// Active preview taps, keyed by preview_id.
+    #[cfg(feature = "moq")]
+    pub previews: Arc<Mutex<HashMap<String, PreviewState>>>,
 }
 
 impl Session {
@@ -328,6 +355,8 @@ impl Session {
             pipeline: Arc::new(Mutex::new(Pipeline::default())),
             created_at: SystemTime::now(),
             created_by,
+            #[cfg(feature = "moq")]
+            previews: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -363,6 +392,42 @@ impl Session {
     /// which typically indicates the engine actor has stopped or panicked.
     pub async fn get_node_view_data(&self) -> Result<HashMap<String, serde_json::Value>, String> {
         self.engine_handle.get_node_view_data().await
+    }
+
+    /// Registers a new preview, enforcing the per-session limit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the maximum number of concurrent previews has been reached.
+    #[cfg(feature = "moq")]
+    pub async fn add_preview(&self, state: PreviewState) -> Result<(), String> {
+        let mut previews = self.previews.lock().await;
+        if previews.len() >= MAX_PREVIEWS_PER_SESSION {
+            return Err(format!(
+                "Maximum of {MAX_PREVIEWS_PER_SESSION} concurrent previews per session"
+            ));
+        }
+        previews.insert(state.preview_id.clone(), state);
+        drop(previews);
+        Ok(())
+    }
+
+    /// Removes and returns a preview by ID.
+    #[cfg(feature = "moq")]
+    pub async fn remove_preview(&self, preview_id: &str) -> Option<PreviewState> {
+        self.previews.lock().await.remove(preview_id)
+    }
+
+    /// Returns a snapshot of all active previews.
+    #[cfg(feature = "moq")]
+    pub async fn list_previews(&self) -> Vec<PreviewState> {
+        self.previews.lock().await.values().cloned().collect()
+    }
+
+    /// Returns the number of active previews.
+    #[cfg(feature = "moq")]
+    pub async fn preview_count(&self) -> usize {
+        self.previews.lock().await.len()
     }
 }
 

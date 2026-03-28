@@ -266,7 +266,8 @@ const PreviewBody: React.FC<{
     if (!isConnected) {
       return (
         <EmptyMessage>
-          Connect to the MoQ gateway in the <strong>Stream</strong> view to preview.
+          Connect to the MoQ gateway in the <strong>Stream</strong> view to preview, or click{' '}
+          <strong>Preview</strong> above to tap the pipeline directly.
         </EmptyMessage>
       );
     }

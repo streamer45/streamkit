@@ -3,69 +3,32 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Hook that manages the MoQ preview connection from the Monitor View.
+ * Hook that manages the server-managed MoQ preview connection from the
+ * Monitor View.
  *
  * Encapsulates:
- * - Stream store selectors for watch-only MoQ connection
+ * - Calling the preview REST API (start / stop)
+ * - Stream store configuration for watch-only MoQ connection
  * - Preview teardown when the selected session is deselected
- * - Pipeline-aware configuration (gateway path, output broadcast, media types)
+ * - Loading and error states
  */
 
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useShallow } from 'zustand/shallow';
 
+import { startPreview, stopPreview } from '@/services/sessions';
 import { useStreamStore } from '@/stores/streamStore';
-import type { Pipeline } from '@/types/types';
 import { updateUrlPath } from '@/utils/moqPeerSettings';
-
-interface PreviewMoqConfig {
-  gatewayPath?: string;
-  outputBroadcast?: string;
-  outputsAudio: boolean;
-  outputsVideo: boolean;
-}
-
-/**
- * Derives MoQ preview configuration from the pipeline's node graph.
- * Used as a fallback for interactively-created sessions that don't have
- * a `client` section.
- */
-function deriveMoqConfigFromNodes(pipeline: Pipeline): PreviewMoqConfig {
-  const config: PreviewMoqConfig = { outputsAudio: true, outputsVideo: true };
-
-  const moqEntry = Object.entries(pipeline.nodes).find(
-    ([, n]) => n.kind === 'transport::moq::peer' && n.params
-  );
-  if (!moqEntry) return config;
-
-  const [moqNodeName, moqNode] = moqEntry;
-  const params = moqNode.params as Record<string, unknown>;
-  config.gatewayPath = params.gateway_path as string | undefined;
-  config.outputBroadcast = params.output_broadcast as string | undefined;
-
-  // Detect media types from connection graph
-  config.outputsAudio = false;
-  config.outputsVideo = false;
-  for (const conn of pipeline.connections) {
-    if (conn.to_node !== moqNodeName) continue;
-    const sourceNode = pipeline.nodes[conn.from_node];
-    if (!sourceNode?.kind) continue;
-    if (sourceNode.kind.startsWith('audio::')) config.outputsAudio = true;
-    else if (sourceNode.kind.startsWith('video::')) config.outputsVideo = true;
-  }
-
-  return config;
-}
 
 export interface UseMonitorPreviewReturn {
   isPreviewConnected: boolean;
+  isPreviewLoading: boolean;
+  previewError: string | null;
   handleStartPreview: () => Promise<void>;
+  handleStopPreview: () => Promise<void>;
 }
 
-export function useMonitorPreview(
-  selectedSessionId: string | null,
-  pipeline: Pipeline | undefined | null
-): UseMonitorPreviewReturn {
+export function useMonitorPreview(selectedSessionId: string | null): UseMonitorPreviewReturn {
   const {
     status: previewStatus,
     loadConfig: previewLoadConfig,
@@ -92,80 +55,114 @@ export function useMonitorPreview(
     }))
   );
 
+  const [isPreviewLoading, setIsPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+
   const isPreviewConnected = previewStatus === 'connected';
 
-  // Tear down the MoQ preview (and release camera/mic) when the selected
-  // session is deselected (transitions from a value to null).  We track
-  // the previous value with a ref so we don't disconnect on initial mount
-  // (where selectedSessionId starts as null while the nav-state or
-  // auto-select effects haven't fired yet).
+  // Track the active preview ID so we can tear it down on the server.
+  const previewIdRef = useRef<string | null>(null);
+  // Track the session the preview belongs to.
+  const previewSessionIdRef = useRef<string | null>(null);
+
+  // Tear down the MoQ preview when the selected session is deselected
+  // (transitions from a value to null).
   const prevSelectedSessionIdRef = useRef(selectedSessionId);
   useEffect(() => {
     const prev = prevSelectedSessionIdRef.current;
     prevSelectedSessionIdRef.current = selectedSessionId;
-    if (prev && !selectedSessionId && previewStatus !== 'disconnected') {
-      previewDisconnect();
+
+    if (prev && !selectedSessionId) {
+      // Session deselected — clean up server-side preview and MoQ connection
+      if (previewIdRef.current && previewSessionIdRef.current) {
+        stopPreview(previewSessionIdRef.current, previewIdRef.current).catch(() => {});
+        previewIdRef.current = null;
+        previewSessionIdRef.current = null;
+      }
+      if (previewStatus !== 'disconnected') {
+        previewDisconnect();
+      }
+      setPreviewError(null);
     }
   }, [selectedSessionId, previewStatus, previewDisconnect]);
 
-  // Read MoQ peer settings from the pipeline's declarative client section
-  // instead of scanning the compiled node graph.
   const handleStartPreview = useCallback(async () => {
-    // Configure for watch-only mode (no publish/mic)
-    previewSetEnablePublish(false);
-    previewSetEnableWatch(true);
-    if (!previewConfigLoaded) {
-      await previewLoadConfig();
-    }
+    if (!selectedSessionId) return;
 
-    // Read gateway_path and output_broadcast from the pipeline's client section.
-    // Fall back to scanning the node graph for interactively-created sessions
-    // that don't have a client section.
-    const client = pipeline?.client ?? null;
-    let gatewayPath: string | undefined;
-    let outputBroadcast: string | undefined;
-    let outputsAudio = true;
-    let outputsVideo = true;
+    setIsPreviewLoading(true);
+    setPreviewError(null);
 
-    if (client) {
-      gatewayPath = client.gateway_path ?? undefined;
-      outputBroadcast = client.watch?.broadcast;
-      outputsAudio = client.watch?.audio ?? false;
-      outputsVideo = client.watch?.video ?? false;
-    } else if (pipeline) {
-      const fallback = deriveMoqConfigFromNodes(pipeline);
-      gatewayPath = fallback.gatewayPath;
-      outputBroadcast = fallback.outputBroadcast;
-      outputsAudio = fallback.outputsAudio;
-      outputsVideo = fallback.outputsVideo;
-    }
+    try {
+      // Configure for watch-only mode
+      previewSetEnablePublish(false);
+      previewSetEnableWatch(true);
+      if (!previewConfigLoaded) {
+        await previewLoadConfig();
+      }
 
-    if (gatewayPath) {
-      // Use the original config URL as the base so that the preview URL
-      // isn't polluted by a relay URL the user previously selected.
+      // Ask the server to inject a preview subgraph
+      const result = await startPreview(selectedSessionId);
+
+      previewIdRef.current = result.preview_id;
+      previewSessionIdRef.current = selectedSessionId;
+
+      // Configure the stream store with the returned gateway path
       const baseUrl =
         useStreamStore.getState().configServerUrl || useStreamStore.getState().serverUrl;
       if (baseUrl) {
-        previewSetServerUrl(updateUrlPath(baseUrl, gatewayPath));
+        previewSetServerUrl(updateUrlPath(baseUrl, result.gateway_path));
       }
-    }
-    if (outputBroadcast) {
-      previewSetOutputBroadcast(outputBroadcast);
-    }
-    previewSetPipelineOutputTypes(outputsAudio, outputsVideo);
+      previewSetOutputBroadcast(result.broadcast);
+      previewSetPipelineOutputTypes(result.audio, result.video);
 
-    await previewConnect();
+      await previewConnect();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to start preview';
+      setPreviewError(message);
+      // Clean up partial state
+      if (previewIdRef.current && previewSessionIdRef.current) {
+        stopPreview(previewSessionIdRef.current, previewIdRef.current).catch(() => {});
+        previewIdRef.current = null;
+        previewSessionIdRef.current = null;
+      }
+    } finally {
+      setIsPreviewLoading(false);
+    }
   }, [
+    selectedSessionId,
     previewSetEnablePublish,
     previewSetEnableWatch,
     previewConfigLoaded,
     previewLoadConfig,
     previewConnect,
-    pipeline,
     previewSetServerUrl,
     previewSetOutputBroadcast,
     previewSetPipelineOutputTypes,
   ]);
 
-  return { isPreviewConnected, handleStartPreview };
+  const handleStopPreview = useCallback(async () => {
+    // Tear down server-side preview
+    if (previewIdRef.current && previewSessionIdRef.current) {
+      try {
+        await stopPreview(previewSessionIdRef.current, previewIdRef.current);
+      } catch {
+        // Best-effort teardown; the server may have already cleaned up
+      }
+      previewIdRef.current = null;
+      previewSessionIdRef.current = null;
+    }
+    // Disconnect the MoQ watch subscription
+    if (previewStatus !== 'disconnected') {
+      previewDisconnect();
+    }
+    setPreviewError(null);
+  }, [previewStatus, previewDisconnect]);
+
+  return {
+    isPreviewConnected,
+    isPreviewLoading,
+    previewError,
+    handleStartPreview,
+    handleStopPreview,
+  };
 }

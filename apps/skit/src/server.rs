@@ -1892,6 +1892,10 @@ async fn destroy_session_handler(
     let shutdown_id = destroyed_id.clone();
     let tracker = app_state.shutdown_tracker.clone();
     let handle = tokio::spawn(async move {
+        // Tear down any active previews before shutting down the engine.
+        #[cfg(feature = "moq")]
+        preview::teardown_all_previews(&session).await;
+
         if let Err(e) = session.shutdown_and_wait().await {
             warn!(session_id = %shutdown_id, error = %e, "Error during engine shutdown");
             global::meter("skit_server").u64_counter("session.shutdown.errors").build().add(1, &[]);
@@ -1950,6 +1954,707 @@ async fn get_pipeline_handler(
 
     info!("Fetched pipeline with states for session '{}' via HTTP", session_id);
     Ok(Json(api_pipeline))
+}
+
+// ---------------------------------------------------------------------------
+// Preview API — engine-native pipeline tap
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "moq")]
+mod preview {
+    use std::sync::Arc;
+
+    use axum::{
+        extract::{Path, State},
+        http::{HeaderMap, StatusCode},
+        Json,
+    };
+    use serde::{Deserialize, Serialize};
+    use tracing::info;
+
+    use crate::session::{system_time_to_rfc3339, PreviewState};
+    use crate::state::AppState;
+    use streamkit_api::Pipeline;
+    use streamkit_core::control::EngineControlMessage;
+    use streamkit_core::types::PacketType;
+
+    use super::read_registry;
+
+    // ── Request / response types ─────────────────────────────────────────
+
+    #[derive(Deserialize)]
+    pub struct StartPreviewRequest {
+        pub tap_node: Option<String>,
+        pub tap_pin: Option<String>,
+    }
+
+    #[derive(Serialize)]
+    pub struct PreviewResponse {
+        pub preview_id: String,
+        pub gateway_path: String,
+        pub broadcast: String,
+        pub audio: bool,
+        pub video: bool,
+    }
+
+    #[derive(Serialize)]
+    pub struct PreviewInfo {
+        pub preview_id: String,
+        pub gateway_path: String,
+        pub broadcast: String,
+        pub audio: bool,
+        pub video: bool,
+        pub tap_node: String,
+        pub tap_pin: String,
+        pub created_at: String,
+    }
+
+    // ── Terminal node kinds (sinks that don't produce useful output) ─────
+
+    const TERMINAL_KINDS: &[&str] =
+        &["transport::moq::publisher", "transport::moq::peer", "core::sink", "io::file_writer"];
+
+    fn is_terminal_kind(kind: &str) -> bool {
+        TERMINAL_KINDS.iter().any(|t| kind.ends_with(t) || *t == kind)
+    }
+
+    // ── Output pin classification ────────────────────────────────────────
+
+    /// Classify a node output pin as `(is_encoded, is_audio, is_video)`.
+    ///
+    /// Uses the node registry to look up the pin's `produces_type`. Falls back
+    /// to a kind-based heuristic when the registry lookup fails (e.g. for
+    /// plugin or dynamic nodes).
+    fn classify_output_pin(
+        node_kind: &str,
+        pin_name: &str,
+        registry: &streamkit_core::NodeRegistry,
+    ) -> (bool, bool, bool) {
+        if let Some(def) = registry.get_definition(node_kind) {
+            for pin in &def.outputs {
+                if pin.name == pin_name {
+                    return match &pin.produces_type {
+                        PacketType::EncodedAudio(_) => (true, true, false),
+                        PacketType::EncodedVideo(_) => (true, false, true),
+                        PacketType::RawAudio(_) => (false, true, false),
+                        PacketType::RawVideo(_) => (false, false, true),
+                        // For Any/Passthrough/Binary, fall through to heuristic
+                        _ => classify_by_kind(node_kind),
+                    };
+                }
+            }
+        }
+        classify_by_kind(node_kind)
+    }
+
+    fn classify_by_kind(kind: &str) -> (bool, bool, bool) {
+        match kind {
+            k if k.contains("vp9::encoder") || k.contains("h264::encoder") => (true, false, true),
+            k if k.contains("opus::encoder") || k.contains("aac::encoder") => (true, true, false),
+            k if k.contains("compositor") || k.contains("pixel_convert") => (false, false, true),
+            k if k.contains("mixer") || k.contains("resampler") || k.contains("gain") => {
+                (false, true, false)
+            },
+            _ => (false, false, false),
+        }
+    }
+
+    // ── Auto-detect tap point ────────────────────────────────────────────
+
+    /// Find the best tap point by tracing connections into terminal nodes.
+    ///
+    /// Prefers tapping after encoders (encoded output) to skip re-encoding.
+    pub fn detect_tap_point(pipeline: &Pipeline) -> Result<(String, String), String> {
+        // Gather candidate tap points: connections feeding into terminal nodes.
+        let mut encoded_candidates: Vec<(String, String, bool, bool)> = Vec::new();
+        let mut raw_candidates: Vec<(String, String, bool, bool)> = Vec::new();
+
+        for conn in &pipeline.connections {
+            let Some(target_node) = pipeline.nodes.get(&conn.to_node) else {
+                continue;
+            };
+            if !is_terminal_kind(&target_node.kind) {
+                continue;
+            }
+
+            let Some(source_node) = pipeline.nodes.get(&conn.from_node) else {
+                continue;
+            };
+
+            let (is_encoded, is_audio, is_video) = classify_by_kind(&source_node.kind);
+            let entry = (conn.from_node.clone(), conn.from_pin.clone(), is_audio, is_video);
+
+            if is_encoded {
+                encoded_candidates.push(entry);
+            } else {
+                raw_candidates.push(entry);
+            }
+        }
+
+        // Prefer encoded (no re-encoding needed)
+        let candidates =
+            if encoded_candidates.is_empty() { &raw_candidates } else { &encoded_candidates };
+
+        if candidates.is_empty() {
+            // Fallback: pick the first non-terminal node that has outgoing
+            // connections (i.e. it produces output that something consumes).
+            for conn in &pipeline.connections {
+                let Some(source_node) = pipeline.nodes.get(&conn.from_node) else {
+                    continue;
+                };
+                if !is_terminal_kind(&source_node.kind) {
+                    return Ok((conn.from_node.clone(), conn.from_pin.clone()));
+                }
+            }
+
+            return Err(
+                "Cannot auto-detect tap point: pipeline has no suitable output nodes".to_string()
+            );
+        }
+
+        // Prefer a candidate that provides both audio and video. Otherwise
+        // take the first encoded (or first raw) candidate.
+        if let Some(both) = candidates.iter().find(|(_, _, a, v)| *a && *v) {
+            return Ok((both.0.clone(), both.1.clone()));
+        }
+
+        Ok((candidates[0].0.clone(), candidates[0].1.clone()))
+    }
+
+    // ── Subgraph injection ───────────────────────────────────────────────
+
+    /// Pre-compute the output pin classification while we still hold the
+    /// registry read-guard (which is `!Send` and must be dropped before the
+    /// next `.await`).
+    fn classify_output_pin_from_registry(
+        pipeline: &Pipeline,
+        tap_node: &str,
+        tap_pin: &str,
+        registry: &streamkit_core::NodeRegistry,
+    ) -> (bool, bool, bool) {
+        pipeline
+            .nodes
+            .get(tap_node)
+            .map_or((false, false, false), |n| classify_output_pin(&n.kind, tap_pin, registry))
+    }
+
+    /// Build and inject the preview subgraph into the running pipeline.
+    ///
+    /// `tap_classification` is `(is_encoded, is_audio, is_video)` — computed
+    /// *before* entering this async fn so we don't hold the registry guard.
+    ///
+    /// Returns `(injected_node_ids, injected_connections, has_audio, has_video)`.
+    pub async fn inject_preview_subgraph(
+        session: &crate::session::Session,
+        preview_id: &str,
+        tap_node: &str,
+        tap_pin: &str,
+        gateway_path: &str,
+        tap_classification: (bool, bool, bool),
+        pipeline: &Pipeline,
+    ) -> Result<(Vec<String>, Vec<(String, String, String, String)>, bool, bool), String> {
+        let prefix = format!("_preview_{preview_id}_");
+
+        if !pipeline.nodes.contains_key(tap_node) {
+            return Err(format!("Tap node '{tap_node}' not found in pipeline"));
+        }
+
+        let (is_encoded, is_audio, is_video) = tap_classification;
+
+        if !is_audio && !is_video {
+            return Err(format!(
+                "Tap point '{tap_node}:{tap_pin}' does not produce audio or video"
+            ));
+        }
+
+        let mut node_ids: Vec<String> = Vec::new();
+        let mut connections: Vec<(String, String, String, String)> = Vec::new();
+
+        // Determine the input pin on moq_peer for this media type.
+        // moq_peer has "in" and "in_1" — by convention "in" for the first
+        // media type and "in_1" for the second.
+        let peer_node_id = format!("{prefix}peer");
+        let mut peer_audio_input = "in";
+        let mut peer_video_input = "in_1";
+
+        // If only one type, use "in" regardless.
+        if is_audio && !is_video {
+            peer_audio_input = "in";
+        }
+        if is_video && !is_audio {
+            peer_video_input = "in";
+        }
+
+        if is_encoded {
+            // Encoded path — connect directly to moq_peer
+            let peer_pin = if is_audio { peer_audio_input } else { peer_video_input };
+            // Add moq_peer node
+            add_moq_peer_node(session, &peer_node_id, gateway_path, is_audio, is_video).await;
+            node_ids.push(peer_node_id.clone());
+
+            // Connect tap → peer
+            connect_best_effort(
+                session,
+                tap_node,
+                tap_pin,
+                &peer_node_id,
+                peer_pin,
+                &mut connections,
+            )
+            .await;
+        } else if is_video {
+            // Raw video path: pixel_convert → vp9_encoder → moq_peer
+            let pixconv_id = format!("{prefix}pixconv");
+            let vp9enc_id = format!("{prefix}vp9enc");
+
+            add_pixel_convert_node(session, &pixconv_id).await;
+            node_ids.push(pixconv_id.clone());
+
+            add_vp9_encoder_node(session, &vp9enc_id).await;
+            node_ids.push(vp9enc_id.clone());
+
+            add_moq_peer_node(session, &peer_node_id, gateway_path, false, true).await;
+            node_ids.push(peer_node_id.clone());
+
+            // tap → pixconv
+            connect_best_effort(session, tap_node, tap_pin, &pixconv_id, "in", &mut connections)
+                .await;
+            // pixconv → vp9enc
+            connect_reliable(session, &pixconv_id, "out", &vp9enc_id, "in", &mut connections).await;
+            // vp9enc → peer
+            connect_reliable(
+                session,
+                &vp9enc_id,
+                "out",
+                &peer_node_id,
+                peer_video_input,
+                &mut connections,
+            )
+            .await;
+        } else if is_audio {
+            // Raw audio path: opus_encoder → moq_peer
+            let opusenc_id = format!("{prefix}opusenc");
+
+            add_opus_encoder_node(session, &opusenc_id).await;
+            node_ids.push(opusenc_id.clone());
+
+            add_moq_peer_node(session, &peer_node_id, gateway_path, true, false).await;
+            node_ids.push(peer_node_id.clone());
+
+            // tap → opusenc
+            connect_best_effort(session, tap_node, tap_pin, &opusenc_id, "in", &mut connections)
+                .await;
+            // opusenc → peer
+            connect_reliable(
+                session,
+                &opusenc_id,
+                "out",
+                &peer_node_id,
+                peer_audio_input,
+                &mut connections,
+            )
+            .await;
+        }
+
+        Ok((node_ids, connections, is_audio, is_video))
+    }
+
+    // ── Node creation helpers ────────────────────────────────────────────
+
+    async fn add_moq_peer_node(
+        session: &crate::session::Session,
+        node_id: &str,
+        gateway_path: &str,
+        _has_audio: bool,
+        _has_video: bool,
+    ) {
+        let params = serde_json::json!({
+            "gateway_path": gateway_path,
+            "output_broadcast": "output",
+            "input_broadcasts": [],
+            "allow_reconnect": false,
+            "output_group_duration_ms": 40,
+        });
+        session
+            .send_control_message(EngineControlMessage::AddNode {
+                node_id: node_id.to_string(),
+                kind: "transport::moq::peer".to_string(),
+                params: Some(params),
+            })
+            .await;
+    }
+
+    async fn add_vp9_encoder_node(session: &crate::session::Session, node_id: &str) {
+        let params = serde_json::json!({
+            "bitrate_kbps": 1000,
+            "keyframe_interval": 60,
+            "threads": 1,
+            "deadline": "realtime",
+            "cpu_used": 8,
+        });
+        session
+            .send_control_message(EngineControlMessage::AddNode {
+                node_id: node_id.to_string(),
+                kind: "video::vp9::encoder".to_string(),
+                params: Some(params),
+            })
+            .await;
+    }
+
+    async fn add_opus_encoder_node(session: &crate::session::Session, node_id: &str) {
+        let params = serde_json::json!({
+            "bitrate": 48000,
+        });
+        session
+            .send_control_message(EngineControlMessage::AddNode {
+                node_id: node_id.to_string(),
+                kind: "audio::opus::encoder".to_string(),
+                params: Some(params),
+            })
+            .await;
+    }
+
+    async fn add_pixel_convert_node(session: &crate::session::Session, node_id: &str) {
+        let params = serde_json::json!({
+            "output_format": "i420",
+        });
+        session
+            .send_control_message(EngineControlMessage::AddNode {
+                node_id: node_id.to_string(),
+                kind: "video::pixel_convert".to_string(),
+                params: Some(params),
+            })
+            .await;
+    }
+
+    // ── Connection helpers ───────────────────────────────────────────────
+
+    async fn connect_best_effort(
+        session: &crate::session::Session,
+        from_node: &str,
+        from_pin: &str,
+        to_node: &str,
+        to_pin: &str,
+        connections: &mut Vec<(String, String, String, String)>,
+    ) {
+        session
+            .send_control_message(EngineControlMessage::Connect {
+                from_node: from_node.to_string(),
+                from_pin: from_pin.to_string(),
+                to_node: to_node.to_string(),
+                to_pin: to_pin.to_string(),
+                mode: streamkit_core::control::ConnectionMode::BestEffort,
+            })
+            .await;
+        connections.push((
+            from_node.to_string(),
+            from_pin.to_string(),
+            to_node.to_string(),
+            to_pin.to_string(),
+        ));
+    }
+
+    async fn connect_reliable(
+        session: &crate::session::Session,
+        from_node: &str,
+        from_pin: &str,
+        to_node: &str,
+        to_pin: &str,
+        connections: &mut Vec<(String, String, String, String)>,
+    ) {
+        session
+            .send_control_message(EngineControlMessage::Connect {
+                from_node: from_node.to_string(),
+                from_pin: from_pin.to_string(),
+                to_node: to_node.to_string(),
+                to_pin: to_pin.to_string(),
+                mode: streamkit_core::control::ConnectionMode::Reliable,
+            })
+            .await;
+        connections.push((
+            from_node.to_string(),
+            from_pin.to_string(),
+            to_node.to_string(),
+            to_pin.to_string(),
+        ));
+    }
+
+    // ── Teardown ─────────────────────────────────────────────────────────
+
+    /// Tear down the preview subgraph (disconnect, then remove nodes in reverse).
+    pub async fn teardown_preview(session: &crate::session::Session, state: &PreviewState) {
+        // Disconnect in reverse order
+        for (from_node, from_pin, to_node, to_pin) in state.injected_connections.iter().rev() {
+            session
+                .send_control_message(EngineControlMessage::Disconnect {
+                    from_node: from_node.clone(),
+                    from_pin: from_pin.clone(),
+                    to_node: to_node.clone(),
+                    to_pin: to_pin.clone(),
+                })
+                .await;
+        }
+        // Remove nodes in reverse order (peer first, then encoders)
+        for node_id in state.injected_node_ids.iter().rev() {
+            session
+                .send_control_message(EngineControlMessage::RemoveNode { node_id: node_id.clone() })
+                .await;
+        }
+    }
+
+    /// Tear down all active previews for a session.
+    pub async fn teardown_all_previews(session: &crate::session::Session) {
+        let previews = session.list_previews().await;
+        for preview in &previews {
+            tracing::debug!(
+                session_id = %session.id,
+                preview_id = %preview.preview_id,
+                "Tearing down preview on session destroy"
+            );
+            teardown_preview(session, preview).await;
+        }
+    }
+
+    // ── Route handlers ───────────────────────────────────────────────────
+
+    /// POST /api/v1/sessions/{id}/preview
+    pub async fn start_preview_handler(
+        State(app_state): State<Arc<AppState>>,
+        headers: HeaderMap,
+        Path(session_id): Path<String>,
+        Json(req): Json<StartPreviewRequest>,
+    ) -> Result<(StatusCode, Json<PreviewResponse>), (StatusCode, String)> {
+        let (role_name, perms) =
+            crate::role_extractor::get_role_and_permissions(&headers, &app_state);
+
+        if !perms.create_sessions {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "Permission denied: cannot create previews".to_string(),
+            ));
+        }
+
+        // Require MoQ gateway
+        if app_state.moq_gateway.is_none() {
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Preview requires MoQ gateway to be enabled".to_string(),
+            ));
+        }
+
+        let session = {
+            let session_manager = app_state.session_manager.lock().await;
+            session_manager.get_session_by_name_or_id(&session_id)
+        };
+
+        let Some(session) = session else {
+            return Err((StatusCode::NOT_FOUND, format!("Session '{session_id}' not found")));
+        };
+
+        // Check ownership
+        if !perms.access_all_sessions
+            && session.created_by.as_ref().is_some_and(|c| c != &role_name)
+        {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "Permission denied: you do not own this session".to_string(),
+            ));
+        }
+
+        // Check preview limit
+        if session.preview_count().await >= 2 {
+            return Err((
+                StatusCode::CONFLICT,
+                "Maximum of 2 concurrent previews per session".to_string(),
+            ));
+        }
+
+        let pipeline = session.pipeline.lock().await.clone();
+
+        // Resolve tap point
+        let (tap_node, tap_pin) = match (req.tap_node, req.tap_pin) {
+            (Some(node), Some(pin)) => {
+                if !pipeline.nodes.contains_key(&node) {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        format!("Tap node '{node}' not found in pipeline"),
+                    ));
+                }
+                (node, pin)
+            },
+            (Some(node), None) => {
+                if !pipeline.nodes.contains_key(&node) {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        format!("Tap node '{node}' not found in pipeline"),
+                    ));
+                }
+                (node, "out".to_string())
+            },
+            _ => detect_tap_point(&pipeline).map_err(|e| (StatusCode::BAD_REQUEST, e))?,
+        };
+
+        let preview_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
+        let gateway_path = format!("/_preview/{}/{}", session.id, preview_id);
+
+        // Classify the tap point synchronously. The registry read-guard is
+        // `!Send` so it must NOT be alive across any `.await`.
+        let tap_classification = {
+            let registry = read_registry(&app_state)
+                .map_err(|status| (status, "Engine registry unavailable".to_string()))?;
+            classify_output_pin_from_registry(&pipeline, &tap_node, &tap_pin, &registry)
+        };
+
+        let (node_ids, connections, has_audio, has_video) = inject_preview_subgraph(
+            &session,
+            &preview_id,
+            &tap_node,
+            &tap_pin,
+            &gateway_path,
+            tap_classification,
+            &pipeline,
+        )
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+
+        let state = PreviewState {
+            preview_id: preview_id.clone(),
+            tap_node,
+            tap_pin,
+            injected_node_ids: node_ids,
+            injected_connections: connections,
+            gateway_path: gateway_path.clone(),
+            has_audio,
+            has_video,
+            created_at: std::time::SystemTime::now(),
+        };
+
+        session.add_preview(state).await.map_err(|e| (StatusCode::CONFLICT, e))?;
+
+        info!(
+            session_id = %session.id,
+            preview_id = %preview_id,
+            gateway_path = %gateway_path,
+            audio = has_audio,
+            video = has_video,
+            "Started preview"
+        );
+
+        Ok((
+            StatusCode::CREATED,
+            Json(PreviewResponse {
+                preview_id,
+                gateway_path,
+                broadcast: "output".to_string(),
+                audio: has_audio,
+                video: has_video,
+            }),
+        ))
+    }
+
+    /// GET /api/v1/sessions/{id}/preview
+    pub async fn list_previews_handler(
+        State(app_state): State<Arc<AppState>>,
+        headers: HeaderMap,
+        Path(session_id): Path<String>,
+    ) -> Result<Json<Vec<PreviewInfo>>, (StatusCode, String)> {
+        let (role_name, perms) =
+            crate::role_extractor::get_role_and_permissions(&headers, &app_state);
+
+        if !perms.list_sessions {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "Permission denied: cannot list previews".to_string(),
+            ));
+        }
+
+        let session = {
+            let session_manager = app_state.session_manager.lock().await;
+            session_manager.get_session_by_name_or_id(&session_id)
+        };
+
+        let Some(session) = session else {
+            return Err((StatusCode::NOT_FOUND, format!("Session '{session_id}' not found")));
+        };
+
+        if !perms.access_all_sessions
+            && session.created_by.as_ref().is_some_and(|c| c != &role_name)
+        {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "Permission denied: you do not own this session".to_string(),
+            ));
+        }
+
+        let previews = session.list_previews().await;
+        let infos: Vec<PreviewInfo> = previews
+            .into_iter()
+            .map(|p| PreviewInfo {
+                preview_id: p.preview_id,
+                gateway_path: p.gateway_path,
+                broadcast: "output".to_string(),
+                audio: p.has_audio,
+                video: p.has_video,
+                tap_node: p.tap_node,
+                tap_pin: p.tap_pin,
+                created_at: system_time_to_rfc3339(p.created_at),
+            })
+            .collect();
+
+        Ok(Json(infos))
+    }
+
+    /// DELETE /api/v1/sessions/{id}/preview/{preview_id}
+    pub async fn stop_preview_handler(
+        State(app_state): State<Arc<AppState>>,
+        headers: HeaderMap,
+        Path((session_id, preview_id)): Path<(String, String)>,
+    ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+        let (role_name, perms) =
+            crate::role_extractor::get_role_and_permissions(&headers, &app_state);
+
+        if !perms.create_sessions {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "Permission denied: cannot stop previews".to_string(),
+            ));
+        }
+
+        let session = {
+            let session_manager = app_state.session_manager.lock().await;
+            session_manager.get_session_by_name_or_id(&session_id)
+        };
+
+        let Some(session) = session else {
+            return Err((StatusCode::NOT_FOUND, format!("Session '{session_id}' not found")));
+        };
+
+        if !perms.access_all_sessions
+            && session.created_by.as_ref().is_some_and(|c| c != &role_name)
+        {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "Permission denied: you do not own this session".to_string(),
+            ));
+        }
+
+        let Some(preview_state) = session.remove_preview(&preview_id).await else {
+            return Err((
+                StatusCode::NOT_FOUND,
+                format!("Preview '{preview_id}' not found on session '{session_id}'"),
+            ));
+        };
+
+        teardown_preview(&session, &preview_state).await;
+
+        info!(
+            session_id = %session.id,
+            preview_id = %preview_id,
+            "Stopped preview"
+        );
+
+        Ok(Json(serde_json::json!({ "preview_id": preview_id })))
+    }
 }
 
 /// Binding between a multipart field and an http_input node.
@@ -3125,7 +3830,23 @@ pub fn create_app(
         .route("/api/v1/logs/stream", get(crate::log_viewer::stream_logs_handler))
         .route("/api/v1/sessions", get(list_sessions_handler).post(create_session_handler))
         .route("/api/v1/sessions/{id}", delete(destroy_session_handler))
-        .route("/api/v1/sessions/{id}/pipeline", get(get_pipeline_handler))
+        .route("/api/v1/sessions/{id}/pipeline", get(get_pipeline_handler));
+
+    // Preview routes are only available when the MoQ feature is enabled.
+    #[cfg(feature = "moq")]
+    {
+        router = router
+            .route(
+                "/api/v1/sessions/{id}/preview",
+                get(preview::list_previews_handler).post(preview::start_preview_handler),
+            )
+            .route(
+                "/api/v1/sessions/{id}/preview/{preview_id}",
+                delete(preview::stop_preview_handler),
+            );
+    }
+
+    router = router
         .route(
             "/api/v1/profile/cpu",
             get({
