@@ -1,0 +1,607 @@
+// SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+//
+// SPDX-License-Identifier: MPL-2.0
+
+//! GPU compositor tests.
+//!
+//! All tests are gated behind `#[cfg(feature = "gpu")]` so they only
+//! compile and run when a GPU is available.  Run with:
+//!
+//! ```bash
+//! cargo test -p streamkit-nodes --features gpu -- gpu
+//! ```
+
+#![cfg(feature = "gpu")]
+
+use std::sync::Arc;
+
+use streamkit_core::frame_pool::PooledVideoData;
+use streamkit_core::types::PixelFormat;
+
+use super::config::{CropShape, Rect};
+use super::gpu::{GpuContext, GpuMode};
+use super::kernel::LayerSnapshot;
+use super::overlay::DecodedOverlay;
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Create a solid-colour RGBA8 buffer.
+fn solid_rgba(width: u32, height: u32, r: u8, g: u8, b: u8, a: u8) -> Vec<u8> {
+    let pixel = [r, g, b, a];
+    pixel.iter().copied().cycle().take((width as usize) * (height as usize) * 4).collect()
+}
+
+/// Create a simple LayerSnapshot from RGBA8 data.
+fn make_layer(data: Vec<u8>, width: u32, height: u32, rect: Option<Rect>) -> LayerSnapshot {
+    LayerSnapshot {
+        data: Arc::new(PooledVideoData::from_vec(data)),
+        width,
+        height,
+        pixel_format: PixelFormat::Rgba8,
+        rect,
+        opacity: 1.0,
+        z_index: 0,
+        rotation_degrees: 0.0,
+        mirror_horizontal: false,
+        mirror_vertical: false,
+        crop_zoom: 1.0,
+        crop_x: 0.5,
+        crop_y: 0.5,
+        crop_shape: CropShape::Rect,
+    }
+}
+
+/// Create a LayerSnapshot with specific properties.
+fn make_layer_with_props(
+    data: Vec<u8>,
+    width: u32,
+    height: u32,
+    rect: Option<Rect>,
+    opacity: f32,
+    rotation_degrees: f32,
+    z_index: i32,
+    mirror_h: bool,
+    mirror_v: bool,
+    crop_zoom: f32,
+    crop_shape: CropShape,
+) -> LayerSnapshot {
+    LayerSnapshot {
+        data: Arc::new(PooledVideoData::from_vec(data)),
+        width,
+        height,
+        pixel_format: PixelFormat::Rgba8,
+        rect,
+        opacity,
+        z_index,
+        rotation_degrees,
+        mirror_horizontal: mirror_h,
+        mirror_vertical: mirror_v,
+        crop_zoom,
+        crop_x: 0.5,
+        crop_y: 0.5,
+        crop_shape,
+    }
+}
+
+/// Create a solid-colour I420 buffer.
+fn solid_i420(width: u32, height: u32, y: u8, u: u8, v: u8) -> Vec<u8> {
+    let w = width as usize;
+    let h = height as usize;
+    let cw = w / 2;
+    let ch = h / 2;
+    let mut buf = vec![0u8; w * h + 2 * cw * ch];
+    // Y plane
+    buf[..w * h].fill(y);
+    // U plane
+    buf[w * h..w * h + cw * ch].fill(u);
+    // V plane
+    buf[w * h + cw * ch..].fill(v);
+    buf
+}
+
+/// Try to initialise a GPU context; skip the test if no GPU is available.
+fn require_gpu() -> GpuContext {
+    GpuContext::try_init().expect(
+        "GPU not available — skipping test. \
+         Run on a machine with a GPU to execute GPU compositor tests.",
+    )
+}
+
+/// Average pixel value in the central region of an RGBA8 buffer.
+/// Returns (R, G, B, A) averages.
+fn avg_centre_pixel(data: &[u8], width: u32, height: u32) -> (f32, f32, f32, f32) {
+    let w = width as usize;
+    let h = height as usize;
+    let cx = w / 4;
+    let cy = h / 4;
+    let cw = w / 2;
+    let ch = h / 2;
+    let mut sum = [0f64; 4];
+    let mut count = 0u64;
+    for y in cy..cy + ch {
+        for x in cx..cx + cw {
+            let off = (y * w + x) * 4;
+            for c in 0..4 {
+                sum[c] += f64::from(data[off + c]);
+            }
+            count += 1;
+        }
+    }
+    (
+        (sum[0] / count as f64) as f32,
+        (sum[1] / count as f64) as f32,
+        (sum[2] / count as f64) as f32,
+        (sum[3] / count as f64) as f32,
+    )
+}
+
+// ── Tests ───────────────────────────────────────────────────────────────────
+
+#[test]
+fn gpu_context_init() {
+    let _ctx = require_gpu();
+}
+
+#[test]
+fn gpu_mode_from_config() {
+    assert_eq!(GpuMode::from_config(None), GpuMode::Auto);
+    assert_eq!(GpuMode::from_config(Some("auto")), GpuMode::Auto);
+    assert_eq!(GpuMode::from_config(Some("gpu")), GpuMode::ForceGpu);
+    assert_eq!(GpuMode::from_config(Some("GPU")), GpuMode::ForceGpu);
+    assert_eq!(GpuMode::from_config(Some("cpu")), GpuMode::ForceCpu);
+    assert_eq!(GpuMode::from_config(Some("CPU")), GpuMode::ForceCpu);
+    assert_eq!(GpuMode::from_config(Some("anything")), GpuMode::Auto);
+}
+
+#[test]
+fn gpu_single_opaque_layer_rgba() {
+    let mut ctx = require_gpu();
+    let canvas_w = 320;
+    let canvas_h = 240;
+
+    // Solid red layer covering the full canvas.
+    let data = solid_rgba(canvas_w, canvas_h, 255, 0, 0, 255);
+    let layer = make_layer(data, canvas_w, canvas_h, None);
+    let layers = vec![Some(layer)];
+
+    let (result, fmt) = ctx.composite_frame_gpu(canvas_w, canvas_h, &layers, &[], &[], None, None);
+
+    assert_eq!(fmt, PixelFormat::Rgba8);
+    let buf = result.as_slice();
+    assert_eq!(buf.len(), (canvas_w as usize) * (canvas_h as usize) * 4);
+
+    // Check the centre pixel is red.
+    let (r, g, b, a) = avg_centre_pixel(buf, canvas_w, canvas_h);
+    assert!(r > 240.0, "Expected red > 240, got {r}");
+    assert!(g < 15.0, "Expected green < 15, got {g}");
+    assert!(b < 15.0, "Expected blue < 15, got {b}");
+    assert!(a > 240.0, "Expected alpha > 240, got {a}");
+}
+
+#[test]
+fn gpu_two_layer_pip() {
+    let mut ctx = require_gpu();
+    let canvas_w = 320;
+    let canvas_h = 240;
+
+    // Background: solid blue, full canvas.
+    let bg = make_layer(solid_rgba(canvas_w, canvas_h, 0, 0, 255, 255), canvas_w, canvas_h, None);
+
+    // Foreground: solid red, small PiP in top-left quadrant.
+    let pip_w = canvas_w / 2;
+    let pip_h = canvas_h / 2;
+    let fg = make_layer_with_props(
+        solid_rgba(pip_w, pip_h, 255, 0, 0, 255),
+        pip_w,
+        pip_h,
+        Some(Rect { x: 0, y: 0, width: pip_w, height: pip_h }),
+        1.0,
+        0.0,
+        1, // higher z_index → drawn on top
+        false,
+        false,
+        1.0,
+        CropShape::Rect,
+    );
+
+    let layers = vec![Some(bg), Some(fg)];
+    let (result, fmt) = ctx.composite_frame_gpu(canvas_w, canvas_h, &layers, &[], &[], None, None);
+
+    assert_eq!(fmt, PixelFormat::Rgba8);
+    let buf = result.as_slice();
+
+    // Bottom-right quadrant should be blue (background only).
+    let br_x = (canvas_w as usize) * 3 / 4;
+    let br_y = (canvas_h as usize) * 3 / 4;
+    let off = (br_y * canvas_w as usize + br_x) * 4;
+    assert!(buf[off] < 15, "BR should be blue, R={}", buf[off]);
+    assert!(buf[off + 2] > 240, "BR should be blue, B={}", buf[off + 2]);
+}
+
+#[test]
+fn gpu_layer_opacity() {
+    let mut ctx = require_gpu();
+    let canvas_w = 320;
+    let canvas_h = 240;
+
+    // Background: solid blue.
+    let bg = make_layer(solid_rgba(canvas_w, canvas_h, 0, 0, 255, 255), canvas_w, canvas_h, None);
+
+    // Foreground: solid red at 50% opacity, full canvas.
+    let fg = make_layer_with_props(
+        solid_rgba(canvas_w, canvas_h, 255, 0, 0, 255),
+        canvas_w,
+        canvas_h,
+        None,
+        0.5,
+        0.0,
+        1,
+        false,
+        false,
+        1.0,
+        CropShape::Rect,
+    );
+
+    let layers = vec![Some(bg), Some(fg)];
+    let (result, _fmt) = ctx.composite_frame_gpu(canvas_w, canvas_h, &layers, &[], &[], None, None);
+
+    let buf = result.as_slice();
+    let (r, _g, b, _a) = avg_centre_pixel(buf, canvas_w, canvas_h);
+
+    // At 50% opacity, red over blue should give roughly (127, 0, 127).
+    assert!(r > 100.0 && r < 160.0, "Expected blended red ~127, got {r}");
+    assert!(b > 100.0 && b < 160.0, "Expected blended blue ~127, got {b}");
+}
+
+#[test]
+fn gpu_layer_rotation() {
+    let mut ctx = require_gpu();
+    let canvas_w = 320;
+    let canvas_h = 240;
+
+    // A small coloured layer, rotated 45°.
+    let layer = make_layer_with_props(
+        solid_rgba(160, 120, 0, 255, 0, 255),
+        160,
+        120,
+        Some(Rect { x: 80, y: 60, width: 160, height: 120 }),
+        1.0,
+        45.0,
+        0,
+        false,
+        false,
+        1.0,
+        CropShape::Rect,
+    );
+
+    let layers = vec![Some(layer)];
+    let (result, fmt) = ctx.composite_frame_gpu(canvas_w, canvas_h, &layers, &[], &[], None, None);
+
+    assert_eq!(fmt, PixelFormat::Rgba8);
+    let buf = result.as_slice();
+    assert_eq!(buf.len(), (canvas_w as usize) * (canvas_h as usize) * 4);
+
+    // The centre of the canvas should have the green layer visible
+    // (rotated but still covering the centre).
+    let mid = ((canvas_h as usize / 2) * canvas_w as usize + canvas_w as usize / 2) * 4;
+    assert!(buf[mid + 1] > 200, "Centre should be green after 45° rotation, G={}", buf[mid + 1]);
+}
+
+#[test]
+fn gpu_circle_crop() {
+    let mut ctx = require_gpu();
+    let canvas_w = 320;
+    let canvas_h = 320;
+
+    // A solid green layer with circle crop.
+    let layer = make_layer_with_props(
+        solid_rgba(canvas_w, canvas_h, 0, 255, 0, 255),
+        canvas_w,
+        canvas_h,
+        None,
+        1.0,
+        0.0,
+        0,
+        false,
+        false,
+        1.0,
+        CropShape::Circle,
+    );
+
+    let layers = vec![Some(layer)];
+    let (result, _) = ctx.composite_frame_gpu(canvas_w, canvas_h, &layers, &[], &[], None, None);
+
+    let buf = result.as_slice();
+
+    // Centre should be green (inside the circle).
+    let mid = ((canvas_h as usize / 2) * canvas_w as usize + canvas_w as usize / 2) * 4;
+    assert!(buf[mid + 1] > 200, "Centre should be green (inside circle), G={}", buf[mid + 1]);
+
+    // Corner should be transparent/black (outside the circle).
+    let corner = 4; // pixel (1, 0)
+    assert!(
+        buf[corner + 3] < 30,
+        "Corner should be transparent (outside circle), A={}",
+        buf[corner + 3]
+    );
+}
+
+#[test]
+fn gpu_empty_scene() {
+    let mut ctx = require_gpu();
+    let canvas_w = 64;
+    let canvas_h = 64;
+
+    // No layers, no overlays.
+    let layers: Vec<Option<LayerSnapshot>> = Vec::new();
+    let (result, fmt) = ctx.composite_frame_gpu(canvas_w, canvas_h, &layers, &[], &[], None, None);
+
+    assert_eq!(fmt, PixelFormat::Rgba8);
+    let buf = result.as_slice();
+    // Canvas should be all transparent (cleared).
+    assert!(buf.iter().all(|&b| b == 0), "Empty canvas should be all zeros");
+}
+
+#[test]
+fn gpu_overlay_compositing() {
+    let mut ctx = require_gpu();
+    let canvas_w = 320;
+    let canvas_h = 240;
+
+    // Background layer: solid blue.
+    let bg = make_layer(solid_rgba(canvas_w, canvas_h, 0, 0, 255, 255), canvas_w, canvas_h, None);
+
+    // Image overlay: solid yellow in the centre.
+    let ov_w = 80;
+    let ov_h = 60;
+    let overlay = Arc::new(DecodedOverlay {
+        id: "test-overlay".to_string(),
+        rgba_data: solid_rgba(ov_w, ov_h, 255, 255, 0, 255),
+        width: ov_w,
+        height: ov_h,
+        rect: Rect {
+            x: (canvas_w - ov_w) as i32 / 2,
+            y: (canvas_h - ov_h) as i32 / 2,
+            width: ov_w,
+            height: ov_h,
+        },
+        opacity: 1.0,
+        z_index: 10,
+        rotation_degrees: 0.0,
+        mirror_horizontal: false,
+        mirror_vertical: false,
+        measured_text_width: None,
+        measured_text_height: None,
+    });
+
+    let layers = vec![Some(bg)];
+    let (result, _) =
+        ctx.composite_frame_gpu(canvas_w, canvas_h, &layers, &[overlay], &[], None, None);
+
+    let buf = result.as_slice();
+
+    // Centre should be yellow (overlay on top of blue background).
+    let (r, g, b, _a) = avg_centre_pixel(buf, canvas_w, canvas_h);
+    // The overlay only covers a small region; avg_centre_pixel samples
+    // the centre 50% area which includes both overlay and background.
+    // The very centre pixel should be yellow.
+    let mid = ((canvas_h as usize / 2) * canvas_w as usize + canvas_w as usize / 2) * 4;
+    assert!(buf[mid] > 240, "Centre R should be bright (yellow), got {}", buf[mid]);
+    assert!(buf[mid + 1] > 240, "Centre G should be bright (yellow), got {}", buf[mid + 1]);
+    // Suppress unused var warning.
+    let _ = (r, g, b);
+}
+
+#[test]
+fn gpu_i420_layer() {
+    let mut ctx = require_gpu();
+    let canvas_w = 320;
+    let canvas_h = 240;
+
+    // Solid green in YUV: Y≈149, U≈43, V≈21 (BT.601).
+    let data = solid_i420(canvas_w, canvas_h, 149, 43, 21);
+    let layer = LayerSnapshot {
+        data: Arc::new(PooledVideoData::from_vec(data)),
+        width: canvas_w,
+        height: canvas_h,
+        pixel_format: PixelFormat::I420,
+        rect: None,
+        opacity: 1.0,
+        z_index: 0,
+        rotation_degrees: 0.0,
+        mirror_horizontal: false,
+        mirror_vertical: false,
+        crop_zoom: 1.0,
+        crop_x: 0.5,
+        crop_y: 0.5,
+        crop_shape: CropShape::Rect,
+    };
+
+    let layers = vec![Some(layer)];
+    let (result, fmt) = ctx.composite_frame_gpu(canvas_w, canvas_h, &layers, &[], &[], None, None);
+
+    assert_eq!(fmt, PixelFormat::Rgba8);
+    let buf = result.as_slice();
+    let (r, g, b, _a) = avg_centre_pixel(buf, canvas_w, canvas_h);
+
+    // Should be approximately green.
+    assert!(g > r && g > b, "I420 green layer should produce green output: R={r}, G={g}, B={b}");
+    assert!(g > 100.0, "Green channel should be strong, got {g}");
+}
+
+#[test]
+fn gpu_output_nv12_conversion() {
+    let mut ctx = require_gpu();
+    let canvas_w = 320;
+    let canvas_h = 240;
+
+    let data = solid_rgba(canvas_w, canvas_h, 255, 0, 0, 255);
+    let layer = make_layer(data, canvas_w, canvas_h, None);
+    let layers = vec![Some(layer)];
+
+    let (result, fmt) = ctx.composite_frame_gpu(
+        canvas_w,
+        canvas_h,
+        &layers,
+        &[],
+        &[],
+        None,
+        Some(PixelFormat::Nv12),
+    );
+
+    assert_eq!(fmt, PixelFormat::Nv12);
+    let buf = result.as_slice();
+    let w = canvas_w as usize;
+    let h = canvas_h as usize;
+    let expected_y_size = w * h;
+    let expected_uv_size = (w / 2) * (h / 2) * 2;
+    assert_eq!(
+        buf.len(),
+        expected_y_size + expected_uv_size,
+        "NV12 buffer size mismatch: got {}, expected {}",
+        buf.len(),
+        expected_y_size + expected_uv_size,
+    );
+
+    // Y plane should have non-zero values (red → Y ≈ 82 in BT.601).
+    let y_avg: f32 =
+        buf[..expected_y_size].iter().map(|&b| f32::from(b)).sum::<f32>() / expected_y_size as f32;
+    assert!(y_avg > 50.0 && y_avg < 120.0, "Y average for red should be ~82, got {y_avg}");
+}
+
+#[test]
+fn gpu_output_i420_conversion() {
+    let mut ctx = require_gpu();
+    let canvas_w = 320;
+    let canvas_h = 240;
+
+    let data = solid_rgba(canvas_w, canvas_h, 0, 255, 0, 255);
+    let layer = make_layer(data, canvas_w, canvas_h, None);
+    let layers = vec![Some(layer)];
+
+    let (result, fmt) = ctx.composite_frame_gpu(
+        canvas_w,
+        canvas_h,
+        &layers,
+        &[],
+        &[],
+        None,
+        Some(PixelFormat::I420),
+    );
+
+    assert_eq!(fmt, PixelFormat::I420);
+    let buf = result.as_slice();
+    let w = canvas_w as usize;
+    let h = canvas_h as usize;
+    let expected_size = w * h + 2 * (w / 2) * (h / 2);
+    assert_eq!(buf.len(), expected_size, "I420 buffer size mismatch");
+
+    // Y plane should have non-zero values (green → Y ≈ 145 in BT.601).
+    let y_avg: f32 = buf[..w * h].iter().map(|&b| f32::from(b)).sum::<f32>() / (w * h) as f32;
+    assert!(y_avg > 100.0 && y_avg < 180.0, "Y average for green should be ~145, got {y_avg}");
+}
+
+#[test]
+fn gpu_canvas_resize() {
+    let mut ctx = require_gpu();
+
+    // Composite at one size.
+    let data1 = solid_rgba(320, 240, 255, 0, 0, 255);
+    let layer1 = make_layer(data1, 320, 240, None);
+    let (result1, _) = ctx.composite_frame_gpu(320, 240, &[Some(layer1)], &[], &[], None, None);
+    assert_eq!(result1.as_slice().len(), 320 * 240 * 4);
+
+    // Composite at a different size — should reallocate canvas.
+    let data2 = solid_rgba(640, 480, 0, 255, 0, 255);
+    let layer2 = make_layer(data2, 640, 480, None);
+    let (result2, _) = ctx.composite_frame_gpu(640, 480, &[Some(layer2)], &[], &[], None, None);
+    assert_eq!(result2.as_slice().len(), 640 * 480 * 4);
+}
+
+#[test]
+fn gpu_z_ordering() {
+    let mut ctx = require_gpu();
+    let canvas_w = 64;
+    let canvas_h = 64;
+
+    // Layer 0 (z=0): solid red.
+    let layer0 = make_layer_with_props(
+        solid_rgba(canvas_w, canvas_h, 255, 0, 0, 255),
+        canvas_w,
+        canvas_h,
+        None,
+        1.0,
+        0.0,
+        0,
+        false,
+        false,
+        1.0,
+        CropShape::Rect,
+    );
+
+    // Layer 1 (z=1): solid green — should be on top.
+    let layer1 = make_layer_with_props(
+        solid_rgba(canvas_w, canvas_h, 0, 255, 0, 255),
+        canvas_w,
+        canvas_h,
+        None,
+        1.0,
+        0.0,
+        1,
+        false,
+        false,
+        1.0,
+        CropShape::Rect,
+    );
+
+    let layers = vec![Some(layer0), Some(layer1)];
+    let (result, _) = ctx.composite_frame_gpu(canvas_w, canvas_h, &layers, &[], &[], None, None);
+
+    let buf = result.as_slice();
+    let (r, g, _b, _a) = avg_centre_pixel(buf, canvas_w, canvas_h);
+    assert!(g > r, "Green (z=1) should be on top of red (z=0): R={r}, G={g}");
+    assert!(g > 240.0, "Expected solid green on top, got G={g}");
+}
+
+#[test]
+fn gpu_should_use_gpu_heuristic() {
+    use super::gpu::should_use_gpu;
+
+    // Single small layer → CPU.
+    let small_layer = make_layer(solid_rgba(320, 240, 0, 0, 0, 255), 320, 240, None);
+    assert!(
+        !should_use_gpu(320, 240, &[Some(small_layer)], &[], &[]),
+        "Single small layer should prefer CPU"
+    );
+
+    // Two layers → GPU.
+    let l1 = make_layer(solid_rgba(320, 240, 0, 0, 0, 255), 320, 240, None);
+    let l2 = make_layer(solid_rgba(320, 240, 0, 0, 0, 255), 320, 240, None);
+    assert!(
+        should_use_gpu(320, 240, &[Some(l1), Some(l2)], &[], &[]),
+        "Two layers should prefer GPU"
+    );
+
+    // 1080p single layer → GPU (high pixel count).
+    let big_layer = make_layer(solid_rgba(1920, 1080, 0, 0, 0, 255), 1920, 1080, None);
+    assert!(should_use_gpu(1920, 1080, &[Some(big_layer)], &[], &[]), "1080p should prefer GPU");
+
+    // Single layer with rotation → GPU (effects).
+    let rotated = make_layer_with_props(
+        solid_rgba(320, 240, 0, 0, 0, 255),
+        320,
+        240,
+        None,
+        1.0,
+        45.0,
+        0,
+        false,
+        false,
+        1.0,
+        CropShape::Rect,
+    );
+    assert!(
+        should_use_gpu(320, 240, &[Some(rotated)], &[], &[]),
+        "Rotated layer should prefer GPU"
+    );
+}

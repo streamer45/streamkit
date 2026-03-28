@@ -607,5 +607,80 @@ fn bench_compositor(c: &mut Criterion) {
     }
 }
 
+// ── GPU compositor benchmarks ───────────────────────────────────────────────
+//
+// Mirror the CPU scenarios above but run through the GPU compositing path.
+// Only compiled when the `gpu` feature is enabled; requires a GPU at runtime.
+//
+// Usage:
+//   cargo bench -p streamkit-engine --features gpu --bench compositor_only -- gpu
+
+#[cfg(feature = "gpu")]
+fn bench_gpu_compositor(c: &mut Criterion) {
+    use streamkit_nodes::video::compositor::gpu::GpuContext;
+
+    let mut gpu_ctx = match GpuContext::try_init() {
+        Some(ctx) => ctx,
+        None => {
+            eprintln!("No GPU available — skipping GPU compositor benchmarks");
+            return;
+        },
+    };
+
+    for &(w, h) in RESOLUTIONS {
+        let mut group = c.benchmark_group(format!("gpu-compositor/{w}x{h}"));
+        group.throughput(Throughput::Elements(1));
+
+        let scenarios = build_scenarios(w, h);
+
+        for scenario in &scenarios {
+            group.bench_function(&scenario.label, |b| {
+                // Warm up GPU pipeline.
+                let _ = gpu_ctx.composite_frame_gpu(
+                    w,
+                    h,
+                    &scenario.layers,
+                    &scenario.image_overlays,
+                    &scenario.text_overlays,
+                    None,
+                    None,
+                );
+
+                b.iter(|| {
+                    gpu_ctx.composite_frame_gpu(
+                        w,
+                        h,
+                        &scenario.layers,
+                        &scenario.image_overlays,
+                        &scenario.text_overlays,
+                        None,
+                        None,
+                    )
+                });
+            });
+        }
+
+        // GPU composite + NV12 output conversion (fused on GPU).
+        group.bench_function("composite+nv12-fused-gpu", |b| {
+            let bg_layer =
+                make_layer(generate_rgba_frame(w, h), w, h, PixelFormat::Rgba8, None, 1.0, 0, 0.0);
+            let layers = vec![bg_layer];
+
+            // Warm up.
+            let _ =
+                gpu_ctx.composite_frame_gpu(w, h, &layers, &[], &[], None, Some(PixelFormat::Nv12));
+
+            b.iter(|| {
+                gpu_ctx.composite_frame_gpu(w, h, &layers, &[], &[], None, Some(PixelFormat::Nv12))
+            });
+        });
+
+        group.finish();
+    }
+}
+
+#[cfg(feature = "gpu")]
+criterion_group!(benches, bench_compositor, bench_gpu_compositor);
+#[cfg(not(feature = "gpu"))]
 criterion_group!(benches, bench_compositor);
 criterion_main!(benches);

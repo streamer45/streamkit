@@ -295,6 +295,15 @@ pub struct CompositorConfig {
     /// Default: `None` (output RGBA8).
     #[serde(default)]
     pub output_format: Option<String>,
+    /// GPU compositing preference.  Default `None` (treated as `"auto"`).
+    /// - `"auto"`: use GPU when available and scene complexity warrants it
+    /// - `"gpu"`: force GPU compositing (fall back to CPU if unavailable)
+    /// - `"cpu"`: force CPU compositing (ignore GPU even if available)
+    ///
+    /// Requires the `gpu` Cargo feature to be enabled; without it this
+    /// field is accepted but ignored.
+    #[serde(default)]
+    pub gpu_mode: Option<String>,
 }
 
 impl Default for CompositorConfig {
@@ -308,6 +317,7 @@ impl Default for CompositorConfig {
             image_overlays: Vec::new(),
             text_overlays: Vec::new(),
             output_format: None,
+            gpu_mode: None,
         }
     }
 }
