@@ -17,6 +17,7 @@
 //! ```bash
 //! cargo bench -p streamkit-nodes --features av1 --bench rav1e_standalone
 //! cargo bench -p streamkit-nodes --features av1 --bench rav1e_standalone -- --width 640 --height 480 --speed 10
+//! cargo bench -p streamkit-nodes --features av1 --bench rav1e_standalone -- --flat  # flat gray input for comparison
 //! ```
 
 use rav1e::prelude::*;
