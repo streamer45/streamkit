@@ -115,7 +115,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libvpx-dev cmake pkg-config libopus-dev
+        run: sudo apt-get update && sudo apt-get install -y cmake pkg-config libopus-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
@@ -126,8 +126,8 @@ jobs:
 
       - name: Run GPU tests
         run: |
-          cargo test --locked -p streamkit-nodes --features gpu
-          cargo test --locked -p streamkit-engine --features gpu
+          cargo test --locked -p streamkit-nodes --no-default-features --features gpu
+          cargo test --locked -p streamkit-engine --no-default-features --features gpu
 
   build:
     name: Build
