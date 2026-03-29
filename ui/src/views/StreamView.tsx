@@ -725,8 +725,15 @@ const StreamView: React.FC = () => {
       viewState.setSessionCreationStatus('success');
       logger.info('Session created successfully');
 
-      // Optionally try connecting after session creation, but don't block session creation.
-      if (status === 'disconnected' && serverUrl.trim()) {
+      // Auto-connect to MoQ after session creation, but only when the
+      // pipeline actually uses MoQ transport (has a gateway path, relay URL,
+      // or an output broadcast to subscribe to).  MSE-only pipelines have
+      // none of these and should skip the MoQ connection entirely.
+      const hasMoqTransport = Boolean(
+        useStreamStore.getState().outputBroadcast ||
+          useStreamStore.getState().inputBroadcast
+      );
+      if (status === 'disconnected' && serverUrl.trim() && hasMoqTransport) {
         void (async () => {
           try {
             const ok = await connect();
