@@ -462,6 +462,9 @@ const StreamView: React.FC = () => {
   const [mseContentType, setMseContentType] = useState<string>('video/webm');
   const [mseError, setMseError] = useState<string | null>(null);
   const mseAbortRef = useRef<AbortController | null>(null);
+  // Bumped to force the MSE effect to re-run (new fetch + fresh stream)
+  // when a previous stream becomes unusable (e.g. locked after re-render).
+  const [mseRetryKey, setMseRetryKey] = useState(0);
 
   useEffect(() => {
     if (!activeSessionId || !msePath) {
@@ -510,7 +513,8 @@ const StreamView: React.FC = () => {
       setMseStream(null);
       setMseError(null);
     };
-  }, [activeSessionId, msePath]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mseRetryKey forces a fresh fetch on stream-lock errors
+  }, [activeSessionId, msePath, mseRetryKey]);
 
   // Get node definitions for YAML autocomplete
   const nodeDefinitions = useSchemaStore((s) => s.nodeDefinitions);
@@ -1204,7 +1208,15 @@ const StreamView: React.FC = () => {
                   contentType={mseContentType}
                   onError={(msg) => {
                     logger.error('MSE playback error:', msg);
-                    setMseError(msg);
+                    if (msg.includes('already locked')) {
+                      // Stream became unusable (e.g. re-render while reader
+                      // was still active).  Bump the retry key to trigger a
+                      // fresh fetch with a new ReadableStream.
+                      logger.info('MSE stream locked — retrying with fresh fetch');
+                      setMseRetryKey((k) => k + 1);
+                    } else {
+                      setMseError(msg);
+                    }
                   }}
                 />
               )}
