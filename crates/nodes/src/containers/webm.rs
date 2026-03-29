@@ -646,7 +646,7 @@ impl ProcessorNode for WebMMuxerNode {
                         let video = ct_str.starts_with("video/");
                         if video {
                             video_is_av1 =
-                            ct_str == "video/av1" || ct_str.starts_with("video/av1;");
+                                ct_str == "video/av1" || ct_str.starts_with("video/av1;");
                             first_video_packet = Some((data, metadata));
                         } else {
                             first_audio_packet = Some((data, metadata));
