@@ -4,7 +4,9 @@
 
 //! MoQ Push Node - publishes packets to a MoQ broadcast
 
-use super::constants::{catalog_video_codec, moq_accepted_media_types, DEFAULT_AUDIO_FRAME_DURATION_US};
+use super::constants::{
+    catalog_video_codec, moq_accepted_media_types, DEFAULT_AUDIO_FRAME_DURATION_US,
+};
 use async_trait::async_trait;
 use futures::future::poll_fn;
 use opentelemetry::{global, KeyValue};

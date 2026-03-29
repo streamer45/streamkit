@@ -4,7 +4,9 @@
 
 //! Shared constants for MoQ transport nodes
 
-use crate::video::{AV1_BIT_DEPTH, AV1_LEVEL, AV1_PROFILE, AV1_TIER, VP9_BIT_DEPTH, VP9_LEVEL, VP9_PROFILE};
+use crate::video::{
+    AV1_BIT_DEPTH, AV1_LEVEL, AV1_PROFILE, AV1_TIER, VP9_BIT_DEPTH, VP9_LEVEL, VP9_PROFILE,
+};
 use streamkit_core::types::{
     AudioCodec, EncodedAudioFormat, EncodedVideoFormat, PacketMetadata, PacketType, VideoCodec,
 };
