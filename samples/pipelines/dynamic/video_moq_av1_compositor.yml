@@ -2,8 +2,13 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
+# NOTE: AV1 (rav1e speed=10) is single-thread-bound and can only sustain
+# real-time 30 fps at 640x480 on current hardware.  1280x720 encodes at
+# ~11 fps (88 ms/frame), well below real-time.  Use 640x480 for live
+# pipelines until faster speed presets or hardware acceleration are available.
+
 name: Video Compositor – AV1 (MoQ Stream)
-description: Composites two colorbars sources with the StreamKit logo watermark, encodes as AV1 (rav1e), and streams via MoQ
+description: Composites two colorbars sources with the StreamKit logo watermark, encodes as AV1 (rav1e) at 640x480, and streams via MoQ
 mode: dynamic
 client:
   gateway_path: /moq/video
@@ -16,8 +21,8 @@ nodes:
   colorbars_bg:
     kind: video::colorbars
     params:
-      width: 1280
-      height: 720
+      width: 640
+      height: 480
       fps: 30
       pixel_format: rgba8
       draw_time: true
@@ -25,8 +30,8 @@ nodes:
   colorbars_pip:
     kind: video::colorbars
     params:
-      width: 320
-      height: 240
+      width: 240
+      height: 180
       fps: 30
       pixel_format: rgba8
       draw_time: true
@@ -34,8 +39,8 @@ nodes:
   compositor:
     kind: video::compositor
     params:
-      width: 1280
-      height: 720
+      width: 640
+      height: 480
       num_inputs: 2
       layers:
         in_0:
@@ -43,8 +48,8 @@ nodes:
           z_index: 0
         in_1:
           rect:
-            x: 100
-            y: 220
+            x: 50
+            y: 150
             width: 240
             height: 180
           opacity: 0.9
@@ -54,10 +59,10 @@ nodes:
         - id: logo
           asset_path: samples/images/system/streamkit-logo.png
           rect:
-            x: 1190
-            y: 630
-            width: 46
-            height: 80
+            x: 590
+            y: 395
+            width: 23
+            height: 40
           opacity: 0.7
           z_index: 3
     needs:

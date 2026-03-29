@@ -37,9 +37,17 @@ use tokio::sync::mpsc;
 
 const AV1_CONTENT_TYPE: &str = "video/av1";
 
-const AV1_DEFAULT_BITRATE_KBPS: u32 = 2500;
+/// Default to constant-quality mode (quantizer-based).  In bitrate mode
+/// rav1e buffers 10+ frames for rate-control look-ahead before producing
+/// any output, even with `low_latency: true`.  CQ mode emits packets
+/// immediately, which is far better for real-time pipelines.
+const AV1_DEFAULT_BITRATE_KBPS: u32 = 0;
 const AV1_DEFAULT_KF_INTERVAL: u32 = 120;
-const AV1_DEFAULT_THREADS: u32 = 2;
+/// Default to auto-detect (`0`).  rav1e delegates to rayon (uses all
+/// logical cores) and rav1d auto-detects like C dav1d.  Note: at
+/// speed=10 tile parallelism is ineffective, so this has minimal
+/// real-world impact on encode throughput.
+const AV1_DEFAULT_THREADS: u32 = 0;
 const AV1_DEFAULT_SPEED: u32 = 10;
 
 /// rav1d / dav1d error code for EAGAIN ("input not consumed, drain pictures
@@ -59,6 +67,9 @@ const MAX_EAGAIN_EMPTY_RETRIES: u32 = 1000;
 #[derive(Deserialize, Debug, JsonSchema, Clone)]
 #[serde(default)]
 pub struct Av1DecoderConfig {
+    /// Number of decoder threads.  `0` = auto-detect (rav1d picks a
+    /// thread count based on the number of logical cores, matching
+    /// C dav1d behaviour).
     pub threads: u32,
 }
 
@@ -73,6 +84,8 @@ impl Default for Av1DecoderConfig {
 pub struct Av1EncoderConfig {
     pub bitrate_kbps: u32,
     pub keyframe_interval: u32,
+    /// Number of encoder threads.  `0` = auto-detect (rav1e delegates
+    /// to rayon, using all available logical cores).
     pub threads: u32,
     /// rav1e speed preset (0 = slowest/best quality, 10 = fastest/real-time).
     pub speed: u32,
@@ -540,7 +553,7 @@ impl Av1Decoder {
         let mut settings = unsafe { settings.assume_init() };
         #[allow(clippy::cast_possible_wrap)]
         {
-            settings.n_threads = threads.max(1) as c_int;
+            settings.n_threads = threads as c_int;
         }
         // Optimise for low latency: emit frames as soon as possible.
         settings.max_frame_delay = 1;
@@ -780,7 +793,17 @@ fn copy_dav1d_picture(
     metadata: Option<PacketMetadata>,
     video_pool: Option<&Arc<VideoFramePool>>,
 ) -> Result<VideoFrame, String> {
+    use rav1d::include::dav1d::headers::DAV1D_PIXEL_LAYOUT_I420;
     use std::ffi::c_int;
+
+    // The chroma copy below assumes 4:2:0 subsampling (UV = width/2 × height/2).
+    // Reject any other layout to avoid silently producing corrupted frames.
+    if pic.p.layout != DAV1D_PIXEL_LAYOUT_I420 {
+        return Err(format!(
+            "AV1 decoder produced unsupported pixel layout {} (expected I420 = {})",
+            pic.p.layout, DAV1D_PIXEL_LAYOUT_I420,
+        ));
+    }
 
     let width = pic.p.w;
     let height = pic.p.h;
@@ -941,9 +964,8 @@ impl Av1Encoder {
             ..Default::default()
         };
 
-        let rav1e_cfg = Config::default()
-            .with_encoder_config(enc_cfg)
-            .with_threads(config.threads.max(1) as usize);
+        let rav1e_cfg =
+            Config::default().with_encoder_config(enc_cfg).with_threads(config.threads as usize);
 
         let ctx: Context<u8> = rav1e_cfg
             .new_context()

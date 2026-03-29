@@ -163,6 +163,24 @@ const fn vp9_codec_private(
     ]
 }
 
+/// Pre-computed VP9 codec-private data (VPCodecConfigurationRecord, 8 bytes)
+/// for the default encoder config (profile 0, level 1.0, 8-bit, 4:2:0).
+const VP9_CODEC_PRIVATE: [u8; 8] =
+    vp9_codec_private(VP9_PROFILE, VP9_LEVEL, VP9_BIT_DEPTH, VP9_CHROMA_SUBSAMPLING);
+
+/// AV1CodecConfigurationRecord for WebM/Matroska (4 bytes).
+///
+/// Byte layout:
+///   [0] marker(1)=1 | version(7)=1        → 0x81
+///   [1] seq_profile(3)=0 | seq_level_idx_0(5)=8  → 0x08  (Main profile, level 4.0)
+///   [2] seq_tier_0(1)=0 | high_bitdepth(1)=0 | twelve_bit(1)=0 | monochrome(1)=0
+///       | chroma_subsampling_x(1)=1 | chroma_subsampling_y(1)=1
+///       | chroma_sample_position(2)=0     → 0x0C  (8-bit, 4:2:0)
+///   [3] reserved(8)=0                     → 0x00
+///
+/// Reference: <https://aomediacodec.github.io/av1-isobmff/#av1codecconfigurationbox>
+const AV1_CODEC_PRIVATE: [u8; 4] = [0x81, 0x08, 0x0C, 0x00];
+
 /// Opus codec lookahead at 48kHz in samples (typical libopus default).
 ///
 /// This is written to the OpusHead `pre_skip` field so decoders can trim encoder delay.
@@ -459,17 +477,23 @@ struct MuxTracks {
 }
 
 /// Builds the MIME content-type string based on which tracks are present.
-const fn webm_content_type(has_audio: bool, has_video: bool) -> &'static str {
-    match (has_audio, has_video) {
-        (true, true) => "video/webm; codecs=\"vp9,opus\"",
-        (false, true) => "video/webm; codecs=\"vp9\"",
-        (true, false) => "audio/webm; codecs=\"opus\"",
+///
+/// When `video_is_av1` is `true` the video codec string is `"av1"` instead
+/// of `"vp9"`.  This is needed for MSE consumers that initialise
+/// SourceBuffers from the MIME type.
+const fn webm_content_type(has_audio: bool, has_video: bool, video_is_av1: bool) -> &'static str {
+    match (has_audio, has_video, video_is_av1) {
+        (true, true, false) => "video/webm; codecs=\"vp9,opus\"",
+        (true, true, true) => "video/webm; codecs=\"av1,opus\"",
+        (false, true, false) => "video/webm; codecs=\"vp9\"",
+        (false, true, true) => "video/webm; codecs=\"av1\"",
+        (true, false, _) => "audio/webm; codecs=\"opus\"",
         // Shouldn't happen - at least one track is required - but provide a safe fallback.
-        (false, false) => "video/webm",
+        (false, false, _) => "video/webm",
     }
 }
 
-/// A node that muxes encoded Opus audio and/or VP9 video packets into a WebM container stream.
+/// A node that muxes encoded Opus audio and/or VP9/AV1 video packets into a WebM container stream.
 ///
 /// Input pins use generic names (`"in"`, `"in_1"`, …) — the media type carried by each
 /// input is detected at runtime from the packet's `content_type` field, **not** from the
@@ -506,6 +530,13 @@ impl ProcessorNode for WebMMuxerNode {
             }),
             PacketType::EncodedVideo(EncodedVideoFormat {
                 codec: VideoCodec::Vp9,
+                bitstream_format: None,
+                codec_private: None,
+                profile: None,
+                level: None,
+            }),
+            PacketType::EncodedVideo(EncodedVideoFormat {
+                codec: VideoCodec::Av1,
                 bitstream_format: None,
                 codec_private: None,
                 profile: None,
@@ -555,12 +586,13 @@ impl ProcessorNode for WebMMuxerNode {
         // (consumers simply won't find an Opus track), whereas advertising
         // only "vp9" when Opus IS present would break MSE consumers that
         // need to initialise an audio SourceBuffer.
+        //
+        // The video codec (VP9 vs AV1) is unknown at config time, so we
+        // default to VP9 for the static hint.  The actual content_type is
+        // resolved at runtime once the first video packet arrives.
         let has_video = self.config.video_width > 0 && self.config.video_height > 0;
-        // Audio is always assumed present: when video dims are zero, only
-        // audio is possible; when video dims are set, combined A+V is the
-        // common case and omitting Opus from the type is harmful.
         let has_audio = true;
-        Some(webm_content_type(has_audio, has_video).to_string())
+        Some(webm_content_type(has_audio, has_video, false).to_string())
     }
 
     async fn run(self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
@@ -596,6 +628,10 @@ impl ProcessorNode for WebMMuxerNode {
         let mut first_video_packet: Option<(Bytes, Option<PacketMetadata>)> = None;
         let mut first_audio_packet: Option<(Bytes, Option<PacketMetadata>)> = None;
 
+        // Detected video codec — determined from content_type (dynamic) or
+        // connection type (oneshot).  Defaults to VP9 for backward compat.
+        let mut video_is_av1 = false;
+
         let use_packet_inspection = context.input_types.is_empty();
 
         for (pin_name, mut rx) in context.inputs.drain() {
@@ -603,9 +639,10 @@ impl ProcessorNode for WebMMuxerNode {
                 // Dynamic pipeline: classify from the first packet's content_type.
                 match rx.recv().await {
                     Some(Packet::Binary { data, content_type, metadata }) => {
-                        let video =
-                            content_type.as_deref().is_some_and(|ct| ct.starts_with("video/"));
+                        let ct_str = content_type.as_deref().unwrap_or("");
+                        let video = ct_str.starts_with("video/");
                         if video {
+                            video_is_av1 = ct_str == "video/av1";
                             first_video_packet = Some((data, metadata));
                         } else {
                             first_audio_packet = Some((data, metadata));
@@ -630,9 +667,19 @@ impl ProcessorNode for WebMMuxerNode {
                 }
             } else {
                 // Oneshot/static pipeline: classify from connection metadata.
-                context.input_types.get(&pin_name).is_some_and(|ty| {
+                let pin_type = context.input_types.get(&pin_name);
+                let is_vid = pin_type.is_some_and(|ty| {
                     matches!(ty, PacketType::EncodedVideo(_) | PacketType::RawVideo(_))
-                })
+                });
+                if is_vid {
+                    // Detect AV1 from the connection's encoded video format.
+                    if let Some(PacketType::EncodedVideo(fmt)) = pin_type {
+                        if fmt.codec == VideoCodec::Av1 {
+                            video_is_av1 = true;
+                        }
+                    }
+                }
+                is_vid
             };
 
             if is_video {
@@ -684,7 +731,7 @@ impl ProcessorNode for WebMMuxerNode {
         tracing::info!("WebMMuxerNode tracks: audio={}, video={}", has_audio, has_video);
 
         let content_type_str: Cow<'static, str> =
-            Cow::Borrowed(webm_content_type(has_audio, has_video));
+            Cow::Borrowed(webm_content_type(has_audio, has_video, video_is_av1));
 
         let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
 
@@ -759,6 +806,18 @@ impl ProcessorNode for WebMMuxerNode {
             let mut h = self.config.video_height;
 
             if w == 0 || h == 0 {
+                if video_is_av1 {
+                    // AV1 dimension auto-detection is not supported — the VP9
+                    // keyframe parser cannot parse AV1 OBUs.  Require explicit
+                    // video_width/video_height in the config.
+                    let err_msg = "WebMMuxerNode: video_width/video_height must be \
+                         configured explicitly for AV1 (keyframe auto-detection \
+                         is only supported for VP9)"
+                        .to_string();
+                    state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
+                    return Err(StreamKitError::Runtime(err_msg));
+                }
+
                 // Auto-detect: use the buffered first video packet if available
                 // (from packet-inspection classification), otherwise recv one.
                 let first_data = if let Some((data, meta)) = first_video_packet.take() {
@@ -819,31 +878,46 @@ impl ProcessorNode for WebMMuxerNode {
         // Video track is added first so that the segment header lists it prominently
         // for players that inspect the first track.
         let builder = if has_video {
-            // These constants must stay in sync with the VP9 encoder
-            // configuration in `crates/nodes/src/video/mod.rs`.  Currently the
-            // encoder only supports profile 0 (I420/NV12 at 8-bit), so the
-            // hardcoded values are correct.  If higher profiles are added
-            // (e.g. 10-bit, 4:4:4), these must be updated accordingly.
-            let vp9_private =
-                vp9_codec_private(VP9_PROFILE, VP9_LEVEL, VP9_BIT_DEPTH, VP9_CHROMA_SUBSAMPLING);
+            let (codec_id, codec_private_bytes, codec_label): (VideoCodecId, &[u8], &str) =
+                if video_is_av1 {
+                    // AV1CodecConfigurationRecord (4 bytes):
+                    // marker(1) | version(7) = 0x81, seq_profile(3) | seq_level_idx_0(5) = 0x08,
+                    // seq_tier_0(1) | high_bitdepth(1) | twelve_bit(1) | monochrome(1) |
+                    //   chroma_subsampling_x(1) | chroma_subsampling_y(1) |
+                    //   chroma_sample_position(2) = 0x0C,
+                    // padding(8) = 0x00.
+                    // Main profile, level 4.0, 8-bit, 4:2:0.
+                    // Reference: https://aomediacodec.github.io/av1-isobmff/#av1codecconfigurationbox
+                    (VideoCodecId::AV1, &AV1_CODEC_PRIVATE, "AV1")
+                } else {
+                    // VP9 codec-private (VPCodecConfigurationRecord, 8 bytes).
+                    // These constants must stay in sync with the VP9 encoder
+                    // configuration in `crates/nodes/src/video/mod.rs`.
+                    // Currently the encoder only supports profile 0 (I420/NV12
+                    // at 8-bit), so the hardcoded values are correct.  If higher
+                    // profiles are added (e.g. 10-bit, 4:4:4), these must be
+                    // updated accordingly.
+                    (VideoCodecId::VP9, &VP9_CODEC_PRIVATE as &[u8], "VP9")
+                };
 
             let (builder, vt) = builder
-                .add_video_track(video_width, video_height, VideoCodecId::VP9, None)
+                .add_video_track(video_width, video_height, codec_id, None)
                 .map_err(|e| {
                     let err_msg = format!("Failed to add video track: {e}");
                     state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
                     StreamKitError::Runtime(err_msg)
                 })?;
 
-            let builder = builder.set_codec_private(vt, &vp9_private).map_err(|e| {
-                let err_msg = format!("Failed to set VP9 codec private: {e}");
+            let builder = builder.set_codec_private(vt, codec_private_bytes).map_err(|e| {
+                let err_msg = format!("Failed to set {codec_label} codec private: {e}");
                 state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
                 StreamKitError::Runtime(err_msg)
             })?;
 
             tracks.video = Some(vt);
             tracing::info!(
-                "Added VP9 video track ({}x{}) with codec private",
+                "Added {} video track ({}x{}) with codec private",
+                codec_label,
                 video_width,
                 video_height
             );
@@ -1409,7 +1483,7 @@ pub fn register_webm_nodes(registry: &mut NodeRegistry) {
             StaticPins { inputs: default_muxer.input_pins(), outputs: default_muxer.output_pins() },
             vec!["containers".to_string(), "webm".to_string()],
             false,
-            "Muxes Opus audio and/or VP9 video into a WebM container. \
+            "Muxes Opus audio and/or VP9/AV1 video into a WebM container. \
              Produces streamable WebM output compatible with web browsers. \
              Supports audio-only, video-only, or combined audio+video muxing.",
         );
@@ -1454,9 +1528,15 @@ mod tests {
 
     #[test]
     fn webm_content_type_helper_covers_all_combinations() {
-        assert_eq!(webm_content_type(true, true), "video/webm; codecs=\"vp9,opus\"");
-        assert_eq!(webm_content_type(false, true), "video/webm; codecs=\"vp9\"");
-        assert_eq!(webm_content_type(true, false), "audio/webm; codecs=\"opus\"");
-        assert_eq!(webm_content_type(false, false), "video/webm");
+        // VP9 (video_is_av1 = false)
+        assert_eq!(webm_content_type(true, true, false), "video/webm; codecs=\"vp9,opus\"");
+        assert_eq!(webm_content_type(false, true, false), "video/webm; codecs=\"vp9\"");
+        assert_eq!(webm_content_type(true, false, false), "audio/webm; codecs=\"opus\"");
+        assert_eq!(webm_content_type(false, false, false), "video/webm");
+        // AV1 (video_is_av1 = true)
+        assert_eq!(webm_content_type(true, true, true), "video/webm; codecs=\"av1,opus\"");
+        assert_eq!(webm_content_type(false, true, true), "video/webm; codecs=\"av1\"");
+        assert_eq!(webm_content_type(true, false, true), "audio/webm; codecs=\"opus\"");
+        assert_eq!(webm_content_type(false, false, true), "video/webm");
     }
 }
