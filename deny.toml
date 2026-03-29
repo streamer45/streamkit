@@ -73,6 +73,11 @@ ignore = [
   # rustls-pemfile is unmaintained. We upgraded axum-server to 0.8 which removed it,
   # but moq-native still depends on it. Will be resolved when moq-native updates.
   { id = "RUSTSEC-2025-0134", reason = "transitive dep from moq-native, no security issue" },
+
+  # paste is unmaintained (dtolnay archived the repo).  It is a transitive dep
+  # of rav1e and rav1d — no security vulnerability, just an unmaintained notice.
+  # Will be resolved when rav1e/rav1d migrate to a fork (e.g. pastey).
+  { id = "RUSTSEC-2024-0436", reason = "transitive dep from rav1e/rav1d, no security issue" },
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.
