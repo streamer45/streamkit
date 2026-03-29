@@ -83,4 +83,5 @@ nodes:
       gateway_path: /moq/video
       output_broadcast: output
       allow_reconnect: true
+      video_codec: av1
     needs: av1_encoder

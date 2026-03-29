@@ -5,7 +5,8 @@
 //! MoQ Push Node - publishes packets to a MoQ broadcast
 
 use super::constants::{
-    catalog_video_codec, moq_accepted_media_types, DEFAULT_AUDIO_FRAME_DURATION_US,
+    catalog_video_codec, moq_accepted_media_types, parse_video_codec_config,
+    DEFAULT_AUDIO_FRAME_DURATION_US,
 };
 use async_trait::async_trait;
 use futures::future::poll_fn;
@@ -37,12 +38,19 @@ pub struct MoqPushConfig {
     /// startup. In oneshot pipelines this is auto-detected from `input_types`
     /// when left as `None`.
     pub audio: Option<bool>,
-    /// Whether to publish a video track (VP9 on the `in_1` pin).
+    /// Whether to publish a video track (VP9/AV1 on the `in_1` pin).
     ///
     /// Required for dynamic pipelines where `input_types` is not available at
     /// startup. In oneshot pipelines this is auto-detected from `input_types`
     /// when left as `None`.
     pub video: Option<bool>,
+    /// Video codec for the MoQ catalog.
+    ///
+    /// Required for dynamic pipelines where `input_types` is not available at
+    /// startup.  Accepted values: `"vp9"`, `"av1"`.  When `None`, the codec
+    /// is auto-detected from `input_types` (static pipelines) and falls back
+    /// to VP9.
+    pub video_codec: Option<String>,
     /// Duration of each MoQ group in milliseconds.
     /// Smaller groups = lower latency but more overhead.
     /// Larger groups = higher latency but better efficiency.
@@ -76,6 +84,7 @@ impl Default for MoqPushConfig {
             channels: 2,
             audio: None,
             video: None,
+            video_codec: None,
             group_duration_ms: default_group_duration_ms(),
             initial_delay_ms: 0,
         }
@@ -213,14 +222,20 @@ impl ProcessorNode for MoqPushNode {
         });
 
         // Detect the upstream video codec so the catalog reflects the actual
-        // encoding.  Defaults to VP9 when the codec cannot be determined (e.g.
-        // in dynamic pipelines where input_types is empty at startup).
-        let video_codec = context
-            .input_types
-            .iter()
-            .find_map(|(_, pt)| match pt {
-                PacketType::EncodedVideo(fmt) => Some(fmt.codec),
-                _ => None,
+        // encoding.  Priority order:
+        // 1. Explicit `video_codec` config param (required for dynamic pipelines)
+        // 2. Auto-detected from `input_types` (static pipelines)
+        // 3. Default: VP9
+        let video_codec = self
+            .config
+            .video_codec
+            .as_deref()
+            .and_then(parse_video_codec_config)
+            .or_else(|| {
+                context.input_types.iter().find_map(|(_, pt)| match pt {
+                    PacketType::EncodedVideo(fmt) => Some(fmt.codec),
+                    _ => None,
+                })
             })
             .unwrap_or(VideoCodec::Vp9);
 
@@ -891,5 +906,24 @@ mod tests {
         assert_eq!(track_name_from_pin("audio/data"), "audio/data");
         assert_eq!(track_name_from_pin("in_2"), "audio/in_2");
         assert_eq!(track_name_from_pin("extra"), "audio/extra");
+    }
+
+    /// Verify that `video_codec` config is correctly deserialized from JSON
+    /// and that the default (None) falls through to VP9.
+    #[test]
+    fn video_codec_config_deserialization() {
+        use super::MoqPushConfig;
+
+        // Default: video_codec is None
+        let default: MoqPushConfig = serde_json::from_str("{}").unwrap();
+        assert!(default.video_codec.is_none());
+
+        // Explicit av1
+        let av1: MoqPushConfig = serde_json::from_str(r#"{"video_codec": "av1"}"#).unwrap();
+        assert_eq!(av1.video_codec.as_deref(), Some("av1"));
+
+        // Explicit vp9
+        let vp9: MoqPushConfig = serde_json::from_str(r#"{"video_codec": "vp9"}"#).unwrap();
+        assert_eq!(vp9.video_codec.as_deref(), Some("vp9"));
     }
 }

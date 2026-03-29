@@ -78,6 +78,11 @@ pub struct Av1EncoderConfig {
     pub speed: u32,
     /// Enable rav1e low-latency mode (disables frame reordering).
     pub low_latency: bool,
+    /// Constant-quality quantizer (0–255 scale, lower = better quality).
+    ///
+    /// Only used when `bitrate_kbps` is 0 (constant-quality mode).
+    /// Default: 80.
+    pub quantizer: u32,
 }
 
 impl Default for Av1EncoderConfig {
@@ -88,6 +93,7 @@ impl Default for Av1EncoderConfig {
             threads: AV1_DEFAULT_THREADS,
             speed: AV1_DEFAULT_SPEED,
             low_latency: true,
+            quantizer: 80,
         }
     }
 }
@@ -663,9 +669,16 @@ impl Av1Decoder {
                 break;
             }
             if res.0 < 0 {
-                // A real error — but if we already collected frames, return them
-                // and report the error on the next call.
+                // A real error — but if we already collected frames, return them.
+                // During flush() there is no next call, so log a warning to avoid
+                // silently losing the error.
                 if !frames.is_empty() {
+                    tracing::warn!(
+                        "rav1d: dav1d_get_picture error {} after draining {} frame(s) — \
+                         returning buffered frames",
+                        res.0,
+                        frames.len(),
+                    );
                     break;
                 }
                 return Err(format!("rav1d: dav1d_get_picture failed with code {}", res.0));
@@ -682,6 +695,11 @@ impl Av1Decoder {
                     if frames.is_empty() {
                         return Err(err);
                     }
+                    tracing::warn!(
+                        "rav1d: copy_dav1d_picture error after draining {} frame(s) — \
+                         returning buffered frames: {err}",
+                        frames.len(),
+                    );
                     break;
                 },
             }
@@ -897,7 +915,7 @@ impl Av1Encoder {
         // When bitrate_kbps is 0, use constant-quality mode (quantizer-based).
         // Otherwise use bitrate-based rate control.
         let (bitrate, quantizer) = if config.bitrate_kbps == 0 {
-            (0, 80) // CQ mode with a moderate default quantizer (0–255 scale)
+            (0, config.quantizer.min(255) as usize) // CQ mode with configurable quantizer (0–255 scale)
         } else {
             (i32::try_from(config.bitrate_kbps).unwrap_or(i32::MAX), 0)
         };
@@ -994,15 +1012,19 @@ impl Av1Encoder {
                 let chroma_w = width.div_ceil(2);
                 let chroma_h = height.div_ceil(2);
                 let uv_plane = &planes[1];
-                let u_stride = rav1e_frame.planes[1].cfg.stride;
-                let v_stride = rav1e_frame.planes[2].cfg.stride;
+                // Hoist mutable borrows outside the loop.  We cannot borrow
+                // two planes through `rav1e_frame.planes` simultaneously, so
+                // use `split_at_mut` to get disjoint references.
+                let (first_planes, rest) = rav1e_frame.planes.split_at_mut(2);
+                let u_stride = first_planes[1].cfg.stride;
+                let v_stride = rest[0].cfg.stride;
+                let u_data = first_planes[1].data_origin_mut();
+                let v_data = rest[0].data_origin_mut();
                 for row in 0..chroma_h {
                     let src_start = uv_plane.offset + row * uv_plane.stride;
-                    let u_data = rav1e_frame.planes[1].data_origin_mut();
                     for col in 0..chroma_w {
                         u_data[row * u_stride + col] = data[src_start + col * 2];
                     }
-                    let v_data = rav1e_frame.planes[2].data_origin_mut();
                     for col in 0..chroma_w {
                         v_data[row * v_stride + col] = data[src_start + col * 2 + 1];
                     }
@@ -1131,6 +1153,12 @@ fn copy_plane_to_rav1e(
     for row in 0..height {
         let src_start = src_plane.offset + row * src_plane.stride;
         let dst_start = row * dst_stride;
+        debug_assert!(
+            src_start + width <= src_data.len(),
+            "copy_plane_to_rav1e: source data too short (need {}, have {}) at row {row}",
+            src_start + width,
+            src_data.len(),
+        );
         let src_end = (src_start + width).min(src_data.len());
         let copy_width = src_end - src_start;
         dst_data[dst_start..dst_start + copy_width].copy_from_slice(&src_data[src_start..src_end]);
@@ -1225,6 +1253,7 @@ mod tests {
             threads: 1,
             speed: 10,
             low_latency: true,
+            quantizer: 80,
         };
         let encoder = Av1EncoderNode::new(encoder_config).unwrap();
 
@@ -1317,6 +1346,7 @@ mod tests {
             threads: 1,
             speed: 10,
             low_latency: true,
+            quantizer: 80,
         };
         let encoder = Av1EncoderNode::new(encoder_config).unwrap();
         let enc_handle = tokio::spawn(async move { Box::new(encoder).run(enc_context).await });
@@ -1415,6 +1445,7 @@ mod tests {
             threads: 1,
             speed: 10,
             low_latency: true,
+            quantizer: 80,
         };
         let encoder = Av1EncoderNode::new(encoder_config).unwrap();
         let enc_handle = tokio::spawn(async move { Box::new(encoder).run(enc_context).await });

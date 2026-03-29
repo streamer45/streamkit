@@ -57,12 +57,84 @@ pub fn catalog_video_codec(codec: VideoCodec) -> hang::catalog::VideoCodec {
             bitdepth: AV1_BIT_DEPTH,
             ..hang::catalog::AV1::default()
         }),
-        // VP9 is the default / fallback.
-        _ => hang::catalog::VideoCodec::VP9(hang::catalog::VP9 {
+        VideoCodec::Vp9 => hang::catalog::VideoCodec::VP9(hang::catalog::VP9 {
             profile: VP9_PROFILE,
             level: VP9_LEVEL,
             bit_depth: VP9_BIT_DEPTH,
             ..hang::catalog::VP9::default()
         }),
+        // Unsupported codec — fall back to VP9 catalog entry and log a warning.
+        _ => {
+            tracing::warn!(?codec, "unsupported VideoCodec for MoQ catalog, defaulting to VP9");
+            hang::catalog::VideoCodec::VP9(hang::catalog::VP9 {
+                profile: VP9_PROFILE,
+                level: VP9_LEVEL,
+                bit_depth: VP9_BIT_DEPTH,
+                ..hang::catalog::VP9::default()
+            })
+        },
+    }
+}
+
+/// Parse a `video_codec` config string (e.g. `"vp9"`, `"av1"`) into the
+/// corresponding [`VideoCodec`].  Returns `None` for unrecognised values so
+/// the caller can fall back to auto-detection.
+///
+/// Shared by `moq_peer` and `moq_push` to avoid duplicating the parsing logic.
+pub fn parse_video_codec_config(s: &str) -> Option<VideoCodec> {
+    match s.to_ascii_lowercase().as_str() {
+        "vp9" => Some(VideoCodec::Vp9),
+        "av1" => Some(VideoCodec::Av1),
+        _ => {
+            tracing::warn!(video_codec = %s, "unrecognised video_codec config value — ignoring");
+            None
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_video_codec_config_vp9() {
+        assert_eq!(parse_video_codec_config("vp9"), Some(VideoCodec::Vp9));
+    }
+
+    #[test]
+    fn parse_video_codec_config_av1() {
+        assert_eq!(parse_video_codec_config("av1"), Some(VideoCodec::Av1));
+    }
+
+    #[test]
+    fn parse_video_codec_config_case_insensitive() {
+        assert_eq!(parse_video_codec_config("AV1"), Some(VideoCodec::Av1));
+        assert_eq!(parse_video_codec_config("VP9"), Some(VideoCodec::Vp9));
+        assert_eq!(parse_video_codec_config("Av1"), Some(VideoCodec::Av1));
+    }
+
+    #[test]
+    fn parse_video_codec_config_unknown_returns_none() {
+        assert_eq!(parse_video_codec_config("h264"), None);
+        assert_eq!(parse_video_codec_config(""), None);
+        assert_eq!(parse_video_codec_config("unknown"), None);
+    }
+
+    #[test]
+    fn catalog_video_codec_av1_produces_av1() {
+        let result = catalog_video_codec(VideoCodec::Av1);
+        assert!(
+            matches!(result, hang::catalog::VideoCodec::AV1(_)),
+            "expected AV1 catalog codec, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn catalog_video_codec_vp9_produces_vp9() {
+        let result = catalog_video_codec(VideoCodec::Vp9);
+        assert!(
+            matches!(result, hang::catalog::VideoCodec::VP9(_)),
+            "expected VP9 catalog codec, got {result:?}"
+        );
     }
 }

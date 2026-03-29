@@ -38,6 +38,7 @@ nodes:
         - input
       output_broadcast: output
       allow_reconnect: true
+      video_codec: av1
     needs:
       in: opus_encoder
       in_1: av1_encoder
