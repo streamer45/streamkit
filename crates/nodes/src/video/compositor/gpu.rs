@@ -1623,12 +1623,13 @@ mod tests {
     #[test]
     fn texture_pool_trims_idle_entries() {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::LowPower,
-            compatible_surface: None,
-            force_fallback_adapter: true,
-        }));
-        let Some(adapter) = adapter else {
+        let Ok(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                compatible_surface: None,
+                force_fallback_adapter: true,
+            }))
+        else {
             // No adapter available (CI without GPU) — skip gracefully.
             eprintln!("skipping texture_pool_trims_idle_entries: no wgpu adapter");
             return;
@@ -1680,12 +1681,13 @@ mod tests {
     #[test]
     fn buffer_pool_trims_idle_entries() {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::LowPower,
-            compatible_surface: None,
-            force_fallback_adapter: true,
-        }));
-        let Some(adapter) = adapter else {
+        let Ok(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                compatible_surface: None,
+                force_fallback_adapter: true,
+            }))
+        else {
             eprintln!("skipping buffer_pool_trims_idle_entries: no wgpu adapter");
             return;
         };
