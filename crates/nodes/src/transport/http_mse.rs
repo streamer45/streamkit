@@ -455,9 +455,7 @@ fn find_cluster_id(data: &[u8]) -> Option<usize> {
 /// is truncated (data too short).
 fn find_tracks_end(data: &[u8]) -> Option<usize> {
     // Locate the 4-byte Tracks element ID.
-    let id_pos = data
-        .windows(WEBM_TRACKS_ID.len())
-        .position(|w| w == WEBM_TRACKS_ID)?;
+    let id_pos = data.windows(WEBM_TRACKS_ID.len()).position(|w| w == WEBM_TRACKS_ID)?;
 
     let size_start = id_pos + WEBM_TRACKS_ID.len();
     if size_start >= data.len() {
