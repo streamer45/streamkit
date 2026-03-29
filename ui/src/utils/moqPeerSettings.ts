@@ -39,6 +39,12 @@ export interface MoqPeerSettings {
   tracks: PublishTrackConfig[];
   /** All unique broadcast names derived from tracks (for multi-broadcast). */
   publishBroadcasts: string[];
+  /**
+   * MSE endpoint path suffix from `client.watch.mse_path` (e.g. `/video`).
+   * When set, the browser fetches chunked WebM from
+   * `/mse/{session_id}{msePath}` and plays it via `MSEPlayer`.
+   */
+  msePath?: string;
 }
 
 /**
@@ -49,13 +55,14 @@ export function deriveSettingsFromClient(client: ClientSection): MoqPeerSettings
   const hasGatewayPath = Boolean(client.gateway_path);
 
   // External relay pattern: relay_url is explicit, OR the pipeline declares
-  // both publish and watch without a gateway_path.  Gateway pipelines always
-  // set gateway_path; its absence with pub+watch means nodes connect to a
-  // standalone relay and the browser must wait for the output broadcast
-  // announcement before subscribing (otherwise the catalog subscribe gets
-  // RESET_STREAM because skit hasn't published yet).
+  // both publish and watch (with a MoQ broadcast) without a gateway_path.
+  // Gateway pipelines always set gateway_path; its absence with pub+watch
+  // means nodes connect to a standalone relay and the browser must wait for
+  // the output broadcast announcement before subscribing.
+  // MSE-only watch configs (no broadcast) don't count as external relay.
+  const hasMoqWatch = Boolean(client.watch?.broadcast);
   const isExternalRelay =
-    hasRelayUrl || (!hasGatewayPath && Boolean(client.publish) && Boolean(client.watch));
+    hasRelayUrl || (!hasGatewayPath && Boolean(client.publish) && hasMoqWatch);
 
   // Derive media needs from tracks array
   const tracks: PublishTrackConfig[] = client.publish?.tracks ?? [];
@@ -87,7 +94,7 @@ export function deriveSettingsFromClient(client: ClientSection): MoqPeerSettings
     gatewayPath: client.gateway_path ?? undefined,
     relayUrl: client.relay_url ?? undefined,
     inputBroadcast: client.publish?.broadcast,
-    outputBroadcast: client.watch?.broadcast,
+    outputBroadcast: client.watch?.broadcast ?? undefined,
     hasInputBroadcast: Boolean(client.publish),
     needsAudioInput,
     needsVideoInput,
@@ -97,6 +104,7 @@ export function deriveSettingsFromClient(client: ClientSection): MoqPeerSettings
     videoSourceType,
     tracks,
     publishBroadcasts,
+    msePath: client.watch?.mse_path ?? undefined,
   };
 }
 

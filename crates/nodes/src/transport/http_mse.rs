@@ -264,6 +264,12 @@ impl ProcessorNode for HttpMseNode {
                         continue;
                     };
 
+                    // Skip empty packets — they carry no data and would
+                    // pass through init-detection doing nothing useful.
+                    if data.is_empty() {
+                        continue;
+                    }
+
                     // Buffer the init segment (everything before the first Cluster element).
                     if !init_complete {
                         // Search for the Cluster ID in the overlap + current chunk to handle
@@ -496,5 +502,159 @@ mod tests {
     #[test]
     fn test_default_content_type_includes_codecs() {
         assert!(DEFAULT_CONTENT_TYPE.contains("codecs"));
+    }
+
+    /// Simulate the init-segment accumulation loop used by `HttpMseNode::run`
+    /// so we can unit-test cross-chunk Cluster ID detection without spinning
+    /// up a full async node context.
+    fn simulate_init_accumulation(chunks: &[&[u8]]) -> (Vec<u8>, bool) {
+        let mut init_segment: Vec<u8> = Vec::new();
+        let mut init_complete = false;
+        let mut overlap: Vec<u8> = Vec::new();
+        let mut overlap_bytes_in_init: usize = 0;
+
+        for data in chunks {
+            if data.is_empty() {
+                continue;
+            }
+            if init_complete {
+                break;
+            }
+
+            let cluster_found = if overlap.is_empty() {
+                false
+            } else {
+                let mut combined = overlap.clone();
+                combined.extend_from_slice(&data[..data.len().min(WEBM_CLUSTER_ID.len())]);
+                find_cluster_id(&combined).is_some_and(|pos| {
+                    let overlap_len = overlap.len();
+                    if pos < overlap_len {
+                        let bytes_to_remove =
+                            (overlap_len - pos).min(overlap_bytes_in_init);
+                        init_segment.truncate(init_segment.len() - bytes_to_remove);
+                    } else {
+                        let extra = pos - overlap_len;
+                        let remaining_capacity =
+                            MAX_INIT_SEGMENT_SIZE.saturating_sub(init_segment.len());
+                        let to_append = extra.min(remaining_capacity);
+                        init_segment.extend_from_slice(&data[..to_append]);
+                    }
+                    true
+                })
+            };
+
+            if cluster_found {
+                init_complete = true;
+            } else if let Some(cluster_offset) = find_cluster_id(data) {
+                if cluster_offset > 0 {
+                    let remaining_capacity =
+                        MAX_INIT_SEGMENT_SIZE.saturating_sub(init_segment.len());
+                    let to_append = cluster_offset.min(remaining_capacity);
+                    init_segment.extend_from_slice(&data[..to_append]);
+                }
+                init_complete = true;
+            } else {
+                let remaining_capacity =
+                    MAX_INIT_SEGMENT_SIZE.saturating_sub(init_segment.len());
+                let appended = if remaining_capacity > 0 {
+                    let to_append = data.len().min(remaining_capacity);
+                    init_segment.extend_from_slice(&data[..to_append]);
+                    to_append
+                } else {
+                    0
+                };
+                let keep = data.len().min(WEBM_CLUSTER_ID.len() - 1);
+                overlap.clear();
+                overlap.extend_from_slice(&data[data.len() - keep..]);
+                overlap_bytes_in_init = appended.saturating_sub(data.len() - keep);
+            }
+
+            if init_complete {
+                overlap.clear();
+            }
+        }
+
+        (init_segment, init_complete)
+    }
+
+    #[test]
+    fn test_cross_chunk_cluster_detection_3_1_split() {
+        // Cluster ID 0x1F43B675 split: first chunk ends with [1F, 43, B6],
+        // second chunk starts with [75, ...].
+        let header = vec![0x1A, 0x45, 0xDF, 0xA3, 0x00, 0x00]; // 6 bytes of EBML header
+        let mut chunk1 = header.clone();
+        chunk1.extend_from_slice(&[0x1F, 0x43, 0xB6]); // first 3 bytes of Cluster ID
+        let chunk2: Vec<u8> = vec![0x75, 0xAA, 0xBB, 0xCC]; // last byte of Cluster ID + data
+
+        let (init, complete) = simulate_init_accumulation(&[&chunk1, &chunk2]);
+
+        assert!(complete, "Cluster ID straddling two chunks must be detected");
+        // Init segment should contain only the header bytes (before the Cluster ID).
+        assert_eq!(
+            init, header,
+            "Init segment should exclude the partial Cluster ID bytes"
+        );
+    }
+
+    #[test]
+    fn test_cross_chunk_cluster_detection_2_2_split() {
+        // Cluster ID split evenly: [1F, 43] | [B6, 75]
+        let header = vec![0xAA; 10]; // 10 bytes of fake header
+        let mut chunk1 = header.clone();
+        chunk1.extend_from_slice(&[0x1F, 0x43]); // first 2 bytes of Cluster ID
+        let chunk2: Vec<u8> = vec![0xB6, 0x75, 0x00, 0x01]; // last 2 bytes + data
+
+        let (init, complete) = simulate_init_accumulation(&[&chunk1, &chunk2]);
+
+        assert!(complete, "Cluster ID split 2|2 must be detected");
+        assert_eq!(init, header, "Init segment should be only the header");
+    }
+
+    #[test]
+    fn test_cross_chunk_cluster_detection_1_3_split() {
+        // Cluster ID split: [1F] | [43, B6, 75]
+        let header = vec![0xBB; 5]; // 5 bytes of fake header
+        let mut chunk1 = header.clone();
+        chunk1.push(0x1F); // first byte of Cluster ID
+        let chunk2: Vec<u8> = vec![0x43, 0xB6, 0x75, 0xFF]; // remaining 3 bytes + data
+
+        let (init, complete) = simulate_init_accumulation(&[&chunk1, &chunk2]);
+
+        assert!(complete, "Cluster ID split 1|3 must be detected");
+        assert_eq!(init, header, "Init segment should be only the header");
+    }
+
+    #[test]
+    fn test_cluster_id_entirely_in_one_chunk() {
+        // Cluster ID not straddling — entirely within chunk 2.
+        let chunk1: Vec<u8> = vec![0x1A, 0x45, 0xDF, 0xA3, 0x00];
+        let mut chunk2 = vec![0x00; 4]; // some data
+        chunk2.extend_from_slice(&WEBM_CLUSTER_ID);
+        chunk2.extend_from_slice(&[0xFF; 4]); // cluster data
+
+        let (init, complete) = simulate_init_accumulation(&[&chunk1, &chunk2]);
+
+        assert!(complete, "Cluster ID within a single chunk must be detected");
+        // Init should be chunk1 + the 4 bytes before the Cluster ID in chunk2
+        let mut expected = chunk1.clone();
+        expected.extend_from_slice(&[0x00; 4]);
+        assert_eq!(init, expected);
+    }
+
+    #[test]
+    fn test_empty_packets_skipped_during_init() {
+        // Empty packets between real chunks should not break accumulation.
+        let chunk1: Vec<u8> = vec![0x1A, 0x45, 0xDF, 0xA3];
+        let empty: Vec<u8> = vec![];
+        let mut chunk2 = vec![0x00; 2];
+        chunk2.extend_from_slice(&WEBM_CLUSTER_ID);
+
+        let (init, complete) =
+            simulate_init_accumulation(&[&chunk1, &empty, &empty, &chunk2]);
+
+        assert!(complete, "Init should complete despite empty packets");
+        let mut expected = chunk1.clone();
+        expected.extend_from_slice(&[0x00; 2]);
+        assert_eq!(init, expected);
     }
 }

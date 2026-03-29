@@ -9,6 +9,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { useShallow } from 'zustand/shallow';
 
 import ConfirmModal from '@/components/ConfirmModal';
+import { MSEPlayer } from '@/components/MSEPlayer';
 import { VolumeSlider } from '@/components/OutputPreviewPanel';
 import { PipelineSelectionSection } from '@/components/stream/PipelineSelectionSection';
 import { TelemetryTimeline as TelemetryTimelineComponent } from '@/components/TelemetryTimeline';
@@ -29,6 +30,7 @@ import { useAudioControls } from '@/hooks/useAudioControls';
 import { useStreamViewState } from '@/hooks/useStreamViewState';
 import { useVideoCanvas } from '@/hooks/useVideoCanvas';
 import { useWebSocket } from '@/hooks/useWebSocket';
+import { getApiUrl } from '@/services/base';
 import { listDynamicSamples } from '@/services/samples';
 import { createSession } from '@/services/sessions';
 import { useSchemaStore, ensureSchemasLoaded } from '@/stores/schemaStore';
@@ -359,6 +361,7 @@ const StreamView: React.FC = () => {
     videoRenderer,
     audioEmitter,
     publishBroadcasts,
+    msePath,
     isSecondaryCameraEnabled,
     secondaryCameraStatus,
     setServerUrl,
@@ -373,6 +376,7 @@ const StreamView: React.FC = () => {
     setIsExternalRelay,
     setVideoSourceType,
     setTracks,
+    setMsePath,
     setActiveSession,
     clearActiveSession,
     loadConfig,
@@ -408,6 +412,7 @@ const StreamView: React.FC = () => {
       videoRenderer: s.videoRenderer,
       audioEmitter: s.audioEmitter,
       publishBroadcasts: s.publishBroadcasts,
+      msePath: s.msePath,
       isSecondaryCameraEnabled: s.isSecondaryCameraEnabled,
       secondaryCameraStatus: s.secondaryCameraStatus,
       setServerUrl: s.setServerUrl,
@@ -422,6 +427,7 @@ const StreamView: React.FC = () => {
       setIsExternalRelay: s.setIsExternalRelay,
       setVideoSourceType: s.setVideoSourceType,
       setTracks: s.setTracks,
+      setMsePath: s.setMsePath,
       setActiveSession: s.setActiveSession,
       clearActiveSession: s.clearActiveSession,
       loadConfig: s.loadConfig,
@@ -448,6 +454,63 @@ const StreamView: React.FC = () => {
       document.removeEventListener('webkitfullscreenchange', handler);
     };
   }, []);
+
+  // ── MSE playback state ──
+  // When `msePath` is set and a session is active, fetch from the MSE
+  // endpoint and pass the response stream + content type to MSEPlayer.
+  const [mseStream, setMseStream] = useState<ReadableStream<Uint8Array> | null>(null);
+  const [mseContentType, setMseContentType] = useState<string>('video/webm');
+  const [mseError, setMseError] = useState<string | null>(null);
+  const mseAbortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    if (!activeSessionId || !msePath) {
+      setMseStream(null);
+      setMseError(null);
+      return;
+    }
+
+    const abort = new AbortController();
+    mseAbortRef.current = abort;
+
+    const startMseFetch = async () => {
+      try {
+        const apiUrl = getApiUrl();
+        const url = `${apiUrl}/mse/${activeSessionId}${msePath}`;
+        logger.info(`Starting MSE fetch: ${url}`);
+
+        const response = await fetch(url, {
+          signal: abort.signal,
+          credentials: 'include',
+        });
+
+        if (!response.ok) {
+          throw new Error(`MSE endpoint returned ${response.status}: ${response.statusText}`);
+        }
+
+        const ct = response.headers.get('content-type') || 'video/webm';
+        setMseContentType(ct);
+        setMseStream(response.body);
+        setMseError(null);
+      } catch (err) {
+        if (abort.signal.aborted) return;
+        const msg = err instanceof Error ? err.message : 'Failed to connect to MSE stream';
+        logger.error('MSE fetch failed:', msg);
+        setMseError(msg);
+      }
+    };
+
+    // Small delay to let the pipeline start and register the MSE endpoint.
+    const timer = setTimeout(() => void startMseFetch(), 1500);
+
+    return () => {
+      clearTimeout(timer);
+      abort.abort();
+      mseAbortRef.current = null;
+      setMseStream(null);
+      setMseError(null);
+    };
+  }, [activeSessionId, msePath]);
 
   // Get node definitions for YAML autocomplete
   const nodeDefinitions = useSchemaStore((s) => s.nodeDefinitions);
@@ -553,6 +616,7 @@ const StreamView: React.FC = () => {
             setIsExternalRelay(moqSettings.isExternalRelay);
             setVideoSourceType(moqSettings.videoSourceType);
             setTracks(moqSettings.tracks, moqSettings.publishBroadcasts);
+            setMsePath(moqSettings.msePath ?? null);
           }
         }
       } catch (error) {
@@ -612,6 +676,10 @@ const StreamView: React.FC = () => {
 
           // Pass tracks and broadcast names for multi-broadcast support.
           setTracks(moqSettings.tracks, moqSettings.publishBroadcasts);
+
+          // MSE output path — when set, StreamView renders an MSEPlayer
+          // instead of (or alongside) the MoQ canvas.
+          setMsePath(moqSettings.msePath ?? null);
         }
       }
     },
@@ -626,6 +694,7 @@ const StreamView: React.FC = () => {
       setIsExternalRelay,
       setVideoSourceType,
       setTracks,
+      setMsePath,
     ]
   );
 
@@ -1075,7 +1144,7 @@ const StreamView: React.FC = () => {
             )}
           </Section>
 
-          {isStreaming && videoRenderer && (
+          {isStreaming && videoRenderer && !msePath && (
             <Section>
               <SectionTitle>Video</SectionTitle>
               <VideoContainer ref={videoContainerRef}>
@@ -1142,6 +1211,28 @@ const StreamView: React.FC = () => {
                   </div>
                 )}
               </VideoContainer>
+            </Section>
+          )}
+
+          {msePath && activeSessionId && (
+            <Section>
+              <SectionTitle>Video (MSE)</SectionTitle>
+              {mseError && <ErrorMessage>{mseError}</ErrorMessage>}
+              {mseStream && (
+                <MSEPlayer
+                  stream={mseStream}
+                  contentType={mseContentType}
+                  onError={(msg) => {
+                    logger.error('MSE playback error:', msg);
+                    setMseError(msg);
+                  }}
+                />
+              )}
+              {!mseStream && !mseError && (
+                <div style={{ color: 'var(--sk-text-muted)', fontSize: '13px', padding: '12px 0' }}>
+                  Connecting to MSE stream...
+                </div>
+              )}
             </Section>
           )}
 

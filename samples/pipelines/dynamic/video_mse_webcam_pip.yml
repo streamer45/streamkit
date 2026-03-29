@@ -17,6 +17,10 @@ client:
         source: microphone
       - kind: video
         source: camera
+  watch:
+    mse_path: /video
+    audio: true
+    video: true
 
 nodes:
   colorbars_bg:

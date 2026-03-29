@@ -8,6 +8,10 @@ description: >
   No MoQ output — validates MSE endpoint in isolation.
   Access the stream at GET /mse/{session_id}/video
 mode: dynamic
+client:
+  watch:
+    mse_path: /video
+    video: true
 
 nodes:
   colorbars_bg:
