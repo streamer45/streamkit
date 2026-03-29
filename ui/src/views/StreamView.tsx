@@ -604,12 +604,8 @@ const StreamView: React.FC = () => {
           if (moqSettings) {
             const resolvedUrl = resolveServerUrl(moqSettings);
             if (resolvedUrl) setServerUrl(resolvedUrl);
-            if (moqSettings.inputBroadcast) {
-              setInputBroadcast(moqSettings.inputBroadcast);
-            }
-            if (moqSettings.outputBroadcast) {
-              setOutputBroadcast(moqSettings.outputBroadcast);
-            }
+            setInputBroadcast(moqSettings.inputBroadcast ?? '');
+            setOutputBroadcast(moqSettings.outputBroadcast ?? '');
             setEnablePublish(moqSettings.hasInputBroadcast);
             setPipelineMediaTypes(moqSettings.needsAudioInput, moqSettings.needsVideoInput);
             setPipelineOutputTypes(moqSettings.outputsAudio, moqSettings.outputsVideo);
@@ -641,44 +637,22 @@ const StreamView: React.FC = () => {
         viewState.setSelectedTemplateId(templateId);
         viewState.setPipelineYaml(template.yaml);
 
-        // Auto-adjust connection settings based on moq_peer node in the pipeline
+        // Auto-adjust connection settings based on moq_peer node in the pipeline.
+        // Always reset broadcast/relay values so stale state from a previous
+        // template doesn't leak into the new selection (e.g. switching from a
+        // MoQ pipeline to an MSE-only pipeline must clear outputBroadcast).
         const moqSettings = extractMoqPeerSettings(template.yaml);
         if (moqSettings) {
           const resolvedUrl = resolveServerUrl(moqSettings);
           if (resolvedUrl) setServerUrl(resolvedUrl);
-          // Update broadcast names if specified
-          if (moqSettings.inputBroadcast) {
-            setInputBroadcast(moqSettings.inputBroadcast);
-          }
-          if (moqSettings.outputBroadcast) {
-            setOutputBroadcast(moqSettings.outputBroadcast);
-          }
-          // Auto-toggle publish based on whether pipeline expects a publisher.
-          // Receive-only pipelines (no input_broadcast) skip microphone access.
+          setInputBroadcast(moqSettings.inputBroadcast ?? '');
+          setOutputBroadcast(moqSettings.outputBroadcast ?? '');
           setEnablePublish(moqSettings.hasInputBroadcast);
-
-          // Tell the store which devices the pipeline actually needs so that
-          // connect() only requests the relevant browser permissions.
           setPipelineMediaTypes(moqSettings.needsAudioInput, moqSettings.needsVideoInput);
-
-          // Tell the store which media types the pipeline outputs to subscribers
-          // so that connect() only creates the relevant watch-side components.
           setPipelineOutputTypes(moqSettings.outputsAudio, moqSettings.outputsVideo);
-
-          // Flag whether this pipeline uses an external relay so that
-          // performConnect can skip the broadcast-announcement wait in
-          // gateway mode.
           setIsExternalRelay(moqSettings.isExternalRelay);
-
-          // Set the video source type so the connect flow creates the right
-          // capture source (camera vs screen).
           setVideoSourceType(moqSettings.videoSourceType);
-
-          // Pass tracks and broadcast names for multi-broadcast support.
           setTracks(moqSettings.tracks, moqSettings.publishBroadcasts);
-
-          // MSE output path — when set, StreamView renders an MSEPlayer
-          // instead of (or alongside) the MoQ canvas.
           setMsePath(moqSettings.msePath ?? null);
         }
       }
@@ -730,8 +704,7 @@ const StreamView: React.FC = () => {
       // or an output broadcast to subscribe to).  MSE-only pipelines have
       // none of these and should skip the MoQ connection entirely.
       const hasMoqTransport = Boolean(
-        useStreamStore.getState().outputBroadcast ||
-          useStreamStore.getState().inputBroadcast
+        useStreamStore.getState().outputBroadcast || useStreamStore.getState().inputBroadcast
       );
       if (status === 'disconnected' && serverUrl.trim() && hasMoqTransport) {
         void (async () => {
