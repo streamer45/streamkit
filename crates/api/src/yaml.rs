@@ -745,7 +745,11 @@ pub fn lint_client_section(client: &ClientSection, mode: EngineMode) -> Vec<Clie
     }
 
     // Rule 3: missing gateway
-    if (client.publish.is_some() || client.watch.is_some())
+    // MSE-only watch configs (mse_path set, no broadcast) don't need a MoQ
+    // gateway — they fetch chunked HTTP instead.  Only count watch as needing
+    // a gateway when it declares a MoQ broadcast.
+    let watch_needs_gateway = client.watch.as_ref().is_some_and(|w| w.broadcast.is_some());
+    if (client.publish.is_some() || watch_needs_gateway)
         && client.gateway_path.is_none()
         && client.relay_url.is_none()
     {
@@ -1176,8 +1180,11 @@ pub fn lint_client_against_nodes(
     }
 
     // Rule 17: watch but no MoQ publisher/peer
-    // Browser watch = server publishes → need moq::peer or moq::publisher
-    if client.watch.is_some() && !has_moq_peer && !has_moq_publisher {
+    // Browser watch = server publishes → need moq::peer or moq::publisher.
+    // MSE-only watch configs (mse_path set, no broadcast) use
+    // transport::http::mse instead of MoQ, so skip this check for them.
+    let watch_needs_moq = client.watch.as_ref().is_some_and(|w| w.broadcast.is_some());
+    if watch_needs_moq && !has_moq_peer && !has_moq_publisher {
         warnings.push(ClientLintWarning {
             rule: "watch-no-transport",
             message: "client declares `watch` but no `transport::moq::peer` or \
@@ -2548,6 +2555,45 @@ client:
         let nodes: Vec<NodeInfo<'_>> = vec![]; // no MoQ nodes
         let warnings = lint_client_against_nodes(&c, EngineMode::Dynamic, &nodes);
         assert!(warnings.iter().any(|w| w.rule == "watch-no-transport"));
+    }
+
+    // Rule 17 — watch-no-transport (MSE-only should NOT trigger)
+    #[test]
+    fn test_lint_watch_no_transport_mse_only() {
+        let c = ClientSection {
+            watch: Some(WatchConfig {
+                broadcast: None,
+                mse_path: Some("/video".into()),
+                audio: false,
+                video: true,
+            }),
+            ..Default::default()
+        };
+        let nodes: Vec<NodeInfo<'_>> = vec![]; // no MoQ nodes
+        let warnings = lint_client_against_nodes(&c, EngineMode::Dynamic, &nodes);
+        assert!(
+            !warnings.iter().any(|w| w.rule == "watch-no-transport"),
+            "MSE-only watch should not trigger watch-no-transport: {warnings:?}"
+        );
+    }
+
+    // Rule 3 — missing-gateway (MSE-only should NOT trigger)
+    #[test]
+    fn test_lint_missing_gateway_mse_only() {
+        let c = ClientSection {
+            watch: Some(WatchConfig {
+                broadcast: None,
+                mse_path: Some("/video".into()),
+                audio: false,
+                video: true,
+            }),
+            ..Default::default()
+        };
+        let warnings = lint_client_section(&c, EngineMode::Dynamic);
+        assert!(
+            !warnings.iter().any(|w| w.rule == "missing-gateway"),
+            "MSE-only watch should not trigger missing-gateway: {warnings:?}"
+        );
     }
 
     // Rule 18 — gateway-path-mismatch
