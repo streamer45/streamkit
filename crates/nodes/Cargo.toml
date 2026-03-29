@@ -82,7 +82,7 @@ smallvec = { version = "1.13", optional = true, features = ["serde"] }
 ts-rs = { version = "12.0.1", optional = true }
 
 # GPU compositing (optional, behind `gpu` feature)
-wgpu = { version = "25", optional = true, default-features = false, features = ["vulkan", "metal", "dx12", "wgsl"] }
+wgpu = { version = "29", optional = true, default-features = false, features = ["vulkan", "metal", "dx12", "wgsl"] }
 pollster = { version = "0.4", optional = true }
 bytemuck = { version = "1.22", optional = true, features = ["derive"] }
 

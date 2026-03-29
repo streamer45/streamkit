@@ -19,7 +19,7 @@ use streamkit_core::frame_pool::PooledVideoData;
 use streamkit_core::types::PixelFormat;
 
 use super::config::{CropShape, Rect};
-use super::gpu::{GpuContext, GpuMode};
+use super::gpu::{self, GpuContext, GpuMode, GpuPathState};
 use super::kernel::LayerSnapshot;
 use super::overlay::DecodedOverlay;
 
@@ -698,4 +698,202 @@ fn gpu_should_use_gpu_heuristic() {
         should_use_gpu(320, 240, &[Some(rotated)], &[], &[]),
         "Rotated layer should prefer GPU"
     );
+}
+
+// ── Phase 2 tests ───────────────────────────────────────────────────────────
+
+#[test]
+fn gpu_multi_frame_pooling() {
+    // Composite 10 frames consecutively with the same scene.
+    // Pool reuse should produce identical output to a single-frame baseline.
+    let mut ctx = require_gpu();
+    let canvas_w = 320;
+    let canvas_h = 240;
+
+    let layer_data = solid_rgba(canvas_w, canvas_h, 200, 100, 50, 255);
+    let layers = vec![Some(make_layer(layer_data.clone(), canvas_w, canvas_h, None))];
+
+    // Single-frame baseline.
+    let (baseline, _) = ctx.composite_frame_gpu(canvas_w, canvas_h, &layers, &[], &[], None, None);
+    let baseline_avg = avg_centre_pixel(baseline.as_slice(), canvas_w, canvas_h);
+
+    // Composite 9 more frames and verify each matches the baseline.
+    for frame in 1..10 {
+        let (output, _) =
+            ctx.composite_frame_gpu(canvas_w, canvas_h, &layers, &[], &[], None, None);
+        let avg = avg_centre_pixel(output.as_slice(), canvas_w, canvas_h);
+        assert!(
+            (avg.0 - baseline_avg.0).abs() < 2.0
+                && (avg.1 - baseline_avg.1).abs() < 2.0
+                && (avg.2 - baseline_avg.2).abs() < 2.0,
+            "Frame {frame} output diverged from baseline: {avg:?} vs {baseline_avg:?}"
+        );
+    }
+}
+
+#[test]
+fn gpu_pool_dimension_change() {
+    // Composite at 320×240, then 640×480, then back to 320×240.
+    // Pool should handle dimension changes correctly.
+    let mut ctx = require_gpu();
+
+    // First size: 320×240.
+    let small_data = solid_rgba(320, 240, 255, 0, 0, 255);
+    let small_layers = vec![Some(make_layer(small_data, 320, 240, None))];
+    let (out1, _) = ctx.composite_frame_gpu(320, 240, &small_layers, &[], &[], None, None);
+    let avg1 = avg_centre_pixel(out1.as_slice(), 320, 240);
+
+    // Second size: 640×480.
+    let big_data = solid_rgba(640, 480, 0, 255, 0, 255);
+    let big_layers = vec![Some(make_layer(big_data, 640, 480, None))];
+    let (out2, _) = ctx.composite_frame_gpu(640, 480, &big_layers, &[], &[], None, None);
+    let avg2 = avg_centre_pixel(out2.as_slice(), 640, 480);
+
+    // Third: back to 320×240 with original colour.
+    let small_data2 = solid_rgba(320, 240, 255, 0, 0, 255);
+    let small_layers2 = vec![Some(make_layer(small_data2, 320, 240, None))];
+    let (out3, _) = ctx.composite_frame_gpu(320, 240, &small_layers2, &[], &[], None, None);
+    let avg3 = avg_centre_pixel(out3.as_slice(), 320, 240);
+
+    // Verify colours are correct at each stage.
+    assert!(avg1.0 > 200.0, "First frame should be red: {avg1:?}");
+    assert!(avg2.1 > 200.0, "Second frame should be green: {avg2:?}");
+    assert!(avg3.0 > 200.0, "Third frame should be red again: {avg3:?}");
+
+    // First and third frames should match closely (same scene).
+    assert!(
+        (avg1.0 - avg3.0).abs() < 2.0 && (avg1.1 - avg3.1).abs() < 2.0,
+        "Return to original size should produce same output: {avg1:?} vs {avg3:?}"
+    );
+}
+
+#[test]
+fn gpu_yuv_batch_correctness() {
+    // Multi-YUV-layer scene: verify batched YUV→RGBA submission
+    // produces correct output (no corruption from shared encoder).
+    let mut ctx = require_gpu();
+    let canvas_w = 320;
+    let canvas_h = 240;
+
+    // Two I420 layers with different colours, composited together.
+    let yuv_data1 = solid_i420(canvas_w, canvas_h, 235, 128, 128); // white-ish
+    let yuv_data2 = solid_i420(canvas_w, canvas_h, 16, 128, 128); // black-ish
+
+    let layer1 = LayerSnapshot {
+        data: Arc::new(PooledVideoData::from_vec(yuv_data1)),
+        width: canvas_w,
+        height: canvas_h,
+        pixel_format: PixelFormat::I420,
+        rect: None,
+        opacity: 1.0,
+        z_index: 0,
+        rotation_degrees: 0.0,
+        mirror_horizontal: false,
+        mirror_vertical: false,
+        crop_zoom: 1.0,
+        crop_x: 0.5,
+        crop_y: 0.5,
+        crop_shape: CropShape::Rect,
+    };
+    let layer2 = LayerSnapshot {
+        data: Arc::new(PooledVideoData::from_vec(yuv_data2)),
+        width: canvas_w,
+        height: canvas_h,
+        pixel_format: PixelFormat::I420,
+        rect: None,
+        opacity: 1.0,
+        z_index: 1,
+        rotation_degrees: 0.0,
+        mirror_horizontal: false,
+        mirror_vertical: false,
+        crop_zoom: 1.0,
+        crop_x: 0.5,
+        crop_y: 0.5,
+        crop_shape: CropShape::Rect,
+    };
+
+    let layers = vec![Some(layer1), Some(layer2)];
+    let (output, fmt) = ctx.composite_frame_gpu(canvas_w, canvas_h, &layers, &[], &[], None, None);
+
+    // Output should be valid RGBA8.
+    assert_eq!(fmt, PixelFormat::Rgba8);
+    assert_eq!(output.as_slice().len(), (canvas_w as usize) * (canvas_h as usize) * 4);
+
+    // The top layer (z=1) is black-ish — centre pixels should be dark.
+    let avg = avg_centre_pixel(output.as_slice(), canvas_w, canvas_h);
+    assert!(
+        avg.0 < 40.0 && avg.1 < 40.0 && avg.2 < 40.0,
+        "Top YUV layer should be dark, got {avg:?}"
+    );
+}
+
+#[test]
+fn gpu_hysteresis_stability() {
+    // Unit test: verify should_use_gpu_with_state requires N consecutive
+    // frames voting opposite before flipping.
+
+    // Seed with CPU (false) to test the flip-to-GPU path.
+    let mut state = GpuPathState::new_seeded(false);
+
+    // Build a scene that votes GPU.
+    let l1 = make_layer(solid_rgba(320, 240, 0, 0, 0, 255), 320, 240, None);
+    let l2 = make_layer(solid_rgba(320, 240, 0, 0, 0, 255), 320, 240, None);
+    let gpu_scene: Vec<Option<LayerSnapshot>> = vec![Some(l1), Some(l2)];
+
+    // First 4 frames voting GPU should NOT flip (hysteresis = 5).
+    for _ in 0..4 {
+        let result = gpu::should_use_gpu_with_state(&mut state, 320, 240, &gpu_scene, &[], &[]);
+        assert!(!result, "Should stay on CPU during hysteresis window");
+    }
+
+    // 5th consecutive frame should flip to GPU.
+    let result = gpu::should_use_gpu_with_state(&mut state, 320, 240, &gpu_scene, &[], &[]);
+    assert!(result, "Should flip to GPU after 5 consecutive votes");
+
+    // Now on GPU. Build a scene that votes CPU.
+    let cpu_layer = make_layer(solid_rgba(320, 240, 0, 0, 0, 255), 320, 240, None);
+    let cpu_scene: Vec<Option<LayerSnapshot>> = vec![Some(cpu_layer)];
+
+    // Interleave: vote CPU, then vote GPU — should reset the counter.
+    for _ in 0..3 {
+        gpu::should_use_gpu_with_state(&mut state, 320, 240, &cpu_scene, &[], &[]);
+    }
+    // Interrupt with a GPU vote (re-add two layers).
+    let l3 = make_layer(solid_rgba(320, 240, 0, 0, 0, 255), 320, 240, None);
+    let l4 = make_layer(solid_rgba(320, 240, 0, 0, 0, 255), 320, 240, None);
+    let gpu_scene2: Vec<Option<LayerSnapshot>> = vec![Some(l3), Some(l4)];
+    let result = gpu::should_use_gpu_with_state(&mut state, 320, 240, &gpu_scene2, &[], &[]);
+    assert!(result, "Interruption should reset counter; stay on GPU");
+}
+
+#[test]
+fn gpu_hysteresis_seeded_skips_warmup() {
+    // Verify that seeding with `true` avoids the warm-up period:
+    // on the very first frame the GPU path is used immediately.
+    let mut state = GpuPathState::new_seeded(true);
+
+    let l1 = make_layer(solid_rgba(320, 240, 0, 0, 0, 255), 320, 240, None);
+    let l2 = make_layer(solid_rgba(320, 240, 0, 0, 0, 255), 320, 240, None);
+    let gpu_scene: Vec<Option<LayerSnapshot>> = vec![Some(l1), Some(l2)];
+
+    // First frame should immediately use GPU — no warm-up.
+    let result = gpu::should_use_gpu_with_state(&mut state, 320, 240, &gpu_scene, &[], &[]);
+    assert!(result, "Seeded state should use GPU on the very first frame");
+}
+
+#[test]
+fn gpu_runtime_mode_switch() {
+    // Verify GpuMode::from_u8 roundtrips correctly for all variants.
+    assert_eq!(GpuMode::from_u8(GpuMode::Auto as u8), GpuMode::Auto);
+    assert_eq!(GpuMode::from_u8(GpuMode::ForceGpu as u8), GpuMode::ForceGpu);
+    assert_eq!(GpuMode::from_u8(GpuMode::ForceCpu as u8), GpuMode::ForceCpu);
+
+    // Unknown values should map to Auto.
+    assert_eq!(GpuMode::from_u8(3), GpuMode::Auto);
+    assert_eq!(GpuMode::from_u8(255), GpuMode::Auto);
+
+    // Verify the repr(u8) values are stable.
+    assert_eq!(GpuMode::Auto as u8, 0);
+    assert_eq!(GpuMode::ForceGpu as u8, 1);
+    assert_eq!(GpuMode::ForceCpu as u8, 2);
 }

@@ -296,16 +296,16 @@ pub struct CompositorConfig {
     #[serde(default)]
     pub output_format: Option<String>,
     /// GPU compositing preference.  Default `None` (treated as `"auto"`).
-    /// - `"auto"`: use GPU when available and scene complexity warrants it
-    /// - `"gpu"`: force GPU compositing (fall back to CPU if unavailable)
+    /// - `"auto"` (default): probe for GPU at startup; use it when scene
+    ///   complexity warrants (multi-layer, high-res, effects)
+    /// - `"gpu"`: force GPU compositing for every frame (warn and fall back
+    ///   to CPU if unavailable)
     /// - `"cpu"`: force CPU compositing (ignore GPU even if available)
     ///
-    /// **Note:** this is read once at compositor startup and cannot be
-    /// changed at runtime via `UpdateParams` (GPU context init/teardown
-    /// is too expensive to toggle per-frame).
-    ///
-    /// Requires the `gpu` Cargo feature to be enabled; without it this
-    /// field is accepted but ignored.
+    /// When unset or `"auto"`, the compositor initialises the GPU at startup
+    /// and uses a per-frame heuristic to decide whether each frame benefits
+    /// from GPU acceleration.  Simple single-layer scenes use the faster CPU
+    /// memcpy path.  Set to `"cpu"` to explicitly disable GPU acceleration.
     #[serde(default)]
     pub gpu_mode: Option<String>,
 }
