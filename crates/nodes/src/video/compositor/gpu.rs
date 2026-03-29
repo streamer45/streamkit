@@ -1512,7 +1512,8 @@ const fn align_up(value: usize, alignment: usize) -> usize {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum GpuMode {
-    /// Use GPU automatically when detected (default).
+    /// Probe for GPU at startup; use it when scene complexity warrants
+    /// (multi-layer, high-res, effects).  Simple scenes use CPU.
     Auto = 0,
     /// Force GPU compositing (log warning and fall back to CPU if unavailable).
     ForceGpu = 1,

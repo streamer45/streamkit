@@ -576,7 +576,7 @@ impl ProcessorNode for CompositorNode {
                 None
             } else if let Some(ctx) = gpu::GpuContext::try_init() {
                 tracing::info!(
-                    "GPU detected — compositor will use GPU acceleration (gpu_mode={:?})",
+                    "GPU detected and ready — will be used when scene complexity warrants it (gpu_mode={:?})",
                     initial_gpu_mode
                 );
                 Some(ctx)
@@ -592,6 +592,22 @@ impl ProcessorNode for CompositorNode {
                 None
             };
 
+            // Hysteresis state for Auto mode: prevents GPU↔CPU thrashing
+            // when scene complexity oscillates near the threshold.
+            #[cfg(feature = "gpu")]
+            let initial_should_gpu = gpu_ctx.is_some()
+                && gpu::should_use_gpu(
+                    config.width,
+                    config.height,
+                    &[], // no layers yet — seed from canvas size alone
+                    &[],
+                    &[],
+                );
+            #[cfg(feature = "gpu")]
+            let mut gpu_path_state = gpu::GpuPathState::new_seeded(initial_should_gpu);
+            #[cfg(feature = "gpu")]
+            let mut last_gpu_mode = initial_gpu_mode;
+
             while let Some(work) = work_rx.blocking_recv() {
                 // Clear the entire conversion cache when the slot
                 // layout changed so that stale RGBA buffers are freed.
@@ -605,25 +621,41 @@ impl ProcessorNode for CompositorNode {
                     let current_gpu_mode =
                         gpu::GpuMode::from_u8(gpu_mode_thread.load(Ordering::Relaxed));
 
-                    // If mode changed to ForceCpu at runtime, skip GPU.
-                    // If mode changed away from ForceCpu and we haven't
-                    // initialized the GPU yet, try now.
-                    if current_gpu_mode != gpu::GpuMode::ForceCpu && gpu_ctx.is_none() {
-                        if let Some(ctx) = gpu::GpuContext::try_init() {
-                            tracing::info!(
-                                "GPU compositing backend initialized after runtime mode change"
-                            );
-                            gpu_ctx = Some(ctx);
-                        } else {
-                            tracing::warn!(
-                                "GPU context initialization failed after runtime mode change to {current_gpu_mode:?}"
-                            );
+                    // Only attempt GPU (re-)initialisation when the mode
+                    // actually changed at runtime — not every frame.
+                    if current_gpu_mode != last_gpu_mode {
+                        last_gpu_mode = current_gpu_mode;
+                        if current_gpu_mode != gpu::GpuMode::ForceCpu && gpu_ctx.is_none() {
+                            if let Some(ctx) = gpu::GpuContext::try_init() {
+                                tracing::info!(
+                                    "GPU compositing backend initialized after runtime mode change to {current_gpu_mode:?}"
+                                );
+                                gpu_ctx = Some(ctx);
+                            } else {
+                                tracing::warn!(
+                                    "GPU context initialization failed after runtime mode change to {current_gpu_mode:?}"
+                                );
+                            }
                         }
                     }
 
-                    // GPU is used automatically whenever available, unless
-                    // explicitly disabled via gpu_mode=cpu.
-                    let use_gpu = gpu_ctx.is_some() && current_gpu_mode != gpu::GpuMode::ForceCpu;
+                    // Decide whether to use GPU for this frame based on mode
+                    // and scene complexity.
+                    let use_gpu = match current_gpu_mode {
+                        gpu::GpuMode::ForceCpu => false,
+                        gpu::GpuMode::ForceGpu => gpu_ctx.is_some(),
+                        gpu::GpuMode::Auto => {
+                            gpu_ctx.is_some()
+                                && gpu::should_use_gpu_with_state(
+                                    &mut gpu_path_state,
+                                    work.canvas_w,
+                                    work.canvas_h,
+                                    &work.layers,
+                                    &work.image_overlays,
+                                    &work.text_overlays,
+                                )
+                        },
+                    };
 
                     if use_gpu {
                         // GPU path: compositing + optional format conversion
