@@ -1551,14 +1551,19 @@ impl GpuMode {
 /// Decide whether to use GPU compositing for this frame based on scene
 /// complexity.  Used when `GpuMode::Auto` is selected.
 ///
-/// GPU wins for: multi-layer, high-resolution, effects (rotation/crop).
-/// CPU wins for: single opaque layer at identity scale (memcpy fast path).
+/// GPU wins for: multi-layer, high-resolution, effects (rotation/crop),
+/// or YUV output (the GPU `rgba_to_yuv.wgsl` shader eliminates the
+/// expensive CPU RGBA→NV12/I420 conversion — ~14% of CPU time in
+/// profiled pipelines).
+/// CPU wins for: single opaque layer at identity scale with RGBA output
+/// (memcpy fast path).
 pub fn should_use_gpu(
     canvas_w: u32,
     canvas_h: u32,
     layers: &[Option<LayerSnapshot>],
     image_overlays: &[Arc<DecodedOverlay>],
     text_overlays: &[Arc<DecodedOverlay>],
+    output_format: Option<PixelFormat>,
 ) -> bool {
     let visible_layers = layers.iter().filter(|l| l.is_some()).count();
     let total_items = visible_layers + image_overlays.len() + text_overlays.len();
@@ -1567,9 +1572,15 @@ pub fn should_use_gpu(
         l.rotation_degrees.abs() > 0.01 || l.crop_zoom > 1.01 || l.crop_shape != CropShape::Rect
     });
 
+    // When the output needs YUV (NV12/I420), the GPU path eliminates the
+    // CPU RGBA→YUV conversion entirely — the `rgba_to_yuv.wgsl` compute
+    // shader handles it on the GPU and the CPU only receives the
+    // already-converted buffer from the readback.
+    let needs_yuv_output = matches!(output_format, Some(PixelFormat::Nv12 | PixelFormat::I420));
+
     // GPU is worthwhile when there's enough work to amortise
     // the upload + readback overhead (~0.5ms for 1080p).
-    total_items >= 2 || total_pixels >= 1920 * 1080 || has_effects
+    total_items >= 2 || total_pixels >= 1920 * 1080 || has_effects || needs_yuv_output
 }
 
 // ── GPU/CPU path hysteresis ─────────────────────────────────────────────────
@@ -1615,8 +1626,10 @@ pub fn should_use_gpu_with_state(
     layers: &[Option<LayerSnapshot>],
     image_overlays: &[Arc<DecodedOverlay>],
     text_overlays: &[Arc<DecodedOverlay>],
+    output_format: Option<PixelFormat>,
 ) -> bool {
-    let vote_gpu = should_use_gpu(canvas_w, canvas_h, layers, image_overlays, text_overlays);
+    let vote_gpu =
+        should_use_gpu(canvas_w, canvas_h, layers, image_overlays, text_overlays, output_format);
 
     if vote_gpu == state.last_used_gpu {
         // Same path as last frame — reset the flip counter.
