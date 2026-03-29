@@ -559,6 +559,10 @@ impl ProcessorNode for CompositorNode {
         ) as u8));
         #[cfg(feature = "gpu")]
         let gpu_mode_thread = Arc::clone(&gpu_mode_atomic);
+        #[cfg(feature = "gpu")]
+        let initial_canvas_w = self.config.width;
+        #[cfg(feature = "gpu")]
+        let initial_canvas_h = self.config.height;
 
         let composite_thread = tokio::task::spawn_blocking(move || {
             // Per-slot cache for YUV→RGBA conversions. Avoids redundant
@@ -597,8 +601,8 @@ impl ProcessorNode for CompositorNode {
             #[cfg(feature = "gpu")]
             let initial_should_gpu = gpu_ctx.is_some()
                 && gpu::should_use_gpu(
-                    config.width,
-                    config.height,
+                    initial_canvas_w,
+                    initial_canvas_h,
                     &[], // no layers yet — seed from canvas size alone
                     &[],
                     &[],
