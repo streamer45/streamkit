@@ -479,7 +479,8 @@ const StreamView: React.FC = () => {
     const startMseFetch = async () => {
       try {
         const apiUrl = getApiUrl();
-        const url = `${apiUrl}/mse/${activeSessionId}${msePath}`;
+        const normalizedMsePath = msePath.startsWith('/') ? msePath : `/${msePath}`;
+        const url = `${apiUrl}/mse/${activeSessionId}${normalizedMsePath}`;
         logger.info(`Starting MSE fetch: ${url}`);
 
         const response = await fetch(url, {

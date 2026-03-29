@@ -1042,7 +1042,7 @@ async function connectWatchPath(
     abortSignal
   );
 
-  if (decision.shouldWatch) {
+  if (decision.shouldWatch && state.outputBroadcast) {
     // When publishing to an external relay, the skit pipeline needs time to
     // discover input tracks, build the graph, and start publishing output.
     // Wait for the output broadcast to be announced on the relay before
