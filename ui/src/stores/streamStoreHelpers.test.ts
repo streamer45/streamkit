@@ -682,6 +682,11 @@ describe('buildVideoEncoderConfig', () => {
     expect(result.encoderConfig.codec).toBe('vp09');
   });
 
+  it('maps av1 to av01.0.01M.08 WebCodecs codec string', () => {
+    const result = buildVideoEncoderConfig(makeTrack({ codec: 'av1' }));
+    expect(result.encoderConfig.codec).toBe('av01.0.01M.08');
+  });
+
   it('throws for unrecognized codec values', () => {
     expect(() => buildVideoEncoderConfig(makeTrack({ codec: 'h264' }))).toThrow(
       /Unsupported video codec 'h264'/
@@ -788,6 +793,16 @@ describe('validateTrackCodecs', () => {
   it('does not warn for recognized video codec vp9', () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     validateTrackCodecs([makeTrack({ codec: 'vp9' })]);
+    const unrecognizedCalls = logSpy.mock.calls.filter((args) =>
+      args.some((a) => typeof a === 'string' && a.includes('unrecognized'))
+    );
+    expect(unrecognizedCalls).toHaveLength(0);
+    logSpy.mockRestore();
+  });
+
+  it('does not warn for recognized video codec av1', () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    validateTrackCodecs([makeTrack({ codec: 'av1' })]);
     const unrecognizedCalls = logSpy.mock.calls.filter((args) =>
       args.some((a) => typeof a === 'string' && a.includes('unrecognized'))
     );
