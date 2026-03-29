@@ -1635,7 +1635,7 @@ mod tests {
             return;
         };
         let (device, _queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default(), None))
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
                 .expect("failed to create device");
 
         let mut pool = TexturePool::new();
@@ -1692,7 +1692,7 @@ mod tests {
             return;
         };
         let (device, _queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default(), None))
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
                 .expect("failed to create device");
 
         let mut pool = BufferPool::new();
