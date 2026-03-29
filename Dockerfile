@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     g++ \
     cmake \
+    nasm \
     libopus-dev \
     libvpx-dev \
     libclang-dev \
@@ -70,6 +71,7 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     g++ \
     cmake \
+    nasm \
     libopus-dev \
     libvpx-dev \
     libclang-dev \

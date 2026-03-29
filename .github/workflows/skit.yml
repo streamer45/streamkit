@@ -36,8 +36,8 @@ jobs:
           bun install --frozen-lockfile
           bun run build
 
-      - name: Install system dependencies (libvpx for VP9 video support)
-        run: sudo apt-get update && sudo apt-get install -y libvpx-dev
+      - name: Install system dependencies (libvpx for VP9, nasm for AV1 assembly)
+        run: sudo apt-get update && sudo apt-get install -y libvpx-dev nasm
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
@@ -92,8 +92,8 @@ jobs:
           bun install --frozen-lockfile
           bun run build
 
-      - name: Install system dependencies (libvpx for VP9 video support)
-        run: sudo apt-get update && sudo apt-get install -y libvpx-dev
+      - name: Install system dependencies (libvpx for VP9, nasm for AV1 assembly)
+        run: sudo apt-get update && sudo apt-get install -y libvpx-dev nasm
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
@@ -115,7 +115,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libvpx-dev cmake pkg-config libopus-dev
+        run: sudo apt-get update && sudo apt-get install -y libvpx-dev nasm cmake pkg-config libopus-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
@@ -165,8 +165,8 @@ jobs:
           bun install --frozen-lockfile
           bun run build
 
-      - name: Install system dependencies (libvpx for VP9 video support)
-        run: sudo apt-get update && sudo apt-get install -y libvpx-dev
+      - name: Install system dependencies (libvpx for VP9, nasm for AV1 assembly)
+        run: sudo apt-get update && sudo apt-get install -y libvpx-dev nasm
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master

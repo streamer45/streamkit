@@ -46,8 +46,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install system dependencies (libvpx for VP9 video support)
-        run: sudo apt-get update && sudo apt-get install -y libvpx-dev
+      - name: Install system dependencies (libvpx for VP9, nasm for AV1 assembly)
+        run: sudo apt-get update && sudo apt-get install -y libvpx-dev nasm
 
       - name: Build skit (debug)
         run: cargo build -p streamkit-server --bin skit
