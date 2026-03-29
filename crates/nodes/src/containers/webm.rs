@@ -484,6 +484,10 @@ struct MuxTracks {
 /// When `video_is_av1` is `true` the video codec string is `"av1"` instead
 /// of `"vp9"`.  This is needed for MSE consumers that initialise
 /// SourceBuffers from the MIME type.
+///
+/// TODO: A future `video_codec` config option on the muxer node could
+/// eliminate the need for manual `content_type` overrides in pipeline
+/// configs when using AV1 instead of VP9.
 const fn webm_content_type(has_audio: bool, has_video: bool, video_is_av1: bool) -> &'static str {
     match (has_audio, has_video, video_is_av1) {
         (true, true, false) => "video/webm; codecs=\"vp9,opus\"",

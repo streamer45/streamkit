@@ -60,6 +60,12 @@ const DAV1D_EAGAIN: i32 = -11;
 /// `spawn_blocking` thread and hang the tokio runtime on shutdown.
 const MAX_EAGAIN_EMPTY_RETRIES: u32 = 1000;
 
+/// After this many consecutive empty EAGAIN retries, switch from
+/// `thread::yield_now()` to `thread::sleep(1ms)` to avoid a tight
+/// spin-loop on lightly-loaded systems where `yield_now` returns
+/// immediately.
+const EAGAIN_YIELD_THRESHOLD: u32 = 10;
+
 // ---------------------------------------------------------------------------
 // Configuration structs
 // ---------------------------------------------------------------------------
@@ -192,7 +198,7 @@ impl ProcessorNode for Av1DecoderNode {
                 }
 
                 let decode_start_time = Instant::now();
-                let result = decoder.decode_packet(&data, metadata, video_pool.as_ref());
+                let result = decoder.decode_packet(&data, metadata.as_ref(), video_pool.as_ref());
                 decode_duration_histogram.record(decode_start_time.elapsed().as_secs_f64(), &[]);
 
                 match result {
@@ -399,6 +405,11 @@ impl ProcessorNode for Av1EncoderNode {
                             current_dimensions = Some(frame_dimensions);
                         },
                         Err(err) => {
+                            tracing::warn!(
+                                width = frame.width,
+                                height = frame.height,
+                                "AV1 encoder re-creation failed, dropping frame: {err}"
+                            );
                             let _ = result_tx.blocking_send(Err(err));
                             continue;
                         },
@@ -517,22 +528,10 @@ struct Av1Decoder {
     ctx: rav1d::include::dav1d::dav1d::Dav1dContext,
 }
 
-// SAFETY: `Dav1dContext` is not `Send` in rav1d because it contains raw
-// pointers internally.  We assert `Send` here under a narrow usage contract:
-//
-// 1. The `Av1Decoder` is **created** inside `tokio::task::spawn_blocking`
-//    (see `Av1DecoderNode::run`).
-// 2. Once created, it **never moves** to another thread — all method calls
-//    (`decode_packet`, `drain_pictures`, `flush`) happen on the same
-//    blocking-thread that owns it.
-// 3. The `Send` impl is required only so that the `spawn_blocking` closure
-//    (which captures `Av1Decoder::new`'s result) can be transferred to the
-//    blocking-thread pool.  After that initial transfer, no further
-//    cross-thread moves occur.
-//
-// This is the same single-owner pattern used by the C dav1d library: one
-// thread owns the context and all calls are serialised on that thread.
-unsafe impl Send for Av1Decoder {}
+// `Av1Decoder` is intentionally `!Send` (inherits from `Dav1dContext`).
+// It is created and used entirely inside a single `spawn_blocking` closure
+// in `Av1DecoderNode::run`, so no `Send` bound is required — it is a local
+// variable, not a captured value.
 
 impl Av1Decoder {
     fn new(threads: u32) -> Result<Self, String> {
@@ -551,10 +550,7 @@ impl Av1Decoder {
             );
         }
         let mut settings = unsafe { settings.assume_init() };
-        #[allow(clippy::cast_possible_wrap)]
-        {
-            settings.n_threads = threads as c_int;
-        }
+        settings.n_threads = c_int::try_from(threads).unwrap_or(0);
         // Optimise for low latency: emit frames as soon as possible.
         settings.max_frame_delay = 1;
 
@@ -577,7 +573,7 @@ impl Av1Decoder {
     fn decode_packet(
         &mut self,
         data: &[u8],
-        metadata: Option<PacketMetadata>,
+        metadata: Option<&PacketMetadata>,
         video_pool: Option<&Arc<VideoFramePool>>,
     ) -> Result<Vec<VideoFrame>, String> {
         use rav1d::include::dav1d::data::Dav1dData;
@@ -632,7 +628,7 @@ impl Av1Decoder {
 
             if res.0 == DAV1D_EAGAIN {
                 // EAGAIN — drain buffered pictures, then retry send.
-                let mut drained = self.drain_pictures(metadata.clone(), video_pool)?;
+                let mut drained = self.drain_pictures(metadata, video_pool)?;
                 if drained.is_empty() {
                     eagain_empty_retries += 1;
                     if eagain_empty_retries > MAX_EAGAIN_EMPTY_RETRIES {
@@ -640,8 +636,14 @@ impl Av1Decoder {
                              (no pictures produced after 1000 retries)"
                             .to_string());
                     }
-                    // Yield to avoid a tight busy-loop.
-                    std::thread::yield_now();
+                    // Progressive backoff: yield_now() returns immediately
+                    // on lightly-loaded systems, so switch to sleep after a
+                    // few iterations to avoid a tight spin-loop.
+                    if eagain_empty_retries <= EAGAIN_YIELD_THRESHOLD {
+                        std::thread::yield_now();
+                    } else {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
                 } else {
                     eagain_empty_retries = 0;
                 }
@@ -663,15 +665,13 @@ impl Av1Decoder {
     /// Pull all currently available decoded pictures from the decoder.
     fn drain_pictures(
         &mut self,
-        metadata: Option<PacketMetadata>,
+        metadata: Option<&PacketMetadata>,
         video_pool: Option<&Arc<VideoFramePool>>,
     ) -> Result<Vec<VideoFrame>, String> {
         use rav1d::include::dav1d::picture::Dav1dPicture;
         use std::ptr::NonNull;
 
         let mut frames = Vec::with_capacity(1);
-        let remaining_metadata = metadata;
-
         loop {
             let mut pic: Dav1dPicture = Dav1dPicture::default();
             let res = unsafe {
@@ -697,7 +697,13 @@ impl Av1Decoder {
                 return Err(format!("rav1d: dav1d_get_picture failed with code {}", res.0));
             }
 
-            let meta = remaining_metadata.clone();
+            // NOTE: When one input packet produces multiple decoded frames
+            // (e.g. B-frame reordering during flush), all output frames receive
+            // identical metadata (timestamps).  This is correct for
+            // low_latency: true (one frame per packet) but may confuse
+            // timestamp-sensitive consumers in non-low-latency mode.  Known
+            // limitation — acceptable for the current real-time use case.
+            let meta = metadata.cloned();
 
             match copy_dav1d_picture(&pic, meta, video_pool) {
                 Ok(frame) => frames.push(frame),
@@ -747,6 +753,13 @@ impl Av1Decoder {
 
 /// RAII guard for a `Dav1dData` buffer.  Calls `dav1d_data_unref` on drop
 /// unless explicitly defused (e.g. after `dav1d_send_data` consumes the data).
+///
+/// # Safety invariant
+///
+/// The raw pointer must remain valid for the guard's entire lifetime.
+/// In practice this means the guard **must** be dropped before the
+/// stack-local `Dav1dData` it points to goes out of scope.  Never store
+/// this guard in a struct or return it from the function that creates it.
 struct Dav1dDataGuard {
     ptr: *mut rav1d::include::dav1d::data::Dav1dData,
     active: bool,
@@ -869,7 +882,38 @@ fn copy_dav1d_picture(
     #[allow(clippy::cast_sign_loss)]
     let v_stride_usize = v_stride as usize;
 
+    // Guard against corrupted bitstreams producing unexpected dimensions.
+    // The stride must be at least as wide as the chroma samples we read per
+    // row, otherwise the `from_raw_parts` calls below would read past the
+    // end of the dav1d-allocated plane buffer.
+    if u_stride_usize < chroma_w {
+        return Err(format!(
+            "AV1 decoder U plane stride ({u_stride_usize}) < chroma width ({chroma_w})"
+        ));
+    }
+    if v_stride_usize < chroma_w {
+        return Err(format!(
+            "AV1 decoder V plane stride ({v_stride_usize}) < chroma width ({chroma_w})"
+        ));
+    }
+    // Verify the total range we will access fits within the expected
+    // dav1d allocation (stride × height).
+    debug_assert!(
+        chroma_h == 0
+            || (chroma_h - 1) * u_stride_usize + chroma_w
+                <= u_stride_usize.saturating_mul(chroma_h),
+        "U plane read would exceed expected dav1d allocation"
+    );
+    debug_assert!(
+        chroma_h == 0
+            || (chroma_h - 1) * v_stride_usize + chroma_w
+                <= v_stride_usize.saturating_mul(chroma_h),
+        "V plane read would exceed expected dav1d allocation"
+    );
+
     for row in 0..chroma_h {
+        // SAFETY: We have verified above that stride >= chroma_w, and
+        // dav1d allocates at least stride × chroma_h bytes per plane.
         let u_row = unsafe {
             std::slice::from_raw_parts(
                 u_ptr.as_ptr().cast::<u8>().add(row * u_stride_usize),
@@ -1006,7 +1050,7 @@ impl Av1Encoder {
             PixelFormat::I420 => {
                 let planes = layout.planes();
                 // Y plane
-                copy_plane_to_rav1e(&mut rav1e_frame.planes[0], data, &planes[0], width, height);
+                copy_plane_to_rav1e(&mut rav1e_frame.planes[0], data, &planes[0], width, height)?;
                 // U plane
                 let chroma_w = width.div_ceil(2);
                 let chroma_h = height.div_ceil(2);
@@ -1016,7 +1060,7 @@ impl Av1Encoder {
                     &planes[1],
                     chroma_w,
                     chroma_h,
-                );
+                )?;
                 // V plane
                 copy_plane_to_rav1e(
                     &mut rav1e_frame.planes[2],
@@ -1024,12 +1068,12 @@ impl Av1Encoder {
                     &planes[2],
                     chroma_w,
                     chroma_h,
-                );
+                )?;
             },
             PixelFormat::Nv12 => {
                 let planes = layout.planes();
                 // Y plane — direct copy.
-                copy_plane_to_rav1e(&mut rav1e_frame.planes[0], data, &planes[0], width, height);
+                copy_plane_to_rav1e(&mut rav1e_frame.planes[0], data, &planes[0], width, height)?;
                 // NV12 has interleaved UV — de-interleave into separate U and V planes.
                 let chroma_w = width.div_ceil(2);
                 let chroma_h = height.div_ceil(2);
@@ -1169,22 +1213,23 @@ fn copy_plane_to_rav1e(
     src_plane: &VideoPlane,
     width: usize,
     height: usize,
-) {
+) -> Result<(), String> {
     let dst_stride = dst.cfg.stride;
     let dst_data = dst.data_origin_mut();
     for row in 0..height {
         let src_start = src_plane.offset + row * src_plane.stride;
         let dst_start = row * dst_stride;
-        debug_assert!(
-            src_start + width <= src_data.len(),
-            "copy_plane_to_rav1e: source data too short (need {}, have {}) at row {row}",
-            src_start + width,
-            src_data.len(),
-        );
-        let src_end = (src_start + width).min(src_data.len());
-        let copy_width = src_end - src_start;
-        dst_data[dst_start..dst_start + copy_width].copy_from_slice(&src_data[src_start..src_end]);
+        if src_start + width > src_data.len() {
+            return Err(format!(
+                "copy_plane_to_rav1e: source data too short (need {}, have {}) at row {row}",
+                src_start + width,
+                src_data.len(),
+            ));
+        }
+        dst_data[dst_start..dst_start + width]
+            .copy_from_slice(&src_data[src_start..src_start + width]);
     }
+    Ok(())
 }
 
 const fn merge_keyframe_metadata(
