@@ -181,6 +181,10 @@ impl ProcessorNode for HttpMseNode {
         // detected, then truncated to only the header (EBML + Segment + Info +
         // Tracks).  Any SimpleBlock data the muxer writes before opening the
         // first Cluster is discarded — it is invalid for MSE SourceBuffer.
+        //
+        // Once complete, we also capture the Cluster preamble (Cluster element ID +
+        // size VINT + Timecode sub-element) so late-joining clients receive a valid
+        // open Cluster and can decode SimpleBlock data immediately.
         let mut init_segment: Vec<u8> = Vec::new();
         let mut init_complete = false;
 
@@ -369,6 +373,29 @@ impl ProcessorNode for HttpMseNode {
                                     init_segment.truncate(tracks_end);
                                 }
                             }
+
+                            // Append the Cluster preamble (Cluster ID + size VINT +
+                            // Timecode) to the init segment so late-joining clients
+                            // receive an open Cluster and can decode SimpleBlocks
+                            // immediately.  Without this, late-joiners would receive
+                            // bare SimpleBlock elements outside any Cluster, which
+                            // MSE rejects.
+                            if let Some(cluster_offset) = cluster_start_in_data {
+                                let cluster_data = &data[cluster_offset..];
+                                if let Some(preamble_len) = find_cluster_preamble_end(cluster_data) {
+                                    let preamble = &cluster_data[..preamble_len];
+                                    init_segment.extend_from_slice(preamble);
+                                    tracing::debug!(
+                                        preamble_len,
+                                        "Appended Cluster preamble to init segment"
+                                    );
+                                } else {
+                                    tracing::warn!(
+                                        "Could not parse Cluster preamble; late-joining clients may fail"
+                                    );
+                                }
+                            }
+
                             tracing::info!(
                                 init_segment_size = init_segment.len(),
                                 "WebM init segment captured"
@@ -405,10 +432,20 @@ impl ProcessorNode for HttpMseNode {
                     }
 
                     // For the chunk that triggered init_complete, only forward
-                    // data from the Cluster start — any bytes before it are
-                    // pre-Cluster SimpleBlock data that must be discarded.
+                    // data from after the Cluster preamble — the preamble is
+                    // already included in the init segment sent to all clients.
+                    // For subsequent chunks, forward everything as-is.
                     let forward_data = match cluster_start_in_data {
-                        Some(offset) if offset > 0 => data.slice(offset..),
+                        Some(offset) => {
+                            let cluster_data = &data[offset..];
+                            let skip = find_cluster_preamble_end(cluster_data).unwrap_or(0);
+                            let start = offset + skip;
+                            if start < data.len() {
+                                data.slice(start..)
+                            } else {
+                                continue;
+                            }
+                        }
                         _ => data.clone(),
                     };
 
@@ -470,6 +507,74 @@ impl ProcessorNode for HttpMseNode {
 
         result
     }
+}
+
+/// WebM Timecode element ID (single byte: `0xE7`).
+const WEBM_TIMECODE_ID: u8 = 0xE7;
+
+/// Find the byte offset immediately after the Cluster preamble in `data`.
+///
+/// The Cluster preamble consists of:
+///   Cluster ID (4 bytes) + size VINT + Timecode element (ID + size VINT + value)
+///
+/// Late-joining MSE clients need the Cluster preamble prepended before they can
+/// decode SimpleBlock data, because MSE requires SimpleBlocks to be inside an
+/// open Cluster element.
+///
+/// `data` must start at the Cluster element ID.  Returns `None` if the
+/// preamble is truncated.
+fn find_cluster_preamble_end(data: &[u8]) -> Option<usize> {
+    // Skip Cluster ID (4 bytes).
+    let mut pos = WEBM_CLUSTER_ID.len();
+    if pos >= data.len() {
+        return None;
+    }
+
+    // Skip Cluster size VINT.
+    let first_byte = data[pos];
+    if first_byte == 0 {
+        return None;
+    }
+    let width = first_byte.leading_zeros() as usize + 1;
+    if pos + width > data.len() || width > 8 {
+        return None;
+    }
+    pos += width;
+
+    // Expect Timecode element (0xE7).
+    if pos >= data.len() || data[pos] != WEBM_TIMECODE_ID {
+        // No Timecode sub-element — return what we have (ID + size only).
+        return Some(pos);
+    }
+    pos += 1; // skip Timecode ID byte
+
+    // Parse Timecode size VINT.
+    if pos >= data.len() {
+        return None;
+    }
+    let tc_first = data[pos];
+    if tc_first == 0 {
+        return None;
+    }
+    let tc_width = tc_first.leading_zeros() as usize + 1;
+    if pos + tc_width > data.len() || tc_width > 8 {
+        return None;
+    }
+    let tc_mask = 0xFFu8.checked_shr(tc_width as u32).unwrap_or(0);
+    let mut tc_size: u64 = u64::from(tc_first & tc_mask);
+    for &b in &data[pos + 1..pos + tc_width] {
+        tc_size = (tc_size << 8) | u64::from(b);
+    }
+    let tc_content = usize::try_from(tc_size).ok()?;
+    pos += tc_width;
+
+    // Skip Timecode content.
+    pos = pos.checked_add(tc_content)?;
+    if pos > data.len() {
+        return None;
+    }
+
+    Some(pos)
 }
 
 /// Search for the WebM Cluster element ID (0x1F43B675) in a byte slice.
@@ -838,6 +943,41 @@ mod tests {
 
         // Tracks end: 4 (ID) + 8 (VINT) + 10 (content) = 22
         assert_eq!(find_tracks_end(&data), Some(22));
+    }
+
+    // ── Cluster preamble parsing ──
+
+    #[test]
+    fn test_find_cluster_preamble_end_basic() {
+        // Cluster ID (4) + unknown size VINT 8-byte (8) + Timecode 0xE7 (1) + VINT size 0x82 (1) + 2 bytes value
+        // Total preamble: 4 + 8 + 1 + 1 + 2 = 16
+        let mut data = Vec::new();
+        data.extend_from_slice(&WEBM_CLUSTER_ID);
+        data.extend_from_slice(&[0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); // unknown size
+        data.push(WEBM_TIMECODE_ID); // 0xE7
+        data.push(0x82); // VINT size = 2
+        data.extend_from_slice(&[0x0F, 0x9F]); // 2 bytes timecode value
+        data.push(0xA3); // SimpleBlock after preamble
+
+        assert_eq!(find_cluster_preamble_end(&data), Some(16));
+    }
+
+    #[test]
+    fn test_find_cluster_preamble_end_no_timecode() {
+        // Cluster ID (4) + unknown size (8), then immediately a SimpleBlock (not Timecode).
+        let mut data = Vec::new();
+        data.extend_from_slice(&WEBM_CLUSTER_ID);
+        data.extend_from_slice(&[0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+        data.push(0xA3); // SimpleBlock instead of Timecode
+
+        // Should return 12 (just past the size VINT, since there's no Timecode).
+        assert_eq!(find_cluster_preamble_end(&data), Some(12));
+    }
+
+    #[test]
+    fn test_find_cluster_preamble_end_truncated() {
+        // Only the Cluster ID, no size VINT.
+        assert_eq!(find_cluster_preamble_end(&WEBM_CLUSTER_ID), None);
     }
 
     // ── Init segment truncation at Tracks end ──
