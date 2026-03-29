@@ -1555,4 +1555,52 @@ mod tests {
         assert_eq!(webm_content_type(true, false, true), "audio/webm; codecs=\"opus\"");
         assert_eq!(webm_content_type(false, false, true), "video/webm");
     }
+
+    /// Verify that the `webm` crate in Live mode with a non-seek writer
+    /// produces Cluster elements (element ID `0x1F43B675`).
+    ///
+    /// The MSE spec requires SimpleBlock elements to be nested inside Clusters.
+    /// If libwebm doesn't produce Clusters, the MSE SourceBuffer will reject
+    /// the stream with `CHUNK_DEMUXER_ERROR_APPEND_FAILED`.
+    #[test]
+    fn webm_live_non_seek_produces_clusters() {
+        use std::io::Cursor;
+        use webm::mux::{SegmentBuilder, SegmentMode, VideoCodecId, Writer};
+
+        let output = Vec::new();
+        let writer = Writer::new_non_seek(Cursor::new(output));
+
+        let builder = SegmentBuilder::new(writer).expect("SegmentBuilder::new");
+        let builder = builder.set_mode(SegmentMode::Live).expect("set_mode Live");
+        let (builder, video_track) =
+            builder.add_video_track(1280, 720, VideoCodecId::VP9, None).expect("add_video_track");
+        let mut segment = builder.build();
+
+        // Add a few frames — the first one is a keyframe.
+        let fake_frame = vec![0u8; 100];
+        segment.add_frame(video_track, &fake_frame, 0, true).expect("add_frame 0");
+        segment.add_frame(video_track, &fake_frame, 33_000_000, false).expect("add_frame 1");
+        segment.add_frame(video_track, &fake_frame, 66_000_000, true).expect("add_frame 2");
+
+        // Finalize (may fail for non-seek, that's ok — we just want the
+        // bytes written so far).
+        let writer = segment.finalize(None).unwrap_or_else(|w| w);
+        let data = writer.into_inner().into_inner();
+
+        // Search for Cluster ID (0x1F43B675).
+        let cluster_id: [u8; 4] = [0x1F, 0x43, 0xB6, 0x75];
+        let cluster_positions: Vec<usize> = data
+            .windows(4)
+            .enumerate()
+            .filter_map(|(i, w)| if w == cluster_id { Some(i) } else { None })
+            .collect();
+
+        assert!(
+            !cluster_positions.is_empty(),
+            "webm crate in Live mode with non-seek writer must produce at least one Cluster element. \
+             Output size: {} bytes. First 200 bytes: {:02x?}",
+            data.len(),
+            &data[..data.len().min(200)]
+        );
+    }
 }
