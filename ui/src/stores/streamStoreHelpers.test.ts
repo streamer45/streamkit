@@ -682,9 +682,9 @@ describe('buildVideoEncoderConfig', () => {
     expect(result.encoderConfig.codec).toBe('vp09');
   });
 
-  it('maps av1 to av01.0.01M.08 WebCodecs codec string', () => {
+  it('maps av1 to av01.0.08M.08 WebCodecs codec string', () => {
     const result = buildVideoEncoderConfig(makeTrack({ codec: 'av1' }));
-    expect(result.encoderConfig.codec).toBe('av01.0.01M.08');
+    expect(result.encoderConfig.codec).toBe('av01.0.08M.08');
   });
 
   it('throws for unrecognized codec values', () => {

@@ -38,7 +38,7 @@ function mapCodecToWebCodecs(codec: string): string {
     case 'vp9':
       return 'vp09';
     case 'av1':
-      return 'av01.0.01M.08'; // Main profile, Level 2.1 Main tier, 8-bit
+      return 'av01.0.08M.08'; // Main profile, Level 4.0 Main tier, 8-bit
     default:
       throw new Error(
         `Unsupported video codec '${codec}'. Supported codecs: ${SUPPORTED_VIDEO_CODECS.join(', ')}.`

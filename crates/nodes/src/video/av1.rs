@@ -917,12 +917,23 @@ impl Av1Encoder {
         };
 
         // Send frame to rav1e.
+        //
+        // `EnoughData` means the encoder has been flushed or hit its frame limit
+        // — it will not accept any more frames.  This should not happen during
+        // normal encoding (we only flush at end-of-stream), but if it does the
+        // frame is already consumed by `into()` and cannot be retried.  Log a
+        // warning and continue to drain any remaining buffered packets.
         let send_result = match frame_params {
             Some(params) => self.ctx.send_frame((rav1e_frame, params)),
             None => self.ctx.send_frame(rav1e_frame),
         };
         if let Err(e) = send_result {
-            if e != EncoderStatus::EnoughData {
+            if e == EncoderStatus::EnoughData {
+                tracing::warn!(
+                    "rav1e: send_frame returned EnoughData — encoder is no longer \
+                     accepting frames (frame dropped)"
+                );
+            } else {
                 return Err(format!("rav1e: send_frame failed: {e}"));
             }
         }
