@@ -1259,3 +1259,126 @@ async fn test_webm_mux_dynamic_pipeline_video_only() {
 
     println!("WebM dynamic pipeline video-only classification test passed");
 }
+
+/// Encode a few AV1 frames, mux them into WebM, and verify the output starts
+/// with EBML magic bytes and uses the `V_AV1` codec (content_type includes "av1").
+#[cfg(feature = "av1")]
+#[tokio::test]
+async fn test_webm_mux_av1_video_only() {
+    use crate::test_utils::create_test_video_frame;
+    use crate::video::av1::{Av1EncoderConfig, Av1EncoderNode};
+    use streamkit_core::types::{PacketMetadata, PixelFormat};
+
+    // ---- Step 1: Encode some raw NV12 frames to AV1 ----
+
+    let (enc_input_tx, enc_input_rx) = mpsc::channel(10);
+    let mut enc_inputs = HashMap::new();
+    enc_inputs.insert("in".to_string(), enc_input_rx);
+
+    let (enc_context, enc_sender, mut enc_state_rx) = create_test_context(enc_inputs, 10);
+    let encoder_config = Av1EncoderConfig {
+        speed: 10,
+        quantizer: 80,
+        threads: 1,
+        low_latency: true,
+        bitrate_kbps: 0,
+        ..Default::default()
+    };
+    let encoder = Av1EncoderNode::new(encoder_config).unwrap();
+    let enc_handle: tokio::task::JoinHandle<Result<(), streamkit_core::StreamKitError>> =
+        tokio::spawn(async move { Box::new(encoder).run(enc_context).await });
+
+    assert_state_initializing(&mut enc_state_rx).await;
+    assert_state_running(&mut enc_state_rx).await;
+
+    let frame_count = 5u64;
+    for i in 0..frame_count {
+        let mut frame = create_test_video_frame(64, 64, PixelFormat::Nv12, 16);
+        frame.metadata = Some(PacketMetadata {
+            timestamp_us: Some(i * 33_333),
+            duration_us: Some(33_333),
+            sequence: Some(i),
+            keyframe: Some(true),
+        });
+        enc_input_tx.send(Packet::Video(frame)).await.unwrap();
+    }
+    drop(enc_input_tx);
+
+    assert_state_stopped(&mut enc_state_rx).await;
+    enc_handle.await.unwrap().unwrap();
+
+    let encoded_packets = enc_sender.get_packets_for_pin("out").await;
+    assert!(!encoded_packets.is_empty(), "AV1 encoder produced no packets");
+
+    // ---- Step 2: Mux the encoded AV1 packets into WebM ----
+
+    let (mux_video_tx, mux_video_rx) = mpsc::channel(10);
+    let mut mux_inputs = HashMap::new();
+    mux_inputs.insert("in".to_string(), mux_video_rx);
+
+    let (mut mux_context, mux_sender, mut mux_state_rx) = create_test_context(mux_inputs, 10);
+    mux_context.input_types.insert(
+        "in".to_string(),
+        PacketType::EncodedVideo(streamkit_core::types::EncodedVideoFormat {
+            codec: streamkit_core::types::VideoCodec::Av1,
+            bitstream_format: None,
+            codec_private: None,
+            profile: None,
+            level: None,
+        }),
+    );
+    let mux_config =
+        WebMMuxerConfig { video_width: 64, video_height: 64, ..WebMMuxerConfig::default() };
+    let muxer = WebMMuxerNode::new(mux_config);
+    let mux_handle = tokio::spawn(async move { Box::new(muxer).run(mux_context).await });
+
+    assert_state_initializing(&mut mux_state_rx).await;
+    assert_state_running(&mut mux_state_rx).await;
+
+    for packet in encoded_packets {
+        mux_video_tx.send(packet).await.unwrap();
+    }
+    drop(mux_video_tx);
+
+    assert_state_stopped(&mut mux_state_rx).await;
+    mux_handle.await.unwrap().unwrap();
+
+    // ---- Step 3: Validate output ----
+
+    let output_packets = mux_sender.get_packets_for_pin("out").await;
+    assert!(!output_packets.is_empty(), "WebM muxer produced no output");
+
+    // Collect all output bytes
+    let mut webm_bytes = Vec::new();
+    for packet in &output_packets {
+        if let Packet::Binary { data, .. } = packet {
+            webm_bytes.extend_from_slice(data);
+        }
+    }
+
+    assert!(!webm_bytes.is_empty(), "WebM output is empty");
+    // WebM/EBML files start with 0x1A45DFA3 (EBML header element ID)
+    assert!(webm_bytes.len() >= 4, "WebM output too small: {} bytes", webm_bytes.len());
+    assert_eq!(
+        &webm_bytes[..4],
+        &[0x1A, 0x45, 0xDF, 0xA3],
+        "WebM output does not start with EBML header"
+    );
+
+    // Verify the matroska codec ID is V_AV1 by scanning the output bytes.
+    let v_av1_bytes = b"V_AV1";
+    let found_v_av1 = webm_bytes.windows(v_av1_bytes.len()).any(|w| w == v_av1_bytes);
+    assert!(found_v_av1, "WebM output does not contain V_AV1 codec ID");
+
+    // Verify content type includes "av1"
+    if let Packet::Binary { content_type, .. } = &output_packets[0] {
+        let ct = content_type.as_ref().expect("content_type should be set");
+        assert_eq!(ct.as_ref(), "video/webm; codecs=\"av1\"");
+    }
+
+    println!(
+        "WebM AV1 video-only mux test passed: {} output packets, {} total bytes",
+        output_packets.len(),
+        webm_bytes.len()
+    );
+}

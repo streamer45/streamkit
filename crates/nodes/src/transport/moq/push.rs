@@ -4,8 +4,10 @@
 
 //! MoQ Push Node - publishes packets to a MoQ broadcast
 
-use super::constants::{moq_accepted_media_types, DEFAULT_AUDIO_FRAME_DURATION_US};
-use crate::video::{VP9_BIT_DEPTH, VP9_LEVEL, VP9_PROFILE};
+use super::constants::{
+    catalog_video_codec, moq_accepted_media_types, parse_video_codec_config,
+    DEFAULT_AUDIO_FRAME_DURATION_US,
+};
 use async_trait::async_trait;
 use futures::future::poll_fn;
 use opentelemetry::{global, KeyValue};
@@ -13,7 +15,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use streamkit_core::pins::PinManagementMessage;
 use streamkit_core::timing::MediaClock;
-use streamkit_core::types::{Packet, PacketType};
+use streamkit_core::types::{Packet, PacketType, VideoCodec};
 use streamkit_core::{
     state_helpers, stats::NodeStatsTracker, InputPin, NodeContext, OutputPin, PinCardinality,
     ProcessorNode, StreamKitError,
@@ -36,12 +38,19 @@ pub struct MoqPushConfig {
     /// startup. In oneshot pipelines this is auto-detected from `input_types`
     /// when left as `None`.
     pub audio: Option<bool>,
-    /// Whether to publish a video track (VP9 on the `in_1` pin).
+    /// Whether to publish a video track (VP9/AV1 on the `in_1` pin).
     ///
     /// Required for dynamic pipelines where `input_types` is not available at
     /// startup. In oneshot pipelines this is auto-detected from `input_types`
     /// when left as `None`.
     pub video: Option<bool>,
+    /// Video codec for the MoQ catalog.
+    ///
+    /// Required for dynamic pipelines where `input_types` is not available at
+    /// startup.  Accepted values: `"vp9"`, `"av1"`.  When `None`, the codec
+    /// is auto-detected from `input_types` (static pipelines) and falls back
+    /// to VP9.
+    pub video_codec: Option<String>,
     /// Duration of each MoQ group in milliseconds.
     /// Smaller groups = lower latency but more overhead.
     /// Larger groups = higher latency but better efficiency.
@@ -75,6 +84,7 @@ impl Default for MoqPushConfig {
             channels: 2,
             audio: None,
             video: None,
+            video_codec: None,
             group_duration_ms: default_group_duration_ms(),
             initial_delay_ms: 0,
         }
@@ -211,6 +221,24 @@ impl ProcessorNode for MoqPushNode {
             context.input_types.iter().any(|(_, pt)| matches!(pt, PacketType::EncodedVideo(_)))
         });
 
+        // Detect the upstream video codec so the catalog reflects the actual
+        // encoding.  Priority order:
+        // 1. Explicit `video_codec` config param (required for dynamic pipelines)
+        // 2. Auto-detected from `input_types` (static pipelines)
+        // 3. Default: VP9
+        let video_codec = self
+            .config
+            .video_codec
+            .as_deref()
+            .and_then(parse_video_codec_config)
+            .or_else(|| {
+                context.input_types.iter().find_map(|(_, pt)| match pt {
+                    PacketType::EncodedVideo(fmt) => Some(fmt.codec),
+                    _ => None,
+                })
+            })
+            .unwrap_or(VideoCodec::Vp9);
+
         if !has_audio && !has_video {
             let err_msg = "MoqPushNode requires at least one audio or video input";
             state_helpers::emit_failed(&context.state_tx, &node_name, err_msg);
@@ -271,12 +299,7 @@ impl ProcessorNode for MoqPushNode {
             video_renditions.insert(
                 vt.name.clone(),
                 hang::catalog::VideoConfig {
-                    codec: hang::catalog::VideoCodec::VP9(hang::catalog::VP9 {
-                        profile: VP9_PROFILE,
-                        level: VP9_LEVEL,
-                        bit_depth: VP9_BIT_DEPTH,
-                        ..hang::catalog::VP9::default()
-                    }),
+                    codec: catalog_video_codec(video_codec),
                     coded_width: None,
                     coded_height: None,
                     display_ratio_width: None,
@@ -407,6 +430,7 @@ impl ProcessorNode for MoqPushNode {
                         &mut catalog,
                         &mut catalog_producer,
                         self.config.channels,
+                        video_codec,
                     );
                     continue;
                 },
@@ -650,6 +674,7 @@ impl MoqPushNode {
         catalog: &mut hang::catalog::Catalog,
         catalog_producer: &mut moq_lite::TrackProducer,
         channels: u32,
+        video_codec: VideoCodec,
     ) {
         match msg {
             PinManagementMessage::RequestAddInputPin { suggested_name, response_tx } => {
@@ -672,6 +697,7 @@ impl MoqPushNode {
                     catalog,
                     catalog_producer,
                     channels,
+                    video_codec,
                 );
             },
             PinManagementMessage::RemoveInputPin { pin_name } => {
@@ -736,6 +762,7 @@ impl MoqPushNode {
         catalog: &mut hang::catalog::Catalog,
         catalog_producer: &mut moq_lite::TrackProducer,
         channels: u32,
+        video_codec: VideoCodec,
     ) {
         tracing::info!("MoqPushNode: activated dynamic input pin '{}'", pin.name);
 
@@ -756,7 +783,7 @@ impl MoqPushNode {
         };
 
         // Update the catalog with the new track rendition.
-        Self::insert_catalog_rendition(catalog, &track_name, is_video, channels);
+        Self::insert_catalog_rendition(catalog, &track_name, is_video, channels, video_codec);
 
         if !Self::republish_catalog(catalog, catalog_producer) {
             // Roll back — subscribers won't discover this track.
@@ -804,17 +831,13 @@ impl MoqPushNode {
         track_name: &str,
         is_video: bool,
         channels: u32,
+        video_codec: VideoCodec,
     ) {
         if is_video {
             catalog.video.renditions.insert(
                 track_name.to_string(),
                 hang::catalog::VideoConfig {
-                    codec: hang::catalog::VideoCodec::VP9(hang::catalog::VP9 {
-                        profile: VP9_PROFILE,
-                        level: VP9_LEVEL,
-                        bit_depth: VP9_BIT_DEPTH,
-                        ..hang::catalog::VP9::default()
-                    }),
+                    codec: catalog_video_codec(video_codec),
                     coded_width: None,
                     coded_height: None,
                     display_ratio_width: None,
@@ -883,5 +906,24 @@ mod tests {
         assert_eq!(track_name_from_pin("audio/data"), "audio/data");
         assert_eq!(track_name_from_pin("in_2"), "audio/in_2");
         assert_eq!(track_name_from_pin("extra"), "audio/extra");
+    }
+
+    /// Verify that `video_codec` config is correctly deserialized from JSON
+    /// and that the default (None) falls through to VP9.
+    #[test]
+    fn video_codec_config_deserialization() {
+        use super::MoqPushConfig;
+
+        // Default: video_codec is None
+        let default: MoqPushConfig = serde_json::from_str("{}").unwrap();
+        assert!(default.video_codec.is_none());
+
+        // Explicit av1
+        let av1: MoqPushConfig = serde_json::from_str(r#"{"video_codec": "av1"}"#).unwrap();
+        assert_eq!(av1.video_codec.as_deref(), Some("av1"));
+
+        // Explicit vp9
+        let vp9: MoqPushConfig = serde_json::from_str(r#"{"video_codec": "vp9"}"#).unwrap();
+        assert_eq!(vp9.video_codec.as_deref(), Some("vp9"));
     }
 }

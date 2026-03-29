@@ -73,6 +73,10 @@ name = "compositor_pipeline"
 harness = false
 
 [[bench]]
+name = "av1_compositor_pipeline"
+harness = false
+
+[[bench]]
 name = "compositor_only"
 harness = false
 

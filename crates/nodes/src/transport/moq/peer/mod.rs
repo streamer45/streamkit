@@ -9,10 +9,10 @@
 //! - Multiple subscribers connect to `{gateway_path}/output` to receive processed media
 //!
 //! Input and output pins are type-agnostic: both `in` and `in_1` accept any
-//! supported encoded media type (Opus audio, VP9 video). The actual media kind
+//! supported encoded media type (Opus audio, VP9/AV1 video). The actual media kind
 //! flowing through each pin is determined at runtime from `NodeContext::input_types`.
 
-use crate::video::{VP9_BIT_DEPTH, VP9_LEVEL, VP9_PROFILE};
+use crate::transport::moq::constants::{catalog_video_codec, parse_video_codec_config};
 use async_trait::async_trait;
 use bytes::Buf;
 use schemars::JsonSchema;
@@ -129,6 +129,7 @@ struct SubscriberMediaConfig {
     video_height: u32,
     output_group_duration_ms: u64,
     output_initial_delay_ms: u64,
+    video_codec: VideoCodec,
 }
 
 struct BidirectionalTaskConfig {
@@ -213,6 +214,13 @@ pub struct MoqPeerConfig {
     /// Used to advertise the video resolution to subscribers.
     /// Default: 480.
     pub video_height: u32,
+    /// Video codec for the MoQ catalog.
+    ///
+    /// Required for dynamic pipelines where `input_types` is not available at
+    /// startup.  Accepted values: `"vp9"`, `"av1"`.  When `None`, the codec
+    /// is auto-detected from `input_types` (static pipelines) and falls back
+    /// to VP9.
+    pub video_codec: Option<String>,
 }
 
 impl Default for MoqPeerConfig {
@@ -226,6 +234,7 @@ impl Default for MoqPeerConfig {
             output_initial_delay_ms: 0,
             video_width: 640,
             video_height: 480,
+            video_codec: None,
         }
     }
 }
@@ -463,6 +472,24 @@ impl ProcessorNode for MoqPeerNode {
         let mut pin_0_kind = context.input_types.get("in").and_then(media_kind_for_packet_type);
         let mut pin_1_kind = context.input_types.get("in_1").and_then(media_kind_for_packet_type);
 
+        // Detect the upstream video codec so the subscriber catalog reflects
+        // the actual encoding.  Priority order:
+        // 1. Explicit `video_codec` config param (required for dynamic pipelines)
+        // 2. Auto-detected from `input_types` (static pipelines)
+        // 3. Default: VP9
+        let video_codec = self
+            .config
+            .video_codec
+            .as_deref()
+            .and_then(parse_video_codec_config)
+            .or_else(|| {
+                context.input_types.iter().find_map(|(_, pt)| match pt {
+                    PacketType::EncodedVideo(fmt) => Some(fmt.codec),
+                    _ => None,
+                })
+            })
+            .unwrap_or(VideoCodec::Vp9);
+
         if pin_0_rx.is_none() && pin_1_rx.is_none() {
             return Err(StreamKitError::Configuration(
                 "MoQ peer requires at least one input pin (\"in\" or \"in_1\")".to_string(),
@@ -624,6 +651,7 @@ impl ProcessorNode for MoqPeerNode {
                                 video_height: self.config.video_height,
                                 output_group_duration_ms: self.config.output_group_duration_ms,
                                 output_initial_delay_ms: self.config.output_initial_delay_ms,
+                                video_codec,
                             },
                             media_state_rx: media_state_rx.clone(),
                             dynamic_outputs: dynamic_outputs.clone(),
@@ -731,6 +759,7 @@ impl ProcessorNode for MoqPeerNode {
                             video_height: self.config.video_height,
                             output_group_duration_ms: self.config.output_group_duration_ms,
                             output_initial_delay_ms: self.config.output_initial_delay_ms,
+                            video_codec,
                         },
                         media_state_rx.clone(),
                     ).await {
@@ -2374,6 +2403,7 @@ impl MoqPeerNode {
             video_track.as_ref().map(|(t, _)| t),
             media.video_width,
             media.video_height,
+            media.video_codec,
         )?;
 
         Ok((
@@ -2385,12 +2415,14 @@ impl MoqPeerNode {
     }
 
     /// Create and publish the catalog with audio and/or video track info
+    #[allow(clippy::too_many_arguments)]
     fn create_and_publish_catalog(
         broadcast_producer: &mut moq_lite::BroadcastProducer,
         audio_track: Option<&moq_lite::Track>,
         video_track: Option<&moq_lite::Track>,
         video_width: u32,
         video_height: u32,
+        video_codec: VideoCodec,
     ) -> Result<moq_lite::TrackProducer, StreamKitError> {
         let mut audio_renditions = std::collections::BTreeMap::new();
         if let Some(audio_track) = audio_track {
@@ -2413,12 +2445,7 @@ impl MoqPeerNode {
             video_renditions.insert(
                 video_track.name.clone(),
                 hang::catalog::VideoConfig {
-                    codec: hang::catalog::VideoCodec::VP9(hang::catalog::VP9 {
-                        profile: VP9_PROFILE,
-                        level: VP9_LEVEL,
-                        bit_depth: VP9_BIT_DEPTH,
-                        ..hang::catalog::VP9::default()
-                    }),
+                    codec: catalog_video_codec(video_codec),
                     coded_width: Some(video_width),
                     coded_height: Some(video_height),
                     display_ratio_width: None,
@@ -2731,6 +2758,7 @@ mod tests {
             output_initial_delay_ms: 0,
             video_width: 640,
             video_height: 480,
+            video_codec: None,
         });
         let pins = node.output_pins();
         assert_eq!(pins[0].name, "audio/data");
@@ -2821,5 +2849,22 @@ mod tests {
             !MoqPeerNode::has_expected_tracks(&handles, true),
             "Empty handles should never be satisfied for additional either"
         );
+    }
+
+    /// Verify that `video_codec` config is correctly deserialized from JSON
+    /// and that the default (None) falls through.
+    #[test]
+    fn video_codec_config_deserialization() {
+        // Default: video_codec is None
+        let default: MoqPeerConfig = serde_json::from_str("{}").unwrap();
+        assert!(default.video_codec.is_none());
+
+        // Explicit av1
+        let av1: MoqPeerConfig = serde_json::from_str(r#"{"video_codec": "av1"}"#).unwrap();
+        assert_eq!(av1.video_codec.as_deref(), Some("av1"));
+
+        // Explicit vp9
+        let vp9: MoqPeerConfig = serde_json::from_str(r#"{"video_codec": "vp9"}"#).unwrap();
+        assert_eq!(vp9.video_codec.as_deref(), Some("vp9"));
     }
 }

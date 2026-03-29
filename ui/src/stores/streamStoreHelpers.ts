@@ -24,7 +24,7 @@ import { getLogger } from '../utils/logger';
 const logger = getLogger('streamStore');
 
 /** Recognized codec values for validation. */
-const SUPPORTED_VIDEO_CODECS = ['vp9'];
+const SUPPORTED_VIDEO_CODECS = ['vp9', 'av1'];
 const SUPPORTED_AUDIO_CODECS = ['opus'];
 
 /**
@@ -37,9 +37,11 @@ function mapCodecToWebCodecs(codec: string): string {
   switch (codec) {
     case 'vp9':
       return 'vp09';
-    // Future codecs (h264 → "avc1.42E01E", av1 → "av01") need full
-    // WebCodecs profile strings and additional validation before they
-    // can be added here.
+    case 'av1':
+      // Main profile, Level 4.0 Main tier, 8-bit.
+      // Coupled with Rust encoder constants: bit_depth=8, ChromaSampling::Cs420.
+      // Both sides must be updated together if profile/level changes.
+      return 'av01.0.08M.08';
     default:
       throw new Error(
         `Unsupported video codec '${codec}'. Supported codecs: ${SUPPORTED_VIDEO_CODECS.join(', ')}.`

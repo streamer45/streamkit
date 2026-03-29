@@ -61,6 +61,23 @@ codegen-units = 16 # Allow parallel LLVM codegen/LTO (thin LTO handles cross-uni
 [profile.dev]
 debug = 2 # Full debug info for development profiling
 
+# Pure-Rust codec crates are unusably slow in debug mode (~100x slower than
+# release) because they rely on SIMD auto-vectorisation and inlining.
+# Always compile them with full optimisations so that debug builds can still
+# encode/decode video in real time.  The dependency crates (v_frame,
+# av-scenechange, etc.) are included because rav1e calls into them on hot
+# paths — optimising only the top-level crate is not sufficient.
+[profile.dev.package.rav1e]
+opt-level = 3
+[profile.dev.package.rav1d]
+opt-level = 3
+[profile.dev.package.v_frame]
+opt-level = 3
+[profile.dev.package.av-scenechange]
+opt-level = 3
+[profile.dev.package.maybe-rayon]
+opt-level = 3
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 # missing_debug_implementations = "warn"

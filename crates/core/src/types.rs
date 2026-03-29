@@ -73,7 +73,7 @@ pub enum VideoCodec {
     Vp9,
     /// Forward-looking placeholder — not yet wired into any encoder/decoder.
     H264,
-    /// Forward-looking placeholder — not yet wired into any encoder/decoder.
+    /// CPU AV1 codec support via rav1e (encoder) and rav1d (decoder).
     Av1,
 }
 
