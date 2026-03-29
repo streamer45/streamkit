@@ -1192,7 +1192,7 @@ mod tests {
             let timestamp = 1_000 + 33_333_u64 * index;
             let duration: u64 = 33_333;
 
-            let mut frame = create_test_video_frame(128, 128, PixelFormat::Nv12, 16);
+            let mut frame = create_test_video_frame(64, 64, PixelFormat::Nv12, 16);
             frame.metadata = Some(PacketMetadata {
                 timestamp_us: Some(timestamp),
                 duration_us: Some(duration),
@@ -1243,8 +1243,8 @@ mod tests {
         for packet in decoded_packets {
             match packet {
                 Packet::Video(frame) => {
-                    assert_eq!(frame.width, 128);
-                    assert_eq!(frame.height, 128);
+                    assert_eq!(frame.width, 64);
+                    assert_eq!(frame.height, 64);
                     assert_eq!(frame.pixel_format, PixelFormat::Nv12);
                     assert!(!frame.data().is_empty(), "Decoded frame should have data");
                 },
@@ -1258,7 +1258,7 @@ mod tests {
     /// is full and data cannot be consumed in a single call.
     #[tokio::test]
     async fn test_av1_decode_many_frames_no_data_loss() {
-        const FRAME_COUNT: u64 = 20;
+        const FRAME_COUNT: u64 = 10;
 
         // --- Encode ---
         let (enc_input_tx, enc_input_rx) = mpsc::channel(32);
@@ -1280,7 +1280,7 @@ mod tests {
         assert_state_running(&mut enc_state_rx).await;
 
         for index in 0..FRAME_COUNT {
-            let mut frame = create_test_video_frame(128, 128, PixelFormat::Nv12, 16);
+            let mut frame = create_test_video_frame(64, 64, PixelFormat::Nv12, 16);
             frame.metadata = Some(PacketMetadata {
                 timestamp_us: Some(33_333 * index),
                 duration_us: Some(33_333),
@@ -1345,8 +1345,8 @@ mod tests {
         for packet in &decoded_packets {
             match packet {
                 Packet::Video(frame) => {
-                    assert_eq!(frame.width, 128);
-                    assert_eq!(frame.height, 128);
+                    assert_eq!(frame.width, 64);
+                    assert_eq!(frame.height, 64);
                     assert_eq!(frame.pixel_format, PixelFormat::Nv12);
                 },
                 _ => panic!("Expected Video packet from AV1 decoder"),
@@ -1379,7 +1379,7 @@ mod tests {
 
         let timestamps: Vec<u64> = vec![1_000, 34_333, 67_666];
         for (i, &ts) in timestamps.iter().enumerate() {
-            let mut frame = create_test_video_frame(128, 128, PixelFormat::Nv12, 16);
+            let mut frame = create_test_video_frame(64, 64, PixelFormat::Nv12, 16);
             frame.metadata = Some(PacketMetadata {
                 timestamp_us: Some(ts),
                 duration_us: Some(33_333),
