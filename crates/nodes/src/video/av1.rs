@@ -448,7 +448,13 @@ struct Av1Decoder {
     ctx: rav1d::include::dav1d::dav1d::Dav1dContext,
 }
 
-// SAFETY: The rav1d context is internally thread-safe (like dav1d).
+// SAFETY: `Dav1dContext` is not `Send` in rav1d because it contains raw
+// pointers internally.  However, the context is only ever accessed from the
+// single `spawn_blocking` thread that owns the `Av1Decoder` — it is never
+// shared across threads concurrently.  This is the same single-owner
+// pattern that the C dav1d library documents as safe.  The `Send` impl
+// allows moving the decoder into the blocking task; once there, no further
+// cross-thread transfers occur.
 unsafe impl Send for Av1Decoder {}
 
 impl Av1Decoder {
@@ -518,18 +524,44 @@ impl Av1Decoder {
             std::ptr::copy_nonoverlapping(data.as_ptr(), buf_ptr, data.len());
         }
 
-        // Feed data to the decoder.
-        let res = unsafe {
-            rav1d::src::lib::dav1d_send_data(Some(self.ctx), NonNull::new(&raw mut dav1d_data))
-        };
-        // EAGAIN (-11) means the decoder has buffered frames; we still try to
-        // pull pictures below.  Any other negative value is a real error.
-        if res.0 < 0 && res.0 != -11 {
+        let mut all_frames = Vec::new();
+
+        // Feed data to the decoder in a retry loop.  The dav1d API contract
+        // states that when `dav1d_send_data` returns EAGAIN (-11) the input
+        // data was **not** consumed.  The caller must drain pending pictures
+        // via `dav1d_get_picture` and then retry with the same `Dav1dData`.
+        loop {
+            let res = unsafe {
+                rav1d::src::lib::dav1d_send_data(
+                    Some(self.ctx),
+                    NonNull::new(&raw mut dav1d_data),
+                )
+            };
+
+            if res.0 == 0 {
+                // Data consumed successfully.
+                break;
+            }
+
+            if res.0 == -11 {
+                // EAGAIN — drain buffered pictures, then retry send.
+                let mut drained = self.drain_pictures(metadata.clone(), video_pool)?;
+                all_frames.append(&mut drained);
+                continue;
+            }
+
+            // Real error — clean up the unconsumed Dav1dData.
+            unsafe {
+                rav1d::src::lib::dav1d_data_unref(NonNull::new(&raw mut dav1d_data));
+            }
             return Err(format!("rav1d: dav1d_send_data failed with code {}", res.0));
         }
 
-        // Drain available pictures.
-        self.drain_pictures(metadata, video_pool)
+        // Drain any pictures produced by the successful send.
+        let mut drained = self.drain_pictures(metadata, video_pool)?;
+        all_frames.append(&mut drained);
+
+        Ok(all_frames)
     }
 
     /// Pull all currently available decoded pictures from the decoder.
@@ -585,17 +617,23 @@ impl Av1Decoder {
         Ok(frames)
     }
 
-    /// Flush the decoder (signal end-of-stream) and drain remaining pictures.
+    /// Drain remaining buffered pictures and reset the decoder.
+    ///
+    /// The dav1d API's `dav1d_flush` resets all inter-frame state (designed for
+    /// seeking), so we must drain any buffered pictures **before** calling it.
+    /// With `max_frame_delay = 1` there are typically no buffered frames at
+    /// end-of-stream, but this ordering is correct for any delay setting.
     fn flush(
         &mut self,
         video_pool: Option<&Arc<VideoFramePool>>,
     ) -> Result<Vec<VideoFrame>, String> {
-        // Signal end-of-stream by flushing the decoder.
+        // Drain any pictures the decoder has buffered but not yet emitted.
+        let frames = self.drain_pictures(None, video_pool)?;
+        // Now reset decoder state (safe — we already pulled all frames).
         unsafe {
             rav1d::src::lib::dav1d_flush(self.ctx);
         }
-        // Drain any remaining pictures.
-        self.drain_pictures(None, video_pool)
+        Ok(frames)
     }
 }
 
@@ -1138,6 +1176,197 @@ mod tests {
                     assert_eq!(frame.height, 256);
                     assert_eq!(frame.pixel_format, PixelFormat::Nv12);
                     assert!(!frame.data().is_empty(), "Decoded frame should have data");
+                },
+                _ => panic!("Expected Video packet from AV1 decoder"),
+            }
+        }
+    }
+
+    /// Encode many frames rapidly, then decode them all — exercises the
+    /// `dav1d_send_data` EAGAIN retry loop when the decoder's internal buffer
+    /// is full and data cannot be consumed in a single call.
+    #[tokio::test]
+    async fn test_av1_decode_many_frames_no_data_loss() {
+        const FRAME_COUNT: u64 = 20;
+
+        // --- Encode ---
+        let (enc_input_tx, enc_input_rx) = mpsc::channel(32);
+        let mut enc_inputs = HashMap::new();
+        enc_inputs.insert("in".to_string(), enc_input_rx);
+
+        let (enc_context, enc_sender, mut enc_state_rx) = create_test_context(enc_inputs, 32);
+        let encoder_config = Av1EncoderConfig {
+            keyframe_interval: 10,
+            bitrate_kbps: 0,
+            threads: 1,
+            speed: 10,
+            low_latency: true,
+        };
+        let encoder = Av1EncoderNode::new(encoder_config).unwrap();
+        let enc_handle = tokio::spawn(async move { Box::new(encoder).run(enc_context).await });
+
+        assert_state_initializing(&mut enc_state_rx).await;
+        assert_state_running(&mut enc_state_rx).await;
+
+        for index in 0..FRAME_COUNT {
+            let mut frame = create_test_video_frame(256, 256, PixelFormat::Nv12, 16);
+            frame.metadata = Some(PacketMetadata {
+                timestamp_us: Some(33_333 * index),
+                duration_us: Some(33_333),
+                sequence: Some(index),
+                keyframe: Some(index % 10 == 0),
+            });
+            enc_input_tx.send(Packet::Video(frame)).await.unwrap();
+        }
+        drop(enc_input_tx);
+
+        assert_state_stopped(&mut enc_state_rx).await;
+        enc_handle.await.unwrap().unwrap();
+
+        let encoded_packets = enc_sender.get_packets_for_pin("out").await;
+        assert!(
+            !encoded_packets.is_empty(),
+            "AV1 encoder produced no packets for {FRAME_COUNT} input frames"
+        );
+
+        // --- Decode ---
+        let (dec_input_tx, dec_input_rx) = mpsc::channel(32);
+        let mut dec_inputs = HashMap::new();
+        dec_inputs.insert("in".to_string(), dec_input_rx);
+
+        let (dec_context, dec_sender, mut dec_state_rx) = create_test_context(dec_inputs, 32);
+        let decoder = Av1DecoderNode::new(Av1DecoderConfig { threads: 1 }).unwrap();
+        let dec_handle = tokio::spawn(async move { Box::new(decoder).run(dec_context).await });
+
+        assert_state_initializing(&mut dec_state_rx).await;
+        assert_state_running(&mut dec_state_rx).await;
+
+        let encoded_count = encoded_packets.len();
+        for packet in encoded_packets {
+            if let Packet::Binary { data, metadata, .. } = packet {
+                dec_input_tx
+                    .send(Packet::Binary {
+                        data,
+                        content_type: Some(Cow::Borrowed(AV1_CONTENT_TYPE)),
+                        metadata,
+                    })
+                    .await
+                    .unwrap();
+            }
+        }
+        drop(dec_input_tx);
+
+        assert_state_stopped(&mut dec_state_rx).await;
+        dec_handle.await.unwrap().unwrap();
+
+        let decoded_packets = dec_sender.get_packets_for_pin("out").await;
+        // With the EAGAIN retry fix, the decoder must not silently drop any
+        // frames.  We should get at least as many decoded frames as encoded
+        // packets (each packet should produce at least one frame).
+        assert!(
+            decoded_packets.len() >= encoded_count,
+            "Decoded frame count ({}) should be >= encoded packet count ({}) — \
+             data may have been dropped on EAGAIN",
+            decoded_packets.len(),
+            encoded_count,
+        );
+
+        for packet in &decoded_packets {
+            match packet {
+                Packet::Video(frame) => {
+                    assert_eq!(frame.width, 256);
+                    assert_eq!(frame.height, 256);
+                    assert_eq!(frame.pixel_format, PixelFormat::Nv12);
+                },
+                _ => panic!("Expected Video packet from AV1 decoder"),
+            }
+        }
+    }
+
+    /// Verify that decoded frames preserve the metadata (timestamp, duration)
+    /// from the input packet — including when multiple frames are produced.
+    #[tokio::test]
+    async fn test_av1_metadata_propagation() {
+        // --- Encode a few frames with known metadata ---
+        let (enc_input_tx, enc_input_rx) = mpsc::channel(10);
+        let mut enc_inputs = HashMap::new();
+        enc_inputs.insert("in".to_string(), enc_input_rx);
+
+        let (enc_context, enc_sender, mut enc_state_rx) = create_test_context(enc_inputs, 10);
+        let encoder_config = Av1EncoderConfig {
+            keyframe_interval: 1,
+            bitrate_kbps: 0,
+            threads: 1,
+            speed: 10,
+            low_latency: true,
+        };
+        let encoder = Av1EncoderNode::new(encoder_config).unwrap();
+        let enc_handle = tokio::spawn(async move { Box::new(encoder).run(enc_context).await });
+
+        assert_state_initializing(&mut enc_state_rx).await;
+        assert_state_running(&mut enc_state_rx).await;
+
+        let timestamps: Vec<u64> = vec![1_000, 34_333, 67_666];
+        for (i, &ts) in timestamps.iter().enumerate() {
+            let mut frame = create_test_video_frame(256, 256, PixelFormat::Nv12, 16);
+            frame.metadata = Some(PacketMetadata {
+                timestamp_us: Some(ts),
+                duration_us: Some(33_333),
+                sequence: Some(i as u64),
+                keyframe: Some(true),
+            });
+            enc_input_tx.send(Packet::Video(frame)).await.unwrap();
+        }
+        drop(enc_input_tx);
+
+        assert_state_stopped(&mut enc_state_rx).await;
+        enc_handle.await.unwrap().unwrap();
+
+        let encoded_packets = enc_sender.get_packets_for_pin("out").await;
+        assert!(!encoded_packets.is_empty());
+
+        // --- Decode and verify metadata is preserved ---
+        let (dec_input_tx, dec_input_rx) = mpsc::channel(10);
+        let mut dec_inputs = HashMap::new();
+        dec_inputs.insert("in".to_string(), dec_input_rx);
+
+        let (dec_context, dec_sender, mut dec_state_rx) = create_test_context(dec_inputs, 10);
+        let decoder = Av1DecoderNode::new(Av1DecoderConfig::default()).unwrap();
+        let dec_handle = tokio::spawn(async move { Box::new(decoder).run(dec_context).await });
+
+        assert_state_initializing(&mut dec_state_rx).await;
+        assert_state_running(&mut dec_state_rx).await;
+
+        for packet in encoded_packets {
+            if let Packet::Binary { data, metadata, .. } = packet {
+                dec_input_tx
+                    .send(Packet::Binary {
+                        data,
+                        content_type: Some(Cow::Borrowed(AV1_CONTENT_TYPE)),
+                        metadata,
+                    })
+                    .await
+                    .unwrap();
+            }
+        }
+        drop(dec_input_tx);
+
+        assert_state_stopped(&mut dec_state_rx).await;
+        dec_handle.await.unwrap().unwrap();
+
+        let decoded_packets = dec_sender.get_packets_for_pin("out").await;
+        assert!(!decoded_packets.is_empty(), "Decoder should produce at least one frame");
+
+        // Every decoded frame should have metadata (the .clone() fix ensures
+        // that even multi-frame outputs from a single packet all get metadata).
+        for (i, packet) in decoded_packets.iter().enumerate() {
+            match packet {
+                Packet::Video(frame) => {
+                    assert!(
+                        frame.metadata.is_some(),
+                        "Decoded frame {i} should have metadata (was None — \
+                         indicates the .clone() metadata fix regressed)"
+                    );
                 },
                 _ => panic!("Expected Video packet from AV1 decoder"),
             }

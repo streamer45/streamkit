@@ -123,6 +123,11 @@ exceptions = [
   # hexf-parse is a transitive dependency of wgpu (via naga) and uses CC0-1.0
   # (Creative Commons Zero / public domain dedication).
   { allow = ["CC0-1.0"], crate = "hexf-parse" },
+
+  # libfuzzer-sys is a fuzzing-only transitive dependency of rav1e (AV1 encoder).
+  # It is never linked into the runtime binary.  NCSA is a permissive BSD-style
+  # license used by LLVM/libFuzzer.
+  { allow = ["NCSA"], crate = "libfuzzer-sys" },
 ]
 
 # Some crates don't have (easily) machine readable licensing information,
