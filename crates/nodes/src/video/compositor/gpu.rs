@@ -37,7 +37,10 @@ struct LayerUniforms {
     opacity: f32,
     /// 1.0 for circle crop, 0.0 for rect.
     circle_crop: f32,
-    _pad: [f32; 2],
+    /// Destination rect aspect ratio (width / height).
+    /// Used by circle crop to inscribe a true circle in the shorter dimension.
+    aspect_ratio: f32,
+    _pad: f32,
 }
 
 /// Uniform params for the YUV→RGBA compute shader.
@@ -1429,12 +1432,15 @@ fn build_layer_uniforms(
         [0.0, 0.0, 1.0, 1.0]
     };
 
+    let aspect_ratio = dst_rect.width as f32 / dst_rect.height.max(1) as f32;
+
     LayerUniforms {
         transform,
         src_region,
         opacity,
         circle_crop: if crop_shape == CropShape::Circle { 1.0 } else { 0.0 },
-        _pad: [0.0; 2],
+        aspect_ratio,
+        _pad: 0.0,
     }
 }
 
