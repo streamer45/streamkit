@@ -86,4 +86,5 @@ nodes:
     params:
       path: /video
       max_clients: 10
+      content_type: 'video/webm; codecs="vp9"'
     needs: webm_muxer
