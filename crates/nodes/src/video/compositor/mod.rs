@@ -574,28 +574,23 @@ impl ProcessorNode for CompositorNode {
             {
                 tracing::info!("GPU compositing disabled by config (gpu_mode=cpu)");
                 None
+            } else if let Some(ctx) = gpu::GpuContext::try_init() {
+                tracing::info!(
+                    "GPU detected — compositor will use GPU acceleration (gpu_mode={:?})",
+                    initial_gpu_mode
+                );
+                Some(ctx)
             } else {
-                match gpu::GpuContext::try_init() {
-                    Some(ctx) => {
-                        tracing::info!("GPU compositing backend initialized (wgpu)");
-                        Some(ctx)
-                    },
-                    None => {
-                        if initial_gpu_mode == gpu::GpuMode::ForceGpu {
-                            tracing::warn!(
-                                "GPU compositing requested (gpu_mode=gpu) but no GPU available; \
-                                 falling back to CPU"
-                            );
-                        } else {
-                            tracing::info!("No GPU available, using CPU compositing");
-                        }
-                        None
-                    },
+                if initial_gpu_mode == gpu::GpuMode::ForceGpu {
+                    tracing::warn!(
+                        "GPU compositing requested (gpu_mode=gpu) but no GPU available; \
+                         falling back to CPU"
+                    );
+                } else {
+                    tracing::info!("No GPU detected, using CPU compositing");
                 }
+                None
             };
-
-            #[cfg(feature = "gpu")]
-            let mut gpu_path_state: Option<gpu::GpuPathState> = None;
 
             while let Some(work) = work_rx.blocking_recv() {
                 // Clear the entire conversion cache when the slot
@@ -626,35 +621,15 @@ impl ProcessorNode for CompositorNode {
                         }
                     }
 
-                    let use_gpu = gpu_ctx.is_some()
-                        && match current_gpu_mode {
-                            gpu::GpuMode::ForceGpu => true,
-                            gpu::GpuMode::ForceCpu => false,
-                            gpu::GpuMode::Auto => {
-                                let state = gpu_path_state.get_or_insert_with(|| {
-                                    let initial = gpu::should_use_gpu(
-                                        work.canvas_w,
-                                        work.canvas_h,
-                                        &work.layers,
-                                        &work.image_overlays,
-                                        &work.text_overlays,
-                                    );
-                                    gpu::GpuPathState::new_seeded(initial)
-                                });
-                                gpu::should_use_gpu_with_state(
-                                    state,
-                                    work.canvas_w,
-                                    work.canvas_h,
-                                    &work.layers,
-                                    &work.image_overlays,
-                                    &work.text_overlays,
-                                )
-                            },
-                        };
+                    // GPU is used automatically whenever available, unless
+                    // explicitly disabled via gpu_mode=cpu.
+                    let use_gpu = gpu_ctx.is_some() && current_gpu_mode != gpu::GpuMode::ForceCpu;
 
                     if use_gpu {
                         // GPU path: compositing + optional format conversion
                         // all happen on the GPU.
+                        // Safety: `use_gpu` is true only when `gpu_ctx.is_some()`.
+                        #[allow(clippy::expect_used)]
                         gpu_ctx.as_mut().expect("gpu_ctx checked above").composite_frame_gpu(
                             work.canvas_w,
                             work.canvas_h,

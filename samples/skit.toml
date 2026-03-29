@@ -636,6 +636,27 @@ global_fetch_allowlist = []
 #
 # These limits apply to every compositor node created by the engine.
 # Individual nodes cannot exceed these values, even via UpdateParams.
+#
+# GPU acceleration:
+# When built with the 'gpu' feature, the compositor automatically probes
+# for a GPU at startup.  If one is found it is used for all frames —
+# no configuration is needed.  The startup log will show either:
+#
+#   "GPU detected — compositor will use GPU acceleration (gpu_mode=Auto)"
+#
+# or, if no GPU is available:
+#
+#   "No GPU detected, using CPU compositing"
+#
+# To force CPU-only compositing even when a GPU is present, set
+# `gpu_mode = "cpu"` in the compositor node's pipeline params:
+#
+#   - kind: video::compositor
+#     params:
+#       gpu_mode: "cpu"         # "auto" (default) | "gpu" | "cpu"
+#       width: 1280
+#       height: 720
+#       ...
 
 # Maximum allowed canvas dimension (width or height) in pixels.
 # Prevents runaway memory usage from oversized canvases.
