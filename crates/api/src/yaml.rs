@@ -1283,9 +1283,7 @@ pub fn lint_client_against_nodes(
         }
         if let Some(ref watch) = client.watch {
             if let Some(ref watch_bc) = watch.broadcast {
-                if !watch_bc.is_empty()
-                    && !node_broadcasts.iter().any(|b| b == watch_bc)
-                {
+                if !watch_bc.is_empty() && !node_broadcasts.iter().any(|b| b == watch_bc) {
                     warnings.push(ClientLintWarning {
                         rule: "broadcast-mismatch",
                         message: format!(
@@ -2062,7 +2060,12 @@ client:
                     max_bitrate: None,
                 }],
             }),
-            watch: Some(WatchConfig { broadcast: Some("output".into()), mse_path: None, audio: true, video: true }),
+            watch: Some(WatchConfig {
+                broadcast: Some("output".into()),
+                mse_path: None,
+                audio: true,
+                video: true,
+            }),
             input: None,
             output: None,
         }
@@ -2156,7 +2159,12 @@ client:
     #[test]
     fn test_lint_watch_no_media() {
         let mut c = dynamic_client();
-        c.watch = Some(WatchConfig { broadcast: Some("x".into()), mse_path: None, audio: false, video: false });
+        c.watch = Some(WatchConfig {
+            broadcast: Some("x".into()),
+            mse_path: None,
+            audio: false,
+            video: false,
+        });
         let warnings = lint_client_section(&c, EngineMode::Dynamic);
         assert!(warnings.iter().any(|w| w.rule == "watch-no-media"));
     }
@@ -2195,7 +2203,12 @@ client:
                 max_bitrate: None,
             }],
         });
-        c.watch = Some(WatchConfig { broadcast: Some("same".into()), mse_path: None, audio: true, video: true });
+        c.watch = Some(WatchConfig {
+            broadcast: Some("same".into()),
+            mse_path: None,
+            audio: true,
+            video: true,
+        });
         let warnings = lint_client_section(&c, EngineMode::Dynamic);
         assert!(warnings.iter().any(|w| w.rule == "duplicate-broadcast"));
     }
@@ -2226,7 +2239,12 @@ client:
                 },
             ],
         });
-        c.watch = Some(WatchConfig { broadcast: Some("output".into()), mse_path: None, audio: true, video: true });
+        c.watch = Some(WatchConfig {
+            broadcast: Some("output".into()),
+            mse_path: None,
+            audio: true,
+            video: true,
+        });
         let warnings = lint_client_section(&c, EngineMode::Dynamic);
         assert!(
             warnings.iter().any(|w| w.rule == "duplicate-broadcast"),
@@ -2519,7 +2537,12 @@ client:
     fn test_lint_watch_no_transport() {
         let c = ClientSection {
             gateway_path: Some("/moq/test".into()),
-            watch: Some(WatchConfig { broadcast: Some("output".into()), mse_path: None, audio: true, video: true }),
+            watch: Some(WatchConfig {
+                broadcast: Some("output".into()),
+                mse_path: None,
+                audio: true,
+                video: true,
+            }),
             ..Default::default()
         };
         let nodes: Vec<NodeInfo<'_>> = vec![]; // no MoQ nodes
@@ -2671,7 +2694,12 @@ client:
     fn test_lint_broadcast_mismatch_watch() {
         let c = ClientSection {
             gateway_path: Some("/moq/test".into()),
-            watch: Some(WatchConfig { broadcast: Some("wrong_name".into()), mse_path: None, audio: true, video: true }),
+            watch: Some(WatchConfig {
+                broadcast: Some("wrong_name".into()),
+                mse_path: None,
+                audio: true,
+                video: true,
+            }),
             ..Default::default()
         };
         let params = serde_json::json!({

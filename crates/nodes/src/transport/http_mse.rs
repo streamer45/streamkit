@@ -529,8 +529,7 @@ mod tests {
                 find_cluster_id(&combined).is_some_and(|pos| {
                     let overlap_len = overlap.len();
                     if pos < overlap_len {
-                        let bytes_to_remove =
-                            (overlap_len - pos).min(overlap_bytes_in_init);
+                        let bytes_to_remove = (overlap_len - pos).min(overlap_bytes_in_init);
                         init_segment.truncate(init_segment.len() - bytes_to_remove);
                     } else {
                         let extra = pos - overlap_len;
@@ -554,8 +553,7 @@ mod tests {
                 }
                 init_complete = true;
             } else {
-                let remaining_capacity =
-                    MAX_INIT_SEGMENT_SIZE.saturating_sub(init_segment.len());
+                let remaining_capacity = MAX_INIT_SEGMENT_SIZE.saturating_sub(init_segment.len());
                 let appended = if remaining_capacity > 0 {
                     let to_append = data.len().min(remaining_capacity);
                     init_segment.extend_from_slice(&data[..to_append]);
@@ -590,10 +588,7 @@ mod tests {
 
         assert!(complete, "Cluster ID straddling two chunks must be detected");
         // Init segment should contain only the header bytes (before the Cluster ID).
-        assert_eq!(
-            init, header,
-            "Init segment should exclude the partial Cluster ID bytes"
-        );
+        assert_eq!(init, header, "Init segment should exclude the partial Cluster ID bytes");
     }
 
     #[test]
@@ -649,8 +644,7 @@ mod tests {
         let mut chunk2 = vec![0x00; 2];
         chunk2.extend_from_slice(&WEBM_CLUSTER_ID);
 
-        let (init, complete) =
-            simulate_init_accumulation(&[&chunk1, &empty, &empty, &chunk2]);
+        let (init, complete) = simulate_init_accumulation(&[&chunk1, &empty, &empty, &chunk2]);
 
         assert!(complete, "Init should complete despite empty packets");
         let mut expected = chunk1.clone();
