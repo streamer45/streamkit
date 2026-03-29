@@ -105,14 +105,26 @@ struct TextureKey {
     usage: wgpu::TextureUsages,
 }
 
+/// Opaque index into [`TexturePool::in_use`].
+///
+/// Valid only within the frame it was issued (i.e. between two
+/// consecutive `reclaim()` calls).  Using it after `reclaim()` is a
+/// logic error — the newtype makes accidental misuse visible at the
+/// type level.
+#[derive(Clone, Copy)]
+struct TextureIdx(usize);
+
+/// Number of frames an unused pool entry survives before eviction.
+const POOL_IDLE_FRAMES: u32 = 60;
+
 /// Per-frame texture pool.  Textures are "checked out" during a frame
 /// and reclaimed at the start of the next frame for reuse.  New
 /// textures are only allocated on a cache miss.
 ///
-/// Returns indices rather than references so callers can interleave
-/// multiple `get` calls without borrow-checker conflicts on `&mut self`.
+/// Returns [`TextureIdx`] rather than references so callers can
+/// interleave multiple `get` calls without borrow-checker conflicts.
 struct TexturePool {
-    available: Vec<(TextureKey, wgpu::Texture)>,
+    available: Vec<(TextureKey, wgpu::Texture, u32)>, // (key, tex, idle_frames)
     in_use: Vec<(TextureKey, wgpu::Texture)>,
 }
 
@@ -122,12 +134,11 @@ impl TexturePool {
     }
 
     /// Get a texture matching `key`, reusing a cached one when possible.
-    /// Returns the index into `in_use` for later lookup via [`texture`].
-    fn get(&mut self, device: &wgpu::Device, key: TextureKey, label: &str) -> usize {
+    fn get(&mut self, device: &wgpu::Device, key: TextureKey, label: &str) -> TextureIdx {
         // Search for a reusable texture with matching key.
-        if let Some(idx) = self.available.iter().position(|(k, _)| *k == key) {
-            let entry = self.available.swap_remove(idx);
-            self.in_use.push(entry);
+        if let Some(idx) = self.available.iter().position(|(k, _, _)| *k == key) {
+            let (k, tex, _) = self.available.swap_remove(idx);
+            self.in_use.push((k, tex));
         } else {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
@@ -145,18 +156,27 @@ impl TexturePool {
             });
             self.in_use.push((key, texture));
         }
-        self.in_use.len() - 1
+        TextureIdx(self.in_use.len() - 1)
     }
 
     /// Look up a texture by the index returned from [`get`].
-    fn texture(&self, idx: usize) -> &wgpu::Texture {
-        &self.in_use[idx].1
+    fn texture(&self, idx: TextureIdx) -> &wgpu::Texture {
+        &self.in_use[idx.0].1
     }
 
-    /// Move all in-use textures back to the available pool.
+    /// Move all in-use textures back to the available pool and evict
+    /// entries that have been idle for more than [`POOL_IDLE_FRAMES`].
     /// Called once at the start of each frame.
     fn reclaim(&mut self) {
-        self.available.append(&mut self.in_use);
+        // Age existing available entries and evict stale ones.
+        self.available.retain_mut(|(_, _, idle)| {
+            *idle += 1;
+            *idle <= POOL_IDLE_FRAMES
+        });
+        // Move in-use back to available with idle counter reset.
+        for (k, tex) in self.in_use.drain(..) {
+            self.available.push((k, tex, 0));
+        }
     }
 }
 
@@ -167,9 +187,13 @@ struct BufferKey {
     usage: wgpu::BufferUsages,
 }
 
+/// Opaque index into [`BufferPool::in_use`], analogous to [`TextureIdx`].
+#[derive(Clone, Copy)]
+struct BufferIdx(usize);
+
 /// Per-frame buffer pool, analogous to [`TexturePool`].
 struct BufferPool {
-    available: Vec<(BufferKey, wgpu::Buffer)>,
+    available: Vec<(BufferKey, wgpu::Buffer, u32)>, // (key, buf, idle_frames)
     in_use: Vec<(BufferKey, wgpu::Buffer)>,
 }
 
@@ -179,11 +203,10 @@ impl BufferPool {
     }
 
     /// Get a buffer matching `key`, reusing a cached one when possible.
-    /// Returns the index into `in_use` for later lookup via [`buffer`].
-    fn get(&mut self, device: &wgpu::Device, key: BufferKey, label: &str) -> usize {
-        if let Some(idx) = self.available.iter().position(|(k, _)| *k == key) {
-            let entry = self.available.swap_remove(idx);
-            self.in_use.push(entry);
+    fn get(&mut self, device: &wgpu::Device, key: BufferKey, label: &str) -> BufferIdx {
+        if let Some(idx) = self.available.iter().position(|(k, _, _)| *k == key) {
+            let (k, buf, _) = self.available.swap_remove(idx);
+            self.in_use.push((k, buf));
         } else {
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
@@ -193,17 +216,24 @@ impl BufferPool {
             });
             self.in_use.push((key, buffer));
         }
-        self.in_use.len() - 1
+        BufferIdx(self.in_use.len() - 1)
     }
 
     /// Look up a buffer by the index returned from [`get`].
-    fn buffer(&self, idx: usize) -> &wgpu::Buffer {
-        &self.in_use[idx].1
+    fn buffer(&self, idx: BufferIdx) -> &wgpu::Buffer {
+        &self.in_use[idx.0].1
     }
 
-    /// Move all in-use buffers back to the available pool.
+    /// Move all in-use buffers back to the available pool and evict
+    /// entries idle for more than [`POOL_IDLE_FRAMES`].
     fn reclaim(&mut self) {
-        self.available.append(&mut self.in_use);
+        self.available.retain_mut(|(_, _, idle)| {
+            *idle += 1;
+            *idle <= POOL_IDLE_FRAMES
+        });
+        for (k, buf) in self.in_use.drain(..) {
+            self.available.push((k, buf, 0));
+        }
     }
 }
 
@@ -556,7 +586,7 @@ impl GpuContext {
 
     /// Upload an RGBA8 buffer to a pooled GPU texture suitable for sampling.
     /// Returns the texture pool index for later lookup.
-    fn upload_rgba_texture(&mut self, data: &[u8], width: u32, height: u32) -> usize {
+    fn upload_rgba_texture(&mut self, data: &[u8], width: u32, height: u32) -> TextureIdx {
         let key = TextureKey {
             width,
             height,
@@ -594,7 +624,7 @@ impl GpuContext {
         width: u32,
         height: u32,
         pixel_format: PixelFormat,
-    ) -> usize {
+    ) -> TextureIdx {
         let (y_tex_idx, uv_tex_idx, format_id) = match pixel_format {
             PixelFormat::Nv12 => {
                 let y_size = (width as usize) * (height as usize);
@@ -722,7 +752,7 @@ impl GpuContext {
         width: u32,
         height: u32,
         pixel_format: PixelFormat,
-    ) -> usize {
+    ) -> TextureIdx {
         match pixel_format {
             PixelFormat::Rgba8 => self.upload_rgba_texture(data, width, height),
             PixelFormat::I420 | PixelFormat::Nv12 => {
@@ -768,8 +798,8 @@ impl GpuContext {
         // A single encoder collects all YUV→RGBA compute dispatches so
         // they are submitted in one batch before the render pass.
         struct DrawItem {
-            /// Index into `texture_pool.in_use`.
-            tex_idx: usize,
+            /// Index into `texture_pool.in_use` (valid this frame only).
+            tex_idx: TextureIdx,
             uniforms: LayerUniforms,
             sort_key: (i32, usize),
         }
@@ -1258,7 +1288,7 @@ impl GpuContext {
         width: u32,
         height: u32,
         data: &[u8],
-    ) -> usize {
+    ) -> TextureIdx {
         let key = TextureKey {
             width,
             height,
@@ -1290,7 +1320,7 @@ impl GpuContext {
         width: u32,
         height: u32,
         data: &[u8],
-    ) -> usize {
+    ) -> TextureIdx {
         let key = TextureKey {
             width,
             height,
@@ -1541,8 +1571,13 @@ pub struct GpuPathState {
 }
 
 impl GpuPathState {
-    pub fn new() -> Self {
-        Self { last_used_gpu: false, consecutive_flip_votes: 0 }
+    /// Create a new state seeded with the initial heuristic evaluation.
+    ///
+    /// This avoids a [`HYSTERESIS_FRAMES`]-frame warm-up period where
+    /// the CPU path would be used even though the scene clearly wants
+    /// GPU compositing.
+    pub fn new_seeded(initial_vote_gpu: bool) -> Self {
+        Self { last_used_gpu: initial_vote_gpu, consecutive_flip_votes: 0 }
     }
 }
 
@@ -1575,4 +1610,114 @@ pub fn should_use_gpu_with_state(
     }
 
     state.last_used_gpu
+}
+
+// ── Pool unit tests ─────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Simulate a texture pool that grows when many layers are active,
+    /// then verify idle entries are evicted after `POOL_IDLE_FRAMES`.
+    #[test]
+    fn texture_pool_trims_idle_entries() {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            compatible_surface: None,
+            force_fallback_adapter: true,
+        }));
+        let Some(adapter) = adapter else {
+            // No adapter available (CI without GPU) — skip gracefully.
+            eprintln!("skipping texture_pool_trims_idle_entries: no wgpu adapter");
+            return;
+        };
+        let (device, _queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default(), None))
+                .expect("failed to create device");
+
+        let mut pool = TexturePool::new();
+
+        let key = TextureKey {
+            width: 64,
+            height: 64,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+        };
+
+        // Simulate a burst: allocate 10 textures in one frame.
+        for _ in 0..10 {
+            pool.get(&device, key.clone(), "test");
+        }
+        assert_eq!(pool.in_use.len(), 10);
+        assert_eq!(pool.available.len(), 0);
+
+        // Reclaim — all 10 move to available.
+        pool.reclaim();
+        assert_eq!(pool.in_use.len(), 0);
+        assert_eq!(pool.available.len(), 10);
+
+        // Now only use 2 per frame for POOL_IDLE_FRAMES frames.
+        // The other 8 should be evicted.
+        for _ in 0..POOL_IDLE_FRAMES {
+            pool.get(&device, key.clone(), "test");
+            pool.get(&device, key.clone(), "test");
+            pool.reclaim();
+        }
+
+        // After POOL_IDLE_FRAMES of only using 2, the 8 idle entries
+        // should have been evicted.  Pool should have exactly 2.
+        assert_eq!(
+            pool.available.len(),
+            2,
+            "Pool should have trimmed idle entries down to 2, got {}",
+            pool.available.len()
+        );
+    }
+
+    /// Verify that `BufferPool` also evicts idle entries.
+    #[test]
+    fn buffer_pool_trims_idle_entries() {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            compatible_surface: None,
+            force_fallback_adapter: true,
+        }));
+        let Some(adapter) = adapter else {
+            eprintln!("skipping buffer_pool_trims_idle_entries: no wgpu adapter");
+            return;
+        };
+        let (device, _queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default(), None))
+                .expect("failed to create device");
+
+        let mut pool = BufferPool::new();
+
+        let key = BufferKey {
+            size: 256,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        };
+
+        // Burst: 5 buffers.
+        for _ in 0..5 {
+            pool.get(&device, key.clone(), "test");
+        }
+        pool.reclaim();
+        assert_eq!(pool.available.len(), 5);
+
+        // Use only 1 per frame for enough frames to evict the rest.
+        for _ in 0..POOL_IDLE_FRAMES {
+            pool.get(&device, key.clone(), "test");
+            pool.reclaim();
+        }
+
+        assert_eq!(
+            pool.available.len(),
+            1,
+            "Buffer pool should have trimmed idle entries to 1, got {}",
+            pool.available.len()
+        );
+    }
 }

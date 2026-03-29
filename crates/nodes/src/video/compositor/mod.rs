@@ -595,7 +595,7 @@ impl ProcessorNode for CompositorNode {
             };
 
             #[cfg(feature = "gpu")]
-            let mut gpu_path_state = gpu::GpuPathState::new();
+            let mut gpu_path_state: Option<gpu::GpuPathState> = None;
 
             while let Some(work) = work_rx.blocking_recv() {
                 // Clear the entire conversion cache when the slot
@@ -619,6 +619,10 @@ impl ProcessorNode for CompositorNode {
                                 "GPU compositing backend initialized after runtime mode change"
                             );
                             gpu_ctx = Some(ctx);
+                        } else {
+                            tracing::warn!(
+                                "GPU context initialization failed after runtime mode change to {current_gpu_mode:?}"
+                            );
                         }
                     }
 
@@ -626,14 +630,26 @@ impl ProcessorNode for CompositorNode {
                         && match current_gpu_mode {
                             gpu::GpuMode::ForceGpu => true,
                             gpu::GpuMode::ForceCpu => false,
-                            gpu::GpuMode::Auto => gpu::should_use_gpu_with_state(
-                                &mut gpu_path_state,
-                                work.canvas_w,
-                                work.canvas_h,
-                                &work.layers,
-                                &work.image_overlays,
-                                &work.text_overlays,
-                            ),
+                            gpu::GpuMode::Auto => {
+                                let state = gpu_path_state.get_or_insert_with(|| {
+                                    let initial = gpu::should_use_gpu(
+                                        work.canvas_w,
+                                        work.canvas_h,
+                                        &work.layers,
+                                        &work.image_overlays,
+                                        &work.text_overlays,
+                                    );
+                                    gpu::GpuPathState::new_seeded(initial)
+                                });
+                                gpu::should_use_gpu_with_state(
+                                    state,
+                                    work.canvas_w,
+                                    work.canvas_h,
+                                    &work.layers,
+                                    &work.image_overlays,
+                                    &work.text_overlays,
+                                )
+                            },
                         };
 
                     if use_gpu {

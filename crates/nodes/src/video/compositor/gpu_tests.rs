@@ -737,9 +737,11 @@ fn gpu_yuv_batch_correctness() {
 fn gpu_hysteresis_stability() {
     // Unit test: verify should_use_gpu_with_state requires N consecutive
     // frames voting opposite before flipping.
-    let mut state = GpuPathState::new();
 
-    // Start at CPU (default). Build a scene that votes GPU.
+    // Seed with CPU (false) to test the flip-to-GPU path.
+    let mut state = GpuPathState::new_seeded(false);
+
+    // Build a scene that votes GPU.
     let l1 = make_layer(solid_rgba(320, 240, 0, 0, 0, 255), 320, 240, None);
     let l2 = make_layer(solid_rgba(320, 240, 0, 0, 0, 255), 320, 240, None);
     let gpu_scene: Vec<Option<LayerSnapshot>> = vec![Some(l1), Some(l2)];
@@ -768,6 +770,21 @@ fn gpu_hysteresis_stability() {
     let gpu_scene2: Vec<Option<LayerSnapshot>> = vec![Some(l3), Some(l4)];
     let result = gpu::should_use_gpu_with_state(&mut state, 320, 240, &gpu_scene2, &[], &[]);
     assert!(result, "Interruption should reset counter; stay on GPU");
+}
+
+#[test]
+fn gpu_hysteresis_seeded_skips_warmup() {
+    // Verify that seeding with `true` avoids the warm-up period:
+    // on the very first frame the GPU path is used immediately.
+    let mut state = GpuPathState::new_seeded(true);
+
+    let l1 = make_layer(solid_rgba(320, 240, 0, 0, 0, 255), 320, 240, None);
+    let l2 = make_layer(solid_rgba(320, 240, 0, 0, 0, 255), 320, 240, None);
+    let gpu_scene: Vec<Option<LayerSnapshot>> = vec![Some(l1), Some(l2)];
+
+    // First frame should immediately use GPU — no warm-up.
+    let result = gpu::should_use_gpu_with_state(&mut state, 320, 240, &gpu_scene, &[], &[]);
+    assert!(result, "Seeded state should use GPU on the very first frame");
 }
 
 #[test]
