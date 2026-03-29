@@ -31,7 +31,9 @@ pub struct HttpMseConfig {
     #[schemars(range(min = 1))]
     pub max_clients: u32,
     /// Content type for the HTTP response.
-    /// Defaults to `video/webm` if not set.
+    /// Defaults to `video/webm; codecs="vp9,opus"`.
+    /// For best MSE compatibility, include the codecs parameter
+    /// (e.g., `video/webm; codecs="vp9,opus"` or `video/webm; codecs="vp9"`).
     #[serde(default)]
     pub content_type: Option<String>,
 }
@@ -41,7 +43,8 @@ const fn default_max_clients() -> u32 {
 }
 
 /// Default content type for WebM MSE streams.
-const DEFAULT_CONTENT_TYPE: &str = "video/webm";
+/// Includes the codecs parameter for best browser compatibility with MSE.
+const DEFAULT_CONTENT_TYPE: &str = "video/webm; codecs=\"vp9,opus\"";
 
 /// Maximum size for the init segment buffer (16 KB).
 /// WebM init segments are typically < 1 KB; this is a generous upper bound.
@@ -139,9 +142,15 @@ impl ProcessorNode for HttpMseNode {
             "HttpMseNode registering MSE stream"
         );
 
-        // Register with the MSE gateway.
+        // Register with the MSE gateway, passing max_clients so the gateway
+        // can enforce capacity and reject clients with a proper 503.
         let mut client_rx = gateway
-            .register_stream(full_path.clone(), session_id.clone(), content_type)
+            .register_stream(
+                full_path.clone(),
+                session_id.clone(),
+                content_type,
+                self.config.max_clients,
+            )
             .await
             .map_err(|e| {
                 let err = format!("Failed to register MSE stream: {e}");
@@ -166,7 +175,10 @@ impl ProcessorNode for HttpMseNode {
         let mut init_segment: Vec<u8> = Vec::new();
         let mut init_complete = false;
 
-        let max_clients = self.config.max_clients as usize;
+        // Overlap buffer for detecting Cluster ID across chunk boundaries.
+        // Holds the last 3 bytes of the previous chunk so a 4-byte Cluster ID
+        // that straddles two consecutive packets can still be found.
+        let mut overlap: Vec<u8> = Vec::new();
 
         let cancellation_token = context.cancellation_token.clone();
 
@@ -208,22 +220,21 @@ impl ProcessorNode for HttpMseNode {
                         break Ok(());
                     };
 
-                    if clients.len() >= max_clients {
-                        tracing::warn!(
-                            max_clients,
-                            "Rejecting MSE client: max_clients reached"
-                        );
-                        // Drop the client sender — the HTTP handler will see
-                        // the channel close and respond with 503.
-                        continue;
-                    }
-
                     // Send the init segment to the new client so MSE can initialize.
+                    // Use try_send to avoid blocking the event loop if the client's
+                    // channel is already full (unlikely for a fresh client, but safe).
                     if !init_segment.is_empty() {
                         let init_bytes = Bytes::copy_from_slice(&init_segment);
-                        if client.body_tx.send(init_bytes).await.is_err() {
-                            tracing::debug!("New MSE client disconnected before init segment delivery");
-                            continue;
+                        match client.body_tx.try_send(init_bytes) {
+                            Ok(()) => {}
+                            Err(mpsc::error::TrySendError::Closed(_)) => {
+                                tracing::debug!("New MSE client disconnected before init segment delivery");
+                                continue;
+                            }
+                            Err(mpsc::error::TrySendError::Full(_)) => {
+                                tracing::warn!("New MSE client channel full during init segment delivery, disconnecting");
+                                continue;
+                            }
                         }
                     }
 
@@ -251,19 +262,43 @@ impl ProcessorNode for HttpMseNode {
 
                     // Buffer the init segment (everything before the first Cluster element).
                     if !init_complete {
-                        // Check if this chunk contains a Cluster element ID.
-                        if let Some(cluster_offset) = find_cluster_id(&data) {
-                            // Everything before the Cluster ID is part of the init segment.
+                        // Search for the Cluster ID in the overlap + current chunk to handle
+                        // the case where the 4-byte ID straddles two consecutive packets.
+                        let cluster_found = if overlap.is_empty() {
+                            false
+                        } else {
+                            let mut combined = overlap.clone();
+                            combined.extend_from_slice(&data[..data.len().min(WEBM_CLUSTER_ID.len())]);
+                            find_cluster_id(&combined).is_some_and(|pos| {
+                                // Cluster ID starts at `pos` within the overlap region.
+                                // The init segment ends at the overlap boundary minus
+                                // the bytes we need to trim from the already-buffered tail.
+                                let overlap_len = overlap.len();
+                                if pos < overlap_len {
+                                    // The Cluster started inside already-buffered data;
+                                    // truncate the init segment to exclude those bytes.
+                                    init_segment.truncate(init_segment.len() - (overlap_len - pos));
+                                } else {
+                                    // The Cluster started inside the new chunk.
+                                    let extra = pos - overlap_len;
+                                    let remaining_capacity = MAX_INIT_SEGMENT_SIZE.saturating_sub(init_segment.len());
+                                    let to_append = extra.min(remaining_capacity);
+                                    init_segment.extend_from_slice(&data[..to_append]);
+                                }
+                                true
+                            })
+                        };
+
+                        if cluster_found {
+                            init_complete = true;
+                        } else if let Some(cluster_offset) = find_cluster_id(&data) {
+                            // Cluster ID found entirely within this chunk.
                             if cluster_offset > 0 {
                                 let remaining_capacity = MAX_INIT_SEGMENT_SIZE.saturating_sub(init_segment.len());
                                 let to_append = cluster_offset.min(remaining_capacity);
                                 init_segment.extend_from_slice(&data[..to_append]);
                             }
                             init_complete = true;
-                            tracing::info!(
-                                init_segment_size = init_segment.len(),
-                                "WebM init segment captured"
-                            );
                         } else {
                             // Still in the init segment — buffer these bytes.
                             let remaining_capacity = MAX_INIT_SEGMENT_SIZE.saturating_sub(init_segment.len());
@@ -271,10 +306,22 @@ impl ProcessorNode for HttpMseNode {
                                 let to_append = data.len().min(remaining_capacity);
                                 init_segment.extend_from_slice(&data[..to_append]);
                             }
+                            // Keep the last 3 bytes for cross-chunk Cluster ID detection.
+                            let keep = data.len().min(WEBM_CLUSTER_ID.len() - 1);
+                            overlap.clear();
+                            overlap.extend_from_slice(&data[data.len() - keep..]);
+                        }
+
+                        if init_complete {
+                            tracing::info!(
+                                init_segment_size = init_segment.len(),
+                                "WebM init segment captured"
+                            );
+                            overlap.clear();
                         }
                     }
 
-                    // Broadcast to all connected clients, removing disconnected ones.
+                    // Broadcast to all connected clients, removing disconnected or slow ones.
                     if !clients.is_empty() {
                         let chunk = data.clone();
                         let mut i = 0;
@@ -282,6 +329,9 @@ impl ProcessorNode for HttpMseNode {
                             // Use try_send to avoid blocking the pipeline on a slow client.
                             match clients[i].try_send(chunk.clone()) {
                                 Ok(()) => {
+                                    // stats_tracker.sent() counts per-client delivery, not per-packet.
+                                    // This differs from single-output nodes but accurately reflects
+                                    // the total number of chunk deliveries across all clients.
                                     stats_tracker.sent();
                                     i += 1;
                                 }
@@ -293,9 +343,15 @@ impl ProcessorNode for HttpMseNode {
                                     );
                                 }
                                 Err(mpsc::error::TrySendError::Full(_)) => {
-                                    // Client is too slow — drop the chunk rather than blocking.
-                                    stats_tracker.discarded();
-                                    i += 1;
+                                    // Dropping chunks from a WebM stream corrupts the container
+                                    // format — MSE SourceBuffer will throw decode errors with
+                                    // no recovery path. Disconnect the slow client entirely
+                                    // rather than silently dropping data.
+                                    clients.swap_remove(i);
+                                    tracing::warn!(
+                                        client_count = clients.len(),
+                                        "MSE client too slow, disconnecting to avoid corrupt stream"
+                                    );
                                 }
                             }
                         }
@@ -422,5 +478,10 @@ mod tests {
         let factory = HttpMseNode::factory();
         let result = (factory)(None);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_default_content_type_includes_codecs() {
+        assert!(DEFAULT_CONTENT_TYPE.contains("codecs"));
     }
 }

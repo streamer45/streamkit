@@ -1505,29 +1505,69 @@ async fn get_certificate_sha256_handler(
 /// When an HttpMse node registers a path via the MSE gateway, this handler
 /// connects incoming HTTP GET requests to the node's output stream.
 /// Each client receives the WebM init segment followed by live media clusters.
+///
+/// # Security model
+///
+/// This endpoint is intentionally **unauthenticated**, matching the MoQ
+/// WebTransport endpoint's model. MSE streams are consumed by browser
+/// `<video>` elements and `fetch()` streaming, which cannot send custom
+/// auth headers. If authentication is needed in the future, consider
+/// query-parameter token auth (e.g. `/mse/{path}?token=...`).
 async fn mse_stream_handler(
     State(app_state): State<Arc<AppState>>,
     Path(path): Path<String>,
 ) -> Response {
+    use crate::mse_gateway::MseConnectError;
+
     let full_path = format!("/mse/{path}");
 
     match app_state.mse_gateway.connect_client(&full_path).await {
-        Ok((content_type, body_rx)) => {
+        Ok((content_type, body_rx, guard)) => {
+            // Wrap the stream to keep the MseClientGuard alive for the entire
+            // duration of the HTTP response. When the stream ends (client
+            // disconnects or node stops), the guard is dropped, decrementing
+            // the active client counter in the gateway.
             let stream = ReceiverStream::new(body_rx).map(Ok::<_, Infallible>);
+            let guarded_stream = GuardedStream { inner: stream, _guard: guard };
 
             Response::builder()
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, content_type)
                 .header(header::CACHE_CONTROL, "no-cache, no-store")
-                .body(Body::from_stream(stream))
+                .body(Body::from_stream(guarded_stream))
                 .unwrap_or_else(|_| {
                     (StatusCode::INTERNAL_SERVER_ERROR, "Failed to build response").into_response()
                 })
         },
-        Err(msg) => {
-            debug!(path = %full_path, error = %msg, "MSE stream not found");
-            (StatusCode::NOT_FOUND, msg).into_response()
+        Err(MseConnectError::NotFound) => {
+            debug!(path = %full_path, "MSE stream not found");
+            (StatusCode::NOT_FOUND, "No MSE stream registered for this path").into_response()
         },
+        Err(MseConnectError::AtCapacity) => {
+            warn!(path = %full_path, "MSE stream at capacity");
+            (StatusCode::SERVICE_UNAVAILABLE, "MSE stream at maximum client capacity")
+                .into_response()
+        },
+        Err(MseConnectError::NodeStopped) => {
+            debug!(path = %full_path, "MSE stream node stopped");
+            (StatusCode::GONE, "MSE stream node is no longer running").into_response()
+        },
+    }
+}
+
+/// A stream wrapper that holds an [`MseClientGuard`] alongside the inner stream.
+/// The guard decrements the gateway's active-client counter when this stream
+/// (and therefore the HTTP response) is dropped.
+struct GuardedStream<S> {
+    inner: S,
+    _guard: crate::mse_gateway::MseClientGuard,
+}
+
+impl<S: futures::Stream + Unpin> futures::Stream for GuardedStream<S> {
+    type Item = S::Item;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
+        Pin::new(&mut self.inner).poll_next(cx)
     }
 }
 
@@ -3231,7 +3271,9 @@ pub fn create_app(
         router = router.route("/certificate.sha256", get(get_certificate_sha256_handler));
     }
 
-    // Add MSE streaming route
+    // Add MSE streaming route.
+    // SECURITY: Intentionally outside /api/ so auth_guard_middleware does not
+    // apply — matches the MoQ WebTransport model. See mse_stream_handler doc comment.
     router = router.route("/mse/{*path}", get(mse_stream_handler));
 
     // Add auth routes

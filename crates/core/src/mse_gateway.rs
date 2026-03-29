@@ -31,6 +31,10 @@ pub struct MseClient {
 pub trait MseGatewayTrait: Send + Sync {
     /// Register an MSE streaming path for a session.
     ///
+    /// `max_clients` is the maximum number of concurrent HTTP clients the gateway
+    /// should accept for this stream. When the limit is reached, new clients are
+    /// rejected with HTTP 503.
+    ///
     /// Returns a receiver that delivers new HTTP clients as they connect.
     /// The node should send WebM chunks to each client's `body_tx`.
     async fn register_stream(
@@ -38,6 +42,7 @@ pub trait MseGatewayTrait: Send + Sync {
         path: String,
         session_id: String,
         content_type: String,
+        max_clients: u32,
     ) -> Result<mpsc::UnboundedReceiver<MseClient>, String>;
 
     /// Unregister an MSE streaming path, disconnecting all clients.
