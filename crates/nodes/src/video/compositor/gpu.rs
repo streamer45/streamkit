@@ -1401,7 +1401,11 @@ fn build_layer_uniforms(
     let my: f32 = if mirror_v { -1.0 } else { 1.0 };
 
     // Rotation (around the quad centre, which is at (tx, ty) in NDC).
-    let theta = rotation_degrees.to_radians();
+    // Negate the angle: the CPU path defines positive rotation as
+    // clockwise in screen-space (Y-down), but in NDC (Y-up) the
+    // standard rotation matrix rotates counter-clockwise for positive
+    // angles.  Negating aligns the GPU with the CPU convention.
+    let theta = (-rotation_degrees).to_radians();
     let cos_t = theta.cos();
     let sin_t = theta.sin();
 

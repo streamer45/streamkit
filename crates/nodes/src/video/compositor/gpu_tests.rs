@@ -291,6 +291,80 @@ fn gpu_layer_rotation() {
     assert!(buf[mid + 1] > 200, "Centre should be green after 45° rotation, G={}", buf[mid + 1]);
 }
 
+/// Regression test: GPU rotation direction must match the CPU path.
+///
+/// Positive `rotation_degrees` means clockwise in screen-space (Y-down),
+/// consistent with the CPU compositor.  Before the fix the GPU used
+/// the raw angle in NDC (Y-up), which produced counter-clockwise
+/// rotation — i.e. the visual result was inverted.
+///
+/// Uses a left-red / right-green split image rotated 90° CW on a
+/// square canvas.  After a 90° clockwise rotation the left (red) half
+/// should move to the top and the right (green) half to the bottom.
+#[test]
+fn gpu_rotation_direction_matches_cpu() {
+    let mut ctx = require_gpu();
+    let size = 64_u32;
+
+    // Build a left-red / right-green split image.
+    let mut data = vec![0u8; (size as usize) * (size as usize) * 4];
+    for y in 0..size as usize {
+        for x in 0..size as usize {
+            let off = (y * size as usize + x) * 4;
+            if x < size as usize / 2 {
+                data[off] = 255; // R
+                data[off + 3] = 255; // A
+            } else {
+                data[off + 1] = 255; // G
+                data[off + 3] = 255; // A
+            }
+        }
+    }
+
+    let layer = make_layer_with_props(
+        data,
+        size,
+        size,
+        None,
+        1.0,
+        90.0, // 90° clockwise
+        0,
+        false,
+        false,
+        1.0,
+        CropShape::Rect,
+    );
+
+    let layers = vec![Some(layer)];
+    let (result, _) = ctx.composite_frame_gpu(size, size, &layers, &[], &[], None, None);
+    let buf = result.as_slice();
+
+    // After 90° CW rotation:
+    //   - original left (red)  → top
+    //   - original right (green) → bottom
+    // Sample a point in the top-centre (should be red).
+    let top_x = size as usize / 2;
+    let top_y = size as usize / 4;
+    let top_off = (top_y * size as usize + top_x) * 4;
+    assert!(
+        buf[top_off] > 200 && buf[top_off + 1] < 55,
+        "Top-centre should be red after 90° CW rotation: R={}, G={}",
+        buf[top_off],
+        buf[top_off + 1],
+    );
+
+    // Sample a point in the bottom-centre (should be green).
+    let bot_x = size as usize / 2;
+    let bot_y = size as usize * 3 / 4;
+    let bot_off = (bot_y * size as usize + bot_x) * 4;
+    assert!(
+        buf[bot_off + 1] > 200 && buf[bot_off] < 55,
+        "Bottom-centre should be green after 90° CW rotation: R={}, G={}",
+        buf[bot_off],
+        buf[bot_off + 1],
+    );
+}
+
 #[test]
 fn gpu_circle_crop() {
     let mut ctx = require_gpu();
