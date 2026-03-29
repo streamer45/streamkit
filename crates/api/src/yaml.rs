@@ -3164,7 +3164,7 @@ client:
                 },
                 PublishTrackConfig {
                     kind: TrackKind::Video,
-                    source: CaptureSource::Camera,
+                    source: CaptureSource::Screen,
                     broadcast: None,
                     width: None,
                     height: None,
