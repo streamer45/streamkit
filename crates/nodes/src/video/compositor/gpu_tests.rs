@@ -329,6 +329,71 @@ fn gpu_circle_crop() {
     );
 }
 
+/// Regression test: circle crop on a non-square layer must produce a true
+/// circle (inscribed in the shorter dimension), not an ellipse.
+///
+/// Before the fix, the GPU shader used `length(quad_uv - centre)` in UV
+/// space where both axes span [0,1] regardless of aspect ratio.  On a
+/// wide rect (e.g. 400×200), this produced a circle in UV space but an
+/// ellipse on screen.  The fix scales the distance by the aspect ratio
+/// so the circle is inscribed in min(width, height), matching the CPU path.
+#[test]
+fn gpu_circle_crop_nonsquare() {
+    let mut ctx = require_gpu();
+    let canvas_w = 400;
+    let canvas_h = 200;
+
+    // Solid green layer covering the full non-square canvas with circle crop.
+    let layer = make_layer_with_props(
+        solid_rgba(canvas_w, canvas_h, 0, 255, 0, 255),
+        canvas_w,
+        canvas_h,
+        None,
+        1.0,
+        0.0,
+        0,
+        false,
+        false,
+        1.0,
+        CropShape::Circle,
+    );
+
+    let layers = vec![Some(layer)];
+    let (result, _) = ctx.composite_frame_gpu(canvas_w, canvas_h, &layers, &[], &[], None, None);
+
+    let buf = result.as_slice();
+
+    // Centre should be green (inside the circle).
+    let mid = ((canvas_h as usize / 2) * canvas_w as usize + canvas_w as usize / 2) * 4;
+    assert!(buf[mid + 1] > 200, "Centre should be green (inside circle), G={}", buf[mid + 1]);
+
+    // The circle is inscribed in the shorter dimension (height = 200),
+    // so it has radius 100px.  The horizontal centre is at x=200.
+    // A point at x = 200 + 100 + 10 = 310, y = 100 (mid-height) is
+    // outside the circle horizontally.  If the bug were present (ellipse
+    // in screen space), this point would be inside because the ellipse
+    // extends to x = 200 ± 200.
+    let outside_x = 310_usize; // 10px beyond circle edge horizontally
+    let outside_y = canvas_h as usize / 2;
+    let off = (outside_y * canvas_w as usize + outside_x) * 4;
+    assert!(
+        buf[off + 3] < 30,
+        "Point beyond circle radius horizontally should be transparent, A={}",
+        buf[off + 3]
+    );
+
+    // A point at x = 200, y = 100 - 90 = 10 (near top, inside circle)
+    // should be green.
+    let inside_x = canvas_w as usize / 2;
+    let inside_y = 10_usize;
+    let off2 = (inside_y * canvas_w as usize + inside_x) * 4;
+    assert!(
+        buf[off2 + 1] > 200,
+        "Point near top at horizontal centre should be inside circle, G={}",
+        buf[off2 + 1]
+    );
+}
+
 #[test]
 fn gpu_empty_scene() {
     let mut ctx = require_gpu();

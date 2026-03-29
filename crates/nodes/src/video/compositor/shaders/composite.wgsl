@@ -28,8 +28,10 @@ struct LayerUniforms {
     opacity: f32,
     // 1.0 for circle crop, 0.0 for rect.
     circle_crop: f32,
+    // Destination rect aspect ratio (width / height).
+    // Used by circle crop to inscribe a true circle in the shorter dimension.
+    aspect_ratio: f32,
     _pad0: f32,
-    _pad1: f32,
 }
 
 @group(0) @binding(0) var<uniform> layer: LayerUniforms;
@@ -87,12 +89,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         discard;
     }
 
-    // Circle-crop: discard fragments outside the unit circle inscribed
-    // in the quad.  Uses quad_uv (original [0,1] space) so the circle
-    // mask is independent of crop/zoom remapping.
+    // Circle-crop: discard fragments outside a true circle inscribed
+    // in the shorter dimension of the quad.  Uses quad_uv (original [0,1]
+    // space) so the circle mask is independent of crop/zoom remapping.
+    // The aspect ratio scales the longer axis so the distance check
+    // produces a circle in screen space, not an ellipse.
     if layer.circle_crop > 0.5 {
         let centre = vec2<f32>(0.5, 0.5);
-        let dist = length(in.quad_uv - centre) * 2.0;
+        let delta = in.quad_uv - centre;
+        let scale = vec2<f32>(max(1.0, layer.aspect_ratio), max(1.0, 1.0 / layer.aspect_ratio));
+        let dist = length(delta * scale) * 2.0;
         if dist > 1.0 {
             discard;
         }

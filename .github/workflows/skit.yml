@@ -102,10 +102,32 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Run tests
+      - name: Run tests (GPU tests run separately on self-hosted runner)
         run: |
-          cargo test --locked --workspace
+          cargo test --locked --workspace -- --skip gpu_tests::
           cargo test --locked -p streamkit-server --features "moq"
+
+  test-gpu:
+    name: Test (GPU)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install system dependencies (libvpx for VP9 video support)
+        run: sudo apt-get update && sudo apt-get install -y libvpx-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92.0"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run GPU tests
+        run: |
+          cargo test --locked -p streamkit-nodes --features gpu
+          cargo test --locked -p streamkit-engine --features gpu
 
   build:
     name: Build
