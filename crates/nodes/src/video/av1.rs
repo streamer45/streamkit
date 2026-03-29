@@ -524,6 +524,11 @@ impl Av1Decoder {
             std::ptr::copy_nonoverlapping(data.as_ptr(), buf_ptr, data.len());
         }
 
+        // RAII guard ensures `dav1d_data_unref` is called on all error paths.
+        // After `dav1d_send_data` consumes the data (returns 0), we defuse the
+        // guard so the (now-empty) `Dav1dData` is not double-freed.
+        let mut data_guard = Dav1dDataGuard::new(&raw mut dav1d_data);
+
         let mut all_frames = Vec::new();
 
         // Feed data to the decoder in a retry loop.  The dav1d API contract
@@ -536,7 +541,8 @@ impl Av1Decoder {
             };
 
             if res.0 == 0 {
-                // Data consumed successfully.
+                // Data consumed successfully — defuse the guard.
+                data_guard.defuse();
                 break;
             }
 
@@ -547,10 +553,7 @@ impl Av1Decoder {
                 continue;
             }
 
-            // Real error — clean up the unconsumed Dav1dData.
-            unsafe {
-                rav1d::src::lib::dav1d_data_unref(NonNull::new(&raw mut dav1d_data));
-            }
+            // Real error — guard will call dav1d_data_unref on drop.
             return Err(format!("rav1d: dav1d_send_data failed with code {}", res.0));
         }
 
@@ -631,6 +634,34 @@ impl Av1Decoder {
             rav1d::src::lib::dav1d_flush(self.ctx);
         }
         Ok(frames)
+    }
+}
+
+/// RAII guard for a `Dav1dData` buffer.  Calls `dav1d_data_unref` on drop
+/// unless explicitly defused (e.g. after `dav1d_send_data` consumes the data).
+struct Dav1dDataGuard {
+    ptr: *mut rav1d::include::dav1d::data::Dav1dData,
+    active: bool,
+}
+
+impl Dav1dDataGuard {
+    const fn new(ptr: *mut rav1d::include::dav1d::data::Dav1dData) -> Self {
+        Self { ptr, active: true }
+    }
+
+    /// Prevent the guard from calling `dav1d_data_unref` on drop.
+    const fn defuse(&mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for Dav1dDataGuard {
+    fn drop(&mut self) {
+        if self.active {
+            unsafe {
+                rav1d::src::lib::dav1d_data_unref(std::ptr::NonNull::new(self.ptr));
+            }
+        }
     }
 }
 
