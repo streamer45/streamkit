@@ -700,6 +700,13 @@ impl MoqPullNode {
         let mut audio_current_group: Option<moq_lite::GroupConsumer> = None;
         let mut video_current_group: Option<moq_lite::GroupConsumer> = None;
 
+        // Resolve the video content_type from the discovered track's codec.
+        // Falls back to "video/vp9" if no codec info is available.
+        let video_content_type: &str = match video_track.and_then(|dt| dt.video_codec) {
+            Some(VideoCodec::Av1) => "video/av1",
+            _ => "video/vp9",
+        };
+
         let mut session_packet_count: u32 = 0;
         let mut last_audio_timestamp_us: Option<u64> = None;
         let mut last_video_timestamp_us: Option<u64> = None;
@@ -872,7 +879,7 @@ impl MoqPullNode {
 
                     let (content_type, metadata) = match source {
                         ReadSource::Video => (
-                            Some(Cow::Borrowed("video/vp9")),
+                            Some(Cow::Borrowed(video_content_type)),
                             Some(PacketMetadata {
                                 timestamp_us: Some(timestamp_us),
                                 duration_us,
