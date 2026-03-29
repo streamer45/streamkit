@@ -532,10 +532,7 @@ impl Av1Decoder {
         // via `dav1d_get_picture` and then retry with the same `Dav1dData`.
         loop {
             let res = unsafe {
-                rav1d::src::lib::dav1d_send_data(
-                    Some(self.ctx),
-                    NonNull::new(&raw mut dav1d_data),
-                )
+                rav1d::src::lib::dav1d_send_data(Some(self.ctx), NonNull::new(&raw mut dav1d_data))
             };
 
             if res.0 == 0 {
