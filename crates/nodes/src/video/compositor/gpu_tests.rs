@@ -313,11 +313,10 @@ fn gpu_rotation_direction_matches_cpu() {
             let off = (y * size as usize + x) * 4;
             if x < size as usize / 2 {
                 data[off] = 255; // R
-                data[off + 3] = 255; // A
             } else {
                 data[off + 1] = 255; // G
-                data[off + 3] = 255; // A
             }
+            data[off + 3] = 255; // A
         }
     }
 
