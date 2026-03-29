@@ -9,7 +9,7 @@
 //! - Multiple subscribers connect to `{gateway_path}/output` to receive processed media
 //!
 //! Input and output pins are type-agnostic: both `in` and `in_1` accept any
-//! supported encoded media type (Opus audio, VP9 video). The actual media kind
+//! supported encoded media type (Opus audio, VP9/AV1 video). The actual media kind
 //! flowing through each pin is determined at runtime from `NodeContext::input_types`.
 
 use crate::video::{VP9_BIT_DEPTH, VP9_LEVEL, VP9_PROFILE};

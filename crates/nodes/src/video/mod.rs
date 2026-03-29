@@ -32,6 +32,19 @@ pub const VP9_BIT_DEPTH: u8 = 8;
 /// 4:2:0 chroma subsampling (value 1 per VPCodecConfigurationRecord).
 pub const VP9_CHROMA_SUBSAMPLING: u8 = 1;
 
+// ── Default AV1 codec parameters ─────────────────────────────────────────────
+//
+// Shared across MoQ catalog creation for AV1 tracks.
+
+/// AV1 Main profile (4:2:0, 8/10-bit).
+pub const AV1_PROFILE: u8 = 0;
+/// AV1 level 4.0.
+pub const AV1_LEVEL: u8 = 8;
+/// 8 bits per channel.
+pub const AV1_BIT_DEPTH: u8 = 8;
+/// AV1 Main tier.
+pub const AV1_TIER: char = 'M';
+
 /// Parse a pixel format string into a [`PixelFormat`].
 ///
 /// Accepts `"i420"`, `"nv12"`, `"rgba8"`, or `"rgba"` (case-insensitive).
@@ -64,6 +77,9 @@ pub mod pixel_convert;
 
 #[cfg(feature = "vp9")]
 pub mod vp9;
+
+#[cfg(feature = "av1")]
+pub mod av1;
 
 #[cfg(any(feature = "colorbars", feature = "compositor"))]
 pub(crate) mod fonts;
@@ -380,4 +396,7 @@ pub fn register_video_nodes(registry: &mut NodeRegistry, constraints: &GlobalNod
 
     #[cfg(feature = "vp9")]
     vp9::register_vp9_nodes(registry);
+
+    #[cfg(feature = "av1")]
+    av1::register_av1_nodes(registry);
 }

@@ -393,7 +393,7 @@ impl MoqPullNode {
         Ok(tracks)
     }
 
-    /// Extract supported tracks (Opus audio, VP9 video) from a parsed catalog.
+    /// Extract supported tracks (Opus audio, VP9/AV1 video) from a parsed catalog.
     fn extract_tracks(catalog: &hang::catalog::Catalog) -> Vec<moq_lite::Track> {
         let mut tracks = Vec::new();
 
@@ -407,11 +407,18 @@ impl MoqPullNode {
         }
 
         for (name, config) in &catalog.video.renditions {
-            if matches!(config.codec, hang::catalog::VideoCodec::VP9(_)) {
-                tracing::info!(track = %name, "found VP9 video track");
-                tracks.push(moq_lite::Track { name: name.clone(), priority: 60 });
-            } else {
-                tracing::debug!(track = %name, codec = ?config.codec, "skipping non-VP9 video track");
+            match config.codec {
+                hang::catalog::VideoCodec::VP9(_) => {
+                    tracing::info!(track = %name, "found VP9 video track");
+                    tracks.push(moq_lite::Track { name: name.clone(), priority: 60 });
+                },
+                hang::catalog::VideoCodec::AV1(_) => {
+                    tracing::info!(track = %name, "found AV1 video track");
+                    tracks.push(moq_lite::Track { name: name.clone(), priority: 60 });
+                },
+                _ => {
+                    tracing::debug!(track = %name, codec = ?config.codec, "skipping unsupported video track");
+                },
             }
         }
 

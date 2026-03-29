@@ -81,6 +81,10 @@ fontdue = { version = "0.9", optional = true }
 smallvec = { version = "1.13", optional = true, features = ["serde"] }
 ts-rs = { version = "12.0.1", optional = true }
 
+# AV1 codec (optional, behind `av1` feature)
+rav1e = { version = "0.8", optional = true, default-features = false, features = ["threading"] }
+rav1d = { version = "1.1", optional = true, default-features = false, features = ["bitdepth_8"] }
+
 # GPU compositing (optional, behind `gpu` feature)
 wgpu = { version = "29", optional = true, default-features = false, features = ["vulkan", "metal", "dx12", "wgsl"] }
 pollster = { version = "0.4", optional = true }
@@ -133,11 +137,12 @@ ogg = ["dep:ogg", "dep:schemars"]
 webm = ["dep:webm", "dep:schemars", "dep:tempfile"]
 symphonia = ["dep:symphonia", "dep:schemars"]
 vp9 = ["dep:env-libvpx-sys", "dep:schemars"]
+av1 = ["dep:rav1e", "dep:rav1d", "dep:schemars"]
 colorbars = ["dep:schemars", "dep:serde_json", "dep:fontdue"]
 compositor = ["dep:schemars", "dep:serde_json", "dep:image", "dep:tiny-skia", "dep:rayon", "dep:fontdue", "dep:smallvec", "dep:uuid"]
 gpu = ["compositor", "dep:wgpu", "dep:pollster", "dep:bytemuck"]
 codegen = ["dep:ts-rs"]
-video = ["vp9", "colorbars", "compositor"]
+video = ["vp9", "av1", "colorbars", "compositor"]
 
 [[bin]]
 name = "generate-compositor-types"
