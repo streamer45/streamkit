@@ -1507,6 +1507,7 @@ pub fn register_webm_nodes(registry: &mut NodeRegistry) {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use streamkit_core::ProcessorNode;
@@ -1570,17 +1571,17 @@ mod tests {
         let output = Vec::new();
         let writer = Writer::new_non_seek(Cursor::new(output));
 
-        let builder = SegmentBuilder::new(writer).expect("SegmentBuilder::new");
-        let builder = builder.set_mode(SegmentMode::Live).expect("set_mode Live");
+        let builder = SegmentBuilder::new(writer).unwrap();
+        let builder = builder.set_mode(SegmentMode::Live).unwrap();
         let (builder, video_track) =
-            builder.add_video_track(1280, 720, VideoCodecId::VP9, None).expect("add_video_track");
+            builder.add_video_track(1280, 720, VideoCodecId::VP9, None).unwrap();
         let mut segment = builder.build();
 
         // Add a few frames — the first one is a keyframe.
         let fake_frame = vec![0u8; 100];
-        segment.add_frame(video_track, &fake_frame, 0, true).expect("add_frame 0");
-        segment.add_frame(video_track, &fake_frame, 33_000_000, false).expect("add_frame 1");
-        segment.add_frame(video_track, &fake_frame, 66_000_000, true).expect("add_frame 2");
+        segment.add_frame(video_track, &fake_frame, 0, true).unwrap();
+        segment.add_frame(video_track, &fake_frame, 33_000_000, false).unwrap();
+        segment.add_frame(video_track, &fake_frame, 66_000_000, true).unwrap();
 
         // Finalize (may fail for non-seek, that's ok — we just want the
         // bytes written so far).
@@ -1589,14 +1590,10 @@ mod tests {
 
         // Search for Cluster ID (0x1F43B675).
         let cluster_id: [u8; 4] = [0x1F, 0x43, 0xB6, 0x75];
-        let cluster_positions: Vec<usize> = data
-            .windows(4)
-            .enumerate()
-            .filter_map(|(i, w)| if w == cluster_id { Some(i) } else { None })
-            .collect();
+        let has_cluster = data.windows(4).any(|w| w == cluster_id);
 
         assert!(
-            !cluster_positions.is_empty(),
+            has_cluster,
             "webm crate in Live mode with non-seek writer must produce at least one Cluster element. \
              Output size: {} bytes. First 200 bytes: {:02x?}",
             data.len(),

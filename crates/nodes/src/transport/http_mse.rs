@@ -411,10 +411,7 @@ impl ProcessorNode for HttpMseNode {
                                 while i < clients.len() {
                                     match clients[i].try_send(init_bytes.clone()) {
                                         Ok(()) => { i += 1; }
-                                        Err(mpsc::error::TrySendError::Closed(_)) => {
-                                            clients.swap_remove(i);
-                                        }
-                                        Err(mpsc::error::TrySendError::Full(_)) => {
+                                        Err(mpsc::error::TrySendError::Closed(_) | mpsc::error::TrySendError::Full(_)) => {
                                             clients.swap_remove(i);
                                         }
                                     }
@@ -560,7 +557,7 @@ fn find_cluster_preamble_end(data: &[u8]) -> Option<usize> {
     if pos + tc_width > data.len() || tc_width > 8 {
         return None;
     }
-    let tc_mask = 0xFFu8.checked_shr(tc_width as u32).unwrap_or(0);
+    let tc_mask = u32::try_from(tc_width).ok().and_then(|w| 0xFFu8.checked_shr(w)).unwrap_or(0);
     let mut tc_size: u64 = u64::from(tc_first & tc_mask);
     for &b in &data[pos + 1..pos + tc_width] {
         tc_size = (tc_size << 8) | u64::from(b);
@@ -620,7 +617,7 @@ fn find_tracks_end(data: &[u8]) -> Option<usize> {
     // Assemble the size value, masking out the width marker bits.
     // For width 1–7 the mask is 0xFF >> width; for width 8 the entire
     // first byte is the marker so the mask is 0x00.
-    let mask = 0xFFu8.checked_shr(width as u32).unwrap_or(0);
+    let mask = u32::try_from(width).ok().and_then(|w| 0xFFu8.checked_shr(w)).unwrap_or(0);
     let mut size: u64 = u64::from(first_byte & mask);
     for &b in &data[size_start + 1..size_start + width] {
         size = (size << 8) | u64::from(b);
