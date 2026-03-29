@@ -280,6 +280,11 @@ impl ProcessorNode for HttpMseNode {
                     }
 
                     // Buffer the init segment (everything before the first Cluster element).
+                    // When the first Cluster is found, `cluster_start_in_data` records
+                    // the byte offset within `data` where the Cluster begins so only
+                    // valid media data (from the Cluster onward) is forwarded to clients.
+                    let mut cluster_start_in_data: Option<usize> = None;
+
                     if !init_complete {
                         // Search for the Cluster ID in the overlap + current chunk to handle
                         // the case where the 4-byte ID straddles two consecutive packets.
@@ -297,12 +302,17 @@ impl ProcessorNode for HttpMseNode {
                                     // buffered if the init_segment hit MAX_INIT_SEGMENT_SIZE.
                                     let bytes_to_remove = (overlap_len - pos).min(overlap_bytes_in_init);
                                     init_segment.truncate(init_segment.len() - bytes_to_remove);
+                                    // Cluster ID straddles: the remaining bytes are at the
+                                    // start of `data`.  Forward from byte 0.
+                                    cluster_start_in_data = Some(0);
                                 } else {
                                     // The Cluster started inside the new chunk.
                                     let extra = pos - overlap_len;
                                     let remaining_capacity = MAX_INIT_SEGMENT_SIZE.saturating_sub(init_segment.len());
                                     let to_append = extra.min(remaining_capacity);
                                     init_segment.extend_from_slice(&data[..to_append]);
+                                    // Forward data from the Cluster offset within this chunk.
+                                    cluster_start_in_data = Some(extra);
                                 }
                                 true
                             })
@@ -318,6 +328,7 @@ impl ProcessorNode for HttpMseNode {
                                 init_segment.extend_from_slice(&data[..to_append]);
                             }
                             init_complete = true;
+                            cluster_start_in_data = Some(cluster_offset);
                         } else {
                             // Still in the init segment — buffer these bytes.
                             let remaining_capacity = MAX_INIT_SEGMENT_SIZE.saturating_sub(init_segment.len());
@@ -363,6 +374,25 @@ impl ProcessorNode for HttpMseNode {
                                 "WebM init segment captured"
                             );
                             overlap.clear();
+
+                            // Send the (now-truncated) init segment to clients
+                            // that connected before init was complete.  They've
+                            // been waiting in the `clients` vec without data.
+                            if !clients.is_empty() && !init_segment.is_empty() {
+                                let init_bytes = Bytes::copy_from_slice(&init_segment);
+                                let mut i = 0;
+                                while i < clients.len() {
+                                    match clients[i].try_send(init_bytes.clone()) {
+                                        Ok(()) => { i += 1; }
+                                        Err(mpsc::error::TrySendError::Closed(_)) => {
+                                            clients.swap_remove(i);
+                                        }
+                                        Err(mpsc::error::TrySendError::Full(_)) => {
+                                            clients.swap_remove(i);
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -374,9 +404,17 @@ impl ProcessorNode for HttpMseNode {
                         continue;
                     }
 
+                    // For the chunk that triggered init_complete, only forward
+                    // data from the Cluster start — any bytes before it are
+                    // pre-Cluster SimpleBlock data that must be discarded.
+                    let forward_data = match cluster_start_in_data {
+                        Some(offset) if offset > 0 => data.slice(offset..),
+                        _ => data.clone(),
+                    };
+
                     // Broadcast to all connected clients, removing disconnected or slow ones.
-                    if !clients.is_empty() {
-                        let chunk = data.clone();
+                    if !clients.is_empty() && !forward_data.is_empty() {
+                        let chunk = forward_data;
                         let mut i = 0;
                         while i < clients.len() {
                             // Use try_send to avoid blocking the pipeline on a slow client.
@@ -475,7 +513,10 @@ fn find_tracks_end(data: &[u8]) -> Option<usize> {
     }
 
     // Assemble the size value, masking out the width marker bits.
-    let mut size: u64 = u64::from(first_byte & (0xFF >> width));
+    // For width 1–7 the mask is 0xFF >> width; for width 8 the entire
+    // first byte is the marker so the mask is 0x00.
+    let mask = 0xFFu8.checked_shr(width as u32).unwrap_or(0);
+    let mut size: u64 = u64::from(first_byte & mask);
     for &b in &data[size_start + 1..size_start + width] {
         size = (size << 8) | u64::from(b);
     }
@@ -784,6 +825,19 @@ mod tests {
         // find_tracks_end returns the *logical* end (ID pos + 4 + 1 + 100 = 105)
         // even if the data is shorter.  The caller should check bounds.
         assert_eq!(find_tracks_end(&data), Some(4 + 1 + 100));
+    }
+
+    #[test]
+    fn test_find_tracks_end_8_byte_vint() {
+        // 8-byte VINT: first byte = 0x01 (width=8), remaining 7 bytes encode size.
+        // 0x01 0x00 0x00 0x00 0x00 0x00 0x00 0x0A → size = 10
+        let mut data = Vec::new();
+        data.extend_from_slice(&WEBM_TRACKS_ID);
+        data.extend_from_slice(&[0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0A]); // 8-byte VINT = 10
+        data.extend_from_slice(&[0xEE; 10]); // 10 bytes of content
+
+        // Tracks end: 4 (ID) + 8 (VINT) + 10 (content) = 22
+        assert_eq!(find_tracks_end(&data), Some(22));
     }
 
     // ── Init segment truncation at Tracks end ──

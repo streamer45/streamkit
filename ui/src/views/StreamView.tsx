@@ -642,10 +642,10 @@ const StreamView: React.FC = () => {
         viewState.setSelectedTemplateId(templateId);
         viewState.setPipelineYaml(template.yaml);
 
-        // Auto-adjust connection settings based on moq_peer node in the pipeline.
-        // Always reset broadcast/relay values so stale state from a previous
-        // template doesn't leak into the new selection (e.g. switching from a
-        // MoQ pipeline to an MSE-only pipeline must clear outputBroadcast).
+        // Always clear transport-related state so switching to a pipeline
+        // without a client section doesn't leave stale values from the
+        // previous template (e.g. switching from a MoQ pipeline to an
+        // MSE-only pipeline must clear outputBroadcast, and vice versa).
         const moqSettings = extractMoqPeerSettings(template.yaml);
         if (moqSettings) {
           const resolvedUrl = resolveServerUrl(moqSettings);
@@ -659,6 +659,13 @@ const StreamView: React.FC = () => {
           setVideoSourceType(moqSettings.videoSourceType);
           setTracks(moqSettings.tracks, moqSettings.publishBroadcasts);
           setMsePath(moqSettings.msePath ?? null);
+        } else {
+          // No client section — clear all transport state to prevent
+          // stale MoQ/MSE settings from leaking across templates.
+          setInputBroadcast('');
+          setOutputBroadcast('');
+          setEnablePublish(false);
+          setMsePath(null);
         }
       }
     },
