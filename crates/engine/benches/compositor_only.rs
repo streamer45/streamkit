@@ -619,12 +619,14 @@ fn bench_compositor(c: &mut Criterion) {
 fn bench_gpu_compositor(c: &mut Criterion) {
     use streamkit_nodes::video::compositor::gpu::GpuContext;
 
-    let mut gpu_ctx = match GpuContext::try_init() {
-        Some(ctx) => ctx,
-        None => {
-            eprintln!("No GPU available — skipping GPU compositor benchmarks");
-            return;
-        },
+    let Some(mut gpu_ctx) = GpuContext::try_init() else {
+        // Benchmarks don't initialise a tracing subscriber, so println is the
+        // only way to surface skip-reasons to the person running `cargo bench`.
+        #[allow(clippy::disallowed_macros)]
+        {
+            println!("No GPU available — skipping GPU compositor benchmarks");
+        }
+        return;
     };
 
     for &(w, h) in RESOLUTIONS {

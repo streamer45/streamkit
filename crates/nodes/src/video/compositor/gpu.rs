@@ -1636,6 +1636,7 @@ pub fn should_use_gpu_with_state(
 // ── Pool unit tests ─────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::disallowed_macros)]
 mod tests {
     use super::*;
 

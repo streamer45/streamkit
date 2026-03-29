@@ -1420,7 +1420,12 @@ mod tests;
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::similar_names,
+    clippy::many_single_char_names,
+    clippy::cast_possible_wrap,
+    clippy::redundant_clone
 )]
 #[path = "gpu_tests.rs"]
 mod gpu_tests;

@@ -11,8 +11,6 @@
 //! cargo test -p streamkit-nodes --features gpu -- gpu
 //! ```
 
-#![cfg(feature = "gpu")]
-
 use std::sync::Arc;
 
 use streamkit_core::frame_pool::PooledVideoData;
@@ -52,6 +50,7 @@ fn make_layer(data: Vec<u8>, width: u32, height: u32, rect: Option<Rect>) -> Lay
 }
 
 /// Create a LayerSnapshot with specific properties.
+#[allow(clippy::too_many_arguments)]
 fn make_layer_with_props(
     data: Vec<u8>,
     width: u32,
@@ -87,11 +86,12 @@ fn make_layer_with_props(
 ///
 /// Uses ceiling division for chroma dimensions to match
 /// `VideoLayout::packed` and the GPU upload path.
+#[allow(clippy::many_single_char_names)]
 fn solid_i420(width: u32, height: u32, y: u8, u: u8, v: u8) -> Vec<u8> {
     let w = width as usize;
     let h = height as usize;
-    let cw = (w + 1) / 2;
-    let ch = (h + 1) / 2;
+    let cw = w.div_ceil(2);
+    let ch = h.div_ceil(2);
     let mut buf = vec![0u8; w * h + 2 * cw * ch];
     // Y plane
     buf[..w * h].fill(y);
@@ -130,11 +130,12 @@ fn avg_centre_pixel(data: &[u8], width: u32, height: u32) -> (f32, f32, f32, f32
             count += 1;
         }
     }
+    let count_f = count as f64;
     (
-        (sum[0] / count as f64) as f32,
-        (sum[1] / count as f64) as f32,
-        (sum[2] / count as f64) as f32,
-        (sum[3] / count as f64) as f32,
+        (sum[0] / count_f) as f32,
+        (sum[1] / count_f) as f32,
+        (sum[2] / count_f) as f32,
+        (sum[3] / count_f) as f32,
     )
 }
 
@@ -428,8 +429,8 @@ fn gpu_overlay_compositing() {
         width: ov_w,
         height: ov_h,
         rect: Rect {
-            x: (canvas_w - ov_w) as i32 / 2,
-            y: (canvas_h - ov_h) as i32 / 2,
+            x: (canvas_w - ov_w).cast_signed() / 2,
+            y: (canvas_h - ov_h).cast_signed() / 2,
             width: ov_w,
             height: ov_h,
         },
