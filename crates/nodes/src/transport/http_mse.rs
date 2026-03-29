@@ -54,6 +54,12 @@ const MAX_INIT_SEGMENT_SIZE: usize = 16 * 1024;
 /// Used to detect when the init segment ends and media data begins.
 const WEBM_CLUSTER_ID: [u8; 4] = [0x1F, 0x43, 0xB6, 0x75];
 
+/// WebM Tracks element ID (0x1654AE6B).
+/// Used to find the end of the header (EBML + Segment + Info + Tracks)
+/// so the init segment can be truncated before any SimpleBlock data
+/// that the muxer may emit prior to opening the first Cluster.
+const WEBM_TRACKS_ID: [u8; 4] = [0x16, 0x54, 0xAE, 0x6B];
+
 /// A node that serves WebM binary data to HTTP clients for MSE playback.
 ///
 /// It accepts `Packet::Binary` from an upstream WebM muxer (in Live mode) and
@@ -171,7 +177,10 @@ impl ProcessorNode for HttpMseNode {
         // Connected clients (body_tx senders).
         let mut clients: Vec<mpsc::Sender<Bytes>> = Vec::new();
 
-        // Init segment buffer: accumulates all bytes before the first WebM Cluster.
+        // Init segment buffer: accumulates bytes until the first WebM Cluster is
+        // detected, then truncated to only the header (EBML + Segment + Info +
+        // Tracks).  Any SimpleBlock data the muxer writes before opening the
+        // first Cluster is discarded — it is invalid for MSE SourceBuffer.
         let mut init_segment: Vec<u8> = Vec::new();
         let mut init_complete = false;
 
@@ -332,12 +341,37 @@ impl ProcessorNode for HttpMseNode {
                         }
 
                         if init_complete {
+                            // Truncate the init segment to the WebM header
+                            // (EBML + Segment + Info + Tracks).  The muxer may
+                            // emit SimpleBlock data before the first Cluster in
+                            // non-seekable streaming mode; those bytes are
+                            // invalid at the Segment level and would cause
+                            // MSE CHUNK_DEMUXER_ERROR_APPEND_FAILED.
+                            if let Some(tracks_end) = find_tracks_end(&init_segment) {
+                                if tracks_end < init_segment.len() {
+                                    tracing::debug!(
+                                        raw_size = init_segment.len(),
+                                        tracks_end,
+                                        stripped = init_segment.len() - tracks_end,
+                                        "Stripping pre-Cluster SimpleBlock data from init segment"
+                                    );
+                                    init_segment.truncate(tracks_end);
+                                }
+                            }
                             tracing::info!(
                                 init_segment_size = init_segment.len(),
                                 "WebM init segment captured"
                             );
                             overlap.clear();
                         }
+                    }
+
+                    // Only forward data once the init segment is complete
+                    // (i.e. the first Cluster has arrived).  Data emitted by
+                    // the muxer before the first Cluster contains SimpleBlock
+                    // elements at the Segment level which are invalid for MSE.
+                    if !init_complete {
+                        continue;
                     }
 
                     // Broadcast to all connected clients, removing disconnected or slow ones.
@@ -407,6 +441,52 @@ fn find_cluster_id(data: &[u8]) -> Option<usize> {
         return None;
     }
     data.windows(WEBM_CLUSTER_ID.len()).position(|window| window == WEBM_CLUSTER_ID)
+}
+
+/// Find the byte offset immediately after the WebM Tracks element in `data`.
+///
+/// The Tracks element (ID `0x1654AE6B`) is the last header element before
+/// media data.  For MSE playback the init segment must contain exactly
+/// EBML + Segment + Info + Tracks — nothing more.  This function locates the
+/// Tracks element, parses its EBML VINT-encoded size, and returns the offset
+/// of the first byte after it.
+///
+/// Returns `None` if the Tracks element is not found or if the size encoding
+/// is truncated (data too short).
+fn find_tracks_end(data: &[u8]) -> Option<usize> {
+    // Locate the 4-byte Tracks element ID.
+    let id_pos = data
+        .windows(WEBM_TRACKS_ID.len())
+        .position(|w| w == WEBM_TRACKS_ID)?;
+
+    let size_start = id_pos + WEBM_TRACKS_ID.len();
+    if size_start >= data.len() {
+        return None;
+    }
+
+    // Parse the EBML VINT (variable-width integer) that encodes the element
+    // size.  The number of leading zero bits in the first byte determines the
+    // width (1–8 bytes).
+    let first_byte = data[size_start];
+    if first_byte == 0 {
+        return None; // Invalid VINT.
+    }
+    let width = first_byte.leading_zeros() as usize + 1;
+    if size_start + width > data.len() || width > 8 {
+        return None; // Truncated or invalid.
+    }
+
+    // Assemble the size value, masking out the width marker bits.
+    let mut size: u64 = u64::from(first_byte & (0xFF >> width));
+    for &b in &data[size_start + 1..size_start + width] {
+        size = (size << 8) | u64::from(b);
+    }
+
+    // Guard against absurd sizes that would overflow usize.
+    let content_size = usize::try_from(size).ok()?;
+    let tracks_end = size_start.checked_add(width)?.checked_add(content_size)?;
+
+    Some(tracks_end)
 }
 
 /// Register HTTP MSE nodes with the registry.
@@ -650,5 +730,102 @@ mod tests {
         let mut expected = chunk1;
         expected.extend_from_slice(&[0x00; 2]);
         assert_eq!(init, expected);
+    }
+
+    // ── find_tracks_end tests ──
+
+    #[test]
+    fn test_find_tracks_end_basic() {
+        // Tracks ID (4 bytes) + VINT size 0x2E=46 (1 byte) + 46 bytes content
+        let mut data = Vec::new();
+        data.extend_from_slice(&[0x1A, 0x45, 0xDF, 0xA3]); // EBML header ID
+        data.extend_from_slice(&[0x00; 10]); // some header bytes
+        data.extend_from_slice(&WEBM_TRACKS_ID); // Tracks element ID
+        data.push(0x85); // VINT: 1-byte size = 5 (0x85 & 0x7F = 5)
+        data.extend_from_slice(&[0xAA; 5]); // 5 bytes of Tracks content
+
+        // Tracks element ends at: 14 (start) + 4 (ID) + 1 (size) + 5 (content) = 24
+        assert_eq!(find_tracks_end(&data), Some(24));
+    }
+
+    #[test]
+    fn test_find_tracks_end_2_byte_vint() {
+        // 2-byte VINT size: 0x40 | high_byte, low_byte
+        // 0x41 0x00 → width=2, value = (0x41 & 0x3F)<<8 | 0x00 = 0x0100 = 256
+        let mut data = Vec::new();
+        data.extend_from_slice(&WEBM_TRACKS_ID);
+        data.extend_from_slice(&[0x41, 0x00]); // 2-byte VINT = 256
+        data.extend_from_slice(&[0xBB; 256]); // 256 bytes of content
+
+        assert_eq!(find_tracks_end(&data), Some(4 + 2 + 256));
+    }
+
+    #[test]
+    fn test_find_tracks_end_not_found() {
+        let data = vec![0x1A, 0x45, 0xDF, 0xA3, 0x00, 0x00];
+        assert_eq!(find_tracks_end(&data), None);
+    }
+
+    #[test]
+    fn test_find_tracks_end_truncated_size() {
+        // Tracks ID present but size VINT is truncated (data ends too early).
+        let mut data = Vec::new();
+        data.extend_from_slice(&WEBM_TRACKS_ID);
+        // No size byte follows — data is truncated.
+        assert_eq!(find_tracks_end(&data), None);
+    }
+
+    #[test]
+    fn test_find_tracks_end_truncated_content() {
+        // Tracks ID + size says 100 bytes, but only 10 bytes of content.
+        let mut data = Vec::new();
+        data.extend_from_slice(&WEBM_TRACKS_ID);
+        data.push(0x80 | 100); // 1-byte VINT = 100
+        data.extend_from_slice(&[0xCC; 10]); // only 10 bytes
+
+        // find_tracks_end returns the *logical* end (ID pos + 4 + 1 + 100 = 105)
+        // even if the data is shorter.  The caller should check bounds.
+        assert_eq!(find_tracks_end(&data), Some(4 + 1 + 100));
+    }
+
+    // ── Init segment truncation at Tracks end ──
+
+    #[test]
+    fn test_init_segment_truncated_at_tracks_end() {
+        // Simulate a WebM stream where the muxer emits SimpleBlock data
+        // (element ID 0xA3) between the Tracks element and the first Cluster.
+        // The init segment must be truncated to exclude that invalid data.
+
+        // Build: EBML(4) + Info(6) + Tracks(4+1+8=13) + garbage(20) + Cluster
+        let mut header = Vec::new();
+        header.extend_from_slice(&[0x1A, 0x45, 0xDF, 0xA3]); // EBML ID
+        header.extend_from_slice(&[0x00; 6]); // Info placeholder
+        header.extend_from_slice(&WEBM_TRACKS_ID); // Tracks ID
+        header.push(0x88); // VINT: 1-byte size = 8
+        header.extend_from_slice(&[0xDD; 8]); // 8 bytes Tracks content
+
+        let tracks_end = header.len(); // 4 + 6 + 4 + 1 + 8 = 23
+
+        // Add invalid SimpleBlock data between Tracks and Cluster.
+        let mut stream = header.clone();
+        stream.extend_from_slice(&[0xA3; 20]); // fake SimpleBlock bytes
+        stream.extend_from_slice(&WEBM_CLUSTER_ID);
+        stream.extend_from_slice(&[0xFF; 10]); // cluster data
+
+        let (init, complete) = simulate_init_accumulation(&[&stream]);
+
+        assert!(complete, "Cluster must be detected");
+        // The raw accumulated init (before truncation) includes the garbage.
+        // But simulate_init_accumulation doesn't call find_tracks_end —
+        // that happens in the node's run loop.  Verify find_tracks_end works:
+        assert_eq!(find_tracks_end(&init), Some(tracks_end));
+
+        // Now simulate what the node does: truncate at tracks_end.
+        let mut truncated = init;
+        if let Some(end) = find_tracks_end(&truncated) {
+            truncated.truncate(end);
+        }
+        assert_eq!(truncated.len(), tracks_end);
+        assert_eq!(truncated, header);
     }
 }
