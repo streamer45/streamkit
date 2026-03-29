@@ -2,17 +2,12 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-name: Video Compositor (MoQ + MSE)
+name: Video Compositor (MSE Output)
 description: >
-  Composites two colorbars sources and streams via both MoQ (low-latency)
-  and HTTP/MSE (broad compatibility) simultaneously.
+  Composites two colorbars sources and streams via HTTP/MSE only.
+  No MoQ output — validates MSE endpoint in isolation.
+  Access the stream at GET /mse/{session_id}/video
 mode: dynamic
-client:
-  gateway_path: /moq/video-mse
-  watch:
-    broadcast: output
-    audio: false
-    video: true
 
 nodes:
   colorbars_bg:
@@ -65,16 +60,6 @@ nodes:
     kind: video::vp9::encoder
     needs: pixel_convert
 
-  # === MoQ output (low-latency, existing path) ===
-  moq_peer:
-    kind: transport::moq::peer
-    params:
-      gateway_path: /moq/video-mse
-      output_broadcast: output
-      allow_reconnect: true
-    needs: vp9_encoder
-
-  # === MSE/HTTP output (broad compatibility) ===
   webm_muxer:
     kind: containers::webm::muxer
     params:

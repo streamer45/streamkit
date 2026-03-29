@@ -179,6 +179,10 @@ impl ProcessorNode for HttpMseNode {
         // Holds the last 3 bytes of the previous chunk so a 4-byte Cluster ID
         // that straddles two consecutive packets can still be found.
         let mut overlap: Vec<u8> = Vec::new();
+        // How many of the overlap bytes were actually appended to init_segment.
+        // When the buffer is near MAX_INIT_SEGMENT_SIZE, the overlap tail may
+        // extend past what was buffered, so truncation must be bounded by this.
+        let mut overlap_bytes_in_init: usize = 0;
 
         let cancellation_token = context.cancellation_token.clone();
 
@@ -270,14 +274,14 @@ impl ProcessorNode for HttpMseNode {
                             let mut combined = overlap.clone();
                             combined.extend_from_slice(&data[..data.len().min(WEBM_CLUSTER_ID.len())]);
                             find_cluster_id(&combined).is_some_and(|pos| {
-                                // Cluster ID starts at `pos` within the overlap region.
-                                // The init segment ends at the overlap boundary minus
-                                // the bytes we need to trim from the already-buffered tail.
                                 let overlap_len = overlap.len();
                                 if pos < overlap_len {
-                                    // The Cluster started inside already-buffered data;
-                                    // truncate the init segment to exclude those bytes.
-                                    init_segment.truncate(init_segment.len() - (overlap_len - pos));
+                                    // The Cluster ID starts inside the overlap region.
+                                    // Only truncate bytes that were actually appended to
+                                    // init_segment — the overlap may extend past what was
+                                    // buffered if the init_segment hit MAX_INIT_SEGMENT_SIZE.
+                                    let bytes_to_remove = (overlap_len - pos).min(overlap_bytes_in_init);
+                                    init_segment.truncate(init_segment.len() - bytes_to_remove);
                                 } else {
                                     // The Cluster started inside the new chunk.
                                     let extra = pos - overlap_len;
@@ -302,14 +306,23 @@ impl ProcessorNode for HttpMseNode {
                         } else {
                             // Still in the init segment — buffer these bytes.
                             let remaining_capacity = MAX_INIT_SEGMENT_SIZE.saturating_sub(init_segment.len());
-                            if remaining_capacity > 0 {
+                            let appended = if remaining_capacity > 0 {
                                 let to_append = data.len().min(remaining_capacity);
                                 init_segment.extend_from_slice(&data[..to_append]);
-                            }
+                                to_append
+                            } else {
+                                0
+                            };
                             // Keep the last 3 bytes for cross-chunk Cluster ID detection.
                             let keep = data.len().min(WEBM_CLUSTER_ID.len() - 1);
                             overlap.clear();
                             overlap.extend_from_slice(&data[data.len() - keep..]);
+                            // Track how many of those overlap bytes are actually in init_segment.
+                            // The overlap comes from the tail of `data`, but only `appended` bytes
+                            // from `data` were added to init_segment. The overlap bytes start at
+                            // offset `data.len() - keep`, so they're in init_segment only if
+                            // `appended > data.len() - keep`.
+                            overlap_bytes_in_init = appended.saturating_sub(data.len() - keep);
                         }
 
                         if init_complete {
