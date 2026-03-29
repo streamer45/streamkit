@@ -2502,7 +2502,16 @@ async fn test_compositor_output_format_runtime_change() {
     };
 
     // Start with no output_format (RGBA8).
-    let config = CompositorConfig { width: 4, height: 4, ..Default::default() };
+    // Force CPU mode so the test isn't blocked by GpuContext::try_init()
+    // competing for the GPU with other parallel tests on the self-hosted
+    // runner.  This test validates runtime output_format switching, not
+    // GPU compositing.
+    let config = CompositorConfig {
+        width: 4,
+        height: 4,
+        gpu_mode: Some("cpu".to_string()),
+        ..Default::default()
+    };
     let node = CompositorNode::new(config, GlobalCompositorConfig::default());
 
     let node_handle = tokio::spawn(async move { Box::new(node).run(context).await });
@@ -2513,21 +2522,17 @@ async fn test_compositor_output_format_runtime_change() {
     // Send a frame — should come out as RGBA8.
     let frame = make_rgba_frame(2, 2, 255, 0, 0, 255);
     input_tx.send(Packet::Video(frame)).await.unwrap();
-    // Give the compositor enough ticks to process the frame.  On the
-    // self-hosted GPU runner many tests run in parallel, so the
-    // compositor thread may be starved for CPU.  300ms ≈ 9 ticks at
-    // 30 fps — generous enough even under heavy load.
-    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
     // Send UpdateParams to switch output_format to NV12.
     let update = serde_json::json!({ "output_format": "nv12" });
     ctrl_tx.send(NodeControlMessage::UpdateParams(update)).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
     // Send another frame — should come out as NV12.
     let frame2 = make_rgba_frame(2, 2, 0, 255, 0, 255);
     input_tx.send(Packet::Video(frame2)).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
     drop(input_tx);
     drop(ctrl_tx);
