@@ -7,6 +7,12 @@ on:
     branches: [ main ]
   workflow_dispatch: {}
 
+# Cancel superseded runs on the same PR / branch so the single
+# self-hosted GPU runner isn't blocked by stale jobs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   skit:
     name: Skit
