@@ -89,7 +89,7 @@ impl BenchArgs {
                         cfg.width = v.parse().unwrap_or(cfg.width);
                     }
                 },
-                "--height" | "-h" => {
+                "--height" | "-H" => {
                     i += 1;
                     if let Some(v) = args.get(i) {
                         cfg.height = v.parse().unwrap_or(cfg.height);
@@ -376,7 +376,7 @@ fn main() {
     // One AV1 keyframe at 640×480 is typically 5-10 KB, so 2000 bytes
     // is a very conservative lower bound that catches "no output at all"
     // regressions.
-    let min_expected_bytes: usize = 2000;
+    let min_expected_bytes: usize = 8000;
 
     for iter in 1..=args.iterations {
         let r = rt.block_on(run_once(&engine, &args));

@@ -179,6 +179,9 @@ const VP9_CODEC_PRIVATE: [u8; 8] =
 ///   [3] reserved(8)=0                     → 0x00
 ///
 /// Reference: <https://aomediacodec.github.io/av1-isobmff/#av1codecconfigurationbox>
+///
+/// NOTE: level 4.0 supports resolutions up to 2048×1152.  If 4K+ output is
+/// ever needed, `seq_level_idx_0` must be bumped (same debt exists on VP9).
 const AV1_CODEC_PRIVATE: [u8; 4] = [0x81, 0x08, 0x0C, 0x00];
 
 /// Opus codec lookahead at 48kHz in samples (typical libopus default).
@@ -642,7 +645,8 @@ impl ProcessorNode for WebMMuxerNode {
                         let ct_str = content_type.as_deref().unwrap_or("");
                         let video = ct_str.starts_with("video/");
                         if video {
-                            video_is_av1 = ct_str == "video/av1";
+                            video_is_av1 =
+                            ct_str == "video/av1" || ct_str.starts_with("video/av1;");
                             first_video_packet = Some((data, metadata));
                         } else {
                             first_audio_packet = Some((data, metadata));
@@ -880,14 +884,7 @@ impl ProcessorNode for WebMMuxerNode {
         let builder = if has_video {
             let (codec_id, codec_private_bytes, codec_label): (VideoCodecId, &[u8], &str) =
                 if video_is_av1 {
-                    // AV1CodecConfigurationRecord (4 bytes):
-                    // marker(1) | version(7) = 0x81, seq_profile(3) | seq_level_idx_0(5) = 0x08,
-                    // seq_tier_0(1) | high_bitdepth(1) | twelve_bit(1) | monochrome(1) |
-                    //   chroma_subsampling_x(1) | chroma_subsampling_y(1) |
-                    //   chroma_sample_position(2) = 0x0C,
-                    // padding(8) = 0x00.
-                    // Main profile, level 4.0, 8-bit, 4:2:0.
-                    // Reference: https://aomediacodec.github.io/av1-isobmff/#av1codecconfigurationbox
+                    // See `AV1_CODEC_PRIVATE` doc comment for byte layout.
                     (VideoCodecId::AV1, &AV1_CODEC_PRIVATE, "AV1")
                 } else {
                     // VP9 codec-private (VPCodecConfigurationRecord, 8 bytes).
