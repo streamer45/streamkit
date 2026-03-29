@@ -11,6 +11,7 @@ keywords = ["audio", "nodes", "codecs", "streaming", "processing"]
 categories = ["multimedia", "network-programming"]
 readme = "README.md"
 publish = false
+autobenches = false
 
 [dependencies]
 # Skit's core library
@@ -82,7 +83,7 @@ smallvec = { version = "1.13", optional = true, features = ["serde"] }
 ts-rs = { version = "12.0.1", optional = true }
 
 # AV1 codec (optional, behind `av1` feature)
-rav1e = { version = "0.8", optional = true, default-features = false, features = ["threading"] }
+rav1e = { version = "0.8", optional = true, default-features = false, features = ["threading", "asm"] }
 rav1d = { version = "1.1", optional = true, default-features = false, features = ["bitdepth_8"] }
 
 # GPU compositing (optional, behind `gpu` feature)
@@ -153,6 +154,12 @@ required-features = ["codegen", "compositor"]
 tempfile = "3.27"
 axum = "0.8"
 tower = "0.5.3"
+serde_json = "1.0"
+
+[[bench]]
+name = "rav1e_standalone"
+harness = false
+required-features = ["av1"]
 
 [lints.rust]
 # Override workspace `forbid` → `deny` so the video module can `#![allow(unsafe_code)]`
