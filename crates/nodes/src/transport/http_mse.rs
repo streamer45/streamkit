@@ -631,7 +631,7 @@ mod tests {
 
         assert!(complete, "Cluster ID within a single chunk must be detected");
         // Init should be chunk1 + the 4 bytes before the Cluster ID in chunk2
-        let mut expected = chunk1.clone();
+        let mut expected = chunk1;
         expected.extend_from_slice(&[0x00; 4]);
         assert_eq!(init, expected);
     }
@@ -647,7 +647,7 @@ mod tests {
         let (init, complete) = simulate_init_accumulation(&[&chunk1, &empty, &empty, &chunk2]);
 
         assert!(complete, "Init should complete despite empty packets");
-        let mut expected = chunk1.clone();
+        let mut expected = chunk1;
         expected.extend_from_slice(&[0x00; 2]);
         assert_eq!(init, expected);
     }

@@ -641,6 +641,16 @@ impl ProcessorNode for WebMMuxerNode {
 
         let use_packet_inspection = context.input_types.is_empty();
 
+        // In dynamic pipelines, emit Running *before* the packet-inspection
+        // loop to avoid deadlocking the pipeline activation system.  Source
+        // nodes wait for a Start signal that requires every node to be in
+        // Ready or Running state; without this early transition the muxer
+        // stays in Initializing (blocking on `rx.recv()`) and the pipeline
+        // never activates — a classic chicken-and-egg deadlock.
+        if use_packet_inspection {
+            state_helpers::emit_running(&context.state_tx, &node_name);
+        }
+
         for (pin_name, mut rx) in context.inputs.drain() {
             let is_video = if use_packet_inspection {
                 // Dynamic pipeline: classify from the first packet's content_type.
@@ -734,7 +744,12 @@ impl ProcessorNode for WebMMuxerNode {
             return Err(StreamKitError::Runtime(err_msg));
         }
 
-        state_helpers::emit_running(&context.state_tx, &node_name);
+        // In oneshot/static pipelines the classification loop is non-blocking
+        // so we emit Running here.  Dynamic pipelines already emitted Running
+        // above (before the packet-inspection recv).
+        if !use_packet_inspection {
+            state_helpers::emit_running(&context.state_tx, &node_name);
+        }
 
         tracing::info!("WebMMuxerNode tracks: audio={}, video={}", has_audio, has_video);
 
