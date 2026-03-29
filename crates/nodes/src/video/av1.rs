@@ -617,11 +617,9 @@ impl Av1Decoder {
                 if drained.is_empty() {
                     eagain_empty_retries += 1;
                     if eagain_empty_retries > MAX_EAGAIN_EMPTY_RETRIES {
-                        return Err(
-                            "rav1d: dav1d_send_data stuck in EAGAIN loop \
+                        return Err("rav1d: dav1d_send_data stuck in EAGAIN loop \
                              (no pictures produced after 1000 retries)"
-                                .to_string(),
-                        );
+                            .to_string());
                     }
                     // Yield to avoid a tight busy-loop.
                     std::thread::yield_now();
