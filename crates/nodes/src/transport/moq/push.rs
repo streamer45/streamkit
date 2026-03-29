@@ -432,6 +432,7 @@ impl ProcessorNode for MoqPushNode {
                         &mut catalog,
                         &mut catalog_producer,
                         self.config.channels,
+                        video_codec,
                     );
                     continue;
                 },
@@ -675,6 +676,7 @@ impl MoqPushNode {
         catalog: &mut hang::catalog::Catalog,
         catalog_producer: &mut moq_lite::TrackProducer,
         channels: u32,
+        video_codec: VideoCodec,
     ) {
         match msg {
             PinManagementMessage::RequestAddInputPin { suggested_name, response_tx } => {
@@ -697,6 +699,7 @@ impl MoqPushNode {
                     catalog,
                     catalog_producer,
                     channels,
+                    video_codec,
                 );
             },
             PinManagementMessage::RemoveInputPin { pin_name } => {
@@ -761,6 +764,7 @@ impl MoqPushNode {
         catalog: &mut hang::catalog::Catalog,
         catalog_producer: &mut moq_lite::TrackProducer,
         channels: u32,
+        video_codec: VideoCodec,
     ) {
         tracing::info!("MoqPushNode: activated dynamic input pin '{}'", pin.name);
 
@@ -781,7 +785,7 @@ impl MoqPushNode {
         };
 
         // Update the catalog with the new track rendition.
-        Self::insert_catalog_rendition(catalog, &track_name, is_video, channels);
+        Self::insert_catalog_rendition(catalog, &track_name, is_video, channels, video_codec);
 
         if !Self::republish_catalog(catalog, catalog_producer) {
             // Roll back — subscribers won't discover this track.
@@ -829,17 +833,29 @@ impl MoqPushNode {
         track_name: &str,
         is_video: bool,
         channels: u32,
+        video_codec: VideoCodec,
     ) {
         if is_video {
+            let catalog_codec = match video_codec {
+                VideoCodec::Av1 => hang::catalog::VideoCodec::AV1(hang::catalog::AV1 {
+                    profile: AV1_PROFILE,
+                    level: AV1_LEVEL,
+                    tier: AV1_TIER,
+                    bitdepth: AV1_BIT_DEPTH,
+                    ..hang::catalog::AV1::default()
+                }),
+                // VP9 is the default / fallback.
+                _ => hang::catalog::VideoCodec::VP9(hang::catalog::VP9 {
+                    profile: VP9_PROFILE,
+                    level: VP9_LEVEL,
+                    bit_depth: VP9_BIT_DEPTH,
+                    ..hang::catalog::VP9::default()
+                }),
+            };
             catalog.video.renditions.insert(
                 track_name.to_string(),
                 hang::catalog::VideoConfig {
-                    codec: hang::catalog::VideoCodec::VP9(hang::catalog::VP9 {
-                        profile: VP9_PROFILE,
-                        level: VP9_LEVEL,
-                        bit_depth: VP9_BIT_DEPTH,
-                        ..hang::catalog::VP9::default()
-                    }),
+                    codec: catalog_codec,
                     coded_width: None,
                     coded_height: None,
                     display_ratio_width: None,

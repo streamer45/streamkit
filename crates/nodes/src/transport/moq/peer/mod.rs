@@ -12,7 +12,9 @@
 //! supported encoded media type (Opus audio, VP9/AV1 video). The actual media kind
 //! flowing through each pin is determined at runtime from `NodeContext::input_types`.
 
-use crate::video::{VP9_BIT_DEPTH, VP9_LEVEL, VP9_PROFILE};
+use crate::video::{
+    AV1_BIT_DEPTH, AV1_LEVEL, AV1_PROFILE, AV1_TIER, VP9_BIT_DEPTH, VP9_LEVEL, VP9_PROFILE,
+};
 use async_trait::async_trait;
 use bytes::Buf;
 use schemars::JsonSchema;
@@ -129,6 +131,7 @@ struct SubscriberMediaConfig {
     video_height: u32,
     output_group_duration_ms: u64,
     output_initial_delay_ms: u64,
+    video_codec: VideoCodec,
 }
 
 struct BidirectionalTaskConfig {
@@ -463,6 +466,18 @@ impl ProcessorNode for MoqPeerNode {
         let mut pin_0_kind = context.input_types.get("in").and_then(media_kind_for_packet_type);
         let mut pin_1_kind = context.input_types.get("in_1").and_then(media_kind_for_packet_type);
 
+        // Detect the upstream video codec so the subscriber catalog reflects
+        // the actual encoding.  Defaults to VP9 when the codec cannot be
+        // determined (e.g. in dynamic pipelines or when the browser publishes).
+        let video_codec = context
+            .input_types
+            .iter()
+            .find_map(|(_, pt)| match pt {
+                PacketType::EncodedVideo(fmt) => Some(fmt.codec),
+                _ => None,
+            })
+            .unwrap_or(VideoCodec::Vp9);
+
         if pin_0_rx.is_none() && pin_1_rx.is_none() {
             return Err(StreamKitError::Configuration(
                 "MoQ peer requires at least one input pin (\"in\" or \"in_1\")".to_string(),
@@ -624,6 +639,7 @@ impl ProcessorNode for MoqPeerNode {
                                 video_height: self.config.video_height,
                                 output_group_duration_ms: self.config.output_group_duration_ms,
                                 output_initial_delay_ms: self.config.output_initial_delay_ms,
+                                video_codec,
                             },
                             media_state_rx: media_state_rx.clone(),
                             dynamic_outputs: dynamic_outputs.clone(),
@@ -731,6 +747,7 @@ impl ProcessorNode for MoqPeerNode {
                             video_height: self.config.video_height,
                             output_group_duration_ms: self.config.output_group_duration_ms,
                             output_initial_delay_ms: self.config.output_initial_delay_ms,
+                            video_codec,
                         },
                         media_state_rx.clone(),
                     ).await {
@@ -2374,6 +2391,7 @@ impl MoqPeerNode {
             video_track.as_ref().map(|(t, _)| t),
             media.video_width,
             media.video_height,
+            media.video_codec,
         )?;
 
         Ok((
@@ -2385,12 +2403,14 @@ impl MoqPeerNode {
     }
 
     /// Create and publish the catalog with audio and/or video track info
+    #[allow(clippy::too_many_arguments)]
     fn create_and_publish_catalog(
         broadcast_producer: &mut moq_lite::BroadcastProducer,
         audio_track: Option<&moq_lite::Track>,
         video_track: Option<&moq_lite::Track>,
         video_width: u32,
         video_height: u32,
+        video_codec: VideoCodec,
     ) -> Result<moq_lite::TrackProducer, StreamKitError> {
         let mut audio_renditions = std::collections::BTreeMap::new();
         if let Some(audio_track) = audio_track {
@@ -2410,15 +2430,26 @@ impl MoqPeerNode {
 
         let mut video_renditions = std::collections::BTreeMap::new();
         if let Some(video_track) = video_track {
+            let catalog_codec = match video_codec {
+                VideoCodec::Av1 => hang::catalog::VideoCodec::AV1(hang::catalog::AV1 {
+                    profile: AV1_PROFILE,
+                    level: AV1_LEVEL,
+                    tier: AV1_TIER,
+                    bitdepth: AV1_BIT_DEPTH,
+                    ..hang::catalog::AV1::default()
+                }),
+                // VP9 is the default / fallback (browsers publish VP9 via WebCodecs).
+                _ => hang::catalog::VideoCodec::VP9(hang::catalog::VP9 {
+                    profile: VP9_PROFILE,
+                    level: VP9_LEVEL,
+                    bit_depth: VP9_BIT_DEPTH,
+                    ..hang::catalog::VP9::default()
+                }),
+            };
             video_renditions.insert(
                 video_track.name.clone(),
                 hang::catalog::VideoConfig {
-                    codec: hang::catalog::VideoCodec::VP9(hang::catalog::VP9 {
-                        profile: VP9_PROFILE,
-                        level: VP9_LEVEL,
-                        bit_depth: VP9_BIT_DEPTH,
-                        ..hang::catalog::VP9::default()
-                    }),
+                    codec: catalog_codec,
                     coded_width: Some(video_width),
                     coded_height: Some(video_height),
                     display_ratio_width: None,

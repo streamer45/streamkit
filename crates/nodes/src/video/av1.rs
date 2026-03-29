@@ -542,7 +542,7 @@ impl Av1Decoder {
         use std::ptr::NonNull;
 
         let mut frames = Vec::with_capacity(1);
-        let mut remaining_metadata = metadata;
+        let remaining_metadata = metadata;
 
         loop {
             let mut pic: Dav1dPicture = Dav1dPicture::default();
@@ -562,7 +562,7 @@ impl Av1Decoder {
                 return Err(format!("rav1d: dav1d_get_picture failed with code {}", res.0));
             }
 
-            let meta = remaining_metadata.take().or_else(|| remaining_metadata.clone());
+            let meta = remaining_metadata.clone();
 
             match copy_dav1d_picture(&pic, meta, video_pool) {
                 Ok(frame) => frames.push(frame),
