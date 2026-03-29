@@ -12,9 +12,7 @@
 //! supported encoded media type (Opus audio, VP9/AV1 video). The actual media kind
 //! flowing through each pin is determined at runtime from `NodeContext::input_types`.
 
-use crate::video::{
-    AV1_BIT_DEPTH, AV1_LEVEL, AV1_PROFILE, AV1_TIER, VP9_BIT_DEPTH, VP9_LEVEL, VP9_PROFILE,
-};
+use crate::transport::moq::constants::catalog_video_codec;
 use async_trait::async_trait;
 use bytes::Buf;
 use schemars::JsonSchema;
@@ -2430,26 +2428,10 @@ impl MoqPeerNode {
 
         let mut video_renditions = std::collections::BTreeMap::new();
         if let Some(video_track) = video_track {
-            let catalog_codec = match video_codec {
-                VideoCodec::Av1 => hang::catalog::VideoCodec::AV1(hang::catalog::AV1 {
-                    profile: AV1_PROFILE,
-                    level: AV1_LEVEL,
-                    tier: AV1_TIER,
-                    bitdepth: AV1_BIT_DEPTH,
-                    ..hang::catalog::AV1::default()
-                }),
-                // VP9 is the default / fallback (browsers publish VP9 via WebCodecs).
-                _ => hang::catalog::VideoCodec::VP9(hang::catalog::VP9 {
-                    profile: VP9_PROFILE,
-                    level: VP9_LEVEL,
-                    bit_depth: VP9_BIT_DEPTH,
-                    ..hang::catalog::VP9::default()
-                }),
-            };
             video_renditions.insert(
                 video_track.name.clone(),
                 hang::catalog::VideoConfig {
-                    codec: catalog_codec,
+                    codec: catalog_video_codec(video_codec),
                     coded_width: Some(video_width),
                     coded_height: Some(video_height),
                     display_ratio_width: None,

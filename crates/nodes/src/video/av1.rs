@@ -42,6 +42,10 @@ const AV1_DEFAULT_KF_INTERVAL: u32 = 120;
 const AV1_DEFAULT_THREADS: u32 = 2;
 const AV1_DEFAULT_SPEED: u32 = 10;
 
+/// rav1d / dav1d error code for EAGAIN ("input not consumed, drain pictures
+/// first").  Matches libc `EAGAIN` on Linux.
+const DAV1D_EAGAIN: i32 = -11;
+
 // ---------------------------------------------------------------------------
 // Configuration structs
 // ---------------------------------------------------------------------------
@@ -134,7 +138,7 @@ impl ProcessorNode for Av1DecoderNode {
         let video_pool = context.video_pool.clone();
 
         let meter = global::meter("skit_nodes");
-        let packets_processed_counter = meter.u64_counter("av1_packets_processed").build();
+        let packets_processed_counter = meter.u64_counter("av1_decoder_packets_processed").build();
         let decode_duration_histogram = meter
             .f64_histogram("av1_decode_duration")
             .with_boundaries(streamkit_core::metrics::HISTOGRAM_BOUNDARIES_CODEC_PACKET.to_vec())
@@ -299,7 +303,7 @@ impl ProcessorNode for Av1EncoderNode {
         let mut input_rx = context.take_input("in")?;
 
         let meter = global::meter("skit_nodes");
-        let packets_processed_counter = meter.u64_counter("av1_packets_processed").build();
+        let packets_processed_counter = meter.u64_counter("av1_encoder_packets_processed").build();
         let encode_duration_histogram = meter
             .f64_histogram("av1_encode_duration")
             .with_boundaries(streamkit_core::metrics::HISTOGRAM_BOUNDARIES_CODEC_PACKET.to_vec())
@@ -326,6 +330,26 @@ impl ProcessorNode for Av1EncoderNode {
 
                 let frame_dimensions = (frame.width, frame.height);
                 if current_dimensions != Some(frame_dimensions) {
+                    // Flush the old encoder before replacing it so that any
+                    // buffered/reordered frames (possible in non-low-latency
+                    // mode) are emitted rather than silently dropped.
+                    if let Some(old_encoder) = encoder.as_mut() {
+                        match old_encoder.flush() {
+                            Ok(packets) => {
+                                for packet in packets {
+                                    if result_tx.blocking_send(Ok(packet)).is_err() {
+                                        return;
+                                    }
+                                }
+                            },
+                            Err(err) => {
+                                tracing::warn!(
+                                    error = %err,
+                                    "failed to flush old AV1 encoder during dimension change"
+                                );
+                            },
+                        }
+                    }
                     match Av1Encoder::new(frame.width, frame.height, &encoder_config) {
                         Ok(new_encoder) => {
                             encoder = Some(new_encoder);
@@ -449,12 +473,20 @@ struct Av1Decoder {
 }
 
 // SAFETY: `Dav1dContext` is not `Send` in rav1d because it contains raw
-// pointers internally.  However, the context is only ever accessed from the
-// single `spawn_blocking` thread that owns the `Av1Decoder` — it is never
-// shared across threads concurrently.  This is the same single-owner
-// pattern that the C dav1d library documents as safe.  The `Send` impl
-// allows moving the decoder into the blocking task; once there, no further
-// cross-thread transfers occur.
+// pointers internally.  We assert `Send` here under a narrow usage contract:
+//
+// 1. The `Av1Decoder` is **created** inside `tokio::task::spawn_blocking`
+//    (see `Av1DecoderNode::run`).
+// 2. Once created, it **never moves** to another thread — all method calls
+//    (`decode_packet`, `drain_pictures`, `flush`) happen on the same
+//    blocking-thread that owns it.
+// 3. The `Send` impl is required only so that the `spawn_blocking` closure
+//    (which captures `Av1Decoder::new`'s result) can be transferred to the
+//    blocking-thread pool.  After that initial transfer, no further
+//    cross-thread moves occur.
+//
+// This is the same single-owner pattern used by the C dav1d library: one
+// thread owns the context and all calls are serialised on that thread.
 unsafe impl Send for Av1Decoder {}
 
 impl Av1Decoder {
@@ -546,7 +578,7 @@ impl Av1Decoder {
                 break;
             }
 
-            if res.0 == -11 {
+            if res.0 == DAV1D_EAGAIN {
                 // EAGAIN — drain buffered pictures, then retry send.
                 let mut drained = self.drain_pictures(metadata.clone(), video_pool)?;
                 all_frames.append(&mut drained);
@@ -581,7 +613,7 @@ impl Av1Decoder {
             let res = unsafe {
                 rav1d::src::lib::dav1d_get_picture(Some(self.ctx), NonNull::new(&raw mut pic))
             };
-            if res.0 == -11 {
+            if res.0 == DAV1D_EAGAIN {
                 // EAGAIN — no more pictures available right now.
                 break;
             }
@@ -820,7 +852,7 @@ impl Av1Encoder {
         // When bitrate_kbps is 0, use constant-quality mode (quantizer-based).
         // Otherwise use bitrate-based rate control.
         let (bitrate, quantizer) = if config.bitrate_kbps == 0 {
-            (0, 100) // CQ mode with a reasonable default quantizer
+            (0, 80) // CQ mode with a moderate default quantizer (0–255 scale)
         } else {
             (i32::try_from(config.bitrate_kbps).unwrap_or(i32::MAX), 0)
         };

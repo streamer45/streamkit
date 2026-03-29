@@ -4,10 +4,7 @@
 
 //! MoQ Push Node - publishes packets to a MoQ broadcast
 
-use super::constants::{moq_accepted_media_types, DEFAULT_AUDIO_FRAME_DURATION_US};
-use crate::video::{
-    AV1_BIT_DEPTH, AV1_LEVEL, AV1_PROFILE, AV1_TIER, VP9_BIT_DEPTH, VP9_LEVEL, VP9_PROFILE,
-};
+use super::constants::{catalog_video_codec, moq_accepted_media_types, DEFAULT_AUDIO_FRAME_DURATION_US};
 use async_trait::async_trait;
 use futures::future::poll_fn;
 use opentelemetry::{global, KeyValue};
@@ -282,26 +279,10 @@ impl ProcessorNode for MoqPushNode {
 
         let mut video_renditions = std::collections::BTreeMap::new();
         if let Some(ref vt) = video_track {
-            let catalog_codec = match video_codec {
-                VideoCodec::Av1 => hang::catalog::VideoCodec::AV1(hang::catalog::AV1 {
-                    profile: AV1_PROFILE,
-                    level: AV1_LEVEL,
-                    tier: AV1_TIER,
-                    bitdepth: AV1_BIT_DEPTH,
-                    ..hang::catalog::AV1::default()
-                }),
-                // VP9 is the default / fallback.
-                _ => hang::catalog::VideoCodec::VP9(hang::catalog::VP9 {
-                    profile: VP9_PROFILE,
-                    level: VP9_LEVEL,
-                    bit_depth: VP9_BIT_DEPTH,
-                    ..hang::catalog::VP9::default()
-                }),
-            };
             video_renditions.insert(
                 vt.name.clone(),
                 hang::catalog::VideoConfig {
-                    codec: catalog_codec,
+                    codec: catalog_video_codec(video_codec),
                     coded_width: None,
                     coded_height: None,
                     display_ratio_width: None,
@@ -836,26 +817,10 @@ impl MoqPushNode {
         video_codec: VideoCodec,
     ) {
         if is_video {
-            let catalog_codec = match video_codec {
-                VideoCodec::Av1 => hang::catalog::VideoCodec::AV1(hang::catalog::AV1 {
-                    profile: AV1_PROFILE,
-                    level: AV1_LEVEL,
-                    tier: AV1_TIER,
-                    bitdepth: AV1_BIT_DEPTH,
-                    ..hang::catalog::AV1::default()
-                }),
-                // VP9 is the default / fallback.
-                _ => hang::catalog::VideoCodec::VP9(hang::catalog::VP9 {
-                    profile: VP9_PROFILE,
-                    level: VP9_LEVEL,
-                    bit_depth: VP9_BIT_DEPTH,
-                    ..hang::catalog::VP9::default()
-                }),
-            };
             catalog.video.renditions.insert(
                 track_name.to_string(),
                 hang::catalog::VideoConfig {
-                    codec: catalog_codec,
+                    codec: catalog_video_codec(video_codec),
                     coded_width: None,
                     coded_height: None,
                     display_ratio_width: None,

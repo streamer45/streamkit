@@ -22,6 +22,16 @@ use streamkit_core::{
     ProcessorNode, StreamKitError,
 };
 
+/// A catalog-discovered track with optional codec metadata.
+///
+/// Wraps [`moq_lite::Track`] with the video codec detected from the MoQ
+/// catalog so that output pins can advertise the correct codec type.
+struct DiscoveredTrack {
+    track: moq_lite::Track,
+    /// `Some(codec)` for video tracks; `None` for audio.
+    video_codec: Option<VideoCodec>,
+}
+
 #[derive(Deserialize, Debug, JsonSchema, Clone, Default)]
 #[serde(default)]
 pub struct MoqPullConfig {
@@ -37,7 +47,7 @@ pub struct MoqPullConfig {
 /// and outputs the received media as encoded packets.
 ///
 /// This node performs catalog discovery during initialization and supports
-/// both audio (Opus) and video (VP9) tracks.
+/// both audio (Opus) and video (VP9/AV1) tracks.
 ///
 /// **Output pins**
 /// - Always exposes a stable `out` pin (audio) for backward-compatible pipelines.
@@ -78,19 +88,16 @@ impl MoqPullNode {
         }
     }
 
-    fn output_pins_for_tracks(tracks: &[moq_lite::Track]) -> Vec<OutputPin> {
+    fn output_pins_for_tracks(tracks: &[DiscoveredTrack]) -> Vec<OutputPin> {
         let mut pins = Vec::with_capacity(1 + tracks.len());
         pins.push(Self::stable_out_pin());
-        for track in tracks {
-            if track.name == "out" {
+        for dt in tracks {
+            if dt.track.name == "out" {
                 continue;
             }
-            // Track type is inferred from the track name prefix. The hang
-            // protocol uses `audio/data` and `video/data` as canonical names,
-            // so this aligns with the catalog-parsed codec info in parse_catalog().
-            let produces_type = if track.name.starts_with("video/") {
+            let produces_type = if dt.track.name.starts_with("video/") {
                 PacketType::EncodedVideo(EncodedVideoFormat {
-                    codec: VideoCodec::Vp9,
+                    codec: dt.video_codec.unwrap_or(VideoCodec::Vp9),
                     bitstream_format: None,
                     codec_private: None,
                     profile: None,
@@ -103,7 +110,7 @@ impl MoqPullNode {
                 })
             };
             pins.push(OutputPin {
-                name: track.name.clone(),
+                name: dt.track.name.clone(),
                 produces_type,
                 cardinality: PinCardinality::Broadcast,
             });
@@ -325,7 +332,7 @@ impl MoqPullNode {
 
     /// Connects to the MoQ server once to discover available tracks from the catalog.
     /// This is used during initialization to create output pins dynamically.
-    async fn discover_tracks(&self) -> Result<Vec<moq_lite::Track>, StreamKitError> {
+    async fn discover_tracks(&self) -> Result<Vec<DiscoveredTrack>, StreamKitError> {
         tracing::info!(
             url = %super::redact_url_str_for_logs(&self.config.url),
             broadcast = %self.config.broadcast,
@@ -394,13 +401,16 @@ impl MoqPullNode {
     }
 
     /// Extract supported tracks (Opus audio, VP9/AV1 video) from a parsed catalog.
-    fn extract_tracks(catalog: &hang::catalog::Catalog) -> Vec<moq_lite::Track> {
+    fn extract_tracks(catalog: &hang::catalog::Catalog) -> Vec<DiscoveredTrack> {
         let mut tracks = Vec::new();
 
         for (name, config) in &catalog.audio.renditions {
             if matches!(config.codec, hang::catalog::AudioCodec::Opus) {
                 tracing::info!(track = %name, "found opus audio track");
-                tracks.push(moq_lite::Track { name: name.clone(), priority: 80 });
+                tracks.push(DiscoveredTrack {
+                    track: moq_lite::Track { name: name.clone(), priority: 80 },
+                    video_codec: None,
+                });
             } else {
                 tracing::debug!(track = %name, codec = %config.codec, "skipping non-opus audio track");
             }
@@ -410,11 +420,17 @@ impl MoqPullNode {
             match config.codec {
                 hang::catalog::VideoCodec::VP9(_) => {
                     tracing::info!(track = %name, "found VP9 video track");
-                    tracks.push(moq_lite::Track { name: name.clone(), priority: 60 });
+                    tracks.push(DiscoveredTrack {
+                        track: moq_lite::Track { name: name.clone(), priority: 60 },
+                        video_codec: Some(VideoCodec::Vp9),
+                    });
                 },
                 hang::catalog::VideoCodec::AV1(_) => {
                     tracing::info!(track = %name, "found AV1 video track");
-                    tracks.push(moq_lite::Track { name: name.clone(), priority: 60 });
+                    tracks.push(DiscoveredTrack {
+                        track: moq_lite::Track { name: name.clone(), priority: 60 },
+                        video_codec: Some(VideoCodec::Av1),
+                    });
                 },
                 _ => {
                     tracing::debug!(track = %name, codec = ?config.codec, "skipping unsupported video track");
@@ -426,9 +442,9 @@ impl MoqPullNode {
     }
 
     /// Returns true if the track list contains both an audio and a video track.
-    fn has_audio_and_video(tracks: &[moq_lite::Track]) -> bool {
-        tracks.iter().any(|t| t.name.starts_with("audio/"))
-            && tracks.iter().any(|t| t.name.starts_with("video/"))
+    fn has_audio_and_video(tracks: &[DiscoveredTrack]) -> bool {
+        tracks.iter().any(|dt| dt.track.name.starts_with("audio/"))
+            && tracks.iter().any(|dt| dt.track.name.starts_with("video/"))
     }
 
     /// After finding initial tracks, wait for catalog updates that might add more
@@ -436,8 +452,8 @@ impl MoqPullNode {
     /// Returns as soon as both audio and video are present, or on timeout.
     async fn settle_catalog(
         catalog_consumer: &mut hang::catalog::CatalogConsumer,
-        mut best: Vec<moq_lite::Track>,
-    ) -> Vec<moq_lite::Track> {
+        mut best: Vec<DiscoveredTrack>,
+    ) -> Vec<DiscoveredTrack> {
         if Self::has_audio_and_video(&best) {
             return best;
         }
@@ -475,7 +491,7 @@ impl MoqPullNode {
     async fn parse_catalog(
         &self,
         catalog_consumer: &mut hang::catalog::CatalogConsumer,
-    ) -> Result<Vec<moq_lite::Track>, StreamKitError> {
+    ) -> Result<Vec<DiscoveredTrack>, StreamKitError> {
         let catalog_timeout = Duration::from_secs(30);
         let retry_delay = Duration::from_millis(100);
         let start = tokio::time::Instant::now();
@@ -644,8 +660,8 @@ impl MoqPullNode {
         // Find the first audio and video tracks. Track type is determined by
         // the hang protocol's canonical track name prefix (`audio/…` / `video/…`),
         // consistent with how parse_catalog() discovers them from codec info.
-        let audio_track = discovered_tracks.iter().find(|t| !t.name.starts_with("video/"));
-        let video_track = discovered_tracks.iter().find(|t| t.name.starts_with("video/"));
+        let audio_track = discovered_tracks.iter().find(|dt| !dt.track.name.starts_with("video/"));
+        let video_track = discovered_tracks.iter().find(|dt| dt.track.name.starts_with("video/"));
 
         if audio_track.is_none() && video_track.is_none() {
             return Err(StreamKitError::Runtime(
@@ -655,11 +671,11 @@ impl MoqPullNode {
 
         // Subscribe to audio track
         let (mut audio_track_consumer, audio_track_pin_name, audio_track_pin_registered) =
-            if let Some(track) = audio_track {
-                tracing::info!("subscribing to audio track: {}", track.name);
-                let pin_name = track.name.clone();
+            if let Some(dt) = audio_track {
+                tracing::info!("subscribing to audio track: {}", dt.track.name);
+                let pin_name = dt.track.name.clone();
                 let pin_registered = self.output_pins.iter().any(|p| p.name == pin_name);
-                let consumer = broadcast.subscribe_track(track).map_err(|e| {
+                let consumer = broadcast.subscribe_track(&dt.track).map_err(|e| {
                     StreamKitError::Runtime(format!("Failed to subscribe to audio track: {e}"))
                 })?;
                 (Some(consumer), Some(pin_name), pin_registered)
@@ -669,11 +685,11 @@ impl MoqPullNode {
 
         // Subscribe to video track
         let (mut video_track_consumer, video_track_pin_name, video_track_pin_registered) =
-            if let Some(track) = video_track {
-                tracing::info!("subscribing to video track: {}", track.name);
-                let pin_name = track.name.clone();
+            if let Some(dt) = video_track {
+                tracing::info!("subscribing to video track: {}", dt.track.name);
+                let pin_name = dt.track.name.clone();
                 let pin_registered = self.output_pins.iter().any(|p| p.name == pin_name);
-                let consumer = broadcast.subscribe_track(track).map_err(|e| {
+                let consumer = broadcast.subscribe_track(&dt.track).map_err(|e| {
                     StreamKitError::Runtime(format!("Failed to subscribe to video track: {e}"))
                 })?;
                 (Some(consumer), Some(pin_name), pin_registered)
@@ -940,9 +956,9 @@ impl MoqPullNode {
                             audio_clock = MediaClock::new(0);
 
                             if audio_resubscribe_attempts < MAX_RESUBSCRIBE_ATTEMPTS {
-                                if let Some(track) = audio_track {
+                                if let Some(dt) = audio_track {
                                     audio_resubscribe_attempts += 1;
-                                    match broadcast.subscribe_track(track) {
+                                    match broadcast.subscribe_track(&dt.track) {
                                         Ok(new_consumer) => {
                                             tracing::info!(
                                                 attempt = audio_resubscribe_attempts,
@@ -970,9 +986,9 @@ impl MoqPullNode {
                             video_clock = MediaClock::new(0);
 
                             if video_resubscribe_attempts < MAX_RESUBSCRIBE_ATTEMPTS {
-                                if let Some(track) = video_track {
+                                if let Some(dt) = video_track {
                                     video_resubscribe_attempts += 1;
-                                    match broadcast.subscribe_track(track) {
+                                    match broadcast.subscribe_track(&dt.track) {
                                         Ok(new_consumer) => {
                                             tracing::info!(
                                                 attempt = video_resubscribe_attempts,
@@ -1049,7 +1065,10 @@ mod tests {
 
     #[test]
     fn test_output_pins_for_tracks_includes_stable_out() {
-        let tracks = vec![moq_lite::Track { name: "audio/data".to_string(), priority: 0 }];
+        let tracks = vec![DiscoveredTrack {
+            track: moq_lite::Track { name: "audio/data".to_string(), priority: 0 },
+            video_codec: None,
+        }];
         let pins = MoqPullNode::output_pins_for_tracks(&tracks);
         assert!(pins.iter().any(|p| p.name == "out"));
         assert!(pins.iter().any(|p| p.name == "audio/data"));
@@ -1057,9 +1076,40 @@ mod tests {
 
     #[test]
     fn test_output_pins_for_tracks_dedupes_out_track_name() {
-        let tracks = vec![moq_lite::Track { name: "out".to_string(), priority: 0 }];
+        let tracks = vec![DiscoveredTrack {
+            track: moq_lite::Track { name: "out".to_string(), priority: 0 },
+            video_codec: None,
+        }];
         let pins = MoqPullNode::output_pins_for_tracks(&tracks);
         assert_eq!(pins.iter().filter(|p| p.name == "out").count(), 1);
+    }
+
+    #[test]
+    fn test_output_pins_for_tracks_uses_av1_codec() {
+        let tracks = vec![DiscoveredTrack {
+            track: moq_lite::Track { name: "video/data".to_string(), priority: 60 },
+            video_codec: Some(VideoCodec::Av1),
+        }];
+        let pins = MoqPullNode::output_pins_for_tracks(&tracks);
+        let video_pin = pins.iter().find(|p| p.name == "video/data").unwrap();
+        match &video_pin.produces_type {
+            PacketType::EncodedVideo(fmt) => assert_eq!(fmt.codec, VideoCodec::Av1),
+            other => panic!("expected EncodedVideo, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_output_pins_for_tracks_defaults_vp9() {
+        let tracks = vec![DiscoveredTrack {
+            track: moq_lite::Track { name: "video/data".to_string(), priority: 60 },
+            video_codec: Some(VideoCodec::Vp9),
+        }];
+        let pins = MoqPullNode::output_pins_for_tracks(&tracks);
+        let video_pin = pins.iter().find(|p| p.name == "video/data").unwrap();
+        match &video_pin.produces_type {
+            PacketType::EncodedVideo(fmt) => assert_eq!(fmt.codec, VideoCodec::Vp9),
+            other => panic!("expected EncodedVideo, got {other:?}"),
+        }
     }
 
     #[test]
