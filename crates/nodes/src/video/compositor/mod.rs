@@ -563,6 +563,8 @@ impl ProcessorNode for CompositorNode {
         let initial_canvas_w = self.config.width;
         #[cfg(feature = "gpu")]
         let initial_canvas_h = self.config.height;
+        #[cfg(feature = "gpu")]
+        let initial_output_format = self.output_format;
 
         let composite_thread = tokio::task::spawn_blocking(move || {
             // Per-slot cache for YUV→RGBA conversions. Avoids redundant
@@ -606,6 +608,7 @@ impl ProcessorNode for CompositorNode {
                     &[], // no layers yet — seed from canvas size alone
                     &[],
                     &[],
+                    initial_output_format,
                 );
             #[cfg(feature = "gpu")]
             let mut gpu_path_state = gpu::GpuPathState::new_seeded(initial_should_gpu);
@@ -657,6 +660,7 @@ impl ProcessorNode for CompositorNode {
                                     &work.layers,
                                     &work.image_overlays,
                                     &work.text_overlays,
+                                    work.output_format,
                                 )
                         },
                     };

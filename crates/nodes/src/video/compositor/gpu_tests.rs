@@ -727,10 +727,10 @@ fn gpu_circle_crop_with_zoom() {
 fn gpu_should_use_gpu_heuristic() {
     use super::gpu::should_use_gpu;
 
-    // Single small layer → CPU.
+    // Single small layer, RGBA output → CPU.
     let small_layer = make_layer(solid_rgba(320, 240, 0, 0, 0, 255), 320, 240, None);
     assert!(
-        !should_use_gpu(320, 240, &[Some(small_layer)], &[], &[]),
+        !should_use_gpu(320, 240, &[Some(small_layer)], &[], &[], None),
         "Single small layer should prefer CPU"
     );
 
@@ -738,13 +738,16 @@ fn gpu_should_use_gpu_heuristic() {
     let l1 = make_layer(solid_rgba(320, 240, 0, 0, 0, 255), 320, 240, None);
     let l2 = make_layer(solid_rgba(320, 240, 0, 0, 0, 255), 320, 240, None);
     assert!(
-        should_use_gpu(320, 240, &[Some(l1), Some(l2)], &[], &[]),
+        should_use_gpu(320, 240, &[Some(l1), Some(l2)], &[], &[], None),
         "Two layers should prefer GPU"
     );
 
     // 1080p single layer → GPU (high pixel count).
     let big_layer = make_layer(solid_rgba(1920, 1080, 0, 0, 0, 255), 1920, 1080, None);
-    assert!(should_use_gpu(1920, 1080, &[Some(big_layer)], &[], &[]), "1080p should prefer GPU");
+    assert!(
+        should_use_gpu(1920, 1080, &[Some(big_layer)], &[], &[], None),
+        "1080p should prefer GPU"
+    );
 
     // Single layer with rotation → GPU (effects).
     let rotated = make_layer_with_props(
@@ -761,8 +764,29 @@ fn gpu_should_use_gpu_heuristic() {
         CropShape::Rect,
     );
     assert!(
-        should_use_gpu(320, 240, &[Some(rotated)], &[], &[]),
+        should_use_gpu(320, 240, &[Some(rotated)], &[], &[], None),
         "Rotated layer should prefer GPU"
+    );
+
+    // Single small layer with NV12 output → GPU (YUV conversion offload).
+    let nv12_layer = make_layer(solid_rgba(320, 240, 0, 0, 0, 255), 320, 240, None);
+    assert!(
+        should_use_gpu(320, 240, &[Some(nv12_layer)], &[], &[], Some(PixelFormat::Nv12)),
+        "NV12 output should prefer GPU even for single small layer"
+    );
+
+    // Single small layer with I420 output → GPU (YUV conversion offload).
+    let i420_layer = make_layer(solid_rgba(320, 240, 0, 0, 0, 255), 320, 240, None);
+    assert!(
+        should_use_gpu(320, 240, &[Some(i420_layer)], &[], &[], Some(PixelFormat::I420)),
+        "I420 output should prefer GPU even for single small layer"
+    );
+
+    // Single small layer with RGBA8 output → CPU (no conversion needed).
+    let rgba_layer = make_layer(solid_rgba(320, 240, 0, 0, 0, 255), 320, 240, None);
+    assert!(
+        !should_use_gpu(320, 240, &[Some(rgba_layer)], &[], &[], Some(PixelFormat::Rgba8)),
+        "RGBA8 output should prefer CPU for single small layer"
     );
 }
 
@@ -908,12 +932,13 @@ fn gpu_hysteresis_stability() {
 
     // First 4 frames voting GPU should NOT flip (hysteresis = 5).
     for _ in 0..4 {
-        let result = gpu::should_use_gpu_with_state(&mut state, 320, 240, &gpu_scene, &[], &[]);
+        let result =
+            gpu::should_use_gpu_with_state(&mut state, 320, 240, &gpu_scene, &[], &[], None);
         assert!(!result, "Should stay on CPU during hysteresis window");
     }
 
     // 5th consecutive frame should flip to GPU.
-    let result = gpu::should_use_gpu_with_state(&mut state, 320, 240, &gpu_scene, &[], &[]);
+    let result = gpu::should_use_gpu_with_state(&mut state, 320, 240, &gpu_scene, &[], &[], None);
     assert!(result, "Should flip to GPU after 5 consecutive votes");
 
     // Now on GPU. Build a scene that votes CPU.
@@ -922,13 +947,13 @@ fn gpu_hysteresis_stability() {
 
     // Interleave: vote CPU, then vote GPU — should reset the counter.
     for _ in 0..3 {
-        gpu::should_use_gpu_with_state(&mut state, 320, 240, &cpu_scene, &[], &[]);
+        gpu::should_use_gpu_with_state(&mut state, 320, 240, &cpu_scene, &[], &[], None);
     }
     // Interrupt with a GPU vote (re-add two layers).
     let l3 = make_layer(solid_rgba(320, 240, 0, 0, 0, 255), 320, 240, None);
     let l4 = make_layer(solid_rgba(320, 240, 0, 0, 0, 255), 320, 240, None);
     let gpu_scene2: Vec<Option<LayerSnapshot>> = vec![Some(l3), Some(l4)];
-    let result = gpu::should_use_gpu_with_state(&mut state, 320, 240, &gpu_scene2, &[], &[]);
+    let result = gpu::should_use_gpu_with_state(&mut state, 320, 240, &gpu_scene2, &[], &[], None);
     assert!(result, "Interruption should reset counter; stay on GPU");
 }
 
@@ -943,7 +968,7 @@ fn gpu_hysteresis_seeded_skips_warmup() {
     let gpu_scene: Vec<Option<LayerSnapshot>> = vec![Some(l1), Some(l2)];
 
     // First frame should immediately use GPU — no warm-up.
-    let result = gpu::should_use_gpu_with_state(&mut state, 320, 240, &gpu_scene, &[], &[]);
+    let result = gpu::should_use_gpu_with_state(&mut state, 320, 240, &gpu_scene, &[], &[], None);
     assert!(result, "Seeded state should use GPU on the very first frame");
 }
 
