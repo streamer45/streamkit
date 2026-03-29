@@ -118,6 +118,10 @@ exceptions = [
   # libbz2-rs-sys is a pure-Rust reimplementation of bzip2. It uses the original
   # bzip2 license (BSD-style permissive) which isn't a standard SPDX identifier.
   { allow = ["bzip2-1.0.6"], crate = "libbz2-rs-sys" },
+
+  # hexf-parse is a transitive dependency of wgpu (via naga) and uses CC0-1.0
+  # (Creative Commons Zero / public domain dedication).
+  { allow = ["CC0-1.0"], crate = "hexf-parse" },
 ]
 
 # Some crates don't have (easily) machine readable licensing information,

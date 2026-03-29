@@ -102,9 +102,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Run tests
+      - name: Run tests (GPU tests run separately on self-hosted runner)
         run: |
-          cargo test --locked --workspace
+          cargo test --locked --workspace -- --skip gpu_tests::
           cargo test --locked -p streamkit-server --features "moq"
 
   test-gpu:

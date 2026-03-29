@@ -138,7 +138,7 @@ blake2 = "0.10.6"
 async-stream = "0.3.6"
 
 [features]
-default = ["script", "compositor", "moq"]
+default = ["script", "compositor", "gpu", "moq"]
 tokio-console = ["console-subscriber"]
 profiling = ["dep:pprof", "dep:tikv-jemallocator", "dep:jemalloc_pprof"]
 # DHAT allocation profiling - tracks allocation counts/rates (mutually exclusive with profiling)
@@ -147,6 +147,7 @@ dhat-heap = ["dep:dhat"]
 moq = ["dep:moq-native", "dep:moq-lite"]
 script = ["streamkit-nodes/script", "streamkit-engine/script"]
 compositor = ["streamkit-nodes/compositor", "streamkit-engine/compositor"]
+gpu = ["compositor", "streamkit-nodes/gpu", "streamkit-engine/gpu"]
 
 [dev-dependencies]
 tokio-test = "0.4.5"
