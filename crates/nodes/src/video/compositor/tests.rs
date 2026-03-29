@@ -1710,11 +1710,14 @@ async fn test_oneshot_output_timestamps_monotonic() {
 /// even in batch mode, capping throughput at wall-clock fps.
 #[tokio::test]
 async fn test_oneshot_processes_faster_than_realtime() {
-    let frame_count: usize = 30;
-    let fps: u32 = 30;
-    // At real-time pacing, 30 frames at 30 fps = 1 second.
-    // We assert it completes in well under half that.
-    let max_allowed = std::time::Duration::from_millis(500);
+    let frame_count: usize = 10;
+    let fps: u32 = 5;
+    // At real-time pacing, 10 frames at 5 fps = 2 seconds.
+    // Without pacing the tiny 4×4 frames should finish well under 1.5s
+    // even on a loaded CI runner.  The previous 30@30 (budget 500ms)
+    // flaked on the GPU runner because per-frame scheduling overhead
+    // (~30ms) nearly matched the pacing interval (33ms).
+    let max_allowed = std::time::Duration::from_millis(1500);
 
     let (input_tx, input_rx) = mpsc::channel(256);
     let mut inputs = HashMap::new();
@@ -1749,7 +1752,10 @@ async fn test_oneshot_processes_faster_than_realtime() {
     assert!(
         elapsed < max_allowed,
         "Oneshot compositor took {elapsed:?} for {frame_count} frames at {fps} fps — \
-         expected < {max_allowed:?} (should not be real-time paced)",
+         expected < {max_allowed:?} (should not be real-time paced).  \
+         If this is close to {} ms (real-time pace), the oneshot tick \
+         path may have regressed to interval-based pacing.",
+        frame_count as u64 * 1000 / u64::from(fps),
     );
 }
 
@@ -2507,17 +2513,21 @@ async fn test_compositor_output_format_runtime_change() {
     // Send a frame — should come out as RGBA8.
     let frame = make_rgba_frame(2, 2, 255, 0, 0, 255);
     input_tx.send(Packet::Video(frame)).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    // Give the compositor enough ticks to process the frame.  On the
+    // self-hosted GPU runner many tests run in parallel, so the
+    // compositor thread may be starved for CPU.  300ms ≈ 9 ticks at
+    // 30 fps — generous enough even under heavy load.
+    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
 
     // Send UpdateParams to switch output_format to NV12.
     let update = serde_json::json!({ "output_format": "nv12" });
     ctrl_tx.send(NodeControlMessage::UpdateParams(update)).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
     // Send another frame — should come out as NV12.
     let frame2 = make_rgba_frame(2, 2, 0, 255, 0, 255);
     input_tx.send(Packet::Video(frame2)).await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
 
     drop(input_tx);
     drop(ctrl_tx);
