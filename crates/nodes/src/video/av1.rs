@@ -46,6 +46,12 @@ const AV1_DEFAULT_SPEED: u32 = 10;
 /// first").  Matches libc `EAGAIN` on Linux.
 const DAV1D_EAGAIN: i32 = -11;
 
+/// Maximum number of consecutive EAGAIN retries in `decode_packet` where
+/// `drain_pictures` returns no frames.  Prevents an infinite busy-loop if the
+/// decoder gets into a pathological state, which would block the
+/// `spawn_blocking` thread and hang the tokio runtime on shutdown.
+const MAX_EAGAIN_EMPTY_RETRIES: u32 = 1000;
+
 // ---------------------------------------------------------------------------
 // Configuration structs
 // ---------------------------------------------------------------------------
@@ -160,6 +166,12 @@ impl ProcessorNode for Av1DecoderNode {
             };
 
             while let Some((data, metadata)) = decode_rx.blocking_recv() {
+                // Exit early if the async side has been cancelled (e.g.
+                // tokio runtime shutting down).
+                if result_tx.is_closed() {
+                    return;
+                }
+
                 let decode_start_time = Instant::now();
                 let result = decoder.decode_packet(&data, metadata, video_pool.as_ref());
                 decode_duration_histogram.record(decode_start_time.elapsed().as_secs_f64(), &[]);
@@ -178,7 +190,11 @@ impl ProcessorNode for Av1DecoderNode {
                 }
             }
 
-            // Flush remaining frames from the decoder.
+            // Flush remaining frames from the decoder — skip if the
+            // async side is already gone (runtime shutting down).
+            if result_tx.is_closed() {
+                return;
+            }
             match decoder.flush(video_pool.as_ref()) {
                 Ok(frames) => {
                     for frame in frames {
@@ -320,6 +336,14 @@ impl ProcessorNode for Av1EncoderNode {
             let mut current_dimensions: Option<(u32, u32)> = None;
 
             while let Some((frame, metadata)) = encode_rx.blocking_recv() {
+                // Exit early if the async side has been cancelled (e.g.
+                // tokio runtime shutting down).  Without this check the
+                // blocking thread keeps the runtime alive indefinitely,
+                // hanging the test binary / process.
+                if result_tx.is_closed() {
+                    return;
+                }
+
                 if frame.pixel_format == PixelFormat::Rgba8 {
                     let _ =
                         result_tx.blocking_send(Err("AV1 encoder requires NV12 or I420 input; \
@@ -386,17 +410,19 @@ impl ProcessorNode for Av1EncoderNode {
             }
 
             if let Some(encoder) = encoder.as_mut() {
-                match encoder.flush() {
-                    Ok(packets) => {
-                        for packet in packets {
-                            if result_tx.blocking_send(Ok(packet)).is_err() {
-                                return;
+                if !result_tx.is_closed() {
+                    match encoder.flush() {
+                        Ok(packets) => {
+                            for packet in packets {
+                                if result_tx.blocking_send(Ok(packet)).is_err() {
+                                    return;
+                                }
                             }
-                        }
-                    },
-                    Err(err) => {
-                        let _ = result_tx.blocking_send(Err(err));
-                    },
+                        },
+                        Err(err) => {
+                            let _ = result_tx.blocking_send(Err(err));
+                        },
+                    }
                 }
             }
         });
@@ -567,6 +593,13 @@ impl Av1Decoder {
         // states that when `dav1d_send_data` returns EAGAIN (-11) the input
         // data was **not** consumed.  The caller must drain pending pictures
         // via `dav1d_get_picture` and then retry with the same `Dav1dData`.
+        //
+        // The retry count is bounded to prevent an infinite busy-loop if the
+        // decoder gets into a state where EAGAIN persists without producing
+        // any pictures (which would block the `spawn_blocking` thread and
+        // hang the tokio runtime on shutdown).
+        let mut eagain_empty_retries: u32 = 0;
+
         loop {
             let res = unsafe {
                 rav1d::src::lib::dav1d_send_data(Some(self.ctx), NonNull::new(&raw mut dav1d_data))
@@ -581,6 +614,20 @@ impl Av1Decoder {
             if res.0 == DAV1D_EAGAIN {
                 // EAGAIN — drain buffered pictures, then retry send.
                 let mut drained = self.drain_pictures(metadata.clone(), video_pool)?;
+                if drained.is_empty() {
+                    eagain_empty_retries += 1;
+                    if eagain_empty_retries > MAX_EAGAIN_EMPTY_RETRIES {
+                        return Err(
+                            "rav1d: dav1d_send_data stuck in EAGAIN loop \
+                             (no pictures produced after 1000 retries)"
+                                .to_string(),
+                        );
+                    }
+                    // Yield to avoid a tight busy-loop.
+                    std::thread::yield_now();
+                } else {
+                    eagain_empty_retries = 0;
+                }
                 all_frames.append(&mut drained);
                 continue;
             }
