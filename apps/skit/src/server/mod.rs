@@ -1500,6 +1500,37 @@ async fn get_certificate_sha256_handler(
     }
 }
 
+/// Handler for MSE streaming — serves WebM media data to HTTP clients.
+///
+/// When an HttpMse node registers a path via the MSE gateway, this handler
+/// connects incoming HTTP GET requests to the node's output stream.
+/// Each client receives the WebM init segment followed by live media clusters.
+async fn mse_stream_handler(
+    State(app_state): State<Arc<AppState>>,
+    Path(path): Path<String>,
+) -> Response {
+    let full_path = format!("/mse/{path}");
+
+    match app_state.mse_gateway.connect_client(&full_path).await {
+        Ok((content_type, body_rx)) => {
+            let stream = ReceiverStream::new(body_rx).map(Ok::<_, Infallible>);
+
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, content_type)
+                .header(header::CACHE_CONTROL, "no-cache, no-store")
+                .body(Body::from_stream(stream))
+                .unwrap_or_else(|_| {
+                    (StatusCode::INTERNAL_SERVER_ERROR, "Failed to build response").into_response()
+                })
+        },
+        Err(msg) => {
+            debug!(path = %full_path, error = %msg, "MSE stream not found");
+            (StatusCode::NOT_FOUND, msg).into_response()
+        },
+    }
+}
+
 /// Request body for creating a session with a pipeline
 #[derive(Debug, Deserialize)]
 struct CreateSessionRequest {
@@ -3077,6 +3108,14 @@ pub fn create_app(
         Some(gateway)
     };
 
+    // Initialize MSE gateway for HTTP-based media streaming
+    let mse_gateway = {
+        let gateway = Arc::new(crate::mse_gateway::MseGateway::new());
+        let trait_obj: Arc<dyn streamkit_core::mse_gateway::MseGatewayTrait> = gateway.clone();
+        streamkit_core::mse_gateway::init_mse_gateway(trait_obj);
+        gateway
+    };
+
     // Use provided auth state or create disabled auth
     let auth = auth.unwrap_or_else(|| Arc::new(crate::auth::AuthState::disabled()));
 
@@ -3098,6 +3137,7 @@ pub fn create_app(
         shutdown_tracker: crate::state::ShutdownTracker::default(),
         #[cfg(feature = "moq")]
         moq_gateway,
+        mse_gateway,
     });
 
     let mut oneshot_route = post(process_oneshot_pipeline_handler)
@@ -3190,6 +3230,9 @@ pub fn create_app(
         router = router.route("/api/v1/moq/fingerprints", get(get_moq_fingerprints_handler));
         router = router.route("/certificate.sha256", get(get_certificate_sha256_handler));
     }
+
+    // Add MSE streaming route
+    router = router.route("/mse/{*path}", get(mse_stream_handler));
 
     // Add auth routes
     router = router.nest("/api/v1/auth", crate::auth::auth_router());

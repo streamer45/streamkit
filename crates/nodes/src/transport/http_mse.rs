@@ -1,0 +1,426 @@
+// SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+//
+// SPDX-License-Identifier: MPL-2.0
+
+//! HTTP MSE output node — serves WebM streams to HTTP clients for MSE playback.
+//!
+//! This node accepts `Packet::Binary` data (WebM chunks) from an upstream muxer
+//! and broadcasts them to connected HTTP clients as chunked responses. Late-joining
+//! clients receive the buffered WebM initialization segment so MSE
+//! `SourceBuffer.appendBuffer()` works correctly.
+
+use async_trait::async_trait;
+use bytes::Bytes;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use streamkit_core::types::{Packet, PacketType};
+use streamkit_core::{
+    config_helpers, state_helpers, stats::NodeStatsTracker, InputPin, NodeContext, OutputPin,
+    PinCardinality, ProcessorNode, StreamKitError,
+};
+use tokio::sync::mpsc;
+
+/// Configuration for the HttpMse node.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct HttpMseConfig {
+    /// Path suffix for the MSE stream endpoint (e.g., "/video").
+    /// Full URL will be: `/mse/{session_id}{path}`
+    pub path: String,
+    /// Maximum concurrent HTTP clients (default: 10).
+    #[serde(default = "default_max_clients")]
+    #[schemars(range(min = 1))]
+    pub max_clients: u32,
+    /// Content type for the HTTP response.
+    /// Defaults to `video/webm` if not set.
+    #[serde(default)]
+    pub content_type: Option<String>,
+}
+
+const fn default_max_clients() -> u32 {
+    10
+}
+
+/// Default content type for WebM MSE streams.
+const DEFAULT_CONTENT_TYPE: &str = "video/webm";
+
+/// Maximum size for the init segment buffer (16 KB).
+/// WebM init segments are typically < 1 KB; this is a generous upper bound.
+const MAX_INIT_SEGMENT_SIZE: usize = 16 * 1024;
+
+/// WebM Cluster element ID (0x1F43B675).
+/// Used to detect when the init segment ends and media data begins.
+const WEBM_CLUSTER_ID: [u8; 4] = [0x1F, 0x43, 0xB6, 0x75];
+
+/// A node that serves WebM binary data to HTTP clients for MSE playback.
+///
+/// It accepts `Packet::Binary` from an upstream WebM muxer (in Live mode) and
+/// fans out the chunks to all connected HTTP clients. The WebM initialization
+/// segment (EBML header + Segment + Tracks) is buffered and replayed to
+/// late-joining clients.
+pub struct HttpMseNode {
+    config: HttpMseConfig,
+}
+
+impl HttpMseNode {
+    pub fn factory() -> streamkit_core::node::NodeFactory {
+        std::sync::Arc::new(|params| {
+            let config: HttpMseConfig = if params.is_none() {
+                // Default config for pin inspection only (dynamic pipelines)
+                HttpMseConfig {
+                    path: "/video".to_string(),
+                    max_clients: default_max_clients(),
+                    content_type: None,
+                }
+            } else {
+                config_helpers::parse_config_required(params)?
+            };
+
+            if config.max_clients == 0 {
+                return Err(StreamKitError::Configuration(
+                    "max_clients must be greater than 0".to_string(),
+                ));
+            }
+
+            Ok(Box::new(Self { config }))
+        })
+    }
+}
+
+#[async_trait]
+impl ProcessorNode for HttpMseNode {
+    fn input_pins(&self) -> Vec<InputPin> {
+        vec![InputPin {
+            name: "in".to_string(),
+            accepts_types: vec![PacketType::Binary],
+            cardinality: PinCardinality::One,
+        }]
+    }
+
+    fn output_pins(&self) -> Vec<OutputPin> {
+        // Pure sink node — no outputs.
+        vec![]
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn run(self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
+        let node_name = context.output_sender.node_name().to_string();
+        state_helpers::emit_initializing(&context.state_tx, &node_name);
+
+        // Session ID is required for gateway registration.
+        let session_id = context.session_id.as_ref().ok_or_else(|| {
+            let err = "transport::http::mse requires a session_id for gateway registration";
+            tracing::error!("{}", err);
+            StreamKitError::Configuration(err.to_string())
+        })?;
+
+        // Get the MSE gateway from the global registry.
+        let gateway = streamkit_core::mse_gateway::get_mse_gateway().ok_or_else(|| {
+            let err = "MSE gateway not available — ensure transport::http::mse is used in a session with gateway support";
+            tracing::error!("{}", err);
+            StreamKitError::Runtime(err.to_string())
+        })?;
+
+        let content_type =
+            self.config.content_type.clone().unwrap_or_else(|| DEFAULT_CONTENT_TYPE.to_string());
+
+        // Build the full registration path: /mse/{session_id}{path}
+        let path_suffix = if self.config.path.starts_with('/') {
+            self.config.path.clone()
+        } else {
+            format!("/{}", self.config.path)
+        };
+        let full_path = format!("/mse/{session_id}{path_suffix}");
+
+        tracing::info!(
+            path = %full_path,
+            session_id = %session_id,
+            content_type = %content_type,
+            max_clients = self.config.max_clients,
+            "HttpMseNode registering MSE stream"
+        );
+
+        // Register with the MSE gateway.
+        let mut client_rx = gateway
+            .register_stream(full_path.clone(), session_id.clone(), content_type)
+            .await
+            .map_err(|e| {
+                let err = format!("Failed to register MSE stream: {e}");
+                tracing::error!("{}", err);
+                StreamKitError::Runtime(err)
+            })?;
+
+        // Take ownership of the input channel.
+        let mut input_rx = context.take_input("in").map_err(|e| {
+            tracing::error!("Failed to take input pin: {}", e);
+            e
+        })?;
+
+        state_helpers::emit_running(&context.state_tx, &node_name);
+
+        let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
+
+        // Connected clients (body_tx senders).
+        let mut clients: Vec<mpsc::Sender<Bytes>> = Vec::new();
+
+        // Init segment buffer: accumulates all bytes before the first WebM Cluster.
+        let mut init_segment: Vec<u8> = Vec::new();
+        let mut init_complete = false;
+
+        let max_clients = self.config.max_clients as usize;
+
+        let cancellation_token = context.cancellation_token.clone();
+
+        let result: Result<(), StreamKitError> = loop {
+            tokio::select! {
+                biased;
+
+                // Shutdown via cancellation token.
+                () = async {
+                    if let Some(ref token) = cancellation_token {
+                        token.cancelled().await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                } => {
+                    tracing::info!("HttpMseNode shutting down (cancellation)");
+                    break Ok(());
+                }
+
+                // Control messages.
+                msg = context.control_rx.recv() => {
+                    match msg {
+                        Some(streamkit_core::control::NodeControlMessage::Shutdown) => {
+                            tracing::info!("HttpMseNode received shutdown");
+                            break Ok(());
+                        }
+                        Some(_) => { /* ignore other control messages */ }
+                        None => {
+                            tracing::debug!("Control channel closed");
+                            break Ok(());
+                        }
+                    }
+                }
+
+                // New HTTP client connecting.
+                client = client_rx.recv() => {
+                    let Some(client) = client else {
+                        tracing::warn!("MSE gateway client channel closed");
+                        break Ok(());
+                    };
+
+                    if clients.len() >= max_clients {
+                        tracing::warn!(
+                            max_clients,
+                            "Rejecting MSE client: max_clients reached"
+                        );
+                        // Drop the client sender — the HTTP handler will see
+                        // the channel close and respond with 503.
+                        continue;
+                    }
+
+                    // Send the init segment to the new client so MSE can initialize.
+                    if !init_segment.is_empty() {
+                        let init_bytes = Bytes::copy_from_slice(&init_segment);
+                        if client.body_tx.send(init_bytes).await.is_err() {
+                            tracing::debug!("New MSE client disconnected before init segment delivery");
+                            continue;
+                        }
+                    }
+
+                    tracing::debug!(
+                        client_count = clients.len() + 1,
+                        "New MSE client connected"
+                    );
+                    clients.push(client.body_tx);
+                }
+
+                // Incoming WebM data from upstream muxer.
+                packet = input_rx.recv() => {
+                    let Some(packet) = packet else {
+                        tracing::info!("Input channel closed");
+                        break Ok(());
+                    };
+
+                    stats_tracker.received();
+
+                    let Packet::Binary { data, .. } = packet else {
+                        tracing::warn!("HttpMseNode received non-binary packet, ignoring");
+                        stats_tracker.discarded();
+                        continue;
+                    };
+
+                    // Buffer the init segment (everything before the first Cluster element).
+                    if !init_complete {
+                        // Check if this chunk contains a Cluster element ID.
+                        if let Some(cluster_offset) = find_cluster_id(&data) {
+                            // Everything before the Cluster ID is part of the init segment.
+                            if cluster_offset > 0 {
+                                let remaining_capacity = MAX_INIT_SEGMENT_SIZE.saturating_sub(init_segment.len());
+                                let to_append = cluster_offset.min(remaining_capacity);
+                                init_segment.extend_from_slice(&data[..to_append]);
+                            }
+                            init_complete = true;
+                            tracing::info!(
+                                init_segment_size = init_segment.len(),
+                                "WebM init segment captured"
+                            );
+                        } else {
+                            // Still in the init segment — buffer these bytes.
+                            let remaining_capacity = MAX_INIT_SEGMENT_SIZE.saturating_sub(init_segment.len());
+                            if remaining_capacity > 0 {
+                                let to_append = data.len().min(remaining_capacity);
+                                init_segment.extend_from_slice(&data[..to_append]);
+                            }
+                        }
+                    }
+
+                    // Broadcast to all connected clients, removing disconnected ones.
+                    if !clients.is_empty() {
+                        let chunk = data.clone();
+                        let mut i = 0;
+                        while i < clients.len() {
+                            // Use try_send to avoid blocking the pipeline on a slow client.
+                            match clients[i].try_send(chunk.clone()) {
+                                Ok(()) => {
+                                    stats_tracker.sent();
+                                    i += 1;
+                                }
+                                Err(mpsc::error::TrySendError::Closed(_)) => {
+                                    clients.swap_remove(i);
+                                    tracing::debug!(
+                                        client_count = clients.len(),
+                                        "MSE client disconnected"
+                                    );
+                                }
+                                Err(mpsc::error::TrySendError::Full(_)) => {
+                                    // Client is too slow — drop the chunk rather than blocking.
+                                    stats_tracker.discarded();
+                                    i += 1;
+                                }
+                            }
+                        }
+                    }
+
+                    stats_tracker.maybe_send();
+                }
+            }
+        };
+
+        // Clean up: unregister from gateway.
+        gateway.unregister_stream(&full_path).await;
+        clients.clear();
+
+        stats_tracker.force_send();
+
+        match &result {
+            Ok(()) => {
+                state_helpers::emit_stopped(&context.state_tx, &node_name, "completed");
+            },
+            Err(e) => {
+                state_helpers::emit_failed(&context.state_tx, &node_name, e.to_string());
+            },
+        }
+
+        result
+    }
+}
+
+/// Search for the WebM Cluster element ID (0x1F43B675) in a byte slice.
+/// Returns the offset of the first occurrence, or `None` if not found.
+fn find_cluster_id(data: &[u8]) -> Option<usize> {
+    if data.len() < WEBM_CLUSTER_ID.len() {
+        return None;
+    }
+    data.windows(WEBM_CLUSTER_ID.len()).position(|window| window == WEBM_CLUSTER_ID)
+}
+
+/// Register HTTP MSE nodes with the registry.
+///
+/// # Panics
+///
+/// Panics if the config schema cannot be serialized to JSON (should never happen).
+#[allow(clippy::expect_used)]
+pub fn register_http_mse_nodes(registry: &mut streamkit_core::NodeRegistry) {
+    use schemars::schema_for;
+
+    let factory = HttpMseNode::factory();
+    registry.register_dynamic_with_description(
+        "transport::http::mse",
+        move |params| (factory)(params),
+        serde_json::to_value(schema_for!(HttpMseConfig))
+            .expect("HttpMseConfig schema should serialize to JSON"),
+        vec!["transport".to_string(), "http".to_string(), "mse".to_string()],
+        false,
+        "Serves WebM streams to HTTP clients for MSE (Media Source Extensions) playback. \
+         Accepts binary data from an upstream WebM muxer and broadcasts to multiple \
+         concurrent HTTP clients with init segment replay for late-joiners.",
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_find_cluster_id() {
+        // No cluster
+        assert_eq!(find_cluster_id(b"hello world"), None);
+
+        // Cluster at start
+        let data = vec![0x1F, 0x43, 0xB6, 0x75, 0x00, 0x01];
+        assert_eq!(find_cluster_id(&data), Some(0));
+
+        // Cluster after init segment
+        let mut with_header = vec![0x1A, 0x45, 0xDF, 0xA3]; // EBML header ID
+        with_header.extend_from_slice(&[0x00; 20]); // some header data
+        with_header.extend_from_slice(&WEBM_CLUSTER_ID);
+        with_header.extend_from_slice(&[0x00; 10]); // cluster data
+        assert_eq!(find_cluster_id(&with_header), Some(24));
+
+        // Too short
+        assert_eq!(find_cluster_id(&[0x1F, 0x43]), None);
+        assert_eq!(find_cluster_id(&[]), None);
+    }
+
+    #[test]
+    fn test_http_mse_node_structure() {
+        let config =
+            HttpMseConfig { path: "/video".to_string(), max_clients: 10, content_type: None };
+        let node = Box::new(HttpMseNode { config });
+
+        // Verify pins
+        assert_eq!(node.input_pins().len(), 1);
+        assert_eq!(node.input_pins()[0].name, "in");
+        assert_eq!(node.input_pins()[0].accepts_types, vec![PacketType::Binary]);
+        assert_eq!(node.output_pins().len(), 0);
+    }
+
+    #[test]
+    fn test_factory_rejects_zero_max_clients() {
+        let factory = HttpMseNode::factory();
+        let params = Some(serde_json::json!({
+            "path": "/video",
+            "max_clients": 0,
+        }));
+        let result = (factory)(params.as_ref());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_factory_accepts_valid_config() {
+        let factory = HttpMseNode::factory();
+        let params = Some(serde_json::json!({
+            "path": "/video",
+            "max_clients": 5,
+        }));
+        let result = (factory)(params.as_ref());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_factory_default_for_pin_inspection() {
+        let factory = HttpMseNode::factory();
+        let result = (factory)(None);
+        assert!(result.is_ok());
+    }
+}

@@ -30,6 +30,7 @@ use crate::session::SessionManager;
 
 #[cfg(feature = "moq")]
 use crate::moq_gateway::MoqGateway;
+use crate::mse_gateway::MseGateway;
 
 /// Tracks background shutdown tasks so they can be drained during server exit.
 ///
@@ -97,6 +98,7 @@ pub struct AppState {
     pub shutdown_tracker: ShutdownTracker,
     #[cfg(feature = "moq")]
     pub moq_gateway: Option<Arc<MoqGateway>>,
+    pub mse_gateway: Arc<MseGateway>,
 }
 
 #[cfg(test)]
