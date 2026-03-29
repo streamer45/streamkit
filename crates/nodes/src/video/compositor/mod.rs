@@ -26,6 +26,8 @@
 //!   cached by (id, content) to avoid redundant decoding.
 
 pub mod config;
+#[cfg(feature = "gpu")]
+pub mod gpu;
 pub mod kernel;
 pub mod overlay;
 
@@ -39,6 +41,8 @@ use overlay::{decode_image_overlay, rasterize_text_overlay, validate_asset_path,
 use schemars::schema_for;
 use smallvec::SmallVec;
 use std::collections::HashMap;
+#[cfg(feature = "gpu")]
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use streamkit_core::control::NodeControlMessage;
 use streamkit_core::pins::PinManagementMessage;
@@ -547,10 +551,66 @@ impl ProcessorNode for CompositorNode {
         let (work_tx, mut work_rx) = tokio::sync::mpsc::channel::<CompositeWorkItem>(2);
         let (result_tx, mut result_rx) = tokio::sync::mpsc::channel::<CompositeResult>(2);
 
+        // Resolve GPU mode from config (used by the compositing thread).
+        // Shared via atomic so UpdateParams can change it at runtime.
+        #[cfg(feature = "gpu")]
+        let gpu_mode_atomic = Arc::new(AtomicU8::new(gpu::GpuMode::from_config(
+            self.config.gpu_mode.as_deref(),
+        ) as u8));
+        #[cfg(feature = "gpu")]
+        let gpu_mode_thread = Arc::clone(&gpu_mode_atomic);
+        #[cfg(feature = "gpu")]
+        let initial_canvas_w = self.config.width;
+        #[cfg(feature = "gpu")]
+        let initial_canvas_h = self.config.height;
+
         let composite_thread = tokio::task::spawn_blocking(move || {
             // Per-slot cache for YUV→RGBA conversions. Avoids redundant
             // conversion when the source Arc hasn't changed between frames.
             let mut conversion_cache = ConversionCache::new();
+
+            // Attempt GPU initialization when the feature is enabled and
+            // the config doesn't force CPU mode.
+            #[cfg(feature = "gpu")]
+            let initial_gpu_mode = gpu::GpuMode::from_u8(gpu_mode_thread.load(Ordering::Relaxed));
+            #[cfg(feature = "gpu")]
+            let mut gpu_ctx: Option<gpu::GpuContext> = if initial_gpu_mode == gpu::GpuMode::ForceCpu
+            {
+                tracing::info!("GPU compositing disabled by config (gpu_mode=cpu)");
+                None
+            } else if let Some(ctx) = gpu::GpuContext::try_init() {
+                tracing::info!(
+                    "GPU detected and ready — will be used when scene complexity warrants it (gpu_mode={:?})",
+                    initial_gpu_mode
+                );
+                Some(ctx)
+            } else {
+                if initial_gpu_mode == gpu::GpuMode::ForceGpu {
+                    tracing::warn!(
+                        "GPU compositing requested (gpu_mode=gpu) but no GPU available; \
+                         falling back to CPU"
+                    );
+                } else {
+                    tracing::info!("No GPU detected, using CPU compositing");
+                }
+                None
+            };
+
+            // Hysteresis state for Auto mode: prevents GPU↔CPU thrashing
+            // when scene complexity oscillates near the threshold.
+            #[cfg(feature = "gpu")]
+            let initial_should_gpu = gpu_ctx.is_some()
+                && gpu::should_use_gpu(
+                    initial_canvas_w,
+                    initial_canvas_h,
+                    &[], // no layers yet — seed from canvas size alone
+                    &[],
+                    &[],
+                );
+            #[cfg(feature = "gpu")]
+            let mut gpu_path_state = gpu::GpuPathState::new_seeded(initial_should_gpu);
+            #[cfg(feature = "gpu")]
+            let mut last_gpu_mode = initial_gpu_mode;
 
             while let Some(work) = work_rx.blocking_recv() {
                 // Clear the entire conversion cache when the slot
@@ -559,62 +619,71 @@ impl ProcessorNode for CompositorNode {
                     conversion_cache.clear();
                 }
 
-                let rgba_buf = composite_frame(
-                    work.canvas_w,
-                    work.canvas_h,
-                    &work.layers,
-                    &work.image_overlays,
-                    &work.text_overlays,
-                    work.video_pool.as_deref(),
-                    &mut conversion_cache,
-                );
+                // ── Choose GPU or CPU compositing path ──────────────
+                #[cfg(feature = "gpu")]
+                let (output_data, pixel_format) = {
+                    let current_gpu_mode =
+                        gpu::GpuMode::from_u8(gpu_mode_thread.load(Ordering::Relaxed));
 
-                // Fused pixel format conversion while data is cache-hot.
-                let (output_data, pixel_format) = match work.output_format {
-                    Some(PixelFormat::Nv12) => {
-                        let w = work.canvas_w as usize;
-                        let h = work.canvas_h as usize;
-                        let chroma_w = w.div_ceil(2);
-                        let chroma_h = h.div_ceil(2);
-                        let nv12_size = w * h + chroma_w * 2 * chroma_h;
-                        let mut nv12_buf = work.video_pool.as_deref().map_or_else(
-                            || PooledVideoData::from_vec(vec![0u8; nv12_size]),
-                            |pool| pool.get(nv12_size),
-                        );
-                        crate::video::pixel_ops::rgba8_to_nv12_buf(
-                            rgba_buf.as_slice(),
+                    // Only attempt GPU (re-)initialisation when the mode
+                    // actually changed at runtime — not every frame.
+                    if current_gpu_mode != last_gpu_mode {
+                        last_gpu_mode = current_gpu_mode;
+                        if current_gpu_mode != gpu::GpuMode::ForceCpu && gpu_ctx.is_none() {
+                            if let Some(ctx) = gpu::GpuContext::try_init() {
+                                tracing::info!(
+                                    "GPU compositing backend initialized after runtime mode change to {current_gpu_mode:?}"
+                                );
+                                gpu_ctx = Some(ctx);
+                            } else {
+                                tracing::warn!(
+                                    "GPU context initialization failed after runtime mode change to {current_gpu_mode:?}"
+                                );
+                            }
+                        }
+                    }
+
+                    // Decide whether to use GPU for this frame based on mode
+                    // and scene complexity.
+                    let use_gpu = match current_gpu_mode {
+                        gpu::GpuMode::ForceCpu => false,
+                        gpu::GpuMode::ForceGpu => gpu_ctx.is_some(),
+                        gpu::GpuMode::Auto => {
+                            gpu_ctx.is_some()
+                                && gpu::should_use_gpu_with_state(
+                                    &mut gpu_path_state,
+                                    work.canvas_w,
+                                    work.canvas_h,
+                                    &work.layers,
+                                    &work.image_overlays,
+                                    &work.text_overlays,
+                                )
+                        },
+                    };
+
+                    if use_gpu {
+                        // GPU path: compositing + optional format conversion
+                        // all happen on the GPU.
+                        // Safety: `use_gpu` is true only when `gpu_ctx.is_some()`.
+                        #[allow(clippy::expect_used)]
+                        gpu_ctx.as_mut().expect("gpu_ctx checked above").composite_frame_gpu(
                             work.canvas_w,
                             work.canvas_h,
-                            nv12_buf.as_mut_slice(),
-                        );
-                        (nv12_buf, PixelFormat::Nv12)
-                    },
-                    Some(PixelFormat::I420) => {
-                        let w = work.canvas_w as usize;
-                        let h = work.canvas_h as usize;
-                        let chroma_w = w.div_ceil(2);
-                        let chroma_h = h.div_ceil(2);
-                        let i420_size = w * h + 2 * chroma_w * chroma_h;
-                        let mut i420_buf = work.video_pool.as_deref().map_or_else(
-                            || PooledVideoData::from_vec(vec![0u8; i420_size]),
-                            |pool| pool.get(i420_size),
-                        );
-                        crate::video::pixel_ops::rgba8_to_i420_buf(
-                            rgba_buf.as_slice(),
-                            work.canvas_w,
-                            work.canvas_h,
-                            i420_buf.as_mut_slice(),
-                        );
-                        (i420_buf, PixelFormat::I420)
-                    },
-                    None | Some(PixelFormat::Rgba8) => (rgba_buf, PixelFormat::Rgba8),
-                    Some(other) => {
-                        tracing::warn!(
-                            "Unsupported fused output format {other:?}, falling back to RGBA8"
-                        );
-                        (rgba_buf, PixelFormat::Rgba8)
-                    },
+                            &work.layers,
+                            &work.image_overlays,
+                            &work.text_overlays,
+                            work.video_pool.as_deref(),
+                            work.output_format,
+                        )
+                    } else {
+                        // CPU path (unchanged).
+                        cpu_composite_with_conversion(&work, &mut conversion_cache)
+                    }
                 };
+
+                #[cfg(not(feature = "gpu"))]
+                let (output_data, pixel_format) =
+                    cpu_composite_with_conversion(&work, &mut conversion_cache);
 
                 let result = CompositeResult { rgba_data: output_data, pixel_format };
                 if result_tx.blocking_send(result).is_err() {
@@ -734,6 +803,16 @@ impl ProcessorNode for CompositorNode {
                                 .output_format
                                 .as_deref()
                                 .and_then(|s| crate::video::parse_pixel_format(s).ok());
+
+                            // Update runtime gpu_mode so the compositing
+                            // thread picks up the change on the next frame.
+                            #[cfg(feature = "gpu")]
+                            {
+                                let new_mode = gpu::GpuMode::from_config(
+                                    self.config.gpu_mode.as_deref(),
+                                );
+                                gpu_mode_atomic.store(new_mode as u8, Ordering::Relaxed);
+                            }
                         },
                         NodeControlMessage::Start => {},
                     }
@@ -1256,6 +1335,73 @@ pub fn register_compositor_nodes(
     );
 }
 
+// ── CPU compositing helper ──────────────────────────────────────────────────
+
+/// Run the CPU compositing path with optional fused pixel format conversion.
+///
+/// Extracted so that both the `#[cfg(feature = "gpu")]` and
+/// `#[cfg(not(feature = "gpu"))]` branches can call it without
+/// duplicating the conversion logic.
+fn cpu_composite_with_conversion(
+    work: &CompositeWorkItem,
+    conversion_cache: &mut ConversionCache,
+) -> (PooledVideoData, PixelFormat) {
+    let rgba_buf = composite_frame(
+        work.canvas_w,
+        work.canvas_h,
+        &work.layers,
+        &work.image_overlays,
+        &work.text_overlays,
+        work.video_pool.as_deref(),
+        conversion_cache,
+    );
+
+    // Fused pixel format conversion while data is cache-hot.
+    match work.output_format {
+        Some(PixelFormat::Nv12) => {
+            let w = work.canvas_w as usize;
+            let h = work.canvas_h as usize;
+            let chroma_w = w.div_ceil(2);
+            let chroma_h = h.div_ceil(2);
+            let nv12_size = w * h + chroma_w * 2 * chroma_h;
+            let mut nv12_buf = work.video_pool.as_deref().map_or_else(
+                || PooledVideoData::from_vec(vec![0u8; nv12_size]),
+                |pool| pool.get(nv12_size),
+            );
+            crate::video::pixel_ops::rgba8_to_nv12_buf(
+                rgba_buf.as_slice(),
+                work.canvas_w,
+                work.canvas_h,
+                nv12_buf.as_mut_slice(),
+            );
+            (nv12_buf, PixelFormat::Nv12)
+        },
+        Some(PixelFormat::I420) => {
+            let w = work.canvas_w as usize;
+            let h = work.canvas_h as usize;
+            let chroma_w = w.div_ceil(2);
+            let chroma_h = h.div_ceil(2);
+            let i420_size = w * h + 2 * chroma_w * chroma_h;
+            let mut i420_buf = work.video_pool.as_deref().map_or_else(
+                || PooledVideoData::from_vec(vec![0u8; i420_size]),
+                |pool| pool.get(i420_size),
+            );
+            crate::video::pixel_ops::rgba8_to_i420_buf(
+                rgba_buf.as_slice(),
+                work.canvas_w,
+                work.canvas_h,
+                i420_buf.as_mut_slice(),
+            );
+            (i420_buf, PixelFormat::I420)
+        },
+        None | Some(PixelFormat::Rgba8) => (rgba_buf, PixelFormat::Rgba8),
+        Some(other) => {
+            tracing::warn!("Unsupported fused output format {other:?}, falling back to RGBA8");
+            (rgba_buf, PixelFormat::Rgba8)
+        },
+    }
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1267,3 +1413,19 @@ pub fn register_compositor_nodes(
 )]
 #[path = "tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[cfg(feature = "gpu")]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::similar_names,
+    clippy::many_single_char_names,
+    clippy::cast_possible_wrap,
+    clippy::redundant_clone
+)]
+#[path = "gpu_tests.rs"]
+mod gpu_tests;

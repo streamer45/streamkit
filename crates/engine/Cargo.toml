@@ -56,6 +56,9 @@ script = ["streamkit-nodes/script"]
 # Enables compositor node support (video compositing)
 compositor = ["streamkit-nodes/compositor"]
 
+# Enables GPU compositing (requires gpu-capable hardware at runtime)
+gpu = ["compositor", "streamkit-nodes/gpu"]
+
 [dev-dependencies]
 criterion = { workspace = true }
 serde_json = { workspace = true }

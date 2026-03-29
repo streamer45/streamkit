@@ -81,6 +81,11 @@ fontdue = { version = "0.9", optional = true }
 smallvec = { version = "1.13", optional = true, features = ["serde"] }
 ts-rs = { version = "12.0.1", optional = true }
 
+# GPU compositing (optional, behind `gpu` feature)
+wgpu = { version = "29", optional = true, default-features = false, features = ["vulkan", "metal", "dx12", "wgsl"] }
+pollster = { version = "0.4", optional = true }
+bytemuck = { version = "1.22", optional = true, features = ["derive"] }
+
 futures-util = "0.3"
 
 [features]
@@ -130,6 +135,7 @@ symphonia = ["dep:symphonia", "dep:schemars"]
 vp9 = ["dep:env-libvpx-sys", "dep:schemars"]
 colorbars = ["dep:schemars", "dep:serde_json", "dep:fontdue"]
 compositor = ["dep:schemars", "dep:serde_json", "dep:image", "dep:tiny-skia", "dep:rayon", "dep:fontdue", "dep:smallvec", "dep:uuid"]
+gpu = ["compositor", "dep:wgpu", "dep:pollster", "dep:bytemuck"]
 codegen = ["dep:ts-rs"]
 video = ["vp9", "colorbars", "compositor"]
 

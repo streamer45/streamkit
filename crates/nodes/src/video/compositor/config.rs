@@ -295,6 +295,19 @@ pub struct CompositorConfig {
     /// Default: `None` (output RGBA8).
     #[serde(default)]
     pub output_format: Option<String>,
+    /// GPU compositing preference.  Default `None` (treated as `"auto"`).
+    /// - `"auto"` (default): probe for GPU at startup; use it when scene
+    ///   complexity warrants (multi-layer, high-res, effects)
+    /// - `"gpu"`: force GPU compositing for every frame (warn and fall back
+    ///   to CPU if unavailable)
+    /// - `"cpu"`: force CPU compositing (ignore GPU even if available)
+    ///
+    /// When unset or `"auto"`, the compositor initialises the GPU at startup
+    /// and uses a per-frame heuristic to decide whether each frame benefits
+    /// from GPU acceleration.  Simple single-layer scenes use the faster CPU
+    /// memcpy path.  Set to `"cpu"` to explicitly disable GPU acceleration.
+    #[serde(default)]
+    pub gpu_mode: Option<String>,
 }
 
 impl Default for CompositorConfig {
@@ -308,6 +321,7 @@ impl Default for CompositorConfig {
             image_overlays: Vec::new(),
             text_overlays: Vec::new(),
             output_format: None,
+            gpu_mode: None,
         }
     }
 }
