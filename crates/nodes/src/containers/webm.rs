@@ -1557,7 +1557,8 @@ fn stage_frame(
              incoming_ts={incoming_ts_us:?}us)"
         );
     }
-    #[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)] // offset keeps the result non-negative via the clamp; raw_ns fits i64 for practical streams
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)]
+    // offset keeps the result non-negative via the clamp; raw_ns fits i64 for practical streams
     let mut timestamp_ns = (raw_ns as i64).saturating_add(offset).max(0) as u64;
 
     // Per-track monotonicity — ensure strictly increasing timestamps within
