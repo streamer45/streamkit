@@ -2075,7 +2075,7 @@ impl MoqPeerNode {
     ///
     /// `is_keyframe` indicates whether this is the first frame of a new MoQ
     /// group, which in the hang protocol corresponds to a keyframe boundary.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::cognitive_complexity)]
     async fn process_frame_from_group(
         group: &mut moq_lite::GroupConsumer,
         output_sender: &mut streamkit_core::OutputSender,

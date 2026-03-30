@@ -1877,6 +1877,7 @@ mod tests {
 
     /// Helper: stage N frames on a single track via `stage_frame` and
     /// return their rebased timestamps in nanoseconds.
+    #[allow(clippy::too_many_arguments)]
     fn stage_n(
         n: usize,
         track_id: u64,
@@ -2151,9 +2152,8 @@ mod tests {
         // Audio should be rebased to near the video's current position
         let audio_start_ms = a1.timestamp_ns / 1_000_000;
         assert!(
-            audio_start_ms >= 2990 && audio_start_ms <= 3010,
-            "audio should start near 3000ms, got {}ms",
-            audio_start_ms
+            (2990..=3010).contains(&audio_start_ms),
+            "audio should start near 3000ms, got {audio_start_ms}ms"
         );
     }
 
