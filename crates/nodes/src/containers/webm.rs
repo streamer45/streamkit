@@ -589,12 +589,19 @@ impl ProcessorNode for WebMMuxerNode {
     }
 
     fn content_type(&self) -> Option<String> {
-        // With dynamic input pins the actual track configuration isn't known
-        // until runtime.  Advertise both codecs — it's safe even if only one
-        // track is connected (MSE consumers simply won't find the absent
-        // track).  The codec (VP9 vs AV1) is unknown at config time, so we
-        // default to VP9; the actual content_type is resolved at runtime.
-        Some(webm_content_type(true, true, false).to_string())
+        // This static hint is used before the node runs (e.g. by the oneshot
+        // backward walk to set the HTTP Content-Type header).  We infer from
+        // config: if video dimensions are set, video is present.  Audio is
+        // always assumed true — advertising "vp9,opus" when only video is
+        // connected is safe (consumers won't find an Opus track), but
+        // advertising "vp9" when Opus IS present would break MSE consumers
+        // that need to initialise an audio SourceBuffer.
+        //
+        // The video codec (VP9 vs AV1) is unknown at config time, so we
+        // default to VP9 for the static hint.  The actual content_type is
+        // resolved at runtime once the first video packet arrives.
+        let has_video = self.config.video_width > 0 && self.config.video_height > 0;
+        Some(webm_content_type(true, has_video, false).to_string())
     }
 
     async fn run(self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
@@ -1761,18 +1768,27 @@ mod tests {
         })
     }
 
-    /// With dynamic input pins, `content_type()` always returns the full A+V
-    /// hint regardless of config because the actual track layout is only known
-    /// at runtime.
+    /// `content_type()` uses video dimensions to decide the static MIME hint:
+    /// audio-only when no dimensions are set, video+audio otherwise.
     #[test]
-    fn content_type_always_advertises_both_codecs() {
-        for (w, h) in [(0, 0), (1280, 720)] {
-            let node = muxer_with_dims(w, h);
-            let Some(ct) = node.content_type() else {
-                panic!("content_type should return Some");
-            };
-            assert_eq!(ct, "video/webm; codecs=\"vp9,opus\"");
-        }
+    fn content_type_audio_only_when_no_video_dims() {
+        let node = muxer_with_dims(0, 0);
+        let Some(ct) = node.content_type() else {
+            panic!("content_type should return Some");
+        };
+        assert_eq!(ct, "audio/webm; codecs=\"opus\"");
+    }
+
+    /// Regression test: when video dimensions are set, the static hint must
+    /// include both codecs so that MSE consumers can initialise an audio
+    /// SourceBuffer.
+    #[test]
+    fn content_type_includes_opus_when_video_dims_set() {
+        let node = muxer_with_dims(1280, 720);
+        let Some(ct) = node.content_type() else {
+            panic!("content_type should return Some");
+        };
+        assert_eq!(ct, "video/webm; codecs=\"vp9,opus\"");
     }
 
     #[test]
