@@ -331,10 +331,9 @@ impl ProcessorNode for OpusEncoderNode {
             mpsc::channel::<(Arc<PooledSamples>, u16, Option<PacketMetadata>)>(
                 get_codec_channel_capacity(),
             );
-        let (result_tx, mut result_rx) =
-            mpsc::channel::<Result<(Vec<u8>, Option<PacketMetadata>), String>>(
-                get_codec_channel_capacity(),
-            );
+        let (result_tx, mut result_rx) = mpsc::channel::<
+            Result<(Vec<u8>, Option<PacketMetadata>), String>,
+        >(get_codec_channel_capacity());
 
         let target_bitrate = self.config.bitrate;
 

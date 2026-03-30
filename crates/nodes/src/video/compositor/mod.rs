@@ -699,6 +699,12 @@ impl ProcessorNode for CompositorNode {
         let mut output_seq: u64 = 0;
         let mut running_timestamp_us: u64 = 0;
         let mut stop_reason: &str = "shutdown";
+        // Calibration offset: once a remote input (e.g. MoQ webcam) delivers
+        // its first timestamp, we compute offset = input_ts - running_ts.
+        // From then on, all output timestamps use running_ts + offset, which
+        // produces a smooth sequence in the remote clock domain without
+        // mixing two timestamp sources on alternating ticks.
+        let mut ts_calibration_offset: Option<i64> = None;
 
         // In oneshot / batch mode we take exactly one frame per slot
         // per iteration so every input frame is composited, and we
@@ -1040,14 +1046,29 @@ impl ProcessorNode for CompositorNode {
             let frame_duration_us = 1_000_000u64 / u64::from(self.config.fps);
             let output_ts = if is_oneshot {
                 running_timestamp_us
+            } else if let Some(offset) = ts_calibration_offset {
+                // Already calibrated — apply offset to running clock.
+                #[allow(clippy::cast_sign_loss)]
+                let ts = (running_timestamp_us as i64).saturating_add(offset).max(0) as u64;
+                ts
             } else {
-                slots
+                // Not yet calibrated — check if a remote input has a
+                // timestamp we can calibrate from.
+                let candidate = slots
                     .iter()
                     .rev()
-                    .find_map(|s| {
-                        s.latest_frame.as_ref()?.metadata.as_ref()?.timestamp_us
-                    })
-                    .unwrap_or(running_timestamp_us)
+                    .find_map(|s| s.latest_frame.as_ref()?.metadata.as_ref()?.timestamp_us);
+                if let Some(input_ts) = candidate {
+                    let offset = input_ts as i64 - running_timestamp_us as i64;
+                    tracing::info!(
+                        "CompositorNode: calibrated timestamp offset={offset}us \
+                         (input_ts={input_ts}us, running={running_timestamp_us}us)"
+                    );
+                    ts_calibration_offset = Some(offset);
+                    input_ts
+                } else {
+                    running_timestamp_us
+                }
             };
             let metadata = Some(PacketMetadata {
                 timestamp_us: Some(output_ts),
