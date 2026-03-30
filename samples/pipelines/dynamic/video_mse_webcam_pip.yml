@@ -108,6 +108,10 @@ nodes:
     kind: containers::webm::muxer
     params:
       streaming_mode: live
+      # video_width/video_height enable the second input pin (in_1).
+      # Actual dimensions are auto-detected from the first VP9 keyframe.
+      video_width: 1
+      video_height: 1
     needs:
       in: opus_encoder
       in_1: vp9_encoder

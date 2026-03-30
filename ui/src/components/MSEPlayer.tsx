@@ -103,20 +103,31 @@ function hasRealMediaError(media: HTMLMediaElement): boolean {
 }
 
 // Helper: Seek to the live edge and start playback.
-// Live MSE streams may not start at timestamp 0 — the first Cluster's
-// Timecode reflects the pipeline's wall-clock offset (e.g. 4s after
-// session creation).  Without seeking, currentTime stays at 0 where
-// there is no buffered data, so canplay never fires.
+// For live MSE streams the buffered ranges may be fragmented (e.g. audio
+// and video starting at different times).  Seeking to buffered.start(0)
+// might land on a tiny range with too little data.  Instead, seek to
+// near the END of the last contiguous range (the true live edge) with a
+// small rewind so the browser has forward buffer for smooth playback.
 // Returns true if the seek was performed (buffered data available).
 function seekToLiveEdgeAndPlay(media: HTMLMediaElement, sourceBuffer: SourceBuffer): boolean {
   const buffered = sourceBuffer.buffered;
   if (buffered.length === 0) {
-    return false; // No media data buffered yet — caller should retry.
+    return false;
   }
-  const liveEdge = buffered.start(0);
-  if (media.currentTime < liveEdge) {
-    componentsLogger.info(`MSEPlayer: Seeking to live edge at ${liveEdge.toFixed(2)}s`);
-    media.currentTime = liveEdge;
+  // Find the last contiguous range and check it's large enough.
+  // The init segment creates a tiny range (0.00-0.02) with no real media.
+  // Don't seek until there's at least 2 seconds of contiguous data.
+  const lastIdx = buffered.length - 1;
+  const lastStart = buffered.start(lastIdx);
+  const lastEnd = buffered.end(lastIdx);
+  if (lastEnd - lastStart < 2) {
+    return false; // Not enough contiguous data yet — caller should retry.
+  }
+  // Seek to ~2s behind the live edge of the last contiguous range.
+  const target = Math.max(lastStart, lastEnd - 2);
+  if (Math.abs(media.currentTime - target) > 1) {
+    componentsLogger.info(`MSEPlayer: Seeking to live edge at ${target.toFixed(2)}s (buffer ends at ${lastEnd.toFixed(2)}s)`);
+    media.currentTime = target;
   }
   if (media.paused) {
     media.play().catch((err) => {
@@ -187,6 +198,7 @@ async function streamMediaData(
   let totalBytes = 0;
   let firstChunkSeen = false;
   let playbackStarted = false;
+  let lastDiagLog = 0;
 
   while (true) {
     // Check if media element is in error state
@@ -227,6 +239,21 @@ async function streamMediaData(
     if (!firstChunkSeen && totalBytes > 0) {
       firstChunkSeen = true;
       onFirstChunk?.();
+    }
+
+    // Periodic buffer diagnostics — log every 5 seconds to help debug
+    // fragmentation and playback stalls without flooding the console.
+    const now = Date.now();
+    if (now - lastDiagLog > 5000 && sourceBuffer.buffered.length > 0) {
+      lastDiagLog = now;
+      const ranges = [];
+      for (let i = 0; i < sourceBuffer.buffered.length; i++) {
+        ranges.push(`${sourceBuffer.buffered.start(i).toFixed(2)}-${sourceBuffer.buffered.end(i).toFixed(2)}`);
+      }
+      componentsLogger.info(
+        `MSEPlayer diag: currentTime=${media.currentTime.toFixed(2)} paused=${media.paused} ` +
+        `readyState=${media.readyState} buffered=[${ranges.join(', ')}] bytes=${(totalBytes / 1024).toFixed(0)}KB`
+      );
     }
 
     // Seek to the live edge once media data is actually buffered.
@@ -295,6 +322,13 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
       componentsLogger.info('MSEPlayer: Media can play - hiding loading overlay');
       if (stallTimerHandle) { clearTimeout(stallTimerHandle); stallTimerHandle = null; }
       setIsReadyToPlay(true);
+      // Retry autoplay — the initial play() call may have fired before
+      // enough data was buffered, leaving the element paused.
+      if (media.paused) {
+        media.play().catch((err) => {
+          componentsLogger.warn('Autoplay on canplay failed:', err);
+        });
+      }
     };
     media.addEventListener('canplay', handleCanPlay);
 
@@ -316,10 +350,12 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
       try {
         setStatus('Opening media source...');
 
-        // Add source buffer with the appropriate codec
-        const normalizedContentType = normalizeMimeType(contentType);
-        componentsLogger.debug('MSEPlayer: Using MIME type:', normalizedContentType);
-        const sourceBuffer = mediaSource.addSourceBuffer(normalizedContentType);
+        // Use the content type from the server (set by the pipeline YAML).
+        // This declares all expected codecs (e.g. "vp9,opus") — the backend
+        // muxer must wait for all inputs before producing the init segment.
+        const mseContentType = normalizeMimeType(contentType);
+        componentsLogger.debug('MSEPlayer: Using MIME type:', mseContentType);
+        const sourceBuffer = mediaSource.addSourceBuffer(mseContentType);
 
         const mediaKind = isVideo ? 'video' : 'audio';
         setStatus(`Streaming ${mediaKind}...`);
@@ -348,8 +384,9 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
         media.addEventListener('error', handleMediaError);
 
         // Stall detection: if data is flowing but canplay never fires within
-        // 15 seconds, the init segment or media data is likely malformed.
-        // Surface a diagnostic error instead of loading forever.
+        // 15 seconds, log diagnostics and retry the live-edge seek.  Don't kill
+        // the stream — live pipelines with MoQ input can take 20+ seconds to
+        // accumulate enough contiguous data for canplay.
         const startStallTimer = () => {
           if (stallTimerHandle) return;
           stallTimerHandle = setTimeout(() => {
@@ -361,12 +398,9 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
               ranges.push(`${buffered.start(i).toFixed(2)}-${buffered.end(i).toFixed(2)}`);
             }
             const diag = `readyState=${readyState}, buffered=[${ranges.join(', ')}]`;
-            componentsLogger.error(`MSEPlayer: stall detected — canplay not fired after 15s (${diag})`);
-            setErrorAndNotify(
-              `Media stalled: the browser cannot decode the stream (${diag}). ` +
-              'Check that the pipeline codec matches the content_type.'
-            );
-            reader.cancel();
+            componentsLogger.warn(`MSEPlayer: canplay not fired after 15s — retrying seek (${diag})`);
+            // Retry seeking to the live edge — buffer may have grown since the first attempt.
+            seekToLiveEdgeAndPlay(media, sourceBuffer);
           }, 15_000);
         };
 

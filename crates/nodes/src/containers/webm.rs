@@ -530,6 +530,11 @@ impl ProcessorNode for WebMMuxerNode {
     fn input_pins(&self) -> Vec<InputPin> {
         // Each pin accepts both audio and video — the actual media type is detected
         // at runtime from the packet content_type, not from the pin name.
+        //
+        // Two pins are declared when `video_width`/`video_height` are set (even to
+        // placeholder values like 1x1 — dimensions are auto-detected from the first
+        // keyframe regardless).  Single-input pipelines (e.g. video-only) leave
+        // these at 0 and get a single `"in"` pin.
         let media_types = vec![
             PacketType::EncodedAudio(EncodedAudioFormat {
                 codec: AudioCodec::Opus,
@@ -551,9 +556,8 @@ impl ProcessorNode for WebMMuxerNode {
             }),
         ];
 
-        let has_video = self.config.video_width > 0 && self.config.video_height > 0;
-        if has_video {
-            // Two generic inputs for audio + video (order is determined at runtime).
+        let two_inputs = self.config.video_width > 0 && self.config.video_height > 0;
+        if two_inputs {
             vec![
                 InputPin {
                     name: "in".to_string(),
@@ -567,7 +571,6 @@ impl ProcessorNode for WebMMuxerNode {
                 },
             ]
         } else {
-            // Single generic input — backward compatible with `needs: encoder_node`.
             vec![InputPin {
                 name: "in".to_string(),
                 accepts_types: media_types,
@@ -990,6 +993,13 @@ impl ProcessorNode for WebMMuxerNode {
         let mut video_clock = MediaClock::new(0);
         let mut mux_state = MuxState { header_sent: false, last_written_ns: 0, packet_count: 0 };
 
+        // Per-track timestamp rebase offsets — computed lazily when each track's
+        // first frame arrives.  Aligns late-arriving tracks (e.g. MoQ audio) to
+        // the muxer's current write position so MSE consumers see contiguous
+        // buffered ranges instead of timestamp gaps between tracks.
+        let mut audio_rebase_offset_ns: Option<i64> = None;
+        let mut video_rebase_offset_ns: Option<i64> = None;
+
         tracing::info!("WebM segment built, entering receive loop to process incoming packets");
 
         // -- Receive loop: multiplex audio + video inputs --
@@ -1018,6 +1028,7 @@ impl ProcessorNode for WebMMuxerNode {
                     DEFAULT_VIDEO_FRAME_DURATION_US,
                     &mut video_clock,
                     &mut mux_state,
+                    &mut video_rebase_offset_ns,
                     &mut segment,
                     &mut context,
                     live_flush_handle.as_ref(),
@@ -1049,6 +1060,7 @@ impl ProcessorNode for WebMMuxerNode {
                     DEFAULT_FRAME_DURATION_US,
                     &mut audio_clock,
                     &mut mux_state,
+                    &mut audio_rebase_offset_ns,
                     &mut segment,
                     &mut context,
                     live_flush_handle.as_ref(),
@@ -1191,6 +1203,7 @@ impl ProcessorNode for WebMMuxerNode {
                         DEFAULT_FRAME_DURATION_US,
                         &mut audio_clock,
                         &mut mux_state,
+                        &mut audio_rebase_offset_ns,
                         &mut segment,
                         &mut context,
                         live_flush_handle.as_ref(),
@@ -1244,6 +1257,7 @@ impl ProcessorNode for WebMMuxerNode {
                         DEFAULT_VIDEO_FRAME_DURATION_US,
                         &mut video_clock,
                         &mut mux_state,
+                        &mut video_rebase_offset_ns,
                         &mut segment,
                         &mut context,
                         live_flush_handle.as_ref(),
@@ -1313,9 +1327,8 @@ impl ProcessorNode for WebMMuxerNode {
 struct MuxState {
     /// Whether the WebM header has been flushed to the output.
     header_sent: bool,
-    /// Monotonic timestamp guard: libwebm requires that timestamps across all
-    /// tracks are non-decreasing.  We track the last written timestamp and
-    /// clamp if needed.
+    /// Global monotonic timestamp guard — libwebm requires globally
+    /// non-decreasing timestamps across all tracks in `add_frame`.
     last_written_ns: u64,
     packet_count: u64,
 }
@@ -1335,6 +1348,7 @@ async fn mux_frame(
     default_duration_us: u64,
     clock: &mut streamkit_core::timing::MediaClock,
     state: &mut MuxState,
+    rebase_offset_ns: &mut Option<i64>,
     segment: &mut webm::mux::Segment<MuxBuffer>,
     context: &mut NodeContext,
     live_buffer: Option<&SharedPacketBuffer>,
@@ -1357,9 +1371,25 @@ async fn mux_frame(
     let presentation_ts_us = incoming_ts_us.unwrap_or_else(|| clock.timestamp_us());
     clock.advance_by_duration_us(incoming_duration_us, default_duration_us);
 
-    let mut timestamp_ns = presentation_ts_us.saturating_mul(1000);
-    if timestamp_ns < state.last_written_ns {
-        timestamp_ns = state.last_written_ns;
+    let raw_ns = presentation_ts_us.saturating_mul(1000);
+
+    // Per-track rebase: when a track's first frame arrives, compute an offset
+    // so it starts at the other track's current position.  This aligns tracks
+    // that start at different wall-clock times (e.g. local compositor video
+    // at t=0 and MoQ audio arriving seconds later).  Without this, MSE
+    // consumers see timestamp gaps between tracks and can't play smoothly.
+    let offset =
+        *rebase_offset_ns.get_or_insert_with(|| state.last_written_ns as i64 - raw_ns as i64);
+    #[allow(clippy::cast_sign_loss)] // offset keeps the result non-negative via the clamp
+    let mut timestamp_ns = (raw_ns as i64).saturating_add(offset).max(0) as u64;
+
+    // Global monotonic guard — libwebm requires non-decreasing timestamps
+    // across all tracks.  When clamping, advance by 1ms (the WebM timecode
+    // resolution) instead of clamping to the exact same value.  Exact
+    // duplicates across tracks (e.g. bursty audio clamped to the last video
+    // timestamp) cause MSE buffer fragmentation.
+    if timestamp_ns <= state.last_written_ns {
+        timestamp_ns = state.last_written_ns + 1_000_000; // +1ms
     }
 
     if let Err(e) = segment.add_frame(track, data, timestamp_ns, is_keyframe) {
