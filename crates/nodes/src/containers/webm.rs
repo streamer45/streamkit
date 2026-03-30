@@ -1144,16 +1144,16 @@ impl ProcessorNode for WebMMuxerNode {
                             }
                         }
                         r0 = rx0.recv() => {
-                            match r0 {
-                                Some(pkt) => classify_packet(pkt),
-                                None => { all_receivers.remove(0); inputs_open -= 1; None },
-                            }
+                            r0.map_or_else(
+                                || { all_receivers.remove(0); inputs_open -= 1; None },
+                                classify_packet,
+                            )
                         }
                         r1 = rx1.recv() => {
-                            match r1 {
-                                Some(pkt) => classify_packet(pkt),
-                                None => { all_receivers.remove(1); inputs_open -= 1; None },
-                            }
+                            r1.map_or_else(
+                                || { all_receivers.remove(1); inputs_open -= 1; None },
+                                classify_packet,
+                            )
                         }
                     }
                 } else if all_receivers.len() == 1 {
@@ -1165,10 +1165,10 @@ impl ProcessorNode for WebMMuxerNode {
                                 Some(MuxFrame::Shutdown)
                             } else { None }
                         }
-                        r = rx.recv() => match r {
-                            Some(pkt) => classify_packet(pkt),
-                            None => { all_receivers.clear(); inputs_open = 0; None },
-                        }
+                        r = rx.recv() => r.map_or_else(
+                            || { all_receivers.clear(); inputs_open = 0; None },
+                            classify_packet,
+                        )
                     }
                 } else {
                     break;
@@ -1379,8 +1379,11 @@ impl ProcessorNode for WebMMuxerNode {
             }
 
             // Periodic pipeline health — every 150 packets (~2s).
-            if mux_state.packet_count % 150 == 0 {
+            if mux_state.packet_count.is_multiple_of(150) {
+                // Timestamps in ms are well within i64 range for any practical stream.
+                #[allow(clippy::cast_possible_wrap)]
                 let a_ms = audio_last_ns.map_or(-1i64, |ns| (ns / 1_000_000) as i64);
+                #[allow(clippy::cast_possible_wrap)]
                 let v_ms = video_last_ns.map_or(-1i64, |ns| (ns / 1_000_000) as i64);
                 let delta_ms = if a_ms >= 0 && v_ms >= 0 { a_ms - v_ms } else { 0 };
                 tracing::debug!(
@@ -1544,6 +1547,8 @@ fn stage_frame(
     // at t=0 and MoQ audio arriving seconds later).  Without this, MSE
     // consumers see timestamp gaps between tracks and can't play smoothly.
     let is_new_offset = rebase_offset_ns.is_none();
+    // Media timestamps in nanoseconds are well within i64 range for practical streams.
+    #[allow(clippy::cast_possible_wrap)]
     let offset = *rebase_offset_ns.get_or_insert_with(|| last_written_ns as i64 - raw_ns as i64);
     if is_new_offset {
         tracing::info!(
@@ -1552,7 +1557,7 @@ fn stage_frame(
              incoming_ts={incoming_ts_us:?}us)"
         );
     }
-    #[allow(clippy::cast_sign_loss)] // offset keeps the result non-negative via the clamp
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)] // offset keeps the result non-negative via the clamp; raw_ns fits i64 for practical streams
     let mut timestamp_ns = (raw_ns as i64).saturating_add(offset).max(0) as u64;
 
     // Per-track monotonicity — ensure strictly increasing timestamps within

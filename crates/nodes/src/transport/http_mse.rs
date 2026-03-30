@@ -60,6 +60,10 @@ const WEBM_CLUSTER_ID: [u8; 4] = [0x1F, 0x43, 0xB6, 0x75];
 /// that the muxer may emit prior to opening the first Cluster.
 const WEBM_TRACKS_ID: [u8; 4] = [0x16, 0x54, 0xAE, 0x6B];
 
+/// Hard cap on the rolling GOP buffer to prevent unbounded growth when
+/// keyframes are infrequent (e.g. 10 s interval at high bitrate).
+const MAX_GOP_BUFFER_SIZE: usize = 2 * 1024 * 1024; // 2 MB
+
 /// A node that serves WebM binary data to HTTP clients for MSE playback.
 ///
 /// It accepts `Packet::Binary` from an upstream WebM muxer (in Live mode) and
@@ -197,7 +201,6 @@ impl ProcessorNode for HttpMseNode {
         // The buffer is reset whenever a new Cluster ID is detected in the
         // live data.  A hard cap prevents unbounded growth if keyframes are
         // infrequent (e.g. 10s interval at high bitrate).
-        const MAX_GOP_BUFFER_SIZE: usize = 2 * 1024 * 1024; // 2 MB
         let mut init_segment: Vec<u8> = Vec::new();
         let mut gop_buffer: Vec<u8> = Vec::new();
         let mut init_complete = false;
@@ -398,9 +401,11 @@ impl ProcessorNode for HttpMseNode {
 
                             // No Cluster preamble is stored — see comment above.
 
+                            let elapsed_ms = u64::try_from(node_start.elapsed().as_millis())
+                                .unwrap_or(u64::MAX);
                             tracing::info!(
                                 init_segment_size = init_segment.len(),
-                                elapsed_ms = node_start.elapsed().as_millis() as u64,
+                                elapsed_ms,
                                 "WebM init segment captured"
                             );
                             overlap.clear();
@@ -445,9 +450,11 @@ impl ProcessorNode for HttpMseNode {
                     // Reset when we see a new Cluster ID; append otherwise.
                     if !forward_data.is_empty() {
                         if find_cluster_id(&forward_data).is_some() {
+                            let elapsed_ms = u64::try_from(node_start.elapsed().as_millis())
+                                .unwrap_or(u64::MAX);
                             tracing::debug!(
                                 gop_size = gop_buffer.len(),
-                                elapsed_ms = node_start.elapsed().as_millis() as u64,
+                                elapsed_ms,
                                 "HTTP MSE: new Cluster (GOP reset)"
                             );
                             gop_buffer.clear();

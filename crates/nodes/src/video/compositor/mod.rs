@@ -1048,7 +1048,7 @@ impl ProcessorNode for CompositorNode {
                 running_timestamp_us
             } else if let Some(offset) = ts_calibration_offset {
                 // Already calibrated — apply offset to running clock.
-                #[allow(clippy::cast_sign_loss)]
+                #[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)]
                 let ts = (running_timestamp_us as i64).saturating_add(offset).max(0) as u64;
                 ts
             } else {
@@ -1058,7 +1058,9 @@ impl ProcessorNode for CompositorNode {
                     .iter()
                     .rev()
                     .find_map(|s| s.latest_frame.as_ref()?.metadata.as_ref()?.timestamp_us);
-                if let Some(input_ts) = candidate {
+                // Microsecond timestamps are well within i64 range for practical streams.
+                #[allow(clippy::cast_possible_wrap)]
+                candidate.map_or(running_timestamp_us, |input_ts| {
                     let offset = input_ts as i64 - running_timestamp_us as i64;
                     tracing::info!(
                         "CompositorNode: calibrated timestamp offset={offset}us \
@@ -1066,9 +1068,7 @@ impl ProcessorNode for CompositorNode {
                     );
                     ts_calibration_offset = Some(offset);
                     input_ts
-                } else {
-                    running_timestamp_us
-                }
+                })
             };
             let metadata = Some(PacketMetadata {
                 timestamp_us: Some(output_ts),
