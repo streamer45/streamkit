@@ -89,6 +89,11 @@ impl HttpMseNode {
                     "max_clients must be greater than 0".to_string(),
                 ));
             }
+            if config.path.contains("..") || config.path.contains("//") {
+                return Err(StreamKitError::Configuration(
+                    "path must not contain '..' or empty segments".to_string(),
+                ));
+            }
 
             Ok(Box::new(Self { config }))
         })
@@ -184,13 +189,15 @@ impl ProcessorNode for HttpMseNode {
         // first Cluster is discarded — it is invalid for MSE SourceBuffer.
         //
         // Per the WebM Byte Stream Format spec for MSE, the init segment must
-        // end before the first Cluster element.  The Cluster preamble (element
-        // ID + size VINT + Timecode) is stored separately and sent as the first
+        // end before the first Cluster element.
+        //
         // Rolling GOP buffer: accumulates data from the most recent Cluster
         // start (keyframe boundary).  Late-joining clients receive init +
         // this buffer so they start at a clean Cluster with a keyframe.
         // The buffer is reset whenever a new Cluster ID is detected in the
-        // live data, keeping it fresh and bounded (~1 GOP = 1s at 30fps).
+        // live data.  A hard cap prevents unbounded growth if keyframes are
+        // infrequent (e.g. 10s interval at high bitrate).
+        const MAX_GOP_BUFFER_SIZE: usize = 2 * 1024 * 1024; // 2 MB
         let mut init_segment: Vec<u8> = Vec::new();
         let mut gop_buffer: Vec<u8> = Vec::new();
         let mut init_complete = false;
@@ -446,6 +453,14 @@ impl ProcessorNode for HttpMseNode {
                             gop_buffer.clear();
                         }
                         gop_buffer.extend_from_slice(&forward_data);
+                        if gop_buffer.len() > MAX_GOP_BUFFER_SIZE {
+                            tracing::warn!(
+                                gop_size = gop_buffer.len(),
+                                "HTTP MSE: GOP buffer exceeded {}B cap, resetting",
+                                MAX_GOP_BUFFER_SIZE
+                            );
+                            gop_buffer.clear();
+                        }
                     }
 
                     // Broadcast to all connected clients, removing disconnected or slow ones.

@@ -980,12 +980,7 @@ impl ProcessorNode for WebMMuxerNode {
 
         let mut audio_clock = MediaClock::new(0);
         let mut video_clock = MediaClock::new(0);
-        let mut mux_state = MuxState {
-            header_sent: false,
-            last_written_ns: 0,
-            last_written_track: 0,
-            packet_count: 0,
-        };
+        let mut mux_state = MuxState { header_sent: false, last_written_ns: 0, packet_count: 0 };
 
         // Per-track timestamp rebase offsets — computed lazily when each track's
         // first frame arrives.
@@ -1086,6 +1081,8 @@ impl ProcessorNode for WebMMuxerNode {
         // Drain frames that queued in both channels during the sequential
         // classification.  These are seconds old (stale) and would produce a
         // burst of WebM data that overwhelms the MSE SourceBuffer.
+        // NOTE: in skip-classification mode audio_rx/video_rx are None, so
+        // this block is a no-op — all receivers are in all_receivers instead.
         if has_audio && has_video {
             let mut drained_v = 0u64;
             let mut drained_a = 0u64;
@@ -1139,21 +1136,13 @@ impl ProcessorNode for WebMMuxerNode {
                         }
                         r0 = rx0.recv() => {
                             match r0 {
-                                Some(Packet::Binary { data, content_type, metadata }) => {
-                                    let is_video = content_type.as_deref().unwrap_or("").starts_with("video/");
-                                    Some(if is_video { MuxFrame::Video(data, metadata) } else { MuxFrame::Audio(data, metadata) })
-                                },
-                                Some(_) => None,
+                                Some(pkt) => classify_packet(pkt),
                                 None => { all_receivers.remove(0); inputs_open -= 1; None },
                             }
                         }
                         r1 = rx1.recv() => {
                             match r1 {
-                                Some(Packet::Binary { data, content_type, metadata }) => {
-                                    let is_video = content_type.as_deref().unwrap_or("").starts_with("video/");
-                                    Some(if is_video { MuxFrame::Video(data, metadata) } else { MuxFrame::Audio(data, metadata) })
-                                },
-                                Some(_) => None,
+                                Some(pkt) => classify_packet(pkt),
                                 None => { all_receivers.remove(1); inputs_open -= 1; None },
                             }
                         }
@@ -1168,11 +1157,7 @@ impl ProcessorNode for WebMMuxerNode {
                             } else { None }
                         }
                         r = rx.recv() => match r {
-                            Some(Packet::Binary { data, content_type, metadata }) => {
-                                let is_video = content_type.as_deref().unwrap_or("").starts_with("video/");
-                                Some(if is_video { MuxFrame::Video(data, metadata) } else { MuxFrame::Audio(data, metadata) })
-                            },
-                            Some(_) => None,
+                            Some(pkt) => classify_packet(pkt),
                             None => { all_receivers.clear(); inputs_open = 0; None },
                         }
                     }
@@ -1371,7 +1356,7 @@ impl ProcessorNode for WebMMuxerNode {
                 let a_ms = audio_last_ns.map_or(-1i64, |ns| (ns / 1_000_000) as i64);
                 let v_ms = video_last_ns.map_or(-1i64, |ns| (ns / 1_000_000) as i64);
                 let delta_ms = if a_ms >= 0 && v_ms >= 0 { a_ms - v_ms } else { 0 };
-                tracing::info!(
+                tracing::debug!(
                     "WebMMuxer health: pkt#{} elapsed={:.1}s a_ts={a_ms}ms v_ts={v_ms}ms \
                      av_delta={delta_ms}ms global_last={}ms",
                     mux_state.packet_count,
@@ -1437,19 +1422,16 @@ struct MuxState {
     header_sent: bool,
     /// Last timestamp (ns) written to the segment.
     last_written_ns: u64,
-    /// Track ID of the last written frame — used to detect same-track
-    /// timestamp collisions from the global clamp.
-    last_written_track: u64,
     packet_count: u64,
 }
 
-/// A frame staged in the pending buffer, awaiting timestamp-ordered writing.
+/// A frame produced by [`stage_frame`] ready for [`write_frame`].
 ///
-/// The two-track merge holds at most one pending frame per track.  Frames are
-/// written to the segment in timestamp order to preserve per-track timing
-/// (e.g. clean 20 ms Opus cadence) while satisfying libwebm's global
-/// monotonicity requirement.
-struct PendingFrame {
+/// Holds the frame data alongside its rebased, per-track-monotonic
+/// timestamp.  `stage_frame` computes the timestamp without touching the
+/// segment; `write_frame` applies the global max-clamp and writes to
+/// libwebm.
+struct StagedFrame {
     data: Bytes,
     metadata: Option<PacketMetadata>,
     track_id: u64,
@@ -1469,14 +1451,37 @@ enum MuxFrame {
     Shutdown,
 }
 
-/// Computes the rebased, per-track-monotonic timestamp for a frame and returns
-/// a [`PendingFrame`] ready for the interleave buffer.
+/// Classify a [`Packet`] as audio or video from its `content_type` field.
 ///
-/// This is the "stage" half of the old `mux_frame` — it advances the
-/// per-track [`MediaClock`], applies the rebase offset, and enforces per-track
-/// monotonicity.  It does **not** touch the segment or the global
-/// `last_written_ns`; the caller writes pending frames in timestamp order via
-/// [`write_frame`].
+/// Used in the skip-classification fast path where pins are not pre-assigned
+/// to audio/video roles.  Returns `None` for non-`Binary` packets.
+fn classify_packet(packet: Packet) -> Option<MuxFrame> {
+    match packet {
+        Packet::Binary { data, content_type, metadata } => {
+            let is_video = content_type.as_deref().unwrap_or("").starts_with("video/");
+            Some(if is_video {
+                MuxFrame::Video(data, metadata)
+            } else {
+                MuxFrame::Audio(data, metadata)
+            })
+        },
+        _ => None,
+    }
+}
+
+/// Computes the rebased, per-track-monotonic timestamp for a frame.
+///
+/// Timestamp pipeline (each layer builds on the previous):
+/// 1. **MoQ peer** normalises raw capture timestamps to start near 0.
+/// 2. **Compositor** calibrates its running clock to the remote input's
+///    domain so video timestamps share the MoQ epoch.
+/// 3. **This function** applies a per-track rebase offset (aligning the
+///    late-arriving track to the first track's position) and enforces
+///    per-track monotonicity (+1 ms on backward jumps).
+/// 4. **[`write_frame`]** applies a global max-clamp for libwebm's
+///    non-decreasing requirement.
+///
+/// Does **not** touch the segment or `last_written_ns`.
 #[allow(clippy::too_many_arguments)]
 fn stage_frame(
     data: Bytes,
@@ -1488,7 +1493,7 @@ fn stage_frame(
     rebase_offset_ns: &mut Option<i64>,
     last_written_ns: u64,
     per_track_last_ns: &mut Option<u64>,
-) -> PendingFrame {
+) -> StagedFrame {
     let incoming_ts_us = metadata.as_ref().and_then(|m| m.timestamp_us);
     let incoming_duration_us =
         metadata.as_ref().and_then(|m| m.duration_us).or(Some(default_duration_us));
@@ -1533,7 +1538,7 @@ fn stage_frame(
     }
     *per_track_last_ns = Some(timestamp_ns);
 
-    PendingFrame {
+    StagedFrame {
         data,
         metadata,
         track_id,
@@ -1544,17 +1549,18 @@ fn stage_frame(
     }
 }
 
-/// Writes a staged [`PendingFrame`] to the WebM segment and flushes output.
+/// Writes a [`StagedFrame`] to the WebM segment and flushes output.
 ///
-/// The caller guarantees that frames are written in globally non-decreasing
-/// timestamp order (enforced by the two-track interleave drain loop).
+/// Applies a global max-clamp (`frame.timestamp_ns.max(last_written_ns)`)
+/// to satisfy libwebm's non-decreasing timestamp requirement.  Cross-track
+/// equality is allowed; per-track cadence is preserved by [`stage_frame`].
 ///
 /// Returns `Ok(true)` if the output channel is closed (caller should stop),
 /// `Ok(false)` to continue, or `Err` on fatal errors.
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::ptr_arg)]
 async fn write_frame(
-    frame: &PendingFrame,
+    frame: &StagedFrame,
     state: &mut MuxState,
     segment: &mut webm::mux::Segment<MuxBuffer>,
     context: &mut NodeContext,
@@ -1589,7 +1595,6 @@ async fn write_frame(
     }
 
     state.last_written_ns = write_ts;
-    state.last_written_track = frame.track_id;
 
     let output_metadata = Some(PacketMetadata {
         timestamp_us: Some(frame.presentation_ts_us),

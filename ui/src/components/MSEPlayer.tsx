@@ -171,16 +171,16 @@ async function processStreamChunk(value: Uint8Array, sourceBuffer: SourceBuffer)
   // Listen for both updateend (success) and error (decode/append failure)
   // so that SourceBuffer errors surface instead of hanging silently.
   await new Promise<void>((resolve, reject) => {
-    sourceBuffer.addEventListener(
-      'updateend',
-      () => resolve(),
-      { once: true }
-    );
-    sourceBuffer.addEventListener(
-      'error',
-      () => reject(new Error('SourceBuffer append failed (decode or format error)')),
-      { once: true }
-    );
+    const onUpdateEnd = () => {
+      sourceBuffer.removeEventListener('error', onError);
+      resolve();
+    };
+    const onError = () => {
+      sourceBuffer.removeEventListener('updateend', onUpdateEnd);
+      reject(new Error('SourceBuffer append failed (decode or format error)'));
+    };
+    sourceBuffer.addEventListener('updateend', onUpdateEnd, { once: true });
+    sourceBuffer.addEventListener('error', onError, { once: true });
   });
 }
 
