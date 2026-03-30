@@ -999,6 +999,8 @@ impl ProcessorNode for WebMMuxerNode {
         let mut video_keyframe_seen = !has_video;
         let mut dropped_video_frames: u64 = 0;
         let mux_start = std::time::Instant::now();
+        let mut audio_frame_count = 0u64;
+        let mut video_frame_count = 0u64;
 
         // Write first video packet (from auto-detection or packet inspection).
         if let Some((data, metadata)) = first_video_packet.take() {
@@ -1267,6 +1269,15 @@ impl ProcessorNode for WebMMuxerNode {
                     };
                     mux_state.packet_count += 1;
                     stats_tracker.received();
+                    audio_frame_count += 1;
+                    if audio_frame_count <= 3 {
+                        let ts = metadata.as_ref().and_then(|m| m.timestamp_us);
+                        tracing::info!(
+                            "WebMMuxer AUDIO #{audio_frame_count}: \
+                             incoming_ts={ts:?}us elapsed={:.0}ms",
+                            mux_start.elapsed().as_secs_f64() * 1000.0,
+                        );
+                    }
                     let frame = stage_frame(
                         data,
                         metadata,
@@ -1323,6 +1334,15 @@ impl ProcessorNode for WebMMuxerNode {
 
                     mux_state.packet_count += 1;
                     stats_tracker.received();
+                    video_frame_count += 1;
+                    if video_frame_count <= 3 {
+                        let ts = metadata.as_ref().and_then(|m| m.timestamp_us);
+                        tracing::info!(
+                            "WebMMuxer VIDEO #{video_frame_count}: \
+                             incoming_ts={ts:?}us elapsed={:.0}ms keyframe={is_keyframe}",
+                            mux_start.elapsed().as_secs_f64() * 1000.0,
+                        );
+                    }
                     let frame = stage_frame(
                         data,
                         metadata,
