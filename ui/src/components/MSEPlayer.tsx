@@ -303,6 +303,14 @@ async function streamMediaData(
         `buffered=[${ranges.join(', ')}] fwdBuf=${fwdBuf.toFixed(1)}s bytes=${(totalBytes / 1024).toFixed(0)}KB`
       );
 
+      // Force-resume if the player paused itself with enough forward buffer.
+      // MSE demuxers sometimes pause on timestamp irregularities from
+      // cross-track clamping, even though the data is playable.
+      if (playbackStarted && media.paused && fwdBuf > 1.0) {
+        componentsLogger.info(`MSEPlayer: force-resuming (paused with ${fwdBuf.toFixed(1)}s fwdBuf)`);
+        media.play().catch(() => {});
+      }
+
       // Re-seek to the live edge if the player drifts too far behind.
       if (playbackStarted) {
         const lastIdx = sourceBuffer.buffered.length - 1;
@@ -314,6 +322,9 @@ async function streamMediaData(
             `re-seeking to ${target.toFixed(2)}s`
           );
           media.currentTime = target;
+          if (media.paused) {
+            media.play().catch(() => {});
+          }
         }
       }
     }
@@ -458,6 +469,9 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
                 `seeking to ${(gapEnd + 0.1).toFixed(2)}s`
               );
               media.currentTime = gapEnd + 0.1;
+              if (media.paused) {
+                media.play().catch(() => {});
+              }
               return;
             }
           }

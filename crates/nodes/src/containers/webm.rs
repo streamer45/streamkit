@@ -1279,17 +1279,10 @@ impl ProcessorNode for WebMMuxerNode {
                         &mut audio_last_ns,
                     );
                     if write_frame(
-                        &frame,
-                        &mut mux_state,
-                        &mut segment,
-                        &mut context,
-                        live_flush_handle.as_ref(),
-                        &content_type_str,
-                        &mut stats_tracker,
-                        &node_name,
-                    )
-                    .await?
-                    {
+                        &frame, &mut mux_state, &mut segment, &mut context,
+                        live_flush_handle.as_ref(), &content_type_str,
+                        &mut stats_tracker, &node_name,
+                    ).await? {
                         break;
                     }
                 },
@@ -1335,17 +1328,10 @@ impl ProcessorNode for WebMMuxerNode {
                         &mut video_last_ns,
                     );
                     if write_frame(
-                        &frame,
-                        &mut mux_state,
-                        &mut segment,
-                        &mut context,
-                        live_flush_handle.as_ref(),
-                        &content_type_str,
-                        &mut stats_tracker,
-                        &node_name,
-                    )
-                    .await?
-                    {
+                        &frame, &mut mux_state, &mut segment, &mut context,
+                        live_flush_handle.as_ref(), &content_type_str,
+                        &mut stats_tracker, &node_name,
+                    ).await? {
                         break;
                     }
                 },
@@ -1569,13 +1555,9 @@ async fn write_frame(
     stats_tracker: &mut NodeStatsTracker,
     node_name: &str,
 ) -> Result<bool, StreamKitError> {
-    // With arrival-order writing, a frame's per-track timestamp may be
-    // slightly behind the last globally-written timestamp from the other
-    // track (e.g. 20ms audio vs 33ms video naturally interleave).  Clamp
-    // to the global max — libwebm requires non-decreasing timestamps.
-    // The per-track clock in stage_frame is unaffected, so the per-track
-    // cadence (20ms Opus, 33ms VP9) stays clean.  Cross-track equality
-    // is allowed by libwebm.
+    // The micro-reorder buffer ensures callers write frames in near-
+    // global order.  In the rare case a frame still arrives out of
+    // order (e.g. first frame of a late track), clamp to max.
     let write_ts = frame.timestamp_ns.max(state.last_written_ns);
 
     if let Err(e) = segment.add_frame(frame.track_id, &frame.data, write_ts, frame.is_keyframe) {
@@ -2119,12 +2101,28 @@ mod tests {
         );
     }
 
+    /// Confirm libwebm rejects cross-track backward timestamps — this is
+    /// why the muxer needs the micro-reorder buffer (held_video) and a
+    /// fallback max-clamp in write_frame.
     #[test]
-    fn global_clamp_allows_cross_track_equality() {
-        // max-clamp produces equality when audio < last_written (from video).
-        let audio_ts = 100_000_000u64;
-        let last_written = 110_000_000u64;
-        let write_ts = audio_ts.max(last_written);
-        assert_eq!(write_ts, 110_000_000, "should clamp to equal, not +1ms");
+    fn libwebm_rejects_cross_track_non_monotonic() {
+        use std::io::Cursor;
+        use webm::mux::{AudioCodecId, SegmentBuilder, SegmentMode, VideoCodecId, Writer};
+
+        let writer = Writer::new_non_seek(Cursor::new(Vec::new()));
+        let builder = SegmentBuilder::new(writer).unwrap();
+        let builder = builder.set_mode(SegmentMode::Live).unwrap();
+        let (builder, video) =
+            builder.add_video_track(64, 64, VideoCodecId::VP9, None).unwrap();
+        let (builder, audio) =
+            builder.add_audio_track(48000, 1, AudioCodecId::Opus, None).unwrap();
+        let mut segment = builder.build();
+        let f = vec![0u8; 10];
+
+        segment.add_frame(video, &f, 0, true).unwrap();
+        segment.add_frame(video, &f, 66_000_000, false).unwrap();
+        // Audio at 60ms after video at 66ms — backward, should fail.
+        let result = segment.add_frame(audio, &f, 60_000_000, false);
+        assert!(result.is_err(), "libwebm must reject backward timestamps");
     }
 }
