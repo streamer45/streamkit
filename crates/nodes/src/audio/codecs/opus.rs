@@ -11,7 +11,8 @@ use std::sync::Arc;
 use std::time::Instant;
 use streamkit_core::stats::NodeStatsTracker;
 use streamkit_core::types::{
-    AudioCodec, AudioFormat, AudioFrame, EncodedAudioFormat, Packet, PacketType, SampleFormat,
+    AudioCodec, AudioFormat, AudioFrame, EncodedAudioFormat, Packet, PacketMetadata, PacketType,
+    SampleFormat,
 };
 use streamkit_core::{
     get_codec_channel_capacity, packet_helpers, state_helpers, AudioFramePool, InputPin,
@@ -327,9 +328,13 @@ impl ProcessorNode for OpusEncoderNode {
         // Now includes channel count with each frame
         // Use Arc<PooledSamples> to avoid cloning samples unless padding is needed
         let (encode_tx, mut encode_rx) =
-            mpsc::channel::<(Arc<PooledSamples>, u16)>(get_codec_channel_capacity());
+            mpsc::channel::<(Arc<PooledSamples>, u16, Option<PacketMetadata>)>(
+                get_codec_channel_capacity(),
+            );
         let (result_tx, mut result_rx) =
-            mpsc::channel::<Result<Vec<u8>, String>>(get_codec_channel_capacity());
+            mpsc::channel::<Result<(Vec<u8>, Option<PacketMetadata>), String>>(
+                get_codec_channel_capacity(),
+            );
 
         let target_bitrate = self.config.bitrate;
 
@@ -345,7 +350,7 @@ impl ProcessorNode for OpusEncoderNode {
             let mut encode_buffer = vec![0u8; OPUS_OUTPUT_BUFFER_SIZE];
 
             // Use blocking_recv - efficient for spawn_blocking context
-            while let Some((samples, channels)) = encode_rx.blocking_recv() {
+            while let Some((samples, channels, metadata)) = encode_rx.blocking_recv() {
                 // Initialize or recreate encoder if channel count changed
                 if current_channels != Some(channels) {
                     let opus_channels =
@@ -406,7 +411,7 @@ impl ProcessorNode for OpusEncoderNode {
                     };
 
                     match encode_result {
-                        Ok(len) => Ok(encode_buffer[..len].to_vec()),
+                        Ok(len) => Ok((encode_buffer[..len].to_vec(), metadata)),
                         Err(e) => Err(e.to_string()),
                     }
                 };
@@ -442,8 +447,12 @@ impl ProcessorNode for OpusEncoderNode {
                     if let Packet::Audio(frame) = packet {
                         frame_count += 1;
 
-                        // Send to blocking task for encoding with channel count
-                        if encode_tx_clone.send((frame.samples, frame.channels)).await.is_err() {
+                        // Send to blocking task for encoding with channel count + metadata
+                        if encode_tx_clone
+                            .send((frame.samples, frame.channels, frame.metadata))
+                            .await
+                            .is_err()
+                        {
                             tracing::error!("Encode task has shut down unexpectedly");
                             return;
                         }
@@ -461,13 +470,13 @@ impl ProcessorNode for OpusEncoderNode {
             encode_tx,
             &packets_processed_counter,
             &mut stats_tracker,
-            |encoded_data| Packet::Binary {
+            |(encoded_data, input_meta): (Vec<u8>, Option<PacketMetadata>)| Packet::Binary {
                 data: Bytes::from(encoded_data),
                 content_type: None,
-                metadata: Some(streamkit_core::types::PacketMetadata {
-                    timestamp_us: None,
+                metadata: Some(PacketMetadata {
+                    timestamp_us: input_meta.as_ref().and_then(|m| m.timestamp_us),
                     duration_us: Some(20_000), // 20ms Opus frame
-                    sequence: None,
+                    sequence: input_meta.as_ref().and_then(|m| m.sequence),
                     keyframe: None,
                 }),
             },

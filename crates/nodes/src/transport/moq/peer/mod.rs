@@ -1910,6 +1910,13 @@ impl MoqPeerNode {
         let mut frame_count = 0u64;
         let mut last_log = std::time::Instant::now();
         let mut current_group: Option<moq_lite::GroupConsumer> = None;
+        // Base timestamp for normalization — the first MoQ timestamp on this
+        // track is subtracted from all subsequent timestamps so that every
+        // track's timeline starts near 0.  This prevents overflow in
+        // downstream containers (WebM timecodes are limited) and lets the
+        // muxer's rebase offset align tracks by arrival time.
+        let mut base_timestamp_us: Option<u64> = None;
+        let mut first_frame_logged = false;
         // Tracks whether the next frame is the first in a new MoQ group.
         // In the hang protocol each group starts with a keyframe.
         let mut is_first_in_group = false;
@@ -1943,6 +1950,8 @@ impl MoqPeerNode {
                     is_video,
                     &mut frame_count,
                     &mut last_log,
+                    &mut base_timestamp_us,
+                    &mut first_frame_logged,
                     shutdown_rx,
                     stats_delta_tx,
                     keyframe,
@@ -2074,6 +2083,8 @@ impl MoqPeerNode {
         is_video: bool,
         frame_count: &mut u64,
         last_log: &mut std::time::Instant,
+        base_timestamp_us: &mut Option<u64>,
+        first_frame_logged: &mut bool,
         shutdown_rx: &mut broadcast::Receiver<()>,
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
         is_keyframe: bool,
@@ -2104,7 +2115,23 @@ impl MoqPeerNode {
                             },
                         };
                         #[allow(clippy::cast_possible_truncation)] // MoQ timestamps fit in u64
-                        let timestamp_us = timestamp.as_micros() as u64;
+                        let raw_timestamp_us = timestamp.as_micros() as u64;
+
+                        // Normalize: subtract the first timestamp so the track
+                        // starts near 0.  This avoids WebM timecode overflow
+                        // (video timestamps from browsers can be 41+ days).
+                        let base = *base_timestamp_us.get_or_insert(raw_timestamp_us);
+                        let timestamp_us = raw_timestamp_us.saturating_sub(base);
+
+                        if !*first_frame_logged {
+                            *first_frame_logged = true;
+                            tracing::info!(
+                                "MoQ first frame: video={is_video} raw_ts={raw_timestamp_us}us \
+                                 normalized_ts={timestamp_us}us base={base}us \
+                                 keyframe={is_keyframe} size={}B",
+                                payload.remaining()
+                            );
+                        }
 
                         let data = payload.copy_to_bytes(payload.remaining());
                         let content_type = if is_video {

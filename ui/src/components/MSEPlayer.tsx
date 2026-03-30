@@ -277,6 +277,9 @@ async function streamMediaData(
     // Start stall timer after the first chunk so we detect hangs.
     if (!firstChunkSeen && totalBytes > 0) {
       firstChunkSeen = true;
+      componentsLogger.info(
+        `MSEPlayer: first chunk received, ${totalBytes}B, t=${performance.now().toFixed(0)}ms`
+      );
       onFirstChunk?.();
     }
 
@@ -292,9 +295,12 @@ async function streamMediaData(
       for (let i = 0; i < sourceBuffer.buffered.length; i++) {
         ranges.push(`${sourceBuffer.buffered.start(i).toFixed(2)}-${sourceBuffer.buffered.end(i).toFixed(2)}`);
       }
+      const lastEnd = sourceBuffer.buffered.end(sourceBuffer.buffered.length - 1);
+      const fwdBuf = lastEnd - media.currentTime;
       componentsLogger.info(
         `MSEPlayer diag: currentTime=${media.currentTime.toFixed(2)} paused=${media.paused} ` +
-        `readyState=${media.readyState} buffered=[${ranges.join(', ')}] bytes=${(totalBytes / 1024).toFixed(0)}KB`
+        `readyState=${media.readyState} rate=${media.playbackRate} ` +
+        `buffered=[${ranges.join(', ')}] fwdBuf=${fwdBuf.toFixed(1)}s bytes=${(totalBytes / 1024).toFixed(0)}KB`
       );
 
       // Re-seek to the live edge if the player drifts too far behind.
@@ -427,6 +433,45 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
         const reader = stream.getReader();
         readerRef.current = reader; // Store reader for cleanup
 
+        // Stall/resume diagnostics — detect buffering events.
+        let lastWaitingTime = 0;
+        const handleWaiting = () => {
+          lastWaitingTime = performance.now();
+          const ranges = [];
+          for (let i = 0; i < sourceBuffer.buffered.length; i++) {
+            ranges.push(`${sourceBuffer.buffered.start(i).toFixed(2)}-${sourceBuffer.buffered.end(i).toFixed(2)}`);
+          }
+          componentsLogger.warn(
+            `MSEPlayer: WAITING (buffering) at currentTime=${media.currentTime.toFixed(2)} ` +
+            `readyState=${media.readyState} buffered=[${ranges.join(', ')}]`
+          );
+
+          // If stuck at a buffer gap, skip past it immediately instead of
+          // waiting for the 8-second drift timer.
+          const buffered = sourceBuffer.buffered;
+          for (let i = 0; i < buffered.length - 1; i++) {
+            const gapStart = buffered.end(i);
+            const gapEnd = buffered.start(i + 1);
+            if (media.currentTime >= gapStart - 0.5 && media.currentTime <= gapEnd + 0.1) {
+              componentsLogger.info(
+                `MSEPlayer: skipping buffer gap [${gapStart.toFixed(2)}-${gapEnd.toFixed(2)}], ` +
+                `seeking to ${(gapEnd + 0.1).toFixed(2)}s`
+              );
+              media.currentTime = gapEnd + 0.1;
+              return;
+            }
+          }
+        };
+        const handlePlaying = () => {
+          if (lastWaitingTime > 0) {
+            const stallMs = performance.now() - lastWaitingTime;
+            componentsLogger.info(`MSEPlayer: resumed after ${stallMs.toFixed(0)}ms stall`);
+            lastWaitingTime = 0;
+          }
+        };
+        media.addEventListener('waiting', handleWaiting);
+        media.addEventListener('playing', handlePlaying);
+
         // Listen for media element errors
         const handleMediaError = createMediaErrorHandler(
           media,
@@ -475,8 +520,10 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
         // Cancel stall timer on normal completion.
         if (stallTimerHandle) { clearTimeout(stallTimerHandle); stallTimerHandle = null; }
 
-        // Cleanup error listener
+        // Cleanup event listeners
         media.removeEventListener('error', handleMediaError);
+        media.removeEventListener('waiting', handleWaiting);
+        media.removeEventListener('playing', handlePlaying);
       } catch (err) {
         if (abortedDueToPlaybackError) {
           // Playback failed (e.g., decode error). Caller can decide how to fall back.

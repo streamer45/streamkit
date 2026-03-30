@@ -998,6 +998,7 @@ impl ProcessorNode for WebMMuxerNode {
 
         let mut video_keyframe_seen = !has_video;
         let mut dropped_video_frames: u64 = 0;
+        let mux_start = std::time::Instant::now();
 
         // Write first video packet (from auto-detection or packet inspection).
         if let Some((data, metadata)) = first_video_packet.take() {
@@ -1359,6 +1360,20 @@ impl ProcessorNode for WebMMuxerNode {
                     }
                 },
             }
+
+            // Periodic pipeline health — every 150 packets (~2s).
+            if mux_state.packet_count % 150 == 0 {
+                let a_ms = audio_last_ns.map_or(-1i64, |ns| (ns / 1_000_000) as i64);
+                let v_ms = video_last_ns.map_or(-1i64, |ns| (ns / 1_000_000) as i64);
+                let delta_ms = if a_ms >= 0 && v_ms >= 0 { a_ms - v_ms } else { 0 };
+                tracing::info!(
+                    "WebMMuxer health: pkt#{} elapsed={:.1}s a_ts={a_ms}ms v_ts={v_ms}ms \
+                     av_delta={delta_ms}ms global_last={}ms",
+                    mux_state.packet_count,
+                    mux_start.elapsed().as_secs_f64(),
+                    mux_state.last_written_ns / 1_000_000,
+                );
+            }
         }
 
         tracing::info!(
@@ -1468,18 +1483,19 @@ fn stage_frame(
     last_written_ns: u64,
     per_track_last_ns: &mut Option<u64>,
 ) -> PendingFrame {
+    let incoming_ts_us = metadata.as_ref().and_then(|m| m.timestamp_us);
     let incoming_duration_us =
         metadata.as_ref().and_then(|m| m.duration_us).or(Some(default_duration_us));
 
-    // Synthetic clock: both tracks start at 0 and advance by frame duration.
-    // Upstream timestamps are ignored because different pipeline paths
-    // (compositor, MoQ, local generators) use incompatible clock domains.
-    // The rebase offset aligns the late-arriving track to the current
-    // position, and arrival-order writing keeps both tracks in lockstep.
-    if clock.timestamp_us() == 0 {
+    // Use incoming timestamps when available (normalized MoQ timestamps
+    // from the peer node start near 0).  Fall back to a synthetic clock
+    // for tracks without timestamps.
+    if let Some(ts) = incoming_ts_us {
+        clock.seed_from_timestamp_us(ts);
+    } else if clock.timestamp_us() == 0 {
         clock.seed_from_timestamp_us(0);
     }
-    let presentation_ts_us = clock.timestamp_us();
+    let presentation_ts_us = incoming_ts_us.unwrap_or_else(|| clock.timestamp_us());
     clock.advance_by_duration_us(incoming_duration_us, default_duration_us);
 
     let raw_ns = presentation_ts_us.saturating_mul(1000);
@@ -1494,7 +1510,8 @@ fn stage_frame(
     if is_new_offset {
         tracing::info!(
             "WebMMuxer track {track_id}: rebase offset={offset}ns \
-             (raw={raw_ns}ns, last_written={last_written_ns}ns)"
+             (raw={raw_ns}ns, last_written={last_written_ns}ns, \
+             incoming_ts={incoming_ts_us:?}us)"
         );
     }
     #[allow(clippy::cast_sign_loss)] // offset keeps the result non-negative via the clamp

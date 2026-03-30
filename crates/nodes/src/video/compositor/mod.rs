@@ -1026,12 +1026,29 @@ impl ProcessorNode for CompositorNode {
                 break;
             };
 
-            // Use the compositor's own running clock for output timestamps.
-            // Input frames from different sources (local colorbars, remote
-            // MoQ webcam) carry timestamps from incompatible clock domains
-            // that cannot be mixed safely.
+            // Timestamp strategy:
+            // - Live (dynamic) pipelines: use the timestamp from the
+            //   highest-indexed input that has one.  This prioritises
+            //   remote/MoQ inputs (e.g. webcam on in_1) over local
+            //   generators (e.g. colorbars on in_0).  MoQ timestamps are
+            //   normalized to start near 0 by the MoQ peer node, so they
+            //   won't overflow WebM timecodes.  Falls back to the running
+            //   clock before any remote input has arrived.
+            // - Oneshot/batch pipelines: use the compositor's own running
+            //   clock because inputs generate frames as fast as possible
+            //   and their timestamps would jump erratically.
             let frame_duration_us = 1_000_000u64 / u64::from(self.config.fps);
-            let output_ts = running_timestamp_us;
+            let output_ts = if is_oneshot {
+                running_timestamp_us
+            } else {
+                slots
+                    .iter()
+                    .rev()
+                    .find_map(|s| {
+                        s.latest_frame.as_ref()?.metadata.as_ref()?.timestamp_us
+                    })
+                    .unwrap_or(running_timestamp_us)
+            };
             let metadata = Some(PacketMetadata {
                 timestamp_us: Some(output_ts),
                 duration_us: Some(frame_duration_us),

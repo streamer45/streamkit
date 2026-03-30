@@ -475,9 +475,9 @@ async fn test_compositor_node_generates_own_timestamps() {
 
     if let Packet::Video(ref out_frame) = output_packets[0] {
         let meta = out_frame.metadata.as_ref().expect("metadata should be present");
-        // Default fps is 30 → frame_duration = 33333µs.
-        // First output frame (seq=0) gets timestamp 0.
-        assert_eq!(meta.timestamp_us, Some(0));
+        // Live mode: highest-indexed input's timestamp is used.
+        // Single input (in_0) has timestamp 42000.
+        assert_eq!(meta.timestamp_us, Some(42_000));
         assert_eq!(meta.duration_us, Some(33_333));
         assert_eq!(meta.sequence, Some(0));
     } else {

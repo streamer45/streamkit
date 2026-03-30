@@ -171,6 +171,7 @@ impl ProcessorNode for HttpMseNode {
         })?;
 
         state_helpers::emit_running(&context.state_tx, &node_name);
+        let node_start = std::time::Instant::now();
 
         let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
 
@@ -392,6 +393,7 @@ impl ProcessorNode for HttpMseNode {
 
                             tracing::info!(
                                 init_segment_size = init_segment.len(),
+                                elapsed_ms = node_start.elapsed().as_millis() as u64,
                                 "WebM init segment captured"
                             );
                             overlap.clear();
@@ -436,6 +438,11 @@ impl ProcessorNode for HttpMseNode {
                     // Reset when we see a new Cluster ID; append otherwise.
                     if !forward_data.is_empty() {
                         if find_cluster_id(&forward_data).is_some() {
+                            tracing::debug!(
+                                gop_size = gop_buffer.len(),
+                                elapsed_ms = node_start.elapsed().as_millis() as u64,
+                                "HTTP MSE: new Cluster (GOP reset)"
+                            );
                             gop_buffer.clear();
                         }
                         gop_buffer.extend_from_slice(&forward_data);
