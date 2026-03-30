@@ -126,7 +126,9 @@ function seekToLiveEdgeAndPlay(media: HTMLMediaElement, sourceBuffer: SourceBuff
   // Seek to ~2s behind the live edge of the last contiguous range.
   const target = Math.max(lastStart, lastEnd - 2);
   if (Math.abs(media.currentTime - target) > 1) {
-    componentsLogger.info(`MSEPlayer: Seeking to live edge at ${target.toFixed(2)}s (buffer ends at ${lastEnd.toFixed(2)}s)`);
+    componentsLogger.info(
+      `MSEPlayer: Seeking to live edge at ${target.toFixed(2)}s (buffer ends at ${lastEnd.toFixed(2)}s)`
+    );
     media.currentTime = target;
   }
   if (media.paused) {
@@ -199,10 +201,7 @@ const STATUS_UPDATE_INTERVAL_MS = 1000;
 // Helper: Evict buffered data that is too far behind currentTime.
 // Calling sourceBuffer.remove() is async — returns a promise that
 // resolves on the next `updateend`.
-async function evictOldBufferData(
-  sourceBuffer: SourceBuffer,
-  currentTime: number,
-): Promise<void> {
+async function evictOldBufferData(sourceBuffer: SourceBuffer, currentTime: number): Promise<void> {
   if (sourceBuffer.updating || sourceBuffer.buffered.length === 0) return;
   const start = sourceBuffer.buffered.start(0);
   const evictEnd = currentTime - BUFFER_EVICT_BEHIND_S;
@@ -225,7 +224,7 @@ async function streamMediaData(
   setStatus: (status: string) => void,
   onComplete: (() => void) | undefined,
   isAborted: () => boolean,
-  onFirstChunk?: () => void,
+  onFirstChunk?: () => void
 ): Promise<void> {
   let totalBytes = 0;
   let firstChunkSeen = false;
@@ -267,9 +266,7 @@ async function streamMediaData(
     if (mediaSource.readyState !== 'open' || hasRealMediaError(media)) {
       componentsLogger.warn('Media source not ready or element error, stopping stream');
       reader.cancel();
-      throw new Error(
-        `Media source closed unexpectedly (readyState: ${mediaSource.readyState})`
-      );
+      throw new Error(`Media source closed unexpectedly (readyState: ${mediaSource.readyState})`);
     }
 
     await processStreamChunk(value, sourceBuffer);
@@ -293,21 +290,25 @@ async function streamMediaData(
       lastDiagLog = now;
       const ranges = [];
       for (let i = 0; i < sourceBuffer.buffered.length; i++) {
-        ranges.push(`${sourceBuffer.buffered.start(i).toFixed(2)}-${sourceBuffer.buffered.end(i).toFixed(2)}`);
+        ranges.push(
+          `${sourceBuffer.buffered.start(i).toFixed(2)}-${sourceBuffer.buffered.end(i).toFixed(2)}`
+        );
       }
       const lastEnd = sourceBuffer.buffered.end(sourceBuffer.buffered.length - 1);
       const fwdBuf = lastEnd - media.currentTime;
       componentsLogger.info(
         `MSEPlayer diag: currentTime=${media.currentTime.toFixed(2)} paused=${media.paused} ` +
-        `readyState=${media.readyState} rate=${media.playbackRate} ` +
-        `buffered=[${ranges.join(', ')}] fwdBuf=${fwdBuf.toFixed(1)}s bytes=${(totalBytes / 1024).toFixed(0)}KB`
+          `readyState=${media.readyState} rate=${media.playbackRate} ` +
+          `buffered=[${ranges.join(', ')}] fwdBuf=${fwdBuf.toFixed(1)}s bytes=${(totalBytes / 1024).toFixed(0)}KB`
       );
 
       // Force-resume if the player paused itself with enough forward buffer.
       // MSE demuxers sometimes pause on timestamp irregularities from
       // cross-track clamping, even though the data is playable.
       if (playbackStarted && media.paused && fwdBuf > 1.0) {
-        componentsLogger.info(`MSEPlayer: force-resuming (paused with ${fwdBuf.toFixed(1)}s fwdBuf)`);
+        componentsLogger.info(
+          `MSEPlayer: force-resuming (paused with ${fwdBuf.toFixed(1)}s fwdBuf)`
+        );
         media.play().catch(() => {});
       }
 
@@ -319,7 +320,7 @@ async function streamMediaData(
           const target = liveEdge - 2;
           componentsLogger.info(
             `MSEPlayer: Drifted ${(liveEdge - media.currentTime).toFixed(1)}s behind live edge, ` +
-            `re-seeking to ${target.toFixed(2)}s`
+              `re-seeking to ${target.toFixed(2)}s`
           );
           media.currentTime = target;
           if (media.paused) {
@@ -393,7 +394,10 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
     // Listen for when media is ready to play
     const handleCanPlay = () => {
       componentsLogger.info('MSEPlayer: Media can play - hiding loading overlay');
-      if (stallTimerHandle) { clearTimeout(stallTimerHandle); stallTimerHandle = null; }
+      if (stallTimerHandle) {
+        clearTimeout(stallTimerHandle);
+        stallTimerHandle = null;
+      }
       setIsReadyToPlay(true);
       // Retry autoplay — the initial play() call may have fired before
       // enough data was buffered, leaving the element paused.
@@ -450,11 +454,13 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
           lastWaitingTime = performance.now();
           const ranges = [];
           for (let i = 0; i < sourceBuffer.buffered.length; i++) {
-            ranges.push(`${sourceBuffer.buffered.start(i).toFixed(2)}-${sourceBuffer.buffered.end(i).toFixed(2)}`);
+            ranges.push(
+              `${sourceBuffer.buffered.start(i).toFixed(2)}-${sourceBuffer.buffered.end(i).toFixed(2)}`
+            );
           }
           componentsLogger.warn(
             `MSEPlayer: WAITING (buffering) at currentTime=${media.currentTime.toFixed(2)} ` +
-            `readyState=${media.readyState} buffered=[${ranges.join(', ')}]`
+              `readyState=${media.readyState} buffered=[${ranges.join(', ')}]`
           );
 
           // If stuck at a buffer gap, skip past it immediately instead of
@@ -466,7 +472,7 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
             if (media.currentTime >= gapStart - 0.5 && media.currentTime <= gapEnd + 0.1) {
               componentsLogger.info(
                 `MSEPlayer: skipping buffer gap [${gapStart.toFixed(2)}-${gapEnd.toFixed(2)}], ` +
-                `seeking to ${(gapEnd + 0.1).toFixed(2)}s`
+                  `seeking to ${(gapEnd + 0.1).toFixed(2)}s`
               );
               media.currentTime = gapEnd + 0.1;
               if (media.paused) {
@@ -513,7 +519,9 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
               ranges.push(`${buffered.start(i).toFixed(2)}-${buffered.end(i).toFixed(2)}`);
             }
             const diag = `readyState=${readyState}, buffered=[${ranges.join(', ')}]`;
-            componentsLogger.warn(`MSEPlayer: canplay not fired after 15s — retrying seek (${diag})`);
+            componentsLogger.warn(
+              `MSEPlayer: canplay not fired after 15s — retrying seek (${diag})`
+            );
             // Retry seeking to the live edge — buffer may have grown since the first attempt.
             seekToLiveEdgeAndPlay(media, sourceBuffer);
           }, 15_000);
@@ -528,11 +536,14 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
           setStatus,
           onCompleteRef.current,
           () => aborted,
-          startStallTimer,
+          startStallTimer
         );
 
         // Cancel stall timer on normal completion.
-        if (stallTimerHandle) { clearTimeout(stallTimerHandle); stallTimerHandle = null; }
+        if (stallTimerHandle) {
+          clearTimeout(stallTimerHandle);
+          stallTimerHandle = null;
+        }
 
         // Cleanup event listeners
         media.removeEventListener('error', handleMediaError);
@@ -565,7 +576,10 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
       aborted = true;
 
       // Cancel stall detection timer.
-      if (stallTimerHandle) { clearTimeout(stallTimerHandle); stallTimerHandle = null; }
+      if (stallTimerHandle) {
+        clearTimeout(stallTimerHandle);
+        stallTimerHandle = null;
+      }
 
       // Cancel the reader if it exists - this will cause the read() to reject
       if (readerRef.current) {

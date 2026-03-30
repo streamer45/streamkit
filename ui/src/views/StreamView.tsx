@@ -653,6 +653,7 @@ const StreamView: React.FC = () => {
           setInputBroadcast(moqSettings.inputBroadcast ?? '');
           setOutputBroadcast(moqSettings.outputBroadcast ?? '');
           setEnablePublish(moqSettings.hasInputBroadcast);
+          setEnableWatch(Boolean(moqSettings.outputBroadcast));
           setPipelineMediaTypes(moqSettings.needsAudioInput, moqSettings.needsVideoInput);
           setPipelineOutputTypes(moqSettings.outputsAudio, moqSettings.outputsVideo);
           setIsExternalRelay(moqSettings.isExternalRelay);
@@ -665,6 +666,7 @@ const StreamView: React.FC = () => {
           setInputBroadcast('');
           setOutputBroadcast('');
           setEnablePublish(false);
+          setEnableWatch(false);
           setMsePath(null);
         }
       }
@@ -675,6 +677,7 @@ const StreamView: React.FC = () => {
       setInputBroadcast,
       setOutputBroadcast,
       setEnablePublish,
+      setEnableWatch,
       setPipelineMediaTypes,
       setPipelineOutputTypes,
       setIsExternalRelay,
