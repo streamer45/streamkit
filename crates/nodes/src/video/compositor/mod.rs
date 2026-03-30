@@ -1026,20 +1026,14 @@ impl ProcessorNode for CompositorNode {
                 break;
             };
 
-            // Derive output timestamps from the compositor's own clock
-            // rather than copying from input frames.  In batch/oneshot
-            // mode, inputs generate frames as fast as possible and the
-            // compositor drains many per tick, so the "latest input"
-            // timestamp can jump by hundreds of milliseconds — producing
-            // a WebM with huge gaps instead of smooth playback.
-            //
-            // We use an incremental accumulator (`running_timestamp_us`)
-            // instead of `output_seq * frame_duration_us` so that
-            // dynamic fps changes via UpdateParams don't cause timestamps
-            // to jump backwards.
+            // Use the compositor's own running clock for output timestamps.
+            // Input frames from different sources (local colorbars, remote
+            // MoQ webcam) carry timestamps from incompatible clock domains
+            // that cannot be mixed safely.
             let frame_duration_us = 1_000_000u64 / u64::from(self.config.fps);
+            let output_ts = running_timestamp_us;
             let metadata = Some(PacketMetadata {
-                timestamp_us: Some(running_timestamp_us),
+                timestamp_us: Some(output_ts),
                 duration_us: Some(frame_duration_us),
                 sequence: Some(output_seq),
                 // Don't set keyframe — the compositor outputs raw RGBA, not

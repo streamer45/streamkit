@@ -109,6 +109,8 @@ nodes:
     params:
       streaming_mode: live
       num_inputs: 2
+      video_width: 1280
+      video_height: 720
     needs:
       in: opus_encoder
       in_1: vp9_encoder

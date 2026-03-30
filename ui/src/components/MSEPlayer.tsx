@@ -184,6 +184,38 @@ async function processStreamChunk(value: Uint8Array, sourceBuffer: SourceBuffer)
   });
 }
 
+// How many seconds of buffered data to keep behind currentTime.
+// Data older than this is evicted to prevent unbounded memory growth.
+const BUFFER_EVICT_BEHIND_S = 10;
+
+// How far (seconds) the player can fall behind the live edge before
+// an automatic re-seek is triggered.
+const LIVE_EDGE_MAX_DRIFT_S = 8;
+
+// Minimum interval (ms) between React status updates to avoid
+// re-rendering the component on every incoming chunk.
+const STATUS_UPDATE_INTERVAL_MS = 1000;
+
+// Helper: Evict buffered data that is too far behind currentTime.
+// Calling sourceBuffer.remove() is async — returns a promise that
+// resolves on the next `updateend`.
+async function evictOldBufferData(
+  sourceBuffer: SourceBuffer,
+  currentTime: number,
+): Promise<void> {
+  if (sourceBuffer.updating || sourceBuffer.buffered.length === 0) return;
+  const start = sourceBuffer.buffered.start(0);
+  const evictEnd = currentTime - BUFFER_EVICT_BEHIND_S;
+  if (evictEnd <= start + 1) return; // nothing meaningful to evict
+  componentsLogger.debug(
+    `MSEPlayer: Evicting buffer [${start.toFixed(2)}s - ${evictEnd.toFixed(2)}s] (currentTime=${currentTime.toFixed(2)}s)`
+  );
+  sourceBuffer.remove(start, evictEnd);
+  await new Promise<void>((resolve) => {
+    sourceBuffer.addEventListener('updateend', () => resolve(), { once: true });
+  });
+}
+
 // Helper: Stream reading loop
 async function streamMediaData(
   reader: ReadableStreamDefaultReader<Uint8Array>,
@@ -199,6 +231,7 @@ async function streamMediaData(
   let firstChunkSeen = false;
   let playbackStarted = false;
   let lastDiagLog = 0;
+  let lastStatusUpdate = 0;
 
   while (true) {
     // Check if media element is in error state
@@ -219,7 +252,13 @@ async function streamMediaData(
     }
 
     totalBytes += value.length;
-    setStatus(`Streaming... ${(totalBytes / 1024).toFixed(1)} KB`);
+
+    // Throttle React status updates to avoid re-rendering on every chunk.
+    const now = Date.now();
+    if (now - lastStatusUpdate >= STATUS_UPDATE_INTERVAL_MS) {
+      lastStatusUpdate = now;
+      setStatus(`Streaming... ${(totalBytes / 1024).toFixed(1)} KB`);
+    }
 
     // Check media source and element state before appending.
     // If the MediaSource closed unexpectedly (e.g. SourceBuffer decode error
@@ -241,9 +280,12 @@ async function streamMediaData(
       onFirstChunk?.();
     }
 
-    // Periodic buffer diagnostics — log every 5 seconds to help debug
-    // fragmentation and playback stalls without flooding the console.
-    const now = Date.now();
+    // Evict old buffered data to bound memory usage.
+    if (playbackStarted) {
+      await evictOldBufferData(sourceBuffer, media.currentTime);
+    }
+
+    // Periodic diagnostics + live-edge tracking.
     if (now - lastDiagLog > 5000 && sourceBuffer.buffered.length > 0) {
       lastDiagLog = now;
       const ranges = [];
@@ -254,6 +296,20 @@ async function streamMediaData(
         `MSEPlayer diag: currentTime=${media.currentTime.toFixed(2)} paused=${media.paused} ` +
         `readyState=${media.readyState} buffered=[${ranges.join(', ')}] bytes=${(totalBytes / 1024).toFixed(0)}KB`
       );
+
+      // Re-seek to the live edge if the player drifts too far behind.
+      if (playbackStarted) {
+        const lastIdx = sourceBuffer.buffered.length - 1;
+        const liveEdge = sourceBuffer.buffered.end(lastIdx);
+        if (liveEdge - media.currentTime > LIVE_EDGE_MAX_DRIFT_S) {
+          const target = liveEdge - 2;
+          componentsLogger.info(
+            `MSEPlayer: Drifted ${(liveEdge - media.currentTime).toFixed(1)}s behind live edge, ` +
+            `re-seeking to ${target.toFixed(2)}s`
+          );
+          media.currentTime = target;
+        }
+      }
     }
 
     // Seek to the live edge once media data is actually buffered.

@@ -406,11 +406,7 @@ impl ProcessorNode for OpusEncoderNode {
                     };
 
                     match encode_result {
-                        Ok(len) => {
-                            // Only allocate the actual encoded size (typically 200-500 bytes)
-                            // instead of the full 4KB buffer
-                            Ok(encode_buffer[..len].to_vec())
-                        },
+                        Ok(len) => Ok(encode_buffer[..len].to_vec()),
                         Err(e) => Err(e.to_string()),
                     }
                 };
