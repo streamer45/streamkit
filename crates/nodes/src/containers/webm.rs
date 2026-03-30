@@ -1279,10 +1279,17 @@ impl ProcessorNode for WebMMuxerNode {
                         &mut audio_last_ns,
                     );
                     if write_frame(
-                        &frame, &mut mux_state, &mut segment, &mut context,
-                        live_flush_handle.as_ref(), &content_type_str,
-                        &mut stats_tracker, &node_name,
-                    ).await? {
+                        &frame,
+                        &mut mux_state,
+                        &mut segment,
+                        &mut context,
+                        live_flush_handle.as_ref(),
+                        &content_type_str,
+                        &mut stats_tracker,
+                        &node_name,
+                    )
+                    .await?
+                    {
                         break;
                     }
                 },
@@ -1328,10 +1335,17 @@ impl ProcessorNode for WebMMuxerNode {
                         &mut video_last_ns,
                     );
                     if write_frame(
-                        &frame, &mut mux_state, &mut segment, &mut context,
-                        live_flush_handle.as_ref(), &content_type_str,
-                        &mut stats_tracker, &node_name,
-                    ).await? {
+                        &frame,
+                        &mut mux_state,
+                        &mut segment,
+                        &mut context,
+                        live_flush_handle.as_ref(),
+                        &content_type_str,
+                        &mut stats_tracker,
+                        &node_name,
+                    )
+                    .await?
+                    {
                         break;
                     }
                 },
@@ -2112,10 +2126,8 @@ mod tests {
         let writer = Writer::new_non_seek(Cursor::new(Vec::new()));
         let builder = SegmentBuilder::new(writer).unwrap();
         let builder = builder.set_mode(SegmentMode::Live).unwrap();
-        let (builder, video) =
-            builder.add_video_track(64, 64, VideoCodecId::VP9, None).unwrap();
-        let (builder, audio) =
-            builder.add_audio_track(48000, 1, AudioCodecId::Opus, None).unwrap();
+        let (builder, video) = builder.add_video_track(64, 64, VideoCodecId::VP9, None).unwrap();
+        let (builder, audio) = builder.add_audio_track(48000, 1, AudioCodecId::Opus, None).unwrap();
         let mut segment = builder.build();
         let f = vec![0u8; 10];
 
