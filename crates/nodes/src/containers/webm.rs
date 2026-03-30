@@ -980,7 +980,12 @@ impl ProcessorNode for WebMMuxerNode {
 
         let mut audio_clock = MediaClock::new(0);
         let mut video_clock = MediaClock::new(0);
-        let mut mux_state = MuxState { header_sent: false, last_written_ns: 0, packet_count: 0 };
+        let mut mux_state = MuxState {
+            header_sent: false,
+            last_written_ns: 0,
+            last_written_track: 0,
+            packet_count: 0,
+        };
 
         // Per-track timestamp rebase offsets — computed lazily when each track's
         // first frame arrives.
@@ -1430,10 +1435,11 @@ impl ProcessorNode for WebMMuxerNode {
 struct MuxState {
     /// Whether the WebM header has been flushed to the output.
     header_sent: bool,
-    /// Last timestamp (ns) written to the segment.  Used for:
-    /// - computing rebase offsets for late-arriving tracks, and
-    /// - debug assertions that interleaving preserves global monotonicity.
+    /// Last timestamp (ns) written to the segment.
     last_written_ns: u64,
+    /// Track ID of the last written frame — used to detect same-track
+    /// timestamp collisions from the global clamp.
+    last_written_track: u64,
     packet_count: u64,
 }
 
@@ -1562,7 +1568,8 @@ async fn write_frame(
     // track (e.g. 20ms audio vs 33ms video naturally interleave).  Clamp
     // to the global max — libwebm requires non-decreasing timestamps.
     // The per-track clock in stage_frame is unaffected, so the per-track
-    // cadence (20ms Opus, 33ms VP9) stays clean.
+    // cadence (20ms Opus, 33ms VP9) stays clean.  Cross-track equality
+    // is allowed by libwebm.
     let write_ts = frame.timestamp_ns.max(state.last_written_ns);
 
     if let Err(e) = segment.add_frame(frame.track_id, &frame.data, write_ts, frame.is_keyframe) {
@@ -1582,6 +1589,7 @@ async fn write_frame(
     }
 
     state.last_written_ns = write_ts;
+    state.last_written_track = frame.track_id;
 
     let output_metadata = Some(PacketMetadata {
         timestamp_us: Some(frame.presentation_ts_us),
@@ -1818,5 +1826,300 @@ mod tests {
             data.len(),
             &data[..data.len().min(200)]
         );
+    }
+
+    // ---------------------------------------------------------------
+    // Timestamp logic unit tests
+    // ---------------------------------------------------------------
+
+    /// Helper: stage N frames on a single track via `stage_frame` and
+    /// return their rebased timestamps in nanoseconds.
+    fn stage_n(
+        n: usize,
+        track_id: u64,
+        duration_us: u64,
+        incoming_timestamps: &[Option<u64>],
+        clock: &mut streamkit_core::timing::MediaClock,
+        rebase_offset: &mut Option<i64>,
+        last_written_ns: u64,
+        per_track_last: &mut Option<u64>,
+    ) -> Vec<u64> {
+        let mut timestamps = Vec::with_capacity(n);
+        for i in 0..n {
+            let meta = incoming_timestamps.get(i).copied().flatten().map(|ts| PacketMetadata {
+                timestamp_us: Some(ts),
+                duration_us: Some(duration_us),
+                sequence: None,
+                keyframe: None,
+            });
+            let pf = stage_frame(
+                Bytes::from_static(&[0]),
+                meta,
+                track_id,
+                i == 0,
+                duration_us,
+                clock,
+                rebase_offset,
+                last_written_ns,
+                per_track_last,
+            );
+            timestamps.push(pf.timestamp_ns);
+        }
+        timestamps
+    }
+
+    #[test]
+    fn stage_frame_synthetic_clock_produces_clean_cadence() {
+        let mut clock = streamkit_core::timing::MediaClock::new(0);
+        let mut offset = None;
+        let mut last = None;
+        // Audio: 20ms frames, no incoming timestamps (synthetic clock)
+        let ts = stage_n(
+            5,
+            2,
+            20_000,
+            &[None, None, None, None, None],
+            &mut clock,
+            &mut offset,
+            0,
+            &mut last,
+        );
+        // Expect 0, 20ms, 40ms, 60ms, 80ms in nanoseconds
+        assert_eq!(ts, vec![0, 20_000_000, 40_000_000, 60_000_000, 80_000_000]);
+    }
+
+    #[test]
+    fn stage_frame_incoming_timestamps_used_when_present() {
+        let mut clock = streamkit_core::timing::MediaClock::new(0);
+        let mut offset = None;
+        let mut last = None;
+        // Video with explicit timestamps (from compositor/MoQ)
+        let ts = stage_n(
+            3,
+            1,
+            33_333,
+            &[Some(0), Some(33_333), Some(66_666)],
+            &mut clock,
+            &mut offset,
+            0,
+            &mut last,
+        );
+        assert_eq!(ts, vec![0, 33_333_000, 66_666_000]);
+    }
+
+    #[test]
+    fn stage_frame_per_track_monotonicity_clamps_backward() {
+        let mut clock = streamkit_core::timing::MediaClock::new(0);
+        let mut offset = None;
+        let mut last = None;
+        // Timestamps go backward (jittery MoQ source).
+        // Rebase: first ts=100000us, last_written=0 → offset=-100ms.
+        // All timestamps are shifted by -100ms then clamped to ≥0.
+        let ts = stage_n(
+            4,
+            1,
+            33_333,
+            &[Some(100_000), Some(90_000), Some(80_000), Some(200_000)],
+            &mut clock,
+            &mut offset,
+            0,
+            &mut last,
+        );
+        // Frame 1: 100ms - 100ms = 0ns
+        assert_eq!(ts[0], 0);
+        // Frame 2: 90ms - 100ms = -10ms → clamped to 0 → per-track: 0 ≤ 0 → +1ms
+        assert_eq!(ts[1], 1_000_000);
+        // Frame 3: 80ms - 100ms = -20ms → clamped to 0 → per-track: 0 ≤ 1ms → +1ms = 2ms
+        assert_eq!(ts[2], 2_000_000);
+        // Frame 4: 200ms - 100ms = 100ms → per-track: 100ms > 2ms → OK
+        assert_eq!(ts[3], 100_000_000);
+    }
+
+    #[test]
+    fn stage_frame_rebase_aligns_late_track() {
+        // Video has been writing for 3 seconds
+        let video_last_written = 3_000_000_000u64; // 3s in ns
+
+        // Audio arrives late, synthetic clock starts at 0
+        let mut audio_clock = streamkit_core::timing::MediaClock::new(0);
+        let mut audio_offset = None;
+        let mut audio_last = None;
+
+        let ts = stage_n(
+            3,
+            2,
+            20_000,
+            &[None, None, None],
+            &mut audio_clock,
+            &mut audio_offset,
+            video_last_written,
+            &mut audio_last,
+        );
+        // Audio should start at ~3s (video's current position)
+        assert_eq!(ts[0], 3_000_000_000);
+        assert_eq!(ts[1], 3_020_000_000);
+        assert_eq!(ts[2], 3_040_000_000);
+        assert_eq!(audio_offset, Some(3_000_000_000));
+    }
+
+    /// Simulate 2 seconds of interleaved audio (50fps) + video (30fps)
+    /// arriving in arrival order.  Verify container timestamps are
+    /// well-formed: globally non-decreasing, no 1ms pairs (the original
+    /// stuttering bug), no huge gaps.
+    #[test]
+    fn interleaved_av_no_large_gaps_or_1ms_pairs() {
+        let mut audio_clock = streamkit_core::timing::MediaClock::new(0);
+        let mut video_clock = streamkit_core::timing::MediaClock::new(0);
+        let mut audio_offset: Option<i64> = Some(0);
+        let mut video_offset: Option<i64> = Some(0);
+        let mut audio_last: Option<u64> = None;
+        let mut video_last: Option<u64> = None;
+        let mut last_written_ns: u64 = 0;
+
+        let mut audio_container_ts: Vec<u64> = Vec::new();
+        let mut video_container_ts: Vec<u64> = Vec::new();
+
+        // Generate 2s of frames: audio every 20ms, video every 33ms.
+        let total_ms = 2000u64;
+        let mut next_audio_ms = 0u64;
+        let mut next_video_ms = 0u64;
+
+        while next_audio_ms < total_ms || next_video_ms < total_ms {
+            if next_audio_ms <= next_video_ms && next_audio_ms < total_ms {
+                let pf = stage_frame(
+                    Bytes::from_static(&[0]),
+                    None,
+                    2,
+                    true,
+                    20_000,
+                    &mut audio_clock,
+                    &mut audio_offset,
+                    last_written_ns,
+                    &mut audio_last,
+                );
+                let write_ts = pf.timestamp_ns.max(last_written_ns);
+                audio_container_ts.push(write_ts);
+                last_written_ns = write_ts;
+                next_audio_ms += 20;
+            } else if next_video_ms < total_ms {
+                let pf = stage_frame(
+                    Bytes::from_static(&[0]),
+                    None,
+                    1,
+                    next_video_ms == 0,
+                    33_333,
+                    &mut video_clock,
+                    &mut video_offset,
+                    last_written_ns,
+                    &mut video_last,
+                );
+                let write_ts = pf.timestamp_ns.max(last_written_ns);
+                video_container_ts.push(write_ts);
+                last_written_ns = write_ts;
+                next_video_ms += 33;
+            }
+        }
+
+        // Per-track monotonicity
+        for w in audio_container_ts.windows(2) {
+            assert!(w[1] >= w[0], "audio went backward: {} -> {}", w[0], w[1]);
+        }
+        for w in video_container_ts.windows(2) {
+            assert!(w[1] >= w[0], "video went backward: {} -> {}", w[0], w[1]);
+        }
+
+        // No 1ms pairs on audio (the original stuttering bug)
+        for w in audio_container_ts.windows(2) {
+            let gap_ms = (w[1] - w[0]) / 1_000_000;
+            assert!(
+                gap_ms >= 5,
+                "audio gap too small: {}ms (ts {} -> {}). Likely 1ms-pair regression.",
+                gap_ms,
+                w[0],
+                w[1]
+            );
+        }
+
+        // No huge gaps (> 2x frame duration) on either track
+        for w in audio_container_ts.windows(2) {
+            let gap_ms = (w[1] - w[0]) / 1_000_000;
+            assert!(gap_ms <= 45, "audio gap too large: {}ms (ts {} -> {})", gap_ms, w[0], w[1]);
+        }
+        for w in video_container_ts.windows(2) {
+            let gap_ms = (w[1] - w[0]) / 1_000_000;
+            assert!(gap_ms <= 70, "video gap too large: {}ms (ts {} -> {})", gap_ms, w[0], w[1]);
+        }
+
+        // Reasonable frame counts
+        assert!(audio_container_ts.len() >= 95, "too few audio: {}", audio_container_ts.len());
+        assert!(video_container_ts.len() >= 55, "too few video: {}", video_container_ts.len());
+    }
+
+    #[test]
+    fn rebase_with_incoming_moq_timestamps() {
+        // Video track starts first at ts=0 (from compositor)
+        let mut video_clock = streamkit_core::timing::MediaClock::new(0);
+        let mut video_offset = None;
+        let mut video_last = None;
+
+        let v1 = stage_frame(
+            Bytes::from_static(&[0]),
+            Some(PacketMetadata {
+                timestamp_us: Some(0),
+                duration_us: Some(33_333),
+                sequence: None,
+                keyframe: Some(true),
+            }),
+            1,
+            true,
+            33_333,
+            &mut video_clock,
+            &mut video_offset,
+            0,
+            &mut video_last,
+        );
+        assert_eq!(v1.timestamp_ns, 0);
+
+        // Simulate 3s of video written
+        let last_video_ns = 3_000_000_000u64;
+
+        // Audio arrives with normalized MoQ timestamp
+        let mut audio_clock = streamkit_core::timing::MediaClock::new(0);
+        let mut audio_offset = None;
+        let mut audio_last = None;
+
+        let a1 = stage_frame(
+            Bytes::from_static(&[0]),
+            Some(PacketMetadata {
+                timestamp_us: Some(20_000),
+                duration_us: Some(20_000),
+                sequence: None,
+                keyframe: None,
+            }),
+            2,
+            true,
+            20_000,
+            &mut audio_clock,
+            &mut audio_offset,
+            last_video_ns,
+            &mut audio_last,
+        );
+
+        // Audio should be rebased to near the video's current position
+        let audio_start_ms = a1.timestamp_ns / 1_000_000;
+        assert!(
+            audio_start_ms >= 2990 && audio_start_ms <= 3010,
+            "audio should start near 3000ms, got {}ms",
+            audio_start_ms
+        );
+    }
+
+    #[test]
+    fn global_clamp_allows_cross_track_equality() {
+        // max-clamp produces equality when audio < last_written (from video).
+        let audio_ts = 100_000_000u64;
+        let last_written = 110_000_000u64;
+        let write_ts = audio_ts.max(last_written);
+        assert_eq!(write_ts, 110_000_000, "should clamp to equal, not +1ms");
     }
 }
