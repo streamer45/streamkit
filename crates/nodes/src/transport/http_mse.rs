@@ -182,10 +182,13 @@ impl ProcessorNode for HttpMseNode {
         // Tracks).  Any SimpleBlock data the muxer writes before opening the
         // first Cluster is discarded — it is invalid for MSE SourceBuffer.
         //
-        // Once complete, we also capture the Cluster preamble (Cluster element ID +
-        // size VINT + Timecode sub-element) so late-joining clients receive a valid
-        // open Cluster and can decode SimpleBlock data immediately.
+        // Per the WebM Byte Stream Format spec for MSE, the init segment must
+        // end before the first Cluster element.  The Cluster preamble (element
+        // ID + size VINT + Timecode) is stored separately and sent as the first
+        // media chunk so late-joining clients receive a valid open Cluster and
+        // can decode SimpleBlock data immediately.
         let mut init_segment: Vec<u8> = Vec::new();
+        let mut cluster_preamble: Vec<u8> = Vec::new();
         let mut init_complete = false;
 
         // Overlap buffer for detecting Cluster ID across chunk boundaries.
@@ -237,13 +240,23 @@ impl ProcessorNode for HttpMseNode {
                         break Ok(());
                     };
 
-                    // Send the init segment to the new client so MSE can initialize.
-                    // Use try_send to avoid blocking the event loop if the client's
-                    // channel is already full (unlikely for a fresh client, but safe).
+                    // Send the init segment + Cluster preamble to the new client.
+                    // Init and preamble are sent as separate chunks: the MSE spec
+                    // requires the init segment to end before the first Cluster.
+                    // Use try_send to avoid blocking the event loop.
                     if !init_segment.is_empty() {
                         let init_bytes = Bytes::copy_from_slice(&init_segment);
                         match client.body_tx.try_send(init_bytes) {
-                            Ok(()) => {}
+                            Ok(()) => {
+                                // Send Cluster preamble as first media chunk.
+                                if !cluster_preamble.is_empty() {
+                                    let pb = Bytes::copy_from_slice(&cluster_preamble);
+                                    if client.body_tx.try_send(pb).is_err() {
+                                        tracing::debug!("New MSE client disconnected before preamble delivery");
+                                        continue;
+                                    }
+                                }
+                            }
                             Err(mpsc::error::TrySendError::Closed(_)) => {
                                 tracing::debug!("New MSE client disconnected before init segment delivery");
                                 continue;
@@ -374,20 +387,18 @@ impl ProcessorNode for HttpMseNode {
                                 }
                             }
 
-                            // Append the Cluster preamble (Cluster ID + size VINT +
-                            // Timecode) to the init segment so late-joining clients
-                            // receive an open Cluster and can decode SimpleBlocks
-                            // immediately.  Without this, late-joiners would receive
-                            // bare SimpleBlock elements outside any Cluster, which
-                            // MSE rejects.
+                            // Store the Cluster preamble (Cluster ID + size VINT +
+                            // Timecode) separately — it must NOT be part of the
+                            // initialization segment per the MSE WebM Byte Stream
+                            // Format spec.  Late-joining clients receive it as the
+                            // first media chunk after the init segment.
                             if let Some(cluster_offset) = cluster_start_in_data {
                                 let cluster_data = &data[cluster_offset..];
                                 if let Some(preamble_len) = find_cluster_preamble_end(cluster_data) {
-                                    let preamble = &cluster_data[..preamble_len];
-                                    init_segment.extend_from_slice(preamble);
+                                    cluster_preamble = cluster_data[..preamble_len].to_vec();
                                     tracing::debug!(
                                         preamble_len,
-                                        "Appended Cluster preamble to init segment"
+                                        "Captured Cluster preamble (separate from init segment)"
                                     );
                                 } else {
                                     tracing::warn!(
@@ -402,15 +413,31 @@ impl ProcessorNode for HttpMseNode {
                             );
                             overlap.clear();
 
-                            // Send the (now-truncated) init segment to clients
+                            // Send init segment + Cluster preamble to clients
                             // that connected before init was complete.  They've
                             // been waiting in the `clients` vec without data.
+                            // Init and preamble are sent as separate chunks so
+                            // the MSE parser sees them as distinct segments.
                             if !clients.is_empty() && !init_segment.is_empty() {
                                 let init_bytes = Bytes::copy_from_slice(&init_segment);
+                                let preamble_bytes = if cluster_preamble.is_empty() {
+                                    None
+                                } else {
+                                    Some(Bytes::copy_from_slice(&cluster_preamble))
+                                };
                                 let mut i = 0;
                                 while i < clients.len() {
                                     match clients[i].try_send(init_bytes.clone()) {
-                                        Ok(()) => { i += 1; }
+                                        Ok(()) => {
+                                            // Also send Cluster preamble as first media chunk.
+                                            if let Some(ref pb) = preamble_bytes {
+                                                if clients[i].try_send(pb.clone()).is_err() {
+                                                    clients.swap_remove(i);
+                                                    continue;
+                                                }
+                                            }
+                                            i += 1;
+                                        }
                                         Err(mpsc::error::TrySendError::Closed(_) | mpsc::error::TrySendError::Full(_)) => {
                                             clients.swap_remove(i);
                                         }
@@ -429,8 +456,8 @@ impl ProcessorNode for HttpMseNode {
                     }
 
                     // For the chunk that triggered init_complete, only forward
-                    // data from after the Cluster preamble — the preamble is
-                    // already included in the init segment sent to all clients.
+                    // data from after the Cluster preamble — the preamble was
+                    // already sent as a separate chunk to all clients.
                     // For subsequent chunks, forward everything as-is.
                     let forward_data = match cluster_start_in_data {
                         Some(offset) => {

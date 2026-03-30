@@ -231,7 +231,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       activePipelineName: pipelineName,
     }),
   clearActiveSession: () =>
-    set({ activeSessionId: null, activeSessionName: null, activePipelineName: null }),
+    set({ activeSessionId: null, activeSessionName: null, activePipelineName: null, msePath: null }),
 
   loadConfig: async () => {
     try {
