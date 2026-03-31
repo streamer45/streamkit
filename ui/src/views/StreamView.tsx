@@ -9,10 +9,10 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { useShallow } from 'zustand/shallow';
 
 import ConfirmModal from '@/components/ConfirmModal';
-import { VideoJSPlayer } from '@/components/VideoJSPlayer';
 import { VolumeSlider } from '@/components/OutputPreviewPanel';
 import { PipelineSelectionSection } from '@/components/stream/PipelineSelectionSection';
 import { TelemetryTimeline as TelemetryTimelineComponent } from '@/components/TelemetryTimeline';
+import { VideoJSPlayer } from '@/components/VideoJSPlayer';
 import {
   ViewContainer,
   ContentArea,
