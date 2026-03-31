@@ -378,13 +378,7 @@ fn run_once(args: &Args) -> IterResult {
         svt_av1_ffi::svt_av1_enc_deinit_handle(handle);
     }
 
-    IterResult {
-        total_elapsed,
-        encode_elapsed,
-        flush_elapsed,
-        total_bytes,
-        total_packets,
-    }
+    IterResult { total_elapsed, encode_elapsed, flush_elapsed, total_bytes, total_packets }
 }
 
 fn main() {
