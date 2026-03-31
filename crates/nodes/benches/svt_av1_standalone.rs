@@ -195,7 +195,10 @@ unsafe impl Send for SendableHandle {}
 /// thread.  Returns `(total_bytes, packet_count)`.
 ///
 /// Uses `pic_send_done = 0` (non-blocking) and polls until the EOS
-/// sentinel packet is received.  This must run on a **separate thread**
+/// sentinel packet is received.  The 1 ms sleep between polls adds a
+/// small amount of latency noise to `total_elapsed`; this is acceptable
+/// for a throughput benchmark but means per-frame timings include
+/// polling overhead.  This must run on a **separate thread**
 /// from the one calling `send_picture` — SVT-AV1's internal pipeline
 /// can stall if `send_picture` and `get_packet` share a thread, because
 /// `send_picture` blocks when the input FIFO is full while `get_packet`
