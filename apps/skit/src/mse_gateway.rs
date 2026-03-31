@@ -193,8 +193,8 @@ impl MseGatewayTrait for MseGateway {
 
     async fn unregister_stream(&self, path: &str) {
         let mut routes = self.routes.write().await;
-        if routes.remove(path).is_some() {
-            info!(path = %path, "Unregistered MSE stream route");
+        if let Some(route) = routes.remove(path) {
+            info!(path = %path, session_id = %route.session_id, "Unregistered MSE stream route");
         } else {
             warn!(path = %path, "Attempted to unregister unknown MSE stream route");
         }
