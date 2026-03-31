@@ -178,21 +178,41 @@ struct IterResult {
     encode_elapsed: std::time::Duration,
     flush_elapsed: std::time::Duration,
     total_bytes: usize,
-    packets_from_encode: usize,
-    packets_from_flush: usize,
+    total_packets: usize,
 }
 
-fn drain_packets(handle: *mut EbComponentType, pic_send_done: u8) -> (usize, usize) {
-    let mut total_bytes = 0;
-    let mut packet_count = 0;
+/// Wrapper to send `*mut EbComponentType` across thread boundaries.
+///
+/// # Safety
+///
+/// SVT-AV1 explicitly supports concurrent `send_picture` / `get_packet`
+/// calls from different threads — the library provides internal
+/// synchronisation via FIFOs and semaphores.
+struct SendableHandle(*mut EbComponentType);
+unsafe impl Send for SendableHandle {}
+
+/// Drain all remaining encoded packets from the encoder on a dedicated
+/// thread.  Returns `(total_bytes, packet_count)`.
+///
+/// Uses `pic_send_done = 0` (non-blocking) and polls until the EOS
+/// sentinel packet is received.  This must run on a **separate thread**
+/// from the one calling `send_picture` — SVT-AV1's internal pipeline
+/// can stall if `send_picture` and `get_packet` share a thread, because
+/// `send_picture` blocks when the input FIFO is full while `get_packet`
+/// is needed to drain output buffers and free pipeline slots.
+fn receive_thread(handle: SendableHandle) -> (usize, usize) {
+    let handle = handle.0;
+    let mut total_bytes: usize = 0;
+    let mut packet_count: usize = 0;
 
     loop {
         let mut out_buf: *mut EbBufferHeaderType = std::ptr::null_mut();
-        let ret =
-            unsafe { svt_av1_ffi::svt_av1_enc_get_packet(handle, &raw mut out_buf, pic_send_done) };
+        let ret = unsafe { svt_av1_ffi::svt_av1_enc_get_packet(handle, &raw mut out_buf, 0) };
 
         if ret == EB_NO_ERROR_EMPTY_QUEUE {
-            break;
+            // Encoder worker threads are still processing — yield briefly.
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            continue;
         }
         assert!(ret == EB_ERROR_NONE, "svt_av1_enc_get_packet failed: {ret:#X}");
 
@@ -256,10 +276,16 @@ fn run_once(args: &Args) -> IterResult {
 
     let total_start = Instant::now();
 
-    // Phase 1: encode frames.
+    // Spawn a dedicated receive thread — SVT-AV1 requires send_picture and
+    // get_packet to run on separate threads.  The internal pipeline stalls
+    // if both happen on the same thread because send_picture blocks when the
+    // input FIFO is full, but slots only free up when get_packet drains
+    // output buffers.
+    let recv_handle = SendableHandle(handle);
+    let recv_thread = std::thread::spawn(move || receive_thread(recv_handle));
+
+    // Phase 1: encode frames (send to encoder).
     let encode_start = Instant::now();
-    let mut total_bytes: usize = 0;
-    let mut packets_from_encode: usize = 0;
 
     for i in 0..args.frame_count {
         generate_i420_frame(
@@ -309,10 +335,6 @@ fn run_once(args: &Args) -> IterResult {
 
         let ret = unsafe { svt_av1_ffi::svt_av1_enc_send_picture(handle, &raw mut buf_header) };
         assert!(ret == EB_ERROR_NONE, "svt_av1_enc_send_picture failed: {ret:#X}");
-
-        let (bytes, pkts) = drain_packets(handle, 0);
-        total_bytes += bytes;
-        packets_from_encode += pkts;
     }
     let encode_elapsed = encode_start.elapsed();
 
@@ -345,8 +367,8 @@ fn run_once(args: &Args) -> IterResult {
     let ret = unsafe { svt_av1_ffi::svt_av1_enc_send_picture(handle, &raw mut eos_header) };
     assert!(ret == EB_ERROR_NONE, "svt_av1_enc_send_picture (EOS) failed: {ret:#X}");
 
-    let (flush_bytes, packets_from_flush) = drain_packets(handle, 1);
-    total_bytes += flush_bytes;
+    // Wait for the receive thread to drain all packets (including EOS).
+    let (total_bytes, total_packets) = recv_thread.join().expect("receive thread panicked");
     let flush_elapsed = flush_start.elapsed();
     let total_elapsed = total_start.elapsed();
 
@@ -361,8 +383,7 @@ fn run_once(args: &Args) -> IterResult {
         encode_elapsed,
         flush_elapsed,
         total_bytes,
-        packets_from_encode,
-        packets_from_flush,
+        total_packets,
     }
 }
 
@@ -393,15 +414,14 @@ fn main() {
 
         eprintln!(
             "  iter {iter}/{}: total={:.3}s ({:.1} fps)  encode={:.3}s ({:.1} fps)  flush={:.3}s  \
-             pkts={}/{}  output={} bytes",
+             pkts={}  output={} bytes",
             args.iterations,
             r.total_elapsed.as_secs_f64(),
             fps,
             r.encode_elapsed.as_secs_f64(),
             encode_fps,
             r.flush_elapsed.as_secs_f64(),
-            r.packets_from_encode,
-            r.packets_from_flush,
+            r.total_packets,
             r.total_bytes,
         );
 
@@ -417,9 +437,7 @@ fn main() {
     let mean_fps = args.frame_count as f64 / mean_total;
     let mean_encode_fps = args.frame_count as f64 / mean_encode;
     let mean_frame_ms = mean_total * 1000.0 / args.frame_count as f64;
-    let avg_pkts_encode =
-        all_results.iter().map(|r| r.packets_from_encode).sum::<usize>() as f64 / n;
-    let avg_pkts_flush = all_results.iter().map(|r| r.packets_from_flush).sum::<usize>() as f64 / n;
+    let avg_pkts = all_results.iter().map(|r| r.total_packets).sum::<usize>() as f64 / n;
     let avg_bytes = all_results.iter().map(|r| r.total_bytes).sum::<usize>() as f64 / n;
 
     eprintln!("── Summary ({} iterations) ──────────────────────────────", args.iterations);
@@ -429,8 +447,7 @@ fn main() {
     eprintln!("  encode phase : {mean_encode:.3}s  ({mean_encode_fps:.1} fps)");
     eprintln!("  flush phase  : {mean_flush:.3}s");
     eprintln!("  flush/total  : {:.1}%", mean_flush / mean_total * 100.0);
-    eprintln!("  pkts encode  : {avg_pkts_encode:.0}");
-    eprintln!("  pkts flush   : {avg_pkts_flush:.0}");
+    eprintln!("  packets      : {avg_pkts:.0}");
     eprintln!(
         "  output size  : {avg_bytes:.0} bytes ({:.0} bytes/frame)",
         avg_bytes / args.frame_count as f64
@@ -456,8 +473,7 @@ fn main() {
         "mean_encode_fps": mean_encode_fps,
         "mean_frame_ms": mean_frame_ms,
         "flush_pct": mean_flush / mean_total * 100.0,
-        "avg_pkts_encode": avg_pkts_encode,
-        "avg_pkts_flush": avg_pkts_flush,
+        "avg_packets": avg_pkts,
         "avg_bytes": avg_bytes,
     });
     println!("{json}");
