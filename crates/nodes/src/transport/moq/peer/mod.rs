@@ -380,7 +380,16 @@ impl ProcessorNode for MoqPeerNode {
     }
 
     fn output_pins(&self) -> Vec<OutputPin> {
-        vec![make_dynamic_output_pin("audio/data"), make_dynamic_output_pin("video/data")]
+        let codec = self
+            .config
+            .video_codec
+            .as_deref()
+            .and_then(parse_video_codec_config)
+            .unwrap_or(VideoCodec::Vp9);
+        vec![
+            make_dynamic_output_pin("audio/data", codec),
+            make_dynamic_output_pin("video/data", codec),
+        ]
     }
 
     fn supports_dynamic_pins(&self) -> bool {
@@ -914,7 +923,7 @@ impl ProcessorNode for MoqPeerNode {
                         None => std::future::pending().await,
                     }
                 } => {
-                    Self::handle_pin_management(msg, &dynamic_outputs, &subscriber_broadcast_tx, &stats_delta_tx, &shutdown_tx, &mut forwarder_handles);
+                    Self::handle_pin_management(msg, &dynamic_outputs, &subscriber_broadcast_tx, &stats_delta_tx, &shutdown_tx, &mut forwarder_handles, video_codec);
                 }
 
                 // Check for shutdown signal
@@ -969,9 +978,10 @@ fn make_dynamic_input_pin(name: &str) -> InputPin {
     }
 }
 
-/// Pin names containing a `video/` segment produce [`PacketType::EncodedVideo`] (VP9);
-/// all others produce [`PacketType::EncodedAudio`] (Opus). This matches the
-/// convention in `MoqPullNode::output_pins_for_tracks`.
+/// Pin names containing a `video/` segment produce [`PacketType::EncodedVideo`]
+/// with the supplied `video_codec`; all others produce
+/// [`PacketType::EncodedAudio`] (Opus). This matches the convention in
+/// `MoqPullNode::output_pins_for_tracks`.
 ///
 /// Handles both unprefixed names (`video/hd`) and broadcast-prefixed names
 /// (`screen-input/video/hd`) by checking `starts_with("video/")` OR
@@ -983,11 +993,11 @@ fn make_dynamic_input_pin(name: &str) -> InputPin {
 /// or `video/`.  Broadcast prefixes are simple identifiers (e.g.
 /// `screen-input`, `cam-input`) so a false-positive match on `/video/` in
 /// the prefix portion is not possible in practice.
-fn make_dynamic_output_pin(name: &str) -> OutputPin {
+fn make_dynamic_output_pin(name: &str, video_codec: VideoCodec) -> OutputPin {
     let is_video = name.starts_with("video/") || name.contains("/video/");
     let produces_type = if is_video {
         PacketType::EncodedVideo(EncodedVideoFormat {
-            codec: VideoCodec::Vp9,
+            codec: video_codec,
             bitstream_format: None,
             codec_private: None,
             profile: None,
@@ -1084,12 +1094,13 @@ impl MoqPeerNode {
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
         shutdown_tx: &broadcast::Sender<()>,
         forwarder_handles: &mut HashMap<String, tokio::task::JoinHandle<()>>,
+        video_codec: VideoCodec,
     ) {
         match msg {
             PinManagementMessage::RequestAddOutputPin { suggested_name, response_tx } => {
                 let pin_name = suggested_name.unwrap_or_else(|| "dynamic_out".to_string());
                 tracing::info!("MoqPeerNode: creating dynamic output pin '{}'", pin_name);
-                let pin = make_dynamic_output_pin(&pin_name);
+                let pin = make_dynamic_output_pin(&pin_name, video_codec);
                 let _ = response_tx.send(Ok(pin));
             },
             PinManagementMessage::AddedOutputPin { pin, channel } => {
@@ -2709,7 +2720,7 @@ mod tests {
 
     #[test]
     fn make_dynamic_output_pin_video_prefix() {
-        let pin = make_dynamic_output_pin("video/hd");
+        let pin = make_dynamic_output_pin("video/hd", VideoCodec::Vp9);
         assert_eq!(pin.name, "video/hd");
         assert!(
             matches!(pin.produces_type, PacketType::EncodedVideo(_)),
@@ -2719,7 +2730,7 @@ mod tests {
 
     #[test]
     fn make_dynamic_output_pin_audio_prefix() {
-        let pin = make_dynamic_output_pin("audio/data");
+        let pin = make_dynamic_output_pin("audio/data", VideoCodec::Vp9);
         assert_eq!(pin.name, "audio/data");
         assert!(
             matches!(pin.produces_type, PacketType::EncodedAudio(_)),
@@ -2729,12 +2740,57 @@ mod tests {
 
     #[test]
     fn make_dynamic_output_pin_bare_name_defaults_to_audio() {
-        let pin = make_dynamic_output_pin("some_track");
+        let pin = make_dynamic_output_pin("some_track", VideoCodec::Vp9);
         assert_eq!(pin.name, "some_track");
         assert!(
             matches!(pin.produces_type, PacketType::EncodedAudio(_)),
             "bare name without video/ prefix should default to EncodedAudio"
         );
+    }
+
+    /// Regression: `make_dynamic_output_pin` hardcoded VP9 for all video pins,
+    /// causing type mismatches when `video_codec: av1` was configured.
+    #[test]
+    fn make_dynamic_output_pin_video_uses_av1_codec() {
+        let pin = make_dynamic_output_pin("video/hd", VideoCodec::Av1);
+        assert_eq!(pin.name, "video/hd");
+        match &pin.produces_type {
+            PacketType::EncodedVideo(fmt) => assert_eq!(
+                fmt.codec,
+                VideoCodec::Av1,
+                "video pin should use the supplied AV1 codec, not default to VP9"
+            ),
+            other => panic!("expected EncodedVideo, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn make_dynamic_output_pin_video_uses_vp9_codec() {
+        let pin = make_dynamic_output_pin("video/hd", VideoCodec::Vp9);
+        match &pin.produces_type {
+            PacketType::EncodedVideo(fmt) => assert_eq!(fmt.codec, VideoCodec::Vp9),
+            other => panic!("expected EncodedVideo, got {other:?}"),
+        }
+    }
+
+    /// Regression: `output_pins()` should respect the configured `video_codec`
+    /// so that the engine's type validation passes for AV1 pipelines.
+    #[test]
+    fn output_pins_respects_video_codec_config() {
+        let node = MoqPeerNode::new(MoqPeerConfig {
+            video_codec: Some("av1".to_string()),
+            ..MoqPeerConfig::default()
+        });
+        let pins = node.output_pins();
+        let video_pin = pins.iter().find(|p| p.name == "video/data").unwrap();
+        match &video_pin.produces_type {
+            PacketType::EncodedVideo(fmt) => assert_eq!(
+                fmt.codec,
+                VideoCodec::Av1,
+                "output_pins() should use AV1 when video_codec config is 'av1'"
+            ),
+            other => panic!("expected EncodedVideo, got {other:?}"),
+        }
     }
 
     /// Regression: `AddedInputPin` previously used `..` to discard the channel,
@@ -2763,6 +2819,7 @@ mod tests {
             &stats_delta_tx,
             &shutdown_tx,
             &mut forwarder_handles,
+            VideoCodec::Vp9,
         );
 
         // If the channel was dropped, try_send would return a closed error.
@@ -2794,23 +2851,23 @@ mod tests {
         assert!(!pins[1].name.starts_with("video/video/"), "video pin must not be double-prefixed");
 
         // Verify make_dynamic_output_pin preserves catalog track names as-is
-        let audio_pin = make_dynamic_output_pin("audio/data");
+        let audio_pin = make_dynamic_output_pin("audio/data", VideoCodec::Vp9);
         assert_eq!(audio_pin.name, "audio/data");
         assert!(matches!(audio_pin.produces_type, PacketType::EncodedAudio(_)));
 
-        let video_pin = make_dynamic_output_pin("video/hd");
+        let video_pin = make_dynamic_output_pin("video/hd", VideoCodec::Vp9);
         assert_eq!(video_pin.name, "video/hd");
         assert!(matches!(video_pin.produces_type, PacketType::EncodedVideo(_)));
 
         // Verify broadcast-prefixed pin names are classified correctly
-        let prefixed_video = make_dynamic_output_pin("screen-input/video/hd");
+        let prefixed_video = make_dynamic_output_pin("screen-input/video/hd", VideoCodec::Vp9);
         assert_eq!(prefixed_video.name, "screen-input/video/hd");
         assert!(
             matches!(prefixed_video.produces_type, PacketType::EncodedVideo(_)),
             "Broadcast-prefixed video pin must be EncodedVideo, not EncodedAudio"
         );
 
-        let prefixed_audio = make_dynamic_output_pin("cam-input/audio/data");
+        let prefixed_audio = make_dynamic_output_pin("cam-input/audio/data", VideoCodec::Vp9);
         assert_eq!(prefixed_audio.name, "cam-input/audio/data");
         assert!(
             matches!(prefixed_audio.produces_type, PacketType::EncodedAudio(_)),
