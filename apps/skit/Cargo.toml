@@ -148,6 +148,7 @@ moq = ["dep:moq-native", "dep:moq-lite"]
 script = ["streamkit-nodes/script", "streamkit-engine/script"]
 compositor = ["streamkit-nodes/compositor", "streamkit-engine/compositor"]
 gpu = ["compositor", "streamkit-nodes/gpu", "streamkit-engine/gpu"]
+svt_av1 = ["streamkit-nodes/svt_av1"]
 
 [dev-dependencies]
 tokio-test = "0.4.5"

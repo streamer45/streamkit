@@ -8,6 +8,11 @@ moq_features := "--features moq"
 profiling_features := "--features profiling"
 tokio_console_features := "--features tokio-console"
 
+# Optional extra features to enable in skit builds (e.g. "svt_av1").
+# Usage: just extra_features="--features svt_av1" skit
+#    or: just extra_features="--features svt_av1" build-skit
+extra_features := ""
+
 # sherpa-onnx version for Kokoro TTS plugin (must match sherpa-rs version)
 # sherpa-rs v0.6.8 uses sherpa-onnx v1.12.17
 sherpa_onnx_version := "1.12.17"
@@ -80,13 +85,13 @@ check-ui-dist:
 # Build the skit in release mode
 build-skit:
     @echo "Building skit..."
-    @cargo build --release {{moq_features}} -p streamkit-server --bin skit
+    @cargo build --release {{moq_features}} {{extra_features}} -p streamkit-server --bin skit
 
 # Build skit in release mode with native CPU optimisations
 # Produces a binary tuned for the build host's microarchitecture (not portable).
 build-skit-native:
     @echo "Building skit (target-cpu=native)..."
-    @RUSTFLAGS="-C target-cpu=native" cargo build --release {{moq_features}} -p streamkit-server --bin skit
+    @RUSTFLAGS="-C target-cpu=native" cargo build --release {{moq_features}} {{extra_features}} -p streamkit-server --bin skit
 
 # Build the skit with profiling support
 # Uses release-lto profile for thin LTO (eliminates UB-check overhead and enables
@@ -99,7 +104,7 @@ build-skit-profiling:
 # Start the skit server
 skit *args='': check-ui-dist
     @echo "Starting skit..."
-    @cargo run {{moq_features}} -p streamkit-server --bin skit -- {{args}}
+    @cargo run {{moq_features}} {{extra_features}} -p streamkit-server --bin skit -- {{args}}
 
 # Start the skit server with profiling support (CPU + heap)
 # Uses release-lto profile for thin LTO (eliminates UB-check overhead and enables
