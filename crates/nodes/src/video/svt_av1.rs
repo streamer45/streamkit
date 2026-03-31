@@ -7,6 +7,9 @@
 //! Uses [SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1) (≥ 2.0) via
 //! hand-written FFI bindings for encoding.
 //!
+//! **Requires `libsvtav1enc` to be installed on the build host.**
+//! See `crates/nodes/SVT_AV1.md` for installation instructions.
+//!
 //! ## Architecture
 //!
 //! SVT-AV1 in low-delay mode (`SVT_AV1_PRED_LOW_DELAY_B`) uses a **blocking**
