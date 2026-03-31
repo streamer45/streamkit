@@ -1134,6 +1134,10 @@ impl ProcessorNode for WebMMuxerNode {
                     let (first, rest) = all_receivers.split_at_mut(1);
                     let rx0 = &mut first[0];
                     let rx1 = &mut rest[0];
+                    // SAFETY: `tokio::select!` executes exactly one branch, so
+                    // at most one `remove()` runs per iteration.  After removing
+                    // index 0 the vec shrinks to len()==1, and the next iteration
+                    // takes the `len() == 1` path below — no stale-index panic.
                     tokio::select! {
                         biased;
                         Some(msg) = context.control_rx.recv() => {

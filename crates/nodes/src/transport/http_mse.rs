@@ -313,6 +313,11 @@ impl ProcessorNode for HttpMseNode {
                     // the byte offset within `data` where the Cluster begins so only
                     // valid media data (from the Cluster onward) is forwarded to clients.
                     let mut cluster_start_in_data: Option<usize> = None;
+                    // When the Cluster ID straddles two chunks, the leading bytes
+                    // live in the overlap buffer and must be prepended to the
+                    // forwarded data so late-joining clients receive a complete
+                    // Cluster header.
+                    let mut cluster_prefix: Vec<u8> = Vec::new();
 
                     if !init_complete {
                         // Search for the Cluster ID in the overlap + current chunk to handle
@@ -331,8 +336,10 @@ impl ProcessorNode for HttpMseNode {
                                     // buffered if the init_segment hit MAX_INIT_SEGMENT_SIZE.
                                     let bytes_to_remove = (overlap_len - pos).min(overlap_bytes_in_init);
                                     init_segment.truncate(init_segment.len() - bytes_to_remove);
-                                    // Cluster ID straddles: the remaining bytes are at the
-                                    // start of `data`.  Forward from byte 0.
+                                    // Cluster ID straddles: save the prefix bytes from
+                                    // the overlap so we can prepend them to the forwarded
+                                    // data, producing a complete Cluster header.
+                                    cluster_prefix = overlap[pos..].to_vec();
                                     cluster_start_in_data = Some(0);
                                 } else {
                                     // The Cluster started inside the new chunk.
@@ -438,10 +445,19 @@ impl ProcessorNode for HttpMseNode {
 
                     // For the chunk that triggered init_complete, forward data
                     // from the Cluster boundary onward (including the Cluster
-                    // header).  Clients receive complete Clusters with their
-                    // own headers so they can start decoding at any keyframe.
+                    // header).  When the Cluster ID straddled two chunks, the
+                    // prefix bytes from the overlap are prepended so clients
+                    // receive a complete Cluster header.
                     let forward_data = match cluster_start_in_data {
-                        Some(offset) if offset < data.len() => data.slice(offset..),
+                        Some(offset) if offset < data.len() => {
+                            if cluster_prefix.is_empty() {
+                                data.slice(offset..)
+                            } else {
+                                let mut combined = cluster_prefix;
+                                combined.extend_from_slice(&data[offset..]);
+                                Bytes::from(combined)
+                            }
+                        }
                         Some(_) => continue,
                         None => data.clone(),
                     };
@@ -679,6 +695,7 @@ pub fn register_http_mse_nodes(registry: &mut streamkit_core::NodeRegistry) {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -821,6 +838,98 @@ mod tests {
         (init_segment, init_complete)
     }
 
+    /// Like `simulate_init_accumulation`, but also returns the forward data
+    /// (bytes from the Cluster boundary onward) for the chunk that triggered
+    /// init completion.  This lets us verify that cross-chunk Cluster ID
+    /// straddling produces a complete Cluster header in the forwarded data.
+    fn simulate_init_and_forward(chunks: &[&[u8]]) -> (Vec<u8>, Option<Vec<u8>>) {
+        let mut init_segment: Vec<u8> = Vec::new();
+        let mut init_complete = false;
+        let mut overlap: Vec<u8> = Vec::new();
+        let mut overlap_bytes_in_init: usize = 0;
+        let mut forward_data: Option<Vec<u8>> = None;
+
+        for data in chunks {
+            if data.is_empty() {
+                continue;
+            }
+            if init_complete {
+                break;
+            }
+
+            let mut cluster_start_in_data: Option<usize> = None;
+            let mut cluster_prefix: Vec<u8> = Vec::new();
+
+            let cluster_found = if overlap.is_empty() {
+                false
+            } else {
+                let mut combined = overlap.clone();
+                combined.extend_from_slice(&data[..data.len().min(WEBM_CLUSTER_ID.len())]);
+                find_cluster_id(&combined).is_some_and(|pos| {
+                    let overlap_len = overlap.len();
+                    if pos < overlap_len {
+                        let bytes_to_remove = (overlap_len - pos).min(overlap_bytes_in_init);
+                        init_segment.truncate(init_segment.len() - bytes_to_remove);
+                        cluster_prefix = overlap[pos..].to_vec();
+                        cluster_start_in_data = Some(0);
+                    } else {
+                        let extra = pos - overlap_len;
+                        let remaining_capacity =
+                            MAX_INIT_SEGMENT_SIZE.saturating_sub(init_segment.len());
+                        let to_append = extra.min(remaining_capacity);
+                        init_segment.extend_from_slice(&data[..to_append]);
+                        cluster_start_in_data = Some(extra);
+                    }
+                    true
+                })
+            };
+
+            if cluster_found {
+                init_complete = true;
+            } else if let Some(cluster_offset) = find_cluster_id(data) {
+                if cluster_offset > 0 {
+                    let remaining_capacity =
+                        MAX_INIT_SEGMENT_SIZE.saturating_sub(init_segment.len());
+                    let to_append = cluster_offset.min(remaining_capacity);
+                    init_segment.extend_from_slice(&data[..to_append]);
+                }
+                init_complete = true;
+                cluster_start_in_data = Some(cluster_offset);
+            } else {
+                let remaining_capacity = MAX_INIT_SEGMENT_SIZE.saturating_sub(init_segment.len());
+                let appended = if remaining_capacity > 0 {
+                    let to_append = data.len().min(remaining_capacity);
+                    init_segment.extend_from_slice(&data[..to_append]);
+                    to_append
+                } else {
+                    0
+                };
+                let keep = data.len().min(WEBM_CLUSTER_ID.len() - 1);
+                overlap.clear();
+                overlap.extend_from_slice(&data[data.len() - keep..]);
+                overlap_bytes_in_init = appended.saturating_sub(data.len() - keep);
+            }
+
+            if init_complete {
+                overlap.clear();
+                // Build forward data the same way the production code does.
+                if let Some(offset) = cluster_start_in_data {
+                    if offset < data.len() {
+                        if cluster_prefix.is_empty() {
+                            forward_data = Some(data[offset..].to_vec());
+                        } else {
+                            let mut combined = cluster_prefix;
+                            combined.extend_from_slice(&data[offset..]);
+                            forward_data = Some(combined);
+                        }
+                    }
+                }
+            }
+        }
+
+        (init_segment, forward_data)
+    }
+
     #[test]
     fn test_cross_chunk_cluster_detection_3_1_split() {
         // Cluster ID 0x1F43B675 split: first chunk ends with [1F, 43, B6],
@@ -896,6 +1005,63 @@ mod tests {
         let mut expected = chunk1;
         expected.extend_from_slice(&[0x00; 2]);
         assert_eq!(init, expected);
+    }
+
+    // ── find_tracks_end tests ──
+
+    #[test]
+    fn test_cross_chunk_forward_data_includes_full_cluster_header_3_1() {
+        // Cluster ID 0x1F43B675 split 3|1: overlap has [1F,43,B6], data starts with [75,...].
+        // Forward data must start with the full Cluster ID, not just the tail byte.
+        let header = vec![0x1A, 0x45, 0xDF, 0xA3, 0x00, 0x00];
+        let mut chunk1 = header.clone();
+        chunk1.extend_from_slice(&[0x1F, 0x43, 0xB6]); // first 3 bytes of Cluster ID
+        let chunk2: Vec<u8> = vec![0x75, 0xAA, 0xBB, 0xCC]; // last byte + payload
+
+        let (init, fwd) = simulate_init_and_forward(&[&chunk1, &chunk2]);
+        assert_eq!(init, header);
+        let fwd = fwd.expect("forward data should be present");
+        assert!(
+            fwd.starts_with(&WEBM_CLUSTER_ID),
+            "forwarded data must start with the full Cluster ID, got {:02X?}",
+            &fwd[..fwd.len().min(8)]
+        );
+    }
+
+    #[test]
+    fn test_cross_chunk_forward_data_includes_full_cluster_header_2_2() {
+        // Cluster ID split 2|2: overlap has [1F,43], data starts with [B6,75,...].
+        let header = vec![0xAA; 10];
+        let mut chunk1 = header.clone();
+        chunk1.extend_from_slice(&[0x1F, 0x43]); // first 2 bytes
+        let chunk2: Vec<u8> = vec![0xB6, 0x75, 0xDD, 0xEE]; // last 2 bytes + payload
+
+        let (init, fwd) = simulate_init_and_forward(&[&chunk1, &chunk2]);
+        assert_eq!(init, header);
+        let fwd = fwd.expect("forward data should be present");
+        assert!(
+            fwd.starts_with(&WEBM_CLUSTER_ID),
+            "forwarded data must start with the full Cluster ID, got {:02X?}",
+            &fwd[..fwd.len().min(8)]
+        );
+    }
+
+    #[test]
+    fn test_non_straddling_forward_data_starts_at_cluster() {
+        // Cluster ID entirely within one chunk — forward data should start at the Cluster ID.
+        let header: Vec<u8> = vec![0x1A, 0x45, 0xDF, 0xA3, 0x00];
+        let mut chunk = header.clone();
+        chunk.extend_from_slice(&WEBM_CLUSTER_ID);
+        chunk.extend_from_slice(&[0xFF; 4]);
+
+        let (init, fwd) = simulate_init_and_forward(&[&chunk]);
+        assert_eq!(init, header);
+        let fwd = fwd.expect("forward data should be present");
+        assert!(
+            fwd.starts_with(&WEBM_CLUSTER_ID),
+            "forwarded data must start with the Cluster ID, got {:02X?}",
+            &fwd[..fwd.len().min(8)]
+        );
     }
 
     // ── find_tracks_end tests ──

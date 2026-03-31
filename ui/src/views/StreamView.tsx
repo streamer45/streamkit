@@ -612,12 +612,20 @@ const StreamView: React.FC = () => {
             setInputBroadcast(moqSettings.inputBroadcast ?? '');
             setOutputBroadcast(moqSettings.outputBroadcast ?? '');
             setEnablePublish(moqSettings.hasInputBroadcast);
+            setEnableWatch(Boolean(moqSettings.outputBroadcast));
             setPipelineMediaTypes(moqSettings.needsAudioInput, moqSettings.needsVideoInput);
             setPipelineOutputTypes(moqSettings.outputsAudio, moqSettings.outputsVideo);
             setIsExternalRelay(moqSettings.isExternalRelay);
             setVideoSourceType(moqSettings.videoSourceType);
             setTracks(moqSettings.tracks, moqSettings.publishBroadcasts);
             setMsePath(moqSettings.msePath ?? null);
+          } else {
+            // No client section — clear all transport state.
+            setInputBroadcast('');
+            setOutputBroadcast('');
+            setEnablePublish(false);
+            setEnableWatch(false);
+            setMsePath(null);
           }
         }
       } catch (error) {
