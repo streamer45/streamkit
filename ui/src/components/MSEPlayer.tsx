@@ -194,6 +194,16 @@ const BUFFER_EVICT_BEHIND_S = 10;
 // an automatic re-seek is triggered.
 const LIVE_EDGE_MAX_DRIFT_S = 8;
 
+// How far (seconds) audio can lead video before an automatic re-seek
+// corrects the A/V offset.  Chrome's muxed-WebM MSE path can let the
+// audio decoder run ahead of the VP9 decoder during live streaming,
+// even when container timestamps are perfectly aligned.
+const AV_SYNC_THRESHOLD_S = 1.0;
+
+// Minimum interval (ms) between A/V sync correction re-seeks to avoid
+// rapid correction loops when the decoder consistently falls behind.
+const AV_SYNC_COOLDOWN_MS = 5000;
+
 // Minimum interval (ms) between React status updates to avoid
 // re-rendering the component on every incoming chunk.
 const STATUS_UPDATE_INTERVAL_MS = 1000;
@@ -296,10 +306,23 @@ async function streamMediaData(
       }
       const lastEnd = sourceBuffer.buffered.end(sourceBuffer.buffered.length - 1);
       const fwdBuf = lastEnd - media.currentTime;
+
+      // Include video decode quality stats when available — dropped frames
+      // are a strong signal that the VP9 decoder can't keep up.
+      let qualityStr = '';
+      if (
+        media instanceof HTMLVideoElement &&
+        typeof media.getVideoPlaybackQuality === 'function'
+      ) {
+        const q = media.getVideoPlaybackQuality();
+        qualityStr = ` vpq(total=${q.totalVideoFrames} dropped=${q.droppedVideoFrames})`;
+      }
+
       componentsLogger.info(
         `MSEPlayer diag: currentTime=${media.currentTime.toFixed(2)} paused=${media.paused} ` +
           `readyState=${media.readyState} rate=${media.playbackRate} ` +
-          `buffered=[${ranges.join(', ')}] fwdBuf=${fwdBuf.toFixed(1)}s bytes=${(totalBytes / 1024).toFixed(0)}KB`
+          `buffered=[${ranges.join(', ')}] fwdBuf=${fwdBuf.toFixed(1)}s bytes=${(totalBytes / 1024).toFixed(0)}KB` +
+          qualityStr
       );
 
       // Force-resume if the player paused itself with enough forward buffer.
@@ -336,6 +359,60 @@ async function streamMediaData(
     // chunk until the seek succeeds.
     if (!playbackStarted && seekToLiveEdgeAndPlay(media, sourceBuffer)) {
       playbackStarted = true;
+
+      // --- A/V sync monitoring via requestVideoFrameCallback ----------
+      // Chrome's muxed-WebM MSE path can let the audio decoder run ahead
+      // of the VP9 decoder during live streaming.  requestVideoFrameCallback
+      // fires when each video frame is actually presented, giving us the
+      // real video presentation time (metadata.mediaTime).  Comparing it
+      // against media.currentTime (which tracks audio in muxed mode)
+      // reveals the true A/V offset.  When the offset exceeds the
+      // threshold, re-seek to the live edge to re-sync both tracks.
+      if (media instanceof HTMLVideoElement && 'requestVideoFrameCallback' in media) {
+        let lastAvCorrectionMs = 0;
+        let avSyncCorrections = 0;
+
+        // Type-narrow: requestVideoFrameCallback is available but not in
+        // all TS DOM libs yet.
+        type RVFCMetadata = { mediaTime: number };
+        type RVFCCallback = (now: DOMHighResTimeStamp, metadata: RVFCMetadata) => void;
+        const vid = media as HTMLVideoElement & {
+          requestVideoFrameCallback(cb: RVFCCallback): number;
+        };
+
+        const onVideoFrame: RVFCCallback = (now, metadata) => {
+          if (isAborted()) return;
+
+          const avOffset = media.currentTime - metadata.mediaTime;
+
+          if (
+            avOffset > AV_SYNC_THRESHOLD_S &&
+            (now - lastAvCorrectionMs > AV_SYNC_COOLDOWN_MS || lastAvCorrectionMs === 0)
+          ) {
+            avSyncCorrections++;
+            lastAvCorrectionMs = now;
+
+            const buffered = sourceBuffer.buffered;
+            if (buffered.length > 0) {
+              const liveEdge = buffered.end(buffered.length - 1);
+              const target = Math.max(buffered.start(buffered.length - 1), liveEdge - 2);
+              componentsLogger.warn(
+                `MSEPlayer: A/V desync detected — audio is ${avOffset.toFixed(1)}s ahead of video. ` +
+                  `Re-seeking to ${target.toFixed(2)}s (correction #${avSyncCorrections})`
+              );
+              media.currentTime = target;
+              if (media.paused) {
+                media.play().catch(() => {});
+              }
+            }
+          }
+
+          // Re-register for the next presented frame.
+          vid.requestVideoFrameCallback(onVideoFrame);
+        };
+
+        vid.requestVideoFrameCallback(onVideoFrame);
+      }
     }
   }
 }
