@@ -9,7 +9,7 @@ description: "Neural machine translation using Helsinki-NLP OPUS-MT models. Supp
 
 Neural machine translation using Helsinki-NLP OPUS-MT models. Supports bidirectional EN<->ES translation with Apache 2.0 licensed models. Powered by Candle (pure Rust ML framework).
 
-Source: `plugins/native/helsinki/target/release/libhelsinki.so`
+Source: `target/plugins/release/libhelsinki.so`
 
 ## Categories
 - `ml`

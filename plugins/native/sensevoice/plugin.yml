@@ -4,7 +4,7 @@ version: 0.1.0
 node_kind: sensevoice
 kind: native
 entrypoint: libsensevoice.so
-artifact: plugins/native/sensevoice/target/release/libsensevoice.so
+artifact: target/plugins/release/libsensevoice.so
 description: Streaming speech-to-text using SenseVoice
 license: MPL-2.0
 models:

@@ -9,7 +9,7 @@ description: "Speech-to-text transcription using SenseVoice, a multilingual spee
 
 Speech-to-text transcription using SenseVoice, a multilingual speech recognition model. Supports Chinese, English, Japanese, Korean, and Cantonese with automatic language detection. Requires 16kHz mono audio input.
 
-Source: `plugins/native/sensevoice/target/release/libsensevoice.so`
+Source: `target/plugins/release/libsensevoice.so`
 
 ## Categories
 - `ml`

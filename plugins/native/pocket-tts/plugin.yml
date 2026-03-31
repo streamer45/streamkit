@@ -4,7 +4,7 @@ version: 0.1.0
 node_kind: pocket-tts
 kind: native
 entrypoint: libpocket_tts.so
-artifact: plugins/native/pocket-tts/target/release/libpocket_tts.so
+artifact: target/plugins/release/libpocket_tts.so
 description: Lightweight CPU TTS using Kyutai Pocket TTS (Candle)
 license: MPL-2.0
 models:

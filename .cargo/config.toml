@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# sccache is recommended for faster rebuilds. CI enables it automatically
+# via mozilla-actions/sccache-action. For local development, install sccache
+# and export RUSTC_WRAPPER=sccache in your shell (see CONTRIBUTING.md).
+# Uncomment below to enable it repo-wide instead of via environment:
+# [build]
+# rustc-wrapper = "sccache"

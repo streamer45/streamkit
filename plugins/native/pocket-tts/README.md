@@ -17,7 +17,7 @@ just build-plugin-native-pocket-tts
 ```
 
 Plugin binary:
-`plugins/native/pocket-tts/target/release/libpocket_tts.so`
+`target/plugins/release/libpocket_tts.so`
 
 ## Download models (offline-friendly)
 
@@ -51,7 +51,7 @@ params:
 ## Loading the plugin
 
 ```bash
-curl -X POST -F plugin=@plugins/native/pocket-tts/target/release/libpocket_tts.so \
+curl -X POST -F plugin=@target/plugins/release/libpocket_tts.so \
   http://127.0.0.1:4545/api/v1/plugins
 ```
 

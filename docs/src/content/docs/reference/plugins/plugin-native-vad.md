@@ -9,7 +9,7 @@ description: "Voice Activity Detection (VAD) using a high-performance ONNX model
 
 Voice Activity Detection (VAD) using a high-performance ONNX model. Can output speech/silence events for downstream processing, or filter audio to pass only speech segments. Requires 16kHz mono audio input.
 
-Source: `plugins/native/vad/target/release/libvad.so`
+Source: `target/plugins/release/libvad.so`
 
 ## Categories
 - `audio`

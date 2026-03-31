@@ -4,7 +4,7 @@ version: 0.1.0
 node_kind: helsinki
 kind: native
 entrypoint: libhelsinki.so
-artifact: plugins/native/helsinki/target/release/libhelsinki.so
+artifact: target/plugins/release/libhelsinki.so
 description: Neural machine translation using OPUS-MT
 license: MPL-2.0
 models:

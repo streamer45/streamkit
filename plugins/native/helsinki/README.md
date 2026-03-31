@@ -78,7 +78,7 @@ just upload-helsinki-plugin
 
 # Or manually
 curl -X POST \
-  -F plugin=@plugins/native/helsinki/target/release/libhelsinki.so \
+  -F plugin=@target/plugins/release/libhelsinki.so \
   http://127.0.0.1:4545/api/v1/plugins
 ```
 

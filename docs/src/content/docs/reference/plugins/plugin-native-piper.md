@@ -9,7 +9,7 @@ description: "Text-to-speech synthesis using Piper TTS models. Lightweight and e
 
 Text-to-speech synthesis using Piper TTS models. Lightweight and efficient for real-time applications. Supports multiple voices and languages. Outputs 22.05kHz mono audio.
 
-Source: `plugins/native/piper/target/release/libpiper.so`
+Source: `target/plugins/release/libpiper.so`
 
 ## Categories
 - `audio`

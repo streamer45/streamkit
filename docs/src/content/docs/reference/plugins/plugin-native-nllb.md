@@ -9,7 +9,7 @@ description: "Neural machine translation using Meta's NLLB (No Language Left Beh
 
 Neural machine translation using Meta's NLLB (No Language Left Behind) model. Supports translation between 200+ languages. Accepts both text and transcription packets.
 
-Source: `plugins/native/nllb/target/release/libnllb.so`
+Source: `target/plugins/release/libnllb.so`
 
 ## Categories
 - `ml`

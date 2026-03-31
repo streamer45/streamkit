@@ -9,7 +9,7 @@ description: "Text-to-speech synthesis using Matcha-TTS, a fast non-autoregressi
 
 Text-to-speech synthesis using Matcha-TTS, a fast non-autoregressive model. Provides high-quality speech with efficient inference. Outputs 22.05kHz mono audio.
 
-Source: `plugins/native/matcha/target/release/libmatcha.so`
+Source: `target/plugins/release/libmatcha.so`
 
 ## Categories
 - `audio`

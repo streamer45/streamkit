@@ -1293,7 +1293,9 @@ fn find_official_native_plugin_artifacts(repo_root: &Path) -> Result<Vec<PathBuf
             continue;
         }
 
+        // TODO: remove legacy per-plugin target search once transition is complete.
         // Prefer release artifacts; fall back to debug if release isn't present.
+        // Check both per-plugin target dirs (legacy) and the shared target/plugins/ dir.
         let release_dir = plugin_dir.join("target/release");
         let debug_dir = plugin_dir.join("target/debug");
 
@@ -1302,6 +1304,15 @@ fn find_official_native_plugin_artifacts(repo_root: &Path) -> Result<Vec<PathBuf
         } else if debug_dir.exists() {
             paths.extend(find_so_files(&debug_dir)?);
         }
+    }
+
+    // Also search the shared plugin target directory (target/plugins/).
+    let shared_release = repo_root.join("target/plugins/release");
+    let shared_debug = repo_root.join("target/plugins/debug");
+    if shared_release.exists() {
+        paths.extend(find_so_files(&shared_release)?);
+    } else if shared_debug.exists() {
+        paths.extend(find_so_files(&shared_debug)?);
     }
 
     // Filter out debug symbol files (.d), deps folder artifacts, and proc-macro libraries
@@ -1319,6 +1330,11 @@ fn find_official_native_plugin_artifacts(repo_root: &Path) -> Result<Vec<PathBuf
     });
     paths.sort();
     paths.dedup();
+    // Deduplicate by filename to handle the transition period where both
+    // legacy per-plugin target dirs and the shared target/plugins/ dir coexist.
+    // Use a HashSet since same-filename paths are not adjacent after sorting by full path.
+    let mut seen_filenames = std::collections::HashSet::new();
+    paths.retain(|p| p.file_name().is_some_and(|name| seen_filenames.insert(name.to_os_string())));
 
     Ok(paths)
 }

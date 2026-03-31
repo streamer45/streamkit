@@ -42,6 +42,6 @@ while IFS= read -r plugin; do
   echo "Building native plugin: ${plugin}"
   (
     cd "plugins/native/${plugin}"
-    cargo build --release
+    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$(cd ../../.. && pwd)/target/plugins}" cargo build --release
   )
 done <<< "${plugins}"

@@ -47,6 +47,25 @@ curl -fsSL https://bun.sh/install | bash
 cargo install just
 ```
 
+### sccache (build cache — recommended)
+
+[sccache](https://github.com/mozilla/sccache) caches compiled crate artifacts by input hash, making rebuilds significantly faster. CI uses it automatically; for local development:
+
+```bash
+cargo install sccache --locked
+export RUSTC_WRAPPER=sccache   # add to your shell profile
+```
+
+> **Note:** You can also uncomment the `rustc-wrapper` line in `.cargo/config.toml` to enable it repo-wide instead of via environment variable.
+
+### cargo-sweep (build cleanup — optional)
+
+Used by `just sweep` to prune stale build artifacts without a full `cargo clean`:
+
+```bash
+cargo install cargo-sweep --locked
+```
+
 ### Linting tools
 
 Required by `just lint`:

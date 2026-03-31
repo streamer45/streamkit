@@ -9,7 +9,7 @@ description: "Lightweight CPU TTS using Kyutai Pocket TTS (Candle). English-only
 
 Lightweight CPU TTS using Kyutai Pocket TTS (Candle). English-only voices with streaming output. Outputs 24kHz mono audio.
 
-Source: `plugins/native/pocket-tts/target/release/libpocket_tts.so`
+Source: `target/plugins/release/libpocket_tts.so`
 
 ## Categories
 - `audio`

@@ -9,7 +9,7 @@ description: "Real-time speech-to-text transcription using OpenAI's Whisper mode
 
 Real-time speech-to-text transcription using OpenAI's Whisper model. Features VAD-based segmentation for natural speech boundaries, GPU acceleration support, and streaming output. Requires 16kHz mono audio input.
 
-Source: `plugins/native/whisper/target/release/libwhisper.so`
+Source: `target/plugins/release/libwhisper.so`
 
 ## Categories
 - `ml`

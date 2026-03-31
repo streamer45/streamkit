@@ -9,7 +9,7 @@ description: "High-quality text-to-speech synthesis using the Kokoro TTS model. 
 
 High-quality text-to-speech synthesis using the Kokoro TTS model. Supports 103 voices across Chinese and English with streaming output. Outputs 24kHz mono audio for real-time playback or further processing.
 
-Source: `plugins/native/kokoro/target/release/libkokoro.so`
+Source: `target/plugins/release/libkokoro.so`
 
 ## Categories
 - `audio`

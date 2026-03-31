@@ -112,7 +112,7 @@ just upload-nllb-plugin
 
 # Or manually
 curl -X POST \
-  -F plugin=@plugins/native/nllb/target/release/libnllb.so \
+  -F plugin=@target/plugins/release/libnllb.so \
   http://127.0.0.1:4545/api/v1/plugins
 ```
 
