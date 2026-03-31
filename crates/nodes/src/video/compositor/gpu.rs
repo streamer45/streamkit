@@ -1396,31 +1396,45 @@ fn build_layer_uniforms(
     let tx = 2.0f32.mul_add(dst_rect.x as f32, dst_rect.width as f32) / cw - 1.0;
     let ty = 1.0 - 2.0f32.mul_add(dst_rect.y as f32, dst_rect.height as f32) / ch;
 
+    // Destination rect pixel dimensions (needed for cross-axis rotation
+    // terms that account for the canvas aspect ratio).
+    let rw = dst_rect.width as f32;
+    let rh = dst_rect.height as f32;
+
     // Mirror: flip scale signs.
     let mx: f32 = if mirror_h { -1.0 } else { 1.0 };
     let my: f32 = if mirror_v { -1.0 } else { 1.0 };
 
-    // Rotation (around the quad centre, which is at (tx, ty) in NDC).
-    // Negate the angle: the CPU path defines positive rotation as
-    // clockwise in screen-space (Y-down), but in NDC (Y-up) the
-    // standard rotation matrix rotates counter-clockwise for positive
-    // angles.  Negating aligns the GPU with the CPU convention.
-    let theta = (-rotation_degrees).to_radians();
-    let cos_t = theta.cos();
-    let sin_t = theta.sin();
-
-    // Combined 2D affine in 4×4 (column-major):
-    //   Scale(sx*mx, sy*my) → Rotate(theta) → Translate(tx, ty)
+    // Rotation in *pixel space*, then mapped to NDC.
     //
-    //   | sx*mx*cos  -sy*my*sin  0  tx |
-    //   | sx*mx*sin   sy*my*cos  0  ty |
-    //   |     0           0      1   0 |
-    //   |     0           0      0   1 |
+    // The CPU path rotates in screen-pixel coordinates (Y-down) where
+    // positive `rotation_degrees` means clockwise.  To match, the GPU
+    // must also rotate in pixel space.  Because NDC axes are normalised
+    // differently per axis (2/cw horizontally, 2/ch vertically), the
+    // off-diagonal (sin) terms use the *cross-axis* canvas dimension:
+    //
+    //   Decomposition: S_pixel → R_screen → P_ndc → T
+    //
+    //   S_pixel = diag(rw/2 · mx, −rh/2 · my)   (quad → pixel offset)
+    //   R_screen = [cos, −sin; sin, cos]          (CW for +θ in Y-down)
+    //   P_ndc = diag(2/cw, −2/ch)                (pixel offset → NDC)
+    //   T = translate(tx, ty)
+    //
+    // Multiplied out the combined matrix is:
+    //
+    //   | sx·mx·cos    (rh/cw)·my·sin  0  tx |
+    //   | −(rw/ch)·mx·sin   sy·my·cos  0  ty |
+    //   |      0              0         1   0 |
+    //   |      0              0         0   1 |
+    let angle_rad = rotation_degrees.to_radians();
+    let cos_a = angle_rad.cos();
+    let sin_a = angle_rad.sin();
+
     let transform: [[f32; 4]; 4] = [
-        [sx * mx * cos_t, sx * mx * sin_t, 0.0, 0.0], // column 0
-        [-sy * my * sin_t, sy * my * cos_t, 0.0, 0.0], // column 1
-        [0.0, 0.0, 1.0, 0.0],                         // column 2
-        [tx, ty, 0.0, 1.0],                           // column 3
+        [sx * mx * cos_a, -(rw / ch) * mx * sin_a, 0.0, 0.0], // column 0
+        [(rh / cw) * my * sin_a, sy * my * cos_a, 0.0, 0.0],  // column 1
+        [0.0, 0.0, 1.0, 0.0],                                 // column 2
+        [tx, ty, 0.0, 1.0],                                   // column 3
     ];
 
     // Source UV region for crop/zoom.

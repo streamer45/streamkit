@@ -1061,3 +1061,85 @@ fn gpu_runtime_mode_switch() {
     assert_eq!(GpuMode::ForceGpu as u8, 1);
     assert_eq!(GpuMode::ForceCpu as u8, 2);
 }
+
+/// Regression test: GPU rotation on a non-square canvas must match the CPU
+/// path.
+///
+/// Before the fix, `build_layer_uniforms` applied rotation in NDC space
+/// (where both axes are normalised to [-1,1]).  On a non-square canvas
+/// (e.g. 400×200) the differing NDC-to-pixel ratios per axis caused the
+/// rotation to skew the layer — producing a diamond-like shape instead of
+/// a properly rotated rectangle.
+///
+/// The fix rotates in pixel space (using cross-axis canvas dimensions in
+/// the off-diagonal sin terms) so the shape is preserved regardless of
+/// canvas aspect ratio.
+///
+/// This test uses a left-red / right-green split image on a 400×200
+/// canvas, rotated 90° CW.  After rotation the top half should be red
+/// (original left) and the bottom half green (original right) — the same
+/// result the CPU path produces.  The non-square canvas (2:1) is the key
+/// ingredient that exposed the original bug.
+#[test]
+fn gpu_rotation_nonsquare_canvas_matches_cpu() {
+    let mut ctx = require_gpu();
+    let canvas_w = 400_u32;
+    let canvas_h = 200_u32;
+
+    // Build a left-red / right-green split image covering the full canvas.
+    let mut data = vec![0u8; (canvas_w as usize) * (canvas_h as usize) * 4];
+    for y in 0..canvas_h as usize {
+        for x in 0..canvas_w as usize {
+            let off = (y * canvas_w as usize + x) * 4;
+            if x < canvas_w as usize / 2 {
+                data[off] = 255; // R
+            } else {
+                data[off + 1] = 255; // G
+            }
+            data[off + 3] = 255; // A
+        }
+    }
+
+    let layer = make_layer_with_props(
+        data,
+        canvas_w,
+        canvas_h,
+        None,
+        1.0,
+        90.0, // 90° clockwise
+        0,
+        false,
+        false,
+        1.0,
+        CropShape::Rect,
+    );
+
+    let layers = vec![Some(layer)];
+    let (result, _) = ctx.composite_frame_gpu(canvas_w, canvas_h, &layers, &[], &[], None, None);
+    let buf = result.as_slice();
+
+    // After 90° CW rotation on a non-square canvas:
+    //   - original left (red)   → top
+    //   - original right (green) → bottom
+    //
+    // Sample the vertical centre column at 25% and 75% height.
+    let mid_x = canvas_w as usize / 2;
+
+    let top_y = canvas_h as usize / 4;
+    let top_off = (top_y * canvas_w as usize + mid_x) * 4;
+    assert!(
+        buf[top_off] > 200 && buf[top_off + 1] < 55,
+        "Top-centre should be red after 90° CW on non-square canvas: R={}, G={}",
+        buf[top_off],
+        buf[top_off + 1],
+    );
+
+    let bot_y = canvas_h as usize * 3 / 4;
+    let bot_off = (bot_y * canvas_w as usize + mid_x) * 4;
+    assert!(
+        buf[bot_off + 1] > 200 && buf[bot_off] < 55,
+        "Bottom-centre should be green after 90° CW on non-square canvas: R={}, G={}",
+        buf[bot_off],
+        buf[bot_off + 1],
+    );
+}
