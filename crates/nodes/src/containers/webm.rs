@@ -723,11 +723,8 @@ impl ProcessorNode for WebMMuxerNode {
                 // the audio side (which is typically faster) could win again,
                 // leaving video_is_av1 permanently false.
                 if !got_video {
-                    let other_rx = if audio_from == 0 {
-                        &mut all_receivers[1]
-                    } else {
-                        &mut all_receivers[0]
-                    };
+                    let other_rx =
+                        if audio_from == 0 { &mut all_receivers[1] } else { &mut all_receivers[0] };
                     if let Some(Packet::Binary { data, content_type, metadata }) =
                         other_rx.recv().await
                     {
