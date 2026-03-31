@@ -158,6 +158,7 @@ struct PublisherReceiveLoopWithSlotConfig {
     publisher_path: String,
     stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
     dynamic_outputs: DynamicOutputs,
+    video_codec: VideoCodec,
 }
 
 fn normalize_gateway_path(path: &str) -> String {
@@ -717,6 +718,7 @@ impl ProcessorNode for MoqPeerNode {
                         publisher_events_tx.clone(),
                         stats_delta_tx.clone(),
                         dynamic_outputs.clone(),
+                        video_codec,
                     ).await {
                         Ok(_handle) => {
                             tracing::info!("Publisher connected and streaming");
@@ -1177,6 +1179,7 @@ impl MoqPeerNode {
         publisher_events: mpsc::UnboundedSender<PublisherEvent>,
         stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
         dynamic_outputs: DynamicOutputs,
+        video_codec: VideoCodec,
     ) -> Result<tokio::task::JoinHandle<Result<(), StreamKitError>>, StreamKitError> {
         let path = moq_connection.path.clone();
 
@@ -1213,6 +1216,7 @@ impl MoqPeerNode {
                 &mut shutdown_rx,
                 stats_delta_tx,
                 dynamic_outputs,
+                video_codec,
             )
             .await;
 
@@ -1272,6 +1276,8 @@ impl MoqPeerNode {
             let publisher_stats_delta_tx = config.stats_delta_tx.clone();
             let subscriber_stats_delta_tx = config.stats_delta_tx.clone();
             let extra_stats_delta_tx = config.stats_delta_tx;
+            // Copy video_codec before async blocks move config fields.
+            let video_codec = config.media.video_codec;
 
             // Create per-broadcast OriginConsumer clones BEFORE moving
             // receive_origin into the primary loop.
@@ -1299,6 +1305,7 @@ impl MoqPeerNode {
                         publisher_path: path.clone(),
                         stats_delta_tx: publisher_stats_delta_tx.clone(),
                         dynamic_outputs: config.dynamic_outputs.clone(),
+                        video_codec,
                     },
                     &mut publisher_shutdown_rx,
                 )
@@ -1340,6 +1347,7 @@ impl MoqPeerNode {
                             &stats,
                             &dyn_out,
                             Some(&bc_name),
+                            video_codec,
                         )
                         .await
                     }));
@@ -1456,6 +1464,7 @@ impl MoqPeerNode {
             shutdown_rx,
             &config.stats_delta_tx,
             &config.dynamic_outputs,
+            config.video_codec,
         )
         .await;
 
@@ -1476,6 +1485,7 @@ impl MoqPeerNode {
         shutdown_rx: &mut broadcast::Receiver<()>,
         stats_delta_tx: mpsc::Sender<NodeStatsDelta>,
         dynamic_outputs: DynamicOutputs,
+        video_codec: VideoCodec,
     ) -> Result<(), StreamKitError> {
         tracing::info!("Waiting for publisher to announce broadcast: {}", broadcast_name);
 
@@ -1494,6 +1504,7 @@ impl MoqPeerNode {
             shutdown_rx,
             &stats_delta_tx,
             &dynamic_outputs,
+            video_codec,
         )
         .await
     }
@@ -1591,6 +1602,7 @@ impl MoqPeerNode {
         shutdown_rx: &mut broadcast::Receiver<()>,
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
         dynamic_outputs: &DynamicOutputs,
+        video_codec: VideoCodec,
     ) -> Result<(), StreamKitError> {
         Self::watch_catalog_and_process_inner(
             broadcast_consumer,
@@ -1599,6 +1611,7 @@ impl MoqPeerNode {
             stats_delta_tx,
             dynamic_outputs,
             None, // no pin prefix for single-broadcast mode
+            video_codec,
         )
         .await
     }
@@ -1622,6 +1635,7 @@ impl MoqPeerNode {
         dynamic_outputs: &DynamicOutputs,
         pin_prefix: Option<&str>,
         track_handles: &mut HashMap<String, tokio::task::JoinHandle<Result<(), StreamKitError>>>,
+        video_codec: VideoCodec,
     ) {
         // Subscribe to all audio tracks not yet being handled
         for track_name in catalog.audio.renditions.keys() {
@@ -1640,6 +1654,7 @@ impl MoqPeerNode {
                         stats_delta_tx,
                         dynamic_outputs,
                         &output_pin,
+                        video_codec,
                     ),
                 );
             }
@@ -1662,6 +1677,7 @@ impl MoqPeerNode {
                         stats_delta_tx,
                         dynamic_outputs,
                         &output_pin,
+                        video_codec,
                     ),
                 );
             }
@@ -1680,6 +1696,7 @@ impl MoqPeerNode {
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
         dynamic_outputs: &DynamicOutputs,
         pin_prefix: Option<&str>,
+        video_codec: VideoCodec,
     ) -> Result<(), StreamKitError> {
         let catalog_track =
             broadcast_consumer.subscribe_track(&hang::catalog::Catalog::default_track()).map_err(
@@ -1726,6 +1743,7 @@ impl MoqPeerNode {
                         dynamic_outputs,
                         pin_prefix,
                         &mut track_handles,
+                        video_codec,
                     );
 
                     let is_additional_broadcast = pin_prefix.is_some();
@@ -1771,6 +1789,7 @@ impl MoqPeerNode {
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
         dynamic_outputs: &DynamicOutputs,
         output_pin_name: &str,
+        video_codec: VideoCodec,
     ) -> tokio::task::JoinHandle<Result<(), StreamKitError>> {
         const MAX_RESUBSCRIBE_ATTEMPTS: u32 = 10;
         const RESUBSCRIBE_INITIAL_BACKOFF: Duration = Duration::from_millis(100);
@@ -1802,6 +1821,7 @@ impl MoqPeerNode {
                     &mut task_shutdown,
                     &stats,
                     &dyn_outputs,
+                    video_codec,
                 )
                 .await;
 
@@ -1917,6 +1937,7 @@ impl MoqPeerNode {
         shutdown_rx: &mut broadcast::Receiver<()>,
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
         dynamic_outputs: &DynamicOutputs,
+        video_codec: VideoCodec,
     ) -> TrackExit {
         let mut frame_count = 0u64;
         let mut last_log = std::time::Instant::now();
@@ -1967,6 +1988,7 @@ impl MoqPeerNode {
                     stats_delta_tx,
                     keyframe,
                     dynamic_outputs,
+                    video_codec,
                 )
                 .await
                 {
@@ -2100,6 +2122,7 @@ impl MoqPeerNode {
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
         is_keyframe: bool,
         dynamic_outputs: &DynamicOutputs,
+        video_codec: VideoCodec,
     ) -> Result<FrameResult, StreamKitError> {
         tokio::select! {
             biased;
@@ -2146,7 +2169,10 @@ impl MoqPeerNode {
 
                         let data = payload.copy_to_bytes(payload.remaining());
                         let content_type = if is_video {
-                            Some(std::borrow::Cow::Borrowed("video/vp9"))
+                            Some(std::borrow::Cow::Borrowed(match video_codec {
+                                VideoCodec::Av1 => "video/av1",
+                                _ => "video/vp9",
+                            }))
                         } else {
                             None
                         };
