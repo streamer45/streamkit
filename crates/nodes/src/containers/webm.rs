@@ -667,11 +667,15 @@ impl ProcessorNode for WebMMuxerNode {
             }
         }
 
-        // If not all types were resolved (rare timeout), fall back to unified
-        // mode where classify_packet routes packets in the main loop, avoiding
-        // misclassification of pins with unknown types.
-        let all_types_resolved = input_types.len() >= num_inputs;
-        let use_unified = skip_classification || !all_types_resolved;
+        // Unified mode: all receivers go into `all_receivers` for on-the-fly
+        // classification in the main loop via `classify_packet`.  This is used
+        // only when `skip_classification` is true (which guarantees both
+        // `video_width > 0` and `video_height > 0`, so dimension auto-
+        // detection is never needed).  When types are partially resolved
+        // (timeout), we still use the classified path — pins with known
+        // types are classified correctly, and pins without types default to
+        // audio (the safer assumption) with a warning.
+        let use_unified = skip_classification;
 
         // -- Classify inputs and assign receivers --
         for (pin_name, rx) in context.inputs.drain() {
@@ -679,6 +683,13 @@ impl ProcessorNode for WebMMuxerNode {
             let is_video = pin_type.is_some_and(|ty| {
                 matches!(ty, PacketType::EncodedVideo(_) | PacketType::RawVideo(_))
             });
+
+            if pin_type.is_none() && !use_unified {
+                tracing::warn!(
+                    "WebMMuxerNode: pin '{pin_name}' has no resolved type info, \
+                     defaulting to audio classification"
+                );
+            }
 
             if is_video {
                 if let Some(PacketType::EncodedVideo(fmt)) = pin_type {
@@ -734,9 +745,8 @@ impl ProcessorNode for WebMMuxerNode {
 
         if use_unified {
             tracing::info!(
-                "WebMMuxerNode: unified mode (skip_classification={}, types_resolved={}, av1={})",
+                "WebMMuxerNode: unified mode (skip_classification={}, av1={})",
                 skip_classification,
-                all_types_resolved,
                 video_is_av1,
             );
         }
@@ -837,18 +847,15 @@ impl ProcessorNode for WebMMuxerNode {
                     "WebMMuxerNode: video_width/video_height not configured, \
                      auto-detecting from first VP9 keyframe"
                 );
-                let first_data = if let Some(rx) = video_rx.as_mut() {
-                    match rx.recv().await {
+                let first_data = match video_rx.as_mut() {
+                    Some(rx) => match rx.recv().await {
                         Some(Packet::Binary { data, metadata, .. }) => Some((data, metadata)),
                         _ => None,
-                    }
-                } else if let Some(rx) = all_receivers.first_mut() {
-                    match rx.recv().await {
-                        Some(Packet::Binary { data, metadata, .. }) => Some((data, metadata)),
-                        _ => None,
-                    }
-                } else {
-                    None
+                    },
+                    // In unified mode (skip_classification), video_width/height
+                    // are always > 0 so this branch is unreachable.  Guard
+                    // against future changes with a clear error.
+                    None => None,
                 };
 
                 if let Some((data, metadata)) = first_data {

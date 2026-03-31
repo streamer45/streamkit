@@ -66,6 +66,11 @@ pub struct DynamicEngine {
     /// `AddedInputPin` / `RemoveInputPin` etc.).
     pub(super) pin_management_txs:
         HashMap<String, mpsc::Sender<streamkit_core::pins::PinManagementMessage>>,
+    /// Nodes that declared `supports_dynamic_pins() = true`.  Used to gate
+    /// dynamic pin creation requests (`RequestAddInputPin` /
+    /// `RequestAddOutputPin`) and to skip strict type validation when a pin
+    /// is not yet in metadata.
+    pub(super) dynamic_pin_nodes: std::collections::HashSet<String>,
     /// Map of node pin metadata: NodeId -> Pin Metadata (for runtime type validation)
     pub(super) node_pin_metadata: HashMap<String, NodePinMetadata>,
     /// Map of node_id -> node_kind for labeling metrics
@@ -574,6 +579,9 @@ impl DynamicEngine {
         // `AddedInputPin` / `RemoveInputPin` etc. through the same channel.
         let (pin_management_tx, pin_management_rx) = mpsc::channel(CONTROL_CAPACITY);
         self.pin_management_txs.insert(node_id.to_string(), pin_management_tx);
+        if node.supports_dynamic_pins() {
+            self.dynamic_pin_nodes.insert(node_id.to_string());
+        }
 
         // 5. Create NodeContext
         let context = NodeContext {
@@ -677,7 +685,7 @@ impl DynamicEngine {
             // support dynamic pins and neither pin exists yet, no compile-time
             // type checking occurs — mismatches will only surface at runtime
             // (or via the post-creation check in connect_nodes).
-            if self.pin_management_txs.contains_key(from_node) {
+            if self.dynamic_pin_nodes.contains(from_node) {
                 tracing::debug!(
                     "Source pin {}.{} not in metadata, but node supports dynamic pins; skipping strict type validation",
                     from_node,
@@ -699,7 +707,7 @@ impl DynamicEngine {
             .find(|p| p.name == to_pin)
             .or_else(|| match_dynamic_pin(&dest_metadata.input_pins, to_pin));
         let Some(dest_pin) = dest_pin else {
-            if self.pin_management_txs.contains_key(to_node) {
+            if self.dynamic_pin_nodes.contains(to_node) {
                 tracing::debug!(
                     "Destination pin {}.{} not in metadata, but node supports dynamic pins; skipping strict type validation",
                     to_node,
@@ -809,7 +817,14 @@ impl DynamicEngine {
         )> = None;
         let dest_tx = if let Some(tx) = self.node_inputs.get(&(to_node.clone(), to_pin.clone())) {
             tx.clone()
-        } else if let Some(pin_mgmt_tx) = self.pin_management_txs.get(&to_node) {
+        } else if self.dynamic_pin_nodes.contains(&to_node) {
+            let Some(pin_mgmt_tx) = self.pin_management_txs.get(&to_node) else {
+                tracing::error!(
+                    "No pin management channel for dynamic-pin node '{}' — cannot create input pin",
+                    to_node
+                );
+                return;
+            };
             // Node supports dynamic pins - create the pin on-demand
             tracing::info!(
                 "Dynamically creating input pin '{}.{}' for connection",
@@ -834,30 +849,21 @@ impl DynamicEngine {
 
             // Wait for the pin to be created (with timeout to avoid blocking
             // the engine indefinitely if the node is unresponsive).
-            let pin = if let Ok(inner) =
-                tokio::time::timeout(std::time::Duration::from_secs(5), response_rx).await
-            {
-                match inner {
-                    Ok(Ok(pin)) => pin,
-                    Ok(Err(e)) => {
-                        tracing::error!("Node '{}' rejected pin creation: {}", to_node, e);
+            let pin =
+                match tokio::time::timeout(std::time::Duration::from_secs(5), response_rx).await {
+                    Ok(Ok(Ok(pin))) => pin,
+                    Ok(Ok(Err(e))) => {
+                        tracing::error!("Node '{}' rejected input pin creation: {}", to_node, e);
                         return;
                     },
-                    Err(_) => {
+                    Ok(Err(_)) | Err(_) => {
                         tracing::error!(
-                            "Node '{}' did not respond to pin creation request",
-                            to_node
-                        );
+                        "Node '{}' did not respond to input pin creation (dropped or timed out)",
+                        to_node
+                    );
                         return;
                     },
-                }
-            } else {
-                tracing::error!(
-                    "Timed out waiting for input pin creation response from node '{}'",
-                    to_node
-                );
-                return;
-            };
+                };
 
             // Create the channel for this new pin
             let (tx, rx) = mpsc::channel(self.node_input_capacity);
@@ -904,7 +910,14 @@ impl DynamicEngine {
                 .get(&from_node)
                 .and_then(|m| m.output_pins.iter().find(|p| p.name == from_pin))
                 .map_or(streamkit_core::types::PacketType::Any, |p| p.produces_type.clone());
-        } else if let Some(pin_mgmt_tx) = self.pin_management_txs.get(&from_node) {
+        } else if self.dynamic_pin_nodes.contains(&from_node) {
+            let Some(pin_mgmt_tx) = self.pin_management_txs.get(&from_node) else {
+                tracing::error!(
+                    "No pin management channel for dynamic-pin node '{}' — cannot create output pin",
+                    from_node
+                );
+                return;
+            };
             // Node supports dynamic pins — create the output pin on-demand
             tracing::info!(
                 "Dynamically creating output pin '{}.{}' for connection",
@@ -932,39 +945,27 @@ impl DynamicEngine {
 
             // Wait for the node to respond with the pin definition (with
             // timeout to avoid blocking the engine indefinitely).
-            let pin = if let Ok(inner) =
-                tokio::time::timeout(std::time::Duration::from_secs(5), response_rx).await
-            {
-                match inner {
-                    Ok(Ok(pin)) => pin,
-                    Ok(Err(e)) => {
+            let pin =
+                match tokio::time::timeout(std::time::Duration::from_secs(5), response_rx).await {
+                    Ok(Ok(Ok(pin))) => pin,
+                    Ok(Ok(Err(e))) => {
                         tracing::error!("Node '{}' rejected output pin creation: {}", from_node, e);
                         if let Some(ref input_pin) = created_dynamic_input {
                             self.rollback_dynamic_input(&to_node, input_pin).await;
                         }
                         return;
                     },
-                    Err(_) => {
+                    Ok(Err(_)) | Err(_) => {
                         tracing::error!(
-                            "Node '{}' did not respond to output pin creation request",
-                            from_node
-                        );
+                        "Node '{}' did not respond to output pin creation (dropped or timed out)",
+                        from_node
+                    );
                         if let Some(ref input_pin) = created_dynamic_input {
                             self.rollback_dynamic_input(&to_node, input_pin).await;
                         }
                         return;
                     },
-                }
-            } else {
-                tracing::error!(
-                    "Timed out waiting for output pin creation response from node '{}'",
-                    from_node
-                );
-                if let Some(ref input_pin) = created_dynamic_input {
-                    self.rollback_dynamic_input(&to_node, input_pin).await;
-                }
-                return;
-            };
+                };
 
             // The engine uses `from_pin` as the connection key while the
             // distributor is stored under `pin.name`.  These must match;

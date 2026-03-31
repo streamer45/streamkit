@@ -31,6 +31,7 @@ fn create_test_engine() -> DynamicEngine {
         node_inputs: HashMap::new(),
         pin_distributors: HashMap::new(),
         pin_management_txs: HashMap::new(),
+        dynamic_pin_nodes: std::collections::HashSet::new(),
         node_pin_metadata: HashMap::new(),
         node_kinds: HashMap::new(),
         batch_size: 32,

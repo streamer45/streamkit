@@ -30,6 +30,7 @@ fn create_test_engine() -> DynamicEngine {
         node_inputs: HashMap::new(),
         pin_distributors: HashMap::new(),
         pin_management_txs: HashMap::new(),
+        dynamic_pin_nodes: std::collections::HashSet::new(),
         node_pin_metadata: HashMap::new(),
         node_kinds: HashMap::new(),
         batch_size: 32,
@@ -328,6 +329,7 @@ fn test_validate_connection_types_missing_pin_allowed_for_dynamic_pin_nodes() {
         .insert("dest".to_string(), NodePinMetadata { input_pins: vec![], output_pins: vec![] });
     let (tx, _rx) = mpsc::channel(1);
     engine.pin_management_txs.insert("dest".to_string(), tx);
+    engine.dynamic_pin_nodes.insert("dest".to_string());
 
     // Should succeed (pin will be created on-demand during connect).
     let result = engine.validate_connection_types("source", "out", "dest", "in_0");
