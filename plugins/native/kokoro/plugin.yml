@@ -4,7 +4,7 @@ version: 0.1.0
 node_kind: kokoro
 kind: native
 entrypoint: libkokoro.so
-artifact: plugins/native/kokoro/target/release/libkokoro.so
+artifact: target/plugins/release/libkokoro.so
 description: Text-to-speech using Sherpa-ONNX Kokoro models
 license: MPL-2.0
 models:

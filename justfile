@@ -12,9 +12,23 @@ tokio_console_features := "--features tokio-console"
 # sherpa-rs v0.6.8 uses sherpa-onnx v1.12.17
 sherpa_onnx_version := "1.12.17"
 
+# Shared target directory for native plugin builds (deduplicates common deps)
+plugins_target_dir := justfile_directory() / "target" / "plugins"
+
 # List all available commands
 default:
     @just --list
+
+# Remove build artifacts not used in the last 7 days (use instead of cargo clean)
+sweep days='7':
+    @echo "Sweeping stale build artifacts (older than {{days}} days)..."
+    @cargo sweep --time {{days}}
+    @for dir in plugins/native/*/; do \
+        if [ -f "$dir/Cargo.toml" ]; then \
+            echo "Sweeping $dir..."; \
+            (cd "$dir" && cargo sweep --time {{days}}); \
+        fi; \
+    done
 
 # --- Codegen ---
 # Generate TypeScript types from Rust code
@@ -309,29 +323,29 @@ gen-docs-reference:
 # Lint native plugins
 lint-plugins:
     @echo "Linting native plugins..."
-    @cd plugins/native/whisper && cargo fmt -- --check && cargo clippy -- -D warnings
-    @cd plugins/native/kokoro && cargo fmt -- --check && cargo clippy -- -D warnings
-    @cd plugins/native/piper && cargo fmt -- --check && cargo clippy -- -D warnings
-    @cd plugins/native/sensevoice && cargo fmt -- --check && cargo clippy -- -D warnings
-    @cd plugins/native/vad && cargo fmt -- --check && cargo clippy -- -D warnings
-    @cd plugins/native/matcha && cargo fmt -- --check && cargo clippy -- -D warnings
-    @cd plugins/native/pocket-tts && cargo fmt -- --check && cargo clippy -- -D warnings
-    @cd plugins/native/nllb && cargo fmt -- --check && CMAKE_ARGS="-DCMAKE_INSTALL_PREFIX=$$(pwd)/target/cmake-install" cargo clippy -- -D warnings
-    @cd plugins/native/supertonic && cargo fmt -- --check && cargo clippy -- -D warnings
+    @cd plugins/native/whisper && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
+    @cd plugins/native/kokoro && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
+    @cd plugins/native/piper && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
+    @cd plugins/native/sensevoice && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
+    @cd plugins/native/vad && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
+    @cd plugins/native/matcha && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
+    @cd plugins/native/pocket-tts && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
+    @cd plugins/native/nllb && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt -- --check && CMAKE_ARGS="-DCMAKE_INSTALL_PREFIX=$$(pwd)/target/cmake-install" CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
+    @cd plugins/native/supertonic && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
     @echo "✓ All native plugins passed linting"
 
 # Auto-fix formatting and linting issues in native plugins
 fix-plugins:
     @echo "Auto-fixing native plugins..."
-    @cd plugins/native/whisper && cargo fmt && cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
-    @cd plugins/native/kokoro && cargo fmt && cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
-    @cd plugins/native/piper && cargo fmt && cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
-    @cd plugins/native/sensevoice && cargo fmt && cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
-    @cd plugins/native/vad && cargo fmt && cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
-    @cd plugins/native/matcha && cargo fmt && cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
-    @cd plugins/native/pocket-tts && cargo fmt && cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
-    @cd plugins/native/nllb && cargo fmt && CMAKE_ARGS="-DCMAKE_INSTALL_PREFIX=$$(pwd)/target/cmake-install" cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
-    @cd plugins/native/supertonic && cargo fmt && cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
+    @cd plugins/native/whisper && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
+    @cd plugins/native/kokoro && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
+    @cd plugins/native/piper && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
+    @cd plugins/native/sensevoice && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
+    @cd plugins/native/vad && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
+    @cd plugins/native/matcha && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
+    @cd plugins/native/pocket-tts && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
+    @cd plugins/native/nllb && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt && CMAKE_ARGS="-DCMAKE_INSTALL_PREFIX=$$(pwd)/target/cmake-install" CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
+    @cd plugins/native/supertonic && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
     @echo "✓ All native plugins fixed"
 
 # --- Profiling ---
@@ -543,7 +557,7 @@ setup-whisper: download-whisper-models download-silero-vad
 [working-directory: 'plugins/native/whisper']
 build-plugin-native-whisper:
     @echo "Building native Whisper STT plugin..."
-    @cargo build --release
+    @CARGO_TARGET_DIR={{plugins_target_dir}} cargo build --release
 
 # Download and install sherpa-onnx shared library (required for Kokoro plugin)
 install-sherpa-onnx:
@@ -609,26 +623,26 @@ setup-piper: install-sherpa-onnx download-piper-models
 [working-directory: 'plugins/native/kokoro']
 build-plugin-native-kokoro:
     @echo "Building native Kokoro TTS plugin..."
-    @cargo build --release
+    @CARGO_TARGET_DIR={{plugins_target_dir}} cargo build --release
 
 # Upload Kokoro plugin to running server
 [working-directory: 'plugins/native/kokoro']
 upload-kokoro-plugin: build-plugin-native-kokoro
     @echo "Uploading Kokoro plugin to server..."
-    @curl -X POST -F plugin=@target/release/libkokoro.so \
+    @curl -X POST -F "plugin=@{{plugins_target_dir}}/release/libkokoro.so" \
         http://127.0.0.1:4545/api/v1/plugins
 
 # Build native Piper TTS plugin
 [working-directory: 'plugins/native/piper']
 build-plugin-native-piper:
     @echo "Building native Piper TTS plugin..."
-    @cargo build --release
+    @CARGO_TARGET_DIR={{plugins_target_dir}} cargo build --release
 
 # Upload Piper plugin to running server
 [working-directory: 'plugins/native/piper']
 upload-piper-plugin: build-plugin-native-piper
     @echo "Uploading Piper plugin to server..."
-    @curl -X POST -F plugin=@target/release/libpiper.so \
+    @curl -X POST -F "plugin=@{{plugins_target_dir}}/release/libpiper.so" \
         http://127.0.0.1:4545/api/v1/plugins
 
 # Download Matcha TTS models
@@ -644,26 +658,26 @@ setup-matcha: install-sherpa-onnx download-matcha-models
 [working-directory: 'plugins/native/matcha']
 build-plugin-native-matcha:
     @echo "Building native Matcha TTS plugin..."
-    @cargo build --release
+    @CARGO_TARGET_DIR={{plugins_target_dir}} cargo build --release
 
 # Build native Pocket TTS plugin
 [working-directory: 'plugins/native/pocket-tts']
 build-plugin-native-pocket-tts:
     @echo "Building native Pocket TTS plugin..."
-    @cargo build --release
+    @CARGO_TARGET_DIR={{plugins_target_dir}} cargo build --release
 
 # Upload Pocket TTS plugin to running server
 [working-directory: 'plugins/native/pocket-tts']
 upload-pocket-tts-plugin: build-plugin-native-pocket-tts
     @echo "Uploading Pocket TTS plugin to server..."
-    @curl -X POST -F plugin=@target/release/libpocket_tts.so \
+    @curl -X POST -F "plugin=@{{plugins_target_dir}}/release/libpocket_tts.so" \
         http://127.0.0.1:4545/api/v1/plugins
 
 # Upload Matcha plugin to running server
 [working-directory: 'plugins/native/matcha']
 upload-matcha-plugin: build-plugin-native-matcha
     @echo "Uploading Matcha plugin to server..."
-    @curl -X POST -F plugin=@target/release/libmatcha.so \
+    @curl -X POST -F "plugin=@{{plugins_target_dir}}/release/libmatcha.so" \
         http://127.0.0.1:4545/api/v1/plugins
 
 # Download SenseVoice models
@@ -694,13 +708,13 @@ setup-sensevoice: install-sherpa-onnx download-sensevoice-models download-silero
 [working-directory: 'plugins/native/sensevoice']
 build-plugin-native-sensevoice:
     @echo "Building native SenseVoice STT plugin..."
-    @cargo build --release
+    @CARGO_TARGET_DIR={{plugins_target_dir}} cargo build --release
 
 # Upload SenseVoice plugin to running server
 [working-directory: 'plugins/native/sensevoice']
 upload-sensevoice-plugin: build-plugin-native-sensevoice
     @echo "Uploading SenseVoice plugin to server..."
-    @curl -X POST -F plugin=@target/release/libsensevoice.so \
+    @curl -X POST -F "plugin=@{{plugins_target_dir}}/release/libsensevoice.so" \
         http://127.0.0.1:4545/api/v1/plugins
 
 # Download pre-converted NLLB models from Hugging Face
@@ -738,13 +752,13 @@ setup-nllb: download-nllb-models
 [working-directory: 'plugins/native/nllb']
 build-plugin-native-nllb:
     @echo "Building native NLLB translation plugin..."
-    @cargo build --release
+    @CARGO_TARGET_DIR={{plugins_target_dir}} cargo build --release
 
 # Upload NLLB plugin to running server
 [working-directory: 'plugins/native/nllb']
 upload-nllb-plugin: build-plugin-native-nllb
     @echo "Uploading NLLB plugin to server..."
-    @curl -X POST -F plugin=@target/release/libnllb.so \
+    @curl -X POST -F "plugin=@{{plugins_target_dir}}/release/libnllb.so" \
         http://127.0.0.1:4545/api/v1/plugins
 
 # Download ten-vad models
@@ -782,13 +796,13 @@ setup-vad: install-sherpa-onnx download-tenvad-models
 [working-directory: 'plugins/native/vad']
 build-plugin-native-vad:
     @echo "Building native VAD plugin..."
-    @cargo build --release
+    @CARGO_TARGET_DIR={{plugins_target_dir}} cargo build --release
 
 # Upload VAD plugin to running server
 [working-directory: 'plugins/native/vad']
 upload-vad-plugin: build-plugin-native-vad
     @echo "Uploading VAD plugin to server..."
-    @curl -X POST -F plugin=@target/release/libvad.so \
+    @curl -X POST -F "plugin=@{{plugins_target_dir}}/release/libvad.so" \
         http://127.0.0.1:4545/api/v1/plugins
 
 # Download Helsinki-NLP OPUS-MT models for translation (pre-packaged from StreamKit HuggingFace)
@@ -844,19 +858,19 @@ setup-helsinki: download-helsinki-models
 [working-directory: 'plugins/native/helsinki']
 build-plugin-native-helsinki:
     @echo "Building native Helsinki translation plugin..."
-    @cargo build --release
+    @CARGO_TARGET_DIR={{plugins_target_dir}} cargo build --release
 
 # Build Helsinki plugin with CUDA support
 [working-directory: 'plugins/native/helsinki']
 build-plugin-native-helsinki-cuda:
     @echo "Building native Helsinki translation plugin with CUDA..."
-    @cargo build --release --features cuda
+    @CARGO_TARGET_DIR={{plugins_target_dir}} cargo build --release --features cuda
 
 # Upload Helsinki plugin to running server
 [working-directory: 'plugins/native/helsinki']
 upload-helsinki-plugin: build-plugin-native-helsinki
     @echo "Uploading Helsinki plugin to server..."
-    @curl -X POST -F plugin=@target/release/libhelsinki.so \
+    @curl -X POST -F "plugin=@{{plugins_target_dir}}/release/libhelsinki.so" \
         http://127.0.0.1:4545/api/v1/plugins
 
 # Download Supertonic TTS models
@@ -887,13 +901,13 @@ setup-supertonic: download-supertonic-models
 [working-directory: 'plugins/native/supertonic']
 build-plugin-native-supertonic:
     @echo "Building native Supertonic TTS plugin..."
-    @cargo build --release
+    @CARGO_TARGET_DIR={{plugins_target_dir}} cargo build --release
 
 # Upload Supertonic plugin to running server
 [working-directory: 'plugins/native/supertonic']
 upload-supertonic-plugin: build-plugin-native-supertonic
     @echo "Uploading Supertonic plugin to server..."
-    @curl -X POST -F plugin=@target/release/libsupertonic.so \
+    @curl -X POST -F "plugin=@{{plugins_target_dir}}/release/libsupertonic.so" \
         http://127.0.0.1:4545/api/v1/plugins
 
 # Build specific native plugin by name
@@ -931,16 +945,18 @@ copy-plugins-native:
     shopt -s nullglob
     mkdir -p .plugins/native
 
-    # Examples
+    PLUGINS_TARGET="{{plugins_target_dir}}"
+
+    # Examples (gain-native has its own target dir, not shared)
     cp examples/plugins/gain-native/target/release/libgain_plugin_native.* .plugins/native/ 2>/dev/null || true
 
-    # Official native plugins (repo-local)
+    # Official native plugins (shared target dir)
     for name in whisper kokoro piper matcha vad sensevoice nllb helsinki supertonic; do
         for f in \
-            plugins/native/"$name"/target/release/lib"$name".so \
-            plugins/native/"$name"/target/release/lib"$name".so.* \
-            plugins/native/"$name"/target/release/lib"$name".dylib \
-            plugins/native/"$name"/target/release/"$name".dll
+            "$PLUGINS_TARGET"/release/lib"$name".so \
+            "$PLUGINS_TARGET"/release/lib"$name".so.* \
+            "$PLUGINS_TARGET"/release/lib"$name".dylib \
+            "$PLUGINS_TARGET"/release/"$name".dll
         do
             if [[ -f "$f" ]]; then
                 cp -f "$f" .plugins/native/
@@ -948,10 +964,10 @@ copy-plugins-native:
         done
     done
     for f in \
-        plugins/native/pocket-tts/target/release/libpocket_tts.so \
-        plugins/native/pocket-tts/target/release/libpocket_tts.so.* \
-        plugins/native/pocket-tts/target/release/libpocket_tts.dylib \
-        plugins/native/pocket-tts/target/release/pocket_tts.dll
+        "$PLUGINS_TARGET"/release/libpocket_tts.so \
+        "$PLUGINS_TARGET"/release/libpocket_tts.so.* \
+        "$PLUGINS_TARGET"/release/libpocket_tts.dylib \
+        "$PLUGINS_TARGET"/release/pocket_tts.dll
     do
         if [[ -f "$f" ]]; then
             cp -f "$f" .plugins/native/

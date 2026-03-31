@@ -7,7 +7,7 @@
       "node_kind": "helsinki",
       "kind": "native",
       "entrypoint": "libhelsinki.so",
-      "artifact": "plugins/native/helsinki/target/release/libhelsinki.so",
+      "artifact": "target/plugins/release/libhelsinki.so",
       "description": "Neural machine translation using OPUS-MT",
       "license": "MPL-2.0",
       "models": [
@@ -50,7 +50,7 @@
       "node_kind": "kokoro",
       "kind": "native",
       "entrypoint": "libkokoro.so",
-      "artifact": "plugins/native/kokoro/target/release/libkokoro.so",
+      "artifact": "target/plugins/release/libkokoro.so",
       "description": "Text-to-speech using Sherpa-ONNX Kokoro models",
       "license": "MPL-2.0",
       "models": [
@@ -78,7 +78,7 @@
       "node_kind": "matcha",
       "kind": "native",
       "entrypoint": "libmatcha.so",
-      "artifact": "plugins/native/matcha/target/release/libmatcha.so",
+      "artifact": "target/plugins/release/libmatcha.so",
       "description": "Text-to-speech using Matcha models",
       "license": "MPL-2.0",
       "models": [
@@ -110,7 +110,7 @@
       "node_kind": "nllb",
       "kind": "native",
       "entrypoint": "libnllb.so",
-      "artifact": "plugins/native/nllb/target/release/libnllb.so",
+      "artifact": "target/plugins/release/libnllb.so",
       "description": "Neural machine translation using NLLB",
       "license": "MPL-2.0",
       "models": [
@@ -138,7 +138,7 @@
       "node_kind": "piper",
       "kind": "native",
       "entrypoint": "libpiper.so",
-      "artifact": "plugins/native/piper/target/release/libpiper.so",
+      "artifact": "target/plugins/release/libpiper.so",
       "description": "Text-to-speech using Piper VITS models",
       "license": "MPL-2.0",
       "models": [
@@ -181,7 +181,7 @@
       "node_kind": "pocket-tts",
       "kind": "native",
       "entrypoint": "libpocket_tts.so",
-      "artifact": "plugins/native/pocket-tts/target/release/libpocket_tts.so",
+      "artifact": "target/plugins/release/libpocket_tts.so",
       "description": "Lightweight CPU TTS using Kyutai Pocket TTS (Candle)",
       "license": "MPL-2.0",
       "models": [
@@ -209,7 +209,7 @@
       "node_kind": "sensevoice",
       "kind": "native",
       "entrypoint": "libsensevoice.so",
-      "artifact": "plugins/native/sensevoice/target/release/libsensevoice.so",
+      "artifact": "target/plugins/release/libsensevoice.so",
       "description": "Streaming speech-to-text using SenseVoice",
       "license": "MPL-2.0",
       "models": [
@@ -252,7 +252,7 @@
       "node_kind": "supertonic",
       "kind": "native",
       "entrypoint": "libsupertonic.so",
-      "artifact": "plugins/native/supertonic/target/release/libsupertonic.so",
+      "artifact": "target/plugins/release/libsupertonic.so",
       "description": "Multilingual TTS using Supertonic (66M params, 5 languages, up to 167x real-time)",
       "license": "MPL-2.0",
       "models": [
@@ -280,7 +280,7 @@
       "node_kind": "vad",
       "kind": "native",
       "entrypoint": "libvad.so",
-      "artifact": "plugins/native/vad/target/release/libvad.so",
+      "artifact": "target/plugins/release/libvad.so",
       "description": "Voice activity detection",
       "license": "MPL-2.0",
       "models": [
@@ -308,7 +308,7 @@
       "node_kind": "whisper",
       "kind": "native",
       "entrypoint": "libwhisper.so",
-      "artifact": "plugins/native/whisper/target/release/libwhisper.so",
+      "artifact": "target/plugins/release/libwhisper.so",
       "description": "Streaming speech-to-text using whisper.cpp",
       "license": "MPL-2.0",
       "models": [

@@ -4,7 +4,7 @@ version: 0.1.0
 node_kind: piper
 kind: native
 entrypoint: libpiper.so
-artifact: plugins/native/piper/target/release/libpiper.so
+artifact: target/plugins/release/libpiper.so
 description: Text-to-speech using Piper VITS models
 license: MPL-2.0
 models:

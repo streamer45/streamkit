@@ -4,7 +4,7 @@ version: 0.1.0
 node_kind: nllb
 kind: native
 entrypoint: libnllb.so
-artifact: plugins/native/nllb/target/release/libnllb.so
+artifact: target/plugins/release/libnllb.so
 description: Neural machine translation using NLLB
 license: MPL-2.0
 models:
