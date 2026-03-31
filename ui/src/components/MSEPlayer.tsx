@@ -241,6 +241,7 @@ async function streamMediaData(
   let playbackStarted = false;
   let lastDiagLog = 0;
   let lastStatusUpdate = 0;
+  let lastTotalVideoFrames = 0;
 
   while (true) {
     // Check if media element is in error state
@@ -316,6 +317,31 @@ async function streamMediaData(
       ) {
         const q = media.getVideoPlaybackQuality();
         qualityStr = ` vpq(total=${q.totalVideoFrames} dropped=${q.droppedVideoFrames})`;
+
+        // Detect VP9 decoder stalls: if totalVideoFrames hasn't increased
+        // since the last diagnostic interval, the decoder has stopped
+        // producing frames while audio continues playing.  Re-seek to the
+        // live edge to recover.
+        if (
+          playbackStarted &&
+          !media.paused &&
+          lastTotalVideoFrames > 0 &&
+          q.totalVideoFrames === lastTotalVideoFrames &&
+          sourceBuffer.buffered.length > 0
+        ) {
+          const lastIdx = sourceBuffer.buffered.length - 1;
+          const liveEdge = sourceBuffer.buffered.end(lastIdx);
+          const target = Math.max(sourceBuffer.buffered.start(lastIdx), liveEdge - 2);
+          componentsLogger.warn(
+            `MSEPlayer: VP9 decoder stall detected (total=${q.totalVideoFrames} unchanged), ` +
+              `re-seeking to ${target.toFixed(2)}s`
+          );
+          media.currentTime = target;
+          if (media.paused) {
+            media.play().catch(() => {});
+          }
+        }
+        lastTotalVideoFrames = q.totalVideoFrames;
       }
 
       componentsLogger.info(
