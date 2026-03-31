@@ -689,7 +689,7 @@ impl ProcessorNode for WebMMuxerNode {
                 // Track which receiver index delivered the first packet so we
                 // can await the OTHER receiver if it was audio.
                 let mut got_video = false;
-                let mut audio_from: usize = 0;
+                let mut audio_from: Option<usize> = None;
                 tokio::select! {
                     r0 = rx0.recv() => {
                         if let Some(Packet::Binary { data, content_type, metadata }) = r0 {
@@ -700,7 +700,7 @@ impl ProcessorNode for WebMMuxerNode {
                                 got_video = true;
                             } else {
                                 first_audio_packet = Some((data, metadata));
-                                audio_from = 0;
+                                audio_from = Some(0);
                             }
                         }
                     }
@@ -713,7 +713,7 @@ impl ProcessorNode for WebMMuxerNode {
                                 got_video = true;
                             } else {
                                 first_audio_packet = Some((data, metadata));
-                                audio_from = 1;
+                                audio_from = Some(1);
                             }
                         }
                     }
@@ -722,16 +722,26 @@ impl ProcessorNode for WebMMuxerNode {
                 // directly.  A second `select!` would race both receivers and
                 // the audio side (which is typically faster) could win again,
                 // leaving video_is_av1 permanently false.
+                //
+                // `audio_from` is `None` when the winning select! branch
+                // returned `None` (closed channel) or a non-Binary packet;
+                // in that case there is no "other" receiver to try.
                 if !got_video {
-                    let other_rx =
-                        if audio_from == 0 { &mut all_receivers[1] } else { &mut all_receivers[0] };
-                    if let Some(Packet::Binary { data, content_type, metadata }) =
-                        other_rx.recv().await
-                    {
-                        let (is_video, is_av1) = classify_content_type(content_type.as_deref());
-                        video_is_av1 |= is_av1;
-                        if is_video {
-                            first_video_packet = Some((data, metadata));
+                    if let Some(idx) = audio_from {
+                        let other_rx = if idx == 0 {
+                            &mut all_receivers[1]
+                        } else {
+                            &mut all_receivers[0]
+                        };
+                        if let Some(Packet::Binary { data, content_type, metadata }) =
+                            other_rx.recv().await
+                        {
+                            let (is_video, is_av1) =
+                                classify_content_type(content_type.as_deref());
+                            video_is_av1 |= is_av1;
+                            if is_video {
+                                first_video_packet = Some((data, metadata));
+                            }
                         }
                     }
                 }
