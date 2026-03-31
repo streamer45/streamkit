@@ -657,9 +657,7 @@ impl ProcessorNode for WebMMuxerNode {
             // packet from each receiver to detect AV1 from content_type.
             if !video_is_av1 {
                 for rx in &mut all_receivers {
-                    if let Some(Packet::Binary { data, content_type, metadata }) =
-                        rx.recv().await
-                    {
+                    if let Some(Packet::Binary { data, content_type, metadata }) = rx.recv().await {
                         let ct_str = content_type.as_deref().unwrap_or("");
                         if ct_str == "video/av1" || ct_str.starts_with("video/av1;") {
                             video_is_av1 = true;
