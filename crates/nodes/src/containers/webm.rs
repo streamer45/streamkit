@@ -498,9 +498,6 @@ struct MuxTracks {
 /// of `"vp9"`.  This is needed for MSE consumers that initialise
 /// SourceBuffers from the MIME type.
 ///
-/// TODO: A future `video_codec` config option on the muxer node could
-/// eliminate the need for manual `content_type` overrides in pipeline
-/// configs when using AV1 instead of VP9.
 const fn webm_content_type(has_audio: bool, has_video: bool, video_is_av1: bool) -> &'static str {
     match (has_audio, has_video, video_is_av1) {
         (true, true, false) => "video/webm; codecs=\"vp9,opus\"",
@@ -638,9 +635,15 @@ impl ProcessorNode for WebMMuxerNode {
         let use_packet_inspection = !skip_classification && context.input_types.is_empty();
 
         if skip_classification {
-            // Fast path: collect all receivers, skip classification.
-            // Still detect AV1 from connection metadata so the segment header
-            // uses the correct codec ID and content-type.
+            // Fast path: collect all receivers into a unified vec.
+            // We still need to detect the video codec (VP9 vs AV1) so the
+            // segment header uses the correct codec ID and content-type.
+            //
+            // Detection priority:
+            //   1. connection metadata (input_types — populated by the
+            //      engine for static/oneshot pipelines)
+            //   2. first video packet's content_type (needed for dynamic
+            //      sessions where input_types is empty)
             for (pin_name, rx) in context.inputs.drain() {
                 if let Some(PacketType::EncodedVideo(fmt)) = context.input_types.get(&pin_name) {
                     if fmt.codec == VideoCodec::Av1 {
@@ -649,12 +652,36 @@ impl ProcessorNode for WebMMuxerNode {
                 }
                 all_receivers.push(rx);
             }
+
+            // If input_types didn't reveal the codec, peek at the first
+            // packet from each receiver to detect AV1 from content_type.
+            if !video_is_av1 {
+                for rx in &mut all_receivers {
+                    if let Some(Packet::Binary { data, content_type, metadata }) =
+                        rx.recv().await
+                    {
+                        let ct_str = content_type.as_deref().unwrap_or("");
+                        if ct_str == "video/av1" || ct_str.starts_with("video/av1;") {
+                            video_is_av1 = true;
+                            first_video_packet = Some((data, metadata));
+                            break;
+                        }
+                        if ct_str.starts_with("video/") {
+                            first_video_packet = Some((data, metadata));
+                        } else {
+                            first_audio_packet = Some((data, metadata));
+                        }
+                    }
+                }
+            }
+
             state_helpers::emit_running(&context.state_tx, &node_name);
             tracing::info!(
-                "WebMMuxerNode: skipping classification (num_inputs={}, dims={}x{})",
+                "WebMMuxerNode: skipping classification (num_inputs={}, dims={}x{}, av1={})",
                 self.config.num_inputs,
                 self.config.video_width,
-                self.config.video_height
+                self.config.video_height,
+                video_is_av1,
             );
         } else if use_packet_inspection {
             state_helpers::emit_running(&context.state_tx, &node_name);
