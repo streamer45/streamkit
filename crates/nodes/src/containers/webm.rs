@@ -1507,7 +1507,11 @@ fn classify_packet(packet: Packet) -> Option<MuxFrame> {
 ///    domain so video timestamps share the MoQ epoch.
 /// 3. **This function** applies a per-track rebase offset (aligning the
 ///    late-arriving track to the first track's position) and enforces
-///    per-track monotonicity (+1 ms on backward jumps).
+///    per-track monotonicity (+1 ms on backward jumps).  Large backward
+///    jumps (> 500 ms) trigger a **rebase reset**: the offset is
+///    recomputed from `last_written_ns` so the track re-aligns with the
+///    current global position, preventing permanent A/V desync from
+///    compositor calibration.
 /// 4. **[`write_frame`]** applies a global max-clamp for libwebm's
 ///    non-decreasing requirement.
 ///
@@ -1564,9 +1568,49 @@ fn stage_frame(
     // Per-track monotonicity — ensure strictly increasing timestamps within
     // each track.  This replaces the old global clamp which distorted the
     // *other* track's timing when clamping across tracks.
+    //
+    // Large backward jumps (> 500 ms) indicate an upstream epoch reset —
+    // most commonly the compositor calibrating its running clock to a
+    // remote MoQ input.  Pre-calibration frames established the rebase
+    // offset when the track started at t ≈ 0, but post-calibration
+    // timestamps jump back to the MoQ epoch.  Simply bumping +1 ms per
+    // frame would keep the track creeping forward at 1 ms/frame for
+    // hundreds of frames, creating a permanent A/V offset equal to the
+    // pipeline startup delay.
+    //
+    // Instead, recompute the rebase offset from `last_written_ns` so the
+    // track re-aligns with the current global position (which is
+    // dominated by the other track that has been flowing normally).
+    // This leaves a small gap in the track's container timeline (from the
+    // pre-calibration end to the new position), but MSE live-edge seeking
+    // skips past it.
     if let Some(last) = *per_track_last_ns {
         if timestamp_ns <= last {
-            timestamp_ns = last + 1_000_000; // +1ms (WebM timecode resolution)
+            // 500 ms — large enough to ignore jitter / micro-reorder,
+            // small enough to catch compositor calibration jumps.
+            const REBASE_RESET_THRESHOLD_NS: u64 = 500_000_000;
+            let gap_ns = last - timestamp_ns;
+            if gap_ns > REBASE_RESET_THRESHOLD_NS {
+                // Media timestamps in nanoseconds are well within i64 range
+                // for practical streams.
+                #[allow(clippy::cast_possible_wrap)]
+                let new_offset = last_written_ns as i64 - raw_ns as i64;
+                tracing::info!(
+                    "WebMMuxer track {track_id}: rebase reset (backward jump {gap_ns}ns > threshold) \
+                     old_offset={offset}ns new_offset={new_offset}ns \
+                     (raw={raw_ns}ns, last_written={last_written_ns}ns)"
+                );
+                *rebase_offset_ns = Some(new_offset);
+                #[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)]
+                {
+                    timestamp_ns = (raw_ns as i64).saturating_add(new_offset).max(0) as u64;
+                }
+            }
+            // After a potential re-rebase, still enforce monotonicity for
+            // the (now small) remaining gap or normal jitter.
+            if timestamp_ns <= last {
+                timestamp_ns = last + 1_000_000; // +1ms (WebM timecode resolution)
+            }
         }
     }
     *per_track_last_ns = Some(timestamp_ns);
@@ -2155,6 +2199,155 @@ mod tests {
             (2990..=3010).contains(&audio_start_ms),
             "audio should start near 3000ms, got {audio_start_ms}ms"
         );
+    }
+
+    /// Simulate the compositor calibration scenario that causes permanent
+    /// A/V desync without the rebase-reset fix.
+    ///
+    /// Timeline:
+    /// 1. Compositor outputs pre-calibration video at running-clock
+    ///    timestamps (0, 33ms, 66ms, …) for 2 seconds.
+    /// 2. Audio arrives ~2s later; its rebase aligns it to the current
+    ///    video position (~2s).
+    /// 3. Compositor calibrates to the MoQ epoch — output timestamps
+    ///    jump backwards from ~2s to ~0.
+    /// 4. Without the rebase-reset, per-track monotonicity bumps each
+    ///    post-calibration video frame by +1ms, creating a permanent
+    ///    ~2s A/V offset.  With the fix, the rebase recomputes from
+    ///    `last_written_ns` and the tracks re-align.
+    #[test]
+    fn rebase_reset_on_compositor_calibration_prevents_av_desync() {
+        let mut video_clock = streamkit_core::timing::MediaClock::new(0);
+        let mut audio_clock = streamkit_core::timing::MediaClock::new(0);
+        let mut video_offset: Option<i64> = None;
+        let mut audio_offset: Option<i64> = None;
+        let mut video_last: Option<u64> = None;
+        let mut audio_last: Option<u64> = None;
+        let mut last_written_ns: u64 = 0;
+
+        // ── Phase 1: 60 pre-calibration video frames (≈2s at 30fps) ──
+        for i in 0u64..60 {
+            let ts_us = i * 33_333;
+            let pf = stage_frame(
+                Bytes::from_static(&[0]),
+                Some(PacketMetadata {
+                    timestamp_us: Some(ts_us),
+                    duration_us: Some(33_333),
+                    sequence: None,
+                    keyframe: Some(i == 0),
+                }),
+                1,
+                i == 0,
+                33_333,
+                &mut video_clock,
+                &mut video_offset,
+                last_written_ns,
+                &mut video_last,
+            );
+            last_written_ns = pf.timestamp_ns.max(last_written_ns);
+        }
+        // Video should be near 2s
+        let video_pre_cal_ns = last_written_ns;
+        assert!(
+            video_pre_cal_ns > 1_900_000_000 && video_pre_cal_ns < 2_100_000_000,
+            "pre-calibration video should be near 2s, got {}ms",
+            video_pre_cal_ns / 1_000_000
+        );
+
+        // ── Phase 2: Audio arrives, rebased to current video position ──
+        for i in 0u64..10 {
+            let ts_us = i * 20_000; // MoQ-normalized, starts near 0
+            let pf = stage_frame(
+                Bytes::from_static(&[0]),
+                Some(PacketMetadata {
+                    timestamp_us: Some(ts_us),
+                    duration_us: Some(20_000),
+                    sequence: None,
+                    keyframe: None,
+                }),
+                2,
+                true,
+                20_000,
+                &mut audio_clock,
+                &mut audio_offset,
+                last_written_ns,
+                &mut audio_last,
+            );
+            last_written_ns = pf.timestamp_ns.max(last_written_ns);
+        }
+
+        // ── Phase 3: Compositor calibrates — video timestamps jump back
+        //    to near 0 (MoQ epoch) ──
+        // This simulates the compositor output after cal_offset is applied:
+        // output_ts = running_clock + cal_offset ≈ 2s + (-2s) = 0.
+        let mut post_cal_video_ts = Vec::new();
+        for i in 0u64..30 {
+            let ts_us = i * 33_333; // post-calibration: back near 0
+            let pf = stage_frame(
+                Bytes::from_static(&[0]),
+                Some(PacketMetadata {
+                    timestamp_us: Some(ts_us),
+                    duration_us: Some(33_333),
+                    sequence: None,
+                    keyframe: Some(i == 0),
+                }),
+                1,
+                i == 0,
+                33_333,
+                &mut video_clock,
+                &mut video_offset,
+                last_written_ns,
+                &mut video_last,
+            );
+            let write_ts = pf.timestamp_ns.max(last_written_ns);
+            post_cal_video_ts.push(write_ts);
+            last_written_ns = write_ts;
+        }
+
+        // ── Phase 4: Continue audio for comparison ──
+        let mut post_cal_audio_ts = Vec::new();
+        for i in 10u64..40 {
+            let ts_us = i * 20_000;
+            let pf = stage_frame(
+                Bytes::from_static(&[0]),
+                Some(PacketMetadata {
+                    timestamp_us: Some(ts_us),
+                    duration_us: Some(20_000),
+                    sequence: None,
+                    keyframe: None,
+                }),
+                2,
+                true,
+                20_000,
+                &mut audio_clock,
+                &mut audio_offset,
+                last_written_ns,
+                &mut audio_last,
+            );
+            let write_ts = pf.timestamp_ns.max(last_written_ns);
+            post_cal_audio_ts.push(write_ts);
+            last_written_ns = write_ts;
+        }
+
+        // ── Assertions ──
+        // After the rebase reset, post-calibration video should quickly
+        // re-align with audio.  The last video and audio timestamps
+        // should be within 500ms of each other (not the ~2s permanent
+        // offset that would exist without the fix).
+        let last_video = *post_cal_video_ts.last().unwrap();
+        let last_audio = *post_cal_audio_ts.last().unwrap();
+        let offset_ms = last_audio.abs_diff(last_video) / 1_000_000;
+        assert!(
+            offset_ms < 500,
+            "A/V offset after calibration should be < 500ms, got {offset_ms}ms \
+             (audio={last_audio}ns, video={last_video}ns). \
+             Rebase reset may not have fired."
+        );
+
+        // Post-calibration video timestamps must be strictly increasing
+        for w in post_cal_video_ts.windows(2) {
+            assert!(w[1] > w[0], "post-cal video went backward: {} -> {}", w[0], w[1]);
+        }
     }
 
     /// Confirm libwebm rejects cross-track backward timestamps — this is
