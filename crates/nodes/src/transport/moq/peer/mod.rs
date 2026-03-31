@@ -2799,6 +2799,22 @@ mod tests {
         }
     }
 
+    /// Broadcast-prefixed name with AV1 codec: the `/video/` infix should be
+    /// detected and the supplied codec should be threaded through.
+    #[test]
+    fn make_dynamic_output_pin_broadcast_prefix_av1() {
+        let pin = make_dynamic_output_pin("screen-input/video/hd", VideoCodec::Av1);
+        assert_eq!(pin.name, "screen-input/video/hd");
+        match &pin.produces_type {
+            PacketType::EncodedVideo(fmt) => assert_eq!(
+                fmt.codec,
+                VideoCodec::Av1,
+                "broadcast-prefixed video pin should use AV1 codec"
+            ),
+            other => panic!("expected EncodedVideo, got {other:?}"),
+        }
+    }
+
     /// Regression: `output_pins()` should respect the configured `video_codec`
     /// so that the engine's type validation passes for AV1 pipelines.
     #[test]
