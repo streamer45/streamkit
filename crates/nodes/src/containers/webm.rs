@@ -658,11 +658,16 @@ impl ProcessorNode for WebMMuxerNode {
             // If input_types didn't reveal the video codec (dynamic sessions
             // where input_types is empty), peek at the first packet from each
             // receiver concurrently to detect AV1 from content_type.
+            //
+            // We need at least the first video packet to determine the codec.
+            // If the first packet to arrive is audio, we must also read the
+            // other receiver to get the video packet.
             if !video_codec_known && all_receivers.len() >= 2 {
                 let (first, rest) = all_receivers.split_at_mut(1);
                 let rx0 = &mut first[0];
                 let rx1 = &mut rest[0];
                 // Peek concurrently so we don't block on the slower track.
+                let mut got_video = false;
                 tokio::select! {
                     biased;
                     r0 = rx0.recv() => {
@@ -673,6 +678,7 @@ impl ProcessorNode for WebMMuxerNode {
                             }
                             if ct_str.starts_with("video/") {
                                 first_video_packet = Some((data, metadata));
+                                got_video = true;
                             } else {
                                 first_audio_packet = Some((data, metadata));
                             }
@@ -686,8 +692,47 @@ impl ProcessorNode for WebMMuxerNode {
                             }
                             if ct_str.starts_with("video/") {
                                 first_video_packet = Some((data, metadata));
+                                got_video = true;
                             } else {
                                 first_audio_packet = Some((data, metadata));
+                            }
+                        }
+                    }
+                }
+                // If the first packet was audio, we still need to peek the
+                // other receiver to detect the video codec.
+                if !got_video {
+                    // Use a second select! to concurrently check both receivers
+                    // (the one that delivered audio may have more packets).
+                    let (first, rest) = all_receivers.split_at_mut(1);
+                    let rx0 = &mut first[0];
+                    let rx1 = &mut rest[0];
+                    tokio::select! {
+                        biased;
+                        r0 = rx0.recv() => {
+                            if let Some(Packet::Binary { data, content_type, metadata }) = r0 {
+                                let ct_str = content_type.as_deref().unwrap_or("");
+                                if ct_str == "video/av1" || ct_str.starts_with("video/av1;") {
+                                    video_is_av1 = true;
+                                }
+                                // At this point we already have first_audio_packet,
+                                // so this should be a video packet.
+                                if ct_str.starts_with("video/") {
+                                    first_video_packet = Some((data, metadata));
+                                }
+                                // If this is also audio, we let the receive loop
+                                // handle codec detection from the main loop.
+                            }
+                        }
+                        r1 = rx1.recv() => {
+                            if let Some(Packet::Binary { data, content_type, metadata }) = r1 {
+                                let ct_str = content_type.as_deref().unwrap_or("");
+                                if ct_str == "video/av1" || ct_str.starts_with("video/av1;") {
+                                    video_is_av1 = true;
+                                }
+                                if ct_str.starts_with("video/") {
+                                    first_video_packet = Some((data, metadata));
+                                }
                             }
                         }
                     }
