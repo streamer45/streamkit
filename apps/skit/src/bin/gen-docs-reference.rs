@@ -1329,6 +1329,9 @@ fn find_official_native_plugin_artifacts(repo_root: &Path) -> Result<Vec<PathBuf
     });
     paths.sort();
     paths.dedup();
+    // Deduplicate by filename to handle the transition period where both
+    // legacy per-plugin target dirs and the shared target/plugins/ dir coexist.
+    paths.dedup_by(|a, b| a.file_name() == b.file_name());
 
     Ok(paths)
 }
