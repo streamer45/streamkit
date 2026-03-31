@@ -1,0 +1,93 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Composites two colorbars sources with the StreamKit logo watermark,
+# encodes as AV1 via SVT-AV1 at 1280x720, and streams via MoQ.
+#
+# Requires: skit built with --features svt_av1
+
+name: Video Compositor – SVT-AV1 (MoQ Stream)
+description: Composites two colorbars sources with the StreamKit logo watermark, encodes as AV1 (SVT-AV1) at 1280x720, and streams via MoQ
+mode: dynamic
+client:
+  gateway_path: /moq/video
+  watch:
+    broadcast: output
+    audio: false
+    video: true
+
+nodes:
+  colorbars_bg:
+    kind: video::colorbars
+    params:
+      width: 1280
+      height: 720
+      fps: 30
+      pixel_format: rgba8
+      draw_time: true
+
+  colorbars_pip:
+    kind: video::colorbars
+    params:
+      width: 320
+      height: 240
+      fps: 30
+      pixel_format: rgba8
+      draw_time: true
+
+  compositor:
+    kind: video::compositor
+    params:
+      width: 1280
+      height: 720
+      num_inputs: 2
+      layers:
+        in_0:
+          opacity: 1.0
+          z_index: 0
+        in_1:
+          rect:
+            x: 50
+            y: 250
+            width: 320
+            height: 240
+          opacity: 0.9
+          z_index: 1
+          rotation_degrees: 15.0
+      image_overlays:
+        - id: logo
+          asset_path: samples/images/system/streamkit-logo.png
+          rect:
+            x: 1220
+            y: 640
+            width: 30
+            height: 52
+          opacity: 0.7
+          z_index: 3
+    needs:
+      - colorbars_bg
+      - colorbars_pip
+
+  pixel_convert:
+    kind: video::pixel_convert
+    params:
+      output_format: nv12
+    needs: compositor
+
+  svt_av1_encoder:
+    kind: video::svt_av1::encoder
+    params:
+      preset: 12
+      crf: 35
+      low_latency: true
+    needs: pixel_convert
+
+  moq_peer:
+    kind: transport::moq::peer
+    params:
+      gateway_path: /moq/video
+      output_broadcast: output
+      allow_reconnect: true
+      video_codec: av1
+    needs: svt_av1_encoder

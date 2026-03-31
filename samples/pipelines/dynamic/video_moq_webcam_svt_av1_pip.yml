@@ -1,0 +1,159 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Composites the user's webcam as picture-in-picture over colorbars with a
+# text overlay, loops audio through a gain filter, re-encodes video as AV1
+# via SVT-AV1 at 1280x720, and streams both via MoQ.
+#
+# Requires: skit built with --features svt_av1
+
+name: Webcam PiP – SVT-AV1 Output (MoQ Stream)
+description: Composites the user's webcam as picture-in-picture over colorbars with a text overlay, loops audio through a gain filter, re-encodes video as AV1 (SVT-AV1) at 1280x720, and streams both via MoQ
+mode: dynamic
+client:
+  gateway_path: /moq/video
+  publish:
+    broadcast: input
+    tracks:
+      - kind: audio
+        source: microphone
+      - kind: video
+        source: camera
+        codec: av1
+  watch:
+    broadcast: output
+    audio: true
+    video: true
+
+nodes:
+  colorbars_bg:
+    kind: video::colorbars
+    params:
+      width: 1280
+      height: 720
+      fps: 30
+      pixel_format: rgba8
+      draw_time: true
+
+  moq_peer:
+    kind: transport::moq::peer
+    params:
+      gateway_path: /moq/video
+      input_broadcasts:
+        - input
+      output_broadcast: output
+      allow_reconnect: true
+      video_codec: av1
+    needs:
+      in: opus_encoder
+      in_1: svt_av1_encoder
+
+  # --- Video path: decode webcam (AV1 from browser) → composite over colorbars → encode as AV1 ---
+
+  av1_decoder:
+    kind: video::av1::decoder
+    needs:
+      # @moq/publish uses "video/hd" as the track name (not "video/data")
+      in: moq_peer.video/hd
+
+  compositor:
+    kind: video::compositor
+    params:
+      width: 1280
+      height: 720
+      num_inputs: 2
+      layers:
+        in_0:
+          rect:
+            x: 0
+            y: 0
+            width: 1280
+            height: 720
+          opacity: 1
+          rotation_degrees: 0
+          z_index: 0
+          mirror_horizontal: false
+          mirror_vertical: false
+          crop_zoom: 1
+          crop_x: 0.5
+          crop_y: 0.5
+        in_1:
+          rect:
+            x: 880
+            y: 20
+            width: 380
+            height: 285
+          opacity: 0.8
+          rotation_degrees: 0
+          z_index: 1
+          mirror_horizontal: false
+          mirror_vertical: false
+          crop_zoom: 2.2
+          crop_x: 0.5
+          crop_y: 0.5
+      text_overlays:
+        - id: greeting
+          text: Hello from StreamKit (SVT-AV1)
+          rect:
+            x: 314
+            y: 330
+            width: 654
+            height: 50
+          color:
+            - 255
+            - 255
+            - 255
+            - 220
+          font_size: 36
+          font_name: samples/fonts/system/DejaVuSans-Bold.ttf
+          opacity: 1
+          rotation_degrees: 0
+          z_index: 2
+          mirror_horizontal: false
+          mirror_vertical: false
+      image_overlays:
+        - id: logo
+          asset_path: samples/images/system/streamkit-logo.png
+          rect:
+            x: 1220
+            y: 640
+            width: 30
+            height: 52
+          opacity: 0.7
+          z_index: 3
+    needs:
+      - colorbars_bg
+      - av1_decoder
+
+  pixel_convert:
+    kind: video::pixel_convert
+    params:
+      output_format: nv12
+    needs: compositor
+
+  svt_av1_encoder:
+    kind: video::svt_av1::encoder
+    params:
+      preset: 12
+      crf: 35
+      low_latency: true
+      keyframe_interval: 30
+    needs: pixel_convert
+
+  # --- Audio path: decode → gain → encode ---
+
+  opus_decoder:
+    kind: audio::opus::decoder
+    needs:
+      in: moq_peer.audio/data
+
+  gain:
+    kind: audio::gain
+    params:
+      gain: 1.0
+    needs: opus_decoder
+
+  opus_encoder:
+    kind: audio::opus::encoder
+    needs: gain
