@@ -198,7 +198,7 @@ const LIVE_EDGE_MAX_DRIFT_S = 8;
 // corrects the A/V offset.  Chrome's muxed-WebM MSE path can let the
 // audio decoder run ahead of the VP9 decoder during live streaming,
 // even when container timestamps are perfectly aligned.
-const AV_SYNC_THRESHOLD_S = 1.0;
+const AV_SYNC_THRESHOLD_S = 0.5;
 
 // Minimum interval (ms) between A/V sync correction re-seeks to avoid
 // rapid correction loops when the decoder consistently falls behind.
@@ -397,6 +397,11 @@ async function streamMediaData(
       if (media instanceof HTMLVideoElement && 'requestVideoFrameCallback' in media) {
         let lastAvCorrectionMs = 0;
         let avSyncCorrections = 0;
+        let avOffsetMin = Infinity;
+        let avOffsetMax = -Infinity;
+        let avOffsetSum = 0;
+        let avOffsetCount = 0;
+        let lastAvStatsLog = 0;
 
         // Type-narrow: requestVideoFrameCallback is available but not in
         // all TS DOM libs yet.
@@ -410,6 +415,27 @@ async function streamMediaData(
           if (isAborted()) return;
 
           const avOffset = media.currentTime - metadata.mediaTime;
+
+          // Track stats for periodic logging.
+          avOffsetMin = Math.min(avOffsetMin, avOffset);
+          avOffsetMax = Math.max(avOffsetMax, avOffset);
+          avOffsetSum += avOffset;
+          avOffsetCount++;
+
+          // Log A/V offset stats every 5 seconds.
+          if (now - lastAvStatsLog > 5000) {
+            const avg = avOffsetCount > 0 ? avOffsetSum / avOffsetCount : 0;
+            componentsLogger.info(
+              `MSEPlayer A/V offset: min=${avOffsetMin.toFixed(3)}s ` +
+                `max=${avOffsetMax.toFixed(3)}s avg=${avg.toFixed(3)}s ` +
+                `samples=${avOffsetCount} corrections=${avSyncCorrections}`
+            );
+            lastAvStatsLog = now;
+            avOffsetMin = Infinity;
+            avOffsetMax = -Infinity;
+            avOffsetSum = 0;
+            avOffsetCount = 0;
+          }
 
           if (
             avOffset > AV_SYNC_THRESHOLD_S &&

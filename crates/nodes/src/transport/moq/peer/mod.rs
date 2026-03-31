@@ -1611,7 +1611,6 @@ impl MoqPeerNode {
         dynamic_outputs: &DynamicOutputs,
         pin_prefix: Option<&str>,
         track_handles: &mut HashMap<String, tokio::task::JoinHandle<Result<(), StreamKitError>>>,
-        shared_base_us: &Arc<AtomicU64>,
     ) {
         // Subscribe to all audio tracks not yet being handled
         for track_name in catalog.audio.renditions.keys() {
@@ -1630,7 +1629,6 @@ impl MoqPeerNode {
                         stats_delta_tx,
                         dynamic_outputs,
                         &output_pin,
-                        shared_base_us,
                     ),
                 );
             }
@@ -1653,7 +1651,6 @@ impl MoqPeerNode {
                         stats_delta_tx,
                         dynamic_outputs,
                         &output_pin,
-                        shared_base_us,
                     ),
                 );
             }
@@ -1683,13 +1680,6 @@ impl MoqPeerNode {
             String,
             tokio::task::JoinHandle<Result<(), StreamKitError>>,
         > = HashMap::new();
-
-        // Shared base timestamp for cross-track normalization.
-        // All tracks within this broadcast subtract the same base so that
-        // the natural capture-time offset between audio and video is
-        // preserved (prevents content-level A/V desync).
-        // Sentinel u64::MAX means "not yet set by any track".
-        let shared_base_us = Arc::new(AtomicU64::new(u64::MAX));
 
         let mut tracks_discovered = false;
 
@@ -1725,7 +1715,6 @@ impl MoqPeerNode {
                         dynamic_outputs,
                         pin_prefix,
                         &mut track_handles,
-                        &shared_base_us,
                     );
 
                     let is_additional_broadcast = pin_prefix.is_some();
@@ -1771,7 +1760,6 @@ impl MoqPeerNode {
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
         dynamic_outputs: &DynamicOutputs,
         output_pin_name: &str,
-        shared_base_us: &Arc<AtomicU64>,
     ) -> tokio::task::JoinHandle<Result<(), StreamKitError>> {
         const MAX_RESUBSCRIBE_ATTEMPTS: u32 = 10;
         const RESUBSCRIBE_INITIAL_BACKOFF: Duration = Duration::from_millis(100);
@@ -1783,7 +1771,6 @@ impl MoqPeerNode {
         let stats = stats_delta_tx.clone();
         let output_pin = output_pin_name.to_string();
         let dyn_outputs = dynamic_outputs.clone();
-        let base = Arc::clone(shared_base_us);
 
         tokio::spawn(async move {
             tracing::info!(output_pin = %output_pin, track = %track.name, "Track processor task started");
@@ -1804,7 +1791,6 @@ impl MoqPeerNode {
                     &mut task_shutdown,
                     &stats,
                     &dyn_outputs,
-                    &base,
                 )
                 .await;
 
@@ -1920,11 +1906,16 @@ impl MoqPeerNode {
         shutdown_rx: &mut broadcast::Receiver<()>,
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
         dynamic_outputs: &DynamicOutputs,
-        shared_base_us: &AtomicU64,
     ) -> TrackExit {
         let mut frame_count = 0u64;
         let mut last_log = std::time::Instant::now();
         let mut current_group: Option<moq_lite::GroupConsumer> = None;
+        // Base timestamp for normalization — the first MoQ timestamp on this
+        // track is subtracted from all subsequent timestamps so that every
+        // track's timeline starts near 0.  This prevents overflow in
+        // downstream containers (WebM timecodes are limited) and lets the
+        // muxer's rebase offset align tracks by arrival time.
+        let mut base_timestamp_us: Option<u64> = None;
         let mut first_frame_logged = false;
         // Tracks whether the next frame is the first in a new MoQ group.
         // In the hang protocol each group starts with a keyframe.
@@ -1959,7 +1950,7 @@ impl MoqPeerNode {
                     is_video,
                     &mut frame_count,
                     &mut last_log,
-                    shared_base_us,
+                    &mut base_timestamp_us,
                     &mut first_frame_logged,
                     shutdown_rx,
                     stats_delta_tx,
@@ -2092,7 +2083,7 @@ impl MoqPeerNode {
         is_video: bool,
         frame_count: &mut u64,
         last_log: &mut std::time::Instant,
-        shared_base_us: &AtomicU64,
+        base_timestamp_us: &mut Option<u64>,
         first_frame_logged: &mut bool,
         shutdown_rx: &mut broadcast::Receiver<()>,
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
@@ -2126,19 +2117,10 @@ impl MoqPeerNode {
                         #[allow(clippy::cast_possible_truncation)] // MoQ timestamps fit in u64
                         let raw_timestamp_us = timestamp.as_micros() as u64;
 
-                        // Normalize using a shared base across all tracks in
-                        // this broadcast.  The first track to receive a frame
-                        // sets the base; all tracks subtract the same value.
-                        // This preserves the natural capture-time offset
-                        // between audio and video, preventing content-level
-                        // A/V desync.
-                        let _ = shared_base_us.compare_exchange(
-                            u64::MAX,
-                            raw_timestamp_us,
-                            Ordering::AcqRel,
-                            Ordering::Acquire,
-                        );
-                        let base = shared_base_us.load(Ordering::Acquire);
+                        // Normalize: subtract the first timestamp so the track
+                        // starts near 0.  This avoids WebM timecode overflow
+                        // (video timestamps from browsers can be 41+ days).
+                        let base = *base_timestamp_us.get_or_insert(raw_timestamp_us);
                         let timestamp_us = raw_timestamp_us.saturating_sub(base);
 
                         if !*first_frame_logged {
