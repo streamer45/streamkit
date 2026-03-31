@@ -461,63 +461,16 @@ impl SvtAv1Encoder {
             return Err(format!("svt_av1_enc_init_handle failed: error code {ret:#X}"));
         }
 
-        // Step 2: Set parameters using the string-based API (ABI-stable).
-        let preset = config.preset.min(13);
-        let crf = config.crf.clamp(1, 63);
-
-        set_param(&mut enc_config, "preset", &preset.to_string())?;
-        set_param(&mut enc_config, "width", &width.to_string())?;
-        set_param(&mut enc_config, "height", &height.to_string())?;
-        set_param(&mut enc_config, "fps-num", "30")?;
-        set_param(&mut enc_config, "fps-denom", "1")?;
-        set_param(&mut enc_config, "input-depth", "8")?;
-        set_param(&mut enc_config, "color-format", "1")?; // YUV420
-
-        // Keyframe interval: SVT-AV1 uses intra_period_length = interval - 1
-        // (0 means every frame is a keyframe, -1 means no intra refresh, -2 = auto).
-        let intra_period = if config.keyframe_interval == 0 {
-            0_i32
-        } else {
-            i32::try_from(config.keyframe_interval).unwrap_or(i32::MAX) - 1
-        };
-        set_param(&mut enc_config, "keyint", &intra_period.to_string())?;
-
-        // Prediction structure: 1 = low-delay B, 2 = random access.
-        let pred_struct = if config.low_latency { "1" } else { "2" };
-        set_param(&mut enc_config, "pred-struct", pred_struct)?;
-
-        // Rate control.
-        if config.bitrate_kbps == 0 {
-            // CRF mode: rc 0 + adaptive quantization
-            set_param(&mut enc_config, "rc", "0")?;
-            set_param(&mut enc_config, "crf", &crf.to_string())?;
-            set_param(&mut enc_config, "aq-mode", "2")?;
-        } else {
-            // VBR mode
-            set_param(&mut enc_config, "rc", "1")?;
-            let target_bps = u64::from(config.bitrate_kbps) * 1000;
-            set_param(&mut enc_config, "tbr", &target_bps.to_string())?;
-        }
-
-        // Thread parallelism.
-        set_param(&mut enc_config, "lp", &config.parallelism.to_string())?;
-
-        // Apply configuration.
-        // SAFETY: handle and config are valid; handle was created above.
-        let ret = unsafe { svt_av1_ffi::svt_av1_enc_set_parameter(handle, &raw mut enc_config) };
-        if ret != EB_ERROR_NONE {
-            // SAFETY: handle is valid.
+        // From here on, if anything fails we must call deinit_handle to avoid
+        // leaking the native encoder handle.  We use a helper closure so that
+        // all error paths are covered by a single cleanup call.
+        let configure_result =
+            Self::configure_and_init(handle, &mut enc_config, width, height, config);
+        if let Err(err) = &configure_result {
+            tracing::debug!("SVT-AV1 init failed ({err}), releasing handle");
+            // SAFETY: handle was successfully created by init_handle above.
             unsafe { svt_av1_ffi::svt_av1_enc_deinit_handle(handle) };
-            return Err(format!("svt_av1_enc_set_parameter failed: error code {ret:#X}"));
-        }
-
-        // Step 3: Initialize the encoder.
-        // SAFETY: handle is valid and configured.
-        let ret = unsafe { svt_av1_ffi::svt_av1_enc_init(handle) };
-        if ret != EB_ERROR_NONE {
-            // SAFETY: handle is valid.
-            unsafe { svt_av1_ffi::svt_av1_enc_deinit_handle(handle) };
-            return Err(format!("svt_av1_enc_init failed: error code {ret:#X}"));
+            return Err(configure_result.unwrap_err());
         }
 
         // Pre-allocate plane buffers for NV12→I420 de-interleaving.
@@ -529,8 +482,8 @@ impl SvtAv1Encoder {
         tracing::info!(
             width,
             height,
-            preset,
-            crf,
+            preset = config.preset.min(13),
+            crf = config.crf.clamp(1, 63),
             bitrate_kbps = config.bitrate_kbps,
             low_latency = config.low_latency,
             parallelism = config.parallelism,
@@ -546,6 +499,75 @@ impl SvtAv1Encoder {
             u_plane: vec![0u8; uv_size],
             v_plane: vec![0u8; uv_size],
         })
+    }
+
+    /// Configure and initialize an encoder handle.  This is factored out of
+    /// [`new`] so that the caller can release the handle on any error —
+    /// avoiding native handle leaks when `set_param` or `svt_av1_enc_init`
+    /// fails.
+    #[allow(clippy::cast_possible_wrap)]
+    fn configure_and_init(
+        handle: *mut EbComponentType,
+        enc_config: &mut EbSvtAv1EncConfiguration,
+        width: u32,
+        height: u32,
+        config: &SvtAv1EncoderConfig,
+    ) -> Result<(), String> {
+        let preset = config.preset.min(13);
+        let crf = config.crf.clamp(1, 63);
+
+        set_param(enc_config, "preset", &preset.to_string())?;
+        set_param(enc_config, "width", &width.to_string())?;
+        set_param(enc_config, "height", &height.to_string())?;
+        set_param(enc_config, "fps-num", "30")?;
+        set_param(enc_config, "fps-denom", "1")?;
+        set_param(enc_config, "input-depth", "8")?;
+        set_param(enc_config, "color-format", "1")?; // YUV420
+
+        // Keyframe interval: SVT-AV1 uses intra_period_length = interval - 1
+        // (0 means every frame is a keyframe, -1 means no intra refresh, -2 = auto).
+        let intra_period = if config.keyframe_interval == 0 {
+            0_i32
+        } else {
+            i32::try_from(config.keyframe_interval).unwrap_or(i32::MAX) - 1
+        };
+        set_param(enc_config, "keyint", &intra_period.to_string())?;
+
+        // Prediction structure: 1 = low-delay B, 2 = random access.
+        let pred_struct = if config.low_latency { "1" } else { "2" };
+        set_param(enc_config, "pred-struct", pred_struct)?;
+
+        // Rate control.
+        if config.bitrate_kbps == 0 {
+            // CRF mode: rc 0 + adaptive quantization
+            set_param(enc_config, "rc", "0")?;
+            set_param(enc_config, "crf", &crf.to_string())?;
+            set_param(enc_config, "aq-mode", "2")?;
+        } else {
+            // VBR mode
+            set_param(enc_config, "rc", "1")?;
+            let target_bps = u64::from(config.bitrate_kbps) * 1000;
+            set_param(enc_config, "tbr", &target_bps.to_string())?;
+        }
+
+        // Thread parallelism.
+        set_param(enc_config, "lp", &config.parallelism.to_string())?;
+
+        // Apply configuration.
+        // SAFETY: handle and config are valid; handle was created by init_handle.
+        let ret = unsafe { svt_av1_ffi::svt_av1_enc_set_parameter(handle, &raw mut *enc_config) };
+        if ret != EB_ERROR_NONE {
+            return Err(format!("svt_av1_enc_set_parameter failed: error code {ret:#X}"));
+        }
+
+        // Initialize the encoder.
+        // SAFETY: handle is valid and configured.
+        let ret = unsafe { svt_av1_ffi::svt_av1_enc_init(handle) };
+        if ret != EB_ERROR_NONE {
+            return Err(format!("svt_av1_enc_init failed: error code {ret:#X}"));
+        }
+
+        Ok(())
     }
 
     /// Prepare and send a single frame to the encoder.

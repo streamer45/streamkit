@@ -139,7 +139,7 @@ webm = ["dep:webm", "dep:schemars", "dep:tempfile"]
 symphonia = ["dep:symphonia", "dep:schemars"]
 vp9 = ["dep:env-libvpx-sys", "dep:schemars"]
 av1 = ["dep:rav1e", "dep:rav1d", "dep:schemars"]
-svt_av1 = ["dep:schemars", "dep:serde_json", "dep:pkg-config"]
+svt_av1 = ["dep:schemars", "dep:serde_json", "dep:pkg-config", "dep:cc"]
 colorbars = ["dep:schemars", "dep:serde_json", "dep:fontdue"]
 compositor = ["dep:schemars", "dep:serde_json", "dep:image", "dep:tiny-skia", "dep:rayon", "dep:fontdue", "dep:smallvec", "dep:uuid"]
 gpu = ["compositor", "dep:wgpu", "dep:pollster", "dep:bytemuck"]
@@ -153,6 +153,7 @@ required-features = ["codegen", "compositor"]
 
 [build-dependencies]
 pkg-config = { version = "0.3", optional = true }
+cc = { version = "1.2", optional = true }
 
 [dev-dependencies]
 tempfile = "3.27"

@@ -5342,6 +5342,7 @@ dependencies = [
  "base64 0.22.1",
  "bytemuck",
  "bytes",
+ "cc",
  "env-libvpx-sys",
  "fontdue",
  "futures",
