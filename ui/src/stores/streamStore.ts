@@ -72,6 +72,11 @@ interface StreamState {
   tracks: import('@/types/types').PublishTrackConfig[];
   publishBroadcasts: string[];
 
+  // MSE output — path suffix for the `/mse/{session_id}{msePath}` endpoint.
+  // When set, the Stream view renders an MSEPlayer instead of (or alongside)
+  // the MoQ canvas.
+  msePath: string | null;
+
   // Error state
   errorMessage: string;
 
@@ -127,6 +132,7 @@ interface StreamState {
   setIsExternalRelay: (v: boolean) => void;
   setVideoSourceType: (v: VideoSourceType) => void;
   setTracks: (tracks: import('@/types/types').PublishTrackConfig[], broadcasts: string[]) => void;
+  setMsePath: (path: string | null) => void;
   loadConfig: () => Promise<void>;
 
   // Session actions
@@ -182,6 +188,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
   videoSourceType: 'camera',
   tracks: [],
   publishBroadcasts: [],
+  msePath: null,
   errorMessage: '',
   configLoaded: false,
   configServerUrl: '',
@@ -214,6 +221,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
   setIsExternalRelay: (v) => set({ isExternalRelay: v }),
   setVideoSourceType: (v) => set({ videoSourceType: v }),
   setTracks: (tracks, broadcasts) => set({ tracks, publishBroadcasts: broadcasts }),
+  setMsePath: (path) => set({ msePath: path }),
 
   // Session setters
   setActiveSession: (sessionId, sessionName, pipelineName) =>
@@ -223,7 +231,12 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       activePipelineName: pipelineName,
     }),
   clearActiveSession: () =>
-    set({ activeSessionId: null, activeSessionName: null, activePipelineName: null }),
+    set({
+      activeSessionId: null,
+      activeSessionName: null,
+      activePipelineName: null,
+      msePath: null,
+    }),
 
   loadConfig: async () => {
     try {
@@ -292,7 +305,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       connectingStep: '',
       status: 'connecting',
       errorMessage: '',
-      watchStatus: decision.shouldWatch ? 'loading' : 'disabled',
+      watchStatus: decision.shouldWatch && state.outputBroadcast ? 'loading' : 'disabled',
       micStatus: decision.shouldPublish && state.pipelineNeedsAudio ? 'requesting' : 'disabled',
       cameraStatus: decision.shouldPublish && state.pipelineNeedsVideo ? 'requesting' : 'disabled',
       secondaryCameraStatus:

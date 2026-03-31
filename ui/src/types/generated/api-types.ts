@@ -491,6 +491,7 @@ gateway_path: string | null,
 publish: PublishConfig | null, 
 /**
  * Browser-side watch configuration (dynamic pipelines).
+ * Supports MoQ (via `broadcast`) and/or MSE (via `mse_path`) output.
  */
 watch: WatchConfig | null, 
 /**
@@ -560,9 +561,15 @@ export type CaptureSource = "camera" | "screen" | "microphone";
 
 export type WatchConfig = { 
 /**
- * Broadcast name the browser subscribes to.
+ * MoQ broadcast name the browser subscribes to.
+ * Omit for MSE-only pipelines.
  */
-broadcast: string, 
+broadcast: string | null, 
+/**
+ * MSE endpoint path suffix (e.g. `/video`).  When set, the browser
+ * fetches chunked WebM from `/mse/{session_id}{mse_path}`.
+ */
+mse_path: string | null, 
 /**
  * Whether the pipeline outputs audio to subscribers.
  */

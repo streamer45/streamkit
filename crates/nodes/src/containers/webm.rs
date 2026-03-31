@@ -458,6 +458,18 @@ pub struct WebMMuxerConfig {
     /// `pre_skip` field.  Decoders use this to trim encoder delay.
     /// Default: 312 (typical libopus default).
     pub opus_preskip_samples: u16,
+    /// Number of input pins to declare (1 or 2).
+    ///
+    /// Set to 2 for pipelines that feed both audio and video into the muxer
+    /// (e.g. `needs: { in: opus_encoder, in_1: vp9_encoder }`).  Defaults
+    /// to 1 for single-input (audio-only or video-only) pipelines.
+    #[serde(default = "default_num_inputs")]
+    #[schemars(range(min = 1, max = 2))]
+    pub num_inputs: u32,
+}
+
+const fn default_num_inputs() -> u32 {
+    1
 }
 
 impl Default for WebMMuxerConfig {
@@ -469,6 +481,7 @@ impl Default for WebMMuxerConfig {
             video_height: 0,
             streaming_mode: WebMStreamingMode::default(),
             opus_preskip_samples: OPUS_PRESKIP_SAMPLES,
+            num_inputs: default_num_inputs(),
         }
     }
 }
@@ -528,8 +541,9 @@ impl WebMMuxerNode {
 #[allow(clippy::too_many_lines)]
 impl ProcessorNode for WebMMuxerNode {
     fn input_pins(&self) -> Vec<InputPin> {
-        // Each pin accepts both audio and video — the actual media type is detected
-        // at runtime from the packet content_type, not from the pin name.
+        // Pin count is driven by `num_inputs` (1 or 2).  Each pin accepts
+        // audio or video — the actual media type is detected at runtime from
+        // the packet's `content_type` field, not from the pin name.
         let media_types = vec![
             PacketType::EncodedAudio(EncodedAudioFormat {
                 codec: AudioCodec::Opus,
@@ -551,29 +565,19 @@ impl ProcessorNode for WebMMuxerNode {
             }),
         ];
 
-        let has_video = self.config.video_width > 0 && self.config.video_height > 0;
-        if has_video {
-            // Two generic inputs for audio + video (order is determined at runtime).
-            vec![
-                InputPin {
-                    name: "in".to_string(),
-                    accepts_types: media_types.clone(),
-                    cardinality: PinCardinality::One,
-                },
-                InputPin {
-                    name: "in_1".to_string(),
-                    accepts_types: media_types,
-                    cardinality: PinCardinality::One,
-                },
-            ]
-        } else {
-            // Single generic input — backward compatible with `needs: encoder_node`.
-            vec![InputPin {
-                name: "in".to_string(),
+        let mut pins = vec![InputPin {
+            name: "in".to_string(),
+            accepts_types: media_types.clone(),
+            cardinality: PinCardinality::One,
+        }];
+        if self.config.num_inputs >= 2 {
+            pins.push(InputPin {
+                name: "in_1".to_string(),
                 accepts_types: media_types,
                 cardinality: PinCardinality::One,
-            }]
+            });
         }
+        pins
     }
 
     fn output_pins(&self) -> Vec<OutputPin> {
@@ -586,20 +590,18 @@ impl ProcessorNode for WebMMuxerNode {
 
     fn content_type(&self) -> Option<String> {
         // This static hint is used before the node runs (e.g. by the oneshot
-        // backward walk to set the HTTP Content-Type header).  We can only
-        // infer from config: if video dimensions are set, video is present.
-        // Audio presence is unknown at this stage so we assume true — it is
-        // safe to advertise "vp9,opus" even if only video is connected
-        // (consumers simply won't find an Opus track), whereas advertising
-        // only "vp9" when Opus IS present would break MSE consumers that
-        // need to initialise an audio SourceBuffer.
+        // backward walk to set the HTTP Content-Type header).  We infer from
+        // config: if video dimensions are set, video is present.  Audio is
+        // always assumed true — advertising "vp9,opus" when only video is
+        // connected is safe (consumers won't find an Opus track), but
+        // advertising "vp9" when Opus IS present would break MSE consumers
+        // that need to initialise an audio SourceBuffer.
         //
         // The video codec (VP9 vs AV1) is unknown at config time, so we
         // default to VP9 for the static hint.  The actual content_type is
         // resolved at runtime once the first video packet arrives.
         let has_video = self.config.video_width > 0 && self.config.video_height > 0;
-        let has_audio = true;
-        Some(webm_content_type(has_audio, has_video, false).to_string())
+        Some(webm_content_type(true, has_video, false).to_string())
     }
 
     async fn run(self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
@@ -607,41 +609,51 @@ impl ProcessorNode for WebMMuxerNode {
         state_helpers::emit_initializing(&context.state_tx, &node_name);
         tracing::info!("WebMMuxerNode starting");
 
-        // --- Classify generic inputs as audio or video ---
-        //
-        // Inputs use generic pin names ("in", "in_1", …).  In oneshot/static
-        // pipelines the graph builder populates `context.input_types` with the
-        // upstream output's [`PacketType`] for each connected pin.
-        //
-        // In dynamic pipelines `input_types` is empty (connections are wired
-        // after nodes are spawned).  In that case we fall back to first-packet
-        // inspection: receive one packet from each channel and classify from
-        // the packet's `content_type` field (e.g. "video/vp9" → video,
-        // `None` → audio).  Inspected packets are buffered for replay after
-        // segment setup.
-
         if context.inputs.is_empty() {
             let err_msg = "WebMMuxerNode requires at least one input (audio or video)".to_string();
             state_helpers::emit_failed(&context.state_tx, &node_name, &err_msg);
             return Err(StreamKitError::Runtime(err_msg));
         }
 
+        // Fast path: when num_inputs >= 2 and video dimensions are configured,
+        // we know both audio + video will be present and don't need to classify
+        // pins by inspecting packets.  This avoids a multi-second blocking
+        // startup while waiting for the slower track.
+        let skip_classification = self.config.num_inputs >= 2
+            && self.config.video_width > 0
+            && self.config.video_height > 0;
+
         let mut audio_rx: Option<tokio::sync::mpsc::Receiver<Packet>> = None;
         let mut video_rx: Option<tokio::sync::mpsc::Receiver<Packet>> = None;
-
-        // Buffers for first packets consumed during classification (dynamic
-        // pipeline path).  The video buffer is also used by the dimension
-        // auto-detect step that follows.
         let mut first_video_packet: Option<(Bytes, Option<PacketMetadata>)> = None;
         let mut first_audio_packet: Option<(Bytes, Option<PacketMetadata>)> = None;
-
-        // Detected video codec — determined from content_type (dynamic) or
-        // connection type (oneshot).  Defaults to VP9 for backward compat.
         let mut video_is_av1 = false;
 
-        let use_packet_inspection = context.input_types.is_empty();
+        // Collect all input receivers.  When skipping classification, ALL
+        // receivers go into a unified vec for on-the-fly routing in the
+        // receive loop.  When classifying, this vec stays empty and the
+        // receivers are assigned to audio_rx / video_rx.
+        let mut all_receivers: Vec<tokio::sync::mpsc::Receiver<Packet>> = Vec::new();
 
-        for (pin_name, mut rx) in context.inputs.drain() {
+        let use_packet_inspection = !skip_classification && context.input_types.is_empty();
+
+        if skip_classification {
+            // Fast path: collect all receivers, skip classification.
+            for (_pin_name, rx) in context.inputs.drain() {
+                all_receivers.push(rx);
+            }
+            state_helpers::emit_running(&context.state_tx, &node_name);
+            tracing::info!(
+                "WebMMuxerNode: skipping classification (num_inputs={}, dims={}x{})",
+                self.config.num_inputs,
+                self.config.video_width,
+                self.config.video_height
+            );
+        } else if use_packet_inspection {
+            state_helpers::emit_running(&context.state_tx, &node_name);
+        }
+
+        for (pin_name, mut rx) in context.inputs.drain().filter(|_| !skip_classification) {
             let is_video = if use_packet_inspection {
                 // Dynamic pipeline: classify from the first packet's content_type.
                 match rx.recv().await {
@@ -723,8 +735,8 @@ impl ProcessorNode for WebMMuxerNode {
             }
         }
 
-        let has_audio = audio_rx.is_some();
-        let has_video = video_rx.is_some();
+        let has_audio = if skip_classification { true } else { audio_rx.is_some() };
+        let has_video = if skip_classification { true } else { video_rx.is_some() };
 
         if !has_audio && !has_video {
             let err_msg =
@@ -734,7 +746,9 @@ impl ProcessorNode for WebMMuxerNode {
             return Err(StreamKitError::Runtime(err_msg));
         }
 
-        state_helpers::emit_running(&context.state_tx, &node_name);
+        if !use_packet_inspection && !skip_classification {
+            state_helpers::emit_running(&context.state_tx, &node_name);
+        }
 
         tracing::info!("WebMMuxerNode tracks: audio={}, video={}", has_audio, has_video);
 
@@ -975,33 +989,48 @@ impl ProcessorNode for WebMMuxerNode {
         let mut video_clock = MediaClock::new(0);
         let mut mux_state = MuxState { header_sent: false, last_written_ns: 0, packet_count: 0 };
 
-        tracing::info!("WebM segment built, entering receive loop to process incoming packets");
+        // Per-track timestamp rebase offsets — computed lazily when each track's
+        // first frame arrives.
+        let mut audio_rebase_offset_ns: Option<i64> = None;
+        let mut video_rebase_offset_ns: Option<i64> = None;
 
-        // -- Receive loop: multiplex audio + video inputs --
+        // Per-track last-written timestamps for per-track monotonicity.
+        let mut audio_last_ns: Option<u64> = None;
+        let mut video_last_ns: Option<u64> = None;
+
+        tracing::info!("WebM segment built, entering receive loop to process incoming packets");
 
         let mut audio_done = !has_audio;
         let mut video_done = !has_video;
 
-        // Track whether we have received the first video keyframe.
-        // WebM clusters must start with a keyframe, so non-keyframe video
-        // frames received before the first keyframe cannot be muxed into a
-        // valid stream — they are dropped immediately (no buffering) to
-        // prevent unbounded memory growth when keyframes are infrequent.
         let mut video_keyframe_seen = !has_video;
         let mut dropped_video_frames: u64 = 0;
+        let mux_start = std::time::Instant::now();
+        let mut audio_frame_count = 0u64;
+        let mut video_frame_count = 0u64;
 
-        // If we buffered the first video packet for dimension detection, replay
-        // it through the normal mux path before entering the receive loop.
+        // Write first video packet (from auto-detection or packet inspection).
         if let Some((data, metadata)) = first_video_packet.take() {
             if let Some(video_track) = tracks.video {
                 let is_keyframe = metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(true);
-                if mux_frame(
-                    &data,
-                    metadata.as_ref(),
-                    video_track,
+                if is_keyframe {
+                    video_keyframe_seen = true;
+                }
+                mux_state.packet_count += 1;
+                stats_tracker.received();
+                let frame = stage_frame(
+                    data,
+                    metadata,
+                    video_track.into(),
                     is_keyframe,
                     DEFAULT_VIDEO_FRAME_DURATION_US,
                     &mut video_clock,
+                    &mut video_rebase_offset_ns,
+                    mux_state.last_written_ns,
+                    &mut video_last_ns,
+                );
+                if write_frame(
+                    &frame,
                     &mut mux_state,
                     &mut segment,
                     &mut context,
@@ -1014,51 +1043,151 @@ impl ProcessorNode for WebMMuxerNode {
                 {
                     video_done = true;
                 }
-                if is_keyframe {
-                    video_keyframe_seen = true;
+            }
+        }
+
+        // Write first audio packet — but ONLY for single-input pipelines.
+        // In dual-input (A+V) pipelines, the audio first-packet was consumed
+        // during classification while video was already running.  Writing it
+        // now would lock the audio rebase offset to last_written≈0, and then
+        // all subsequent audio frames (arriving after seconds of video) would
+        // map far behind the video position.  Dropping it lets the receive
+        // loop compute the rebase from the current video position.
+        if !has_video {
+            if let Some((data, metadata)) = first_audio_packet.take() {
+                if let Some(audio_track) = tracks.audio {
+                    mux_state.packet_count += 1;
+                    stats_tracker.received();
+                    let frame = stage_frame(
+                        data,
+                        metadata,
+                        audio_track.into(),
+                        true,
+                        DEFAULT_FRAME_DURATION_US,
+                        &mut audio_clock,
+                        &mut audio_rebase_offset_ns,
+                        mux_state.last_written_ns,
+                        &mut audio_last_ns,
+                    );
+                    if write_frame(
+                        &frame,
+                        &mut mux_state,
+                        &mut segment,
+                        &mut context,
+                        live_flush_handle.as_ref(),
+                        &content_type_str,
+                        &mut stats_tracker,
+                        &node_name,
+                    )
+                    .await?
+                    {
+                        audio_done = true;
+                    }
                 }
             }
         }
 
-        // If we buffered the first audio packet during packet-inspection
-        // classification (dynamic pipelines), replay it before entering the
-        // receive loop.
-        if let Some((data, metadata)) = first_audio_packet.take() {
-            if let Some(audio_track) = tracks.audio {
-                // Audio frames are always keyframes.
-                if mux_frame(
-                    &data,
-                    metadata.as_ref(),
-                    audio_track,
-                    true,
-                    DEFAULT_FRAME_DURATION_US,
-                    &mut audio_clock,
-                    &mut mux_state,
-                    &mut segment,
-                    &mut context,
-                    live_flush_handle.as_ref(),
-                    &content_type_str,
-                    &mut stats_tracker,
-                    &node_name,
-                )
-                .await?
-                {
-                    audio_done = true;
+        // Drain frames that queued in both channels during the sequential
+        // classification.  These are seconds old (stale) and would produce a
+        // burst of WebM data that overwhelms the MSE SourceBuffer.
+        // NOTE: in skip-classification mode audio_rx/video_rx are None, so
+        // this block is a no-op — all receivers are in all_receivers instead.
+        if has_audio && has_video {
+            let mut drained_v = 0u64;
+            let mut drained_a = 0u64;
+            let mut drained_keyframes = 0u64;
+            if let Some(ref mut rx) = video_rx {
+                while let Ok(pkt) = rx.try_recv() {
+                    drained_v += 1;
+                    if let Packet::Binary { metadata, .. } = &pkt {
+                        if metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(false) {
+                            drained_keyframes += 1;
+                        }
+                    }
                 }
+            }
+            if let Some(ref mut rx) = audio_rx {
+                while rx.try_recv().is_ok() {
+                    drained_a += 1;
+                }
+            }
+            if drained_v > 0 || drained_a > 0 {
+                tracing::info!(
+                    "WebMMuxerNode: drained {drained_v} video ({drained_keyframes} keyframes) \
+                     + {drained_a} audio stale frames from channels"
+                );
             }
         }
 
-        while !audio_done || !video_done {
-            enum MuxFrame {
-                Audio(Bytes, Option<PacketMetadata>),
-                Video(Bytes, Option<PacketMetadata>),
-                AudioClosed,
-                VideoClosed,
-                Shutdown,
-            }
-
-            let frame = if audio_done {
-                // Only video remains
+        // -- Main receive loop: write frames in arrival order --
+        //
+        // Frames are written immediately as they arrive from either track.
+        // Per-track monotonicity is enforced in `stage_frame`.  Global
+        // monotonicity for libwebm is enforced in `write_frame` via a soft
+        // clamp (equality across tracks is allowed).
+        //
+        // In skip-classification mode, `all_receivers` holds every input
+        // channel and frames are classified on-the-fly from `content_type`.
+        // In the legacy path, `audio_rx`/`video_rx` are pre-classified.
+        let mut inputs_open = if skip_classification { all_receivers.len() } else { 0 };
+        while (skip_classification && inputs_open > 0)
+            || (!skip_classification && (!audio_done || !video_done))
+        {
+            let frame = if skip_classification {
+                // Unified receive: select on all input receivers + control.
+                // Frames are classified on-the-fly from content_type below.
+                let recv_result = if all_receivers.len() >= 2 {
+                    let (first, rest) = all_receivers.split_at_mut(1);
+                    let rx0 = &mut first[0];
+                    let rx1 = &mut rest[0];
+                    // SAFETY: `tokio::select!` executes exactly one branch, so
+                    // at most one `remove()` runs per iteration.  After removing
+                    // index 0 the vec shrinks to len()==1, and the next iteration
+                    // takes the `len() == 1` path below — no stale-index panic.
+                    tokio::select! {
+                        biased;
+                        Some(msg) = context.control_rx.recv() => {
+                            if matches!(msg, streamkit_core::control::NodeControlMessage::Shutdown) {
+                                Some(MuxFrame::Shutdown)
+                            } else {
+                                None // non-shutdown control, loop again
+                            }
+                        }
+                        r0 = rx0.recv() => {
+                            r0.map_or_else(
+                                || { all_receivers.remove(0); inputs_open -= 1; None },
+                                classify_packet,
+                            )
+                        }
+                        r1 = rx1.recv() => {
+                            r1.map_or_else(
+                                || { all_receivers.remove(1); inputs_open -= 1; None },
+                                classify_packet,
+                            )
+                        }
+                    }
+                } else if all_receivers.len() == 1 {
+                    let rx = &mut all_receivers[0];
+                    tokio::select! {
+                        biased;
+                        Some(msg) = context.control_rx.recv() => {
+                            if matches!(msg, streamkit_core::control::NodeControlMessage::Shutdown) {
+                                Some(MuxFrame::Shutdown)
+                            } else { None }
+                        }
+                        r = rx.recv() => r.map_or_else(
+                            || { all_receivers.clear(); inputs_open = 0; None },
+                            classify_packet,
+                        )
+                    }
+                } else {
+                    break;
+                };
+                match recv_result {
+                    Some(f) => f,
+                    None => continue,
+                }
+            } else if audio_done {
                 match video_rx.as_mut() {
                     Some(rx) => {
                         tokio::select! {
@@ -1082,7 +1211,6 @@ impl ProcessorNode for WebMMuxerNode {
                     None => break,
                 }
             } else if video_done {
-                // Only audio remains
                 match audio_rx.as_mut() {
                     Some(rx) => {
                         tokio::select! {
@@ -1106,41 +1234,36 @@ impl ProcessorNode for WebMMuxerNode {
                     None => break,
                 }
             } else {
-                // Both active - use select to receive from whichever is ready first
-                let audio_rx_ref = audio_rx.as_mut();
-                let video_rx_ref = video_rx.as_mut();
-                match (audio_rx_ref, video_rx_ref) {
-                    (Some(a_rx), Some(v_rx)) => {
-                        tokio::select! {
-                            biased; // prefer shutdown, then audio for stable ordering
-                            Some(msg) = context.control_rx.recv() => {
-                                if matches!(msg, streamkit_core::control::NodeControlMessage::Shutdown) {
-                                    MuxFrame::Shutdown
-                                } else {
-                                    continue;
-                                }
-                            }
-                            maybe_audio = a_rx.recv() => {
-                                match maybe_audio {
-                                    Some(Packet::Binary { data, metadata, .. }) => {
-                                        MuxFrame::Audio(data, metadata)
-                                    },
-                                    Some(_) => continue,
-                                    None => MuxFrame::AudioClosed,
-                                }
-                            }
-                            maybe_video = v_rx.recv() => {
-                                match maybe_video {
-                                    Some(Packet::Binary { data, metadata, .. }) => {
-                                        MuxFrame::Video(data, metadata)
-                                    },
-                                    Some(_) => continue,
-                                    None => MuxFrame::VideoClosed,
-                                }
-                            }
+                let (Some(a_rx), Some(v_rx)) = (audio_rx.as_mut(), video_rx.as_mut()) else {
+                    break;
+                };
+                tokio::select! {
+                    biased;
+                    Some(msg) = context.control_rx.recv() => {
+                        if matches!(msg, streamkit_core::control::NodeControlMessage::Shutdown) {
+                            MuxFrame::Shutdown
+                        } else {
+                            continue;
                         }
-                    },
-                    _ => break,
+                    }
+                    maybe_audio = a_rx.recv() => {
+                        match maybe_audio {
+                            Some(Packet::Binary { data, metadata, .. }) => {
+                                MuxFrame::Audio(data, metadata)
+                            },
+                            Some(_) => continue,
+                            None => MuxFrame::AudioClosed,
+                        }
+                    }
+                    maybe_video = v_rx.recv() => {
+                        match maybe_video {
+                            Some(Packet::Binary { data, metadata, .. }) => {
+                                MuxFrame::Video(data, metadata)
+                            },
+                            Some(_) => continue,
+                            None => MuxFrame::VideoClosed,
+                        }
+                    }
                 }
             };
 
@@ -1154,12 +1277,6 @@ impl ProcessorNode for WebMMuxerNode {
                     audio_done = true;
                 },
                 MuxFrame::VideoClosed => {
-                    if dropped_video_frames > 0 && !video_keyframe_seen {
-                        tracing::warn!(
-                            "WebMMuxerNode: video input closed after dropping \
-                             {dropped_video_frames} frames (no keyframe was ever received)"
-                        );
-                    }
                     tracing::info!("WebMMuxerNode video input closed");
                     video_done = true;
                 },
@@ -1167,14 +1284,30 @@ impl ProcessorNode for WebMMuxerNode {
                     let Some(audio_track) = tracks.audio else {
                         continue;
                     };
-                    // Audio frames are always keyframes.
-                    if mux_frame(
-                        &data,
-                        metadata.as_ref(),
-                        audio_track,
+                    mux_state.packet_count += 1;
+                    stats_tracker.received();
+                    audio_frame_count += 1;
+                    if audio_frame_count <= 3 {
+                        let ts = metadata.as_ref().and_then(|m| m.timestamp_us);
+                        tracing::debug!(
+                            "WebMMuxer AUDIO #{audio_frame_count}: \
+                             incoming_ts={ts:?}us elapsed={:.0}ms",
+                            mux_start.elapsed().as_secs_f64() * 1000.0,
+                        );
+                    }
+                    let frame = stage_frame(
+                        data,
+                        metadata,
+                        audio_track.into(),
                         true,
                         DEFAULT_FRAME_DURATION_US,
                         &mut audio_clock,
+                        &mut audio_rebase_offset_ns,
+                        mux_state.last_written_ns,
+                        &mut audio_last_ns,
+                    );
+                    if write_frame(
+                        &frame,
                         &mut mux_state,
                         &mut segment,
                         &mut context,
@@ -1194,10 +1327,6 @@ impl ProcessorNode for WebMMuxerNode {
                     };
                     let is_keyframe = metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(false);
 
-                    // Gate on the first keyframe so the WebM stream starts at
-                    // a valid cluster boundary.  Non-keyframe frames received
-                    // before the first keyframe are dropped immediately — they
-                    // cannot be decoded without a preceding reference frame.
                     if !video_keyframe_seen {
                         if is_keyframe {
                             if dropped_video_frames > 0 {
@@ -1208,7 +1337,6 @@ impl ProcessorNode for WebMMuxerNode {
                                 );
                             }
                             video_keyframe_seen = true;
-                            // Fall through to mux this keyframe normally.
                         } else {
                             dropped_video_frames += 1;
                             if dropped_video_frames.is_multiple_of(300) {
@@ -1221,13 +1349,30 @@ impl ProcessorNode for WebMMuxerNode {
                         }
                     }
 
-                    if mux_frame(
-                        &data,
-                        metadata.as_ref(),
-                        video_track,
+                    mux_state.packet_count += 1;
+                    stats_tracker.received();
+                    video_frame_count += 1;
+                    if video_frame_count <= 3 {
+                        let ts = metadata.as_ref().and_then(|m| m.timestamp_us);
+                        tracing::debug!(
+                            "WebMMuxer VIDEO #{video_frame_count}: \
+                             incoming_ts={ts:?}us elapsed={:.0}ms keyframe={is_keyframe}",
+                            mux_start.elapsed().as_secs_f64() * 1000.0,
+                        );
+                    }
+                    let frame = stage_frame(
+                        data,
+                        metadata,
+                        video_track.into(),
                         is_keyframe,
                         DEFAULT_VIDEO_FRAME_DURATION_US,
                         &mut video_clock,
+                        &mut video_rebase_offset_ns,
+                        mux_state.last_written_ns,
+                        &mut video_last_ns,
+                    );
+                    if write_frame(
+                        &frame,
                         &mut mux_state,
                         &mut segment,
                         &mut context,
@@ -1241,6 +1386,23 @@ impl ProcessorNode for WebMMuxerNode {
                         break;
                     }
                 },
+            }
+
+            // Periodic pipeline health — every 150 packets (~2s).
+            if mux_state.packet_count.is_multiple_of(150) {
+                // Timestamps in ms are well within i64 range for any practical stream.
+                #[allow(clippy::cast_possible_wrap)]
+                let a_ms = audio_last_ns.map_or(-1i64, |ns| (ns / 1_000_000) as i64);
+                #[allow(clippy::cast_possible_wrap)]
+                let v_ms = video_last_ns.map_or(-1i64, |ns| (ns / 1_000_000) as i64);
+                let delta_ms = if a_ms >= 0 && v_ms >= 0 { a_ms - v_ms } else { 0 };
+                tracing::debug!(
+                    "WebMMuxer health: pkt#{} elapsed={:.1}s a_ts={a_ms}ms v_ts={v_ms}ms \
+                     av_delta={delta_ms}ms global_last={}ms",
+                    mux_state.packet_count,
+                    mux_start.elapsed().as_secs_f64(),
+                    mux_state.last_written_ns / 1_000_000,
+                );
             }
         }
 
@@ -1289,36 +1451,207 @@ impl ProcessorNode for WebMMuxerNode {
 
 /// Mutable state shared across the muxer receive loop.
 ///
-/// Groups the monotonic timestamp guard, header-sent flag, and packet counter
-/// into a single struct to reduce the number of loose parameters passed to
-/// [`mux_frame`] and [`flush_output`].
+/// Groups the timestamp guard, header-sent flag, and packet counter into a
+/// single struct to reduce the number of loose parameters passed to
+/// [`write_frame`] and [`flush_output`].
 ///
 /// Per-track clocks are kept separate so callers can borrow a clock and this
 /// struct simultaneously without aliasing.
 struct MuxState {
     /// Whether the WebM header has been flushed to the output.
     header_sent: bool,
-    /// Monotonic timestamp guard: libwebm requires that timestamps across all
-    /// tracks are non-decreasing.  We track the last written timestamp and
-    /// clamp if needed.
+    /// Last timestamp (ns) written to the segment.
     last_written_ns: u64,
     packet_count: u64,
 }
 
-/// Timestamps, clocks, and writes a single frame (audio or video) to the WebM
-/// segment, then flushes any buffered output.
+/// A frame produced by [`stage_frame`] ready for [`write_frame`].
+///
+/// Holds the frame data alongside its rebased, per-track-monotonic
+/// timestamp.  `stage_frame` computes the timestamp without touching the
+/// segment; `write_frame` applies the global max-clamp and writes to
+/// libwebm.
+struct StagedFrame {
+    data: Bytes,
+    metadata: Option<PacketMetadata>,
+    track_id: u64,
+    is_keyframe: bool,
+    /// Rebased, per-track-monotonic timestamp in nanoseconds.
+    timestamp_ns: u64,
+    presentation_ts_us: u64,
+    duration_us: Option<u64>,
+}
+
+/// Frame variant received from the audio/video input channels.
+enum MuxFrame {
+    Audio(Bytes, Option<PacketMetadata>),
+    Video(Bytes, Option<PacketMetadata>),
+    AudioClosed,
+    VideoClosed,
+    Shutdown,
+}
+
+/// Classify a [`Packet`] as audio or video from its `content_type` field.
+///
+/// Used in the skip-classification fast path where pins are not pre-assigned
+/// to audio/video roles.  Returns `None` for non-`Binary` packets.
+fn classify_packet(packet: Packet) -> Option<MuxFrame> {
+    match packet {
+        Packet::Binary { data, content_type, metadata } => {
+            let is_video = content_type.as_deref().unwrap_or("").starts_with("video/");
+            Some(if is_video {
+                MuxFrame::Video(data, metadata)
+            } else {
+                MuxFrame::Audio(data, metadata)
+            })
+        },
+        _ => None,
+    }
+}
+
+/// Computes the rebased, per-track-monotonic timestamp for a frame.
+///
+/// Timestamp pipeline (each layer builds on the previous):
+/// 1. **MoQ peer** normalises raw capture timestamps to start near 0.
+/// 2. **Compositor** calibrates its running clock to the remote input's
+///    domain so video timestamps share the MoQ epoch.
+/// 3. **This function** applies a per-track rebase offset (aligning the
+///    late-arriving track to the first track's position) and enforces
+///    per-track monotonicity (+1 ms on backward jumps).  Large backward
+///    jumps (> 500 ms) trigger a **rebase reset**: the offset is
+///    recomputed from `last_written_ns` so the track re-aligns with the
+///    current global position, preventing permanent A/V desync from
+///    compositor calibration.
+/// 4. **[`write_frame`]** applies a global max-clamp for libwebm's
+///    non-decreasing requirement.
+///
+/// Does **not** touch the segment or `last_written_ns`.
+#[allow(clippy::too_many_arguments)]
+fn stage_frame(
+    data: Bytes,
+    metadata: Option<PacketMetadata>,
+    track_id: u64,
+    is_keyframe: bool,
+    default_duration_us: u64,
+    clock: &mut streamkit_core::timing::MediaClock,
+    rebase_offset_ns: &mut Option<i64>,
+    last_written_ns: u64,
+    per_track_last_ns: &mut Option<u64>,
+) -> StagedFrame {
+    let incoming_ts_us = metadata.as_ref().and_then(|m| m.timestamp_us);
+    let incoming_duration_us =
+        metadata.as_ref().and_then(|m| m.duration_us).or(Some(default_duration_us));
+
+    // Use incoming timestamps when available (normalized MoQ timestamps
+    // from the peer node start near 0).  Fall back to a synthetic clock
+    // for tracks without timestamps.
+    if let Some(ts) = incoming_ts_us {
+        clock.seed_from_timestamp_us(ts);
+    } else if clock.timestamp_us() == 0 {
+        clock.seed_from_timestamp_us(0);
+    }
+    let presentation_ts_us = incoming_ts_us.unwrap_or_else(|| clock.timestamp_us());
+    clock.advance_by_duration_us(incoming_duration_us, default_duration_us);
+
+    let raw_ns = presentation_ts_us.saturating_mul(1000);
+
+    // Per-track rebase: when a track's first frame arrives, compute an offset
+    // so it starts at the other track's current position.  This aligns tracks
+    // that start at different wall-clock times (e.g. local compositor video
+    // at t=0 and MoQ audio arriving seconds later).  Without this, MSE
+    // consumers see timestamp gaps between tracks and can't play smoothly.
+    let is_new_offset = rebase_offset_ns.is_none();
+    // Media timestamps in nanoseconds are well within i64 range for practical streams.
+    #[allow(clippy::cast_possible_wrap)]
+    let offset = *rebase_offset_ns.get_or_insert_with(|| last_written_ns as i64 - raw_ns as i64);
+    if is_new_offset {
+        tracing::info!(
+            "WebMMuxer track {track_id}: rebase offset={offset}ns \
+             (raw={raw_ns}ns, last_written={last_written_ns}ns, \
+             incoming_ts={incoming_ts_us:?}us)"
+        );
+    }
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)]
+    // offset keeps the result non-negative via the clamp; raw_ns fits i64 for practical streams
+    let mut timestamp_ns = (raw_ns as i64).saturating_add(offset).max(0) as u64;
+
+    // Per-track monotonicity — ensure strictly increasing timestamps within
+    // each track.  This replaces the old global clamp which distorted the
+    // *other* track's timing when clamping across tracks.
+    //
+    // Large backward jumps (> 500 ms) indicate an upstream epoch reset —
+    // most commonly the compositor calibrating its running clock to a
+    // remote MoQ input.  Pre-calibration frames established the rebase
+    // offset when the track started at t ≈ 0, but post-calibration
+    // timestamps jump back to the MoQ epoch.  Simply bumping +1 ms per
+    // frame would keep the track creeping forward at 1 ms/frame for
+    // hundreds of frames, creating a permanent A/V offset equal to the
+    // pipeline startup delay.
+    //
+    // Instead, recompute the rebase offset from `last_written_ns` so the
+    // track re-aligns with the current global position (which is
+    // dominated by the other track that has been flowing normally).
+    // This leaves a small gap in the track's container timeline (from the
+    // pre-calibration end to the new position), but MSE live-edge seeking
+    // skips past it.
+    if let Some(last) = *per_track_last_ns {
+        if timestamp_ns <= last {
+            // 500 ms — large enough to ignore jitter / micro-reorder,
+            // small enough to catch compositor calibration jumps.
+            const REBASE_RESET_THRESHOLD_NS: u64 = 500_000_000;
+            let gap_ns = last - timestamp_ns;
+            if gap_ns > REBASE_RESET_THRESHOLD_NS {
+                // Media timestamps in nanoseconds are well within i64 range
+                // for practical streams.
+                #[allow(clippy::cast_possible_wrap)]
+                let new_offset = last_written_ns as i64 - raw_ns as i64;
+                tracing::info!(
+                    "WebMMuxer track {track_id}: rebase reset (backward jump {gap_ns}ns > threshold) \
+                     old_offset={offset}ns new_offset={new_offset}ns \
+                     (raw={raw_ns}ns, last_written={last_written_ns}ns)"
+                );
+                *rebase_offset_ns = Some(new_offset);
+                #[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)]
+                {
+                    timestamp_ns = (raw_ns as i64).saturating_add(new_offset).max(0) as u64;
+                }
+            }
+            // After a potential re-rebase, still enforce monotonicity for
+            // the (now small) remaining gap or normal jitter.
+            if timestamp_ns <= last {
+                timestamp_ns = last + 1_000_000; // +1ms (WebM timecode resolution)
+            }
+        }
+    }
+    *per_track_last_ns = Some(timestamp_ns);
+
+    StagedFrame {
+        data,
+        metadata,
+        track_id,
+        is_keyframe,
+        timestamp_ns,
+        presentation_ts_us,
+        duration_us: incoming_duration_us,
+    }
+}
+
+/// Writes a [`StagedFrame`] to the WebM segment and flushes output.
+///
+/// Applies a global clamp to satisfy libwebm's non-decreasing timestamp
+/// requirement.  Timestamps are forced **strictly increasing** (+1 ms
+/// when a frame would otherwise equal the previous write) to prevent
+/// cross-track timestamp equality.  Chrome's muxed-WebM MSE demuxer
+/// stalls intermittently when multiple SimpleBlocks share the same
+/// timecode, so unique timestamps per packet are essential for smooth
+/// live playback.
 ///
 /// Returns `Ok(true)` if the output channel is closed (caller should stop),
 /// `Ok(false)` to continue, or `Err` on fatal errors.
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::ptr_arg)] // content_type is cloned as Cow<'static, str> for Packet; &str would force allocation
-async fn mux_frame(
-    data: &[u8],
-    metadata: Option<&PacketMetadata>,
-    track: impl Into<u64>,
-    is_keyframe: bool,
-    default_duration_us: u64,
-    clock: &mut streamkit_core::timing::MediaClock,
+#[allow(clippy::ptr_arg)]
+async fn write_frame(
+    frame: &StagedFrame,
     state: &mut MuxState,
     segment: &mut webm::mux::Segment<MuxBuffer>,
     context: &mut NodeContext,
@@ -1327,41 +1660,41 @@ async fn mux_frame(
     stats_tracker: &mut NodeStatsTracker,
     node_name: &str,
 ) -> Result<bool, StreamKitError> {
-    state.packet_count += 1;
-    stats_tracker.received();
+    // Ensure strictly increasing write timestamps.  When a frame from
+    // one track arrives after a frame from another track with a higher
+    // (or equal) staged timestamp, bumping by 1 ms avoids cross-track
+    // equality in the container.  The bump does not cascade because
+    // per-track staged timestamps (computed by `stage_frame`) are
+    // independent of `last_written_ns` for existing tracks.
+    let write_ts = if frame.timestamp_ns > state.last_written_ns {
+        frame.timestamp_ns
+    } else {
+        state.last_written_ns + 1_000_000 // +1 ms (WebM timecode resolution)
+    };
 
-    let incoming_ts_us = metadata.and_then(|m| m.timestamp_us);
-    let incoming_duration_us = metadata.and_then(|m| m.duration_us).or(Some(default_duration_us));
-
-    if let Some(ts) = incoming_ts_us {
-        clock.seed_from_timestamp_us(ts);
-    } else if clock.timestamp_us() == 0 {
-        clock.seed_from_timestamp_us(0);
-    }
-
-    let presentation_ts_us = incoming_ts_us.unwrap_or_else(|| clock.timestamp_us());
-    clock.advance_by_duration_us(incoming_duration_us, default_duration_us);
-
-    let mut timestamp_ns = presentation_ts_us.saturating_mul(1000);
-    if timestamp_ns < state.last_written_ns {
-        timestamp_ns = state.last_written_ns;
-    }
-
-    if let Err(e) = segment.add_frame(track, data, timestamp_ns, is_keyframe) {
+    if let Err(e) = segment.add_frame(frame.track_id, &frame.data, write_ts, frame.is_keyframe) {
         stats_tracker.errored();
         stats_tracker.maybe_send();
-        let err_msg = format!("Failed to add frame to segment: {e}");
+        let err_msg = format!(
+            "Failed to add frame to segment: {e} (track={}, write_ts={write_ts}ns, \
+             frame_ts={}ns, last_written={}ns, keyframe={}, data_len={})",
+            frame.track_id,
+            frame.timestamp_ns,
+            state.last_written_ns,
+            frame.is_keyframe,
+            frame.data.len()
+        );
         state_helpers::emit_failed(&context.state_tx, node_name, &err_msg);
         return Err(StreamKitError::Runtime(err_msg));
     }
 
-    state.last_written_ns = timestamp_ns;
+    state.last_written_ns = write_ts;
 
     let output_metadata = Some(PacketMetadata {
-        timestamp_us: Some(presentation_ts_us),
-        duration_us: incoming_duration_us,
-        sequence: metadata.and_then(|m| m.sequence),
-        keyframe: Some(is_keyframe),
+        timestamp_us: Some(frame.presentation_ts_us),
+        duration_us: frame.duration_us,
+        sequence: frame.metadata.as_ref().and_then(|m| m.sequence),
+        keyframe: Some(frame.is_keyframe),
     });
 
     let stopped = flush_output(
@@ -1492,9 +1825,19 @@ pub fn register_webm_nodes(registry: &mut NodeRegistry) {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use streamkit_core::ProcessorNode;
+
+    /// Mirrors the strictly-increasing write logic from `write_frame`.
+    fn strictly_increasing_ts(frame_ts: u64, last_written: u64) -> u64 {
+        if frame_ts > last_written {
+            frame_ts
+        } else {
+            last_written + 1_000_000
+        }
+    }
 
     /// Helper to build a `WebMMuxerNode` with the given video dimensions.
     fn muxer_with_dims(w: u32, h: u32) -> WebMMuxerNode {
@@ -1505,6 +1848,8 @@ mod tests {
         })
     }
 
+    /// `content_type()` uses video dimensions to decide the static MIME hint:
+    /// audio-only when no dimensions are set, video+audio otherwise.
     #[test]
     fn content_type_audio_only_when_no_video_dims() {
         let node = muxer_with_dims(0, 0);
@@ -1516,8 +1861,7 @@ mod tests {
 
     /// Regression test: when video dimensions are set, the static hint must
     /// include both codecs so that MSE consumers can initialise an audio
-    /// SourceBuffer.  Previously `has_audio = !has_video` caused the hint
-    /// to omit Opus for combined A+V pipelines.
+    /// SourceBuffer.
     #[test]
     fn content_type_includes_opus_when_video_dims_set() {
         let node = muxer_with_dims(1280, 720);
@@ -1525,6 +1869,22 @@ mod tests {
             panic!("content_type should return Some");
         };
         assert_eq!(ct, "video/webm; codecs=\"vp9,opus\"");
+    }
+
+    #[test]
+    fn input_pins_default_single() {
+        let node = muxer_with_dims(0, 0);
+        assert_eq!(node.input_pins().len(), 1);
+    }
+
+    #[test]
+    fn input_pins_dual_with_num_inputs() {
+        let node =
+            WebMMuxerNode::new(WebMMuxerConfig { num_inputs: 2, ..WebMMuxerConfig::default() });
+        let pins = node.input_pins();
+        assert_eq!(pins.len(), 2);
+        assert_eq!(pins[0].name, "in");
+        assert_eq!(pins[1].name, "in_1");
     }
 
     #[test]
@@ -1539,5 +1899,589 @@ mod tests {
         assert_eq!(webm_content_type(false, true, true), "video/webm; codecs=\"av1\"");
         assert_eq!(webm_content_type(true, false, true), "audio/webm; codecs=\"opus\"");
         assert_eq!(webm_content_type(false, false, true), "video/webm");
+    }
+
+    /// Verify that the `webm` crate in Live mode with a non-seek writer
+    /// produces Cluster elements (element ID `0x1F43B675`).
+    ///
+    /// The MSE spec requires SimpleBlock elements to be nested inside Clusters.
+    /// If libwebm doesn't produce Clusters, the MSE SourceBuffer will reject
+    /// the stream with `CHUNK_DEMUXER_ERROR_APPEND_FAILED`.
+    #[test]
+    fn webm_live_non_seek_produces_clusters() {
+        use std::io::Cursor;
+        use webm::mux::{SegmentBuilder, SegmentMode, VideoCodecId, Writer};
+
+        let output = Vec::new();
+        let writer = Writer::new_non_seek(Cursor::new(output));
+
+        let builder = SegmentBuilder::new(writer).unwrap();
+        let builder = builder.set_mode(SegmentMode::Live).unwrap();
+        let (builder, video_track) =
+            builder.add_video_track(1280, 720, VideoCodecId::VP9, None).unwrap();
+        let mut segment = builder.build();
+
+        // Add a few frames — the first one is a keyframe.
+        let fake_frame = vec![0u8; 100];
+        segment.add_frame(video_track, &fake_frame, 0, true).unwrap();
+        segment.add_frame(video_track, &fake_frame, 33_000_000, false).unwrap();
+        segment.add_frame(video_track, &fake_frame, 66_000_000, true).unwrap();
+
+        // Finalize (may fail for non-seek, that's ok — we just want the
+        // bytes written so far).
+        let writer = segment.finalize(None).unwrap_or_else(|w| w);
+        let data = writer.into_inner().into_inner();
+
+        // Search for Cluster ID (0x1F43B675).
+        let cluster_id: [u8; 4] = [0x1F, 0x43, 0xB6, 0x75];
+        let has_cluster = data.windows(4).any(|w| w == cluster_id);
+
+        assert!(
+            has_cluster,
+            "webm crate in Live mode with non-seek writer must produce at least one Cluster element. \
+             Output size: {} bytes. First 200 bytes: {:02x?}",
+            data.len(),
+            &data[..data.len().min(200)]
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Timestamp logic unit tests
+    // ---------------------------------------------------------------
+
+    /// Helper: stage N frames on a single track via `stage_frame` and
+    /// return their rebased timestamps in nanoseconds.
+    #[allow(clippy::too_many_arguments)]
+    fn stage_n(
+        n: usize,
+        track_id: u64,
+        duration_us: u64,
+        incoming_timestamps: &[Option<u64>],
+        clock: &mut streamkit_core::timing::MediaClock,
+        rebase_offset: &mut Option<i64>,
+        last_written_ns: u64,
+        per_track_last: &mut Option<u64>,
+    ) -> Vec<u64> {
+        let mut timestamps = Vec::with_capacity(n);
+        for i in 0..n {
+            let meta = incoming_timestamps.get(i).copied().flatten().map(|ts| PacketMetadata {
+                timestamp_us: Some(ts),
+                duration_us: Some(duration_us),
+                sequence: None,
+                keyframe: None,
+            });
+            let pf = stage_frame(
+                Bytes::from_static(&[0]),
+                meta,
+                track_id,
+                i == 0,
+                duration_us,
+                clock,
+                rebase_offset,
+                last_written_ns,
+                per_track_last,
+            );
+            timestamps.push(pf.timestamp_ns);
+        }
+        timestamps
+    }
+
+    #[test]
+    fn stage_frame_synthetic_clock_produces_clean_cadence() {
+        let mut clock = streamkit_core::timing::MediaClock::new(0);
+        let mut offset = None;
+        let mut last = None;
+        // Audio: 20ms frames, no incoming timestamps (synthetic clock)
+        let ts = stage_n(
+            5,
+            2,
+            20_000,
+            &[None, None, None, None, None],
+            &mut clock,
+            &mut offset,
+            0,
+            &mut last,
+        );
+        // Expect 0, 20ms, 40ms, 60ms, 80ms in nanoseconds
+        assert_eq!(ts, vec![0, 20_000_000, 40_000_000, 60_000_000, 80_000_000]);
+    }
+
+    #[test]
+    fn stage_frame_incoming_timestamps_used_when_present() {
+        let mut clock = streamkit_core::timing::MediaClock::new(0);
+        let mut offset = None;
+        let mut last = None;
+        // Video with explicit timestamps (from compositor/MoQ)
+        let ts = stage_n(
+            3,
+            1,
+            33_333,
+            &[Some(0), Some(33_333), Some(66_666)],
+            &mut clock,
+            &mut offset,
+            0,
+            &mut last,
+        );
+        assert_eq!(ts, vec![0, 33_333_000, 66_666_000]);
+    }
+
+    #[test]
+    fn stage_frame_per_track_monotonicity_clamps_backward() {
+        let mut clock = streamkit_core::timing::MediaClock::new(0);
+        let mut offset = None;
+        let mut last = None;
+        // Timestamps go backward (jittery MoQ source).
+        // Rebase: first ts=100000us, last_written=0 → offset=-100ms.
+        // All timestamps are shifted by -100ms then clamped to ≥0.
+        let ts = stage_n(
+            4,
+            1,
+            33_333,
+            &[Some(100_000), Some(90_000), Some(80_000), Some(200_000)],
+            &mut clock,
+            &mut offset,
+            0,
+            &mut last,
+        );
+        // Frame 1: 100ms - 100ms = 0ns
+        assert_eq!(ts[0], 0);
+        // Frame 2: 90ms - 100ms = -10ms → clamped to 0 → per-track: 0 ≤ 0 → +1ms
+        assert_eq!(ts[1], 1_000_000);
+        // Frame 3: 80ms - 100ms = -20ms → clamped to 0 → per-track: 0 ≤ 1ms → +1ms = 2ms
+        assert_eq!(ts[2], 2_000_000);
+        // Frame 4: 200ms - 100ms = 100ms → per-track: 100ms > 2ms → OK
+        assert_eq!(ts[3], 100_000_000);
+    }
+
+    #[test]
+    fn stage_frame_rebase_aligns_late_track() {
+        // Video has been writing for 3 seconds
+        let video_last_written = 3_000_000_000u64; // 3s in ns
+
+        // Audio arrives late, synthetic clock starts at 0
+        let mut audio_clock = streamkit_core::timing::MediaClock::new(0);
+        let mut audio_offset = None;
+        let mut audio_last = None;
+
+        let ts = stage_n(
+            3,
+            2,
+            20_000,
+            &[None, None, None],
+            &mut audio_clock,
+            &mut audio_offset,
+            video_last_written,
+            &mut audio_last,
+        );
+        // Audio should start at ~3s (video's current position)
+        assert_eq!(ts[0], 3_000_000_000);
+        assert_eq!(ts[1], 3_020_000_000);
+        assert_eq!(ts[2], 3_040_000_000);
+        assert_eq!(audio_offset, Some(3_000_000_000));
+    }
+
+    /// Simulate 2 seconds of interleaved audio (50fps) + video (30fps)
+    /// arriving in arrival order.  Verify container timestamps are
+    /// well-formed: globally non-decreasing, no 1ms pairs (the original
+    /// stuttering bug), no huge gaps.
+    #[test]
+    fn interleaved_av_no_large_gaps_or_1ms_pairs() {
+        let mut audio_clock = streamkit_core::timing::MediaClock::new(0);
+        let mut video_clock = streamkit_core::timing::MediaClock::new(0);
+        let mut audio_offset: Option<i64> = Some(0);
+        let mut video_offset: Option<i64> = Some(0);
+        let mut audio_last: Option<u64> = None;
+        let mut video_last: Option<u64> = None;
+        let mut last_written_ns: u64 = 0;
+
+        let mut audio_container_ts: Vec<u64> = Vec::new();
+        let mut video_container_ts: Vec<u64> = Vec::new();
+
+        // Generate 2s of frames: audio every 20ms, video every 33ms.
+        let total_ms = 2000u64;
+        let mut next_audio_ms = 0u64;
+        let mut next_video_ms = 0u64;
+
+        while next_audio_ms < total_ms || next_video_ms < total_ms {
+            if next_audio_ms <= next_video_ms && next_audio_ms < total_ms {
+                let pf = stage_frame(
+                    Bytes::from_static(&[0]),
+                    None,
+                    2,
+                    true,
+                    20_000,
+                    &mut audio_clock,
+                    &mut audio_offset,
+                    last_written_ns,
+                    &mut audio_last,
+                );
+                let write_ts = strictly_increasing_ts(pf.timestamp_ns, last_written_ns);
+                audio_container_ts.push(write_ts);
+                last_written_ns = write_ts;
+                next_audio_ms += 20;
+            } else if next_video_ms < total_ms {
+                let pf = stage_frame(
+                    Bytes::from_static(&[0]),
+                    None,
+                    1,
+                    next_video_ms == 0,
+                    33_333,
+                    &mut video_clock,
+                    &mut video_offset,
+                    last_written_ns,
+                    &mut video_last,
+                );
+                let write_ts = strictly_increasing_ts(pf.timestamp_ns, last_written_ns);
+                video_container_ts.push(write_ts);
+                last_written_ns = write_ts;
+                next_video_ms += 33;
+            }
+        }
+
+        // Per-track monotonicity
+        for w in audio_container_ts.windows(2) {
+            assert!(w[1] >= w[0], "audio went backward: {} -> {}", w[0], w[1]);
+        }
+        for w in video_container_ts.windows(2) {
+            assert!(w[1] >= w[0], "video went backward: {} -> {}", w[0], w[1]);
+        }
+
+        // No 1ms pairs on audio (the original stuttering bug)
+        for w in audio_container_ts.windows(2) {
+            let gap_ms = (w[1] - w[0]) / 1_000_000;
+            assert!(
+                gap_ms >= 5,
+                "audio gap too small: {}ms (ts {} -> {}). Likely 1ms-pair regression.",
+                gap_ms,
+                w[0],
+                w[1]
+            );
+        }
+
+        // No huge gaps (> 2x frame duration) on either track
+        for w in audio_container_ts.windows(2) {
+            let gap_ms = (w[1] - w[0]) / 1_000_000;
+            assert!(gap_ms <= 45, "audio gap too large: {}ms (ts {} -> {})", gap_ms, w[0], w[1]);
+        }
+        for w in video_container_ts.windows(2) {
+            let gap_ms = (w[1] - w[0]) / 1_000_000;
+            assert!(gap_ms <= 70, "video gap too large: {}ms (ts {} -> {})", gap_ms, w[0], w[1]);
+        }
+
+        // Reasonable frame counts
+        assert!(audio_container_ts.len() >= 95, "too few audio: {}", audio_container_ts.len());
+        assert!(video_container_ts.len() >= 55, "too few video: {}", video_container_ts.len());
+    }
+
+    /// Simulate arrival-order interleaving where video frames arrive before
+    /// audio frames that have earlier staged timestamps.  Without strictly
+    /// increasing write timestamps, the global max-clamp creates cross-track
+    /// timestamp equality (e.g. video@40.032, audio@40.032, audio@40.032),
+    /// which causes Chrome's muxed-WebM MSE demuxer to stall.
+    #[test]
+    fn arrival_order_produces_unique_global_timestamps() {
+        let mut video_clock = streamkit_core::timing::MediaClock::new(0);
+        let mut audio_clock = streamkit_core::timing::MediaClock::new(0);
+        let mut video_offset: Option<i64> = None;
+        let mut audio_offset: Option<i64> = None;
+        let mut video_last: Option<u64> = None;
+        let mut audio_last: Option<u64> = None;
+        let mut last_written_ns: u64 = 0;
+
+        // Collect all global write timestamps in order.
+        let mut all_write_ts: Vec<u64> = Vec::new();
+
+        // Simulate 2 seconds of arrival-order interleaving:
+        // Video arrives at muxer first (compositor has lower latency),
+        // then audio for the same time window arrives slightly later.
+        // This matches the real pattern: V, V, A, A, V, A, A, V, ...
+        let total_ms = 2000u64;
+        let mut next_video_ms: u64 = 0;
+        let mut next_audio_ms: u64 = 0;
+
+        while next_video_ms < total_ms || next_audio_ms < total_ms {
+            // Write video first (simulating lower-latency compositor path)
+            if next_video_ms < total_ms && next_video_ms <= next_audio_ms + 10 {
+                let pf = stage_frame(
+                    Bytes::from_static(&[0]),
+                    None,
+                    1,
+                    next_video_ms == 0,
+                    33_333,
+                    &mut video_clock,
+                    &mut video_offset,
+                    last_written_ns,
+                    &mut video_last,
+                );
+                let write_ts = strictly_increasing_ts(pf.timestamp_ns, last_written_ns);
+                all_write_ts.push(write_ts);
+                last_written_ns = write_ts;
+                next_video_ms += 33;
+            }
+
+            // Then write any audio frames whose timestamps fall before
+            // the next video frame (simulating later arrival).
+            while next_audio_ms < total_ms && next_audio_ms < next_video_ms {
+                let pf = stage_frame(
+                    Bytes::from_static(&[0]),
+                    None,
+                    2,
+                    true,
+                    20_000,
+                    &mut audio_clock,
+                    &mut audio_offset,
+                    last_written_ns,
+                    &mut audio_last,
+                );
+                let write_ts = strictly_increasing_ts(pf.timestamp_ns, last_written_ns);
+                all_write_ts.push(write_ts);
+                last_written_ns = write_ts;
+                next_audio_ms += 20;
+            }
+        }
+
+        // Every global write timestamp must be unique (strictly increasing).
+        for w in all_write_ts.windows(2) {
+            assert!(
+                w[1] > w[0],
+                "global timestamps must be strictly increasing: {} -> {} (equal = MSE stall risk)",
+                w[0],
+                w[1]
+            );
+        }
+
+        // Sanity: reasonable frame counts.
+        assert!(all_write_ts.len() >= 150, "too few frames: {}", all_write_ts.len());
+    }
+
+    #[test]
+    fn rebase_with_incoming_moq_timestamps() {
+        // Video track starts first at ts=0 (from compositor)
+        let mut video_clock = streamkit_core::timing::MediaClock::new(0);
+        let mut video_offset = None;
+        let mut video_last = None;
+
+        let v1 = stage_frame(
+            Bytes::from_static(&[0]),
+            Some(PacketMetadata {
+                timestamp_us: Some(0),
+                duration_us: Some(33_333),
+                sequence: None,
+                keyframe: Some(true),
+            }),
+            1,
+            true,
+            33_333,
+            &mut video_clock,
+            &mut video_offset,
+            0,
+            &mut video_last,
+        );
+        assert_eq!(v1.timestamp_ns, 0);
+
+        // Simulate 3s of video written
+        let last_video_ns = 3_000_000_000u64;
+
+        // Audio arrives with normalized MoQ timestamp
+        let mut audio_clock = streamkit_core::timing::MediaClock::new(0);
+        let mut audio_offset = None;
+        let mut audio_last = None;
+
+        let a1 = stage_frame(
+            Bytes::from_static(&[0]),
+            Some(PacketMetadata {
+                timestamp_us: Some(20_000),
+                duration_us: Some(20_000),
+                sequence: None,
+                keyframe: None,
+            }),
+            2,
+            true,
+            20_000,
+            &mut audio_clock,
+            &mut audio_offset,
+            last_video_ns,
+            &mut audio_last,
+        );
+
+        // Audio should be rebased to near the video's current position
+        let audio_start_ms = a1.timestamp_ns / 1_000_000;
+        assert!(
+            (2990..=3010).contains(&audio_start_ms),
+            "audio should start near 3000ms, got {audio_start_ms}ms"
+        );
+    }
+
+    /// Simulate the compositor calibration scenario that causes permanent
+    /// A/V desync without the rebase-reset fix.
+    ///
+    /// Timeline:
+    /// 1. Compositor outputs pre-calibration video at running-clock
+    ///    timestamps (0, 33ms, 66ms, …) for 2 seconds.
+    /// 2. Audio arrives ~2s later; its rebase aligns it to the current
+    ///    video position (~2s).
+    /// 3. Compositor calibrates to the MoQ epoch — output timestamps
+    ///    jump backwards from ~2s to ~0.
+    /// 4. Without the rebase-reset, per-track monotonicity bumps each
+    ///    post-calibration video frame by +1ms, creating a permanent
+    ///    ~2s A/V offset.  With the fix, the rebase recomputes from
+    ///    `last_written_ns` and the tracks re-align.
+    #[test]
+    fn rebase_reset_on_compositor_calibration_prevents_av_desync() {
+        let mut video_clock = streamkit_core::timing::MediaClock::new(0);
+        let mut audio_clock = streamkit_core::timing::MediaClock::new(0);
+        let mut video_offset: Option<i64> = None;
+        let mut audio_offset: Option<i64> = None;
+        let mut video_last: Option<u64> = None;
+        let mut audio_last: Option<u64> = None;
+        let mut last_written_ns: u64 = 0;
+
+        // ── Phase 1: 60 pre-calibration video frames (≈2s at 30fps) ──
+        for i in 0u64..60 {
+            let ts_us = i * 33_333;
+            let pf = stage_frame(
+                Bytes::from_static(&[0]),
+                Some(PacketMetadata {
+                    timestamp_us: Some(ts_us),
+                    duration_us: Some(33_333),
+                    sequence: None,
+                    keyframe: Some(i == 0),
+                }),
+                1,
+                i == 0,
+                33_333,
+                &mut video_clock,
+                &mut video_offset,
+                last_written_ns,
+                &mut video_last,
+            );
+            last_written_ns = strictly_increasing_ts(pf.timestamp_ns, last_written_ns);
+        }
+        // Video should be near 2s
+        let video_pre_cal_ns = last_written_ns;
+        assert!(
+            video_pre_cal_ns > 1_900_000_000 && video_pre_cal_ns < 2_100_000_000,
+            "pre-calibration video should be near 2s, got {}ms",
+            video_pre_cal_ns / 1_000_000
+        );
+
+        // ── Phase 2: Audio arrives, rebased to current video position ──
+        for i in 0u64..10 {
+            let ts_us = i * 20_000; // MoQ-normalized, starts near 0
+            let pf = stage_frame(
+                Bytes::from_static(&[0]),
+                Some(PacketMetadata {
+                    timestamp_us: Some(ts_us),
+                    duration_us: Some(20_000),
+                    sequence: None,
+                    keyframe: None,
+                }),
+                2,
+                true,
+                20_000,
+                &mut audio_clock,
+                &mut audio_offset,
+                last_written_ns,
+                &mut audio_last,
+            );
+            last_written_ns = strictly_increasing_ts(pf.timestamp_ns, last_written_ns);
+        }
+
+        // ── Phase 3: Compositor calibrates — video timestamps jump back
+        //    to near 0 (MoQ epoch) ──
+        // This simulates the compositor output after cal_offset is applied:
+        // output_ts = running_clock + cal_offset ≈ 2s + (-2s) = 0.
+        let mut post_cal_video_ts = Vec::new();
+        for i in 0u64..30 {
+            let ts_us = i * 33_333; // post-calibration: back near 0
+            let pf = stage_frame(
+                Bytes::from_static(&[0]),
+                Some(PacketMetadata {
+                    timestamp_us: Some(ts_us),
+                    duration_us: Some(33_333),
+                    sequence: None,
+                    keyframe: Some(i == 0),
+                }),
+                1,
+                i == 0,
+                33_333,
+                &mut video_clock,
+                &mut video_offset,
+                last_written_ns,
+                &mut video_last,
+            );
+            let write_ts = strictly_increasing_ts(pf.timestamp_ns, last_written_ns);
+            post_cal_video_ts.push(write_ts);
+            last_written_ns = write_ts;
+        }
+
+        // ── Phase 4: Continue audio for comparison ──
+        let mut post_cal_audio_ts = Vec::new();
+        for i in 10u64..40 {
+            let ts_us = i * 20_000;
+            let pf = stage_frame(
+                Bytes::from_static(&[0]),
+                Some(PacketMetadata {
+                    timestamp_us: Some(ts_us),
+                    duration_us: Some(20_000),
+                    sequence: None,
+                    keyframe: None,
+                }),
+                2,
+                true,
+                20_000,
+                &mut audio_clock,
+                &mut audio_offset,
+                last_written_ns,
+                &mut audio_last,
+            );
+            let write_ts = strictly_increasing_ts(pf.timestamp_ns, last_written_ns);
+            post_cal_audio_ts.push(write_ts);
+            last_written_ns = write_ts;
+        }
+
+        // ── Assertions ──
+        // After the rebase reset, post-calibration video should quickly
+        // re-align with audio.  The last video and audio timestamps
+        // should be within 500ms of each other (not the ~2s permanent
+        // offset that would exist without the fix).
+        let last_video = *post_cal_video_ts.last().unwrap();
+        let last_audio = *post_cal_audio_ts.last().unwrap();
+        let offset_ms = last_audio.abs_diff(last_video) / 1_000_000;
+        assert!(
+            offset_ms < 500,
+            "A/V offset after calibration should be < 500ms, got {offset_ms}ms \
+             (audio={last_audio}ns, video={last_video}ns). \
+             Rebase reset may not have fired."
+        );
+
+        // Post-calibration video timestamps must be strictly increasing
+        for w in post_cal_video_ts.windows(2) {
+            assert!(w[1] > w[0], "post-cal video went backward: {} -> {}", w[0], w[1]);
+        }
+    }
+
+    /// Confirm libwebm rejects cross-track backward timestamps — this is
+    /// why `write_frame` enforces strictly increasing timestamps with a
+    /// +1 ms bump when a frame would otherwise equal or precede the
+    /// previous write.
+    #[test]
+    fn libwebm_rejects_cross_track_non_monotonic() {
+        use std::io::Cursor;
+        use webm::mux::{AudioCodecId, SegmentBuilder, SegmentMode, VideoCodecId, Writer};
+
+        let writer = Writer::new_non_seek(Cursor::new(Vec::new()));
+        let builder = SegmentBuilder::new(writer).unwrap();
+        let builder = builder.set_mode(SegmentMode::Live).unwrap();
+        let (builder, video) = builder.add_video_track(64, 64, VideoCodecId::VP9, None).unwrap();
+        let (builder, audio) = builder.add_audio_track(48000, 1, AudioCodecId::Opus, None).unwrap();
+        let mut segment = builder.build();
+        let f = vec![0u8; 10];
+
+        segment.add_frame(video, &f, 0, true).unwrap();
+        segment.add_frame(video, &f, 66_000_000, false).unwrap();
+        // Audio at 60ms after video at 66ms — backward, should fail.
+        let result = segment.add_frame(audio, &f, 60_000_000, false);
+        assert!(result.is_err(), "libwebm must reject backward timestamps");
     }
 }

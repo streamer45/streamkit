@@ -14,6 +14,7 @@ pub mod marketplace_installer;
 pub mod marketplace_security;
 #[cfg(feature = "moq")]
 pub mod moq_gateway;
+pub mod mse_gateway;
 pub mod permissions;
 pub mod plugin_paths;
 pub mod plugin_records;

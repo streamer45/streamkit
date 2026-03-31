@@ -608,8 +608,16 @@ async function setupPublishPath(
     enabled: true,
     name: Publish.Lite.Path.from(inputBroadcast),
   };
+  // When both audio and video are needed, start audio disabled and enable it
+  // after the video encoder is ready.  This ensures both tracks begin MoQ
+  // publishing at the same time, preventing the ~0.7s A/V desync from the
+  // VP9 encoder's slower startup.
+  const deferAudioUntilVideo = needsAudio && needsVideo;
   if (needsAudio && microphone) {
-    broadcastConfig.audio = { enabled: true, source: microphone.source };
+    broadcastConfig.audio = {
+      enabled: !deferAudioUntilVideo,
+      source: microphone.source,
+    };
   }
   if (needsVideo) {
     if (videoSourceType === 'screen' && screen) {
@@ -654,6 +662,12 @@ async function setupPublishPath(
       throw e;
     }
     logger.info('Step 5b: Video catalog ready');
+    // Now that video is publishing, enable audio so both tracks start
+    // at the same time on the server side.
+    if (deferAudioUntilVideo) {
+      publish.audio.enabled.set(true);
+      logger.info('Step 5c: Audio enabled (deferred until video ready)');
+    }
   }
 
   return { microphone, camera, screen, publish };
@@ -1042,7 +1056,7 @@ async function connectWatchPath(
     abortSignal
   );
 
-  if (decision.shouldWatch) {
+  if (decision.shouldWatch && state.outputBroadcast) {
     // When publishing to an external relay, the skit pipeline needs time to
     // discover input tracks, build the graph, and start publishing output.
     // Wait for the output broadcast to be announced on the relay before

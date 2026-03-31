@@ -56,6 +56,7 @@ pub mod frame_pool;
 pub mod helpers;
 pub mod metrics;
 pub mod moq_gateway;
+pub mod mse_gateway;
 pub mod node;
 pub mod node_config;
 pub mod packet_meta;

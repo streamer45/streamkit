@@ -451,9 +451,10 @@ async fn test_compositor_node_generates_own_timestamps() {
     assert_state_initializing(&mut state_rx).await;
     assert_state_running(&mut state_rx).await;
 
-    // Send a frame with an arbitrary input timestamp — the compositor
-    // should derive its own output timestamps from its configured fps
-    // and output sequence counter, not copy from the input.
+    // Send a frame with an arbitrary input timestamp — in live mode
+    // the compositor passes it through, but this test context is NOT
+    // oneshot (it uses the default dynamic context), so the input
+    // timestamp is propagated.
     let mut frame = make_rgba_frame(2, 2, 100, 100, 100, 255);
     frame.metadata = Some(PacketMetadata {
         timestamp_us: Some(42_000),
@@ -474,9 +475,9 @@ async fn test_compositor_node_generates_own_timestamps() {
 
     if let Packet::Video(ref out_frame) = output_packets[0] {
         let meta = out_frame.metadata.as_ref().expect("metadata should be present");
-        // Default fps is 30 → frame_duration = 33333µs.
-        // First output frame (seq=0) gets timestamp 0.
-        assert_eq!(meta.timestamp_us, Some(0));
+        // Live mode: highest-indexed input's timestamp is used.
+        // Single input (in_0) has timestamp 42000.
+        assert_eq!(meta.timestamp_us, Some(42_000));
         assert_eq!(meta.duration_us, Some(33_333));
         assert_eq!(meta.sequence, Some(0));
     } else {

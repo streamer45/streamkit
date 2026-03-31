@@ -103,7 +103,7 @@ describe('deriveSettingsFromClient', () => {
           },
         ],
       },
-      watch: { broadcast: 'composited-output', audio: true, video: true },
+      watch: { broadcast: 'composited-output', mse_path: null, audio: true, video: true },
       input: null,
       output: null,
     };
@@ -164,7 +164,7 @@ describe('deriveSettingsFromClient', () => {
           },
         ],
       },
-      watch: { broadcast: 'output', audio: false, video: true },
+      watch: { broadcast: 'output', mse_path: null, audio: false, video: true },
       input: null,
       output: null,
     };
@@ -203,7 +203,7 @@ describe('deriveSettingsFromClient', () => {
       relay_url: null,
       gateway_path: '/moq/monitor',
       publish: null,
-      watch: { broadcast: 'preview', audio: false, video: true },
+      watch: { broadcast: 'preview', mse_path: null, audio: false, video: true },
       input: null,
       output: null,
     };
@@ -384,7 +384,7 @@ describe('deriveSettingsFromClient — monitor preview scenarios', () => {
       relay_url: null,
       gateway_path: '/moq/transcoder',
       publish: null,
-      watch: { broadcast: 'output', audio: true, video: false },
+      watch: { broadcast: 'output', mse_path: null, audio: true, video: false },
       input: null,
       output: null,
     };
@@ -425,7 +425,7 @@ describe('deriveSettingsFromClient — monitor preview scenarios', () => {
           },
         ],
       },
-      watch: { broadcast: 'composited', audio: true, video: true },
+      watch: { broadcast: 'composited', mse_path: null, audio: true, video: true },
       input: null,
       output: null,
     };
@@ -464,7 +464,7 @@ describe('deriveSettingsFromClient — monitor preview scenarios', () => {
           },
         ],
       },
-      watch: { broadcast: 'output', audio: true, video: true },
+      watch: { broadcast: 'output', mse_path: null, audio: true, video: true },
       input: null,
       output: null,
     };
@@ -512,7 +512,7 @@ describe('deriveSettingsFromClient — monitor preview scenarios', () => {
       relay_url: 'https://relay.example.com',
       gateway_path: null,
       publish: null,
-      watch: { broadcast: 'preview', audio: false, video: true },
+      watch: { broadcast: 'preview', mse_path: null, audio: false, video: true },
       input: null,
       output: null,
     };

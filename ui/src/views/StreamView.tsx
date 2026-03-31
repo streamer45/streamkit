@@ -9,6 +9,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { useShallow } from 'zustand/shallow';
 
 import ConfirmModal from '@/components/ConfirmModal';
+import { NativeStreamPlayer } from '@/components/NativeStreamPlayer';
 import { VolumeSlider } from '@/components/OutputPreviewPanel';
 import { PipelineSelectionSection } from '@/components/stream/PipelineSelectionSection';
 import { TelemetryTimeline as TelemetryTimelineComponent } from '@/components/TelemetryTimeline';
@@ -29,6 +30,7 @@ import { useAudioControls } from '@/hooks/useAudioControls';
 import { useStreamViewState } from '@/hooks/useStreamViewState';
 import { useVideoCanvas } from '@/hooks/useVideoCanvas';
 import { useWebSocket } from '@/hooks/useWebSocket';
+import { getApiUrl } from '@/services/base';
 import { listDynamicSamples } from '@/services/samples';
 import { createSession } from '@/services/sessions';
 import { useSchemaStore, ensureSchemasLoaded } from '@/stores/schemaStore';
@@ -359,6 +361,7 @@ const StreamView: React.FC = () => {
     videoRenderer,
     audioEmitter,
     publishBroadcasts,
+    msePath,
     isSecondaryCameraEnabled,
     secondaryCameraStatus,
     setServerUrl,
@@ -373,6 +376,7 @@ const StreamView: React.FC = () => {
     setIsExternalRelay,
     setVideoSourceType,
     setTracks,
+    setMsePath,
     setActiveSession,
     clearActiveSession,
     loadConfig,
@@ -408,6 +412,7 @@ const StreamView: React.FC = () => {
       videoRenderer: s.videoRenderer,
       audioEmitter: s.audioEmitter,
       publishBroadcasts: s.publishBroadcasts,
+      msePath: s.msePath,
       isSecondaryCameraEnabled: s.isSecondaryCameraEnabled,
       secondaryCameraStatus: s.secondaryCameraStatus,
       setServerUrl: s.setServerUrl,
@@ -422,6 +427,7 @@ const StreamView: React.FC = () => {
       setIsExternalRelay: s.setIsExternalRelay,
       setVideoSourceType: s.setVideoSourceType,
       setTracks: s.setTracks,
+      setMsePath: s.setMsePath,
       setActiveSession: s.setActiveSession,
       clearActiveSession: s.clearActiveSession,
       loadConfig: s.loadConfig,
@@ -448,6 +454,19 @@ const StreamView: React.FC = () => {
       document.removeEventListener('webkitfullscreenchange', handler);
     };
   }, []);
+
+  // ── MSE playback URL ──
+  // When `msePath` is set and a session is active, build the URL for the
+  // MSE HTTP endpoint.  NativeStreamPlayer (via the browser's native
+  // <video> decoder) handles the chunked WebM stream directly — no manual
+  // MediaSource / SourceBuffer management needed.
+  const [mseError, setMseError] = useState<string | null>(null);
+  const mseUrl = React.useMemo(() => {
+    if (!activeSessionId || !msePath) return null;
+    const apiUrl = getApiUrl();
+    const normalizedMsePath = msePath.startsWith('/') ? msePath : `/${msePath}`;
+    return `${apiUrl}/mse/${activeSessionId}${normalizedMsePath}`;
+  }, [activeSessionId, msePath]);
 
   // Get node definitions for YAML autocomplete
   const nodeDefinitions = useSchemaStore((s) => s.nodeDefinitions);
@@ -541,18 +560,23 @@ const StreamView: React.FC = () => {
           if (moqSettings) {
             const resolvedUrl = resolveServerUrl(moqSettings);
             if (resolvedUrl) setServerUrl(resolvedUrl);
-            if (moqSettings.inputBroadcast) {
-              setInputBroadcast(moqSettings.inputBroadcast);
-            }
-            if (moqSettings.outputBroadcast) {
-              setOutputBroadcast(moqSettings.outputBroadcast);
-            }
+            setInputBroadcast(moqSettings.inputBroadcast ?? '');
+            setOutputBroadcast(moqSettings.outputBroadcast ?? '');
             setEnablePublish(moqSettings.hasInputBroadcast);
+            setEnableWatch(Boolean(moqSettings.outputBroadcast));
             setPipelineMediaTypes(moqSettings.needsAudioInput, moqSettings.needsVideoInput);
             setPipelineOutputTypes(moqSettings.outputsAudio, moqSettings.outputsVideo);
             setIsExternalRelay(moqSettings.isExternalRelay);
             setVideoSourceType(moqSettings.videoSourceType);
             setTracks(moqSettings.tracks, moqSettings.publishBroadcasts);
+            setMsePath(moqSettings.msePath ?? null);
+          } else {
+            // No client section — clear all transport state.
+            setInputBroadcast('');
+            setOutputBroadcast('');
+            setEnablePublish(false);
+            setEnableWatch(false);
+            setMsePath(null);
           }
         }
       } catch (error) {
@@ -577,41 +601,32 @@ const StreamView: React.FC = () => {
         viewState.setSelectedTemplateId(templateId);
         viewState.setPipelineYaml(template.yaml);
 
-        // Auto-adjust connection settings based on moq_peer node in the pipeline
+        // Always clear transport-related state so switching to a pipeline
+        // without a client section doesn't leave stale values from the
+        // previous template (e.g. switching from a MoQ pipeline to an
+        // MSE-only pipeline must clear outputBroadcast, and vice versa).
         const moqSettings = extractMoqPeerSettings(template.yaml);
         if (moqSettings) {
           const resolvedUrl = resolveServerUrl(moqSettings);
           if (resolvedUrl) setServerUrl(resolvedUrl);
-          // Update broadcast names if specified
-          if (moqSettings.inputBroadcast) {
-            setInputBroadcast(moqSettings.inputBroadcast);
-          }
-          if (moqSettings.outputBroadcast) {
-            setOutputBroadcast(moqSettings.outputBroadcast);
-          }
-          // Auto-toggle publish based on whether pipeline expects a publisher.
-          // Receive-only pipelines (no input_broadcast) skip microphone access.
+          setInputBroadcast(moqSettings.inputBroadcast ?? '');
+          setOutputBroadcast(moqSettings.outputBroadcast ?? '');
           setEnablePublish(moqSettings.hasInputBroadcast);
-
-          // Tell the store which devices the pipeline actually needs so that
-          // connect() only requests the relevant browser permissions.
+          setEnableWatch(Boolean(moqSettings.outputBroadcast));
           setPipelineMediaTypes(moqSettings.needsAudioInput, moqSettings.needsVideoInput);
-
-          // Tell the store which media types the pipeline outputs to subscribers
-          // so that connect() only creates the relevant watch-side components.
           setPipelineOutputTypes(moqSettings.outputsAudio, moqSettings.outputsVideo);
-
-          // Flag whether this pipeline uses an external relay so that
-          // performConnect can skip the broadcast-announcement wait in
-          // gateway mode.
           setIsExternalRelay(moqSettings.isExternalRelay);
-
-          // Set the video source type so the connect flow creates the right
-          // capture source (camera vs screen).
           setVideoSourceType(moqSettings.videoSourceType);
-
-          // Pass tracks and broadcast names for multi-broadcast support.
           setTracks(moqSettings.tracks, moqSettings.publishBroadcasts);
+          setMsePath(moqSettings.msePath ?? null);
+        } else {
+          // No client section — clear all transport state to prevent
+          // stale MoQ/MSE settings from leaking across templates.
+          setInputBroadcast('');
+          setOutputBroadcast('');
+          setEnablePublish(false);
+          setEnableWatch(false);
+          setMsePath(null);
         }
       }
     },
@@ -621,11 +636,13 @@ const StreamView: React.FC = () => {
       setInputBroadcast,
       setOutputBroadcast,
       setEnablePublish,
+      setEnableWatch,
       setPipelineMediaTypes,
       setPipelineOutputTypes,
       setIsExternalRelay,
       setVideoSourceType,
       setTracks,
+      setMsePath,
     ]
   );
 
@@ -656,8 +673,14 @@ const StreamView: React.FC = () => {
       viewState.setSessionCreationStatus('success');
       logger.info('Session created successfully');
 
-      // Optionally try connecting after session creation, but don't block session creation.
-      if (status === 'disconnected' && serverUrl.trim()) {
+      // Auto-connect to MoQ after session creation, but only when the
+      // pipeline actually uses MoQ transport (has a gateway path, relay URL,
+      // or an output broadcast to subscribe to).  MSE-only pipelines have
+      // none of these and should skip the MoQ connection entirely.
+      const hasMoqTransport = Boolean(
+        useStreamStore.getState().outputBroadcast || useStreamStore.getState().inputBroadcast
+      );
+      if (status === 'disconnected' && serverUrl.trim() && hasMoqTransport) {
         void (async () => {
           try {
             const ok = await connect();
@@ -959,12 +982,12 @@ const StreamView: React.FC = () => {
 
             {connectionMode === 'direct' && status === 'disconnected' && (
               <div style={{ display: 'flex', gap: '24px', marginBottom: '8px' }}>
-                <Checkbox data-disabled={status !== 'disconnected'}>
+                <Checkbox data-disabled={status !== 'disconnected' || !outputBroadcast}>
                   <input
                     type="checkbox"
                     checked={enableWatch}
                     onChange={(e) => setEnableWatch(e.target.checked)}
-                    disabled={status !== 'disconnected'}
+                    disabled={status !== 'disconnected' || !outputBroadcast}
                   />
                   Subscribe (Watch)
                 </Checkbox>
@@ -1075,7 +1098,7 @@ const StreamView: React.FC = () => {
             )}
           </Section>
 
-          {isStreaming && videoRenderer && (
+          {isStreaming && videoRenderer && !msePath && (
             <Section>
               <SectionTitle>Video</SectionTitle>
               <VideoContainer ref={videoContainerRef}>
@@ -1142,6 +1165,23 @@ const StreamView: React.FC = () => {
                   </div>
                 )}
               </VideoContainer>
+            </Section>
+          )}
+
+          {msePath && activeSessionId && (
+            <Section>
+              <SectionTitle>Video (MSE)</SectionTitle>
+              {mseError && <ErrorMessage>{mseError}</ErrorMessage>}
+              {mseUrl && (
+                <NativeStreamPlayer
+                  src={mseUrl}
+                  live
+                  onError={(msg) => {
+                    logger.error('MSE playback error:', msg);
+                    setMseError(msg);
+                  }}
+                />
+              )}
             </Section>
           )}
 

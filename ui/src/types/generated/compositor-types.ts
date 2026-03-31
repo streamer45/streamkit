@@ -214,7 +214,28 @@ image_overlays: Array<ImageOverlayConfig>,
 /**
  * Text overlays (rasterized once per `UpdateParams`).
  */
-text_overlays: Array<TextOverlayConfig>, };
+text_overlays: Array<TextOverlayConfig>, 
+/**
+ * Optional output pixel format conversion.  When set to `"nv12"` or
+ * `"i420"`, the compositor converts its RGBA8 canvas to the target
+ * format on the compositing thread while data is still cache-hot.
+ * Default: `None` (output RGBA8).
+ */
+output_format: string | null, 
+/**
+ * GPU compositing preference.  Default `None` (treated as `"auto"`).
+ * - `"auto"` (default): probe for GPU at startup; use it when scene
+ *   complexity warrants (multi-layer, high-res, effects)
+ * - `"gpu"`: force GPU compositing for every frame (warn and fall back
+ *   to CPU if unavailable)
+ * - `"cpu"`: force CPU compositing (ignore GPU even if available)
+ *
+ * When unset or `"auto"`, the compositor initialises the GPU at startup
+ * and uses a per-frame heuristic to decide whether each frame benefits
+ * from GPU acceleration.  Simple single-layer scenes use the faster CPU
+ * memcpy path.  Set to `"cpu"` to explicitly disable GPU acceleration.
+ */
+gpu_mode: string | null, };
 
 export type ResolvedLayer = { 
 /**

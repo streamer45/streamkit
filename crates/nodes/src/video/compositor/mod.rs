@@ -699,6 +699,16 @@ impl ProcessorNode for CompositorNode {
         let mut output_seq: u64 = 0;
         let mut running_timestamp_us: u64 = 0;
         let mut stop_reason: &str = "shutdown";
+        // Calibration offset: once a remote input (e.g. MoQ webcam) delivers
+        // its first timestamp, we compute offset = input_ts - running_ts.
+        // From then on, all output timestamps use running_ts + offset, which
+        // produces a smooth sequence in the remote clock domain without
+        // mixing two timestamp sources on alternating ticks.
+        // TODO: If a remote input disconnects and reconnects with a new
+        // timestamp epoch, the stale offset persists.  The downstream WebM
+        // rebase-reset (500ms backward jump threshold) partially handles
+        // this, but re-calibrating here would produce smoother transitions.
+        let mut ts_calibration_offset: Option<i64> = None;
 
         // In oneshot / batch mode we take exactly one frame per slot
         // per iteration so every input frame is composited, and we
@@ -1026,20 +1036,46 @@ impl ProcessorNode for CompositorNode {
                 break;
             };
 
-            // Derive output timestamps from the compositor's own clock
-            // rather than copying from input frames.  In batch/oneshot
-            // mode, inputs generate frames as fast as possible and the
-            // compositor drains many per tick, so the "latest input"
-            // timestamp can jump by hundreds of milliseconds — producing
-            // a WebM with huge gaps instead of smooth playback.
-            //
-            // We use an incremental accumulator (`running_timestamp_us`)
-            // instead of `output_seq * frame_duration_us` so that
-            // dynamic fps changes via UpdateParams don't cause timestamps
-            // to jump backwards.
+            // Timestamp strategy:
+            // - Live (dynamic) pipelines: use the timestamp from the
+            //   highest-indexed input that has one.  This prioritises
+            //   remote/MoQ inputs (e.g. webcam on in_1) over local
+            //   generators (e.g. colorbars on in_0).  MoQ timestamps are
+            //   normalized to start near 0 by the MoQ peer node, so they
+            //   won't overflow WebM timecodes.  Falls back to the running
+            //   clock before any remote input has arrived.
+            // - Oneshot/batch pipelines: use the compositor's own running
+            //   clock because inputs generate frames as fast as possible
+            //   and their timestamps would jump erratically.
             let frame_duration_us = 1_000_000u64 / u64::from(self.config.fps);
+            let output_ts = if is_oneshot {
+                running_timestamp_us
+            } else if let Some(offset) = ts_calibration_offset {
+                // Already calibrated — apply offset to running clock.
+                #[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)]
+                let ts = (running_timestamp_us as i64).saturating_add(offset).max(0) as u64;
+                ts
+            } else {
+                // Not yet calibrated — check if a remote input has a
+                // timestamp we can calibrate from.
+                let candidate = slots
+                    .iter()
+                    .rev()
+                    .find_map(|s| s.latest_frame.as_ref()?.metadata.as_ref()?.timestamp_us);
+                // Microsecond timestamps are well within i64 range for practical streams.
+                #[allow(clippy::cast_possible_wrap)]
+                candidate.map_or(running_timestamp_us, |input_ts| {
+                    let offset = input_ts as i64 - running_timestamp_us as i64;
+                    tracing::info!(
+                        "CompositorNode: calibrated timestamp offset={offset}us \
+                         (input_ts={input_ts}us, running={running_timestamp_us}us)"
+                    );
+                    ts_calibration_offset = Some(offset);
+                    input_ts
+                })
+            };
             let metadata = Some(PacketMetadata {
-                timestamp_us: Some(running_timestamp_us),
+                timestamp_us: Some(output_ts),
                 duration_us: Some(frame_duration_us),
                 sequence: Some(output_seq),
                 // Don't set keyframe — the compositor outputs raw RGBA, not

@@ -113,6 +113,7 @@ pub struct ClientSection {
     /// Browser-side publish configuration (dynamic pipelines).
     pub publish: Option<PublishConfig>,
     /// Browser-side watch configuration (dynamic pipelines).
+    /// Supports MoQ (via `broadcast`) and/or MSE (via `mse_path`) output.
     pub watch: Option<WatchConfig>,
     /// Input UX configuration (oneshot pipelines).
     pub input: Option<InputConfig>,
@@ -211,11 +212,27 @@ impl std::fmt::Display for CaptureSource {
 }
 
 /// Browser-side watch configuration for dynamic pipelines.
+///
+/// Supports two output transports:
+/// - **MoQ** (WebTransport): set `broadcast` to subscribe via `@moq/watch`.
+/// - **MSE** (HTTP chunked): set `mse_path` to fetch from
+///   `/mse/{session_id}{mse_path}` and play via `MediaSource`.
+///
+/// Both can be set simultaneously for dual-transport output.
+/// The content type for MSE is read from the HTTP response `Content-Type`
+/// header (set by the `transport::http::mse` node), avoiding duplication
+/// with the node's `content_type` param.
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]
 #[ts(export)]
 pub struct WatchConfig {
-    /// Broadcast name the browser subscribes to.
-    pub broadcast: String,
+    /// MoQ broadcast name the browser subscribes to.
+    /// Omit for MSE-only pipelines.
+    #[serde(default)]
+    pub broadcast: Option<String>,
+    /// MSE endpoint path suffix (e.g. `/video`).  When set, the browser
+    /// fetches chunked WebM from `/mse/{session_id}{mse_path}`.
+    #[serde(default)]
+    pub mse_path: Option<String>,
     /// Whether the pipeline outputs audio to subscribers.
     #[serde(default)]
     pub audio: bool,
@@ -728,7 +745,11 @@ pub fn lint_client_section(client: &ClientSection, mode: EngineMode) -> Vec<Clie
     }
 
     // Rule 3: missing gateway
-    if (client.publish.is_some() || client.watch.is_some())
+    // MSE-only watch configs (mse_path set, no broadcast) don't need a MoQ
+    // gateway — they fetch chunked HTTP instead.  Only count watch as needing
+    // a gateway when it declares a MoQ broadcast.
+    let watch_needs_gateway = client.watch.as_ref().is_some_and(|w| w.broadcast.is_some());
+    if (client.publish.is_some() || watch_needs_gateway)
         && client.gateway_path.is_none()
         && client.relay_url.is_none()
     {
@@ -915,7 +936,7 @@ pub fn lint_client_section(client: &ClientSection, mode: EngineMode) -> Vec<Clie
         }
 
         // Rule 11b: empty broadcast
-        if watch.broadcast.is_empty() {
+        if watch.broadcast.as_deref() == Some("") {
             warnings.push(ClientLintWarning {
                 rule: "empty-broadcast",
                 message: "watch.broadcast is an empty string.".into(),
@@ -927,32 +948,33 @@ pub fn lint_client_section(client: &ClientSection, mode: EngineMode) -> Vec<Clie
     // Check top-level publish.broadcast AND per-track broadcast overrides
     // against watch.broadcast to detect feedback loops.
     if let (Some(ref publish), Some(ref watch)) = (&client.publish, &client.watch) {
-        let watch_bc = &watch.broadcast;
-        if !watch_bc.is_empty() {
-            // Collect all effective publish broadcast names
-            let mut publish_broadcasts: Vec<&str> = Vec::new();
-            if !publish.broadcast.is_empty() {
-                publish_broadcasts.push(&publish.broadcast);
-            }
-            for track in &publish.tracks {
-                if let Some(ref bc) = track.broadcast {
-                    if !bc.is_empty() {
-                        publish_broadcasts.push(bc);
+        if let Some(ref watch_bc) = watch.broadcast {
+            if !watch_bc.is_empty() {
+                // Collect all effective publish broadcast names
+                let mut publish_broadcasts: Vec<&str> = Vec::new();
+                if !publish.broadcast.is_empty() {
+                    publish_broadcasts.push(&publish.broadcast);
+                }
+                for track in &publish.tracks {
+                    if let Some(ref bc) = track.broadcast {
+                        if !bc.is_empty() {
+                            publish_broadcasts.push(bc);
+                        }
                     }
                 }
-            }
-            publish_broadcasts.sort_unstable();
-            publish_broadcasts.dedup();
+                publish_broadcasts.sort_unstable();
+                publish_broadcasts.dedup();
 
-            for bc in publish_broadcasts {
-                if bc == watch_bc {
-                    warnings.push(ClientLintWarning {
-                        rule: "duplicate-broadcast",
-                        message: format!(
-                            "Publish broadcast '{bc}' matches watch.broadcast '{watch_bc}' \
-                             — this would cause a feedback loop.",
-                        ),
-                    });
+                for bc in publish_broadcasts {
+                    if bc == watch_bc {
+                        warnings.push(ClientLintWarning {
+                            rule: "duplicate-broadcast",
+                            message: format!(
+                                "Publish broadcast '{bc}' matches watch.broadcast '{watch_bc}' \
+                                 — this would cause a feedback loop.",
+                            ),
+                        });
+                    }
                 }
             }
         }
@@ -1158,8 +1180,11 @@ pub fn lint_client_against_nodes(
     }
 
     // Rule 17: watch but no MoQ publisher/peer
-    // Browser watch = server publishes → need moq::peer or moq::publisher
-    if client.watch.is_some() && !has_moq_peer && !has_moq_publisher {
+    // Browser watch = server publishes → need moq::peer or moq::publisher.
+    // MSE-only watch configs (mse_path set, no broadcast) use
+    // transport::http::mse instead of MoQ, so skip this check for them.
+    let watch_needs_moq = client.watch.as_ref().is_some_and(|w| w.broadcast.is_some());
+    if watch_needs_moq && !has_moq_peer && !has_moq_publisher {
         warnings.push(ClientLintWarning {
             rule: "watch-no-transport",
             message: "client declares `watch` but no `transport::moq::peer` or \
@@ -1264,17 +1289,18 @@ pub fn lint_client_against_nodes(
             }
         }
         if let Some(ref watch) = client.watch {
-            if !watch.broadcast.is_empty() && !node_broadcasts.iter().any(|b| *b == watch.broadcast)
-            {
-                warnings.push(ClientLintWarning {
-                    rule: "broadcast-mismatch",
-                    message: format!(
-                        "watch.broadcast is `{}` but no MoQ transport node declares \
-                         that broadcast name. Node broadcasts: {}.",
-                        watch.broadcast,
-                        node_broadcasts.join(", ")
-                    ),
-                });
+            if let Some(ref watch_bc) = watch.broadcast {
+                if !watch_bc.is_empty() && !node_broadcasts.iter().any(|b| b == watch_bc) {
+                    warnings.push(ClientLintWarning {
+                        rule: "broadcast-mismatch",
+                        message: format!(
+                            "watch.broadcast is `{}` but no MoQ transport node declares \
+                             that broadcast name. Node broadcasts: {}.",
+                            watch_bc,
+                            node_broadcasts.join(", ")
+                        ),
+                    });
+                }
             }
         }
     }
@@ -1916,7 +1942,7 @@ client:
         assert_eq!(publish.tracks[1].source, CaptureSource::Camera);
 
         let watch = client.watch.expect("watch config should be present");
-        assert_eq!(watch.broadcast, "output");
+        assert_eq!(watch.broadcast.as_deref(), Some("output"));
         assert!(watch.audio);
         assert!(watch.video);
     }
@@ -2041,7 +2067,12 @@ client:
                     max_bitrate: None,
                 }],
             }),
-            watch: Some(WatchConfig { broadcast: "output".into(), audio: true, video: true }),
+            watch: Some(WatchConfig {
+                broadcast: Some("output".into()),
+                mse_path: None,
+                audio: true,
+                video: true,
+            }),
             input: None,
             output: None,
         }
@@ -2135,7 +2166,12 @@ client:
     #[test]
     fn test_lint_watch_no_media() {
         let mut c = dynamic_client();
-        c.watch = Some(WatchConfig { broadcast: "x".into(), audio: false, video: false });
+        c.watch = Some(WatchConfig {
+            broadcast: Some("x".into()),
+            mse_path: None,
+            audio: false,
+            video: false,
+        });
         let warnings = lint_client_section(&c, EngineMode::Dynamic);
         assert!(warnings.iter().any(|w| w.rule == "watch-no-media"));
     }
@@ -2174,7 +2210,12 @@ client:
                 max_bitrate: None,
             }],
         });
-        c.watch = Some(WatchConfig { broadcast: "same".into(), audio: true, video: true });
+        c.watch = Some(WatchConfig {
+            broadcast: Some("same".into()),
+            mse_path: None,
+            audio: true,
+            video: true,
+        });
         let warnings = lint_client_section(&c, EngineMode::Dynamic);
         assert!(warnings.iter().any(|w| w.rule == "duplicate-broadcast"));
     }
@@ -2205,7 +2246,12 @@ client:
                 },
             ],
         });
-        c.watch = Some(WatchConfig { broadcast: "output".into(), audio: true, video: true });
+        c.watch = Some(WatchConfig {
+            broadcast: Some("output".into()),
+            mse_path: None,
+            audio: true,
+            video: true,
+        });
         let warnings = lint_client_section(&c, EngineMode::Dynamic);
         assert!(
             warnings.iter().any(|w| w.rule == "duplicate-broadcast"),
@@ -2498,12 +2544,56 @@ client:
     fn test_lint_watch_no_transport() {
         let c = ClientSection {
             gateway_path: Some("/moq/test".into()),
-            watch: Some(WatchConfig { broadcast: "output".into(), audio: true, video: true }),
+            watch: Some(WatchConfig {
+                broadcast: Some("output".into()),
+                mse_path: None,
+                audio: true,
+                video: true,
+            }),
             ..Default::default()
         };
         let nodes: Vec<NodeInfo<'_>> = vec![]; // no MoQ nodes
         let warnings = lint_client_against_nodes(&c, EngineMode::Dynamic, &nodes);
         assert!(warnings.iter().any(|w| w.rule == "watch-no-transport"));
+    }
+
+    // Rule 17 — watch-no-transport (MSE-only should NOT trigger)
+    #[test]
+    fn test_lint_watch_no_transport_mse_only() {
+        let c = ClientSection {
+            watch: Some(WatchConfig {
+                broadcast: None,
+                mse_path: Some("/video".into()),
+                audio: false,
+                video: true,
+            }),
+            ..Default::default()
+        };
+        let nodes: Vec<NodeInfo<'_>> = vec![]; // no MoQ nodes
+        let warnings = lint_client_against_nodes(&c, EngineMode::Dynamic, &nodes);
+        assert!(
+            !warnings.iter().any(|w| w.rule == "watch-no-transport"),
+            "MSE-only watch should not trigger watch-no-transport: {warnings:?}"
+        );
+    }
+
+    // Rule 3 — missing-gateway (MSE-only should NOT trigger)
+    #[test]
+    fn test_lint_missing_gateway_mse_only() {
+        let c = ClientSection {
+            watch: Some(WatchConfig {
+                broadcast: None,
+                mse_path: Some("/video".into()),
+                audio: false,
+                video: true,
+            }),
+            ..Default::default()
+        };
+        let warnings = lint_client_section(&c, EngineMode::Dynamic);
+        assert!(
+            !warnings.iter().any(|w| w.rule == "missing-gateway"),
+            "MSE-only watch should not trigger missing-gateway: {warnings:?}"
+        );
     }
 
     // Rule 18 — gateway-path-mismatch
@@ -2650,7 +2740,12 @@ client:
     fn test_lint_broadcast_mismatch_watch() {
         let c = ClientSection {
             gateway_path: Some("/moq/test".into()),
-            watch: Some(WatchConfig { broadcast: "wrong_name".into(), audio: true, video: true }),
+            watch: Some(WatchConfig {
+                broadcast: Some("wrong_name".into()),
+                mse_path: None,
+                audio: true,
+                video: true,
+            }),
             ..Default::default()
         };
         let params = serde_json::json!({

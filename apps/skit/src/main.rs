@@ -42,6 +42,7 @@ mod marketplace_installer;
 mod marketplace_security;
 #[cfg(feature = "moq")]
 mod moq_gateway;
+mod mse_gateway;
 mod permissions;
 mod plugin_paths;
 mod plugin_records;
