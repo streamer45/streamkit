@@ -1628,9 +1628,13 @@ fn stage_frame(
 
 /// Writes a [`StagedFrame`] to the WebM segment and flushes output.
 ///
-/// Applies a global max-clamp (`frame.timestamp_ns.max(last_written_ns)`)
-/// to satisfy libwebm's non-decreasing timestamp requirement.  Cross-track
-/// equality is allowed; per-track cadence is preserved by [`stage_frame`].
+/// Applies a global clamp to satisfy libwebm's non-decreasing timestamp
+/// requirement.  Timestamps are forced **strictly increasing** (+1 ms
+/// when a frame would otherwise equal the previous write) to prevent
+/// cross-track timestamp equality.  Chrome's muxed-WebM MSE demuxer
+/// stalls intermittently when multiple SimpleBlocks share the same
+/// timecode, so unique timestamps per packet are essential for smooth
+/// live playback.
 ///
 /// Returns `Ok(true)` if the output channel is closed (caller should stop),
 /// `Ok(false)` to continue, or `Err` on fatal errors.
@@ -1646,10 +1650,17 @@ async fn write_frame(
     stats_tracker: &mut NodeStatsTracker,
     node_name: &str,
 ) -> Result<bool, StreamKitError> {
-    // The micro-reorder buffer ensures callers write frames in near-
-    // global order.  In the rare case a frame still arrives out of
-    // order (e.g. first frame of a late track), clamp to max.
-    let write_ts = frame.timestamp_ns.max(state.last_written_ns);
+    // Ensure strictly increasing write timestamps.  When a frame from
+    // one track arrives after a frame from another track with a higher
+    // (or equal) staged timestamp, bumping by 1 ms avoids cross-track
+    // equality in the container.  The bump does not cascade because
+    // per-track staged timestamps (computed by `stage_frame`) are
+    // independent of `last_written_ns` for existing tracks.
+    let write_ts = if frame.timestamp_ns > state.last_written_ns {
+        frame.timestamp_ns
+    } else {
+        state.last_written_ns + 1_000_000 // +1 ms (WebM timecode resolution)
+    };
 
     if let Err(e) = segment.add_frame(frame.track_id, &frame.data, write_ts, frame.is_keyframe) {
         stats_tracker.errored();
@@ -1808,6 +1819,15 @@ pub fn register_webm_nodes(registry: &mut NodeRegistry) {
 mod tests {
     use super::*;
     use streamkit_core::ProcessorNode;
+
+    /// Mirrors the strictly-increasing write logic from `write_frame`.
+    fn strictly_increasing_ts(frame_ts: u64, last_written: u64) -> u64 {
+        if frame_ts > last_written {
+            frame_ts
+        } else {
+            last_written + 1_000_000
+        }
+    }
 
     /// Helper to build a `WebMMuxerNode` with the given video dimensions.
     fn muxer_with_dims(w: u32, h: u32) -> WebMMuxerNode {
@@ -2085,7 +2105,7 @@ mod tests {
                     last_written_ns,
                     &mut audio_last,
                 );
-                let write_ts = pf.timestamp_ns.max(last_written_ns);
+                let write_ts = strictly_increasing_ts(pf.timestamp_ns, last_written_ns);
                 audio_container_ts.push(write_ts);
                 last_written_ns = write_ts;
                 next_audio_ms += 20;
@@ -2101,7 +2121,7 @@ mod tests {
                     last_written_ns,
                     &mut video_last,
                 );
-                let write_ts = pf.timestamp_ns.max(last_written_ns);
+                let write_ts = strictly_increasing_ts(pf.timestamp_ns, last_written_ns);
                 video_container_ts.push(write_ts);
                 last_written_ns = write_ts;
                 next_video_ms += 33;
@@ -2141,6 +2161,87 @@ mod tests {
         // Reasonable frame counts
         assert!(audio_container_ts.len() >= 95, "too few audio: {}", audio_container_ts.len());
         assert!(video_container_ts.len() >= 55, "too few video: {}", video_container_ts.len());
+    }
+
+    /// Simulate arrival-order interleaving where video frames arrive before
+    /// audio frames that have earlier staged timestamps.  Without strictly
+    /// increasing write timestamps, the global max-clamp creates cross-track
+    /// timestamp equality (e.g. video@40.032, audio@40.032, audio@40.032),
+    /// which causes Chrome's muxed-WebM MSE demuxer to stall.
+    #[test]
+    fn arrival_order_produces_unique_global_timestamps() {
+        let mut video_clock = streamkit_core::timing::MediaClock::new(0);
+        let mut audio_clock = streamkit_core::timing::MediaClock::new(0);
+        let mut video_offset: Option<i64> = None;
+        let mut audio_offset: Option<i64> = None;
+        let mut video_last: Option<u64> = None;
+        let mut audio_last: Option<u64> = None;
+        let mut last_written_ns: u64 = 0;
+
+        // Collect all global write timestamps in order.
+        let mut all_write_ts: Vec<u64> = Vec::new();
+
+        // Simulate 2 seconds of arrival-order interleaving:
+        // Video arrives at muxer first (compositor has lower latency),
+        // then audio for the same time window arrives slightly later.
+        // This matches the real pattern: V, V, A, A, V, A, A, V, ...
+        let total_ms = 2000u64;
+        let mut next_video_ms: u64 = 0;
+        let mut next_audio_ms: u64 = 0;
+
+        while next_video_ms < total_ms || next_audio_ms < total_ms {
+            // Write video first (simulating lower-latency compositor path)
+            if next_video_ms < total_ms && next_video_ms <= next_audio_ms + 10 {
+                let pf = stage_frame(
+                    Bytes::from_static(&[0]),
+                    None,
+                    1,
+                    next_video_ms == 0,
+                    33_333,
+                    &mut video_clock,
+                    &mut video_offset,
+                    last_written_ns,
+                    &mut video_last,
+                );
+                let write_ts = strictly_increasing_ts(pf.timestamp_ns, last_written_ns);
+                all_write_ts.push(write_ts);
+                last_written_ns = write_ts;
+                next_video_ms += 33;
+            }
+
+            // Then write any audio frames whose timestamps fall before
+            // the next video frame (simulating later arrival).
+            while next_audio_ms < total_ms && next_audio_ms < next_video_ms {
+                let pf = stage_frame(
+                    Bytes::from_static(&[0]),
+                    None,
+                    2,
+                    true,
+                    20_000,
+                    &mut audio_clock,
+                    &mut audio_offset,
+                    last_written_ns,
+                    &mut audio_last,
+                );
+                let write_ts = strictly_increasing_ts(pf.timestamp_ns, last_written_ns);
+                all_write_ts.push(write_ts);
+                last_written_ns = write_ts;
+                next_audio_ms += 20;
+            }
+        }
+
+        // Every global write timestamp must be unique (strictly increasing).
+        for w in all_write_ts.windows(2) {
+            assert!(
+                w[1] > w[0],
+                "global timestamps must be strictly increasing: {} -> {} (equal = MSE stall risk)",
+                w[0],
+                w[1]
+            );
+        }
+
+        // Sanity: reasonable frame counts.
+        assert!(all_write_ts.len() >= 150, "too few frames: {}", all_write_ts.len());
     }
 
     #[test]
@@ -2244,7 +2345,7 @@ mod tests {
                 last_written_ns,
                 &mut video_last,
             );
-            last_written_ns = pf.timestamp_ns.max(last_written_ns);
+            last_written_ns = strictly_increasing_ts(pf.timestamp_ns, last_written_ns);
         }
         // Video should be near 2s
         let video_pre_cal_ns = last_written_ns;
@@ -2273,7 +2374,7 @@ mod tests {
                 last_written_ns,
                 &mut audio_last,
             );
-            last_written_ns = pf.timestamp_ns.max(last_written_ns);
+            last_written_ns = strictly_increasing_ts(pf.timestamp_ns, last_written_ns);
         }
 
         // ── Phase 3: Compositor calibrates — video timestamps jump back
@@ -2299,7 +2400,7 @@ mod tests {
                 last_written_ns,
                 &mut video_last,
             );
-            let write_ts = pf.timestamp_ns.max(last_written_ns);
+            let write_ts = strictly_increasing_ts(pf.timestamp_ns, last_written_ns);
             post_cal_video_ts.push(write_ts);
             last_written_ns = write_ts;
         }
@@ -2324,7 +2425,7 @@ mod tests {
                 last_written_ns,
                 &mut audio_last,
             );
-            let write_ts = pf.timestamp_ns.max(last_written_ns);
+            let write_ts = strictly_increasing_ts(pf.timestamp_ns, last_written_ns);
             post_cal_audio_ts.push(write_ts);
             last_written_ns = write_ts;
         }
@@ -2351,8 +2452,9 @@ mod tests {
     }
 
     /// Confirm libwebm rejects cross-track backward timestamps — this is
-    /// why the muxer needs the micro-reorder buffer (held_video) and a
-    /// fallback max-clamp in write_frame.
+    /// why `write_frame` enforces strictly increasing timestamps with a
+    /// +1 ms bump when a frame would otherwise equal or precede the
+    /// previous write.
     #[test]
     fn libwebm_rejects_cross_track_non_monotonic() {
         use std::io::Cursor;
