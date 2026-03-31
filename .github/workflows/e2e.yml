@@ -44,6 +44,8 @@ jobs:
         with:
           toolchain: "1.92.0"
 
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
       - uses: Swatinem/rust-cache@v2
 
       - name: Install system dependencies (libvpx for VP9, nasm for AV1 assembly)

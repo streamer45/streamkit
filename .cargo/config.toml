@@ -2,7 +2,5 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-# Uncomment to enable sccache locally (requires: cargo install sccache --locked).
-# Not enabled by default because CI runners may not have sccache installed.
-# [build]
-# rustc-wrapper = "sccache"
+[build]
+rustc-wrapper = "sccache"

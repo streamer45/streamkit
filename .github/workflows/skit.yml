@@ -45,6 +45,8 @@ jobs:
           toolchain: "1.92.0"
           components: rustfmt, clippy
 
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
       - uses: Swatinem/rust-cache@v2
 
       - name: Check formatting
@@ -100,6 +102,8 @@ jobs:
         with:
           toolchain: "1.92.0"
 
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
       - uses: Swatinem/rust-cache@v2
 
       - name: Run tests (GPU tests run separately on self-hosted runner)
@@ -121,6 +125,8 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.92.0"
+
+      - uses: mozilla-actions/sccache-action@v0.0.9
 
       - uses: Swatinem/rust-cache@v2
 
@@ -172,6 +178,8 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.92.0"
+
+      - uses: mozilla-actions/sccache-action@v0.0.9
 
       - uses: Swatinem/rust-cache@v2
 
