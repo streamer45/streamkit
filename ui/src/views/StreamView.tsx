@@ -9,7 +9,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { useShallow } from 'zustand/shallow';
 
 import ConfirmModal from '@/components/ConfirmModal';
-import { MSEPlayer } from '@/components/MSEPlayer';
+import { VideoJSPlayer } from '@/components/VideoJSPlayer';
 import { VolumeSlider } from '@/components/OutputPreviewPanel';
 import { PipelineSelectionSection } from '@/components/stream/PipelineSelectionSection';
 import { TelemetryTimeline as TelemetryTimelineComponent } from '@/components/TelemetryTimeline';
@@ -455,67 +455,18 @@ const StreamView: React.FC = () => {
     };
   }, []);
 
-  // ── MSE playback state ──
-  // When `msePath` is set and a session is active, fetch from the MSE
-  // endpoint and pass the response stream + content type to MSEPlayer.
-  const [mseStream, setMseStream] = useState<ReadableStream<Uint8Array> | null>(null);
-  const [mseContentType, setMseContentType] = useState<string>('video/webm');
+  // ── MSE playback URL ──
+  // When `msePath` is set and a session is active, build the URL for the
+  // MSE HTTP endpoint.  Video.js (via the browser's native <video>
+  // decoder) handles the chunked WebM stream directly — no manual
+  // MediaSource / SourceBuffer management needed.
   const [mseError, setMseError] = useState<string | null>(null);
-  const mseAbortRef = useRef<AbortController | null>(null);
-  // Bumped to force the MSE effect to re-run (new fetch + fresh stream)
-  // when a previous stream becomes unusable (e.g. locked after re-render).
-  const [mseRetryKey, setMseRetryKey] = useState(0);
-  const MAX_MSE_RETRIES = 3;
-
-  useEffect(() => {
-    if (!activeSessionId || !msePath) {
-      setMseStream(null);
-      setMseError(null);
-      return;
-    }
-
-    const abort = new AbortController();
-    mseAbortRef.current = abort;
-
-    const startMseFetch = async () => {
-      try {
-        const apiUrl = getApiUrl();
-        const normalizedMsePath = msePath.startsWith('/') ? msePath : `/${msePath}`;
-        const url = `${apiUrl}/mse/${activeSessionId}${normalizedMsePath}`;
-        logger.info(`Starting MSE fetch: ${url}`);
-
-        const response = await fetch(url, {
-          signal: abort.signal,
-          credentials: 'include',
-        });
-
-        if (!response.ok) {
-          throw new Error(`MSE endpoint returned ${response.status}: ${response.statusText}`);
-        }
-
-        const ct = response.headers.get('content-type') || 'video/webm';
-        setMseContentType(ct);
-        setMseStream(response.body);
-        setMseError(null);
-      } catch (err) {
-        if (abort.signal.aborted) return;
-        const msg = err instanceof Error ? err.message : 'Failed to connect to MSE stream';
-        logger.error('MSE fetch failed:', msg);
-        setMseError(msg);
-      }
-    };
-
-    // Small delay to let the pipeline start and register the MSE endpoint.
-    const timer = setTimeout(() => void startMseFetch(), 1500);
-
-    return () => {
-      clearTimeout(timer);
-      abort.abort();
-      mseAbortRef.current = null;
-      setMseStream(null);
-      setMseError(null);
-    };
-  }, [activeSessionId, msePath, mseRetryKey]);
+  const mseUrl = React.useMemo(() => {
+    if (!activeSessionId || !msePath) return null;
+    const apiUrl = getApiUrl();
+    const normalizedMsePath = msePath.startsWith('/') ? msePath : `/${msePath}`;
+    return `${apiUrl}/mse/${activeSessionId}${normalizedMsePath}`;
+  }, [activeSessionId, msePath]);
 
   // Get node definitions for YAML autocomplete
   const nodeDefinitions = useSchemaStore((s) => s.nodeDefinitions);
@@ -1221,28 +1172,15 @@ const StreamView: React.FC = () => {
             <Section>
               <SectionTitle>Video (MSE)</SectionTitle>
               {mseError && <ErrorMessage>{mseError}</ErrorMessage>}
-              {mseStream && (
-                <MSEPlayer
-                  stream={mseStream}
-                  contentType={mseContentType}
+              {mseUrl && (
+                <VideoJSPlayer
+                  src={mseUrl}
+                  live
                   onError={(msg) => {
                     logger.error('MSE playback error:', msg);
-                    if (msg.includes('already locked') && mseRetryKey < MAX_MSE_RETRIES) {
-                      // Stream became unusable (e.g. re-render while reader
-                      // was still active).  Bump the retry key to trigger a
-                      // fresh fetch with a new ReadableStream.
-                      logger.info('MSE stream locked — retrying with fresh fetch');
-                      setMseRetryKey((k) => k + 1);
-                    } else {
-                      setMseError(msg);
-                    }
+                    setMseError(msg);
                   }}
                 />
-              )}
-              {!mseStream && !mseError && (
-                <div style={{ color: 'var(--sk-text-muted)', fontSize: '13px', padding: '12px 0' }}>
-                  Connecting to MSE stream...
-                </div>
               )}
             </Section>
           )}
