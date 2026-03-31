@@ -3,13 +3,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import styled from '@emotion/styled';
-import React, { useEffect, useRef } from 'react';
-import videojs from 'video.js';
-import type Player from 'video.js/dist/types/player';
-
-import 'video.js/dist/video-js.css';
+import React, { useCallback, useEffect, useRef } from 'react';
 
 import { componentsLogger } from '@/utils/logger';
+
+/** Maximum acceptable latency (seconds) before seeking to live edge. */
+const DEFAULT_MAX_LATENCY_S = 3;
+/** How often (ms) to check buffer latency in live mode. */
+const LATENCY_CHECK_INTERVAL_MS = 2000;
 
 const PlayerContainer = styled.div`
   position: relative;
@@ -21,30 +22,25 @@ const PlayerContainer = styled.div`
   border-radius: 8px;
   border: 1px solid var(--border-primary);
 
-  /* Video.js skin overrides to blend with StreamKit's dark UI. */
-  .video-js {
+  video {
     width: 100%;
     max-height: 480px;
     border-radius: 6px;
     background: #000;
-    font-family: inherit;
-  }
-
-  .video-js .vjs-big-play-button {
-    /* Center the big-play button. */
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
   }
 `;
 
-interface VideoJSPlayerProps {
+interface NativeStreamPlayerProps {
   /** URL to stream from (e.g. the MSE HTTP endpoint). */
   src: string;
-  /** MIME type of the source (e.g. 'video/webm; codecs="vp9,opus"'). */
+  /** MIME type hint (used on the <source> element). */
   type?: string;
-  /** Whether this is a live stream (adds liveui). */
+  /** Whether this is a live stream.  When true the player periodically
+   *  seeks to the live edge to keep latency bounded. */
   live?: boolean;
+  /** Maximum acceptable latency in seconds before auto-seeking to the
+   *  live edge.  Only relevant when `live` is true.  Defaults to 3. */
+  maxLatency?: number;
   /** Optional CSS class name. */
   className?: string;
   /** Called when the player encounters an unrecoverable error. */
@@ -52,83 +48,89 @@ interface VideoJSPlayerProps {
 }
 
 /**
- * Thin React wrapper around Video.js.
+ * Lightweight `<video>` wrapper for chunked WebM streams.
  *
- * For live WebM streams the browser's native HTML5 `<video>` decoder
- * handles buffering, seeking, and VP9/Opus decode scheduling — avoiding
- * all the Chrome-specific MSE SourceBuffer stalling issues that plague
- * manual MSE implementations.
+ * The browser's native HTML5 decoder handles VP9/Opus buffering and
+ * scheduling directly — no MediaSource API, no third-party player
+ * library.  For live streams, a periodic timer checks the distance
+ * between `currentTime` and the end of the buffered range; when it
+ * exceeds `maxLatency` the player seeks forward to keep latency low.
  */
-export const VideoJSPlayer: React.FC<VideoJSPlayerProps> = ({
+export const VideoJSPlayer: React.FC<NativeStreamPlayerProps> = ({
   src,
   type = 'video/webm',
   live = false,
+  maxLatency = DEFAULT_MAX_LATENCY_S,
   className,
   onError,
 }) => {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const playerRef = useRef<Player | null>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
 
+  // ── Seek to the live edge ──
+  const seekToLiveEdge = useCallback((video: HTMLVideoElement) => {
+    const buf = video.buffered;
+    if (buf.length === 0) return;
+    const liveEdge = buf.end(buf.length - 1);
+    // Seek to slightly behind the edge so playback doesn't immediately stall.
+    const target = Math.max(0, liveEdge - 0.5);
+    if (video.currentTime < target) {
+      componentsLogger.debug(
+        `NativeStreamPlayer: seeking to live edge (${video.currentTime.toFixed(1)}s -> ${target.toFixed(1)}s, latency=${(liveEdge - video.currentTime).toFixed(1)}s)`
+      );
+      video.currentTime = target;
+    }
+  }, []);
+
+  // ── Main effect: autoplay + live-edge timer ──
   useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
+    const video = videoRef.current;
+    if (!video) return;
 
-    // Video.js expects a <video-js> element inside our container.
-    const videoEl = document.createElement('video-js');
-    videoEl.classList.add('vjs-big-play-centered');
-    container.appendChild(videoEl);
-
-    const player = videojs(videoEl, {
-      controls: true,
-      autoplay: true,
-      preload: 'auto',
-      fluid: true,
-      liveui: live,
-      html5: {
-        vhs: {
-          // Disable VHS (Video.js HTTP Streaming) — we serve raw WebM,
-          // not HLS/DASH manifests.
-          overrideNative: false,
-        },
-        nativeVideoTracks: true,
-        nativeAudioTracks: true,
-      },
-      sources: [{ src, type }],
+    // Autoplay (muted to satisfy browser autoplay policies).
+    video.muted = true;
+    video.play().catch((err) => {
+      componentsLogger.warn('NativeStreamPlayer: autoplay blocked:', err);
     });
 
-    playerRef.current = player;
+    if (!live) return;
 
-    player.on('error', () => {
-      const err = player.error();
-      if (err) {
-        const msg = `Video.js error [${err.code}]: ${err.message || 'Unknown'}`;
-        componentsLogger.error('VideoJSPlayer:', msg);
-        onErrorRef.current?.(msg);
+    // In live mode, periodically check latency and seek forward.
+    const timer = setInterval(() => {
+      const buf = video.buffered;
+      if (buf.length === 0) return;
+      const liveEdge = buf.end(buf.length - 1);
+      const latency = liveEdge - video.currentTime;
+      if (latency > maxLatency) {
+        seekToLiveEdge(video);
       }
-    });
+    }, LATENCY_CHECK_INTERVAL_MS);
 
-    player.on('playing', () => {
-      componentsLogger.info('VideoJSPlayer: playing');
-    });
-
-    componentsLogger.info(`VideoJSPlayer: initialized (src=${src}, live=${live})`);
+    // Initial seek once enough data has buffered.
+    const onCanPlay = () => seekToLiveEdge(video);
+    video.addEventListener('canplay', onCanPlay, { once: true });
 
     return () => {
-      if (playerRef.current && !playerRef.current.isDisposed()) {
-        componentsLogger.debug('VideoJSPlayer: disposing');
-        playerRef.current.dispose();
-        playerRef.current = null;
-      }
+      clearInterval(timer);
+      video.removeEventListener('canplay', onCanPlay);
     };
-    // Re-create the player when src or live mode changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [src, live]);
+  }, [src, live, maxLatency, seekToLiveEdge]);
+
+  const handleError = useCallback(() => {
+    const video = videoRef.current;
+    if (!video?.error) return;
+    const { code, message } = video.error;
+    const msg = `Video error [${code}]: ${message || 'Unknown'}`;
+    componentsLogger.error('NativeStreamPlayer:', msg);
+    onErrorRef.current?.(msg);
+  }, []);
 
   return (
     <PlayerContainer className={className}>
-      <div ref={containerRef} />
+      <video ref={videoRef} controls onError={handleError}>
+        <source src={src} type={type} />
+      </video>
     </PlayerContainer>
   );
 };
