@@ -12,7 +12,6 @@ import ConfirmModal from '@/components/ConfirmModal';
 import { VolumeSlider } from '@/components/OutputPreviewPanel';
 import { PipelineSelectionSection } from '@/components/stream/PipelineSelectionSection';
 import { TelemetryTimeline as TelemetryTimelineComponent } from '@/components/TelemetryTimeline';
-import { VideoJSPlayer } from '@/components/VideoJSPlayer';
 import {
   ViewContainer,
   ContentArea,
@@ -26,6 +25,7 @@ import {
   TechnicalDetailsToggle,
   TechnicalDetails,
 } from '@/components/ui/ViewLayout';
+import { VideoJSPlayer } from '@/components/VideoJSPlayer';
 import { useAudioControls } from '@/hooks/useAudioControls';
 import { useStreamViewState } from '@/hooks/useStreamViewState';
 import { useVideoCanvas } from '@/hooks/useVideoCanvas';
