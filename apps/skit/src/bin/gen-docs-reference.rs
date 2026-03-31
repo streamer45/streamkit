@@ -1294,6 +1294,7 @@ fn find_official_native_plugin_artifacts(repo_root: &Path) -> Result<Vec<PathBuf
         }
 
         // Prefer release artifacts; fall back to debug if release isn't present.
+        // Check both per-plugin target dirs (legacy) and the shared target/plugins/ dir.
         let release_dir = plugin_dir.join("target/release");
         let debug_dir = plugin_dir.join("target/debug");
 
@@ -1302,6 +1303,15 @@ fn find_official_native_plugin_artifacts(repo_root: &Path) -> Result<Vec<PathBuf
         } else if debug_dir.exists() {
             paths.extend(find_so_files(&debug_dir)?);
         }
+    }
+
+    // Also search the shared plugin target directory (target/plugins/).
+    let shared_release = repo_root.join("target/plugins/release");
+    let shared_debug = repo_root.join("target/plugins/debug");
+    if shared_release.exists() {
+        paths.extend(find_so_files(&shared_release)?);
+    } else if shared_debug.exists() {
+        paths.extend(find_so_files(&shared_debug)?);
     }
 
     // Filter out debug symbol files (.d), deps folder artifacts, and proc-macro libraries
