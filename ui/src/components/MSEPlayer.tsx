@@ -621,7 +621,6 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
 
         // Stall/resume diagnostics — detect buffering events.
         let lastWaitingTime = 0;
-        let stallRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
         const handleWaiting = () => {
           lastWaitingTime = performance.now();
           const ranges = [];
@@ -653,43 +652,12 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
               return;
             }
           }
-
-          // Active stall recovery for live streams: Chrome's muxed-WebM MSE
-          // decoder can stall with plenty of forward buffer.  If the stall
-          // persists for 500ms, nudge the decoder by seeking slightly ahead.
-          // This prevents the escalating stall pattern (0.5s → 1s → 2s → 4s)
-          // that occurs when Chrome's VP9 decoder gets stuck.
-          if (live && buffered.length > 0) {
-            const lastIdx = buffered.length - 1;
-            const fwdBuf = buffered.end(lastIdx) - media.currentTime;
-            if (fwdBuf > 2.0) {
-              if (stallRecoveryTimer) clearTimeout(stallRecoveryTimer);
-              stallRecoveryTimer = setTimeout(() => {
-                stallRecoveryTimer = null;
-                // Only nudge if still in WAITING state (readyState < 4).
-                if (media.readyState < 4 && !media.paused && !aborted) {
-                  const nudgeTarget = media.currentTime + 0.5;
-                  componentsLogger.info(
-                    `MSEPlayer: stall recovery — nudging from ${media.currentTime.toFixed(2)}s ` +
-                      `to ${nudgeTarget.toFixed(2)}s (fwdBuf=${fwdBuf.toFixed(1)}s)`
-                  );
-                  media.currentTime = nudgeTarget;
-                  media.play().catch(() => {});
-                }
-              }, 500);
-            }
-          }
         };
         const handlePlaying = () => {
           if (lastWaitingTime > 0) {
             const stallMs = performance.now() - lastWaitingTime;
             componentsLogger.info(`MSEPlayer: resumed after ${stallMs.toFixed(0)}ms stall`);
             lastWaitingTime = 0;
-          }
-          // Cancel pending stall recovery if playback resumed on its own.
-          if (stallRecoveryTimer) {
-            clearTimeout(stallRecoveryTimer);
-            stallRecoveryTimer = null;
           }
         };
         media.addEventListener('waiting', handleWaiting);
