@@ -38,11 +38,6 @@ const PlayerContainer = styled.div`
   }
 `;
 
-const ErrorText = styled.div`
-  color: var(--error);
-  font-size: 13px;
-`;
-
 interface VideoJSPlayerProps {
   /** URL to stream from (e.g. the MSE HTTP endpoint). */
   src: string;
