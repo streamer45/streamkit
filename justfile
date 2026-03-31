@@ -21,6 +21,7 @@ default:
 
 # Remove build artifacts not used in the last 7 days (use instead of cargo clean)
 sweep days='7':
+    @command -v cargo-sweep >/dev/null 2>&1 || { echo "Install cargo-sweep: cargo install cargo-sweep --locked"; exit 1; }
     @echo "Sweeping stale build artifacts (older than {{days}} days)..."
     @cargo sweep --time {{days}}
     @echo "Sweeping shared plugin target dir..."
@@ -319,29 +320,29 @@ gen-docs-reference:
 # Lint native plugins
 lint-plugins:
     @echo "Linting native plugins..."
-    @cd plugins/native/whisper && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
-    @cd plugins/native/kokoro && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
-    @cd plugins/native/piper && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
-    @cd plugins/native/sensevoice && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
-    @cd plugins/native/vad && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
-    @cd plugins/native/matcha && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
-    @cd plugins/native/pocket-tts && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
-    @cd plugins/native/nllb && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt -- --check && CMAKE_ARGS="-DCMAKE_INSTALL_PREFIX=$$(pwd)/target/cmake-install" CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
-    @cd plugins/native/supertonic && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
+    @cd plugins/native/whisper && cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
+    @cd plugins/native/kokoro && cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
+    @cd plugins/native/piper && cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
+    @cd plugins/native/sensevoice && cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
+    @cd plugins/native/vad && cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
+    @cd plugins/native/matcha && cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
+    @cd plugins/native/pocket-tts && cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
+    @cd plugins/native/nllb && cargo fmt -- --check && CMAKE_ARGS="-DCMAKE_INSTALL_PREFIX=$$(pwd)/target/cmake-install" CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
+    @cd plugins/native/supertonic && cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
     @echo "✓ All native plugins passed linting"
 
 # Auto-fix formatting and linting issues in native plugins
 fix-plugins:
     @echo "Auto-fixing native plugins..."
-    @cd plugins/native/whisper && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
-    @cd plugins/native/kokoro && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
-    @cd plugins/native/piper && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
-    @cd plugins/native/sensevoice && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
-    @cd plugins/native/vad && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
-    @cd plugins/native/matcha && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
-    @cd plugins/native/pocket-tts && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
-    @cd plugins/native/nllb && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt && CMAKE_ARGS="-DCMAKE_INSTALL_PREFIX=$$(pwd)/target/cmake-install" CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
-    @cd plugins/native/supertonic && CARGO_TARGET_DIR={{plugins_target_dir}} cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
+    @cd plugins/native/whisper && cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
+    @cd plugins/native/kokoro && cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
+    @cd plugins/native/piper && cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
+    @cd plugins/native/sensevoice && cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
+    @cd plugins/native/vad && cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
+    @cd plugins/native/matcha && cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
+    @cd plugins/native/pocket-tts && cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
+    @cd plugins/native/nllb && cargo fmt && CMAKE_ARGS="-DCMAKE_INSTALL_PREFIX=$$(pwd)/target/cmake-install" CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
+    @cd plugins/native/supertonic && cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
     @echo "✓ All native plugins fixed"
 
 # --- Profiling ---

@@ -1293,6 +1293,7 @@ fn find_official_native_plugin_artifacts(repo_root: &Path) -> Result<Vec<PathBuf
             continue;
         }
 
+        // TODO: remove legacy per-plugin target search once transition is complete.
         // Prefer release artifacts; fall back to debug if release isn't present.
         // Check both per-plugin target dirs (legacy) and the shared target/plugins/ dir.
         let release_dir = plugin_dir.join("target/release");

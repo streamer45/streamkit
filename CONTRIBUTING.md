@@ -15,7 +15,7 @@ just build-ui   # build the embedded web UI (required before compiling the serve
 just dev        # starts backend + frontend with hot reload
 ```
 
-**Prerequisites:** Rust 1.92+, Bun 1.3+, [Just](https://github.com/casey/just), [sccache](https://github.com/mozilla/sccache)
+**Prerequisites:** Rust 1.92+, Bun 1.3+, [Just](https://github.com/casey/just)
 
 Run `just --list` to see all available commands.
 
@@ -47,15 +47,24 @@ curl -fsSL https://bun.sh/install | bash
 cargo install just
 ```
 
-### sccache (build cache)
+### sccache (build cache — recommended)
 
-The project uses [sccache](https://github.com/mozilla/sccache) as the default `rustc` wrapper (configured in `.cargo/config.toml`). It caches compiled crate artifacts by input hash, making rebuilds significantly faster.
+[sccache](https://github.com/mozilla/sccache) caches compiled crate artifacts by input hash, making rebuilds significantly faster. CI uses it automatically; for local development:
 
 ```bash
 cargo install sccache --locked
+export RUSTC_WRAPPER=sccache   # add to your shell profile
 ```
 
-> **Tip:** To temporarily disable sccache (e.g. for debugging), set `RUSTC_WRAPPER=""` in your shell.
+> **Note:** You can also uncomment the `rustc-wrapper` line in `.cargo/config.toml` to enable it repo-wide instead of via environment variable.
+
+### cargo-sweep (build cleanup — optional)
+
+Used by `just sweep` to prune stale build artifacts without a full `cargo clean`:
+
+```bash
+cargo install cargo-sweep --locked
+```
 
 ### Linting tools
 
