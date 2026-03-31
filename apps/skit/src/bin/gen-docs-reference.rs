@@ -1333,10 +1333,8 @@ fn find_official_native_plugin_artifacts(repo_root: &Path) -> Result<Vec<PathBuf
     // legacy per-plugin target dirs and the shared target/plugins/ dir coexist.
     // Use a HashSet since same-filename paths are not adjacent after sorting by full path.
     let mut seen_filenames = std::collections::HashSet::new();
-    paths.retain(|p| {
-        p.file_name()
-            .map_or(false, |name| seen_filenames.insert(name.to_os_string()))
-    });
+    paths
+        .retain(|p| p.file_name().map_or(false, |name| seen_filenames.insert(name.to_os_string())));
 
     Ok(paths)
 }
