@@ -644,8 +644,10 @@ impl ProcessorNode for WebMMuxerNode {
             //      engine for static/oneshot pipelines)
             //   2. first video packet's content_type (needed for dynamic
             //      sessions where input_types is empty)
+            let mut video_codec_known = false;
             for (pin_name, rx) in context.inputs.drain() {
                 if let Some(PacketType::EncodedVideo(fmt)) = context.input_types.get(&pin_name) {
+                    video_codec_known = true;
                     if fmt.codec == VideoCodec::Av1 {
                         video_is_av1 = true;
                     }
@@ -653,22 +655,55 @@ impl ProcessorNode for WebMMuxerNode {
                 all_receivers.push(rx);
             }
 
-            // If input_types didn't reveal the codec, peek at the first
-            // packet from each receiver to detect AV1 from content_type.
-            if !video_is_av1 {
-                for rx in &mut all_receivers {
-                    if let Some(Packet::Binary { data, content_type, metadata }) = rx.recv().await {
-                        let ct_str = content_type.as_deref().unwrap_or("");
-                        if ct_str == "video/av1" || ct_str.starts_with("video/av1;") {
-                            video_is_av1 = true;
-                            first_video_packet = Some((data, metadata));
-                            break;
+            // If input_types didn't reveal the video codec (dynamic sessions
+            // where input_types is empty), peek at the first packet from each
+            // receiver concurrently to detect AV1 from content_type.
+            if !video_codec_known && all_receivers.len() >= 2 {
+                let (first, rest) = all_receivers.split_at_mut(1);
+                let rx0 = &mut first[0];
+                let rx1 = &mut rest[0];
+                // Peek concurrently so we don't block on the slower track.
+                tokio::select! {
+                    biased;
+                    r0 = rx0.recv() => {
+                        if let Some(Packet::Binary { data, content_type, metadata }) = r0 {
+                            let ct_str = content_type.as_deref().unwrap_or("");
+                            if ct_str == "video/av1" || ct_str.starts_with("video/av1;") {
+                                video_is_av1 = true;
+                            }
+                            if ct_str.starts_with("video/") {
+                                first_video_packet = Some((data, metadata));
+                            } else {
+                                first_audio_packet = Some((data, metadata));
+                            }
                         }
-                        if ct_str.starts_with("video/") {
-                            first_video_packet = Some((data, metadata));
-                        } else {
-                            first_audio_packet = Some((data, metadata));
+                    }
+                    r1 = rx1.recv() => {
+                        if let Some(Packet::Binary { data, content_type, metadata }) = r1 {
+                            let ct_str = content_type.as_deref().unwrap_or("");
+                            if ct_str == "video/av1" || ct_str.starts_with("video/av1;") {
+                                video_is_av1 = true;
+                            }
+                            if ct_str.starts_with("video/") {
+                                first_video_packet = Some((data, metadata));
+                            } else {
+                                first_audio_packet = Some((data, metadata));
+                            }
                         }
+                    }
+                }
+            } else if !video_codec_known && all_receivers.len() == 1 {
+                if let Some(Packet::Binary { data, content_type, metadata }) =
+                    all_receivers[0].recv().await
+                {
+                    let ct_str = content_type.as_deref().unwrap_or("");
+                    if ct_str == "video/av1" || ct_str.starts_with("video/av1;") {
+                        video_is_av1 = true;
+                    }
+                    if ct_str.starts_with("video/") {
+                        first_video_packet = Some((data, metadata));
+                    } else {
+                        first_audio_packet = Some((data, metadata));
                     }
                 }
             }
