@@ -728,16 +728,12 @@ impl ProcessorNode for WebMMuxerNode {
                 // in that case there is no "other" receiver to try.
                 if !got_video {
                     if let Some(idx) = audio_from {
-                        let other_rx = if idx == 0 {
-                            &mut all_receivers[1]
-                        } else {
-                            &mut all_receivers[0]
-                        };
+                        let other_rx =
+                            if idx == 0 { &mut all_receivers[1] } else { &mut all_receivers[0] };
                         if let Some(Packet::Binary { data, content_type, metadata }) =
                             other_rx.recv().await
                         {
-                            let (is_video, is_av1) =
-                                classify_content_type(content_type.as_deref());
+                            let (is_video, is_av1) = classify_content_type(content_type.as_deref());
                             video_is_av1 |= is_av1;
                             if is_video {
                                 first_video_packet = Some((data, metadata));
