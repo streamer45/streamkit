@@ -26,7 +26,7 @@ sweep days='7':
     @for dir in plugins/native/*/; do \
         if [ -f "$dir/Cargo.toml" ]; then \
             echo "Sweeping $dir..."; \
-            (cd "$dir" && cargo sweep --time {{days}}); \
+            (cd "$dir" && CARGO_TARGET_DIR={{plugins_target_dir}} cargo sweep --time {{days}}); \
         fi; \
     done
 
