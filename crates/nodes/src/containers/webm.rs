@@ -22,6 +22,23 @@ use webm::mux::{
     AudioCodecId, AudioTrack, SegmentBuilder, SegmentMode, VideoCodecId, VideoTrack, Writer,
 };
 
+// ---------------------------------------------------------------------------
+// Packet content-type classification helper
+// ---------------------------------------------------------------------------
+
+/// Classify a packet's `content_type` string for the WebM muxer.
+///
+/// Returns `(is_video, is_av1)`:
+/// - `is_video` — `true` when the content-type starts with `"video/"`.
+/// - `is_av1`   — `true` when the content-type is exactly `"video/av1"` or
+///   starts with `"video/av1;"` (parameterised form).
+fn classify_content_type(content_type: Option<&str>) -> (bool, bool) {
+    let ct = content_type.unwrap_or("");
+    let is_video = ct.starts_with("video/");
+    let is_av1 = ct == "video/av1" || ct.starts_with("video/av1;");
+    (is_video, is_av1)
+}
+
 // --- WebM Constants ---
 
 /// Default audio frame duration when metadata is missing (20ms Opus frame).
@@ -667,73 +684,57 @@ impl ProcessorNode for WebMMuxerNode {
                 let rx0 = &mut first[0];
                 let rx1 = &mut rest[0];
                 // Peek concurrently so we don't block on the slower track.
+                // No `biased` — there is no ordering requirement here, and
+                // bias would deterministically starve rx1 when rx0 is ready.
+                // Track which receiver index delivered the first packet so we
+                // can await the OTHER receiver if it was audio.
                 let mut got_video = false;
+                let mut audio_from: usize = 0;
                 tokio::select! {
-                    biased;
                     r0 = rx0.recv() => {
                         if let Some(Packet::Binary { data, content_type, metadata }) = r0 {
-                            let ct_str = content_type.as_deref().unwrap_or("");
-                            if ct_str == "video/av1" || ct_str.starts_with("video/av1;") {
-                                video_is_av1 = true;
-                            }
-                            if ct_str.starts_with("video/") {
+                            let (is_video, is_av1) = classify_content_type(content_type.as_deref());
+                            video_is_av1 |= is_av1;
+                            if is_video {
                                 first_video_packet = Some((data, metadata));
                                 got_video = true;
                             } else {
                                 first_audio_packet = Some((data, metadata));
+                                audio_from = 0;
                             }
                         }
                     }
                     r1 = rx1.recv() => {
                         if let Some(Packet::Binary { data, content_type, metadata }) = r1 {
-                            let ct_str = content_type.as_deref().unwrap_or("");
-                            if ct_str == "video/av1" || ct_str.starts_with("video/av1;") {
-                                video_is_av1 = true;
-                            }
-                            if ct_str.starts_with("video/") {
+                            let (is_video, is_av1) = classify_content_type(content_type.as_deref());
+                            video_is_av1 |= is_av1;
+                            if is_video {
                                 first_video_packet = Some((data, metadata));
                                 got_video = true;
                             } else {
                                 first_audio_packet = Some((data, metadata));
+                                audio_from = 1;
                             }
                         }
                     }
                 }
-                // If the first packet was audio, we still need to peek the
-                // other receiver to detect the video codec.
+                // If the first packet was audio, await the OTHER receiver
+                // directly.  A second `select!` would race both receivers and
+                // the audio side (which is typically faster) could win again,
+                // leaving video_is_av1 permanently false.
                 if !got_video {
-                    // Use a second select! to concurrently check both receivers
-                    // (the one that delivered audio may have more packets).
-                    let (first, rest) = all_receivers.split_at_mut(1);
-                    let rx0 = &mut first[0];
-                    let rx1 = &mut rest[0];
-                    tokio::select! {
-                        biased;
-                        r0 = rx0.recv() => {
-                            if let Some(Packet::Binary { data, content_type, metadata }) = r0 {
-                                let ct_str = content_type.as_deref().unwrap_or("");
-                                if ct_str == "video/av1" || ct_str.starts_with("video/av1;") {
-                                    video_is_av1 = true;
-                                }
-                                // At this point we already have first_audio_packet,
-                                // so this should be a video packet.
-                                if ct_str.starts_with("video/") {
-                                    first_video_packet = Some((data, metadata));
-                                }
-                                // If this is also audio, we let the receive loop
-                                // handle codec detection from the main loop.
-                            }
-                        }
-                        r1 = rx1.recv() => {
-                            if let Some(Packet::Binary { data, content_type, metadata }) = r1 {
-                                let ct_str = content_type.as_deref().unwrap_or("");
-                                if ct_str == "video/av1" || ct_str.starts_with("video/av1;") {
-                                    video_is_av1 = true;
-                                }
-                                if ct_str.starts_with("video/") {
-                                    first_video_packet = Some((data, metadata));
-                                }
-                            }
+                    let other_rx = if audio_from == 0 {
+                        &mut all_receivers[1]
+                    } else {
+                        &mut all_receivers[0]
+                    };
+                    if let Some(Packet::Binary { data, content_type, metadata }) =
+                        other_rx.recv().await
+                    {
+                        let (is_video, is_av1) = classify_content_type(content_type.as_deref());
+                        video_is_av1 |= is_av1;
+                        if is_video {
+                            first_video_packet = Some((data, metadata));
                         }
                     }
                 }
@@ -741,11 +742,9 @@ impl ProcessorNode for WebMMuxerNode {
                 if let Some(Packet::Binary { data, content_type, metadata }) =
                     all_receivers[0].recv().await
                 {
-                    let ct_str = content_type.as_deref().unwrap_or("");
-                    if ct_str == "video/av1" || ct_str.starts_with("video/av1;") {
-                        video_is_av1 = true;
-                    }
-                    if ct_str.starts_with("video/") {
+                    let (is_video, is_av1) = classify_content_type(content_type.as_deref());
+                    video_is_av1 |= is_av1;
+                    if is_video {
                         first_video_packet = Some((data, metadata));
                     } else {
                         first_audio_packet = Some((data, metadata));
@@ -770,16 +769,14 @@ impl ProcessorNode for WebMMuxerNode {
                 // Dynamic pipeline: classify from the first packet's content_type.
                 match rx.recv().await {
                     Some(Packet::Binary { data, content_type, metadata }) => {
-                        let ct_str = content_type.as_deref().unwrap_or("");
-                        let video = ct_str.starts_with("video/");
-                        if video {
-                            video_is_av1 =
-                                ct_str == "video/av1" || ct_str.starts_with("video/av1;");
+                        let (is_video, is_av1) = classify_content_type(content_type.as_deref());
+                        if is_video {
+                            video_is_av1 |= is_av1;
                             first_video_packet = Some((data, metadata));
                         } else {
                             first_audio_packet = Some((data, metadata));
                         }
-                        video
+                        is_video
                     },
                     Some(_) => {
                         // Non-binary packet on a muxer input is unexpected;
