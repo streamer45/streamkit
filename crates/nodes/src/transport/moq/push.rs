@@ -687,7 +687,7 @@ impl MoqPushNode {
                 };
                 let _ = response_tx.send(Ok(pin));
             },
-            PinManagementMessage::AddedInputPin { pin, channel } => {
+            PinManagementMessage::AddedInputPin { pin, channel, produces_type: _produces_type } => {
                 Self::activate_dynamic_input(
                     &pin,
                     channel,

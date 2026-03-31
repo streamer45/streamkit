@@ -88,7 +88,14 @@ pub enum PinManagementMessage {
     },
 
     /// Engine has created the pin and channel, node should start receiving.
-    AddedInputPin { pin: InputPin, channel: tokio::sync::mpsc::Receiver<Packet> },
+    AddedInputPin {
+        pin: InputPin,
+        channel: tokio::sync::mpsc::Receiver<Packet>,
+        /// The [`PacketType`] that the upstream output pin produces.
+        /// Lets the receiving node know the exact media type without
+        /// inspecting packets at runtime.
+        produces_type: PacketType,
+    },
 
     /// Remove an input pin (e.g., connection deleted).
     RemoveInputPin { pin_name: String },

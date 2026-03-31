@@ -1323,7 +1323,7 @@ impl CompositorNode {
                 node.input_pins.push(pin.clone());
                 let _ = response_tx.send(Ok(pin));
             },
-            PinManagementMessage::AddedInputPin { pin, channel } => {
+            PinManagementMessage::AddedInputPin { pin, channel, produces_type: _produces_type } => {
                 tracing::info!("CompositorNode: activated input pin '{}'", pin.name);
                 slots.push(InputSlot {
                     name: pin.name,
