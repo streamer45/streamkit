@@ -30,8 +30,7 @@ impl Drop for MseClientGuard {
 
 /// A stream registration from a path to a client receiver.
 struct StreamRoute {
-    /// The session ID that owns this route.
-    #[allow(dead_code)]
+    /// The session ID that owns this route (used in unregister logging).
     session_id: String,
 
     /// The content type for HTTP responses (e.g. `video/webm; codecs="vp9,opus"`).

@@ -704,6 +704,10 @@ impl ProcessorNode for CompositorNode {
         // From then on, all output timestamps use running_ts + offset, which
         // produces a smooth sequence in the remote clock domain without
         // mixing two timestamp sources on alternating ticks.
+        // TODO: If a remote input disconnects and reconnects with a new
+        // timestamp epoch, the stale offset persists.  The downstream WebM
+        // rebase-reset (500ms backward jump threshold) partially handles
+        // this, but re-calibrating here would produce smoother transitions.
         let mut ts_calibration_offset: Option<i64> = None;
 
         // In oneshot / batch mode we take exactly one frame per slot

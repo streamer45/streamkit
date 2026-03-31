@@ -65,11 +65,6 @@ interface MSEPlayerProps {
   contentType: string;
   /** Optional class name */
   className?: string;
-  /** Whether this is a live stream (default: true).  Live mode seeks to the
-   *  live edge on start, re-seeks when drifting behind, and evicts old
-   *  buffered data.  Non-live (oneshot/convert) mode plays from the
-   *  beginning and keeps buffered data for user seeking. */
-  live?: boolean;
   /** Callback when stream processing is complete */
   onComplete?: () => void;
   /** Callback when stream is cancelled */
@@ -107,47 +102,9 @@ function hasRealMediaError(media: HTMLMediaElement): boolean {
   return !!media.error && !media.error.message?.includes('Empty src attribute');
 }
 
-// Helper: Seek to the live edge and start playback.
-// For live MSE streams the buffered ranges may be fragmented (e.g. audio
-// and video starting at different times).  Seeking to buffered.start(0)
-// might land on a tiny range with too little data.  Instead, seek to
-// near the END of the last contiguous range (the true live edge) with a
-// small rewind so the browser has forward buffer for smooth playback.
-// Returns true if the seek was performed (buffered data available).
-function seekToLiveEdgeAndPlay(media: HTMLMediaElement, sourceBuffer: SourceBuffer): boolean {
-  const buffered = sourceBuffer.buffered;
-  if (buffered.length === 0) {
-    return false;
-  }
-  // Find the last contiguous range and check it's large enough.
-  // The init segment creates a tiny range (0.00-0.02) with no real media.
-  // Don't seek until there's at least 2 seconds of contiguous data.
-  const lastIdx = buffered.length - 1;
-  const lastStart = buffered.start(lastIdx);
-  const lastEnd = buffered.end(lastIdx);
-  if (lastEnd - lastStart < 2) {
-    return false; // Not enough contiguous data yet — caller should retry.
-  }
-  // Seek to ~2s behind the live edge of the last contiguous range.
-  const target = Math.max(lastStart, lastEnd - 2);
-  if (Math.abs(media.currentTime - target) > 1) {
-    componentsLogger.info(
-      `MSEPlayer: Seeking to live edge at ${target.toFixed(2)}s (buffer ends at ${lastEnd.toFixed(2)}s)`
-    );
-    media.currentTime = target;
-  }
-  if (media.paused) {
-    media.play().catch((err) => {
-      componentsLogger.warn('Autoplay failed, user interaction may be required:', err);
-    });
-  }
-  return true;
-}
-
-// Helper: Start playback from the beginning for non-live (oneshot/convert)
-// streams.  Unlike seekToLiveEdgeAndPlay, this does NOT seek to the buffer
-// end — it plays from wherever currentTime is (typically 0).  Returns true
-// once there is enough buffered data to begin playback.
+// Helper: Start playback from the beginning for oneshot/convert streams.
+// Plays from wherever currentTime is (typically 0).  Returns true once
+// there is enough buffered data to begin playback.
 function startPlaybackFromBeginning(media: HTMLMediaElement, sourceBuffer: SourceBuffer): boolean {
   const buffered = sourceBuffer.buffered;
   if (buffered.length === 0) {
@@ -216,44 +173,9 @@ async function processStreamChunk(value: Uint8Array, sourceBuffer: SourceBuffer)
   });
 }
 
-// How many seconds of buffered data to keep behind currentTime.
-// Data older than this is evicted to prevent unbounded memory growth.
-const BUFFER_EVICT_BEHIND_S = 10;
-
-// How far (seconds) the player can fall behind the live edge before
-// an automatic re-seek is triggered.
-const LIVE_EDGE_MAX_DRIFT_S = 8;
-
-// How far (seconds) audio can lead video before an automatic re-seek
-// corrects the A/V offset.  Chrome's muxed-WebM MSE path can let the
-// audio decoder run ahead of the VP9 decoder during live streaming,
-// even when container timestamps are perfectly aligned.
-const AV_SYNC_THRESHOLD_S = 0.5;
-
-// Minimum interval (ms) between A/V sync correction re-seeks to avoid
-// rapid correction loops when the decoder consistently falls behind.
-const AV_SYNC_COOLDOWN_MS = 5000;
-
 // Minimum interval (ms) between React status updates to avoid
 // re-rendering the component on every incoming chunk.
 const STATUS_UPDATE_INTERVAL_MS = 1000;
-
-// Helper: Evict buffered data that is too far behind currentTime.
-// Calling sourceBuffer.remove() is async — returns a promise that
-// resolves on the next `updateend`.
-async function evictOldBufferData(sourceBuffer: SourceBuffer, currentTime: number): Promise<void> {
-  if (sourceBuffer.updating || sourceBuffer.buffered.length === 0) return;
-  const start = sourceBuffer.buffered.start(0);
-  const evictEnd = currentTime - BUFFER_EVICT_BEHIND_S;
-  if (evictEnd <= start + 1) return; // nothing meaningful to evict
-  componentsLogger.debug(
-    `MSEPlayer: Evicting buffer [${start.toFixed(2)}s - ${evictEnd.toFixed(2)}s] (currentTime=${currentTime.toFixed(2)}s)`
-  );
-  sourceBuffer.remove(start, evictEnd);
-  await new Promise<void>((resolve) => {
-    sourceBuffer.addEventListener('updateend', () => resolve(), { once: true });
-  });
-}
 
 // Helper: Stream reading loop
 async function streamMediaData(
@@ -264,15 +186,13 @@ async function streamMediaData(
   setStatus: (status: string) => void,
   onComplete: (() => void) | undefined,
   isAborted: () => boolean,
-  onFirstChunk?: () => void,
-  live = true
+  onFirstChunk?: () => void
 ): Promise<void> {
   let totalBytes = 0;
   let firstChunkSeen = false;
   let playbackStarted = false;
   let lastDiagLog = 0;
   let lastStatusUpdate = 0;
-  let lastTotalVideoFrames = 0;
 
   while (true) {
     // Check if media element is in error state
@@ -322,13 +242,7 @@ async function streamMediaData(
       onFirstChunk?.();
     }
 
-    // Evict old buffered data to bound memory usage (live mode only —
-    // non-live content is finite and the user may want to seek back).
-    if (live && playbackStarted) {
-      await evictOldBufferData(sourceBuffer, media.currentTime);
-    }
-
-    // Periodic diagnostics + live-edge tracking.
+    // Periodic diagnostics.
     if (now - lastDiagLog > 5000 && sourceBuffer.buffered.length > 0) {
       lastDiagLog = now;
       const ranges = [];
@@ -340,47 +254,10 @@ async function streamMediaData(
       const lastEnd = sourceBuffer.buffered.end(sourceBuffer.buffered.length - 1);
       const fwdBuf = lastEnd - media.currentTime;
 
-      // Include video decode quality stats when available — dropped frames
-      // are a strong signal that the VP9 decoder can't keep up.
-      let qualityStr = '';
-      if (
-        media instanceof HTMLVideoElement &&
-        typeof media.getVideoPlaybackQuality === 'function'
-      ) {
-        const q = media.getVideoPlaybackQuality();
-        qualityStr = ` vpq(total=${q.totalVideoFrames} dropped=${q.droppedVideoFrames})`;
-
-        // Detect VP9 decoder stalls: if totalVideoFrames hasn't increased
-        // since the last diagnostic interval, the decoder has stopped
-        // producing frames while audio continues playing.  Re-seek to the
-        // live edge to recover.
-        if (
-          playbackStarted &&
-          !media.paused &&
-          lastTotalVideoFrames > 0 &&
-          q.totalVideoFrames === lastTotalVideoFrames &&
-          sourceBuffer.buffered.length > 0
-        ) {
-          const lastIdx = sourceBuffer.buffered.length - 1;
-          const liveEdge = sourceBuffer.buffered.end(lastIdx);
-          const target = Math.max(sourceBuffer.buffered.start(lastIdx), liveEdge - 2);
-          componentsLogger.warn(
-            `MSEPlayer: VP9 decoder stall detected (total=${q.totalVideoFrames} unchanged), ` +
-              `re-seeking to ${target.toFixed(2)}s`
-          );
-          media.currentTime = target;
-          if (media.paused) {
-            media.play().catch(() => {});
-          }
-        }
-        lastTotalVideoFrames = q.totalVideoFrames;
-      }
-
       componentsLogger.info(
         `MSEPlayer diag: currentTime=${media.currentTime.toFixed(2)} paused=${media.paused} ` +
           `readyState=${media.readyState} rate=${media.playbackRate} ` +
-          `buffered=[${ranges.join(', ')}] fwdBuf=${fwdBuf.toFixed(1)}s bytes=${(totalBytes / 1024).toFixed(0)}KB` +
-          qualityStr
+          `buffered=[${ranges.join(', ')}] fwdBuf=${fwdBuf.toFixed(1)}s bytes=${(totalBytes / 1024).toFixed(0)}KB`
       );
 
       // Force-resume if the player paused itself with enough forward buffer.
@@ -392,134 +269,32 @@ async function streamMediaData(
         );
         media.play().catch(() => {});
       }
-
-      // Re-seek to the live edge if the player drifts too far behind
-      // (live mode only — non-live content plays at its own pace).
-      if (live && playbackStarted) {
-        const lastIdx = sourceBuffer.buffered.length - 1;
-        const liveEdge = sourceBuffer.buffered.end(lastIdx);
-        if (liveEdge - media.currentTime > LIVE_EDGE_MAX_DRIFT_S) {
-          const target = liveEdge - 2;
-          componentsLogger.info(
-            `MSEPlayer: Drifted ${(liveEdge - media.currentTime).toFixed(1)}s behind live edge, ` +
-              `re-seeking to ${target.toFixed(2)}s`
-          );
-          media.currentTime = target;
-          if (media.paused) {
-            media.play().catch(() => {});
-          }
-        }
-      }
     }
 
     // Start playback once media data is actually buffered.
     // The first few chunks (init segment, Cluster preamble) don't produce
     // buffered ranges — only SimpleBlock data does.  Keep trying on each
     // chunk until the seek succeeds.
-    //
-    // Live mode: seek to the live edge (near buffer end) so latency stays
-    // low.  Non-live mode: play from the beginning.
-    if (
-      !playbackStarted &&
-      (live
-        ? seekToLiveEdgeAndPlay(media, sourceBuffer)
-        : startPlaybackFromBeginning(media, sourceBuffer))
-    ) {
+    if (!playbackStarted && startPlaybackFromBeginning(media, sourceBuffer)) {
       playbackStarted = true;
-
-      // --- A/V sync monitoring via requestVideoFrameCallback ----------
-      // Chrome's muxed-WebM MSE path can let the audio decoder run ahead
-      // of the VP9 decoder during live streaming.  requestVideoFrameCallback
-      // fires when each video frame is actually presented, giving us the
-      // real video presentation time (metadata.mediaTime).  Comparing it
-      // against media.currentTime (which tracks audio in muxed mode)
-      // reveals the true A/V offset.  When the offset exceeds the
-      // threshold, re-seek to the live edge to re-sync both tracks.
-      if (media instanceof HTMLVideoElement && 'requestVideoFrameCallback' in media) {
-        let lastAvCorrectionMs = 0;
-        let avSyncCorrections = 0;
-        let avOffsetMin = Infinity;
-        let avOffsetMax = -Infinity;
-        let avOffsetSum = 0;
-        let avOffsetCount = 0;
-        let lastAvStatsLog = 0;
-
-        // Type-narrow: requestVideoFrameCallback is available but not in
-        // all TS DOM libs yet.
-        type RVFCMetadata = { mediaTime: number };
-        type RVFCCallback = (now: DOMHighResTimeStamp, metadata: RVFCMetadata) => void;
-        const vid = media as HTMLVideoElement & {
-          requestVideoFrameCallback(cb: RVFCCallback): number;
-        };
-
-        const onVideoFrame: RVFCCallback = (now, metadata) => {
-          if (isAborted()) return;
-
-          const avOffset = media.currentTime - metadata.mediaTime;
-
-          // Track stats for periodic logging.
-          avOffsetMin = Math.min(avOffsetMin, avOffset);
-          avOffsetMax = Math.max(avOffsetMax, avOffset);
-          avOffsetSum += avOffset;
-          avOffsetCount++;
-
-          // Log A/V offset stats every 5 seconds.
-          if (now - lastAvStatsLog > 5000) {
-            const avg = avOffsetCount > 0 ? avOffsetSum / avOffsetCount : 0;
-            componentsLogger.info(
-              `MSEPlayer A/V offset: min=${avOffsetMin.toFixed(3)}s ` +
-                `max=${avOffsetMax.toFixed(3)}s avg=${avg.toFixed(3)}s ` +
-                `samples=${avOffsetCount} corrections=${avSyncCorrections}`
-            );
-            lastAvStatsLog = now;
-            avOffsetMin = Infinity;
-            avOffsetMax = -Infinity;
-            avOffsetSum = 0;
-            avOffsetCount = 0;
-          }
-
-          if (
-            avOffset > AV_SYNC_THRESHOLD_S &&
-            (now - lastAvCorrectionMs > AV_SYNC_COOLDOWN_MS || lastAvCorrectionMs === 0)
-          ) {
-            avSyncCorrections++;
-            lastAvCorrectionMs = now;
-
-            const buffered = sourceBuffer.buffered;
-            if (buffered.length > 0) {
-              const liveEdge = buffered.end(buffered.length - 1);
-              const target = Math.max(buffered.start(buffered.length - 1), liveEdge - 2);
-              componentsLogger.warn(
-                `MSEPlayer: A/V desync detected — audio is ${avOffset.toFixed(1)}s ahead of video. ` +
-                  `Re-seeking to ${target.toFixed(2)}s (correction #${avSyncCorrections})`
-              );
-              media.currentTime = target;
-              if (media.paused) {
-                media.play().catch(() => {});
-              }
-            }
-          }
-
-          // Re-register for the next presented frame.
-          vid.requestVideoFrameCallback(onVideoFrame);
-        };
-
-        vid.requestVideoFrameCallback(onVideoFrame);
-      }
     }
   }
 }
 
 /**
- * MSE-based media player for streaming WebM audio or video.
- * Uses Media Source Extensions to progressively load and play media.
+ * MSE-based media player for oneshot/convert pipeline streams.
+ *
+ * Uses Media Source Extensions to progressively play a WebM ReadableStream
+ * (typically from a POST response body) that cannot be addressed by URL.
  * Automatically detects audio vs video from contentType.
+ *
+ * For live streaming over HTTP (chunked transfer), use NativeStreamPlayer
+ * instead — it uses a plain `<video>` element with a URL source.
  */
 export const MSEPlayer: React.FC<MSEPlayerProps> = ({
   stream,
   contentType,
   className,
-  live = true,
   onComplete,
   onCancel,
   onError,
@@ -634,8 +409,7 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
               `readyState=${media.readyState} buffered=[${ranges.join(', ')}]`
           );
 
-          // If stuck at a buffer gap, skip past it immediately instead of
-          // waiting for the 8-second drift timer.
+          // If stuck at a buffer gap, skip past it immediately.
           const buffered = sourceBuffer.buffered;
           for (let i = 0; i < buffered.length - 1; i++) {
             const gapStart = buffered.end(i);
@@ -676,9 +450,7 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
         media.addEventListener('error', handleMediaError);
 
         // Stall detection: if data is flowing but canplay never fires within
-        // 15 seconds, log diagnostics and retry the live-edge seek.  Don't kill
-        // the stream — live pipelines with MoQ input can take 20+ seconds to
-        // accumulate enough contiguous data for canplay.
+        // 15 seconds, log diagnostics and retry playback from the beginning.
         const startStallTimer = () => {
           if (stallTimerHandle) return;
           stallTimerHandle = setTimeout(() => {
@@ -693,12 +465,7 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
             componentsLogger.warn(
               `MSEPlayer: canplay not fired after 15s — retrying seek (${diag})`
             );
-            // Retry seeking — buffer may have grown since the first attempt.
-            if (live) {
-              seekToLiveEdgeAndPlay(media, sourceBuffer);
-            } else {
-              startPlaybackFromBeginning(media, sourceBuffer);
-            }
+            startPlaybackFromBeginning(media, sourceBuffer);
           }, 15_000);
         };
 
@@ -711,8 +478,7 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
           setStatus,
           onCompleteRef.current,
           () => aborted,
-          startStallTimer,
-          live
+          startStallTimer
         );
 
         // Cancel stall timer on normal completion.

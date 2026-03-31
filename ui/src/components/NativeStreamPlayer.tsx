@@ -88,7 +88,9 @@ export const NativeStreamPlayer: React.FC<NativeStreamPlayerProps> = ({
     const video = videoRef.current;
     if (!video) return;
 
-    // Autoplay (muted to satisfy browser autoplay policies).
+    // Autoplay muted to satisfy browser autoplay policies — most browsers
+    // block unmuted autoplay.  The native <video> controls include a mute
+    // toggle so users can unmute manually once they interact with the page.
     video.muted = true;
     video.play().catch((err) => {
       componentsLogger.warn('NativeStreamPlayer: autoplay blocked:', err);

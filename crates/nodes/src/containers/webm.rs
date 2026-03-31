@@ -1095,9 +1095,15 @@ impl ProcessorNode for WebMMuxerNode {
         if has_audio && has_video {
             let mut drained_v = 0u64;
             let mut drained_a = 0u64;
+            let mut drained_keyframes = 0u64;
             if let Some(ref mut rx) = video_rx {
-                while rx.try_recv().is_ok() {
+                while let Ok(pkt) = rx.try_recv() {
                     drained_v += 1;
+                    if let Packet::Binary { metadata, .. } = &pkt {
+                        if metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(false) {
+                            drained_keyframes += 1;
+                        }
+                    }
                 }
             }
             if let Some(ref mut rx) = audio_rx {
@@ -1107,8 +1113,8 @@ impl ProcessorNode for WebMMuxerNode {
             }
             if drained_v > 0 || drained_a > 0 {
                 tracing::info!(
-                    "WebMMuxerNode: drained {drained_v} video + {drained_a} audio \
-                     stale frames from channels"
+                    "WebMMuxerNode: drained {drained_v} video ({drained_keyframes} keyframes) \
+                     + {drained_a} audio stale frames from channels"
                 );
             }
         }
@@ -1283,7 +1289,7 @@ impl ProcessorNode for WebMMuxerNode {
                     audio_frame_count += 1;
                     if audio_frame_count <= 3 {
                         let ts = metadata.as_ref().and_then(|m| m.timestamp_us);
-                        tracing::info!(
+                        tracing::debug!(
                             "WebMMuxer AUDIO #{audio_frame_count}: \
                              incoming_ts={ts:?}us elapsed={:.0}ms",
                             mux_start.elapsed().as_secs_f64() * 1000.0,
@@ -1348,7 +1354,7 @@ impl ProcessorNode for WebMMuxerNode {
                     video_frame_count += 1;
                     if video_frame_count <= 3 {
                         let ts = metadata.as_ref().and_then(|m| m.timestamp_us);
-                        tracing::info!(
+                        tracing::debug!(
                             "WebMMuxer VIDEO #{video_frame_count}: \
                              incoming_ts={ts:?}us elapsed={:.0}ms keyframe={is_keyframe}",
                             mux_start.elapsed().as_secs_f64() * 1000.0,

@@ -457,8 +457,8 @@ const StreamView: React.FC = () => {
 
   // ── MSE playback URL ──
   // When `msePath` is set and a session is active, build the URL for the
-  // MSE HTTP endpoint.  Video.js (via the browser's native <video>
-  // decoder) handles the chunked WebM stream directly — no manual
+  // MSE HTTP endpoint.  NativeStreamPlayer (via the browser's native
+  // <video> decoder) handles the chunked WebM stream directly — no manual
   // MediaSource / SourceBuffer management needed.
   const [mseError, setMseError] = useState<string | null>(null);
   const mseUrl = React.useMemo(() => {
