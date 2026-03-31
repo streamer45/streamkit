@@ -639,7 +639,14 @@ impl ProcessorNode for WebMMuxerNode {
 
         if skip_classification {
             // Fast path: collect all receivers, skip classification.
-            for (_pin_name, rx) in context.inputs.drain() {
+            // Still detect AV1 from connection metadata so the segment header
+            // uses the correct codec ID and content-type.
+            for (pin_name, rx) in context.inputs.drain() {
+                if let Some(PacketType::EncodedVideo(fmt)) = context.input_types.get(&pin_name) {
+                    if fmt.codec == VideoCodec::Av1 {
+                        video_is_av1 = true;
+                    }
+                }
                 all_receivers.push(rx);
             }
             state_helpers::emit_running(&context.state_tx, &node_name);
