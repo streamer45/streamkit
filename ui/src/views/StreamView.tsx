@@ -9,6 +9,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { useShallow } from 'zustand/shallow';
 
 import ConfirmModal from '@/components/ConfirmModal';
+import { NativeStreamPlayer } from '@/components/NativeStreamPlayer';
 import { VolumeSlider } from '@/components/OutputPreviewPanel';
 import { PipelineSelectionSection } from '@/components/stream/PipelineSelectionSection';
 import { TelemetryTimeline as TelemetryTimelineComponent } from '@/components/TelemetryTimeline';
@@ -25,7 +26,6 @@ import {
   TechnicalDetailsToggle,
   TechnicalDetails,
 } from '@/components/ui/ViewLayout';
-import { VideoJSPlayer } from '@/components/VideoJSPlayer';
 import { useAudioControls } from '@/hooks/useAudioControls';
 import { useStreamViewState } from '@/hooks/useStreamViewState';
 import { useVideoCanvas } from '@/hooks/useVideoCanvas';
@@ -1173,7 +1173,7 @@ const StreamView: React.FC = () => {
               <SectionTitle>Video (MSE)</SectionTitle>
               {mseError && <ErrorMessage>{mseError}</ErrorMessage>}
               {mseUrl && (
-                <VideoJSPlayer
+                <NativeStreamPlayer
                   src={mseUrl}
                   live
                   onError={(msg) => {

@@ -56,7 +56,7 @@ interface NativeStreamPlayerProps {
  * between `currentTime` and the end of the buffered range; when it
  * exceeds `maxLatency` the player seeks forward to keep latency low.
  */
-export const VideoJSPlayer: React.FC<NativeStreamPlayerProps> = ({
+export const NativeStreamPlayer: React.FC<NativeStreamPlayerProps> = ({
   src,
   type = 'video/webm',
   live = false,
