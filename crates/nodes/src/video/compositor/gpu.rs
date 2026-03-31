@@ -1422,7 +1422,7 @@ fn build_layer_uniforms(
     //
     // Multiplied out the combined matrix is:
     //
-    //   | sx·mx·cos   −(rh/cw)·my·sin  0  tx |
+    //   | sx·mx·cos    (rh/cw)·my·sin  0  tx |
     //   | −(rw/ch)·mx·sin   sy·my·cos  0  ty |
     //   |      0              0         1   0 |
     //   |      0              0         0   1 |
