@@ -687,7 +687,7 @@ impl MoqPushNode {
                 };
                 let _ = response_tx.send(Ok(pin));
             },
-            PinManagementMessage::AddedInputPin { pin, channel, produces_type: _produces_type } => {
+            PinManagementMessage::AddedInputPin { pin, channel } => {
                 Self::activate_dynamic_input(
                     &pin,
                     channel,
@@ -719,8 +719,9 @@ impl MoqPushNode {
                 )));
             },
             PinManagementMessage::AddedOutputPin { .. }
-            | PinManagementMessage::RemoveOutputPin { .. } => {
-                // No-op for output pins on a push node
+            | PinManagementMessage::RemoveOutputPin { .. }
+            | PinManagementMessage::InputTypeResolved { .. } => {
+                // No-op for output pins / type info on a push node
             },
         }
     }

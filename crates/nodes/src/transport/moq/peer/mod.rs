@@ -1114,7 +1114,7 @@ impl MoqPeerNode {
                 tracing::info!("MoqPeerNode: creating dynamic input pin '{}'", pin_name);
                 let _ = response_tx.send(Ok(make_dynamic_input_pin(&pin_name)));
             },
-            PinManagementMessage::AddedInputPin { pin, channel, produces_type: _produces_type } => {
+            PinManagementMessage::AddedInputPin { pin, channel } => {
                 Self::activate_dynamic_input_forwarder(
                     pin,
                     channel,
@@ -1134,6 +1134,8 @@ impl MoqPeerNode {
                 tracing::info!("MoqPeerNode: removed output pin '{}'", pin_name);
                 Self::remove_dynamic_output(dynamic_outputs, &pin_name);
             },
+            // Type info for pre-existing pins; not used by this node.
+            PinManagementMessage::InputTypeResolved { .. } => {},
         }
     }
 
@@ -2852,11 +2854,7 @@ mod tests {
             accepts_types: vec![],
             cardinality: PinCardinality::One,
         };
-        let msg = PinManagementMessage::AddedInputPin {
-            pin,
-            channel: rx,
-            produces_type: PacketType::Any,
-        };
+        let msg = PinManagementMessage::AddedInputPin { pin, channel: rx };
         let mut forwarder_handles = HashMap::new();
         MoqPeerNode::handle_pin_management(
             msg,

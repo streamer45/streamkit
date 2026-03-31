@@ -88,17 +88,18 @@ pub enum PinManagementMessage {
     },
 
     /// Engine has created the pin and channel, node should start receiving.
-    AddedInputPin {
-        pin: InputPin,
-        channel: tokio::sync::mpsc::Receiver<Packet>,
-        /// The [`PacketType`] that the upstream output pin produces.
-        /// Lets the receiving node know the exact media type without
-        /// inspecting packets at runtime.
-        produces_type: PacketType,
-    },
+    AddedInputPin { pin: InputPin, channel: tokio::sync::mpsc::Receiver<Packet> },
 
     /// Remove an input pin (e.g., connection deleted).
     RemoveInputPin { pin_name: String },
+
+    /// The upstream output pin's type has been resolved for a connected
+    /// input pin.  Sent by the engine after `connect_nodes` wires a
+    /// connection — for both pre-existing input pins (created at node
+    /// spawn time) and dynamically created ones (via `RequestAddInputPin`).
+    /// This is the single mechanism for delivering upstream type info to
+    /// all nodes in dynamic pipelines.
+    InputTypeResolved { pin_name: String, packet_type: PacketType },
 
     /// Request to create a new output pin (less common).
     RequestAddOutputPin {

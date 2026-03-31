@@ -60,7 +60,10 @@ pub struct DynamicEngine {
     pub(super) node_inputs: HashMap<(String, String), mpsc::Sender<streamkit_core::types::Packet>>,
     /// Map of Pin Distributor configuration Senders: (NodeId, PinName) -> Config Sender
     pub(super) pin_distributors: HashMap<(String, String), mpsc::Sender<PinConfigMsg>>,
-    /// Map of Pin Management Senders: NodeId -> Pin Management Sender (for dynamic pins)
+    /// Map of Pin Management Senders: NodeId -> Pin Management Sender.
+    /// Always created for every node in dynamic pipelines so the engine
+    /// can deliver `InputTypeResolved` (and, for dynamic-pin nodes,
+    /// `AddedInputPin` / `RemoveInputPin` etc.).
     pub(super) pin_management_txs:
         HashMap<String, mpsc::Sender<streamkit_core::pins::PinManagementMessage>>,
     /// Map of node pin metadata: NodeId -> Pin Metadata (for runtime type validation)
@@ -565,15 +568,12 @@ impl DynamicEngine {
         self.node_states.insert(node_id.to_string(), NodeState::Initializing);
         self.node_stats.insert(node_id.to_string(), NodeStats::default());
 
-        // 4. Setup dynamic pin management if the node supports it
-        let pin_management_rx = if node.supports_dynamic_pins() {
-            let (tx, rx) = mpsc::channel(CONTROL_CAPACITY);
-            // Store the sender so the engine can send pin management messages
-            self.pin_management_txs.insert(node_id.to_string(), tx);
-            Some(rx)
-        } else {
-            None
-        };
+        // 4. Setup pin management channel.
+        // Always created so the engine can deliver `InputTypeResolved` to
+        // every node.  Dynamic-pin nodes additionally receive
+        // `AddedInputPin` / `RemoveInputPin` etc. through the same channel.
+        let (pin_management_tx, pin_management_rx) = mpsc::channel(CONTROL_CAPACITY);
+        self.pin_management_txs.insert(node_id.to_string(), pin_management_tx);
 
         // 5. Create NodeContext
         let context = NodeContext {
@@ -593,7 +593,7 @@ impl DynamicEngine {
             telemetry_tx: Some(channels.telemetry.clone()),
             session_id: self.session_id.clone(),
             cancellation_token: None, // Dynamic pipelines don't use cancellation tokens
-            pin_management_rx,
+            pin_management_rx: Some(pin_management_rx),
             audio_pool: Some(self.audio_pool.clone()),
             video_pool: Some(self.video_pool.clone()),
             pipeline_mode: streamkit_core::PipelineMode::Dynamic,
@@ -1075,14 +1075,13 @@ impl DynamicEngine {
             return;
         }
 
-        // 2b. Send the deferred AddedInputPin now that we know produces_type.
+        // 2b. Send the deferred AddedInputPin now that the source pin is resolved.
         // This only fires when a dynamic input pin was created in step 1.
         if let Some((input_pin, input_rx)) = pending_input_pin_activation {
             if let Some(pin_mgmt_tx) = self.pin_management_txs.get(&to_node) {
                 let msg = streamkit_core::pins::PinManagementMessage::AddedInputPin {
                     pin: input_pin,
                     channel: input_rx,
-                    produces_type: source_produces_type.clone(),
                 };
 
                 if pin_mgmt_tx.send(msg).await.is_err() {
@@ -1090,34 +1089,47 @@ impl DynamicEngine {
                         "Failed to send pin activation message to node '{}'. It may have stopped.",
                         to_node
                     );
-                    // Clean up dynamically created output pin resources if any.
                     if let Some(ref output_pin_name) = created_dynamic_output {
-                        if let Some(cfg) = self
-                            .pin_distributors
-                            .remove(&(from_node.clone(), output_pin_name.clone()))
-                        {
-                            let _ = cfg.send(PinConfigMsg::Shutdown).await;
-                        }
-                        if let Some(meta) = self.node_pin_metadata.get_mut(&from_node) {
-                            meta.output_pins.retain(|p| p.name != *output_pin_name);
-                        }
-                        // The source node already received AddedOutputPin and
-                        // holds a data_tx pointing to the now-dead distributor.
-                        // Tell it to drop the pin so it doesn't send into a
-                        // closed channel on every subsequent frame.
-                        if let Some(src_pin_mgmt_tx) = self.pin_management_txs.get(&from_node) {
-                            let _ = src_pin_mgmt_tx
-                                .send(streamkit_core::pins::PinManagementMessage::RemoveOutputPin {
-                                    pin_name: output_pin_name.clone(),
-                                })
-                                .await;
-                        }
+                        self.rollback_dynamic_output(&from_node, output_pin_name).await;
                     }
                     if let Some(ref input_pin_name) = created_dynamic_input {
                         self.rollback_dynamic_input(&to_node, input_pin_name).await;
                     }
                     return;
                 }
+            } else {
+                // pin_management_txs should always contain an entry (created
+                // in add_node for every node).  If missing, the node was
+                // removed between step 1 and step 2b.
+                tracing::error!(
+                    "No pin management channel for node '{}' — cannot activate dynamic input pin. \
+                     Rolling back connection.",
+                    to_node
+                );
+                if let Some(ref output_pin_name) = created_dynamic_output {
+                    self.rollback_dynamic_output(&from_node, output_pin_name).await;
+                }
+                if let Some(ref input_pin_name) = created_dynamic_input {
+                    self.rollback_dynamic_input(&to_node, input_pin_name).await;
+                }
+                return;
+            }
+        }
+
+        // 2c. Deliver InputTypeResolved to the destination node.
+        // This is the single, uniform mechanism for all nodes (both
+        // dynamic-pin and pre-existing-pin) to learn the upstream type.
+        if let Some(pin_mgmt_tx) = self.pin_management_txs.get(&to_node) {
+            let msg = streamkit_core::pins::PinManagementMessage::InputTypeResolved {
+                pin_name: to_pin.clone(),
+                packet_type: source_produces_type,
+            };
+            if pin_mgmt_tx.send(msg).await.is_err() {
+                tracing::warn!(
+                    "Failed to send InputTypeResolved to '{}' for pin '{}' — node may have stopped",
+                    to_node,
+                    to_pin
+                );
             }
         }
 
@@ -1155,6 +1167,29 @@ impl DynamicEngine {
                 pin_name: pin_name.to_string(),
             };
             let _ = pin_mgmt_tx.send(msg).await;
+        }
+    }
+
+    /// Roll back a dynamically created output pin: shut down its distributor,
+    /// remove it from metadata, and tell the source node to drop it.
+    async fn rollback_dynamic_output(&mut self, source_node: &str, output_pin_name: &str) {
+        if let Some(cfg) =
+            self.pin_distributors.remove(&(source_node.to_string(), output_pin_name.to_string()))
+        {
+            let _ = cfg.send(PinConfigMsg::Shutdown).await;
+        }
+        if let Some(meta) = self.node_pin_metadata.get_mut(source_node) {
+            meta.output_pins.retain(|p| p.name != output_pin_name);
+        }
+        // The source node already received AddedOutputPin and holds a
+        // data_tx pointing to the now-dead distributor.  Tell it to drop
+        // the pin so it doesn't send into a closed channel.
+        if let Some(src_pin_mgmt_tx) = self.pin_management_txs.get(source_node) {
+            let _ = src_pin_mgmt_tx
+                .send(streamkit_core::pins::PinManagementMessage::RemoveOutputPin {
+                    pin_name: output_pin_name.to_string(),
+                })
+                .await;
         }
     }
 

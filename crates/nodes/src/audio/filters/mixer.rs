@@ -358,7 +358,7 @@ impl AudioMixerNode {
                             self.input_pins.push(pin.clone());
                             let _ = response_tx.send(Ok(pin));
                         }
-                        PinManagementMessage::AddedInputPin { pin, channel, produces_type: _produces_type } => {
+                        PinManagementMessage::AddedInputPin { pin, channel } => {
                             tracing::info!("Mixer (clocked): Activated input pin {}", pin.name);
                             let (name, handle) = start_clocked_input_drainer(
                                 &audio_cmd_tx,
@@ -587,7 +587,7 @@ impl AudioMixerNode {
                             let _ = response_tx.send(Ok(pin));
                         }
 
-                        PinManagementMessage::AddedInputPin { pin, channel, produces_type: _produces_type } => {
+                        PinManagementMessage::AddedInputPin { pin, channel } => {
                             // Engine has created the channel, start receiving
                             tracing::info!("Mixer: Activated input pin {}", pin.name);
                             slots.push(InputSlot {
