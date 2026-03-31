@@ -247,6 +247,7 @@ impl ProcessorNode for SvtAv1EncoderNode {
                             current_dimensions = Some(frame_dimensions);
                         },
                         Err(err) => {
+                            current_dimensions = None;
                             tracing::warn!(
                                 width = frame.width,
                                 height = frame.height,
