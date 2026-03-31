@@ -547,6 +547,7 @@ impl ProcessorNode for HttpMseNode {
 }
 
 /// WebM Timecode element ID (single byte: `0xE7`).
+#[cfg(test)]
 const WEBM_TIMECODE_ID: u8 = 0xE7;
 
 /// Find the byte offset immediately after the Cluster preamble in `data`.
@@ -560,10 +561,7 @@ const WEBM_TIMECODE_ID: u8 = 0xE7;
 ///
 /// `data` must start at the Cluster element ID.  Returns `None` if the
 /// preamble is truncated.
-/// TODO: Currently only used in tests for verifying init-segment truncation.
-/// Consider integrating into the live forwarding path if we need to split
-/// init segments more precisely in the future.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 fn find_cluster_preamble_end(data: &[u8]) -> Option<usize> {
     // Skip Cluster ID (4 bytes).
     let mut pos = WEBM_CLUSTER_ID.len();

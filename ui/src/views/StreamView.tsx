@@ -982,12 +982,12 @@ const StreamView: React.FC = () => {
 
             {connectionMode === 'direct' && status === 'disconnected' && (
               <div style={{ display: 'flex', gap: '24px', marginBottom: '8px' }}>
-                <Checkbox data-disabled={status !== 'disconnected'}>
+                <Checkbox data-disabled={status !== 'disconnected' || !outputBroadcast}>
                   <input
                     type="checkbox"
                     checked={enableWatch}
                     onChange={(e) => setEnableWatch(e.target.checked)}
-                    disabled={status !== 'disconnected'}
+                    disabled={status !== 'disconnected' || !outputBroadcast}
                   />
                   Subscribe (Watch)
                 </Checkbox>
