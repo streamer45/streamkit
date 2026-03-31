@@ -305,7 +305,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       connectingStep: '',
       status: 'connecting',
       errorMessage: '',
-      watchStatus: decision.shouldWatch ? 'loading' : 'disabled',
+      watchStatus: decision.shouldWatch && state.outputBroadcast ? 'loading' : 'disabled',
       micStatus: decision.shouldPublish && state.pipelineNeedsAudio ? 'requesting' : 'disabled',
       cameraStatus: decision.shouldPublish && state.pipelineNeedsVideo ? 'requesting' : 'disabled',
       secondaryCameraStatus:
