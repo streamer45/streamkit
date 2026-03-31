@@ -199,6 +199,16 @@ impl ProcessorNode for SvtAv1EncoderNode {
 
             while let Some((frame, metadata)) = encode_rx.blocking_recv() {
                 if result_tx.is_closed() {
+                    // Properly shut down the receive thread before returning,
+                    // otherwise the encoder handle will be freed while the
+                    // receive thread is still using it (use-after-free).
+                    if let Some(enc) = encoder.take() {
+                        send_eos(enc.handle);
+                        if let Some(t) = recv_thread.take() {
+                            let _ = t.join();
+                        }
+                        drop(enc);
+                    }
                     return;
                 }
 
@@ -505,6 +515,18 @@ impl SvtAv1Encoder {
         height: u32,
         config: &SvtAv1EncoderConfig,
     ) -> Result<(), String> {
+        // The two-thread architecture (send thread + receive thread) relies on
+        // SVT-AV1's blocking `get_packet` in low-delay mode.  In random-access
+        // mode (`pred_struct=2`), `get_packet` is non-blocking and returns
+        // `EB_NO_ERROR_EMPTY_QUEUE` immediately when the output queue is empty,
+        // which would cause the receive thread to exit prematurely.
+        if !config.low_latency {
+            return Err("SVT-AV1 encoder currently only supports low_latency=true (low-delay \
+                 prediction structure). Random-access mode (low_latency=false) is not \
+                 supported because the receive thread relies on blocking get_packet."
+                .to_string());
+        }
+
         let preset = config.preset.min(13);
         let crf = config.crf.clamp(1, 63);
 

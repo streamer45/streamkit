@@ -219,14 +219,8 @@ fn run_once(args: &Args) -> IterResult {
     let mut enc_config = EbSvtAv1EncConfiguration::zeroed();
     let mut handle: *mut EbComponentType = std::ptr::null_mut();
 
-    // Init handle.
-    let ret = unsafe {
-        svt_av1_ffi::svt_av1_enc_init_handle(
-            &raw mut handle,
-            std::ptr::null_mut(),
-            &raw mut enc_config,
-        )
-    };
+    // Init handle (SVT-AV1 4.x API: no p_app_data parameter).
+    let ret = unsafe { svt_av1_ffi::svt_av1_enc_init_handle(&raw mut handle, &raw mut enc_config) };
     assert!(ret == EB_ERROR_NONE, "svt_av1_enc_init_handle failed: {ret:#X}");
 
     // Configure.
@@ -285,12 +279,6 @@ fn run_once(args: &Args) -> IterResult {
             y_stride: args.width as u32,
             cb_stride: chroma_w as u32,
             cr_stride: chroma_w as u32,
-            width: args.width as u32,
-            height: args.height as u32,
-            org_x: 0,
-            org_y: 0,
-            color_fmt: 1, // EB_YUV420
-            bit_depth: 8,
         };
 
         let frame_size = (y_size + uv_size * 2) as u32;
@@ -305,7 +293,9 @@ fn run_once(args: &Args) -> IterResult {
             n_tick_count: 0,
             dts: 0,
             pts: i as i64,
+            temporal_layer_index: 0,
             qp: 0,
+            avg_qp: 0,
             pic_type: 0,
             luma_sse: 0,
             cr_sse: 0,
@@ -338,7 +328,9 @@ fn run_once(args: &Args) -> IterResult {
         n_tick_count: 0,
         dts: 0,
         pts: 0,
+        temporal_layer_index: 0,
         qp: 0,
+        avg_qp: 0,
         pic_type: 0,
         luma_sse: 0,
         cr_sse: 0,
