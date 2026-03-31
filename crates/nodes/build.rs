@@ -12,12 +12,12 @@
 fn main() {
     #[cfg(feature = "svt_av1")]
     {
-        let lib = match pkg_config::Config::new().atleast_version("2.0.0").probe("SvtAv1Enc") {
+        let lib = match pkg_config::Config::new().atleast_version("4.0.0").probe("SvtAv1Enc") {
             Ok(lib) => lib,
             Err(e) => panic!(
-                "SVT-AV1 >= 2.0 not found: {e}.  Install libsvtav1enc-dev (or build \
-                 from source) and ensure pkg-config can locate SvtAv1Enc.pc.  \
-                 On Ubuntu/Debian: sudo apt install libsvtav1enc-dev"
+                "SVT-AV1 >= 4.0 not found: {e}.  Install libsvtav1enc (>= 4.0) from source \
+                 — see crates/nodes/SVT_AV1.md for instructions.  \
+                 Ubuntu/Debian distro packages ship very old versions and are NOT sufficient."
             ),
         };
 

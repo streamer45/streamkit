@@ -6,7 +6,7 @@ SPDX-License-Identifier: MPL-2.0
 
 # Installing SVT-AV1 for StreamKit
 
-The `video::svt_av1::encoder` node requires **libsvtav1enc ≥ 2.0**.
+The `video::svt_av1::encoder` node requires **libsvtav1enc ≥ 4.0**.
 Ubuntu/Debian distro packages ship very old versions (e.g. Ubuntu 22.04
 ships ~0.9.0), so **building from source** is the recommended path.
 

@@ -4,7 +4,7 @@
 
 //! SVT-AV1 video encoder node (CPU).
 //!
-//! Uses [SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1) (≥ 2.0) via
+//! Uses [SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1) (≥ 4.0) via
 //! hand-written FFI bindings for encoding.
 //!
 //! **Requires `libsvtav1enc` to be installed on the build host.**
@@ -71,9 +71,6 @@ const SVT_AV1_DEFAULT_PRESET: u32 = 12;
 const SVT_AV1_DEFAULT_CRF: u32 = 35;
 /// 0 = auto-detect thread count (SVT-AV1 picks based on core count).
 const SVT_AV1_DEFAULT_PARALLELISM: u32 = 0;
-
-// ── YUV420 color format constant ─────────────────────────────────────────────
-const EB_YUV420: u32 = 1;
 
 // ---------------------------------------------------------------------------
 // Configuration struct
@@ -427,8 +424,6 @@ fn receive_loop(handle_raw: usize, result_tx: &mpsc::Sender<Result<EncodedPacket
 
 struct SvtAv1Encoder {
     handle: *mut EbComponentType,
-    width: u32,
-    height: u32,
     next_pts: i64,
     /// Reusable Y plane buffer.
     y_plane: Vec<u8>,
@@ -453,13 +448,9 @@ impl SvtAv1Encoder {
 
         // Step 1: Init handle — fills enc_config with defaults.
         // SAFETY: We pass valid pointers.  `handle` is written by the library.
-        let ret = unsafe {
-            svt_av1_ffi::svt_av1_enc_init_handle(
-                &raw mut handle,
-                std::ptr::null_mut(),
-                &raw mut enc_config,
-            )
-        };
+        // NOTE: SVT-AV1 4.x removed the `p_app_data` parameter from the 2.x API.
+        let ret =
+            unsafe { svt_av1_ffi::svt_av1_enc_init_handle(&raw mut handle, &raw mut enc_config) };
         if ret != EB_ERROR_NONE {
             return Err(format!("svt_av1_enc_init_handle failed: error code {ret:#X}"));
         }
@@ -469,11 +460,11 @@ impl SvtAv1Encoder {
         // all error paths are covered by a single cleanup call.
         let configure_result =
             Self::configure_and_init(handle, &mut enc_config, width, height, config);
-        if let Err(err) = &configure_result {
+        if let Err(err) = configure_result {
             tracing::debug!("SVT-AV1 init failed ({err}), releasing handle");
             // SAFETY: handle was successfully created by init_handle above.
             unsafe { svt_av1_ffi::svt_av1_enc_deinit_handle(handle) };
-            return Err(configure_result.unwrap_err());
+            return Err(err);
         }
 
         // Pre-allocate plane buffers for NV12→I420 de-interleaving.
@@ -495,8 +486,6 @@ impl SvtAv1Encoder {
 
         Ok(Self {
             handle,
-            width,
-            height,
             next_pts: 0,
             y_plane: vec![0u8; y_size],
             u_plane: vec![0u8; uv_size],
@@ -653,12 +642,6 @@ impl SvtAv1Encoder {
             y_stride: width as u32,
             cb_stride: chroma_w as u32,
             cr_stride: chroma_w as u32,
-            width: self.width,
-            height: self.height,
-            org_x: 0,
-            org_y: 0,
-            color_fmt: EB_YUV420,
-            bit_depth: 8,
         };
 
         // SVT-AV1 validates n_filled_len >= expected frame size.
@@ -678,7 +661,9 @@ impl SvtAv1Encoder {
             n_tick_count: 0,
             dts: 0,
             pts,
+            temporal_layer_index: 0,
             qp: 0,
+            avg_qp: 0,
             pic_type: 0,
             luma_sse: 0,
             cr_sse: 0,
@@ -744,7 +729,9 @@ fn send_eos(handle: *mut EbComponentType) {
         n_tick_count: 0,
         dts: 0,
         pts: 0,
+        temporal_layer_index: 0,
         qp: 0,
+        avg_qp: 0,
         pic_type: 0,
         luma_sse: 0,
         cr_sse: 0,

@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-//! Minimal hand-written FFI bindings for libsvtav1enc (≥ 2.0).
+//! Minimal hand-written FFI bindings for libsvtav1enc (≥ 4.0).
 //!
 //! Only the types and functions the SVT-AV1 encoder node actually calls are
 //! declared here.  The [`EbSvtAv1EncConfiguration`] struct is intentionally
@@ -11,7 +11,7 @@
 //! `svt_av1_enc_parse_parameter` to set individual fields by name (which is
 //! ABI-stable across minor SVT-AV1 releases).
 
-use std::ffi::c_void;
+use std::ffi::{c_char, c_void};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -54,7 +54,9 @@ pub struct EbBufferHeaderType {
     pub n_tick_count: u32,
     pub dts: i64,
     pub pts: i64,
+    pub temporal_layer_index: u8,
     pub qp: u32,
+    pub avg_qp: u32,
     pub pic_type: u32, // EbAv1PictureType
     pub luma_sse: u64,
     pub cr_sse: u64,
@@ -68,8 +70,9 @@ pub struct EbBufferHeaderType {
 
 /// I/O format for picture planes (YUV420 planar).
 ///
-/// In SVT-AV1 ≥ 2.0 the deprecated `luma_ext`/`cb_ext`/`cr_ext` fields are
-/// removed, so the layout is: luma, cb, cr, then stride/dimension fields.
+/// In SVT-AV1 4.x the struct was simplified to just the three plane pointers
+/// and their strides — the `width`, `height`, `org_x/y`, `color_fmt`, and
+/// `bit_depth` fields that existed in 2.x were removed.
 #[repr(C)]
 pub struct EbSvtIOFormat {
     pub luma: *mut u8,
@@ -78,12 +81,6 @@ pub struct EbSvtIOFormat {
     pub y_stride: u32,
     pub cr_stride: u32,
     pub cb_stride: u32,
-    pub width: u32,
-    pub height: u32,
-    pub org_x: u32,
-    pub org_y: u32,
-    pub color_fmt: u32, // EbColorFormat
-    pub bit_depth: u32, // EbBitDepth
 }
 
 /// Encoder configuration — intentionally opaque.
@@ -124,9 +121,11 @@ impl EbSvtAv1EncConfiguration {
 
 extern "C" {
     /// Step 1: Construct an encoder handle and fill `config_ptr` with defaults.
+    ///
+    /// NOTE: SVT-AV1 4.x removed the `p_app_data` parameter that existed in
+    /// the 2.x API.  This binding targets the 4.x signature.
     pub fn svt_av1_enc_init_handle(
         p_handle: *mut *mut EbComponentType,
-        p_app_data: *mut c_void,
         config_ptr: *mut EbSvtAv1EncConfiguration,
     ) -> EbErrorType;
 
@@ -142,8 +141,8 @@ extern "C" {
     /// depending on the exact struct field offsets.
     pub fn svt_av1_enc_parse_parameter(
         config_ptr: *mut EbSvtAv1EncConfiguration,
-        name: *const std::ffi::c_char,
-        value: *const std::ffi::c_char,
+        name: *const c_char,
+        value: *const c_char,
     ) -> EbErrorType;
 
     /// Step 3: Initialize the encoder (allocates internal buffers).
