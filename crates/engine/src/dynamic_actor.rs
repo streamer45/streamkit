@@ -1101,6 +1101,17 @@ impl DynamicEngine {
                         if let Some(meta) = self.node_pin_metadata.get_mut(&from_node) {
                             meta.output_pins.retain(|p| p.name != *output_pin_name);
                         }
+                        // The source node already received AddedOutputPin and
+                        // holds a data_tx pointing to the now-dead distributor.
+                        // Tell it to drop the pin so it doesn't send into a
+                        // closed channel on every subsequent frame.
+                        if let Some(src_pin_mgmt_tx) = self.pin_management_txs.get(&from_node) {
+                            let _ = src_pin_mgmt_tx
+                                .send(streamkit_core::pins::PinManagementMessage::RemoveOutputPin {
+                                    pin_name: output_pin_name.clone(),
+                                })
+                                .await;
+                        }
                     }
                     if let Some(ref input_pin_name) = created_dynamic_input {
                         self.rollback_dynamic_input(&to_node, input_pin_name).await;
