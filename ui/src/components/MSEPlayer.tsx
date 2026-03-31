@@ -65,6 +65,11 @@ interface MSEPlayerProps {
   contentType: string;
   /** Optional class name */
   className?: string;
+  /** Whether this is a live stream (default: true).  Live mode seeks to the
+   *  live edge on start, re-seeks when drifting behind, and evicts old
+   *  buffered data.  Non-live (oneshot/convert) mode plays from the
+   *  beginning and keeps buffered data for user seeking. */
+  live?: boolean;
   /** Callback when stream processing is complete */
   onComplete?: () => void;
   /** Callback when stream is cancelled */
@@ -131,6 +136,31 @@ function seekToLiveEdgeAndPlay(media: HTMLMediaElement, sourceBuffer: SourceBuff
     );
     media.currentTime = target;
   }
+  if (media.paused) {
+    media.play().catch((err) => {
+      componentsLogger.warn('Autoplay failed, user interaction may be required:', err);
+    });
+  }
+  return true;
+}
+
+// Helper: Start playback from the beginning for non-live (oneshot/convert)
+// streams.  Unlike seekToLiveEdgeAndPlay, this does NOT seek to the buffer
+// end — it plays from wherever currentTime is (typically 0).  Returns true
+// once there is enough buffered data to begin playback.
+function startPlaybackFromBeginning(media: HTMLMediaElement, sourceBuffer: SourceBuffer): boolean {
+  const buffered = sourceBuffer.buffered;
+  if (buffered.length === 0) {
+    return false;
+  }
+  // Wait until there's at least a small amount of contiguous data.
+  const rangeEnd = buffered.end(0);
+  if (rangeEnd < 0.5) {
+    return false;
+  }
+  componentsLogger.info(
+    `MSEPlayer: Starting playback from beginning (buffered to ${rangeEnd.toFixed(2)}s)`
+  );
   if (media.paused) {
     media.play().catch((err) => {
       componentsLogger.warn('Autoplay failed, user interaction may be required:', err);
@@ -234,7 +264,8 @@ async function streamMediaData(
   setStatus: (status: string) => void,
   onComplete: (() => void) | undefined,
   isAborted: () => boolean,
-  onFirstChunk?: () => void
+  onFirstChunk?: () => void,
+  live = true
 ): Promise<void> {
   let totalBytes = 0;
   let firstChunkSeen = false;
@@ -291,8 +322,9 @@ async function streamMediaData(
       onFirstChunk?.();
     }
 
-    // Evict old buffered data to bound memory usage.
-    if (playbackStarted) {
+    // Evict old buffered data to bound memory usage (live mode only —
+    // non-live content is finite and the user may want to seek back).
+    if (live && playbackStarted) {
       await evictOldBufferData(sourceBuffer, media.currentTime);
     }
 
@@ -361,8 +393,9 @@ async function streamMediaData(
         media.play().catch(() => {});
       }
 
-      // Re-seek to the live edge if the player drifts too far behind.
-      if (playbackStarted) {
+      // Re-seek to the live edge if the player drifts too far behind
+      // (live mode only — non-live content plays at its own pace).
+      if (live && playbackStarted) {
         const lastIdx = sourceBuffer.buffered.length - 1;
         const liveEdge = sourceBuffer.buffered.end(lastIdx);
         if (liveEdge - media.currentTime > LIVE_EDGE_MAX_DRIFT_S) {
@@ -379,11 +412,19 @@ async function streamMediaData(
       }
     }
 
-    // Seek to the live edge once media data is actually buffered.
+    // Start playback once media data is actually buffered.
     // The first few chunks (init segment, Cluster preamble) don't produce
     // buffered ranges — only SimpleBlock data does.  Keep trying on each
     // chunk until the seek succeeds.
-    if (!playbackStarted && seekToLiveEdgeAndPlay(media, sourceBuffer)) {
+    //
+    // Live mode: seek to the live edge (near buffer end) so latency stays
+    // low.  Non-live mode: play from the beginning.
+    if (
+      !playbackStarted &&
+      (live
+        ? seekToLiveEdgeAndPlay(media, sourceBuffer)
+        : startPlaybackFromBeginning(media, sourceBuffer))
+    ) {
       playbackStarted = true;
 
       // --- A/V sync monitoring via requestVideoFrameCallback ----------
@@ -478,6 +519,7 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
   stream,
   contentType,
   className,
+  live = true,
   onComplete,
   onCancel,
   onError,
@@ -651,8 +693,12 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
             componentsLogger.warn(
               `MSEPlayer: canplay not fired after 15s — retrying seek (${diag})`
             );
-            // Retry seeking to the live edge — buffer may have grown since the first attempt.
-            seekToLiveEdgeAndPlay(media, sourceBuffer);
+            // Retry seeking — buffer may have grown since the first attempt.
+            if (live) {
+              seekToLiveEdgeAndPlay(media, sourceBuffer);
+            } else {
+              startPlaybackFromBeginning(media, sourceBuffer);
+            }
           }, 15_000);
         };
 
@@ -665,7 +711,8 @@ export const MSEPlayer: React.FC<MSEPlayerProps> = ({
           setStatus,
           onCompleteRef.current,
           () => aborted,
-          startStallTimer
+          startStallTimer,
+          live
         );
 
         // Cancel stall timer on normal completion.

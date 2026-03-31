@@ -1518,6 +1518,7 @@ const ConvertView: React.FC = () => {
                     <MSEPlayer
                       stream={mediaStream}
                       contentType={mediaContentType}
+                      live={false}
                       onComplete={mediaStreamCallbacks.onComplete}
                       onCancel={mediaStreamCallbacks.onCancel}
                       onError={handleMsePlaybackError}
