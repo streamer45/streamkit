@@ -19,6 +19,9 @@ use std::ffi::{c_char, c_void};
 
 pub const EB_BUFFERFLAG_EOS: u32 = 0x0000_0001;
 
+/// AV1 key picture type (used in `EbBufferHeaderType::pic_type`).
+pub const EB_AV1_KEY_PICTURE: u32 = 3;
+
 // ---------------------------------------------------------------------------
 // Error type
 // ---------------------------------------------------------------------------
@@ -87,16 +90,16 @@ pub struct EbSvtIOFormat {
 ///
 /// The struct layout changes across SVT-AV1 minor versions (conditional
 /// compilation, padding bytes, deprecated fields).  Instead of reproducing
-/// the full 2 KB struct field-by-field, we:
+/// the full struct field-by-field, we:
 ///
 /// 1. Allocate a generously-sized zeroed buffer (`CONFIG_SIZE` bytes).
 /// 2. Let `svt_av1_enc_init_handle` populate it with sane defaults.
 /// 3. Use `svt_av1_enc_parse_parameter` to override fields by name.
 ///
 /// This is the same approach the SVT-AV1 `SvtAv1EncApp` uses and is stable
-/// across 2.x releases.
+/// across 4.x releases.
 ///
-/// The 8192-byte size is ~4× the actual struct size in 2.3.0 (≈2 KB) to
+/// The 8192-byte size is ~4× the actual struct size in 4.1.0 (≈2 KB) to
 /// provide ample headroom for future additions.
 const CONFIG_SIZE: usize = 8192;
 

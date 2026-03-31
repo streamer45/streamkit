@@ -51,7 +51,7 @@ use tokio::sync::mpsc;
 
 use super::svt_av1_ffi::{
     self, EbBufferHeaderType, EbComponentType, EbSvtAv1EncConfiguration, EbSvtIOFormat,
-    EB_BUFFERFLAG_EOS, EB_ERROR_NONE, EB_NO_ERROR_EMPTY_QUEUE,
+    EB_AV1_KEY_PICTURE, EB_BUFFERFLAG_EOS, EB_ERROR_NONE, EB_NO_ERROR_EMPTY_QUEUE,
 };
 
 const AV1_CONTENT_TYPE: &str = "video/av1";
@@ -71,6 +71,8 @@ const SVT_AV1_DEFAULT_PRESET: u32 = 12;
 const SVT_AV1_DEFAULT_CRF: u32 = 35;
 /// 0 = auto-detect thread count (SVT-AV1 picks based on core count).
 const SVT_AV1_DEFAULT_PARALLELISM: u32 = 0;
+/// Default frame rate (matches rav1e encoder default).
+const SVT_AV1_DEFAULT_FPS: u32 = 30;
 
 // ---------------------------------------------------------------------------
 // Configuration struct
@@ -91,6 +93,10 @@ pub struct SvtAv1EncoderConfig {
     pub parallelism: u32,
     /// Use low-delay prediction structure (minimal latency).
     pub low_latency: bool,
+    /// Frame rate in fps.  Used by SVT-AV1's rate-control and bitrate
+    /// allocation — should match the actual source frame rate for accurate
+    /// rate control.  Default: 30.
+    pub fps: u32,
 }
 
 impl Default for SvtAv1EncoderConfig {
@@ -102,6 +108,7 @@ impl Default for SvtAv1EncoderConfig {
             crf: SVT_AV1_DEFAULT_CRF,
             parallelism: SVT_AV1_DEFAULT_PARALLELISM,
             low_latency: true,
+            fps: SVT_AV1_DEFAULT_FPS,
         }
     }
 }
@@ -170,8 +177,8 @@ impl ProcessorNode for SvtAv1EncoderNode {
         let meter = global::meter("skit_nodes");
         let packets_processed_counter =
             meter.u64_counter("svt_av1_encoder_packets_processed").build();
-        let encode_duration_histogram = meter
-            .f64_histogram("svt_av1_encode_duration")
+        let send_duration_histogram = meter
+            .f64_histogram("svt_av1_send_duration")
             .with_boundaries(streamkit_core::metrics::HISTOGRAM_BOUNDARIES_CODEC_PACKET.to_vec())
             .build();
 
@@ -238,10 +245,10 @@ impl ProcessorNode for SvtAv1EncoderNode {
                     match SvtAv1Encoder::new(frame.width, frame.height, &encoder_config) {
                         Ok(new_encoder) => {
                             // Start a new receive thread for this encoder.
-                            let handle_raw = new_encoder.handle as usize;
+                            let sendable_handle = SendableHandle(new_encoder.handle);
                             let recv_result_tx = result_tx.clone();
                             recv_thread = Some(std::thread::spawn(move || {
-                                receive_loop(handle_raw, &recv_result_tx);
+                                receive_loop(sendable_handle, &recv_result_tx);
                             }));
                             encoder = Some(new_encoder);
                             current_dimensions = Some(frame_dimensions);
@@ -265,9 +272,9 @@ impl ProcessorNode for SvtAv1EncoderNode {
                     continue;
                 };
 
-                let encode_start_time = Instant::now();
+                let send_start_time = Instant::now();
                 let result = enc.send_frame(&frame, metadata.as_ref());
-                encode_duration_histogram.record(encode_start_time.elapsed().as_secs_f64(), &[]);
+                send_duration_histogram.record(send_start_time.elapsed().as_secs_f64(), &[]);
 
                 if let Err(err) = result {
                     let _ = result_tx.blocking_send(Err(err));
@@ -347,6 +354,20 @@ struct EncodedPacket {
     metadata: Option<PacketMetadata>,
 }
 
+/// Wrapper around `*mut EbComponentType` that can be sent across threads.
+///
+/// SVT-AV1's encoder handle is designed for concurrent access from separate
+/// `send_picture` and `get_packet` threads — the library provides internal
+/// synchronisation via FIFOs and semaphores.  This newtype makes the
+/// `Send` impl explicit and avoids the raw `handle as usize` pattern.
+#[derive(Clone, Copy)]
+struct SendableHandle(*mut EbComponentType);
+
+// SAFETY: SVT-AV1's encoder handle uses internal locking; concurrent
+// `send_picture` / `get_packet` from different threads is the intended
+// usage pattern (see `SvtAv1EncApp`).
+unsafe impl Send for SendableHandle {}
+
 // ---------------------------------------------------------------------------
 // Receive loop (runs on its own OS thread)
 // ---------------------------------------------------------------------------
@@ -358,13 +379,11 @@ struct EncodedPacket {
 /// so this thread will sleep until encoded data is available — it does NOT
 /// busy-wait.
 ///
-/// # Safety
-///
-/// `handle_raw` must be a valid `*mut EbComponentType` cast to `usize`.
 /// The caller must ensure the encoder handle remains live for the duration
-/// of this function.
-fn receive_loop(handle_raw: usize, result_tx: &mpsc::Sender<Result<EncodedPacket, String>>) {
-    let handle = handle_raw as *mut EbComponentType;
+/// of this function (i.e. do not drop the `SvtAv1Encoder` before joining
+/// the receive thread).
+fn receive_loop(handle: SendableHandle, result_tx: &mpsc::Sender<Result<EncodedPacket, String>>) {
+    let handle = handle.0;
 
     loop {
         let mut out_buf: *mut EbBufferHeaderType = std::ptr::null_mut();
@@ -389,7 +408,7 @@ fn receive_loop(handle_raw: usize, result_tx: &mpsc::Sender<Result<EncodedPacket
         let (data, is_keyframe, is_eos, pts) = unsafe {
             let buf = &*out_buf;
             let is_eos = (buf.flags & EB_BUFFERFLAG_EOS) != 0;
-            let is_keyframe = buf.pic_type == 3; // EB_AV1_KEY_PICTURE
+            let is_keyframe = buf.pic_type == EB_AV1_KEY_PICTURE;
             let pts = buf.pts;
             let data = if buf.p_buffer.is_null() || buf.n_filled_len == 0 {
                 Bytes::new()
@@ -445,10 +464,8 @@ struct SvtAv1Encoder {
 }
 
 // SAFETY: The SVT-AV1 encoder handle uses internal locking for thread-safety.
-// `send_picture` and `get_packet` are designed to be called from separate
-// threads concurrently.  Our `SvtAv1Encoder` struct is only used from the
-// send thread; the handle pointer is also passed to the receive thread via
-// `receive_loop`.
+// `SvtAv1Encoder` is only used from the send thread (inside `spawn_blocking`);
+// the handle pointer is shared with the receive thread via `SendableHandle`.
 unsafe impl Send for SvtAv1Encoder {}
 
 impl SvtAv1Encoder {
@@ -529,12 +546,27 @@ impl SvtAv1Encoder {
         }
 
         let preset = config.preset.min(13);
+        if preset != config.preset {
+            tracing::warn!(
+                requested = config.preset,
+                clamped = preset,
+                "SVT-AV1 preset clamped to valid range 0–13"
+            );
+        }
         let crf = config.crf.clamp(1, 63);
+        if crf != config.crf {
+            tracing::warn!(
+                requested = config.crf,
+                clamped = crf,
+                "SVT-AV1 CRF clamped to valid range 1–63"
+            );
+        }
 
         set_param(enc_config, "preset", &preset.to_string())?;
         set_param(enc_config, "width", &width.to_string())?;
         set_param(enc_config, "height", &height.to_string())?;
-        set_param(enc_config, "fps-num", "30")?;
+        let fps = config.fps.max(1);
+        set_param(enc_config, "fps-num", &fps.to_string())?;
         set_param(enc_config, "fps-denom", "1")?;
         set_param(enc_config, "input-depth", "8")?;
         set_param(enc_config, "color-format", "1")?; // YUV420
@@ -712,10 +744,17 @@ impl SvtAv1Encoder {
     fn next_pts(&mut self, metadata: Option<&PacketMetadata>) -> i64 {
         let duration = metadata.and_then(|meta| meta.duration_us).unwrap_or(1);
 
-        let pts =
-            metadata.and_then(|meta| meta.timestamp_us).map_or(self.next_pts, u64::cast_signed);
+        // Clamp u64 timestamps to i64::MAX to avoid sign flip.
+        let pts = metadata
+            .and_then(|meta| meta.timestamp_us)
+            .map_or(self.next_pts, |ts| i64::try_from(ts).unwrap_or(i64::MAX));
 
-        self.next_pts = if duration > 0 { pts + duration.cast_signed() } else { pts + 1 };
+        self.next_pts = if duration > 0 {
+            let d = i64::try_from(duration).unwrap_or(i64::MAX);
+            pts.saturating_add(d)
+        } else {
+            pts.saturating_add(1)
+        };
         pts
     }
 }
