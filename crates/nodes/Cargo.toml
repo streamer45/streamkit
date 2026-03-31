@@ -139,6 +139,7 @@ webm = ["dep:webm", "dep:schemars", "dep:tempfile"]
 symphonia = ["dep:symphonia", "dep:schemars"]
 vp9 = ["dep:env-libvpx-sys", "dep:schemars"]
 av1 = ["dep:rav1e", "dep:rav1d", "dep:schemars"]
+svt_av1 = ["dep:schemars", "dep:serde_json", "dep:pkg-config"]
 colorbars = ["dep:schemars", "dep:serde_json", "dep:fontdue"]
 compositor = ["dep:schemars", "dep:serde_json", "dep:image", "dep:tiny-skia", "dep:rayon", "dep:fontdue", "dep:smallvec", "dep:uuid"]
 gpu = ["compositor", "dep:wgpu", "dep:pollster", "dep:bytemuck"]
@@ -150,6 +151,9 @@ name = "generate-compositor-types"
 path = "src/bin/generate_compositor_types.rs"
 required-features = ["codegen", "compositor"]
 
+[build-dependencies]
+pkg-config = { version = "0.3", optional = true }
+
 [dev-dependencies]
 tempfile = "3.27"
 axum = "0.8"
@@ -160,6 +164,11 @@ serde_json = "1.0"
 name = "rav1e_standalone"
 harness = false
 required-features = ["av1"]
+
+[[bench]]
+name = "svt_av1_standalone"
+harness = false
+required-features = ["svt_av1"]
 
 [lints.rust]
 # Override workspace `forbid` → `deny` so the video module can `#![allow(unsafe_code)]`
