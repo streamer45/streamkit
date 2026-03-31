@@ -23,12 +23,8 @@ default:
 sweep days='7':
     @echo "Sweeping stale build artifacts (older than {{days}} days)..."
     @cargo sweep --time {{days}}
-    @for dir in plugins/native/*/; do \
-        if [ -f "$dir/Cargo.toml" ]; then \
-            echo "Sweeping $dir..."; \
-            (cd "$dir" && CARGO_TARGET_DIR={{plugins_target_dir}} cargo sweep --time {{days}}); \
-        fi; \
-    done
+    @echo "Sweeping shared plugin target dir..."
+    @CARGO_TARGET_DIR={{plugins_target_dir}} cargo sweep --time {{days}}
 
 # --- Codegen ---
 # Generate TypeScript types from Rust code
