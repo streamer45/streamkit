@@ -299,18 +299,15 @@ export const useCompositorLayers = (
   });
 
   // ── Sync from props ─────────────────────────────────────────────────────
-  // In Monitor view (sessionId is set), the server's view data is the source
-  // of truth for geometry.  The "sync from props" effect must NOT overwrite
-  // server-resolved positions with config-parsed ones.
-  const isMonitorView = !!sessionId;
-
   // Track previous parsed results so sync-from-props can detect which
   // config fields ACTUALLY changed in the new params vs the previous parse.
   // Without this, topology rebuilds with stale params overwrite local
   // inspector edits (crop/zoom on video layers, color alpha on text, etc.).
-  const prevParsedLayersRef = useRef<LayerState[]>([]);
-  const prevParsedTextRef = useRef<TextOverlayState[]>([]);
-  const prevParsedImgRef = useRef<ImageOverlayState[]>([]);
+  const prevParsedRef = useRef<{
+    layers: LayerState[];
+    text: TextOverlayState[];
+    img: ImageOverlayState[];
+  }>({ layers: [], text: [], img: [] });
 
   useEffect(() => {
     // Skip during pointer drag/resize — atoms already have the latest local
@@ -330,11 +327,11 @@ export const useCompositorLayers = (
         a.cropY !== b.cropY ||
         a.cropShape !== b.cropShape ||
         a.aspectFit !== b.aspectFit,
-      isMonitorView,
-      isMonitorView ? prevParsedLayersRef.current : undefined
+      !!sessionId,
+      sessionId ? prevParsedRef.current.layers : undefined
     );
 
-    if (isMonitorView) {
+    if (sessionId) {
       // Clear serverOnly on layers that now have explicit config in params.
       // Without this, a stub materialized by mapServerLayers would keep
       // serverOnly: true even after another client adds config, causing
@@ -363,7 +360,7 @@ export const useCompositorLayers = (
     }
 
     if (merged !== currentLayers) setLayersInStore(store, merged);
-    prevParsedLayersRef.current = parsed;
+    prevParsedRef.current.layers = parsed;
 
     const parsedText = parseTextOverlays(params);
     const currentText = getTextOverlaysFromStore(store);
@@ -375,11 +372,11 @@ export const useCompositorLayers = (
         a.fontSize !== b.fontSize ||
         a.fontName !== b.fontName ||
         a.color.some((v, i) => v !== b.color[i]),
-      isMonitorView,
-      isMonitorView ? prevParsedTextRef.current : undefined
+      !!sessionId,
+      sessionId ? prevParsedRef.current.text : undefined
     );
     if (mergedText !== currentText) setTextOverlaysInStore(store, mergedText);
-    prevParsedTextRef.current = parsedText;
+    prevParsedRef.current.text = parsedText;
 
     const parsedImg = parseImageOverlays(params);
     const currentImg = getImageOverlaysFromStore(store);
@@ -387,12 +384,12 @@ export const useCompositorLayers = (
       currentImg,
       parsedImg,
       (a, b) => a.assetPath !== b.assetPath,
-      isMonitorView,
-      isMonitorView ? prevParsedImgRef.current : undefined
+      !!sessionId,
+      sessionId ? prevParsedRef.current.img : undefined
     );
     if (mergedImg !== currentImg) setImageOverlaysInStore(store, mergedImg);
-    prevParsedImgRef.current = parsedImg;
-  }, [params, canvasWidth, canvasHeight, isMonitorView, store]);
+    prevParsedRef.current.img = parsedImg;
+  }, [params, canvasWidth, canvasHeight, sessionId, store]);
 
   // ── Server-driven layout (Monitor view only) ───────────────────────────
   useServerLayoutSync(sessionId, nodeId, store, dragStateRef, sourceDimsRef, activeInteractionRef);

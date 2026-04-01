@@ -65,6 +65,53 @@ export async function cleanupPreview(
   }
 }
 
+/** Clean up any existing server-side preview before creating a new one.
+ *  Awaits the stop to avoid racing with startPreview — if the server
+ *  processes start before stop, the old preview could count toward the
+ *  limit and cause a spurious 409. */
+async function teardownExistingPreview(
+  previewIdRef: React.MutableRefObject<string | null>,
+  previewSessionIdRef: React.MutableRefObject<string | null>
+): Promise<void> {
+  if (!previewIdRef.current || !previewSessionIdRef.current) return;
+  try {
+    await stopPreview(previewSessionIdRef.current, previewIdRef.current);
+  } catch {
+    // Best-effort cleanup — proceed even if the old preview is gone.
+  }
+  previewIdRef.current = null;
+  previewSessionIdRef.current = null;
+}
+
+/** Apply startPreview API result to the stream store. */
+function applyPreviewResult(
+  result: {
+    preview_id: string;
+    gateway_path: string;
+    broadcast: string;
+    audio: boolean;
+    video: boolean;
+  },
+  selectedSessionId: string,
+  previewIdRef: React.MutableRefObject<string | null>,
+  previewSessionIdRef: React.MutableRefObject<string | null>,
+  setters: {
+    setServerUrl: (url: string) => void;
+    setOutputBroadcast: (bc: string) => void;
+    setPipelineOutputTypes: (audio: boolean, video: boolean) => void;
+  }
+): void {
+  previewIdRef.current = result.preview_id;
+  previewSessionIdRef.current = selectedSessionId;
+
+  const baseUrl = useStreamStore.getState().configServerUrl || useStreamStore.getState().serverUrl;
+  if (baseUrl) {
+    setters.setServerUrl(updateUrlPath(baseUrl, result.gateway_path));
+  }
+  setters.setOutputBroadcast(result.broadcast);
+  setters.setPipelineOutputTypes(result.audio, result.video);
+}
+
 export function useMonitorPreview(selectedSessionId: string | null): UseMonitorPreviewReturn {
   const {
     status: previewStatus,
@@ -169,20 +216,7 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
     if (!selectedSessionId) return;
 
     // Clean up any existing server-side preview before creating a new one.
-    // This handles the case where the MoQ connection dropped but the
-    // server-side preview subgraph is still active.
-    // Await the stop to avoid racing with the new startPreview — if the
-    // server processes start before stop, the old preview could count
-    // toward the limit and cause a spurious 409.
-    if (previewIdRef.current && previewSessionIdRef.current) {
-      try {
-        await stopPreview(previewSessionIdRef.current, previewIdRef.current);
-      } catch {
-        // Best-effort cleanup — proceed even if the old preview is gone.
-      }
-      previewIdRef.current = null;
-      previewSessionIdRef.current = null;
-    }
+    await teardownExistingPreview(previewIdRef, previewSessionIdRef);
 
     // Cancel any previous in-flight request
     abortControllerRef.current?.abort();
@@ -205,9 +239,6 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
       if (controller.signal.aborted) return;
 
       // Ask the server to inject a preview subgraph.
-      // Pass the abort signal so the HTTP request is cancelled immediately
-      // when the user switches sessions, avoiding a server-side subgraph
-      // that we'd have to tear down after the fact.
       const result = await startPreview(selectedSessionId, undefined, undefined, controller.signal);
 
       // Check for cancellation after the API await — if the session
@@ -217,21 +248,14 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
         return;
       }
 
-      previewIdRef.current = result.preview_id;
-      previewSessionIdRef.current = selectedSessionId;
-
-      // Configure the stream store with the returned gateway path
-      const baseUrl =
-        useStreamStore.getState().configServerUrl || useStreamStore.getState().serverUrl;
-      if (baseUrl) {
-        previewSetServerUrl(updateUrlPath(baseUrl, result.gateway_path));
-      }
-      previewSetOutputBroadcast(result.broadcast);
-      previewSetPipelineOutputTypes(result.audio, result.video);
+      applyPreviewResult(result, selectedSessionId, previewIdRef, previewSessionIdRef, {
+        setServerUrl: previewSetServerUrl,
+        setOutputBroadcast: previewSetOutputBroadcast,
+        setPipelineOutputTypes: previewSetPipelineOutputTypes,
+      });
 
       // Remember whether we are creating a fresh connection or piggybacking
-      // on an existing StreamView connection.  Only a preview that creates
-      // its own connection should tear it down on cleanup.
+      // on an existing StreamView connection.
       const wasDisconnected = useStreamStore.getState().status === 'disconnected';
       await previewConnect();
       previewOwnsConnectionRef.current =
@@ -243,11 +267,7 @@ export function useMonitorPreview(selectedSessionId: string | null): UseMonitorP
       const message = err instanceof Error ? err.message : 'Failed to start preview';
       setPreviewError(message);
       // Clean up partial state
-      if (previewIdRef.current && previewSessionIdRef.current) {
-        stopPreview(previewSessionIdRef.current, previewIdRef.current).catch(() => {});
-        previewIdRef.current = null;
-        previewSessionIdRef.current = null;
-      }
+      await teardownExistingPreview(previewIdRef, previewSessionIdRef);
     } finally {
       if (!controller.signal.aborted) {
         setIsPreviewLoading(false);

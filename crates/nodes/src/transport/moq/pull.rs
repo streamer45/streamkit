@@ -5,6 +5,7 @@
 //! MoQ Pull Node - subscribes to broadcasts from a MoQ server
 
 use super::constants::DEFAULT_AUDIO_FRAME_DURATION_US;
+use crate::video::{AV1_CONTENT_TYPE, VP9_CONTENT_TYPE};
 use async_trait::async_trait;
 use bytes::Buf;
 use moq_lite::AsPath;
@@ -703,8 +704,8 @@ impl MoqPullNode {
         // Resolve the video content_type from the discovered track's codec.
         // Falls back to "video/vp9" if no codec info is available.
         let video_content_type: &str = match video_track.and_then(|dt| dt.video_codec) {
-            Some(VideoCodec::Av1) => "video/av1",
-            _ => "video/vp9",
+            Some(VideoCodec::Av1) => AV1_CONTENT_TYPE,
+            _ => VP9_CONTENT_TYPE,
         };
 
         let mut session_packet_count: u32 = 0;

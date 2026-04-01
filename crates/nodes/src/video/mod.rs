@@ -45,6 +45,16 @@ pub const AV1_BIT_DEPTH: u8 = 8;
 /// AV1 Main tier.
 pub const AV1_TIER: char = 'M';
 
+// ── Codec content-type strings ───────────────────────────────────────────────
+//
+// Shared across encoder nodes, MoQ transport, and container muxers.
+
+/// MIME-style content type for VP9-encoded video packets.
+pub const VP9_CONTENT_TYPE: &str = "video/vp9";
+
+/// MIME-style content type for AV1-encoded video packets.
+pub const AV1_CONTENT_TYPE: &str = "video/av1";
+
 /// Parse a pixel format string into a [`PixelFormat`].
 ///
 /// Accepts `"i420"`, `"nv12"`, `"rgba8"`, or `"rgba"` (case-insensitive).
@@ -74,6 +84,9 @@ pub mod pixel_ops;
 
 #[cfg(feature = "compositor")]
 pub mod pixel_convert;
+
+#[cfg(any(feature = "vp9", feature = "av1", feature = "svt_av1"))]
+pub(crate) mod encoder_trait;
 
 #[cfg(feature = "vp9")]
 pub mod vp9;
