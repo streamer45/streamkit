@@ -719,8 +719,9 @@ impl MoqPushNode {
                 )));
             },
             PinManagementMessage::AddedOutputPin { .. }
-            | PinManagementMessage::RemoveOutputPin { .. } => {
-                // No-op for output pins on a push node
+            | PinManagementMessage::RemoveOutputPin { .. }
+            | PinManagementMessage::InputTypeResolved { .. } => {
+                // No-op for output pins / type info on a push node
             },
         }
     }

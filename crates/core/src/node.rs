@@ -308,7 +308,12 @@ pub struct NodeContext {
     /// client disconnects or the request is interrupted.
     pub cancellation_token: Option<tokio_util::sync::CancellationToken>,
     /// Channel for runtime pin management messages (Tier 2).
-    /// Only provided for nodes that support dynamic pins.
+    /// Always provided in dynamic pipelines so the engine can deliver
+    /// [`PinManagementMessage::InputTypeResolved`] to every node.
+    /// Dynamic-pin nodes additionally receive `AddedInputPin`,
+    /// `RemoveInputPin`, etc. through this channel.
+    /// `None` in oneshot/static pipelines (type info is delivered via
+    /// [`NodeContext::input_types`] at build time).
     pub pin_management_rx: Option<mpsc::Receiver<PinManagementMessage>>,
     /// Optional per-pipeline audio buffer pool for hot-path allocations.
     ///

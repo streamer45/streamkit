@@ -60,11 +60,23 @@ pub struct DynamicEngine {
     pub(super) node_inputs: HashMap<(String, String), mpsc::Sender<streamkit_core::types::Packet>>,
     /// Map of Pin Distributor configuration Senders: (NodeId, PinName) -> Config Sender
     pub(super) pin_distributors: HashMap<(String, String), mpsc::Sender<PinConfigMsg>>,
-    /// Map of Pin Management Senders: NodeId -> Pin Management Sender (for dynamic pins)
+    /// Map of Pin Management Senders: NodeId -> Pin Management Sender.
+    /// Always created for every node in dynamic pipelines so the engine
+    /// can deliver `InputTypeResolved` (and, for dynamic-pin nodes,
+    /// `AddedInputPin` / `RemoveInputPin` etc.).
     pub(super) pin_management_txs:
         HashMap<String, mpsc::Sender<streamkit_core::pins::PinManagementMessage>>,
+    /// Nodes that declared `supports_dynamic_pins() = true`.  Used to gate
+    /// dynamic pin creation requests (`RequestAddInputPin` /
+    /// `RequestAddOutputPin`) and to skip strict type validation when a pin
+    /// is not yet in metadata.
+    pub(super) dynamic_pin_nodes: std::collections::HashSet<String>,
     /// Map of node pin metadata: NodeId -> Pin Metadata (for runtime type validation)
     pub(super) node_pin_metadata: HashMap<String, NodePinMetadata>,
+    /// Active connections: (dest_node, dest_pin) -> (source_node, source_pin).
+    /// Used for backward tracing when resolving `Passthrough` types in
+    /// `InputTypeResolved` delivery.
+    pub(super) connections: HashMap<(String, String), (String, String)>,
     /// Map of node_id -> node_kind for labeling metrics
     pub(super) node_kinds: HashMap<String, String>,
     pub(super) batch_size: usize,
@@ -565,15 +577,15 @@ impl DynamicEngine {
         self.node_states.insert(node_id.to_string(), NodeState::Initializing);
         self.node_stats.insert(node_id.to_string(), NodeStats::default());
 
-        // 4. Setup dynamic pin management if the node supports it
-        let pin_management_rx = if node.supports_dynamic_pins() {
-            let (tx, rx) = mpsc::channel(CONTROL_CAPACITY);
-            // Store the sender so the engine can send pin management messages
-            self.pin_management_txs.insert(node_id.to_string(), tx);
-            Some(rx)
-        } else {
-            None
-        };
+        // 4. Setup pin management channel.
+        // Always created so the engine can deliver `InputTypeResolved` to
+        // every node.  Dynamic-pin nodes additionally receive
+        // `AddedInputPin` / `RemoveInputPin` etc. through the same channel.
+        let (pin_management_tx, pin_management_rx) = mpsc::channel(CONTROL_CAPACITY);
+        self.pin_management_txs.insert(node_id.to_string(), pin_management_tx);
+        if node.supports_dynamic_pins() {
+            self.dynamic_pin_nodes.insert(node_id.to_string());
+        }
 
         // 5. Create NodeContext
         let context = NodeContext {
@@ -593,7 +605,7 @@ impl DynamicEngine {
             telemetry_tx: Some(channels.telemetry.clone()),
             session_id: self.session_id.clone(),
             cancellation_token: None, // Dynamic pipelines don't use cancellation tokens
-            pin_management_rx,
+            pin_management_rx: Some(pin_management_rx),
             audio_pool: Some(self.audio_pool.clone()),
             video_pool: Some(self.video_pool.clone()),
             pipeline_mode: streamkit_core::PipelineMode::Dynamic,
@@ -677,7 +689,7 @@ impl DynamicEngine {
             // support dynamic pins and neither pin exists yet, no compile-time
             // type checking occurs — mismatches will only surface at runtime
             // (or via the post-creation check in connect_nodes).
-            if self.pin_management_txs.contains_key(from_node) {
+            if self.dynamic_pin_nodes.contains(from_node) {
                 tracing::debug!(
                     "Source pin {}.{} not in metadata, but node supports dynamic pins; skipping strict type validation",
                     from_node,
@@ -699,7 +711,7 @@ impl DynamicEngine {
             .find(|p| p.name == to_pin)
             .or_else(|| match_dynamic_pin(&dest_metadata.input_pins, to_pin));
         let Some(dest_pin) = dest_pin else {
-            if self.pin_management_txs.contains_key(to_node) {
+            if self.dynamic_pin_nodes.contains(to_node) {
                 tracing::debug!(
                     "Destination pin {}.{} not in metadata, but node supports dynamic pins; skipping strict type validation",
                     to_node,
@@ -794,13 +806,30 @@ impl DynamicEngine {
         }
 
         // 1. Find the destination input Sender
-        // If the pin doesn't exist and the node supports dynamic pins, create it first
+        // If the pin doesn't exist and the node supports dynamic pins, create it first.
         // Track whether we dynamically created the input pin so we can roll it
         // back if step 2 (output pin creation) fails.
+        //
+        // NOTE: We defer sending AddedInputPin until after the source output
+        // pin is resolved (step 2) so that AddedInputPin arrives before
+        // InputTypeResolved — the node needs the channel ready before it
+        // receives type info.  The deferred state is stored in
+        // `pending_input_pin_activation`.
         let mut created_dynamic_input: Option<String> = None;
+        let mut pending_input_pin_activation: Option<(
+            streamkit_core::InputPin,
+            mpsc::Receiver<streamkit_core::types::Packet>,
+        )> = None;
         let dest_tx = if let Some(tx) = self.node_inputs.get(&(to_node.clone(), to_pin.clone())) {
             tx.clone()
-        } else if let Some(pin_mgmt_tx) = self.pin_management_txs.get(&to_node) {
+        } else if self.dynamic_pin_nodes.contains(&to_node) {
+            let Some(pin_mgmt_tx) = self.pin_management_txs.get(&to_node) else {
+                tracing::error!(
+                    "No pin management channel for dynamic-pin node '{}' — cannot create input pin",
+                    to_node
+                );
+                return;
+            };
             // Node supports dynamic pins - create the pin on-demand
             tracing::info!(
                 "Dynamically creating input pin '{}.{}' for connection",
@@ -825,30 +854,21 @@ impl DynamicEngine {
 
             // Wait for the pin to be created (with timeout to avoid blocking
             // the engine indefinitely if the node is unresponsive).
-            let pin = if let Ok(inner) =
-                tokio::time::timeout(std::time::Duration::from_secs(5), response_rx).await
-            {
-                match inner {
-                    Ok(Ok(pin)) => pin,
-                    Ok(Err(e)) => {
-                        tracing::error!("Node '{}' rejected pin creation: {}", to_node, e);
+            let pin =
+                match tokio::time::timeout(std::time::Duration::from_secs(5), response_rx).await {
+                    Ok(Ok(Ok(pin))) => pin,
+                    Ok(Ok(Err(e))) => {
+                        tracing::error!("Node '{}' rejected input pin creation: {}", to_node, e);
                         return;
                     },
-                    Err(_) => {
+                    Ok(Err(_)) | Err(_) => {
                         tracing::error!(
-                            "Node '{}' did not respond to pin creation request",
-                            to_node
-                        );
+                        "Node '{}' did not respond to input pin creation (dropped or timed out)",
+                        to_node
+                    );
                         return;
                     },
-                }
-            } else {
-                tracing::error!(
-                    "Timed out waiting for input pin creation response from node '{}'",
-                    to_node
-                );
-                return;
-            };
+                };
 
             // Create the channel for this new pin
             let (tx, rx) = mpsc::channel(self.node_input_capacity);
@@ -862,21 +882,11 @@ impl DynamicEngine {
                 meta.input_pins.push(pin.clone());
             }
 
-            // Notify the node that the pin is ready with its channel
-            let msg = streamkit_core::pins::PinManagementMessage::AddedInputPin {
-                pin: pin.clone(),
-                channel: rx,
-            };
-
-            if pin_mgmt_tx.send(msg).await.is_err() {
-                tracing::error!(
-                    "Failed to send pin activation message to node '{}'. It may have stopped.",
-                    to_node
-                );
-                return;
-            }
-
+            // Defer sending AddedInputPin until after the source output pin
+            // is resolved so AddedInputPin arrives before InputTypeResolved —
+            // the node needs the channel ready before it receives type info.
             created_dynamic_input = Some(pin.name.clone());
+            pending_input_pin_activation = Some((pin, rx));
             tx
         } else {
             tracing::error!(
@@ -888,12 +898,32 @@ impl DynamicEngine {
         };
 
         // 2. Find the source Pin Distributor configuration Sender
-        // If the pin doesn't exist and the node supports dynamic pins, create it first
-        let config_tx = if let Some(tx) =
-            self.pin_distributors.get(&(from_node.clone(), from_pin.clone()))
-        {
-            tx.clone()
-        } else if let Some(pin_mgmt_tx) = self.pin_management_txs.get(&from_node) {
+        // If the pin doesn't exist and the node supports dynamic pins, create it first.
+        // Also resolve the upstream `produces_type` so we can include it in
+        // the deferred AddedInputPin message (step 2b).
+        // Track whether we dynamically created the output pin so we can roll
+        // it back if step 2b fails.
+        let config_tx;
+        let source_produces_type: streamkit_core::types::PacketType;
+        let mut created_dynamic_output: Option<String> = None;
+
+        if let Some(tx) = self.pin_distributors.get(&(from_node.clone(), from_pin.clone())) {
+            config_tx = tx.clone();
+
+            // Look up produces_type from existing pin metadata.
+            source_produces_type = self
+                .node_pin_metadata
+                .get(&from_node)
+                .and_then(|m| m.output_pins.iter().find(|p| p.name == from_pin))
+                .map_or(streamkit_core::types::PacketType::Any, |p| p.produces_type.clone());
+        } else if self.dynamic_pin_nodes.contains(&from_node) {
+            let Some(pin_mgmt_tx) = self.pin_management_txs.get(&from_node) else {
+                tracing::error!(
+                    "No pin management channel for dynamic-pin node '{}' — cannot create output pin",
+                    from_node
+                );
+                return;
+            };
             // Node supports dynamic pins — create the output pin on-demand
             tracing::info!(
                 "Dynamically creating output pin '{}.{}' for connection",
@@ -921,39 +951,27 @@ impl DynamicEngine {
 
             // Wait for the node to respond with the pin definition (with
             // timeout to avoid blocking the engine indefinitely).
-            let pin = if let Ok(inner) =
-                tokio::time::timeout(std::time::Duration::from_secs(5), response_rx).await
-            {
-                match inner {
-                    Ok(Ok(pin)) => pin,
-                    Ok(Err(e)) => {
+            let pin =
+                match tokio::time::timeout(std::time::Duration::from_secs(5), response_rx).await {
+                    Ok(Ok(Ok(pin))) => pin,
+                    Ok(Ok(Err(e))) => {
                         tracing::error!("Node '{}' rejected output pin creation: {}", from_node, e);
                         if let Some(ref input_pin) = created_dynamic_input {
                             self.rollback_dynamic_input(&to_node, input_pin).await;
                         }
                         return;
                     },
-                    Err(_) => {
+                    Ok(Err(_)) | Err(_) => {
                         tracing::error!(
-                            "Node '{}' did not respond to output pin creation request",
-                            from_node
-                        );
+                        "Node '{}' did not respond to output pin creation (dropped or timed out)",
+                        from_node
+                    );
                         if let Some(ref input_pin) = created_dynamic_input {
                             self.rollback_dynamic_input(&to_node, input_pin).await;
                         }
                         return;
                     },
-                }
-            } else {
-                tracing::error!(
-                    "Timed out waiting for output pin creation response from node '{}'",
-                    from_node
-                );
-                if let Some(ref input_pin) = created_dynamic_input {
-                    self.rollback_dynamic_input(&to_node, input_pin).await;
-                }
-                return;
-            };
+                };
 
             // The engine uses `from_pin` as the connection key while the
             // distributor is stored under `pin.name`.  These must match;
@@ -1023,6 +1041,7 @@ impl DynamicEngine {
 
             // Notify the node that the output pin is ready with its channel
             let pin_name_for_cleanup = pin.name.clone();
+            source_produces_type = pin.produces_type.clone();
             let added_msg = streamkit_core::pins::PinManagementMessage::AddedOutputPin {
                 pin,
                 channel: data_tx,
@@ -1049,7 +1068,8 @@ impl DynamicEngine {
                 return;
             }
 
-            cfg_tx
+            created_dynamic_output = Some(from_pin.clone());
+            config_tx = cfg_tx;
         } else {
             tracing::error!(
                     "Cannot connect: Source output '{}.{}' distributor not found and node doesn't support dynamic pins.",
@@ -1060,7 +1080,80 @@ impl DynamicEngine {
                 self.rollback_dynamic_input(&to_node, input_pin).await;
             }
             return;
-        };
+        }
+
+        // 2b. Send the deferred AddedInputPin now that the source pin is resolved.
+        // This only fires when a dynamic input pin was created in step 1.
+        if let Some((input_pin, input_rx)) = pending_input_pin_activation {
+            if let Some(pin_mgmt_tx) = self.pin_management_txs.get(&to_node) {
+                let msg = streamkit_core::pins::PinManagementMessage::AddedInputPin {
+                    pin: input_pin,
+                    channel: input_rx,
+                };
+
+                if pin_mgmt_tx.send(msg).await.is_err() {
+                    tracing::error!(
+                        "Failed to send pin activation message to node '{}'. It may have stopped.",
+                        to_node
+                    );
+                    if let Some(ref output_pin_name) = created_dynamic_output {
+                        self.rollback_dynamic_output(&from_node, output_pin_name).await;
+                    }
+                    if let Some(ref input_pin_name) = created_dynamic_input {
+                        self.rollback_dynamic_input(&to_node, input_pin_name).await;
+                    }
+                    return;
+                }
+            } else {
+                // pin_management_txs should always contain an entry (created
+                // in add_node for every node).  If missing, the node was
+                // removed between step 1 and step 2b.
+                tracing::error!(
+                    "No pin management channel for node '{}' — cannot activate dynamic input pin. \
+                     Rolling back connection.",
+                    to_node
+                );
+                if let Some(ref output_pin_name) = created_dynamic_output {
+                    self.rollback_dynamic_output(&from_node, output_pin_name).await;
+                }
+                if let Some(ref input_pin_name) = created_dynamic_input {
+                    self.rollback_dynamic_input(&to_node, input_pin_name).await;
+                }
+                return;
+            }
+        }
+
+        // 2c. Deliver InputTypeResolved to the destination node.
+        // This is the single, uniform mechanism for all nodes (both
+        // dynamic-pin and pre-existing-pin) to learn the upstream type.
+        //
+        // If the source produces Passthrough, resolve it by tracing
+        // backward through the connection graph to find a concrete type.
+        //
+        // NOTE: If step 3 (AddConnection) fails below, the node will have
+        // received type info for a connection that never materialized.
+        // This is low-severity — the worst case is a pin that never
+        // receives data, and step 3 failure is rare (PinDistributor
+        // would need to have stopped between creation and this point).
+        let resolved_type =
+            if matches!(source_produces_type, streamkit_core::types::PacketType::Passthrough) {
+                self.resolve_passthrough_type(&from_node, &from_pin)
+            } else {
+                source_produces_type
+            };
+        if let Some(pin_mgmt_tx) = self.pin_management_txs.get(&to_node) {
+            let msg = streamkit_core::pins::PinManagementMessage::InputTypeResolved {
+                pin_name: to_pin.clone(),
+                packet_type: resolved_type,
+            };
+            if pin_mgmt_tx.send(msg).await.is_err() {
+                tracing::warn!(
+                    "Failed to send InputTypeResolved to '{}' for pin '{}' — node may have stopped",
+                    to_node,
+                    to_pin
+                );
+            }
+        }
 
         // 3. Send configuration message
         let connection_id = crate::dynamic_messages::ConnectionId::new(
@@ -1078,6 +1171,73 @@ impl DynamicEngine {
                 from_pin
             );
         }
+
+        // Record the connection for Passthrough type resolution.
+        self.connections.insert((to_node.clone(), to_pin.clone()), (from_node, from_pin));
+    }
+
+    /// Resolve a `Passthrough` type by tracing backward through the
+    /// connection graph.  Returns the first non-Passthrough type found,
+    /// or `PacketType::Any` if the chain is unresolved (max 50 hops to
+    /// guard against cycles).
+    pub(super) fn resolve_passthrough_type(
+        &self,
+        source_node: &str,
+        source_pin: &str,
+    ) -> streamkit_core::types::PacketType {
+        use streamkit_core::types::PacketType;
+
+        let mut current_node = source_node.to_string();
+        let mut current_pin = source_pin.to_string();
+
+        for _ in 0..50 {
+            let produces = self
+                .node_pin_metadata
+                .get(&current_node)
+                .and_then(|m| m.output_pins.iter().find(|p| p.name == current_pin))
+                .map_or(PacketType::Any, |p| p.produces_type.clone());
+
+            if !matches!(produces, PacketType::Passthrough) {
+                return produces;
+            }
+
+            // Trace backward: find any connection feeding this node's input
+            // pins, then look up that upstream output's type.
+            let input_pins = self
+                .node_pin_metadata
+                .get(&current_node)
+                .map(|m| m.input_pins.iter().map(|p| p.name.clone()).collect::<Vec<_>>())
+                .unwrap_or_default();
+
+            let mut found_upstream = false;
+            for input_pin in &input_pins {
+                if let Some((upstream_node, upstream_pin)) =
+                    self.connections.get(&(current_node.clone(), input_pin.clone()))
+                {
+                    current_node.clone_from(upstream_node);
+                    current_pin.clone_from(upstream_pin);
+                    found_upstream = true;
+                    break;
+                }
+            }
+
+            if !found_upstream {
+                // No upstream connection found — can't resolve further.
+                tracing::debug!(
+                    "Cannot resolve Passthrough for {}.{}: no upstream connection",
+                    current_node,
+                    current_pin
+                );
+                return PacketType::Any;
+            }
+        }
+
+        tracing::warn!(
+            "Passthrough resolution exceeded 50 hops from {}.{} — possible cycle",
+            source_node,
+            source_pin
+        );
+        PacketType::Any
     }
 
     /// Roll back a dynamically created input pin when a subsequent step in
@@ -1099,17 +1259,41 @@ impl DynamicEngine {
         }
     }
 
+    /// Roll back a dynamically created output pin: shut down its distributor,
+    /// remove it from metadata, and tell the source node to drop it.
+    async fn rollback_dynamic_output(&mut self, source_node: &str, output_pin_name: &str) {
+        if let Some(cfg) =
+            self.pin_distributors.remove(&(source_node.to_string(), output_pin_name.to_string()))
+        {
+            let _ = cfg.send(PinConfigMsg::Shutdown).await;
+        }
+        if let Some(meta) = self.node_pin_metadata.get_mut(source_node) {
+            meta.output_pins.retain(|p| p.name != output_pin_name);
+        }
+        // The source node already received AddedOutputPin and holds a
+        // data_tx pointing to the now-dead distributor.  Tell it to drop
+        // the pin so it doesn't send into a closed channel.
+        if let Some(src_pin_mgmt_tx) = self.pin_management_txs.get(source_node) {
+            let _ = src_pin_mgmt_tx
+                .send(streamkit_core::pins::PinManagementMessage::RemoveOutputPin {
+                    pin_name: output_pin_name.to_string(),
+                })
+                .await;
+        }
+    }
+
     /// Helper function to disconnect nodes.
-    ///
-    /// Takes `&self` not `&mut self` because it only reads from HashMaps and sends messages
     async fn disconnect_nodes(
-        &self,
+        &mut self,
         from_node: String,
         from_pin: String,
         to_node: String,
         to_pin: String,
     ) {
         tracing::info!("Disconnecting {}.{} -> {}.{}", from_node, from_pin, to_node, to_pin);
+
+        // Remove from connection tracking.
+        self.connections.remove(&(to_node.clone(), to_pin.clone()));
 
         // 1. Find the source Pin Distributor configuration Sender
         // Use let...else for cleaner early return pattern
@@ -1200,6 +1384,8 @@ impl DynamicEngine {
         self.node_view_data.remove(node_id);
         self.node_pin_metadata.remove(node_id);
         self.pin_management_txs.remove(node_id);
+        self.dynamic_pin_nodes.remove(node_id);
+        self.connections.retain(|(to, _), (from, _)| to != node_id && from != node_id);
         self.node_kinds.remove(node_id);
         self.nodes_active_gauge.record(self.live_nodes.len() as u64, &[]);
     }

@@ -1079,7 +1079,10 @@ async fn test_webm_mux_truncated_vp9_header() {
 async fn test_webm_mux_dynamic_pipeline_classifies_inputs_from_packets() {
     use crate::test_utils::create_test_video_frame;
     use crate::video::vp9::{Vp9EncoderConfig, Vp9EncoderNode};
-    use streamkit_core::types::{PacketMetadata, PixelFormat};
+    use streamkit_core::pins::PinManagementMessage;
+    use streamkit_core::types::{
+        AudioCodec, EncodedAudioFormat, EncodedVideoFormat, PacketMetadata, PixelFormat, VideoCodec,
+    };
 
     // ---- Step 1: Encode a real VP9 keyframe ----
 
@@ -1123,7 +1126,7 @@ async fn test_webm_mux_dynamic_pipeline_classifies_inputs_from_packets() {
     let encoded_video_packets = enc_sender.get_packets_for_pin("out").await;
     assert!(!encoded_video_packets.is_empty(), "VP9 encoder produced no packets");
 
-    // ---- Step 2: Mux with empty input_types (dynamic pipeline simulation) ----
+    // ---- Step 2: Mux with InputTypeResolved (dynamic pipeline simulation) ----
 
     let (mux_audio_tx, mux_audio_rx) = mpsc::channel(10);
     let (mux_video_tx, mux_video_rx) = mpsc::channel(10);
@@ -1131,9 +1134,10 @@ async fn test_webm_mux_dynamic_pipeline_classifies_inputs_from_packets() {
     mux_inputs.insert("in".to_string(), mux_audio_rx);
     mux_inputs.insert("in_1".to_string(), mux_video_rx);
 
-    // create_test_context sets input_types to HashMap::new() — exactly the
-    // dynamic pipeline case we're testing.  Do NOT populate input_types here.
-    let (mux_context, mux_sender, mut mux_state_rx) = create_test_context(mux_inputs, 10);
+    // Use create_test_context_with_pin_mgmt so we can send InputTypeResolved
+    // messages, simulating what the engine does in connect_nodes().
+    let (mux_context, mux_sender, mut mux_state_rx, pin_mgmt_tx) =
+        crate::test_utils::create_test_context_with_pin_mgmt(mux_inputs, 10);
     assert!(
         mux_context.input_types.is_empty(),
         "Test precondition: input_types must be empty to simulate dynamic pipeline"
@@ -1146,11 +1150,37 @@ async fn test_webm_mux_dynamic_pipeline_classifies_inputs_from_packets() {
 
     assert_state_initializing(&mut mux_state_rx).await;
 
-    // Send audio packets (content_type: None → classified as audio via packet inspection)
+    // Send InputTypeResolved for both pins (simulates engine behaviour).
+    pin_mgmt_tx
+        .send(PinManagementMessage::InputTypeResolved {
+            pin_name: "in".to_string(),
+            packet_type: streamkit_core::types::PacketType::EncodedAudio(EncodedAudioFormat {
+                codec: AudioCodec::Opus,
+                codec_private: None,
+            }),
+        })
+        .await
+        .unwrap();
+    pin_mgmt_tx
+        .send(PinManagementMessage::InputTypeResolved {
+            pin_name: "in_1".to_string(),
+            packet_type: streamkit_core::types::PacketType::EncodedVideo(EncodedVideoFormat {
+                codec: VideoCodec::Vp9,
+                bitstream_format: None,
+                codec_private: None,
+                profile: None,
+                level: None,
+            }),
+        })
+        .await
+        .unwrap();
+    drop(pin_mgmt_tx);
+
+    // Send audio packets
     for _ in 0..5 {
         mux_audio_tx.send(create_mock_opus_packet()).await.unwrap();
     }
-    // Send video packets (content_type: Some("video/vp9") → classified as video)
+    // Send video packets
     for packet in encoded_video_packets {
         mux_video_tx.send(packet).await.unwrap();
     }
@@ -1167,10 +1197,10 @@ async fn test_webm_mux_dynamic_pipeline_classifies_inputs_from_packets() {
     let output_packets = mux_sender.get_packets_for_pin("out").await;
     assert!(
         !output_packets.is_empty(),
-        "WebM muxer should produce output when classifying inputs via packet inspection"
+        "WebM muxer should produce output when classifying inputs via InputTypeResolved"
     );
 
-    println!("WebM dynamic pipeline input classification test passed");
+    println!("WebM dynamic pipeline InputTypeResolved classification test passed");
 }
 
 /// Regression test: video-only muxing in a dynamic pipeline (empty input_types)
@@ -1180,7 +1210,8 @@ async fn test_webm_mux_dynamic_pipeline_classifies_inputs_from_packets() {
 async fn test_webm_mux_dynamic_pipeline_video_only() {
     use crate::test_utils::create_test_video_frame;
     use crate::video::vp9::{Vp9EncoderConfig, Vp9EncoderNode};
-    use streamkit_core::types::{PacketMetadata, PixelFormat};
+    use streamkit_core::pins::PinManagementMessage;
+    use streamkit_core::types::{EncodedVideoFormat, PacketMetadata, PixelFormat, VideoCodec};
 
     // ---- Step 1: Encode a real VP9 keyframe ----
 
@@ -1224,13 +1255,14 @@ async fn test_webm_mux_dynamic_pipeline_video_only() {
     let encoded_video_packets = enc_sender.get_packets_for_pin("out").await;
     assert!(!encoded_video_packets.is_empty(), "VP9 encoder produced no packets");
 
-    // ---- Step 2: Video-only mux with empty input_types ----
+    // ---- Step 2: Video-only mux with InputTypeResolved ----
 
     let (mux_video_tx, mux_video_rx) = mpsc::channel(10);
     let mut mux_inputs = HashMap::new();
     mux_inputs.insert("in".to_string(), mux_video_rx);
 
-    let (mux_context, mux_sender, mut mux_state_rx) = create_test_context(mux_inputs, 10);
+    let (mux_context, mux_sender, mut mux_state_rx, pin_mgmt_tx) =
+        crate::test_utils::create_test_context_with_pin_mgmt(mux_inputs, 10);
     assert!(mux_context.input_types.is_empty());
 
     // video_width/height = 0 triggers auto-detect from the first VP9 keyframe
@@ -1241,7 +1273,23 @@ async fn test_webm_mux_dynamic_pipeline_video_only() {
 
     assert_state_initializing(&mut mux_state_rx).await;
 
-    // Send video packets — should be classified as video via content_type inspection
+    // Send InputTypeResolved so the muxer classifies this pin as video.
+    pin_mgmt_tx
+        .send(PinManagementMessage::InputTypeResolved {
+            pin_name: "in".to_string(),
+            packet_type: streamkit_core::types::PacketType::EncodedVideo(EncodedVideoFormat {
+                codec: VideoCodec::Vp9,
+                bitstream_format: None,
+                codec_private: None,
+                profile: None,
+                level: None,
+            }),
+        })
+        .await
+        .unwrap();
+    drop(pin_mgmt_tx);
+
+    // Send video packets
     for packet in encoded_video_packets {
         mux_video_tx.send(packet).await.unwrap();
     }
@@ -1381,4 +1429,134 @@ async fn test_webm_mux_av1_video_only() {
         output_packets.len(),
         webm_bytes.len()
     );
+}
+
+/// Verify that AV1 codec detection works via `InputTypeResolved` in a dynamic
+/// pipeline (empty `input_types`).  The muxer should set `video_is_av1 = true`
+/// from the resolved type info, producing content_type `"video/webm; codecs=\"av1,opus\""`.
+#[cfg(feature = "av1")]
+#[tokio::test]
+async fn test_webm_mux_av1_via_input_type_resolved() {
+    use crate::test_utils::create_test_video_frame;
+    use crate::video::av1::{Av1EncoderConfig, Av1EncoderNode};
+    use streamkit_core::pins::PinManagementMessage;
+    use streamkit_core::types::{
+        AudioCodec, EncodedAudioFormat, EncodedVideoFormat, PacketMetadata, PixelFormat, VideoCodec,
+    };
+
+    // ---- Step 1: Encode some AV1 frames ----
+
+    let (enc_input_tx, enc_input_rx) = mpsc::channel(10);
+    let mut enc_inputs = HashMap::new();
+    enc_inputs.insert("in".to_string(), enc_input_rx);
+
+    let (enc_context, enc_sender, mut enc_state_rx) = create_test_context(enc_inputs, 10);
+    let encoder_config = Av1EncoderConfig {
+        speed: 10,
+        quantizer: 80,
+        threads: 1,
+        low_latency: true,
+        bitrate_kbps: 0,
+        ..Default::default()
+    };
+    let encoder = Av1EncoderNode::new(encoder_config).unwrap();
+    let enc_handle = tokio::spawn(async move { Box::new(encoder).run(enc_context).await });
+
+    assert_state_initializing(&mut enc_state_rx).await;
+    assert_state_running(&mut enc_state_rx).await;
+
+    for i in 0..3u64 {
+        let mut frame = create_test_video_frame(64, 64, PixelFormat::Nv12, 16);
+        frame.metadata = Some(PacketMetadata {
+            timestamp_us: Some(i * 33_333),
+            duration_us: Some(33_333),
+            sequence: Some(i),
+            keyframe: Some(true),
+        });
+        enc_input_tx.send(Packet::Video(frame)).await.unwrap();
+    }
+    drop(enc_input_tx);
+
+    assert_state_stopped(&mut enc_state_rx).await;
+    enc_handle.await.unwrap().unwrap();
+
+    let encoded_video = enc_sender.get_packets_for_pin("out").await;
+    assert!(!encoded_video.is_empty(), "AV1 encoder produced no packets");
+
+    // ---- Step 2: Mux via InputTypeResolved (dynamic pipeline) ----
+
+    let (mux_audio_tx, mux_audio_rx) = mpsc::channel(10);
+    let (mux_video_tx, mux_video_rx) = mpsc::channel(10);
+    let mut mux_inputs = HashMap::new();
+    mux_inputs.insert("in".to_string(), mux_audio_rx);
+    mux_inputs.insert("in_1".to_string(), mux_video_rx);
+
+    let (mux_context, mux_sender, mut mux_state_rx, pin_mgmt_tx) =
+        crate::test_utils::create_test_context_with_pin_mgmt(mux_inputs, 10);
+    assert!(mux_context.input_types.is_empty());
+
+    let mux_config =
+        WebMMuxerConfig { video_width: 64, video_height: 64, ..WebMMuxerConfig::default() };
+    let muxer = WebMMuxerNode::new(mux_config);
+    let mux_handle = tokio::spawn(async move { Box::new(muxer).run(mux_context).await });
+
+    assert_state_initializing(&mut mux_state_rx).await;
+
+    // Deliver AV1 + Opus type info via InputTypeResolved.
+    pin_mgmt_tx
+        .send(PinManagementMessage::InputTypeResolved {
+            pin_name: "in".to_string(),
+            packet_type: PacketType::EncodedAudio(EncodedAudioFormat {
+                codec: AudioCodec::Opus,
+                codec_private: None,
+            }),
+        })
+        .await
+        .unwrap();
+    pin_mgmt_tx
+        .send(PinManagementMessage::InputTypeResolved {
+            pin_name: "in_1".to_string(),
+            packet_type: PacketType::EncodedVideo(EncodedVideoFormat {
+                codec: VideoCodec::Av1,
+                bitstream_format: None,
+                codec_private: None,
+                profile: None,
+                level: None,
+            }),
+        })
+        .await
+        .unwrap();
+    drop(pin_mgmt_tx);
+
+    // Send audio + video packets.
+    for _ in 0..3 {
+        mux_audio_tx.send(create_mock_opus_packet()).await.unwrap();
+    }
+    for packet in encoded_video {
+        mux_video_tx.send(packet).await.unwrap();
+    }
+    drop(mux_audio_tx);
+    drop(mux_video_tx);
+
+    assert_state_running(&mut mux_state_rx).await;
+    assert_state_stopped(&mut mux_state_rx).await;
+    mux_handle.await.unwrap().unwrap();
+
+    // ---- Step 3: Verify content type includes "av1,opus" ----
+
+    let output_packets = mux_sender.get_packets_for_pin("out").await;
+    assert!(!output_packets.is_empty(), "WebM muxer produced no output");
+
+    if let Packet::Binary { content_type, .. } = &output_packets[0] {
+        let ct = content_type.as_ref().expect("content_type should be set");
+        assert_eq!(
+            ct.as_ref(),
+            "video/webm; codecs=\"av1,opus\"",
+            "AV1 codec detection via InputTypeResolved should produce av1,opus content type"
+        );
+    } else {
+        panic!("Expected Binary packet from WebM muxer");
+    }
+
+    println!("WebM AV1 via InputTypeResolved test passed");
 }

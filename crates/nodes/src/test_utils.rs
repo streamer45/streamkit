@@ -47,6 +47,49 @@ pub fn create_test_context(
     (context, mock_sender, state_rx)
 }
 
+/// Creates a test NodeContext that also returns the pin management sender.
+///
+/// Use this when a test needs to send `PinManagementMessage` variants
+/// (e.g. `InputTypeResolved`) to the node under test.
+#[allow(clippy::implicit_hasher)]
+pub fn create_test_context_with_pin_mgmt(
+    inputs: HashMap<String, mpsc::Receiver<streamkit_core::types::Packet>>,
+    batch_size: usize,
+) -> (
+    NodeContext,
+    MockOutputSender,
+    mpsc::Receiver<NodeStateUpdate>,
+    mpsc::Sender<streamkit_core::pins::PinManagementMessage>,
+) {
+    let (_control_tx, control_rx) = mpsc::channel(10);
+    let (state_tx, state_rx) = mpsc::channel(10);
+    let (stats_tx, _stats_rx) = mpsc::channel(10);
+    let (pin_mgmt_tx, pin_mgmt_rx) = mpsc::channel(10);
+
+    let mock_sender = MockOutputSender::new();
+    let output_sender = mock_sender.to_output_sender("test_node".to_string());
+
+    let context = NodeContext {
+        inputs,
+        input_types: HashMap::new(),
+        control_rx,
+        output_sender,
+        batch_size,
+        state_tx,
+        stats_tx: Some(stats_tx),
+        telemetry_tx: None,
+        session_id: None,
+        cancellation_token: None,
+        pin_management_rx: Some(pin_mgmt_rx),
+        audio_pool: None,
+        video_pool: None,
+        pipeline_mode: streamkit_core::node::PipelineMode::Dynamic,
+        view_data_tx: None,
+    };
+
+    (context, mock_sender, state_rx, pin_mgmt_tx)
+}
+
 /// Creates a test NodeContext configured for **oneshot / batch** mode.
 ///
 /// Identical to [`create_test_context`] but sets `cancellation_token` to
