@@ -157,6 +157,58 @@ export function mergeTextMeasurements(
   return changed ? next : base;
 }
 
+// ── Server layout helpers ────────────────────────────────────────────────────
+
+/** Check whether incoming view data is a stale echo of our own config change.
+ *  Returns true when the data should be skipped (rev < local counter). */
+function isStaleViewData(vd: Record<string, unknown>, nodeId: string): boolean {
+  const sender = typeof vd._sender === 'string' ? vd._sender : undefined;
+  const rev = typeof vd._rev === 'number' ? vd._rev : undefined;
+  if (sender && sender === getClientNonce() && rev !== undefined) {
+    return rev < getLocalConfigRev(nodeId);
+  }
+  return false;
+}
+
+/** Populate per-layer source dimensions from server view data.
+ *  Only writes when a value actually changed to avoid unnecessary object churn. */
+function updateSourceDims(
+  sourceDimsRef: React.MutableRefObject<SourceDimsMap>,
+  serverLayers: ResolvedLayer[]
+): void {
+  for (const sl of serverLayers) {
+    if (sl.source_width != null && sl.source_height != null) {
+      const prev = sourceDimsRef.current.get(sl.id);
+      if (!prev || prev.width !== sl.source_width || prev.height !== sl.source_height) {
+        sourceDimsRef.current.set(sl.id, {
+          width: sl.source_width,
+          height: sl.source_height,
+        });
+      }
+    }
+  }
+}
+
+/** Apply server overlay and layer updates to the compositor store. */
+function applyServerLayoutToStore(store: CompositorStore, layout: CompositorLayout): void {
+  const prevLayers = getLayersFromStore(store);
+  const newLayers = mapServerLayers(prevLayers, layout.layers);
+  if (newLayers !== prevLayers) setLayersInStore(store, newLayers);
+
+  if (Array.isArray(layout.text_overlays)) {
+    const prevText = getTextOverlaysFromStore(store);
+    const base = applyServerOverlays(prevText, layout.text_overlays);
+    const next = mergeTextMeasurements(base, layout.text_overlays);
+    if (next !== prevText) setTextOverlaysInStore(store, next);
+  }
+
+  if (Array.isArray(layout.image_overlays)) {
+    const prevImg = getImageOverlaysFromStore(store);
+    const next = applyServerOverlays(prevImg, layout.image_overlays);
+    if (next !== prevImg) setImageOverlaysInStore(store, next);
+  }
+}
+
 // ── Hook ────────────────────────────────────────────────────────────────────
 
 /** Subscribe to server-driven layout updates for a compositor node.
@@ -188,53 +240,17 @@ export function useServerLayoutSync(
 
       const vd = viewData as Record<string, unknown>;
 
-      // Stale view-data gate: if this view data originated from our own
-      // config change and the rev is strictly less than our local counter,
-      // skip it.  We use `<` (not `<=`) because the view data for the
-      // current rev carries server-computed geometry (aspect-fit positions,
-      // text measurements) that the client cannot compute locally and
-      // must accept.
-      const sender = typeof vd._sender === 'string' ? vd._sender : undefined;
-      const rev = typeof vd._rev === 'number' ? vd._rev : undefined;
-      if (sender && sender === getClientNonce() && rev !== undefined) {
-        const localRev = getLocalConfigRev(nodeId);
-        if (rev < localRev) {
-          return;
-        }
-      }
+      // Stale view-data gate: skip echoes of our own config changes
+      // whose rev is strictly below our local counter.  We use `<`
+      // (not `<=`) because the view data for the current rev carries
+      // server-computed geometry that the client must accept.
+      if (isStaleViewData(vd, nodeId)) return;
 
       const layout = viewData as CompositorLayout;
       if (!Array.isArray(layout.layers)) return;
 
-      // Update source dims ref from server view data (prediction inputs).
-      for (const sl of layout.layers) {
-        if (sl.source_width != null && sl.source_height != null) {
-          const prev = sourceDimsRef.current.get(sl.id);
-          if (!prev || prev.width !== sl.source_width || prev.height !== sl.source_height) {
-            sourceDimsRef.current.set(sl.id, {
-              width: sl.source_width,
-              height: sl.source_height,
-            });
-          }
-        }
-      }
-
-      const prevLayers = getLayersFromStore(store);
-      const newLayers = mapServerLayers(prevLayers, layout.layers);
-      if (newLayers !== prevLayers) setLayersInStore(store, newLayers);
-
-      if (Array.isArray(layout.text_overlays)) {
-        const prevText = getTextOverlaysFromStore(store);
-        const base = applyServerOverlays(prevText, layout.text_overlays);
-        const next = mergeTextMeasurements(base, layout.text_overlays);
-        if (next !== prevText) setTextOverlaysInStore(store, next);
-      }
-
-      if (Array.isArray(layout.image_overlays)) {
-        const prevImg = getImageOverlaysFromStore(store);
-        const next = applyServerOverlays(prevImg, layout.image_overlays);
-        if (next !== prevImg) setImageOverlaysInStore(store, next);
-      }
+      updateSourceDims(sourceDimsRef, layout.layers);
+      applyServerLayoutToStore(store, layout);
     };
 
     // Apply current value immediately (if any) from the default Jotai store.
