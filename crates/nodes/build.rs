@@ -356,10 +356,7 @@ fn build_dav1d_static() -> Vec<std::path::PathBuf> {
             .arg("-Denable_examples=false")
             .status()
             .expect("failed to run meson — is meson installed?");
-        assert!(
-            meson_status.success(),
-            "meson setup failed (exit status: {meson_status})"
-        );
+        assert!(meson_status.success(), "meson setup failed (exit status: {meson_status})");
 
         let ninja_status = std::process::Command::new("ninja")
             .arg("-C")
@@ -367,10 +364,7 @@ fn build_dav1d_static() -> Vec<std::path::PathBuf> {
             .arg("install")
             .status()
             .expect("failed to run ninja — is ninja installed?");
-        assert!(
-            ninja_status.success(),
-            "ninja install failed (exit status: {ninja_status})"
-        );
+        assert!(ninja_status.success(), "ninja install failed (exit status: {ninja_status})");
     }
 
     println!("cargo:warning=dav1d_static: build complete, linking statically");

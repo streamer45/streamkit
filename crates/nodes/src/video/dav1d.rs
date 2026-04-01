@@ -289,8 +289,7 @@ impl Dav1dDecoder {
 
         // Wrap the input data in a Dav1dData.
         let mut dav1d_data = dav1d_ffi::Dav1dData::zeroed();
-        let buf_ptr =
-            unsafe { dav1d_ffi::dav1d_data_create(&raw mut dav1d_data, data.len()) };
+        let buf_ptr = unsafe { dav1d_ffi::dav1d_data_create(&raw mut dav1d_data, data.len()) };
         if buf_ptr.is_null() {
             return Err("dav1d: failed to allocate Dav1dData buffer".to_string());
         }
@@ -326,11 +325,9 @@ impl Dav1dDecoder {
                 if drained.is_empty() {
                     eagain_empty_retries += 1;
                     if eagain_empty_retries > MAX_EAGAIN_EMPTY_RETRIES {
-                        return Err(
-                            "dav1d: dav1d_send_data stuck in EAGAIN loop \
+                        return Err("dav1d: dav1d_send_data stuck in EAGAIN loop \
                              (no pictures produced after 1000 retries)"
-                                .to_string(),
-                        );
+                            .to_string());
                     }
                     if eagain_empty_retries <= EAGAIN_YIELD_THRESHOLD {
                         std::thread::yield_now();
@@ -580,12 +577,10 @@ fn copy_dav1d_picture(
     for row in 0..chroma_h {
         // SAFETY: stride >= chroma_w (checked above) and dav1d allocates
         // at least stride * chroma_h bytes per plane.
-        let u_row = unsafe {
-            std::slice::from_raw_parts(u_ptr.add(row * u_stride_usize), chroma_w)
-        };
-        let v_row = unsafe {
-            std::slice::from_raw_parts(v_ptr.add(row * v_stride_usize), chroma_w)
-        };
+        let u_row =
+            unsafe { std::slice::from_raw_parts(u_ptr.add(row * u_stride_usize), chroma_w) };
+        let v_row =
+            unsafe { std::slice::from_raw_parts(v_ptr.add(row * v_stride_usize), chroma_w) };
         let dst_start = uv_plane.offset + row * uv_plane.stride;
         for col in 0..chroma_w {
             data_slice[dst_start + col * 2] = u_row[col];
@@ -915,10 +910,7 @@ mod tests {
         for (i, packet) in decoded_packets.iter().enumerate() {
             match packet {
                 Packet::Video(frame) => {
-                    assert!(
-                        frame.metadata.is_some(),
-                        "Decoded frame {i} should have metadata"
-                    );
+                    assert!(frame.metadata.is_some(), "Decoded frame {i} should have metadata");
                 },
                 _ => panic!("Expected Video packet from dav1d decoder"),
             }
