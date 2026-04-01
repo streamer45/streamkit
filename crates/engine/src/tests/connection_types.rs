@@ -30,7 +30,9 @@ fn create_test_engine() -> DynamicEngine {
         node_inputs: HashMap::new(),
         pin_distributors: HashMap::new(),
         pin_management_txs: HashMap::new(),
+        dynamic_pin_nodes: std::collections::HashSet::new(),
         node_pin_metadata: HashMap::new(),
+        connections: HashMap::new(),
         node_kinds: HashMap::new(),
         batch_size: 32,
         session_id: None,
@@ -328,8 +330,139 @@ fn test_validate_connection_types_missing_pin_allowed_for_dynamic_pin_nodes() {
         .insert("dest".to_string(), NodePinMetadata { input_pins: vec![], output_pins: vec![] });
     let (tx, _rx) = mpsc::channel(1);
     engine.pin_management_txs.insert("dest".to_string(), tx);
+    engine.dynamic_pin_nodes.insert("dest".to_string());
 
     // Should succeed (pin will be created on-demand during connect).
     let result = engine.validate_connection_types("source", "out", "dest", "in_0");
     assert!(result.is_ok());
+}
+
+#[test]
+fn test_resolve_passthrough_type_direct() {
+    let mut engine = create_test_engine();
+
+    let video_type = PacketType::EncodedVideo(streamkit_core::types::EncodedVideoFormat {
+        codec: streamkit_core::types::VideoCodec::Vp9,
+        bitstream_format: None,
+        codec_private: None,
+        profile: None,
+        level: None,
+    });
+
+    // encoder.out -> pacer.in -> pacer.out
+    engine.node_pin_metadata.insert(
+        "encoder".to_string(),
+        NodePinMetadata {
+            input_pins: vec![],
+            output_pins: vec![OutputPin {
+                name: "out".to_string(),
+                produces_type: video_type.clone(),
+                cardinality: PinCardinality::Broadcast,
+            }],
+        },
+    );
+    engine.node_pin_metadata.insert(
+        "pacer".to_string(),
+        NodePinMetadata {
+            input_pins: vec![InputPin {
+                name: "in".to_string(),
+                accepts_types: vec![PacketType::Any],
+                cardinality: PinCardinality::One,
+            }],
+            output_pins: vec![OutputPin {
+                name: "out".to_string(),
+                produces_type: PacketType::Passthrough,
+                cardinality: PinCardinality::Broadcast,
+            }],
+        },
+    );
+
+    // Record the connection: encoder.out -> pacer.in
+    engine.connections.insert(
+        ("pacer".to_string(), "in".to_string()),
+        ("encoder".to_string(), "out".to_string()),
+    );
+
+    // Resolving pacer.out should trace back through pacer.in to encoder.out
+    let resolved = engine.resolve_passthrough_type("pacer", "out");
+    assert_eq!(resolved, video_type, "Passthrough should resolve to upstream video type");
+}
+
+#[test]
+fn test_resolve_passthrough_type_chained() {
+    let mut engine = create_test_engine();
+
+    let audio_type = PacketType::EncodedAudio(EncodedAudioFormat {
+        codec: AudioCodec::Opus,
+        codec_private: None,
+    });
+
+    // encoder.out -> pacer1.in -> pacer1.out -> pacer2.in -> pacer2.out
+    engine.node_pin_metadata.insert(
+        "encoder".to_string(),
+        NodePinMetadata {
+            input_pins: vec![],
+            output_pins: vec![OutputPin {
+                name: "out".to_string(),
+                produces_type: audio_type.clone(),
+                cardinality: PinCardinality::Broadcast,
+            }],
+        },
+    );
+    for name in ["pacer1", "pacer2"] {
+        engine.node_pin_metadata.insert(
+            name.to_string(),
+            NodePinMetadata {
+                input_pins: vec![InputPin {
+                    name: "in".to_string(),
+                    accepts_types: vec![PacketType::Any],
+                    cardinality: PinCardinality::One,
+                }],
+                output_pins: vec![OutputPin {
+                    name: "out".to_string(),
+                    produces_type: PacketType::Passthrough,
+                    cardinality: PinCardinality::Broadcast,
+                }],
+            },
+        );
+    }
+
+    engine.connections.insert(
+        ("pacer1".to_string(), "in".to_string()),
+        ("encoder".to_string(), "out".to_string()),
+    );
+    engine.connections.insert(
+        ("pacer2".to_string(), "in".to_string()),
+        ("pacer1".to_string(), "out".to_string()),
+    );
+
+    // Resolving pacer2.out should trace through pacer2 -> pacer1 -> encoder
+    let resolved = engine.resolve_passthrough_type("pacer2", "out");
+    assert_eq!(resolved, audio_type, "Chained Passthrough should resolve to upstream audio type");
+}
+
+#[test]
+fn test_resolve_passthrough_type_no_upstream() {
+    let mut engine = create_test_engine();
+
+    // Passthrough node with no upstream connection
+    engine.node_pin_metadata.insert(
+        "pacer".to_string(),
+        NodePinMetadata {
+            input_pins: vec![InputPin {
+                name: "in".to_string(),
+                accepts_types: vec![PacketType::Any],
+                cardinality: PinCardinality::One,
+            }],
+            output_pins: vec![OutputPin {
+                name: "out".to_string(),
+                produces_type: PacketType::Passthrough,
+                cardinality: PinCardinality::Broadcast,
+            }],
+        },
+    );
+
+    // No connections recorded — should fall back to Any
+    let resolved = engine.resolve_passthrough_type("pacer", "out");
+    assert_eq!(resolved, PacketType::Any, "Unresolvable Passthrough should return Any");
 }

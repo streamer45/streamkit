@@ -1134,6 +1134,8 @@ impl MoqPeerNode {
                 tracing::info!("MoqPeerNode: removed output pin '{}'", pin_name);
                 Self::remove_dynamic_output(dynamic_outputs, &pin_name);
             },
+            // Type info for pre-existing pins; not used by this node.
+            PinManagementMessage::InputTypeResolved { .. } => {},
         }
     }
 

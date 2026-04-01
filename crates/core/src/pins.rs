@@ -93,6 +93,14 @@ pub enum PinManagementMessage {
     /// Remove an input pin (e.g., connection deleted).
     RemoveInputPin { pin_name: String },
 
+    /// The upstream output pin's type has been resolved for a connected
+    /// input pin.  Sent by the engine after `connect_nodes` wires a
+    /// connection — for both pre-existing input pins (created at node
+    /// spawn time) and dynamically created ones (via `RequestAddInputPin`).
+    /// This is the single mechanism for delivering upstream type info to
+    /// all nodes in dynamic pipelines.
+    InputTypeResolved { pin_name: String, packet_type: PacketType },
+
     /// Request to create a new output pin (less common).
     RequestAddOutputPin {
         suggested_name: Option<String>,
