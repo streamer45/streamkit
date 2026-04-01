@@ -76,6 +76,29 @@ pub fn catalog_video_codec(codec: VideoCodec) -> hang::catalog::VideoCodec {
     }
 }
 
+/// Resolve the video codec from config → input_types → default (VP9).
+///
+/// Priority order:
+/// 1. Explicit `video_codec` config param (required for dynamic pipelines)
+/// 2. Auto-detected from `input_types` (static pipelines)
+/// 3. Default: VP9
+///
+/// Shared by `moq_peer` and `moq_push` to avoid duplicating the resolution chain.
+pub fn resolve_video_codec(
+    config_codec: Option<&str>,
+    input_types: &std::collections::HashMap<String, PacketType>,
+) -> VideoCodec {
+    config_codec
+        .and_then(parse_video_codec_config)
+        .or_else(|| {
+            input_types.iter().find_map(|(_, pt)| match pt {
+                PacketType::EncodedVideo(fmt) => Some(fmt.codec),
+                _ => None,
+            })
+        })
+        .unwrap_or(VideoCodec::Vp9)
+}
+
 /// Parse a `video_codec` config string (e.g. `"vp9"`, `"av1"`) into the
 /// corresponding [`VideoCodec`].  Returns `None` for unrecognised values so
 /// the caller can fall back to auto-detection.
@@ -136,5 +159,44 @@ mod tests {
             matches!(result, hang::catalog::VideoCodec::VP9(_)),
             "expected VP9 catalog codec, got {result:?}"
         );
+    }
+
+    #[test]
+    fn resolve_video_codec_prefers_config() {
+        let mut input_types = std::collections::HashMap::new();
+        input_types.insert(
+            "video".to_string(),
+            PacketType::EncodedVideo(EncodedVideoFormat {
+                codec: VideoCodec::Vp9,
+                bitstream_format: None,
+                codec_private: None,
+                profile: None,
+                level: None,
+            }),
+        );
+        // Config says AV1 — should win over input_types VP9.
+        assert_eq!(resolve_video_codec(Some("av1"), &input_types), VideoCodec::Av1);
+    }
+
+    #[test]
+    fn resolve_video_codec_falls_back_to_input_types() {
+        let mut input_types = std::collections::HashMap::new();
+        input_types.insert(
+            "video".to_string(),
+            PacketType::EncodedVideo(EncodedVideoFormat {
+                codec: VideoCodec::Av1,
+                bitstream_format: None,
+                codec_private: None,
+                profile: None,
+                level: None,
+            }),
+        );
+        assert_eq!(resolve_video_codec(None, &input_types), VideoCodec::Av1);
+    }
+
+    #[test]
+    fn resolve_video_codec_defaults_to_vp9() {
+        let input_types = std::collections::HashMap::new();
+        assert_eq!(resolve_video_codec(None, &input_types), VideoCodec::Vp9);
     }
 }

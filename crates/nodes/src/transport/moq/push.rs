@@ -5,7 +5,7 @@
 //! MoQ Push Node - publishes packets to a MoQ broadcast
 
 use super::constants::{
-    catalog_video_codec, moq_accepted_media_types, parse_video_codec_config,
+    catalog_video_codec, moq_accepted_media_types, resolve_video_codec,
     DEFAULT_AUDIO_FRAME_DURATION_US,
 };
 use async_trait::async_trait;
@@ -226,18 +226,8 @@ impl ProcessorNode for MoqPushNode {
         // 1. Explicit `video_codec` config param (required for dynamic pipelines)
         // 2. Auto-detected from `input_types` (static pipelines)
         // 3. Default: VP9
-        let video_codec = self
-            .config
-            .video_codec
-            .as_deref()
-            .and_then(parse_video_codec_config)
-            .or_else(|| {
-                context.input_types.iter().find_map(|(_, pt)| match pt {
-                    PacketType::EncodedVideo(fmt) => Some(fmt.codec),
-                    _ => None,
-                })
-            })
-            .unwrap_or(VideoCodec::Vp9);
+        let video_codec =
+            resolve_video_codec(self.config.video_codec.as_deref(), &context.input_types);
 
         if !has_audio && !has_video {
             let err_msg = "MoqPushNode requires at least one audio or video input";
