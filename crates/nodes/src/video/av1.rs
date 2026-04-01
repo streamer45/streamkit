@@ -66,6 +66,87 @@ const MAX_EAGAIN_EMPTY_RETRIES: u32 = 1000;
 const EAGAIN_YIELD_THRESHOLD: u32 = 10;
 
 // ---------------------------------------------------------------------------
+// AV1 OBU validation
+// ---------------------------------------------------------------------------
+
+/// Read a LEB128-encoded unsigned integer from `data`.
+/// Returns `(value, bytes_consumed)` or an error if the data is truncated
+/// or the encoding exceeds the 8-byte AV1-spec limit.
+fn read_leb128(data: &[u8]) -> Result<(u64, usize), &'static str> {
+    let mut value: u64 = 0;
+    for i in 0..8 {
+        if i >= data.len() {
+            return Err("truncated LEB128 size field");
+        }
+        let byte = data[i] as u64;
+        value |= (byte & 0x7F) << (i * 7);
+        if byte & 0x80 == 0 {
+            return Ok((value, i + 1));
+        }
+    }
+    Err("LEB128 size exceeds 8-byte AV1 limit")
+}
+
+/// Walk the OBUs in `data` and verify structural integrity.
+///
+/// Returns `Ok(())` when every OBU header is well-formed and its declared
+/// size fits inside the remaining buffer.  Returns `Err` on the first
+/// issue found.
+///
+/// This is a defence against rav1d 1.1.0's internal panic
+/// (`decode.rs:4997`) when its error handler accesses an uninitialised
+/// `frame_hdr` while recovering from a corrupted bitstream.  Because
+/// rav1d's `dav1d_send_data` is `extern "C"`, a panic inside it aborts
+/// the process — so we must reject obviously malformed data *before* it
+/// reaches the decoder.
+fn validate_av1_obus(data: &[u8]) -> Result<(), &'static str> {
+    let mut offset = 0;
+    while offset < data.len() {
+        let header_byte = data[offset];
+
+        // Bit 7 — forbidden bit (must be 0).
+        if header_byte & 0x80 != 0 {
+            return Err("forbidden bit set in OBU header");
+        }
+
+        let obu_type = (header_byte >> 3) & 0x0F;
+        let has_extension = header_byte & 0x04 != 0;
+        let has_size = header_byte & 0x02 != 0;
+
+        // Valid OBU types: 1–8, 15.
+        match obu_type {
+            1..=8 | 15 => {},
+            _ => return Err("invalid OBU type"),
+        }
+
+        offset += 1;
+
+        // Extension byte (temporal_id, spatial_id, reserved).
+        if has_extension {
+            if offset >= data.len() {
+                return Err("truncated OBU extension byte");
+            }
+            offset += 1;
+        }
+
+        if has_size {
+            let remaining = &data[offset..];
+            let (size, leb_bytes) = read_leb128(remaining)?;
+            offset += leb_bytes;
+            let left = data.len() - offset;
+            if size > left as u64 {
+                return Err("OBU size exceeds remaining data");
+            }
+            offset += size as usize;
+        } else {
+            // No size field — the OBU extends to end of data.
+            break;
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Configuration structs
 // ---------------------------------------------------------------------------
 
@@ -453,6 +534,15 @@ impl Av1Decoder {
         use std::ptr::NonNull;
 
         if data.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Validate OBU structure before feeding data to rav1d.  rav1d 1.1.0
+        // panics inside its error handler when processing truncated or
+        // corrupted bitstreams, and because the entry point is `extern "C"`
+        // the panic aborts the process.
+        if let Err(reason) = validate_av1_obus(data) {
+            tracing::warn!(size = data.len(), reason, "Skipping malformed AV1 packet");
             return Ok(Vec::new());
         }
 
@@ -1459,5 +1549,77 @@ mod tests {
                 _ => panic!("Expected Video packet from AV1 decoder"),
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // OBU validation unit tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_validate_av1_obus_valid_sequence_header() {
+        // Minimal sequence header OBU: type=1, has_size=1, size=1, one payload byte.
+        let data = [0x0a, 0x01, 0x00];
+        assert!(validate_av1_obus(&data).is_ok());
+    }
+
+    #[test]
+    fn test_validate_av1_obus_forbidden_bit() {
+        let data = [0x8a, 0x01, 0x00]; // forbidden bit set
+        assert!(validate_av1_obus(&data).is_err());
+    }
+
+    #[test]
+    fn test_validate_av1_obus_invalid_type() {
+        // OBU type 0 is reserved/invalid.
+        let data = [0x02, 0x01, 0x00]; // type=0, has_size=1
+        assert!(validate_av1_obus(&data).is_err());
+    }
+
+    #[test]
+    fn test_validate_av1_obus_truncated_size() {
+        // Sequence header OBU claiming size=10 but only 2 payload bytes.
+        let data = [0x0a, 0x0a, 0x00, 0x00];
+        assert!(validate_av1_obus(&data).is_err());
+    }
+
+    #[test]
+    fn test_validate_av1_obus_truncated_extension() {
+        // OBU with extension flag set but no extension byte.
+        let data = [0x0e]; // type=1, extension=1, has_size=1
+        assert!(validate_av1_obus(&data).is_err());
+    }
+
+    #[test]
+    fn test_validate_av1_obus_empty() {
+        assert!(validate_av1_obus(&[]).is_ok());
+    }
+
+    #[test]
+    fn test_validate_av1_obus_multiple_obus() {
+        // Two OBUs: temporal delimiter (type=2, size=0) + sequence header (type=1, size=1).
+        let data = [
+            0x12, 0x00, // TD: type=2, has_size=1, size=0
+            0x0a, 0x01, 0x00, // SEQ_HDR: type=1, has_size=1, size=1
+        ];
+        assert!(validate_av1_obus(&data).is_ok());
+    }
+
+    #[test]
+    fn test_validate_av1_obus_no_size_field() {
+        // Single OBU without size field — extends to end of data.
+        let data = [0x08, 0xAA, 0xBB]; // type=1, has_size=0
+        assert!(validate_av1_obus(&data).is_ok());
+    }
+
+    #[test]
+    fn test_read_leb128_basic() {
+        assert_eq!(read_leb128(&[0x00]).unwrap(), (0, 1));
+        assert_eq!(read_leb128(&[0x7F]).unwrap(), (127, 1));
+        assert_eq!(read_leb128(&[0x80, 0x01]).unwrap(), (128, 2));
+    }
+
+    #[test]
+    fn test_read_leb128_truncated() {
+        assert!(read_leb128(&[0x80]).is_err()); // continuation bit set, no next byte
     }
 }
