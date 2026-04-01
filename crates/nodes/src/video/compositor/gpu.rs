@@ -1667,7 +1667,7 @@ pub fn should_use_gpu_with_state(
 // ── Pool unit tests ─────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::disallowed_macros)]
+#[allow(clippy::expect_used, clippy::disallowed_macros, clippy::significant_drop_tightening)]
 mod tests {
     use std::sync::{LazyLock, Mutex};
 

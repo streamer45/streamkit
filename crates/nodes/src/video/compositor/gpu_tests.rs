@@ -10,6 +10,11 @@
 //! ```bash
 //! cargo test -p streamkit-nodes --features gpu -- gpu
 //! ```
+//!
+//! All GPU tests share a single `GpuContext` behind a `Mutex` to avoid
+//! creating 26+ simultaneous wgpu devices.  The guard is intentionally
+//! held for each test's full duration to serialise GPU access.
+#![allow(clippy::significant_drop_tightening)]
 
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 
