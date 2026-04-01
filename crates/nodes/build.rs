@@ -119,6 +119,7 @@ fn build_svt_av1_static() -> Vec<std::path::PathBuf> {
         .define("BUILD_APPS", "OFF")
         .define("BUILD_DEC", "OFF")
         .define("BUILD_TESTING", "OFF")
+        .define("CMAKE_INSTALL_LIBDIR", "lib")
         .build();
 
     // 4. Emit linker directives.

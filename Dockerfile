@@ -108,7 +108,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
         /build/target/release-lto/deps/streamkit_server-* \
         /build/target/release-lto/.fingerprint/streamkit-server-*; \
       # Build only the server binary \
-      cargo build --locked --profile release-lto --features "moq" --bin skit; \
+      cargo build --locked --profile release-lto --features "moq,svt_av1_static" --bin skit; \
       # Copy final binary out of cache mount \
       mkdir -p /build/bin && cp /build/target/release-lto/skit /build/bin/skit \
     '
