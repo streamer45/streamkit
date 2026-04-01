@@ -85,6 +85,9 @@ pub mod pixel_ops;
 #[cfg(feature = "compositor")]
 pub mod pixel_convert;
 
+#[cfg(any(feature = "vp9", feature = "av1", feature = "svt_av1"))]
+pub(crate) mod encoder_trait;
+
 #[cfg(feature = "vp9")]
 pub mod vp9;
 

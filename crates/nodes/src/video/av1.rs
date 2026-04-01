@@ -20,7 +20,6 @@ use rav1e::prelude::{
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
-use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Instant;
 use streamkit_core::stats::NodeStatsTracker;
@@ -336,177 +335,54 @@ impl ProcessorNode for Av1EncoderNode {
         Some(AV1_CONTENT_TYPE.to_string())
     }
 
-    async fn run(self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
-        let node_name = context.output_sender.node_name().to_string();
-        state_helpers::emit_initializing(&context.state_tx, &node_name);
+    async fn run(self: Box<Self>, context: NodeContext) -> Result<(), StreamKitError> {
+        encoder_trait::run_encoder(*self, context).await
+    }
+}
 
-        tracing::info!("Av1EncoderNode starting");
-        let mut input_rx = context.take_input("in")?;
+impl EncoderNodeRunner for Av1EncoderNode {
+    const CONTENT_TYPE: &'static str = AV1_CONTENT_TYPE;
+    const NODE_LABEL: &'static str = "Av1EncoderNode";
+    const PACKETS_COUNTER_NAME: &'static str = "av1_encoder_packets_processed";
+    const DURATION_HISTOGRAM_NAME: &'static str = "av1_encode_duration";
 
-        let meter = global::meter("skit_nodes");
-        let packets_processed_counter = meter.u64_counter("av1_encoder_packets_processed").build();
-        let encode_duration_histogram = meter
-            .f64_histogram("av1_encode_duration")
-            .with_boundaries(streamkit_core::metrics::HISTOGRAM_BOUNDARIES_CODEC_PACKET.to_vec())
-            .build();
-
-        let (encode_tx, mut encode_rx) =
-            mpsc::channel::<(VideoFrame, Option<PacketMetadata>)>(get_codec_channel_capacity());
-        let (result_tx, mut result_rx) =
-            mpsc::channel::<Result<EncodedPacket, String>>(get_codec_channel_capacity());
-
-        let encoder_config = self.config;
-        let encode_task = tokio::task::spawn_blocking(move || {
-            let mut encoder: Option<Av1Encoder> = None;
-            let mut current_dimensions: Option<(u32, u32)> = None;
-
-            while let Some((frame, metadata)) = encode_rx.blocking_recv() {
-                // Exit early if the async side has been cancelled (e.g.
-                // tokio runtime shutting down).  Without this check the
-                // blocking thread keeps the runtime alive indefinitely,
-                // hanging the test binary / process.
-                if result_tx.is_closed() {
-                    return;
-                }
-
-                if frame.pixel_format == PixelFormat::Rgba8 {
-                    let _ =
-                        result_tx.blocking_send(Err("AV1 encoder requires NV12 or I420 input; \
-                         insert a video::pixel_convert node upstream"
-                            .to_string()));
-                    continue;
-                }
-
-                let frame_dimensions = (frame.width, frame.height);
-                if current_dimensions != Some(frame_dimensions) {
-                    // Flush the old encoder before replacing it so that any
-                    // buffered/reordered frames (possible in non-low-latency
-                    // mode) are emitted rather than silently dropped.
-                    if let Some(old_encoder) = encoder.as_mut() {
-                        match old_encoder.flush() {
-                            Ok(packets) => {
-                                for packet in packets {
-                                    if result_tx.blocking_send(Ok(packet)).is_err() {
-                                        return;
-                                    }
-                                }
-                            },
-                            Err(err) => {
-                                tracing::warn!(
-                                    error = %err,
-                                    "failed to flush old AV1 encoder during dimension change"
-                                );
-                            },
-                        }
-                    }
-                    match Av1Encoder::new(frame.width, frame.height, &encoder_config) {
-                        Ok(new_encoder) => {
-                            encoder = Some(new_encoder);
-                            current_dimensions = Some(frame_dimensions);
-                        },
-                        Err(err) => {
-                            tracing::warn!(
-                                width = frame.width,
-                                height = frame.height,
-                                "AV1 encoder re-creation failed, dropping frame: {err}"
-                            );
-                            let _ = result_tx.blocking_send(Err(err));
-                            continue;
-                        },
-                    }
-                }
-
-                let Some(encoder) = encoder.as_mut() else {
-                    let _ = result_tx.blocking_send(Err("AV1 encoder not initialized".to_string()));
-                    continue;
-                };
-
-                let encode_start_time = Instant::now();
-                let result = encoder.encode_frame(&frame, metadata);
-                encode_duration_histogram.record(encode_start_time.elapsed().as_secs_f64(), &[]);
-
-                match result {
-                    Ok(packets) => {
-                        for packet in packets {
-                            if result_tx.blocking_send(Ok(packet)).is_err() {
-                                return;
-                            }
-                        }
-                    },
-                    Err(err) => {
-                        let _ = result_tx.blocking_send(Err(err));
-                    },
-                }
-            }
-
-            if let Some(encoder) = encoder.as_mut() {
-                if !result_tx.is_closed() {
-                    match encoder.flush() {
-                        Ok(packets) => {
-                            for packet in packets {
-                                if result_tx.blocking_send(Ok(packet)).is_err() {
-                                    return;
-                                }
-                            }
-                        },
-                        Err(err) => {
-                            let _ = result_tx.blocking_send(Err(err));
-                        },
-                    }
-                }
-            }
-        });
-
-        state_helpers::emit_running(&context.state_tx, &node_name);
-
-        let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
-        let batch_size = context.batch_size;
-
-        let encode_tx_clone = encode_tx.clone();
-        let mut input_task = tokio::spawn(async move {
-            loop {
-                let Some(first_packet) = input_rx.recv().await else {
-                    break;
-                };
-
-                let packet_batch =
-                    packet_helpers::batch_packets_greedy(first_packet, &mut input_rx, batch_size);
-
-                for packet in packet_batch {
-                    if let Packet::Video(mut frame) = packet {
-                        let metadata = frame.metadata.take();
-                        if encode_tx_clone.send((frame, metadata)).await.is_err() {
-                            tracing::error!(
-                                "Av1EncoderNode encode task has shut down unexpectedly"
-                            );
-                            return;
-                        }
-                    }
-                }
-            }
-            tracing::info!("Av1EncoderNode input stream closed");
-        });
-
-        crate::codec_utils::codec_forward_loop(
-            &mut context,
-            &mut result_rx,
-            &mut input_task,
-            encode_task,
-            encode_tx,
-            &packets_processed_counter,
-            &mut stats_tracker,
-            |encoded| Packet::Binary {
-                data: encoded.data,
-                content_type: Some(Cow::Borrowed(AV1_CONTENT_TYPE)),
-                metadata: encoded.metadata,
-            },
-            "Av1EncoderNode",
+    fn spawn_codec_task(
+        self,
+        encode_rx: mpsc::Receiver<(VideoFrame, Option<PacketMetadata>)>,
+        result_tx: mpsc::Sender<Result<EncodedPacket, String>>,
+        duration_histogram: opentelemetry::metrics::Histogram<f64>,
+    ) -> tokio::task::JoinHandle<()> {
+        encoder_trait::spawn_standard_encode_task::<Av1Encoder>(
+            self.config,
+            encode_rx,
+            result_tx,
+            duration_histogram,
         )
-        .await;
+    }
+}
 
-        state_helpers::emit_stopped(&context.state_tx, &node_name, "input_closed");
-        tracing::info!("Av1EncoderNode finished");
-        Ok(())
+impl StandardVideoEncoder for Av1Encoder {
+    type Config = Av1EncoderConfig;
+    const CODEC_NAME: &'static str = "AV1";
+
+    fn new_encoder(width: u32, height: u32, config: &Self::Config) -> Result<Self, String> {
+        Self::new(width, height, config)
+    }
+
+    fn encode(
+        &mut self,
+        frame: &VideoFrame,
+        metadata: Option<PacketMetadata>,
+    ) -> Result<Vec<EncodedPacket>, String> {
+        self.encode_frame(frame, metadata)
+    }
+
+    fn flush_encoder(&mut self) -> Result<Vec<EncodedPacket>, String> {
+        self.flush()
+    }
+
+    fn flush_on_dimension_change() -> bool {
+        true
     }
 }
 
@@ -514,10 +390,7 @@ impl ProcessorNode for Av1EncoderNode {
 // Internal codec types
 // ---------------------------------------------------------------------------
 
-struct EncodedPacket {
-    data: Bytes,
-    metadata: Option<PacketMetadata>,
-}
+use super::encoder_trait::{self, EncodedPacket, EncoderNodeRunner, StandardVideoEncoder};
 
 // ---------------------------------------------------------------------------
 // rav1d-based AV1 decoder
@@ -1304,6 +1177,7 @@ mod tests {
         assert_state_initializing, assert_state_running, assert_state_stopped, create_test_context,
         create_test_video_frame,
     };
+    use std::borrow::Cow;
     use std::collections::HashMap;
     use tokio::sync::mpsc;
 

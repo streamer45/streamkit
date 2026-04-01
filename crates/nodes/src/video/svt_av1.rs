@@ -32,20 +32,17 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use opentelemetry::global;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use std::borrow::Cow;
 use std::ffi::CString;
 use std::time::Instant;
-use streamkit_core::stats::NodeStatsTracker;
 use streamkit_core::types::{
-    EncodedVideoFormat, Packet, PacketMetadata, PacketType, PixelFormat, RawVideoFormat,
-    VideoCodec, VideoFrame,
+    EncodedVideoFormat, PacketMetadata, PacketType, PixelFormat, RawVideoFormat, VideoCodec,
+    VideoFrame,
 };
 use streamkit_core::{
-    config_helpers, get_codec_channel_capacity, packet_helpers, state_helpers, InputPin,
-    NodeContext, NodeRegistry, OutputPin, PinCardinality, ProcessorNode, StreamKitError,
+    config_helpers, InputPin, NodeContext, NodeRegistry, OutputPin, PinCardinality, ProcessorNode,
+    StreamKitError,
 };
 use tokio::sync::mpsc;
 
@@ -166,28 +163,23 @@ impl ProcessorNode for SvtAv1EncoderNode {
         Some(AV1_CONTENT_TYPE.to_string())
     }
 
-    async fn run(self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
-        let node_name = context.output_sender.node_name().to_string();
-        state_helpers::emit_initializing(&context.state_tx, &node_name);
+    async fn run(self: Box<Self>, context: NodeContext) -> Result<(), StreamKitError> {
+        encoder_trait::run_encoder(*self, context).await
+    }
+}
 
-        tracing::info!("SvtAv1EncoderNode starting");
-        let mut input_rx = context.take_input("in")?;
+impl EncoderNodeRunner for SvtAv1EncoderNode {
+    const CONTENT_TYPE: &'static str = AV1_CONTENT_TYPE;
+    const NODE_LABEL: &'static str = "SvtAv1EncoderNode";
+    const PACKETS_COUNTER_NAME: &'static str = "svt_av1_encoder_packets_processed";
+    const DURATION_HISTOGRAM_NAME: &'static str = "svt_av1_send_duration";
 
-        let meter = global::meter("skit_nodes");
-        let packets_processed_counter =
-            meter.u64_counter("svt_av1_encoder_packets_processed").build();
-        let send_duration_histogram = meter
-            .f64_histogram("svt_av1_send_duration")
-            .with_boundaries(streamkit_core::metrics::HISTOGRAM_BOUNDARIES_CODEC_PACKET.to_vec())
-            .build();
-
-        let (encode_tx, mut encode_rx) =
-            mpsc::channel::<(VideoFrame, Option<PacketMetadata>)>(get_codec_channel_capacity());
-        let (result_tx, mut result_rx) =
-            mpsc::channel::<Result<EncodedPacket, String>>(get_codec_channel_capacity());
-
-        // ── Codec task ───────────────────────────────────────────────────
-        //
+    fn spawn_codec_task(
+        self,
+        mut encode_rx: mpsc::Receiver<(VideoFrame, Option<PacketMetadata>)>,
+        result_tx: mpsc::Sender<Result<EncodedPacket, String>>,
+        send_duration_histogram: opentelemetry::metrics::Histogram<f64>,
+    ) -> tokio::task::JoinHandle<()> {
         // SVT-AV1 in low-delay mode blocks on `get_packet` until a packet
         // is available.  To avoid deadlocking (send_picture cannot proceed
         // if get_packet is blocked on the same thread), we split into two
@@ -198,7 +190,7 @@ impl ProcessorNode for SvtAv1EncoderNode {
         // SVT-AV1 provides internal synchronisation for concurrent
         // `send_picture` / `get_packet` calls from different threads.
         let encoder_config = self.config;
-        let encode_task = tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
             let mut encoder: Option<SvtAv1Encoder> = None;
             let mut current_dimensions: Option<(u32, u32)> = None;
             let mut recv_thread: Option<std::thread::JoinHandle<()>> = None;
@@ -289,58 +281,7 @@ impl ProcessorNode for SvtAv1EncoderNode {
                 // Drop encoder (calls deinit + deinit_handle).
                 drop(enc);
             }
-        });
-
-        state_helpers::emit_running(&context.state_tx, &node_name);
-
-        let mut stats_tracker = NodeStatsTracker::new(node_name.clone(), context.stats_tx.clone());
-        let batch_size = context.batch_size;
-
-        let encode_tx_clone = encode_tx.clone();
-        let mut input_task = tokio::spawn(async move {
-            loop {
-                let Some(first_packet) = input_rx.recv().await else {
-                    break;
-                };
-
-                let packet_batch =
-                    packet_helpers::batch_packets_greedy(first_packet, &mut input_rx, batch_size);
-
-                for packet in packet_batch {
-                    if let Packet::Video(mut frame) = packet {
-                        let metadata = frame.metadata.take();
-                        if encode_tx_clone.send((frame, metadata)).await.is_err() {
-                            tracing::error!(
-                                "SvtAv1EncoderNode encode task has shut down unexpectedly"
-                            );
-                            return;
-                        }
-                    }
-                }
-            }
-            tracing::info!("SvtAv1EncoderNode input stream closed");
-        });
-
-        crate::codec_utils::codec_forward_loop(
-            &mut context,
-            &mut result_rx,
-            &mut input_task,
-            encode_task,
-            encode_tx,
-            &packets_processed_counter,
-            &mut stats_tracker,
-            |encoded| Packet::Binary {
-                data: encoded.data,
-                content_type: Some(Cow::Borrowed(AV1_CONTENT_TYPE)),
-                metadata: encoded.metadata,
-            },
-            "SvtAv1EncoderNode",
-        )
-        .await;
-
-        state_helpers::emit_stopped(&context.state_tx, &node_name, "input_closed");
-        tracing::info!("SvtAv1EncoderNode finished");
-        Ok(())
+        })
     }
 }
 
@@ -348,10 +289,7 @@ impl ProcessorNode for SvtAv1EncoderNode {
 // Internal codec types
 // ---------------------------------------------------------------------------
 
-struct EncodedPacket {
-    data: Bytes,
-    metadata: Option<PacketMetadata>,
-}
+use super::encoder_trait::{self, EncodedPacket, EncoderNodeRunner};
 
 /// Wrapper around `*mut EbComponentType` that can be sent across threads.
 ///
@@ -873,6 +811,7 @@ mod tests {
         create_test_video_frame,
     };
     use std::collections::HashMap;
+    use streamkit_core::types::Packet;
     use tokio::sync::mpsc;
 
     #[tokio::test]
