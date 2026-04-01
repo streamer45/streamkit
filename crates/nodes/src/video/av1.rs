@@ -78,7 +78,7 @@ fn read_leb128(data: &[u8]) -> Result<(u64, usize), &'static str> {
         if i >= data.len() {
             return Err("truncated LEB128 size field");
         }
-        let byte = data[i] as u64;
+        let byte = u64::from(data[i]);
         value |= (byte & 0x7F) << (i * 7);
         if byte & 0x80 == 0 {
             return Ok((value, i + 1));
@@ -137,7 +137,7 @@ fn validate_av1_obus(data: &[u8]) -> Result<(), &'static str> {
             if size > left as u64 {
                 return Err("OBU size exceeds remaining data");
             }
-            offset += size as usize;
+            offset += usize::try_from(size).map_err(|_| "OBU size too large for platform")?;
         } else {
             // No size field — the OBU extends to end of data.
             break;
