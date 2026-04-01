@@ -45,7 +45,7 @@ jobs:
 
       - name: Build release binaries
         run: |
-          cargo build --locked -p streamkit-server --bin skit --release --features "moq"
+          cargo build --locked -p streamkit-server --bin skit --release --features "moq,svt_av1_static"
           cargo build --locked -p streamkit-client --bin skit-cli --release
 
       - name: Strip binaries
