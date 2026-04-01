@@ -61,3 +61,7 @@ _Static_assert(
     offsetof(Dav1dPictureParameters, layout) == 8,
     "Dav1dPictureParameters::layout offset changed — update dav1d_ffi.rs"
 );
+_Static_assert(
+    offsetof(Dav1dPictureParameters, bpc) == 12,
+    "Dav1dPictureParameters::bpc offset changed — update dav1d_ffi.rs"
+);

@@ -88,6 +88,171 @@ pub mod pixel_convert;
 #[cfg(any(feature = "vp9", feature = "av1", feature = "svt_av1"))]
 pub(crate) mod encoder_trait;
 
+// ── Shared I420→NV12 conversion helpers ──────────────────────────────────────
+//
+// Used by both the rav1d decoder (av1.rs) and the C dav1d decoder (dav1d.rs).
+
+/// Raw plane pointers + strides for an I420 picture, abstracting over the
+/// different picture types produced by rav1d and C dav1d.
+#[cfg(any(feature = "av1", feature = "dav1d"))]
+pub(super) struct I420Planes {
+    pub y_ptr: *const u8,
+    pub u_ptr: *const u8,
+    pub v_ptr: *const u8,
+    /// Luma stride in bytes (must be positive).
+    pub y_stride: isize,
+    /// Chroma stride in bytes (must be positive, shared by U and V).
+    pub uv_stride: isize,
+    /// Picture width in pixels.
+    pub width: u32,
+    /// Picture height in pixels.
+    pub height: u32,
+}
+
+/// Copy a single plane from a raw pointer with `src_stride` into `dst` with
+/// `dst_stride`, copying `width` bytes per row for `height` rows.
+///
+/// # Safety
+///
+/// The caller must ensure `src_ptr` points to at least
+/// `(height - 1) * src_stride + width` readable bytes.
+///
+/// # Errors
+///
+/// Returns an error if `src_stride` is non-positive or the destination slice
+/// is too small.
+#[cfg(any(feature = "av1", feature = "dav1d"))]
+pub(super) fn copy_plane(
+    dst: &mut [u8],
+    dst_stride: usize,
+    src_ptr: *const u8,
+    src_stride: isize,
+    width: usize,
+    height: usize,
+) -> Result<(), String> {
+    if src_stride <= 0 {
+        return Err("Invalid source stride for plane copy".to_string());
+    }
+    #[allow(clippy::cast_sign_loss)]
+    let src_stride = src_stride as usize;
+
+    for row in 0..height {
+        // SAFETY: caller guarantees the source buffer is large enough.
+        let src_row = unsafe { std::slice::from_raw_parts(src_ptr.add(row * src_stride), width) };
+        let dst_start = row * dst_stride;
+        let dst_end = dst_start + width;
+        if dst_end > dst.len() {
+            return Err("plane copy overflow".to_string());
+        }
+        dst[dst_start..dst_end].copy_from_slice(src_row);
+    }
+
+    Ok(())
+}
+
+/// Convert I420 planes into an NV12 [`VideoFrame`].
+///
+/// Copies the Y plane as-is, then interleaves the U and V planes into a
+/// single UV plane.  Includes bounds-checking on strides and allocations.
+///
+/// # Safety
+///
+/// The raw pointers in `planes` must be valid for the dimensions described.
+#[cfg(any(feature = "av1", feature = "dav1d"))]
+pub(super) fn i420_to_nv12(
+    planes: &I420Planes,
+    metadata: Option<streamkit_core::types::PacketMetadata>,
+    video_pool: Option<&std::sync::Arc<streamkit_core::VideoFramePool>>,
+) -> Result<streamkit_core::types::VideoFrame, String> {
+    use streamkit_core::types::{VideoLayout, VideoFrame};
+    use streamkit_core::PooledVideoData;
+
+    let width = planes.width;
+    let height = planes.height;
+
+    // Output layout is NV12 (Y + interleaved UV).
+    let nv12_layout = VideoLayout::packed(width, height, PixelFormat::Nv12);
+    let mut data = video_pool.map_or_else(
+        || PooledVideoData::from_vec(vec![0u8; nv12_layout.total_bytes()]),
+        |pool| pool.get(nv12_layout.total_bytes()),
+    );
+    let data_slice = data.as_mut_slice();
+
+    let nv12_planes = nv12_layout.planes();
+    let y_plane = nv12_planes[0];
+    let uv_plane = nv12_planes[1];
+
+    // Copy Y plane.
+    copy_plane(
+        &mut data_slice[y_plane.offset..y_plane.offset + y_plane.stride * y_plane.height as usize],
+        y_plane.stride,
+        planes.y_ptr,
+        planes.y_stride,
+        width as usize,
+        height as usize,
+    )?;
+
+    // Interleave U + V into NV12's single UV plane.
+    let chroma_w = (width as usize).div_ceil(2);
+    let chroma_h = uv_plane.height as usize;
+
+    #[allow(clippy::cast_sign_loss)]
+    let u_stride_usize = planes.uv_stride as usize;
+    #[allow(clippy::cast_sign_loss)]
+    let v_stride_usize = planes.uv_stride as usize;
+
+    // Guard against corrupted bitstreams producing unexpected dimensions.
+    if u_stride_usize < chroma_w {
+        return Err(format!(
+            "U plane stride ({u_stride_usize}) < chroma width ({chroma_w})"
+        ));
+    }
+    if v_stride_usize < chroma_w {
+        return Err(format!(
+            "V plane stride ({v_stride_usize}) < chroma width ({chroma_w})"
+        ));
+    }
+    // Verify the total range we will access fits within the expected allocation
+    // (stride × height).
+    debug_assert!(
+        chroma_h == 0
+            || (chroma_h - 1) * u_stride_usize + chroma_w
+                <= u_stride_usize.saturating_mul(chroma_h),
+        "U plane read would exceed expected allocation"
+    );
+    debug_assert!(
+        chroma_h == 0
+            || (chroma_h - 1) * v_stride_usize + chroma_w
+                <= v_stride_usize.saturating_mul(chroma_h),
+        "V plane read would exceed expected allocation"
+    );
+
+    for row in 0..chroma_h {
+        // SAFETY: We have verified above that stride >= chroma_w, and the
+        // decoder allocates at least stride × chroma_h bytes per plane.
+        let u_row = unsafe {
+            std::slice::from_raw_parts(
+                planes.u_ptr.add(row * u_stride_usize),
+                chroma_w,
+            )
+        };
+        let v_row = unsafe {
+            std::slice::from_raw_parts(
+                planes.v_ptr.add(row * v_stride_usize),
+                chroma_w,
+            )
+        };
+        let dst_start = uv_plane.offset + row * uv_plane.stride;
+        for col in 0..chroma_w {
+            data_slice[dst_start + col * 2] = u_row[col];
+            data_slice[dst_start + col * 2 + 1] = v_row[col];
+        }
+    }
+
+    VideoFrame::from_pooled(width, height, PixelFormat::Nv12, data, metadata)
+        .map_err(|e| e.to_string())
+}
+
 #[cfg(feature = "vp9")]
 pub mod vp9;
 

@@ -23,17 +23,17 @@ use bytes::Bytes;
 use opentelemetry::global;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use std::ffi::{c_int, c_void};
+use std::ffi::c_void;
 use std::sync::Arc;
 use std::time::Instant;
 use streamkit_core::stats::NodeStatsTracker;
 use streamkit_core::types::{
     EncodedVideoFormat, Packet, PacketMetadata, PacketType, PixelFormat, RawVideoFormat,
-    VideoCodec, VideoFrame, VideoLayout,
+    VideoCodec, VideoFrame,
 };
 use streamkit_core::{
     config_helpers, get_codec_channel_capacity, packet_helpers, state_helpers, InputPin,
-    NodeContext, NodeRegistry, OutputPin, PinCardinality, PooledVideoData, ProcessorNode,
+    NodeContext, NodeRegistry, OutputPin, PinCardinality, ProcessorNode,
     StreamKitError, VideoFramePool,
 };
 use tokio::sync::mpsc;
@@ -257,7 +257,7 @@ impl Dav1dDecoder {
             dav1d_ffi::dav1d_default_settings(&raw mut settings);
         }
 
-        let n_threads = c_int::try_from(threads).unwrap_or(0);
+        let n_threads = std::ffi::c_int::try_from(threads).unwrap_or(0);
         settings.set_n_threads(n_threads);
         // Optimise for low latency: emit frames as soon as possible.
         settings.set_max_frame_delay(1);
@@ -493,6 +493,17 @@ fn copy_dav1d_picture(
         ));
     }
 
+    // Reject non-8-bit content.  AV1 supports 10-bit (Main profile) and
+    // 12-bit (Professional profile), but the copy code below treats every
+    // sample as a single byte.  Feeding 10/12-bit data would produce
+    // silently corrupted output.
+    let bpc = pic.bpc();
+    if bpc != 8 {
+        return Err(format!(
+            "dav1d decoder produced {bpc}-bit content, but only 8-bit is supported"
+        ));
+    }
+
     let width_i = pic.width();
     let height_i = pic.height();
     if width_i <= 0 || height_i <= 0 {
@@ -519,77 +530,30 @@ fn copy_dav1d_picture(
     if u_ptr.is_null() {
         return Err("dav1d decoder returned null U plane".to_string());
     }
-    let u_stride = pic.stride(1);
-    if u_stride <= 0 {
-        return Err("dav1d decoder returned invalid U stride".to_string());
+    let uv_stride = pic.stride(1);
+    if uv_stride <= 0 {
+        return Err("dav1d decoder returned invalid chroma stride".to_string());
     }
 
-    // V plane — shares chroma stride with U.
+    // V plane
     let v_ptr = pic.data_ptr(2);
     if v_ptr.is_null() {
         return Err("dav1d decoder returned null V plane".to_string());
     }
-    let v_stride = u_stride;
 
-    // Output layout is NV12 (Y + interleaved UV).
-    let nv12_layout = VideoLayout::packed(width, height, PixelFormat::Nv12);
-    let mut data = video_pool.map_or_else(
-        || PooledVideoData::from_vec(vec![0u8; nv12_layout.total_bytes()]),
-        |pool| pool.get(nv12_layout.total_bytes()),
-    );
-    let data_slice = data.as_mut_slice();
-
-    let nv12_planes = nv12_layout.planes();
-    let y_plane = nv12_planes[0];
-    let uv_plane = nv12_planes[1];
-
-    // Copy Y plane — reuse the helper from av1.rs.
-    #[allow(clippy::cast_possible_truncation)]
-    super::av1::copy_dav1d_plane(
-        &mut data_slice[y_plane.offset..y_plane.offset + y_plane.stride * y_plane.height as usize],
-        y_plane.stride,
-        y_ptr,
-        y_stride as c_int,
-        width as usize,
-        height as usize,
-    )?;
-
-    // Interleave U + V into NV12's single UV plane.
-    let chroma_w = (width as usize).div_ceil(2);
-    let chroma_h = uv_plane.height as usize;
-
-    #[allow(clippy::cast_sign_loss)]
-    let u_stride_usize = u_stride as usize;
-    #[allow(clippy::cast_sign_loss)]
-    let v_stride_usize = v_stride as usize;
-
-    if u_stride_usize < chroma_w {
-        return Err(format!(
-            "dav1d decoder U plane stride ({u_stride_usize}) < chroma width ({chroma_w})"
-        ));
-    }
-    if v_stride_usize < chroma_w {
-        return Err(format!(
-            "dav1d decoder V plane stride ({v_stride_usize}) < chroma width ({chroma_w})"
-        ));
-    }
-
-    for row in 0..chroma_h {
-        // SAFETY: stride >= chroma_w (checked above) and dav1d allocates
-        // at least stride * chroma_h bytes per plane.
-        let u_row =
-            unsafe { std::slice::from_raw_parts(u_ptr.add(row * u_stride_usize), chroma_w) };
-        let v_row =
-            unsafe { std::slice::from_raw_parts(v_ptr.add(row * v_stride_usize), chroma_w) };
-        let dst_start = uv_plane.offset + row * uv_plane.stride;
-        for col in 0..chroma_w {
-            data_slice[dst_start + col * 2] = u_row[col];
-            data_slice[dst_start + col * 2 + 1] = v_row[col];
-        }
-    }
-
-    VideoFrame::from_pooled(width, height, PixelFormat::Nv12, data, metadata)
-        .map_err(|e| e.to_string())
+    super::i420_to_nv12(
+        &super::I420Planes {
+            y_ptr,
+            u_ptr,
+            v_ptr,
+            y_stride,
+            uv_stride,
+            width,
+            height,
+        },
+        metadata,
+        video_pool,
+    )
 }
 
 // ---------------------------------------------------------------------------

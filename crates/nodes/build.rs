@@ -333,8 +333,17 @@ fn build_dav1d_static() -> Vec<std::path::PathBuf> {
     let install_dir = out_dir.join("dav1d-install");
     let build_dir = out_dir.join("dav1d-build");
 
-    // Only rebuild if the install dir doesn't already exist (cached builds).
-    if !install_dir.join("lib").exists() && !install_dir.join("lib64").exists() {
+    // Only rebuild if libdav1d.a is not already present (cached builds).
+    // Checking the actual library file is more robust than checking for a
+    // directory — a partial build could leave the dir without the artifact.
+    let lib_search_dirs = [
+        install_dir.join("lib/x86_64-linux-gnu"),
+        install_dir.join("lib64"),
+        install_dir.join("lib"),
+    ];
+    let already_built = lib_search_dirs.iter().any(|d| d.join("libdav1d.a").exists());
+
+    if !already_built {
         if build_dir.exists() {
             std::fs::remove_dir_all(&build_dir).ok();
         }

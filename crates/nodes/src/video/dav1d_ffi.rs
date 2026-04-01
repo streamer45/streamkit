@@ -130,6 +130,8 @@ const PIC_P_W_OFFSET: usize = 56;
 const PIC_P_H_OFFSET: usize = 60;
 /// Byte offset of `Dav1dPicture::p.layout`.
 const PIC_P_LAYOUT_OFFSET: usize = 64;
+/// Byte offset of `Dav1dPicture::p.bpc`.
+const PIC_P_BPC_OFFSET: usize = 68;
 
 /// Read a `c_int` (4 bytes, native endian) from `buf` at `offset`.
 const fn read_i32(buf: &[u8; PICTURE_SIZE], offset: usize) -> c_int {
@@ -205,6 +207,11 @@ impl Dav1dPicture {
     /// Read `p.layout` — pixel layout enum (`DAV1D_PIXEL_LAYOUT_*`).
     pub const fn layout(&self) -> c_int {
         read_i32(&self.buf, PIC_P_LAYOUT_OFFSET)
+    }
+
+    /// Read `p.bpc` — bits per pixel component (8 or 10).
+    pub const fn bpc(&self) -> c_int {
+        read_i32(&self.buf, PIC_P_BPC_OFFSET)
     }
 }
 
