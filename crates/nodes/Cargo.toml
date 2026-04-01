@@ -152,7 +152,7 @@ colorbars = ["dep:schemars", "dep:serde_json", "dep:fontdue"]
 compositor = ["dep:schemars", "dep:serde_json", "dep:image", "dep:tiny-skia", "dep:rayon", "dep:fontdue", "dep:smallvec", "dep:uuid"]
 gpu = ["compositor", "dep:wgpu", "dep:pollster", "dep:bytemuck"]
 codegen = ["dep:ts-rs"]
-video = ["vp9", "av1", "dav1d_static", "colorbars", "compositor"]
+video = ["vp9", "av1", "colorbars", "compositor"]
 
 [[bin]]
 name = "generate-compositor-types"

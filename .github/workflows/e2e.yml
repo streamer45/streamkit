@@ -66,8 +66,8 @@ jobs:
           sudo ldconfig
           pkg-config --modversion SvtAv1Enc
 
-      - name: Build skit (debug, with SVT-AV1)
-        run: cargo build -p streamkit-server --bin skit --features svt_av1
+      - name: Build skit (debug, with SVT-AV1 + dav1d)
+        run: cargo build -p streamkit-server --bin skit --features "svt_av1 dav1d_static"
 
       - name: Build moq-relay for relay e2e tests
         run: |
