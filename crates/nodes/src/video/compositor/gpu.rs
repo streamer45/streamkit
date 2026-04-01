@@ -1667,29 +1667,40 @@ pub fn should_use_gpu_with_state(
 // ── Pool unit tests ─────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::disallowed_macros)]
+#[allow(clippy::expect_used, clippy::disallowed_macros, clippy::significant_drop_tightening)]
 mod tests {
+    use std::sync::{LazyLock, Mutex};
+
     use super::*;
+
+    /// Shared wgpu device for pool tests.
+    ///
+    /// Same rationale as the `SHARED_GPU` context in `gpu_tests.rs`:
+    /// creating a separate device per test can overwhelm the Vulkan driver
+    /// when tests run in parallel.
+    static SHARED_DEVICE: LazyLock<Mutex<(wgpu::Device, wgpu::Queue)>> = LazyLock::new(|| {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN | wgpu::Backends::METAL | wgpu::Backends::DX12,
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
+        });
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
+        .expect("no wgpu adapter available");
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+                .expect("failed to create device");
+        Mutex::new((device, queue))
+    });
 
     /// Simulate a texture pool that grows when many layers are active,
     /// then verify idle entries are evicted after `POOL_IDLE_FRAMES`.
     #[test]
     fn texture_pool_trims_idle_entries() {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let Ok(adapter) =
-            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::LowPower,
-                compatible_surface: None,
-                force_fallback_adapter: true,
-            }))
-        else {
-            // No adapter available (CI without GPU) — skip gracefully.
-            eprintln!("skipping texture_pool_trims_idle_entries: no wgpu adapter");
-            return;
-        };
-        let (device, _queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-                .expect("failed to create device");
+        let guard = SHARED_DEVICE.lock().expect("device mutex poisoned");
+        let (ref device, _) = *guard;
 
         let mut pool = TexturePool::new();
 
@@ -1702,7 +1713,7 @@ mod tests {
 
         // Simulate a burst: allocate 10 textures in one frame.
         for _ in 0..10 {
-            pool.get(&device, key.clone(), "test");
+            pool.get(device, key.clone(), "test");
         }
         assert_eq!(pool.in_use.len(), 10);
         assert_eq!(pool.available.len(), 0);
@@ -1715,8 +1726,8 @@ mod tests {
         // Now only use 2 per frame for POOL_IDLE_FRAMES frames.
         // The remaining entries should be evicted.
         for _ in 0..POOL_IDLE_FRAMES {
-            pool.get(&device, key.clone(), "test");
-            pool.get(&device, key.clone(), "test");
+            pool.get(device, key.clone(), "test");
+            pool.get(device, key.clone(), "test");
             pool.reclaim();
         }
 
@@ -1737,20 +1748,8 @@ mod tests {
     /// Verify that `BufferPool` also evicts idle entries.
     #[test]
     fn buffer_pool_trims_idle_entries() {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let Ok(adapter) =
-            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::LowPower,
-                compatible_surface: None,
-                force_fallback_adapter: true,
-            }))
-        else {
-            eprintln!("skipping buffer_pool_trims_idle_entries: no wgpu adapter");
-            return;
-        };
-        let (device, _queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-                .expect("failed to create device");
+        let guard = SHARED_DEVICE.lock().expect("device mutex poisoned");
+        let (ref device, _) = *guard;
 
         let mut pool = BufferPool::new();
 
@@ -1761,14 +1760,14 @@ mod tests {
 
         // Burst: 5 buffers.
         for _ in 0..5 {
-            pool.get(&device, key.clone(), "test");
+            pool.get(device, key.clone(), "test");
         }
         pool.reclaim();
         assert_eq!(pool.available.len(), 5);
 
         // Use only 1 per frame for enough frames to evict the rest.
         for _ in 0..POOL_IDLE_FRAMES {
-            pool.get(&device, key.clone(), "test");
+            pool.get(device, key.clone(), "test");
             pool.reclaim();
         }
 

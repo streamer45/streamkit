@@ -10,8 +10,13 @@
 //! ```bash
 //! cargo test -p streamkit-nodes --features gpu -- gpu
 //! ```
+//!
+//! All GPU tests share a single `GpuContext` behind a `Mutex` to avoid
+//! creating 26+ simultaneous wgpu devices.  The guard is intentionally
+//! held for each test's full duration to serialise GPU access.
+#![allow(clippy::significant_drop_tightening)]
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 
 use streamkit_core::frame_pool::PooledVideoData;
 use streamkit_core::types::PixelFormat;
@@ -102,12 +107,23 @@ fn solid_i420(width: u32, height: u32, y: u8, u: u8, v: u8) -> Vec<u8> {
     buf
 }
 
-/// Try to initialise a GPU context; skip the test if no GPU is available.
-fn require_gpu() -> GpuContext {
-    GpuContext::try_init().expect(
+/// Shared GPU context for all tests.
+///
+/// Creating a separate `wgpu::Device` per test (26+) overwhelms the Vulkan
+/// driver on CI machines, causing `device.poll(wait_indefinitely)` to hang
+/// indefinitely.  Sharing one context behind a `Mutex` serialises the GPU
+/// work (which hits a single physical GPU anyway) while letting non-GPU
+/// tests run in parallel.
+static SHARED_GPU: LazyLock<Mutex<GpuContext>> = LazyLock::new(|| {
+    Mutex::new(GpuContext::try_init().expect(
         "GPU not available — skipping test. \
          Run on a machine with a GPU to execute GPU compositor tests.",
-    )
+    ))
+});
+
+/// Lock the shared GPU context; panics if no GPU is available.
+fn require_gpu() -> MutexGuard<'static, GpuContext> {
+    SHARED_GPU.lock().expect("GPU mutex poisoned")
 }
 
 /// Average pixel value in the central region of an RGBA8 buffer.
