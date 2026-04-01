@@ -54,7 +54,7 @@ use super::svt_av1_ffi::{
     EB_AV1_KEY_PICTURE, EB_BUFFERFLAG_EOS, EB_ERROR_NONE, EB_NO_ERROR_EMPTY_QUEUE,
 };
 
-const AV1_CONTENT_TYPE: &str = "video/av1";
+use super::AV1_CONTENT_TYPE;
 
 // ── Default config values ────────────────────────────────────────────────────
 
@@ -122,9 +122,8 @@ pub struct SvtAv1EncoderNode {
 }
 
 impl SvtAv1EncoderNode {
-    #[allow(clippy::missing_errors_doc)]
-    pub const fn new(config: SvtAv1EncoderConfig) -> Result<Self, StreamKitError> {
-        Ok(Self { config })
+    pub const fn new(config: SvtAv1EncoderConfig) -> Self {
+        Self { config }
     }
 }
 
@@ -843,13 +842,12 @@ use streamkit_core::registry::StaticPins;
 
 #[allow(clippy::expect_used, clippy::missing_panics_doc)]
 pub fn register_svt_av1_nodes(registry: &mut NodeRegistry) {
-    let default_encoder = SvtAv1EncoderNode::new(SvtAv1EncoderConfig::default())
-        .expect("default SVT-AV1 encoder config should be valid");
+    let default_encoder = SvtAv1EncoderNode::new(SvtAv1EncoderConfig::default());
     registry.register_static_with_description(
         "video::svt_av1::encoder",
         |params| {
             let config = config_helpers::parse_config_optional(params)?;
-            Ok(Box::new(SvtAv1EncoderNode::new(config)?))
+            Ok(Box::new(SvtAv1EncoderNode::new(config)))
         },
         serde_json::to_value(schema_for!(SvtAv1EncoderConfig))
             .expect("SvtAv1EncoderConfig schema should serialize to JSON"),
@@ -892,7 +890,7 @@ mod tests {
             parallelism: 1,
             low_latency: true,
         };
-        let encoder = SvtAv1EncoderNode::new(encoder_config).unwrap();
+        let encoder = SvtAv1EncoderNode::new(encoder_config);
 
         let enc_handle = tokio::spawn(async move { Box::new(encoder).run(enc_context).await });
 
@@ -950,8 +948,7 @@ mod tests {
             crf: 35,
             parallelism: 1,
             low_latency: true,
-        })
-        .unwrap();
+        });
 
         let enc_handle = tokio::spawn(async move { Box::new(encoder).run(enc_context).await });
 
@@ -993,8 +990,7 @@ mod tests {
             crf: 35,
             parallelism: 1,
             low_latency: true,
-        })
-        .unwrap();
+        });
         let enc_handle = tokio::spawn(async move { Box::new(encoder).run(enc_context).await });
 
         assert_state_initializing(&mut enc_state_rx).await;

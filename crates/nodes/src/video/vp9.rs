@@ -31,7 +31,7 @@ use vpx::vpx_kf_mode::VPX_KF_AUTO;
 use vpx_sys as vpx;
 
 const VP9_TIMEBASE_DEN: i32 = 1_000_000;
-const VP9_CONTENT_TYPE: &str = "video/vp9";
+use super::VP9_CONTENT_TYPE;
 
 // libvpx ABI values are macros in vpx headers; libvpx-sys doesn't expose them.
 // Values are derived from /usr/include/vpx headers (VPX_IMAGE/VPX_CODEC/VPX_ENCODER ABI).

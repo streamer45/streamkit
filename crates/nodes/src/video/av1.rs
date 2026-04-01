@@ -35,7 +35,7 @@ use streamkit_core::{
 };
 use tokio::sync::mpsc;
 
-const AV1_CONTENT_TYPE: &str = "video/av1";
+use super::AV1_CONTENT_TYPE;
 
 /// Default to constant-quality mode (quantizer-based).  In bitrate mode
 /// rav1e buffers 10+ frames for rate-control look-ahead before producing
