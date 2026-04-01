@@ -162,8 +162,13 @@ fn build_svt_av1_static() -> Vec<std::path::PathBuf> {
     };
 
     // 3. Build with cmake.
+    // Always build SVT-AV1 in Release mode regardless of the Cargo profile.
+    // The cmake crate inherits OPT_LEVEL from Cargo, which means `cargo build`
+    // (debug) would produce CMAKE_BUILD_TYPE=Debug — an un-optimised SVT-AV1
+    // that is too slow for real-time encoding and causes audio/video desync.
     println!("cargo:warning=svt_av1_static: building SVT-AV1 with cmake (this may take a few minutes) ...");
     let dst = cmake::Config::new(&src_dir)
+        .profile("Release")
         .define("BUILD_SHARED_LIBS", "OFF")
         .define("BUILD_APPS", "OFF")
         .define("BUILD_DEC", "OFF")
