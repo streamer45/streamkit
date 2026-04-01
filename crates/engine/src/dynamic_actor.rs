@@ -73,6 +73,10 @@ pub struct DynamicEngine {
     pub(super) dynamic_pin_nodes: std::collections::HashSet<String>,
     /// Map of node pin metadata: NodeId -> Pin Metadata (for runtime type validation)
     pub(super) node_pin_metadata: HashMap<String, NodePinMetadata>,
+    /// Active connections: (dest_node, dest_pin) -> (source_node, source_pin).
+    /// Used for backward tracing when resolving `Passthrough` types in
+    /// `InputTypeResolved` delivery.
+    pub(super) connections: HashMap<(String, String), (String, String)>,
     /// Map of node_id -> node_kind for labeling metrics
     pub(super) node_kinds: HashMap<String, String>,
     pub(super) batch_size: usize,
@@ -1123,15 +1127,24 @@ impl DynamicEngine {
         // This is the single, uniform mechanism for all nodes (both
         // dynamic-pin and pre-existing-pin) to learn the upstream type.
         //
+        // If the source produces Passthrough, resolve it by tracing
+        // backward through the connection graph to find a concrete type.
+        //
         // NOTE: If step 3 (AddConnection) fails below, the node will have
         // received type info for a connection that never materialized.
         // This is low-severity — the worst case is a pin that never
         // receives data, and step 3 failure is rare (PinDistributor
         // would need to have stopped between creation and this point).
+        let resolved_type =
+            if matches!(source_produces_type, streamkit_core::types::PacketType::Passthrough) {
+                self.resolve_passthrough_type(&from_node, &from_pin)
+            } else {
+                source_produces_type
+            };
         if let Some(pin_mgmt_tx) = self.pin_management_txs.get(&to_node) {
             let msg = streamkit_core::pins::PinManagementMessage::InputTypeResolved {
                 pin_name: to_pin.clone(),
-                packet_type: source_produces_type,
+                packet_type: resolved_type,
             };
             if pin_mgmt_tx.send(msg).await.is_err() {
                 tracing::warn!(
@@ -1158,6 +1171,73 @@ impl DynamicEngine {
                 from_pin
             );
         }
+
+        // Record the connection for Passthrough type resolution.
+        self.connections.insert((to_node.clone(), to_pin.clone()), (from_node, from_pin));
+    }
+
+    /// Resolve a `Passthrough` type by tracing backward through the
+    /// connection graph.  Returns the first non-Passthrough type found,
+    /// or `PacketType::Any` if the chain is unresolved (max 50 hops to
+    /// guard against cycles).
+    pub(super) fn resolve_passthrough_type(
+        &self,
+        source_node: &str,
+        source_pin: &str,
+    ) -> streamkit_core::types::PacketType {
+        use streamkit_core::types::PacketType;
+
+        let mut current_node = source_node.to_string();
+        let mut current_pin = source_pin.to_string();
+
+        for _ in 0..50 {
+            let produces = self
+                .node_pin_metadata
+                .get(&current_node)
+                .and_then(|m| m.output_pins.iter().find(|p| p.name == current_pin))
+                .map_or(PacketType::Any, |p| p.produces_type.clone());
+
+            if !matches!(produces, PacketType::Passthrough) {
+                return produces;
+            }
+
+            // Trace backward: find any connection feeding this node's input
+            // pins, then look up that upstream output's type.
+            let input_pins = self
+                .node_pin_metadata
+                .get(&current_node)
+                .map(|m| m.input_pins.iter().map(|p| p.name.clone()).collect::<Vec<_>>())
+                .unwrap_or_default();
+
+            let mut found_upstream = false;
+            for input_pin in &input_pins {
+                if let Some((upstream_node, upstream_pin)) =
+                    self.connections.get(&(current_node.clone(), input_pin.clone()))
+                {
+                    current_node.clone_from(upstream_node);
+                    current_pin.clone_from(upstream_pin);
+                    found_upstream = true;
+                    break;
+                }
+            }
+
+            if !found_upstream {
+                // No upstream connection found — can't resolve further.
+                tracing::debug!(
+                    "Cannot resolve Passthrough for {}.{}: no upstream connection",
+                    current_node,
+                    current_pin
+                );
+                return PacketType::Any;
+            }
+        }
+
+        tracing::warn!(
+            "Passthrough resolution exceeded 50 hops from {}.{} — possible cycle",
+            source_node,
+            source_pin
+        );
+        PacketType::Any
     }
 
     /// Roll back a dynamically created input pin when a subsequent step in
@@ -1203,16 +1283,17 @@ impl DynamicEngine {
     }
 
     /// Helper function to disconnect nodes.
-    ///
-    /// Takes `&self` not `&mut self` because it only reads from HashMaps and sends messages
     async fn disconnect_nodes(
-        &self,
+        &mut self,
         from_node: String,
         from_pin: String,
         to_node: String,
         to_pin: String,
     ) {
         tracing::info!("Disconnecting {}.{} -> {}.{}", from_node, from_pin, to_node, to_pin);
+
+        // Remove from connection tracking.
+        self.connections.remove(&(to_node.clone(), to_pin.clone()));
 
         // 1. Find the source Pin Distributor configuration Sender
         // Use let...else for cleaner early return pattern
@@ -1304,6 +1385,7 @@ impl DynamicEngine {
         self.node_pin_metadata.remove(node_id);
         self.pin_management_txs.remove(node_id);
         self.dynamic_pin_nodes.remove(node_id);
+        self.connections.retain(|(to, _), (from, _)| to != node_id && from != node_id);
         self.node_kinds.remove(node_id);
         self.nodes_active_gauge.record(self.live_nodes.len() as u64, &[]);
     }
