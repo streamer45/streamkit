@@ -807,8 +807,9 @@ impl DynamicEngine {
         // back if step 2 (output pin creation) fails.
         //
         // NOTE: We defer sending AddedInputPin until after the source output
-        // pin is resolved (step 2) so that the message can include the
-        // upstream `produces_type`. The deferred state is stored in
+        // pin is resolved (step 2) so that AddedInputPin arrives before
+        // InputTypeResolved — the node needs the channel ready before it
+        // receives type info.  The deferred state is stored in
         // `pending_input_pin_activation`.
         let mut created_dynamic_input: Option<String> = None;
         let mut pending_input_pin_activation: Option<(
@@ -878,7 +879,8 @@ impl DynamicEngine {
             }
 
             // Defer sending AddedInputPin until after the source output pin
-            // is resolved so we can include produces_type.
+            // is resolved so AddedInputPin arrives before InputTypeResolved —
+            // the node needs the channel ready before it receives type info.
             created_dynamic_input = Some(pin.name.clone());
             pending_input_pin_activation = Some((pin, rx));
             tx
@@ -1120,14 +1122,20 @@ impl DynamicEngine {
         // 2c. Deliver InputTypeResolved to the destination node.
         // This is the single, uniform mechanism for all nodes (both
         // dynamic-pin and pre-existing-pin) to learn the upstream type.
+        //
+        // NOTE: If step 3 (AddConnection) fails below, the node will have
+        // received type info for a connection that never materialized.
+        // This is low-severity — the worst case is a pin that never
+        // receives data, and step 3 failure is rare (PinDistributor
+        // would need to have stopped between creation and this point).
         if let Some(pin_mgmt_tx) = self.pin_management_txs.get(&to_node) {
             let msg = streamkit_core::pins::PinManagementMessage::InputTypeResolved {
                 pin_name: to_pin.clone(),
                 packet_type: source_produces_type,
             };
-            if pin_mgmt_tx.send(msg).await.is_err() {
+            if let Err(e) = pin_mgmt_tx.try_send(msg) {
                 tracing::warn!(
-                    "Failed to send InputTypeResolved to '{}' for pin '{}' — node may have stopped",
+                    "Failed to send InputTypeResolved to '{}' for pin '{}': {e}",
                     to_node,
                     to_pin
                 );
@@ -1295,6 +1303,7 @@ impl DynamicEngine {
         self.node_view_data.remove(node_id);
         self.node_pin_metadata.remove(node_id);
         self.pin_management_txs.remove(node_id);
+        self.dynamic_pin_nodes.remove(node_id);
         self.node_kinds.remove(node_id);
         self.nodes_active_gauge.record(self.live_nodes.len() as u64, &[]);
     }

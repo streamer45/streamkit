@@ -657,7 +657,7 @@ impl ProcessorNode for WebMMuxerNode {
                         () = tokio::time::sleep_until(deadline) => {
                             tracing::warn!(
                                 "WebMMuxerNode: timed out waiting for InputTypeResolved \
-                                 ({}/{} resolved), falling back to runtime content_type routing",
+                                 ({}/{} resolved). Unresolved pins will default to audio classification.",
                                 input_types.len(), num_inputs
                             );
                             break;
@@ -667,15 +667,14 @@ impl ProcessorNode for WebMMuxerNode {
             }
         }
 
-        // Unified mode: all receivers go into `all_receivers` for on-the-fly
-        // classification in the main loop via `classify_packet`.  This is used
-        // only when `skip_classification` is true (which guarantees both
+        // When `skip_classification` is true, all receivers go into
+        // `all_receivers` for on-the-fly classification in the main loop via
+        // `classify_packet`.  `skip_classification` guarantees both
         // `video_width > 0` and `video_height > 0`, so dimension auto-
-        // detection is never needed).  When types are partially resolved
+        // detection is never needed.  When types are partially resolved
         // (timeout), we still use the classified path — pins with known
         // types are classified correctly, and pins without types default to
         // audio (the safer assumption) with a warning.
-        let use_unified = skip_classification;
 
         // -- Classify inputs and assign receivers --
         for (pin_name, rx) in context.inputs.drain() {
@@ -684,7 +683,7 @@ impl ProcessorNode for WebMMuxerNode {
                 matches!(ty, PacketType::EncodedVideo(_) | PacketType::RawVideo(_))
             });
 
-            if pin_type.is_none() && !use_unified {
+            if pin_type.is_none() && !skip_classification {
                 tracing::warn!(
                     "WebMMuxerNode: pin '{pin_name}' has no resolved type info, \
                      defaulting to audio classification"
@@ -699,7 +698,7 @@ impl ProcessorNode for WebMMuxerNode {
                 }
             }
 
-            if use_unified {
+            if skip_classification {
                 all_receivers.push(rx);
             } else if is_video {
                 if video_rx.is_some() {
@@ -730,8 +729,8 @@ impl ProcessorNode for WebMMuxerNode {
             }
         }
 
-        let has_audio = if use_unified { true } else { audio_rx.is_some() };
-        let has_video = if use_unified { true } else { video_rx.is_some() };
+        let has_audio = if skip_classification { true } else { audio_rx.is_some() };
+        let has_video = if skip_classification { true } else { video_rx.is_some() };
 
         if !has_audio && !has_video {
             let err_msg =
@@ -743,10 +742,9 @@ impl ProcessorNode for WebMMuxerNode {
 
         state_helpers::emit_running(&context.state_tx, &node_name);
 
-        if use_unified {
+        if skip_classification {
             tracing::info!(
-                "WebMMuxerNode: unified mode (skip_classification={}, av1={})",
-                skip_classification,
+                "WebMMuxerNode: unified mode (skip_classification=true, av1={})",
                 video_is_av1,
             );
         }
@@ -1052,9 +1050,11 @@ impl ProcessorNode for WebMMuxerNode {
         // In unified mode, `all_receivers` holds every input
         // channel and frames are classified on-the-fly from `content_type`.
         // In the classified path, `audio_rx`/`video_rx` are pre-assigned.
-        let mut inputs_open = if use_unified { all_receivers.len() } else { 0 };
-        while (use_unified && inputs_open > 0) || (!use_unified && (!audio_done || !video_done)) {
-            let frame = if use_unified {
+        let mut inputs_open = if skip_classification { all_receivers.len() } else { 0 };
+        while (skip_classification && inputs_open > 0)
+            || (!skip_classification && (!audio_done || !video_done))
+        {
+            let frame = if skip_classification {
                 // Unified receive: select on all input receivers + control.
                 // Frames are classified on-the-fly from content_type below.
                 let recv_result = if all_receivers.len() >= 2 {
