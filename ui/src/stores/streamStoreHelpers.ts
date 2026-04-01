@@ -487,7 +487,73 @@ function setupWatchPath(
   };
 }
 
-/** Create media sources and wait for device permission if needed. */
+/** Set up screen capture with 30s timeout for the OS picker dialog.
+ *  NOTE: Screen uses `screenProps.video` for constraints while Camera uses
+ *  `cameraProps.constraints` — this asymmetry is correct per the @moq/publish
+ *  types (Publish.Source.Screen vs Publish.Source.Camera have different APIs). */
+async function setupScreenCapture(
+  healthEffect: Effect,
+  microphone: Publish.Source.Microphone | null,
+  set: StateSetter,
+  abortSignal?: AbortSignal,
+  videoConstraints?: { width?: number; height?: number }
+): Promise<Publish.Source.Screen> {
+  const screenProps: ConstructorParameters<typeof Publish.Source.Screen>[0] = { enabled: true };
+  if (videoConstraints) screenProps.video = videoConstraints;
+  const screen = new Publish.Source.Screen(screenProps);
+  set({ cameraStatus: screen.source.peek()?.video ? 'ready' : 'requesting' });
+  healthEffect.subscribe(screen.source, (v) =>
+    set({ cameraStatus: v?.video ? 'ready' : 'requesting' })
+  );
+  if (!screen.source.peek()?.video) {
+    try {
+      await waitForSignalValue(
+        screen.source,
+        (v) => v?.video !== undefined,
+        30_000,
+        'Screen capture not available',
+        abortSignal
+      );
+    } catch (e) {
+      shutdownMediaSource(screen);
+      shutdownMediaSource(microphone);
+      throw e;
+    }
+  }
+  return screen;
+}
+
+/** Set up camera capture with 15s timeout for permission dialog. */
+async function setupCameraCapture(
+  healthEffect: Effect,
+  microphone: Publish.Source.Microphone | null,
+  set: StateSetter,
+  abortSignal?: AbortSignal,
+  videoConstraints?: { width?: number; height?: number }
+): Promise<Publish.Source.Camera> {
+  const cameraProps: ConstructorParameters<typeof Publish.Source.Camera>[0] = { enabled: true };
+  if (videoConstraints) cameraProps.constraints = videoConstraints;
+  const camera = new Publish.Source.Camera(cameraProps);
+  set({ cameraStatus: camera.source.peek() ? 'ready' : 'requesting' });
+  healthEffect.subscribe(camera.source, (v) => set({ cameraStatus: v ? 'ready' : 'requesting' }));
+  if (!camera.source.peek()) {
+    try {
+      await waitForSignalValue(
+        camera.source,
+        (v) => v !== undefined,
+        15_000,
+        'Camera not available',
+        abortSignal
+      );
+    } catch (e) {
+      shutdownMediaSource(camera);
+      shutdownMediaSource(microphone);
+      throw e;
+    }
+  }
+  return camera;
+}
+
 async function setupMediaSources(
   healthEffect: Effect,
   needsAudio: boolean,
@@ -513,60 +579,21 @@ async function setupMediaSources(
   }
   if (needsVideo) {
     if (videoSourceType === 'screen') {
-      // Screen capture — the OS picker dialog may take a while, use 30s timeout.
-      // NOTE: Screen uses `screenProps.video` for constraints while Camera uses
-      // `cameraProps.constraints` — this asymmetry is correct per the @moq/publish
-      // types (Publish.Source.Screen vs Publish.Source.Camera have different APIs).
-      const screenProps: ConstructorParameters<typeof Publish.Source.Screen>[0] = { enabled: true };
-      if (videoConstraints) {
-        screenProps.video = videoConstraints;
-      }
-      screen = new Publish.Source.Screen(screenProps);
-      set({ cameraStatus: screen.source.peek()?.video ? 'ready' : 'requesting' });
-      healthEffect.subscribe(screen.source, (v) =>
-        set({ cameraStatus: v?.video ? 'ready' : 'requesting' })
+      screen = await setupScreenCapture(
+        healthEffect,
+        microphone,
+        set,
+        abortSignal,
+        videoConstraints
       );
-      if (!screen.source.peek()?.video) {
-        try {
-          await waitForSignalValue(
-            screen.source,
-            (v) => v?.video !== undefined,
-            30_000,
-            'Screen capture not available',
-            abortSignal
-          );
-        } catch (e) {
-          shutdownMediaSource(screen);
-          shutdownMediaSource(microphone);
-          throw e;
-        }
-      }
     } else {
-      // Camera capture — standard 15s timeout for permission dialog.
-      const cameraProps: ConstructorParameters<typeof Publish.Source.Camera>[0] = { enabled: true };
-      if (videoConstraints) {
-        cameraProps.constraints = videoConstraints;
-      }
-      camera = new Publish.Source.Camera(cameraProps);
-      set({ cameraStatus: camera.source.peek() ? 'ready' : 'requesting' });
-      healthEffect.subscribe(camera.source, (v) =>
-        set({ cameraStatus: v ? 'ready' : 'requesting' })
+      camera = await setupCameraCapture(
+        healthEffect,
+        microphone,
+        set,
+        abortSignal,
+        videoConstraints
       );
-      if (!camera.source.peek()) {
-        try {
-          await waitForSignalValue(
-            camera.source,
-            (v) => v !== undefined,
-            15_000,
-            'Camera not available',
-            abortSignal
-          );
-        } catch (e) {
-          shutdownMediaSource(camera);
-          shutdownMediaSource(microphone);
-          throw e;
-        }
-      }
     }
   }
   return { microphone, camera, screen };
@@ -1019,6 +1046,50 @@ function applySecondaryPublishResult(
   attempt.secondaryScreen = result.secondaryScreen;
 }
 
+/** Set up secondary broadcast if the pipeline declares more than one.
+ *  UI limitation: at most 2 broadcasts total (1 primary + 1 secondary).
+ *  The Rust backend (`MoqPeerNode`) supports N broadcasts, but the UI
+ *  currently only wires a single secondary.  Extending to N would require
+ *  dynamic `ConnectAttempt` fields and per-broadcast cleanup tracking. */
+async function setupSecondaryBroadcastIfNeeded(
+  attempt: ConnectAttempt,
+  state: ConnectableState,
+  abortSignal: AbortSignal
+): Promise<void> {
+  if (state.publishBroadcasts.length <= 1) return;
+
+  if (state.publishBroadcasts.length > 2) {
+    logger.warn(
+      `Pipeline declares ${state.publishBroadcasts.length} broadcasts but only 2 are supported; ` +
+        `ignoring: ${state.publishBroadcasts.slice(2).join(', ')}`
+    );
+  }
+  const primaryBroadcast = state.publishBroadcasts[0];
+  const secondaryName = state.publishBroadcasts[1];
+  const secondaryTracks = filterSecondaryTracks(state.tracks, primaryBroadcast, secondaryName);
+
+  if (secondaryTracks.length > 0) {
+    // Secondary setup runs after the primary because both share the same
+    // connection: if the secondary fails, the primary resources must already
+    // be on `attempt` so cleanupConnectAttempt can tear them down.
+    // setupSecondaryPublishPath owns cleanup of its resources on failure;
+    // on success, ownership transfers to `attempt` via applySecondaryPublishResult,
+    // and the outer catch block handles cleanup through cleanupConnectAttempt.
+    applySecondaryPublishResult(
+      attempt,
+      await setupSecondaryPublishPath(
+        attempt.healthEffect!,
+        attempt.connection!,
+        secondaryName,
+        secondaryTracks,
+        abortSignal
+      )
+    );
+  } else {
+    logger.warn(`Secondary broadcast '${secondaryName}' declared but no tracks matched; skipping`);
+  }
+}
+
 /** Create the MoQ connection and wire up the health-status sync effect. */
 function createConnectionAndHealth(
   serverUrl: string,
@@ -1139,48 +1210,7 @@ export async function performConnect(
       );
 
       // Secondary broadcast (multi-broadcast mode).
-      // UI limitation: at most 2 broadcasts total (1 primary + 1 secondary).
-      // The Rust backend (`MoqPeerNode`) supports N broadcasts, but the UI
-      // currently only wires a single secondary.  Extending to N would require
-      // dynamic `ConnectAttempt` fields and per-broadcast cleanup tracking.
-      if (state.publishBroadcasts.length > 1) {
-        if (state.publishBroadcasts.length > 2) {
-          logger.warn(
-            `Pipeline declares ${state.publishBroadcasts.length} broadcasts but only 2 are supported; ` +
-              `ignoring: ${state.publishBroadcasts.slice(2).join(', ')}`
-          );
-        }
-        const primaryBroadcast = state.publishBroadcasts[0];
-        const secondaryName = state.publishBroadcasts[1];
-        const secondaryTracks = filterSecondaryTracks(
-          state.tracks,
-          primaryBroadcast,
-          secondaryName
-        );
-
-        if (secondaryTracks.length > 0) {
-          // Secondary setup runs after the primary because both share the same
-          // connection: if the secondary fails, the primary resources must already
-          // be on `attempt` so cleanupConnectAttempt can tear them down.
-          // setupSecondaryPublishPath owns cleanup of its resources on failure;
-          // on success, ownership transfers to `attempt` via applySecondaryPublishResult,
-          // and the outer catch block handles cleanup through cleanupConnectAttempt.
-          applySecondaryPublishResult(
-            attempt,
-            await setupSecondaryPublishPath(
-              attempt.healthEffect!,
-              attempt.connection!,
-              secondaryName,
-              secondaryTracks,
-              abortSignal
-            )
-          );
-        } else {
-          logger.warn(
-            `Secondary broadcast '${secondaryName}' declared but no tracks matched; skipping`
-          );
-        }
-      }
+      await setupSecondaryBroadcastIfNeeded(attempt, state, abortSignal);
     }
 
     await connectWatchPath(attempt, state, decision, set, abortSignal);

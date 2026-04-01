@@ -170,4 +170,17 @@ export default tseslint.config(
       "complexity": "off",
     },
   },
+  {
+    // Test files: comprehensive test suites naturally exceed the 500-line limit
+    // because tests are grouped by describe blocks for cohesion and discoverability.
+    // Splitting tests to satisfy an arbitrary line count harms co-location of
+    // related assertions and makes test maintenance harder.
+    // Similarly, data-driven tests with many assertions have inherent cyclomatic
+    // complexity proportional to the number of cases — this is expected.
+    files: ["**/*.test.ts", "**/*.test.tsx"],
+    rules: {
+      "max-lines": "off",
+      "complexity": "off",
+    },
+  },
 );

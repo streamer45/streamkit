@@ -12,7 +12,7 @@
 
 import { useCallback, useEffect, useRef } from 'react';
 
-import { computeUpdatedLayer, detectSnapGuides } from './compositorLayerParsers';
+import { computeUpdatedLayer } from './compositorLayerParsers';
 import type {
   LayerState,
   TextOverlayState,
@@ -20,6 +20,8 @@ import type {
   ResizeHandle,
   LayerKind,
 } from './compositorLayerParsers';
+import { detectSnapGuides } from './compositorResizeHelpers';
+import type { SnapGuides } from './compositorResizeHelpers';
 
 // ── Drag state ref type ──────────────────────────────────────────────────
 
@@ -66,6 +68,39 @@ export interface DragResizeDeps {
     top: HTMLDivElement | null;
     bottom: HTMLDivElement | null;
   }>;
+}
+
+// ── Extracted helpers (reduce handlePointerMove complexity) ───────────────
+
+/** Scale font-size of all <span> elements inside a text overlay during resize
+ *  so the text visually tracks the handle without snap-back on drop. */
+function applyTextFontScaling(
+  el: HTMLDivElement | null,
+  origFontSize: number,
+  origWidth: number,
+  newWidth: number
+): void {
+  if (!el) return;
+  const newFs = Math.max(8, Math.round(origFontSize * (newWidth / origWidth)));
+  const spans = el.querySelectorAll<HTMLSpanElement>('span');
+  for (const span of spans) {
+    if (span.style.fontSize) span.style.fontSize = `${newFs}px`;
+  }
+}
+
+/** Show / hide the 6 snap guide line elements by setting their opacity.
+ *  Operates directly on refs — no React state updates. */
+function updateSnapGuideVisibility(
+  refs: DragResizeDeps['snapGuideRefs']['current'],
+  guides: SnapGuides
+): void {
+  const ON = '0.8';
+  if (refs.vertical) refs.vertical.style.opacity = guides.verticalCenter ? ON : '0';
+  if (refs.horizontal) refs.horizontal.style.opacity = guides.horizontalCenter ? ON : '0';
+  if (refs.left) refs.left.style.opacity = guides.leftEdge ? ON : '0';
+  if (refs.right) refs.right.style.opacity = guides.rightEdge ? ON : '0';
+  if (refs.top) refs.top.style.opacity = guides.topEdge ? ON : '0';
+  if (refs.bottom) refs.bottom.style.opacity = guides.bottomEdge ? ON : '0';
 }
 
 // ── Hook ─────────────────────────────────────────────────────────────────
@@ -159,37 +194,28 @@ export function useCompositorDragResize(deps: DragResizeDeps) {
           s.origFontSize != null &&
           s.origLayer.width > 0
         ) {
-          const el = layerRefs.current.get(s.layerId);
-          if (el) {
-            const newFs = Math.max(
-              8,
-              Math.round(s.origFontSize * (updated.width / s.origLayer.width))
-            );
-            const spans = el.querySelectorAll<HTMLSpanElement>('span');
-            for (const span of spans) {
-              if (span.style.fontSize) span.style.fontSize = `${newFs}px`;
-            }
-          }
+          applyTextFontScaling(
+            layerRefs.current.get(s.layerId) ?? null,
+            s.origFontSize,
+            s.origLayer.width,
+            updated.width
+          );
         }
 
         // Show/hide snap guide lines (ref-only, no React state).
         // Guides are shown for both drag and resize — during resize the
         // relevant edge guides fire when a handle snaps to a canvas boundary.
-        const guides = detectSnapGuides(updated, canvasWidth, canvasHeight);
-        const refs = snapGuideRefs.current;
-        const ON = '0.8';
-        if (refs.vertical) refs.vertical.style.opacity = guides.verticalCenter ? ON : '0';
-        if (refs.horizontal) refs.horizontal.style.opacity = guides.horizontalCenter ? ON : '0';
-        if (refs.left) refs.left.style.opacity = guides.leftEdge ? ON : '0';
-        if (refs.right) refs.right.style.opacity = guides.rightEdge ? ON : '0';
-        if (refs.top) refs.top.style.opacity = guides.topEdge ? ON : '0';
-        if (refs.bottom) refs.bottom.style.opacity = guides.bottomEdge ? ON : '0';
+        updateSnapGuideVisibility(
+          snapGuideRefs.current,
+          detectSnapGuides(updated, canvasWidth, canvasHeight)
+        );
       });
     },
     [
       dragStateRef,
       computeLayerFromPointer,
       applyVisualUpdate,
+      layerRefs,
       canvasWidth,
       canvasHeight,
       snapGuideRefs,

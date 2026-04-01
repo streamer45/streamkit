@@ -1160,6 +1160,7 @@ const MonitorViewContent: React.FC = () => {
 
   // - Only track nodes.length, not full nodes array (FlowCanvas handles position updates internally)
   // - selectedSession used instead of sessions array to prevent unnecessary re-renders
+  const hasPipeline = !!pipeline;
   const centerPanel = React.useMemo(
     () => (
       <CenterPanelContainer>
@@ -1239,7 +1240,7 @@ const MonitorViewContent: React.FC = () => {
       selectedSession,
       isConnected,
       nodes.length,
-      !!pipeline,
+      hasPipeline,
       colorMode,
       onInit,
       handleStartPreview,

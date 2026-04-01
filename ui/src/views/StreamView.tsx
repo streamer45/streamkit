@@ -39,10 +39,131 @@ import { getLogger } from '@/utils/logger';
 import { extractMoqPeerSettings, applyMoqSettings } from '@/utils/moqPeerSettings';
 import { orderSamplePipelinesSystemFirst } from '@/utils/samplePipelineOrdering';
 
-import type { CameraStatus } from '../stores/streamStore';
+import type {
+  CameraStatus,
+  ConnectionStatus,
+  MicStatus,
+  VideoSourceType,
+  WatchStatus,
+} from '../stores/streamStore';
 import { useStreamStore } from '../stores/streamStore';
 
 const logger = getLogger('StreamView');
+
+/** Attempt MoQ auto-connect after session creation if the pipeline uses
+ *  MoQ transport.  Fire-and-forget — errors are surfaced via viewState. */
+function autoConnectIfMoq(
+  status: ConnectionStatus,
+  serverUrl: string,
+  connect: () => Promise<boolean>,
+  viewState: { setSessionCreationError: (msg: string) => void }
+): void {
+  const hasMoqTransport = Boolean(
+    useStreamStore.getState().outputBroadcast || useStreamStore.getState().inputBroadcast
+  );
+  if (status !== 'disconnected' || !serverUrl.trim() || !hasMoqTransport) return;
+
+  void (async () => {
+    try {
+      const ok = await connect();
+      if (!ok) logger.warn('Auto-connect after session creation did not succeed');
+    } catch (error) {
+      logger.error('MoQ connection attempt after session creation failed:', error);
+      viewState.setSessionCreationError(
+        error instanceof Error ? error.message : 'Connection failed after session creation'
+      );
+    }
+  })();
+}
+
+/** Load dynamic pipeline samples and auto-select the first one. */
+async function loadAndApplySamples(
+  viewState: ReturnType<typeof useStreamViewState>,
+  storeActions: Parameters<typeof applyMoqSettings>[1]
+): Promise<void> {
+  try {
+    viewState.setSamplesLoading(true);
+    viewState.setSamplesError(null);
+    const samples = await listDynamicSamples();
+    const orderedSamples = orderSamplePipelinesSystemFirst(samples);
+    viewState.setSamples(orderedSamples);
+
+    // Auto-select first template if available and apply its MoQ
+    // settings so the stream store (pipelineNeedsVideo, etc.) matches
+    // the selected template.
+    if (orderedSamples.length > 0 && !viewState.selectedTemplateId) {
+      const first = orderedSamples[0];
+      viewState.setSelectedTemplateId(first.id);
+      viewState.setPipelineYaml(first.yaml);
+      const moqSettings = extractMoqPeerSettings(first.yaml);
+      applyMoqSettings(moqSettings, storeActions, useStreamStore.getState().configServerUrl);
+    }
+  } catch (error) {
+    logger.error('Failed to load dynamic samples:', error);
+    viewState.setSamplesError(
+      error instanceof Error ? error.message : 'Failed to load pipeline templates'
+    );
+  } finally {
+    viewState.setSamplesLoading(false);
+  }
+}
+
+/** Build the relay connection status label for the streaming status bar. */
+function relayStatusLabel(status: ConnectionStatus, connectingStep: string): string {
+  if (status === 'connected') return 'Relay: connected';
+  if (connectingStep) {
+    return 'Connecting — ' + (CONNECTING_STEP_TEXT[connectingStep] ?? connectingStep);
+  }
+  return 'Connecting\u2026';
+}
+
+/** Build the streaming info text shown when connected in direct mode. */
+function directModeStreamingText(enableWatch: boolean, enablePublish: boolean): string {
+  const parts = [enableWatch && 'watching', enablePublish && 'publishing'].filter(Boolean);
+  return `Connected: ${parts.join(' and ')}`;
+}
+
+// Static text maps — pure constants, no need to recreate on every render.
+const STATUS_TEXT: Record<ConnectionStatus, string> = {
+  disconnected: 'Disconnected',
+  connecting: 'Connecting...',
+  connected: 'Connected',
+};
+
+const MIC_STATUS_TEXT: Record<MicStatus, string> = {
+  disabled: 'Mic: disabled',
+  requesting: 'Mic: requesting permission\u2026',
+  ready: 'Mic: ready',
+  error: 'Mic: error',
+};
+
+const CAMERA_STATUS_TEXT: Record<VideoSourceType, Record<CameraStatus, string>> = {
+  screen: {
+    disabled: 'Screen: disabled',
+    requesting: 'Screen: requesting permission\u2026',
+    ready: 'Screen: ready',
+    error: 'Screen: error',
+  },
+  camera: {
+    disabled: 'Camera: disabled',
+    requesting: 'Camera: requesting permission\u2026',
+    ready: 'Camera: ready',
+    error: 'Camera: error',
+  },
+};
+
+const WATCH_STATUS_TEXT: Record<WatchStatus, string> = {
+  disabled: 'Watch: disabled',
+  offline: 'Watch: offline',
+  loading: 'Watch: loading\u2026',
+  live: 'Watch: live',
+};
+
+const CONNECTING_STEP_TEXT: Record<string, string> = {
+  devices: 'Requesting device access',
+  relay: 'Connecting to relay',
+  pipeline: 'Waiting for pipeline',
+};
 
 const ConnectionControlsRow = styled.div`
   display: flex;
@@ -452,22 +573,23 @@ const StreamView: React.FC = () => {
   const videoContainerRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
-  // Track fullscreen state so the button label can reflect it.
+  // Track fullscreen state + ensure schemas & config are loaded on mount.
   useEffect(() => {
     const handler = () => setIsFullscreen(Boolean(document.fullscreenElement));
     document.addEventListener('fullscreenchange', handler);
     document.addEventListener('webkitfullscreenchange', handler);
+    ensureSchemasLoaded();
     return () => {
       document.removeEventListener('fullscreenchange', handler);
       document.removeEventListener('webkitfullscreenchange', handler);
     };
   }, []);
 
-  // ── MSE playback URL ──
-  // When `msePath` is set and a session is active, build the URL for the
-  // MSE HTTP endpoint.  NativeStreamPlayer (via the browser's native
-  // <video> decoder) handles the chunked WebM stream directly — no manual
-  // MediaSource / SourceBuffer management needed.
+  useEffect(() => {
+    if (!configLoaded) loadConfig();
+  }, [configLoaded, loadConfig]);
+
+  // MSE playback URL — build from msePath + activeSessionId.
   const [mseError, setMseError] = useState<string | null>(null);
   const mseUrl = React.useMemo(() => {
     if (!activeSessionId || !msePath) return null;
@@ -476,45 +598,25 @@ const StreamView: React.FC = () => {
     return `${apiUrl}/mse/${activeSessionId}${normalizedMsePath}`;
   }, [activeSessionId, msePath]);
 
-  // Get node definitions for YAML autocomplete
   const nodeDefinitions = useSchemaStore((s) => s.nodeDefinitions);
-
   const { canvasRef: videoCanvasRef, aspectRatio: canvasAspectRatio } =
     useVideoCanvas(videoRenderer);
-
   const { muted, volume, toggleMute, changeVolume } = useAudioControls(audioEmitter);
-
-  // Ensure schemas are loaded for autocomplete
-  useEffect(() => {
-    ensureSchemasLoaded();
-  }, []);
-
-  // Load server config on mount
-  useEffect(() => {
-    if (!configLoaded) {
-      loadConfig();
-    }
-  }, [configLoaded, loadConfig]);
 
   // Validate active session still exists when navigating to this view
   useEffect(() => {
     const validateSession = async () => {
-      if (activeSessionId) {
-        try {
-          const { listSessions } = await import('@/services/sessions');
-          const sessions = await listSessions();
-          const sessionExists = sessions.some((s) => s.id === activeSessionId);
+      if (!activeSessionId) return;
+      try {
+        const { listSessions } = await import('@/services/sessions');
+        const sessions = await listSessions();
+        if (sessions.some((s) => s.id === activeSessionId)) return;
 
-          if (!sessionExists) {
-            // Session was deleted while we were away, clear it
-            if (status === 'connected' || status === 'connecting') {
-              disconnect();
-            }
-            clearActiveSession();
-          }
-        } catch (error) {
-          logger.error('Failed to validate session:', error);
-        }
+        // Session was deleted while we were away, clear it
+        if (status === 'connected' || status === 'connecting') disconnect();
+        clearActiveSession();
+      } catch (error) {
+        logger.error('Failed to validate session:', error);
       }
     };
 
@@ -526,20 +628,16 @@ const StreamView: React.FC = () => {
   // Listen for session destroyed events to sync with Monitor view (when view is active)
   useEffect(() => {
     const unsubscribe = onMessage((message) => {
-      if (message.type === 'event') {
-        const event = message as Event;
-        if (event.payload.event === 'sessiondestroyed') {
-          // If the destroyed session matches our active session, clear it
-          if (activeSessionId === event.payload.session_id) {
-            // If currently streaming, disconnect first
-            if (status === 'connected' || status === 'connecting') {
-              disconnect();
-            }
+      if (message.type !== 'event') return;
+      const event = message as Event;
+      if (event.payload.event !== 'sessiondestroyed') return;
+      if (activeSessionId !== event.payload.session_id) return;
 
-            clearActiveSession();
-          }
-        }
+      // If currently streaming, disconnect first
+      if (status === 'connected' || status === 'connecting') {
+        disconnect();
       }
+      clearActiveSession();
     });
 
     return unsubscribe;
@@ -547,37 +645,7 @@ const StreamView: React.FC = () => {
 
   // Load dynamic pipeline samples
   useEffect(() => {
-    const loadSamples = async () => {
-      try {
-        viewState.setSamplesLoading(true);
-        viewState.setSamplesError(null);
-        const samples = await listDynamicSamples();
-        const orderedSamples = orderSamplePipelinesSystemFirst(samples);
-        viewState.setSamples(orderedSamples);
-
-        // Auto-select first template if available and apply its MoQ
-        // settings so the stream store (pipelineNeedsVideo, etc.) matches
-        // the selected template.  Without this, clicking an already-selected
-        // radio item won't fire onValueChange, leaving the store defaults.
-        if (orderedSamples.length > 0 && !viewState.selectedTemplateId) {
-          const first = orderedSamples[0];
-          viewState.setSelectedTemplateId(first.id);
-          viewState.setPipelineYaml(first.yaml);
-
-          const moqSettings = extractMoqPeerSettings(first.yaml);
-          applyMoqSettings(moqSettings, storeActions, useStreamStore.getState().configServerUrl);
-        }
-      } catch (error) {
-        logger.error('Failed to load dynamic samples:', error);
-        viewState.setSamplesError(
-          error instanceof Error ? error.message : 'Failed to load pipeline templates'
-        );
-      } finally {
-        viewState.setSamplesLoading(false);
-      }
-    };
-
-    loadSamples();
+    loadAndApplySamples(viewState, storeActions);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -628,27 +696,8 @@ const StreamView: React.FC = () => {
       logger.info('Session created successfully');
 
       // Auto-connect to MoQ after session creation, but only when the
-      // pipeline actually uses MoQ transport (has a gateway path, relay URL,
-      // or an output broadcast to subscribe to).  MSE-only pipelines have
-      // none of these and should skip the MoQ connection entirely.
-      const hasMoqTransport = Boolean(
-        useStreamStore.getState().outputBroadcast || useStreamStore.getState().inputBroadcast
-      );
-      if (status === 'disconnected' && serverUrl.trim() && hasMoqTransport) {
-        void (async () => {
-          try {
-            const ok = await connect();
-            if (!ok) {
-              logger.warn('Auto-connect after session creation did not succeed');
-            }
-          } catch (error) {
-            logger.error('MoQ connection attempt after session creation failed:', error);
-            viewState.setSessionCreationError(
-              error instanceof Error ? error.message : 'Connection failed after session creation'
-            );
-          }
-        })();
-      }
+      // pipeline actually uses MoQ transport.
+      autoConnectIfMoq(status, serverUrl, connect, viewState);
     } catch (error) {
       logger.error('Failed to create session:', error);
       viewState.setSessionCreationError(
@@ -706,46 +755,7 @@ const StreamView: React.FC = () => {
     }
   }, [navigate, activeSessionId]);
 
-  const statusText = {
-    disconnected: 'Disconnected',
-    connecting: 'Connecting...',
-    connected: 'Connected',
-  };
-
-  const micStatusText = {
-    disabled: 'Mic: disabled',
-    requesting: 'Mic: requesting permission…',
-    ready: 'Mic: ready',
-    error: 'Mic: error',
-  };
-
-  const cameraStatusText: Record<CameraStatus, string> =
-    videoSourceType === 'screen'
-      ? {
-          disabled: 'Screen: disabled',
-          requesting: 'Screen: requesting permission…',
-          ready: 'Screen: ready',
-          error: 'Screen: error',
-        }
-      : {
-          disabled: 'Camera: disabled',
-          requesting: 'Camera: requesting permission…',
-          ready: 'Camera: ready',
-          error: 'Camera: error',
-        };
-
-  const watchStatusText = {
-    disabled: 'Watch: disabled',
-    offline: 'Watch: offline',
-    loading: 'Watch: loading…',
-    live: 'Watch: live',
-  };
-
-  const connectingStepText: Record<string, string> = {
-    devices: 'Requesting device access',
-    relay: 'Connecting to relay',
-    pipeline: 'Waiting for pipeline',
-  };
+  const cameraStatusText = CAMERA_STATUS_TEXT[videoSourceType];
 
   return (
     <ViewContainer data-testid="stream-view">
@@ -887,7 +897,7 @@ const StreamView: React.FC = () => {
           <Section>
             <SectionTitle>Connection & Controls</SectionTitle>
             <ConnectionControlsRow>
-              <StatusIndicator status={status}>{statusText[status]}</StatusIndicator>
+              <StatusIndicator status={status}>{STATUS_TEXT[status]}</StatusIndicator>
               {status === 'disconnected' ? (
                 <Button variant="primary" onClick={connect} disabled={!canConnect}>
                   Connect & Stream
@@ -960,7 +970,7 @@ const StreamView: React.FC = () => {
             {isStreaming && (
               <div style={{ color: 'var(--sk-text-muted)', fontSize: '14px', padding: '8px 0' }}>
                 {connectionMode === 'direct'
-                  ? `Connected: ${[enableWatch && 'watching', enablePublish && 'publishing'].filter(Boolean).join(' and ')}`
+                  ? directModeStreamingText(enableWatch, enablePublish)
                   : isMicEnabled
                     ? 'Your audio is being streamed and will be echoed back'
                     : 'Enable your microphone to start streaming'}
@@ -969,13 +979,8 @@ const StreamView: React.FC = () => {
 
             {(status === 'connecting' || status === 'connected') && (
               <div style={{ color: 'var(--sk-text-muted)', fontSize: '13px', padding: '4px 0' }}>
-                {status === 'connected'
-                  ? 'Relay: connected'
-                  : connectingStep
-                    ? 'Connecting — ' + (connectingStepText[connectingStep] ?? connectingStep)
-                    : 'Connecting…'}{' '}
-                • {watchStatusText[watchStatus]}
-                {pipelineNeedsAudio && <> • {micStatusText[micStatus]}</>}
+                {relayStatusLabel(status, connectingStep)} • {WATCH_STATUS_TEXT[watchStatus]}
+                {pipelineNeedsAudio && <> • {MIC_STATUS_TEXT[micStatus]}</>}
                 {pipelineNeedsVideo && <> • {cameraStatusText[cameraStatus]}</>}
                 {secondaryCameraStatus !== 'disabled' && (
                   <>
