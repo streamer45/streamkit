@@ -4,13 +4,64 @@ SPDX-FileCopyrightText: © 2025 StreamKit Contributors
 SPDX-License-Identifier: MPL-2.0
 -->
 
-# Installing SVT-AV1 for StreamKit
+# SVT-AV1 for StreamKit
 
 The `video::svt_av1::encoder` node requires **libsvtav1enc ≥ 4.0**.
-Ubuntu/Debian distro packages ship very old versions (e.g. Ubuntu 22.04
-ships ~0.9.0), so **building from source** is the recommended path.
 
-## Quick install (build from source)
+## Static build (recommended)
+
+The easiest way to enable SVT-AV1 is the `svt_av1_static` feature, which
+downloads a pinned SVT-AV1 release at `cargo build` time and links it
+statically.  No system-wide installation or `sudo` is needed.
+
+### Prerequisites
+
+- `cmake` (≥ 3.16)
+- A C compiler (`gcc` / `clang`)
+- `nasm` (optional — enables x86-64 SIMD assembly; without it CMake falls
+  back to C-only, which still works but is slower)
+- `curl` (for downloading the source tarball)
+
+On Debian/Ubuntu:
+
+```bash
+sudo apt install cmake nasm build-essential curl
+```
+
+### Build & run
+
+```bash
+# Via just (recommended)
+just extra_features="--features svt_av1_static" skit
+
+# Or build in release mode
+just extra_features="--features svt_av1_static" build-skit
+
+# Or directly with cargo
+cargo run -p streamkit-server --features "moq,svt_av1_static"
+```
+
+### Using a pre-downloaded source tree
+
+If you already have the SVT-AV1 source, point the build at it to skip the
+download step:
+
+```bash
+SVT_AV1_SRC_DIR=/path/to/SVT-AV1 cargo build --features svt_av1_static
+```
+
+The directory must contain `CMakeLists.txt` at its root.
+
+## System library (alternative)
+
+If you prefer to link against a system-installed shared library, use the
+`svt_av1` feature (without `_static`).  This requires **libsvtav1enc ≥ 4.0**
+installed and discoverable via `pkg-config`.
+
+Ubuntu/Debian distro packages ship very old versions (e.g. Ubuntu 22.04
+ships ~0.9.0), so **building from source** is required.
+
+### Quick install (build from source)
 
 ```bash
 # 1. Remove any old distro packages
@@ -26,6 +77,7 @@ sudo apt install -y \
 cd /tmp
 git clone https://gitlab.com/AOMediaCodec/SVT-AV1.git
 cd SVT-AV1
+# NOTE: keep version in sync with SVT_AV1_VERSION in crates/nodes/build.rs
 git checkout v4.1.0
 
 cmake -S . -B build -G Ninja \
@@ -42,9 +94,7 @@ pkg-config --modversion SvtAv1Enc
 ldconfig -p | grep -i SvtAv1
 ```
 
-## Building StreamKit with SVT-AV1
-
-Once installed, build and run with the `svt_av1` feature enabled:
+### Build & run
 
 ```bash
 # Via just (recommended)

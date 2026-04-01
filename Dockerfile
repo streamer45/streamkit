@@ -41,7 +41,7 @@ RUN mkdir -p ui/dist && echo '<!DOCTYPE html><html><body>Building...</body></htm
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/build/target \
-    cargo build --locked --profile release-lto -p streamkit-server --bin skit --features "moq" && \
+    cargo build --locked --profile release-lto -p streamkit-server --bin skit --features "moq,svt_av1_static" && \
     # Copy compiled artifacts out of cache mount so they persist in the layer
     mkdir -p /build/target-out && \
     cp -r /build/target/release-lto /build/target-out/
@@ -108,7 +108,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
         /build/target/release-lto/deps/streamkit_server-* \
         /build/target/release-lto/.fingerprint/streamkit-server-*; \
       # Build only the server binary \
-      cargo build --locked --profile release-lto --features "moq" --bin skit; \
+      cargo build --locked --profile release-lto --features "moq,svt_av1_static" --bin skit; \
       # Copy final binary out of cache mount \
       mkdir -p /build/bin && cp /build/target/release-lto/skit /build/bin/skit \
     '

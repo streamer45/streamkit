@@ -40,12 +40,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install system dependencies (libvpx for VP9, nasm for AV1 assembly)
-        run: sudo apt-get update && sudo apt-get install -y libvpx-dev nasm
+      - name: Install system dependencies (libvpx for VP9, cmake + nasm for AV1 static build)
+        run: sudo apt-get update && sudo apt-get install -y libvpx-dev nasm cmake
 
       - name: Build release binaries
         run: |
-          cargo build --locked -p streamkit-server --bin skit --release --features "moq"
+          cargo build --locked -p streamkit-server --bin skit --release --features "moq,svt_av1_static"
           cargo build --locked -p streamkit-client --bin skit-cli --release
 
       - name: Strip binaries
