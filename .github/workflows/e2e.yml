@@ -49,10 +49,23 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Install system dependencies (libvpx for VP9, nasm for AV1 assembly)
-        run: sudo apt-get update && sudo apt-get install -y libvpx-dev nasm
+        run: sudo apt-get update && sudo apt-get install -y libvpx-dev nasm cmake ninja-build yasm
 
-      - name: Build skit (debug)
-        run: cargo build -p streamkit-server --bin skit
+      - name: Build and install SVT-AV1 from source (v4.1.0)
+        run: |
+          cd /tmp
+          git clone --depth 1 --branch v4.1.0 https://gitlab.com/AOMediaCodec/SVT-AV1.git
+          cd SVT-AV1
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr/local
+          cmake --build build -j"$(nproc)"
+          sudo cmake --install build
+          sudo ldconfig
+          pkg-config --modversion SvtAv1Enc
+
+      - name: Build skit (debug, with SVT-AV1)
+        run: cargo build -p streamkit-server --bin skit --features svt_av1
 
       - name: Build moq-relay for relay e2e tests
         run: |
