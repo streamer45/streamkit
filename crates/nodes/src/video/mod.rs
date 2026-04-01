@@ -99,6 +99,11 @@ pub mod svt_av1;
 #[cfg(feature = "svt_av1")]
 pub mod svt_av1_ffi;
 
+#[cfg(feature = "dav1d")]
+pub mod dav1d;
+#[cfg(feature = "dav1d")]
+pub mod dav1d_ffi;
+
 #[cfg(any(feature = "colorbars", feature = "compositor"))]
 pub(crate) mod fonts;
 
@@ -420,4 +425,7 @@ pub fn register_video_nodes(registry: &mut NodeRegistry, constraints: &GlobalNod
 
     #[cfg(feature = "svt_av1")]
     svt_av1::register_svt_av1_nodes(registry);
+
+    #[cfg(feature = "dav1d")]
+    dav1d::register_dav1d_nodes(registry);
 }

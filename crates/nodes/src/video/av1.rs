@@ -900,7 +900,7 @@ fn copy_dav1d_picture(
         .map_err(|e| e.to_string())
 }
 
-fn copy_dav1d_plane(
+pub(super) fn copy_dav1d_plane(
     dst: &mut [u8],
     dst_stride: usize,
     src_ptr: *const u8,
