@@ -164,7 +164,7 @@ pub(super) fn i420_to_nv12(
     metadata: Option<streamkit_core::types::PacketMetadata>,
     video_pool: Option<&std::sync::Arc<streamkit_core::VideoFramePool>>,
 ) -> Result<streamkit_core::types::VideoFrame, String> {
-    use streamkit_core::types::{VideoLayout, VideoFrame};
+    use streamkit_core::types::{VideoFrame, VideoLayout};
     use streamkit_core::PooledVideoData;
 
     let width = planes.width;
@@ -203,14 +203,10 @@ pub(super) fn i420_to_nv12(
 
     // Guard against corrupted bitstreams producing unexpected dimensions.
     if u_stride_usize < chroma_w {
-        return Err(format!(
-            "U plane stride ({u_stride_usize}) < chroma width ({chroma_w})"
-        ));
+        return Err(format!("U plane stride ({u_stride_usize}) < chroma width ({chroma_w})"));
     }
     if v_stride_usize < chroma_w {
-        return Err(format!(
-            "V plane stride ({v_stride_usize}) < chroma width ({chroma_w})"
-        ));
+        return Err(format!("V plane stride ({v_stride_usize}) < chroma width ({chroma_w})"));
     }
     // Verify the total range we will access fits within the expected allocation
     // (stride × height).
@@ -230,18 +226,10 @@ pub(super) fn i420_to_nv12(
     for row in 0..chroma_h {
         // SAFETY: We have verified above that stride >= chroma_w, and the
         // decoder allocates at least stride × chroma_h bytes per plane.
-        let u_row = unsafe {
-            std::slice::from_raw_parts(
-                planes.u_ptr.add(row * u_stride_usize),
-                chroma_w,
-            )
-        };
-        let v_row = unsafe {
-            std::slice::from_raw_parts(
-                planes.v_ptr.add(row * v_stride_usize),
-                chroma_w,
-            )
-        };
+        let u_row =
+            unsafe { std::slice::from_raw_parts(planes.u_ptr.add(row * u_stride_usize), chroma_w) };
+        let v_row =
+            unsafe { std::slice::from_raw_parts(planes.v_ptr.add(row * v_stride_usize), chroma_w) };
         let dst_start = uv_plane.offset + row * uv_plane.stride;
         for col in 0..chroma_w {
             data_slice[dst_start + col * 2] = u_row[col];

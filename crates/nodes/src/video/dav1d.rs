@@ -33,8 +33,8 @@ use streamkit_core::types::{
 };
 use streamkit_core::{
     config_helpers, get_codec_channel_capacity, packet_helpers, state_helpers, InputPin,
-    NodeContext, NodeRegistry, OutputPin, PinCardinality, ProcessorNode,
-    StreamKitError, VideoFramePool,
+    NodeContext, NodeRegistry, OutputPin, PinCardinality, ProcessorNode, StreamKitError,
+    VideoFramePool,
 };
 use tokio::sync::mpsc;
 
@@ -542,15 +542,7 @@ fn copy_dav1d_picture(
     }
 
     super::i420_to_nv12(
-        &super::I420Planes {
-            y_ptr,
-            u_ptr,
-            v_ptr,
-            y_stride,
-            uv_stride,
-            width,
-            height,
-        },
+        &super::I420Planes { y_ptr, u_ptr, v_ptr, y_stride, uv_stride, width, height },
         metadata,
         video_pool,
     )
