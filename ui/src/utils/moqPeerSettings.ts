@@ -222,12 +222,17 @@ export function applyMoqSettings(
     actions.setTracks(settings.tracks, settings.publishBroadcasts);
     actions.setMsePath(settings.msePath ?? null);
   } else {
-    // No client section — clear all transport state to prevent
-    // stale MoQ/MSE settings from leaking across templates.
+    // No client section — reset all transport state to defaults to
+    // prevent stale MoQ/MSE settings from leaking across templates.
     actions.setInputBroadcast('');
     actions.setOutputBroadcast('');
     actions.setEnablePublish(false);
     actions.setEnableWatch(false);
+    actions.setPipelineMediaTypes(true, true);
+    actions.setPipelineOutputTypes(true, true);
+    actions.setIsExternalRelay(false);
+    actions.setVideoSourceType('camera');
+    actions.setTracks([], []);
     actions.setMsePath(null);
   }
 }
