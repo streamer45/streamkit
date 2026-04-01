@@ -36,36 +36,13 @@ import { createSession } from '@/services/sessions';
 import { useSchemaStore, ensureSchemasLoaded } from '@/stores/schemaStore';
 import type { Event } from '@/types/types';
 import { getLogger } from '@/utils/logger';
-import {
-  extractMoqPeerSettings,
-  updateUrlPath,
-  type MoqPeerSettings,
-} from '@/utils/moqPeerSettings';
+import { extractMoqPeerSettings, applyMoqSettings } from '@/utils/moqPeerSettings';
 import { orderSamplePipelinesSystemFirst } from '@/utils/samplePipelineOrdering';
 
 import type { CameraStatus } from '../stores/streamStore';
 import { useStreamStore } from '../stores/streamStore';
 
 const logger = getLogger('StreamView');
-
-/**
- * Resolves the server URL for a pipeline's MoQ settings.
- *
- * - Relay pipelines use the relay URL directly.
- * - Gateway pipelines apply the gateway path to the original config URL
- *   (not the current serverUrl, which may have been overwritten by a
- *   previous relay selection).
- *
- * Returns the resolved URL or undefined if no update is needed.
- */
-function resolveServerUrl(settings: MoqPeerSettings): string | undefined {
-  if (settings.relayUrl) return settings.relayUrl;
-  if (settings.gatewayPath) {
-    const baseUrl = useStreamStore.getState().configServerUrl;
-    if (baseUrl) return updateUrlPath(baseUrl, settings.gatewayPath);
-  }
-  return undefined;
-}
 
 const ConnectionControlsRow = styled.div`
   display: flex;
@@ -441,6 +418,37 @@ const StreamView: React.FC = () => {
 
   const isStreaming = status === 'connected';
 
+  // Memoised action bundle for applyMoqSettings — all setters are stable
+  // Zustand references so the object identity only changes on first render.
+  const storeActions = React.useMemo(
+    () => ({
+      setServerUrl,
+      setInputBroadcast,
+      setOutputBroadcast,
+      setEnablePublish,
+      setEnableWatch,
+      setPipelineMediaTypes,
+      setPipelineOutputTypes,
+      setIsExternalRelay,
+      setVideoSourceType,
+      setTracks,
+      setMsePath,
+    }),
+    [
+      setServerUrl,
+      setInputBroadcast,
+      setOutputBroadcast,
+      setEnablePublish,
+      setEnableWatch,
+      setPipelineMediaTypes,
+      setPipelineOutputTypes,
+      setIsExternalRelay,
+      setVideoSourceType,
+      setTracks,
+      setMsePath,
+    ]
+  );
+
   const videoContainerRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
@@ -557,27 +565,7 @@ const StreamView: React.FC = () => {
           viewState.setPipelineYaml(first.yaml);
 
           const moqSettings = extractMoqPeerSettings(first.yaml);
-          if (moqSettings) {
-            const resolvedUrl = resolveServerUrl(moqSettings);
-            if (resolvedUrl) setServerUrl(resolvedUrl);
-            setInputBroadcast(moqSettings.inputBroadcast ?? '');
-            setOutputBroadcast(moqSettings.outputBroadcast ?? '');
-            setEnablePublish(moqSettings.hasInputBroadcast);
-            setEnableWatch(Boolean(moqSettings.outputBroadcast));
-            setPipelineMediaTypes(moqSettings.needsAudioInput, moqSettings.needsVideoInput);
-            setPipelineOutputTypes(moqSettings.outputsAudio, moqSettings.outputsVideo);
-            setIsExternalRelay(moqSettings.isExternalRelay);
-            setVideoSourceType(moqSettings.videoSourceType);
-            setTracks(moqSettings.tracks, moqSettings.publishBroadcasts);
-            setMsePath(moqSettings.msePath ?? null);
-          } else {
-            // No client section — clear all transport state.
-            setInputBroadcast('');
-            setOutputBroadcast('');
-            setEnablePublish(false);
-            setEnableWatch(false);
-            setMsePath(null);
-          }
+          applyMoqSettings(moqSettings, storeActions, useStreamStore.getState().configServerUrl);
         }
       } catch (error) {
         logger.error('Failed to load dynamic samples:', error);
@@ -606,44 +594,10 @@ const StreamView: React.FC = () => {
         // previous template (e.g. switching from a MoQ pipeline to an
         // MSE-only pipeline must clear outputBroadcast, and vice versa).
         const moqSettings = extractMoqPeerSettings(template.yaml);
-        if (moqSettings) {
-          const resolvedUrl = resolveServerUrl(moqSettings);
-          if (resolvedUrl) setServerUrl(resolvedUrl);
-          setInputBroadcast(moqSettings.inputBroadcast ?? '');
-          setOutputBroadcast(moqSettings.outputBroadcast ?? '');
-          setEnablePublish(moqSettings.hasInputBroadcast);
-          setEnableWatch(Boolean(moqSettings.outputBroadcast));
-          setPipelineMediaTypes(moqSettings.needsAudioInput, moqSettings.needsVideoInput);
-          setPipelineOutputTypes(moqSettings.outputsAudio, moqSettings.outputsVideo);
-          setIsExternalRelay(moqSettings.isExternalRelay);
-          setVideoSourceType(moqSettings.videoSourceType);
-          setTracks(moqSettings.tracks, moqSettings.publishBroadcasts);
-          setMsePath(moqSettings.msePath ?? null);
-        } else {
-          // No client section — clear all transport state to prevent
-          // stale MoQ/MSE settings from leaking across templates.
-          setInputBroadcast('');
-          setOutputBroadcast('');
-          setEnablePublish(false);
-          setEnableWatch(false);
-          setMsePath(null);
-        }
+        applyMoqSettings(moqSettings, storeActions, useStreamStore.getState().configServerUrl);
       }
     },
-    [
-      viewState,
-      setServerUrl,
-      setInputBroadcast,
-      setOutputBroadcast,
-      setEnablePublish,
-      setEnableWatch,
-      setPipelineMediaTypes,
-      setPipelineOutputTypes,
-      setIsExternalRelay,
-      setVideoSourceType,
-      setTracks,
-      setMsePath,
-    ]
+    [viewState, storeActions]
   );
 
   // Handle session creation
