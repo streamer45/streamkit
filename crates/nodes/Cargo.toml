@@ -140,6 +140,9 @@ symphonia = ["dep:symphonia", "dep:schemars"]
 vp9 = ["dep:env-libvpx-sys", "dep:schemars"]
 av1 = ["dep:rav1e", "dep:rav1d", "dep:schemars"]
 svt_av1 = ["dep:schemars", "dep:serde_json", "dep:pkg-config", "dep:cc"]
+# svt_av1_static downloads + builds SVT-AV1 at compile time (no system install).
+# Not in `default` to keep dev builds fast; enabled explicitly in Dockerfiles and
+# release.yml so every shipped artifact includes AV1 encoding.
 svt_av1_static = ["svt_av1", "dep:cmake"]
 colorbars = ["dep:schemars", "dep:serde_json", "dep:fontdue"]
 compositor = ["dep:schemars", "dep:serde_json", "dep:image", "dep:tiny-skia", "dep:rayon", "dep:fontdue", "dep:smallvec", "dep:uuid"]

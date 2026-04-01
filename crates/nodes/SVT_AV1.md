@@ -77,6 +77,7 @@ sudo apt install -y \
 cd /tmp
 git clone https://gitlab.com/AOMediaCodec/SVT-AV1.git
 cd SVT-AV1
+# NOTE: keep version in sync with SVT_AV1_VERSION in crates/nodes/build.rs
 git checkout v4.1.0
 
 cmake -S . -B build -G Ninja \
