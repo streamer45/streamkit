@@ -1133,9 +1133,9 @@ impl DynamicEngine {
                 pin_name: to_pin.clone(),
                 packet_type: source_produces_type,
             };
-            if let Err(e) = pin_mgmt_tx.try_send(msg) {
+            if pin_mgmt_tx.send(msg).await.is_err() {
                 tracing::warn!(
-                    "Failed to send InputTypeResolved to '{}' for pin '{}': {e}",
+                    "Failed to send InputTypeResolved to '{}' for pin '{}' — node may have stopped",
                     to_node,
                     to_pin
                 );
