@@ -80,6 +80,10 @@ fn build_svt_av1_static() -> Vec<std::path::PathBuf> {
             "SVT_AV1_SRC_DIR={} does not contain a CMakeLists.txt",
             p.display()
         );
+        println!(
+            "cargo:warning=svt_av1_static: using pre-downloaded source from SVT_AV1_SRC_DIR={}",
+            p.display()
+        );
         p
     } else {
         let dir_name = format!("SVT-AV1-v{SVT_AV1_VERSION}");
@@ -91,7 +95,7 @@ fn build_svt_av1_static() -> Vec<std::path::PathBuf> {
                 "https://gitlab.com/AOMediaCodec/SVT-AV1/-/archive/v{V}/SVT-AV1-v{V}.tar.gz",
                 V = SVT_AV1_VERSION
             );
-            eprintln!("Downloading SVT-AV1 v{SVT_AV1_VERSION} from {url}");
+            println!("cargo:warning=svt_av1_static: downloading SVT-AV1 v{SVT_AV1_VERSION} ...");
 
             let tarball = out_dir.join(format!("SVT-AV1-v{SVT_AV1_VERSION}.tar.gz"));
 
@@ -106,6 +110,8 @@ fn build_svt_av1_static() -> Vec<std::path::PathBuf> {
                 "curl failed to download SVT-AV1 tarball (exit status: {curl_status})"
             );
 
+            println!("cargo:warning=svt_av1_static: download complete, verifying SHA-256 ...");
+
             // Verify tarball integrity.
             let sha_output = std::process::Command::new("sha256sum")
                 .arg(&tarball)
@@ -117,6 +123,8 @@ fn build_svt_av1_static() -> Vec<std::path::PathBuf> {
                 actual_sha == SVT_AV1_SHA256,
                 "SVT-AV1 tarball SHA-256 mismatch:\n  expected: {SVT_AV1_SHA256}\n  actual:   {actual_sha}"
             );
+
+            println!("cargo:warning=svt_av1_static: checksum OK, extracting ...");
 
             let tar_status = std::process::Command::new("tar")
                 .args(["-xzf"])
@@ -138,6 +146,7 @@ fn build_svt_av1_static() -> Vec<std::path::PathBuf> {
     };
 
     // 3. Build with cmake.
+    println!("cargo:warning=svt_av1_static: building SVT-AV1 with cmake (this may take a few minutes) ...");
     let dst = cmake::Config::new(&src_dir)
         .define("BUILD_SHARED_LIBS", "OFF")
         .define("BUILD_APPS", "OFF")
@@ -145,6 +154,8 @@ fn build_svt_av1_static() -> Vec<std::path::PathBuf> {
         .define("BUILD_TESTING", "OFF")
         .define("CMAKE_INSTALL_LIBDIR", "lib")
         .build();
+
+    println!("cargo:warning=svt_av1_static: build complete, linking statically");
 
     // 4. Emit linker directives.
     println!("cargo:rustc-link-search=native={}", dst.join("lib").display());
