@@ -20,19 +20,16 @@
 //! opaque configuration buffer is large enough for the installed headers.
 
 /// Pinned SVT-AV1 version used by the static build path.
-#[cfg(feature = "svt_av1")]
+#[cfg(feature = "svt_av1_static")]
 const SVT_AV1_VERSION: &str = "4.1.0";
 
 fn main() {
     #[cfg(feature = "svt_av1")]
     {
-        let include_paths: Vec<std::path::PathBuf>;
-
-        if cfg!(feature = "svt_av1_static") {
-            include_paths = build_svt_av1_static();
-        } else {
-            include_paths = probe_svt_av1_pkgconfig();
-        }
+        #[cfg(feature = "svt_av1_static")]
+        let include_paths = build_svt_av1_static();
+        #[cfg(not(feature = "svt_av1_static"))]
+        let include_paths = probe_svt_av1_pkgconfig();
 
         // Compile a tiny C program that static-asserts our Rust-side opaque
         // buffer (8192 bytes) is at least as large as the real struct.
@@ -47,7 +44,7 @@ fn main() {
 }
 
 /// Probe for a system-installed SVT-AV1 via pkg-config (existing path).
-#[cfg(feature = "svt_av1")]
+#[cfg(all(feature = "svt_av1", not(feature = "svt_av1_static")))]
 fn probe_svt_av1_pkgconfig() -> Vec<std::path::PathBuf> {
     let lib = match pkg_config::Config::new().atleast_version("4.0.0").probe("SvtAv1Enc") {
         Ok(lib) => lib,
@@ -61,7 +58,7 @@ fn probe_svt_av1_pkgconfig() -> Vec<std::path::PathBuf> {
 }
 
 /// Download (if needed), build, and statically link SVT-AV1.
-#[cfg(feature = "svt_av1")]
+#[cfg(feature = "svt_av1_static")]
 fn build_svt_av1_static() -> Vec<std::path::PathBuf> {
     use std::path::PathBuf;
 
