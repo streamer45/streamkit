@@ -1,0 +1,136 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Composites the user's screen capture as the background with webcam as
+# picture-in-picture overlay, loops microphone audio through a gain filter,
+# re-encodes video as AV1 via SVT-AV1 at 1280x720, and streams both via MoQ.
+# Uses multi-broadcast subscription to receive screen and camera inputs on
+# separate broadcasts with namespaced output pins.
+#
+# Requires: skit built with --features svt_av1
+
+name: Screen Share + Camera PiP – SVT-AV1 Output (MoQ Stream)
+description: >
+  Composites the user's screen capture as the background with webcam as
+  picture-in-picture overlay (circle crop), loops microphone audio through
+  a gain filter, re-encodes video as AV1 (SVT-AV1) at 1280x720, and streams
+  both via MoQ.
+mode: dynamic
+client:
+  gateway_path: /moq/screenshare
+  publish:
+    broadcast: screen-input
+    tracks:
+      - kind: audio
+        source: microphone
+        codec: opus
+        max_bitrate: 32
+      - kind: video
+        source: screen
+        width: 1280
+        height: 720
+        codec: av1
+      - kind: video
+        source: camera
+        broadcast: cam-input
+        width: 640
+        height: 480
+        codec: av1
+  watch:
+    broadcast: output
+    audio: true
+    video: true
+
+nodes:
+  moq_peer:
+    kind: transport::moq::peer
+    params:
+      gateway_path: /moq/screenshare
+      # The first broadcast is the "primary" — its output pins are unprefixed
+      # (e.g. video/hd, audio/data).  Additional broadcasts get their pins
+      # namespaced as {broadcast}/{track} (e.g. cam-input/video/hd) so that
+      # downstream nodes can wire to each source independently.
+      # NOTE: @moq/publish uses "video/hd" (not "video/data") as the track name.
+      input_broadcasts:
+        - screen-input
+        - cam-input
+      output_broadcast: output
+      allow_reconnect: true
+      video_codec: av1
+      video_width: 1280
+      video_height: 720
+    needs:
+      in: opus_encoder
+      in_1: svt_av1_encoder
+
+  # --- Video path: decode both AV1 sources → composite → SVT-AV1 encode ---
+
+  av1_decoder_screen:
+    kind: video::av1::decoder
+    needs:
+      # @moq/publish uses "video/hd" as the track name (not "video/data")
+      in: moq_peer.video/hd
+
+  av1_decoder_cam:
+    kind: video::av1::decoder
+    needs:
+      in: moq_peer.cam-input/video/hd
+
+  compositor:
+    kind: video::compositor
+    params:
+      width: 1280
+      height: 720
+      num_inputs: 2
+      layers:
+        in_0:
+          rect: { x: 0, y: 0, width: 1280, height: 720 }
+          opacity: 1
+          z_index: 0
+        # Camera PiP: small circle crop, top-right corner
+        in_1:
+          rect: { x: 1040, y: 30, width: 200, height: 200 }
+          opacity: 1
+          z_index: 1
+          crop_zoom: 1.8
+          crop_x: 0.5
+          crop_y: 0.4
+          crop_shape: circle
+      text_overlays:
+        - id: label
+          text: Live Screen Share (SVT-AV1)
+          rect: { x: 30, y: 30, width: 500, height: 50 }
+          color: [255, 255, 255, 180]
+          font_size: 40
+          font_name: samples/fonts/system/DejaVuSans-Bold.ttf
+          z_index: 2
+      output_format: nv12
+    needs:
+      - av1_decoder_screen
+      - av1_decoder_cam
+
+  svt_av1_encoder:
+    kind: video::svt_av1::encoder
+    params:
+      preset: 12
+      crf: 35
+      low_latency: true
+      keyframe_interval: 30
+    needs: compositor
+
+  # --- Audio path: decode → gain → encode ---
+
+  opus_decoder:
+    kind: audio::opus::decoder
+    needs: moq_peer.audio/data
+
+  gain:
+    kind: audio::gain
+    params:
+      gain: 1.0
+    needs: opus_decoder
+
+  opus_encoder:
+    kind: audio::opus::encoder
+    needs: gain
