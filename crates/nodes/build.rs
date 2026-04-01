@@ -17,6 +17,10 @@
 //! * **`svt_av1`** (without `svt_av1_static`) — probes for a system-installed
 //!   `SvtAv1Enc` via `pkg-config` and links dynamically.
 //!
+//! **Note:** the static build path currently targets Linux (uses `sha256sum`
+//! for checksum verification).  macOS developers should use the pkg-config
+//! path or set `SVT_AV1_SRC_DIR` to a pre-downloaded source tree.
+//!
 //! In both cases a small C snippet is compiled to verify that the Rust-side
 //! opaque configuration buffer is large enough for the installed headers.
 
@@ -90,7 +94,14 @@ fn build_svt_av1_static() -> Vec<std::path::PathBuf> {
         let src = out_dir.join(&dir_name);
 
         // 2. Download if the source tree is not already present.
-        if !src.join("CMakeLists.txt").exists() {
+        // A sentinel file gates the cache so partial extractions don't
+        // poison subsequent builds.
+        let sentinel = src.join(".svt_av1_ok");
+        if !sentinel.exists() {
+            // Clean up any partial previous extraction.
+            if src.exists() {
+                std::fs::remove_dir_all(&src).ok();
+            }
             let url = format!(
                 "https://gitlab.com/AOMediaCodec/SVT-AV1/-/archive/v{V}/SVT-AV1-v{V}.tar.gz",
                 V = SVT_AV1_VERSION
@@ -117,11 +128,16 @@ fn build_svt_av1_static() -> Vec<std::path::PathBuf> {
                 .arg(&tarball)
                 .output()
                 .expect("failed to run sha256sum");
+            assert!(
+                sha_output.status.success(),
+                "sha256sum failed (exit status: {})",
+                sha_output.status
+            );
             let sha_line = String::from_utf8_lossy(&sha_output.stdout);
             let actual_sha = sha_line.split_whitespace().next().unwrap_or("");
-            assert!(
-                actual_sha == SVT_AV1_SHA256,
-                "SVT-AV1 tarball SHA-256 mismatch:\n  expected: {SVT_AV1_SHA256}\n  actual:   {actual_sha}"
+            assert_eq!(
+                actual_sha, SVT_AV1_SHA256,
+                "SVT-AV1 tarball SHA-256 mismatch"
             );
 
             println!("cargo:warning=svt_av1_static: checksum OK, extracting ...");
@@ -141,6 +157,9 @@ fn build_svt_av1_static() -> Vec<std::path::PathBuf> {
                 "SVT-AV1 source not found at {} after download",
                 src.display()
             );
+
+            // Mark extraction as complete so we don't re-download next time.
+            std::fs::write(&sentinel, b"ok").ok();
         }
         src
     };
