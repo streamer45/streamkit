@@ -1,0 +1,137 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Demonstrates the video::compositor node with AV1 round-trip using the C
+# dav1d decoder:
+#   1. A full-size 1280x720 background colorbars (RGBA8)
+#   2. A smaller 320x240 PiP colorbars overlay (RGBA8) with 15° rotation
+#   3. A text overlay ("StreamKit dav1d Demo")
+#   4. The StreamKit logo as a semi-transparent watermark
+#
+# The pipeline encodes to AV1 (rav1e), decodes via C dav1d, re-encodes, and
+# streams via http_output.  This exercises the full dav1d round-trip in a
+# self-contained oneshot pipeline (no relay or browser needed).
+
+name: Video Compositor Demo (dav1d AV1)
+description: Composites two colorbars sources (main + PiP) with a text overlay and logo watermark, encodes to AV1 (rav1e), decodes with C dav1d, re-encodes, and streams a WebM via http_output (3 seconds)
+mode: oneshot
+client:
+  input:
+    type: none
+  output:
+    type: video
+
+nodes:
+  colorbars_bg:
+    kind: video::colorbars
+    params:
+      width: 1280
+      height: 720
+      fps: 30
+      frame_count: 90
+      pixel_format: rgba8
+      draw_time: true
+      draw_time_use_pts: true
+
+  colorbars_pip:
+    kind: video::colorbars
+    params:
+      width: 320
+      height: 240
+      fps: 30
+      frame_count: 90
+      pixel_format: rgba8
+      draw_time: true
+      draw_time_use_pts: true
+
+  compositor:
+    kind: video::compositor
+    params:
+      width: 1280
+      height: 720
+      num_inputs: 2
+      layers:
+        in_0:
+          opacity: 1.0
+          z_index: 0
+        in_1:
+          rect:
+            x: 50
+            y: 250
+            width: 320
+            height: 240
+          opacity: 0.9
+          z_index: 1
+          rotation_degrees: 15.0
+      text_overlays:
+        - id: "title"
+          text: "StreamKit dav1d Demo"
+          rect:
+            x: 30
+            y: 30
+            width: 420
+            height: 40
+          color: [255, 255, 255, 230]
+          font_size: 32
+          opacity: 1.0
+          rotation_degrees: 0.0
+          z_index: 2
+          font_name: samples/fonts/system/DejaVuSans.ttf
+      image_overlays:
+        - id: logo
+          asset_path: samples/images/system/streamkit-logo.png
+          rect:
+            x: 1220
+            y: 640
+            width: 30
+            height: 52
+          opacity: 0.7
+          z_index: 3
+    needs:
+      - colorbars_bg
+      - colorbars_pip
+
+  pixel_convert:
+    kind: video::pixel_convert
+    params:
+      output_format: nv12
+    needs: compositor
+
+  # Encode to AV1 (rav1e), then decode with dav1d to exercise the round-trip.
+  av1_encoder:
+    kind: video::av1::encoder
+    params:
+      speed: 10
+      low_latency: true
+    needs: pixel_convert
+
+  dav1d_decoder:
+    kind: video::dav1d::decoder
+    needs: av1_encoder
+
+  # Re-encode the dav1d output for the WebM muxer.
+  av1_reencoder:
+    kind: video::av1::encoder
+    params:
+      speed: 10
+      low_latency: true
+    needs: dav1d_decoder
+
+  webm_muxer:
+    kind: containers::webm::muxer
+    params:
+      video_width: 1280
+      video_height: 720
+      streaming_mode: live
+    needs: av1_reencoder
+
+  pacer:
+    kind: core::pacer
+    needs: webm_muxer
+
+  http_output:
+    kind: streamkit::http_output
+    params:
+      content_type: 'video/webm; codecs="av1"'
+    needs: pacer
