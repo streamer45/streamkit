@@ -135,10 +135,7 @@ fn build_svt_av1_static() -> Vec<std::path::PathBuf> {
             );
             let sha_line = String::from_utf8_lossy(&sha_output.stdout);
             let actual_sha = sha_line.split_whitespace().next().unwrap_or("");
-            assert_eq!(
-                actual_sha, SVT_AV1_SHA256,
-                "SVT-AV1 tarball SHA-256 mismatch"
-            );
+            assert_eq!(actual_sha, SVT_AV1_SHA256, "SVT-AV1 tarball SHA-256 mismatch");
 
             println!("cargo:warning=svt_av1_static: checksum OK, extracting ...");
 
