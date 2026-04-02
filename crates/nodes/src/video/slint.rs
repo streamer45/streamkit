@@ -142,18 +142,17 @@ impl SlintConfig {
         validate_slint_asset_path(&self.slint_file)
     }
 
-    /// Merge runtime-changeable fields from an `UpdateParams` payload into
-    /// this config.
+    /// Merge runtime property changes from an `UpdateParams` payload.
     ///
-    /// Only `properties`, `property_keyframes`, and `keyframe_interval` are
-    /// updated.  Immutable init-time fields (`slint_file`, `component`,
-    /// `width`, `height`, `fps`, `frame_count`) are preserved from the
-    /// original config so that partial JSON payloads (e.g.
-    /// `{"properties": {"score": 5}}`) work without re-validating the path.
+    /// Only `properties` values are merged (via `extend`) so that a partial
+    /// JSON like `{"properties": {"home_score": 4}}` updates the named keys
+    /// without dropping unmentioned ones.  Init-time fields (`slint_file`,
+    /// `component`, `width`, `height`, `fps`, `frame_count`,
+    /// `property_keyframes`, `keyframe_interval`) are left unchanged because
+    /// serde defaults make it impossible to distinguish "user sent empty" from
+    /// "field was absent in the JSON".
     fn merge_update(&mut self, update: &Self) {
-        self.properties.clone_from(&update.properties);
-        self.property_keyframes.clone_from(&update.property_keyframes);
-        self.keyframe_interval = update.keyframe_interval;
+        self.properties.extend(update.properties.iter().map(|(k, v)| (k.clone(), v.clone())));
     }
 }
 
