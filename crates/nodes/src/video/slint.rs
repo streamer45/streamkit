@@ -440,6 +440,13 @@ fn render_slint_frame(instance: &mut SlintInstance, config: &SlintConfig) -> Vec
     // (e.g. slide-in transitions) advance on each tick.
     slint::platform::update_timers_and_animations();
 
+    // Force a full redraw every frame.  With `RepaintBufferType::NewBuffer`
+    // the renderer always paints the entire scene, so there is no wasted
+    // incremental-diff cost.  Without this call, `draw_if_needed` would
+    // skip rendering once the window is no longer dirty (e.g. static UIs
+    // with no property changes), leaving the pixel buffer zeroed.
+    instance.window.request_redraw();
+
     // Render into the pixel buffer.
     let width = instance.width;
     instance.window.draw_if_needed(|renderer| {
