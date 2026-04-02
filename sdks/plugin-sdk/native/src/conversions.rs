@@ -167,9 +167,20 @@ pub enum CPacketTypeOwned {
 
 /// Convert Rust PacketType to C representation.
 ///
-/// Returns `(CPacketTypeInfo, CPacketTypeOwned)`.  The owned value **must**
-/// outlive the `CPacketTypeInfo` because the info struct borrows a pointer
-/// into it.
+/// Returns `(CPacketTypeInfo, CPacketTypeOwned)`.  The caller **must** patch
+/// the appropriate pointer in `CPacketTypeInfo` to point into the returned
+/// `CPacketTypeOwned` value once it is stored at a stable address.  The info
+/// struct is returned with all optional pointers set to `null` to avoid
+/// dangling references to stack locals.
+///
+/// Example:
+/// ```ignore
+/// let (mut info, owned) = packet_type_to_c(&pkt_type);
+/// // Store `owned` somewhere stable, then patch the pointer:
+/// if let CPacketTypeOwned::Audio(ref fmt) = owned {
+///     info.audio_format = fmt as *const _;
+/// }
+/// ```
 pub fn packet_type_to_c(pt: &PacketType) -> (CPacketTypeInfo, CPacketTypeOwned) {
     match pt {
         PacketType::RawAudio(format) => {
@@ -177,7 +188,8 @@ pub fn packet_type_to_c(pt: &PacketType) -> (CPacketTypeInfo, CPacketTypeOwned) 
             (
                 CPacketTypeInfo {
                     type_discriminant: CPacketType::RawAudio,
-                    audio_format: &raw const c_format,
+                    // Caller must patch this pointer after storing the owned value.
+                    audio_format: std::ptr::null(),
                     custom_type_id: std::ptr::null(),
                     raw_video_format: std::ptr::null(),
                 },
@@ -241,7 +253,8 @@ pub fn packet_type_to_c(pt: &PacketType) -> (CPacketTypeInfo, CPacketTypeOwned) 
                     type_discriminant: CPacketType::RawVideo,
                     audio_format: std::ptr::null(),
                     custom_type_id: std::ptr::null(),
-                    raw_video_format: &raw const c_fmt,
+                    // Caller must patch this pointer after storing the owned value.
+                    raw_video_format: std::ptr::null(),
                 },
                 CPacketTypeOwned::Video(c_fmt),
             )

@@ -600,7 +600,7 @@ impl NativeNodeWrapper {
         }
 
         // Wait for Start (or Shutdown / cancellation).
-        let mut control_channel_open = true;
+        let control_channel_open = true;
         loop {
             tokio::select! {
                 biased;
@@ -660,19 +660,11 @@ impl NativeNodeWrapper {
                 break;
             }
 
-            // Poll for control messages / cancellation without blocking
-            loop {
-                tokio::select! {
-                    biased;
-
-                    () = async {
-                        match &context.cancellation_token {
-                            Some(token) => token.cancelled().await,
-                            None => std::future::pending().await,
-                        }
-                    } => {
-                        tracing::info!(node = %node_name, "Source plugin cancelled");
-                        // Jump to cleanup
+            // Non-blocking drain of pending control messages.
+            while let Ok(ctrl) = context.control_rx.try_recv() {
+                match ctrl {
+                    NodeControlMessage::Shutdown => {
+                        tracing::info!(node = %node_name, "Source plugin received shutdown");
                         if let Err(e) = context
                             .state_tx
                             .send(NodeStateUpdate::new(
@@ -684,38 +676,13 @@ impl NativeNodeWrapper {
                             warn!(error = %e, node = %node_name, "Failed to send stopped state");
                         }
                         return Ok(());
-                    }
-
-                    maybe_ctrl = context.control_rx.recv(), if control_channel_open => {
-                        match maybe_ctrl {
-                            Some(NodeControlMessage::Shutdown) => {
-                                tracing::info!(node = %node_name, "Source plugin received shutdown");
-                                if let Err(e) = context
-                                    .state_tx
-                                    .send(NodeStateUpdate::new(
-                                        node_name.clone(),
-                                        NodeState::Stopped { reason: StopReason::Completed },
-                                    ))
-                                    .await
-                                {
-                                    warn!(error = %e, node = %node_name, "Failed to send stopped state");
-                                }
-                                return Ok(());
-                            }
-                            Some(NodeControlMessage::UpdateParams(params_value)) => {
-                                self.apply_params_update(&node_name, &context, &params_value).await?;
-                            }
-                            Some(NodeControlMessage::Start) => {
-                                // Already started — ignore duplicate.
-                            }
-                            None => {
-                                control_channel_open = false;
-                            }
-                        }
-                    }
-
-                    // No pending control message — break out to tick
-                    else => break,
+                    },
+                    NodeControlMessage::UpdateParams(params_value) => {
+                        self.apply_params_update(&node_name, &context, &params_value).await?;
+                    },
+                    NodeControlMessage::Start => {
+                        // Already started — ignore duplicate.
+                    },
                 }
             }
 
@@ -724,8 +691,6 @@ impl NativeNodeWrapper {
             let telemetry_tx = context.telemetry_tx.clone();
             let session_id = context.session_id.clone();
             let node_id = node_name.clone();
-            let sleep_dur = tick_interval;
-
             let outcome = tokio::task::spawn_blocking(move || {
                 let Some(handle) = state.begin_call() else {
                     return TickOutcome {
@@ -771,9 +736,6 @@ impl NativeNodeWrapper {
                 let outputs = callback_ctx.output_packets;
                 state.finish_call();
 
-                // Sleep inside the blocking task to avoid needing tokio::time feature.
-                std::thread::sleep(sleep_dur);
-
                 TickOutcome {
                     outputs,
                     success: result.result.success,
@@ -816,6 +778,21 @@ impl NativeNodeWrapper {
             }
 
             tick_count += 1;
+
+            // Sleep until next tick — cancellation-aware so shutdown is responsive.
+            tokio::select! {
+                biased;
+                () = async {
+                    match &context.cancellation_token {
+                        Some(token) => token.cancelled().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    tracing::info!(node = %node_name, "Source plugin cancelled during tick sleep");
+                    break;
+                }
+                () = tokio::time::sleep(tick_interval) => {}
+            }
         }
 
         // Emit stopped state
