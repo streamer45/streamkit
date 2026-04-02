@@ -674,7 +674,8 @@ impl NativeNodeWrapper {
             warn!(error = %e, node = %node_name, "Failed to send running state");
         }
 
-        let tick_interval = std::time::Duration::from_micros(self.metadata.tick_interval_us);
+        // Clamp to at least 1µs to prevent panic in tokio::time::interval.
+        let tick_interval = std::time::Duration::from_micros(self.metadata.tick_interval_us.max(1));
         let max_ticks = self.metadata.max_ticks;
         let mut tick_count: u64 = 0;
 
@@ -780,12 +781,19 @@ impl NativeNodeWrapper {
             .await
             .map_err(|e| StreamKitError::Runtime(format!("Source tick task panicked: {e}")))?;
 
-            // Send outputs produced by tick
+            // Send outputs produced by tick.  If the output channel is closed,
+            // stop ticking — source nodes have no input-close backstop so we must
+            // detect consumer disconnect here.
+            let mut output_closed = false;
             for (pin, pkt) in outcome.outputs {
                 if context.output_sender.send(&pin, pkt).await.is_err() {
                     tracing::debug!(node = %node_name, "Output channel closed during tick");
+                    output_closed = true;
                     break;
                 }
+            }
+            if output_closed {
+                break;
             }
 
             tick_count += 1;
