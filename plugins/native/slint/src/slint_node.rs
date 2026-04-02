@@ -123,7 +123,19 @@ impl NativeSourceNode for SlintSourcePlugin {
         let config: SlintConfig = if let Some(p) = params {
             serde_json::from_value(p).map_err(|e| format!("Invalid config: {e}"))?
         } else {
-            SlintConfig::default()
+            // Parameterless construction is used by the host to probe
+            // source_config().  Return a lightweight default instance
+            // without starting the Slint thread.
+            let config = SlintConfig::default();
+            let (_tx, result_rx) = std::sync::mpsc::sync_channel(1);
+            return Ok(Self {
+                config,
+                node_id: uuid::Uuid::new_v4(),
+                result_rx,
+                tick_count: 0,
+                duration_us: 1_000_000 / 30,
+                logger,
+            });
         };
 
         config.validate()?;
