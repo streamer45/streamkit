@@ -1,0 +1,171 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Self-contained dav1d AV1 decoder relay test: publishes audio (from file) and
+# video (colorbars encoded as AV1 via SVT-AV1) to an external moq-relay,
+# subscribes back, decodes AV1 using the C dav1d decoder, composites over a
+# colorbars background, re-encodes as AV1 via SVT-AV1, and republishes.
+#
+# Validates the full dav1d decode → composite → SVT-AV1 encode path without
+# a browser or webcam.  This is the same pipeline as
+# moq-relay-av1-compositor.yaml but uses video::dav1d::decoder instead of
+# video::av1::decoder (rav1d).
+#
+# Requires: skit built with --features dav1d_static,svt_av1
+#
+# The relay URL is substituted at runtime by the test harness.
+name: MoQ Relay dav1d Compositor (Self-Contained)
+description: Publishes AV1 video+audio to a MoQ relay, subscribes, decodes AV1 via C dav1d, composites with colorbars background, re-encodes via SVT-AV1, and republishes — validates dav1d decode → composite → SVT-AV1 encode
+mode: dynamic
+nodes:
+  # --- Publish side: audio from file + video from colorbars (AV1-encoded) ---
+
+  file_reader:
+    kind: core::file_reader
+    params:
+      path: samples/audio/system/speech_10m.opus
+      chunk_size: 8192
+  demuxer:
+    kind: containers::ogg::demuxer
+    needs: file_reader
+  pacer:
+    kind: core::pacer
+    params:
+      speed: 1
+      buffer_size: 16
+    needs: demuxer
+
+  colorbars_src:
+    kind: video::colorbars
+    params:
+      width: 320
+      height: 240
+      fps: 15
+      pixel_format: nv12
+      draw_time: true
+
+  svt_av1_encoder_src:
+    kind: video::svt_av1::encoder
+    params:
+      preset: 12
+      crf: 35
+      low_latency: true
+      keyframe_interval: 15
+    needs: colorbars_src
+
+  moq_av_publisher:
+    kind: transport::moq::publisher
+    params:
+      url: ${RELAY_URL}
+      broadcast: e2e-relay-dav1d-input
+      channels: 1
+      group_duration_ms: 40
+      audio: true
+      video: true
+      video_codec: av1
+    needs:
+      in: pacer
+      in_1: svt_av1_encoder_src
+
+  # --- Subscribe side: receive both tracks from relay ---
+
+  moq_av_subscriber:
+    kind: transport::moq::subscriber
+    params:
+      url: ${RELAY_URL}
+      broadcast: e2e-relay-dav1d-input
+
+  # Video path: dav1d decode → compositor (PiP over colorbars) → SVT-AV1 encode
+  dav1d_decoder:
+    kind: video::dav1d::decoder
+    needs:
+      in: moq_av_subscriber.video/data
+
+  colorbars_bg:
+    kind: video::colorbars
+    params:
+      width: 1280
+      height: 720
+      fps: 15
+      pixel_format: rgba8
+      draw_time: true
+
+  compositor:
+    kind: video::compositor
+    params:
+      width: 1280
+      height: 720
+      num_inputs: 2
+      layers:
+        in_0:
+          opacity: 1.0
+          z_index: 0
+        in_1:
+          rect:
+            x: 880
+            y: 20
+            width: 380
+            height: 285
+          opacity: 0.9
+          z_index: 1
+      text_overlays:
+        - id: label
+          text: dav1d Compositor E2E
+          rect:
+            x: 40
+            y: 660
+            width: 400
+            height: 40
+          color: [255, 255, 255, 220]
+          font_size: 28
+          font_name: samples/fonts/system/DejaVuSans-Bold.ttf
+          opacity: 1.0
+          z_index: 2
+    needs:
+      - colorbars_bg
+      - dav1d_decoder
+
+  pixel_convert:
+    kind: video::pixel_convert
+    params:
+      output_format: nv12
+    needs: compositor
+
+  svt_av1_encoder:
+    kind: video::svt_av1::encoder
+    params:
+      preset: 12
+      crf: 35
+      low_latency: true
+      keyframe_interval: 15
+    needs: pixel_convert
+
+  # Audio path: decode → gain → encode
+  opus_decoder:
+    kind: audio::opus::decoder
+    needs: moq_av_subscriber
+
+  gain:
+    kind: audio::gain
+    params:
+      gain: 1.0
+    needs: opus_decoder
+
+  opus_encoder:
+    kind: audio::opus::encoder
+    needs: gain
+
+  moq_av_output:
+    kind: transport::moq::publisher
+    params:
+      url: ${RELAY_URL}
+      broadcast: e2e-relay-dav1d-output
+      channels: 1
+      group_duration_ms: 40
+      audio: true
+      video: true
+      video_codec: av1
+    needs:
+      in: opus_encoder
+      in_1: svt_av1_encoder

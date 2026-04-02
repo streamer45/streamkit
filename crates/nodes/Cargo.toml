@@ -144,6 +144,10 @@ svt_av1 = ["dep:schemars", "dep:serde_json", "dep:pkg-config", "dep:cc"]
 # Not in `default` to keep dev builds fast; enabled explicitly in Dockerfiles and
 # release.yml so every shipped artifact includes AV1 encoding.
 svt_av1_static = ["svt_av1", "dep:cmake"]
+dav1d = ["dep:schemars", "dep:serde_json", "dep:pkg-config", "dep:cc"]
+# dav1d_static downloads + builds dav1d at compile time via meson + ninja
+# (no system install).  Mirrors the svt_av1_static pattern.
+dav1d_static = ["dav1d"]
 colorbars = ["dep:schemars", "dep:serde_json", "dep:fontdue"]
 compositor = ["dep:schemars", "dep:serde_json", "dep:image", "dep:tiny-skia", "dep:rayon", "dep:fontdue", "dep:smallvec", "dep:uuid"]
 gpu = ["compositor", "dep:wgpu", "dep:pollster", "dep:bytemuck"]
