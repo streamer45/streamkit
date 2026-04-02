@@ -268,7 +268,11 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
                     let rgba_data = render_slint_frame(&mut state.instance, &state.config);
                     // If the result channel is closed the node has been dropped;
                     // clean up its state on the next Unregister (or here eagerly).
-                    if state.result_tx.blocking_send(SlintThreadResult::Frame { rgba_data }).is_err() {
+                    if state
+                        .result_tx
+                        .blocking_send(SlintThreadResult::Frame { rgba_data })
+                        .is_err()
+                    {
                         nodes.remove(&node_id);
                     }
                 }
