@@ -332,8 +332,7 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
                             || state.cached_frame.is_none();
 
                         if need_render {
-                            let data =
-                                render_slint_frame(&mut state.instance, &state.config);
+                            let data = render_slint_frame(&mut state.instance, &state.config);
                             state.cached_frame = Some(data.clone());
                             state.cached_keyframe_idx = kf_idx;
                             state.dirty = false;
@@ -467,9 +466,8 @@ fn create_slint_instance(
     // Set the Slint platform backend exactly once per process.
     // All instances share this thread, so the first call suffices.
     if !*platform_set {
-        slint::platform::set_platform(Box::new(SlintBackend)).map_err(|e| {
-            StreamKitError::Runtime(format!("Failed to set Slint platform: {e}"))
-        })?;
+        slint::platform::set_platform(Box::new(SlintBackend))
+            .map_err(|e| StreamKitError::Runtime(format!("Failed to set Slint platform: {e}")))?;
         *platform_set = true;
     }
 
