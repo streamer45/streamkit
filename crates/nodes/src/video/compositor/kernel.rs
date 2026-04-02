@@ -244,6 +244,11 @@ pub struct CompositeWorkItem {
     /// Optional output pixel format.  When `Some`, the compositing thread
     /// converts the RGBA8 canvas to this format while data is cache-hot.
     pub output_format: Option<streamkit_core::types::PixelFormat>,
+    /// When `Some`, the compositing thread updates its cached Slint overlay
+    /// configs (properties, transform) for the next render.  `None` means
+    /// "keep the current configs unchanged".
+    #[cfg(feature = "slint_overlay")]
+    pub slint_overlay_configs: Option<Vec<super::config::SlintOverlayConfig>>,
 }
 
 /// Result sent back from the compositing thread to the async loop.

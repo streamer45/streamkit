@@ -30,6 +30,8 @@ pub mod config;
 pub mod gpu;
 pub mod kernel;
 pub mod overlay;
+#[cfg(feature = "slint_overlay")]
+pub mod slint_overlay;
 
 use async_trait::async_trait;
 use config::{
@@ -438,6 +440,13 @@ impl ProcessorNode for CompositorNode {
             self.config.image_overlays.len(),
             self.config.text_overlays.len(),
         );
+        #[cfg(feature = "slint_overlay")]
+        if !self.config.slint_overlays.is_empty() {
+            tracing::info!(
+                "CompositorNode: {} Slint overlays configured",
+                self.config.slint_overlays.len(),
+            );
+        }
 
         // Decode image overlays (once).  Wrap in Arc so per-frame clones
         // into the work item are cheap reference-count bumps.
@@ -566,6 +575,10 @@ impl ProcessorNode for CompositorNode {
         #[cfg(feature = "gpu")]
         let initial_output_format = self.output_format;
 
+        // Initial Slint overlay configs for the blocking thread to compile.
+        #[cfg(feature = "slint_overlay")]
+        let initial_slint_configs = self.config.slint_overlays.clone();
+
         let composite_thread = tokio::task::spawn_blocking(move || {
             // Per-slot cache for YUV→RGBA conversions. Avoids redundant
             // conversion when the source Arc hasn't changed between frames.
@@ -615,11 +628,67 @@ impl ProcessorNode for CompositorNode {
             #[cfg(feature = "gpu")]
             let mut last_gpu_mode = initial_gpu_mode;
 
-            while let Some(work) = work_rx.blocking_recv() {
+            // ── Slint overlay instances (lives on this !Send thread) ────
+            #[cfg(feature = "slint_overlay")]
+            let mut slint_instances: Vec<(
+                slint_overlay::SlintOverlayInstance,
+                config::SlintOverlayConfig,
+            )> = Vec::new();
+            #[cfg(feature = "slint_overlay")]
+            {
+                for cfg in &initial_slint_configs {
+                    match slint_overlay::create_slint_overlay(cfg) {
+                        Ok(inst) => {
+                            tracing::info!(
+                                "Created Slint overlay '{}' from '{}'",
+                                cfg.id,
+                                cfg.slint_file
+                            );
+                            slint_instances.push((inst, cfg.clone()));
+                        },
+                        Err(e) => {
+                            tracing::warn!("Failed to create Slint overlay '{}': {e}", cfg.id);
+                        },
+                    }
+                }
+            }
+
+            // `work` is mutated only when `slint_overlay` merges rendered
+            // overlays into the image_overlays list before compositing.
+            #[allow(unused_mut)]
+            while let Some(mut work) = work_rx.blocking_recv() {
                 // Clear the entire conversion cache when the slot
                 // layout changed so that stale RGBA buffers are freed.
                 if work.clear_conversion_cache {
                     conversion_cache.clear();
+                }
+
+                // ── Slint overlay rendering ─────────────────────────────
+                // Update configs if new ones arrived via UpdateParams,
+                // then render all Slint overlays into DecodedOverlay
+                // bitmaps and merge them into the image_overlays list so
+                // the compositing kernel treats them identically.
+                #[cfg(feature = "slint_overlay")]
+                {
+                    // Apply config updates (property changes only, no recompilation).
+                    if let Some(new_configs) = work.slint_overlay_configs.take() {
+                        for new_cfg in &new_configs {
+                            if let Some((_, stored_cfg)) =
+                                slint_instances.iter_mut().find(|(_, c)| c.id == new_cfg.id)
+                            {
+                                *stored_cfg = new_cfg.clone();
+                            }
+                        }
+                    }
+
+                    if !slint_instances.is_empty() {
+                        let mut all: Vec<Arc<DecodedOverlay>> =
+                            work.image_overlays.iter().cloned().collect();
+                        for (inst, cfg) in &mut slint_instances {
+                            all.push(Arc::new(slint_overlay::render_slint_overlay(inst, cfg)));
+                        }
+                        work.image_overlays = Arc::from(all);
+                    }
                 }
 
                 // ── Choose GPU or CPU compositing path ──────────────
@@ -722,6 +791,11 @@ impl ProcessorNode for CompositorNode {
         // its conversion cache on the next frame.
         let mut clear_conversion_cache = false;
 
+        // Pending Slint overlay config updates to forward to the
+        // compositing thread on the next work item.
+        #[cfg(feature = "slint_overlay")]
+        let mut pending_slint_configs: Option<Vec<config::SlintOverlayConfig>> = None;
+
         // ── OpenTelemetry metrics ───────────────────────────────────────
         let meter = global::meter("skit_nodes");
         let frames_dropped_counter = meter
@@ -801,6 +875,14 @@ impl ProcessorNode for CompositorNode {
                                 &mut stats_tracker,
                             );
                             layer_configs_dirty = true;
+
+                            // Forward Slint overlay config updates to the
+                            // compositing thread (property changes only).
+                            #[cfg(feature = "slint_overlay")]
+                            if !self.config.slint_overlays.is_empty() {
+                                pending_slint_configs =
+                                    Some(self.config.slint_overlays.clone());
+                            }
                             if self.config.fps != old_fps {
                                 let new_duration = std::time::Duration::from_nanos(
                                     1_000_000_000u64 / u64::from(self.config.fps),
@@ -1005,6 +1087,8 @@ impl ProcessorNode for CompositorNode {
                 video_pool: video_pool.clone(),
                 clear_conversion_cache,
                 output_format: self.output_format,
+                #[cfg(feature = "slint_overlay")]
+                slint_overlay_configs: pending_slint_configs.take(),
             };
 
             // Send work to the compositing thread.  The work channel has

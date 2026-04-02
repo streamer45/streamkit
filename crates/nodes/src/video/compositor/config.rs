@@ -308,6 +308,10 @@ pub struct CompositorConfig {
     /// memcpy path.  Set to `"cpu"` to explicitly disable GPU acceleration.
     #[serde(default)]
     pub gpu_mode: Option<String>,
+    /// Slint UI overlays (compiled once at init, properties updated at runtime).
+    #[cfg(feature = "slint_overlay")]
+    #[serde(default)]
+    pub slint_overlays: Vec<SlintOverlayConfig>,
 }
 
 impl Default for CompositorConfig {
@@ -322,6 +326,8 @@ impl Default for CompositorConfig {
             text_overlays: Vec::new(),
             output_format: None,
             gpu_mode: None,
+            #[cfg(feature = "slint_overlay")]
+            slint_overlays: Vec::new(),
         }
     }
 }
@@ -392,6 +398,51 @@ pub struct CompositorLayout {
     pub text_overlays: SmallVec<[ResolvedOverlay; 8]>,
     #[cfg_attr(feature = "codegen", ts(as = "Vec<ResolvedOverlay>"))]
     pub image_overlays: SmallVec<[ResolvedOverlay; 8]>,
+}
+
+/// Configuration for a Slint UI overlay rendered via the software renderer.
+///
+/// At init time the `.slint` file is compiled once via `slint-interpreter`.
+/// Each compositor tick, changed properties are pushed into the component
+/// instance and `draw_if_needed()` re-renders only dirty regions into an
+/// RGBA8 buffer that feeds the existing `DecodedOverlay` / `composite_frame`
+/// pipeline — zero changes to the compositing kernel.
+#[cfg(feature = "slint_overlay")]
+#[derive(Deserialize, Debug, Clone, PartialEq, JsonSchema)]
+#[cfg_attr(feature = "codegen", derive(ts_rs::TS))]
+pub struct SlintOverlayConfig {
+    /// Stable unique identifier.  Auto-generated (UUID v4) when omitted.
+    #[serde(default = "generate_overlay_id")]
+    pub id: String,
+    /// Path to the `.slint` file (must start with `samples/slint/`).
+    pub slint_file: String,
+    /// Name of the exported component to instantiate.  When omitted, the
+    /// first exported component in the file is used.
+    #[serde(default)]
+    pub component: Option<String>,
+    /// Spatial and visual properties (rect, opacity, rotation, z_index).
+    #[serde(flatten)]
+    pub transform: OverlayTransform,
+    /// Key-value map of Slint properties to set on the component instance.
+    /// Strings → `SharedString`, numbers → `i32`/`f32`, booleans → `bool`.
+    #[serde(default)]
+    pub properties: HashMap<String, serde_json::Value>,
+}
+
+/// Validates that a Slint asset path is safe to read.
+///
+/// # Errors
+///
+/// Returns an error string if the path contains traversal sequences or does
+/// not start with `samples/slint/`.
+#[cfg(feature = "slint_overlay")]
+pub fn validate_slint_asset_path(path: &str) -> Result<(), String> {
+    if path.contains("..") || !path.starts_with("samples/slint/") {
+        return Err(format!(
+            "Invalid slint_file: must start with 'samples/slint/' and not contain '..': {path}"
+        ));
+    }
+    Ok(())
 }
 
 /// Check that an opacity value is a finite number in `[0.0, 1.0]`.
@@ -515,6 +566,14 @@ impl CompositorConfig {
                     limits.max_text_length
                 ));
             }
+        }
+        #[cfg(feature = "slint_overlay")]
+        for slint_cfg in &self.slint_overlays {
+            let label = format!("Slint overlay '{}'", slint_cfg.id);
+            validate_opacity(slint_cfg.transform.opacity, &label)?;
+            validate_rotation(slint_cfg.transform.rotation_degrees, &label)?;
+            validate_slint_asset_path(&slint_cfg.slint_file)
+                .map_err(|e| format!("{label}: {e}"))?;
         }
         if let Some(ref fmt) = self.output_format {
             crate::video::parse_pixel_format(fmt)

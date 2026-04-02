@@ -1,0 +1,83 @@
+// SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+//
+// SPDX-License-Identifier: MPL-2.0
+
+// Sports scoreboard overlay for the StreamKit compositor.
+//
+// Properties can be updated at runtime via UpdateParams JSON:
+//   home_team, away_team, home_score, away_score, clock, period
+
+export component Scoreboard inherits Rectangle {
+    in property <string> home_team: "HOME";
+    in property <string> away_team: "AWAY";
+    in property <int> home_score: 0;
+    in property <int> away_score: 0;
+    in property <string> clock: "00:00";
+    in property <string> period: "1ST";
+
+    width: 420px;
+    height: 80px;
+    background: #1a1a2ecc;
+    border-radius: 8px;
+
+    HorizontalLayout {
+        padding: 12px;
+        spacing: 8px;
+        alignment: center;
+
+        // Home team
+        VerticalLayout {
+            alignment: center;
+            Text {
+                text: root.home_team;
+                color: #e0e0e0;
+                font-size: 14px;
+                horizontal-alignment: center;
+            }
+            Text {
+                text: root.home_score;
+                color: #ffffff;
+                font-size: 28px;
+                font-weight: 700;
+                horizontal-alignment: center;
+            }
+        }
+
+        // Separator / clock
+        VerticalLayout {
+            alignment: center;
+            min-width: 80px;
+            Text {
+                text: root.clock;
+                color: #ffcc00;
+                font-size: 18px;
+                font-weight: 700;
+                horizontal-alignment: center;
+            }
+            Text {
+                text: root.period;
+                color: #aaaaaa;
+                font-size: 12px;
+                horizontal-alignment: center;
+            }
+        }
+
+        // Away team
+        VerticalLayout {
+            alignment: center;
+            Text {
+                text: root.away_team;
+                color: #e0e0e0;
+                font-size: 14px;
+                horizontal-alignment: center;
+            }
+            Text {
+                text: root.away_score;
+                color: #ffffff;
+                font-size: 28px;
+                font-weight: 700;
+                horizontal-alignment: center;
+            }
+        }
+    }
+}

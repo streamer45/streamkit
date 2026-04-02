@@ -1,0 +1,108 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Demonstrates Slint overlays (scoreboard + lower third) composited onto
+# colorbars and streamed via MoQ, with runtime property updates.
+#
+# Requires: cargo build --features slint_overlay
+#
+# After starting the pipeline, update properties at runtime:
+#
+#   curl -X POST http://localhost:4545/api/v1/sessions/<id>/nodes/compositor/update \
+#     -H 'Content-Type: application/json' \
+#     -d '{
+#       "slint_overlays": [{
+#         "id": "scoreboard",
+#         "slint_file": "samples/slint/scoreboard.slint",
+#         "rect": { "x": 430, "y": 20, "width": 420, "height": 80 },
+#         "opacity": 1.0,
+#         "z_index": 10,
+#         "properties": {
+#           "home_score": 4,
+#           "clock": "35:47",
+#           "period": "2ND"
+#         }
+#       }]
+#     }'
+
+name: Video Slint Scoreboard + Lower Third (MoQ)
+description: Composites colorbars with Slint scoreboard and lower-third overlays, streams via MoQ with runtime property updates
+mode: dynamic
+client:
+  gateway_path: /moq/video
+  watch:
+    broadcast: output
+    audio: false
+    video: true
+
+nodes:
+  colorbars_bg:
+    kind: video::colorbars
+    params:
+      width: 1280
+      height: 720
+      fps: 30
+      pixel_format: rgba8
+      draw_time: true
+
+  compositor:
+    kind: video::compositor
+    params:
+      width: 1280
+      height: 720
+      num_inputs: 1
+      layers:
+        in_0:
+          opacity: 1.0
+          z_index: 0
+      slint_overlays:
+        - id: scoreboard
+          slint_file: samples/slint/scoreboard.slint
+          rect:
+            x: 430
+            y: 20
+            width: 420
+            height: 80
+          opacity: 1.0
+          z_index: 10
+          properties:
+            home_team: "EAGLES"
+            away_team: "HAWKS"
+            home_score: 3
+            away_score: 1
+            clock: "12:34"
+            period: "2ND"
+        - id: lower_third
+          slint_file: samples/slint/lower_third.slint
+          rect:
+            x: 50
+            y: 600
+            width: 350
+            height: 70
+          opacity: 1.0
+          z_index: 11
+          properties:
+            name: "Alex Johnson"
+            title: "Forward · #17"
+            visible: true
+    needs:
+      - colorbars_bg
+
+  pixel_convert:
+    kind: video::pixel_convert
+    params:
+      output_format: nv12
+    needs: compositor
+
+  vp9_encoder:
+    kind: video::vp9::encoder
+    needs: pixel_convert
+
+  moq_peer:
+    kind: transport::moq::peer
+    params:
+      gateway_path: /moq/video
+      output_broadcast: output
+      allow_reconnect: true
+    needs: vp9_encoder
