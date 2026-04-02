@@ -204,10 +204,25 @@ impl ProcessorNode for NativeNodeWrapper {
     // The run method is complex by necessity - it's an async actor managing FFI calls,
     // control messages, and packet processing. Breaking it up would make the logic harder to follow.
     #[allow(clippy::too_many_lines)]
-    async fn run(self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
+    async fn run(self: Box<Self>, context: NodeContext) -> Result<(), StreamKitError> {
+        if self.metadata.is_source {
+            return self.run_source(context).await;
+        }
+        self.run_processor(context).await
+    }
+}
+
+// ── Private run implementations ────────────────────────────────────────────
+impl NativeNodeWrapper {
+    /// Input-driven processing loop (existing behaviour for processor plugins).
+    #[allow(clippy::too_many_lines)]
+    async fn run_processor(
+        self: Box<Self>,
+        mut context: NodeContext,
+    ) -> Result<(), StreamKitError> {
         let node_name = context.output_sender.node_name().to_string();
 
-        tracing::info!(node = %node_name, "Native plugin wrapper starting");
+        tracing::info!(node = %node_name, "Native plugin wrapper starting (processor)");
 
         // Emit initializing state
         if let Err(e) = context
@@ -544,6 +559,323 @@ impl ProcessorNode for NativeNodeWrapper {
             .await
         {
             warn!(error = %e, node = %node_name, "Failed to send stopped state");
+        }
+
+        Ok(())
+    }
+
+    /// Tick-driven loop for source plugins (no inputs, host drives timing).
+    ///
+    /// Lifecycle: Initializing → Ready → (wait for Start) → Running → tick loop → Stopped.
+    #[allow(clippy::too_many_lines)]
+    async fn run_source(self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
+        // Defined up-front to satisfy `items_after_statements` lint.
+        struct TickOutcome {
+            outputs: Vec<(String, Packet)>,
+            success: bool,
+            done: bool,
+            error_msg: Option<String>,
+        }
+
+        let node_name = context.output_sender.node_name().to_string();
+
+        tracing::info!(node = %node_name, "Native source plugin wrapper starting");
+
+        // Emit initializing state
+        if let Err(e) = context
+            .state_tx
+            .send(NodeStateUpdate::new(node_name.clone(), NodeState::Initializing))
+            .await
+        {
+            warn!(error = %e, node = %node_name, "Failed to send initializing state");
+        }
+
+        // ── Ready → Start handshake ─────────────────────────────────────
+        // Emit Ready so the pipeline coordinator knows this node is waiting
+        // for the Start signal before producing data.
+        if let Err(e) =
+            context.state_tx.send(NodeStateUpdate::new(node_name.clone(), NodeState::Ready)).await
+        {
+            warn!(error = %e, node = %node_name, "Failed to send ready state");
+        }
+
+        // Wait for Start (or Shutdown / cancellation).
+        let mut control_channel_open = true;
+        loop {
+            tokio::select! {
+                biased;
+
+                () = async {
+                    match &context.cancellation_token {
+                        Some(token) => token.cancelled().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    tracing::info!(node = %node_name, "Source plugin cancelled before start");
+                    return Ok(());
+                }
+
+                maybe_ctrl = context.control_rx.recv(), if control_channel_open => {
+                    match maybe_ctrl {
+                        Some(NodeControlMessage::Start) => {
+                            tracing::info!(node = %node_name, "Source plugin received Start");
+                            break; // proceed to tick loop
+                        }
+                        Some(NodeControlMessage::Shutdown) => {
+                            tracing::info!(node = %node_name, "Source plugin received Shutdown before start");
+                            return Ok(());
+                        }
+                        Some(NodeControlMessage::UpdateParams(params_value)) => {
+                            // Apply parameter updates even before Start.
+                            self.apply_params_update(&node_name, &context, &params_value).await?;
+                        }
+                        None => {
+                            // Control channel closed before Start — shut down gracefully.
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Running ─────────────────────────────────────────────────────
+        if let Err(e) =
+            context.state_tx.send(NodeStateUpdate::new(node_name.clone(), NodeState::Running)).await
+        {
+            warn!(error = %e, node = %node_name, "Failed to send running state");
+        }
+
+        let tick_interval = std::time::Duration::from_micros(self.metadata.tick_interval_us);
+        let max_ticks = self.metadata.max_ticks;
+        let mut tick_count: u64 = 0;
+
+        let tick_fn = self.state.api().tick.ok_or_else(|| {
+            StreamKitError::Runtime("Source plugin missing tick function".to_string())
+        })?;
+
+        loop {
+            // Check tick limit
+            if max_ticks > 0 && tick_count >= max_ticks {
+                tracing::info!(node = %node_name, ticks = tick_count, "Source reached max ticks");
+                break;
+            }
+
+            // Poll for control messages / cancellation without blocking
+            loop {
+                tokio::select! {
+                    biased;
+
+                    () = async {
+                        match &context.cancellation_token {
+                            Some(token) => token.cancelled().await,
+                            None => std::future::pending().await,
+                        }
+                    } => {
+                        tracing::info!(node = %node_name, "Source plugin cancelled");
+                        // Jump to cleanup
+                        if let Err(e) = context
+                            .state_tx
+                            .send(NodeStateUpdate::new(
+                                node_name.clone(),
+                                NodeState::Stopped { reason: StopReason::Completed },
+                            ))
+                            .await
+                        {
+                            warn!(error = %e, node = %node_name, "Failed to send stopped state");
+                        }
+                        return Ok(());
+                    }
+
+                    maybe_ctrl = context.control_rx.recv(), if control_channel_open => {
+                        match maybe_ctrl {
+                            Some(NodeControlMessage::Shutdown) => {
+                                tracing::info!(node = %node_name, "Source plugin received shutdown");
+                                if let Err(e) = context
+                                    .state_tx
+                                    .send(NodeStateUpdate::new(
+                                        node_name.clone(),
+                                        NodeState::Stopped { reason: StopReason::Completed },
+                                    ))
+                                    .await
+                                {
+                                    warn!(error = %e, node = %node_name, "Failed to send stopped state");
+                                }
+                                return Ok(());
+                            }
+                            Some(NodeControlMessage::UpdateParams(params_value)) => {
+                                self.apply_params_update(&node_name, &context, &params_value).await?;
+                            }
+                            Some(NodeControlMessage::Start) => {
+                                // Already started — ignore duplicate.
+                            }
+                            None => {
+                                control_channel_open = false;
+                            }
+                        }
+                    }
+
+                    // No pending control message — break out to tick
+                    else => break,
+                }
+            }
+
+            // ── Tick ────────────────────────────────────────────────────
+            let state = Arc::clone(&self.state);
+            let telemetry_tx = context.telemetry_tx.clone();
+            let session_id = context.session_id.clone();
+            let node_id = node_name.clone();
+            let sleep_dur = tick_interval;
+
+            let outcome = tokio::task::spawn_blocking(move || {
+                let Some(handle) = state.begin_call() else {
+                    return TickOutcome {
+                        outputs: Vec::new(),
+                        success: false,
+                        done: false,
+                        error_msg: Some("Instance handle is null".to_string()),
+                    };
+                };
+
+                let _lib = Arc::clone(&state.library);
+
+                let mut callback_ctx = CallbackContext {
+                    output_packets: Vec::new(),
+                    error: None,
+                    telemetry_tx,
+                    session_id,
+                    node_id,
+                };
+
+                let callback_data = (&raw mut callback_ctx).cast::<c_void>();
+
+                let result = tick_fn(
+                    handle,
+                    output_callback_shim,
+                    callback_data,
+                    Some(telemetry_callback_shim),
+                    callback_data,
+                );
+
+                // Extract error string while pointers are still valid.
+                let error_msg = if result.result.success {
+                    callback_ctx.error
+                } else if result.result.error_message.is_null() {
+                    Some("Source tick failed".to_string())
+                } else {
+                    Some(unsafe {
+                        conversions::c_str_to_string(result.result.error_message)
+                            .unwrap_or_else(|_| "Source tick failed".to_string())
+                    })
+                };
+
+                let outputs = callback_ctx.output_packets;
+                state.finish_call();
+
+                // Sleep inside the blocking task to avoid needing tokio::time feature.
+                std::thread::sleep(sleep_dur);
+
+                TickOutcome {
+                    outputs,
+                    success: result.result.success,
+                    done: result.done,
+                    error_msg,
+                }
+            })
+            .await
+            .map_err(|e| StreamKitError::Runtime(format!("Source tick task panicked: {e}")))?;
+
+            // Send outputs produced by tick
+            for (pin, pkt) in outcome.outputs {
+                if context.output_sender.send(&pin, pkt).await.is_err() {
+                    tracing::debug!(node = %node_name, "Output channel closed during tick");
+                    break;
+                }
+            }
+
+            // Check tick result
+            if !outcome.success {
+                let error_msg =
+                    outcome.error_msg.unwrap_or_else(|| "Source tick failed".to_string());
+                error!(node = %node_name, error = %error_msg, "Source tick error");
+                if let Err(e) = context
+                    .state_tx
+                    .send(NodeStateUpdate::new(
+                        node_name.clone(),
+                        NodeState::Failed { reason: error_msg.clone() },
+                    ))
+                    .await
+                {
+                    warn!(error = %e, node = %node_name, "Failed to send failed state");
+                }
+                return Err(StreamKitError::Runtime(error_msg));
+            }
+
+            if outcome.done {
+                tracing::info!(node = %node_name, ticks = tick_count + 1, "Source signalled done");
+                break;
+            }
+
+            tick_count += 1;
+        }
+
+        // Emit stopped state
+        if let Err(e) = context
+            .state_tx
+            .send(NodeStateUpdate::new(
+                node_name.clone(),
+                NodeState::Stopped { reason: StopReason::Completed },
+            ))
+            .await
+        {
+            warn!(error = %e, node = %node_name, "Failed to send stopped state");
+        }
+
+        Ok(())
+    }
+
+    /// Helper to apply a parameter update via the C ABI.
+    async fn apply_params_update(
+        &self,
+        node_name: &str,
+        _context: &NodeContext,
+        params_value: &serde_json::Value,
+    ) -> Result<(), StreamKitError> {
+        let params_json = serde_json::to_string(params_value).map_err(|e| {
+            StreamKitError::Configuration(format!("Failed to serialize params: {e}"))
+        })?;
+        let params_cstr = CString::new(params_json)
+            .map_err(|e| StreamKitError::Configuration(format!("Invalid params string: {e}")))?;
+
+        let state = Arc::clone(&self.state);
+        let node_name_owned = node_name.to_string();
+        let error_msg = tokio::task::spawn_blocking(move || {
+            let handle = state.begin_call()?;
+
+            let _lib = Arc::clone(&state.library);
+            let api = state.api();
+            let result = (api.update_params)(handle, params_cstr.as_ptr());
+
+            let error = if result.success {
+                None
+            } else if result.error_message.is_null() {
+                Some("Failed to update parameters".to_string())
+            } else {
+                unsafe {
+                    Some(
+                        conversions::c_str_to_string(result.error_message)
+                            .unwrap_or_else(|_| "Failed to update parameters".to_string()),
+                    )
+                }
+            };
+
+            state.finish_call();
+            error
+        })
+        .await
+        .map_err(|e| StreamKitError::Runtime(format!("Update params task panicked: {e}")))?;
+
+        if let Some(err) = error_msg {
+            warn!(node = %node_name_owned, error = %err, "Parameter update failed");
         }
 
         Ok(())

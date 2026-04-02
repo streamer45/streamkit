@@ -8,7 +8,7 @@
 
 use crate::types::{
     CAudioFormat, CAudioFrame, CCustomEncoding, CCustomPacket, CPacket, CPacketMetadata,
-    CPacketType, CPacketTypeInfo, CSampleFormat,
+    CPacketType, CPacketTypeInfo, CPixelFormat, CRawVideoFormat, CSampleFormat, CVideoFrame,
 };
 use std::cell::RefCell;
 use std::ffi::{c_void, CStr, CString};
@@ -16,7 +16,8 @@ use std::os::raw::c_char;
 use std::sync::Arc;
 use streamkit_core::types::{
     AudioCodec, AudioFormat, AudioFrame, CustomEncoding, CustomPacketData, EncodedAudioFormat,
-    Packet, PacketMetadata, PacketType, SampleFormat, TranscriptionData,
+    EncodedVideoFormat, Packet, PacketMetadata, PacketType, PixelFormat, RawVideoFormat,
+    SampleFormat, TranscriptionData, VideoFrame,
 };
 
 /// Convert C packet type info to Rust PacketType
@@ -49,6 +50,25 @@ pub fn packet_type_from_c(cpt_info: CPacketTypeInfo) -> Result<PacketType, Strin
             }
             let type_id = unsafe { c_str_to_string(cpt_info.custom_type_id) }?;
             Ok(PacketType::Custom { type_id })
+        },
+        CPacketType::RawVideo => {
+            if cpt_info.raw_video_format.is_null() {
+                return Err("RawVideo packet type missing raw_video_format".to_string());
+            }
+            // SAFETY: caller guarantees pointer validity for the duration of this call.
+            let c_fmt = unsafe { &*cpt_info.raw_video_format };
+            Ok(PacketType::RawVideo(raw_video_format_from_c(c_fmt)))
+        },
+        CPacketType::EncodedVideo => {
+            // EncodedVideo format details are not carried across the C ABI today;
+            // the discriminant alone signals "encoded video".
+            Ok(PacketType::EncodedVideo(EncodedVideoFormat {
+                codec: streamkit_core::types::VideoCodec::Vp9,
+                bitstream_format: None,
+                codec_private: None,
+                profile: None,
+                level: None,
+            }))
         },
         CPacketType::Binary => Ok(PacketType::Binary),
         CPacketType::Any => Ok(PacketType::Any),
@@ -90,10 +110,67 @@ pub const fn audio_format_from_c(caf: &CAudioFormat) -> AudioFormat {
     }
 }
 
-/// Convert Rust PacketType to C representation
-/// Returns (CPacketTypeInfo, optional CAudioFormat that must be kept alive)
-/// For RawAudio types, the returned CAudioFormat must outlive the CPacketTypeInfo
-pub fn packet_type_to_c(pt: &PacketType) -> (CPacketTypeInfo, Option<CAudioFormat>) {
+/// Convert Rust PixelFormat to C.
+///
+/// Unknown variants (added after this SDK version) fall back to `Rgba8`
+/// with a warning.  This keeps the conversion total for `#[non_exhaustive]`
+/// enums without panicking at runtime.
+pub fn pixel_format_to_c(pf: PixelFormat) -> CPixelFormat {
+    match pf {
+        PixelFormat::Rgba8 => CPixelFormat::Rgba8,
+        PixelFormat::I420 => CPixelFormat::I420,
+        PixelFormat::Nv12 => CPixelFormat::Nv12,
+        _ => {
+            tracing::warn!(?pf, "Unknown PixelFormat variant, falling back to Rgba8");
+            CPixelFormat::Rgba8
+        },
+    }
+}
+
+/// Convert C pixel format to Rust
+pub const fn pixel_format_from_c(cpf: CPixelFormat) -> PixelFormat {
+    match cpf {
+        CPixelFormat::Rgba8 => PixelFormat::Rgba8,
+        CPixelFormat::I420 => PixelFormat::I420,
+        CPixelFormat::Nv12 => PixelFormat::Nv12,
+    }
+}
+
+/// Convert Rust RawVideoFormat to C
+pub fn raw_video_format_to_c(fmt: &RawVideoFormat) -> CRawVideoFormat {
+    CRawVideoFormat {
+        width: fmt.width.unwrap_or(0),
+        height: fmt.height.unwrap_or(0),
+        pixel_format: pixel_format_to_c(fmt.pixel_format),
+    }
+}
+
+/// Convert C RawVideoFormat to Rust
+pub const fn raw_video_format_from_c(cfmt: &CRawVideoFormat) -> RawVideoFormat {
+    RawVideoFormat {
+        width: if cfmt.width == 0 { None } else { Some(cfmt.width) },
+        height: if cfmt.height == 0 { None } else { Some(cfmt.height) },
+        pixel_format: pixel_format_from_c(cfmt.pixel_format),
+    }
+}
+
+/// Ancillary data kept alive alongside a `CPacketTypeInfo`.
+///
+/// `packet_type_to_c` returns this alongside the info struct so that
+/// pointers inside `CPacketTypeInfo` stay valid for as long as this value
+/// is alive.
+pub enum CPacketTypeOwned {
+    None,
+    Audio(CAudioFormat),
+    Video(CRawVideoFormat),
+}
+
+/// Convert Rust PacketType to C representation.
+///
+/// Returns `(CPacketTypeInfo, CPacketTypeOwned)`.  The owned value **must**
+/// outlive the `CPacketTypeInfo` because the info struct borrows a pointer
+/// into it.
+pub fn packet_type_to_c(pt: &PacketType) -> (CPacketTypeInfo, CPacketTypeOwned) {
     match pt {
         PacketType::RawAudio(format) => {
             let c_format = audio_format_to_c(format);
@@ -102,8 +179,9 @@ pub fn packet_type_to_c(pt: &PacketType) -> (CPacketTypeInfo, Option<CAudioForma
                     type_discriminant: CPacketType::RawAudio,
                     audio_format: &raw const c_format,
                     custom_type_id: std::ptr::null(),
+                    raw_video_format: std::ptr::null(),
                 },
-                Some(c_format),
+                CPacketTypeOwned::Audio(c_format),
             )
         },
         PacketType::EncodedAudio(format) => {
@@ -113,8 +191,9 @@ pub fn packet_type_to_c(pt: &PacketType) -> (CPacketTypeInfo, Option<CAudioForma
                         type_discriminant: CPacketType::OpusAudio,
                         audio_format: std::ptr::null(),
                         custom_type_id: std::ptr::null(),
+                        raw_video_format: std::ptr::null(),
                     },
-                    None,
+                    CPacketTypeOwned::None,
                 )
             } else {
                 (
@@ -122,8 +201,9 @@ pub fn packet_type_to_c(pt: &PacketType) -> (CPacketTypeInfo, Option<CAudioForma
                         type_discriminant: CPacketType::Binary,
                         audio_format: std::ptr::null(),
                         custom_type_id: std::ptr::null(),
+                        raw_video_format: std::ptr::null(),
                     },
-                    None,
+                    CPacketTypeOwned::None,
                 )
             }
         },
@@ -132,70 +212,75 @@ pub fn packet_type_to_c(pt: &PacketType) -> (CPacketTypeInfo, Option<CAudioForma
                 type_discriminant: CPacketType::Text,
                 audio_format: std::ptr::null(),
                 custom_type_id: std::ptr::null(),
+                raw_video_format: std::ptr::null(),
             },
-            None,
+            CPacketTypeOwned::None,
         ),
         PacketType::Transcription => (
             CPacketTypeInfo {
                 type_discriminant: CPacketType::Transcription,
                 audio_format: std::ptr::null(),
                 custom_type_id: std::ptr::null(),
+                raw_video_format: std::ptr::null(),
             },
-            None,
+            CPacketTypeOwned::None,
         ),
         PacketType::Custom { .. } => (
             CPacketTypeInfo {
                 type_discriminant: CPacketType::Custom,
                 audio_format: std::ptr::null(),
                 custom_type_id: std::ptr::null(), // provided by the caller where stable storage exists
+                raw_video_format: std::ptr::null(),
             },
-            None,
+            CPacketTypeOwned::None,
         ),
-        // TODO: extend C ABI with CPacketType::RawVideo / EncodedVideo for structured video support.
-        // Currently video types are mapped to opaque Binary, so native plugins cannot
-        // inspect width/height/pixel_format. This will be addressed when the C ABI gains
-        // native video packet types.
-        PacketType::RawVideo(_) | PacketType::EncodedVideo(_) => {
-            use std::sync::Once;
-            static WARN: Once = Once::new();
-            WARN.call_once(|| {
-                tracing::warn!(
-                    "Video PacketType mapped to Binary in native plugin ABI: \
-                     video metadata (width, height, pixel_format) is not preserved"
-                );
-            });
+        PacketType::RawVideo(fmt) => {
+            let c_fmt = raw_video_format_to_c(fmt);
             (
                 CPacketTypeInfo {
-                    type_discriminant: CPacketType::Binary,
+                    type_discriminant: CPacketType::RawVideo,
                     audio_format: std::ptr::null(),
                     custom_type_id: std::ptr::null(),
+                    raw_video_format: &raw const c_fmt,
                 },
-                None,
+                CPacketTypeOwned::Video(c_fmt),
             )
         },
+        PacketType::EncodedVideo(_) => (
+            CPacketTypeInfo {
+                type_discriminant: CPacketType::EncodedVideo,
+                audio_format: std::ptr::null(),
+                custom_type_id: std::ptr::null(),
+                raw_video_format: std::ptr::null(),
+            },
+            CPacketTypeOwned::None,
+        ),
         PacketType::Binary => (
             CPacketTypeInfo {
                 type_discriminant: CPacketType::Binary,
                 audio_format: std::ptr::null(),
                 custom_type_id: std::ptr::null(),
+                raw_video_format: std::ptr::null(),
             },
-            None,
+            CPacketTypeOwned::None,
         ),
         PacketType::Any => (
             CPacketTypeInfo {
                 type_discriminant: CPacketType::Any,
                 audio_format: std::ptr::null(),
                 custom_type_id: std::ptr::null(),
+                raw_video_format: std::ptr::null(),
             },
-            None,
+            CPacketTypeOwned::None,
         ),
         PacketType::Passthrough => (
             CPacketTypeInfo {
                 type_discriminant: CPacketType::Passthrough,
                 audio_format: std::ptr::null(),
                 custom_type_id: std::ptr::null(),
+                raw_video_format: std::ptr::null(),
             },
-            None,
+            CPacketTypeOwned::None,
         ),
     }
 }
@@ -209,6 +294,7 @@ pub struct CPacketRepr {
 enum CPacketOwned {
     None,
     Audio(Box<CAudioFrame>),
+    Video(Box<CVideoFrame>),
     Text(CString),
     Bytes(Vec<u8>),
     Custom(CustomOwned),
@@ -339,28 +425,20 @@ pub fn packet_to_c(packet: &Packet) -> CPacketRepr {
             },
             _owned: CPacketOwned::None,
         },
-        // TODO: extend C ABI for structured video frame support (width, height, pixel_format, layout).
-        // Currently video frames are converted to opaque Binary packets, discarding all
-        // metadata (width, height, pixel_format, layout, keyframe). Native plugins receiving
-        // these packets have no way to reconstruct the frame without out-of-band knowledge.
-        // This will be addressed when the C ABI gains native video types.
         Packet::Video(frame) => {
-            use std::sync::Once;
-            static WARN: Once = Once::new();
-            WARN.call_once(|| {
-                tracing::warn!(
-                    "Video packet converted to Binary for native plugin: frame metadata \
-                     (width, height, pixel_format, layout, keyframe) is lost"
-                );
+            let c_frame = Box::new(CVideoFrame {
+                width: frame.width,
+                height: frame.height,
+                pixel_format: pixel_format_to_c(frame.pixel_format),
+                data: frame.data.as_ptr(),
+                data_len: frame.data.len(),
             });
-            CPacketRepr {
-                packet: CPacket {
-                    packet_type: CPacketType::Binary,
-                    data: frame.data.as_ptr().cast::<c_void>(),
-                    len: frame.data.len(),
-                },
-                _owned: CPacketOwned::None,
-            }
+            let packet = CPacket {
+                packet_type: CPacketType::RawVideo,
+                data: std::ptr::from_ref::<CVideoFrame>(&*c_frame).cast::<c_void>(),
+                len: std::mem::size_of::<CVideoFrame>(),
+            };
+            CPacketRepr { packet, _owned: CPacketOwned::Video(c_frame) }
         },
     }
 }
@@ -449,6 +527,26 @@ pub unsafe fn packet_from_c(c_packet: *const CPacket) -> Result<Packet, String> 
             Ok(Packet::Custom(Arc::new(CustomPacketData { type_id, encoding, data, metadata })))
         },
         CPacketType::Binary => {
+            let data = std::slice::from_raw_parts(c_pkt.data.cast::<u8>(), c_pkt.len);
+            Ok(Packet::Binary {
+                data: bytes::Bytes::copy_from_slice(data),
+                content_type: None,
+                metadata: None,
+            })
+        },
+        CPacketType::RawVideo => {
+            let c_frame = &*c_pkt.data.cast::<CVideoFrame>();
+            if c_frame.data.is_null() {
+                return Err("Null data pointer in video frame".to_string());
+            }
+            let pixel_format = pixel_format_from_c(c_frame.pixel_format);
+            let data = std::slice::from_raw_parts(c_frame.data, c_frame.data_len).to_vec();
+            VideoFrame::with_metadata(c_frame.width, c_frame.height, pixel_format, data, None)
+                .map(Packet::Video)
+                .map_err(|e| format!("Invalid video frame: {e}"))
+        },
+        CPacketType::EncodedVideo => {
+            // Encoded video is carried as opaque bytes across the C ABI.
             let data = std::slice::from_raw_parts(c_pkt.data.cast::<u8>(), c_pkt.len);
             Ok(Packet::Binary {
                 data: bytes::Bytes::copy_from_slice(data),

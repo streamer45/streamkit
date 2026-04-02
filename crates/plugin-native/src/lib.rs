@@ -18,6 +18,17 @@ use streamkit_plugin_sdk_native::types::{CNativePluginAPI, NATIVE_PLUGIN_API_VER
 use streamkit_plugin_sdk_native::{conversions, types::PLUGIN_API_SYMBOL};
 use tracing::info;
 
+/// Silent log callback used only during source-config probing (no actual instance work).
+// Cannot be `const`: `const extern "C" fn` is not supported by the compiler.
+#[allow(clippy::missing_const_for_fn)]
+extern "C" fn plugin_log_callback_noop(
+    _level: streamkit_plugin_sdk_native::types::CLogLevel,
+    _target: *const std::os::raw::c_char,
+    _message: *const std::os::raw::c_char,
+    _user_data: *mut std::ffi::c_void,
+) {
+}
+
 /// A loaded native plugin
 #[derive(Clone)]
 pub struct LoadedNativePlugin {
@@ -35,6 +46,13 @@ pub struct PluginMetadata {
     pub outputs: Vec<streamkit_core::OutputPin>,
     pub param_schema: serde_json::Value,
     pub categories: Vec<String>,
+    /// `true` when the plugin exports `get_source_config` and reports `is_source = true`.
+    /// Source plugins use the tick loop instead of the input-driven processing loop.
+    pub is_source: bool,
+    /// Tick interval for source plugins (microseconds).  Only meaningful when `is_source` is `true`.
+    pub tick_interval_us: u64,
+    /// Maximum number of ticks (0 = infinite).  Only meaningful when `is_source` is `true`.
+    pub max_ticks: u64,
 }
 
 impl LoadedNativePlugin {
@@ -95,7 +113,35 @@ impl LoadedNativePlugin {
         }
 
         // Extract metadata
-        let metadata = Self::extract_metadata(api)?;
+        let mut metadata = Self::extract_metadata(api)?;
+
+        // Detect source plugin capability from the v3 API fields.
+        // If the plugin provides `get_source_config`, we probe it with a temporary
+        // instance to read tick parameters.  If instance creation fails we fall back
+        // to treating it as a processor plugin.
+        if let Some(get_source_config) = api.get_source_config {
+            // Create a temporary instance with no params to query source config
+            let temp_handle = (api.create_instance)(
+                std::ptr::null(),
+                plugin_log_callback_noop,
+                std::ptr::null_mut(),
+            );
+            if !temp_handle.is_null() {
+                let cfg = get_source_config(temp_handle);
+                if cfg.is_source {
+                    metadata.is_source = true;
+                    metadata.tick_interval_us = cfg.tick_interval_us;
+                    metadata.max_ticks = cfg.max_ticks;
+                    info!(
+                        kind = %metadata.kind,
+                        tick_interval_us = cfg.tick_interval_us,
+                        max_ticks = cfg.max_ticks,
+                        "Detected source plugin"
+                    );
+                }
+                (api.destroy_instance)(temp_handle);
+            }
+        }
 
         info!(kind = %metadata.kind, "Successfully loaded native plugin");
 
@@ -211,7 +257,17 @@ impl LoadedNativePlugin {
             categories.push(cat);
         }
 
-        Ok(PluginMetadata { kind, description, inputs, outputs, param_schema, categories })
+        Ok(PluginMetadata {
+            kind,
+            description,
+            inputs,
+            outputs,
+            param_schema,
+            categories,
+            is_source: false,
+            tick_interval_us: 0,
+            max_ticks: 0,
+        })
     }
 
     /// Get the plugin metadata
@@ -271,7 +327,10 @@ pub fn register_plugins(
         let kind = namespaced_kind(&original_kind)?;
         let param_schema = metadata.param_schema.clone();
         let categories = metadata.categories.clone();
-        let inputs = metadata.inputs.clone();
+        let is_source = metadata.is_source;
+
+        // Source plugins register with empty inputs (they produce data, not consume it).
+        let inputs = if is_source { Vec::new() } else { metadata.inputs.clone() };
         let outputs = metadata.outputs.clone();
 
         // Debug: Log what we're registering

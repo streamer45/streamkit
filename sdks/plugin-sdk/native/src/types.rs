@@ -10,7 +10,10 @@
 use std::os::raw::{c_char, c_void};
 
 /// API version number. Plugins and host check compatibility via this field.
-pub const NATIVE_PLUGIN_API_VERSION: u32 = 2;
+///
+/// v3: Added video packet types (`RawVideo`, `EncodedVideo`), `CRawVideoFormat`,
+///     `CPixelFormat`, and source node support (`get_source_config`, `tick`).
+pub const NATIVE_PLUGIN_API_VERSION: u32 = 3;
 
 /// Opaque handle to a plugin instance
 pub type CPluginHandle = *mut c_void;
@@ -87,6 +90,41 @@ pub enum CPacketType {
     Binary = 5,
     Any = 6,
     Passthrough = 7,
+    RawVideo = 8,
+    EncodedVideo = 9,
+}
+
+/// Pixel format discriminant for raw video frames.
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum CPixelFormat {
+    Rgba8 = 0,
+    I420 = 1,
+    Nv12 = 2,
+}
+
+/// Raw video format metadata for the C ABI.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct CRawVideoFormat {
+    /// Frame width in pixels (0 = unspecified).
+    pub width: u32,
+    /// Frame height in pixels (0 = unspecified).
+    pub height: u32,
+    /// Pixel format.
+    pub pixel_format: CPixelFormat,
+}
+
+/// Video frame data passed across the C ABI boundary.
+///
+/// `data` points to raw pixel bytes; layout depends on `pixel_format`.
+#[repr(C)]
+pub struct CVideoFrame {
+    pub width: u32,
+    pub height: u32,
+    pub pixel_format: CPixelFormat,
+    pub data: *const u8,
+    pub data_len: usize,
 }
 
 /// Encoding for Custom packets.
@@ -121,16 +159,22 @@ pub struct CCustomPacket {
     pub metadata: *const CPacketMetadata,
 }
 
-/// Full packet type with optional format information
-/// For RawAudio, includes the audio format details
+/// Full packet type with optional format information.
+///
+/// Exactly one of the optional pointers is non-null depending on `type_discriminant`:
+/// - `RawAudio`  → `audio_format`
+/// - `Custom`    → `custom_type_id`
+/// - `RawVideo`  → `raw_video_format`
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct CPacketTypeInfo {
     pub type_discriminant: CPacketType,
-    /// For RawAudio: pointer to CAudioFormat, otherwise null
+    /// For RawAudio: pointer to CAudioFormat, otherwise null.
     pub audio_format: *const CAudioFormat,
-    /// For Custom: pointer to a null-terminated type id string, otherwise null
+    /// For Custom: pointer to a null-terminated type id string, otherwise null.
     pub custom_type_id: *const c_char,
+    /// For RawVideo: pointer to CRawVideoFormat, otherwise null.
+    pub raw_video_format: *const CRawVideoFormat,
 }
 
 /// Audio frame data (for RawAudio packets)
@@ -200,32 +244,77 @@ pub type CTelemetryCallback = Option<
     extern "C" fn(*const c_char, *const u8, usize, *const CPacketMetadata, *mut c_void) -> CResult,
 >;
 
-/// The main plugin API structure
-/// Plugins export a function that returns a pointer to this struct
+/// Source node configuration returned by the plugin.
+///
+/// Tells the host how to drive the tick loop for source nodes (nodes with no
+/// inputs that generate data on their own schedule).
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct CSourceConfig {
+    /// If true, this plugin is a source node (no inputs, host drives tick loop).
+    pub is_source: bool,
+    /// Microseconds between ticks (e.g. 33333 for 30 fps).
+    pub tick_interval_us: u64,
+    /// If > 0, host stops after this many ticks. 0 = infinite.
+    pub max_ticks: u64,
+}
+
+/// Result returned by the source `tick` function.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct CTickResult {
+    /// Standard success/error result.
+    pub result: CResult,
+    /// If true, the source is done producing output (finite mode).
+    pub done: bool,
+}
+
+impl CTickResult {
+    /// Convenience: continue ticking.
+    pub const fn ok() -> Self {
+        Self { result: CResult::success(), done: false }
+    }
+
+    /// Convenience: last tick — stop after this one.
+    pub const fn done() -> Self {
+        Self { result: CResult::success(), done: true }
+    }
+
+    /// Convenience: tick failed.
+    pub const fn error(msg: *const c_char) -> Self {
+        Self { result: CResult::error(msg), done: false }
+    }
+}
+
+/// The main plugin API structure.
+///
+/// Plugins export a function that returns a pointer to this struct.
+/// Fields added in v3 (`get_source_config`, `tick`) are `Option` for
+/// backward compatibility; processor plugins set them to `None`.
 #[repr(C)]
 pub struct CNativePluginAPI {
-    /// API version for compatibility checking
+    /// API version for compatibility checking.
     pub version: u32,
 
-    /// Get metadata about the node type
-    /// Returns: Pointer to CNodeMetadata (must remain valid for plugin lifetime)
+    /// Get metadata about the node type.
+    /// Returns: Pointer to CNodeMetadata (must remain valid for plugin lifetime).
     pub get_metadata: extern "C" fn() -> *const CNodeMetadata,
 
-    /// Create a new plugin instance
-    /// params: JSON string with initialization parameters (nullable)
-    /// log_callback: Callback for plugin to send log messages to host
-    /// log_user_data: Opaque pointer to pass to log callback
-    /// Returns: Opaque handle to the instance, or null on error
+    /// Create a new plugin instance.
+    /// params: JSON string with initialization parameters (nullable).
+    /// log_callback: Callback for plugin to send log messages to host.
+    /// log_user_data: Opaque pointer to pass to log callback.
+    /// Returns: Opaque handle to the instance, or null on error.
     pub create_instance: extern "C" fn(*const c_char, CLogCallback, *mut c_void) -> CPluginHandle,
 
-    /// Process an incoming packet
-    /// handle: Plugin instance handle
-    /// input_pin: Name of the input pin
-    /// packet: The packet to process
-    /// output_callback: Callback to send output packets
-    /// callback_data: User data to pass to output callback
-    /// telemetry_callback: Callback to emit telemetry events
-    /// telemetry_user_data: User data to pass to telemetry callback
+    /// Process an incoming packet (processor plugins).
+    /// handle: Plugin instance handle.
+    /// input_pin: Name of the input pin.
+    /// packet: The packet to process.
+    /// output_callback: Callback to send output packets.
+    /// callback_data: User data to pass to output callback.
+    /// telemetry_callback: Callback to emit telemetry events.
+    /// telemetry_user_data: User data to pass to telemetry callback.
     pub process_packet: extern "C" fn(
         CPluginHandle,
         *const c_char,
@@ -236,17 +325,17 @@ pub struct CNativePluginAPI {
         *mut c_void,
     ) -> CResult,
 
-    /// Update runtime parameters
-    /// handle: Plugin instance handle
-    /// params: JSON string with new parameters (nullable)
+    /// Update runtime parameters.
+    /// handle: Plugin instance handle.
+    /// params: JSON string with new parameters (nullable).
     pub update_params: extern "C" fn(CPluginHandle, *const c_char) -> CResult,
 
-    /// Flush any buffered data (called when input stream ends)
-    /// handle: Plugin instance handle
-    /// output_callback: Callback to send output packets
-    /// callback_data: User data to pass to output callback
-    /// telemetry_callback: Callback to emit telemetry events
-    /// telemetry_user_data: User data to pass to telemetry callback
+    /// Flush any buffered data (called when input stream ends).
+    /// handle: Plugin instance handle.
+    /// output_callback: Callback to send output packets.
+    /// callback_data: User data to pass to output callback.
+    /// telemetry_callback: Callback to emit telemetry events.
+    /// telemetry_user_data: User data to pass to telemetry callback.
     pub flush: extern "C" fn(
         CPluginHandle,
         COutputCallback,
@@ -255,9 +344,35 @@ pub struct CNativePluginAPI {
         *mut c_void,
     ) -> CResult,
 
-    /// Destroy a plugin instance
-    /// handle: Plugin instance handle
+    /// Destroy a plugin instance.
+    /// handle: Plugin instance handle.
     pub destroy_instance: extern "C" fn(CPluginHandle),
+
+    // ── v3 additions ──────────────────────────────────────────────────────
+    /// Query source configuration after instance creation.
+    ///
+    /// `None` for processor plugins. When `Some`, the returned
+    /// `CSourceConfig.is_source` tells the host whether to use the tick
+    /// loop instead of the input-driven processing loop.
+    pub get_source_config: Option<extern "C" fn(CPluginHandle) -> CSourceConfig>,
+
+    /// Produce one unit of output (source plugins).
+    ///
+    /// The host calls this at the interval specified by `get_source_config`.
+    /// The plugin renders one frame/sample/etc. and sends it via
+    /// `output_callback`.  Returns `CTickResult` to signal continuation or
+    /// completion.
+    ///
+    /// `None` for processor plugins.
+    pub tick: Option<
+        extern "C" fn(
+            CPluginHandle,
+            COutputCallback,
+            *mut c_void,
+            CTelemetryCallback,
+            *mut c_void,
+        ) -> CTickResult,
+    >,
 }
 
 /// Symbol name that plugins must export
