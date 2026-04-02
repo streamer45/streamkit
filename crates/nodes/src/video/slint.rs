@@ -141,6 +141,20 @@ impl SlintConfig {
         }
         validate_slint_asset_path(&self.slint_file)
     }
+
+    /// Merge runtime-changeable fields from an `UpdateParams` payload into
+    /// this config.
+    ///
+    /// Only `properties`, `property_keyframes`, and `keyframe_interval` are
+    /// updated.  Immutable init-time fields (`slint_file`, `component`,
+    /// `width`, `height`, `fps`, `frame_count`) are preserved from the
+    /// original config so that partial JSON payloads (e.g.
+    /// `{"properties": {"score": 5}}`) work without re-validating the path.
+    fn merge_update(&mut self, update: &Self) {
+        self.properties.clone_from(&update.properties);
+        self.property_keyframes.clone_from(&update.property_keyframes);
+        self.keyframe_interval = update.keyframe_interval;
+    }
 }
 
 /// Validates that a Slint asset path is safe to read.
@@ -669,13 +683,11 @@ impl ProcessorNode for SlintNode {
                                 break;
                             },
                             NodeControlMessage::UpdateParams(params) => {
-                                if let Ok(new_config) = serde_json::from_value::<SlintConfig>(params) {
-                                    if new_config.validate().is_ok() {
-                                        self.config = new_config.clone();
-                                        let _ = thread_handle.work_tx.send(
-                                            SlintWorkItem::UpdateConfig { node_id, config: new_config },
-                                        );
-                                    }
+                                if let Ok(update) = serde_json::from_value::<SlintConfig>(params) {
+                                    self.config.merge_update(&update);
+                                    let _ = thread_handle.work_tx.send(
+                                        SlintWorkItem::UpdateConfig { node_id, config: self.config.clone() },
+                                    );
                                 }
                             },
                             NodeControlMessage::Start => {},
@@ -694,15 +706,12 @@ impl ProcessorNode for SlintNode {
                             break;
                         },
                         NodeControlMessage::UpdateParams(params) => {
-                            if let Ok(new_config) = serde_json::from_value::<SlintConfig>(params) {
-                                if new_config.validate().is_ok() {
-                                    self.config = new_config.clone();
-                                    let _ =
-                                        thread_handle.work_tx.send(SlintWorkItem::UpdateConfig {
-                                            node_id,
-                                            config: new_config,
-                                        });
-                                }
+                            if let Ok(update) = serde_json::from_value::<SlintConfig>(params) {
+                                self.config.merge_update(&update);
+                                let _ = thread_handle.work_tx.send(SlintWorkItem::UpdateConfig {
+                                    node_id,
+                                    config: self.config.clone(),
+                                });
                             }
                         },
                         NodeControlMessage::Start => {},
