@@ -194,6 +194,11 @@ impl EncoderNodeRunner for SvtAv1EncoderNode {
             let mut encoder: Option<SvtAv1Encoder> = None;
             let mut current_dimensions: Option<(u32, u32)> = None;
             let mut recv_thread: Option<std::thread::JoinHandle<()>> = None;
+            // Monitor send_picture latency as a proxy for encoder saturation.
+            // The actual encode happens asynchronously on SVT-AV1's internal
+            // threads; send_picture blocks when the input FIFO is full, which
+            // correlates with the encoder falling behind real-time.
+            let mut budget_monitor = encoder_trait::FrameBudgetMonitor::new("SVT-AV1");
 
             while let Some((frame, metadata)) = encode_rx.blocking_recv() {
                 if result_tx.is_closed() {
@@ -263,9 +268,12 @@ impl EncoderNodeRunner for SvtAv1EncoderNode {
                     continue;
                 };
 
+                let frame_duration_us = metadata.as_ref().and_then(|m| m.duration_us);
                 let send_start_time = Instant::now();
                 let result = enc.send_frame(&frame, metadata.as_ref());
-                send_duration_histogram.record(send_start_time.elapsed().as_secs_f64(), &[]);
+                let send_elapsed = send_start_time.elapsed();
+                send_duration_histogram.record(send_elapsed.as_secs_f64(), &[]);
+                budget_monitor.record(send_elapsed, frame_duration_us);
 
                 if let Err(err) = result {
                     let _ = result_tx.blocking_send(Err(err));

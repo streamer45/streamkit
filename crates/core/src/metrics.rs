@@ -56,3 +56,12 @@ pub const HISTOGRAM_BOUNDARIES_HTTP_DURATION: &[f64] =
 /// Used by: session.duration
 pub const HISTOGRAM_BOUNDARIES_SESSION_DURATION: &[f64] =
     &[1.0, 10.0, 60.0, 300.0, 600.0, 1800.0, 3600.0, 7200.0, 21600.0, 86400.0];
+
+/// Frame budget overrun boundaries (1ms to 1s)
+/// Used by: video_encoder.frame_overrun_seconds
+///
+/// Records how much encode time exceeds the frame duration budget.
+/// Granularity around the 33ms mark (one frame at 30fps) helps distinguish
+/// minor jitter from severe overruns that cause A/V desync.
+pub const HISTOGRAM_BOUNDARIES_FRAME_OVERRUN: &[f64] =
+    &[0.001, 0.005, 0.01, 0.02, 0.033, 0.05, 0.1, 0.5, 1.0];

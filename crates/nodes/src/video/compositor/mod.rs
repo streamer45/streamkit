@@ -728,7 +728,14 @@ impl ProcessorNode for CompositorNode {
             .u64_counter("compositor.frames_dropped")
             .with_description("Frames dropped by the compositor to keep up with real-time input")
             .build();
-        let otel_attrs = [KeyValue::new("node", node_name.clone())];
+        let otel_attrs_input =
+            [KeyValue::new("node", node_name.clone()), KeyValue::new("reason", "input_drain")];
+        let otel_attrs_busy =
+            [KeyValue::new("node", node_name.clone()), KeyValue::new("reason", "compositing_busy")];
+        let otel_attrs_output = [
+            KeyValue::new("node", node_name.clone()),
+            KeyValue::new("reason", "output_backpressure"),
+        ];
 
         // ── Tick / pacing ────────────────────────────────────────────────
         //
@@ -905,7 +912,7 @@ impl ProcessorNode for CompositorNode {
                         latest = Some(frame);
                     }
                     if dropped > 0 {
-                        frames_dropped_counter.add(dropped, &otel_attrs);
+                        frames_dropped_counter.add(dropped, &otel_attrs_input);
                         stats_tracker.discarded_n(dropped);
                     }
                     if let Some(frame) = latest {
@@ -1019,7 +1026,7 @@ impl ProcessorNode for CompositorNode {
                 },
                 Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                     // Compositing thread is still busy — skip this frame.
-                    frames_dropped_counter.add(1, &otel_attrs);
+                    frames_dropped_counter.add(1, &otel_attrs_busy);
                     stats_tracker.discarded();
                     continue;
                 },
@@ -1104,7 +1111,7 @@ impl ProcessorNode for CompositorNode {
                     stats_tracker.maybe_send();
                 },
                 Err(streamkit_core::node::OutputSendError::ChannelFull { .. }) => {
-                    frames_dropped_counter.add(1, &otel_attrs);
+                    frames_dropped_counter.add(1, &otel_attrs_output);
                     stats_tracker.discarded();
                 },
                 Err(_) => {
