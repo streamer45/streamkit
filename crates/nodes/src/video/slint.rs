@@ -68,6 +68,10 @@ const fn default_keyframe_interval() -> u32 {
     90
 }
 
+const fn default_static_ui() -> bool {
+    false
+}
+
 // ── Configuration ───────────────────────────────────────────────────────────
 
 /// Configuration for the standalone Slint UI video source node.
@@ -76,6 +80,7 @@ const fn default_keyframe_interval() -> u32 {
 /// software renderer.  Properties can be set at init and updated at runtime
 /// via `UpdateParams`.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(default)]
 pub struct SlintConfig {
     /// Output frame width in pixels.
     #[serde(default = "default_width")]
@@ -107,6 +112,13 @@ pub struct SlintConfig {
     /// Total frames to generate.  0 = infinite (real-time pacing).
     #[serde(default = "default_frame_count")]
     pub frame_count: u32,
+    /// When `true`, the rendered frame is cached and reused until properties
+    /// change (via `UpdateParams` or keyframe cycling).  Suitable for overlays
+    /// with no Slint-internal `Timer` or `animate` directives.  When `false`
+    /// (the default), every frame is re-rendered so that Slint timers and
+    /// animations advance correctly.
+    #[serde(default = "default_static_ui")]
+    pub static_ui: bool,
 }
 
 impl Default for SlintConfig {
@@ -121,6 +133,7 @@ impl Default for SlintConfig {
             property_keyframes: Vec::new(),
             keyframe_interval: default_keyframe_interval(),
             frame_count: default_frame_count(),
+            static_ui: default_static_ui(),
         }
     }
 }
@@ -181,9 +194,11 @@ fn validate_slint_asset_path(path: &str) -> Result<(), String> {
 //
 // Each node gets a unique `NodeId` (UUID) and communicates with the shared
 // thread via tagged work items.  Results are sent back on a per-node
-// `tokio::sync::mpsc` channel (using `blocking_send` on the Slint thread
-// so the async `run()` method can `.recv().await` without blocking the
-// tokio worker thread).
+// `tokio::sync::mpsc` channel so the async `run()` method can
+// `.recv().await` without blocking the tokio worker thread.
+// Frame results use `try_send` to avoid head-of-line blocking: if one
+// node's consumer is slow, frames are dropped instead of stalling the
+// shared thread for all other nodes.
 
 /// Opaque identifier for a node's instance on the shared Slint thread.
 type NodeId = uuid::Uuid;
@@ -295,45 +310,62 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
             },
             SlintWorkItem::Render { node_id } => {
                 if let Some(state) = nodes.get_mut(&node_id) {
-                    // Determine the current keyframe index (if keyframes are configured).
-                    let kf_idx = if state.config.property_keyframes.is_empty() {
-                        None
+                    // Always pump Slint timers/animations (process-global) so
+                    // that Timer callbacks and CSS-like transitions advance
+                    // even when the frame is served from cache.
+                    slint::platform::update_timers_and_animations();
+
+                    let rgba_data = if state.config.static_ui {
+                        // ── Static UI path: cache the rendered frame ────────
+                        let kf_idx = if state.config.property_keyframes.is_empty() {
+                            None
+                        } else {
+                            let interval = state.config.keyframe_interval.max(1);
+                            Some(
+                                (state.instance.frame_counter / interval) as usize
+                                    % state.config.property_keyframes.len(),
+                            )
+                        };
+
+                        let need_render = state.dirty
+                            || state.cached_keyframe_idx != kf_idx
+                            || state.cached_frame.is_none();
+
+                        if need_render {
+                            let data =
+                                render_slint_frame(&mut state.instance, &state.config);
+                            state.cached_frame = Some(data.clone());
+                            state.cached_keyframe_idx = kf_idx;
+                            state.dirty = false;
+                            data
+                        } else {
+                            // Advance frame counter so keyframe boundaries
+                            // are detected at the right time.
+                            state.instance.frame_counter =
+                                state.instance.frame_counter.wrapping_add(1);
+                            // Invariant: need_render is false only when
+                            // cached_frame is Some.
+                            state.cached_frame.clone().unwrap_or_default()
+                        }
                     } else {
-                        let interval = state.config.keyframe_interval.max(1);
-                        Some(
-                            (state.instance.frame_counter / interval) as usize
-                                % state.config.property_keyframes.len(),
-                        )
+                        // ── Dynamic UI path: always re-render ───────────────
+                        render_slint_frame(&mut state.instance, &state.config)
                     };
 
-                    // Re-render only when properties have actually changed:
-                    // config update (dirty flag) or keyframe boundary.
-                    let need_render = state.dirty
-                        || state.cached_keyframe_idx != kf_idx
-                        || state.cached_frame.is_none();
-
-                    let rgba_data = if need_render {
-                        let data = render_slint_frame(&mut state.instance, &state.config);
-                        state.cached_frame = Some(data.clone());
-                        state.cached_keyframe_idx = kf_idx;
-                        state.dirty = false;
-                        data
-                    } else {
-                        // Advance frame counter even when reusing the cache so
-                        // keyframe boundaries are detected at the right time.
-                        state.instance.frame_counter = state.instance.frame_counter.wrapping_add(1);
-                        // SAFETY: need_render is false only when cached_frame is Some.
-                        state.cached_frame.clone().unwrap_or_default()
-                    };
-
-                    // If the result channel is closed the node has been dropped;
-                    // clean up its state on the next Unregister (or here eagerly).
-                    if state
-                        .result_tx
-                        .blocking_send(SlintThreadResult::Frame { rgba_data })
-                        .is_err()
-                    {
-                        nodes.remove(&node_id);
+                    // Use try_send to avoid head-of-line blocking: if this
+                    // node's consumer is slow, drop the frame rather than
+                    // stalling the shared thread for all other nodes.
+                    match state.result_tx.try_send(SlintThreadResult::Frame { rgba_data }) {
+                        Ok(()) => {},
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                            tracing::debug!(
+                                "SlintNode '{}' result channel full, dropping frame",
+                                node_id
+                            );
+                        },
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                            nodes.remove(&node_id);
+                        },
                     }
                 }
             },
@@ -391,7 +423,7 @@ fn create_slint_instance(
 
     // Compile the .slint file.
     let compiler = slint_interpreter::Compiler::default();
-    let result = spin_on::spin_on(compiler.build_from_path(&config.slint_file));
+    let result = pollster::block_on(compiler.build_from_path(&config.slint_file));
 
     // Check for compilation errors.
     let diags: Vec<_> = result
@@ -435,7 +467,9 @@ fn create_slint_instance(
     // Set the Slint platform backend exactly once per process.
     // All instances share this thread, so the first call suffices.
     if !*platform_set {
-        let _ = slint::platform::set_platform(Box::new(SlintBackend));
+        slint::platform::set_platform(Box::new(SlintBackend)).map_err(|e| {
+            StreamKitError::Runtime(format!("Failed to set Slint platform: {e}"))
+        })?;
         *platform_set = true;
     }
 
@@ -461,12 +495,17 @@ fn create_slint_instance(
         StreamKitError::Configuration(format!("Failed to show Slint component: {e}"))
     })?;
 
+    // Clear the thread-local so a stale reference isn't returned by an
+    // unexpected `create_window_adapter()` call during rendering.
+    CURRENT_WINDOW.with(|cell| *cell.borrow_mut() = None);
+
     Ok(SlintInstance { window, component, definition, buffer, width, frame_counter: 0 })
 }
 
 /// Render a single frame from the Slint instance, returning raw RGBA8 data.
 ///
-/// Applies property keyframe cycling and pumps Slint animation timers.
+/// Applies property keyframe cycling.  Timer/animation pumping is handled
+/// by the caller (`slint_thread_main`) so it runs unconditionally.
 fn render_slint_frame(instance: &mut SlintInstance, config: &SlintConfig) -> Vec<u8> {
     // Build the effective property map: base properties merged with the
     // current keyframe (if keyframes are configured).
@@ -483,10 +522,6 @@ fn render_slint_frame(instance: &mut SlintInstance, config: &SlintConfig) -> Vec
 
     // Push property updates into the component instance.
     set_properties(&instance.component, &effective_props);
-
-    // Pump Slint's internal animation timers so time-based animations
-    // (e.g. slide-in transitions) advance on each tick.
-    slint::platform::update_timers_and_animations();
 
     // Force a full redraw every frame.  With `RepaintBufferType::NewBuffer`
     // the renderer always paints the entire scene, so there is no wasted
@@ -831,19 +866,7 @@ impl ProcessorNode for SlintNode {
 
 #[allow(clippy::expect_used, clippy::missing_panics_doc)]
 pub fn register_slint_nodes(registry: &mut NodeRegistry) {
-    let default_node = SlintNode {
-        config: SlintConfig {
-            width: default_width(),
-            height: default_height(),
-            fps: default_fps(),
-            slint_file: String::new(),
-            component: None,
-            properties: HashMap::new(),
-            property_keyframes: Vec::new(),
-            keyframe_interval: default_keyframe_interval(),
-            frame_count: default_frame_count(),
-        },
-    };
+    let default_node = SlintNode { config: SlintConfig::default() };
 
     registry.register_static_with_description(
         "video::slint",

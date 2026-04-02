@@ -43,6 +43,7 @@ nodes:
       fps: 30
       frame_count: 300
       slint_file: samples/slint/watermark.slint
+      static_ui: true
       properties:
         channel: "StreamKit"
         tagline: "LIVE"

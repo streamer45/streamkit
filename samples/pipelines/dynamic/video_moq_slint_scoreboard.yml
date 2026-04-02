@@ -21,6 +21,12 @@
 #         "period": "2ND"
 #       }
 #     }'
+#
+# NOTE: Only `properties` are mergeable at runtime via UpdateParams.
+# Init-time fields (slint_file, width, height, fps, frame_count,
+# keyframe_interval, property_keyframes, static_ui) are ignored in
+# UpdateParams because serde defaults make it impossible to distinguish
+# "user sent empty" from "field was absent".
 
 name: Video Slint Scoreboard + Lower Third (MoQ)
 description: Composites colorbars with Slint scoreboard and lower-third overlays, streams via MoQ with runtime property updates
