@@ -334,6 +334,7 @@ lint-plugins:
     @cd plugins/native/pocket-tts && cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
     @cd plugins/native/nllb && cargo fmt -- --check && CMAKE_ARGS="-DCMAKE_INSTALL_PREFIX=$$(pwd)/target/cmake-install" CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
     @cd plugins/native/supertonic && cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
+    @cd plugins/native/slint && cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
     @echo "✓ All native plugins passed linting"
 
 # Auto-fix formatting and linting issues in native plugins
@@ -348,6 +349,7 @@ fix-plugins:
     @cd plugins/native/pocket-tts && cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
     @cd plugins/native/nllb && cargo fmt && CMAKE_ARGS="-DCMAKE_INSTALL_PREFIX=$$(pwd)/target/cmake-install" CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
     @cd plugins/native/supertonic && cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
+    @cd plugins/native/slint && cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
     @echo "✓ All native plugins fixed"
 
 # --- Profiling ---
@@ -912,12 +914,25 @@ upload-supertonic-plugin: build-plugin-native-supertonic
     @curl -X POST -F "plugin=@{{plugins_target_dir}}/release/libsupertonic.so" \
         http://127.0.0.1:4545/api/v1/plugins
 
+# Build native Slint UI plugin
+[working-directory: 'plugins/native/slint']
+build-plugin-native-slint:
+    @echo "Building native Slint UI plugin..."
+    @CARGO_TARGET_DIR={{plugins_target_dir}} cargo build --release
+
+# Upload Slint plugin to running server
+[working-directory: 'plugins/native/slint']
+upload-slint-plugin: build-plugin-native-slint
+    @echo "Uploading Slint plugin to server..."
+    @curl -X POST -F "plugin=@{{plugins_target_dir}}/release/libslint_plugin.so" \
+        http://127.0.0.1:4545/api/v1/plugins
+
 # Build specific native plugin by name
 build-plugin-native name:
     @just build-plugin-native-{{name}}
 
 # Build all native plugin examples
-build-plugins-native: build-plugin-native-gain build-plugin-native-whisper build-plugin-native-kokoro build-plugin-native-piper build-plugin-native-matcha build-plugin-native-pocket-tts build-plugin-native-sensevoice build-plugin-native-nllb build-plugin-native-vad build-plugin-native-helsinki build-plugin-native-supertonic
+build-plugins-native: build-plugin-native-gain build-plugin-native-whisper build-plugin-native-kokoro build-plugin-native-piper build-plugin-native-matcha build-plugin-native-pocket-tts build-plugin-native-sensevoice build-plugin-native-nllb build-plugin-native-vad build-plugin-native-helsinki build-plugin-native-supertonic build-plugin-native-slint
 
 ## Combined
 
@@ -953,7 +968,7 @@ copy-plugins-native:
     cp examples/plugins/gain-native/target/release/libgain_plugin_native.* .plugins/native/ 2>/dev/null || true
 
     # Official native plugins (shared target dir)
-    for name in whisper kokoro piper matcha vad sensevoice nllb helsinki supertonic; do
+    for name in whisper kokoro piper matcha vad sensevoice nllb helsinki supertonic slint_plugin; do
         for f in \
             "$PLUGINS_TARGET"/release/lib"$name".so \
             "$PLUGINS_TARGET"/release/lib"$name".so.* \

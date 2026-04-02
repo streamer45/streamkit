@@ -1,0 +1,62 @@
+// SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+//
+// SPDX-License-Identifier: MPL-2.0
+
+// Semi-transparent channel watermark / bug overlay.
+//
+// A simple branded badge suitable for compositing into a corner of the
+// video frame.  All text is property-driven and can be updated at runtime
+// via UpdateParams JSON: channel, tagline.
+
+export component Watermark inherits Window {
+    in property <string> channel: "StreamKit";
+    in property <string> tagline: "LIVE";
+
+    width: 180px;
+    height: 44px;
+    background: transparent;
+
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        border-radius: 8px;
+        background: #00000099;
+
+        HorizontalLayout {
+            padding-left: 14px;
+            padding-right: 14px;
+            spacing: 10px;
+
+            // Centre the accent dot vertically within the row.
+            VerticalLayout {
+                alignment: center;
+
+                Rectangle {
+                    width: 8px;
+                    height: 8px;
+                    border-radius: 4px;
+                    background: #e63946;
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                spacing: 2px;
+
+                Text {
+                    text: root.channel;
+                    color: #ffffff;
+                    font-size: 14px;
+                    font-weight: 700;
+                }
+                Text {
+                    text: root.tagline;
+                    color: #ffffffb3;
+                    font-size: 10px;
+                    font-weight: 600;
+                    letter-spacing: 2px;
+                }
+            }
+        }
+    }
+}

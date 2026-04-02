@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Renders a static Slint watermark overlay as a standalone video source.
+#
+# This is a minimal example that demonstrates the Slint plugin producing
+# RGBA8 frames from a `.slint` file.  The `static_ui: true` flag caches
+# the rendered frame so re-renders are skipped when properties don't change.
+#
+# Requires: plugin::native::slint loaded
+#   just build-plugin-native-slint && just upload-slint-plugin
+
+name: Video Slint Watermark
+description: Renders a Slint watermark overlay as a video source (10 frames)
+mode: oneshot
+steps:
+  - kind: plugin::native::slint
+    params:
+      slint_file: "samples/slint/watermark.slint"
+      width: 180
+      height: 44
+      fps: 30
+      frame_count: 10
+      static_ui: true
+      properties:
+        channel: "StreamKit"
+        tagline: "LIVE"
+  - kind: streamkit::http_output

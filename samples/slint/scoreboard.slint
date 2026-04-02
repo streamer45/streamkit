@@ -1,0 +1,118 @@
+// SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+//
+// SPDX-License-Identifier: MPL-2.0
+
+// Sports scoreboard overlay for the StreamKit compositor.
+//
+// Properties can be updated at runtime via UpdateParams JSON:
+//   home_team, away_team, home_score, away_score, clock_start, period
+//
+// The clock ticks automatically once per second from `clock_start`
+// (total seconds).  Set `clock_running` to false to freeze it.
+
+export component Scoreboard inherits Window {
+    in property <string> home_team: "HOME";
+    in property <string> away_team: "AWAY";
+    in property <int> home_score: 0;
+    in property <int> away_score: 0;
+    /// Starting time in total seconds (e.g. 754 = "12:34").
+    in property <int> clock_start: 0;
+    in property <bool> clock_running: true;
+    in property <string> period: "1ST";
+
+    // Internal elapsed seconds counter driven by the Timer below.
+    property <int> elapsed: 0;
+    property <int> total_seconds: root.clock_start + root.elapsed;
+    property <int> minutes: Math.floor(root.total_seconds / 60);
+    property <int> secs: Math.mod(root.total_seconds, 60);
+
+    // Format as MM:SS — Slint doesn't have zero-pad, so we build it
+    // with a ternary for the leading zero on each part.
+    property <string> clock_display:
+        (root.minutes < 10 ? "0" : "") + root.minutes
+        + ":"
+        + (root.secs < 10 ? "0" : "") + root.secs;
+
+    width: 420px;
+    height: 80px;
+    // Transparent window background so only the rounded rectangle is
+    // visible when composited onto the video frame.
+    background: transparent;
+
+    // 1-second tick timer for the match clock.
+    Timer {
+        interval: 1s;
+        running: root.clock_running;
+        triggered() => {
+            root.elapsed += 1;
+        }
+    }
+
+    Rectangle {
+        background: #1a1a2ecc;
+        border-radius: 8px;
+        width: 100%;
+        height: 100%;
+
+        HorizontalLayout {
+            padding: 12px;
+            spacing: 8px;
+            alignment: center;
+
+            // Home team
+            VerticalLayout {
+                alignment: center;
+                Text {
+                    text: root.home_team;
+                    color: #e0e0e0;
+                    font-size: 14px;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: root.home_score;
+                    color: #ffffff;
+                    font-size: 28px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                }
+            }
+
+            // Separator / clock
+            VerticalLayout {
+                alignment: center;
+                min-width: 80px;
+                Text {
+                    text: root.clock_display;
+                    color: #ffcc00;
+                    font-size: 18px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: root.period;
+                    color: #aaaaaa;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                }
+            }
+
+            // Away team
+            VerticalLayout {
+                alignment: center;
+                Text {
+                    text: root.away_team;
+                    color: #e0e0e0;
+                    font-size: 14px;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: root.away_score;
+                    color: #ffffff;
+                    font-size: 28px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+    }
+}
