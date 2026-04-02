@@ -20,7 +20,7 @@
 #         "z_index": 10,
 #         "properties": {
 #           "home_score": 4,
-#           "clock": "35:47",
+#           "clock_start": 2147,
 #           "period": "2ND"
 #         }
 #       }]
@@ -71,7 +71,7 @@ nodes:
             away_team: "HAWKS"
             home_score: 3
             away_score: 1
-            clock: "12:34"
+            clock_start: 754
             period: "2ND"
         - id: lower_third
           slint_file: samples/slint/lower_third.slint
