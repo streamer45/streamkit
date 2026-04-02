@@ -30,7 +30,7 @@ impl NativeSourceNode for SlintSourcePlugin {
     fn metadata() -> NodeMetadata {
         NodeMetadata::builder("slint")
             .output(
-                "video",
+                "out",
                 PacketType::RawVideo(RawVideoFormat {
                     width: None,
                     height: None,
@@ -201,7 +201,7 @@ impl NativeSourceNode for SlintSourcePlugin {
         )
         .map_err(|e| format!("Failed to create video frame: {e}"))?;
 
-        output.send("video", &Packet::Video(frame))?;
+        output.send("out", &Packet::Video(frame))?;
 
         self.tick_count += 1;
         Ok(false)

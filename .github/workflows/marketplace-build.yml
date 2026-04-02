@@ -42,7 +42,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake pkg-config libclang-dev wget libopenblas-dev zstd patchelf python3-yaml python3-tomli
+          sudo apt-get install -y cmake pkg-config libclang-dev libfontconfig1-dev wget libopenblas-dev zstd patchelf python3-yaml python3-tomli
 
       - name: Install minisign
         run: |

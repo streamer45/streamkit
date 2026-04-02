@@ -20,7 +20,7 @@ Source: `target/plugins/release/libslint_plugin.so`
 *(none — this is a source node)*
 
 ### Outputs
-- `video` produces `RawVideo(RawVideoFormat { width: None, height: None, pixel_format: Rgba8 })` (broadcast)
+- `out` produces `RawVideo(RawVideoFormat { width: None, height: None, pixel_format: Rgba8 })` (broadcast)
 
 ## Parameters
 | Name | Type | Required | Default | Description |
