@@ -10,8 +10,9 @@
 #
 # Requires: cargo build --features slint_overlay
 #
-# Properties are set statically here.  For runtime updates see the
-# dynamic/video_moq_slint_scoreboard.yml pipeline.
+# Base properties set the initial state; `property_keyframes` cycles the
+# score and clock every ~3 s so the output is not 100 % static.
+# For runtime updates see the dynamic/video_moq_slint_scoreboard.yml pipeline.
 
 name: Video Slint Scoreboard (Oneshot)
 description: Composites colorbars with a Slint scoreboard overlay, encodes to VP9, and streams a WebM via http_output
@@ -61,6 +62,17 @@ nodes:
             away_score: 1
             clock: "12:34"
             period: "2ND"
+          keyframe_interval: 90
+          property_keyframes:
+            - home_score: 3
+              away_score: 1
+              clock: "12:34"
+            - home_score: 3
+              away_score: 2
+              clock: "18:07"
+            - home_score: 4
+              away_score: 2
+              clock: "25:51"
     needs:
       - colorbars_bg
 

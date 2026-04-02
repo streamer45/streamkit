@@ -43,6 +43,8 @@ pub struct SlintOverlayInstance {
     buffer: Vec<PremultipliedRgbaColor>,
     width: u32,
     height: u32,
+    /// Frame counter for property keyframe cycling.
+    frame_counter: u32,
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────
@@ -138,7 +140,15 @@ pub fn create_slint_overlay(
         ))
     })?;
 
-    Ok(SlintOverlayInstance { window, component, definition, buffer, width, height })
+    Ok(SlintOverlayInstance {
+        window,
+        component,
+        definition,
+        buffer,
+        width,
+        height,
+        frame_counter: 0,
+    })
 }
 
 /// Re-render a Slint overlay, updating properties from the config.
@@ -150,8 +160,21 @@ pub fn render_slint_overlay(
     instance: &mut SlintOverlayInstance,
     config: &SlintOverlayConfig,
 ) -> DecodedOverlay {
+    // Build the effective property map: base properties merged with the
+    // current keyframe (if keyframes are configured).
+    let effective_props = if config.property_keyframes.is_empty() {
+        std::borrow::Cow::Borrowed(&config.properties)
+    } else {
+        let interval = config.keyframe_interval.max(1);
+        let idx = (instance.frame_counter / interval) as usize % config.property_keyframes.len();
+        let mut merged = config.properties.clone();
+        merged.extend(config.property_keyframes[idx].iter().map(|(k, v)| (k.clone(), v.clone())));
+        std::borrow::Cow::Owned(merged)
+    };
+    instance.frame_counter = instance.frame_counter.wrapping_add(1);
+
     // Push property updates into the component instance.
-    set_properties(&instance.component, &config.properties);
+    set_properties(&instance.component, &effective_props);
 
     // Pump Slint's internal animation timers so time-based animations
     // (e.g. slide-in transitions) advance on each compositor tick.

@@ -7,7 +7,7 @@
 // Properties can be updated at runtime via UpdateParams JSON:
 //   home_team, away_team, home_score, away_score, clock, period
 
-export component Scoreboard inherits Rectangle {
+export component Scoreboard inherits Window {
     in property <string> home_team: "HOME";
     in property <string> away_team: "AWAY";
     in property <int> home_score: 0;
@@ -17,66 +17,74 @@ export component Scoreboard inherits Rectangle {
 
     width: 420px;
     height: 80px;
-    background: #1a1a2ecc;
-    border-radius: 8px;
+    // Transparent window background so only the rounded rectangle is
+    // visible when composited onto the video frame.
+    background: transparent;
 
-    HorizontalLayout {
-        padding: 12px;
-        spacing: 8px;
-        alignment: center;
+    Rectangle {
+        background: #1a1a2ecc;
+        border-radius: 8px;
+        width: 100%;
+        height: 100%;
 
-        // Home team
-        VerticalLayout {
+        HorizontalLayout {
+            padding: 12px;
+            spacing: 8px;
             alignment: center;
-            Text {
-                text: root.home_team;
-                color: #e0e0e0;
-                font-size: 14px;
-                horizontal-alignment: center;
-            }
-            Text {
-                text: root.home_score;
-                color: #ffffff;
-                font-size: 28px;
-                font-weight: 700;
-                horizontal-alignment: center;
-            }
-        }
 
-        // Separator / clock
-        VerticalLayout {
-            alignment: center;
-            min-width: 80px;
-            Text {
-                text: root.clock;
-                color: #ffcc00;
-                font-size: 18px;
-                font-weight: 700;
-                horizontal-alignment: center;
+            // Home team
+            VerticalLayout {
+                alignment: center;
+                Text {
+                    text: root.home_team;
+                    color: #e0e0e0;
+                    font-size: 14px;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: root.home_score;
+                    color: #ffffff;
+                    font-size: 28px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                }
             }
-            Text {
-                text: root.period;
-                color: #aaaaaa;
-                font-size: 12px;
-                horizontal-alignment: center;
-            }
-        }
 
-        // Away team
-        VerticalLayout {
-            alignment: center;
-            Text {
-                text: root.away_team;
-                color: #e0e0e0;
-                font-size: 14px;
-                horizontal-alignment: center;
+            // Separator / clock
+            VerticalLayout {
+                alignment: center;
+                min-width: 80px;
+                Text {
+                    text: root.clock;
+                    color: #ffcc00;
+                    font-size: 18px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: root.period;
+                    color: #aaaaaa;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                }
             }
-            Text {
-                text: root.away_score;
-                color: #ffffff;
-                font-size: 28px;
-                font-weight: 700;
-                horizontal-alignment: center;
+
+            // Away team
+            VerticalLayout {
+                alignment: center;
+                Text {
+                    text: root.away_team;
+                    color: #e0e0e0;
+                    font-size: 14px;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: root.away_score;
+                    color: #ffffff;
+                    font-size: 28px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                }
             }
         }
     }

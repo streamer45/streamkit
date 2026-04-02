@@ -427,6 +427,21 @@ pub struct SlintOverlayConfig {
     /// Strings → `SharedString`, numbers → `i32`/`f32`, booleans → `bool`.
     #[serde(default)]
     pub properties: HashMap<String, serde_json::Value>,
+    /// Optional list of property snapshots to cycle through over time.
+    /// Each entry is a partial property map that is merged on top of `properties`.
+    /// When present, the overlay cycles through these keyframes at the rate
+    /// specified by `keyframe_interval`.
+    #[serde(default)]
+    pub property_keyframes: Vec<HashMap<String, serde_json::Value>>,
+    /// Number of frames between keyframe switches (default: 90 ≈ 3 s at 30 fps).
+    /// Only used when `property_keyframes` is non-empty.
+    #[serde(default = "default_keyframe_interval")]
+    pub keyframe_interval: u32,
+}
+
+#[cfg(feature = "slint_overlay")]
+fn default_keyframe_interval() -> u32 {
+    90
 }
 
 /// Validates that a Slint asset path is safe to read.
