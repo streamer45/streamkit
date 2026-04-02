@@ -16,8 +16,8 @@ use std::os::raw::c_char;
 use std::sync::Arc;
 use streamkit_core::types::{
     AudioCodec, AudioFormat, AudioFrame, CustomEncoding, CustomPacketData, EncodedAudioFormat,
-    EncodedVideoFormat, Packet, PacketMetadata, PacketType, PixelFormat, RawVideoFormat,
-    SampleFormat, TranscriptionData, VideoFrame,
+    Packet, PacketMetadata, PacketType, PixelFormat, RawVideoFormat, SampleFormat,
+    TranscriptionData, VideoFrame,
 };
 
 /// Convert C packet type info to Rust PacketType
@@ -60,15 +60,12 @@ pub fn packet_type_from_c(cpt_info: CPacketTypeInfo) -> Result<PacketType, Strin
             Ok(PacketType::RawVideo(raw_video_format_from_c(c_fmt)))
         },
         CPacketType::EncodedVideo => {
-            // EncodedVideo format details are not carried across the C ABI today;
-            // the discriminant alone signals "encoded video".
-            Ok(PacketType::EncodedVideo(EncodedVideoFormat {
-                codec: streamkit_core::types::VideoCodec::Vp9,
-                bitstream_format: None,
-                codec_private: None,
-                profile: None,
-                level: None,
-            }))
+            // TODO: Add CVideoCodec enum to carry codec through the C ABI.
+            // Until then, EncodedVideo is accepted as a discriminant for pin
+            // declarations but the codec field is meaningless.  Using Binary
+            // as the packet-level representation (see `packet_from_c`) avoids
+            // silently mislabelling the codec.
+            Ok(PacketType::Binary)
         },
         CPacketType::Binary => Ok(PacketType::Binary),
         CPacketType::Any => Ok(PacketType::Any),
@@ -159,6 +156,7 @@ pub const fn raw_video_format_from_c(cfmt: &CRawVideoFormat) -> RawVideoFormat {
 /// `packet_type_to_c` returns this alongside the info struct so that
 /// pointers inside `CPacketTypeInfo` stay valid for as long as this value
 /// is alive.
+#[must_use]
 pub enum CPacketTypeOwned {
     None,
     Audio(CAudioFormat),

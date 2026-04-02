@@ -16,7 +16,7 @@ use std::sync::Arc;
 use streamkit_core::{NodeRegistry, PinCardinality};
 use streamkit_plugin_sdk_native::types::{CNativePluginAPI, NATIVE_PLUGIN_API_VERSION};
 use streamkit_plugin_sdk_native::{conversions, types::PLUGIN_API_SYMBOL};
-use tracing::info;
+use tracing::{info, warn};
 
 /// Silent log callback used only during source-config probing (no actual instance work).
 // Cannot be `const`: `const extern "C" fn` is not supported by the compiler.
@@ -126,7 +126,14 @@ impl LoadedNativePlugin {
                 plugin_log_callback_noop,
                 std::ptr::null_mut(),
             );
-            if !temp_handle.is_null() {
+            if temp_handle.is_null() {
+                warn!(
+                    kind = %metadata.kind,
+                    "Source config probe failed: plugin returned null from create_instance \
+                     with no params — treating as processor. Source plugins must support \
+                     parameterless construction for probing."
+                );
+            } else {
                 let cfg = get_source_config(temp_handle);
                 if cfg.is_source {
                     metadata.is_source = true;
