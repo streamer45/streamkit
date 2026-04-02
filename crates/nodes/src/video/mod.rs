@@ -197,39 +197,30 @@ pub(super) fn i420_to_nv12(
     let chroma_h = uv_plane.height as usize;
 
     #[allow(clippy::cast_sign_loss)]
-    let u_stride_usize = planes.uv_stride as usize;
-    #[allow(clippy::cast_sign_loss)]
-    let v_stride_usize = planes.uv_stride as usize;
+    let chroma_stride = planes.uv_stride as usize;
 
     // Guard against corrupted bitstreams producing unexpected dimensions.
-    if u_stride_usize < chroma_w {
-        return Err(format!("U plane stride ({u_stride_usize}) < chroma width ({chroma_w})"));
-    }
-    if v_stride_usize < chroma_w {
-        return Err(format!("V plane stride ({v_stride_usize}) < chroma width ({chroma_w})"));
+    if chroma_stride < chroma_w {
+        return Err(format!(
+            "Chroma plane stride ({chroma_stride}) < chroma width ({chroma_w})"
+        ));
     }
     // Verify the total range we will access fits within the expected allocation
     // (stride × height).
     debug_assert!(
         chroma_h == 0
-            || (chroma_h - 1) * u_stride_usize + chroma_w
-                <= u_stride_usize.saturating_mul(chroma_h),
-        "U plane read would exceed expected allocation"
-    );
-    debug_assert!(
-        chroma_h == 0
-            || (chroma_h - 1) * v_stride_usize + chroma_w
-                <= v_stride_usize.saturating_mul(chroma_h),
-        "V plane read would exceed expected allocation"
+            || (chroma_h - 1) * chroma_stride + chroma_w
+                <= chroma_stride.saturating_mul(chroma_h),
+        "Chroma plane read would exceed expected allocation"
     );
 
     for row in 0..chroma_h {
         // SAFETY: We have verified above that stride >= chroma_w, and the
         // decoder allocates at least stride × chroma_h bytes per plane.
         let u_row =
-            unsafe { std::slice::from_raw_parts(planes.u_ptr.add(row * u_stride_usize), chroma_w) };
+            unsafe { std::slice::from_raw_parts(planes.u_ptr.add(row * chroma_stride), chroma_w) };
         let v_row =
-            unsafe { std::slice::from_raw_parts(planes.v_ptr.add(row * v_stride_usize), chroma_w) };
+            unsafe { std::slice::from_raw_parts(planes.v_ptr.add(row * chroma_stride), chroma_w) };
         let dst_start = uv_plane.offset + row * uv_plane.stride;
         for col in 0..chroma_w {
             data_slice[dst_start + col * 2] = u_row[col];

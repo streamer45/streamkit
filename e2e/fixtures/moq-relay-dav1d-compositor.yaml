@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MPL-2.0
 
 # Self-contained dav1d AV1 decoder relay test: publishes audio (from file) and
-# video (colorbars encoded as AV1 via rav1e) to an external moq-relay,
+# video (colorbars encoded as AV1 via SVT-AV1) to an external moq-relay,
 # subscribes back, decodes AV1 using the C dav1d decoder, composites over a
 # colorbars background, re-encodes as AV1 via SVT-AV1, and republishes.
 #
@@ -45,9 +45,12 @@ nodes:
       pixel_format: nv12
       draw_time: true
 
-  av1_encoder_src:
-    kind: video::av1::encoder
+  svt_av1_encoder_src:
+    kind: video::svt_av1::encoder
     params:
+      preset: 12
+      crf: 35
+      low_latency: true
       keyframe_interval: 15
     needs: colorbars_src
 
@@ -63,7 +66,7 @@ nodes:
       video_codec: av1
     needs:
       in: pacer
-      in_1: av1_encoder_src
+      in_1: svt_av1_encoder_src
 
   # --- Subscribe side: receive both tracks from relay ---
 

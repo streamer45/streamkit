@@ -6,7 +6,7 @@ name: Webcam PiP – dav1d AV1 Decode (MoQ Stream)
 description: >
   Composites the user's webcam as picture-in-picture over colorbars with a
   text overlay, loops audio through a gain filter, decodes AV1 using the C
-  dav1d decoder (instead of rav1d), re-encodes video as AV1 (rav1e) at
+  dav1d decoder (instead of rav1d), re-encodes video as AV1 (SVT-AV1) at
   1280x720, and streams both via MoQ.
 
   This is the same pipeline as video_moq_webcam_av1_pip.yml but uses the
@@ -135,9 +135,10 @@ nodes:
     needs: compositor
 
   av1_encoder:
-    kind: video::av1::encoder
+    kind: video::svt_av1::encoder
     params:
-      speed: 10
+      preset: 12
+      crf: 35
       low_latency: true
       keyframe_interval: 30
     needs: pixel_convert

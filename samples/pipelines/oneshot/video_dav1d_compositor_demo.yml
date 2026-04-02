@@ -9,12 +9,12 @@
 #   3. A text overlay ("StreamKit dav1d Demo")
 #   4. The StreamKit logo as a semi-transparent watermark
 #
-# The pipeline encodes to AV1 (rav1e), decodes via C dav1d, re-encodes, and
+# The pipeline encodes to AV1 (SVT-AV1), decodes via C dav1d, re-encodes, and
 # streams via http_output.  This exercises the full dav1d round-trip in a
 # self-contained oneshot pipeline (no relay or browser needed).
 
 name: Video Compositor Demo (dav1d AV1)
-description: Composites two colorbars sources (main + PiP) with a text overlay and logo watermark, encodes to AV1 (rav1e), decodes with C dav1d, re-encodes, and streams a WebM via http_output (3 seconds)
+description: Composites two colorbars sources (main + PiP) with a text overlay and logo watermark, encodes to AV1 (SVT-AV1), decodes with C dav1d, re-encodes, and streams a WebM via http_output (3 seconds)
 mode: oneshot
 client:
   input:
@@ -98,23 +98,25 @@ nodes:
       output_format: nv12
     needs: compositor
 
-  # Encode to AV1 (rav1e), then decode with dav1d to exercise the round-trip.
-  av1_encoder:
-    kind: video::av1::encoder
+  # Encode to AV1 (SVT-AV1), then decode with dav1d to exercise the round-trip.
+  svt_av1_encoder:
+    kind: video::svt_av1::encoder
     params:
-      speed: 10
+      preset: 12
+      crf: 35
       low_latency: true
     needs: pixel_convert
 
   dav1d_decoder:
     kind: video::dav1d::decoder
-    needs: av1_encoder
+    needs: svt_av1_encoder
 
   # Re-encode the dav1d output for the WebM muxer.
-  av1_reencoder:
-    kind: video::av1::encoder
+  svt_av1_reencoder:
+    kind: video::svt_av1::encoder
     params:
-      speed: 10
+      preset: 12
+      crf: 35
       low_latency: true
     needs: dav1d_decoder
 
@@ -124,7 +126,7 @@ nodes:
       video_width: 1280
       video_height: 720
       streaming_mode: live
-    needs: av1_reencoder
+    needs: svt_av1_reencoder
 
   pacer:
     kind: core::pacer

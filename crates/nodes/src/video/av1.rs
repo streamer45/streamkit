@@ -784,6 +784,17 @@ fn copy_dav1d_picture(
         ));
     }
 
+    // Reject non-8-bit content.  rav1d is compiled with `bitdepth_16` so it
+    // *can* decode 10-bit AV1, but the I420→NV12 copy below treats every
+    // sample as a single byte.  Feeding higher bit-depth data would produce
+    // silently corrupted output.
+    if pic.p.bpc != 8 {
+        return Err(format!(
+            "AV1 decoder produced {}-bit content, but only 8-bit is supported",
+            pic.p.bpc,
+        ));
+    }
+
     let width = pic.p.w;
     let height = pic.p.h;
     if width <= 0 || height <= 0 {
