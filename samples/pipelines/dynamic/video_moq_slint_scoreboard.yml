@@ -1,0 +1,119 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Demonstrates Slint overlays (scoreboard + lower third) composited onto
+# colorbars and streamed via MoQ, with runtime property updates.
+#
+# Each Slint overlay is a standalone video::slint source node whose output
+# is wired into the compositor as a regular video layer.
+#
+# Requires: cargo build --features slint
+#
+# After starting the pipeline, update properties at runtime:
+#
+#   curl -X POST http://localhost:4545/api/v1/sessions/<id>/nodes/scoreboard/update \
+#     -H 'Content-Type: application/json' \
+#     -d '{
+#       "properties": {
+#         "home_score": 4,
+#         "clock_start": 2147,
+#         "period": "2ND"
+#       }
+#     }'
+
+name: Video Slint Scoreboard + Lower Third (MoQ)
+description: Composites colorbars with Slint scoreboard and lower-third overlays, streams via MoQ with runtime property updates
+mode: dynamic
+client:
+  gateway_path: /moq/video
+  watch:
+    broadcast: output
+    audio: false
+    video: true
+
+nodes:
+  colorbars_bg:
+    kind: video::colorbars
+    params:
+      width: 1280
+      height: 720
+      fps: 30
+      pixel_format: rgba8
+      draw_time: true
+
+  scoreboard:
+    kind: video::slint
+    params:
+      width: 420
+      height: 80
+      fps: 30
+      slint_file: samples/slint/scoreboard.slint
+      properties:
+        home_team: "EAGLES"
+        away_team: "HAWKS"
+        home_score: 3
+        away_score: 1
+        clock_start: 754
+        period: "2ND"
+
+  lower_third:
+    kind: video::slint
+    params:
+      width: 350
+      height: 70
+      fps: 30
+      slint_file: samples/slint/lower_third.slint
+      properties:
+        name: "Alex Johnson"
+        title: "Forward · #17"
+        visible: true
+
+  compositor:
+    kind: video::compositor
+    params:
+      width: 1280
+      height: 720
+      num_inputs: 3
+      layers:
+        in_0:
+          opacity: 1.0
+          z_index: 0
+        in_1:
+          rect:
+            x: 430
+            y: 20
+            width: 420
+            height: 80
+          opacity: 1.0
+          z_index: 10
+        in_2:
+          rect:
+            x: 50
+            y: 600
+            width: 350
+            height: 70
+          opacity: 1.0
+          z_index: 11
+    needs:
+      - colorbars_bg
+      - scoreboard
+      - lower_third
+
+  pixel_convert:
+    kind: video::pixel_convert
+    params:
+      output_format: nv12
+    needs: compositor
+
+  vp9_encoder:
+    kind: video::vp9::encoder
+    needs: pixel_convert
+
+  moq_peer:
+    kind: transport::moq::peer
+    params:
+      gateway_path: /moq/video
+      output_broadcast: output
+      allow_reconnect: true
+    needs: vp9_encoder

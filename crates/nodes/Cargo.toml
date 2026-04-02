@@ -91,6 +91,11 @@ wgpu = { version = "29", optional = true, default-features = false, features = [
 pollster = { version = "0.4", optional = true }
 bytemuck = { version = "1.22", optional = true, features = ["derive"] }
 
+# Slint UI rendering (optional, behind `slint` feature)
+slint = { version = "1.15", optional = true, default-features = false, features = ["renderer-software", "compat-1-2"] }
+slint-interpreter = { version = "1.15", optional = true }
+spin_on = { version = "0.1", optional = true }
+
 futures-util = "0.3"
 
 [features]
@@ -151,6 +156,7 @@ dav1d_static = ["dav1d"]
 colorbars = ["dep:schemars", "dep:serde_json", "dep:fontdue"]
 compositor = ["dep:schemars", "dep:serde_json", "dep:image", "dep:tiny-skia", "dep:rayon", "dep:fontdue", "dep:smallvec", "dep:uuid"]
 gpu = ["compositor", "dep:wgpu", "dep:pollster", "dep:bytemuck"]
+slint = ["dep:slint", "dep:slint-interpreter", "dep:spin_on", "dep:schemars", "dep:serde_json", "dep:uuid"]
 codegen = ["dep:ts-rs"]
 video = ["vp9", "av1", "colorbars", "compositor"]
 

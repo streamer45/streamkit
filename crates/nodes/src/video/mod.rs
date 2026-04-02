@@ -245,6 +245,9 @@ pub mod dav1d;
 #[cfg(feature = "dav1d")]
 pub mod dav1d_ffi;
 
+#[cfg(feature = "slint")]
+pub mod slint;
+
 #[cfg(any(feature = "colorbars", feature = "compositor"))]
 pub(crate) mod fonts;
 
@@ -569,4 +572,7 @@ pub fn register_video_nodes(registry: &mut NodeRegistry, constraints: &GlobalNod
 
     #[cfg(feature = "dav1d")]
     dav1d::register_dav1d_nodes(registry);
+
+    #[cfg(feature = "slint")]
+    slint::register_slint_nodes(registry);
 }

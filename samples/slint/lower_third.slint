@@ -1,0 +1,66 @@
+// SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+//
+// SPDX-License-Identifier: MPL-2.0
+
+// Broadcast lower-third overlay with a slide-in animation.
+//
+// Set `visible` to `true` to slide in, `false` to slide out.
+// Properties can be updated at runtime via UpdateParams JSON:
+//   name, title, visible
+
+export component LowerThird inherits Window {
+    in property <string> name: "Player Name";
+    in property <string> title: "Position";
+    in property <bool> visible: true;
+
+    width: 350px;
+    height: 70px;
+    clip: true;
+    background: transparent;
+
+    // Content container that slides in/out.
+    Rectangle {
+        x: root.visible ? 0px : -360px;
+        y: 0px;
+        width: 350px;
+        height: 70px;
+        animate x { duration: 400ms; easing: ease-out; }
+
+        // Accent bar (left edge)
+        Rectangle {
+            x: 0px;
+            y: 0px;
+            width: 5px;
+            height: 70px;
+            background: #e63946;
+        }
+
+        // Background panel
+        Rectangle {
+            x: 5px;
+            y: 0px;
+            width: 345px;
+            height: 70px;
+            background: #1d3557e6;
+
+            VerticalLayout {
+                padding-left: 14px;
+                padding-top: 10px;
+                padding-bottom: 10px;
+                spacing: 4px;
+
+                Text {
+                    text: root.name;
+                    color: #ffffff;
+                    font-size: 20px;
+                    font-weight: 700;
+                }
+                Text {
+                    text: root.title;
+                    color: #a8dadc;
+                    font-size: 14px;
+                }
+            }
+        }
+    }
+}
