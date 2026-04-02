@@ -275,14 +275,17 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
                             config.slint_file
                         );
                         let _ = result_tx.blocking_send(SlintThreadResult::InitOk);
-                        nodes.insert(node_id, NodeState {
-                            instance,
-                            config,
-                            result_tx,
-                            cached_frame: None,
-                            cached_keyframe_idx: None,
-                            dirty: true,
-                        });
+                        nodes.insert(
+                            node_id,
+                            NodeState {
+                                instance,
+                                config,
+                                result_tx,
+                                cached_frame: None,
+                                cached_keyframe_idx: None,
+                                dirty: true,
+                            },
+                        );
                     },
                     Err(e) => {
                         tracing::error!("Failed to create Slint instance '{}': {e}", node_id);
@@ -305,8 +308,9 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
 
                     // Re-render only when properties have actually changed:
                     // config update (dirty flag) or keyframe boundary.
-                    let need_render =
-                        state.dirty || state.cached_keyframe_idx != kf_idx || state.cached_frame.is_none();
+                    let need_render = state.dirty
+                        || state.cached_keyframe_idx != kf_idx
+                        || state.cached_frame.is_none();
 
                     let rgba_data = if need_render {
                         let data = render_slint_frame(&mut state.instance, &state.config);
@@ -317,8 +321,7 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
                     } else {
                         // Advance frame counter even when reusing the cache so
                         // keyframe boundaries are detected at the right time.
-                        state.instance.frame_counter =
-                            state.instance.frame_counter.wrapping_add(1);
+                        state.instance.frame_counter = state.instance.frame_counter.wrapping_add(1);
                         // SAFETY: need_render is false only when cached_frame is Some.
                         state.cached_frame.clone().unwrap_or_default()
                     };
