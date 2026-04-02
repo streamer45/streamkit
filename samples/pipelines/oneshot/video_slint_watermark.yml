@@ -38,8 +38,8 @@ nodes:
   watermark:
     kind: video::slint
     params:
-      width: 200
-      height: 50
+      width: 180
+      height: 44
       fps: 30
       frame_count: 300
       slint_file: samples/slint/watermark.slint
@@ -59,10 +59,10 @@ nodes:
           z_index: 0
         in_1:
           rect:
-            x: 1060
+            x: 1080
             y: 20
-            width: 200
-            height: 50
+            width: 180
+            height: 44
           opacity: 0.9
           z_index: 10
     needs:

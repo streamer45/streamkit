@@ -10,47 +10,51 @@
 
 export component Watermark inherits Window {
     in property <string> channel: "StreamKit";
-    in property <string> tagline: "Live";
+    in property <string> tagline: "LIVE";
 
-    width: 200px;
-    height: 50px;
+    width: 180px;
+    height: 44px;
     background: transparent;
 
     Rectangle {
         width: 100%;
         height: 100%;
-        border-radius: 6px;
-        background: #000000aa;
+        border-radius: 8px;
+        background: #00000099;
 
         HorizontalLayout {
-            padding-left: 12px;
-            padding-right: 12px;
-            spacing: 8px;
-            alignment: center;
+            padding-left: 14px;
+            padding-right: 14px;
+            spacing: 10px;
 
-            // Accent dot (live indicator)
-            Rectangle {
-                width: 10px;
-                height: 10px;
-                border-radius: 5px;
-                background: #e63946;
+            // Centre the accent dot vertically within the row.
+            VerticalLayout {
+                alignment: center;
+
+                Rectangle {
+                    width: 8px;
+                    height: 8px;
+                    border-radius: 4px;
+                    background: #e63946;
+                }
             }
 
             VerticalLayout {
                 alignment: center;
-                spacing: 1px;
+                spacing: 2px;
 
                 Text {
                     text: root.channel;
                     color: #ffffff;
-                    font-size: 16px;
+                    font-size: 14px;
                     font-weight: 700;
                 }
                 Text {
                     text: root.tagline;
-                    color: #a0a0a0;
-                    font-size: 11px;
-                    letter-spacing: 1.5px;
+                    color: #ffffffb3;
+                    font-size: 10px;
+                    font-weight: 600;
+                    letter-spacing: 2px;
                 }
             }
         }
