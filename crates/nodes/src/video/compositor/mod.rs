@@ -878,6 +878,13 @@ impl ProcessorNode for CompositorNode {
 
                             // Forward Slint overlay config updates to the
                             // compositing thread (property changes only).
+                            // Note: UpdateParams that omit `slint_overlays`
+                            // deserialise as `[]` (via serde default).  We
+                            // intentionally skip forwarding an empty list so
+                            // the compositing thread keeps rendering the
+                            // overlays created at init — Slint instances
+                            // cannot be dynamically added/removed, only
+                            // property-updated.
                             #[cfg(feature = "slint_overlay")]
                             if !self.config.slint_overlays.is_empty() {
                                 pending_slint_configs =
@@ -1088,7 +1095,7 @@ impl ProcessorNode for CompositorNode {
                 clear_conversion_cache,
                 output_format: self.output_format,
                 #[cfg(feature = "slint_overlay")]
-                slint_overlay_configs: pending_slint_configs.take(),
+                slint_overlay_configs: pending_slint_configs.clone(),
             };
 
             // Send work to the compositing thread.  The work channel has
@@ -1100,6 +1107,11 @@ impl ProcessorNode for CompositorNode {
                 Ok(()) => {
                     // Cache clear was successfully delivered — reset the flag.
                     clear_conversion_cache = false;
+                    // Slint config update was delivered — clear the pending state.
+                    #[cfg(feature = "slint_overlay")]
+                    {
+                        pending_slint_configs = None;
+                    }
                 },
                 Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                     // Compositing thread is still busy — skip this frame.

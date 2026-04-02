@@ -152,6 +152,7 @@ svt_av1 = ["streamkit-nodes/svt_av1"]
 svt_av1_static = ["streamkit-nodes/svt_av1_static"]
 dav1d = ["streamkit-nodes/dav1d"]
 dav1d_static = ["streamkit-nodes/dav1d_static"]
+slint_overlay = ["compositor", "streamkit-nodes/slint_overlay"]
 
 [dev-dependencies]
 tokio-test = "0.4.5"

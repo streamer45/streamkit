@@ -95,7 +95,7 @@ pub fn create_slint_overlay(
         })?
     } else {
         // Use the first exported component.
-        result.components().into_iter().next().ok_or_else(|| {
+        result.components().next().ok_or_else(|| {
             StreamKitError::Configuration(format!(
                 "Slint overlay '{}': no exported components in '{}'",
                 config.id, config.slint_file
@@ -104,11 +104,11 @@ pub fn create_slint_overlay(
     };
 
     // Create the minimal software window.
+    // Overlay dimensions are bounded by max_canvas_dimension (default 7680),
+    // so the u32→f32 precision loss above ~16M is irrelevant here.
     let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
-    window.set_size(LogicalSize::new(
-        f32::from(width as u16).max(1.0),
-        f32::from(height as u16).max(1.0),
-    ));
+    #[allow(clippy::cast_precision_loss)]
+    window.set_size(LogicalSize::new((width as f32).max(1.0), (height as f32).max(1.0)));
 
     // Set as the Slint platform backend for this thread.
     // This may fail if already set (e.g. multiple overlays), which is fine.
@@ -202,17 +202,13 @@ fn json_to_slint_value(json: &serde_json::Value) -> Value {
     match json {
         serde_json::Value::String(s) => Value::String(SharedString::from(s.as_str())),
         serde_json::Value::Bool(b) => Value::Bool(*b),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                // Slint uses i32 for integer properties.
-                #[allow(clippy::cast_possible_truncation)]
-                Value::Number(i as f64)
-            } else if let Some(f) = n.as_f64() {
-                Value::Number(f)
-            } else {
-                Value::Number(0.0)
-            }
-        },
+        // Slint's Value::Number takes f64.  JSON integers arrive as i64;
+        // the i64→f64 cast may lose precision for values > 2^52, which is
+        // acceptable for UI property values (scores, counters, etc.).
+        #[allow(clippy::cast_precision_loss)]
+        serde_json::Value::Number(n) => n
+            .as_i64()
+            .map_or_else(|| Value::Number(n.as_f64().unwrap_or(0.0)), |i| Value::Number(i as f64)),
         _ => Value::Void,
     }
 }
@@ -221,6 +217,11 @@ fn json_to_slint_value(json: &serde_json::Value) -> Value {
 ///
 /// `DecodedOverlay` expects straight (non-premultiplied) RGBA8 data, so we
 /// reverse the premultiplication that Slint's software renderer applies.
+///
+/// The `as u8` casts below are safe: for premultiplied data the invariant
+/// `channel <= alpha` holds, so `channel * 255 / alpha <= 255` — always
+/// fits in a `u8`.
+#[allow(clippy::cast_possible_truncation)]
 fn premultiplied_to_straight_rgba(pixels: &[PremultipliedRgbaColor]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(pixels.len() * 4);
     for px in pixels {
