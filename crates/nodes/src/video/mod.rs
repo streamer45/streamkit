@@ -201,16 +201,13 @@ pub(super) fn i420_to_nv12(
 
     // Guard against corrupted bitstreams producing unexpected dimensions.
     if chroma_stride < chroma_w {
-        return Err(format!(
-            "Chroma plane stride ({chroma_stride}) < chroma width ({chroma_w})"
-        ));
+        return Err(format!("Chroma plane stride ({chroma_stride}) < chroma width ({chroma_w})"));
     }
     // Verify the total range we will access fits within the expected allocation
     // (stride × height).
     debug_assert!(
         chroma_h == 0
-            || (chroma_h - 1) * chroma_stride + chroma_w
-                <= chroma_stride.saturating_mul(chroma_h),
+            || (chroma_h - 1) * chroma_stride + chroma_w <= chroma_stride.saturating_mul(chroma_h),
         "Chroma plane read would exceed expected allocation"
     );
 
