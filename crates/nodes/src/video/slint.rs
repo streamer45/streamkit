@@ -252,6 +252,13 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
         instance: SlintInstance,
         config: SlintConfig,
         result_tx: tokio::sync::mpsc::Sender<SlintThreadResult>,
+        /// Cached straight-alpha RGBA8 output from the last render.
+        /// Re-used when properties have not changed between frames.
+        cached_frame: Option<Vec<u8>>,
+        /// Keyframe index that produced `cached_frame`.
+        cached_keyframe_idx: Option<usize>,
+        /// Set by `UpdateConfig` to force a re-render on the next frame.
+        dirty: bool,
     }
 
     let mut nodes: HashMap<NodeId, NodeState> = HashMap::new();
@@ -268,7 +275,14 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
                             config.slint_file
                         );
                         let _ = result_tx.blocking_send(SlintThreadResult::InitOk);
-                        nodes.insert(node_id, NodeState { instance, config, result_tx });
+                        nodes.insert(node_id, NodeState {
+                            instance,
+                            config,
+                            result_tx,
+                            cached_frame: None,
+                            cached_keyframe_idx: None,
+                            dirty: true,
+                        });
                     },
                     Err(e) => {
                         tracing::error!("Failed to create Slint instance '{}': {e}", node_id);
@@ -278,7 +292,37 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
             },
             SlintWorkItem::Render { node_id } => {
                 if let Some(state) = nodes.get_mut(&node_id) {
-                    let rgba_data = render_slint_frame(&mut state.instance, &state.config);
+                    // Determine the current keyframe index (if keyframes are configured).
+                    let kf_idx = if state.config.property_keyframes.is_empty() {
+                        None
+                    } else {
+                        let interval = state.config.keyframe_interval.max(1);
+                        Some(
+                            (state.instance.frame_counter / interval) as usize
+                                % state.config.property_keyframes.len(),
+                        )
+                    };
+
+                    // Re-render only when properties have actually changed:
+                    // config update (dirty flag) or keyframe boundary.
+                    let need_render =
+                        state.dirty || state.cached_keyframe_idx != kf_idx || state.cached_frame.is_none();
+
+                    let rgba_data = if need_render {
+                        let data = render_slint_frame(&mut state.instance, &state.config);
+                        state.cached_frame = Some(data.clone());
+                        state.cached_keyframe_idx = kf_idx;
+                        state.dirty = false;
+                        data
+                    } else {
+                        // Advance frame counter even when reusing the cache so
+                        // keyframe boundaries are detected at the right time.
+                        state.instance.frame_counter =
+                            state.instance.frame_counter.wrapping_add(1);
+                        // SAFETY: need_render is false only when cached_frame is Some.
+                        state.cached_frame.clone().unwrap_or_default()
+                    };
+
                     // If the result channel is closed the node has been dropped;
                     // clean up its state on the next Unregister (or here eagerly).
                     if state
@@ -293,6 +337,7 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
             SlintWorkItem::UpdateConfig { node_id, config } => {
                 if let Some(state) = nodes.get_mut(&node_id) {
                     state.config = config;
+                    state.dirty = true;
                 }
             },
             SlintWorkItem::Unregister { node_id } => {
