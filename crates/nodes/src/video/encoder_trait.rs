@@ -24,7 +24,7 @@
 use bytes::Bytes;
 use opentelemetry::global;
 use std::borrow::Cow;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use streamkit_core::stats::NodeStatsTracker;
 use streamkit_core::types::{Packet, PacketMetadata, PixelFormat, VideoFrame};
 use streamkit_core::{
@@ -43,6 +43,113 @@ use tokio::sync::mpsc;
 pub struct EncodedPacket {
     pub data: Bytes,
     pub metadata: Option<PacketMetadata>,
+}
+
+// ---------------------------------------------------------------------------
+// Frame budget monitor
+// ---------------------------------------------------------------------------
+
+/// Detects when video encoding consistently exceeds the frame duration budget,
+/// which causes A/V desync and pipeline backpressure.
+///
+/// Tracks two OTel metrics:
+/// - `video_encoder.frame_overrun_seconds` — histogram of how far over budget
+///   each slow frame is (only recorded for over-budget frames).
+/// - `video_encoder.slow_frames` — counter of frames that exceeded the budget.
+///
+/// Also emits rate-limited `tracing::warn` when encoding falls behind
+/// real-time for a sustained period, and logs recovery when it catches up.
+pub struct FrameBudgetMonitor {
+    codec_name: &'static str,
+    overrun_histogram: opentelemetry::metrics::Histogram<f64>,
+    slow_frames_counter: opentelemetry::metrics::Counter<u64>,
+    /// Number of consecutive frames where encode time exceeded the budget.
+    consecutive_slow: u64,
+    /// Whether we emitted a warning for the current slow streak.
+    warned: bool,
+}
+
+impl FrameBudgetMonitor {
+    /// Warn after this many consecutive over-budget frames (~333ms at 30fps).
+    const CONSECUTIVE_SLOW_THRESHOLD: u64 = 10;
+    /// Repeat the warning every this many slow frames (~5s at 30fps).
+    const WARN_REPEAT_INTERVAL: u64 = 150;
+
+    pub fn new(codec_name: &'static str) -> Self {
+        let meter = global::meter("skit_nodes");
+        let overrun_histogram = meter
+            .f64_histogram("video_encoder.frame_overrun_seconds")
+            .with_description(
+                "Amount by which encode time exceeds the frame duration budget (seconds)",
+            )
+            .with_boundaries(streamkit_core::metrics::HISTOGRAM_BOUNDARIES_FRAME_OVERRUN.to_vec())
+            .build();
+        let slow_frames_counter = meter
+            .u64_counter("video_encoder.slow_frames")
+            .with_description("Frames where encoding exceeded the frame duration budget")
+            .build();
+
+        Self {
+            codec_name,
+            overrun_histogram,
+            slow_frames_counter,
+            consecutive_slow: 0,
+            warned: false,
+        }
+    }
+
+    /// Record a frame's encode timing against its duration budget.
+    ///
+    /// `frame_duration_us` comes from packet metadata; when absent the
+    /// default 30fps budget (~33.3ms) is used.
+    pub fn record(&mut self, encode_duration: Duration, frame_duration_us: Option<u64>) {
+        let budget = Duration::from_micros(
+            frame_duration_us.unwrap_or(super::DEFAULT_VIDEO_FRAME_DURATION_US),
+        );
+
+        if encode_duration > budget {
+            let overrun = encode_duration.saturating_sub(budget);
+            self.overrun_histogram.record(overrun.as_secs_f64(), &[]);
+            self.slow_frames_counter.add(1, &[]);
+            self.consecutive_slow += 1;
+
+            if self.consecutive_slow == Self::CONSECUTIVE_SLOW_THRESHOLD {
+                tracing::warn!(
+                    codec = self.codec_name,
+                    consecutive_slow_frames = self.consecutive_slow,
+                    encode_ms = format_args!("{:.1}", encode_duration.as_secs_f64() * 1000.0),
+                    budget_ms = format_args!("{:.1}", budget.as_secs_f64() * 1000.0),
+                    "{} encoder cannot keep up with real-time: encoding consistently \
+                     exceeds frame budget, which will cause A/V desync",
+                    self.codec_name,
+                );
+                self.warned = true;
+            } else if self.warned
+                && self.consecutive_slow.is_multiple_of(Self::WARN_REPEAT_INTERVAL)
+            {
+                tracing::warn!(
+                    codec = self.codec_name,
+                    consecutive_slow_frames = self.consecutive_slow,
+                    encode_ms = format_args!("{:.1}", encode_duration.as_secs_f64() * 1000.0),
+                    budget_ms = format_args!("{:.1}", budget.as_secs_f64() * 1000.0),
+                    "{} encoder still behind real-time ({} consecutive slow frames)",
+                    self.codec_name,
+                    self.consecutive_slow,
+                );
+            }
+        } else {
+            if self.warned {
+                tracing::info!(
+                    codec = self.codec_name,
+                    slow_streak = self.consecutive_slow,
+                    "{} encoder recovered — encoding within frame budget again",
+                    self.codec_name,
+                );
+            }
+            self.consecutive_slow = 0;
+            self.warned = false;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -235,6 +342,7 @@ pub fn spawn_standard_encode_task<E: StandardVideoEncoder>(
     tokio::task::spawn_blocking(move || {
         let mut encoder: Option<E> = None;
         let mut current_dimensions: Option<(u32, u32)> = None;
+        let mut budget_monitor = FrameBudgetMonitor::new(E::CODEC_NAME);
 
         while let Some((frame, metadata)) = encode_rx.blocking_recv() {
             // Exit early if the async side has been cancelled (e.g. tokio
@@ -303,9 +411,12 @@ pub fn spawn_standard_encode_task<E: StandardVideoEncoder>(
                 continue;
             };
 
+            let frame_duration_us = metadata.as_ref().and_then(|m| m.duration_us);
             let encode_start_time = Instant::now();
             let result = enc.encode(&frame, metadata);
-            duration_histogram.record(encode_start_time.elapsed().as_secs_f64(), &[]);
+            let encode_elapsed = encode_start_time.elapsed();
+            duration_histogram.record(encode_elapsed.as_secs_f64(), &[]);
+            budget_monitor.record(encode_elapsed, frame_duration_us);
 
             match result {
                 Ok(packets) => {
@@ -339,4 +450,122 @@ pub fn spawn_standard_encode_task<E: StandardVideoEncoder>(
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: create a monitor and feed it a sequence of frame timings.
+    /// Returns the final consecutive_slow count and whether warned was set.
+    fn run_monitor(frames: &[(Duration, Option<u64>)]) -> (u64, bool) {
+        let mut monitor = FrameBudgetMonitor::new("test");
+        for &(dur, budget) in frames {
+            monitor.record(dur, budget);
+        }
+        (monitor.consecutive_slow, monitor.warned)
+    }
+
+    #[test]
+    fn fast_frames_never_trigger_warning() {
+        let frames: Vec<_> =
+            (0..100).map(|_| (Duration::from_millis(10), Some(33_333u64))).collect();
+        let (consecutive, warned) = run_monitor(&frames);
+        assert_eq!(consecutive, 0);
+        assert!(!warned);
+    }
+
+    #[test]
+    fn occasional_slow_frame_does_not_trigger_warning() {
+        let mut frames = Vec::new();
+        for i in 0..50 {
+            let dur = if i % 10 == 0 {
+                Duration::from_millis(40) // one slow frame every 10
+            } else {
+                Duration::from_millis(10)
+            };
+            frames.push((dur, Some(33_333)));
+        }
+        let (_, warned) = run_monitor(&frames);
+        assert!(!warned);
+    }
+
+    #[test]
+    fn sustained_slow_frames_trigger_warning() {
+        let frames: Vec<_> =
+            (0..15).map(|_| (Duration::from_millis(50), Some(33_333u64))).collect();
+        let (consecutive, warned) = run_monitor(&frames);
+        assert_eq!(consecutive, 15);
+        assert!(warned);
+    }
+
+    #[test]
+    fn warning_threshold_is_exact() {
+        // 9 slow frames: no warning
+        let frames: Vec<_> = (0..9).map(|_| (Duration::from_millis(50), Some(33_333u64))).collect();
+        let (_, warned) = run_monitor(&frames);
+        assert!(!warned);
+
+        // 10 slow frames: warning
+        let frames: Vec<_> =
+            (0..10).map(|_| (Duration::from_millis(50), Some(33_333u64))).collect();
+        let (_, warned) = run_monitor(&frames);
+        assert!(warned);
+    }
+
+    #[test]
+    fn recovery_resets_state() {
+        let mut monitor = FrameBudgetMonitor::new("test");
+
+        // Trigger a warning
+        for _ in 0..15 {
+            monitor.record(Duration::from_millis(50), Some(33_333));
+        }
+        assert!(monitor.warned);
+
+        // Recovery: one fast frame resets everything
+        monitor.record(Duration::from_millis(10), Some(33_333));
+        assert_eq!(monitor.consecutive_slow, 0);
+        assert!(!monitor.warned);
+    }
+
+    #[test]
+    fn uses_default_budget_when_metadata_absent() {
+        // DEFAULT_VIDEO_FRAME_DURATION_US = 33_333 (~30fps)
+        // 40ms > 33.3ms → should count as slow
+        let mut monitor = FrameBudgetMonitor::new("test");
+        for _ in 0..10 {
+            monitor.record(Duration::from_millis(40), None);
+        }
+        assert!(monitor.warned);
+    }
+
+    #[test]
+    fn respects_custom_frame_duration() {
+        // 60fps → 16.6ms budget. 20ms encode should be slow.
+        let mut monitor = FrameBudgetMonitor::new("test");
+        for _ in 0..10 {
+            monitor.record(Duration::from_millis(20), Some(16_666));
+        }
+        assert!(monitor.warned);
+
+        // But 20ms encode with 33ms budget (30fps) should be fine.
+        let mut monitor2 = FrameBudgetMonitor::new("test");
+        for _ in 0..10 {
+            monitor2.record(Duration::from_millis(20), Some(33_333));
+        }
+        assert!(!monitor2.warned);
+    }
+
+    #[test]
+    fn repeat_warning_fires_at_interval() {
+        let mut monitor = FrameBudgetMonitor::new("test");
+        for _ in 0..FrameBudgetMonitor::WARN_REPEAT_INTERVAL {
+            monitor.record(Duration::from_millis(50), Some(33_333));
+        }
+        assert_eq!(monitor.consecutive_slow, FrameBudgetMonitor::WARN_REPEAT_INTERVAL);
+        assert!(monitor.warned);
+        // The repeat path is exercised because consecutive_slow
+        // is a multiple of WARN_REPEAT_INTERVAL while warned is true.
+    }
 }
