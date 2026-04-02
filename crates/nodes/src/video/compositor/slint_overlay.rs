@@ -38,6 +38,7 @@ use streamkit_core::StreamKitError;
 pub struct SlintOverlayInstance {
     window: Rc<MinimalSoftwareWindow>,
     component: ComponentInstance,
+    // Kept alive to prevent the compiled Slint component definition from being dropped.
     #[allow(dead_code)]
     definition: ComponentDefinition,
     buffer: Vec<PremultipliedRgbaColor>,
