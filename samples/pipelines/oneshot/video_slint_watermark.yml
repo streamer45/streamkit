@@ -2,28 +2,99 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-# Renders a static Slint watermark overlay as a standalone video source.
+# Demonstrates a Slint watermark composited onto colorbars.
 #
-# This is a minimal example that demonstrates the Slint plugin producing
-# RGBA8 frames from a `.slint` file.  The `static_ui: true` flag caches
-# the rendered frame so re-renders are skipped when properties don't change.
+# The watermark is a standalone plugin::native::slint source node that renders
+# RGBA8 frames via the slint-interpreter software renderer.  Its output
+# is wired into the compositor as a regular video layer — no special
+# integration in the compositor itself.
 #
 # Requires: plugin::native::slint loaded
-#   just build-plugin-native-slint && just upload-slint-plugin
+#   just build-plugin-native-slint && just copy-plugins-native
+#
+# For runtime property updates see the dynamic/video_moq_slint_scoreboard.yml
+# pipeline which uses the scoreboard overlay in real-time mode.
 
-name: Video Slint Watermark
-description: Renders a Slint watermark overlay as a video source (10 frames)
+name: Video Slint Watermark (Oneshot)
+description: Composites colorbars with a Slint watermark overlay, encodes to VP9, and streams a WebM via http_output
 mode: oneshot
-steps:
-  - kind: plugin::native::slint
+client:
+  input:
+    type: none
+  output:
+    type: video
+
+nodes:
+  colorbars_bg:
+    kind: video::colorbars
     params:
-      slint_file: "samples/slint/watermark.slint"
+      width: 1280
+      height: 720
+      fps: 30
+      frame_count: 300
+      pixel_format: rgba8
+      draw_time: true
+      draw_time_use_pts: true
+
+  watermark:
+    kind: plugin::native::slint
+    params:
       width: 180
       height: 44
       fps: 30
-      frame_count: 10
+      frame_count: 300
+      slint_file: samples/slint/watermark.slint
       static_ui: true
       properties:
         channel: "StreamKit"
         tagline: "LIVE"
-  - kind: streamkit::http_output
+
+  compositor:
+    kind: video::compositor
+    params:
+      width: 1280
+      height: 720
+      num_inputs: 2
+      layers:
+        in_0:
+          opacity: 1.0
+          z_index: 0
+        in_1:
+          rect:
+            x: 1080
+            y: 20
+            width: 180
+            height: 44
+          opacity: 0.9
+          z_index: 10
+    needs:
+      - colorbars_bg
+      - watermark
+
+  pixel_convert:
+    kind: video::pixel_convert
+    params:
+      output_format: nv12
+    needs: compositor
+
+  vp9_encoder:
+    kind: video::vp9::encoder
+    needs: pixel_convert
+
+  webm_muxer:
+    kind: containers::webm::muxer
+    params:
+      video_width: 1280
+      video_height: 720
+      streaming_mode: live
+    needs: vp9_encoder
+
+  pacer:
+    kind: core::pacer
+    needs: webm_muxer
+
+  http_output:
+    kind: streamkit::http_output
+    params:
+      content_type: 'video/webm; codecs="vp9"'
+    needs: pacer

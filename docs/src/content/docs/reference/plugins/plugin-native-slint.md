@@ -38,27 +38,90 @@ Source: `target/plugins/release/libslint_plugin.so`
 
 ## Example Pipeline
 
+Composites a Slint watermark overlay onto colorbars and streams as WebM:
+
 ```yaml
-name: Slint Watermark
-description: Renders a Slint UI overlay as a video source
+name: Video Slint Watermark (Oneshot)
+description: Composites colorbars with a Slint watermark overlay
 mode: oneshot
-steps:
-  - kind: plugin::native::slint
+client:
+  input:
+    type: none
+  output:
+    type: video
+
+nodes:
+  colorbars_bg:
+    kind: video::colorbars
     params:
-      slint_file: "samples/slint/watermark.slint"
       width: 1280
       height: 720
       fps: 30
+      frame_count: 300
+      pixel_format: rgba8
+
+  watermark:
+    kind: plugin::native::slint
+    params:
+      width: 180
+      height: 44
+      fps: 30
+      frame_count: 300
+      slint_file: samples/slint/watermark.slint
       static_ui: true
       properties:
-        text: "StreamKit Live"
-  - kind: video::vp9::encoder
+        channel: "StreamKit"
+        tagline: "LIVE"
+
+  compositor:
+    kind: video::compositor
     params:
-      bitrate_kbps: 2000
-  - kind: containers::webm::muxer
+      width: 1280
+      height: 720
+      num_inputs: 2
+      layers:
+        in_0:
+          opacity: 1.0
+          z_index: 0
+        in_1:
+          rect:
+            x: 1080
+            y: 20
+            width: 180
+            height: 44
+          opacity: 0.9
+          z_index: 10
+    needs:
+      - colorbars_bg
+      - watermark
+
+  pixel_convert:
+    kind: video::pixel_convert
     params:
+      output_format: nv12
+    needs: compositor
+
+  vp9_encoder:
+    kind: video::vp9::encoder
+    needs: pixel_convert
+
+  webm_muxer:
+    kind: containers::webm::muxer
+    params:
+      video_width: 1280
+      video_height: 720
       streaming_mode: live
-  - kind: streamkit::http_output
+    needs: vp9_encoder
+
+  pacer:
+    kind: core::pacer
+    needs: webm_muxer
+
+  http_output:
+    kind: streamkit::http_output
+    params:
+      content_type: 'video/webm; codecs="vp9"'
+    needs: pacer
 ```
 
 
