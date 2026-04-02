@@ -87,6 +87,7 @@ pub struct SlintConfig {
     #[serde(default = "default_fps")]
     pub fps: u32,
     /// Path to the `.slint` file (must start with `samples/slint/`).
+    #[serde(default)]
     pub slint_file: String,
     /// Name of the exported component to instantiate.  When omitted, the
     /// first exported component in the file is used.
@@ -167,7 +168,9 @@ fn validate_slint_asset_path(path: &str) -> Result<(), String> {
 //
 // Each node gets a unique `NodeId` (UUID) and communicates with the shared
 // thread via tagged work items.  Results are sent back on a per-node
-// `std::sync::mpsc` channel.
+// `tokio::sync::mpsc` channel (using `blocking_send` on the Slint thread
+// so the async `run()` method can `.recv().await` without blocking the
+// tokio worker thread).
 
 /// Opaque identifier for a node's instance on the shared Slint thread.
 type NodeId = uuid::Uuid;
@@ -180,7 +183,7 @@ enum SlintWorkItem {
     Register {
         node_id: NodeId,
         config: SlintConfig,
-        result_tx: std::sync::mpsc::Sender<SlintThreadResult>,
+        result_tx: tokio::sync::mpsc::Sender<SlintThreadResult>,
     },
     /// Request a single rendered frame for the given node.
     Render { node_id: NodeId },
@@ -235,7 +238,7 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
     struct NodeState {
         instance: SlintInstance,
         config: SlintConfig,
-        result_tx: std::sync::mpsc::Sender<SlintThreadResult>,
+        result_tx: tokio::sync::mpsc::Sender<SlintThreadResult>,
     }
 
     let mut nodes: HashMap<NodeId, NodeState> = HashMap::new();
@@ -251,12 +254,12 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
                             node_id,
                             config.slint_file
                         );
-                        let _ = result_tx.send(SlintThreadResult::InitOk);
+                        let _ = result_tx.blocking_send(SlintThreadResult::InitOk);
                         nodes.insert(node_id, NodeState { instance, config, result_tx });
                     },
                     Err(e) => {
                         tracing::error!("Failed to create Slint instance '{}': {e}", node_id);
-                        let _ = result_tx.send(SlintThreadResult::InitErr(e.to_string()));
+                        let _ = result_tx.blocking_send(SlintThreadResult::InitErr(e.to_string()));
                     },
                 }
             },
@@ -265,7 +268,7 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
                     let rgba_data = render_slint_frame(&mut state.instance, &state.config);
                     // If the result channel is closed the node has been dropped;
                     // clean up its state on the next Unregister (or here eagerly).
-                    if state.result_tx.send(SlintThreadResult::Frame { rgba_data }).is_err() {
+                    if state.result_tx.blocking_send(SlintThreadResult::Frame { rgba_data }).is_err() {
                         nodes.remove(&node_id);
                     }
                 }
@@ -593,7 +596,7 @@ impl ProcessorNode for SlintNode {
         let node_id = uuid::Uuid::new_v4();
         let thread_handle = shared_slint_thread();
 
-        let (result_tx, result_rx) = std::sync::mpsc::channel::<SlintThreadResult>();
+        let (result_tx, mut result_rx) = tokio::sync::mpsc::channel::<SlintThreadResult>(2);
 
         if thread_handle
             .work_tx
@@ -604,21 +607,21 @@ impl ProcessorNode for SlintNode {
         }
 
         // Wait for init result from the shared thread.
-        match result_rx.recv() {
-            Ok(SlintThreadResult::InitOk) => {
+        match result_rx.recv().await {
+            Some(SlintThreadResult::InitOk) => {
                 tracing::info!("SlintNode '{}' registered on shared thread", node_id);
             },
-            Ok(SlintThreadResult::InitErr(e)) => {
+            Some(SlintThreadResult::InitErr(e)) => {
                 return Err(StreamKitError::Configuration(format!(
                     "Slint instance creation failed: {e}"
                 )));
             },
-            Ok(SlintThreadResult::Frame { .. }) => {
+            Some(SlintThreadResult::Frame { .. }) => {
                 return Err(StreamKitError::Runtime(
                     "Unexpected frame result during init".to_string(),
                 ));
             },
-            Err(_) => {
+            None => {
                 return Err(StreamKitError::Runtime(
                     "Shared Slint thread channel closed during init".to_string(),
                 ));
@@ -710,13 +713,13 @@ impl ProcessorNode for SlintNode {
             }
 
             // Wait for the rendered frame.
-            let rgba_data = match result_rx.recv() {
-                Ok(SlintThreadResult::Frame { rgba_data }) => rgba_data,
-                Ok(_) => {
+            let rgba_data = match result_rx.recv().await {
+                Some(SlintThreadResult::Frame { rgba_data }) => rgba_data,
+                Some(_) => {
                     tracing::warn!("Unexpected result from shared Slint thread");
                     continue;
                 },
-                Err(_) => {
+                None => {
                     tracing::error!("Shared Slint thread result channel closed");
                     break;
                 },
