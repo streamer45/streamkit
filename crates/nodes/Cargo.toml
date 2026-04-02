@@ -92,8 +92,8 @@ pollster = { version = "0.4", optional = true }
 bytemuck = { version = "1.22", optional = true, features = ["derive"] }
 
 # Slint UI overlay (optional, behind `slint_overlay` feature)
-slint = { version = "1.10", optional = true, default-features = false, features = ["renderer-software", "compat-1-2"] }
-slint-interpreter = { version = "1.10", optional = true }
+slint = { version = "1.15", optional = true, default-features = false, features = ["renderer-software", "compat-1-2"] }
+slint-interpreter = { version = "1.15", optional = true }
 spin_on = { version = "0.1", optional = true }
 
 futures-util = "0.3"
