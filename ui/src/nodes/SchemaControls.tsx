@@ -220,12 +220,10 @@ export const BooleanToggleControl: React.FC<BooleanToggleControlProps> = ({
   }, [tuneNodeConfig]);
 
   const handleToggle = useCallback(() => {
-    setChecked((prev) => {
-      const next = !prev;
-      tuneRef.current(nodeId, buildParamUpdate(config.path, next));
-      return next;
-    });
-  }, [nodeId, config.path]);
+    const next = !checked;
+    setChecked(next);
+    tuneRef.current(nodeId, buildParamUpdate(config.path, next));
+  }, [nodeId, config.path, checked]);
 
   const disabled = !sessionId;
 
