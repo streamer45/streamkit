@@ -48,6 +48,7 @@ import { useReactFlowCommon } from '@/hooks/useReactFlowCommon';
 import { useResolvedColorMode } from '@/hooks/useResolvedColorMode';
 import { useSession } from '@/hooks/useSession';
 import { useSessionList } from '@/hooks/useSessionList';
+import { useTuneNode } from '@/hooks/useTuneNode';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { getWebSocketService } from '@/services/websocket';
 import { useLayoutStore } from '@/stores/layoutStore';
@@ -69,7 +70,7 @@ import type {
   InputPin,
   OutputPin,
 } from '@/types/types';
-import { buildParamUpdate, deepMerge } from '@/utils/controlProps';
+import { buildParamUpdate } from '@/utils/controlProps';
 import { topoLevelsFromPipeline, orderedNamesFromLevels } from '@/utils/dag';
 import { deepEqual } from '@/utils/deepEqual';
 import { validateValue } from '@/utils/jsonSchema';
@@ -383,6 +384,11 @@ const MonitorViewContent: React.FC = () => {
     disconnectPins,
   } = useSession(selectedSessionId);
 
+  // Lightweight hook for dot-notation path updates: deep-merges locally
+  // into the atom and sends only the partial to the server (unlike
+  // useSession.tuneNodeConfig which shallow-merges and sends as-is).
+  const { tuneNodeConfig: tuneNodeConfigDeep } = useTuneNode(selectedSessionId);
+
   // Use session-specific connection status if a session is selected, otherwise use global
   const isConnected = selectedSessionId ? sessionIsConnected : globalIsConnected;
 
@@ -502,15 +508,12 @@ const MonitorViewContent: React.FC = () => {
       // Dot-notation paths need nested payload (same deep-merge logic as
       // stableOnParamChange — see comment there for details).
       if (key.includes('.')) {
-        const partial = buildParamUpdate(key, value);
-        const k = nodeKey(selectedSessionId ?? '', nodeId);
-        const current = defaultSessionStore.get(nodeParamsAtom(k));
-        tuneNodeConfig(nodeId, deepMerge(current, partial));
+        tuneNodeConfigDeep(nodeId, buildParamUpdate(key, value));
       } else {
         tuneNode(nodeId, key, value);
       }
     },
-    [toast, tuneNode, tuneNodeConfig, selectedSessionId]
+    [toast, tuneNode, tuneNodeConfigDeep]
   );
 
   // Memoized label change handler (currently no-op)
@@ -913,21 +916,16 @@ const MonitorViewContent: React.FC = () => {
       }
 
       // Dot-notation paths (e.g. "properties.show") need buildParamUpdate to
-      // produce the correct nested UpdateParams payload.  We deep-merge the
-      // partial update into the current atom state so sibling nested
-      // properties are preserved (e.g. updating properties.score doesn't
-      // clobber properties.show).  This mirrors useTuneNode's deep-merge
-      // pattern.
+      // produce the correct nested UpdateParams payload.  tuneNodeConfigDeep
+      // deep-merges locally into the atom (preserving sibling nested
+      // properties) and sends only the partial to the server.
       if (paramName.includes('.')) {
-        const partial = buildParamUpdate(paramName, value);
-        const k = nodeKey(selectedSessionId ?? '', nodeId);
-        const current = defaultSessionStore.get(nodeParamsAtom(k));
-        tuneNodeConfig(nodeId, deepMerge(current, partial));
+        tuneNodeConfigDeep(nodeId, buildParamUpdate(paramName, value));
       } else {
         tuneNode(nodeId, paramName, value);
       }
     },
-    [toast, tuneNode, tuneNodeConfig, selectedSessionId]
+    [toast, tuneNode, tuneNodeConfigDeep]
   );
 
   // Stable callback for full-config updates (compositor nodes).

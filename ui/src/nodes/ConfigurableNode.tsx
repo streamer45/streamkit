@@ -13,6 +13,7 @@ import { areNodePropsEqual } from '@/nodes/nodePropsEqual';
 import { BooleanToggleControl, TextInputControl } from '@/nodes/SchemaControls';
 import { perfOnRender } from '@/perf';
 import type { InputPin, OutputPin, NodeState, NodeStats, NodeDefinition } from '@/types/types';
+import { readByPath } from '@/utils/controlProps';
 import {
   type JsonSchemaProperty,
   type JsonSchema,
@@ -210,7 +211,7 @@ const NumericSliderControl: React.FC<NumericSliderControlProps> = ({
   showLiveIndicator = false,
   isTunable,
 }) => {
-  const baseParam = params?.[paramKey];
+  const baseParam = readByPath(params as Record<string, unknown>, pathOverride ?? paramKey);
   const defaultValue = schema?.default;
 
   const fallback = computeFallbackValue(defaultValue, baseParam, min, max);
