@@ -69,7 +69,7 @@ import type {
   InputPin,
   OutputPin,
 } from '@/types/types';
-import { buildParamUpdate } from '@/utils/controlProps';
+import { buildParamUpdate, deepMerge } from '@/utils/controlProps';
 import { topoLevelsFromPipeline, orderedNamesFromLevels } from '@/utils/dag';
 import { deepEqual } from '@/utils/deepEqual';
 import { validateValue } from '@/utils/jsonSchema';
@@ -499,14 +499,18 @@ const MonitorViewContent: React.FC = () => {
         return;
       }
 
-      // Dot-notation paths need nested payload (same logic as stableOnParamChange).
+      // Dot-notation paths need nested payload (same deep-merge logic as
+      // stableOnParamChange — see comment there for details).
       if (key.includes('.')) {
-        tuneNodeConfig(nodeId, buildParamUpdate(key, value));
+        const partial = buildParamUpdate(key, value);
+        const k = nodeKey(selectedSessionId ?? '', nodeId);
+        const current = defaultSessionStore.get(nodeParamsAtom(k));
+        tuneNodeConfig(nodeId, deepMerge(current, partial));
       } else {
         tuneNode(nodeId, key, value);
       }
     },
-    [toast, tuneNode, tuneNodeConfig]
+    [toast, tuneNode, tuneNodeConfig, selectedSessionId]
   );
 
   // Memoized label change handler (currently no-op)
@@ -909,15 +913,21 @@ const MonitorViewContent: React.FC = () => {
       }
 
       // Dot-notation paths (e.g. "properties.show") need buildParamUpdate to
-      // produce the correct nested UpdateParams payload and tuneNodeConfig to
-      // deep-merge into the atom.  Flat keys use tuneNode directly.
+      // produce the correct nested UpdateParams payload.  We deep-merge the
+      // partial update into the current atom state so sibling nested
+      // properties are preserved (e.g. updating properties.score doesn't
+      // clobber properties.show).  This mirrors useTuneNode's deep-merge
+      // pattern.
       if (paramName.includes('.')) {
-        tuneNodeConfig(nodeId, buildParamUpdate(paramName, value));
+        const partial = buildParamUpdate(paramName, value);
+        const k = nodeKey(selectedSessionId ?? '', nodeId);
+        const current = defaultSessionStore.get(nodeParamsAtom(k));
+        tuneNodeConfig(nodeId, deepMerge(current, partial));
       } else {
         tuneNode(nodeId, paramName, value);
       }
     },
-    [toast, tuneNode, tuneNodeConfig]
+    [toast, tuneNode, tuneNodeConfig, selectedSessionId]
   );
 
   // Stable callback for full-config updates (compositor nodes).
