@@ -34,7 +34,7 @@ just upload-slint-plugin
 Or manually:
 ```bash
 curl -X POST \
-  -F plugin=@target/plugins/release/libslint_plugin.so \
+  -F plugin=@target/plugins/release/libslint.so \
   http://127.0.0.1:4545/api/v1/plugins
 ```
 

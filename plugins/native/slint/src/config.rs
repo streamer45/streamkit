@@ -10,6 +10,10 @@ use serde::Deserialize;
 
 // ── Defaults ────────────────────────────────────────────────────────────────
 
+/// Maximum allowed dimension (width or height) — 8K.
+/// Guards against config typos that would attempt multi-GB buffer allocations.
+const MAX_DIMENSION: u32 = 7680;
+
 const fn default_width() -> u32 {
     640
 }
@@ -111,6 +115,12 @@ impl SlintConfig {
         if self.width == 0 || self.height == 0 {
             return Err("width and height must be > 0".to_string());
         }
+        if self.width > MAX_DIMENSION || self.height > MAX_DIMENSION {
+            return Err(format!(
+                "width and height must be <= {MAX_DIMENSION} (8K), got {}x{}",
+                self.width, self.height
+            ));
+        }
         if self.fps == 0 {
             return Err("fps must be > 0".to_string());
         }
@@ -141,6 +151,9 @@ impl SlintConfig {
 fn validate_slint_asset_path(path: &str) -> Result<(), String> {
     if path.is_empty() {
         return Err("slint_file must not be empty".to_string());
+    }
+    if std::path::Path::new(path).is_absolute() {
+        return Err(format!("Invalid slint_file: absolute paths are not allowed: {path}"));
     }
     if path.contains("..") {
         return Err(format!("Invalid slint_file: path must not contain '..': {path}"));

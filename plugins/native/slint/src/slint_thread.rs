@@ -156,9 +156,11 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
             },
             SlintWorkItem::Render { node_id } => {
                 if let Some(state) = instances.get_mut(&node_id) {
-                    // Always pump Slint timers/animations (process-global) so
-                    // that Timer callbacks and CSS-like transitions advance
-                    // even when the frame is served from cache.
+                    // Pump Slint timers/animations (process-global) so Timer
+                    // callbacks and CSS-like transitions advance even when the
+                    // frame is served from cache.  This call is idempotent and
+                    // wall-clock-based, so running it N times per tick cycle
+                    // (once per instance) is harmless.
                     slint::platform::update_timers_and_animations();
 
                     let rgba_data = if state.config.static_ui {
@@ -179,17 +181,18 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
 
                         if need_render {
                             let data = render_slint_frame(&mut state.instance, &state.config);
-                            state.cached_frame = Some(data.clone());
+                            state.cached_frame = Some(data);
                             state.cached_keyframe_idx = kf_idx;
                             state.dirty = false;
-                            data
                         } else {
                             // Advance frame counter so keyframe boundaries
                             // are detected at the right time.
                             state.instance.frame_counter =
                                 state.instance.frame_counter.wrapping_add(1);
-                            state.cached_frame.clone().unwrap_or_default()
                         }
+                        // Clone from cache — avoids a redundant allocation
+                        // compared to cloning before storing.
+                        state.cached_frame.clone().unwrap_or_default()
                     } else {
                         // ── Dynamic UI path: always re-render ───────────────
                         render_slint_frame(&mut state.instance, &state.config)
@@ -225,6 +228,18 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
 }
 
 // ── Slint rendering internals ───────────────────────────────────────────────
+
+/// Scope guard that clears the `CURRENT_WINDOW` thread-local on drop.
+///
+/// Used by `create_slint_instance` to ensure the thread-local is cleaned up
+/// even if `definition.create()` or `component.show()` fails via `?`.
+struct ClearWindow;
+
+impl Drop for ClearWindow {
+    fn drop(&mut self) {
+        CURRENT_WINDOW.with(|cell| *cell.borrow_mut() = None);
+    }
+}
 
 /// A compiled Slint component instance ready for per-frame rendering.
 ///
@@ -299,8 +314,12 @@ fn create_slint_instance(
 
     // Swap in this instance's window so `create_window_adapter()` returns
     // the correct one during `definition.create()` and `component.show()`.
+    // The `ClearWindow` guard ensures the thread-local is cleared even if
+    // either call fails via `?`, preventing a stale `Rc<dyn WindowAdapter>`
+    // from lingering until the next `Register`.
     let window_adapter = window.clone() as Rc<dyn WindowAdapter>;
     CURRENT_WINDOW.with(|cell| *cell.borrow_mut() = Some(window_adapter));
+    let _guard = ClearWindow;
 
     // Instantiate the component.
     let component = definition
@@ -317,9 +336,7 @@ fn create_slint_instance(
     // Show the component so it becomes visible for rendering.
     component.show().map_err(|e| format!("Failed to show Slint component: {e}"))?;
 
-    // Clear the thread-local so a stale reference isn't returned by an
-    // unexpected `create_window_adapter()` call during rendering.
-    CURRENT_WINDOW.with(|cell| *cell.borrow_mut() = None);
+    // _guard drops here, clearing CURRENT_WINDOW.
 
     Ok(SlintInstance { window, component, definition, buffer, width, frame_counter: 0 })
 }

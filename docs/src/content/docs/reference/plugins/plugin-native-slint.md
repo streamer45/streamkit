@@ -9,7 +9,7 @@ description: "Slint UI rendering as a video source — render .slint files to RG
 
 Slint UI rendering as a video source — render `.slint` files to RGBA8 frames at configurable resolution and frame rate.
 
-Source: `target/plugins/release/libslint_plugin.so`
+Source: `target/plugins/release/libslint.so`
 
 ## Categories
 - `video`

@@ -924,7 +924,7 @@ build-plugin-native-slint:
 [working-directory: 'plugins/native/slint']
 upload-slint-plugin: build-plugin-native-slint
     @echo "Uploading Slint plugin to server..."
-    @curl -X POST -F "plugin=@{{plugins_target_dir}}/release/libslint_plugin.so" \
+    @curl -X POST -F "plugin=@{{plugins_target_dir}}/release/libslint.so" \
         http://127.0.0.1:4545/api/v1/plugins
 
 # Build specific native plugin by name
@@ -968,7 +968,7 @@ copy-plugins-native:
     cp examples/plugins/gain-native/target/release/libgain_plugin_native.* .plugins/native/ 2>/dev/null || true
 
     # Official native plugins (shared target dir)
-    for name in whisper kokoro piper matcha vad sensevoice nllb helsinki supertonic slint_plugin; do
+    for name in whisper kokoro piper matcha vad sensevoice nllb helsinki supertonic slint; do
         for f in \
             "$PLUGINS_TARGET"/release/lib"$name".so \
             "$PLUGINS_TARGET"/release/lib"$name".so.* \
