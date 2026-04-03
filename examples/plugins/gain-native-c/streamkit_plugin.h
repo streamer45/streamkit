@@ -9,7 +9,7 @@
  * Plugins must export a single symbol `streamkit_native_plugin_api` that
  * returns a pointer to a CNativePluginAPI struct.
  *
- * API Version: 2
+ * API Version: 4
  */
 
 #ifndef STREAMKIT_PLUGIN_H
@@ -28,7 +28,7 @@ extern "C" {
  * ============================================================================ */
 
 /** Current API version. Plugins and host check compatibility via this field. */
-#define STREAMKIT_NATIVE_PLUGIN_API_VERSION 2
+#define STREAMKIT_NATIVE_PLUGIN_API_VERSION 4
 
 /* ============================================================================
  * Core Types
@@ -291,6 +291,25 @@ typedef struct CNativePluginAPI {
      * @param handle Plugin instance handle
      */
     void (*destroy_instance)(CPluginHandle handle);
+
+    /* -- v4 additions ---------------------------------------------------- */
+
+    /**
+     * Get runtime-discovered param schema (optional).
+     *
+     * Plugins whose tunable parameters depend on runtime configuration
+     * (e.g. properties discovered after compiling a .slint file) can
+     * implement this to return a JSON Schema fragment.  The host merges
+     * it with the static param_schema and delivers it to the UI.
+     *
+     * Return CResult with success=true and error_message carrying the
+     * JSON string, or success=true with error_message=NULL for no schema.
+     *
+     * @param handle Plugin instance handle
+     * @return       CResult: success+NULL = no schema,
+     *               success+json = schema, !success = error
+     */
+    CResult (*get_runtime_param_schema)(CPluginHandle handle);
 } CNativePluginAPI;
 
 /* ============================================================================

@@ -379,8 +379,7 @@ fn discover_properties(definition: &ComponentDefinition) -> Vec<DiscoveredProper
         .filter_map(|(name, value_type)| {
             let vt = match value_type {
                 ValueType::Bool => DiscoveredValueType::Bool,
-                ValueType::Float => DiscoveredValueType::Number,
-                ValueType::Int => DiscoveredValueType::Number,
+                ValueType::Number => DiscoveredValueType::Number,
                 ValueType::String => DiscoveredValueType::String,
                 // Image, Model, Struct, Brush, etc. are not tuneable.
                 _ => return None,

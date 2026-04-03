@@ -13,7 +13,8 @@ use std::os::raw::{c_char, c_void};
 ///
 /// v3: Added video packet types (`RawVideo`, `EncodedVideo`), `CRawVideoFormat`,
 ///     `CPixelFormat`, and source node support (`get_source_config`, `tick`).
-pub const NATIVE_PLUGIN_API_VERSION: u32 = 3;
+/// v4: Added `get_runtime_param_schema` for dynamic runtime parameter discovery.
+pub const NATIVE_PLUGIN_API_VERSION: u32 = 4;
 
 /// Opaque handle to a plugin instance
 pub type CPluginHandle = *mut c_void;
