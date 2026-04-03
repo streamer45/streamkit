@@ -2,9 +2,9 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 
-import { buildParamUpdate, deepMerge, readByPath } from './controlProps';
+import { buildParamUpdate, deepMerge, dispatchParamUpdate, readByPath } from './controlProps';
 
 describe('buildParamUpdate', () => {
   it('wraps a single-segment path as a flat key', () => {
@@ -135,5 +135,29 @@ describe('readByPath', () => {
   it('is the inverse of buildParamUpdate for reading back', () => {
     const update = buildParamUpdate('properties.home_score', 4);
     expect(readByPath(update, 'properties.home_score')).toBe(4);
+  });
+});
+
+describe('dispatchParamUpdate', () => {
+  it('routes flat keys through onFlat', () => {
+    const onFlat = vi.fn();
+    const onNested = vi.fn();
+    dispatchParamUpdate('node1', 'gain_db', 1.5, onFlat, onNested);
+    expect(onFlat).toHaveBeenCalledWith('node1', 'gain_db', 1.5);
+    expect(onNested).not.toHaveBeenCalled();
+  });
+
+  it('routes dot-notation paths through onNested with buildParamUpdate result', () => {
+    const onFlat = vi.fn();
+    const onNested = vi.fn();
+    dispatchParamUpdate('node1', 'properties.show', true, onFlat, onNested);
+    expect(onNested).toHaveBeenCalledWith('node1', { properties: { show: true } });
+    expect(onFlat).not.toHaveBeenCalled();
+  });
+
+  it('handles multi-segment dot paths', () => {
+    const onNested = vi.fn();
+    dispatchParamUpdate('node1', 'a.b.c', 42, vi.fn(), onNested);
+    expect(onNested).toHaveBeenCalledWith('node1', { a: { b: { c: 42 } } });
   });
 });

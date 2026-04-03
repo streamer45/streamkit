@@ -15,7 +15,7 @@ import {
   writeNodeParams,
   clearNodeParams,
 } from '@/stores/sessionAtoms';
-import { buildParamUpdate, deepMerge } from '@/utils/controlProps';
+import { dispatchParamUpdate, deepMerge } from '@/utils/controlProps';
 import { hooksLogger } from '@/utils/logger';
 import { parseYamlToPipeline, type EngineMode } from '@/utils/yamlPipeline';
 
@@ -109,14 +109,10 @@ export const usePipeline = () => {
     // Dot-notation paths (e.g. "properties.score") need to be stored as
     // nested objects so readByPath can find them.  Flat keys use the
     // simple writeNodeParam helper.
-    if (paramName.includes('.')) {
-      const k = nodeId;
-      const current = defaultSessionStore.get(nodeParamsAtom(k));
-      const partial = buildParamUpdate(paramName, value);
-      writeNodeParams(nodeId, deepMerge(current, partial));
-    } else {
-      writeNodeParam(nodeId, paramName, value);
-    }
+    dispatchParamUpdate(nodeId, paramName, value, writeNodeParam, (nid, config) => {
+      const current = defaultSessionStore.get(nodeParamsAtom(nid));
+      writeNodeParams(nid, deepMerge(current, config));
+    });
     // Keep the YAML editor in sync with param changes made via the canvas
     // (e.g. compositor layer drag / slider). The guard prevents a feedback
     // loop when YAML editing triggers parseYamlToPipeline which stores the

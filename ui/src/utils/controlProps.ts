@@ -50,6 +50,31 @@ export function readByPath(obj: Record<string, unknown>, path: string): unknown 
   return current;
 }
 
+/**
+ * Dispatches a param update through the correct handler based on whether
+ * the param name is a flat key or a dot-notation path.
+ *
+ * This centralises the `if (name.includes('.'))` branching that otherwise
+ * appears in every call-site (MonitorView, usePipeline, etc.).
+ *
+ * - **Flat keys** (e.g. `"gain_db"`) → `onFlat(nodeId, key, value)`
+ * - **Dot-paths** (e.g. `"properties.show"`) → `onNested(nodeId, partialConfig)`
+ *   where `partialConfig` is produced by `buildParamUpdate`.
+ */
+export function dispatchParamUpdate(
+  nodeId: string,
+  paramName: string,
+  value: unknown,
+  onFlat: (nodeId: string, key: string, value: unknown) => void,
+  onNested: (nodeId: string, config: Record<string, unknown>) => void
+): void {
+  if (paramName.includes('.')) {
+    onNested(nodeId, buildParamUpdate(paramName, value));
+  } else {
+    onFlat(nodeId, paramName, value);
+  }
+}
+
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }

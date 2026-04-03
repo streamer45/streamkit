@@ -4,13 +4,19 @@
 
 import styled from '@emotion/styled';
 import * as Tooltip from '@radix-ui/react-tooltip';
-import React from 'react';
+import React, { useMemo } from 'react';
 
 import { NodeFrame } from '@/components/node/NodeFrame';
 import { LiveBadge, LiveDot } from '@/components/ui/LiveIndicator';
 import { useNumericSlider } from '@/hooks/useNumericSlider';
 import { areNodePropsEqual } from '@/nodes/nodePropsEqual';
-import { BooleanToggleControl, TextInputControl } from '@/nodes/SchemaControls';
+import {
+  BooleanToggleControl,
+  TextInputControl,
+  ControlLabel,
+  ControlLabelText,
+  ControlDescription,
+} from '@/nodes/SchemaControls';
 import { perfOnRender } from '@/perf';
 import type { InputPin, OutputPin, NodeState, NodeStats, NodeDefinition } from '@/types/types';
 import { readByPath } from '@/utils/controlProps';
@@ -34,7 +40,7 @@ const ParamCount = styled.div`
   border-top: 1px solid var(--sk-border);
 `;
 
-const SliderGroup = styled.div`
+const ControlGroup = styled.div`
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -46,25 +52,6 @@ const SliderWrapper = styled.div`
   flex-direction: column;
   gap: 4px;
   padding: 4px 0;
-`;
-
-const SliderLabel = styled.div`
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--sk-text);
-`;
-
-const SliderLabelText = styled.span`
-  flex: 0 0 auto;
-`;
-
-const SliderDescription = styled.div`
-  font-size: 11px;
-  color: var(--sk-text-muted);
 `;
 
 const SliderValue = styled.span`
@@ -240,8 +227,8 @@ const NumericSliderControl: React.FC<NumericSliderControlProps> = ({
 
   return (
     <SliderWrapper>
-      <SliderLabel>
-        <SliderLabelText className="code-font">{paramKey}</SliderLabelText>
+      <ControlLabel>
+        <ControlLabelText className="code-font">{paramKey}</ControlLabelText>
         {showLiveIndicator && isTunable && (
           <Tooltip.Provider delayDuration={300}>
             <Tooltip.Root>
@@ -261,8 +248,8 @@ const NumericSliderControl: React.FC<NumericSliderControlProps> = ({
           </Tooltip.Provider>
         )}
         <SliderValue>{formattedValue}</SliderValue>
-      </SliderLabel>
-      {schema?.description && <SliderDescription>{schema.description}</SliderDescription>}
+      </ControlLabel>
+      {schema?.description && <ControlDescription>{schema.description}</ControlDescription>}
       <SliderInput
         type="range"
         min={min}
@@ -300,9 +287,9 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(function Co
   const properties = schema?.properties ?? {};
   const totalParams = Object.keys(properties).length;
 
-  const sliderConfigs = extractSliderConfigs(schema);
-  const toggleConfigs = extractToggleConfigs(schema);
-  const textConfigs = extractTextConfigs(schema);
+  const sliderConfigs = useMemo(() => extractSliderConfigs(schema), [schema]);
+  const toggleConfigs = useMemo(() => extractToggleConfigs(schema), [schema]);
+  const textConfigs = useMemo(() => extractTextConfigs(schema), [schema]);
   const hasControls =
     toggleConfigs.length > 0 || sliderConfigs.length > 0 || textConfigs.length > 0;
 
@@ -328,7 +315,7 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(function Co
       isBidirectional={isBidirectional}
     >
       {hasControls && (
-        <SliderGroup>
+        <ControlGroup>
           {toggleConfigs.map((config) => (
             <BooleanToggleControl
               key={config.key}
@@ -366,7 +353,7 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(function Co
               showLiveIndicator={showLiveIndicator}
             />
           ))}
-        </SliderGroup>
+        </ControlGroup>
       )}
 
       {totalParams > 0 ? (

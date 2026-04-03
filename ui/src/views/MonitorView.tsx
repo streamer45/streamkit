@@ -70,7 +70,7 @@ import type {
   InputPin,
   OutputPin,
 } from '@/types/types';
-import { buildParamUpdate } from '@/utils/controlProps';
+import { dispatchParamUpdate } from '@/utils/controlProps';
 import { topoLevelsFromPipeline, orderedNamesFromLevels } from '@/utils/dag';
 import { deepEqual } from '@/utils/deepEqual';
 import { validateValue } from '@/utils/jsonSchema';
@@ -507,11 +507,7 @@ const MonitorViewContent: React.FC = () => {
 
       // Dot-notation paths need nested payload (same deep-merge logic as
       // stableOnParamChange — see comment there for details).
-      if (key.includes('.')) {
-        tuneNodeConfigDeep(nodeId, buildParamUpdate(key, value));
-      } else {
-        tuneNode(nodeId, key, value);
-      }
+      dispatchParamUpdate(nodeId, key, value, tuneNode, tuneNodeConfigDeep);
     },
     [toast, tuneNode, tuneNodeConfigDeep]
   );
@@ -919,11 +915,7 @@ const MonitorViewContent: React.FC = () => {
       // produce the correct nested UpdateParams payload.  tuneNodeConfigDeep
       // deep-merges locally into the atom (preserving sibling nested
       // properties) and sends only the partial to the server.
-      if (paramName.includes('.')) {
-        tuneNodeConfigDeep(nodeId, buildParamUpdate(paramName, value));
-      } else {
-        tuneNode(nodeId, paramName, value);
-      }
+      dispatchParamUpdate(nodeId, paramName, value, tuneNode, tuneNodeConfigDeep);
     },
     [toast, tuneNode, tuneNodeConfigDeep]
   );

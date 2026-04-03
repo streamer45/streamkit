@@ -24,7 +24,7 @@ import { buildParamUpdate, readByPath } from '@/utils/controlProps';
 import type { ToggleConfig, TextConfig } from '@/utils/jsonSchema';
 
 // ---------------------------------------------------------------------------
-// Shared styled components (also used by ConfigurableNode for labels)
+// Styled components for toggle/text controls
 // ---------------------------------------------------------------------------
 
 export const ControlLabel = styled.div`
@@ -219,11 +219,16 @@ export const BooleanToggleControl: React.FC<BooleanToggleControlProps> = ({
     tuneRef.current = tuneNodeConfig;
   }, [tuneNodeConfig]);
 
+  // Ref tracks latest checked to avoid stale closures if two clicks
+  // fire before React re-renders.
+  const checkedRef = useRef(checked);
+  checkedRef.current = checked;
+
   const handleToggle = useCallback(() => {
-    const next = !checked;
+    const next = !checkedRef.current;
     setChecked(next);
     tuneRef.current(nodeId, buildParamUpdate(config.path, next));
-  }, [nodeId, config.path, checked]);
+  }, [nodeId, config.path]);
 
   const disabled = !sessionId;
 
@@ -232,6 +237,8 @@ export const BooleanToggleControl: React.FC<BooleanToggleControlProps> = ({
       <ToggleLabel className="code-font">{config.key}</ToggleLabel>
       {showLiveIndicator && <LiveIndicator />}
       <ToggleTrack
+        role="switch"
+        aria-checked={checked}
         checked={checked}
         onClick={handleToggle}
         disabled={disabled}
@@ -306,8 +313,19 @@ export const TextInputControl: React.FC<TextInputControlProps> = ({
     [nodeId, config.path]
   );
 
-  // Clean up pending timer on unmount.
-  useEffect(() => () => clearTimeout(timerRef.current), []);
+  // Flush any pending debounce on unmount so the last typed value is
+  // sent rather than silently dropped.
+  const flushDebounce = useCallback(() => {
+    if (timerRef.current !== undefined) {
+      clearTimeout(timerRef.current);
+      timerRef.current = undefined;
+      // Send the current text value immediately.
+      tuneRef.current(nodeId, buildParamUpdate(config.path, text));
+      isEditingRef.current = false;
+    }
+  }, [nodeId, config.path, text]);
+
+  useEffect(() => () => flushDebounce(), [flushDebounce]);
 
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -334,6 +352,7 @@ export const TextInputControl: React.FC<TextInputControlProps> = ({
         type="text"
         value={text}
         onChange={handleChange}
+        onBlur={flushDebounce}
         placeholder={config.schema.description ?? config.key}
         disabled={disabled}
         aria-label={config.schema.description ?? config.key}
