@@ -205,7 +205,7 @@ const TextControl: React.FC<{
     onSendRef.current = onSend;
   }, [onSend]);
 
-  const timerRef = useRef<ReturnType<typeof setTimeout>>();
+  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const debouncedSend = useCallback((value: string) => {
     clearTimeout(timerRef.current);
@@ -354,7 +354,7 @@ const OverlayControls: React.FC<OverlayControlsProps> = ({ pipelineYaml, session
   if (controls.length === 0) return null;
 
   return (
-    <Section>
+    <Section data-testid="overlay-controls">
       <SectionTitle>Pipeline Controls</SectionTitle>
       <ControlsContainer>
         {Array.from(grouped.entries()).map(([groupName, items]) => (
