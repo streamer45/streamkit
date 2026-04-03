@@ -19,6 +19,7 @@ FROM rust:1.92-slim-bookworm AS rust-deps
 WORKDIR /build
 
 # Install build dependencies (includes all deps needed by workspace plugins)
+# meson + ninja-build + python3 are needed by dav1d_static (builds dav1d from source)
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
@@ -31,6 +32,9 @@ RUN apt-get update && apt-get install -y \
     clang \
     curl \
     git \
+    meson \
+    ninja-build \
+    python3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy workspace files to build dependencies (plugins are now excluded)
@@ -85,6 +89,9 @@ RUN apt-get update && apt-get install -y \
     clang \
     curl \
     git \
+    meson \
+    ninja-build \
+    python3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy workspace files (plugins are excluded from workspace)
