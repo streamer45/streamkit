@@ -7,7 +7,7 @@ import { throttle } from 'lodash-es';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { Section, SectionTitle } from '@/components/ui/ViewLayout';
-import { useSession } from '@/hooks/useSession';
+import { useTuneNode } from '@/hooks/useTuneNode';
 import type { ControlConfig } from '@/types/types';
 import { parseClientFromYaml } from '@/utils/clientSection';
 import { buildParamUpdate } from '@/utils/controlProps';
@@ -189,13 +189,22 @@ const TextControl: React.FC<{
     return '';
   });
 
-  const debouncedSend = useMemo(() => {
-    let timer: ReturnType<typeof setTimeout>;
-    return (value: string) => {
-      clearTimeout(timer);
-      timer = setTimeout(() => onSend(value), TEXT_DEBOUNCE_MS);
-    };
+  // Store onSend in a ref so the debounce closure is stable across re-renders
+  // and pending timers always call the latest callback.
+  const onSendRef = useRef(onSend);
+  useEffect(() => {
+    onSendRef.current = onSend;
   }, [onSend]);
+
+  const timerRef = useRef<ReturnType<typeof setTimeout>>();
+
+  const debouncedSend = useCallback((value: string) => {
+    clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => onSendRef.current(value), TEXT_DEBOUNCE_MS);
+  }, []);
+
+  // Clean up any pending timer on unmount.
+  useEffect(() => () => clearTimeout(timerRef.current), []);
 
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -221,13 +230,20 @@ const NumberControl: React.FC<{
   const [localValue, setLocalValue] = useState<number>(defaultValue);
   const isDraggingRef = useRef(false);
 
+  // Store onSend in a ref so the throttle closure is stable and always
+  // calls the latest callback without recreating the throttle function.
+  const onSendRef = useRef(onSend);
+  useEffect(() => {
+    onSendRef.current = onSend;
+  }, [onSend]);
+
   const throttledSend = useMemo(
     () =>
-      throttle((value: number) => onSend(value), SLIDER_THROTTLE_MS, {
+      throttle((value: number) => onSendRef.current(value), SLIDER_THROTTLE_MS, {
         leading: true,
         trailing: true,
       }),
-    [onSend]
+    []
   );
 
   useEffect(() => () => throttledSend.cancel(), [throttledSend]);
@@ -309,7 +325,7 @@ function groupControls(controls: ControlConfig[]): Map<string | null, ControlCon
 }
 
 const OverlayControls: React.FC<OverlayControlsProps> = ({ pipelineYaml, sessionId }) => {
-  const { tuneNodeConfig } = useSession(sessionId);
+  const { tuneNodeConfig } = useTuneNode(sessionId);
 
   // Parse controls from the pipeline YAML's client section.
   const controls: ControlConfig[] = useMemo(
