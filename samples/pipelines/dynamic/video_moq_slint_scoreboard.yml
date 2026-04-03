@@ -38,6 +38,46 @@ client:
     broadcast: output
     audio: false
     video: true
+  controls:
+    - label: "Show Lower Third"
+      type: toggle
+      node: lower_third
+      property: properties.show
+      default: true
+    - label: "Player Name"
+      type: text
+      node: lower_third
+      property: properties.name
+      default: "Alex Johnson"
+    - label: "Subtitle"
+      type: text
+      node: lower_third
+      property: properties.subtitle
+      default: "Forward · #17"
+    - label: "Home Score"
+      type: number
+      node: scoreboard
+      property: properties.home_score
+      group: Scoreboard
+      default: 3
+      min: 0
+      max: 99
+      step: 1
+    - label: "Away Score"
+      type: number
+      node: scoreboard
+      property: properties.away_score
+      group: Scoreboard
+      default: 1
+      min: 0
+      max: 99
+      step: 1
+    - label: "Period"
+      type: text
+      node: scoreboard
+      property: properties.period
+      group: Scoreboard
+      default: "2ND"
 
 nodes:
   colorbars_bg:

@@ -501,7 +501,11 @@ input: InputConfig | null,
 /**
  * Output rendering configuration (oneshot pipelines).
  */
-output: OutputConfig | null, };
+output: OutputConfig | null, 
+/**
+ * Declarative overlay controls for runtime node tuning (dynamic pipelines).
+ */
+controls: Array<ControlConfig> | null, };
 
 export type PublishConfig = { 
 /**
@@ -626,3 +630,48 @@ accept: string | null,
 placeholder: string | null, };
 
 export type FieldType = "file" | "text";
+
+export type ControlType = "toggle" | "text" | "number" | "button";
+
+export type ControlConfig = { 
+/**
+ * Human-readable label shown next to the widget.
+ */
+label: string, 
+/**
+ * Widget type.
+ */
+type: ControlType, 
+/**
+ * Target node ID in the pipeline graph.
+ */
+node: string, 
+/**
+ * Dot-notation property path, e.g. `"properties.home_score"`.
+ */
+property: string, 
+/**
+ * Optional grouping label — controls with the same group are rendered
+ * together under a shared heading.
+ */
+group: string | null, 
+/**
+ * Default value sent on first render / reset.
+ */
+default: unknown, 
+/**
+ * Minimum value (number controls).
+ */
+min: number | null, 
+/**
+ * Maximum value (number controls).
+ */
+max: number | null, 
+/**
+ * Step increment (number controls).
+ */
+step: number | null, 
+/**
+ * Fixed value sent on click (button controls).  Defaults to `true`.
+ */
+value: unknown, };

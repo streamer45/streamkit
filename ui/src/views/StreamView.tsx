@@ -11,6 +11,7 @@ import { useShallow } from 'zustand/shallow';
 import ConfirmModal from '@/components/ConfirmModal';
 import { NativeStreamPlayer } from '@/components/NativeStreamPlayer';
 import { VolumeSlider } from '@/components/OutputPreviewPanel';
+import OverlayControls from '@/components/stream/OverlayControls';
 import { PipelineSelectionSection } from '@/components/stream/PipelineSelectionSection';
 import { TelemetryTimeline as TelemetryTimelineComponent } from '@/components/TelemetryTimeline';
 import {
@@ -1056,6 +1057,10 @@ const StreamView: React.FC = () => {
               </InputGroup>
             )}
           </Section>
+
+          {activeSessionId && viewState.pipelineYaml && (
+            <OverlayControls pipelineYaml={viewState.pipelineYaml} sessionId={activeSessionId} />
+          )}
 
           {isStreaming && videoRenderer && !msePath && (
             <Section>
