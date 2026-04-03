@@ -1,0 +1,61 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Minimal pipeline for E2E-testing overlay controls.
+# Uses only core nodes (no plugins, no MoQ) so the session can be
+# created in any environment.  The controls section exercises all
+# four control types: toggle, text, number, and button.
+
+name: "Test: Overlay Controls"
+description: Colorbars-to-sink pipeline with overlay controls (E2E test fixture)
+mode: dynamic
+client:
+  controls:
+    - label: "Draw Time"
+      type: toggle
+      node: colorbars
+      property: draw_time
+      default: true
+    - label: "Label"
+      type: text
+      node: colorbars
+      property: label
+      default: "Hello"
+    - label: "Width"
+      type: number
+      node: colorbars
+      property: properties.width
+      group: Dimensions
+      default: 640
+      min: 160
+      max: 1920
+      step: 10
+    - label: "Height"
+      type: number
+      node: colorbars
+      property: properties.height
+      group: Dimensions
+      default: 480
+      min: 120
+      max: 1080
+      step: 10
+    - label: "Reset"
+      type: button
+      node: colorbars
+      property: reset
+      value: true
+
+nodes:
+  colorbars:
+    kind: video::colorbars
+    params:
+      width: 640
+      height: 480
+      fps: 30
+      pixel_format: rgba8
+      draw_time: true
+
+  sink:
+    kind: core::sink
+    needs: colorbars

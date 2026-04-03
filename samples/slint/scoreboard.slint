@@ -1,0 +1,161 @@
+// SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+//
+// SPDX-License-Identifier: MPL-2.0
+
+// Sports scoreboard overlay for the StreamKit compositor.
+//
+// Properties can be updated at runtime via UpdateParams JSON:
+//   home_team, away_team, home_score, away_score, clock_start, period
+//
+// The clock ticks automatically once per second from `clock_start`
+// (total seconds).  Set `clock_running` to false to freeze it.
+
+export component Scoreboard inherits Window {
+    in property <string> home_team: "HOME";
+    in property <string> away_team: "AWAY";
+    in property <int> home_score: 0;
+    in property <int> away_score: 0;
+    /// Starting time in total seconds (e.g. 754 = "12:34").
+    in property <int> clock_start: 0;
+    in property <bool> clock_running: true;
+    in property <string> period: "1ST";
+
+    // Internal elapsed seconds counter driven by the Timer below.
+    property <int> elapsed: 0;
+    property <int> total_seconds: root.clock_start + root.elapsed;
+    property <int> minutes: Math.floor(root.total_seconds / 60);
+    property <int> secs: Math.mod(root.total_seconds, 60);
+
+    // Format as MM:SS — Slint doesn't have zero-pad, so we build it
+    // with a ternary for the leading zero on each part.
+    property <string> clock_display:
+        (root.minutes < 10 ? "0" : "") + root.minutes
+        + ":"
+        + (root.secs < 10 ? "0" : "") + root.secs;
+
+    width: 420px;
+    height: 80px;
+    // Transparent window background so only the rounded rectangle is
+    // visible when composited onto the video frame.
+    background: transparent;
+
+    // 1-second tick timer for the match clock.
+    Timer {
+        interval: 1s;
+        running: root.clock_running;
+        triggered() => {
+            root.elapsed += 1;
+        }
+    }
+
+    Rectangle {
+        background: #0d1117e8;
+        border-radius: 10px;
+        width: 100%;
+        height: 100%;
+        clip: true;
+
+        // Subtle top-edge highlight.
+        Rectangle {
+            x: 0px;
+            y: 0px;
+            width: 100%;
+            height: 1px;
+            background: #ffffff12;
+        }
+
+        // Home team color indicator (left edge).
+        Rectangle {
+            x: 0px;
+            y: 0px;
+            width: 3px;
+            height: 100%;
+            background: #3b82f6;
+        }
+
+        // Away team color indicator (right edge).
+        Rectangle {
+            x: parent.width - 3px;
+            y: 0px;
+            width: 3px;
+            height: 100%;
+            background: #ef4444;
+        }
+
+        HorizontalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
+            spacing: 0px;
+
+            // Home team
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+                spacing: 1px;
+
+                Text {
+                    text: root.home_team;
+                    color: #8b949e;
+                    font-size: 11px;
+                    font-weight: 600;
+                    letter-spacing: 1px;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: root.home_score;
+                    color: #ffffff;
+                    font-size: 30px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                }
+            }
+
+            // Center: clock + period
+            VerticalLayout {
+                horizontal-stretch: 0;
+                min-width: 100px;
+                alignment: center;
+                spacing: 3px;
+
+                Text {
+                    text: root.clock_display;
+                    color: #fbbf24;
+                    font-size: 20px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: root.period;
+                    color: #6e7681;
+                    font-size: 10px;
+                    font-weight: 600;
+                    letter-spacing: 2px;
+                    horizontal-alignment: center;
+                }
+            }
+
+            // Away team
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+                spacing: 1px;
+
+                Text {
+                    text: root.away_team;
+                    color: #8b949e;
+                    font-size: 11px;
+                    font-weight: 600;
+                    letter-spacing: 1px;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: root.away_score;
+                    color: #ffffff;
+                    font-size: 30px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+    }
+}

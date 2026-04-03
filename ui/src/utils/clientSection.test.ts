@@ -41,6 +41,7 @@ describe('extractClientFromParsed', () => {
         field_hints: null,
       },
       output: { type: 'audio' },
+      controls: null,
     };
     const parsed = { nodes: {}, client };
     expect(extractClientFromParsed(parsed)).toBe(client);
@@ -69,6 +70,7 @@ describe('extractClientSection', () => {
       watch: null,
       input: null,
       output: null,
+      controls: null,
     };
     const pipeline = { nodes: {}, connections: [], mode: 'live', client } as never;
     expect(extractClientSection(pipeline)).toBe(client);
@@ -106,6 +108,7 @@ describe('deriveSettingsFromClient', () => {
       watch: { broadcast: 'composited-output', mse_path: null, audio: true, video: true },
       input: null,
       output: null,
+      controls: null,
     };
 
     const settings = deriveSettingsFromClient(client);
@@ -167,6 +170,7 @@ describe('deriveSettingsFromClient', () => {
       watch: { broadcast: 'output', mse_path: null, audio: false, video: true },
       input: null,
       output: null,
+      controls: null,
     };
 
     const settings = deriveSettingsFromClient(client);
@@ -206,6 +210,7 @@ describe('deriveSettingsFromClient', () => {
       watch: { broadcast: 'preview', mse_path: null, audio: false, video: true },
       input: null,
       output: null,
+      controls: null,
     };
 
     const settings = deriveSettingsFromClient(client);
@@ -241,6 +246,7 @@ describe('deriveSettingsFromClient', () => {
         field_hints: null,
       },
       output: { type: 'transcription' },
+      controls: null,
     };
 
     const settings = deriveSettingsFromClient(client);
@@ -387,6 +393,7 @@ describe('deriveSettingsFromClient — monitor preview scenarios', () => {
       watch: { broadcast: 'output', mse_path: null, audio: true, video: false },
       input: null,
       output: null,
+      controls: null,
     };
 
     const settings = deriveSettingsFromClient(client);
@@ -428,6 +435,7 @@ describe('deriveSettingsFromClient — monitor preview scenarios', () => {
       watch: { broadcast: 'composited', mse_path: null, audio: true, video: true },
       input: null,
       output: null,
+      controls: null,
     };
 
     const settings = deriveSettingsFromClient(client);
@@ -467,6 +475,7 @@ describe('deriveSettingsFromClient — monitor preview scenarios', () => {
       watch: { broadcast: 'output', mse_path: null, audio: true, video: true },
       input: null,
       output: null,
+      controls: null,
     };
 
     const settings = deriveSettingsFromClient(client);
@@ -515,6 +524,7 @@ describe('deriveSettingsFromClient — monitor preview scenarios', () => {
       watch: { broadcast: 'preview', mse_path: null, audio: false, video: true },
       input: null,
       output: null,
+      controls: null,
     };
 
     const settings = deriveSettingsFromClient(client);

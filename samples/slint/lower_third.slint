@@ -1,0 +1,101 @@
+// SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+//
+// SPDX-License-Identifier: MPL-2.0
+
+// Broadcast lower-third overlay with a slide-in animation.
+//
+// Set `show` to `true` to slide in, `false` to slide out.
+// Properties can be updated at runtime via UpdateParams JSON:
+//   name, subtitle, show
+
+export component LowerThird inherits Window {
+    in property <string> name: "Player Name";
+    in property <string> subtitle: "Position";
+    in property <bool> show: true;
+
+    width: 350px;
+    height: 70px;
+    background: transparent;
+
+    // Clip wrapper — `clip` is only valid on Rectangle, not Window.
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        clip: true;
+        background: transparent;
+
+        // Content container that slides in/out.
+        Rectangle {
+            x: root.show ? 0px : -360px;
+            y: 0px;
+            width: 350px;
+            height: 70px;
+            animate x { duration: 400ms; easing: ease-out; }
+
+            // Accent bar (left edge).
+            Rectangle {
+                x: 0px;
+                y: 0px;
+                width: 4px;
+                height: 70px;
+                background: #e63946;
+            }
+
+            // Thin bright highlight next to the accent bar.
+            Rectangle {
+                x: 4px;
+                y: 0px;
+                width: 1px;
+                height: 70px;
+                background: #ff6b7a;
+            }
+
+            // Background panel.
+            Rectangle {
+                x: 5px;
+                y: 0px;
+                width: 345px;
+                height: 70px;
+                background: #0d1117ee;
+
+                // Subtle top-edge highlight.
+                Rectangle {
+                    x: 0px;
+                    y: 0px;
+                    width: 100%;
+                    height: 1px;
+                    background: #ffffff12;
+                }
+
+                VerticalLayout {
+                    padding-left: 14px;
+                    padding-top: 10px;
+                    padding-bottom: 10px;
+                    spacing: 3px;
+
+                    Text {
+                        text: root.name;
+                        color: #ffffff;
+                        font-size: 20px;
+                        font-weight: 700;
+                    }
+
+                    // Thin separator between name and subtitle.
+                    Rectangle {
+                        width: 40px;
+                        height: 1px;
+                        background: #ffffff18;
+                    }
+
+                    Text {
+                        text: root.subtitle;
+                        color: #8b949e;
+                        font-size: 13px;
+                        font-weight: 500;
+                        letter-spacing: 0.5px;
+                    }
+                }
+            }
+        }
+    }
+}

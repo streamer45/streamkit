@@ -246,6 +246,17 @@
       ]
     },
     {
+      "id": "slint",
+      "name": "Slint",
+      "version": "0.1.0",
+      "node_kind": "slint",
+      "kind": "native",
+      "entrypoint": "libslint.so",
+      "artifact": "target/plugins/release/libslint.so",
+      "description": "Slint UI rendering as a video source \u2014 render .slint files to RGBA8 frames at configurable resolution and frame rate",
+      "license": "MPL-2.0"
+    },
+    {
       "id": "supertonic",
       "name": "Supertonic",
       "version": "0.1.0",

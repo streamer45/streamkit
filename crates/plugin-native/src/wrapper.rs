@@ -674,9 +674,26 @@ impl NativeNodeWrapper {
             warn!(error = %e, node = %node_name, "Failed to send running state");
         }
 
-        // Clamp to at least 1µs to prevent panic in tokio::time::interval.
-        let tick_interval = std::time::Duration::from_micros(self.metadata.tick_interval_us.max(1));
-        let max_ticks = self.metadata.max_ticks;
+        // Re-query source config from the live instance (created with actual
+        // params) so per-instance values like `max_ticks` (from `frame_count`)
+        // override the defaults obtained during the load-time probe.
+        let fallback = || {
+            let ti = std::time::Duration::from_micros(self.metadata.tick_interval_us.max(1));
+            (ti, self.metadata.max_ticks)
+        };
+        let (tick_interval, max_ticks) = self
+            .state
+            .api()
+            .get_source_config
+            .and_then(|get_source_config_fn| {
+                self.state.begin_call().map(|h| {
+                    let cfg = get_source_config_fn(h);
+                    self.state.finish_call();
+                    let ti = std::time::Duration::from_micros(cfg.tick_interval_us.max(1));
+                    (ti, cfg.max_ticks)
+                })
+            })
+            .unwrap_or_else(fallback);
         let mut tick_count: u64 = 0;
 
         let tick_fn = self.state.api().tick.ok_or_else(|| {

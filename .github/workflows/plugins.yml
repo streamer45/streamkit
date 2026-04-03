@@ -55,6 +55,10 @@ jobs:
         working-directory: plugins/native/nllb
         run: cargo fmt -- --check
 
+      - name: Check formatting - Slint
+        working-directory: plugins/native/slint
+        run: cargo fmt -- --check
+
   # Lint plugins that can build without pre-installed native libraries
   lint-simple:
     name: Lint (Simple Plugins)
@@ -65,7 +69,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake pkg-config libclang-dev
+          sudo apt-get install -y cmake pkg-config libclang-dev libfontconfig1-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
@@ -79,10 +83,15 @@ jobs:
         with:
           workspaces: |
             plugins/native/vad
+            plugins/native/slint
           cache-on-failure: true
 
       - name: Clippy - VAD
         working-directory: plugins/native/vad
+        run: cargo clippy -- -D warnings
+
+      - name: Clippy - Slint
+        working-directory: plugins/native/slint
         run: cargo clippy -- -D warnings
 
   # Lint Whisper plugin (builds whisper.cpp from source)

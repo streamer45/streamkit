@@ -889,11 +889,33 @@ impl ProcessorNode for CompositorNode {
             // the channel and only the very last one would survive the
             // drain — producing a tiny handful of output frames instead
             // of the full expected count.
+            //
+            // Frame-aligned synchronization (oneshot only): we check
+            // readiness of **every** active (non-closed) slot *before*
+            // dequeuing, so a fast source isn't consumed ahead of a
+            // slower one.  Without this, asymmetric drain causes the
+            // faster source's channel to close first, its slot to be
+            // removed, and the compositor to keep running with only the
+            // slower source — producing frames with missing layers.
             let mut any_new_frame = false;
-            for slot in &mut slots {
-                if is_oneshot {
+
+            if is_oneshot {
+                // Pass 1: verify all active slots have at least one
+                // pending frame.  Closed channels are considered ready
+                // (they may still have buffered data to drain).
+                let all_active_ready = slots.iter().all(|s| !s.rx.is_empty() || s.rx.is_closed());
+
+                if !all_active_ready {
+                    if slots.iter().all(|s| s.rx.is_closed() && s.rx.is_empty()) {
+                        stop_reason = "all_inputs_closed";
+                        break;
+                    }
+                    continue; // wait for slower sources to catch up
+                }
+
+                // Pass 2: all active slots are ready — dequeue one from each.
+                for slot in &mut slots {
                     if let Ok(Packet::Video(frame)) = slot.rx.try_recv() {
-                        // Detect source dimension changes → trigger layout re-emission.
                         let new_dims = (frame.width, frame.height);
                         if slot.last_source_dims != Some(new_dims) {
                             slot.last_source_dims = Some(new_dims);
@@ -902,7 +924,9 @@ impl ProcessorNode for CompositorNode {
                         slot.latest_frame = Some(frame);
                         any_new_frame = true;
                     }
-                } else {
+                }
+            } else {
+                for slot in &mut slots {
                     let mut latest: Option<VideoFrame> = None;
                     let mut dropped: u64 = 0;
                     while let Ok(Packet::Video(frame)) = slot.rx.try_recv() {
@@ -934,6 +958,8 @@ impl ProcessorNode for CompositorNode {
 
             // In oneshot mode, skip compositing when no slot received a
             // new frame this tick — avoids duplicating stale content.
+            // (The frame-aligned readiness check above already handles
+            // the case where active slots are waiting for data.)
             if is_oneshot && !any_new_frame {
                 if slots.iter().all(|s| s.rx.is_closed() && s.rx.is_empty()) {
                     stop_reason = "all_inputs_closed";

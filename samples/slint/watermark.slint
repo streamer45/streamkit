@@ -1,0 +1,97 @@
+// SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+//
+// SPDX-License-Identifier: MPL-2.0
+
+// Semi-transparent channel watermark / bug overlay.
+//
+// A branded badge with a pulsing "live" indicator, suitable for
+// compositing into a corner of the video frame.  The pulse animates
+// when rendered with `static_ui: false`; with `static_ui: true` the
+// glow ring provides a static visual accent.
+//
+// Properties can be updated at runtime via UpdateParams JSON:
+//   channel, tagline
+
+export component Watermark inherits Window {
+    in property <string> channel: "StreamKit";
+    in property <string> tagline: "LIVE";
+
+    // Toggle once per second — drives the live-indicator glow.
+    property <bool> pulse-state: true;
+
+    width: 180px;
+    height: 44px;
+    background: transparent;
+
+    Timer {
+        interval: 1s;
+        running: true;
+        triggered() => {
+            root.pulse-state = !root.pulse-state;
+        }
+    }
+
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        border-radius: 8px;
+        background: #000000b3;
+
+        // Subtle top-edge highlight.
+        Rectangle {
+            x: 8px;
+            y: 0px;
+            width: parent.width - 16px;
+            height: 1px;
+            background: #ffffff15;
+        }
+
+        HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 14px;
+            spacing: 10px;
+
+            // Live indicator with animated glow ring.
+            VerticalLayout {
+                alignment: center;
+
+                Rectangle {
+                    width: 14px;
+                    height: 14px;
+                    border-radius: 7px;
+                    background: root.pulse-state ? #e6394640 : #e6394618;
+                    animate background { duration: 600ms; easing: ease-in-out; }
+
+                    Rectangle {
+                        x: 3px;
+                        y: 3px;
+                        width: 8px;
+                        height: 8px;
+                        border-radius: 4px;
+                        background: root.pulse-state ? #e63946 : #e63946aa;
+                        animate background { duration: 600ms; easing: ease-in-out; }
+                    }
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                spacing: 1px;
+
+                Text {
+                    text: root.channel;
+                    color: #ffffff;
+                    font-size: 14px;
+                    font-weight: 700;
+                }
+                Text {
+                    text: root.tagline;
+                    color: #ffffffcc;
+                    font-size: 9px;
+                    font-weight: 700;
+                    letter-spacing: 3px;
+                }
+            }
+        }
+    }
+}
