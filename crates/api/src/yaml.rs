@@ -119,6 +119,9 @@ pub struct ClientSection {
     pub input: Option<InputConfig>,
     /// Output rendering configuration (oneshot pipelines).
     pub output: Option<OutputConfig>,
+    /// Declarative overlay controls for runtime node tuning (dynamic pipelines).
+    #[serde(default)]
+    pub controls: Option<Vec<ControlConfig>>,
 }
 
 /// Browser-side publish configuration for dynamic pipelines.
@@ -320,6 +323,75 @@ pub struct FieldHint {
     pub accept: Option<String>,
     /// Placeholder text for text inputs.
     pub placeholder: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Declarative overlay controls — interactive widgets for runtime tuning
+// ---------------------------------------------------------------------------
+
+/// The kind of interactive control widget rendered in the StreamView.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlType {
+    /// Boolean on/off switch.
+    Toggle,
+    /// Debounced text input.
+    Text,
+    /// Numeric slider with min/max/step.
+    Number,
+    /// Action button that sends a fixed value on click.
+    Button,
+}
+
+/// A single declarative control entry in the `client.controls` array.
+///
+/// Each control targets a specific node + property and renders as a widget
+/// in the StreamView.  On interaction the frontend sends a `TuneNodeAsync`
+/// / `UpdateParams` message to the targeted node.
+///
+/// The `property` field uses dot-notation paths (e.g. `"properties.home_score"`)
+/// so the frontend can build the correct nested JSON payload.  A flat path
+/// like `"gain_db"` produces `{"gain_db": <value>}`.
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+#[ts(export)]
+pub struct ControlConfig {
+    /// Human-readable label shown next to the widget.
+    pub label: String,
+    /// Widget type.
+    #[serde(rename = "type")]
+    pub control_type: ControlType,
+    /// Target node ID in the pipeline graph.
+    pub node: String,
+    /// Dot-notation property path, e.g. `"properties.home_score"`.
+    pub property: String,
+    /// Optional grouping label — controls with the same group are rendered
+    /// together under a shared heading.
+    #[serde(default)]
+    pub group: Option<String>,
+    /// Initial value for the UI widget.  This is a **UI-only hint** — it
+    /// seeds the local component state but is *not* sent to the server on
+    /// mount.  Pipeline authors should ensure defaults here match the
+    /// node's own initial params to avoid a visual desync before the first
+    /// user interaction.
+    #[serde(default)]
+    #[ts(type = "unknown")]
+    pub default: Option<serde_json::Value>,
+    // -- Number-only fields --
+    /// Minimum value (number controls).
+    #[serde(default)]
+    pub min: Option<f64>,
+    /// Maximum value (number controls).
+    #[serde(default)]
+    pub max: Option<f64>,
+    /// Step increment (number controls).
+    #[serde(default)]
+    pub step: Option<f64>,
+    // -- Button-only field --
+    /// Fixed value sent on click (button controls).  Defaults to `true`.
+    #[serde(default)]
+    #[ts(type = "unknown")]
+    pub value: Option<serde_json::Value>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1046,6 +1118,8 @@ pub fn lint_client_section(client: &ClientSection, mode: EngineMode) -> Vec<Clie
 /// Callers construct this from either `UserPipeline::Dag` nodes or
 /// `UserPipeline::Steps` steps.
 pub struct NodeInfo<'a> {
+    /// The user-facing node ID (the key in the `nodes:` map).
+    pub name: &'a str,
     pub kind: &'a str,
     pub params: Option<&'a serde_json::Value>,
 }
@@ -1076,6 +1150,10 @@ pub struct NodeInfo<'a> {
 ///     `transport::moq::subscriber` node.
 /// 20. **`broadcast-mismatch`** — `publish.broadcast` or `watch.broadcast`
 ///     does not match any broadcast name configured on MoQ transport nodes.
+/// 21. **`control-unknown-node`** — a `controls` entry targets a `node` that
+///     does not exist in the pipeline's `nodes` map.
+/// 22. **`control-number-no-bounds`** — a `number` control is missing `min`
+///     and/or `max`, so the slider will lack proper bounds.
 pub fn lint_client_against_nodes(
     client: &ClientSection,
     _mode: EngineMode,
@@ -1301,6 +1379,50 @@ pub fn lint_client_against_nodes(
                         ),
                     });
                 }
+            }
+        }
+    }
+
+    // Rule 21: control-unknown-node — control.node not in pipeline's nodes map
+    // Rule 22: control-number-no-bounds — number control without min/max
+    if let Some(ref controls) = client.controls {
+        let node_names: Vec<&str> = nodes.iter().map(|n| n.name).collect();
+
+        for control in controls {
+            if !node_names.iter().any(|n| *n == control.node) {
+                warnings.push(ClientLintWarning {
+                    rule: "control-unknown-node",
+                    message: format!(
+                        "control `{}` targets node `{}` which does not exist in the pipeline. \
+                         Known nodes: {}.",
+                        control.label,
+                        control.node,
+                        if node_names.is_empty() {
+                            "(none)".to_string()
+                        } else {
+                            node_names.join(", ")
+                        }
+                    ),
+                });
+            }
+
+            if matches!(control.control_type, ControlType::Number)
+                && (control.min.is_none() || control.max.is_none())
+            {
+                warnings.push(ClientLintWarning {
+                    rule: "control-number-no-bounds",
+                    message: format!(
+                        "control `{}` is type `number` but is missing {} — the slider \
+                         will not have proper bounds.",
+                        control.label,
+                        match (control.min.is_none(), control.max.is_none()) {
+                            (true, true) => "`min` and `max`",
+                            (true, false) => "`min`",
+                            (false, true) => "`max`",
+                            _ => unreachable!(),
+                        }
+                    ),
+                });
             }
         }
     }
@@ -2075,6 +2197,7 @@ client:
             }),
             input: None,
             output: None,
+            ..Default::default()
         }
     }
 
@@ -2093,6 +2216,7 @@ client:
                 field_hints: None,
             }),
             output: Some(OutputConfig { output_type: OutputType::Audio }),
+            ..Default::default()
         }
     }
 
@@ -2150,6 +2274,7 @@ client:
             watch: None,
             input: None,
             output: None,
+            ..Default::default()
         };
         let warnings = lint_client_section(&c, EngineMode::Dynamic);
         assert!(warnings.iter().any(|w| w.rule == "missing-gateway"));
@@ -2274,6 +2399,7 @@ client:
                 field_hints: None,
             }),
             output: Some(OutputConfig { output_type: OutputType::Video }),
+            ..Default::default()
         };
         let warnings = lint_client_section(&c, EngineMode::OneShot);
         assert!(warnings.iter().any(|w| w.rule == "input-none-with-accept"));
@@ -2294,6 +2420,7 @@ client:
                 field_hints: None,
             }),
             output: Some(OutputConfig { output_type: OutputType::Audio }),
+            ..Default::default()
         };
         let warnings = lint_client_section(&c, EngineMode::OneShot);
         assert!(warnings.iter().any(|w| w.rule == "input-trigger-with-accept"));
@@ -2319,6 +2446,7 @@ client:
                 field_hints: Some(hints),
             }),
             output: Some(OutputConfig { output_type: OutputType::Video }),
+            ..Default::default()
         };
         let warnings = lint_client_section(&c, EngineMode::OneShot);
         assert!(warnings.iter().any(|w| w.rule == "field-hints-no-input"));
@@ -2339,6 +2467,7 @@ client:
                 field_hints: None,
             }),
             output: Some(OutputConfig { output_type: OutputType::Audio }),
+            ..Default::default()
         };
         let warnings = lint_client_section(&c, EngineMode::OneShot);
         assert!(warnings.iter().any(|w| w.rule == "asset-tags-no-input"));
@@ -2359,6 +2488,7 @@ client:
                 field_hints: None,
             }),
             output: Some(OutputConfig { output_type: OutputType::Audio }),
+            ..Default::default()
         };
         let warnings = lint_client_section(&c, EngineMode::OneShot);
         assert!(warnings.iter().any(|w| w.rule == "text-no-placeholder"));
@@ -2374,7 +2504,15 @@ client:
     }
 
     fn node<'a>(kind: &'a str, params: Option<&'a serde_json::Value>) -> NodeInfo<'a> {
-        NodeInfo { kind, params }
+        NodeInfo { name: kind, kind, params }
+    }
+
+    fn named_node<'a>(
+        name: &'a str,
+        kind: &'a str,
+        params: Option<&'a serde_json::Value>,
+    ) -> NodeInfo<'a> {
+        NodeInfo { name, kind, params }
     }
 
     // Rule 13 — input-requires-http-input
@@ -2774,6 +2912,112 @@ client:
         assert!(
             !warnings.iter().any(|w| w.rule == "broadcast-mismatch"),
             "Should not warn when broadcast names match: {warnings:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Client-vs-nodes cross-validation tests (rules 21–22: controls)
+    // -----------------------------------------------------------------------
+
+    // Rule 21 — control-unknown-node
+    #[test]
+    fn test_lint_control_unknown_node() {
+        let c = ClientSection {
+            controls: Some(vec![ControlConfig {
+                label: "Show".into(),
+                control_type: ControlType::Toggle,
+                node: "nonexistent".into(),
+                property: "properties.show".into(),
+                group: None,
+                default: None,
+                min: None,
+                max: None,
+                step: None,
+                value: None,
+            }]),
+            ..Default::default()
+        };
+        let nodes = vec![named_node("lower_third", "plugin::slint", None)];
+        let warnings = lint_client_against_nodes(&c, EngineMode::Dynamic, &nodes);
+        assert!(
+            warnings.iter().any(|w| w.rule == "control-unknown-node"),
+            "Should warn when control targets unknown node: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_lint_control_known_node_clean() {
+        let c = ClientSection {
+            controls: Some(vec![ControlConfig {
+                label: "Show".into(),
+                control_type: ControlType::Toggle,
+                node: "lower_third".into(),
+                property: "properties.show".into(),
+                group: None,
+                default: None,
+                min: None,
+                max: None,
+                step: None,
+                value: None,
+            }]),
+            ..Default::default()
+        };
+        let nodes = vec![named_node("lower_third", "plugin::slint", None)];
+        let warnings = lint_client_against_nodes(&c, EngineMode::Dynamic, &nodes);
+        assert!(
+            !warnings.iter().any(|w| w.rule == "control-unknown-node"),
+            "Should not warn when control targets known node: {warnings:?}"
+        );
+    }
+
+    // Rule 22 — control-number-no-bounds
+    #[test]
+    fn test_lint_control_number_no_bounds() {
+        let c = ClientSection {
+            controls: Some(vec![ControlConfig {
+                label: "Score".into(),
+                control_type: ControlType::Number,
+                node: "scoreboard".into(),
+                property: "properties.home_score".into(),
+                group: None,
+                default: None,
+                min: None,
+                max: None,
+                step: None,
+                value: None,
+            }]),
+            ..Default::default()
+        };
+        let nodes = vec![named_node("scoreboard", "plugin::slint", None)];
+        let warnings = lint_client_against_nodes(&c, EngineMode::Dynamic, &nodes);
+        assert!(
+            warnings.iter().any(|w| w.rule == "control-number-no-bounds"),
+            "Should warn when number control has no min/max: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_lint_control_number_with_bounds_clean() {
+        let c = ClientSection {
+            controls: Some(vec![ControlConfig {
+                label: "Score".into(),
+                control_type: ControlType::Number,
+                node: "scoreboard".into(),
+                property: "properties.home_score".into(),
+                group: None,
+                default: None,
+                min: Some(0.0),
+                max: Some(99.0),
+                step: Some(1.0),
+                value: None,
+            }]),
+            ..Default::default()
+        };
+        let nodes = vec![named_node("scoreboard", "plugin::slint", None)];
+        let warnings = lint_client_against_nodes(&c, EngineMode::Dynamic, &nodes);
+        assert!(
+            !warnings.iter().any(|w| w.rule == "control-number-no-bounds"),
+            "Should not warn when number control has min and max: {warnings:?}"
         );
     }
 

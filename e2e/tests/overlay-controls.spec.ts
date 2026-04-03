@@ -1,0 +1,243 @@
+// SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+//
+// SPDX-License-Identifier: MPL-2.0
+
+import { test, expect, request } from '@playwright/test';
+
+import { ensureLoggedIn, getAuthHeaders } from './auth-helpers';
+import { type ConsoleErrorCollector, createConsoleErrorCollector } from './test-helpers';
+
+/**
+ * E2E tests for the declarative overlay controls feature.
+ *
+ * Uses the "Test: Overlay Controls" sample pipeline which includes all four
+ * control types (toggle, text, number, button) and requires only core nodes
+ * (video::colorbars → core::sink) — no plugins or MoQ gateway needed.
+ */
+test.describe('Stream View - Overlay Controls', () => {
+  let collector: ConsoleErrorCollector;
+  let sessionId: string | null = null;
+
+  // Captured WebSocket messages sent from the client.
+  let wsSentMessages: unknown[] = [];
+
+  test.beforeEach(async ({ page }) => {
+    collector = createConsoleErrorCollector(page);
+    wsSentMessages = [];
+
+    // Intercept outgoing WebSocket messages to verify control payloads.
+    page.on('websocket', (ws) => {
+      ws.on('framesent', (frame) => {
+        try {
+          const data = JSON.parse(frame.payload as string);
+          wsSentMessages.push(data);
+        } catch {
+          // Ignore non-JSON frames.
+        }
+      });
+    });
+
+    await page.goto('/stream');
+    await ensureLoggedIn(page);
+    if (!page.url().includes('/stream')) {
+      await page.goto('/stream');
+    }
+    await expect(page.getByTestId('stream-view')).toBeVisible();
+  });
+
+  test('renders all control types and sends correct UpdateParams on interaction', async ({
+    page,
+  }) => {
+    test.setTimeout(60_000);
+
+    // ── 1. Select the overlay-controls test pipeline ─────────────────
+    const templateCard = page.getByText('Test: Overlay Controls', {
+      exact: true,
+    });
+    await expect(templateCard).toBeVisible({ timeout: 15_000 });
+    await templateCard.click();
+
+    // ── 2. Create session ────────────────────────────────────────────
+    const createButton = page.getByRole('button', { name: /Create Session/i });
+    await expect(createButton).toBeEnabled({ timeout: 5_000 });
+    await createButton.click();
+
+    const activeBadge = page.getByText('Session Active');
+    await expect(activeBadge).toBeVisible({ timeout: 15_000 });
+
+    const sessionIdText = await page.getByText(/Session ID:/).textContent();
+    sessionId = sessionIdText?.replace(/Session ID:\s*/, '').trim() ?? null;
+
+    // ── 3. Verify "Pipeline Controls" section appears ────────────────
+    const controls = page.getByTestId('overlay-controls');
+    await expect(controls).toBeVisible({ timeout: 5_000 });
+    await expect(controls.getByText('Pipeline Controls', { exact: true })).toBeVisible();
+
+    // ── 4. Verify all control labels are rendered ────────────────────
+    // Scope all locators to the controls section to avoid collisions
+    // with the YAML editor that also displays control label strings.
+    // Use label locators to avoid collisions with button text.
+    const labels = controls.locator('label');
+    await expect(labels.filter({ hasText: 'Draw Time' })).toBeVisible();
+    await expect(labels.filter({ hasText: 'Label' })).toBeVisible();
+    await expect(labels.filter({ hasText: 'Width' })).toBeVisible();
+    await expect(labels.filter({ hasText: 'Height' })).toBeVisible();
+    await expect(labels.filter({ hasText: 'Reset' })).toBeVisible();
+
+    // Verify group heading.
+    await expect(controls.getByText('Dimensions', { exact: true })).toBeVisible();
+
+    // ── 5. Exercise toggle control ───────────────────────────────────
+    // The toggle defaults to true (checked).  Click it to toggle off.
+    const toggleButton = controls.locator('button[aria-label="Draw Time"]');
+    await expect(toggleButton).toBeVisible();
+    await toggleButton.click();
+
+    // Wait for the WS message to be sent.
+    await page.waitForTimeout(200);
+
+    // Find the TuneNodeAsync message for the toggle.
+    const toggleMsg = wsSentMessages.find(
+      (m: unknown) =>
+        typeof m === 'object' &&
+        m !== null &&
+        (m as Record<string, unknown>).type === 'request' &&
+        ((m as Record<string, Record<string, unknown>>).payload?.action === 'tunenodeasync' ||
+          (m as Record<string, Record<string, unknown>>).payload?.action === 'TuneNodeAsync') &&
+        (m as Record<string, Record<string, unknown>>).payload?.node_id === 'colorbars'
+    );
+    expect(toggleMsg, 'Expected a TuneNodeAsync message for the toggle control').toBeTruthy();
+
+    const togglePayload = (toggleMsg as Record<string, Record<string, Record<string, unknown>>>)
+      .payload?.message?.UpdateParams;
+    expect(togglePayload, 'Toggle should send { draw_time: false }').toEqual({
+      draw_time: false,
+    });
+
+    // ── 6. Exercise text control ─────────────────────────────────────
+    const textInput = controls.locator('input[placeholder="Label"]');
+    await expect(textInput).toBeVisible();
+    // Clear the default value and type a new one.
+    await textInput.fill('World');
+
+    // Text is debounced at 300ms — wait for it to fire.
+    await page.waitForTimeout(500);
+
+    const textMsg = wsSentMessages.find(
+      (m: unknown) =>
+        typeof m === 'object' &&
+        m !== null &&
+        (m as Record<string, unknown>).type === 'request' &&
+        ((m as Record<string, Record<string, unknown>>).payload?.action === 'tunenodeasync' ||
+          (m as Record<string, Record<string, unknown>>).payload?.action === 'TuneNodeAsync') &&
+        (m as Record<string, Record<string, unknown>>).payload?.node_id === 'colorbars' &&
+        typeof (
+          (m as Record<string, Record<string, Record<string, unknown>>>).payload?.message
+            ?.UpdateParams as Record<string, unknown>
+        )?.label === 'string'
+    );
+    expect(textMsg, 'Expected a TuneNodeAsync message for the text control').toBeTruthy();
+
+    const textPayload = (textMsg as Record<string, Record<string, Record<string, unknown>>>).payload
+      ?.message?.UpdateParams;
+    expect(textPayload, 'Text should send { label: "World" }').toEqual({
+      label: 'World',
+    });
+
+    // ── 7. Exercise number/slider control ────────────────────────────
+    // Clear previous messages to isolate slider messages.
+    wsSentMessages.length = 0;
+
+    const slider = controls.locator('input[type="range"]').first();
+    await expect(slider).toBeVisible();
+
+    // Set the slider to a specific value via fill (simulates user input).
+    await slider.fill('800');
+
+    // Throttled — wait for trailing edge.
+    await page.waitForTimeout(300);
+
+    const sliderMsg = wsSentMessages.find(
+      (m: unknown) =>
+        typeof m === 'object' &&
+        m !== null &&
+        (m as Record<string, unknown>).type === 'request' &&
+        ((m as Record<string, Record<string, unknown>>).payload?.action === 'tunenodeasync' ||
+          (m as Record<string, Record<string, unknown>>).payload?.action === 'TuneNodeAsync') &&
+        (m as Record<string, Record<string, unknown>>).payload?.node_id === 'colorbars' &&
+        (
+          (m as Record<string, Record<string, Record<string, unknown>>>).payload?.message
+            ?.UpdateParams as Record<string, unknown>
+        )?.properties !== undefined
+    );
+    expect(sliderMsg, 'Expected a TuneNodeAsync message for the slider control').toBeTruthy();
+
+    const sliderPayload = (sliderMsg as Record<string, Record<string, Record<string, unknown>>>)
+      .payload?.message?.UpdateParams;
+    // Width slider: dot-notation "properties.width" → nested { properties: { width: 800 } }
+    expect(sliderPayload).toHaveProperty('properties');
+    expect((sliderPayload as Record<string, Record<string, unknown>>).properties).toHaveProperty(
+      'width'
+    );
+
+    // ── 8. Exercise button control ───────────────────────────────────
+    wsSentMessages.length = 0;
+
+    const resetButton = controls.getByRole('button', { name: 'Reset' });
+    await expect(resetButton).toBeVisible();
+    await resetButton.click();
+
+    await page.waitForTimeout(200);
+
+    const buttonMsg = wsSentMessages.find(
+      (m: unknown) =>
+        typeof m === 'object' &&
+        m !== null &&
+        (m as Record<string, unknown>).type === 'request' &&
+        ((m as Record<string, Record<string, unknown>>).payload?.action === 'tunenodeasync' ||
+          (m as Record<string, Record<string, unknown>>).payload?.action === 'TuneNodeAsync') &&
+        (m as Record<string, Record<string, unknown>>).payload?.node_id === 'colorbars' &&
+        (
+          (m as Record<string, Record<string, Record<string, unknown>>>).payload?.message
+            ?.UpdateParams as Record<string, unknown>
+        )?.reset === true
+    );
+    expect(buttonMsg, 'Expected a TuneNodeAsync message for the button control').toBeTruthy();
+
+    // ── 9. Assert no unexpected console errors ───────────────────────
+    const unexpected = collector.getUnexpected();
+    expect(unexpected, `Unexpected console errors: ${unexpected.join('; ')}`).toHaveLength(0);
+    collector.stop();
+
+    // ── 10. Destroy session ──────────────────────────────────────────
+    const destroyButton = page.getByRole('button', {
+      name: /Destroy Session/i,
+    });
+    await expect(destroyButton).toBeVisible();
+    await destroyButton.click();
+
+    const confirmModal = page.getByTestId('confirm-modal');
+    await expect(confirmModal).toBeVisible();
+    await confirmModal.getByRole('button', { name: /Destroy Session/i }).click();
+
+    await expect(createButton).toBeVisible({ timeout: 15_000 });
+    sessionId = null;
+  });
+
+  // Safety-net cleanup.
+  test.afterEach(async ({ baseURL }) => {
+    if (sessionId) {
+      try {
+        const apiContext = await request.newContext({
+          baseURL: baseURL!,
+          extraHTTPHeaders: getAuthHeaders(),
+        });
+        await apiContext.delete(`/api/v1/sessions/${sessionId}`);
+        await apiContext.dispose();
+      } catch {
+        // Best-effort cleanup; ignore errors.
+      }
+      sessionId = null;
+    }
+  });
+});
