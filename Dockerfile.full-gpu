@@ -619,6 +619,7 @@ ARG CUDA_VERSION
 FROM nvidia/cuda:${CUDA_VERSION}-cudnn9-runtime-ubuntu22.04
 
 # Install runtime dependencies and debugging tools
+# libvulkan1: required by wgpu compositor for GPU-accelerated compositing via Vulkan
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     libssl3 \
@@ -627,6 +628,7 @@ RUN apt-get update && apt-get install -y \
     libgomp1 \
     libfontconfig1 \
     fonts-dejavu-core \
+    libvulkan1 \
     gdb \
     curl \
     iproute2 \
