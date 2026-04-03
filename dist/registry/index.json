@@ -100,6 +100,20 @@
       ]
     },
     {
+      "id": "slint",
+      "name": "Slint",
+      "description": "Slint UI rendering as a video source \u2014 render .slint files to RGBA8 frames at configurable resolution and frame rate",
+      "latest": "0.1.0",
+      "versions": [
+        {
+          "version": "0.1.0",
+          "manifest_url": "https://streamkit.dev/registry/plugins/slint/0.1.0/manifest.json",
+          "signature_url": "https://streamkit.dev/registry/plugins/slint/0.1.0/manifest.minisig",
+          "published_at": "2026-04-03"
+        }
+      ]
+    },
+    {
       "id": "supertonic",
       "name": "Supertonic",
       "description": "Multilingual TTS using Supertonic (66M params, 5 languages, up to 167x real-time)",
