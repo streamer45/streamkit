@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-# Demo image: CPU-only with all core plugins (including Pocket TTS and Supertonic) and sample pipelines
+# Demo image: CPU-only with all core plugins (including Pocket TTS, Supertonic, and Slint) and sample pipelines
 # syntax=docker/dockerfile:1
 
 # Version configuration
@@ -528,6 +528,39 @@ RUN mkdir -p /build/models && \
     tar xf supertonic-v2-onnx.tar.bz2 && \
     rm supertonic-v2-onnx.tar.bz2
 
+# Stage 13: Build Slint UI plugin
+FROM rust:1.92-slim-bookworm AS slint-builder
+
+WORKDIR /build
+
+# Install build dependencies (libfontconfig1-dev needed by Slint's software renderer)
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    g++ \
+    cmake \
+    curl \
+    libclang-dev \
+    clang \
+    git \
+    libfontconfig1-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy only what's needed to build slint plugin
+COPY Cargo.toml Cargo.lock ./
+COPY crates/core ./crates/core
+COPY sdks/plugin-sdk ./sdks/plugin-sdk
+COPY plugins/native/slint ./plugins/native/slint
+
+# Build slint plugin
+RUN --mount=type=cache,id=cargo-registry-slint,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=cargo-git-slint,target=/usr/local/cargo/git \
+    --mount=type=cache,id=slint-target,target=/build/plugins/native/slint/target \
+    cd plugins/native/slint && \
+    cargo build --release --target-dir target && \
+    mkdir -p /build/plugins/native && \
+    cp target/release/libslint.so /build/plugins/native/
+
 # Runtime stage
 FROM debian:bookworm-slim
 
@@ -538,6 +571,8 @@ RUN apt-get update && apt-get install -y \
     libopus0 \
     libvpx7 \
     libgomp1 \
+    libfontconfig1 \
+    fonts-dejavu-core \
     gdb \
     curl \
     && rm -rf /var/lib/apt/lists/*
@@ -592,10 +627,16 @@ COPY --chown=app:app --from=pocket-tts-builder /build/models/pocket-tts /opt/str
 COPY --chown=app:app --from=supertonic-builder /build/plugins/native/* /opt/streamkit/plugins/native/
 COPY --chown=app:app --from=supertonic-builder /build/models/supertonic-v2-onnx /opt/streamkit/models/supertonic-v2-onnx
 
+# Copy slint plugin (no models needed)
+COPY --chown=app:app --from=slint-builder /build/plugins/native/* /opt/streamkit/plugins/native/
+
 # Copy sample pipelines + small bundled audio samples (Opus/Ogg only)
 COPY --chown=app:app samples/pipelines /opt/streamkit/samples/pipelines
 COPY --chown=app:app samples/audio/system/*.ogg samples/audio/system/*.ogg.license /opt/streamkit/samples/audio/system/
 COPY --chown=app:app samples/audio/system/*.opus samples/audio/system/*.opus.license /opt/streamkit/samples/audio/system/
+
+# Copy Slint UI source files (referenced by sample pipelines)
+COPY --chown=app:app samples/slint /opt/streamkit/samples/slint
 
 # Demo image uses a single tiny multilingual Whisper model, but the committed sample pipelines
 # reference a mix of base.en/tiny.en/multilingual model filenames. Rewrite them inside the image
