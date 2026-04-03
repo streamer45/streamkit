@@ -686,17 +686,16 @@ impl NativeNodeWrapper {
                     self.state.finish_call();
                     let ti = std::time::Duration::from_micros(cfg.tick_interval_us.max(1));
                     (ti, cfg.max_ticks)
-                }
+                },
                 _ => {
                     if handle.is_some() {
                         self.state.finish_call();
                     }
                     // Fall back to static metadata from load-time probe.
-                    let ti = std::time::Duration::from_micros(
-                        self.metadata.tick_interval_us.max(1),
-                    );
+                    let ti =
+                        std::time::Duration::from_micros(self.metadata.tick_interval_us.max(1));
                     (ti, self.metadata.max_ticks)
-                }
+                },
             }
         };
         let mut tick_count: u64 = 0;
