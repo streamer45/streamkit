@@ -311,6 +311,7 @@ export const TextInputControl: React.FC<TextInputControlProps> = ({
     (value: string) => {
       clearTimeout(timerRef.current);
       timerRef.current = setTimeout(() => {
+        timerRef.current = undefined;
         tuneRef.current(nodeId, buildParamUpdate(config.path, value));
         isEditingRef.current = false;
       }, TEXT_DEBOUNCE_MS);
