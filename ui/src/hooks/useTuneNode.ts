@@ -9,6 +9,11 @@ import { getWebSocketService } from '@/services/websocket';
 import { writeNodeParams } from '@/stores/sessionAtoms';
 import type { Request, MessageType } from '@/types/types';
 
+// Resolved once at module level — getWebSocketService returns a singleton,
+// so hoisting it avoids a new reference on every render and keeps
+// tuneNodeConfig's useCallback deps minimal.
+const wsService = getWebSocketService();
+
 /**
  * Lightweight hook that only provides `tuneNodeConfig` without subscribing
  * to pipeline or connection state.  Use this in components that need to
@@ -17,8 +22,6 @@ import type { Request, MessageType } from '@/types/types';
  * broader `useSession` hook's subscriptions.
  */
 export function useTuneNode(sessionId: string | null) {
-  const wsService = getWebSocketService();
-
   const tuneNodeConfig = useCallback(
     (nodeId: string, config: Record<string, unknown>) => {
       if (!sessionId) return;
@@ -40,7 +43,7 @@ export function useTuneNode(sessionId: string | null) {
 
       wsService.sendFireAndForget(request);
     },
-    [sessionId, wsService]
+    [sessionId]
   );
 
   return { tuneNodeConfig };

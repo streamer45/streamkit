@@ -369,7 +369,11 @@ pub struct ControlConfig {
     /// together under a shared heading.
     #[serde(default)]
     pub group: Option<String>,
-    /// Default value sent on first render / reset.
+    /// Initial value for the UI widget.  This is a **UI-only hint** — it
+    /// seeds the local component state but is *not* sent to the server on
+    /// mount.  Pipeline authors should ensure defaults here match the
+    /// node's own initial params to avoid a visual desync before the first
+    /// user interaction.
     #[serde(default)]
     #[ts(type = "unknown")]
     pub default: Option<serde_json::Value>,

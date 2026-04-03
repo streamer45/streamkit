@@ -171,11 +171,20 @@ const ToggleControl: React.FC<{
     return false;
   });
 
+  // Ref pattern matching TextControl/NumberControl so rapid double-clicks
+  // always see the latest checked state and the latest onSend callback.
+  const onSendRef = useRef(onSend);
+  useEffect(() => {
+    onSendRef.current = onSend;
+  }, [onSend]);
+
   const handleToggle = useCallback(() => {
-    const next = !checked;
-    setChecked(next);
-    onSend(next);
-  }, [checked, onSend]);
+    setChecked((prev) => {
+      const next = !prev;
+      onSendRef.current(next);
+      return next;
+    });
+  }, []);
 
   return <ToggleTrack checked={checked} onClick={handleToggle} aria-label={control.label} />;
 };
@@ -228,7 +237,6 @@ const NumberControl: React.FC<{
   const defaultValue = typeof control.default === 'number' ? control.default : min;
 
   const [localValue, setLocalValue] = useState<number>(defaultValue);
-  const isDraggingRef = useRef(false);
 
   // Store onSend in a ref so the throttle closure is stable and always
   // calls the latest callback without recreating the throttle function.
@@ -259,14 +267,12 @@ const NumberControl: React.FC<{
   );
 
   const handlePointerDown = useCallback((e: React.PointerEvent<HTMLInputElement>) => {
-    isDraggingRef.current = true;
     e.stopPropagation();
     e.currentTarget.setPointerCapture?.(e.pointerId);
   }, []);
 
   const handlePointerUp = useCallback(
     (e: React.PointerEvent<HTMLInputElement>) => {
-      isDraggingRef.current = false;
       e.stopPropagation();
       e.currentTarget.releasePointerCapture?.(e.pointerId);
       throttledSend.flush?.();
@@ -333,7 +339,8 @@ const OverlayControls: React.FC<OverlayControlsProps> = ({ pipelineYaml, session
     [pipelineYaml]
   );
 
-  // Build a stable send callback per control (keyed by node+property).
+  // Build a send callback for a control. A new closure is created per
+  // render, but child controls absorb this via onSendRef so it is safe.
   const makeSend = useCallback(
     (control: ControlConfig) => (value: unknown) => {
       const update = buildParamUpdate(control.property, value);
