@@ -226,6 +226,7 @@ export const BooleanToggleControl: React.FC<BooleanToggleControlProps> = ({
 
   const handleToggle = useCallback(() => {
     const next = !checkedRef.current;
+    checkedRef.current = next;
     setChecked(next);
     tuneRef.current(nodeId, buildParamUpdate(config.path, next));
   }, [nodeId, config.path]);
