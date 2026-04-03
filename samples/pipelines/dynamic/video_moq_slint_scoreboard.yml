@@ -73,8 +73,8 @@ nodes:
       slint_file: samples/slint/lower_third.slint
       properties:
         name: "Alex Johnson"
-        title: "Forward · #17"
-        visible: true
+        subtitle: "Forward · #17"
+        show: true
 
   compositor:
     kind: video::compositor

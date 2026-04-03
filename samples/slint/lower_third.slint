@@ -4,61 +4,96 @@
 
 // Broadcast lower-third overlay with a slide-in animation.
 //
-// Set `visible` to `true` to slide in, `false` to slide out.
+// Set `show` to `true` to slide in, `false` to slide out.
 // Properties can be updated at runtime via UpdateParams JSON:
-//   name, title, visible
+//   name, subtitle, show
 
 export component LowerThird inherits Window {
     in property <string> name: "Player Name";
-    in property <string> title: "Position";
-    in property <bool> visible: true;
+    in property <string> subtitle: "Position";
+    in property <bool> show: true;
 
     width: 350px;
     height: 70px;
-    clip: true;
     background: transparent;
 
-    // Content container that slides in/out.
+    // Clip wrapper — `clip` is only valid on Rectangle, not Window.
     Rectangle {
-        x: root.visible ? 0px : -360px;
-        y: 0px;
-        width: 350px;
-        height: 70px;
-        animate x { duration: 400ms; easing: ease-out; }
+        width: 100%;
+        height: 100%;
+        clip: true;
+        background: transparent;
 
-        // Accent bar (left edge)
+        // Content container that slides in/out.
         Rectangle {
-            x: 0px;
+            x: root.show ? 0px : -360px;
             y: 0px;
-            width: 5px;
+            width: 350px;
             height: 70px;
-            background: #e63946;
-        }
+            animate x { duration: 400ms; easing: ease-out; }
 
-        // Background panel
-        Rectangle {
-            x: 5px;
-            y: 0px;
-            width: 345px;
-            height: 70px;
-            background: #1d3557e6;
+            // Accent bar (left edge).
+            Rectangle {
+                x: 0px;
+                y: 0px;
+                width: 4px;
+                height: 70px;
+                background: #e63946;
+            }
 
-            VerticalLayout {
-                padding-left: 14px;
-                padding-top: 10px;
-                padding-bottom: 10px;
-                spacing: 4px;
+            // Thin bright highlight next to the accent bar.
+            Rectangle {
+                x: 4px;
+                y: 0px;
+                width: 1px;
+                height: 70px;
+                background: #ff6b7a;
+            }
 
-                Text {
-                    text: root.name;
-                    color: #ffffff;
-                    font-size: 20px;
-                    font-weight: 700;
+            // Background panel.
+            Rectangle {
+                x: 5px;
+                y: 0px;
+                width: 345px;
+                height: 70px;
+                background: #0d1117ee;
+
+                // Subtle top-edge highlight.
+                Rectangle {
+                    x: 0px;
+                    y: 0px;
+                    width: 100%;
+                    height: 1px;
+                    background: #ffffff12;
                 }
-                Text {
-                    text: root.title;
-                    color: #a8dadc;
-                    font-size: 14px;
+
+                VerticalLayout {
+                    padding-left: 14px;
+                    padding-top: 10px;
+                    padding-bottom: 10px;
+                    spacing: 3px;
+
+                    Text {
+                        text: root.name;
+                        color: #ffffff;
+                        font-size: 20px;
+                        font-weight: 700;
+                    }
+
+                    // Thin separator between name and subtitle.
+                    Rectangle {
+                        width: 40px;
+                        height: 1px;
+                        background: #ffffff18;
+                    }
+
+                    Text {
+                        text: root.subtitle;
+                        color: #8b949e;
+                        font-size: 13px;
+                        font-weight: 500;
+                        letter-spacing: 0.5px;
+                    }
                 }
             }
         }

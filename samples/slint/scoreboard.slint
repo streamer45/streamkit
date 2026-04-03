@@ -49,66 +49,109 @@ export component Scoreboard inherits Window {
     }
 
     Rectangle {
-        background: #1a1a2ecc;
-        border-radius: 8px;
+        background: #0d1117e8;
+        border-radius: 10px;
         width: 100%;
         height: 100%;
+        clip: true;
+
+        // Subtle top-edge highlight.
+        Rectangle {
+            x: 0px;
+            y: 0px;
+            width: 100%;
+            height: 1px;
+            background: #ffffff12;
+        }
+
+        // Home team color indicator (left edge).
+        Rectangle {
+            x: 0px;
+            y: 0px;
+            width: 3px;
+            height: 100%;
+            background: #3b82f6;
+        }
+
+        // Away team color indicator (right edge).
+        Rectangle {
+            x: parent.width - 3px;
+            y: 0px;
+            width: 3px;
+            height: 100%;
+            background: #ef4444;
+        }
 
         HorizontalLayout {
-            padding: 12px;
-            spacing: 8px;
-            alignment: center;
+            padding-left: 16px;
+            padding-right: 16px;
+            spacing: 0px;
 
             // Home team
             VerticalLayout {
+                horizontal-stretch: 1;
                 alignment: center;
+                spacing: 1px;
+
                 Text {
                     text: root.home_team;
-                    color: #e0e0e0;
-                    font-size: 14px;
+                    color: #8b949e;
+                    font-size: 11px;
+                    font-weight: 600;
+                    letter-spacing: 1px;
                     horizontal-alignment: center;
                 }
                 Text {
                     text: root.home_score;
                     color: #ffffff;
-                    font-size: 28px;
+                    font-size: 30px;
                     font-weight: 700;
                     horizontal-alignment: center;
                 }
             }
 
-            // Separator / clock
+            // Center: clock + period
             VerticalLayout {
+                horizontal-stretch: 0;
+                min-width: 100px;
                 alignment: center;
-                min-width: 80px;
+                spacing: 3px;
+
                 Text {
                     text: root.clock_display;
-                    color: #ffcc00;
-                    font-size: 18px;
+                    color: #fbbf24;
+                    font-size: 20px;
                     font-weight: 700;
                     horizontal-alignment: center;
                 }
                 Text {
                     text: root.period;
-                    color: #aaaaaa;
-                    font-size: 12px;
+                    color: #6e7681;
+                    font-size: 10px;
+                    font-weight: 600;
+                    letter-spacing: 2px;
                     horizontal-alignment: center;
                 }
             }
 
             // Away team
             VerticalLayout {
+                horizontal-stretch: 1;
                 alignment: center;
+                spacing: 1px;
+
                 Text {
                     text: root.away_team;
-                    color: #e0e0e0;
-                    font-size: 14px;
+                    color: #8b949e;
+                    font-size: 11px;
+                    font-weight: 600;
+                    letter-spacing: 1px;
                     horizontal-alignment: center;
                 }
                 Text {
                     text: root.away_score;
                     color: #ffffff;
-                    font-size: 28px;
+                    font-size: 30px;
                     font-weight: 700;
                     horizontal-alignment: center;
                 }
