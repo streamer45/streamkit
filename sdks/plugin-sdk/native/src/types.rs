@@ -373,6 +373,18 @@ pub struct CNativePluginAPI {
             *mut c_void,
         ) -> CTickResult,
     >,
+
+    // ── v4 additions ──────────────────────────────────────────────────────
+    /// Query runtime-discovered param schema after instance creation.
+    ///
+    /// Returns a JSON string describing additional tunable parameters
+    /// discovered at runtime (e.g. properties from a compiled `.slint`
+    /// file).  The host deep-merges this with the static `param_schema`
+    /// from metadata and delivers it to the UI.
+    ///
+    /// `None` when the plugin has no runtime-discovered parameters (the
+    /// common case — most plugins declare everything statically).
+    pub get_runtime_param_schema: Option<extern "C" fn(CPluginHandle) -> CResult>,
 }
 
 /// Symbol name that plugins must export

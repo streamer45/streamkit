@@ -422,6 +422,19 @@ impl Session {
         self.engine_handle.get_node_view_data().await
     }
 
+    /// Gets the runtime param schema overrides for all nodes in this session.
+    ///
+    /// Only nodes whose `ProcessorNode::runtime_param_schema()` returned
+    /// `Some` after initialization will have entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the engine handle's oneshot channel fails to receive a response,
+    /// which typically indicates the engine actor has stopped or panicked.
+    pub async fn get_runtime_schemas(&self) -> Result<HashMap<String, serde_json::Value>, String> {
+        self.engine_handle.get_runtime_schemas().await
+    }
+
     /// Registers a new preview, enforcing the per-session limit.
     ///
     /// # Errors

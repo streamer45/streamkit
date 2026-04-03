@@ -4,7 +4,12 @@
 
 import { describe, it, expect } from 'vitest';
 
-import { extractSliderConfigs, extractToggleConfigs, extractTextConfigs } from './jsonSchema';
+import {
+  extractSliderConfigs,
+  extractToggleConfigs,
+  extractTextConfigs,
+  deepMergeSchemas,
+} from './jsonSchema';
 
 describe('extractToggleConfigs', () => {
   it('returns boolean + tunable properties', () => {
@@ -229,5 +234,93 @@ describe('mixed schema extraction', () => {
     const sliders = extractSliderConfigs(schema);
     expect(sliders).toHaveLength(1);
     expect(sliders[0].key).toBe('score');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// deepMergeSchemas
+// ---------------------------------------------------------------------------
+
+describe('deepMergeSchemas', () => {
+  it('returns empty object when both are undefined', () => {
+    expect(deepMergeSchemas(undefined, undefined)).toEqual({});
+  });
+
+  it('returns base when runtime is undefined', () => {
+    const base = { properties: { gain: { type: 'number', tunable: true } } };
+    expect(deepMergeSchemas(base, undefined)).toBe(base);
+  });
+
+  it('returns runtime when base is undefined', () => {
+    const runtime = { properties: { show: { type: 'boolean', tunable: true } } };
+    expect(deepMergeSchemas(undefined, runtime)).toBe(runtime);
+  });
+
+  it('preserves base properties not in runtime', () => {
+    const base = {
+      properties: {
+        fps: { type: 'integer', default: 30 },
+        width: { type: 'integer', default: 640 },
+      },
+    };
+    const runtime = {
+      properties: {
+        show: { type: 'boolean', tunable: true, path: 'properties.show' },
+      },
+    };
+    const merged = deepMergeSchemas(base, runtime);
+    expect(merged.properties).toHaveProperty('fps');
+    expect(merged.properties).toHaveProperty('width');
+    expect(merged.properties).toHaveProperty('show');
+  });
+
+  it('runtime properties override base properties with same key', () => {
+    const base = {
+      properties: {
+        show: { type: 'boolean', default: false },
+      },
+    };
+    const runtime = {
+      properties: {
+        show: { type: 'boolean', tunable: true, path: 'properties.show' },
+      },
+    };
+    const merged = deepMergeSchemas(base, runtime);
+    expect(merged.properties?.show).toEqual({
+      type: 'boolean',
+      tunable: true,
+      path: 'properties.show',
+    });
+  });
+
+  it('merged schema works with extractors', () => {
+    const base = {
+      properties: {
+        fps: { type: 'integer', default: 30 },
+      },
+    };
+    const runtime = {
+      properties: {
+        show: { type: 'boolean', tunable: true, path: 'properties.show' },
+        score: {
+          type: 'number',
+          tunable: true,
+          minimum: 0,
+          maximum: 99,
+          path: 'properties.score',
+        },
+        name: { type: 'string', tunable: true, path: 'properties.name' },
+      },
+    };
+    const merged = deepMergeSchemas(base, runtime);
+
+    expect(extractToggleConfigs(merged)).toHaveLength(1);
+    expect(extractToggleConfigs(merged)[0].path).toBe('properties.show');
+
+    expect(extractSliderConfigs(merged)).toHaveLength(1);
+    expect(extractSliderConfigs(merged)[0].path).toBe('properties.score');
+
+    expect(extractTextConfigs(merged)).toHaveLength(1);
+    expect(extractTextConfigs(merged)[0].path).toBe('properties.name');
   });
 });

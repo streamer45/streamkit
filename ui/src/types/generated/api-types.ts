@@ -361,7 +361,13 @@ client?: ClientSection | null, nodes: Record<string, Node>, connections: Array<C
  * Resolved per-node view data (e.g., compositor layout).
  * Only populated in API responses; absent from pipeline definitions.
  */
-view_data?: Record<string, JsonValue> | null, };
+view_data?: Record<string, JsonValue> | null, 
+/**
+ * Per-instance runtime param schema overrides discovered after node
+ * initialization.  Only populated in API responses for nodes whose
+ * `ProcessorNode::runtime_param_schema()` returned `Some`.
+ */
+runtime_schemas?: Record<string, JsonValue> | null, };
 
 export type SamplePipeline = { id: string, name: string, description: string, yaml: string, is_system: boolean, mode: string, 
 /**
@@ -656,7 +662,11 @@ property: string,
  */
 group: string | null, 
 /**
- * Default value sent on first render / reset.
+ * Initial value for the UI widget.  This is a **UI-only hint** — it
+ * seeds the local component state but is *not* sent to the server on
+ * mount.  Pipeline authors should ensure defaults here match the
+ * node's own initial params to avoid a visual desync before the first
+ * user interaction.
  */
 default: unknown, 
 /**

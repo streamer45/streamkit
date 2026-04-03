@@ -54,6 +54,7 @@ pub enum QueryMessage {
     SubscribeTelemetry { response_tx: mpsc::Sender<mpsc::Receiver<TelemetryEvent>> },
     SubscribeViewData { response_tx: mpsc::Sender<mpsc::Receiver<NodeViewDataUpdate>> },
     GetNodeViewData { response_tx: mpsc::Sender<HashMap<String, serde_json::Value>> },
+    GetRuntimeSchemas { response_tx: mpsc::Sender<HashMap<String, serde_json::Value>> },
 }
 
 // Re-export ConnectionMode from core for use by pin distributor

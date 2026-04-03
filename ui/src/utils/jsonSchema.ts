@@ -220,6 +220,39 @@ export const validateValue = (value: unknown, schema: JsonSchemaProperty): strin
 };
 
 // ---------------------------------------------------------------------------
+// Schema merging — runtime enrichment
+// ---------------------------------------------------------------------------
+
+/**
+ * Deep-merge a runtime param schema into a base (static) schema.
+ *
+ * The merge is shallow at the top level (only `properties` is merged) and
+ * shallow within each property: runtime entries are added or overwritten
+ * on a per-key basis, preserving sibling properties from the base.
+ *
+ * This is used to combine the static `param_schema` from the node registry
+ * with per-instance runtime discoveries (e.g. Slint component properties).
+ */
+export const deepMergeSchemas = (
+  base: JsonSchema | undefined,
+  runtime: JsonSchema | undefined
+): JsonSchema => {
+  if (!runtime) return base ?? {};
+  if (!base) return runtime;
+
+  const baseProps = base.properties ?? {};
+  const runtimeProps = runtime.properties ?? {};
+
+  return {
+    ...base,
+    properties: {
+      ...baseProps,
+      ...runtimeProps,
+    },
+  };
+};
+
+// ---------------------------------------------------------------------------
 // Toggle (boolean) config extraction
 // ---------------------------------------------------------------------------
 

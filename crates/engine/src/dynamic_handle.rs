@@ -153,6 +153,24 @@ impl DynamicEngineHandle {
         response_rx.recv().await.ok_or_else(|| "Failed to receive response from engine".to_string())
     }
 
+    /// Gets the runtime param schema overrides for all nodes in the pipeline.
+    ///
+    /// Only nodes whose `ProcessorNode::runtime_param_schema()` returned
+    /// `Some` after initialization will have entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the engine actor has shut down or fails to respond.
+    pub async fn get_runtime_schemas(&self) -> Result<HashMap<String, serde_json::Value>, String> {
+        let (response_tx, mut response_rx) = mpsc::channel(1);
+        self.query_tx
+            .send(QueryMessage::GetRuntimeSchemas { response_tx })
+            .await
+            .map_err(|_| "Engine actor has shut down".to_string())?;
+
+        response_rx.recv().await.ok_or_else(|| "Failed to receive response from engine".to_string())
+    }
+
     /// Sends a shutdown signal to the engine and waits for it to complete.
     /// This ensures all nodes are properly stopped before returning.
     /// Can only be called once - subsequent calls will return an error.

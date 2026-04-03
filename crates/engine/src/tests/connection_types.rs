@@ -55,6 +55,7 @@ fn create_test_engine() -> DynamicEngine {
         node_packets_discarded_counter: meter.u64_counter("test.discarded").build(),
         node_packets_errored_counter: meter.u64_counter("test.errored").build(),
         node_state_gauge: meter.u64_gauge("test.state").build(),
+        runtime_schemas: HashMap::new(),
     }
 }
 

@@ -73,7 +73,8 @@ import type {
 import { dispatchParamUpdate } from '@/utils/controlProps';
 import { topoLevelsFromPipeline, orderedNamesFromLevels } from '@/utils/dag';
 import { deepEqual } from '@/utils/deepEqual';
-import { validateValue } from '@/utils/jsonSchema';
+import { deepMergeSchemas, validateValue } from '@/utils/jsonSchema';
+import type { JsonSchema } from '@/utils/jsonSchema';
 import { viewsLogger } from '@/utils/logger';
 import {
   buildEdgesFromConnections,
@@ -865,6 +866,21 @@ const MonitorViewContent: React.FC = () => {
 
       const nodeDef = defByKind.get(apiNode.kind);
 
+      // Merge runtime param schema (if any) with the static per-kind schema.
+      // Runtime schemas are per-instance overrides discovered after node init
+      // (e.g. Slint component properties enumerated from the compiled .slint).
+      const runtimeSchema = pipeline.runtime_schemas?.[nodeName] as JsonSchema | undefined;
+      const effectiveNodeDef =
+        runtimeSchema && nodeDef
+          ? {
+              ...nodeDef,
+              param_schema: deepMergeSchemas(
+                nodeDef.param_schema as JsonSchema | undefined,
+                runtimeSchema
+              ),
+            }
+          : nodeDef;
+
       // Build node object using helper function
       const node = buildNodeObject({
         nodeName,
@@ -873,7 +889,7 @@ const MonitorViewContent: React.FC = () => {
         nodeState,
         finalInputs,
         finalOutputs,
-        nodeDef,
+        nodeDef: effectiveNodeDef,
         stableOnParamChange,
         stableOnConfigChange,
         selectedSessionId,

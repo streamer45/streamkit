@@ -538,6 +538,13 @@ pub struct Pipeline {
     #[serde(default)]
     #[ts(type = "Record<string, JsonValue> | null")]
     pub view_data: Option<HashMap<String, serde_json::Value>>,
+    /// Per-instance runtime param schema overrides discovered after node
+    /// initialization.  Only populated in API responses for nodes whose
+    /// `ProcessorNode::runtime_param_schema()` returned `Some`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    #[ts(type = "Record<string, JsonValue> | null")]
+    pub runtime_schemas: Option<HashMap<String, serde_json::Value>>,
 }
 
 // Type aliases for backwards compatibility

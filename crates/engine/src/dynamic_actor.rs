@@ -104,6 +104,10 @@ pub struct DynamicEngine {
     pub(super) node_view_data: HashMap<String, serde_json::Value>,
     /// Subscribers that want to receive node view data updates
     pub(super) view_data_subscribers: Vec<mpsc::Sender<NodeViewDataUpdate>>,
+    /// Per-instance runtime param schema overrides discovered after node init.
+    /// Only populated for nodes whose `ProcessorNode::runtime_param_schema()`
+    /// returns `Some`.
+    pub(super) runtime_schemas: HashMap<String, serde_json::Value>,
     // Metrics
     pub(super) nodes_active_gauge: opentelemetry::metrics::Gauge<u64>,
     pub(super) node_state_transitions_counter: opentelemetry::metrics::Counter<u64>,
@@ -204,6 +208,9 @@ impl DynamicEngine {
             },
             QueryMessage::GetNodeViewData { response_tx } => {
                 let _ = response_tx.send(self.node_view_data.clone()).await;
+            },
+            QueryMessage::GetRuntimeSchemas { response_tx } => {
+                let _ = response_tx.send(self.runtime_schemas.clone()).await;
             },
         }
     }
@@ -533,6 +540,12 @@ impl DynamicEngine {
             Err(e) => {
                 return Err(e);
             },
+        }
+
+        // Query runtime param schema after init (before spawning the run loop,
+        // which consumes the node via `Box<Self>`).
+        if let Some(schema) = node.runtime_param_schema() {
+            self.runtime_schemas.insert(node_id.to_string(), schema);
         }
 
         let (control_tx, control_rx) = mpsc::channel(CONTROL_CAPACITY);
@@ -1385,6 +1398,7 @@ impl DynamicEngine {
         self.node_pin_metadata.remove(node_id);
         self.pin_management_txs.remove(node_id);
         self.dynamic_pin_nodes.remove(node_id);
+        self.runtime_schemas.remove(node_id);
         self.connections.retain(|(to, _), (from, _)| to != node_id && from != node_id);
         self.node_kinds.remove(node_id);
         self.nodes_active_gauge.record(self.live_nodes.len() as u64, &[]);

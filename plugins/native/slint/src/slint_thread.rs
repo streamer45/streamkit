@@ -25,12 +25,29 @@ use slint::platform::software_renderer::{
 };
 use slint::platform::WindowAdapter;
 use slint::{ComponentHandle, LogicalSize, SharedString};
-use slint_interpreter::{ComponentDefinition, ComponentInstance, Value};
+use slint_interpreter::{ComponentDefinition, ComponentInstance, Value, ValueType};
 
 use crate::config::SlintConfig;
 
 /// Opaque identifier for a plugin instance on the shared Slint thread.
 pub type NodeId = uuid::Uuid;
+
+/// Describes a single publicly declared property discovered from a compiled
+/// `.slint` component.  Used to build the runtime param schema.
+#[derive(Debug, Clone)]
+pub struct DiscoveredProperty {
+    pub name: String,
+    pub value_type: DiscoveredValueType,
+}
+
+/// Subset of `slint_interpreter::ValueType` that maps to JSON Schema types
+/// the UI can render as controls.
+#[derive(Debug, Clone, Copy)]
+pub enum DiscoveredValueType {
+    Bool,
+    Number,
+    String,
+}
 
 /// Work item sent from a plugin's `tick()` to the shared Slint thread.
 pub enum SlintWorkItem {
@@ -53,7 +70,9 @@ pub enum SlintWorkItem {
 /// Result sent from the shared Slint thread back to a specific instance.
 pub enum SlintThreadResult {
     /// Init succeeded — the instance can start rendering.
-    InitOk,
+    /// Carries the list of publicly declared properties discovered from the
+    /// compiled `.slint` component (may be empty).
+    InitOk { properties: Vec<DiscoveredProperty> },
     /// Init failed with an error message.
     InitErr(String),
     /// A rendered frame.
@@ -126,12 +145,18 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
             SlintWorkItem::Register { node_id, config, result_tx } => {
                 match create_slint_instance(&config, &mut platform_set) {
                     Ok(instance) => {
+                        // Discover publicly declared properties from the compiled
+                        // component.  Only types the UI can render as controls
+                        // (bool, number, string) are included.
+                        let properties = discover_properties(&instance.definition);
+
                         tracing::info!(
                             node_id = %node_id,
                             slint_file = %config.slint_file,
+                            discovered_properties = properties.len(),
                             "Created Slint instance",
                         );
-                        let _ = result_tx.send(SlintThreadResult::InitOk);
+                        let _ = result_tx.send(SlintThreadResult::InitOk { properties });
                         instances.insert(
                             node_id,
                             InstanceState {
@@ -339,6 +364,30 @@ fn create_slint_instance(
     // _guard drops here, clearing CURRENT_WINDOW.
 
     Ok(SlintInstance { window, component, definition, buffer, width, frame_counter: 0 })
+}
+
+/// Enumerate the publicly declared properties of a compiled Slint component
+/// and return those whose types map to JSON Schema primitives the UI can
+/// render as controls (boolean → toggle, number → slider, string → text).
+///
+/// **Limitation:** `.slint` files are assumed to be static for the lifetime
+/// of the node.  Property discovery happens once at initialization; if the
+/// source file changes, the node must be re-created to pick up new properties.
+fn discover_properties(definition: &ComponentDefinition) -> Vec<DiscoveredProperty> {
+    definition
+        .properties()
+        .filter_map(|(name, value_type)| {
+            let vt = match value_type {
+                ValueType::Bool => DiscoveredValueType::Bool,
+                ValueType::Float => DiscoveredValueType::Number,
+                ValueType::Int => DiscoveredValueType::Number,
+                ValueType::String => DiscoveredValueType::String,
+                // Image, Model, Struct, Brush, etc. are not tuneable.
+                _ => return None,
+            };
+            Some(DiscoveredProperty { name, value_type: vt })
+        })
+        .collect()
 }
 
 /// Render a single frame from the Slint instance, returning raw RGBA8 data.

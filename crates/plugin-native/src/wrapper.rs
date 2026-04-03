@@ -201,6 +201,34 @@ impl ProcessorNode for NativeNodeWrapper {
         self.metadata.outputs.clone()
     }
 
+    fn runtime_param_schema(&self) -> Option<serde_json::Value> {
+        let get_schema = self.state.api().get_runtime_param_schema?;
+        let handle = self.state.begin_call()?;
+
+        let _lib = Arc::clone(&self.state.library);
+        let result = get_schema(handle);
+        self.state.finish_call();
+
+        if !result.success {
+            // FFI call failed — log and return None.
+            if !result.error_message.is_null() {
+                let msg = unsafe { conversions::c_str_to_string(result.error_message) }
+                    .unwrap_or_default();
+                warn!(error = %msg, "Plugin runtime_param_schema failed");
+            }
+            return None;
+        }
+
+        // success=true, null message → plugin has no runtime schema.
+        if result.error_message.is_null() {
+            return None;
+        }
+
+        // success=true, non-null message → JSON string containing the schema.
+        let json_str = unsafe { conversions::c_str_to_string(result.error_message) }.ok()?;
+        serde_json::from_str(&json_str).ok()
+    }
+
     // The run method is complex by necessity - it's an async actor managing FFI calls,
     // control messages, and packet processing. Breaking it up would make the logic harder to follow.
     #[allow(clippy::too_many_lines)]

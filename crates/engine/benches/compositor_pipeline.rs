@@ -239,6 +239,7 @@ fn build_pipeline(width: u32, height: u32, fps: u32, frame_count: u32) -> stream
         connections,
         view_data: None,
         client: None,
+        runtime_schemas: None,
     }
 }
 
