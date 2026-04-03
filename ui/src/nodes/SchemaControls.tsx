@@ -285,6 +285,10 @@ export const TextInputControl: React.FC<TextInputControlProps> = ({
   })();
 
   const [text, setText] = useState(effectiveValue);
+  // Ref tracks latest text for flushDebounce so its identity stays
+  // stable across keystrokes (no `text` in useCallback deps).
+  const textRef = useRef(text);
+  textRef.current = text;
 
   // Sync with external changes when not actively editing
   const isEditingRef = useRef(false);
@@ -313,17 +317,17 @@ export const TextInputControl: React.FC<TextInputControlProps> = ({
     [nodeId, config.path]
   );
 
-  // Flush any pending debounce on unmount so the last typed value is
-  // sent rather than silently dropped.
+  // Flush any pending debounce on blur/unmount so the last typed value
+  // is sent rather than silently dropped.  Reads from textRef so the
+  // callback identity doesn't change on every keystroke.
   const flushDebounce = useCallback(() => {
     if (timerRef.current !== undefined) {
       clearTimeout(timerRef.current);
       timerRef.current = undefined;
-      // Send the current text value immediately.
-      tuneRef.current(nodeId, buildParamUpdate(config.path, text));
+      tuneRef.current(nodeId, buildParamUpdate(config.path, textRef.current));
       isEditingRef.current = false;
     }
-  }, [nodeId, config.path, text]);
+  }, [nodeId, config.path]);
 
   useEffect(() => () => flushDebounce(), [flushDebounce]);
 
