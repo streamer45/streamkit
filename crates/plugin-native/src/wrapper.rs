@@ -677,26 +677,17 @@ impl NativeNodeWrapper {
         // Re-query source config from the live instance (created with actual
         // params) so per-instance values like `max_ticks` (from `frame_count`)
         // override the defaults obtained during the load-time probe.
-        let (tick_interval, max_ticks) = {
-            let get_sc = self.state.api().get_source_config;
-            let handle = self.state.begin_call();
-            match (get_sc, handle) {
-                (Some(get_source_config_fn), Some(h)) => {
-                    let cfg = get_source_config_fn(h);
-                    self.state.finish_call();
-                    let ti = std::time::Duration::from_micros(cfg.tick_interval_us.max(1));
-                    (ti, cfg.max_ticks)
-                },
-                _ => {
-                    if handle.is_some() {
-                        self.state.finish_call();
-                    }
-                    // Fall back to static metadata from load-time probe.
-                    let ti =
-                        std::time::Duration::from_micros(self.metadata.tick_interval_us.max(1));
-                    (ti, self.metadata.max_ticks)
-                },
-            }
+        let (tick_interval, max_ticks) = if let (Some(get_source_config_fn), Some(h)) =
+            (self.state.api().get_source_config, self.state.begin_call())
+        {
+            let cfg = get_source_config_fn(h);
+            self.state.finish_call();
+            let ti = std::time::Duration::from_micros(cfg.tick_interval_us.max(1));
+            (ti, cfg.max_ticks)
+        } else {
+            // Fall back to static metadata from load-time probe.
+            let ti = std::time::Duration::from_micros(self.metadata.tick_interval_us.max(1));
+            (ti, self.metadata.max_ticks)
         };
         let mut tick_count: u64 = 0;
 
