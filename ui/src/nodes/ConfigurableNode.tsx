@@ -129,6 +129,8 @@ interface NumericSliderControlProps {
   nodeId: string;
   sessionId?: string;
   paramKey: string;
+  /** Dot-notation path for reading/writing nested params. Defaults to `paramKey`. */
+  path?: string;
   schema: JsonSchemaProperty;
   min: number;
   max: number;
@@ -198,6 +200,7 @@ const NumericSliderControl: React.FC<NumericSliderControlProps> = ({
   nodeId,
   sessionId,
   paramKey,
+  path: pathOverride,
   schema,
   min,
   max,
@@ -218,6 +221,7 @@ const NumericSliderControl: React.FC<NumericSliderControlProps> = ({
       nodeId,
       sessionId,
       paramKey,
+      path: pathOverride,
       min,
       max,
       step,
@@ -334,12 +338,13 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(function Co
               showLiveIndicator={showLiveIndicator}
             />
           ))}
-          {sliderConfigs.map(({ key, schema: schemaProp, min, max, step, tunable }) => (
+          {sliderConfigs.map(({ key, path, schema: schemaProp, min, max, step, tunable }) => (
             <NumericSliderControl
               key={key}
               nodeId={id}
               sessionId={data.sessionId}
               paramKey={key}
+              path={path}
               schema={schemaProp}
               min={min}
               max={max}

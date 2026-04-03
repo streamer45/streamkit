@@ -9,10 +9,9 @@ import React from 'react';
 
 import { SKTooltip } from '@/components/Tooltip';
 import { CheckboxWithLabel } from '@/components/ui/Checkbox';
-import { useTuneNode } from '@/hooks/useTuneNode';
 import { nodeParamsAtom } from '@/stores/sessionAtoms';
 import type { NodeDefinition, InputPin, OutputPin, PacketType } from '@/types/types';
-import { buildParamUpdate } from '@/utils/controlProps';
+import { readByPath } from '@/utils/controlProps';
 import type { JsonSchema, JsonSchemaProperty } from '@/utils/jsonSchema';
 import {
   formatPacketType,
@@ -261,23 +260,24 @@ const InspectorPane: React.FC<InspectorPaneProps> = ({
   const paramsKey = node.data.sessionId ? `${node.data.sessionId}\0${node.id}` : node.id;
   const nodeParams = useAtomValue(nodeParamsAtom(paramsKey));
 
-  const { tuneNodeConfig } = useTuneNode(node.data.sessionId ?? null);
-
   const handleInputChange = (key: string, value: unknown, schema?: JsonSchemaProperty) => {
-    // When a schema has a `path` override, use tuneNodeConfig with
-    // buildParamUpdate so nested dot-notation paths produce the correct
-    // nested UpdateParams payload.
+    // When a schema has a `path` override, build the nested payload and
+    // route it through onParamChange so it works in both Monitor view
+    // (where onParamChange → tuneNode) and design view (where
+    // onParamChange → onConfigChange).  The path is passed as the
+    // paramName so the caller can build the correct UpdateParams.
     if (schema?.path) {
-      tuneNodeConfig(node.id, buildParamUpdate(schema.path, value));
+      onParamChange(node.id, schema.path, value);
     } else {
       onParamChange(node.id, key, value);
     }
   };
 
   const renderField = (key: string, schema: JsonSchemaProperty) => {
+    const readPath = schema.path ?? key;
     const currentValue =
-      (nodeParams as Record<string, unknown>)[key] ??
-      node.data.params?.[key] ??
+      readByPath(nodeParams as Record<string, unknown>, readPath) ??
+      readByPath((node.data.params ?? {}) as Record<string, unknown>, readPath) ??
       schema.default ??
       '';
     const inputId = `param-${node.id}-${key}`;

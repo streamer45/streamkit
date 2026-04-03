@@ -13,11 +13,17 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 
 import { PARAM_THROTTLE_MS } from '@/constants/timing';
 import { nodeParamsAtom } from '@/stores/sessionAtoms';
+import { readByPath } from '@/utils/controlProps';
 
 export interface UseNumericSliderOptions {
   nodeId: string;
   sessionId?: string;
   paramKey: string;
+  /**
+   * Dot-notation path for reading/writing nested params.
+   * Defaults to `paramKey` when omitted.
+   */
+  path?: string;
   min: number;
   max: number;
   step: number;
@@ -68,6 +74,7 @@ export const useNumericSlider = (options: UseNumericSliderOptions): UseNumericSl
     nodeId,
     sessionId,
     paramKey,
+    path: pathOverride,
     min,
     max,
     step,
@@ -78,10 +85,13 @@ export const useNumericSlider = (options: UseNumericSliderOptions): UseNumericSl
     throttleMs = PARAM_THROTTLE_MS,
   } = options;
 
-  // Get stored value from Jotai per-node atom (fine-grained reactivity)
+  const effectivePath = pathOverride ?? paramKey;
+
+  // Get stored value from Jotai per-node atom (fine-grained reactivity).
+  // Use readByPath so nested paths (e.g. "properties.score") are resolved.
   const paramsKey = sessionId ? `${sessionId}\0${nodeId}` : nodeId;
   const nodeParams = useAtomValue(nodeParamsAtom(paramsKey));
-  const storedValue = nodeParams[paramKey] as number | undefined;
+  const storedValue = readByPath(nodeParams, effectivePath) as number | undefined;
 
   // Determine effective value: stored > prop > default
   const effectiveValue = (() => {
@@ -125,12 +135,12 @@ export const useNumericSlider = (options: UseNumericSliderOptions): UseNumericSl
     return throttle(
       (value: number) => {
         const transformedValue = transformValue ? transformValue(value) : value;
-        onParamChange(nodeId, paramKey, transformedValue);
+        onParamChange(nodeId, effectivePath, transformedValue);
       },
       throttleMs,
       { leading: true, trailing: true }
     );
-  }, [nodeId, onParamChange, paramKey, transformValue, throttleMs]);
+  }, [nodeId, onParamChange, effectivePath, transformValue, throttleMs]);
 
   // Cancel throttled function on unmount
   useEffect(

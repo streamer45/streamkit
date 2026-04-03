@@ -266,6 +266,7 @@ export interface TextConfig {
 /**
  * Extracts text input configurations from a JSON schema.
  * Returns configs for string properties marked `tunable: true`.
+ * Excludes enum-constrained strings (those would need a select/dropdown control).
  */
 export const extractTextConfigs = (schema: JsonSchema | undefined): TextConfig[] => {
   if (!schema) return [];
@@ -273,7 +274,12 @@ export const extractTextConfigs = (schema: JsonSchema | undefined): TextConfig[]
   const properties = schema.properties ?? {};
 
   return Object.entries(properties).reduce((acc, [key, schemaProp]) => {
-    if (!schemaProp || schemaProp.type !== 'string' || !schemaProp.tunable) {
+    if (
+      !schemaProp ||
+      schemaProp.type !== 'string' ||
+      !schemaProp.tunable ||
+      (schemaProp.enum && schemaProp.enum.length > 0)
+    ) {
       return acc;
     }
     acc.push({

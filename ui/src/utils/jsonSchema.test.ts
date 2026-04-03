@@ -136,6 +136,29 @@ describe('extractTextConfigs', () => {
   it('returns empty array for undefined schema', () => {
     expect(extractTextConfigs(undefined)).toEqual([]);
   });
+
+  it('excludes enum-constrained string properties', () => {
+    const result = extractTextConfigs({
+      properties: {
+        mode: {
+          type: 'string',
+          tunable: true,
+          enum: ['fast', 'balanced', 'quality'],
+        },
+      },
+    });
+    expect(result).toEqual([]);
+  });
+
+  it('includes string properties with empty enum array', () => {
+    const result = extractTextConfigs({
+      properties: {
+        label: { type: 'string', tunable: true, enum: [] },
+      },
+    });
+    expect(result).toHaveLength(1);
+    expect(result[0].key).toBe('label');
+  });
 });
 
 describe('extractSliderConfigs — path field', () => {

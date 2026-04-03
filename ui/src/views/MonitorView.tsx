@@ -69,6 +69,7 @@ import type {
   InputPin,
   OutputPin,
 } from '@/types/types';
+import { buildParamUpdate } from '@/utils/controlProps';
 import { topoLevelsFromPipeline, orderedNamesFromLevels } from '@/utils/dag';
 import { deepEqual } from '@/utils/deepEqual';
 import { validateValue } from '@/utils/jsonSchema';
@@ -498,9 +499,14 @@ const MonitorViewContent: React.FC = () => {
         return;
       }
 
-      tuneNode(nodeId, key, value);
+      // Dot-notation paths need nested payload (same logic as stableOnParamChange).
+      if (key.includes('.')) {
+        tuneNodeConfig(nodeId, buildParamUpdate(key, value));
+      } else {
+        tuneNode(nodeId, key, value);
+      }
     },
-    [toast, tuneNode]
+    [toast, tuneNode, tuneNodeConfig]
   );
 
   // Memoized label change handler (currently no-op)
@@ -902,9 +908,16 @@ const MonitorViewContent: React.FC = () => {
         return;
       }
 
-      tuneNode(nodeId, paramName, value);
+      // Dot-notation paths (e.g. "properties.show") need buildParamUpdate to
+      // produce the correct nested UpdateParams payload and tuneNodeConfig to
+      // deep-merge into the atom.  Flat keys use tuneNode directly.
+      if (paramName.includes('.')) {
+        tuneNodeConfig(nodeId, buildParamUpdate(paramName, value));
+      } else {
+        tuneNode(nodeId, paramName, value);
+      }
     },
-    [toast, tuneNode]
+    [toast, tuneNode, tuneNodeConfig]
   );
 
   // Stable callback for full-config updates (compositor nodes).
