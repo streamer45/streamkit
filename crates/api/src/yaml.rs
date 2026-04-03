@@ -758,7 +758,7 @@ pub struct ClientLintWarning {
 ///  1. **`mode-mismatch-dynamic`** — Dynamic pipeline declares oneshot-only
 ///     fields (`input` / `output`).
 ///  2. **`mode-mismatch-oneshot`** — Oneshot pipeline declares dynamic-only
-///     fields (`publish` / `watch` / `gateway_path` / `relay_url`).
+///     fields (`publish` / `watch` / `gateway_path` / `relay_url` / `controls`).
 ///  3. **`missing-gateway`** — Dynamic pipeline has `publish` or `watch`
 ///     but no `gateway_path` or `relay_url`.
 ///  4. **`publish-no-media`** — `publish` block sets both `audio` and
@@ -792,7 +792,8 @@ pub fn lint_client_section(client: &ClientSection, mode: EngineMode) -> Vec<Clie
     let has_dynamic_fields = client.gateway_path.is_some()
         || client.relay_url.is_some()
         || client.publish.is_some()
-        || client.watch.is_some();
+        || client.watch.is_some()
+        || client.controls.is_some();
 
     let has_oneshot_fields = client.input.is_some() || client.output.is_some();
 
@@ -810,8 +811,9 @@ pub fn lint_client_section(client: &ClientSection, mode: EngineMode) -> Vec<Clie
     if mode == EngineMode::OneShot && has_dynamic_fields {
         warnings.push(ClientLintWarning {
             rule: "mode-mismatch-oneshot",
-            message: "Oneshot pipeline declares `publish`, `watch`, `gateway_path`, or \
-                      `relay_url` — these are dynamic-only fields and will be ignored."
+            message: "Oneshot pipeline declares `publish`, `watch`, `gateway_path`, \
+                      `relay_url`, or `controls` — these are dynamic-only fields and \
+                      will be ignored."
                 .into(),
         });
     }
@@ -2250,6 +2252,25 @@ client:
     fn test_lint_mode_mismatch_oneshot_with_dynamic_fields() {
         let mut c = oneshot_client();
         c.gateway_path = Some("/moq/test".into());
+        let warnings = lint_client_section(&c, EngineMode::OneShot);
+        assert!(warnings.iter().any(|w| w.rule == "mode-mismatch-oneshot"));
+    }
+
+    #[test]
+    fn test_lint_mode_mismatch_oneshot_with_controls() {
+        let mut c = oneshot_client();
+        c.controls = Some(vec![ControlConfig {
+            label: "Toggle".into(),
+            control_type: ControlType::Toggle,
+            node: "some_node".into(),
+            property: "enabled".into(),
+            group: None,
+            default: None,
+            min: None,
+            max: None,
+            step: None,
+            value: None,
+        }]);
         let warnings = lint_client_section(&c, EngineMode::OneShot);
         assert!(warnings.iter().any(|w| w.rule == "mode-mismatch-oneshot"));
     }
