@@ -29,6 +29,27 @@ export function buildParamUpdate(path: string, value: unknown): Record<string, u
   return { [parts[0]]: result };
 }
 
+/**
+ * Reads a value from a nested object using a dot-notation path.
+ *
+ * Companion to `buildParamUpdate` — while `buildParamUpdate` *writes* a
+ * value into a nested structure, `readByPath` *reads* one back out.
+ *
+ * For example:
+ * - `readByPath({ gain_db: 1.5 }, "gain_db")` → `1.5`
+ * - `readByPath({ properties: { show: true } }, "properties.show")` → `true`
+ * - `readByPath({}, "missing.key")` → `undefined`
+ */
+export function readByPath(obj: Record<string, unknown>, path: string): unknown {
+  const parts = path.split('.').filter(Boolean);
+  let current: unknown = obj;
+  for (const part of parts) {
+    if (current == null || typeof current !== 'object') return undefined;
+    current = (current as Record<string, unknown>)[part];
+  }
+  return current;
+}
+
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }

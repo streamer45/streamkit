@@ -10,6 +10,7 @@ import { NodeFrame } from '@/components/node/NodeFrame';
 import { LiveBadge, LiveDot } from '@/components/ui/LiveIndicator';
 import { useNumericSlider } from '@/hooks/useNumericSlider';
 import { areNodePropsEqual } from '@/nodes/nodePropsEqual';
+import { BooleanToggleControl, TextInputControl } from '@/nodes/SchemaControls';
 import { perfOnRender } from '@/perf';
 import type { InputPin, OutputPin, NodeState, NodeStats, NodeDefinition } from '@/types/types';
 import {
@@ -17,6 +18,8 @@ import {
   type JsonSchema,
   isFiniteNumber,
   extractSliderConfigs,
+  extractToggleConfigs,
+  extractTextConfigs,
   decimalPlacesFromStep,
   formatNumber,
 } from '@/utils/jsonSchema';
@@ -187,6 +190,10 @@ function formatMinMaxLabels(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Numeric slider control
+// ---------------------------------------------------------------------------
+
 const NumericSliderControl: React.FC<NumericSliderControlProps> = ({
   nodeId,
   sessionId,
@@ -289,6 +296,10 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(function Co
   const totalParams = Object.keys(properties).length;
 
   const sliderConfigs = extractSliderConfigs(schema);
+  const toggleConfigs = extractToggleConfigs(schema);
+  const textConfigs = extractTextConfigs(schema);
+  const hasControls =
+    toggleConfigs.length > 0 || sliderConfigs.length > 0 || textConfigs.length > 0;
 
   // Detect bidirectional nodes using the bidirectional property from node definition
   const isBidirectional = data.definition?.bidirectional ?? false;
@@ -311,8 +322,18 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(function Co
       sessionId={data.sessionId}
       isBidirectional={isBidirectional}
     >
-      {sliderConfigs.length > 0 && (
+      {hasControls && (
         <SliderGroup>
+          {toggleConfigs.map((config) => (
+            <BooleanToggleControl
+              key={config.key}
+              nodeId={id}
+              sessionId={data.sessionId}
+              config={config}
+              params={data.params}
+              showLiveIndicator={showLiveIndicator}
+            />
+          ))}
           {sliderConfigs.map(({ key, schema: schemaProp, min, max, step, tunable }) => (
             <NumericSliderControl
               key={key}
@@ -327,6 +348,16 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(function Co
               onParamChange={data.onParamChange}
               showLiveIndicator={showLiveIndicator}
               isTunable={tunable}
+            />
+          ))}
+          {textConfigs.map((config) => (
+            <TextInputControl
+              key={config.key}
+              nodeId={id}
+              sessionId={data.sessionId}
+              config={config}
+              params={data.params}
+              showLiveIndicator={showLiveIndicator}
             />
           ))}
         </SliderGroup>

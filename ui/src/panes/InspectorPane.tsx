@@ -9,8 +9,11 @@ import React from 'react';
 
 import { SKTooltip } from '@/components/Tooltip';
 import { CheckboxWithLabel } from '@/components/ui/Checkbox';
+import { useTuneNode } from '@/hooks/useTuneNode';
 import { nodeParamsAtom } from '@/stores/sessionAtoms';
 import type { NodeDefinition, InputPin, OutputPin, PacketType } from '@/types/types';
+import { buildParamUpdate } from '@/utils/controlProps';
+import type { JsonSchema, JsonSchemaProperty } from '@/utils/jsonSchema';
 import {
   formatPacketType,
   getPacketTypeColor,
@@ -18,22 +21,6 @@ import {
   getPinCardinalityIcon,
   getPinCardinalityDescription,
 } from '@/utils/packetTypes';
-
-interface JsonSchemaProperty {
-  type?: string;
-  description?: string;
-  default?: unknown;
-  minimum?: number;
-  maximum?: number;
-  exclusiveMinimum?: number;
-  exclusiveMaximum?: number;
-  multipleOf?: number;
-  tunable?: boolean;
-}
-
-interface JsonSchema {
-  properties?: Record<string, JsonSchemaProperty>;
-}
 
 const PaneWrapper = styled.div`
   display: flex;
@@ -274,8 +261,17 @@ const InspectorPane: React.FC<InspectorPaneProps> = ({
   const paramsKey = node.data.sessionId ? `${node.data.sessionId}\0${node.id}` : node.id;
   const nodeParams = useAtomValue(nodeParamsAtom(paramsKey));
 
-  const handleInputChange = (key: string, value: unknown) => {
-    onParamChange(node.id, key, value);
+  const { tuneNodeConfig } = useTuneNode(node.data.sessionId ?? null);
+
+  const handleInputChange = (key: string, value: unknown, schema?: JsonSchemaProperty) => {
+    // When a schema has a `path` override, use tuneNodeConfig with
+    // buildParamUpdate so nested dot-notation paths produce the correct
+    // nested UpdateParams payload.
+    if (schema?.path) {
+      tuneNodeConfig(node.id, buildParamUpdate(schema.path, value));
+    } else {
+      onParamChange(node.id, key, value);
+    }
   };
 
   const renderField = (key: string, schema: JsonSchemaProperty) => {
@@ -297,7 +293,7 @@ const InspectorPane: React.FC<InspectorPaneProps> = ({
             schema={schema}
             paramKey={key}
             readOnly={isDisabled}
-            onChange={(v) => handleInputChange(key, v)}
+            onChange={(v) => handleInputChange(key, v, schema)}
           />
         );
       case 'number':
@@ -308,7 +304,7 @@ const InspectorPane: React.FC<InspectorPaneProps> = ({
             value={currentValue}
             schema={schema}
             readOnly={isDisabled}
-            onChange={(v) => handleInputChange(key, v)}
+            onChange={(v) => handleInputChange(key, v, schema)}
           />
         );
       case 'boolean':
@@ -318,7 +314,7 @@ const InspectorPane: React.FC<InspectorPaneProps> = ({
             value={currentValue}
             schema={schema}
             readOnly={isDisabled}
-            onChange={(v) => handleInputChange(key, v)}
+            onChange={(v) => handleInputChange(key, v, schema)}
           />
         );
       default:
@@ -328,7 +324,7 @@ const InspectorPane: React.FC<InspectorPaneProps> = ({
             value={currentValue}
             schema={schema}
             readOnly={isDisabled}
-            onChange={(v) => handleInputChange(key, v)}
+            onChange={(v) => handleInputChange(key, v, schema)}
           />
         );
     }

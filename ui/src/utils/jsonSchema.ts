@@ -22,6 +22,14 @@ export interface JsonSchemaProperty {
    * If true, the parameter supports live updates via UpdateParams messages.
    */
   tunable?: boolean;
+  /**
+   * Override the UpdateParams key path (dot-notation).
+   * Defaults to the property key when omitted.
+   * Example: `"path": "properties.show"` sends `{ properties: { show: value } }`.
+   */
+  path?: string;
+  /** Enum values for select/dropdown controls. */
+  enum?: unknown[];
 }
 
 export interface JsonSchema {
@@ -30,6 +38,8 @@ export interface JsonSchema {
 
 export interface SliderConfig {
   key: string;
+  /** Dot-notation path for UpdateParams. Defaults to `key`. */
+  path: string;
   schema: JsonSchemaProperty;
   min: number;
   max: number;
@@ -142,6 +152,7 @@ export const extractSliderConfigs = (schema: JsonSchema | undefined): SliderConf
     const step = inferStep(schemaProp, min, max);
     acc.push({
       key,
+      path: schemaProp.path ?? key,
       schema: schemaProp,
       min,
       max,
@@ -206,4 +217,70 @@ export const validateValue = (value: unknown, schema: JsonSchemaProperty): strin
   }
 
   return null; // Valid
+};
+
+// ---------------------------------------------------------------------------
+// Toggle (boolean) config extraction
+// ---------------------------------------------------------------------------
+
+export interface ToggleConfig {
+  key: string;
+  /** Dot-notation path for UpdateParams. Defaults to `key`. */
+  path: string;
+  schema: JsonSchemaProperty;
+}
+
+/**
+ * Extracts toggle configurations from a JSON schema.
+ * Returns configs for boolean properties marked `tunable: true`.
+ */
+export const extractToggleConfigs = (schema: JsonSchema | undefined): ToggleConfig[] => {
+  if (!schema) return [];
+
+  const properties = schema.properties ?? {};
+
+  return Object.entries(properties).reduce((acc, [key, schemaProp]) => {
+    if (!schemaProp || schemaProp.type !== 'boolean' || !schemaProp.tunable) {
+      return acc;
+    }
+    acc.push({
+      key,
+      path: schemaProp.path ?? key,
+      schema: schemaProp,
+    });
+    return acc;
+  }, [] as ToggleConfig[]);
+};
+
+// ---------------------------------------------------------------------------
+// Text (string) config extraction
+// ---------------------------------------------------------------------------
+
+export interface TextConfig {
+  key: string;
+  /** Dot-notation path for UpdateParams. Defaults to `key`. */
+  path: string;
+  schema: JsonSchemaProperty;
+}
+
+/**
+ * Extracts text input configurations from a JSON schema.
+ * Returns configs for string properties marked `tunable: true`.
+ */
+export const extractTextConfigs = (schema: JsonSchema | undefined): TextConfig[] => {
+  if (!schema) return [];
+
+  const properties = schema.properties ?? {};
+
+  return Object.entries(properties).reduce((acc, [key, schemaProp]) => {
+    if (!schemaProp || schemaProp.type !== 'string' || !schemaProp.tunable) {
+      return acc;
+    }
+    acc.push({
+      key,
+      path: schemaProp.path ?? key,
+      schema: schemaProp,
+    });
+    return acc;
+  }, [] as TextConfig[]);
 };
