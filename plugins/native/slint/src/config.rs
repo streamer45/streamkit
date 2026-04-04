@@ -12,7 +12,7 @@ use serde::Deserialize;
 
 /// Maximum allowed dimension (width or height) — 8K.
 /// Guards against config typos that would attempt multi-GB buffer allocations.
-const MAX_DIMENSION: u32 = 7680;
+pub const MAX_DIMENSION: u32 = 7680;
 
 const fn default_width() -> u32 {
     640

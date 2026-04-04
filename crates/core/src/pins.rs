@@ -88,7 +88,14 @@ pub enum PinManagementMessage {
     },
 
     /// Engine has created the pin and channel, node should start receiving.
-    AddedInputPin { pin: InputPin, channel: tokio::sync::mpsc::Receiver<Packet> },
+    AddedInputPin {
+        pin: InputPin,
+        channel: tokio::sync::mpsc::Receiver<Packet>,
+        /// Optional sender for upstream hints.  Present only in dynamic
+        /// pipelines; the destination node stores this to send advisory
+        /// hints back to the source.
+        hint_tx: Option<tokio::sync::mpsc::Sender<crate::UpstreamHint>>,
+    },
 
     /// Remove an input pin (e.g., connection deleted).
     RemoveInputPin { pin_name: String },
@@ -112,4 +119,22 @@ pub enum PinManagementMessage {
 
     /// Remove an output pin.
     RemoveOutputPin { pin_name: String },
+
+    /// Deliver a hint receiver to a source node's output pin.
+    /// Created by the engine during `connect_nodes` and sent to the
+    /// upstream (source) node so it can receive advisory hints from
+    /// the downstream consumer.
+    OutputHintChannel {
+        pin_name: String,
+        hint_rx: tokio::sync::mpsc::Receiver<crate::UpstreamHint>,
+    },
+
+    /// Attach a hint sender to a pre-existing input pin.
+    ///
+    /// For dynamically created pins, `hint_tx` is delivered via
+    /// [`AddedInputPin`].  For pre-existing pins (declared at node
+    /// definition time), the engine sends this message after
+    /// `connect_nodes` so the destination node can send advisory
+    /// hints back to the source.
+    AttachHintSender { pin_name: String, hint_tx: tokio::sync::mpsc::Sender<crate::UpstreamHint> },
 }

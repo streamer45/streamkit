@@ -298,7 +298,8 @@ static const CNativePluginAPI g_plugin_api = {
     .destroy_instance = gain_destroy_instance,
     .get_source_config = NULL,             /* Not a source plugin */
     .tick = NULL,                          /* Not a source plugin */
-    .get_runtime_param_schema = NULL       /* No dynamic params */
+    .get_runtime_param_schema = NULL,      /* No dynamic params */
+    .on_upstream_hint = NULL               /* Not a source plugin */
 };
 
 /* Export the plugin entry point */

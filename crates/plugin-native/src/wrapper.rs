@@ -739,6 +739,15 @@ impl NativeNodeWrapper {
         // Consume the first (immediate) tick so we don't double-fire on entry.
         interval.tick().await;
 
+        // Hint receivers from downstream consumers, delivered via
+        // OutputHintChannel pin management messages.  Keyed by pin name
+        // so multi-output sources can distinguish which output the hint
+        // targets (currently single-output only, but future-proofed).
+        let mut hint_receivers: Vec<(
+            String,
+            tokio::sync::mpsc::Receiver<streamkit_core::UpstreamHint>,
+        )> = Vec::new();
+
         loop {
             // Check tick limit
             if max_ticks > 0 && tick_count >= max_ticks {
@@ -769,6 +778,65 @@ impl NativeNodeWrapper {
                     NodeControlMessage::Start => {
                         // Already started — ignore duplicate.
                     },
+                }
+            }
+
+            // Non-blocking drain of pin management messages to pick up
+            // OutputHintChannel deliveries from the engine.
+            // NOTE: this consumes ALL variants but only extracts
+            // OutputHintChannel.  Safe today because source plugins
+            // don't receive AddedOutputPin/RemoveOutputPin/InputTypeResolved.
+            // If dynamic output pins are added to sources in the future,
+            // this drain must be updated to handle those variants.
+            if let Some(ref mut pin_mgmt_rx) = context.pin_management_rx {
+                while let Ok(msg) = pin_mgmt_rx.try_recv() {
+                    if let streamkit_core::pins::PinManagementMessage::OutputHintChannel {
+                        pin_name: ref pn,
+                        hint_rx,
+                    } = msg
+                    {
+                        tracing::info!(node = %node_name, pin = %pn, "Received OutputHintChannel from engine");
+                        hint_receivers.push((pn.clone(), hint_rx));
+                    }
+                }
+            }
+
+            // Drain all hint receivers and deliver to plugin via C ABI.
+            // Retain only receivers whose channels are still open.
+            // First collect pending hints (non-blocking), then deliver
+            // via spawn_blocking to avoid blocking the tokio worker —
+            // consistent with how tick_fn and other C ABI calls are made.
+            if !hint_receivers.is_empty() {
+                if let Some(on_hint_fn) = self.state.api().on_upstream_hint {
+                    let mut pending_hints: Vec<std::ffi::CString> = Vec::new();
+                    hint_receivers.retain_mut(|(_pin, rx)| loop {
+                        match rx.try_recv() {
+                            Ok(hint) => {
+                                tracing::info!(node = %node_name, ?hint, "Delivering upstream hint to plugin");
+                                if let Ok(json) = serde_json::to_string(&hint) {
+                                    if let Ok(c_str) = std::ffi::CString::new(json) {
+                                        pending_hints.push(c_str);
+                                    }
+                                }
+                            },
+                            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => return true,
+                            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                                return false
+                            },
+                        }
+                    });
+                    if !pending_hints.is_empty() {
+                        let state = Arc::clone(&self.state);
+                        let _ = tokio::task::spawn_blocking(move || {
+                            for c_str in &pending_hints {
+                                if let Some(handle) = state.begin_call() {
+                                    let _ = on_hint_fn(handle, c_str.as_ptr());
+                                    state.finish_call();
+                                }
+                            }
+                        })
+                        .await;
+                    }
                 }
             }
 

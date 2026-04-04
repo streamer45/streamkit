@@ -283,4 +283,41 @@ impl NativeSourceNode for SlintSourcePlugin {
             "properties": props,
         }))
     }
+
+    fn on_upstream_hint(
+        &mut self,
+        hint: streamkit_plugin_sdk_native::streamkit_core::UpstreamHint,
+    ) {
+        if let streamkit_plugin_sdk_native::streamkit_core::UpstreamHint::PreferredSize {
+            width,
+            height,
+        } = hint
+        {
+            // Clamp to safe bounds before checking for no-op.
+            let width = width.clamp(1, crate::config::MAX_DIMENSION);
+            let height = height.clamp(1, crate::config::MAX_DIMENSION);
+            // Ignore if dimensions unchanged.
+            if width == self.config.width && height == self.config.height {
+                return;
+            }
+
+            plugin_info!(
+                self.logger,
+                "Upstream hint: resizing from {}x{} to {}x{}",
+                self.config.width,
+                self.config.height,
+                width,
+                height
+            );
+
+            self.config.width = width;
+            self.config.height = height;
+
+            // Tell the Slint thread to resize window + buffer.
+            // FIFO ordering guarantees Resize is processed before the
+            // next Render, so tick() will produce a correctly-sized frame.
+            let _ = send_work(SlintWorkItem::Resize { node_id: self.node_id, width, height });
+        }
+        // Unknown hint variants are silently ignored (non_exhaustive enum).
+    }
 }

@@ -66,7 +66,7 @@ pub mod prelude {
         OutputSender, ResourceSupport, SourceConfig,
     };
     pub use streamkit_core::types::{AudioFrame, Packet, PacketType};
-    pub use streamkit_core::{InputPin, OutputPin, PinCardinality, Resource};
+    pub use streamkit_core::{InputPin, OutputPin, PinCardinality, Resource, UpstreamHint};
 }
 
 /// Metadata about a node type
@@ -458,6 +458,15 @@ pub trait NativeSourceNode: Sized + Send + 'static {
     fn runtime_param_schema(&self) -> Option<serde_json::Value> {
         None
     }
+
+    /// Called when a downstream consumer sends an advisory hint.
+    ///
+    /// The default implementation ignores all hints.  Source plugins
+    /// that support resolution-independent rendering (e.g. Slint) can
+    /// override this to resize their output.
+    fn on_upstream_hint(&mut self, _hint: streamkit_core::UpstreamHint) {
+        // default: ignore
+    }
 }
 
 /// Optional trait for plugins that need shared resource management (e.g., ML models).
@@ -637,6 +646,7 @@ macro_rules! native_plugin_entry {
                 get_source_config: None,
                 tick: None,
                 get_runtime_param_schema: Some(__plugin_get_runtime_param_schema),
+                on_upstream_hint: None,
             };
             &API
         }
@@ -1160,6 +1170,7 @@ macro_rules! native_source_plugin_entry {
                 get_source_config: Some(__plugin_get_source_config),
                 tick: Some(__plugin_tick),
                 get_runtime_param_schema: Some(__plugin_get_runtime_param_schema),
+                on_upstream_hint: Some(__plugin_on_upstream_hint),
             };
             &API
         }
@@ -1575,6 +1586,35 @@ macro_rules! native_source_plugin_entry {
             _telemetry_callback: $crate::types::CTelemetryCallback,
             _telemetry_callback_data: *mut std::os::raw::c_void,
         ) -> $crate::types::CResult {
+            $crate::types::CResult::success()
+        }
+
+        // ── Upstream hint delivery (v5) ─────────────────────────────────
+
+        extern "C" fn __plugin_on_upstream_hint(
+            handle: $crate::types::CPluginHandle,
+            hint_json: *const std::os::raw::c_char,
+        ) -> $crate::types::CResult {
+            if handle.is_null() {
+                let err = $crate::conversions::error_to_c("Invalid handle (null)");
+                return $crate::types::CResult::error(err);
+            }
+            let hint_str = match unsafe { $crate::conversions::c_str_to_string(hint_json) } {
+                Ok(s) => s,
+                Err(e) => {
+                    let err = $crate::conversions::error_to_c(format!("Invalid hint JSON: {e}"));
+                    return $crate::types::CResult::error(err);
+                },
+            };
+            let hint: $crate::streamkit_core::UpstreamHint = match serde_json::from_str(&hint_str) {
+                Ok(h) => h,
+                Err(e) => {
+                    let err = $crate::conversions::error_to_c(format!("Failed to parse hint: {e}"));
+                    return $crate::types::CResult::error(err);
+                },
+            };
+            let instance = unsafe { &mut *(handle as *mut $plugin_type) };
+            instance.on_upstream_hint(hint);
             $crate::types::CResult::success()
         }
 

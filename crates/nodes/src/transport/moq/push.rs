@@ -677,7 +677,7 @@ impl MoqPushNode {
                 };
                 let _ = response_tx.send(Ok(pin));
             },
-            PinManagementMessage::AddedInputPin { pin, channel } => {
+            PinManagementMessage::AddedInputPin { pin, channel, hint_tx: _ } => {
                 Self::activate_dynamic_input(
                     &pin,
                     channel,
@@ -710,8 +710,10 @@ impl MoqPushNode {
             },
             PinManagementMessage::AddedOutputPin { .. }
             | PinManagementMessage::RemoveOutputPin { .. }
-            | PinManagementMessage::InputTypeResolved { .. } => {
-                // No-op for output pins / type info on a push node
+            | PinManagementMessage::InputTypeResolved { .. }
+            | PinManagementMessage::OutputHintChannel { .. }
+            | PinManagementMessage::AttachHintSender { .. } => {
+                // No-op for output pins / type info / hint channels on a push node
             },
         }
     }

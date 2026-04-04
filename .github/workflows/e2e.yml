@@ -81,6 +81,7 @@ jobs:
           CLONE_DIR="target/moq-relay-src"
           echo "Cloning moq-dev/moq at $MOQ_RELAY_COMMIT..."
           if [ ! -d "$CLONE_DIR/.git" ]; then
+            rm -rf "$CLONE_DIR"
             git clone --depth 1 https://github.com/moq-dev/moq.git "$CLONE_DIR"
           fi
           cd "$CLONE_DIR"

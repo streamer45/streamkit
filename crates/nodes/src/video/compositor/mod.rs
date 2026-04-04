@@ -53,7 +53,7 @@ use streamkit_core::types::{
 };
 use streamkit_core::{
     config_helpers, state_helpers, view_data_helpers, InputPin, NodeContext, NodeRegistry,
-    OutputPin, PinCardinality, PooledVideoData, ProcessorNode, StreamKitError,
+    OutputPin, PinCardinality, PooledVideoData, ProcessorNode, StreamKitError, UpstreamHint,
 };
 use tokio::sync::mpsc;
 
@@ -70,6 +70,10 @@ struct InputSlot {
     /// When the frame resolution changes at runtime (e.g. camera switch),
     /// the compositor sets `layer_configs_dirty` to re-emit view data.
     last_source_dims: Option<(u32, u32)>,
+    /// Optional sender for upstream resize hints.
+    /// Present only in dynamic pipelines where the engine created
+    /// a hint channel during `connect_nodes`.
+    hint_tx: Option<mpsc::Sender<UpstreamHint>>,
 }
 
 // ── Cached layer config ─────────────────────────────────────────────────────
@@ -530,7 +534,13 @@ impl ProcessorNode for CompositorNode {
         });
         for (name, rx) in pre_inputs {
             tracing::info!("CompositorNode: pre-connected input '{}'", name);
-            slots.push(InputSlot { name, rx, latest_frame: None, last_source_dims: None });
+            slots.push(InputSlot {
+                name,
+                rx,
+                latest_frame: None,
+                last_source_dims: None,
+                hint_tx: None, // no hints in static/pre-connected pipelines
+            });
         }
 
         // Pin management channel (optional).
@@ -799,6 +809,7 @@ impl ProcessorNode for CompositorNode {
                                 .unwrap_or(0);
 
                             let old_fps = self.config.fps;
+                            let old_config = self.config.clone();
                             Self::apply_update_params(
                                 &mut self.config,
                                 &self.limits,
@@ -807,6 +818,7 @@ impl ProcessorNode for CompositorNode {
                                 params.clone(),
                                 &mut stats_tracker,
                             );
+                            Self::send_resize_hints(&old_config, &self.config, &slots);
                             layer_configs_dirty = true;
                             if self.config.fps != old_fps {
                                 let new_duration = std::time::Duration::from_nanos(
@@ -1338,6 +1350,53 @@ impl CompositorNode {
         }
     }
 
+    /// Compare old and new layer configs; send `PreferredSize` hints for
+    /// any slot whose destination rect dimensions changed.
+    fn send_resize_hints(
+        old_config: &CompositorConfig,
+        new_config: &CompositorConfig,
+        slots: &[InputSlot],
+    ) {
+        let slots_with_tx = slots.iter().filter(|s| s.hint_tx.is_some()).count();
+        tracing::debug!(
+            total_slots = slots.len(),
+            slots_with_hint_tx = slots_with_tx,
+            old_layer_count = old_config.layers.len(),
+            new_layer_count = new_config.layers.len(),
+            "send_resize_hints: comparing layer configs"
+        );
+        for slot in slots {
+            let old_rect = old_config.layers.get(&slot.name).and_then(|lc| lc.rect);
+            let new_rect = new_config.layers.get(&slot.name).and_then(|lc| lc.rect);
+            let changed = match (old_rect, new_rect) {
+                (Some(o), Some(n)) => o.width != n.width || o.height != n.height,
+                (None, Some(_)) | (Some(_), None) => true,
+                (None, None) => false,
+            };
+            if changed {
+                if let (Some(ref tx), Some(ref rect)) = (&slot.hint_tx, new_rect) {
+                    tracing::info!(
+                        slot = %slot.name,
+                        width = rect.width,
+                        height = rect.height,
+                        "Sending upstream PreferredSize hint"
+                    );
+                    let _ = tx.try_send(UpstreamHint::PreferredSize {
+                        width: rect.width,
+                        height: rect.height,
+                    });
+                } else {
+                    tracing::debug!(
+                        slot = %slot.name,
+                        has_hint_tx = slot.hint_tx.is_some(),
+                        has_new_rect = new_rect.is_some(),
+                        "Skipping hint: missing hint_tx or new_rect"
+                    );
+                }
+            }
+        }
+    }
+
     /// Handle a dynamic pin management message (add / remove input pins).
     fn handle_pin_management(
         node: &mut Box<Self>,
@@ -1356,14 +1415,25 @@ impl CompositorNode {
                 node.input_pins.push(pin.clone());
                 let _ = response_tx.send(Ok(pin));
             },
-            PinManagementMessage::AddedInputPin { pin, channel } => {
+            PinManagementMessage::AddedInputPin { pin, channel, hint_tx } => {
                 tracing::info!("CompositorNode: activated input pin '{}'", pin.name);
+                let pin_name = pin.name.clone();
                 slots.push(InputSlot {
                     name: pin.name,
                     rx: channel,
                     latest_frame: None,
                     last_source_dims: None,
+                    hint_tx,
                 });
+
+                Self::send_initial_hint_for_slot(
+                    &pin_name,
+                    slots.last().and_then(|s| s.hint_tx.as_ref()),
+                    &node.config,
+                );
+            },
+            PinManagementMessage::AttachHintSender { ref pin_name, hint_tx } => {
+                Self::attach_hint_sender(pin_name, hint_tx, slots, &node.config);
             },
             PinManagementMessage::RemoveInputPin { pin_name } => {
                 tracing::info!("CompositorNode: removed input pin '{}'", pin_name);
@@ -1374,6 +1444,64 @@ impl CompositorNode {
                 node.input_pins.retain(|p| p.name != pin_name);
             },
             _ => {},
+        }
+    }
+
+    /// Attach a hint sender to a pre-existing input slot and send an
+    /// initial `PreferredSize` hint if a layer rect is already configured.
+    fn attach_hint_sender(
+        pin_name: &str,
+        hint_tx: tokio::sync::mpsc::Sender<UpstreamHint>,
+        slots: &mut [InputSlot],
+        config: &CompositorConfig,
+    ) {
+        if let Some(slot) = slots.iter_mut().find(|s| s.name == pin_name) {
+            tracing::info!(
+                "CompositorNode: attached hint sender for pre-existing pin '{}'",
+                pin_name
+            );
+            slot.hint_tx = Some(hint_tx);
+            Self::send_initial_hint_for_slot(pin_name, slot.hint_tx.as_ref(), config);
+        } else {
+            tracing::debug!(
+                "CompositorNode: ignoring AttachHintSender for unknown pin '{}'",
+                pin_name
+            );
+        }
+    }
+
+    /// If the given slot has a layer rect in `config`, send an initial
+    /// `PreferredSize` hint so the source can resize immediately rather
+    /// than waiting for the next `UpdateParams`.
+    fn send_initial_hint_for_slot(
+        pin_name: &str,
+        hint_tx: Option<&tokio::sync::mpsc::Sender<UpstreamHint>>,
+        config: &CompositorConfig,
+    ) {
+        let Some(tx) = hint_tx else { return };
+        if let Some(lc) = config.layers.get(pin_name) {
+            if let Some(ref rect) = lc.rect {
+                tracing::info!(
+                    pin = %pin_name,
+                    width = rect.width,
+                    height = rect.height,
+                    "CompositorNode: sending initial PreferredSize hint"
+                );
+                let _ = tx.try_send(UpstreamHint::PreferredSize {
+                    width: rect.width,
+                    height: rect.height,
+                });
+            } else {
+                tracing::debug!(
+                    pin = %pin_name,
+                    "CompositorNode: no rect configured for pin, skipping initial hint"
+                );
+            }
+        } else {
+            tracing::debug!(
+                pin = %pin_name,
+                "CompositorNode: no layer config found for pin, skipping initial hint"
+            );
         }
     }
 }
