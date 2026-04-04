@@ -262,15 +262,20 @@ impl NativeSourceNode for SlintSourcePlugin {
                 DiscoveredValueType::String => "string",
             };
 
-            props.insert(
-                dp.name.clone(),
-                serde_json::json!({
-                    "type": type_str,
-                    "tunable": true,
-                    "path": format!("properties.{}", dp.name),
-                    "description": format!("Slint property: {}", dp.name),
-                }),
-            );
+            let mut schema = serde_json::json!({
+                "type": type_str,
+                "tunable": true,
+                "path": format!("properties.{}", dp.name),
+                "description": format!("Slint property: {}", dp.name),
+            });
+
+            // Include the initial value from the component so the UI can
+            // show the correct default state (e.g. a toggle that starts on).
+            if let Some(ref initial) = dp.initial_value {
+                schema["default"] = initial.clone();
+            }
+
+            props.insert(dp.name.clone(), schema);
         }
 
         Some(serde_json::json!({

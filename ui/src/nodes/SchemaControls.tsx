@@ -13,11 +13,9 @@
  */
 
 import styled from '@emotion/styled';
-import * as Tooltip from '@radix-ui/react-tooltip';
 import { useAtomValue } from 'jotai/react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
-import { LiveBadge, LiveDot } from '@/components/ui/LiveIndicator';
 import { TEXT_DEBOUNCE_MS } from '@/constants/timing';
 import { useTuneNode } from '@/hooks/useTuneNode';
 import { nodeParamsAtom } from '@/stores/sessionAtoms';
@@ -45,18 +43,6 @@ export const ControlLabelText = styled.span`
 export const ControlDescription = styled.div`
   font-size: 11px;
   color: var(--sk-text-muted);
-`;
-
-const TooltipContent = styled(Tooltip.Content)`
-  background: var(--sk-panel-bg);
-  border: 1px solid var(--sk-border);
-  border-radius: 6px;
-  padding: 8px 12px;
-  box-shadow: 0 4px 12px var(--sk-shadow);
-  font-size: 11px;
-  z-index: 1000;
-  max-width: 250px;
-  color: var(--sk-text);
 `;
 
 // ---------------------------------------------------------------------------
@@ -144,29 +130,6 @@ const CompactTextInput = styled.input`
 `;
 
 // ---------------------------------------------------------------------------
-// Live indicator tooltip (shared by both controls)
-// ---------------------------------------------------------------------------
-
-const LiveIndicator: React.FC = () => (
-  <Tooltip.Provider delayDuration={300}>
-    <Tooltip.Root>
-      <Tooltip.Trigger asChild>
-        <LiveBadge size="small">
-          <LiveDot size="small" />
-          LIVE
-        </LiveBadge>
-      </Tooltip.Trigger>
-      <Tooltip.Portal>
-        <TooltipContent side="top" sideOffset={5}>
-          Changes apply immediately to the running pipeline
-          <Tooltip.Arrow style={{ fill: 'var(--sk-border)' }} />
-        </TooltipContent>
-      </Tooltip.Portal>
-    </Tooltip.Root>
-  </Tooltip.Provider>
-);
-
-// ---------------------------------------------------------------------------
 // Boolean toggle control
 // ---------------------------------------------------------------------------
 
@@ -175,7 +138,6 @@ interface BooleanToggleControlProps {
   sessionId?: string;
   config: ToggleConfig;
   params: Record<string, unknown>;
-  showLiveIndicator?: boolean;
 }
 
 export const BooleanToggleControl: React.FC<BooleanToggleControlProps> = ({
@@ -183,7 +145,6 @@ export const BooleanToggleControl: React.FC<BooleanToggleControlProps> = ({
   sessionId,
   config,
   params,
-  showLiveIndicator = false,
 }) => {
   const { tuneNodeConfig } = useTuneNode(sessionId ?? null);
 
@@ -232,7 +193,6 @@ export const BooleanToggleControl: React.FC<BooleanToggleControlProps> = ({
   return (
     <ToggleRow>
       <ToggleLabel className="code-font">{config.key}</ToggleLabel>
-      {showLiveIndicator && <LiveIndicator />}
       <ToggleTrack
         role="switch"
         aria-checked={checked}
@@ -255,7 +215,6 @@ interface TextInputControlProps {
   sessionId?: string;
   config: TextConfig;
   params: Record<string, unknown>;
-  showLiveIndicator?: boolean;
 }
 
 export const TextInputControl: React.FC<TextInputControlProps> = ({
@@ -263,7 +222,6 @@ export const TextInputControl: React.FC<TextInputControlProps> = ({
   sessionId,
   config,
   params,
-  showLiveIndicator = false,
 }) => {
   const { tuneNodeConfig } = useTuneNode(sessionId ?? null);
 
@@ -345,7 +303,6 @@ export const TextInputControl: React.FC<TextInputControlProps> = ({
     <TextInputWrapper>
       <ControlLabel>
         <ControlLabelText className="code-font">{config.key}</ControlLabelText>
-        {showLiveIndicator && <LiveIndicator />}
       </ControlLabel>
       {config.schema.description && (
         <ControlDescription>{config.schema.description}</ControlDescription>

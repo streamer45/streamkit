@@ -38,6 +38,10 @@ pub type NodeId = uuid::Uuid;
 pub struct DiscoveredProperty {
     pub name: String,
     pub value_type: DiscoveredValueType,
+    /// The initial value of the property as declared in the `.slint` file.
+    /// Used as the `default` in the runtime JSON Schema so the UI can show
+    /// the correct initial state (e.g. a toggle that is `true` at startup).
+    pub initial_value: Option<serde_json::Value>,
 }
 
 /// Subset of `slint_interpreter::ValueType` that maps to JSON Schema types
@@ -148,7 +152,7 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
                         // Discover publicly declared properties from the compiled
                         // component.  Only types the UI can render as controls
                         // (bool, number, string) are included.
-                        let properties = discover_properties(&instance.definition);
+                        let properties = discover_properties(&instance.definition, &instance.component);
 
                         tracing::info!(
                             node_id = %node_id,
@@ -370,10 +374,16 @@ fn create_slint_instance(
 /// and return those whose types map to JSON Schema primitives the UI can
 /// render as controls (boolean → toggle, number → slider, string → text).
 ///
+/// Also reads the initial value of each property from the instantiated
+/// component so the UI can show the correct initial state.
+///
 /// **Limitation:** `.slint` files are assumed to be static for the lifetime
 /// of the node.  Property discovery happens once at initialization; if the
 /// source file changes, the node must be re-created to pick up new properties.
-fn discover_properties(definition: &ComponentDefinition) -> Vec<DiscoveredProperty> {
+fn discover_properties(
+    definition: &ComponentDefinition,
+    component: &ComponentInstance,
+) -> Vec<DiscoveredProperty> {
     definition
         .properties()
         .filter_map(|(name, value_type)| {
@@ -384,7 +394,15 @@ fn discover_properties(definition: &ComponentDefinition) -> Vec<DiscoveredProper
                 // Image, Model, Struct, Brush, etc. are not tuneable.
                 _ => return None,
             };
-            Some(DiscoveredProperty { name, value_type: vt })
+            // Read the initial value from the live component instance so the
+            // UI can display the correct default (e.g. clock_running = true).
+            let initial_value = component.get_property(&name).ok().and_then(|v| match v {
+                Value::Bool(b) => Some(serde_json::Value::Bool(b)),
+                Value::Number(n) => serde_json::Number::from_f64(n).map(serde_json::Value::Number),
+                Value::String(s) => Some(serde_json::Value::String(s.to_string())),
+                _ => None,
+            });
+            Some(DiscoveredProperty { name, value_type: vt, initial_value })
         })
         .collect()
 }

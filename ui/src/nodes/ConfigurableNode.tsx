@@ -3,11 +3,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import styled from '@emotion/styled';
-import * as Tooltip from '@radix-ui/react-tooltip';
 import React, { useCallback, useMemo, useState } from 'react';
 
 import { NodeFrame } from '@/components/node/NodeFrame';
-import { LiveBadge, LiveDot } from '@/components/ui/LiveIndicator';
+import { LiveDot } from '@/components/ui/LiveIndicator';
 import { useNumericSlider } from '@/hooks/useNumericSlider';
 import { areNodePropsEqual } from '@/nodes/nodePropsEqual';
 import {
@@ -63,18 +62,6 @@ const SliderValue = styled.span`
   color: var(--sk-text-muted);
   margin-left: auto;
   flex: 0 0 auto;
-`;
-
-const TooltipContent = styled(Tooltip.Content)`
-  background: var(--sk-panel-bg);
-  border: 1px solid var(--sk-border);
-  border-radius: 6px;
-  padding: 8px 12px;
-  box-shadow: 0 4px 12px var(--sk-shadow);
-  font-size: 11px;
-  z-index: 1000;
-  max-width: 250px;
-  color: var(--sk-text);
 `;
 
 const SliderInput = styled.input`
@@ -156,8 +143,6 @@ interface NumericSliderControlProps {
   step: number;
   params: Record<string, unknown>;
   onParamChange?: (nodeId: string, paramName: string, value: unknown) => void;
-  showLiveIndicator?: boolean;
-  isTunable: boolean;
 }
 
 // Helper: Compute fallback value for slider
@@ -226,8 +211,6 @@ const NumericSliderControl: React.FC<NumericSliderControlProps> = ({
   step,
   params,
   onParamChange,
-  showLiveIndicator = false,
-  isTunable,
 }) => {
   const baseParam = readByPath(params as Record<string, unknown>, pathOverride ?? paramKey);
   const defaultValue = schema?.default;
@@ -260,24 +243,6 @@ const NumericSliderControl: React.FC<NumericSliderControlProps> = ({
     <SliderWrapper>
       <ControlLabel>
         <ControlLabelText className="code-font">{paramKey}</ControlLabelText>
-        {showLiveIndicator && isTunable && (
-          <Tooltip.Provider delayDuration={300}>
-            <Tooltip.Root>
-              <Tooltip.Trigger asChild>
-                <LiveBadge size="small">
-                  <LiveDot size="small" />
-                  LIVE
-                </LiveBadge>
-              </Tooltip.Trigger>
-              <Tooltip.Portal>
-                <TooltipContent side="top" sideOffset={5}>
-                  Changes apply immediately to the running pipeline
-                  <Tooltip.Arrow style={{ fill: 'var(--sk-border)' }} />
-                </TooltipContent>
-              </Tooltip.Portal>
-            </Tooltip.Root>
-          </Tooltip.Provider>
-        )}
         <SliderValue>{formattedValue}</SliderValue>
       </ControlLabel>
       {schema?.description && <ControlDescription>{schema.description}</ControlDescription>}
@@ -374,6 +339,7 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(function Co
             <span>
               {controlCount} control{controlCount !== 1 ? 's' : ''}
             </span>
+            {showLiveIndicator && <LiveDot size="small" aria-label="Live-tunable" />}
           </ControlsToggleBar>
           {controlsExpanded && (
             <ControlGroup>
@@ -384,10 +350,9 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(function Co
                   sessionId={data.sessionId}
                   config={config}
                   params={data.params}
-                  showLiveIndicator={showLiveIndicator}
                 />
               ))}
-              {sliderConfigs.map(({ key, path, schema: schemaProp, min, max, step, tunable }) => (
+              {sliderConfigs.map(({ key, path, schema: schemaProp, min, max, step }) => (
                 <NumericSliderControl
                   key={key}
                   nodeId={id}
@@ -400,8 +365,6 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(function Co
                   step={step}
                   params={data.params}
                   onParamChange={data.onParamChange}
-                  showLiveIndicator={showLiveIndicator}
-                  isTunable={tunable}
                 />
               ))}
               {textConfigs.map((config) => (
@@ -411,7 +374,6 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(function Co
                   sessionId={data.sessionId}
                   config={config}
                   params={data.params}
-                  showLiveIndicator={showLiveIndicator}
                 />
               ))}
             </ControlGroup>
