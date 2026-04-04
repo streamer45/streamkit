@@ -11,6 +11,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  RUSTC_WRAPPER: sccache
   SHERPA_ONNX_VERSION: "1.12.17"
 
 jobs:
