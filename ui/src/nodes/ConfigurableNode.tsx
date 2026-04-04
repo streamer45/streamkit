@@ -10,10 +10,6 @@ import { NodeFrame } from '@/components/node/NodeFrame';
 import { LiveBadge, LiveDot } from '@/components/ui/LiveIndicator';
 import { useNumericSlider } from '@/hooks/useNumericSlider';
 import { areNodePropsEqual } from '@/nodes/nodePropsEqual';
-
-// Module-level map so expanded state survives topology rebuilds (which
-// recreate ConfigurableNode React elements, resetting useState).
-const expandedState = new Map<string, boolean>();
 import {
   BooleanToggleControl,
   TextInputControl,
@@ -35,6 +31,10 @@ import {
   formatNumber,
 } from '@/utils/jsonSchema';
 import { nodesLogger } from '@/utils/logger';
+
+// Module-level map so expanded state survives topology rebuilds (which
+// recreate ConfigurableNode React elements, resetting useState).
+const expandedState = new Map<string, boolean>();
 
 const ParamCount = styled.div`
   padding: 4px 0;
