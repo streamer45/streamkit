@@ -2,8 +2,33 @@
 # SPDX-FileCopyrightText: © 2025 StreamKit Contributors
 # SPDX-License-Identifier: MPL-2.0
 title: GPU Setup
-description: Configure GPU acceleration for ML workloads
+description: Configure GPU acceleration for compositing and ML workloads
 ---
+
+StreamKit can use GPUs in two ways: the built-in video compositor uses **wgpu** (Vulkan/Metal/DX12 — works with any compatible GPU), and selected native ML plugins use **NVIDIA CUDA** for inference acceleration.
+
+## Compositor (GPU compositing)
+
+The built-in `video::compositor` node supports GPU-accelerated compositing via wgpu. Set `gpu_mode` in the compositor params:
+
+| Value  | Behaviour |
+|--------|-----------|
+| `auto` (default) | CPU for simple scenes, auto-promotes to GPU when complexity warrants it |
+| `gpu`  | Force GPU compositing (falls back to CPU if no GPU is available) |
+| `cpu`  | Force CPU-only compositing (tiny-skia) |
+
+No NVIDIA-specific tooling is required for compositor GPU — wgpu works with any Vulkan-capable GPU. Example:
+
+```yaml
+compositor:
+  kind: video::compositor
+  params:
+    width: 1280
+    height: 720
+    gpu_mode: auto  # or "gpu" / "cpu"
+```
+
+## ML Plugins (NVIDIA GPU)
 
 StreamKit can use NVIDIA GPUs for selected native ML plugins. GPU support depends on how you build and deploy:
 

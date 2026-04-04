@@ -66,7 +66,7 @@ A fragment is a reusable mini-graph (a small, pre-wired set of nodes) that you c
 Monitor View uses the same overall three-pane layout, but focuses on running sessions:
 
 - **Left pane**: a live list of sessions until you enter **Staging Mode** (then it switches to the node library/palette for editing).
-- **Center pane**: the session graph view.
+- **Center pane**: the session graph view. If the selected session contains a `video::compositor` node, a **compositor scene editor** is available — an interactive canvas where you can drag, resize, reorder, and configure video layers and overlays in real time.
 - **Right pane** (once a session is selected): the YAML editor plus the Inspector pane for selected nodes.
 
 ## Convert View

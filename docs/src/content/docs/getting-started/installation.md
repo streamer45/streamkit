@@ -45,6 +45,8 @@ Optional:
 - `reuse` (`pip3 install --user reuse`) for SPDX license header checks in `just lint` (note: the apt package is too old)
 - `clang` and `libclang-dev` (`sudo apt install clang libclang-dev`) for building native ML plugins (e.g. whisper, sensevoice)
 - `libvpx` + `pkg-config` if building with `--features video` (VP9 nodes)
+- `cmake` + `nasm` + C compiler if building with `--features svt_av1_static` (SVT-AV1 encoder); see [`crates/nodes/SVT_AV1.md`](https://github.com/streamer45/streamkit/blob/main/crates/nodes/SVT_AV1.md) for details
+- `libdav1d-dev` if building with `--features dav1d` (C dav1d AV1 decoder); the pure-Rust rav1d decoder (`--features av1`) requires no extra deps
 
 ### Build Steps
 

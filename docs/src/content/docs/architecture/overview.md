@@ -9,7 +9,7 @@ StreamKit has three major pieces:
 
 - **Server (`skit`)**: the Rust backend that runs pipelines and serves the web UI + APIs.
 - **Pipelines engine**: compiles YAML into a typed node graph (DAG) and executes it as Tokio tasks connected by bounded channels.
-- **Web UI**: a React app for creating, running, and monitoring pipelines in real time.
+- **Web UI**: a React app for creating, running, and monitoring pipelines in real time, with a dedicated compositor scene editor for video layouts.
 
 ## Execution surfaces
 
@@ -19,8 +19,8 @@ StreamKit has three major pieces:
 
 ## Extensibility
 
-- **Built-in nodes** (core, audio, video, containers, transport).
-- **Plugins**: native (in-process C ABI) and WASM (sandboxed Component Model).
+- **Built-in nodes** (core, audio, video, containers, transport) — including a multi-layer video compositor with CPU (tiny-skia) and GPU (wgpu) backends.
+- **Plugins**: native (in-process C ABI) and WASM (sandboxed Component Model) — e.g. Slint for dynamic UI overlays, Whisper/SenseVoice for STT, Kokoro/Piper for TTS.
 - **Script node**: sandboxed JavaScript (QuickJS) for lightweight integration and text processing.
 
 Next:
