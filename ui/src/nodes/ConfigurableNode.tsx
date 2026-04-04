@@ -4,7 +4,7 @@
 
 import styled from '@emotion/styled';
 import * as Tooltip from '@radix-ui/react-tooltip';
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 
 import { NodeFrame } from '@/components/node/NodeFrame';
 import { LiveBadge, LiveDot } from '@/components/ui/LiveIndicator';
@@ -90,6 +90,39 @@ const SliderMarks = styled.div`
   font-size: 10px;
   color: var(--sk-text-muted);
   font-variant-numeric: tabular-nums;
+`;
+
+const ControlsToggleBar = styled.button`
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 4px;
+  background: none;
+  border: none;
+  border-top: 1px solid var(--sk-border);
+  color: var(--sk-text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  border-radius: 0;
+
+  &:hover {
+    color: var(--sk-text);
+  }
+`;
+
+const Chevron = styled.span<{ expanded: boolean }>`
+  display: inline-block;
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 4px 0 4px 6px;
+  border-color: transparent transparent transparent currentColor;
+  transition: transform 0.15s ease;
+  transform: rotate(${(props) => (props.expanded ? '90deg' : '0deg')});
+  flex-shrink: 0;
 `;
 
 interface ConfigurableNodeData {
@@ -290,8 +323,8 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(function Co
   const sliderConfigs = useMemo(() => extractSliderConfigs(schema), [schema]);
   const toggleConfigs = useMemo(() => extractToggleConfigs(schema), [schema]);
   const textConfigs = useMemo(() => extractTextConfigs(schema), [schema]);
-  const hasControls =
-    toggleConfigs.length > 0 || sliderConfigs.length > 0 || textConfigs.length > 0;
+  const controlCount = toggleConfigs.length + sliderConfigs.length + textConfigs.length;
+  const hasControls = controlCount > 0;
 
   // Detect bidirectional nodes using the bidirectional property from node definition
   const isBidirectional = data.definition?.bidirectional ?? false;
@@ -299,6 +332,8 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(function Co
   // Show live indicator when node is in an active session (has sessionId)
   // This prevents the LIVE badge from showing in design view (which has no sessionId)
   const showLiveIndicator = !!data.onParamChange && !!data.sessionId;
+
+  const [controlsExpanded, setControlsExpanded] = useState(false);
 
   const content = (
     <NodeFrame
@@ -315,45 +350,63 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(function Co
       isBidirectional={isBidirectional}
     >
       {hasControls && (
-        <ControlGroup>
-          {toggleConfigs.map((config) => (
-            <BooleanToggleControl
-              key={config.key}
-              nodeId={id}
-              sessionId={data.sessionId}
-              config={config}
-              params={data.params}
-              showLiveIndicator={showLiveIndicator}
-            />
-          ))}
-          {sliderConfigs.map(({ key, path, schema: schemaProp, min, max, step, tunable }) => (
-            <NumericSliderControl
-              key={key}
-              nodeId={id}
-              sessionId={data.sessionId}
-              paramKey={key}
-              path={path}
-              schema={schemaProp}
-              min={min}
-              max={max}
-              step={step}
-              params={data.params}
-              onParamChange={data.onParamChange}
-              showLiveIndicator={showLiveIndicator}
-              isTunable={tunable}
-            />
-          ))}
-          {textConfigs.map((config) => (
-            <TextInputControl
-              key={config.key}
-              nodeId={id}
-              sessionId={data.sessionId}
-              config={config}
-              params={data.params}
-              showLiveIndicator={showLiveIndicator}
-            />
-          ))}
-        </ControlGroup>
+        <>
+          <ControlsToggleBar
+            className="nodrag nopan"
+            onClick={(e) => {
+              e.stopPropagation();
+              setControlsExpanded((prev) => !prev);
+            }}
+            aria-expanded={controlsExpanded}
+            aria-label={`${controlsExpanded ? 'Hide' : 'Show'} ${controlCount} controls`}
+          >
+            <Chevron expanded={controlsExpanded} />
+            <span>
+              {controlCount} control{controlCount !== 1 ? 's' : ''}
+            </span>
+          </ControlsToggleBar>
+          {controlsExpanded && (
+            <ControlGroup>
+              {toggleConfigs.map((config) => (
+                <BooleanToggleControl
+                  key={config.key}
+                  nodeId={id}
+                  sessionId={data.sessionId}
+                  config={config}
+                  params={data.params}
+                  showLiveIndicator={showLiveIndicator}
+                />
+              ))}
+              {sliderConfigs.map(({ key, path, schema: schemaProp, min, max, step, tunable }) => (
+                <NumericSliderControl
+                  key={key}
+                  nodeId={id}
+                  sessionId={data.sessionId}
+                  paramKey={key}
+                  path={path}
+                  schema={schemaProp}
+                  min={min}
+                  max={max}
+                  step={step}
+                  params={data.params}
+                  onParamChange={data.onParamChange}
+                  showLiveIndicator={showLiveIndicator}
+                  isTunable={tunable}
+                />
+              ))}
+              {textConfigs.map((config) => (
+                <TextInputControl
+                  key={config.key}
+                  nodeId={id}
+                  sessionId={data.sessionId}
+                  config={config}
+                  params={data.params}
+                  showLiveIndicator={showLiveIndicator}
+                />
+              ))}
+            </ControlGroup>
+          )}
+        </>
       )}
 
       {totalParams > 0 ? (
