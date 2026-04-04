@@ -18,6 +18,7 @@ import { useAtomValue } from 'jotai/react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 import { LiveBadge, LiveDot } from '@/components/ui/LiveIndicator';
+import { TEXT_DEBOUNCE_MS } from '@/constants/timing';
 import { useTuneNode } from '@/hooks/useTuneNode';
 import { nodeParamsAtom } from '@/stores/sessionAtoms';
 import { buildParamUpdate, readByPath } from '@/utils/controlProps';
@@ -141,11 +142,6 @@ const CompactTextInput = styled.input`
     opacity: 0.5;
   }
 `;
-
-// ---------------------------------------------------------------------------
-// Debounce delay for text inputs (ms)
-// ---------------------------------------------------------------------------
-const TEXT_DEBOUNCE_MS = 300;
 
 // ---------------------------------------------------------------------------
 // Live indicator tooltip (shared by both controls)

@@ -18,3 +18,11 @@
  * while leaving headroom for network RTT and server processing.
  */
 export const PARAM_THROTTLE_MS = 33;
+
+/**
+ * Debounce delay for text input controls on node cards.
+ *
+ * 300ms gives the user time to finish typing before sending the value
+ * to the server, avoiding excessive partial updates.
+ */
+export const TEXT_DEBOUNCE_MS = 300;
