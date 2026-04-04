@@ -45,6 +45,14 @@ impl std::fmt::Display for ConnectionId {
     }
 }
 
+/// Notification emitted when a node's runtime param schema is discovered
+/// after initialization (e.g. Slint component properties).
+#[derive(Clone, Debug)]
+pub struct RuntimeSchemaUpdate {
+    pub node_id: String,
+    pub schema: serde_json::Value,
+}
+
 /// Query messages for retrieving information from the engine without modifying state.
 pub enum QueryMessage {
     GetNodeStates { response_tx: mpsc::Sender<HashMap<String, NodeState>> },
@@ -55,6 +63,7 @@ pub enum QueryMessage {
     SubscribeViewData { response_tx: mpsc::Sender<mpsc::Receiver<NodeViewDataUpdate>> },
     GetNodeViewData { response_tx: mpsc::Sender<HashMap<String, serde_json::Value>> },
     GetRuntimeSchemas { response_tx: mpsc::Sender<HashMap<String, serde_json::Value>> },
+    SubscribeRuntimeSchemas { response_tx: mpsc::Sender<mpsc::Receiver<RuntimeSchemaUpdate>> },
 }
 
 // Re-export ConnectionMode from core for use by pin distributor
