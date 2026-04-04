@@ -136,8 +136,5 @@ pub enum PinManagementMessage {
     /// definition time), the engine sends this message after
     /// `connect_nodes` so the destination node can send advisory
     /// hints back to the source.
-    AttachHintSender {
-        pin_name: String,
-        hint_tx: tokio::sync::mpsc::Sender<crate::UpstreamHint>,
-    },
+    AttachHintSender { pin_name: String, hint_tx: tokio::sync::mpsc::Sender<crate::UpstreamHint> },
 }
