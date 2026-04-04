@@ -558,6 +558,10 @@ macro_rules! __plugin_shared_ffi {
                 None => $crate::types::CSchemaResult::none(),
                 Some(schema) => match serde_json::to_string(&schema) {
                     Ok(json) => {
+                        // NOTE: error_to_c is a misnomer here — it's a generic
+                        // "String → thread-local CString" helper reused for the
+                        // success payload.  A rename to e.g. `thread_local_c_str`
+                        // would clarify intent but touches many call-sites.
                         let c_str = $crate::conversions::error_to_c(json);
                         $crate::types::CSchemaResult::schema(c_str)
                     },

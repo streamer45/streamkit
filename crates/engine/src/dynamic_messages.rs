@@ -55,15 +55,33 @@ pub struct RuntimeSchemaUpdate {
 
 /// Query messages for retrieving information from the engine without modifying state.
 pub enum QueryMessage {
-    GetNodeStates { response_tx: mpsc::Sender<HashMap<String, NodeState>> },
-    GetNodeStats { response_tx: mpsc::Sender<HashMap<String, NodeStats>> },
-    SubscribeState { response_tx: mpsc::Sender<mpsc::Receiver<NodeStateUpdate>> },
-    SubscribeStats { response_tx: mpsc::Sender<mpsc::Receiver<NodeStatsUpdate>> },
-    SubscribeTelemetry { response_tx: mpsc::Sender<mpsc::Receiver<TelemetryEvent>> },
-    SubscribeViewData { response_tx: mpsc::Sender<mpsc::Receiver<NodeViewDataUpdate>> },
-    GetNodeViewData { response_tx: mpsc::Sender<HashMap<String, serde_json::Value>> },
-    GetRuntimeSchemas { response_tx: mpsc::Sender<HashMap<String, serde_json::Value>> },
-    SubscribeRuntimeSchemas { response_tx: mpsc::Sender<mpsc::Receiver<RuntimeSchemaUpdate>> },
+    GetNodeStates {
+        response_tx: mpsc::Sender<HashMap<String, NodeState>>,
+    },
+    GetNodeStats {
+        response_tx: mpsc::Sender<HashMap<String, NodeStats>>,
+    },
+    SubscribeState {
+        response_tx: mpsc::Sender<mpsc::Receiver<NodeStateUpdate>>,
+    },
+    SubscribeStats {
+        response_tx: mpsc::Sender<mpsc::Receiver<NodeStatsUpdate>>,
+    },
+    SubscribeTelemetry {
+        response_tx: mpsc::Sender<mpsc::Receiver<TelemetryEvent>>,
+    },
+    SubscribeViewData {
+        response_tx: mpsc::Sender<mpsc::Receiver<NodeViewDataUpdate>>,
+    },
+    GetNodeViewData {
+        response_tx: mpsc::Sender<HashMap<String, serde_json::Value>>,
+    },
+    GetRuntimeSchemas {
+        response_tx: mpsc::Sender<HashMap<String, serde_json::Value>>,
+    },
+    SubscribeRuntimeSchemas {
+        response_tx: mpsc::Sender<mpsc::UnboundedReceiver<RuntimeSchemaUpdate>>,
+    },
 }
 
 // Re-export ConnectionMode from core for use by pin distributor

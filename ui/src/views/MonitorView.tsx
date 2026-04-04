@@ -470,7 +470,10 @@ const MonitorViewContent: React.FC = () => {
     }
   }, [selectedSessionId, selectedSession, isLoadingSessions]);
 
-  // Helper to validate parameter value against schema
+  // Helper to validate parameter value against schema.
+  // Resolves dot-paths (e.g. "properties.show") by walking nested schema
+  // properties, and uses the runtime-merged schema when available so that
+  // dynamically discovered parameters are validated correctly.
   const validateParamValue = useCallback(
     (nodeId: string, paramKey: string, value: unknown): string | null => {
       const node = pipeline?.nodes[nodeId];
@@ -479,15 +482,21 @@ const MonitorViewContent: React.FC = () => {
       const nodeDef = nodeDefinitions.find((d) => d.kind === node.kind);
       if (!nodeDef) return null;
 
-      const schema = nodeDef.param_schema as
-        | {
-            properties?: Record<
-              string,
-              { type?: string; minimum?: number; maximum?: number; multipleOf?: number }
-            >;
-          }
-        | undefined;
-      const propSchema = schema?.properties?.[paramKey];
+      // Merge runtime schema (if any) so dynamically discovered properties
+      // are included in validation.
+      const runtimeSchema = pipeline?.runtime_schemas?.[nodeId] as JsonSchema | undefined;
+      const baseSchema = nodeDef.param_schema as JsonSchema | undefined;
+      const merged = runtimeSchema ? deepMergeSchemas(baseSchema, runtimeSchema) : baseSchema;
+      if (!merged?.properties) return null;
+
+      // Resolve dot-paths: "properties.show" → schema.properties.properties
+      //   .properties.show
+      const segments = paramKey.split('.');
+      type PropSchema = { type?: string; minimum?: number; maximum?: number; multipleOf?: number; properties?: Record<string, PropSchema> };
+      let propSchema: PropSchema | undefined = merged.properties[segments[0]] as PropSchema | undefined;
+      for (let i = 1; i < segments.length && propSchema; i++) {
+        propSchema = propSchema.properties?.[segments[i]];
+      }
       if (!propSchema) return null;
 
       return validateValue(value, propSchema);

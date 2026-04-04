@@ -4,12 +4,16 @@
 
 import styled from '@emotion/styled';
 import * as Tooltip from '@radix-ui/react-tooltip';
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 
 import { NodeFrame } from '@/components/node/NodeFrame';
 import { LiveBadge, LiveDot } from '@/components/ui/LiveIndicator';
 import { useNumericSlider } from '@/hooks/useNumericSlider';
 import { areNodePropsEqual } from '@/nodes/nodePropsEqual';
+
+// Module-level map so expanded state survives topology rebuilds (which
+// recreate ConfigurableNode React elements, resetting useState).
+const expandedState = new Map<string, boolean>();
 import {
   BooleanToggleControl,
   TextInputControl,
@@ -327,7 +331,16 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(function Co
   // This prevents the LIVE badge from showing in design view (which has no sessionId)
   const showLiveIndicator = !!data.onParamChange && !!data.sessionId;
 
-  const [controlsExpanded, setControlsExpanded] = useState(false);
+  const [controlsExpanded, setControlsExpanded] = useState(
+    () => expandedState.get(id) ?? false
+  );
+  const toggleExpanded = useCallback(() => {
+    setControlsExpanded((prev) => {
+      const next = !prev;
+      expandedState.set(id, next);
+      return next;
+    });
+  }, [id]);
 
   const content = (
     <NodeFrame
@@ -347,7 +360,7 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(function Co
         <>
           <ControlsToggleBar
             className="nodrag nopan"
-            onClick={() => setControlsExpanded((prev) => !prev)}
+            onClick={toggleExpanded}
             aria-expanded={controlsExpanded}
             aria-label={`${controlsExpanded ? 'Hide' : 'Show'} ${controlCount} controls`}
           >

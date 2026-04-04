@@ -109,7 +109,10 @@ pub struct DynamicEngine {
     /// returns `Some`.
     pub(super) runtime_schemas: HashMap<String, serde_json::Value>,
     /// Subscribers that want to receive runtime schema discovery notifications.
-    pub(super) runtime_schema_subscribers: Vec<mpsc::Sender<RuntimeSchemaUpdate>>,
+    /// Unbounded because schema discovery is one-per-node and low-frequency;
+    /// a bounded channel risks silently dropping a notification that leaves
+    /// the UI permanently stale.
+    pub(super) runtime_schema_subscribers: Vec<mpsc::UnboundedSender<RuntimeSchemaUpdate>>,
     // Metrics
     pub(super) nodes_active_gauge: opentelemetry::metrics::Gauge<u64>,
     pub(super) node_state_transitions_counter: opentelemetry::metrics::Counter<u64>,
@@ -215,7 +218,7 @@ impl DynamicEngine {
                 let _ = response_tx.send(self.runtime_schemas.clone()).await;
             },
             QueryMessage::SubscribeRuntimeSchemas { response_tx } => {
-                let (tx, rx) = mpsc::channel(DEFAULT_SUBSCRIBER_CHANNEL_CAPACITY);
+                let (tx, rx) = mpsc::unbounded_channel();
                 self.runtime_schema_subscribers.push(tx);
                 let _ = response_tx.send(rx).await;
             },
@@ -557,20 +560,8 @@ impl DynamicEngine {
             // Notify subscribers so the UI can merge the schema immediately
             // rather than waiting for a manual pipeline re-fetch.
             let update = RuntimeSchemaUpdate { node_id: node_id.to_string(), schema };
-            self.runtime_schema_subscribers.retain(|subscriber| {
-                match subscriber.try_send(update.clone()) {
-                    Ok(()) => true,
-                    Err(mpsc::error::TrySendError::Full(_)) => {
-                        tracing::warn!(
-                            node_id = %node_id,
-                            "RuntimeSchemaUpdate dropped: subscriber channel full \
-                             (schema discovery is one-time; UI may remain stale)"
-                        );
-                        true
-                    },
-                    Err(mpsc::error::TrySendError::Closed(_)) => false,
-                }
-            });
+            self.runtime_schema_subscribers
+                .retain(|subscriber| subscriber.send(update.clone()).is_ok());
         }
 
         let (control_tx, control_rx) = mpsc::channel(CONTROL_CAPACITY);

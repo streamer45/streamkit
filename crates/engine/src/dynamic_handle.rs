@@ -180,7 +180,7 @@ impl DynamicEngineHandle {
     /// Returns an error if the engine actor has shut down or fails to respond.
     pub async fn subscribe_runtime_schemas(
         &self,
-    ) -> Result<mpsc::Receiver<RuntimeSchemaUpdate>, String> {
+    ) -> Result<mpsc::UnboundedReceiver<RuntimeSchemaUpdate>, String> {
         let (response_tx, mut response_rx) = mpsc::channel(1);
         self.query_tx
             .send(QueryMessage::SubscribeRuntimeSchemas { response_tx })

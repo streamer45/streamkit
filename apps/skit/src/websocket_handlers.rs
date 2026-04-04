@@ -1005,6 +1005,10 @@ async fn handle_tune_node_fire_and_forget(
                 }
             } // Lock released here
 
+            // Broadcast the *partial delta* (not merged state) to all clients.
+            // Correct deep-merge on receive depends on each client having a
+            // valid base state, which is guaranteed because every client
+            // fetches the full pipeline on connect.
             let event = ApiEvent {
                 message_type: MessageType::Event,
                 correlation_id: None,
