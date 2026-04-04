@@ -246,3 +246,128 @@ async fn test_upstream_resize_hint_end_to_end() {
     // Shutdown.
     handle.shutdown_and_wait().await.expect("shutdown");
 }
+
+/// Engine-level test for **pre-existing** input pins.
+///
+/// When `num_inputs` is set in the compositor config, input pins are created
+/// at node construction time (not dynamically via `RequestAddInputPin`).
+/// `connect_nodes` must still wire a hint channel for these pins so that
+/// resize hints can flow upstream.
+#[tokio::test]
+#[allow(clippy::expect_used)]
+async fn test_upstream_resize_hint_preexisting_pin() {
+    let captured_hints = Arc::new(Mutex::new(Vec::<CapturedHint>::new()));
+    let captured_clone = captured_hints.clone();
+
+    let mut registry = NodeRegistry::new();
+
+    registry.register_dynamic(
+        "test::hint_source",
+        move |_params| Ok(Box::new(HintCapturingSource { captured_hints: captured_clone.clone() })),
+        serde_json::json!({}),
+        vec!["test".to_string()],
+        false,
+    );
+
+    let constraints = streamkit_core::constraints::GlobalNodeConstraints::default();
+    streamkit_nodes::video::compositor::register_compositor_nodes(&mut registry, &constraints);
+
+    let engine = Engine {
+        registry: Arc::new(std::sync::RwLock::new(registry)),
+        audio_pool: Arc::new(streamkit_core::AudioFramePool::audio_default()),
+        video_pool: Arc::new(streamkit_core::VideoFramePool::video_default()),
+    };
+    let handle = engine.start_dynamic_actor(DynamicEngineConfig::default());
+
+    // 1. Add the source node.
+    handle
+        .send_control(EngineControlMessage::AddNode {
+            node_id: "source".to_string(),
+            kind: "test::hint_source".to_string(),
+            params: None,
+        })
+        .await
+        .expect("add source");
+
+    // 2. Add the compositor with `num_inputs: 1` so the "in" pin is
+    //    pre-created at construction time (not dynamically).
+    handle
+        .send_control(EngineControlMessage::AddNode {
+            node_id: "compositor".to_string(),
+            kind: "video::compositor".to_string(),
+            params: Some(serde_json::json!({
+                "width": 1280,
+                "height": 720,
+                "fps": 30,
+                "num_inputs": 1,
+                "layers": {
+                    "in": {
+                        "rect": { "x": 0, "y": 0, "width": 640, "height": 480 }
+                    }
+                }
+            })),
+        })
+        .await
+        .expect("add compositor");
+
+    // Let both nodes start their run loops.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // 3. Connect source → compositor.  Because `num_inputs` was set, the
+    //    engine finds the pre-existing "in" pin and takes the fast path
+    //    in `connect_nodes`.  Our fix ensures a hint channel is still
+    //    created via `AttachHintSender`.
+    handle
+        .send_control(EngineControlMessage::Connect {
+            from_node: "source".to_string(),
+            from_pin: "out".to_string(),
+            to_node: "compositor".to_string(),
+            to_pin: "in".to_string(),
+            mode: ConnectionMode::Reliable,
+        })
+        .await
+        .expect("connect");
+
+    // The compositor should send an initial hint for the pre-configured
+    // layer rect (640×480) once it receives the AttachHintSender.
+    let initial_hints = poll_hints(
+        &captured_hints,
+        |h| !h.is_empty(),
+        std::time::Duration::from_secs(5),
+        "source should receive an initial resize hint for a pre-existing pin (timed out)",
+    )
+    .await;
+
+    assert_eq!(initial_hints[0].width, 640);
+    assert_eq!(initial_hints[0].height, 480);
+
+    // 4. Update the layer rect and verify the resize hint flows.
+    captured_hints.lock().expect("lock poisoned").clear();
+
+    handle
+        .send_control(EngineControlMessage::TuneNode {
+            node_id: "compositor".to_string(),
+            message: NodeControlMessage::UpdateParams(serde_json::json!({
+                "layers": {
+                    "in": {
+                        "rect": { "x": 0, "y": 0, "width": 1920, "height": 1080 }
+                    }
+                }
+            })),
+        })
+        .await
+        .expect("update params");
+
+    let resize_hints = poll_hints(
+        &captured_hints,
+        |h| !h.is_empty(),
+        std::time::Duration::from_secs(5),
+        "source should receive a resize hint after UpdateParams on a pre-existing pin (timed out)",
+    )
+    .await;
+
+    assert_eq!(resize_hints[0].width, 1920, "hint width should match new layer rect");
+    assert_eq!(resize_hints[0].height, 1080, "hint height should match new layer rect");
+
+    handle.shutdown_and_wait().await.expect("shutdown");
+}

@@ -851,9 +851,27 @@ impl DynamicEngine {
             Option<mpsc::Sender<streamkit_core::UpstreamHint>>,
         )> = None;
         // Hint receiver to deliver to the source node after connection is
-        // established.  Created alongside the data channel for dynamic pins.
-        let mut pending_hint_rx: Option<mpsc::Receiver<streamkit_core::UpstreamHint>> = None;
+        // established.  Created for both pre-existing and dynamic pins.
+        // (Not initialised here — every branch below either assigns it or
+        // returns early, so the compiler can verify exhaustiveness.)
+        let mut pending_hint_rx: Option<mpsc::Receiver<streamkit_core::UpstreamHint>>;
         let dest_tx = if let Some(tx) = self.node_inputs.get(&(to_node.clone(), to_pin.clone())) {
+            // Pre-existing pin — create a hint channel so the destination
+            // can send advisory hints (e.g. preferred output size) upstream.
+            let (hint_tx, hint_rx) = mpsc::channel::<streamkit_core::UpstreamHint>(1);
+            pending_hint_rx = Some(hint_rx);
+            if let Some(pin_mgmt_tx) = self.pin_management_txs.get(&to_node) {
+                let msg = streamkit_core::pins::PinManagementMessage::AttachHintSender {
+                    pin_name: to_pin.clone(),
+                    hint_tx,
+                };
+                if pin_mgmt_tx.send(msg).await.is_err() {
+                    tracing::warn!(
+                        "Failed to send AttachHintSender to '{}' for pin '{}' — node may have stopped",
+                        to_node, to_pin
+                    );
+                }
+            }
             tx.clone()
         } else if self.dynamic_pin_nodes.contains(&to_node) {
             let Some(pin_mgmt_tx) = self.pin_management_txs.get(&to_node) else {

@@ -1432,6 +1432,33 @@ impl CompositorNode {
                     }
                 }
             },
+            PinManagementMessage::AttachHintSender { ref pin_name, hint_tx } => {
+                if let Some(slot) = slots.iter_mut().find(|s| s.name == *pin_name) {
+                    tracing::info!(
+                        "CompositorNode: attached hint sender for pre-existing pin '{}'",
+                        pin_name
+                    );
+                    slot.hint_tx = Some(hint_tx);
+
+                    // Send an initial hint if this slot already has a layer
+                    // rect configured, so the source can resize immediately.
+                    if let Some(lc) = node.config.layers.get(pin_name) {
+                        if let Some(ref rect) = lc.rect {
+                            if let Some(ref tx) = slot.hint_tx {
+                                let _ = tx.try_send(UpstreamHint::PreferredSize {
+                                    width: rect.width,
+                                    height: rect.height,
+                                });
+                            }
+                        }
+                    }
+                } else {
+                    tracing::debug!(
+                        "CompositorNode: ignoring AttachHintSender for unknown pin '{}'",
+                        pin_name
+                    );
+                }
+            },
             PinManagementMessage::RemoveInputPin { pin_name } => {
                 tracing::info!("CompositorNode: removed input pin '{}'", pin_name);
                 if let Some(idx) = slots.iter().position(|s| s.name == pin_name) {

@@ -837,7 +837,8 @@ impl MoqPeerNode {
             },
             // Type info for pre-existing pins; not used by this node.
             PinManagementMessage::InputTypeResolved { .. }
-            | PinManagementMessage::OutputHintChannel { .. } => {},
+            | PinManagementMessage::OutputHintChannel { .. }
+            | PinManagementMessage::AttachHintSender { .. } => {},
         }
     }
 

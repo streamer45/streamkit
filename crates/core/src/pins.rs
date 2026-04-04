@@ -128,4 +128,16 @@ pub enum PinManagementMessage {
         pin_name: String,
         hint_rx: tokio::sync::mpsc::Receiver<crate::UpstreamHint>,
     },
+
+    /// Attach a hint sender to a pre-existing input pin.
+    ///
+    /// For dynamically created pins, `hint_tx` is delivered via
+    /// [`AddedInputPin`].  For pre-existing pins (declared at node
+    /// definition time), the engine sends this message after
+    /// `connect_nodes` so the destination node can send advisory
+    /// hints back to the source.
+    AttachHintSender {
+        pin_name: String,
+        hint_tx: tokio::sync::mpsc::Sender<crate::UpstreamHint>,
+    },
 }

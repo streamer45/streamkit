@@ -711,7 +711,8 @@ impl MoqPushNode {
             PinManagementMessage::AddedOutputPin { .. }
             | PinManagementMessage::RemoveOutputPin { .. }
             | PinManagementMessage::InputTypeResolved { .. }
-            | PinManagementMessage::OutputHintChannel { .. } => {
+            | PinManagementMessage::OutputHintChannel { .. }
+            | PinManagementMessage::AttachHintSender { .. } => {
                 // No-op for output pins / type info / hint channels on a push node
             },
         }
