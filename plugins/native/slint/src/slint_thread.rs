@@ -409,7 +409,7 @@ fn discover_properties(
                         );
                     }
                     json_num.map(serde_json::Value::Number)
-                }
+                },
                 Value::String(s) => Some(serde_json::Value::String(s.to_string())),
                 _ => None,
             });
