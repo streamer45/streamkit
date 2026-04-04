@@ -851,7 +851,12 @@ async fn handle_tune_node(
             }
             let mut pipeline = session.pipeline.lock().await;
             if let Some(node) = pipeline.nodes.get_mut(&node_id) {
-                node.params = Some(durable_params);
+                // Deep-merge the partial update into existing params so
+                // sibling keys are preserved (mirrors the async handler).
+                node.params = Some(match node.params.take() {
+                    Some(existing) => deep_merge_json(existing, durable_params),
+                    None => durable_params,
+                });
             } else {
                 warn!(
                     node_id = %node_id,
