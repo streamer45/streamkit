@@ -206,8 +206,18 @@ fn build_svt_av1_static() -> Vec<std::path::PathBuf> {
     println!("cargo:warning=svt_av1_static: build complete, linking statically");
 
     // 4. Emit linker directives.
+    //
+    // NOTE: we use `+whole-archive,-bundle` to work around a thin-LTO
+    // linking bug.  Under thin LTO the Rust object files are LLVM bitcode;
+    // when the linker processes the SVT-AV1 archive it hasn't yet compiled
+    // the bitcode to native code, so it doesn't see the undefined symbol
+    // references and skips the archive members.  `+whole-archive` forces
+    // all objects from the archive to be included unconditionally, and
+    // `-bundle` keeps the archive out of the rlib so the linker receives
+    // the original `.a` file directly (avoiding a bundle–extract round-trip
+    // that can interact poorly with LTO).
     println!("cargo:rustc-link-search=native={}", dst.join("lib").display());
-    println!("cargo:rustc-link-lib=static=SvtAv1Enc");
+    println!("cargo:rustc-link-lib=static:+whole-archive,-bundle=SvtAv1Enc");
     println!("cargo:rustc-link-lib=m");
     println!("cargo:rustc-link-lib=pthread");
 
