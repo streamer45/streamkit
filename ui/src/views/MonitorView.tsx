@@ -492,8 +492,16 @@ const MonitorViewContent: React.FC = () => {
       // Resolve dot-paths: "properties.show" → schema.properties.properties
       //   .properties.show
       const segments = paramKey.split('.');
-      type PropSchema = { type?: string; minimum?: number; maximum?: number; multipleOf?: number; properties?: Record<string, PropSchema> };
-      let propSchema: PropSchema | undefined = merged.properties[segments[0]] as PropSchema | undefined;
+      type PropSchema = {
+        type?: string;
+        minimum?: number;
+        maximum?: number;
+        multipleOf?: number;
+        properties?: Record<string, PropSchema>;
+      };
+      let propSchema: PropSchema | undefined = merged.properties[segments[0]] as
+        | PropSchema
+        | undefined;
       for (let i = 1; i < segments.length && propSchema; i++) {
         propSchema = propSchema.properties?.[segments[i]];
       }

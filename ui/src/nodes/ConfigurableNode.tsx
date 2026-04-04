@@ -331,9 +331,7 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(function Co
   // This prevents the LIVE badge from showing in design view (which has no sessionId)
   const showLiveIndicator = !!data.onParamChange && !!data.sessionId;
 
-  const [controlsExpanded, setControlsExpanded] = useState(
-    () => expandedState.get(id) ?? false
-  );
+  const [controlsExpanded, setControlsExpanded] = useState(() => expandedState.get(id) ?? false);
   const toggleExpanded = useCallback(() => {
     setControlsExpanded((prev) => {
       const next = !prev;
