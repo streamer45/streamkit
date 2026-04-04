@@ -798,18 +798,19 @@ impl NativeNodeWrapper {
 
             // Drain all hint receivers and deliver to plugin via C ABI.
             // Retain only receivers whose channels are still open.
+            // First collect pending hints (non-blocking), then deliver
+            // via spawn_blocking to avoid blocking the tokio worker —
+            // consistent with how tick_fn and other C ABI calls are made.
             if !hint_receivers.is_empty() {
                 if let Some(on_hint_fn) = self.state.api().on_upstream_hint {
+                    let mut pending_hints: Vec<std::ffi::CString> = Vec::new();
                     hint_receivers.retain_mut(|(_pin, rx)| loop {
                         match rx.try_recv() {
                             Ok(hint) => {
                                 tracing::info!(node = %node_name, ?hint, "Delivering upstream hint to plugin");
                                 if let Ok(json) = serde_json::to_string(&hint) {
                                     if let Ok(c_str) = std::ffi::CString::new(json) {
-                                        if let Some(handle) = self.state.begin_call() {
-                                            let _ = on_hint_fn(handle, c_str.as_ptr());
-                                            self.state.finish_call();
-                                        }
+                                        pending_hints.push(c_str);
                                     }
                                 }
                             },
@@ -819,6 +820,18 @@ impl NativeNodeWrapper {
                             },
                         }
                     });
+                    if !pending_hints.is_empty() {
+                        let state = Arc::clone(&self.state);
+                        let _ = tokio::task::spawn_blocking(move || {
+                            for c_str in &pending_hints {
+                                if let Some(handle) = state.begin_call() {
+                                    let _ = on_hint_fn(handle, c_str.as_ptr());
+                                    state.finish_call();
+                                }
+                            }
+                        })
+                        .await;
+                    }
                 }
             }
 
