@@ -414,7 +414,10 @@ const MonitorViewContent: React.FC = () => {
     const conns = pipeline.connections
       .map((c: Connection) => `${c.from_node}:${c.from_pin}>${c.to_node}:${c.to_pin}`)
       .sort();
-    const key = JSON.stringify([kinds, conns]);
+    // Include runtime schema keys so topology rebuilds when schemas arrive
+    // after the initial build (e.g. Slint property discovery).
+    const runtimeKeys = Object.keys(pipeline.runtime_schemas ?? {}).sort();
+    const key = JSON.stringify([kinds, conns, runtimeKeys]);
     viewsLogger.debug('topoKey recalculated:', key.substring(0, 100));
     return key;
   }, [pipeline]);

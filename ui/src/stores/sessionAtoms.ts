@@ -18,6 +18,7 @@ import { atom, getDefaultStore } from 'jotai';
 import { atomFamily } from 'jotai-family';
 
 import type { NodeState, NodeStats, Pipeline } from '@/types/types';
+import { deepMerge } from '@/utils/controlProps';
 
 // ── Default store reference ─────────────────────────────────────────────────
 
@@ -77,7 +78,7 @@ export function writeNodeParams(
       cleaned[key] = value;
     }
   }
-  sessionStore.set(nodeParamsAtom(k), { ...current, ...cleaned });
+  sessionStore.set(nodeParamsAtom(k), deepMerge(current, cleaned));
 }
 
 /** Clear node params atom for a specific node. */
