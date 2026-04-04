@@ -417,6 +417,12 @@ pub trait ProcessorNode: Send + Sync {
     /// a `"properties"` map.  Each property can include `"tunable": true`
     /// and an optional `"path"` override for dot-notation addressing.
     ///
+    /// **Called once** — the engine queries this immediately after
+    /// [`initialize`](Self::initialize) and caches the result for the
+    /// lifetime of the node.  There is currently no mechanism to refresh
+    /// the schema at runtime; if the underlying configuration changes
+    /// (e.g. a different `.slint` file), the node must be re-created.
+    ///
     /// Default: `None` (use static schema only).
     fn runtime_param_schema(&self) -> Option<serde_json::Value> {
         None
