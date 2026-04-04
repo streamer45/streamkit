@@ -74,6 +74,7 @@ fn build_svt_av1_static() -> Vec<PathBuf> {
     }
 
     let dst = cmake::Config::new(&src_dir)
+        .generator("Ninja")
         .define("BUILD_SHARED_LIBS", "OFF")
         .define("BUILD_APPS", "OFF")
         .define("BUILD_DEC", "OFF")
@@ -88,7 +89,7 @@ fn build_svt_av1_static() -> Vec<PathBuf> {
     println!("cargo:rustc-link-lib=pthread");
 
     // Return include paths for the ABI size-check compilation.
-    vec![dst.join("include").join("svt-av1")]
+    vec![dst.join("include")]
 }
 
 /// Probe for an installed SVT-AV1 (≥ 4.0) via pkg-config.
