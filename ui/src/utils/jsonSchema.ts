@@ -227,8 +227,10 @@ export const validateValue = (value: unknown, schema: JsonSchemaProperty): strin
  * Deep-merge a runtime param schema into a base (static) schema.
  *
  * The merge is shallow at the top level (only `properties` is merged) and
- * shallow within each property: runtime entries are added or overwritten
- * on a per-key basis, preserving sibling properties from the base.
+ * **deep within each property**: when a runtime property key collides with
+ * a base property key, the two entries are spread together so that base
+ * fields (e.g. `default`, `minimum`, `maximum`) are preserved unless the
+ * runtime entry explicitly overrides them.
  *
  * This is used to combine the static `param_schema` from the node registry
  * with per-instance runtime discoveries (e.g. Slint component properties).
@@ -243,12 +245,18 @@ export const deepMergeSchemas = (
   const baseProps = base.properties ?? {};
   const runtimeProps = runtime.properties ?? {};
 
+  // Property-level deep merge: for each key present in runtime, spread
+  // the base entry first (if any) then the runtime entry on top so that
+  // runtime fields win but base-only fields (default, min, max, …) survive.
+  const mergedProps: Record<string, JsonSchemaProperty> = { ...baseProps };
+  for (const [key, runtimeEntry] of Object.entries(runtimeProps)) {
+    const baseEntry = baseProps[key];
+    mergedProps[key] = baseEntry ? { ...baseEntry, ...runtimeEntry } : runtimeEntry;
+  }
+
   return {
     ...base,
-    properties: {
-      ...baseProps,
-      ...runtimeProps,
-    },
+    properties: mergedProps,
   };
 };
 

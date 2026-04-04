@@ -248,12 +248,12 @@ describe('deepMergeSchemas', () => {
 
   it('returns base when runtime is undefined', () => {
     const base = { properties: { gain: { type: 'number', tunable: true } } };
-    expect(deepMergeSchemas(base, undefined)).toBe(base);
+    expect(deepMergeSchemas(base, undefined)).toEqual(base);
   });
 
   it('returns runtime when base is undefined', () => {
     const runtime = { properties: { show: { type: 'boolean', tunable: true } } };
-    expect(deepMergeSchemas(undefined, runtime)).toBe(runtime);
+    expect(deepMergeSchemas(undefined, runtime)).toEqual(runtime);
   });
 
   it('preserves base properties not in runtime', () => {
@@ -286,10 +286,34 @@ describe('deepMergeSchemas', () => {
       },
     };
     const merged = deepMergeSchemas(base, runtime);
+    // Runtime fields win, but base-only fields (default) are preserved.
     expect(merged.properties?.show).toEqual({
       type: 'boolean',
+      default: false,
       tunable: true,
       path: 'properties.show',
+    });
+  });
+
+  it('preserves base minimum/maximum when runtime only adds tunable + path', () => {
+    const base = {
+      properties: {
+        score: { type: 'integer', minimum: 0, maximum: 99, default: 0 },
+      },
+    };
+    const runtime = {
+      properties: {
+        score: { type: 'integer', tunable: true, path: 'properties.score' },
+      },
+    };
+    const merged = deepMergeSchemas(base, runtime);
+    expect(merged.properties?.score).toEqual({
+      type: 'integer',
+      minimum: 0,
+      maximum: 99,
+      default: 0,
+      tunable: true,
+      path: 'properties.score',
     });
   });
 
