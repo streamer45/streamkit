@@ -14,6 +14,7 @@ use std::cell::RefCell;
 use std::ffi::{c_void, CStr, CString};
 use std::os::raw::c_char;
 use std::sync::Arc;
+use streamkit_core::frame_pool::{PooledSamples, PooledVideoData};
 use streamkit_core::types::{
     AudioCodec, AudioFormat, AudioFrame, CustomEncoding, CustomPacketData, EncodedAudioFormat,
     Packet, PacketMetadata, PacketType, PixelFormat, RawVideoFormat, SampleFormat,
@@ -304,11 +305,23 @@ pub struct CPacketRepr {
 #[allow(dead_code)] // Owned values are kept alive to support FFI pointers during callbacks.
 enum CPacketOwned {
     None,
-    Audio(Box<CAudioFrame>),
-    Video(Box<CVideoFrame>),
+    Audio(AudioOwned),
+    Video(VideoOwned),
     Text(CString),
     Bytes(Vec<u8>),
     Custom(CustomOwned),
+}
+
+#[allow(dead_code)] // Owned values are kept alive to support FFI pointers during callbacks.
+struct VideoOwned {
+    frame: Box<CVideoFrame>,
+    metadata: Option<Box<CPacketMetadata>>,
+}
+
+#[allow(dead_code)] // Owned values are kept alive to support FFI pointers during callbacks.
+struct AudioOwned {
+    frame: Box<CAudioFrame>,
+    metadata: Option<Box<CPacketMetadata>>,
 }
 
 #[allow(dead_code)] // Owned values are kept alive to support FFI pointers during callbacks.
@@ -319,7 +332,7 @@ struct CustomOwned {
     custom: Box<CCustomPacket>,
 }
 
-fn metadata_to_c(meta: &PacketMetadata) -> CPacketMetadata {
+pub fn metadata_to_c(meta: &PacketMetadata) -> CPacketMetadata {
     CPacketMetadata {
         timestamp_us: meta.timestamp_us.unwrap_or_default(),
         has_timestamp_us: meta.timestamp_us.is_some(),
@@ -349,18 +362,24 @@ fn cstring_sanitize(s: &str) -> CString {
 pub fn packet_to_c(packet: &Packet) -> CPacketRepr {
     match packet {
         Packet::Audio(frame) => {
+            let metadata = frame.metadata.as_ref().map(|m| Box::new(metadata_to_c(m)));
             let c_frame = Box::new(CAudioFrame {
                 sample_rate: frame.sample_rate,
                 channels: frame.channels,
                 samples: frame.samples.as_ptr(),
                 sample_count: frame.samples.len(),
+                buffer_handle: std::ptr::null_mut(),
+                metadata: metadata.as_deref().map_or(std::ptr::null(), std::ptr::from_ref),
             });
             let packet = CPacket {
                 packet_type: CPacketType::RawAudio,
                 data: std::ptr::from_ref::<CAudioFrame>(&*c_frame).cast::<c_void>(),
                 len: std::mem::size_of::<CAudioFrame>(),
             };
-            CPacketRepr { packet, _owned: CPacketOwned::Audio(c_frame) }
+            CPacketRepr {
+                packet,
+                _owned: CPacketOwned::Audio(AudioOwned { frame: c_frame, metadata }),
+            }
         },
         Packet::Text(text) => {
             let s = text.as_ref();
@@ -437,19 +456,25 @@ pub fn packet_to_c(packet: &Packet) -> CPacketRepr {
             _owned: CPacketOwned::None,
         },
         Packet::Video(frame) => {
+            let metadata = frame.metadata.as_ref().map(|m| Box::new(metadata_to_c(m)));
             let c_frame = Box::new(CVideoFrame {
                 width: frame.width,
                 height: frame.height,
                 pixel_format: pixel_format_to_c(frame.pixel_format),
                 data: frame.data.as_ptr(),
                 data_len: frame.data.len(),
+                buffer_handle: std::ptr::null_mut(),
+                metadata: metadata.as_deref().map_or(std::ptr::null(), std::ptr::from_ref),
             });
             let packet = CPacket {
                 packet_type: CPacketType::RawVideo,
                 data: std::ptr::from_ref::<CVideoFrame>(&*c_frame).cast::<c_void>(),
                 len: std::mem::size_of::<CVideoFrame>(),
             };
-            CPacketRepr { packet, _owned: CPacketOwned::Video(c_frame) }
+            CPacketRepr {
+                packet,
+                _owned: CPacketOwned::Video(VideoOwned { frame: c_frame, metadata }),
+            }
         },
     }
 }
@@ -488,13 +513,32 @@ pub unsafe fn packet_from_c(c_packet: *const CPacket) -> Result<Packet, String> 
                 return Err("Null samples pointer in audio frame".to_string());
             }
 
-            let samples = std::slice::from_raw_parts(c_frame.samples, c_frame.sample_count);
+            let metadata = if c_frame.metadata.is_null() {
+                None
+            } else {
+                Some(metadata_from_c(&*c_frame.metadata))
+            };
 
-            Ok(Packet::Audio(AudioFrame::new(
-                c_frame.sample_rate,
-                c_frame.channels,
-                samples.to_vec(),
-            )))
+            if c_frame.buffer_handle.is_null() {
+                // Legacy copy path.
+                let samples =
+                    std::slice::from_raw_parts(c_frame.samples, c_frame.sample_count).to_vec();
+                Ok(Packet::Audio(AudioFrame::with_metadata(
+                    c_frame.sample_rate,
+                    c_frame.channels,
+                    samples,
+                    metadata,
+                )))
+            } else {
+                // Zero-copy path: reclaim the PooledSamples from the handle.
+                let pooled = *Box::from_raw(c_frame.buffer_handle.cast::<PooledSamples>());
+                Ok(Packet::Audio(AudioFrame::from_pooled(
+                    c_frame.sample_rate,
+                    c_frame.channels,
+                    pooled,
+                    metadata,
+                )))
+            }
         },
         CPacketType::Text => {
             let c_str = CStr::from_ptr(c_pkt.data.cast::<c_char>());
@@ -551,10 +595,38 @@ pub unsafe fn packet_from_c(c_packet: *const CPacket) -> Result<Packet, String> 
                 return Err("Null data pointer in video frame".to_string());
             }
             let pixel_format = pixel_format_from_c(c_frame.pixel_format);
-            let data = std::slice::from_raw_parts(c_frame.data, c_frame.data_len).to_vec();
-            VideoFrame::with_metadata(c_frame.width, c_frame.height, pixel_format, data, None)
+
+            let metadata = if c_frame.metadata.is_null() {
+                None
+            } else {
+                Some(metadata_from_c(&*c_frame.metadata))
+            };
+
+            if c_frame.buffer_handle.is_null() {
+                // Legacy copy path.
+                let data = std::slice::from_raw_parts(c_frame.data, c_frame.data_len).to_vec();
+                VideoFrame::with_metadata(
+                    c_frame.width,
+                    c_frame.height,
+                    pixel_format,
+                    data,
+                    metadata,
+                )
                 .map(Packet::Video)
                 .map_err(|e| format!("Invalid video frame: {e}"))
+            } else {
+                // Zero-copy path: reclaim the PooledVideoData from the handle.
+                let pooled = *Box::from_raw(c_frame.buffer_handle.cast::<PooledVideoData>());
+                VideoFrame::from_pooled(
+                    c_frame.width,
+                    c_frame.height,
+                    pixel_format,
+                    pooled,
+                    metadata,
+                )
+                .map(Packet::Video)
+                .map_err(|e| format!("Invalid video frame: {e}"))
+            }
         },
         CPacketType::EncodedVideo => {
             // Encoded video is carried as opaque bytes across the C ABI.

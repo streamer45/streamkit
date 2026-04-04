@@ -160,35 +160,120 @@ impl NodeMetadataBuilder {
     }
 }
 
+/// A video buffer allocated from the host's frame pool.
+///
+/// Follows linear-type semantics: after allocation the plugin must either
+/// pass the buffer to [`OutputSender::send_video`] (which consumes it) or
+/// let it drop (which calls `free_fn` to return the buffer to the pool).
+pub struct PooledVideoBuffer {
+    data: *mut u8,
+    len: usize,
+    handle: *mut std::os::raw::c_void,
+    free_fn: extern "C" fn(*mut std::os::raw::c_void),
+    consumed: bool,
+}
+
+impl PooledVideoBuffer {
+    /// Writable slice into the pooled buffer.
+    pub const fn as_mut_slice(&mut self) -> &mut [u8] {
+        // SAFETY: `data` was returned by the host's `alloc_video` callback
+        // and is valid for `len` bytes. Exclusive access is guaranteed by
+        // `&mut self` — no other reference exists.
+        unsafe { std::slice::from_raw_parts_mut(self.data, self.len) }
+    }
+
+    /// Number of usable bytes.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Returns `true` if the buffer is empty.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Mark the buffer as consumed (ownership transferred to the host).
+    const fn consume(&mut self) -> (*mut std::os::raw::c_void, *const u8) {
+        self.consumed = true;
+        (self.handle, self.data)
+    }
+}
+
+impl Drop for PooledVideoBuffer {
+    fn drop(&mut self) {
+        if !self.consumed {
+            (self.free_fn)(self.handle);
+        }
+    }
+}
+
+/// An audio buffer allocated from the host's frame pool.
+///
+/// Same linear-type semantics as [`PooledVideoBuffer`].
+pub struct PooledAudioBuffer {
+    data: *mut f32,
+    sample_count: usize,
+    handle: *mut std::os::raw::c_void,
+    free_fn: extern "C" fn(*mut std::os::raw::c_void),
+    consumed: bool,
+}
+
+impl PooledAudioBuffer {
+    /// Writable slice into the pooled buffer.
+    pub const fn as_mut_slice(&mut self) -> &mut [f32] {
+        // SAFETY: same as PooledVideoBuffer.
+        unsafe { std::slice::from_raw_parts_mut(self.data, self.sample_count) }
+    }
+
+    /// Number of usable samples.
+    #[must_use]
+    pub const fn sample_count(&self) -> usize {
+        self.sample_count
+    }
+
+    /// Returns `true` if the buffer is empty.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.sample_count == 0
+    }
+
+    /// Mark the buffer as consumed (ownership transferred to the host).
+    const fn consume(&mut self) -> (*mut std::os::raw::c_void, *const f32) {
+        self.consumed = true;
+        (self.handle, self.data)
+    }
+}
+
+impl Drop for PooledAudioBuffer {
+    fn drop(&mut self) {
+        if !self.consumed {
+            (self.free_fn)(self.handle);
+        }
+    }
+}
+
 /// Output sender for sending packets to output pins
 pub struct OutputSender {
-    output_callback: COutputCallback,
-    output_user_data: *mut std::os::raw::c_void,
-    telemetry_callback: types::CTelemetryCallback,
-    telemetry_user_data: *mut std::os::raw::c_void,
+    callbacks: *const types::CNodeCallbacks,
 }
 
 impl OutputSender {
-    /// Create a new output sender from C callback
-    pub fn from_callback(callback: COutputCallback, user_data: *mut std::os::raw::c_void) -> Self {
-        Self {
-            output_callback: callback,
-            output_user_data: user_data,
-            telemetry_callback: None,
-            telemetry_user_data: std::ptr::null_mut(),
-        }
+    /// Create an `OutputSender` from a `CNodeCallbacks` pointer.
+    ///
+    /// # Safety
+    ///
+    /// The pointer must remain valid for the lifetime of this `OutputSender`.
+    pub const unsafe fn from_node_callbacks(callbacks: *const types::CNodeCallbacks) -> Self {
+        Self { callbacks }
     }
 
-    /// Create a new output sender from C callbacks.
-    ///
-    /// `telemetry_callback` may be null if the host doesn't provide telemetry support.
-    pub fn from_callbacks(
-        output_callback: COutputCallback,
-        output_user_data: *mut std::os::raw::c_void,
-        telemetry_callback: types::CTelemetryCallback,
-        telemetry_user_data: *mut std::os::raw::c_void,
-    ) -> Self {
-        Self { output_callback, output_user_data, telemetry_callback, telemetry_user_data }
+    /// Access the underlying callbacks.
+    const fn cb(&self) -> &types::CNodeCallbacks {
+        // SAFETY: The pointer is valid for the lifetime of this `OutputSender`,
+        // guaranteed by the caller of `from_node_callbacks`.
+        unsafe { &*self.callbacks }
     }
 
     /// Send a packet to an output pin
@@ -200,14 +285,170 @@ impl OutputSender {
     /// - The C callback returns an error
     pub fn send(&self, pin: &str, packet: &Packet) -> Result<(), String> {
         let pin_c = CString::new(pin).map_err(|e| format!("Invalid pin name: {e}"))?;
+        let cb = self.cb();
 
         let packet_repr = conversions::packet_to_c(packet);
-        let result = (self.output_callback)(
+        let result = (cb.output_callback)(
             pin_c.as_ptr(),
             &raw const packet_repr.packet,
-            self.output_user_data,
+            cb.output_user_data,
         );
 
+        if result.success {
+            Ok(())
+        } else {
+            let error_msg = if result.error_message.is_null() {
+                "Unknown error".to_string()
+            } else {
+                unsafe {
+                    conversions::c_str_to_string(result.error_message)
+                        .unwrap_or_else(|_| "Unknown error".to_string())
+                }
+            };
+            Err(error_msg)
+        }
+    }
+
+    // ── Frame pool allocation ─────────────────────────────────────────────
+
+    /// Allocate a video buffer from the host's frame pool.
+    ///
+    /// Returns `None` if the host has no video pool or allocation fails.
+    pub fn alloc_video(&self, min_bytes: usize) -> Option<PooledVideoBuffer> {
+        let cb = self.cb();
+        let alloc_fn = cb.alloc_video?;
+        let res = alloc_fn(min_bytes, cb.alloc_user_data);
+        if res.data.is_null() {
+            return None;
+        }
+        Some(PooledVideoBuffer {
+            data: res.data,
+            len: res.len,
+            handle: res.handle,
+            free_fn: res.free_fn?,
+            consumed: false,
+        })
+    }
+
+    /// Allocate an audio buffer from the host's frame pool.
+    ///
+    /// Returns `None` if the host has no audio pool or allocation fails.
+    pub fn alloc_audio(&self, min_samples: usize) -> Option<PooledAudioBuffer> {
+        let cb = self.cb();
+        let alloc_fn = cb.alloc_audio?;
+        let res = alloc_fn(min_samples, cb.alloc_user_data);
+        if res.data.is_null() {
+            return None;
+        }
+        Some(PooledAudioBuffer {
+            data: res.data,
+            sample_count: res.sample_count,
+            handle: res.handle,
+            free_fn: res.free_fn?,
+            consumed: false,
+        })
+    }
+
+    /// Send a video frame using a pool-allocated buffer (zero-copy path).
+    ///
+    /// Consumes `buf` — ownership transfers to the host.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the pin name is invalid or the host rejects the
+    /// packet.
+    #[allow(clippy::too_many_arguments)] // Mirrors the frame fields; a builder would add overhead on the FFI hot path.
+    pub fn send_video(
+        &self,
+        pin: &str,
+        width: u32,
+        height: u32,
+        pixel_format: streamkit_core::types::PixelFormat,
+        data_len: usize,
+        mut buf: PooledVideoBuffer,
+        metadata: Option<&streamkit_core::types::PacketMetadata>,
+    ) -> Result<(), String> {
+        let pin_c = CString::new(pin).map_err(|e| format!("Invalid pin name: {e}"))?;
+        let cb = self.cb();
+
+        let (handle, data_ptr) = buf.consume();
+
+        let c_meta = metadata.map(conversions::metadata_to_c);
+        let c_meta_ptr = c_meta.as_ref().map_or(std::ptr::null(), std::ptr::from_ref);
+
+        let c_frame = types::CVideoFrame {
+            width,
+            height,
+            pixel_format: conversions::pixel_format_to_c(pixel_format),
+            data: data_ptr,
+            data_len,
+            buffer_handle: handle,
+            metadata: c_meta_ptr,
+        };
+
+        let c_pkt = types::CPacket {
+            packet_type: types::CPacketType::RawVideo,
+            data: std::ptr::from_ref(&c_frame).cast(),
+            len: std::mem::size_of::<types::CVideoFrame>(),
+        };
+
+        let result = (cb.output_callback)(pin_c.as_ptr(), &raw const c_pkt, cb.output_user_data);
+        if result.success {
+            Ok(())
+        } else {
+            let error_msg = if result.error_message.is_null() {
+                "Unknown error".to_string()
+            } else {
+                unsafe {
+                    conversions::c_str_to_string(result.error_message)
+                        .unwrap_or_else(|_| "Unknown error".to_string())
+                }
+            };
+            Err(error_msg)
+        }
+    }
+
+    /// Send an audio frame using a pool-allocated buffer (zero-copy path).
+    ///
+    /// Consumes `buf` — ownership transfers to the host.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the pin name is invalid or the host rejects the
+    /// packet.
+    pub fn send_audio(
+        &self,
+        pin: &str,
+        sample_rate: u32,
+        channels: u16,
+        sample_count: usize,
+        mut buf: PooledAudioBuffer,
+        metadata: Option<&streamkit_core::types::PacketMetadata>,
+    ) -> Result<(), String> {
+        let pin_c = CString::new(pin).map_err(|e| format!("Invalid pin name: {e}"))?;
+        let cb = self.cb();
+
+        let (handle, data_ptr) = buf.consume();
+
+        let c_meta = metadata.map(conversions::metadata_to_c);
+        let c_meta_ptr = c_meta.as_ref().map_or(std::ptr::null(), std::ptr::from_ref);
+
+        let c_frame = types::CAudioFrame {
+            sample_rate,
+            channels,
+            samples: data_ptr,
+            sample_count,
+            buffer_handle: handle,
+            metadata: c_meta_ptr,
+        };
+
+        let c_pkt = types::CPacket {
+            packet_type: types::CPacketType::RawAudio,
+            data: std::ptr::from_ref(&c_frame).cast(),
+            len: std::mem::size_of::<types::CAudioFrame>(),
+        };
+
+        let result = (cb.output_callback)(pin_c.as_ptr(), &raw const c_pkt, cb.output_user_data);
         if result.success {
             Ok(())
         } else {
@@ -241,7 +482,8 @@ impl OutputSender {
         data: &serde_json::Value,
         timestamp_us: Option<u64>,
     ) -> Result<(), String> {
-        let Some(cb) = self.telemetry_callback else {
+        let cb = self.cb();
+        let Some(telemetry_cb) = cb.telemetry_callback else {
             return Ok(());
         };
 
@@ -260,12 +502,12 @@ impl OutputSender {
         });
         let meta_ptr = meta.as_ref().map_or(std::ptr::null(), std::ptr::from_ref);
 
-        let result = cb(
+        let result = telemetry_cb(
             event_type_c.as_ptr(),
             data_json.as_ptr(),
             data_json.len(),
             meta_ptr,
-            self.telemetry_user_data,
+            cb.telemetry_user_data,
         );
 
         if result.success {
@@ -984,12 +1226,9 @@ macro_rules! native_plugin_entry {
             handle: $crate::types::CPluginHandle,
             input_pin: *const std::os::raw::c_char,
             packet: *const $crate::types::CPacket,
-            output_callback: $crate::types::COutputCallback,
-            callback_data: *mut std::os::raw::c_void,
-            telemetry_callback: $crate::types::CTelemetryCallback,
-            telemetry_callback_data: *mut std::os::raw::c_void,
+            callbacks: *const $crate::types::CNodeCallbacks,
         ) -> $crate::types::CResult {
-            if handle.is_null() || input_pin.is_null() || packet.is_null() {
+            if handle.is_null() || input_pin.is_null() || packet.is_null() || callbacks.is_null() {
                 return $crate::types::CResult::error(std::ptr::null());
             }
 
@@ -1011,12 +1250,7 @@ macro_rules! native_plugin_entry {
                 }
             };
 
-            let output = $crate::OutputSender::from_callbacks(
-                output_callback,
-                callback_data,
-                telemetry_callback,
-                telemetry_callback_data,
-            );
+            let output = unsafe { $crate::OutputSender::from_node_callbacks(callbacks) };
 
             match instance.process(&pin_name, rust_packet, &output) {
                 Ok(()) => $crate::types::CResult::success(),
@@ -1070,28 +1304,19 @@ macro_rules! native_plugin_entry {
 
         extern "C" fn __plugin_flush(
             handle: $crate::types::CPluginHandle,
-            callback: $crate::types::COutputCallback,
-            callback_data: *mut std::os::raw::c_void,
-            telemetry_callback: $crate::types::CTelemetryCallback,
-            telemetry_callback_data: *mut std::os::raw::c_void,
+            callbacks: *const $crate::types::CNodeCallbacks,
         ) -> $crate::types::CResult {
             tracing::info!("__plugin_flush called");
-            if handle.is_null() {
-                tracing::error!("Handle is null");
-                let err_msg = $crate::conversions::error_to_c("Invalid handle (null)");
+            if handle.is_null() || callbacks.is_null() {
+                tracing::error!("Handle or callbacks is null");
+                let err_msg = $crate::conversions::error_to_c("Invalid handle or callbacks (null)");
                 return $crate::types::CResult::error(err_msg);
             }
 
             let instance = unsafe { &mut *(handle as *mut $plugin_type) };
             tracing::info!("Got instance pointer");
 
-            // Create OutputSender wrapper for the callback
-            let output_sender = $crate::OutputSender::from_callbacks(
-                callback,
-                callback_data,
-                telemetry_callback,
-                telemetry_callback_data,
-            );
+            let output_sender = unsafe { $crate::OutputSender::from_node_callbacks(callbacks) };
             tracing::info!("Created OutputSender, calling instance.flush()");
 
             match instance.flush(&output_sender) {
@@ -1529,23 +1754,15 @@ macro_rules! native_source_plugin_entry {
 
         extern "C" fn __plugin_tick(
             handle: $crate::types::CPluginHandle,
-            output_callback: $crate::types::COutputCallback,
-            callback_data: *mut std::os::raw::c_void,
-            telemetry_callback: $crate::types::CTelemetryCallback,
-            telemetry_callback_data: *mut std::os::raw::c_void,
+            callbacks: *const $crate::types::CNodeCallbacks,
         ) -> $crate::types::CTickResult {
-            if handle.is_null() {
-                let err = $crate::conversions::error_to_c("Invalid handle (null)");
+            if handle.is_null() || callbacks.is_null() {
+                let err = $crate::conversions::error_to_c("Invalid handle or callbacks (null)");
                 return $crate::types::CTickResult::error(err);
             }
 
             let instance = unsafe { &mut *(handle as *mut $plugin_type) };
-            let output = $crate::OutputSender::from_callbacks(
-                output_callback,
-                callback_data,
-                telemetry_callback,
-                telemetry_callback_data,
-            );
+            let output = unsafe { $crate::OutputSender::from_node_callbacks(callbacks) };
 
             match instance.tick(&output) {
                 Ok(done) => {
@@ -1568,10 +1785,7 @@ macro_rules! native_source_plugin_entry {
             _handle: $crate::types::CPluginHandle,
             _input_pin: *const std::os::raw::c_char,
             _packet: *const $crate::types::CPacket,
-            _output_callback: $crate::types::COutputCallback,
-            _callback_data: *mut std::os::raw::c_void,
-            _telemetry_callback: $crate::types::CTelemetryCallback,
-            _telemetry_callback_data: *mut std::os::raw::c_void,
+            _callbacks: *const $crate::types::CNodeCallbacks,
         ) -> $crate::types::CResult {
             let err = $crate::conversions::error_to_c(
                 "process_packet called on source plugin (not supported)",
@@ -1581,10 +1795,7 @@ macro_rules! native_source_plugin_entry {
 
         extern "C" fn __plugin_flush_noop(
             _handle: $crate::types::CPluginHandle,
-            _callback: $crate::types::COutputCallback,
-            _callback_data: *mut std::os::raw::c_void,
-            _telemetry_callback: $crate::types::CTelemetryCallback,
-            _telemetry_callback_data: *mut std::os::raw::c_void,
+            _callbacks: *const $crate::types::CNodeCallbacks,
         ) -> $crate::types::CResult {
             $crate::types::CResult::success()
         }

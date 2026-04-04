@@ -215,16 +215,30 @@ impl NativeSourceNode for SlintSourcePlugin {
             keyframe: Some(true),
         });
 
-        let frame = VideoFrame::with_metadata(
-            self.config.width,
-            self.config.height,
-            PixelFormat::Rgba8,
-            rgba_data,
-            metadata,
-        )
-        .map_err(|e| format!("Failed to create video frame: {e}"))?;
+        // Try zero-copy pool allocation; fall back to legacy copy path.
+        if let Some(mut buf) = output.alloc_video(rgba_data.len()) {
+            buf.as_mut_slice()[..rgba_data.len()].copy_from_slice(&rgba_data);
+            output.send_video(
+                "out",
+                self.config.width,
+                self.config.height,
+                PixelFormat::Rgba8,
+                rgba_data.len(),
+                buf,
+                metadata.as_ref(),
+            )?;
+        } else {
+            let frame = VideoFrame::with_metadata(
+                self.config.width,
+                self.config.height,
+                PixelFormat::Rgba8,
+                rgba_data,
+                metadata,
+            )
+            .map_err(|e| format!("Failed to create video frame: {e}"))?;
 
-        output.send("out", &Packet::Video(frame))?;
+            output.send("out", &Packet::Video(frame))?;
+        }
 
         self.tick_count += 1;
         Ok(false)
