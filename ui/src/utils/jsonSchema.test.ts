@@ -9,6 +9,7 @@ import {
   extractToggleConfigs,
   extractTextConfigs,
   deepMergeSchemas,
+  schemaToControlConfigs,
 } from './jsonSchema';
 
 describe('extractToggleConfigs', () => {
@@ -346,5 +347,120 @@ describe('deepMergeSchemas', () => {
 
     expect(extractTextConfigs(merged)).toHaveLength(1);
     expect(extractTextConfigs(merged)[0].path).toBe('properties.name');
+  });
+});
+
+describe('schemaToControlConfigs', () => {
+  it('converts boolean tunable properties to toggle ControlConfigs', () => {
+    const result = schemaToControlConfigs('scoreboard', {
+      properties: {
+        clock_running: {
+          type: 'boolean',
+          tunable: true,
+          path: 'properties.clock_running',
+          default: true,
+        },
+      },
+    });
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      label: 'Clock Running',
+      type: 'toggle',
+      node: 'scoreboard',
+      property: 'properties.clock_running',
+      default: true,
+    });
+  });
+
+  it('converts number tunable properties to number ControlConfigs', () => {
+    const result = schemaToControlConfigs('scoreboard', {
+      properties: {
+        home_score: {
+          type: 'number',
+          tunable: true,
+          path: 'properties.home_score',
+          minimum: 0,
+          maximum: 99,
+          default: 0,
+        },
+      },
+    });
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      label: 'Home Score',
+      type: 'number',
+      node: 'scoreboard',
+      property: 'properties.home_score',
+      min: 0,
+      max: 99,
+      default: 0,
+    });
+  });
+
+  it('converts string tunable properties to text ControlConfigs', () => {
+    const result = schemaToControlConfigs('scoreboard', {
+      properties: {
+        home_team: {
+          type: 'string',
+          tunable: true,
+          path: 'properties.home_team',
+          default: 'HOME',
+        },
+      },
+    });
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      label: 'Home Team',
+      type: 'text',
+      node: 'scoreboard',
+      property: 'properties.home_team',
+      default: 'HOME',
+    });
+  });
+
+  it('skips non-tunable properties', () => {
+    const result = schemaToControlConfigs('node', {
+      properties: {
+        fps: { type: 'number', default: 30 },
+        width: { type: 'integer', default: 420 },
+      },
+    });
+    expect(result).toEqual([]);
+  });
+
+  it('skips enum-constrained strings', () => {
+    const result = schemaToControlConfigs('node', {
+      properties: {
+        mode: { type: 'string', tunable: true, enum: ['fast', 'slow'] },
+      },
+    });
+    expect(result).toEqual([]);
+  });
+
+  it('assigns group label when provided', () => {
+    const result = schemaToControlConfigs(
+      'scoreboard',
+      {
+        properties: {
+          show: { type: 'boolean', tunable: true, path: 'properties.show' },
+        },
+      },
+      'Scoreboard'
+    );
+    expect(result[0].group).toBe('Scoreboard');
+  });
+
+  it('derives label from snake_case and kebab-case keys', () => {
+    const result = schemaToControlConfigs('node', {
+      properties: {
+        clock_running: { type: 'boolean', tunable: true },
+        'font-size': { type: 'number', tunable: true, minimum: 8, maximum: 72 },
+      },
+    });
+    expect(result.map((c) => c.label)).toEqual(['Clock Running', 'Font Size']);
+  });
+
+  it('returns empty array for undefined schema', () => {
+    expect(schemaToControlConfigs('node', undefined)).toEqual([]);
   });
 });

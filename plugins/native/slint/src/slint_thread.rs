@@ -403,6 +403,11 @@ fn discover_properties(
                 Value::String(s) => Some(serde_json::Value::String(s.to_string())),
                 _ => None,
             });
+            // Slint normalizes identifiers to kebab-case internally
+            // (e.g. `clock_running` → `clock-running`).  The rest of the
+            // StreamKit stack (YAML params, JSON UpdateParams, set_properties)
+            // uses snake_case, so convert back to match.
+            let name = name.replace('-', "_");
             Some(DiscoveredProperty { name, value_type: vt, initial_value })
         })
         .collect()

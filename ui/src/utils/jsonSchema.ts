@@ -7,6 +7,8 @@
  * These functions help extract slider configurations from JSON schemas.
  */
 
+import type { ControlConfig } from '@/types/types';
+
 export interface JsonSchemaProperty {
   type?: string;
   description?: string;
@@ -331,3 +333,92 @@ export const extractTextConfigs = (schema: JsonSchema | undefined): TextConfig[]
     return acc;
   }, [] as TextConfig[]);
 };
+
+// ---------------------------------------------------------------------------
+// Schema → ControlConfig conversion
+// ---------------------------------------------------------------------------
+
+/** Derive a human-readable label: "clock_running" → "Clock Running". */
+function labelFromKey(key: string): string {
+  return key.replace(/[_-]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/** Map a single tunable schema property to a ControlConfig, or null. */
+function propToControlConfig(
+  nodeId: string,
+  key: string,
+  prop: JsonSchemaProperty,
+  group: string | null
+): ControlConfig | null {
+  const path = prop.path ?? key;
+  const label = labelFromKey(key);
+  const base = { label, node: nodeId, property: path, group, value: null };
+
+  switch (prop.type) {
+    case 'boolean':
+      return {
+        ...base,
+        type: 'toggle',
+        default: prop.default ?? false,
+        min: null,
+        max: null,
+        step: null,
+      };
+    case 'number':
+    case 'integer': {
+      const min = resolveMinimum(prop) ?? 0;
+      const max = resolveMaximum(prop) ?? 100;
+      return {
+        ...base,
+        type: 'number',
+        default: prop.default ?? min,
+        min,
+        max,
+        step: inferStep(prop, min, max),
+      };
+    }
+    case 'string':
+      if (prop.enum && prop.enum.length > 0) return null;
+      return {
+        ...base,
+        type: 'text',
+        default: prop.default ?? '',
+        min: null,
+        max: null,
+        step: null,
+      };
+    default:
+      return null;
+  }
+}
+
+/**
+ * Converts tunable properties from a merged JSON schema into `ControlConfig`
+ * entries suitable for `OverlayControls`.
+ *
+ * This bridges the gap between the schema-driven controls in Monitor View
+ * and the `client.controls` YAML controls in Stream View, allowing both
+ * views to render the same set of controls from a single source of truth.
+ *
+ * @param nodeId  The pipeline node ID (e.g. "scoreboard").
+ * @param schema  The merged (base + runtime) JSON schema for the node.
+ * @param group   Optional group label for all generated controls.
+ */
+export function schemaToControlConfigs(
+  nodeId: string,
+  schema: JsonSchema | undefined,
+  group?: string
+): ControlConfig[] {
+  if (!schema?.properties) return [];
+
+  const groupLabel = group ?? null;
+  const controls: ControlConfig[] = [];
+
+  for (const [key, prop] of Object.entries(schema.properties)) {
+    if (!prop?.tunable) continue;
+    const ctrl = propToControlConfig(nodeId, key, prop, groupLabel);
+    if (ctrl) controls.push(ctrl);
+  }
+
+  return controls;
+}

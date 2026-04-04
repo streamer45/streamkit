@@ -6,7 +6,7 @@
  * Service for managing sessions
  */
 
-import type { SessionInfo } from '@/types/types';
+import type { Pipeline, SessionInfo } from '@/types/types';
 import { getLogger } from '@/utils/logger';
 
 import { fetchApi } from './base';
@@ -94,6 +94,25 @@ export async function createSession(
   logger.info('Created session:', result.session_id, result.name || '(unnamed)');
 
   return result;
+}
+
+/**
+ * Fetches the pipeline for a session, including runtime schemas.
+ * Returns the full Pipeline object from the API.
+ */
+export async function fetchPipeline(sessionId: string, signal?: AbortSignal): Promise<Pipeline> {
+  const response = await fetchApi(`/api/v1/sessions/${encodeURIComponent(sessionId)}/pipeline`, {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' },
+    signal,
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(errorText || `Failed to fetch pipeline: ${response.statusText}`);
+  }
+
+  return response.json();
 }
 
 // ── Preview API ────────────────────────────────────────────────────────
