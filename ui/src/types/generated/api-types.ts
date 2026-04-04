@@ -327,7 +327,7 @@ timestamp_us: bigint | null,
 /**
  * RFC 3339 formatted timestamp for convenience
  */
-timestamp: string, };
+timestamp: string, } | { "event": "runtimeschemasupdated", session_id: string, node_id: string, schema: JsonValue, };
 
 export type SessionInfo = { id: string, name: string | null, 
 /**

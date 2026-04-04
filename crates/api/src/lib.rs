@@ -465,6 +465,16 @@ pub enum EventPayload {
         /// RFC 3339 formatted timestamp for convenience
         timestamp: String,
     },
+    // --- Runtime Schema Events ---
+    /// A node's runtime param schema has been discovered after initialization.
+    /// The UI should merge this with the static per-kind schema so controls
+    /// can render for dynamically discovered parameters (e.g. Slint properties).
+    RuntimeSchemasUpdated {
+        session_id: String,
+        node_id: String,
+        #[ts(type = "JsonValue")]
+        schema: serde_json::Value,
+    },
 }
 
 pub type Event = Message<EventPayload>;

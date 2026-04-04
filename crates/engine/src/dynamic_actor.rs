@@ -11,7 +11,7 @@
 use crate::{
     constants::DEFAULT_SUBSCRIBER_CHANNEL_CAPACITY,
     dynamic_config::CONTROL_CAPACITY,
-    dynamic_messages::{PinConfigMsg, QueryMessage},
+    dynamic_messages::{PinConfigMsg, QueryMessage, RuntimeSchemaUpdate},
     dynamic_pin_distributor::PinDistributorActor,
     graph_builder,
 };
@@ -108,6 +108,8 @@ pub struct DynamicEngine {
     /// Only populated for nodes whose `ProcessorNode::runtime_param_schema()`
     /// returns `Some`.
     pub(super) runtime_schemas: HashMap<String, serde_json::Value>,
+    /// Subscribers that want to receive runtime schema discovery notifications.
+    pub(super) runtime_schema_subscribers: Vec<mpsc::Sender<RuntimeSchemaUpdate>>,
     // Metrics
     pub(super) nodes_active_gauge: opentelemetry::metrics::Gauge<u64>,
     pub(super) node_state_transitions_counter: opentelemetry::metrics::Counter<u64>,
@@ -211,6 +213,11 @@ impl DynamicEngine {
             },
             QueryMessage::GetRuntimeSchemas { response_tx } => {
                 let _ = response_tx.send(self.runtime_schemas.clone()).await;
+            },
+            QueryMessage::SubscribeRuntimeSchemas { response_tx } => {
+                let (tx, rx) = mpsc::channel(DEFAULT_SUBSCRIBER_CHANNEL_CAPACITY);
+                self.runtime_schema_subscribers.push(tx);
+                let _ = response_tx.send(rx).await;
             },
         }
     }
@@ -545,7 +552,17 @@ impl DynamicEngine {
         // Query runtime param schema after init (before spawning the run loop,
         // which consumes the node via `Box<Self>`).
         if let Some(schema) = node.runtime_param_schema() {
-            self.runtime_schemas.insert(node_id.to_string(), schema);
+            self.runtime_schemas.insert(node_id.to_string(), schema.clone());
+
+            // Notify subscribers so the UI can merge the schema immediately
+            // rather than waiting for a manual pipeline re-fetch.
+            let update = RuntimeSchemaUpdate { node_id: node_id.to_string(), schema };
+            self.runtime_schema_subscribers.retain(|subscriber| {
+                match subscriber.try_send(update.clone()) {
+                    Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => true,
+                    Err(mpsc::error::TrySendError::Closed(_)) => false,
+                }
+            });
         }
 
         let (control_tx, control_rx) = mpsc::channel(CONTROL_CAPACITY);

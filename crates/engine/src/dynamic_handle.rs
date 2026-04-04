@@ -4,7 +4,7 @@
 
 //! Public client handle for controlling a running dynamic engine.
 
-use crate::dynamic_messages::QueryMessage;
+use crate::dynamic_messages::{QueryMessage, RuntimeSchemaUpdate};
 use std::collections::HashMap;
 use std::sync::Arc;
 use streamkit_core::control::EngineControlMessage;
@@ -165,6 +165,25 @@ impl DynamicEngineHandle {
         let (response_tx, mut response_rx) = mpsc::channel(1);
         self.query_tx
             .send(QueryMessage::GetRuntimeSchemas { response_tx })
+            .await
+            .map_err(|_| "Engine actor has shut down".to_string())?;
+
+        response_rx.recv().await.ok_or_else(|| "Failed to receive response from engine".to_string())
+    }
+
+    /// Subscribes to runtime param schema discovery notifications.
+    /// Returns a receiver that will receive updates whenever a node's
+    /// runtime schema is discovered after initialization.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the engine actor has shut down or fails to respond.
+    pub async fn subscribe_runtime_schemas(
+        &self,
+    ) -> Result<mpsc::Receiver<RuntimeSchemaUpdate>, String> {
+        let (response_tx, mut response_rx) = mpsc::channel(1);
+        self.query_tx
+            .send(QueryMessage::SubscribeRuntimeSchemas { response_tx })
             .await
             .map_err(|_| "Engine actor has shut down".to_string())?;
 
