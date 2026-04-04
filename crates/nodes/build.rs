@@ -33,6 +33,16 @@
 //!
 //! In both cases a small C snippet is compiled to verify that the Rust-side
 //! opaque configuration buffers are large enough for the installed headers.
+//!
+//! ## rust-lld thin-LTO workaround
+//!
+//! When both `svt_av1_static` and `dav1d_static` are active under the
+//! `release-lto` profile (thin LTO via rust-lld), rust-lld silently drops
+//! SVT-AV1 symbols from the archive passed via
+//! `cargo:rustc-link-lib=static=SvtAv1Enc`.  The workaround extracts the
+//! `.o` files from `libSvtAv1Enc.a` and bundles them directly into the
+//! `cc::Build` output via `build.object()`, embedding them in the rlib so
+//! they survive the LTO link step.
 
 /// Pinned SVT-AV1 version used by the static build path.
 /// NOTE: keep in sync with the version referenced in `SVT_AV1.md`.
@@ -47,7 +57,7 @@ fn main() {
     #[cfg(feature = "svt_av1")]
     {
         #[cfg(feature = "svt_av1_static")]
-        let include_paths = build_svt_av1_static();
+        let (include_paths, svt_av1_lib_dir) = build_svt_av1_static();
         #[cfg(not(feature = "svt_av1_static"))]
         let include_paths = probe_svt_av1_pkgconfig();
 
@@ -59,6 +69,41 @@ fn main() {
         for path in &include_paths {
             build.include(path);
         }
+
+        // When linking statically, bundle the SVT-AV1 object files directly
+        // into the cc output.  This embeds the symbols in the rlib so that
+        // cargo's thin-LTO link step (via rust-lld) finds them reliably.
+        // Passing the archive via `cargo:rustc-link-lib=static=SvtAv1Enc`
+        // fails under rust-lld + thin LTO when multiple native archives are
+        // present (dav1d_static + svt_av1_static).
+        #[cfg(feature = "svt_av1_static")]
+        {
+            let lib_path = svt_av1_lib_dir.join("libSvtAv1Enc.a");
+            let objs_dir = svt_av1_lib_dir.join("svt_av1_objs");
+            if objs_dir.exists() {
+                std::fs::remove_dir_all(&objs_dir).ok();
+            }
+            std::fs::create_dir_all(&objs_dir).expect("failed to create svt_av1_objs directory");
+            let status = std::process::Command::new("ar")
+                .arg("x")
+                .arg(&lib_path)
+                .current_dir(&objs_dir)
+                .status()
+                .expect("failed to extract SVT-AV1 archive with ar");
+            assert!(status.success(), "ar x failed for libSvtAv1Enc.a");
+            let mut obj_files: Vec<std::path::PathBuf> = std::fs::read_dir(&objs_dir)
+                .expect("failed to read svt_av1_objs directory")
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().is_some_and(|ext| ext == "o"))
+                .map(|e| e.path())
+                .collect();
+            // Sort for deterministic build output.
+            obj_files.sort();
+            for obj in &obj_files {
+                build.object(obj);
+            }
+        }
+
         build.compile("svt_av1_config_size_check");
     }
 
@@ -95,8 +140,15 @@ fn probe_svt_av1_pkgconfig() -> Vec<std::path::PathBuf> {
 }
 
 /// Download (if needed), build, and statically link SVT-AV1.
+///
+/// Returns `(include_paths, lib_dir)`.  The caller bundles the `.o` files
+/// from `libSvtAv1Enc.a` directly via `cc::Build::object()` instead of
+/// emitting `cargo:rustc-link-lib=static=SvtAv1Enc`.  This works around
+/// a rust-lld thin-LTO bug where SVT-AV1 symbols are silently dropped
+/// when multiple native static archives are present (see the module docs
+/// in `svt_av1_ffi.rs` and the `release-lto` profile in `Cargo.toml`).
 #[cfg(feature = "svt_av1_static")]
-fn build_svt_av1_static() -> Vec<std::path::PathBuf> {
+fn build_svt_av1_static() -> (Vec<std::path::PathBuf>, std::path::PathBuf) {
     use std::path::PathBuf;
 
     println!("cargo:rerun-if-env-changed=SVT_AV1_SRC_DIR");
@@ -203,16 +255,21 @@ fn build_svt_av1_static() -> Vec<std::path::PathBuf> {
         .define("CMAKE_INSTALL_LIBDIR", "lib")
         .build();
 
-    println!("cargo:warning=svt_av1_static: build complete, linking statically");
+    println!("cargo:warning=svt_av1_static: build complete");
 
-    // 4. Emit linker directives.
-    println!("cargo:rustc-link-search=native={}", dst.join("lib").display());
-    println!("cargo:rustc-link-lib=static=SvtAv1Enc");
+    // 4. Emit linker directives for system dependencies only.
+    // NOTE: we intentionally do NOT emit `cargo:rustc-link-lib=static=SvtAv1Enc`
+    // here.  Under the `release-lto` profile (thin LTO via rust-lld), passing
+    // the SVT-AV1 archive as a separate `-l` flag causes rust-lld to silently
+    // drop its symbols when a second native archive (e.g. libdav1d.a) is also
+    // present.  Instead, the caller extracts the `.o` files from the archive
+    // and bundles them into the `cc::Build` output via `build.object()`,
+    // embedding them in the rlib so they survive the LTO link step.
     println!("cargo:rustc-link-lib=m");
     println!("cargo:rustc-link-lib=pthread");
 
-    // 5. Return include paths for the ABI check.
-    vec![dst.join("include")]
+    // 5. Return include paths for the ABI check + lib dir for .o extraction.
+    (vec![dst.join("include")], dst.join("lib"))
 }
 
 // ---------------------------------------------------------------------------
