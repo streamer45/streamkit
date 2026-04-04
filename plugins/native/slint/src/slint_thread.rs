@@ -24,7 +24,7 @@ use slint::platform::software_renderer::{
     MinimalSoftwareWindow, PremultipliedRgbaColor, RepaintBufferType,
 };
 use slint::platform::WindowAdapter;
-use slint::{ComponentHandle, LogicalSize, SharedString};
+use slint::{ComponentHandle, LogicalSize, PhysicalSize, SharedString};
 use slint_interpreter::{ComponentDefinition, ComponentInstance, Value, ValueType};
 
 use crate::config::SlintConfig;
@@ -142,6 +142,13 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
         cached_keyframe_idx: Option<usize>,
         /// Set by `UpdateConfig` to force a re-render on the next frame.
         dirty: bool,
+        /// Original configured dimensions from init.  Used to compute
+        /// the DPI scale factor when upstream resize hints request
+        /// different physical dimensions — content is rendered at the
+        /// original logical proportions but at higher physical
+        /// resolution for crisper text and vector graphics.
+        original_width: u32,
+        original_height: u32,
     }
 
     let mut instances: HashMap<NodeId, InstanceState> = HashMap::new();
@@ -169,6 +176,8 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
                             node_id,
                             InstanceState {
                                 instance,
+                                original_width: config.width,
+                                original_height: config.height,
                                 config,
                                 result_tx,
                                 cached_frame: None,
@@ -260,11 +269,33 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
                         state.instance.height = height;
                         state.config.width = width;
                         state.config.height = height;
+
+                        // Compute DPI scale factor so content renders at
+                        // original logical proportions but higher physical
+                        // resolution.  Text and vector graphics benefit
+                        // from crisper rendering without changing apparent
+                        // size.  `min()` picks the axis that limits
+                        // scaling (letterbox logic).
                         #[allow(clippy::cast_precision_loss)]
-                        state.instance.window.set_size(LogicalSize::new(
-                            (width as f32).max(1.0),
-                            (height as f32).max(1.0),
+                        let scale = f32::min(
+                            width as f32 / state.original_width.max(1) as f32,
+                            height as f32 / state.original_height.max(1) as f32,
+                        )
+                        .max(0.1);
+
+                        // Notify Slint of the new scale factor, then set
+                        // the physical size.  Order matters: scale must be
+                        // applied first so Slint computes correct logical
+                        // coordinates from the physical dimensions.
+                        state.instance.component.window().dispatch_event(
+                            slint::platform::WindowEvent::ScaleFactorChanged {
+                                scale_factor: scale,
+                            },
+                        );
+                        state.instance.window.set_size(PhysicalSize::new(
+                            width, height,
                         ));
+
                         let pixel_count = (width as usize) * (height as usize);
                         state.instance.buffer =
                             vec![PremultipliedRgbaColor::default(); pixel_count];
@@ -273,6 +304,7 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
                         tracing::info!(
                             node_id = %node_id,
                             width, height,
+                            scale_factor = %scale,
                             "Resized Slint instance via upstream hint",
                         );
                     }

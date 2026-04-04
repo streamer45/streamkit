@@ -783,6 +783,11 @@ impl NativeNodeWrapper {
 
             // Non-blocking drain of pin management messages to pick up
             // OutputHintChannel deliveries from the engine.
+            // NOTE: this consumes ALL variants but only extracts
+            // OutputHintChannel.  Safe today because source plugins
+            // don't receive AddedOutputPin/RemoveOutputPin/InputTypeResolved.
+            // If dynamic output pins are added to sources in the future,
+            // this drain must be updated to handle those variants.
             if let Some(ref mut pin_mgmt_rx) = context.pin_management_rx {
                 while let Ok(msg) = pin_mgmt_rx.try_recv() {
                     if let streamkit_core::pins::PinManagementMessage::OutputHintChannel {

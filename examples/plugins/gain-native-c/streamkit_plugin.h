@@ -9,7 +9,7 @@
  * Plugins must export a single symbol `streamkit_native_plugin_api` that
  * returns a pointer to a CNativePluginAPI struct.
  *
- * API Version: 4
+ * API Version: 5
  *
  * Version history:
  *   v1: Initial release — processor nodes.
@@ -18,6 +18,8 @@
  *       source node support (get_source_config, tick, CSourceConfig, CTickResult).
  *   v4: Added get_runtime_param_schema (CSchemaResult) for dynamic runtime
  *       parameter discovery.
+ *   v5: Added on_upstream_hint for receiving advisory hints from downstream
+ *       consumers (e.g. preferred output resolution).
  */
 
 #ifndef STREAMKIT_PLUGIN_H
@@ -36,7 +38,7 @@ extern "C" {
  * ============================================================================ */
 
 /** Current API version. Plugins and host check compatibility via this field. */
-#define STREAMKIT_NATIVE_PLUGIN_API_VERSION 4
+#define STREAMKIT_NATIVE_PLUGIN_API_VERSION 5
 
 /* ============================================================================
  * Core Types
@@ -439,6 +441,24 @@ typedef struct CNativePluginAPI {
      *               success+json = schema, !success = error
      */
     CSchemaResult (*get_runtime_param_schema)(CPluginHandle handle);
+
+    /* -- v5 additions ---------------------------------------------------- */
+
+    /**
+     * Receive an advisory upstream hint from a downstream consumer (optional).
+     *
+     * Source plugins can implement this to adapt their output to the
+     * consumer's preferences.  For example, a compositor may send a
+     * PreferredSize hint when a layer rect is resized, allowing the source
+     * to re-rasterize at the target dimensions instead of being upscaled.
+     *
+     * Hints are advisory — plugins may ignore them.
+     *
+     * @param handle    Plugin instance handle
+     * @param hint_json JSON-serialized UpstreamHint (null-terminated)
+     * @return          CResult (success/failure)
+     */
+    CResult (*on_upstream_hint)(CPluginHandle handle, const char* hint_json);
 } CNativePluginAPI;
 
 /* ============================================================================

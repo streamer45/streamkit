@@ -1426,63 +1426,14 @@ impl CompositorNode {
                     hint_tx,
                 });
 
-                // Send an initial hint if this slot already has a layer
-                // rect configured, so the source can resize immediately
-                // rather than waiting for the next UpdateParams.
-                if let Some(lc) = node.config.layers.get(&pin_name) {
-                    if let Some(ref rect) = lc.rect {
-                        if let Some(tx) = slots.last().and_then(|s| s.hint_tx.as_ref()) {
-                            let _ = tx.try_send(UpstreamHint::PreferredSize {
-                                width: rect.width,
-                                height: rect.height,
-                            });
-                        }
-                    }
-                }
+                Self::send_initial_hint_for_slot(
+                    &pin_name,
+                    slots.last().and_then(|s| s.hint_tx.as_ref()),
+                    &node.config,
+                );
             },
             PinManagementMessage::AttachHintSender { ref pin_name, hint_tx } => {
-                if let Some(slot) = slots.iter_mut().find(|s| s.name == *pin_name) {
-                    tracing::info!(
-                        "CompositorNode: attached hint sender for pre-existing pin '{}'",
-                        pin_name
-                    );
-                    slot.hint_tx = Some(hint_tx);
-
-                    // Send an initial hint if this slot already has a layer
-                    // rect configured, so the source can resize immediately.
-                    if let Some(lc) = node.config.layers.get(pin_name) {
-                        if let Some(ref rect) = lc.rect {
-                            if let Some(ref tx) = slot.hint_tx {
-                                tracing::info!(
-                                    pin = %pin_name,
-                                    width = rect.width,
-                                    height = rect.height,
-                                    "CompositorNode: sending initial PreferredSize hint on attach"
-                                );
-                                let _ = tx.try_send(UpstreamHint::PreferredSize {
-                                    width: rect.width,
-                                    height: rect.height,
-                                });
-                            }
-                        } else {
-                            tracing::debug!(
-                                pin = %pin_name,
-                                "CompositorNode: no rect configured for pin, skipping initial hint"
-                            );
-                        }
-                    } else {
-                        tracing::debug!(
-                            pin = %pin_name,
-                            layer_keys = ?node.config.layers.keys().collect::<Vec<_>>(),
-                            "CompositorNode: no layer config found for pin, skipping initial hint"
-                        );
-                    }
-                } else {
-                    tracing::debug!(
-                        "CompositorNode: ignoring AttachHintSender for unknown pin '{}'",
-                        pin_name
-                    );
-                }
+                Self::attach_hint_sender(pin_name, hint_tx, slots, &node.config);
             },
             PinManagementMessage::RemoveInputPin { pin_name } => {
                 tracing::info!("CompositorNode: removed input pin '{}'", pin_name);
@@ -1493,6 +1444,64 @@ impl CompositorNode {
                 node.input_pins.retain(|p| p.name != pin_name);
             },
             _ => {},
+        }
+    }
+
+    /// Attach a hint sender to a pre-existing input slot and send an
+    /// initial `PreferredSize` hint if a layer rect is already configured.
+    fn attach_hint_sender(
+        pin_name: &str,
+        hint_tx: tokio::sync::mpsc::Sender<UpstreamHint>,
+        slots: &mut [InputSlot],
+        config: &CompositorConfig,
+    ) {
+        if let Some(slot) = slots.iter_mut().find(|s| s.name == pin_name) {
+            tracing::info!(
+                "CompositorNode: attached hint sender for pre-existing pin '{}'",
+                pin_name
+            );
+            slot.hint_tx = Some(hint_tx);
+            Self::send_initial_hint_for_slot(pin_name, slot.hint_tx.as_ref(), config);
+        } else {
+            tracing::debug!(
+                "CompositorNode: ignoring AttachHintSender for unknown pin '{}'",
+                pin_name
+            );
+        }
+    }
+
+    /// If the given slot has a layer rect in `config`, send an initial
+    /// `PreferredSize` hint so the source can resize immediately rather
+    /// than waiting for the next `UpdateParams`.
+    fn send_initial_hint_for_slot(
+        pin_name: &str,
+        hint_tx: Option<&tokio::sync::mpsc::Sender<UpstreamHint>>,
+        config: &CompositorConfig,
+    ) {
+        let Some(tx) = hint_tx else { return };
+        if let Some(lc) = config.layers.get(pin_name) {
+            if let Some(ref rect) = lc.rect {
+                tracing::info!(
+                    pin = %pin_name,
+                    width = rect.width,
+                    height = rect.height,
+                    "CompositorNode: sending initial PreferredSize hint"
+                );
+                let _ = tx.try_send(UpstreamHint::PreferredSize {
+                    width: rect.width,
+                    height: rect.height,
+                });
+            } else {
+                tracing::debug!(
+                    pin = %pin_name,
+                    "CompositorNode: no rect configured for pin, skipping initial hint"
+                );
+            }
+        } else {
+            tracing::debug!(
+                pin = %pin_name,
+                "CompositorNode: no layer config found for pin, skipping initial hint"
+            );
         }
     }
 }
