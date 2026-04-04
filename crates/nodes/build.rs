@@ -206,7 +206,25 @@ fn build_svt_av1_static() -> Vec<std::path::PathBuf> {
     println!("cargo:warning=svt_av1_static: build complete, linking statically");
 
     // 4. Emit linker directives.
+    //
+    // When dav1d_static is also active, we hit a thin-LTO linking bug:
+    // under thin LTO the Rust object files are LLVM bitcode; when the
+    // linker processes the SVT-AV1 archive it hasn't yet compiled the
+    // bitcode to native code, so it doesn't see the undefined symbol
+    // references and skips the archive members.  `+whole-archive` forces
+    // all objects from the archive to be included unconditionally, and
+    // `-bundle` keeps the archive out of the rlib so the linker receives
+    // the original `.a` file directly (avoiding a bundle–extract round-trip
+    // that can interact poorly with LTO).
+    //
+    // When svt_av1_static is the only native archive the default `+bundle`
+    // works fine, so we only apply the workaround when dav1d_static is
+    // also present — keeping the other Dockerfiles (Dockerfile,
+    // Dockerfile.gpu, Dockerfile.demo) on the standard linking path.
     println!("cargo:rustc-link-search=native={}", dst.join("lib").display());
+    #[cfg(feature = "dav1d_static")]
+    println!("cargo:rustc-link-lib=static:+whole-archive,-bundle=SvtAv1Enc");
+    #[cfg(not(feature = "dav1d_static"))]
     println!("cargo:rustc-link-lib=static=SvtAv1Enc");
     println!("cargo:rustc-link-lib=m");
     println!("cargo:rustc-link-lib=pthread");
@@ -389,6 +407,11 @@ fn build_dav1d_static() -> Vec<std::path::PathBuf> {
         install_dir.join("lib")
     };
 
+    // NOTE: unlike SVT-AV1, dav1d does NOT need `+whole-archive` because
+    // rav1d (a Rust dav1d port in the dependency tree) already provides the
+    // same table symbols (dav1d_mc_warp_filter, dav1d_mc_subpel_filters,
+    // etc.).  Using --whole-archive here would cause "multiple definition"
+    // linker errors.
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
     println!("cargo:rustc-link-lib=static=dav1d");
     println!("cargo:rustc-link-lib=pthread");
