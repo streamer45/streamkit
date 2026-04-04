@@ -293,13 +293,13 @@ impl NativeSourceNode for SlintSourcePlugin {
             height,
         } = hint
         {
+            // Clamp to safe bounds before checking for no-op.
+            let width = width.clamp(1, crate::config::MAX_DIMENSION);
+            let height = height.clamp(1, crate::config::MAX_DIMENSION);
             // Ignore if dimensions unchanged.
             if width == self.config.width && height == self.config.height {
                 return;
             }
-            // Clamp to safe bounds.
-            let width = width.clamp(1, crate::config::MAX_DIMENSION);
-            let height = height.clamp(1, crate::config::MAX_DIMENSION);
 
             plugin_info!(
                 self.logger,
