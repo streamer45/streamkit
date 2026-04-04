@@ -152,7 +152,8 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
                         // Discover publicly declared properties from the compiled
                         // component.  Only types the UI can render as controls
                         // (bool, number, string) are included.
-                        let properties = discover_properties(&instance.definition, &instance.component);
+                        let properties =
+                            discover_properties(&instance.definition, &instance.component);
 
                         tracing::info!(
                             node_id = %node_id,
