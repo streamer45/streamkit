@@ -1199,6 +1199,11 @@ impl DynamicEngine {
         // downstream consumer.
         if let Some(hint_rx) = pending_hint_rx.take() {
             if let Some(pin_mgmt_tx) = self.pin_management_txs.get(&from_node) {
+                tracing::info!(
+                    "Delivering OutputHintChannel to source '{}' for pin '{}'",
+                    from_node,
+                    from_pin
+                );
                 let msg = streamkit_core::pins::PinManagementMessage::OutputHintChannel {
                     pin_name: from_pin.clone(),
                     hint_rx,

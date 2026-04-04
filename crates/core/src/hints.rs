@@ -3,10 +3,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
 //! Advisory hints sent from downstream consumers back to upstream sources.
-//!
-//! Hints are non-binding — sources may ignore any or all of them.
-//! The hint channel uses `try_send` so stale hints are dropped if the
-//! source is slow to drain.
 
 /// Advisory hints sent from a downstream consumer back to an upstream
 /// source, allowing the source to adapt its output characteristics.
@@ -18,7 +14,7 @@
 /// Marked `#[non_exhaustive]` so future variants (e.g. `PreferredFps`,
 /// `PreferredPixelFormat`) can be added without breaking downstream
 /// plugin `match` arms.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum UpstreamHint {
@@ -38,7 +34,7 @@ mod tests {
         let hint = UpstreamHint::PreferredSize { width: 1920, height: 1080 };
         let json = serde_json::to_string(&hint).expect("serialize");
         let parsed: UpstreamHint = serde_json::from_str(&json).expect("deserialize");
-        assert!(matches!(parsed, UpstreamHint::PreferredSize { width: 1920, height: 1080 }));
+        assert_eq!(parsed, UpstreamHint::PreferredSize { width: 1920, height: 1080 });
     }
 
     #[test]
@@ -55,6 +51,6 @@ mod tests {
     fn deserialize_from_known_json() {
         let json = r#"{"type":"preferred_size","width":3840,"height":2160}"#;
         let hint: UpstreamHint = serde_json::from_str(json).expect("deserialize");
-        assert!(matches!(hint, UpstreamHint::PreferredSize { width: 3840, height: 2160 }));
+        assert_eq!(hint, UpstreamHint::PreferredSize { width: 3840, height: 2160 });
     }
 }

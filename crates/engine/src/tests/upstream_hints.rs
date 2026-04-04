@@ -103,6 +103,29 @@ impl ProcessorNode for HintCapturingSource {
     }
 }
 
+/// Poll `captured_hints` until `predicate` returns `true` or `timeout` elapses.
+/// Returns the snapshot of hints when the predicate first matches.
+/// Panics with `msg` if the timeout is reached.
+#[allow(clippy::expect_used)]
+async fn poll_hints(
+    captured_hints: &Arc<Mutex<Vec<CapturedHint>>>,
+    predicate: impl Fn(&[CapturedHint]) -> bool,
+    timeout: std::time::Duration,
+    msg: &str,
+) -> Vec<CapturedHint> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(20));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        interval.tick().await;
+        let snapshot = captured_hints.lock().expect("lock poisoned").clone();
+        if predicate(&snapshot) {
+            return snapshot;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "{msg}");
+    }
+}
+
 /// Full engine-level test: source → compositor with dynamic pin.
 /// After connecting, update the compositor's layer rect and verify the
 /// source received the resize hint.
@@ -163,10 +186,10 @@ async fn test_upstream_resize_hint_end_to_end() {
         .await
         .expect("add compositor");
 
-    // Let nodes initialize.
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
     // 3. Connect source → compositor (this triggers the hint channel wiring).
+    //    Small delay to let both nodes start their run loops.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
     handle
         .send_control(EngineControlMessage::Connect {
             from_node: "source".to_string(),
@@ -178,15 +201,16 @@ async fn test_upstream_resize_hint_end_to_end() {
         .await
         .expect("connect");
 
-    // Wait for the initial hint from the connection (the compositor sends
+    // Poll for the initial hint from the connection (the compositor sends
     // a hint on AddedInputPin if the layer rect is already configured).
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let initial_hints = poll_hints(
+        &captured_hints,
+        |h| !h.is_empty(),
+        std::time::Duration::from_secs(5),
+        "source should receive an initial resize hint on connection (timed out)",
+    )
+    .await;
 
-    let initial_hints = captured_hints.lock().expect("lock poisoned").clone();
-    assert!(
-        !initial_hints.is_empty(),
-        "source should receive an initial resize hint on connection (got none)"
-    );
     assert_eq!(initial_hints[0].width, 640);
     assert_eq!(initial_hints[0].height, 480);
 
@@ -207,14 +231,15 @@ async fn test_upstream_resize_hint_end_to_end() {
         .await
         .expect("update params");
 
-    // Wait for the resize hint to propagate.
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    // Poll for the resize hint to propagate.
+    let resize_hints = poll_hints(
+        &captured_hints,
+        |h| !h.is_empty(),
+        std::time::Duration::from_secs(5),
+        "source should receive a resize hint after UpdateParams (timed out)",
+    )
+    .await;
 
-    let resize_hints = captured_hints.lock().expect("lock poisoned").clone();
-    assert!(
-        !resize_hints.is_empty(),
-        "source should receive a resize hint after UpdateParams (got none)"
-    );
     assert_eq!(resize_hints[0].width, 1280, "hint width should match new layer rect");
     assert_eq!(resize_hints[0].height, 720, "hint height should match new layer rect");
 

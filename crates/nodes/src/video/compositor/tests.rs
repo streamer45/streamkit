@@ -2620,7 +2620,7 @@ fn send_resize_hints_fires_on_rect_change() {
     CompositorNode::send_resize_hints(&old_config, &new_config, &[slot]);
 
     let hint = hint_rx.try_recv().expect("should have received a hint");
-    assert!(matches!(hint, UpstreamHint::PreferredSize { width: 1280, height: 720 }));
+    assert_eq!(hint, UpstreamHint::PreferredSize { width: 1280, height: 720 });
 }
 
 #[test]

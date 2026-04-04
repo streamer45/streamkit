@@ -1367,10 +1367,23 @@ impl CompositorNode {
             };
             if changed {
                 if let (Some(ref tx), Some(ref rect)) = (&slot.hint_tx, new_rect) {
+                    tracing::info!(
+                        slot = %slot.name,
+                        width = rect.width,
+                        height = rect.height,
+                        "Sending upstream PreferredSize hint"
+                    );
                     let _ = tx.try_send(UpstreamHint::PreferredSize {
                         width: rect.width,
                         height: rect.height,
                     });
+                } else {
+                    tracing::debug!(
+                        slot = %slot.name,
+                        has_hint_tx = slot.hint_tx.is_some(),
+                        has_new_rect = new_rect.is_some(),
+                        "Skipping hint: missing hint_tx or new_rect"
+                    );
                 }
             }
         }
