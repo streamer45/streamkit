@@ -225,6 +225,11 @@ impl ProcessorNode for NativeNodeWrapper {
         }
 
         // success=true, non-null json_schema → JSON string containing the schema.
+        // SAFETY: result.json_schema points to a thread-local CString set by
+        // error_to_c (used here as a generic "String → *const c_char" helper).
+        // We must copy the string BEFORE any other FFI call on this thread
+        // (including finish_call) that could invoke error_to_c again and
+        // overwrite the thread-local buffer.
         let json_str = unsafe { conversions::c_str_to_string(result.json_schema) }.ok();
         self.state.finish_call();
         json_str.and_then(|s| serde_json::from_str(&s).ok())

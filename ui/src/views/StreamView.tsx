@@ -33,9 +33,10 @@ import { useVideoCanvas } from '@/hooks/useVideoCanvas';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { getApiUrl } from '@/services/base';
 import { listDynamicSamples } from '@/services/samples';
-import { createSession, fetchPipeline } from '@/services/sessions';
+import { createSession } from '@/services/sessions';
 import { useSchemaStore, ensureSchemasLoaded } from '@/stores/schemaStore';
-import type { Event, Pipeline } from '@/types/types';
+import { useSessionStore } from '@/stores/sessionStore';
+import type { Event } from '@/types/types';
 import { getLogger } from '@/utils/logger';
 import { extractMoqPeerSettings, applyMoqSettings } from '@/utils/moqPeerSettings';
 import { orderSamplePipelinesSystemFirst } from '@/utils/samplePipelineOrdering';
@@ -604,31 +605,19 @@ const StreamView: React.FC = () => {
     useVideoCanvas(videoRenderer);
   const { muted, volume, toggleMute, changeVolume } = useAudioControls(audioEmitter);
 
-  // Fetch the live pipeline (including runtime_schemas) so OverlayControls
-  // can generate schema-driven controls — the same source of truth used by
-  // Monitor View.  Re-fetches when the active session changes.
-  const [livePipeline, setLivePipeline] = useState<Pipeline | null>(null);
-  useEffect(() => {
-    if (!activeSessionId) {
-      setLivePipeline(null);
-      return;
-    }
-    const controller = new AbortController();
-    // Small delay to let runtime schemas arrive after node init.
-    const timer = setTimeout(() => {
-      fetchPipeline(activeSessionId, controller.signal)
-        .then(setLivePipeline)
-        .catch((err) => {
-          if (!controller.signal.aborted) {
-            logger.warn('Failed to fetch pipeline for controls:', err);
-          }
-        });
-    }, 1500);
-    return () => {
-      clearTimeout(timer);
-      controller.abort();
-    };
-  }, [activeSessionId]);
+  // Read the pipeline (including runtime_schemas) from the session store,
+  // which is kept up-to-date by WebSocket events (RuntimeSchemasUpdated).
+  // This replaces the previous one-shot REST fetch with a 1.5s delay that
+  // could miss late-arriving schemas.
+  const livePipeline = useSessionStore(
+    useCallback(
+      (s) => {
+        if (!activeSessionId) return null;
+        return s.sessions.get(activeSessionId)?.pipeline ?? null;
+      },
+      [activeSessionId]
+    )
+  );
 
   // Validate active session still exists when navigating to this view
   useEffect(() => {

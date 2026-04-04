@@ -399,7 +399,17 @@ fn discover_properties(
             // UI can display the correct default (e.g. clock_running = true).
             let initial_value = component.get_property(&name).ok().and_then(|v| match v {
                 Value::Bool(b) => Some(serde_json::Value::Bool(b)),
-                Value::Number(n) => serde_json::Number::from_f64(n).map(serde_json::Value::Number),
+                Value::Number(n) => {
+                    let json_num = serde_json::Number::from_f64(n);
+                    if json_num.is_none() {
+                        tracing::warn!(
+                            property = %name,
+                            value = %n,
+                            "Slint property has NaN/Infinity value, dropping default"
+                        );
+                    }
+                    json_num.map(serde_json::Value::Number)
+                }
                 Value::String(s) => Some(serde_json::Value::String(s.to_string())),
                 _ => None,
             });
