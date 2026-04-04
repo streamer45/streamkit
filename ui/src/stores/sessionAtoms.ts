@@ -18,6 +18,7 @@ import { atom, getDefaultStore } from 'jotai';
 import { atomFamily } from 'jotai-family';
 
 import type { NodeState, NodeStats, Pipeline } from '@/types/types';
+import { deepMerge } from '@/utils/controlProps';
 
 // ── Default store reference ─────────────────────────────────────────────────
 
@@ -49,7 +50,10 @@ export const nodeViewDataAtom = atomFamily((_key: string) => atom<unknown>(undef
 /** Per-node params atom -- stores the full Record<string, unknown> for a node. */
 export const nodeParamsAtom = atomFamily((_key: string) => atom<Record<string, unknown>>({}));
 
-/** Write a single node param to the Jotai atom. */
+/** Write a single flat-key node param to the Jotai atom.
+ *  This performs a shallow merge — suitable for top-level scalar keys only
+ *  (e.g. `gain_db`).  For nested/dot-path updates, use `writeNodeParams`
+ *  which deep-merges to preserve sibling properties. */
 export function writeNodeParam(
   nodeId: string,
   key: string,
@@ -77,7 +81,7 @@ export function writeNodeParams(
       cleaned[key] = value;
     }
   }
-  sessionStore.set(nodeParamsAtom(k), { ...current, ...cleaned });
+  sessionStore.set(nodeParamsAtom(k), deepMerge(current, cleaned));
 }
 
 /** Clear node params atom for a specific node. */

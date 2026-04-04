@@ -165,6 +165,7 @@ export const FlowCanvas = <NodeData extends Record<string, unknown> = Record<str
         connectionLineComponent={ConnectionLine}
         nodeOrigin={nodeOrigin}
         defaultEdgeOptions={defaultEdgeOptions}
+        elevateNodesOnSelect={true}
         nodeDragThreshold={1}
         maxZoom={1.5}
         minZoom={0.25}

@@ -44,6 +44,12 @@ client:
       node: lower_third
       property: properties.show
       default: true
+    - label: "Clock Running"
+      type: toggle
+      node: scoreboard
+      property: properties.clock_running
+      group: Scoreboard
+      default: true
     - label: "Player Name"
       type: text
       node: lower_third
@@ -102,6 +108,7 @@ nodes:
         home_score: 3
         away_score: 1
         clock_start: 754
+        clock_running: true
         period: "2ND"
 
   lower_third:

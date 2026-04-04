@@ -21,6 +21,7 @@ interface SessionStore {
   updateNodeState: (sessionId: string, nodeId: string, state: NodeState) => void;
   updateNodeStats: (sessionId: string, nodeId: string, stats: NodeStats) => void;
   updateNodeViewData: (sessionId: string, nodeId: string, data: unknown) => void;
+  updateRuntimeSchema: (sessionId: string, nodeId: string, schema: unknown) => void;
   setPipeline: (sessionId: string, pipeline: Pipeline) => void;
   updateNodeParams: (sessionId: string, nodeId: string, params: Record<string, unknown>) => void;
   addNode: (
@@ -89,6 +90,22 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
         ...session,
         nodeViewData: { ...session.nodeViewData, [nodeId]: data },
       });
+      return { sessions: newSessions };
+    }),
+
+  updateRuntimeSchema: (sessionId, nodeId, schema) =>
+    set((prev) => {
+      const session = prev.sessions.get(sessionId);
+      if (!session || !session.pipeline) return prev;
+
+      const existing = session.pipeline.runtime_schemas ?? {};
+      const updatedPipeline: Pipeline = {
+        ...session.pipeline,
+        runtime_schemas: { ...existing, [nodeId]: schema },
+      };
+
+      const newSessions = new Map(prev.sessions);
+      newSessions.set(sessionId, { ...session, pipeline: updatedPipeline });
       return { sessions: newSessions };
     }),
 

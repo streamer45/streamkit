@@ -25,12 +25,33 @@ use slint::platform::software_renderer::{
 };
 use slint::platform::WindowAdapter;
 use slint::{ComponentHandle, LogicalSize, SharedString};
-use slint_interpreter::{ComponentDefinition, ComponentInstance, Value};
+use slint_interpreter::{ComponentDefinition, ComponentInstance, Value, ValueType};
 
 use crate::config::SlintConfig;
 
 /// Opaque identifier for a plugin instance on the shared Slint thread.
 pub type NodeId = uuid::Uuid;
+
+/// Describes a single publicly declared property discovered from a compiled
+/// `.slint` component.  Used to build the runtime param schema.
+#[derive(Debug, Clone)]
+pub struct DiscoveredProperty {
+    pub name: String,
+    pub value_type: DiscoveredValueType,
+    /// The initial value of the property as declared in the `.slint` file.
+    /// Used as the `default` in the runtime JSON Schema so the UI can show
+    /// the correct initial state (e.g. a toggle that is `true` at startup).
+    pub initial_value: Option<serde_json::Value>,
+}
+
+/// Subset of `slint_interpreter::ValueType` that maps to JSON Schema types
+/// the UI can render as controls.
+#[derive(Debug, Clone, Copy)]
+pub enum DiscoveredValueType {
+    Bool,
+    Number,
+    String,
+}
 
 /// Work item sent from a plugin's `tick()` to the shared Slint thread.
 pub enum SlintWorkItem {
@@ -53,7 +74,9 @@ pub enum SlintWorkItem {
 /// Result sent from the shared Slint thread back to a specific instance.
 pub enum SlintThreadResult {
     /// Init succeeded — the instance can start rendering.
-    InitOk,
+    /// Carries the list of publicly declared properties discovered from the
+    /// compiled `.slint` component (may be empty).
+    InitOk { properties: Vec<DiscoveredProperty> },
     /// Init failed with an error message.
     InitErr(String),
     /// A rendered frame.
@@ -126,12 +149,19 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
             SlintWorkItem::Register { node_id, config, result_tx } => {
                 match create_slint_instance(&config, &mut platform_set) {
                     Ok(instance) => {
+                        // Discover publicly declared properties from the compiled
+                        // component.  Only types the UI can render as controls
+                        // (bool, number, string) are included.
+                        let properties =
+                            discover_properties(&instance.definition, &instance.component);
+
                         tracing::info!(
                             node_id = %node_id,
                             slint_file = %config.slint_file,
+                            discovered_properties = properties.len(),
                             "Created Slint instance",
                         );
-                        let _ = result_tx.send(SlintThreadResult::InitOk);
+                        let _ = result_tx.send(SlintThreadResult::InitOk { properties });
                         instances.insert(
                             node_id,
                             InstanceState {
@@ -339,6 +369,58 @@ fn create_slint_instance(
     // _guard drops here, clearing CURRENT_WINDOW.
 
     Ok(SlintInstance { window, component, definition, buffer, width, frame_counter: 0 })
+}
+
+/// Enumerate the publicly declared properties of a compiled Slint component
+/// and return those whose types map to JSON Schema primitives the UI can
+/// render as controls (boolean → toggle, number → slider, string → text).
+///
+/// Also reads the initial value of each property from the instantiated
+/// component so the UI can show the correct initial state.
+///
+/// **Limitation:** `.slint` files are assumed to be static for the lifetime
+/// of the node.  Property discovery happens once at initialization; if the
+/// source file changes, the node must be re-created to pick up new properties.
+fn discover_properties(
+    definition: &ComponentDefinition,
+    component: &ComponentInstance,
+) -> Vec<DiscoveredProperty> {
+    definition
+        .properties()
+        .filter_map(|(name, value_type)| {
+            let vt = match value_type {
+                ValueType::Bool => DiscoveredValueType::Bool,
+                ValueType::Number => DiscoveredValueType::Number,
+                ValueType::String => DiscoveredValueType::String,
+                // Image, Model, Struct, Brush, etc. are not tuneable.
+                _ => return None,
+            };
+            // Read the initial value from the live component instance so the
+            // UI can display the correct default (e.g. clock_running = true).
+            let initial_value = component.get_property(&name).ok().and_then(|v| match v {
+                Value::Bool(b) => Some(serde_json::Value::Bool(b)),
+                Value::Number(n) => {
+                    let json_num = serde_json::Number::from_f64(n);
+                    if json_num.is_none() {
+                        tracing::warn!(
+                            property = %name,
+                            value = %n,
+                            "Slint property has NaN/Infinity value, dropping default"
+                        );
+                    }
+                    json_num.map(serde_json::Value::Number)
+                },
+                Value::String(s) => Some(serde_json::Value::String(s.to_string())),
+                _ => None,
+            });
+            // Slint normalizes identifiers to kebab-case internally
+            // (e.g. `clock_running` → `clock-running`).  The rest of the
+            // StreamKit stack (YAML params, JSON UpdateParams, set_properties)
+            // uses snake_case, so convert back to match.
+            let name = name.replace('-', "_");
+            Some(DiscoveredProperty { name, value_type: vt, initial_value })
+        })
+        .collect()
 }
 
 /// Render a single frame from the Slint instance, returning raw RGBA8 data.

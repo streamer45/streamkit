@@ -287,6 +287,7 @@ fn build_pipeline(args: &BenchArgs) -> streamkit_api::Pipeline {
         connections,
         view_data: None,
         client: None,
+        runtime_schemas: None,
     }
 }
 

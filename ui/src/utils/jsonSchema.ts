@@ -7,6 +7,8 @@
  * These functions help extract slider configurations from JSON schemas.
  */
 
+import type { ControlConfig } from '@/types/types';
+
 export interface JsonSchemaProperty {
   type?: string;
   description?: string;
@@ -22,6 +24,14 @@ export interface JsonSchemaProperty {
    * If true, the parameter supports live updates via UpdateParams messages.
    */
   tunable?: boolean;
+  /**
+   * Override the UpdateParams key path (dot-notation).
+   * Defaults to the property key when omitted.
+   * Example: `"path": "properties.show"` sends `{ properties: { show: value } }`.
+   */
+  path?: string;
+  /** Enum values for select/dropdown controls. */
+  enum?: unknown[];
 }
 
 export interface JsonSchema {
@@ -30,6 +40,8 @@ export interface JsonSchema {
 
 export interface SliderConfig {
   key: string;
+  /** Dot-notation path for UpdateParams. Defaults to `key`. */
+  path: string;
   schema: JsonSchemaProperty;
   min: number;
   max: number;
@@ -142,6 +154,7 @@ export const extractSliderConfigs = (schema: JsonSchema | undefined): SliderConf
     const step = inferStep(schemaProp, min, max);
     acc.push({
       key,
+      path: schemaProp.path ?? key,
       schema: schemaProp,
       min,
       max,
@@ -207,3 +220,205 @@ export const validateValue = (value: unknown, schema: JsonSchemaProperty): strin
 
   return null; // Valid
 };
+
+// ---------------------------------------------------------------------------
+// Schema merging — runtime enrichment
+// ---------------------------------------------------------------------------
+
+/**
+ * Deep-merge a runtime param schema into a base (static) schema.
+ *
+ * The merge is shallow at the top level (only `properties` is merged) and
+ * **deep within each property**: when a runtime property key collides with
+ * a base property key, the two entries are spread together so that base
+ * fields (e.g. `default`, `minimum`, `maximum`) are preserved unless the
+ * runtime entry explicitly overrides them.
+ *
+ * This is used to combine the static `param_schema` from the node registry
+ * with per-instance runtime discoveries (e.g. Slint component properties).
+ */
+export const deepMergeSchemas = (
+  base: JsonSchema | undefined,
+  runtime: JsonSchema | undefined
+): JsonSchema => {
+  if (!runtime) return base ?? {};
+  if (!base) return runtime;
+
+  const baseProps = base.properties ?? {};
+  const runtimeProps = runtime.properties ?? {};
+
+  // Property-level deep merge: for each key present in runtime, spread
+  // the base entry first (if any) then the runtime entry on top so that
+  // runtime fields win but base-only fields (default, min, max, …) survive.
+  const mergedProps: Record<string, JsonSchemaProperty> = { ...baseProps };
+  for (const [key, runtimeEntry] of Object.entries(runtimeProps)) {
+    const baseEntry = baseProps[key];
+    mergedProps[key] = baseEntry ? { ...baseEntry, ...runtimeEntry } : runtimeEntry;
+  }
+
+  return {
+    ...base,
+    properties: mergedProps,
+  };
+};
+
+// ---------------------------------------------------------------------------
+// Toggle (boolean) config extraction
+// ---------------------------------------------------------------------------
+
+export interface ToggleConfig {
+  key: string;
+  /** Dot-notation path for UpdateParams. Defaults to `key`. */
+  path: string;
+  schema: JsonSchemaProperty;
+}
+
+/**
+ * Extracts toggle configurations from a JSON schema.
+ * Returns configs for boolean properties marked `tunable: true`.
+ */
+export const extractToggleConfigs = (schema: JsonSchema | undefined): ToggleConfig[] => {
+  if (!schema) return [];
+
+  const properties = schema.properties ?? {};
+
+  return Object.entries(properties).reduce((acc, [key, schemaProp]) => {
+    if (!schemaProp || schemaProp.type !== 'boolean' || !schemaProp.tunable) {
+      return acc;
+    }
+    acc.push({
+      key,
+      path: schemaProp.path ?? key,
+      schema: schemaProp,
+    });
+    return acc;
+  }, [] as ToggleConfig[]);
+};
+
+// ---------------------------------------------------------------------------
+// Text (string) config extraction
+// ---------------------------------------------------------------------------
+
+export interface TextConfig {
+  key: string;
+  /** Dot-notation path for UpdateParams. Defaults to `key`. */
+  path: string;
+  schema: JsonSchemaProperty;
+}
+
+/**
+ * Extracts text input configurations from a JSON schema.
+ * Returns configs for string properties marked `tunable: true`.
+ * Excludes enum-constrained strings (those would need a select/dropdown control).
+ */
+export const extractTextConfigs = (schema: JsonSchema | undefined): TextConfig[] => {
+  if (!schema) return [];
+
+  const properties = schema.properties ?? {};
+
+  return Object.entries(properties).reduce((acc, [key, schemaProp]) => {
+    if (
+      !schemaProp ||
+      schemaProp.type !== 'string' ||
+      !schemaProp.tunable ||
+      (schemaProp.enum && schemaProp.enum.length > 0)
+    ) {
+      return acc;
+    }
+    acc.push({
+      key,
+      path: schemaProp.path ?? key,
+      schema: schemaProp,
+    });
+    return acc;
+  }, [] as TextConfig[]);
+};
+
+// ---------------------------------------------------------------------------
+// Schema → ControlConfig conversion
+// ---------------------------------------------------------------------------
+
+/** Derive a human-readable label: "clock_running" → "Clock Running". */
+function labelFromKey(key: string): string {
+  return key.replace(/[_-]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/** Map a single tunable schema property to a ControlConfig, or null. */
+function propToControlConfig(
+  nodeId: string,
+  key: string,
+  prop: JsonSchemaProperty,
+  group: string | null
+): ControlConfig | null {
+  const path = prop.path ?? key;
+  const label = labelFromKey(key);
+  const base = { label, node: nodeId, property: path, group, value: null };
+
+  switch (prop.type) {
+    case 'boolean':
+      return {
+        ...base,
+        type: 'toggle',
+        default: prop.default ?? false,
+        min: null,
+        max: null,
+        step: null,
+      };
+    case 'number':
+    case 'integer': {
+      const min = resolveMinimum(prop) ?? 0;
+      const max = resolveMaximum(prop) ?? 100;
+      return {
+        ...base,
+        type: 'number',
+        default: prop.default ?? min,
+        min,
+        max,
+        step: inferStep(prop, min, max),
+      };
+    }
+    case 'string':
+      if (prop.enum && prop.enum.length > 0) return null;
+      return {
+        ...base,
+        type: 'text',
+        default: prop.default ?? '',
+        min: null,
+        max: null,
+        step: null,
+      };
+    default:
+      return null;
+  }
+}
+
+/**
+ * Converts tunable properties from a merged JSON schema into `ControlConfig`
+ * entries suitable for `OverlayControls`.
+ *
+ * This bridges the gap between the schema-driven controls in Monitor View
+ * and the `client.controls` YAML controls in Stream View, allowing both
+ * views to render the same set of controls from a single source of truth.
+ *
+ * @param nodeId  The pipeline node ID (e.g. "scoreboard").
+ * @param schema  The merged (base + runtime) JSON schema for the node.
+ * @param group   Optional group label for all generated controls.
+ */
+export function schemaToControlConfigs(
+  nodeId: string,
+  schema: JsonSchema | undefined,
+  group?: string
+): ControlConfig[] {
+  if (!schema?.properties) return [];
+
+  const groupLabel = group ?? null;
+  const controls: ControlConfig[] = [];
+
+  for (const [key, prop] of Object.entries(schema.properties)) {
+    if (!prop?.tunable) continue;
+    const ctrl = propToControlConfig(nodeId, key, prop, groupLabel);
+    if (ctrl) controls.push(ctrl);
+  }
+
+  return controls;
+}

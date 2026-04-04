@@ -465,6 +465,16 @@ pub enum EventPayload {
         /// RFC 3339 formatted timestamp for convenience
         timestamp: String,
     },
+    // --- Runtime Schema Events ---
+    /// A node's runtime param schema has been discovered after initialization.
+    /// The UI should merge this with the static per-kind schema so controls
+    /// can render for dynamically discovered parameters (e.g. Slint properties).
+    RuntimeSchemasUpdated {
+        session_id: String,
+        node_id: String,
+        #[ts(type = "JsonValue")]
+        schema: serde_json::Value,
+    },
 }
 
 pub type Event = Message<EventPayload>;
@@ -538,6 +548,13 @@ pub struct Pipeline {
     #[serde(default)]
     #[ts(type = "Record<string, JsonValue> | null")]
     pub view_data: Option<HashMap<String, serde_json::Value>>,
+    /// Per-instance runtime param schema overrides discovered after node
+    /// initialization.  Only populated in API responses for nodes whose
+    /// `ProcessorNode::runtime_param_schema()` returned `Some`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    #[ts(type = "Record<string, JsonValue> | null")]
+    pub runtime_schemas: Option<HashMap<String, serde_json::Value>>,
 }
 
 // Type aliases for backwards compatibility

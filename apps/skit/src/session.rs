@@ -347,6 +347,34 @@ impl Session {
             );
         });
 
+        // Subscribe to runtime schema discovery notifications from the engine
+        let mut runtime_schema_rx = engine_handle
+            .subscribe_runtime_schemas()
+            .await
+            .map_err(|e| format!("Failed to subscribe to runtime schema updates: {e}"))?;
+
+        // Spawn task to forward runtime schema updates to WebSocket clients
+        let session_id_for_schemas = session_id.clone();
+        let event_tx_for_schemas = event_tx.clone();
+        tokio::spawn(async move {
+            while let Some(update) = runtime_schema_rx.recv().await {
+                let event = ApiEvent {
+                    message_type: MessageType::Event,
+                    correlation_id: None,
+                    payload: EventPayload::RuntimeSchemasUpdated {
+                        session_id: session_id_for_schemas.clone(),
+                        node_id: update.node_id,
+                        schema: update.schema,
+                    },
+                };
+                let _ = event_tx_for_schemas.send(BroadcastEvent::to_all(event));
+            }
+            tracing::debug!(
+                session_id = %session_id_for_schemas,
+                "Runtime schema forwarding task ended"
+            );
+        });
+
         // Subscribe to telemetry events from the engine
         let mut telemetry_rx = engine_handle
             .subscribe_telemetry()
@@ -420,6 +448,19 @@ impl Session {
     /// which typically indicates the engine actor has stopped or panicked.
     pub async fn get_node_view_data(&self) -> Result<HashMap<String, serde_json::Value>, String> {
         self.engine_handle.get_node_view_data().await
+    }
+
+    /// Gets the runtime param schema overrides for all nodes in this session.
+    ///
+    /// Only nodes whose `ProcessorNode::runtime_param_schema()` returned
+    /// `Some` after initialization will have entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the engine handle's oneshot channel fails to receive a response,
+    /// which typically indicates the engine actor has stopped or panicked.
+    pub async fn get_runtime_schemas(&self) -> Result<HashMap<String, serde_json::Value>, String> {
+        self.engine_handle.get_runtime_schemas().await
     }
 
     /// Registers a new preview, enforcing the per-session limit.

@@ -277,7 +277,8 @@ pub async fn handle_websocket(
                         | EventPayload::ConnectionAdded { session_id, .. }
                         | EventPayload::ConnectionRemoved { session_id, .. }
                         | EventPayload::NodeTelemetry { session_id, .. }
-                        | EventPayload::NodeViewDataUpdated { session_id, .. } => {
+                        | EventPayload::NodeViewDataUpdated { session_id, .. }
+                        | EventPayload::RuntimeSchemasUpdated { session_id, .. } => {
                             visible_session_ids.contains(session_id)
                         }
                     }

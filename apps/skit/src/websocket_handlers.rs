@@ -851,7 +851,12 @@ async fn handle_tune_node(
             }
             let mut pipeline = session.pipeline.lock().await;
             if let Some(node) = pipeline.nodes.get_mut(&node_id) {
-                node.params = Some(durable_params);
+                // Deep-merge the partial update into existing params so
+                // sibling keys are preserved (mirrors the async handler).
+                node.params = Some(match node.params.take() {
+                    Some(existing) => deep_merge_json(existing, durable_params),
+                    None => durable_params,
+                });
             } else {
                 warn!(
                     node_id = %node_id,
@@ -988,7 +993,15 @@ async fn handle_tune_node_fire_and_forget(
                 }
                 let mut pipeline = session.pipeline.lock().await;
                 if let Some(node) = pipeline.nodes.get_mut(&node_id) {
-                    node.params = Some(durable_params);
+                    // Deep-merge the partial update into existing params so
+                    // sibling keys are preserved.  Without this, a partial
+                    // nested update like `{ properties: { show: false } }`
+                    // would overwrite the entire params, losing keys such
+                    // as `fps`, `width`, or `properties.name`.
+                    node.params = Some(match node.params.take() {
+                        Some(existing) => deep_merge_json(existing, durable_params),
+                        None => durable_params,
+                    });
                 } else {
                     warn!(
                         node_id = %node_id,
@@ -997,6 +1010,10 @@ async fn handle_tune_node_fire_and_forget(
                 }
             } // Lock released here
 
+            // Broadcast the *partial delta* (not merged state) to all clients.
+            // Correct deep-merge on receive depends on each client having a
+            // valid base state, which is guaranteed because every client
+            // fetches the full pipeline on connect.
             let event = ApiEvent {
                 message_type: MessageType::Event,
                 correlation_id: None,
@@ -1066,6 +1083,7 @@ async fn handle_get_pipeline(
 
     let node_states = session.get_node_states().await.unwrap_or_default();
     let node_view_data = session.get_node_view_data().await.unwrap_or_default();
+    let runtime_schemas = session.get_runtime_schemas().await.unwrap_or_default();
 
     // Clone pipeline (short lock hold) and add runtime state to nodes.
     let mut api_pipeline = {
@@ -1079,6 +1097,12 @@ async fn handle_get_pipeline(
     // Attach resolved view data so clients have accurate positions on initial load.
     if !node_view_data.is_empty() {
         api_pipeline.view_data = Some(node_view_data);
+    }
+
+    // Attach runtime param schemas so the UI can merge them with static schemas
+    // and render controls for dynamically discovered parameters.
+    if !runtime_schemas.is_empty() {
+        api_pipeline.runtime_schemas = Some(runtime_schemas);
     }
 
     info!(
@@ -1359,4 +1383,81 @@ async fn handle_apply_batch(
 fn handle_get_permissions(perms: &Permissions, role_name: &str) -> ResponsePayload {
     info!(role = %role_name, "Returning permissions for role");
     ResponsePayload::Permissions { role: role_name.to_string(), permissions: perms.to_info() }
+}
+
+/// Recursively deep-merges `source` into `target`, returning the merged value.
+/// Only JSON objects are merged recursively; arrays and scalars in `source`
+/// replace the corresponding value in `target`.
+fn deep_merge_json(target: serde_json::Value, source: serde_json::Value) -> serde_json::Value {
+    match (target, source) {
+        (serde_json::Value::Object(mut t_map), serde_json::Value::Object(s_map)) => {
+            for (key, s_val) in s_map {
+                let merged = match t_map.remove(&key) {
+                    Some(t_val) => deep_merge_json(t_val, s_val),
+                    None => s_val,
+                };
+                t_map.insert(key, merged);
+            }
+            serde_json::Value::Object(t_map)
+        },
+        // Non-object source replaces target wholesale.
+        (_, source) => source,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn deep_merge_preserves_sibling_keys() {
+        let target = json!({
+            "fps": 30,
+            "width": 1920,
+            "properties": { "show": true, "name": "Alex" }
+        });
+        let source = json!({
+            "properties": { "show": false }
+        });
+        let merged = deep_merge_json(target, source);
+        assert_eq!(merged["fps"], 30);
+        assert_eq!(merged["width"], 1920);
+        assert_eq!(merged["properties"]["show"], false);
+        assert_eq!(merged["properties"]["name"], "Alex");
+    }
+
+    #[test]
+    fn deep_merge_adds_new_keys() {
+        let target = json!({ "a": 1 });
+        let source = json!({ "b": 2 });
+        let merged = deep_merge_json(target, source);
+        assert_eq!(merged, json!({ "a": 1, "b": 2 }));
+    }
+
+    #[test]
+    fn deep_merge_replaces_non_object() {
+        let target = json!({ "x": [1, 2, 3] });
+        let source = json!({ "x": [4, 5] });
+        let merged = deep_merge_json(target, source);
+        assert_eq!(merged["x"], json!([4, 5]));
+    }
+
+    #[test]
+    fn deep_merge_nested_objects() {
+        let target = json!({
+            "properties": {
+                "home_score": 0,
+                "away_score": 0,
+                "show": true
+            }
+        });
+        let source = json!({
+            "properties": { "home_score": 3 }
+        });
+        let merged = deep_merge_json(target, source);
+        assert_eq!(merged["properties"]["home_score"], 3);
+        assert_eq!(merged["properties"]["away_score"], 0);
+        assert_eq!(merged["properties"]["show"], true);
+    }
 }

@@ -3,24 +3,37 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import styled from '@emotion/styled';
-import * as Tooltip from '@radix-ui/react-tooltip';
-import React from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 
 import { NodeFrame } from '@/components/node/NodeFrame';
-import { LiveBadge, LiveDot } from '@/components/ui/LiveIndicator';
+import { LiveDot } from '@/components/ui/LiveIndicator';
 import { useNumericSlider } from '@/hooks/useNumericSlider';
 import { areNodePropsEqual } from '@/nodes/nodePropsEqual';
+import {
+  BooleanToggleControl,
+  TextInputControl,
+  ControlLabel,
+  ControlLabelText,
+  ControlDescription,
+} from '@/nodes/SchemaControls';
 import { perfOnRender } from '@/perf';
 import type { InputPin, OutputPin, NodeState, NodeStats, NodeDefinition } from '@/types/types';
+import { readByPath } from '@/utils/controlProps';
 import {
   type JsonSchemaProperty,
   type JsonSchema,
   isFiniteNumber,
   extractSliderConfigs,
+  extractToggleConfigs,
+  extractTextConfigs,
   decimalPlacesFromStep,
   formatNumber,
 } from '@/utils/jsonSchema';
 import { nodesLogger } from '@/utils/logger';
+
+// Module-level map so expanded state survives topology rebuilds (which
+// recreate ConfigurableNode React elements, resetting useState).
+const expandedState = new Map<string, boolean>();
 
 const ParamCount = styled.div`
   padding: 4px 0;
@@ -30,7 +43,7 @@ const ParamCount = styled.div`
   border-top: 1px solid var(--sk-border);
 `;
 
-const SliderGroup = styled.div`
+const ControlGroup = styled.div`
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -44,42 +57,11 @@ const SliderWrapper = styled.div`
   padding: 4px 0;
 `;
 
-const SliderLabel = styled.div`
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--sk-text);
-`;
-
-const SliderLabelText = styled.span`
-  flex: 0 0 auto;
-`;
-
-const SliderDescription = styled.div`
-  font-size: 11px;
-  color: var(--sk-text-muted);
-`;
-
 const SliderValue = styled.span`
   font-variant-numeric: tabular-nums;
   color: var(--sk-text-muted);
   margin-left: auto;
   flex: 0 0 auto;
-`;
-
-const TooltipContent = styled(Tooltip.Content)`
-  background: var(--sk-panel-bg);
-  border: 1px solid var(--sk-border);
-  border-radius: 6px;
-  padding: 8px 12px;
-  box-shadow: 0 4px 12px var(--sk-shadow);
-  font-size: 11px;
-  z-index: 1000;
-  max-width: 250px;
-  color: var(--sk-text);
 `;
 
 const SliderInput = styled.input`
@@ -99,6 +81,33 @@ const SliderMarks = styled.div`
   font-size: 10px;
   color: var(--sk-text-muted);
   font-variant-numeric: tabular-nums;
+`;
+
+const ControlsToggleBar = styled.button`
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 0;
+  background: none;
+  border: none;
+  border-top: 1px solid var(--sk-border);
+  color: var(--sk-text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  border-radius: 0;
+
+  &:hover {
+    color: var(--sk-text);
+  }
+`;
+
+const ChevronSvg = styled.svg<{ expanded: boolean }>`
+  transition: transform 0.15s ease;
+  transform: rotate(${(props) => (props.expanded ? '90deg' : '0deg')});
+  flex-shrink: 0;
 `;
 
 interface ConfigurableNodeData {
@@ -126,14 +135,14 @@ interface NumericSliderControlProps {
   nodeId: string;
   sessionId?: string;
   paramKey: string;
+  /** Dot-notation path for reading/writing nested params. Defaults to `paramKey`. */
+  path?: string;
   schema: JsonSchemaProperty;
   min: number;
   max: number;
   step: number;
   params: Record<string, unknown>;
   onParamChange?: (nodeId: string, paramName: string, value: unknown) => void;
-  showLiveIndicator?: boolean;
-  isTunable: boolean;
 }
 
 // Helper: Compute fallback value for slider
@@ -187,20 +196,23 @@ function formatMinMaxLabels(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Numeric slider control
+// ---------------------------------------------------------------------------
+
 const NumericSliderControl: React.FC<NumericSliderControlProps> = ({
   nodeId,
   sessionId,
   paramKey,
+  path: pathOverride,
   schema,
   min,
   max,
   step,
   params,
   onParamChange,
-  showLiveIndicator = false,
-  isTunable,
 }) => {
-  const baseParam = params?.[paramKey];
+  const baseParam = readByPath(params as Record<string, unknown>, pathOverride ?? paramKey);
   const defaultValue = schema?.default;
 
   const fallback = computeFallbackValue(defaultValue, baseParam, min, max);
@@ -211,6 +223,7 @@ const NumericSliderControl: React.FC<NumericSliderControlProps> = ({
       nodeId,
       sessionId,
       paramKey,
+      path: pathOverride,
       min,
       max,
       step,
@@ -228,29 +241,11 @@ const NumericSliderControl: React.FC<NumericSliderControlProps> = ({
 
   return (
     <SliderWrapper>
-      <SliderLabel>
-        <SliderLabelText className="code-font">{paramKey}</SliderLabelText>
-        {showLiveIndicator && isTunable && (
-          <Tooltip.Provider delayDuration={300}>
-            <Tooltip.Root>
-              <Tooltip.Trigger asChild>
-                <LiveBadge size="small">
-                  <LiveDot size="small" />
-                  LIVE
-                </LiveBadge>
-              </Tooltip.Trigger>
-              <Tooltip.Portal>
-                <TooltipContent side="top" sideOffset={5}>
-                  Changes apply immediately to the running pipeline
-                  <Tooltip.Arrow style={{ fill: 'var(--sk-border)' }} />
-                </TooltipContent>
-              </Tooltip.Portal>
-            </Tooltip.Root>
-          </Tooltip.Provider>
-        )}
+      <ControlLabel>
+        <ControlLabelText className="code-font">{paramKey}</ControlLabelText>
         <SliderValue>{formattedValue}</SliderValue>
-      </SliderLabel>
-      {schema?.description && <SliderDescription>{schema.description}</SliderDescription>}
+      </ControlLabel>
+      {schema?.description && <ControlDescription>{schema.description}</ControlDescription>}
       <SliderInput
         type="range"
         min={min}
@@ -288,7 +283,11 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(function Co
   const properties = schema?.properties ?? {};
   const totalParams = Object.keys(properties).length;
 
-  const sliderConfigs = extractSliderConfigs(schema);
+  const sliderConfigs = useMemo(() => extractSliderConfigs(schema), [schema]);
+  const toggleConfigs = useMemo(() => extractToggleConfigs(schema), [schema]);
+  const textConfigs = useMemo(() => extractTextConfigs(schema), [schema]);
+  const controlCount = toggleConfigs.length + sliderConfigs.length + textConfigs.length;
+  const hasControls = controlCount > 0;
 
   // Detect bidirectional nodes using the bidirectional property from node definition
   const isBidirectional = data.definition?.bidirectional ?? false;
@@ -296,6 +295,15 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(function Co
   // Show live indicator when node is in an active session (has sessionId)
   // This prevents the LIVE badge from showing in design view (which has no sessionId)
   const showLiveIndicator = !!data.onParamChange && !!data.sessionId;
+
+  const [controlsExpanded, setControlsExpanded] = useState(() => expandedState.get(id) ?? false);
+  const toggleExpanded = useCallback(() => {
+    setControlsExpanded((prev) => {
+      const next = !prev;
+      expandedState.set(id, next);
+      return next;
+    });
+  }, [id]);
 
   const content = (
     <NodeFrame
@@ -311,25 +319,66 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(function Co
       sessionId={data.sessionId}
       isBidirectional={isBidirectional}
     >
-      {sliderConfigs.length > 0 && (
-        <SliderGroup>
-          {sliderConfigs.map(({ key, schema: schemaProp, min, max, step, tunable }) => (
-            <NumericSliderControl
-              key={key}
-              nodeId={id}
-              sessionId={data.sessionId}
-              paramKey={key}
-              schema={schemaProp}
-              min={min}
-              max={max}
-              step={step}
-              params={data.params}
-              onParamChange={data.onParamChange}
-              showLiveIndicator={showLiveIndicator}
-              isTunable={tunable}
-            />
-          ))}
-        </SliderGroup>
+      {hasControls && (
+        <>
+          <ControlsToggleBar
+            className="nodrag nopan"
+            onClick={toggleExpanded}
+            aria-expanded={controlsExpanded}
+            aria-label={`${controlsExpanded ? 'Hide' : 'Show'} ${controlCount} controls`}
+          >
+            <ChevronSvg
+              expanded={controlsExpanded}
+              width="8"
+              height="8"
+              viewBox="0 0 8 8"
+              fill="currentColor"
+            >
+              <path d="M2 1l4 3-4 3z" />
+            </ChevronSvg>
+            <span>
+              {controlCount} control{controlCount !== 1 ? 's' : ''}
+            </span>
+            {showLiveIndicator && <LiveDot size="small" aria-label="Live-tunable" />}
+          </ControlsToggleBar>
+          {controlsExpanded && (
+            <ControlGroup>
+              {toggleConfigs.map((config) => (
+                <BooleanToggleControl
+                  key={config.key}
+                  nodeId={id}
+                  sessionId={data.sessionId}
+                  config={config}
+                  params={data.params}
+                />
+              ))}
+              {sliderConfigs.map(({ key, path, schema: schemaProp, min, max, step }) => (
+                <NumericSliderControl
+                  key={key}
+                  nodeId={id}
+                  sessionId={data.sessionId}
+                  paramKey={key}
+                  path={path}
+                  schema={schemaProp}
+                  min={min}
+                  max={max}
+                  step={step}
+                  params={data.params}
+                  onParamChange={data.onParamChange}
+                />
+              ))}
+              {textConfigs.map((config) => (
+                <TextInputControl
+                  key={config.key}
+                  nodeId={id}
+                  sessionId={data.sessionId}
+                  config={config}
+                  params={data.params}
+                />
+              ))}
+            </ControlGroup>
+          )}
+        </>
       )}
 
       {totalParams > 0 ? (

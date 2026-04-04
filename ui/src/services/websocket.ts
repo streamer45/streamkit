@@ -36,6 +36,7 @@ type ConnectionAddedPayload = Extract<WsEventPayload, { event: 'connectionadded'
 type ConnectionRemovedPayload = Extract<WsEventPayload, { event: 'connectionremoved' }>;
 type NodeTelemetryPayload = Extract<WsEventPayload, { event: 'nodetelemetry' }>;
 type NodeViewDataUpdatedPayload = Extract<WsEventPayload, { event: 'nodeviewdataupdated' }>;
+type RuntimeSchemasUpdatedPayload = Extract<WsEventPayload, { event: 'runtimeschemasupdated' }>;
 
 interface PendingRequest {
   resolve: (response: Response) => void;
@@ -247,6 +248,9 @@ export class WebSocketService {
       case 'nodeviewdataupdated':
         this.handleNodeViewDataUpdated(payload);
         break;
+      case 'runtimeschemasupdated':
+        this.handleRuntimeSchemasUpdated(payload);
+        break;
       default:
         break;
     }
@@ -394,6 +398,11 @@ export class WebSocketService {
     writeNodeViewData(session_id, node_id, data);
     // Keep Zustand write for consumers not yet migrated to Jotai atoms.
     useSessionStore.getState().updateNodeViewData(session_id, node_id, data);
+  }
+
+  private handleRuntimeSchemasUpdated(payload: RuntimeSchemasUpdatedPayload): void {
+    const { session_id, node_id, schema } = payload;
+    useSessionStore.getState().updateRuntimeSchema(session_id, node_id, schema);
   }
 
   private handleNodeTelemetry(payload: NodeTelemetryPayload): void {

@@ -48,6 +48,7 @@ import { useReactFlowCommon } from '@/hooks/useReactFlowCommon';
 import { useResolvedColorMode } from '@/hooks/useResolvedColorMode';
 import { useSession } from '@/hooks/useSession';
 import { useSessionList } from '@/hooks/useSessionList';
+import { useTuneNode } from '@/hooks/useTuneNode';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { getWebSocketService } from '@/services/websocket';
 import { useLayoutStore } from '@/stores/layoutStore';
@@ -69,9 +70,11 @@ import type {
   InputPin,
   OutputPin,
 } from '@/types/types';
+import { dispatchParamUpdate } from '@/utils/controlProps';
 import { topoLevelsFromPipeline, orderedNamesFromLevels } from '@/utils/dag';
 import { deepEqual } from '@/utils/deepEqual';
-import { validateValue } from '@/utils/jsonSchema';
+import { deepMergeSchemas, validateValue } from '@/utils/jsonSchema';
+import type { JsonSchema, JsonSchemaProperty } from '@/utils/jsonSchema';
 import { viewsLogger } from '@/utils/logger';
 import {
   buildEdgesFromConnections,
@@ -382,6 +385,11 @@ const MonitorViewContent: React.FC = () => {
     disconnectPins,
   } = useSession(selectedSessionId);
 
+  // Lightweight hook for dot-notation path updates: deep-merges locally
+  // into the atom and sends only the partial to the server (unlike
+  // useSession.tuneNodeConfig which shallow-merges and sends as-is).
+  const { tuneNodeConfig: tuneNodeConfigDeep } = useTuneNode(selectedSessionId);
+
   // Use session-specific connection status if a session is selected, otherwise use global
   const isConnected = selectedSessionId ? sessionIsConnected : globalIsConnected;
 
@@ -406,7 +414,14 @@ const MonitorViewContent: React.FC = () => {
     const conns = pipeline.connections
       .map((c: Connection) => `${c.from_node}:${c.from_pin}>${c.to_node}:${c.to_pin}`)
       .sort();
-    const key = JSON.stringify([kinds, conns]);
+    // Include runtime schema keys so topology rebuilds when schemas arrive
+    // after the initial build (e.g. Slint property discovery).
+    // NOTE: Only keys are tracked, not content.  If a schema's content changed
+    // for an existing key (hot-reload), the effect would NOT re-run.  This is
+    // intentional — runtime_param_schema() is documented as immutable for the
+    // node's lifetime (see crates/core ProcessorNode trait docs).
+    const runtimeKeys = Object.keys(pipeline.runtime_schemas ?? {}).sort();
+    const key = JSON.stringify([kinds, conns, runtimeKeys]);
     viewsLogger.debug('topoKey recalculated:', key.substring(0, 100));
     return key;
   }, [pipeline]);
@@ -455,7 +470,15 @@ const MonitorViewContent: React.FC = () => {
     }
   }, [selectedSessionId, selectedSession, isLoadingSessions]);
 
-  // Helper to validate parameter value against schema
+  // Helper to validate parameter value against schema.
+  // Uses the runtime-merged schema when available so that dynamically
+  // discovered parameters are validated correctly.
+  //
+  // Runtime-discovered properties (e.g. from Slint) are stored as flat
+  // keys in the merged schema (e.g. "show") with a `path` field containing
+  // the dot-notation wire path (e.g. "properties.show").  When paramKey is
+  // a dot-path, we search for a property whose `path` matches before
+  // falling back to a flat key lookup.
   const validateParamValue = useCallback(
     (nodeId: string, paramKey: string, value: unknown): string | null => {
       const node = pipeline?.nodes[nodeId];
@@ -464,15 +487,28 @@ const MonitorViewContent: React.FC = () => {
       const nodeDef = nodeDefinitions.find((d) => d.kind === node.kind);
       if (!nodeDef) return null;
 
-      const schema = nodeDef.param_schema as
-        | {
-            properties?: Record<
-              string,
-              { type?: string; minimum?: number; maximum?: number; multipleOf?: number }
-            >;
+      // Merge runtime schema (if any) so dynamically discovered properties
+      // are included in validation.
+      const runtimeSchema = pipeline?.runtime_schemas?.[nodeId] as JsonSchema | undefined;
+      const baseSchema = nodeDef.param_schema as JsonSchema | undefined;
+      const merged = runtimeSchema ? deepMergeSchemas(baseSchema, runtimeSchema) : baseSchema;
+      if (!merged?.properties) return null;
+
+      // 1. Direct flat-key lookup (works for simple keys like "gain_db").
+      let propSchema = merged.properties[paramKey] as JsonSchemaProperty | undefined;
+
+      // 2. If paramKey is a dot-path (e.g. "properties.show"), search for a
+      //    schema property whose `path` field matches.  Runtime-discovered
+      //    properties use this pattern.
+      if (!propSchema && paramKey.includes('.')) {
+        for (const entry of Object.values(merged.properties)) {
+          if (entry && (entry as JsonSchemaProperty).path === paramKey) {
+            propSchema = entry as JsonSchemaProperty;
+            break;
           }
-        | undefined;
-      const propSchema = schema?.properties?.[paramKey];
+        }
+      }
+
       if (!propSchema) return null;
 
       return validateValue(value, propSchema);
@@ -498,9 +534,11 @@ const MonitorViewContent: React.FC = () => {
         return;
       }
 
-      tuneNode(nodeId, key, value);
+      // Dot-notation paths need nested payload (same deep-merge logic as
+      // stableOnParamChange — see comment there for details).
+      dispatchParamUpdate(nodeId, key, value, tuneNode, tuneNodeConfigDeep);
     },
-    [toast, tuneNode]
+    [toast, tuneNode, tuneNodeConfigDeep]
   );
 
   // Memoized label change handler (currently no-op)
@@ -842,19 +880,32 @@ const MonitorViewContent: React.FC = () => {
           : null) ?? apiNode.state;
 
       // Get base pins from definition and resolve dynamic pins
-      const baseInputs = defByKind.get(apiNode.kind)?.inputs ?? [];
-      const baseOutputs = defByKind.get(apiNode.kind)?.outputs ?? [];
-      const nodeDefinition = defByKind.get(apiNode.kind);
+      const nodeDef = defByKind.get(apiNode.kind);
+      const baseInputs = nodeDef?.inputs ?? [];
+      const baseOutputs = nodeDef?.outputs ?? [];
 
       const { finalInputs, finalOutputs } = resolveDynamicPins(
-        nodeDefinition,
+        nodeDef,
         nodeName,
         pipeline,
         baseInputs,
         baseOutputs
       );
 
-      const nodeDef = defByKind.get(apiNode.kind);
+      // Merge runtime param schema (if any) with the static per-kind schema.
+      // Runtime schemas are per-instance overrides discovered after node init
+      // (e.g. Slint component properties enumerated from the compiled .slint).
+      const runtimeSchema = pipeline.runtime_schemas?.[nodeName] as JsonSchema | undefined;
+      const effectiveNodeDef =
+        runtimeSchema && nodeDef
+          ? {
+              ...nodeDef,
+              param_schema: deepMergeSchemas(
+                nodeDef.param_schema as JsonSchema | undefined,
+                runtimeSchema
+              ),
+            }
+          : nodeDef;
 
       // Build node object using helper function
       const node = buildNodeObject({
@@ -864,7 +915,7 @@ const MonitorViewContent: React.FC = () => {
         nodeState,
         finalInputs,
         finalOutputs,
-        nodeDef,
+        nodeDef: effectiveNodeDef,
         stableOnParamChange,
         stableOnConfigChange,
         selectedSessionId,
@@ -902,9 +953,13 @@ const MonitorViewContent: React.FC = () => {
         return;
       }
 
-      tuneNode(nodeId, paramName, value);
+      // Dot-notation paths (e.g. "properties.show") need buildParamUpdate to
+      // produce the correct nested UpdateParams payload.  tuneNodeConfigDeep
+      // deep-merges locally into the atom (preserving sibling nested
+      // properties) and sends only the partial to the server.
+      dispatchParamUpdate(nodeId, paramName, value, tuneNode, tuneNodeConfigDeep);
     },
-    [toast, tuneNode]
+    [toast, tuneNode, tuneNodeConfigDeep]
   );
 
   // Stable callback for full-config updates (compositor nodes).

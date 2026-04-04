@@ -10,7 +10,9 @@ use streamkit_plugin_sdk_native::streamkit_core::types::{
 };
 
 use crate::config::SlintConfig;
-use crate::slint_thread::{send_work, NodeId, SlintThreadResult, SlintWorkItem};
+use crate::slint_thread::{
+    send_work, DiscoveredProperty, DiscoveredValueType, NodeId, SlintThreadResult, SlintWorkItem,
+};
 
 /// Slint UI video source plugin.
 ///
@@ -24,6 +26,9 @@ pub struct SlintSourcePlugin {
     tick_count: u64,
     duration_us: u64,
     logger: Logger,
+    /// Properties discovered from the compiled `.slint` component at init.
+    /// Used to build the runtime param schema so the UI can render controls.
+    discovered_properties: Vec<DiscoveredProperty>,
 }
 
 impl NativeSourceNode for SlintSourcePlugin {
@@ -135,6 +140,7 @@ impl NativeSourceNode for SlintSourcePlugin {
                 tick_count: 0,
                 duration_us: 1_000_000 / 30,
                 logger,
+                discovered_properties: Vec::new(),
             });
         };
 
@@ -163,21 +169,26 @@ impl NativeSourceNode for SlintSourcePlugin {
 
         // Wait for init result.
         match result_rx.recv() {
-            Ok(SlintThreadResult::InitOk) => {
+            Ok(SlintThreadResult::InitOk { properties }) => {
                 plugin_info!(logger, "Slint instance registered: {node_id}");
+                Ok(Self {
+                    config,
+                    node_id,
+                    result_rx,
+                    tick_count: 0,
+                    duration_us,
+                    logger,
+                    discovered_properties: properties,
+                })
             },
             Ok(SlintThreadResult::InitErr(e)) => {
-                return Err(format!("Slint instance creation failed: {e}"));
+                Err(format!("Slint instance creation failed: {e}"))
             },
             Ok(SlintThreadResult::Frame { .. }) => {
-                return Err("Unexpected frame result during init".to_string());
+                Err("Unexpected frame result during init".to_string())
             },
-            Err(_) => {
-                return Err("Shared Slint thread channel closed during init".to_string());
-            },
+            Err(_) => Err("Shared Slint thread channel closed during init".to_string()),
         }
-
-        Ok(Self { config, node_id, result_rx, tick_count: 0, duration_us, logger })
     }
 
     fn tick(&mut self, output: &OutputSender) -> Result<bool, String> {
@@ -236,5 +247,40 @@ impl NativeSourceNode for SlintSourcePlugin {
     fn cleanup(&mut self) {
         let _ = send_work(SlintWorkItem::Unregister { node_id: self.node_id });
         plugin_info!(self.logger, "Slint instance unregistered: {}", self.node_id);
+    }
+
+    fn runtime_param_schema(&self) -> Option<serde_json::Value> {
+        if self.discovered_properties.is_empty() {
+            return None;
+        }
+
+        let mut props = serde_json::Map::new();
+        for dp in &self.discovered_properties {
+            let type_str = match dp.value_type {
+                DiscoveredValueType::Bool => "boolean",
+                DiscoveredValueType::Number => "number",
+                DiscoveredValueType::String => "string",
+            };
+
+            let mut schema = serde_json::json!({
+                "type": type_str,
+                "tunable": true,
+                "path": format!("properties.{}", dp.name),
+                "description": format!("Slint property: {}", dp.name),
+            });
+
+            // Include the initial value from the component so the UI can
+            // show the correct default state (e.g. a toggle that starts on).
+            if let Some(ref initial) = dp.initial_value {
+                schema["default"] = initial.clone();
+            }
+
+            props.insert(dp.name.clone(), schema);
+        }
+
+        Some(serde_json::json!({
+            "type": "object",
+            "properties": props,
+        }))
     }
 }

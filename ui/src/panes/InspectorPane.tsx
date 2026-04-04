@@ -11,6 +11,8 @@ import { SKTooltip } from '@/components/Tooltip';
 import { CheckboxWithLabel } from '@/components/ui/Checkbox';
 import { nodeParamsAtom } from '@/stores/sessionAtoms';
 import type { NodeDefinition, InputPin, OutputPin, PacketType } from '@/types/types';
+import { readByPath } from '@/utils/controlProps';
+import type { JsonSchema, JsonSchemaProperty } from '@/utils/jsonSchema';
 import {
   formatPacketType,
   getPacketTypeColor,
@@ -18,22 +20,6 @@ import {
   getPinCardinalityIcon,
   getPinCardinalityDescription,
 } from '@/utils/packetTypes';
-
-interface JsonSchemaProperty {
-  type?: string;
-  description?: string;
-  default?: unknown;
-  minimum?: number;
-  maximum?: number;
-  exclusiveMinimum?: number;
-  exclusiveMaximum?: number;
-  multipleOf?: number;
-  tunable?: boolean;
-}
-
-interface JsonSchema {
-  properties?: Record<string, JsonSchemaProperty>;
-}
 
 const PaneWrapper = styled.div`
   display: flex;
@@ -274,14 +260,24 @@ const InspectorPane: React.FC<InspectorPaneProps> = ({
   const paramsKey = node.data.sessionId ? `${node.data.sessionId}\0${node.id}` : node.id;
   const nodeParams = useAtomValue(nodeParamsAtom(paramsKey));
 
-  const handleInputChange = (key: string, value: unknown) => {
-    onParamChange(node.id, key, value);
+  const handleInputChange = (key: string, value: unknown, schema?: JsonSchemaProperty) => {
+    // When a schema has a `path` override, build the nested payload and
+    // route it through onParamChange so it works in both Monitor view
+    // (where onParamChange → tuneNode) and design view (where
+    // onParamChange → onConfigChange).  The path is passed as the
+    // paramName so the caller can build the correct UpdateParams.
+    if (schema?.path) {
+      onParamChange(node.id, schema.path, value);
+    } else {
+      onParamChange(node.id, key, value);
+    }
   };
 
   const renderField = (key: string, schema: JsonSchemaProperty) => {
+    const readPath = schema.path ?? key;
     const currentValue =
-      (nodeParams as Record<string, unknown>)[key] ??
-      node.data.params?.[key] ??
+      readByPath(nodeParams as Record<string, unknown>, readPath) ??
+      readByPath((node.data.params ?? {}) as Record<string, unknown>, readPath) ??
       schema.default ??
       '';
     const inputId = `param-${node.id}-${key}`;
@@ -297,7 +293,7 @@ const InspectorPane: React.FC<InspectorPaneProps> = ({
             schema={schema}
             paramKey={key}
             readOnly={isDisabled}
-            onChange={(v) => handleInputChange(key, v)}
+            onChange={(v) => handleInputChange(key, v, schema)}
           />
         );
       case 'number':
@@ -308,7 +304,7 @@ const InspectorPane: React.FC<InspectorPaneProps> = ({
             value={currentValue}
             schema={schema}
             readOnly={isDisabled}
-            onChange={(v) => handleInputChange(key, v)}
+            onChange={(v) => handleInputChange(key, v, schema)}
           />
         );
       case 'boolean':
@@ -318,7 +314,7 @@ const InspectorPane: React.FC<InspectorPaneProps> = ({
             value={currentValue}
             schema={schema}
             readOnly={isDisabled}
-            onChange={(v) => handleInputChange(key, v)}
+            onChange={(v) => handleInputChange(key, v, schema)}
           />
         );
       default:
@@ -328,7 +324,7 @@ const InspectorPane: React.FC<InspectorPaneProps> = ({
             value={currentValue}
             schema={schema}
             readOnly={isDisabled}
-            onChange={(v) => handleInputChange(key, v)}
+            onChange={(v) => handleInputChange(key, v, schema)}
           />
         );
     }

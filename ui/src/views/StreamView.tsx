@@ -35,6 +35,7 @@ import { getApiUrl } from '@/services/base';
 import { listDynamicSamples } from '@/services/samples';
 import { createSession } from '@/services/sessions';
 import { useSchemaStore, ensureSchemasLoaded } from '@/stores/schemaStore';
+import { useSessionStore } from '@/stores/sessionStore';
 import type { Event } from '@/types/types';
 import { getLogger } from '@/utils/logger';
 import { extractMoqPeerSettings, applyMoqSettings } from '@/utils/moqPeerSettings';
@@ -604,6 +605,20 @@ const StreamView: React.FC = () => {
     useVideoCanvas(videoRenderer);
   const { muted, volume, toggleMute, changeVolume } = useAudioControls(audioEmitter);
 
+  // Read the pipeline (including runtime_schemas) from the session store,
+  // which is kept up-to-date by WebSocket events (RuntimeSchemasUpdated).
+  // This replaces the previous one-shot REST fetch with a 1.5s delay that
+  // could miss late-arriving schemas.
+  const livePipeline = useSessionStore(
+    useCallback(
+      (s) => {
+        if (!activeSessionId) return null;
+        return s.sessions.get(activeSessionId)?.pipeline ?? null;
+      },
+      [activeSessionId]
+    )
+  );
+
   // Validate active session still exists when navigating to this view
   useEffect(() => {
     const validateSession = async () => {
@@ -1059,7 +1074,11 @@ const StreamView: React.FC = () => {
           </Section>
 
           {activeSessionId && viewState.pipelineYaml && (
-            <OverlayControls pipelineYaml={viewState.pipelineYaml} sessionId={activeSessionId} />
+            <OverlayControls
+              pipelineYaml={viewState.pipelineYaml}
+              sessionId={activeSessionId}
+              pipeline={livePipeline}
+            />
           )}
 
           {isStreaming && videoRenderer && !msePath && (

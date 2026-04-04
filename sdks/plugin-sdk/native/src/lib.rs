@@ -328,6 +328,19 @@ pub trait NativeProcessorNode: Sized + Send + 'static {
 
     /// Clean up resources (optional)
     fn cleanup(&mut self) {}
+
+    /// Return a runtime-discovered param schema after initialization (optional).
+    ///
+    /// Plugins whose tunable parameters depend on runtime configuration
+    /// (e.g., properties discovered after compiling a `.slint` file) can
+    /// override this to return a JSON Schema fragment.  The engine will
+    /// deep-merge it with the static `param_schema` from metadata and
+    /// deliver the enriched schema to the UI.
+    ///
+    /// Default: `None` (use static schema only).
+    fn runtime_param_schema(&self) -> Option<serde_json::Value> {
+        None
+    }
 }
 
 /// Configuration for a source node's tick loop.
@@ -432,6 +445,19 @@ pub trait NativeSourceNode: Sized + Send + 'static {
 
     /// Clean up resources (optional).
     fn cleanup(&mut self) {}
+
+    /// Return a runtime-discovered param schema after initialization (optional).
+    ///
+    /// Source plugins whose tunable parameters depend on runtime configuration
+    /// (e.g., properties discovered after compiling a `.slint` file) can
+    /// override this to return a JSON Schema fragment.  The engine will
+    /// deep-merge it with the static `param_schema` from metadata and
+    /// deliver the enriched schema to the UI.
+    ///
+    /// Default: `None` (use static schema only).
+    fn runtime_param_schema(&self) -> Option<serde_json::Value> {
+        None
+    }
 }
 
 /// Optional trait for plugins that need shared resource management (e.g., ML models).
@@ -512,6 +538,52 @@ pub trait ResourceSupport: NativeProcessorNode {
     }
 }
 
+/// Internal helper macro: generates `__plugin_get_runtime_param_schema` and
+/// `__plugin_destroy_instance` trampolines.  Shared by both
+/// `native_plugin_entry!` and `native_source_plugin_entry!` to avoid
+/// identical duplicated implementations.
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __plugin_shared_ffi {
+    ($plugin_type:ty) => {
+        extern "C" fn __plugin_get_runtime_param_schema(
+            handle: $crate::types::CPluginHandle,
+        ) -> $crate::types::CSchemaResult {
+            if handle.is_null() {
+                return $crate::types::CSchemaResult::none();
+            }
+
+            let instance = unsafe { &*(handle as *const $plugin_type) };
+            match instance.runtime_param_schema() {
+                None => $crate::types::CSchemaResult::none(),
+                Some(schema) => match serde_json::to_string(&schema) {
+                    Ok(json) => {
+                        // NOTE: error_to_c is a misnomer here — it's a generic
+                        // "String → thread-local CString" helper reused for the
+                        // success payload.  A rename to e.g. `thread_local_c_str`
+                        // would clarify intent but touches many call-sites.
+                        let c_str = $crate::conversions::error_to_c(json);
+                        $crate::types::CSchemaResult::schema(c_str)
+                    },
+                    Err(e) => {
+                        let err_msg = $crate::conversions::error_to_c(format!(
+                            "Failed to serialize runtime param schema: {e}"
+                        ));
+                        $crate::types::CSchemaResult::error(err_msg)
+                    },
+                },
+            }
+        }
+
+        extern "C" fn __plugin_destroy_instance(handle: $crate::types::CPluginHandle) {
+            if !handle.is_null() {
+                let mut instance = unsafe { Box::from_raw(handle as *mut $plugin_type) };
+                instance.cleanup();
+            }
+        }
+    };
+}
+
 /// Macro to generate C ABI exports for a plugin
 ///
 /// This macro should be called once per plugin with the type that implements
@@ -564,6 +636,7 @@ macro_rules! native_plugin_entry {
                 destroy_instance: __plugin_destroy_instance,
                 get_source_config: None,
                 tick: None,
+                get_runtime_param_schema: Some(__plugin_get_runtime_param_schema),
             };
             &API
         }
@@ -1024,12 +1097,7 @@ macro_rules! native_plugin_entry {
             }
         }
 
-        extern "C" fn __plugin_destroy_instance(handle: $crate::types::CPluginHandle) {
-            if !handle.is_null() {
-                let mut instance = unsafe { Box::from_raw(handle as *mut $plugin_type) };
-                instance.cleanup();
-            }
-        }
+        $crate::__plugin_shared_ffi!($plugin_type);
     };
 }
 
@@ -1091,6 +1159,7 @@ macro_rules! native_source_plugin_entry {
                 destroy_instance: __plugin_destroy_instance,
                 get_source_config: Some(__plugin_get_source_config),
                 tick: Some(__plugin_tick),
+                get_runtime_param_schema: Some(__plugin_get_runtime_param_schema),
             };
             &API
         }
@@ -1553,11 +1622,6 @@ macro_rules! native_source_plugin_entry {
             }
         }
 
-        extern "C" fn __plugin_destroy_instance(handle: $crate::types::CPluginHandle) {
-            if !handle.is_null() {
-                let mut instance = unsafe { Box::from_raw(handle as *mut $plugin_type) };
-                instance.cleanup();
-            }
-        }
+        $crate::__plugin_shared_ffi!($plugin_type);
     };
 }

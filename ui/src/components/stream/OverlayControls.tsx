@@ -8,9 +8,12 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Section, SectionTitle } from '@/components/ui/ViewLayout';
 import { useTuneNode } from '@/hooks/useTuneNode';
-import type { ControlConfig } from '@/types/types';
+import { useSchemaStore } from '@/stores/schemaStore';
+import type { ControlConfig, Pipeline } from '@/types/types';
 import { parseClientFromYaml } from '@/utils/clientSection';
 import { buildParamUpdate } from '@/utils/controlProps';
+import { deepMergeSchemas, schemaToControlConfigs } from '@/utils/jsonSchema';
+import type { JsonSchema } from '@/utils/jsonSchema';
 
 // ---------------------------------------------------------------------------
 // Props
@@ -19,6 +22,10 @@ import { buildParamUpdate } from '@/utils/controlProps';
 interface OverlayControlsProps {
   pipelineYaml: string;
   sessionId: string;
+  /** Live pipeline object (from REST API).  When provided, schema-driven
+   *  controls are generated from `runtime_schemas` so Stream View and
+   *  Monitor View render the same set of controls. */
+  pipeline?: Pipeline | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -330,14 +337,50 @@ function groupControls(controls: ControlConfig[]): Map<string | null, ControlCon
   return groups;
 }
 
-const OverlayControls: React.FC<OverlayControlsProps> = ({ pipelineYaml, sessionId }) => {
+const OverlayControls: React.FC<OverlayControlsProps> = ({ pipelineYaml, sessionId, pipeline }) => {
   const { tuneNodeConfig } = useTuneNode(sessionId);
+  const nodeDefinitions = useSchemaStore((s) => s.nodeDefinitions);
 
   // Parse controls from the pipeline YAML's client section.
-  const controls: ControlConfig[] = useMemo(
+  const yamlControls: ControlConfig[] = useMemo(
     () => parseClientFromYaml(pipelineYaml)?.controls ?? [],
     [pipelineYaml]
   );
+
+  // Generate schema-driven controls from runtime_schemas (same source as
+  // Monitor View) and merge with YAML controls.  YAML controls take
+  // precedence when they target the same node+property — they carry
+  // hand-authored labels, groups, and range overrides.
+  const controls: ControlConfig[] = useMemo(() => {
+    if (!pipeline?.runtime_schemas) return yamlControls;
+
+    // Build a set of node:property keys already covered by YAML controls
+    const yamlKeys = new Set(yamlControls.map((c) => `${c.node}:${c.property}`));
+
+    const schemaControls: ControlConfig[] = [];
+    for (const [nodeId, rawSchema] of Object.entries(pipeline.runtime_schemas)) {
+      const runtimeSchema = rawSchema as JsonSchema | undefined;
+      if (!runtimeSchema) continue;
+
+      // Merge with static param_schema (if any) from node registry
+      const node = pipeline.nodes[nodeId];
+      const nodeDef = node ? nodeDefinitions.find((d) => d.kind === node.kind) : undefined;
+      const baseSchema = nodeDef?.param_schema as JsonSchema | undefined;
+      const merged = deepMergeSchemas(baseSchema, runtimeSchema);
+
+      // Convert tunable properties to ControlConfig entries
+      const generated = schemaToControlConfigs(nodeId, merged, nodeId);
+      for (const ctrl of generated) {
+        const key = `${ctrl.node}:${ctrl.property}`;
+        if (!yamlKeys.has(key)) {
+          schemaControls.push(ctrl);
+          yamlKeys.add(key); // prevent duplicates within runtime schemas
+        }
+      }
+    }
+
+    return [...yamlControls, ...schemaControls];
+  }, [yamlControls, pipeline, nodeDefinitions]);
 
   // Build a send callback for a control. A new closure is created per
   // render, but child controls absorb this via onSendRef so it is safe.

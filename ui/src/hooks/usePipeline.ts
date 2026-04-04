@@ -12,8 +12,10 @@ import {
   sessionStore as defaultSessionStore,
   nodeParamsAtom,
   writeNodeParam,
+  writeNodeParams,
   clearNodeParams,
 } from '@/stores/sessionAtoms';
+import { dispatchParamUpdate } from '@/utils/controlProps';
 import { hooksLogger } from '@/utils/logger';
 import { parseYamlToPipeline, type EngineMode } from '@/utils/yamlPipeline';
 
@@ -104,7 +106,13 @@ export const usePipeline = () => {
   const regenerateYamlRef = useRef<() => void>(() => {});
 
   const handleParamChange = useCallback((nodeId: string, paramName: string, value: unknown) => {
-    writeNodeParam(nodeId, paramName, value);
+    // Dot-notation paths (e.g. "properties.score") need to be stored as
+    // nested objects so readByPath can find them.  Flat keys use the
+    // simple writeNodeParam helper.
+    dispatchParamUpdate(nodeId, paramName, value, writeNodeParam, (nid, config) => {
+      // writeNodeParams handles the deep-merge internally.
+      writeNodeParams(nid, config);
+    });
     // Keep the YAML editor in sync with param changes made via the canvas
     // (e.g. compositor layer drag / slider). The guard prevents a feedback
     // loop when YAML editing triggers parseYamlToPipeline which stores the

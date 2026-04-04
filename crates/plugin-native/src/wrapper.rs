@@ -201,6 +201,40 @@ impl ProcessorNode for NativeNodeWrapper {
         self.metadata.outputs.clone()
     }
 
+    fn runtime_param_schema(&self) -> Option<serde_json::Value> {
+        let get_schema = self.state.api().get_runtime_param_schema?;
+        let handle = self.state.begin_call()?;
+
+        let result = get_schema(handle);
+
+        if !result.success {
+            // FFI call failed — log and return None.
+            if !result.error_message.is_null() {
+                let msg = unsafe { conversions::c_str_to_string(result.error_message) }
+                    .unwrap_or_default();
+                warn!(error = %msg, "Plugin runtime_param_schema failed");
+            }
+            self.state.finish_call();
+            return None;
+        }
+
+        // success=true, null json_schema → plugin has no runtime schema.
+        if result.json_schema.is_null() {
+            self.state.finish_call();
+            return None;
+        }
+
+        // success=true, non-null json_schema → JSON string containing the schema.
+        // SAFETY: result.json_schema points to a thread-local CString set by
+        // error_to_c (used here as a generic "String → *const c_char" helper).
+        // We must copy the string BEFORE any other FFI call on this thread
+        // (including finish_call) that could invoke error_to_c again and
+        // overwrite the thread-local buffer.
+        let json_str = unsafe { conversions::c_str_to_string(result.json_schema) }.ok();
+        self.state.finish_call();
+        json_str.and_then(|s| serde_json::from_str(&s).ok())
+    }
+
     // The run method is complex by necessity - it's an async actor managing FFI calls,
     // control messages, and packet processing. Breaking it up would make the logic harder to follow.
     #[allow(clippy::too_many_lines)]

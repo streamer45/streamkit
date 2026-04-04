@@ -405,6 +405,29 @@ pub trait ProcessorNode: Send + Sync {
         Ok(PinUpdate::NoChange)
     }
 
+    /// Return a runtime-discovered param schema after initialization.
+    ///
+    /// Plugins whose tunable parameters depend on runtime configuration
+    /// (e.g., properties discovered after compiling a `.slint` file) can
+    /// override this to return a JSON Schema fragment.  The engine will
+    /// deep-merge it with the static `param_schema` from registration
+    /// and deliver the enriched schema to the UI.
+    ///
+    /// The returned value should be a JSON Schema `"type": "object"` with
+    /// a `"properties"` map.  Each property can include `"tunable": true`
+    /// and an optional `"path"` override for dot-notation addressing.
+    ///
+    /// **Called once** — the engine queries this immediately after
+    /// [`initialize`](Self::initialize) and caches the result for the
+    /// lifetime of the node.  There is currently no mechanism to refresh
+    /// the schema at runtime; if the underlying configuration changes
+    /// (e.g. a different `.slint` file), the node must be re-created.
+    ///
+    /// Default: `None` (use static schema only).
+    fn runtime_param_schema(&self) -> Option<serde_json::Value> {
+        None
+    }
+
     /// Tier 2: Runtime pin management capability.
     ///
     /// Returns true if this node supports adding/removing pins while running.
