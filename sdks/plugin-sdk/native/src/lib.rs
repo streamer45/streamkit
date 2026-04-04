@@ -538,6 +538,48 @@ pub trait ResourceSupport: NativeProcessorNode {
     }
 }
 
+/// Internal helper macro: generates `__plugin_get_runtime_param_schema` and
+/// `__plugin_destroy_instance` trampolines.  Shared by both
+/// `native_plugin_entry!` and `native_source_plugin_entry!` to avoid
+/// identical duplicated implementations.
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __plugin_shared_ffi {
+    ($plugin_type:ty) => {
+        extern "C" fn __plugin_get_runtime_param_schema(
+            handle: $crate::types::CPluginHandle,
+        ) -> $crate::types::CSchemaResult {
+            if handle.is_null() {
+                return $crate::types::CSchemaResult::none();
+            }
+
+            let instance = unsafe { &*(handle as *const $plugin_type) };
+            match instance.runtime_param_schema() {
+                None => $crate::types::CSchemaResult::none(),
+                Some(schema) => match serde_json::to_string(&schema) {
+                    Ok(json) => {
+                        let c_str = $crate::conversions::error_to_c(json);
+                        $crate::types::CSchemaResult::schema(c_str)
+                    },
+                    Err(e) => {
+                        let err_msg = $crate::conversions::error_to_c(format!(
+                            "Failed to serialize runtime param schema: {e}"
+                        ));
+                        $crate::types::CSchemaResult::error(err_msg)
+                    },
+                },
+            }
+        }
+
+        extern "C" fn __plugin_destroy_instance(handle: $crate::types::CPluginHandle) {
+            if !handle.is_null() {
+                let mut instance = unsafe { Box::from_raw(handle as *mut $plugin_type) };
+                instance.cleanup();
+            }
+        }
+    };
+}
+
 /// Macro to generate C ABI exports for a plugin
 ///
 /// This macro should be called once per plugin with the type that implements
@@ -1051,37 +1093,7 @@ macro_rules! native_plugin_entry {
             }
         }
 
-        extern "C" fn __plugin_get_runtime_param_schema(
-            handle: $crate::types::CPluginHandle,
-        ) -> $crate::types::CSchemaResult {
-            if handle.is_null() {
-                return $crate::types::CSchemaResult::none();
-            }
-
-            let instance = unsafe { &*(handle as *const $plugin_type) };
-            match instance.runtime_param_schema() {
-                None => $crate::types::CSchemaResult::none(),
-                Some(schema) => match serde_json::to_string(&schema) {
-                    Ok(json) => {
-                        let c_str = $crate::conversions::error_to_c(json);
-                        $crate::types::CSchemaResult::schema(c_str)
-                    },
-                    Err(e) => {
-                        let err_msg = $crate::conversions::error_to_c(format!(
-                            "Failed to serialize runtime param schema: {e}"
-                        ));
-                        $crate::types::CSchemaResult::error(err_msg)
-                    },
-                },
-            }
-        }
-
-        extern "C" fn __plugin_destroy_instance(handle: $crate::types::CPluginHandle) {
-            if !handle.is_null() {
-                let mut instance = unsafe { Box::from_raw(handle as *mut $plugin_type) };
-                instance.cleanup();
-            }
-        }
+        $crate::__plugin_shared_ffi!($plugin_type);
     };
 }
 
@@ -1606,36 +1618,6 @@ macro_rules! native_source_plugin_entry {
             }
         }
 
-        extern "C" fn __plugin_get_runtime_param_schema(
-            handle: $crate::types::CPluginHandle,
-        ) -> $crate::types::CSchemaResult {
-            if handle.is_null() {
-                return $crate::types::CSchemaResult::none();
-            }
-
-            let instance = unsafe { &*(handle as *const $plugin_type) };
-            match instance.runtime_param_schema() {
-                None => $crate::types::CSchemaResult::none(),
-                Some(schema) => match serde_json::to_string(&schema) {
-                    Ok(json) => {
-                        let c_str = $crate::conversions::error_to_c(json);
-                        $crate::types::CSchemaResult::schema(c_str)
-                    },
-                    Err(e) => {
-                        let err_msg = $crate::conversions::error_to_c(format!(
-                            "Failed to serialize runtime param schema: {e}"
-                        ));
-                        $crate::types::CSchemaResult::error(err_msg)
-                    },
-                },
-            }
-        }
-
-        extern "C" fn __plugin_destroy_instance(handle: $crate::types::CPluginHandle) {
-            if !handle.is_null() {
-                let mut instance = unsafe { Box::from_raw(handle as *mut $plugin_type) };
-                instance.cleanup();
-            }
-        }
+        $crate::__plugin_shared_ffi!($plugin_type);
     };
 }

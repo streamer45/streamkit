@@ -416,6 +416,10 @@ const MonitorViewContent: React.FC = () => {
       .sort();
     // Include runtime schema keys so topology rebuilds when schemas arrive
     // after the initial build (e.g. Slint property discovery).
+    // NOTE: Only keys are tracked, not content.  If a schema's content changed
+    // for an existing key (hot-reload), the effect would NOT re-run.  This is
+    // intentional — runtime_param_schema() is documented as immutable for the
+    // node's lifetime (see crates/core ProcessorNode trait docs).
     const runtimeKeys = Object.keys(pipeline.runtime_schemas ?? {}).sort();
     const key = JSON.stringify([kinds, conns, runtimeKeys]);
     viewsLogger.debug('topoKey recalculated:', key.substring(0, 100));
@@ -855,19 +859,17 @@ const MonitorViewContent: React.FC = () => {
           : null) ?? apiNode.state;
 
       // Get base pins from definition and resolve dynamic pins
-      const baseInputs = defByKind.get(apiNode.kind)?.inputs ?? [];
-      const baseOutputs = defByKind.get(apiNode.kind)?.outputs ?? [];
-      const nodeDefinition = defByKind.get(apiNode.kind);
+      const nodeDef = defByKind.get(apiNode.kind);
+      const baseInputs = nodeDef?.inputs ?? [];
+      const baseOutputs = nodeDef?.outputs ?? [];
 
       const { finalInputs, finalOutputs } = resolveDynamicPins(
-        nodeDefinition,
+        nodeDef,
         nodeName,
         pipeline,
         baseInputs,
         baseOutputs
       );
-
-      const nodeDef = defByKind.get(apiNode.kind);
 
       // Merge runtime param schema (if any) with the static per-kind schema.
       // Runtime schemas are per-instance overrides discovered after node init

@@ -205,9 +205,7 @@ impl ProcessorNode for NativeNodeWrapper {
         let get_schema = self.state.api().get_runtime_param_schema?;
         let handle = self.state.begin_call()?;
 
-        let _lib = Arc::clone(&self.state.library);
         let result = get_schema(handle);
-        self.state.finish_call();
 
         if !result.success {
             // FFI call failed — log and return None.
@@ -216,17 +214,20 @@ impl ProcessorNode for NativeNodeWrapper {
                     .unwrap_or_default();
                 warn!(error = %msg, "Plugin runtime_param_schema failed");
             }
+            self.state.finish_call();
             return None;
         }
 
         // success=true, null json_schema → plugin has no runtime schema.
         if result.json_schema.is_null() {
+            self.state.finish_call();
             return None;
         }
 
         // success=true, non-null json_schema → JSON string containing the schema.
-        let json_str = unsafe { conversions::c_str_to_string(result.json_schema) }.ok()?;
-        serde_json::from_str(&json_str).ok()
+        let json_str = unsafe { conversions::c_str_to_string(result.json_schema) }.ok();
+        self.state.finish_call();
+        json_str.and_then(|s| serde_json::from_str(&s).ok())
     }
 
     // The run method is complex by necessity - it's an async actor managing FFI calls,

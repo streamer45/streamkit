@@ -559,7 +559,15 @@ impl DynamicEngine {
             let update = RuntimeSchemaUpdate { node_id: node_id.to_string(), schema };
             self.runtime_schema_subscribers.retain(|subscriber| {
                 match subscriber.try_send(update.clone()) {
-                    Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => true,
+                    Ok(()) => true,
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        tracing::warn!(
+                            node_id = %node_id,
+                            "RuntimeSchemaUpdate dropped: subscriber channel full \
+                             (schema discovery is one-time; UI may remain stale)"
+                        );
+                        true
+                    },
                     Err(mpsc::error::TrySendError::Closed(_)) => false,
                 }
             });
