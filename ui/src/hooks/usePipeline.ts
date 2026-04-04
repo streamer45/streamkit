@@ -15,7 +15,7 @@ import {
   writeNodeParams,
   clearNodeParams,
 } from '@/stores/sessionAtoms';
-import { dispatchParamUpdate, deepMerge } from '@/utils/controlProps';
+import { dispatchParamUpdate } from '@/utils/controlProps';
 import { hooksLogger } from '@/utils/logger';
 import { parseYamlToPipeline, type EngineMode } from '@/utils/yamlPipeline';
 
@@ -110,8 +110,8 @@ export const usePipeline = () => {
     // nested objects so readByPath can find them.  Flat keys use the
     // simple writeNodeParam helper.
     dispatchParamUpdate(nodeId, paramName, value, writeNodeParam, (nid, config) => {
-      const current = defaultSessionStore.get(nodeParamsAtom(nid));
-      writeNodeParams(nid, deepMerge(current, config));
+      // writeNodeParams handles the deep-merge internally.
+      writeNodeParams(nid, config);
     });
     // Keep the YAML editor in sync with param changes made via the canvas
     // (e.g. compositor layer drag / slider). The guard prevents a feedback
