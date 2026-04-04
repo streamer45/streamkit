@@ -1357,6 +1357,14 @@ impl CompositorNode {
         new_config: &CompositorConfig,
         slots: &[InputSlot],
     ) {
+        let slots_with_tx = slots.iter().filter(|s| s.hint_tx.is_some()).count();
+        tracing::debug!(
+            total_slots = slots.len(),
+            slots_with_hint_tx = slots_with_tx,
+            old_layer_count = old_config.layers.len(),
+            new_layer_count = new_config.layers.len(),
+            "send_resize_hints: comparing layer configs"
+        );
         for slot in slots {
             let old_rect = old_config.layers.get(&slot.name).and_then(|lc| lc.rect);
             let new_rect = new_config.layers.get(&slot.name).and_then(|lc| lc.rect);
@@ -1445,12 +1453,29 @@ impl CompositorNode {
                     if let Some(lc) = node.config.layers.get(pin_name) {
                         if let Some(ref rect) = lc.rect {
                             if let Some(ref tx) = slot.hint_tx {
+                                tracing::info!(
+                                    pin = %pin_name,
+                                    width = rect.width,
+                                    height = rect.height,
+                                    "CompositorNode: sending initial PreferredSize hint on attach"
+                                );
                                 let _ = tx.try_send(UpstreamHint::PreferredSize {
                                     width: rect.width,
                                     height: rect.height,
                                 });
                             }
+                        } else {
+                            tracing::debug!(
+                                pin = %pin_name,
+                                "CompositorNode: no rect configured for pin, skipping initial hint"
+                            );
                         }
+                    } else {
+                        tracing::debug!(
+                            pin = %pin_name,
+                            layer_keys = ?node.config.layers.keys().collect::<Vec<_>>(),
+                            "CompositorNode: no layer config found for pin, skipping initial hint"
+                        );
                     }
                 } else {
                     tracing::debug!(
