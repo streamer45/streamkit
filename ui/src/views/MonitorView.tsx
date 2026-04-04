@@ -74,7 +74,7 @@ import { dispatchParamUpdate } from '@/utils/controlProps';
 import { topoLevelsFromPipeline, orderedNamesFromLevels } from '@/utils/dag';
 import { deepEqual } from '@/utils/deepEqual';
 import { deepMergeSchemas, validateValue } from '@/utils/jsonSchema';
-import type { JsonSchema } from '@/utils/jsonSchema';
+import type { JsonSchema, JsonSchemaProperty } from '@/utils/jsonSchema';
 import { viewsLogger } from '@/utils/logger';
 import {
   buildEdgesFromConnections,
@@ -471,9 +471,14 @@ const MonitorViewContent: React.FC = () => {
   }, [selectedSessionId, selectedSession, isLoadingSessions]);
 
   // Helper to validate parameter value against schema.
-  // Resolves dot-paths (e.g. "properties.show") by walking nested schema
-  // properties, and uses the runtime-merged schema when available so that
-  // dynamically discovered parameters are validated correctly.
+  // Uses the runtime-merged schema when available so that dynamically
+  // discovered parameters are validated correctly.
+  //
+  // Runtime-discovered properties (e.g. from Slint) are stored as flat
+  // keys in the merged schema (e.g. "show") with a `path` field containing
+  // the dot-notation wire path (e.g. "properties.show").  When paramKey is
+  // a dot-path, we search for a property whose `path` matches before
+  // falling back to a flat key lookup.
   const validateParamValue = useCallback(
     (nodeId: string, paramKey: string, value: unknown): string | null => {
       const node = pipeline?.nodes[nodeId];
@@ -489,22 +494,21 @@ const MonitorViewContent: React.FC = () => {
       const merged = runtimeSchema ? deepMergeSchemas(baseSchema, runtimeSchema) : baseSchema;
       if (!merged?.properties) return null;
 
-      // Resolve dot-paths: "properties.show" → schema.properties.properties
-      //   .properties.show
-      const segments = paramKey.split('.');
-      type PropSchema = {
-        type?: string;
-        minimum?: number;
-        maximum?: number;
-        multipleOf?: number;
-        properties?: Record<string, PropSchema>;
-      };
-      let propSchema: PropSchema | undefined = merged.properties[segments[0]] as
-        | PropSchema
-        | undefined;
-      for (let i = 1; i < segments.length && propSchema; i++) {
-        propSchema = propSchema.properties?.[segments[i]];
+      // 1. Direct flat-key lookup (works for simple keys like "gain_db").
+      let propSchema = merged.properties[paramKey] as JsonSchemaProperty | undefined;
+
+      // 2. If paramKey is a dot-path (e.g. "properties.show"), search for a
+      //    schema property whose `path` field matches.  Runtime-discovered
+      //    properties use this pattern.
+      if (!propSchema && paramKey.includes('.')) {
+        for (const entry of Object.values(merged.properties)) {
+          if (entry && (entry as JsonSchemaProperty).path === paramKey) {
+            propSchema = entry as JsonSchemaProperty;
+            break;
+          }
+        }
       }
+
       if (!propSchema) return null;
 
       return validateValue(value, propSchema);
