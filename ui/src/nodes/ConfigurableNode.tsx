@@ -97,7 +97,7 @@ const ControlsToggleBar = styled.button`
   align-items: center;
   gap: 6px;
   width: 100%;
-  padding: 6px 4px;
+  padding: 6px 0;
   background: none;
   border: none;
   border-top: 1px solid var(--sk-border);
@@ -113,13 +113,7 @@ const ControlsToggleBar = styled.button`
   }
 `;
 
-const Chevron = styled.span<{ expanded: boolean }>`
-  display: inline-block;
-  width: 0;
-  height: 0;
-  border-style: solid;
-  border-width: 4px 0 4px 6px;
-  border-color: transparent transparent transparent currentColor;
+const ChevronSvg = styled.svg<{ expanded: boolean }>`
   transition: transform 0.15s ease;
   transform: rotate(${(props) => (props.expanded ? '90deg' : '0deg')});
   flex-shrink: 0;
@@ -353,14 +347,19 @@ const ConfigurableNode: React.FC<ConfigurableNodeProps> = React.memo(function Co
         <>
           <ControlsToggleBar
             className="nodrag nopan"
-            onClick={(e) => {
-              e.stopPropagation();
-              setControlsExpanded((prev) => !prev);
-            }}
+            onClick={() => setControlsExpanded((prev) => !prev)}
             aria-expanded={controlsExpanded}
             aria-label={`${controlsExpanded ? 'Hide' : 'Show'} ${controlCount} controls`}
           >
-            <Chevron expanded={controlsExpanded} />
+            <ChevronSvg
+              expanded={controlsExpanded}
+              width="8"
+              height="8"
+              viewBox="0 0 8 8"
+              fill="currentColor"
+            >
+              <path d="M2 1l4 3-4 3z" />
+            </ChevronSvg>
             <span>
               {controlCount} control{controlCount !== 1 ? 's' : ''}
             </span>
