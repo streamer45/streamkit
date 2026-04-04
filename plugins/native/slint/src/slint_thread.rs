@@ -292,10 +292,7 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
                                 scale_factor: scale,
                             },
                         );
-                        state
-                            .instance
-                            .window
-                            .set_size(PhysicalSize::new(width, height));
+                        state.instance.window.set_size(PhysicalSize::new(width, height));
 
                         let pixel_count = (width as usize) * (height as usize);
                         state.instance.buffer =
