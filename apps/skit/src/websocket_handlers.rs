@@ -1379,10 +1379,7 @@ fn handle_get_permissions(perms: &Permissions, role_name: &str) -> ResponsePaylo
 /// Recursively deep-merges `source` into `target`, returning the merged value.
 /// Only JSON objects are merged recursively; arrays and scalars in `source`
 /// replace the corresponding value in `target`.
-fn deep_merge_json(
-    target: serde_json::Value,
-    source: serde_json::Value,
-) -> serde_json::Value {
+fn deep_merge_json(target: serde_json::Value, source: serde_json::Value) -> serde_json::Value {
     match (target, source) {
         (serde_json::Value::Object(mut t_map), serde_json::Value::Object(s_map)) => {
             for (key, s_val) in s_map {
@@ -1393,7 +1390,7 @@ fn deep_merge_json(
                 t_map.insert(key, merged);
             }
             serde_json::Value::Object(t_map)
-        }
+        },
         // Non-object source replaces target wholesale.
         (_, source) => source,
     }
