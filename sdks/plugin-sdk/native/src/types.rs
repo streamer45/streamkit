@@ -11,9 +11,13 @@ use std::os::raw::{c_char, c_void};
 
 /// API version number. Plugins and host check compatibility via this field.
 ///
+/// v1: Initial release — processor nodes (get_metadata, create_instance,
+///     process_packet, update_params, flush, destroy_instance).
+/// v2: Added telemetry callback parameters to process_packet and flush.
 /// v3: Added video packet types (`RawVideo`, `EncodedVideo`), `CRawVideoFormat`,
 ///     `CPixelFormat`, and source node support (`get_source_config`, `tick`).
-/// v4: Added `get_runtime_param_schema` for dynamic runtime parameter discovery.
+/// v4: Added `get_runtime_param_schema` (returns [`CSchemaResult`]) for
+///     dynamic runtime parameter discovery.
 pub const NATIVE_PLUGIN_API_VERSION: u32 = 4;
 
 /// Opaque handle to a plugin instance
@@ -59,6 +63,46 @@ impl CResult {
 
     pub const fn error(msg: *const c_char) -> Self {
         Self { success: false, error_message: msg }
+    }
+}
+
+/// Result type for `get_runtime_param_schema`.
+///
+/// Unlike [`CResult`], this type has a dedicated `json_schema` field for the
+/// success payload so that plugin authors don't have to read a JSON string
+/// out of `error_message`.
+///
+/// - `success=true`, `json_schema=NULL` → plugin has no runtime schema.
+/// - `success=true`, `json_schema=<ptr>` → JSON Schema string.
+/// - `success=false`, `error_message=<ptr>` → error description.
+///
+/// # Ownership
+///
+/// Both pointers are **borrowed** and must not be freed by the caller.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct CSchemaResult {
+    pub success: bool,
+    /// Null-terminated error message on failure, NULL on success.
+    pub error_message: *const c_char,
+    /// Null-terminated JSON Schema string on success, NULL otherwise.
+    pub json_schema: *const c_char,
+}
+
+impl CSchemaResult {
+    /// No runtime schema (success, both pointers NULL).
+    pub const fn none() -> Self {
+        Self { success: true, error_message: std::ptr::null(), json_schema: std::ptr::null() }
+    }
+
+    /// Runtime schema available (success, json_schema carries the payload).
+    pub const fn schema(json: *const c_char) -> Self {
+        Self { success: true, error_message: std::ptr::null(), json_schema: json }
+    }
+
+    /// Error during schema retrieval.
+    pub const fn error(msg: *const c_char) -> Self {
+        Self { success: false, error_message: msg, json_schema: std::ptr::null() }
     }
 }
 
@@ -378,14 +422,14 @@ pub struct CNativePluginAPI {
     // ── v4 additions ──────────────────────────────────────────────────────
     /// Query runtime-discovered param schema after instance creation.
     ///
-    /// Returns a JSON string describing additional tunable parameters
+    /// Returns a [`CSchemaResult`] describing additional tunable parameters
     /// discovered at runtime (e.g. properties from a compiled `.slint`
     /// file).  The host deep-merges this with the static `param_schema`
     /// from metadata and delivers it to the UI.
     ///
     /// `None` when the plugin has no runtime-discovered parameters (the
     /// common case — most plugins declare everything statically).
-    pub get_runtime_param_schema: Option<extern "C" fn(CPluginHandle) -> CResult>,
+    pub get_runtime_param_schema: Option<extern "C" fn(CPluginHandle) -> CSchemaResult>,
 }
 
 /// Symbol name that plugins must export

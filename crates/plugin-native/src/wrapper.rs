@@ -219,13 +219,13 @@ impl ProcessorNode for NativeNodeWrapper {
             return None;
         }
 
-        // success=true, null message → plugin has no runtime schema.
-        if result.error_message.is_null() {
+        // success=true, null json_schema → plugin has no runtime schema.
+        if result.json_schema.is_null() {
             return None;
         }
 
-        // success=true, non-null message → JSON string containing the schema.
-        let json_str = unsafe { conversions::c_str_to_string(result.error_message) }.ok()?;
+        // success=true, non-null json_schema → JSON string containing the schema.
+        let json_str = unsafe { conversions::c_str_to_string(result.json_schema) }.ok()?;
         serde_json::from_str(&json_str).ok()
     }
 

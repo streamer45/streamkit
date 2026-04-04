@@ -1053,25 +1053,24 @@ macro_rules! native_plugin_entry {
 
         extern "C" fn __plugin_get_runtime_param_schema(
             handle: $crate::types::CPluginHandle,
-        ) -> $crate::types::CResult {
+        ) -> $crate::types::CSchemaResult {
             if handle.is_null() {
-                return $crate::types::CResult::success(); // null = no schema
+                return $crate::types::CSchemaResult::none();
             }
 
             let instance = unsafe { &*(handle as *const $plugin_type) };
             match instance.runtime_param_schema() {
-                None => $crate::types::CResult::success(), // success with null = no schema
+                None => $crate::types::CSchemaResult::none(),
                 Some(schema) => match serde_json::to_string(&schema) {
                     Ok(json) => {
                         let c_str = $crate::conversions::error_to_c(json);
-                        // Re-use CResult: success=true, error_message carries the JSON.
-                        $crate::types::CResult { success: true, error_message: c_str }
+                        $crate::types::CSchemaResult::schema(c_str)
                     },
                     Err(e) => {
                         let err_msg = $crate::conversions::error_to_c(format!(
                             "Failed to serialize runtime param schema: {e}"
                         ));
-                        $crate::types::CResult::error(err_msg)
+                        $crate::types::CSchemaResult::error(err_msg)
                     },
                 },
             }
@@ -1609,24 +1608,24 @@ macro_rules! native_source_plugin_entry {
 
         extern "C" fn __plugin_get_runtime_param_schema(
             handle: $crate::types::CPluginHandle,
-        ) -> $crate::types::CResult {
+        ) -> $crate::types::CSchemaResult {
             if handle.is_null() {
-                return $crate::types::CResult::success();
+                return $crate::types::CSchemaResult::none();
             }
 
             let instance = unsafe { &*(handle as *const $plugin_type) };
             match instance.runtime_param_schema() {
-                None => $crate::types::CResult::success(),
+                None => $crate::types::CSchemaResult::none(),
                 Some(schema) => match serde_json::to_string(&schema) {
                     Ok(json) => {
                         let c_str = $crate::conversions::error_to_c(json);
-                        $crate::types::CResult { success: true, error_message: c_str }
+                        $crate::types::CSchemaResult::schema(c_str)
                     },
                     Err(e) => {
                         let err_msg = $crate::conversions::error_to_c(format!(
                             "Failed to serialize runtime param schema: {e}"
                         ));
-                        $crate::types::CResult::error(err_msg)
+                        $crate::types::CSchemaResult::error(err_msg)
                     },
                 },
             }

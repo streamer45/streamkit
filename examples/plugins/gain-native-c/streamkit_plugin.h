@@ -10,6 +10,14 @@
  * returns a pointer to a CNativePluginAPI struct.
  *
  * API Version: 4
+ *
+ * Version history:
+ *   v1: Initial release — processor nodes.
+ *   v2: Added telemetry callback parameters to process_packet and flush.
+ *   v3: Added video types (CRawVideoFormat, CPixelFormat, CVideoFrame),
+ *       source node support (get_source_config, tick, CSourceConfig, CTickResult).
+ *   v4: Added get_runtime_param_schema (CSchemaResult) for dynamic runtime
+ *       parameter discovery.
  */
 
 #ifndef STREAMKIT_PLUGIN_H
@@ -62,6 +70,43 @@ typedef struct CResult {
     bool success;
     const char* error_message;  /**< NULL on success, error string on failure */
 } CResult;
+
+/**
+ * Result type for get_runtime_param_schema.
+ *
+ * Unlike CResult, this type has a dedicated json_schema field for the
+ * success payload so that plugin authors don't have to read a JSON
+ * string out of error_message.
+ *
+ * - success=true, json_schema=NULL  → plugin has no runtime schema.
+ * - success=true, json_schema=<ptr> → JSON Schema string.
+ * - success=false, error_message=<ptr> → error description.
+ *
+ * All pointers are borrowed and must not be freed by the caller.
+ */
+typedef struct CSchemaResult {
+    bool success;
+    const char* error_message;  /**< NULL on success, error string on failure */
+    const char* json_schema;    /**< NULL when no schema, JSON string on success */
+} CSchemaResult;
+
+/** Helper to create a CSchemaResult with no runtime schema */
+static inline CSchemaResult CSchemaResult_none(void) {
+    CSchemaResult r = {true, NULL, NULL};
+    return r;
+}
+
+/** Helper to create a CSchemaResult carrying a JSON schema */
+static inline CSchemaResult CSchemaResult_schema(const char* json) {
+    CSchemaResult r = {true, NULL, json};
+    return r;
+}
+
+/** Helper to create a CSchemaResult error */
+static inline CSchemaResult CSchemaResult_error(const char* msg) {
+    CSchemaResult r = {false, msg, NULL};
+    return r;
+}
 
 /** Helper to create a successful result */
 static inline CResult CResult_success(void) {
@@ -118,8 +163,33 @@ typedef enum CPacketType {
     PACKET_TYPE_CUSTOM = 4,
     PACKET_TYPE_BINARY = 5,
     PACKET_TYPE_ANY = 6,
-    PACKET_TYPE_PASSTHROUGH = 7
+    PACKET_TYPE_PASSTHROUGH = 7,
+    PACKET_TYPE_RAW_VIDEO = 8,
+    PACKET_TYPE_ENCODED_VIDEO = 9
 } CPacketType;
+
+/** Pixel format discriminant for raw video frames. */
+typedef enum CPixelFormat {
+    PIXEL_FORMAT_RGBA8 = 0,
+    PIXEL_FORMAT_I420 = 1,
+    PIXEL_FORMAT_NV12 = 2
+} CPixelFormat;
+
+/** Raw video format metadata. */
+typedef struct CRawVideoFormat {
+    uint32_t width;         /**< Frame width in pixels (0 = unspecified) */
+    uint32_t height;        /**< Frame height in pixels (0 = unspecified) */
+    CPixelFormat pixel_format;
+} CRawVideoFormat;
+
+/** Video frame data passed across the ABI boundary. */
+typedef struct CVideoFrame {
+    uint32_t width;
+    uint32_t height;
+    CPixelFormat pixel_format;
+    const uint8_t* data;
+    size_t data_len;
+} CVideoFrame;
 
 /** Encoding for custom packets. */
 typedef enum CCustomEncoding {
@@ -155,8 +225,9 @@ typedef struct CCustomPacket {
  */
 typedef struct CPacketTypeInfo {
     CPacketType type_discriminant;
-    const CAudioFormat* audio_format;  /**< Non-NULL only for RawAudio */
-    const char* custom_type_id;        /**< Non-NULL only for Custom */
+    const CAudioFormat* audio_format;       /**< Non-NULL only for RawAudio */
+    const char* custom_type_id;             /**< Non-NULL only for Custom */
+    const CRawVideoFormat* raw_video_format; /**< Non-NULL only for RawVideo */
 } CPacketTypeInfo;
 
 /**
@@ -204,6 +275,35 @@ typedef struct CNodeMetadata {
     const char* const* categories;          /**< Array of category strings */
     size_t categories_count;
 } CNodeMetadata;
+
+/* ============================================================================
+ * Source Node Types (v3)
+ * ============================================================================ */
+
+/**
+ * Source node configuration returned by the plugin.
+ *
+ * Tells the host how to drive the tick loop for source nodes (nodes with no
+ * inputs that generate data on their own schedule).
+ */
+typedef struct CSourceConfig {
+    /** If true, this plugin is a source node (no inputs, host drives tick loop). */
+    bool is_source;
+    /** Microseconds between ticks (e.g. 33333 for 30 fps). */
+    uint64_t tick_interval_us;
+    /** If > 0, host stops after this many ticks. 0 = infinite. */
+    uint64_t max_ticks;
+} CSourceConfig;
+
+/**
+ * Result returned by the source tick function.
+ */
+typedef struct CTickResult {
+    /** Standard success/error result. */
+    CResult result;
+    /** If true, the source is done producing output (finite mode). */
+    bool done;
+} CTickResult;
 
 /* ============================================================================
  * Callbacks
@@ -292,6 +392,38 @@ typedef struct CNativePluginAPI {
      */
     void (*destroy_instance)(CPluginHandle handle);
 
+    /* -- v3 additions ---------------------------------------------------- */
+
+    /**
+     * Query source configuration after instance creation (optional).
+     *
+     * NULL for processor plugins.  When non-NULL, the returned
+     * CSourceConfig.is_source tells the host whether to use the tick
+     * loop instead of the input-driven processing loop.
+     *
+     * @param handle Plugin instance handle
+     * @return       CSourceConfig describing tick behaviour
+     */
+    CSourceConfig (*get_source_config)(CPluginHandle handle);
+
+    /**
+     * Produce one unit of output (source plugins, optional).
+     *
+     * The host calls this at the interval specified by get_source_config.
+     * The plugin renders one frame/sample/etc. and sends it via
+     * output_callback.  Returns CTickResult to signal continuation or
+     * completion.
+     *
+     * NULL for processor plugins.
+     *
+     * @param handle          Plugin instance handle
+     * @param output_callback Callback to send output packets
+     * @param callback_data   User data to pass to callback
+     * @return                CTickResult (done flag + result)
+     */
+    CTickResult (*tick)(CPluginHandle handle, COutputCallback output_callback,
+                        void* callback_data);
+
     /* -- v4 additions ---------------------------------------------------- */
 
     /**
@@ -302,14 +434,11 @@ typedef struct CNativePluginAPI {
      * implement this to return a JSON Schema fragment.  The host merges
      * it with the static param_schema and delivers it to the UI.
      *
-     * Return CResult with success=true and error_message carrying the
-     * JSON string, or success=true with error_message=NULL for no schema.
-     *
      * @param handle Plugin instance handle
-     * @return       CResult: success+NULL = no schema,
+     * @return       CSchemaResult: success+NULL = no schema,
      *               success+json = schema, !success = error
      */
-    CResult (*get_runtime_param_schema)(CPluginHandle handle);
+    CSchemaResult (*get_runtime_param_schema)(CPluginHandle handle);
 } CNativePluginAPI;
 
 /* ============================================================================
