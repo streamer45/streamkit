@@ -339,6 +339,7 @@ fn test_resolved_layer_source_dims() {
         rx,
         latest_frame: Some(make_rgba_frame(1920, 1080, 0, 0, 0, 255)),
         last_source_dims: Some((1920, 1080)),
+        hint_tx: None,
     }];
     let image_overlays: Arc<[Arc<DecodedOverlay>]> = Arc::from(vec![]);
     let text_overlays: Arc<[Arc<DecodedOverlay>]> = Arc::from(vec![]);
@@ -359,6 +360,7 @@ fn test_resolved_layer_source_dims_none_when_no_frame() {
         rx,
         latest_frame: None,
         last_source_dims: None,
+        hint_tx: None,
     }];
     let image_overlays: Arc<[Arc<DecodedOverlay>]> = Arc::from(vec![]);
     let text_overlays: Arc<[Arc<DecodedOverlay>]> = Arc::from(vec![]);
@@ -1996,7 +1998,13 @@ fn test_composite_frame_crop_shape_circle_skip_clear() {
 /// Helper: build an `InputSlot` with the given name and optional latest frame.
 fn make_slot(name: &str, frame: Option<VideoFrame>) -> InputSlot {
     let (_tx, rx) = mpsc::channel::<Packet>(1);
-    InputSlot { name: name.to_string(), rx, latest_frame: frame, last_source_dims: None }
+    InputSlot {
+        name: name.to_string(),
+        rx,
+        latest_frame: frame,
+        last_source_dims: None,
+        hint_tx: None,
+    }
 }
 
 #[test]
@@ -2565,4 +2573,113 @@ async fn test_compositor_output_format_runtime_change() {
     } else {
         panic!("Expected video packet");
     }
+}
+
+// ── Upstream resize hint tests ──────────────────────────────────────
+
+#[test]
+fn send_resize_hints_fires_on_rect_change() {
+    let (hint_tx, mut hint_rx) = mpsc::channel::<UpstreamHint>(4);
+    let slot = InputSlot {
+        name: "cam".to_string(),
+        rx: mpsc::channel(1).1,
+        latest_frame: None,
+        last_source_dims: None,
+        hint_tx: Some(hint_tx),
+    };
+
+    let old_config = CompositorConfig {
+        layers: {
+            let mut m = HashMap::new();
+            m.insert(
+                "cam".to_string(),
+                LayerConfig {
+                    rect: Some(Rect { x: 0, y: 0, width: 640, height: 480 }),
+                    ..Default::default()
+                },
+            );
+            m
+        },
+        ..Default::default()
+    };
+    let new_config = CompositorConfig {
+        layers: {
+            let mut m = HashMap::new();
+            m.insert(
+                "cam".to_string(),
+                LayerConfig {
+                    rect: Some(Rect { x: 0, y: 0, width: 1280, height: 720 }),
+                    ..Default::default()
+                },
+            );
+            m
+        },
+        ..Default::default()
+    };
+
+    CompositorNode::send_resize_hints(&old_config, &new_config, &[slot]);
+
+    let hint = hint_rx.try_recv().expect("should have received a hint");
+    assert!(matches!(hint, UpstreamHint::PreferredSize { width: 1280, height: 720 }));
+}
+
+#[test]
+fn send_resize_hints_skips_unchanged_rect() {
+    let (hint_tx, mut hint_rx) = mpsc::channel::<UpstreamHint>(4);
+    let slot = InputSlot {
+        name: "cam".to_string(),
+        rx: mpsc::channel(1).1,
+        latest_frame: None,
+        last_source_dims: None,
+        hint_tx: Some(hint_tx),
+    };
+
+    let config = CompositorConfig {
+        layers: {
+            let mut m = HashMap::new();
+            m.insert(
+                "cam".to_string(),
+                LayerConfig {
+                    rect: Some(Rect { x: 0, y: 0, width: 640, height: 480 }),
+                    ..Default::default()
+                },
+            );
+            m
+        },
+        ..Default::default()
+    };
+
+    CompositorNode::send_resize_hints(&config, &config, &[slot]);
+
+    assert!(hint_rx.try_recv().is_err(), "no hint should be sent when rect is unchanged");
+}
+
+#[test]
+fn send_resize_hints_skips_slot_without_hint_tx() {
+    let slot = InputSlot {
+        name: "cam".to_string(),
+        rx: mpsc::channel(1).1,
+        latest_frame: None,
+        last_source_dims: None,
+        hint_tx: None,
+    };
+
+    let old_config = CompositorConfig::default();
+    let new_config = CompositorConfig {
+        layers: {
+            let mut m = HashMap::new();
+            m.insert(
+                "cam".to_string(),
+                LayerConfig {
+                    rect: Some(Rect { x: 0, y: 0, width: 1280, height: 720 }),
+                    ..Default::default()
+                },
+            );
+            m
+        },
+        ..Default::default()
+    };
+
+    // Should not panic even with hint_tx: None
+    CompositorNode::send_resize_hints(&old_config, &new_config, &[slot]);
 }

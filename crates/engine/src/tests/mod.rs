@@ -13,3 +13,5 @@ mod oneshot_linear;
 mod pin_distributor;
 #[cfg(feature = "dynamic")]
 mod pipeline_activation;
+#[cfg(feature = "dynamic")]
+mod upstream_hints;

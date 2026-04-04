@@ -739,6 +739,11 @@ impl NativeNodeWrapper {
         // Consume the first (immediate) tick so we don't double-fire on entry.
         interval.tick().await;
 
+        // Hint receivers from downstream consumers, delivered via
+        // OutputHintChannel pin management messages.
+        let mut hint_receivers: Vec<tokio::sync::mpsc::Receiver<streamkit_core::UpstreamHint>> =
+            Vec::new();
+
         loop {
             // Check tick limit
             if max_ticks > 0 && tick_count >= max_ticks {
@@ -769,6 +774,45 @@ impl NativeNodeWrapper {
                     NodeControlMessage::Start => {
                         // Already started — ignore duplicate.
                     },
+                }
+            }
+
+            // Non-blocking drain of pin management messages to pick up
+            // OutputHintChannel deliveries from the engine.
+            if let Some(ref mut pin_mgmt_rx) = context.pin_management_rx {
+                while let Ok(msg) = pin_mgmt_rx.try_recv() {
+                    if let streamkit_core::pins::PinManagementMessage::OutputHintChannel {
+                        pin_name: _,
+                        hint_rx,
+                    } = msg
+                    {
+                        hint_receivers.push(hint_rx);
+                    }
+                }
+            }
+
+            // Drain all hint receivers and deliver to plugin via C ABI.
+            // Retain only receivers whose channels are still open.
+            if !hint_receivers.is_empty() {
+                if let Some(on_hint_fn) = self.state.api().on_upstream_hint {
+                    hint_receivers.retain_mut(|rx| loop {
+                        match rx.try_recv() {
+                            Ok(hint) => {
+                                if let Ok(json) = serde_json::to_string(&hint) {
+                                    if let Ok(c_str) = std::ffi::CString::new(json) {
+                                        if let Some(handle) = self.state.begin_call() {
+                                            let _ = on_hint_fn(handle, c_str.as_ptr());
+                                            self.state.finish_call();
+                                        }
+                                    }
+                                }
+                            },
+                            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => return true,
+                            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                                return false
+                            },
+                        }
+                    });
                 }
             }
 

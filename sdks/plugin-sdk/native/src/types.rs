@@ -18,7 +18,9 @@ use std::os::raw::{c_char, c_void};
 ///     `CPixelFormat`, and source node support (`get_source_config`, `tick`).
 /// v4: Added `get_runtime_param_schema` (returns [`CSchemaResult`]) for
 ///     dynamic runtime parameter discovery.
-pub const NATIVE_PLUGIN_API_VERSION: u32 = 4;
+/// v5: Added `on_upstream_hint` for receiving advisory hints from
+///     downstream consumers (e.g. preferred output resolution).
+pub const NATIVE_PLUGIN_API_VERSION: u32 = 5;
 
 /// Opaque handle to a plugin instance
 pub type CPluginHandle = *mut c_void;
@@ -430,6 +432,18 @@ pub struct CNativePluginAPI {
     /// `None` when the plugin has no runtime-discovered parameters (the
     /// common case — most plugins declare everything statically).
     pub get_runtime_param_schema: Option<extern "C" fn(CPluginHandle) -> CSchemaResult>,
+
+    // ── v5 additions ──────────────────────────────────────────────────────
+    /// Deliver an upstream hint to a source plugin instance.
+    ///
+    /// `hint_json` is a null-terminated JSON string representing the
+    /// serialized [`UpstreamHint`](streamkit_core::UpstreamHint).  The
+    /// plugin deserializes it and adapts its output accordingly (e.g.
+    /// resizing to a preferred resolution).
+    ///
+    /// `None` for processor plugins or source plugins that don't handle
+    /// hints.
+    pub on_upstream_hint: Option<extern "C" fn(CPluginHandle, *const c_char) -> CResult>,
 }
 
 /// Symbol name that plugins must export

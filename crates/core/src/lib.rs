@@ -54,6 +54,7 @@ pub mod control;
 pub mod error;
 pub mod frame_pool;
 pub mod helpers;
+pub mod hints;
 pub mod metrics;
 pub mod moq_gateway;
 pub mod mse_gateway;
@@ -105,6 +106,7 @@ pub use view_data::NodeViewDataUpdate;
 pub use timing::*;
 
 // Pin definitions
+pub use hints::UpstreamHint;
 pub use pins::{InputPin, OutputPin, PinCardinality};
 
 // Helper modules (for convenience, maintaining backward compatibility)

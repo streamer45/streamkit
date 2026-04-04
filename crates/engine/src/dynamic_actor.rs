@@ -803,7 +803,7 @@ impl DynamicEngine {
     /// Helper function to connect nodes by configuring the Pin Distributor.
     ///
     /// May create dynamic pins on-demand if the destination node supports them.
-    #[allow(clippy::cognitive_complexity)] // Dynamic pin creation inherently complex
+    #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
     async fn connect_nodes(
         &mut self,
         from_node: String,
@@ -848,7 +848,11 @@ impl DynamicEngine {
         let mut pending_input_pin_activation: Option<(
             streamkit_core::InputPin,
             mpsc::Receiver<streamkit_core::types::Packet>,
+            Option<mpsc::Sender<streamkit_core::UpstreamHint>>,
         )> = None;
+        // Hint receiver to deliver to the source node after connection is
+        // established.  Created alongside the data channel for dynamic pins.
+        let mut pending_hint_rx: Option<mpsc::Receiver<streamkit_core::UpstreamHint>> = None;
         let dest_tx = if let Some(tx) = self.node_inputs.get(&(to_node.clone(), to_pin.clone())) {
             tx.clone()
         } else if self.dynamic_pin_nodes.contains(&to_node) {
@@ -903,6 +907,11 @@ impl DynamicEngine {
             let (tx, rx) = mpsc::channel(self.node_input_capacity);
             self.node_inputs.insert((to_node.clone(), pin.name.clone()), tx.clone());
 
+            // Create a parallel hint channel (downstream → upstream) so the
+            // destination node can send advisory hints back to the source.
+            let (hint_tx, hint_rx) = mpsc::channel::<streamkit_core::UpstreamHint>(1);
+            pending_hint_rx = Some(hint_rx);
+
             // Update our pin metadata so future validations can resolve this pin by name.
             let meta = self.node_pin_metadata.entry(to_node.clone()).or_insert_with(|| {
                 NodePinMetadata { input_pins: Vec::new(), output_pins: Vec::new() }
@@ -915,7 +924,7 @@ impl DynamicEngine {
             // is resolved so AddedInputPin arrives before InputTypeResolved —
             // the node needs the channel ready before it receives type info.
             created_dynamic_input = Some(pin.name.clone());
-            pending_input_pin_activation = Some((pin, rx));
+            pending_input_pin_activation = Some((pin, rx, Some(hint_tx)));
             tx
         } else {
             tracing::error!(
@@ -1113,11 +1122,12 @@ impl DynamicEngine {
 
         // 2b. Send the deferred AddedInputPin now that the source pin is resolved.
         // This only fires when a dynamic input pin was created in step 1.
-        if let Some((input_pin, input_rx)) = pending_input_pin_activation {
+        if let Some((input_pin, input_rx, hint_tx)) = pending_input_pin_activation {
             if let Some(pin_mgmt_tx) = self.pin_management_txs.get(&to_node) {
                 let msg = streamkit_core::pins::PinManagementMessage::AddedInputPin {
                     pin: input_pin,
                     channel: input_rx,
+                    hint_tx,
                 };
 
                 if pin_mgmt_tx.send(msg).await.is_err() {
@@ -1181,6 +1191,25 @@ impl DynamicEngine {
                     to_node,
                     to_pin
                 );
+            }
+        }
+
+        // 2d. Deliver the hint receiver to the source node so it can
+        // receive advisory hints (e.g. preferred output size) from the
+        // downstream consumer.
+        if let Some(hint_rx) = pending_hint_rx.take() {
+            if let Some(pin_mgmt_tx) = self.pin_management_txs.get(&from_node) {
+                let msg = streamkit_core::pins::PinManagementMessage::OutputHintChannel {
+                    pin_name: from_pin.clone(),
+                    hint_rx,
+                };
+                if pin_mgmt_tx.send(msg).await.is_err() {
+                    tracing::warn!(
+                        "Failed to send OutputHintChannel to '{}' for pin '{}' — node may have stopped",
+                        from_node,
+                        from_pin
+                    );
+                }
             }
         }
 

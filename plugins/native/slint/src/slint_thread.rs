@@ -67,6 +67,9 @@ pub enum SlintWorkItem {
     Render { node_id: NodeId },
     /// Update the config (properties / keyframes) for subsequent renders.
     UpdateConfig { node_id: NodeId, config: SlintConfig },
+    /// Resize the rendering window and buffer for the given instance.
+    /// Sent when an upstream hint requests a new preferred size.
+    Resize { node_id: NodeId, width: u32, height: u32 },
     /// Unregister an instance — drop its component and result channel.
     Unregister { node_id: NodeId },
 }
@@ -250,6 +253,31 @@ fn slint_thread_main(work_rx: std::sync::mpsc::Receiver<SlintWorkItem>) {
                     state.dirty = true;
                 }
             },
+            SlintWorkItem::Resize { node_id, width, height } => {
+                if let Some(state) = instances.get_mut(&node_id) {
+                    if state.instance.width != width || state.instance.height != height {
+                        state.instance.width = width;
+                        state.instance.height = height;
+                        state.config.width = width;
+                        state.config.height = height;
+                        #[allow(clippy::cast_precision_loss)]
+                        state.instance.window.set_size(LogicalSize::new(
+                            (width as f32).max(1.0),
+                            (height as f32).max(1.0),
+                        ));
+                        let pixel_count = (width as usize) * (height as usize);
+                        state.instance.buffer =
+                            vec![PremultipliedRgbaColor::default(); pixel_count];
+                        state.cached_frame = None;
+                        state.dirty = true;
+                        tracing::info!(
+                            node_id = %node_id,
+                            width, height,
+                            "Resized Slint instance via upstream hint",
+                        );
+                    }
+                }
+            },
             SlintWorkItem::Unregister { node_id } => {
                 instances.remove(&node_id);
             },
@@ -283,6 +311,7 @@ struct SlintInstance {
     definition: ComponentDefinition,
     buffer: Vec<PremultipliedRgbaColor>,
     width: u32,
+    height: u32,
     /// Frame counter for property keyframe cycling.
     frame_counter: u32,
 }
@@ -368,7 +397,7 @@ fn create_slint_instance(
 
     // _guard drops here, clearing CURRENT_WINDOW.
 
-    Ok(SlintInstance { window, component, definition, buffer, width, frame_counter: 0 })
+    Ok(SlintInstance { window, component, definition, buffer, width, height, frame_counter: 0 })
 }
 
 /// Enumerate the publicly declared properties of a compiled Slint component
