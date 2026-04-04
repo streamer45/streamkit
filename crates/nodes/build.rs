@@ -399,8 +399,13 @@ fn build_dav1d_static() -> Vec<std::path::PathBuf> {
         install_dir.join("lib")
     };
 
+    // NOTE: we use `+whole-archive,-bundle` for the same reason as SVT-AV1
+    // (see build_svt_av1_static).  Under thin LTO, rust-lld silently drops
+    // native archive members whose symbols are only referenced from Rust
+    // bitcode.  Keeping the archive unbundled with --whole-archive ensures
+    // all dav1d symbols survive the link.
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
-    println!("cargo:rustc-link-lib=static=dav1d");
+    println!("cargo:rustc-link-lib=static:+whole-archive,-bundle=dav1d");
     println!("cargo:rustc-link-lib=pthread");
 
     // 5. Return include paths for the ABI check.
