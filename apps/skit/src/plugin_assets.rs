@@ -609,10 +609,7 @@ async fn serve_handler(
             [
                 (header::CONTENT_TYPE, content_type_header.to_string()),
                 (header::CACHE_CONTROL, "public, must-revalidate".to_string()),
-                (
-                    header::CONTENT_DISPOSITION,
-                    format!("attachment; filename=\"{id}\""),
-                ),
+                (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{id}\"")),
             ],
             data,
         )

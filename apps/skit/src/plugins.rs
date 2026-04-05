@@ -192,25 +192,43 @@ impl UnifiedPluginManager {
         })
     }
 
-    /// Load all native plugins from the native directory
+    /// Load all native plugins from the native directory.
+    ///
+    /// Scans the top-level directory for `.so`/`.dylib`/`.dll` files (flat
+    /// layout) and also one level of subdirectories (bundle layout, e.g.
+    /// `native/slint/libslint.so`).
     fn load_native_plugins_from_dir(&mut self) -> Result<Vec<PluginSummary>> {
         let mut summaries = Vec::new();
 
         info!("Loading native plugins...");
+
+        let mut lib_paths: Vec<std::path::PathBuf> = Vec::new();
+
         for entry in std::fs::read_dir(&self.native_directory).with_context(|| {
             format!("failed to read native plugin directory {}", self.native_directory.display())
         })? {
             let entry = entry?;
             let path = entry.path();
 
-            // Check for native library extensions
-            let extension = path.extension().and_then(|ext| ext.to_str());
-            let is_native_lib = matches!(extension, Some("so" | "dylib" | "dll"));
-
-            if !is_native_lib || path.to_string_lossy().ends_with(".d") {
+            if path.is_dir() {
+                // Scan one level of subdirectories for plugin bundles.
+                if let Ok(sub_entries) = std::fs::read_dir(&path) {
+                    for sub_entry in sub_entries.flatten() {
+                        let sub_path = sub_entry.path();
+                        if Self::is_native_lib(&sub_path) {
+                            lib_paths.push(sub_path);
+                        }
+                    }
+                }
                 continue;
             }
 
+            if Self::is_native_lib(&path) {
+                lib_paths.push(path);
+            }
+        }
+
+        for path in lib_paths {
             match self.load_native_plugin(&path) {
                 Ok(summary) => {
                     info!(plugin = %summary.kind, file = ?path, plugin_type = ?summary.plugin_type, "Loaded plugin from disk");
@@ -223,6 +241,12 @@ impl UnifiedPluginManager {
         }
 
         Ok(summaries)
+    }
+
+    /// Returns `true` if the path looks like a native plugin library.
+    fn is_native_lib(path: &std::path::Path) -> bool {
+        let extension = path.extension().and_then(|ext| ext.to_str());
+        matches!(extension, Some("so" | "dylib" | "dll")) && !path.to_string_lossy().ends_with(".d")
     }
 
     /// Load all WASM plugins from the WASM directory
