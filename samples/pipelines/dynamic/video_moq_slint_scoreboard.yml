@@ -101,7 +101,7 @@ nodes:
       width: 420
       height: 80
       fps: 30
-      slint_file: samples/slint/scoreboard.slint
+      slint_file: samples/slint/system/scoreboard.slint
       properties:
         home_team: "EAGLES"
         away_team: "HAWKS"
@@ -117,7 +117,7 @@ nodes:
       width: 350
       height: 70
       fps: 30
-      slint_file: samples/slint/lower_third.slint
+      slint_file: samples/slint/system/lower_third.slint
       properties:
         name: "Alex Johnson"
         subtitle: "Forward · #17"

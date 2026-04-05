@@ -229,6 +229,57 @@ pub struct PluginManifest {
     pub compatibility: Option<PluginCompatibility>,
     #[serde(default)]
     pub models: Vec<ModelSpec>,
+    /// Asset types registered by this plugin.
+    ///
+    /// When a plugin declares asset types, the server creates generic CRUD
+    /// endpoints under `/api/v1/assets/plugin/{type_id}` and includes them
+    /// in the `GET /api/v1/asset-types` discovery response.
+    #[serde(default)]
+    pub assets: Vec<PluginAssetSpec>,
+}
+
+/// An asset type declared by a plugin in its manifest.
+///
+/// Each spec causes the server to register generic CRUD endpoints and
+/// include the type in the asset-type discovery API.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginAssetSpec {
+    /// URL-safe identifier, unique per plugin (e.g. `slint`).
+    pub type_id: String,
+    /// Human-readable label for the UI (e.g. "Slint Files").
+    pub label: String,
+    /// Allowed file extensions (e.g. `["slint"]`).
+    pub extensions: Vec<String>,
+    /// Maximum upload size in bytes (default: 1 MiB).
+    #[serde(default = "default_max_asset_size")]
+    pub max_size_bytes: usize,
+    /// Whether the file content is text (editable) or binary.
+    #[serde(default = "default_asset_content_type")]
+    pub content_type: AssetContentType,
+    /// UI icon hint (e.g. `code`, `music`, `image`, `type`, `file`).
+    pub icon_hint: Option<String>,
+    /// Which node parameter references this asset on drag-drop
+    /// (e.g. `slint_file`).
+    pub node_param: Option<String>,
+    /// Directory (relative to server CWD) containing bundled system assets.
+    /// User uploads go to a sibling `user/` directory derived from this path.
+    pub system_dir: Option<String>,
+}
+
+/// Whether a plugin asset is text (editable) or binary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AssetContentType {
+    Text,
+    Binary,
+}
+
+const fn default_max_asset_size() -> usize {
+    1_048_576 // 1 MiB
+}
+
+const fn default_asset_content_type() -> AssetContentType {
+    AssetContentType::Binary
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

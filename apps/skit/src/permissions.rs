@@ -201,6 +201,10 @@ impl Permissions {
                 // Users can access system and user font assets
                 "samples/fonts/system/*".to_string(),
                 "samples/fonts/user/*".to_string(),
+                // Users can access plugin-registered asset types
+                // (covers any plugin that declares assets in its manifest)
+                "samples/*/system/*".to_string(),
+                "samples/*/user/*".to_string(),
             ],
         }
     }

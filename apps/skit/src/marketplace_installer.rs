@@ -2108,6 +2108,7 @@ mod tests {
             },
             compatibility: None,
             models,
+            assets: Vec::new(),
         }
     }
 

@@ -3133,10 +3133,13 @@ pub fn create_app(
     .expect("Failed to initialize unified plugin manager");
     let plugin_manager = Arc::new(tokio::sync::Mutex::new(plugin_manager));
 
+    let plugin_asset_registry = crate::plugin_assets::PluginAssetRegistry::new();
+
     // Spawn background task to load plugins asynchronously to avoid blocking startup
     UnifiedPluginManager::spawn_load_existing(
         Arc::clone(&plugin_manager),
         config.resources.prewarm.clone(),
+        plugin_asset_registry.clone(),
     );
 
     let marketplace_jobs = crate::marketplace_installer::InstallJobQueue::new(
@@ -3181,6 +3184,7 @@ pub fn create_app(
         marketplace_jobs,
         auth,
         shutdown_tracker: crate::state::ShutdownTracker::default(),
+        plugin_asset_registry,
         #[cfg(feature = "moq")]
         moq_gateway,
         mse_gateway,
@@ -3268,7 +3272,8 @@ pub fn create_app(
         .merge(crate::samples::samples_router())
         .merge(crate::assets::assets_router())
         .merge(crate::assets::image_assets_router())
-        .merge(crate::assets::font_assets_router());
+        .merge(crate::assets::font_assets_router())
+        .merge(crate::plugin_assets::plugin_assets_router());
 
     // Add MoQ routes if feature is enabled
     #[cfg(feature = "moq")]

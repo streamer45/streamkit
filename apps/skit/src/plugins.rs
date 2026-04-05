@@ -453,6 +453,7 @@ impl UnifiedPluginManager {
     pub fn spawn_load_existing(
         manager: SharedUnifiedPluginManager,
         prewarm_config: crate::config::PrewarmConfig,
+        plugin_asset_registry: crate::plugin_assets::PluginAssetRegistry,
     ) {
         tokio::spawn(async move {
             info!("Starting background plugin loading");
@@ -461,7 +462,10 @@ impl UnifiedPluginManager {
                 let manager = Arc::clone(&manager);
                 move || {
                     let mut mgr = manager.blocking_lock();
-                    mgr.load_existing()
+                    let summaries = mgr.load_existing()?;
+                    let asset_specs = mgr.collect_plugin_asset_specs();
+                    drop(mgr);
+                    Ok::<_, anyhow::Error>((summaries, asset_specs))
                 }
             })
             .await
@@ -474,7 +478,7 @@ impl UnifiedPluginManager {
             };
 
             match result {
-                Ok(summaries) => {
+                Ok((summaries, asset_specs)) => {
                     if summaries.is_empty() {
                         info!("Background plugin loading completed (no plugins found)");
                     } else {
@@ -483,6 +487,11 @@ impl UnifiedPluginManager {
                             plugins = ?summaries.iter().map(|s| (s.kind.as_str(), s.plugin_type)).collect::<Vec<_>>(),
                             "Completed background plugin loading"
                         );
+                    }
+
+                    // Register plugin asset types
+                    for (plugin_id, node_kind, specs) in &asset_specs {
+                        plugin_asset_registry.register(plugin_id, node_kind, specs).await;
                     }
 
                     // Pre-warm plugins if configured
@@ -919,6 +928,28 @@ impl UnifiedPluginManager {
         path: P,
     ) -> Result<PluginSummary> {
         self.load_from_written_path(plugin_type, path.as_ref().to_path_buf())
+    }
+
+    /// Collect asset type declarations from all loaded plugins.
+    ///
+    /// For each loaded plugin, attempts to read a `plugin.yml` manifest from the
+    /// same directory as the plugin library.  Returns `(plugin_id, node_kind, specs)`
+    /// tuples for plugins that declare asset types.
+    pub fn collect_plugin_asset_specs(
+        &self,
+    ) -> Vec<(String, String, Vec<crate::marketplace::PluginAssetSpec>)> {
+        let mut result = Vec::new();
+
+        for (kind, managed) in &self.plugins {
+            let manifest = crate::plugin_assets::read_local_plugin_manifest(&managed.file_path);
+            if let Some(manifest) = manifest {
+                if !manifest.assets.is_empty() {
+                    result.push((manifest.id.clone(), kind.clone(), manifest.assets));
+                }
+            }
+        }
+
+        result
     }
 }
 

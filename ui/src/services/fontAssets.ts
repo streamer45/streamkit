@@ -7,6 +7,8 @@
  * via the CSS Font Loading API for accurate canvas previews.
  */
 
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+
 import type { FontAsset } from '@/types/generated/api-types';
 import { getLogger } from '@/utils/logger';
 
@@ -178,4 +180,46 @@ export async function deleteFontAsset(id: string): Promise<void> {
   }
 
   logger.info('Deleted font asset:', id);
+}
+
+// ── React Query hooks ───────────────────────────────────────────────────────
+
+/**
+ * Hook to fetch font assets with caching
+ */
+export function useFontAssets() {
+  return useQuery({
+    queryKey: ['fontAssets'],
+    queryFn: listFontAssets,
+    staleTime: 30_000,
+    refetchOnWindowFocus: true,
+  });
+}
+
+/**
+ * Hook to upload a font asset
+ */
+export function useUploadFontAsset() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: uploadFontAsset,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['fontAssets'] });
+    },
+  });
+}
+
+/**
+ * Hook to delete a font asset
+ */
+export function useDeleteFontAsset() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: deleteFontAsset,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['fontAssets'] });
+    },
+  });
 }

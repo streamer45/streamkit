@@ -44,6 +44,7 @@ mod marketplace_security;
 mod moq_gateway;
 mod mse_gateway;
 mod permissions;
+mod plugin_assets;
 mod plugin_paths;
 mod plugin_records;
 mod plugins;
