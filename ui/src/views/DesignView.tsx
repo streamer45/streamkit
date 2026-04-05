@@ -1048,6 +1048,7 @@ const DesignViewContent: React.FC = () => {
           break;
         case 'font':
           // Fonts are not droppable onto the canvas
+          setType(null);
           return;
       }
       setType(dragType);
