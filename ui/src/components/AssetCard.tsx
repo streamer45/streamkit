@@ -22,8 +22,6 @@ export type UnifiedAsset =
   | { type: 'font'; asset: FontAsset }
   | { type: 'plugin'; asset: PluginAsset; typeInfo: AssetTypeInfo };
 
-type AssetType = 'audio' | 'image' | 'font' | 'plugin';
-
 interface AssetCardProps {
   item: UnifiedAsset;
   onDelete?: (item: UnifiedAsset) => void;
@@ -83,10 +81,6 @@ function getIconBg(item: UnifiedAsset): string {
     case 'plugin':
       return 'rgba(245, 158, 11, 0.15)';
   }
-}
-
-function getId(item: UnifiedAsset): string {
-  return item.asset.id;
 }
 
 function getName(item: UnifiedAsset): string {
