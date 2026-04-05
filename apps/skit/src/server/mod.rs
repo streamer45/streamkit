@@ -1385,7 +1385,15 @@ async fn delete_plugin_handler(
     // Unregister any asset types owned by this plugin so the CRUD endpoints
     // stop serving stale types.  User-uploaded files are intentionally left
     // in place — they will become available again if the plugin is re-installed.
-    app_state.plugin_asset_registry.unregister_plugin(&summary.original_kind).await;
+    //
+    // For marketplace plugins use the authoritative `plugin_id` from the
+    // active record (matches `manifest.id` used during registration).
+    // For non-marketplace plugins fall back to `original_kind` which, by
+    // convention, equals the manifest `id`.
+    let unregister_id = active_record
+        .as_ref()
+        .map_or(&summary.original_kind, |(_, record)| &record.plugin_id);
+    app_state.plugin_asset_registry.unregister_plugin(unregister_id).await;
 
     if let Some((record_path, record)) = active_record {
         if query.keep_file {
