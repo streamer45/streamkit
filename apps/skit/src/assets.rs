@@ -1001,28 +1001,30 @@ async fn serve_image_asset_handler(
         _ => "application/octet-stream",
     };
 
-    // SVGs can contain <script> and event handlers; force download to prevent
-    // stored XSS when a user-uploaded SVG is opened directly in a browser tab.
-    let is_svg = extension == "svg" || extension == "svgz";
+    // SVGs can contain <script> and event handlers; restrict execution via
+    // CSP to prevent stored XSS when a user-uploaded SVG is opened in a browser tab.
+    let is_svg = extension == "svg";
+    let is_svgz = extension == "svgz";
 
     match fs::read(&file_path).await {
         Ok(data) => {
-            if is_svg {
-                (
-                    StatusCode::OK,
-                    [
-                        (header::CONTENT_TYPE, content_type.to_string()),
-                        (header::CACHE_CONTROL, "public, must-revalidate".to_string()),
-                        (header::CONTENT_DISPOSITION, "inline".to_string()),
-                        (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
-                        (
-                            header::CONTENT_SECURITY_POLICY,
-                            "default-src 'none'; style-src 'unsafe-inline'".to_string(),
-                        ),
-                    ],
-                    data,
-                )
-                    .into_response()
+            if is_svg || is_svgz {
+                let mut response = axum::http::Response::builder()
+                    .status(StatusCode::OK)
+                    .header(header::CONTENT_TYPE, content_type)
+                    .header(header::CACHE_CONTROL, "public, must-revalidate")
+                    .header(header::CONTENT_DISPOSITION, "inline")
+                    .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+                    .header(
+                        header::CONTENT_SECURITY_POLICY,
+                        "default-src 'none'; style-src 'unsafe-inline'",
+                    );
+                if is_svgz {
+                    response = response.header(header::CONTENT_ENCODING, "gzip");
+                }
+                #[allow(clippy::expect_used)]
+                // Builder only fails if status/headers are invalid; ours are all static.
+                response.body(axum::body::Body::from(data)).expect("valid response").into_response()
             } else {
                 (
                     StatusCode::OK,
