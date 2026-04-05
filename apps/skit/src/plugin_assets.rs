@@ -88,11 +88,7 @@ impl PluginAssetRegistry {
         let mut map = self.inner.write().await;
         for spec in specs {
             // Reject type_id values that aren't URL-safe identifiers.
-            if !spec
-                .type_id
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-            {
+            if !spec.type_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
                 warn!(
                     type_id = %spec.type_id,
                     plugin_id = %plugin_id,
@@ -394,17 +390,20 @@ async fn upload_handler(
 
             info!("Uploaded plugin asset: {} (type: {})", filename, type_id);
 
-            (StatusCode::CREATED, Json(PluginAsset {
-                id: filename,
-                name: display_name,
-                path: relative_path,
-                format: extension,
-                size_bytes: written_bytes as u64,
-                is_system: false,
-                type_id: asset_type.type_id.clone(),
-                plugin_id: asset_type.plugin_id.clone(),
-            }))
-            .into_response()
+            (
+                StatusCode::CREATED,
+                Json(PluginAsset {
+                    id: filename,
+                    name: display_name,
+                    path: relative_path,
+                    format: extension,
+                    size_bytes: written_bytes as u64,
+                    is_system: false,
+                    type_id: asset_type.type_id.clone(),
+                    plugin_id: asset_type.plugin_id.clone(),
+                }),
+            )
+                .into_response()
         },
         Err(e) => {
             error!("Failed to upload plugin asset: {}", e);
