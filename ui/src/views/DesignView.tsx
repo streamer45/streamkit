@@ -18,6 +18,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useShallow } from 'zustand/shallow';
 
+import type { UnifiedAsset } from '@/components/AssetCard';
 import ConfirmModal from '@/components/ConfirmModal';
 import ContextMenu from '@/components/ContextMenu';
 import CreateSessionModal from '@/components/CreateSessionModal';
@@ -339,6 +340,48 @@ function processAudioAssetDrop(
       outputs: fileReaderDefinition?.outputs || [],
       nodeDefinition: fileReaderDefinition,
       definition: { bidirectional: fileReaderDefinition?.bidirectional },
+      onParamChange: stableHandleParamChange,
+      onLabelChange: stableHandleLabelChange,
+    },
+    selected: true,
+  };
+
+  return { node: newNode, nodeId: newId };
+}
+
+/**
+ * Helper function to handle Slint asset drops — creates a plugin::native::slint node
+ */
+function processSlintAssetDrop(
+  assetPath: string,
+  position: { x: number; y: number },
+  filteredNodeDefinitions: NodeDefinition[],
+  getId: () => string,
+  nextLabelForKind: (kind: string) => string,
+  stableHandleParamChange: (nodeId: string, paramName: string, value: unknown) => void,
+  stableHandleLabelChange: (nodeId: string, newLabel: string) => void
+) {
+  const slintDefinition = filteredNodeDefinitions.find(
+    (def) => def.kind === 'plugin::native::slint'
+  );
+  const newId = getId();
+
+  const newNode = {
+    id: newId,
+    type: 'configurable',
+    dragHandle: '.drag-handle',
+    position,
+    data: {
+      label: nextLabelForKind('plugin::native::slint'),
+      kind: 'plugin::native::slint',
+      params: {
+        slint_file: assetPath,
+      },
+      paramSchema: slintDefinition?.param_schema,
+      inputs: slintDefinition?.inputs || [],
+      outputs: slintDefinition?.outputs || [],
+      nodeDefinition: slintDefinition,
+      definition: { bidirectional: slintDefinition?.bidirectional },
       onParamChange: stableHandleParamChange,
       onLabelChange: stableHandleLabelChange,
     },
@@ -915,10 +958,18 @@ const DesignViewContent: React.FC = () => {
         return;
       }
 
-      // Handle audio asset drop
-      if (type.startsWith('audio-asset:')) {
-        const assetPath = type.replace('audio-asset:', '');
-        const { node: newNode, nodeId: newId } = processAudioAssetDrop(
+      // Handle asset drops (audio, image, slint)
+      if (
+        type.startsWith('audio-asset:') ||
+        type.startsWith('image-asset:') ||
+        type.startsWith('slint-asset:')
+      ) {
+        const colonIdx = type.indexOf(':');
+        const prefix = type.slice(0, colonIdx);
+        const assetPath = type.slice(colonIdx + 1);
+
+        const processor = prefix === 'slint-asset' ? processSlintAssetDrop : processAudioAssetDrop;
+        const { node: newNode, nodeId: newId } = processor(
           assetPath,
           position,
           filteredNodeDefinitions,
@@ -983,10 +1034,21 @@ const DesignViewContent: React.FC = () => {
   );
 
   const onAssetDragStart = React.useCallback(
-    (event: React.DragEvent, asset: import('@/types/generated/api-types').AudioAsset) => {
-      const dragType = `audio-asset:${asset.path}`;
+    (event: React.DragEvent, item: UnifiedAsset) => {
+      let dragType: string;
+      switch (item.type) {
+        case 'image':
+          dragType = `image-asset:${item.asset.path}`;
+          break;
+        case 'slint':
+          dragType = `slint-asset:${item.asset.path}`;
+          break;
+        default:
+          dragType = `audio-asset:${item.asset.path}`;
+          break;
+      }
       setType(dragType);
-      event.dataTransfer.setData('application/x-streamkit-audio-asset', JSON.stringify(asset));
+      event.dataTransfer.setData('application/x-streamkit-asset', JSON.stringify(item));
       event.dataTransfer.effectAllowed = 'move';
     },
     [setType]
