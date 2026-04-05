@@ -147,7 +147,7 @@ mp4 = ["dep:shiguredo_mp4", "dep:schemars", "dep:tempfile", "dep:serde_json"]
 symphonia = ["dep:symphonia", "dep:schemars"]
 vp9 = ["dep:env-libvpx-sys", "dep:schemars"]
 av1 = ["dep:rav1e", "dep:rav1d", "dep:schemars"]
-openh264 = ["dep:openh264", "dep:schemars"]
+openh264 = ["dep:openh264", "dep:schemars", "dep:serde_json"]
 svt_av1 = ["dep:schemars", "dep:serde_json", "dep:pkg-config", "dep:cc"]
 # svt_av1_static downloads + builds SVT-AV1 at compile time (no system install).
 # Not in `default` to keep dev builds fast; enabled explicitly in Dockerfiles and
