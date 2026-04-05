@@ -819,7 +819,10 @@ pub fn plugin_assets_router() -> Router<Arc<AppState>> {
         .route("/api/v1/assets/plugin/{type_id}/{id}", delete(delete_handler))
         .route(
             "/api/v1/assets/plugin/{type_id}/file/{scope}/{id}",
-            get(serve_handler).put(update_handler).layer(DefaultBodyLimit::max(100 * 1024 * 1024)),
+            // 10 MiB — update_handler buffers body: String in memory before
+            // checking per-type max_size_bytes (typically 1 MiB).  Keep this
+            // well below the 100 MiB multipart upload limit to bound memory.
+            get(serve_handler).put(update_handler).layer(DefaultBodyLimit::max(10 * 1024 * 1024)),
         )
 }
 
