@@ -5,7 +5,7 @@
 import styled from '@emotion/styled';
 import { useQueries, useQueryClient } from '@tanstack/react-query';
 import { Upload } from 'lucide-react';
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useRef } from 'react';
 
 import { useToast } from '@/context/ToastContext';
 import { usePermissions } from '@/hooks/usePermissions';
@@ -299,6 +299,15 @@ function useAssetData(typeFilter: TypeFilter, assetTypes: AssetTypeInfo[] | unde
     })),
   });
 
+  // Extract the data arrays from the query results so useMemo deps are stable
+  // (useQueries returns a new array reference every render).
+  const pluginQueryData = pluginQueries.map((q) => q.data);
+  const prevPluginDataRef = useRef(pluginQueryData);
+  const stablePluginData = pluginQueryData.every((d, i) => d === prevPluginDataRef.current[i])
+    ? prevPluginDataRef.current
+    : pluginQueryData;
+  prevPluginDataRef.current = stablePluginData;
+
   // Mutations
   const uploadAudio = useUploadAudioAsset();
   const deleteAudio = useDeleteAudioAsset();
@@ -312,10 +321,10 @@ function useAssetData(typeFilter: TypeFilter, assetTypes: AssetTypeInfo[] | unde
   const pluginEntries = useMemo(
     () =>
       pluginTypesToFetch.map((typeInfo, i) => ({
-        data: pluginQueries[i]?.data,
+        data: stablePluginData[i],
         typeInfo,
       })),
-    [pluginTypesToFetch, pluginQueries]
+    [pluginTypesToFetch, stablePluginData]
   );
 
   const allItems = useMemo(

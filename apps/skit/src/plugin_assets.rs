@@ -53,6 +53,10 @@ pub struct RegisteredAssetType {
     /// Text or binary content.
     pub content_type: AssetContentType,
     /// UI icon hint.
+    ///
+    /// `Option` internally because plugins may omit it; the discovery API
+    /// response (`AssetTypeInfo.icon_hint`) always fills in a default of
+    /// `"file"` so the frontend never sees `None`.
     pub icon_hint: Option<String>,
     /// Node parameter that references this asset.
     pub node_param: Option<String>,
@@ -194,8 +198,8 @@ fn sanitize_filename(filename: &str) -> String {
         )
         .collect();
 
-    // Guard against inputs like "." or ".." that survive sanitization unchanged.
-    if sanitized == "." || sanitized == ".." {
+    // Guard against empty input and directory-reference results.
+    if sanitized.is_empty() || sanitized == "." || sanitized == ".." {
         return String::from("_invalid_");
     }
 
@@ -401,10 +405,25 @@ async fn upload_handler(
 
     let file_path = asset_type.user_dir.join(&filename);
 
-    // Defense-in-depth: validate the resolved path stays within the user directory
-    // before writing, in case sanitize_filename has a bypass.
-    if let Err(e) = validate_file_in_directory(&file_path, &asset_type.user_dir) {
-        return e.into_response();
+    // Defense-in-depth: verify the user directory (which now exists after
+    // create_dir_all) canonicalizes to where we expect.  We cannot
+    // canonicalize `file_path` itself because the file doesn't exist yet.
+    // Instead we canonicalize the parent and check the filename is safe.
+    {
+        let canonical_dir = match asset_type.user_dir.canonicalize() {
+            Ok(d) => d,
+            Err(e) => {
+                return PluginAssetError::IoError(format!("Failed to resolve directory: {e}"))
+                    .into_response()
+            },
+        };
+        let target = canonical_dir.join(&filename);
+        // After sanitization the filename should never contain path separators,
+        // but verify the joined result is still inside the directory.
+        if !target.starts_with(&canonical_dir) {
+            error!("Upload path escapes user directory: {:?} not in {:?}", target, canonical_dir);
+            return PluginAssetError::Forbidden.into_response();
+        }
     }
 
     // Stream to disk with size enforcement.
@@ -462,11 +481,9 @@ async fn delete_handler(
 
     let file_path = asset_type.user_dir.join(&id);
 
-    if !file_path.exists() {
-        return PluginAssetError::NotFound(id).into_response();
-    }
-
     // Verify the file is inside the user directory (path traversal protection).
+    // Also returns NotFound if the file doesn't exist (avoids TOCTOU with a
+    // separate exists() check).
     if let Err(e) = validate_file_in_directory(&file_path, &asset_type.user_dir) {
         return e.into_response();
     }
@@ -516,11 +533,18 @@ async fn serve_handler(
         return PluginAssetError::Forbidden.into_response();
     }
 
-    if !file_path.exists() {
-        return PluginAssetError::NotFound(id).into_response();
+    // Validate extension against registered type before serving.
+    let extension =
+        file_path.extension().and_then(|e| e.to_str()).map(str::to_lowercase).unwrap_or_default();
+    if !asset_type.extensions.iter().any(|e| e.eq_ignore_ascii_case(&extension)) {
+        return PluginAssetError::InvalidFormat(format!(
+            "File extension '{extension}' is not permitted for asset type '{type_id}'"
+        ))
+        .into_response();
     }
 
-    // Symlink-safe canonical path validation (same as delete/update handlers).
+    // Canonical path validation — also returns NotFound if the file doesn't
+    // exist, avoiding a TOCTOU race with a separate exists() check.
     if let Err(e) = validate_file_in_directory(&file_path, dir) {
         return e.into_response();
     }
@@ -588,10 +612,8 @@ async fn update_handler(
 
     let file_path = asset_type.user_dir.join(&id);
 
-    if !file_path.exists() {
-        return PluginAssetError::NotFound(id.clone()).into_response();
-    }
-
+    // Canonical path validation — also returns NotFound if the file doesn't
+    // exist, avoiding a TOCTOU race with a separate exists() check.
     if let Err(e) = validate_file_in_directory(&file_path, &asset_type.user_dir) {
         return e.into_response();
     }
@@ -758,9 +780,15 @@ fn validate_file_in_directory(
     file_path: &std::path::Path,
     expected_dir: &std::path::Path,
 ) -> Result<(), PluginAssetError> {
-    let canonical = file_path
-        .canonicalize()
-        .map_err(|e| PluginAssetError::IoError(format!("Failed to resolve file path: {e}")))?;
+    let canonical = file_path.canonicalize().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            PluginAssetError::NotFound(
+                file_path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default(),
+            )
+        } else {
+            PluginAssetError::IoError(format!("Failed to resolve file path: {e}"))
+        }
+    })?;
 
     let canonical_dir = expected_dir
         .canonicalize()
@@ -964,7 +992,7 @@ mod tests {
 
     #[test]
     fn sanitize_handles_empty_string() {
-        assert_eq!(sanitize_filename(""), "");
+        assert_eq!(sanitize_filename(""), "_invalid_");
     }
 
     #[test]

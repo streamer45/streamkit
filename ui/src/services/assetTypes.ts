@@ -23,7 +23,7 @@ const logger = getLogger('assetTypes');
  * Fetches all registered asset types from the server.
  */
 export async function listAssetTypes(): Promise<AssetTypeInfo[]> {
-  logger.info('Fetching asset types');
+  logger.debug('Fetching asset types');
 
   const response = await fetchApi('/api/v1/asset-types', {
     method: 'GET',
@@ -39,7 +39,7 @@ export async function listAssetTypes(): Promise<AssetTypeInfo[]> {
   }
 
   const types: AssetTypeInfo[] = await response.json();
-  logger.info('Fetched', types.length, 'asset types');
+  logger.debug('Fetched', types.length, 'asset types');
 
   return types;
 }

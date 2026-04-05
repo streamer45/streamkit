@@ -1255,8 +1255,9 @@ impl PluginInstaller {
 
         // Register asset types declared by this plugin's manifest.
         if !manifest.assets.is_empty() {
-            let node_kind = format!("plugin::native::{}", manifest.id);
-            self.plugin_asset_registry.register(&manifest.id, &node_kind, &manifest.assets).await;
+            self.plugin_asset_registry
+                .register(&manifest.id, expected_kind, &manifest.assets)
+                .await;
         }
 
         Ok(summary)

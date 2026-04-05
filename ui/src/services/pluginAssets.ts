@@ -105,14 +105,24 @@ export async function deletePluginAsset(typeId: string, id: string): Promise<voi
 
 /**
  * Hook to upload a plugin asset.
+ *
+ * When `typeId` is empty (no plugin type selected), the mutation is a no-op
+ * to avoid posting to an invalid endpoint.
  */
 export function useUploadPluginAsset(typeId: string) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (file: File) => uploadPluginAsset(typeId, file),
+    mutationFn: (file: File) => {
+      if (!typeId) {
+        return Promise.reject(new Error('No plugin asset type selected'));
+      }
+      return uploadPluginAsset(typeId, file);
+    },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['pluginAssets', typeId] });
+      if (typeId) {
+        queryClient.invalidateQueries({ queryKey: ['pluginAssets', typeId] });
+      }
     },
   });
 }
