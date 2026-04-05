@@ -88,7 +88,9 @@ impl PluginAssetRegistry {
         let mut map = self.inner.write().await;
         for spec in specs {
             // Reject type_id values that aren't URL-safe identifiers.
-            if !spec.type_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+            if spec.type_id.is_empty()
+                || !spec.type_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            {
                 warn!(
                     type_id = %spec.type_id,
                     plugin_id = %plugin_id,
