@@ -535,6 +535,10 @@ async fn update_handler(
         return e.into_response();
     }
 
+    if body.len() > asset_type.max_size_bytes {
+        return PluginAssetError::FileTooLarge(asset_type.max_size_bytes).into_response();
+    }
+
     if let Err(e) = fs::write(&file_path, body.as_bytes()).await {
         error!("Failed to write plugin asset {:?}: {}", file_path, e);
         return PluginAssetError::IoError(format!("Failed to write file: {e}")).into_response();
