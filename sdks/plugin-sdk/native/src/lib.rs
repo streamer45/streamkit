@@ -194,7 +194,8 @@ pub struct PooledVideoBuffer {
 
 impl PooledVideoBuffer {
     /// Writable slice into the pooled buffer.
-    pub const fn as_mut_slice(&mut self) -> &mut [u8] {
+    #[allow(clippy::missing_const_for_fn)] // Dereferences a heap pointer; will never be called in const context.
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
         // SAFETY: `data` was returned by the host's `alloc_video` callback
         // and is valid for `len` bytes. Exclusive access is guaranteed by
         // `&mut self` — no other reference exists.
@@ -214,7 +215,8 @@ impl PooledVideoBuffer {
     }
 
     /// Mark the buffer as consumed (ownership transferred to the host).
-    const fn consume(&mut self) -> (*mut std::os::raw::c_void, *const u8) {
+    #[allow(clippy::missing_const_for_fn)] // Mutates runtime state; const context is meaningless here.
+    fn consume(&mut self) -> (*mut std::os::raw::c_void, *const u8) {
         self.consumed = true;
         (self.handle, self.data)
     }
@@ -241,7 +243,8 @@ pub struct PooledAudioBuffer {
 
 impl PooledAudioBuffer {
     /// Writable slice into the pooled buffer.
-    pub const fn as_mut_slice(&mut self) -> &mut [f32] {
+    #[allow(clippy::missing_const_for_fn)] // Dereferences a heap pointer; will never be called in const context.
+    pub fn as_mut_slice(&mut self) -> &mut [f32] {
         // SAFETY: same as PooledVideoBuffer.
         unsafe { std::slice::from_raw_parts_mut(self.data, self.sample_count) }
     }
@@ -259,7 +262,8 @@ impl PooledAudioBuffer {
     }
 
     /// Mark the buffer as consumed (ownership transferred to the host).
-    const fn consume(&mut self) -> (*mut std::os::raw::c_void, *const f32) {
+    #[allow(clippy::missing_const_for_fn)] // Mutates runtime state; const context is meaningless here.
+    fn consume(&mut self) -> (*mut std::os::raw::c_void, *const f32) {
         self.consumed = true;
         (self.handle, self.data)
     }
@@ -1280,7 +1284,7 @@ macro_rules! native_plugin_entry {
             handle: $crate::types::CPluginHandle,
             callbacks: *const $crate::types::CNodeCallbacks,
         ) -> $crate::types::CResult {
-            tracing::info!("__plugin_flush called");
+            tracing::trace!("__plugin_flush called");
             if handle.is_null() || callbacks.is_null() {
                 tracing::error!("Handle or callbacks is null");
                 let err_msg = $crate::conversions::error_to_c("Invalid handle or callbacks (null)");
@@ -1288,14 +1292,14 @@ macro_rules! native_plugin_entry {
             }
 
             let instance = unsafe { &mut *(handle as *mut $plugin_type) };
-            tracing::info!("Got instance pointer");
+            tracing::trace!("Got instance pointer");
 
             let output_sender = unsafe { $crate::OutputSender::from_node_callbacks(callbacks) };
-            tracing::info!("Created OutputSender, calling instance.flush()");
+            tracing::trace!("Created OutputSender, calling instance.flush()");
 
             match instance.flush(&output_sender) {
                 Ok(()) => {
-                    tracing::info!("instance.flush() returned Ok");
+                    tracing::trace!("instance.flush() returned Ok");
                     $crate::types::CResult::success()
                 },
                 Err(e) => {
