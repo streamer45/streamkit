@@ -1257,7 +1257,6 @@ impl CompositorNode {
                 // For vector overlays with unchanged path but changed dimensions,
                 // re-rasterize from the cached tree (avoids file I/O + XML re-parse).
                 if let OverlaySourceKind::Vector { ref tree } = existing.source_kind {
-                    let old_cfg = old_config.image_overlays.iter().find(|c| c.id == img_cfg.id);
                     if old_cfg.is_some_and(|oc| oc.asset_path == img_cfg.asset_path) {
                         match overlay::rasterize_svg_tree(
                             tree,
@@ -1267,7 +1266,7 @@ impl CompositorNode {
                             Ok((rgba_data, w, h, rect)) => {
                                 result.push(Arc::new(DecodedOverlay {
                                     id: img_cfg.id.clone(),
-                                    rgba_data,
+                                    rgba_data: Arc::from(rgba_data),
                                     width: w,
                                     height: h,
                                     rect,

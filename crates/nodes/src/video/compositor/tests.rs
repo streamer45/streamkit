@@ -2099,7 +2099,7 @@ fn test_resolve_scene_overlay_geometry() {
 
     let text_overlay = Arc::new(overlay::DecodedOverlay {
         id: "text_0".to_string(),
-        rgba_data: vec![0u8; 4],
+        rgba_data: Arc::from(vec![0u8; 4]),
         width: 200,
         height: 40,
         rect: Rect { x: 50, y: 100, width: 200, height: 40 },

@@ -145,7 +145,7 @@ fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
     let text_ov_h = canvas_h / 8;
     let text_overlay = Arc::new(DecodedOverlay {
         id: "bench-text".to_string(),
-        rgba_data: generate_text_overlay(text_ov_w, text_ov_h),
+        rgba_data: Arc::from(generate_text_overlay(text_ov_w, text_ov_h)),
         width: text_ov_w,
         height: text_ov_h,
         rect: Rect {
@@ -169,7 +169,7 @@ fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
     let logo_h = canvas_h / 8;
     let image_overlay = Arc::new(DecodedOverlay {
         id: "bench-image".to_string(),
-        rgba_data: generate_image_overlay(logo_w, logo_h),
+        rgba_data: Arc::from(generate_image_overlay(logo_w, logo_h)),
         width: logo_w,
         height: logo_h,
         rect: Rect { x: 20, y: 20, width: logo_w, height: logo_h },

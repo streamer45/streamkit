@@ -555,7 +555,12 @@ async fn process_image_entry(
     // SVGs use the resvg parser; raster formats use ImageReader::open().
     let (width, height) = if extension == "svg" {
         let svg_data = fs::read(&path).await.ok()?;
-        streamkit_nodes::video::compositor::overlay::svg_viewbox_dimensions(&svg_data)?
+        // SVG parsing is CPU-intensive; run off the async runtime.
+        tokio::task::spawn_blocking(move || {
+            streamkit_nodes::video::compositor::overlay::svg_viewbox_dimensions(&svg_data)
+        })
+        .await
+        .ok()??
     } else {
         // Use ImageReader::open() which reads directly from file rather than
         // loading the entire file into memory first.
@@ -737,19 +742,32 @@ async fn process_image_upload(
             },
         };
 
-        let dims = streamkit_nodes::video::compositor::overlay::svg_viewbox_dimensions(&file_data);
-        let (width, height) = if let Some((w, h)) = dims {
-            if w > max_image_dimension || h > max_image_dimension {
+        // SVG parsing (Tree::from_data) is CPU-intensive; run off the async runtime.
+        let dims = tokio::task::spawn_blocking(move || {
+            streamkit_nodes::video::compositor::overlay::svg_viewbox_dimensions(&file_data)
+        })
+        .await;
+        let (width, height) = match dims {
+            Ok(Some((w, h))) => {
+                if w > max_image_dimension || h > max_image_dimension {
+                    let _ = fs::remove_file(&file_path).await;
+                    return Err(AssetsError::InvalidFormat(format!(
+                        "SVG dimensions {w}x{h} exceed maximum \
+                         {max_image_dimension}x{max_image_dimension}"
+                    )));
+                }
+                (w, h)
+            },
+            Ok(None) => {
                 let _ = fs::remove_file(&file_path).await;
-                return Err(AssetsError::InvalidFormat(format!(
-                    "SVG dimensions {w}x{h} exceed maximum \
-                     {max_image_dimension}x{max_image_dimension}"
-                )));
-            }
-            (w, h)
-        } else {
-            let _ = fs::remove_file(&file_path).await;
-            return Err(AssetsError::InvalidFormat("Uploaded file is not a valid SVG".to_string()));
+                return Err(AssetsError::InvalidFormat(
+                    "Uploaded file is not a valid SVG".to_string(),
+                ));
+            },
+            Err(e) => {
+                let _ = fs::remove_file(&file_path).await;
+                return Err(AssetsError::IoError(format!("SVG validation task failed: {e}")));
+            },
         };
 
         let name_without_ext = filename.trim_end_matches(&format!(".{extension}"));
@@ -983,16 +1001,40 @@ async fn serve_image_asset_handler(
         _ => "application/octet-stream",
     };
 
+    // SVGs can contain <script> and event handlers; force download to prevent
+    // stored XSS when a user-uploaded SVG is opened directly in a browser tab.
+    let is_svg = extension == "svg";
+
     match fs::read(&file_path).await {
-        Ok(data) => (
-            StatusCode::OK,
-            [
-                (header::CONTENT_TYPE, content_type.to_string()),
-                (header::CACHE_CONTROL, "public, must-revalidate".to_string()),
-            ],
-            data,
-        )
-            .into_response(),
+        Ok(data) => {
+            if is_svg {
+                (
+                    StatusCode::OK,
+                    [
+                        (header::CONTENT_TYPE, content_type.to_string()),
+                        (header::CACHE_CONTROL, "public, must-revalidate".to_string()),
+                        (header::CONTENT_DISPOSITION, "attachment".to_string()),
+                        (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+                        (
+                            header::CONTENT_SECURITY_POLICY,
+                            "default-src 'none'; style-src 'unsafe-inline'".to_string(),
+                        ),
+                    ],
+                    data,
+                )
+                    .into_response()
+            } else {
+                (
+                    StatusCode::OK,
+                    [
+                        (header::CONTENT_TYPE, content_type.to_string()),
+                        (header::CACHE_CONTROL, "public, must-revalidate".to_string()),
+                    ],
+                    data,
+                )
+                    .into_response()
+            }
+        },
         Err(e) => {
             error!("Failed to read image file {:?}: {}", file_path, e);
             AssetsError::IoError(format!("Failed to read file: {e}")).into_response()

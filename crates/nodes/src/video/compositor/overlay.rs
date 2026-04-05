@@ -35,7 +35,7 @@ pub enum OverlaySourceKind {
 pub struct DecodedOverlay {
     /// Stable identifier carried through from the config.
     pub id: String,
-    pub rgba_data: Vec<u8>,
+    pub rgba_data: Arc<[u8]>,
     pub width: u32,
     pub height: u32,
     pub rect: Rect,
@@ -154,7 +154,7 @@ pub fn decode_image_overlay(
 
         Ok(DecodedOverlay {
             id: config.id.clone(),
-            rgba_data: scaled,
+            rgba_data: Arc::from(scaled),
             width: fit_w,
             height: fit_h,
             rect,
@@ -170,7 +170,7 @@ pub fn decode_image_overlay(
     } else {
         Ok(DecodedOverlay {
             id: config.id.clone(),
-            rgba_data: rgba.into_raw(),
+            rgba_data: Arc::from(rgba.into_raw()),
             width: w,
             height: h,
             rect: config.transform.rect,
@@ -202,6 +202,19 @@ fn prescale_rgba(src: &[u8], sw: u32, sh: u32, dw: u32, dh: u32) -> Vec<u8> {
 }
 
 // ── SVG helpers ──────────────────────────────────────────────────────────────
+
+/// Build `usvg::Options` with the image href resolver disabled so that
+/// `<image href="file:///etc/shadow"/>` (or any other local/remote reference)
+/// inside an uploaded SVG cannot trigger server-side file reads.
+fn safe_svg_options() -> resvg::usvg::Options<'static> {
+    resvg::usvg::Options {
+        image_href_resolver: resvg::usvg::ImageHrefResolver {
+            resolve_data: Box::new(|_, _, _| None),
+            resolve_string: Box::new(|_, _| None),
+        },
+        ..Default::default()
+    }
+}
 
 /// Check whether the given bytes represent an SVG file, using both the
 /// file extension and a content sniff for `<svg`.
@@ -286,7 +299,7 @@ fn rasterize_svg(
     svg_data: &[u8],
     max_dimension: u32,
 ) -> Result<DecodedOverlay, StreamKitError> {
-    let tree = resvg::usvg::Tree::from_data(svg_data, &resvg::usvg::Options::default())
+    let tree = resvg::usvg::Tree::from_data(svg_data, &safe_svg_options())
         .map_err(|e| StreamKitError::Configuration(format!("Failed to parse SVG: {e}")))?;
 
     let (rgba_data, w, h, rect) = rasterize_svg_tree(&tree, config, max_dimension)?;
@@ -294,7 +307,7 @@ fn rasterize_svg(
 
     Ok(DecodedOverlay {
         id: config.id.clone(),
-        rgba_data,
+        rgba_data: Arc::from(rgba_data),
         width: w,
         height: h,
         rect,
@@ -312,10 +325,13 @@ fn rasterize_svg(
 /// Extract viewBox dimensions from raw SVG data.
 /// Used by skit asset pipeline without pulling resvg as a direct dependency.
 pub fn svg_viewbox_dimensions(data: &[u8]) -> Option<(u32, u32)> {
-    let tree = resvg::usvg::Tree::from_data(data, &resvg::usvg::Options::default()).ok()?;
+    let tree = resvg::usvg::Tree::from_data(data, &safe_svg_options()).ok()?;
     let size = tree.size();
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    Some((size.width() as u32, size.height() as u32))
+    let w = (size.width().ceil() as u32).max(1);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let h = (size.height().ceil() as u32).max(1);
+    Some((w, h))
 }
 
 /// Test-only re-export of [`unpremultiply_alpha`].
@@ -605,7 +621,7 @@ pub fn rasterize_text_overlay(
 
     DecodedOverlay {
         id: config.id.clone(),
-        rgba_data,
+        rgba_data: Arc::from(rgba_data),
         width: w,
         height: h,
         rect: {
