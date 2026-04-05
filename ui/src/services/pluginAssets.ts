@@ -131,4 +131,3 @@ export function useUploadPluginAsset(typeId: string) {
     },
   });
 }
-

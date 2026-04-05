@@ -13,11 +13,7 @@ import { useAudioAssets, useUploadAudioAsset, useDeleteAudioAsset } from '@/serv
 import { useAssetTypes } from '@/services/assetTypes';
 import { useFontAssets, useUploadFontAsset, useDeleteFontAsset } from '@/services/fontAssets';
 import { useImageAssets, useUploadImageAsset, useDeleteImageAsset } from '@/services/imageAssets';
-import {
-  usePluginAssets,
-  useUploadPluginAsset,
-  deletePluginAsset,
-} from '@/services/pluginAssets';
+import { usePluginAssets, useUploadPluginAsset, deletePluginAsset } from '@/services/pluginAssets';
 import type { AssetTypeInfo, AudioAsset, FontAsset, ImageAsset } from '@/types/generated/api-types';
 
 import { AssetCard, type UnifiedAsset } from './AssetCard';
