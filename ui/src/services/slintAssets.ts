@@ -182,14 +182,3 @@ export function useDeleteSlintAsset() {
   });
 }
 
-/**
- * Hook to fetch the content of a specific slint asset file
- */
-export function useSlintAssetContent(scope: string, id: string) {
-  return useQuery({
-    queryKey: ['slintAssetContent', scope, id],
-    queryFn: () => fetchSlintAssetContent(scope, id),
-    enabled: !!scope && !!id,
-    staleTime: 30000,
-  });
-}
