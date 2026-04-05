@@ -201,6 +201,9 @@ impl Permissions {
                 // Users can access system and user font assets
                 "samples/fonts/system/*".to_string(),
                 "samples/fonts/user/*".to_string(),
+                // Users can access system and user slint assets
+                "samples/slint/system/*".to_string(),
+                "samples/slint/user/*".to_string(),
             ],
         }
     }
@@ -246,6 +249,8 @@ impl Permissions {
                 "samples/images/system/*".to_string(),
                 // Viewers can see system font assets
                 "samples/fonts/system/*".to_string(),
+                // Viewers can see system slint assets
+                "samples/slint/system/*".to_string(),
             ],
         }
     }
