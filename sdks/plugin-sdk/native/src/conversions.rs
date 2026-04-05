@@ -510,6 +510,9 @@ pub unsafe fn packet_from_c(c_packet: *const CPacket) -> Result<Packet, String> 
         CPacketType::RawAudio => {
             let c_frame = &*c_pkt.data.cast::<CAudioFrame>();
             if c_frame.samples.is_null() {
+                if !c_frame.buffer_handle.is_null() {
+                    drop(Box::from_raw(c_frame.buffer_handle.cast::<PooledSamples>()));
+                }
                 return Err("Null samples pointer in audio frame".to_string());
             }
 
@@ -592,6 +595,9 @@ pub unsafe fn packet_from_c(c_packet: *const CPacket) -> Result<Packet, String> 
         CPacketType::RawVideo => {
             let c_frame = &*c_pkt.data.cast::<CVideoFrame>();
             if c_frame.data.is_null() {
+                if !c_frame.buffer_handle.is_null() {
+                    drop(Box::from_raw(c_frame.buffer_handle.cast::<PooledVideoData>()));
+                }
                 return Err("Null data pointer in video frame".to_string());
             }
             let pixel_format = pixel_format_from_c(c_frame.pixel_format);
@@ -755,6 +761,66 @@ mod tests {
             let result_cstr = CStr::from_ptr(c_msg);
             assert_eq!(result_cstr.to_string_lossy(), "hello");
             free_c_string(c_msg);
+        }
+    }
+
+    /// Regression test: packet_from_c must free a pooled video buffer_handle
+    /// when the data pointer is null, rather than leaking it.
+    #[test]
+    fn packet_from_c_frees_video_handle_on_null_data() {
+        let pooled = PooledVideoData::from_vec(vec![0u8; 1024]);
+        let handle = Box::into_raw(Box::new(pooled)).cast::<c_void>();
+
+        let c_frame = CVideoFrame {
+            width: 640,
+            height: 480,
+            pixel_format: CPixelFormat::Rgba8,
+            data: std::ptr::null(),
+            data_len: 0,
+            buffer_handle: handle,
+            metadata: std::ptr::null(),
+        };
+
+        let c_pkt = CPacket {
+            packet_type: CPacketType::RawVideo,
+            data: std::ptr::from_ref(&c_frame).cast(),
+            len: std::mem::size_of::<CVideoFrame>(),
+        };
+
+        let result = unsafe { packet_from_c(&raw const c_pkt) };
+        match result {
+            Err(msg) => assert!(msg.contains("Null data pointer"), "unexpected: {msg}"),
+            Ok(_) => panic!("expected error for null video data pointer"),
+        }
+        // If the handle were leaked, Miri / DHAT would catch it.
+    }
+
+    /// Regression test: packet_from_c must free a pooled audio buffer_handle
+    /// when the samples pointer is null, rather than leaking it.
+    #[test]
+    fn packet_from_c_frees_audio_handle_on_null_samples() {
+        let pooled = PooledSamples::from_vec(vec![0.0f32; 960]);
+        let handle = Box::into_raw(Box::new(pooled)).cast::<c_void>();
+
+        let c_frame = CAudioFrame {
+            sample_rate: 48_000,
+            channels: 1,
+            samples: std::ptr::null(),
+            sample_count: 0,
+            buffer_handle: handle,
+            metadata: std::ptr::null(),
+        };
+
+        let c_pkt = CPacket {
+            packet_type: CPacketType::RawAudio,
+            data: std::ptr::from_ref(&c_frame).cast(),
+            len: std::mem::size_of::<CAudioFrame>(),
+        };
+
+        let result = unsafe { packet_from_c(&raw const c_pkt) };
+        match result {
+            Err(msg) => assert!(msg.contains("Null samples pointer"), "unexpected: {msg}"),
+            Ok(_) => panic!("expected error for null audio samples pointer"),
         }
     }
 }

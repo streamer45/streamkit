@@ -20,7 +20,7 @@ use std::os::raw::{c_char, c_void};
 ///     dynamic runtime parameter discovery.
 /// v5: Added `on_upstream_hint` for receiving advisory hints from
 ///     downstream consumers (e.g. preferred output resolution).
-/// v6: Added frame pool allocation (`CNodeCallbacks`, `CAllocResult`,
+/// v6: Added frame pool allocation (`CNodeCallbacks`, `CAllocVideoResult`,
 ///     `CAllocAudioResult`).  Consolidated per-call callback parameters
 ///     into a single `CNodeCallbacks` struct.  Extended `CVideoFrame` and
 ///     `CAudioFrame` with `buffer_handle` and `metadata` fields.
@@ -453,7 +453,7 @@ pub struct CNativePluginAPI {
 /// buffer until it either passes it back via `CVideoFrame::buffer_handle`
 /// or calls `free_fn(handle)` to release it without sending.
 #[repr(C)]
-pub struct CAllocResult {
+pub struct CAllocVideoResult {
     /// Pointer to the writable buffer, or null on failure.
     pub data: *mut u8,
     /// Usable byte count (≥ requested `min_bytes`).
@@ -466,7 +466,7 @@ pub struct CAllocResult {
     pub free_fn: Option<extern "C" fn(*mut c_void)>,
 }
 
-impl CAllocResult {
+impl CAllocVideoResult {
     /// Null / failed allocation sentinel.
     pub const fn null() -> Self {
         Self { data: std::ptr::null_mut(), len: 0, handle: std::ptr::null_mut(), free_fn: None }
@@ -503,7 +503,7 @@ impl CAllocAudioResult {
 ///
 /// `min_bytes` — minimum buffer size in bytes.
 /// `user_data` — opaque pointer provided by the host.
-pub type CAllocVideoFn = extern "C" fn(usize, *mut c_void) -> CAllocResult;
+pub type CAllocVideoFn = extern "C" fn(usize, *mut c_void) -> CAllocVideoResult;
 
 /// Callback: allocate an audio buffer from the host's frame pool.
 ///
@@ -516,8 +516,14 @@ pub type CAllocAudioFn = extern "C" fn(usize, *mut c_void) -> CAllocAudioResult;
 ///
 /// Replaces the previous positional callback + user-data pairs with a
 /// single struct pointer, making the ABI easier to extend in the future.
+///
+/// `struct_size` is set by the host so that a v7 plugin running on a v6
+/// host can detect which fields are present.
 #[repr(C)]
 pub struct CNodeCallbacks {
+    /// Size of this struct in bytes (set by the host).
+    pub struct_size: usize,
+
     // ── output ──────────────────────────────────────────────────────────
     pub output_callback: COutputCallback,
     pub output_user_data: *mut c_void,

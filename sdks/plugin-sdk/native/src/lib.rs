@@ -53,6 +53,25 @@ use streamkit_core::{InputPin, OutputPin, PinCardinality, Resource};
 
 use logger::Logger;
 
+/// Convert a [`CResult`] from a host callback into a Rust `Result`.
+///
+/// # Safety
+///
+/// If `result.error_message` is non-null it must point to a valid,
+/// NUL-terminated C string.
+unsafe fn result_from_c(result: types::CResult) -> Result<(), String> {
+    if result.success {
+        return Ok(());
+    }
+    let error_msg = if result.error_message.is_null() {
+        "Unknown error".to_string()
+    } else {
+        conversions::c_str_to_string(result.error_message)
+            .unwrap_or_else(|_| "Unknown error".to_string())
+    };
+    Err(error_msg)
+}
+
 pub use streamkit_core;
 pub use types::*;
 
@@ -63,7 +82,7 @@ pub mod prelude {
     pub use crate::{
         native_plugin_entry, native_source_plugin_entry, plugin_debug, plugin_error, plugin_info,
         plugin_log, plugin_trace, plugin_warn, NativeProcessorNode, NativeSourceNode, NodeMetadata,
-        OutputSender, ResourceSupport, SourceConfig,
+        OutputSender, PooledAudioBuffer, PooledVideoBuffer, ResourceSupport, SourceConfig,
     };
     pub use streamkit_core::types::{AudioFrame, Packet, PacketType};
     pub use streamkit_core::{InputPin, OutputPin, PinCardinality, Resource, UpstreamHint};
@@ -294,19 +313,8 @@ impl OutputSender {
             cb.output_user_data,
         );
 
-        if result.success {
-            Ok(())
-        } else {
-            let error_msg = if result.error_message.is_null() {
-                "Unknown error".to_string()
-            } else {
-                unsafe {
-                    conversions::c_str_to_string(result.error_message)
-                        .unwrap_or_else(|_| "Unknown error".to_string())
-                }
-            };
-            Err(error_msg)
-        }
+        // SAFETY: CResult from host callback; error_message is a valid C string if non-null.
+        unsafe { result_from_c(result) }
     }
 
     // ── Frame pool allocation ─────────────────────────────────────────────
@@ -357,14 +365,12 @@ impl OutputSender {
     ///
     /// Returns an error if the pin name is invalid or the host rejects the
     /// packet.
-    #[allow(clippy::too_many_arguments)] // Mirrors the frame fields; a builder would add overhead on the FFI hot path.
     pub fn send_video(
         &self,
         pin: &str,
         width: u32,
         height: u32,
         pixel_format: streamkit_core::types::PixelFormat,
-        data_len: usize,
         mut buf: PooledVideoBuffer,
         metadata: Option<&streamkit_core::types::PacketMetadata>,
     ) -> Result<(), String> {
@@ -381,7 +387,7 @@ impl OutputSender {
             height,
             pixel_format: conversions::pixel_format_to_c(pixel_format),
             data: data_ptr,
-            data_len,
+            data_len: buf.len(),
             buffer_handle: handle,
             metadata: c_meta_ptr,
         };
@@ -393,19 +399,8 @@ impl OutputSender {
         };
 
         let result = (cb.output_callback)(pin_c.as_ptr(), &raw const c_pkt, cb.output_user_data);
-        if result.success {
-            Ok(())
-        } else {
-            let error_msg = if result.error_message.is_null() {
-                "Unknown error".to_string()
-            } else {
-                unsafe {
-                    conversions::c_str_to_string(result.error_message)
-                        .unwrap_or_else(|_| "Unknown error".to_string())
-                }
-            };
-            Err(error_msg)
-        }
+        // SAFETY: CResult from host callback; error_message is a valid C string if non-null.
+        unsafe { result_from_c(result) }
     }
 
     /// Send an audio frame using a pool-allocated buffer (zero-copy path).
@@ -421,7 +416,6 @@ impl OutputSender {
         pin: &str,
         sample_rate: u32,
         channels: u16,
-        sample_count: usize,
         mut buf: PooledAudioBuffer,
         metadata: Option<&streamkit_core::types::PacketMetadata>,
     ) -> Result<(), String> {
@@ -437,7 +431,7 @@ impl OutputSender {
             sample_rate,
             channels,
             samples: data_ptr,
-            sample_count,
+            sample_count: buf.sample_count(),
             buffer_handle: handle,
             metadata: c_meta_ptr,
         };
@@ -449,19 +443,8 @@ impl OutputSender {
         };
 
         let result = (cb.output_callback)(pin_c.as_ptr(), &raw const c_pkt, cb.output_user_data);
-        if result.success {
-            Ok(())
-        } else {
-            let error_msg = if result.error_message.is_null() {
-                "Unknown error".to_string()
-            } else {
-                unsafe {
-                    conversions::c_str_to_string(result.error_message)
-                        .unwrap_or_else(|_| "Unknown error".to_string())
-                }
-            };
-            Err(error_msg)
-        }
+        // SAFETY: CResult from host callback; error_message is a valid C string if non-null.
+        unsafe { result_from_c(result) }
     }
 
     /// Emit a telemetry event to the host telemetry bus (best-effort).
@@ -510,19 +493,8 @@ impl OutputSender {
             cb.telemetry_user_data,
         );
 
-        if result.success {
-            Ok(())
-        } else {
-            let error_msg = if result.error_message.is_null() {
-                "Unknown error".to_string()
-            } else {
-                unsafe {
-                    conversions::c_str_to_string(result.error_message)
-                        .unwrap_or_else(|_| "Unknown error".to_string())
-                }
-            };
-            Err(error_msg)
-        }
+        // SAFETY: CResult from host callback; error_message is a valid C string if non-null.
+        unsafe { result_from_c(result) }
     }
 }
 

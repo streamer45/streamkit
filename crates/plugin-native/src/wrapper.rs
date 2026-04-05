@@ -23,8 +23,8 @@ use streamkit_core::{
 use streamkit_plugin_sdk_native::{
     conversions,
     types::{
-        CAllocAudioResult, CAllocResult, CNativePluginAPI, CNodeCallbacks, CPacket, CPluginHandle,
-        CResult,
+        CAllocAudioResult, CAllocVideoResult, CNativePluginAPI, CNodeCallbacks, CPacket,
+        CPluginHandle, CResult,
     },
 };
 use tracing::{error, info, warn};
@@ -1044,6 +1044,41 @@ struct CallbackContext {
     audio_pool: Option<Arc<AudioFramePool>>,
 }
 
+/// Free any pool-allocated `buffer_handle` embedded in a raw [`CPacket`].
+///
+/// This is the safety net for error paths in [`output_callback_shim`]: if
+/// `packet_from_c` is never called (e.g. invalid pin name) or if it fails
+/// before reclaiming the handle, the pooled buffer would leak because the
+/// SDK already marked it as consumed (suppressing `Drop`).
+///
+/// # Safety
+///
+/// `c_packet` must be a valid, non-null pointer to a [`CPacket`].
+unsafe fn free_packet_buffer_handle(c_packet: *const CPacket) {
+    use streamkit_core::frame_pool::{PooledSamples, PooledVideoData};
+    use streamkit_plugin_sdk_native::types::CPacketType;
+
+    let pkt = &*c_packet;
+    if pkt.data.is_null() {
+        return;
+    }
+    match pkt.packet_type {
+        CPacketType::RawVideo => {
+            let frame = &*pkt.data.cast::<streamkit_plugin_sdk_native::types::CVideoFrame>();
+            if !frame.buffer_handle.is_null() {
+                drop(Box::from_raw(frame.buffer_handle.cast::<PooledVideoData>()));
+            }
+        },
+        CPacketType::RawAudio => {
+            let frame = &*pkt.data.cast::<streamkit_plugin_sdk_native::types::CAudioFrame>();
+            if !frame.buffer_handle.is_null() {
+                drop(Box::from_raw(frame.buffer_handle.cast::<PooledSamples>()));
+            }
+        },
+        _ => {},
+    }
+}
+
 /// C callback function for sending output packets
 /// This collects packets and they are sent asynchronously after the callback returns
 extern "C" fn output_callback_shim(
@@ -1064,6 +1099,8 @@ extern "C" fn output_callback_shim(
         Ok(s) => s,
         Err(e) => {
             ctx.error = Some(format!("Invalid pin name: {e}"));
+            // Free any pooled buffer the plugin already consumed.
+            unsafe { free_packet_buffer_handle(c_packet) };
             return CResult::error(std::ptr::null());
         },
     };
@@ -1072,6 +1109,8 @@ extern "C" fn output_callback_shim(
     let packet = match unsafe { conversions::packet_from_c(c_packet) } {
         Ok(p) => p,
         Err(e) => {
+            // packet_from_c already frees the buffer_handle on its own error
+            // paths (Critical #1), so no extra cleanup needed here.
             ctx.error = Some(format!("Failed to convert packet: {e}"));
             return CResult::error(std::ptr::null());
         },
@@ -1165,16 +1204,16 @@ extern "C" fn telemetry_callback_shim(
 // ── Frame pool allocation shims (v6) ─────────────────────────────────────
 
 /// Allocate a video buffer from the host's frame pool.
-extern "C" fn alloc_video_shim(min_bytes: usize, user_data: *mut c_void) -> CAllocResult {
+extern "C" fn alloc_video_shim(min_bytes: usize, user_data: *mut c_void) -> CAllocVideoResult {
     use streamkit_core::frame_pool::PooledVideoData;
 
     if user_data.is_null() {
-        return CAllocResult::null();
+        return CAllocVideoResult::null();
     }
 
     let ctx = unsafe { &*user_data.cast::<CallbackContext>() };
     let Some(pool) = ctx.video_pool.as_ref() else {
-        return CAllocResult::null();
+        return CAllocVideoResult::null();
     };
 
     let mut pooled: PooledVideoData = pool.get(min_bytes);
@@ -1182,7 +1221,7 @@ extern "C" fn alloc_video_shim(min_bytes: usize, user_data: *mut c_void) -> CAll
     let len = pooled.len();
     let handle = Box::into_raw(Box::new(pooled)).cast::<c_void>();
 
-    CAllocResult { data: data_ptr, len, handle, free_fn: Some(free_video_buffer) }
+    CAllocVideoResult { data: data_ptr, len, handle, free_fn: Some(free_video_buffer) }
 }
 
 /// Free a video buffer without sending it (error/discard path).
@@ -1231,6 +1270,7 @@ extern "C" fn free_audio_buffer(handle: *mut c_void) {
 /// `CallbackContext`.
 fn build_node_callbacks(callback_data: *mut c_void) -> CNodeCallbacks {
     CNodeCallbacks {
+        struct_size: std::mem::size_of::<CNodeCallbacks>(),
         output_callback: output_callback_shim,
         output_user_data: callback_data,
         telemetry_callback: Some(telemetry_callback_shim),

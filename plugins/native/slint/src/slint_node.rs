@@ -223,7 +223,6 @@ impl NativeSourceNode for SlintSourcePlugin {
                 self.config.width,
                 self.config.height,
                 PixelFormat::Rgba8,
-                rgba_data.len(),
                 buf,
                 metadata.as_ref(),
             )?;
