@@ -55,6 +55,9 @@ pub const VP9_CONTENT_TYPE: &str = "video/vp9";
 /// MIME-style content type for AV1-encoded video packets.
 pub const AV1_CONTENT_TYPE: &str = "video/av1";
 
+/// MIME-style content type for H.264-encoded video packets.
+pub const H264_CONTENT_TYPE: &str = "video/h264";
+
 /// Parse a pixel format string into a [`PixelFormat`].
 ///
 /// Accepts `"i420"`, `"nv12"`, `"rgba8"`, or `"rgba"` (case-insensitive).
@@ -85,7 +88,7 @@ pub mod pixel_ops;
 #[cfg(feature = "compositor")]
 pub mod pixel_convert;
 
-#[cfg(any(feature = "vp9", feature = "av1", feature = "svt_av1"))]
+#[cfg(any(feature = "vp9", feature = "av1", feature = "svt_av1", feature = "openh264"))]
 pub(crate) mod encoder_trait;
 
 // ── Shared I420→NV12 conversion helpers ──────────────────────────────────────
@@ -234,6 +237,9 @@ pub mod vp9;
 
 #[cfg(feature = "av1")]
 pub mod av1;
+
+#[cfg(feature = "openh264")]
+pub mod openh264;
 
 #[cfg(feature = "svt_av1")]
 pub mod svt_av1;
@@ -563,6 +569,9 @@ pub fn register_video_nodes(registry: &mut NodeRegistry, constraints: &GlobalNod
 
     #[cfg(feature = "av1")]
     av1::register_av1_nodes(registry);
+
+    #[cfg(feature = "openh264")]
+    openh264::register_openh264_nodes(registry);
 
     #[cfg(feature = "svt_av1")]
     svt_av1::register_svt_av1_nodes(registry);
