@@ -13,16 +13,16 @@
 //!   offsets) is kept in memory.  At finalization the file is patched with the moov
 //!   box and read back for a single downstream send.
 //!
-//! Codec support: H.264 (AVC) video + AAC/Opus audio.  Additional codecs (AV1,
-//! VP9) can be added by extending the sample-entry construction helpers.
+//! Codec support: H.264 (AVC) and AV1 video + AAC/Opus audio.  Additional
+//! codecs (VP9) can be added by extending the sample-entry construction helpers.
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use shiguredo_mp4::boxes::{
-    AudioSampleEntryFields, Avc1Box, AvccBox, DopsBox, EsdsBox, Mp4aBox, OpusBox, SampleEntry,
-    VisualSampleEntryFields,
+    AudioSampleEntryFields, Av01Box, Av1cBox, Avc1Box, AvccBox, DopsBox, EsdsBox, Mp4aBox, OpusBox,
+    SampleEntry, VisualSampleEntryFields,
 };
 use shiguredo_mp4::descriptors::{
     DecoderConfigDescriptor, DecoderSpecificInfo, EsDescriptor, SlConfigDescriptor,
@@ -245,6 +245,42 @@ fn build_opus_sample_entry(sample_rate: u32, channels: u16) -> SampleEntry {
     })
 }
 
+/// Build an AV1 (`av01`) sample entry box.
+///
+/// If `codec_private` is available it is stored as `config_obus` in the
+/// AV1CodecConfigurationBox.  Otherwise a minimal Main-profile placeholder is
+/// used.
+fn build_av01_sample_entry(width: u16, height: u16, codec_private: Option<&[u8]>) -> SampleEntry {
+    let config_obus = codec_private.unwrap_or(&[]).to_vec();
+
+    SampleEntry::Av01(Av01Box {
+        visual: VisualSampleEntryFields {
+            data_reference_index: VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
+            width,
+            height,
+            horizresolution: VisualSampleEntryFields::DEFAULT_HORIZRESOLUTION,
+            vertresolution: VisualSampleEntryFields::DEFAULT_VERTRESOLUTION,
+            frame_count: VisualSampleEntryFields::DEFAULT_FRAME_COUNT,
+            compressorname: VisualSampleEntryFields::NULL_COMPRESSORNAME,
+            depth: VisualSampleEntryFields::DEFAULT_DEPTH,
+        },
+        av1c_box: Av1cBox {
+            seq_profile: Uint::new(0),     // Main profile
+            seq_level_idx_0: Uint::new(4), // Level 3.0
+            seq_tier_0: Uint::new(0),      // Main tier
+            high_bitdepth: Uint::new(0),   // 8-bit
+            twelve_bit: Uint::new(0),
+            monochrome: Uint::new(0),
+            chroma_subsampling_x: Uint::new(1),   // 4:2:0
+            chroma_subsampling_y: Uint::new(1),   // 4:2:0
+            chroma_sample_position: Uint::new(0), // Unknown
+            initial_presentation_delay_minus_one: None,
+            config_obus,
+        },
+        unknown_boxes: vec![],
+    })
+}
+
 // ---------------------------------------------------------------------------
 // File-backed buffer (reused pattern from WebM muxer)
 // ---------------------------------------------------------------------------
@@ -396,19 +432,29 @@ fn classify_packet(packet: Packet) -> Option<MuxFrame> {
     }
 }
 
-/// Determine the MP4 MIME content-type string.
-const fn mp4_content_type(has_audio: bool, has_video: bool, audio_is_opus: bool) -> &'static str {
-    match (has_audio, has_video, audio_is_opus) {
-        (true, true, false) => "video/mp4; codecs=\"avc1,mp4a\"",
-        (true, true, true) => "video/mp4; codecs=\"avc1,opus\"",
-        (false, true, _) => "video/mp4; codecs=\"avc1\"",
-        (true, false, false) => "audio/mp4; codecs=\"mp4a\"",
-        (true, false, true) => "audio/mp4; codecs=\"opus\"",
-        (false, false, _) => "video/mp4",
+/// Determine the MP4 MIME content-type string from optional codec info.
+///
+/// `audio` and `video` are `None` when the respective track is absent.
+const fn mp4_content_type(audio: Option<AudioCodec>, video: Option<VideoCodec>) -> &'static str {
+    let has_audio = audio.is_some();
+    let has_video = video.is_some();
+    let audio_is_opus = matches!(audio, Some(AudioCodec::Opus));
+    let video_is_av1 = matches!(video, Some(VideoCodec::Av1));
+
+    match (has_audio, has_video, audio_is_opus, video_is_av1) {
+        (true, true, false, false) => "video/mp4; codecs=\"avc1,mp4a\"",
+        (true, true, true, false) => "video/mp4; codecs=\"avc1,opus\"",
+        (true, true, false, true) => "video/mp4; codecs=\"av01,mp4a\"",
+        (true, true, true, true) => "video/mp4; codecs=\"av01,opus\"",
+        (false, true, _, false) => "video/mp4; codecs=\"avc1\"",
+        (false, true, _, true) => "video/mp4; codecs=\"av01\"",
+        (true, false, false, _) => "audio/mp4; codecs=\"mp4a\"",
+        (true, false, true, _) => "audio/mp4; codecs=\"opus\"",
+        (false, false, _, _) => "video/mp4",
     }
 }
 
-/// A node that muxes encoded H.264 video and/or AAC/Opus audio into an MP4 container.
+/// A node that muxes encoded H.264/AV1 video and/or AAC/Opus audio into an MP4 container.
 ///
 /// Supports two modes:
 /// - **Stream** (fMP4): produces fragmented segments sent downstream immediately.
@@ -453,6 +499,13 @@ impl ProcessorNode for Mp4MuxerNode {
                 profile: None,
                 level: None,
             }),
+            PacketType::EncodedVideo(EncodedVideoFormat {
+                codec: VideoCodec::Av1,
+                bitstream_format: None,
+                codec_private: None,
+                profile: None,
+                level: None,
+            }),
         ];
 
         let mut pins = vec![InputPin {
@@ -479,8 +532,14 @@ impl ProcessorNode for Mp4MuxerNode {
     }
 
     fn content_type(&self) -> Option<String> {
-        let has_video = self.config.video_width > 0 && self.config.video_height > 0;
-        Some(mp4_content_type(true, has_video, true).to_string())
+        let video = if self.config.video_width > 0 && self.config.video_height > 0 {
+            Some(VideoCodec::Av1)
+        } else {
+            None
+        };
+        // Static hint: default to Opus since it's the only AudioCodec variant.
+        // The runtime content type is resolved from actual input types.
+        Some(mp4_content_type(Some(AudioCodec::Opus), video).to_string())
     }
 
     async fn run(self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
@@ -503,6 +562,7 @@ impl ProcessorNode for Mp4MuxerNode {
         let mut audio_rx: Option<tokio::sync::mpsc::Receiver<Packet>> = None;
         let mut video_rx: Option<tokio::sync::mpsc::Receiver<Packet>> = None;
         let mut audio_codec = AudioCodec::Opus;
+        let mut video_codec = VideoCodec::Av1;
         let mut all_receivers: Vec<tokio::sync::mpsc::Receiver<Packet>> = Vec::new();
 
         // Resolve input types from engine or pin management messages.
@@ -557,6 +617,11 @@ impl ProcessorNode for Mp4MuxerNode {
                 audio_codec = fmt.codec;
             }
 
+            // Detect video codec from type info.
+            if let Some(PacketType::EncodedVideo(fmt)) = pin_type {
+                video_codec = fmt.codec;
+            }
+
             if skip_classification {
                 all_receivers.push(rx);
             } else if is_video {
@@ -589,8 +654,9 @@ impl ProcessorNode for Mp4MuxerNode {
 
         state_helpers::emit_running(&context.state_tx, &node_name);
 
-        let audio_is_opus = matches!(audio_codec, AudioCodec::Opus);
-        let content_type_str = mp4_content_type(has_audio, has_video, audio_is_opus);
+        let audio_arg = if has_audio { Some(audio_codec) } else { None };
+        let video_arg = if has_video { Some(video_codec) } else { None };
+        let content_type_str = mp4_content_type(audio_arg, video_arg);
 
         tracing::info!(
             "Mp4MuxerNode tracks: audio={has_audio} video={has_video} \
@@ -611,6 +677,7 @@ impl ProcessorNode for Mp4MuxerNode {
                     content_type_str,
                     &mut stats_tracker,
                     audio_codec,
+                    video_codec,
                     audio_rx,
                     video_rx,
                     all_receivers,
@@ -627,6 +694,7 @@ impl ProcessorNode for Mp4MuxerNode {
                     content_type_str,
                     &mut stats_tracker,
                     audio_codec,
+                    video_codec,
                     audio_rx,
                     video_rx,
                     all_receivers,
@@ -654,12 +722,17 @@ fn resolve_timescales(config: &Mp4MuxerConfig) -> (NonZeroU32, NonZeroU32) {
     (video_ts, audio_ts)
 }
 
-/// Build codec-specific sample entries from config and detected audio codec.
+/// Build codec-specific sample entries from config and detected codecs.
 fn build_sample_entries(
     config: &Mp4MuxerConfig,
     audio_codec: AudioCodec,
+    video_codec: VideoCodec,
 ) -> (SampleEntry, SampleEntry) {
-    let video_entry = build_avc1_sample_entry(config.video_width, config.video_height, None);
+    let video_entry = match video_codec {
+        VideoCodec::Av1 => build_av01_sample_entry(config.video_width, config.video_height, None),
+        // H264, Vp9, and any future variants fall back to AVC1 for now.
+        _ => build_avc1_sample_entry(config.video_width, config.video_height, None),
+    };
     let audio_entry = if matches!(audio_codec, AudioCodec::Opus) {
         build_opus_sample_entry(config.sample_rate, config.channels)
     } else {
@@ -694,6 +767,7 @@ async fn run_stream_mode(
     content_type: &'static str,
     stats_tracker: &mut NodeStatsTracker,
     audio_codec: AudioCodec,
+    video_codec: VideoCodec,
     mut audio_rx: Option<tokio::sync::mpsc::Receiver<Packet>>,
     mut video_rx: Option<tokio::sync::mpsc::Receiver<Packet>>,
     mut all_receivers: Vec<tokio::sync::mpsc::Receiver<Packet>>,
@@ -707,7 +781,8 @@ async fn run_stream_mode(
     })?;
 
     let (video_timescale, audio_timescale) = resolve_timescales(config);
-    let (video_sample_entry, audio_sample_entry) = build_sample_entries(config, audio_codec);
+    let (video_sample_entry, audio_sample_entry) =
+        build_sample_entries(config, audio_codec, video_codec);
 
     let mut pending_samples: Vec<Sample> = Vec::new();
     let mut pending_payloads: Vec<Bytes> = Vec::new();
@@ -957,6 +1032,7 @@ async fn run_file_mode(
     content_type: &'static str,
     stats_tracker: &mut NodeStatsTracker,
     audio_codec: AudioCodec,
+    video_codec: VideoCodec,
     mut audio_rx: Option<tokio::sync::mpsc::Receiver<Packet>>,
     mut video_rx: Option<tokio::sync::mpsc::Receiver<Packet>>,
     mut all_receivers: Vec<tokio::sync::mpsc::Receiver<Packet>>,
@@ -982,7 +1058,8 @@ async fn run_file_mode(
         .map_err(|e| StreamKitError::Runtime(format!("Failed to write initial MP4 boxes: {e}")))?;
 
     let (video_timescale, audio_timescale) = resolve_timescales(config);
-    let (video_sample_entry, audio_sample_entry) = build_sample_entries(config, audio_codec);
+    let (video_sample_entry, audio_sample_entry) =
+        build_sample_entries(config, audio_codec, video_codec);
 
     let mut video_keyframe_seen = false;
     let mut packet_count: u64 = 0;
@@ -1425,12 +1502,24 @@ mod tests {
 
     #[test]
     fn content_type_combinations() {
-        assert_eq!(mp4_content_type(true, true, false), "video/mp4; codecs=\"avc1,mp4a\"");
-        assert_eq!(mp4_content_type(true, true, true), "video/mp4; codecs=\"avc1,opus\"");
-        assert_eq!(mp4_content_type(false, true, false), "video/mp4; codecs=\"avc1\"");
-        assert_eq!(mp4_content_type(true, false, false), "audio/mp4; codecs=\"mp4a\"");
-        assert_eq!(mp4_content_type(true, false, true), "audio/mp4; codecs=\"opus\"");
-        assert_eq!(mp4_content_type(false, false, false), "video/mp4");
+        // H.264 + Opus
+        assert_eq!(
+            mp4_content_type(Some(AudioCodec::Opus), Some(VideoCodec::H264)),
+            "video/mp4; codecs=\"avc1,opus\""
+        );
+        // H.264 video only
+        assert_eq!(mp4_content_type(None, Some(VideoCodec::H264)), "video/mp4; codecs=\"avc1\"");
+        // AV1 + Opus
+        assert_eq!(
+            mp4_content_type(Some(AudioCodec::Opus), Some(VideoCodec::Av1)),
+            "video/mp4; codecs=\"av01,opus\""
+        );
+        // AV1 video only
+        assert_eq!(mp4_content_type(None, Some(VideoCodec::Av1)), "video/mp4; codecs=\"av01\"");
+        // Audio-only (Opus)
+        assert_eq!(mp4_content_type(Some(AudioCodec::Opus), None), "audio/mp4; codecs=\"opus\"");
+        // No tracks
+        assert_eq!(mp4_content_type(None, None), "video/mp4");
     }
 
     #[test]
@@ -1468,6 +1557,12 @@ mod tests {
     fn build_avc1_sample_entry_produces_avc1() {
         let entry = build_avc1_sample_entry(1280, 720, None);
         assert!(matches!(entry, SampleEntry::Avc1(_)));
+    }
+
+    #[test]
+    fn build_av01_sample_entry_produces_av01() {
+        let entry = build_av01_sample_entry(1280, 720, None);
+        assert!(matches!(entry, SampleEntry::Av01(_)));
     }
 
     #[test]
