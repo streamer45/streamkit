@@ -909,4 +909,58 @@ abcd";
         let err = decode_base64_line("!!!").unwrap_err();
         assert!(err.to_string().contains("Base64 decode failed"));
     }
+
+    // ==================== PluginManifest Deserialization Tests ====================
+
+    /// Local plugin manifests (e.g. `plugins/native/slint/plugin.yml`) omit
+    /// the `bundle` section because they aren't distributed via marketplace.
+    /// Ensure deserialization succeeds with `bundle` absent.
+    #[test]
+    fn deserialize_manifest_without_bundle() {
+        let yaml = r#"
+schema_version: 1
+id: slint
+version: "0.1.0"
+node_kind: "plugin::native::slint"
+kind: native
+entrypoint: libslint_plugin.so
+assets:
+  - type_id: slint
+    label: "Slint Files"
+    extensions: [slint]
+    max_size_bytes: 1048576
+    content_type: text
+    icon_hint: code
+    node_param: slint_file
+    system_dir: samples/slint/system
+"#;
+        let manifest: PluginManifest = serde_saphyr::from_str(yaml).unwrap();
+        assert_eq!(manifest.id, "slint");
+        assert!(manifest.bundle.is_none());
+        assert_eq!(manifest.assets.len(), 1);
+        assert_eq!(manifest.assets[0].type_id, "slint");
+        assert_eq!(manifest.assets[0].content_type, AssetContentType::Text);
+    }
+
+    /// Marketplace manifests include `bundle`; deserialization should populate it.
+    #[test]
+    fn deserialize_manifest_with_bundle() {
+        let yaml = r#"
+schema_version: 1
+id: test-plugin
+version: "1.0.0"
+node_kind: "plugin::native::test"
+kind: native
+entrypoint: libtest.so
+bundle:
+  url: "https://example.com/bundle.tar.zst"
+  sha256: "abc123"
+"#;
+        let manifest: PluginManifest = serde_saphyr::from_str(yaml).unwrap();
+        assert_eq!(manifest.id, "test-plugin");
+        let bundle = manifest.bundle.unwrap();
+        assert_eq!(bundle.url, "https://example.com/bundle.tar.zst");
+        assert_eq!(bundle.sha256, "abc123");
+        assert!(manifest.assets.is_empty());
+    }
 }
