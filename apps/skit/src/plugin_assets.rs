@@ -755,6 +755,7 @@ pub async fn list_asset_types_handler(
                 "webp".to_string(),
                 "gif".to_string(),
                 "svg".to_string(),
+                "svgz".to_string(),
             ],
             icon_hint: "image".to_string(),
             editable: false,

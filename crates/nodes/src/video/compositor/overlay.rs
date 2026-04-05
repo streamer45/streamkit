@@ -267,7 +267,7 @@ pub(crate) fn rasterize_svg_tree(
     let fit_w = ((svg_w * scale).round() as u32).max(1).min(max_dimension);
     let fit_h = ((svg_h * scale).round() as u32).max(1).min(max_dimension);
 
-    let pixmap = resvg::tiny_skia::Pixmap::new(fit_w, fit_h).ok_or_else(|| {
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(fit_w, fit_h).ok_or_else(|| {
         StreamKitError::Configuration(format!(
             "Failed to create pixmap for SVG rasterization ({fit_w}x{fit_h})"
         ))
@@ -276,8 +276,6 @@ pub(crate) fn rasterize_svg_tree(
     let transform =
         resvg::tiny_skia::Transform::from_scale(fit_w as f32 / svg_w, fit_h as f32 / svg_h);
 
-    // resvg::render takes &mut PixmapMut — reborrow from owned Pixmap.
-    let mut pixmap = pixmap;
     resvg::render(tree, transform, &mut pixmap.as_mut());
 
     let mut rgba_data = pixmap.take();
@@ -293,7 +291,7 @@ pub(crate) fn rasterize_svg_tree(
     Ok((rgba_data, fit_w, fit_h, rect))
 }
 
-/// Rasterize an SVG at the exact target dimensions from `config.transform.rect`.
+/// Rasterize an SVG with aspect-ratio-preserving fit within `config.transform.rect`.
 fn rasterize_svg(
     config: &ImageOverlayConfig,
     svg_data: &[u8],

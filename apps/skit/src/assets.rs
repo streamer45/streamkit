@@ -481,7 +481,7 @@ const MAX_IMAGE_FILE_SIZE: usize = 10 * 1024 * 1024; // 10MB
 const MAX_IMAGE_PIXELS: u64 = 40_000_000; // ~40 MP — bounds decoded RGBA to ~160 MB
 
 // Allowed image formats
-const ALLOWED_IMAGE_FORMATS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif", "svg"];
+const ALLOWED_IMAGE_FORMATS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif", "svg", "svgz"];
 
 /// Validates a filename for image asset security
 fn validate_image_filename(filename: &str) -> Result<String, AssetsError> {
@@ -553,7 +553,7 @@ async fn process_image_entry(
 
     // Read only the image header to extract dimensions (avoids full pixel decode).
     // SVGs use the resvg parser; raster formats use ImageReader::open().
-    let (width, height) = if extension == "svg" {
+    let (width, height) = if extension == "svg" || extension == "svgz" {
         let svg_data = fs::read(&path).await.ok()?;
         // SVG parsing is CPU-intensive; run off the async runtime.
         tokio::task::spawn_blocking(move || {
@@ -733,7 +733,7 @@ async fn process_image_upload(
 
     // SVG validation: parse with resvg to check validity and extract dimensions.
     // Skip raster decode path entirely for SVGs.
-    if extension == "svg" {
+    if extension == "svg" || extension == "svgz" {
         let file_data = match fs::read(&file_path).await {
             Ok(data) => data,
             Err(e) => {
@@ -997,13 +997,13 @@ async fn serve_image_asset_handler(
         "jpg" | "jpeg" => "image/jpeg",
         "webp" => "image/webp",
         "gif" => "image/gif",
-        "svg" => "image/svg+xml",
+        "svg" | "svgz" => "image/svg+xml",
         _ => "application/octet-stream",
     };
 
     // SVGs can contain <script> and event handlers; force download to prevent
     // stored XSS when a user-uploaded SVG is opened directly in a browser tab.
-    let is_svg = extension == "svg";
+    let is_svg = extension == "svg" || extension == "svgz";
 
     match fs::read(&file_path).await {
         Ok(data) => {
@@ -1013,7 +1013,7 @@ async fn serve_image_asset_handler(
                     [
                         (header::CONTENT_TYPE, content_type.to_string()),
                         (header::CACHE_CONTROL, "public, must-revalidate".to_string()),
-                        (header::CONTENT_DISPOSITION, "attachment".to_string()),
+                        (header::CONTENT_DISPOSITION, "inline".to_string()),
                         (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
                         (
                             header::CONTENT_SECURITY_POLICY,
