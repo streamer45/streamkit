@@ -201,11 +201,8 @@ impl Permissions {
                 // Users can access system and user font assets
                 "samples/fonts/system/*".to_string(),
                 "samples/fonts/user/*".to_string(),
-                // Users can access plugin-registered asset types.
-                // Intentionally broad (`samples/*/`) so any plugin that declares
-                // assets in its manifest is covered without per-plugin allowlisting.
-                "samples/*/system/*".to_string(),
-                "samples/*/user/*".to_string(),
+                // Plugin asset type patterns are added dynamically after
+                // plugin loading via `extend_for_plugin_assets()`.
             ],
         }
     }
@@ -251,8 +248,8 @@ impl Permissions {
                 "samples/images/system/*".to_string(),
                 // Viewers can see system font assets
                 "samples/fonts/system/*".to_string(),
-                // Viewers can see system plugin assets (read-only).
-                "samples/*/system/*".to_string(),
+                // Plugin asset type patterns are added dynamically after
+                // plugin loading via `extend_for_plugin_assets()`.
             ],
         }
     }
@@ -641,5 +638,32 @@ mod tests {
             })
             .count();
         assert_eq!(admin_session_count, 4); // All sessions
+    }
+
+    #[test]
+    fn test_default_roles_no_broad_plugin_wildcards() {
+        let user = Permissions::user();
+        let viewer = Permissions::viewer();
+
+        // Default roles should NOT contain the broad `samples/*/` wildcards.
+        for perm in [&user, &viewer] {
+            for pattern in &perm.allowed_assets {
+                assert!(
+                    !pattern.starts_with("samples/*/"),
+                    "Default role should not contain broad wildcard pattern '{pattern}'; \
+                     plugin asset patterns are added dynamically via registered_type_ids()"
+                );
+            }
+        }
+
+        // Core types should still be present.
+        assert!(user.is_asset_allowed("samples/audio/system/test.opus"));
+        assert!(user.is_asset_allowed("samples/images/system/logo.png"));
+        assert!(user.is_asset_allowed("samples/fonts/system/mono.ttf"));
+        assert!(user.is_asset_allowed("samples/audio/user/custom.wav"));
+
+        // Unregistered plugin type should be denied.
+        assert!(!user.is_asset_allowed("samples/unknown_plugin/system/file.txt"));
+        assert!(!viewer.is_asset_allowed("samples/unknown_plugin/system/file.txt"));
     }
 }

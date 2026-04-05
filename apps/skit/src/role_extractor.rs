@@ -14,6 +14,9 @@ use crate::{permissions::Permissions, state::AppState};
 /// 1. A configured trusted role header (set by launcher or auth layer)
 /// 2. SK_ROLE environment variable (fallback)
 /// 3. Config default_role (final fallback)
+///
+/// Plugin asset type patterns are augmented dynamically so that default
+/// roles don't need a broad `samples/*/` wildcard.
 pub fn get_permissions(headers: &HeaderMap, app_state: &Arc<AppState>) -> Permissions {
     let trusted_header = app_state.config.permissions.role_header.as_deref().map(|h| {
         // Normalize for HeaderMap lookups.
@@ -31,7 +34,24 @@ pub fn get_permissions(headers: &HeaderMap, app_state: &Arc<AppState>) -> Permis
         // Fallback to default role from config
         .unwrap_or_else(|| app_state.config.permissions.default_role.clone());
 
-    let perms = app_state.config.permissions.get_role(&role_name);
+    let mut perms = app_state.config.permissions.get_role(&role_name);
+
+    // Dynamically add permission patterns for registered plugin asset types
+    // so default roles don't rely on a broad `samples/*/` wildcard.
+    let plugin_type_ids = app_state.plugin_asset_registry.registered_type_ids();
+    for type_id in &plugin_type_ids {
+        let system_pattern = format!("samples/{type_id}/system/*");
+        if !perms.allowed_assets.contains(&system_pattern) {
+            perms.allowed_assets.push(system_pattern);
+        }
+        if perms.upload_assets {
+            let user_pattern = format!("samples/{type_id}/user/*");
+            if !perms.allowed_assets.contains(&user_pattern) {
+                perms.allowed_assets.push(user_pattern);
+            }
+        }
+    }
+
     debug!(
         role = %role_name,
         create_sessions = perms.create_sessions,
