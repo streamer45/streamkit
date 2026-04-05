@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Demonstrates the MP4 muxer node in file mode (audio-only).
+#
+# Takes an uploaded Ogg/Opus file, decodes → re-encodes it, then muxes the
+# Opus stream into an MP4 container (Opus-in-MP4 is valid per RFC 6381 /
+# ISO 14496-12).
+#
+# NOTE: Video muxing requires an H.264 encoder node which is not yet
+# available.  Once added, extend this pipeline with a video track.
+
+name: MP4 Mux (Opus audio, file mode)
+description: Decodes an uploaded Ogg/Opus file, re-encodes, and muxes into an MP4 container (file mode)
+mode: oneshot
+client:
+  input:
+    type: file_upload
+    accept: "audio/opus"
+  output:
+    type: audio
+steps:
+  - kind: streamkit::http_input
+  - kind: containers::ogg::demuxer
+  - kind: audio::opus::decoder
+  - kind: audio::opus::encoder
+  - kind: containers::mp4::muxer
+    params:
+      mode: file
+      sample_rate: 48000
+      channels: 2
+  - kind: streamkit::http_output
+    params:
+      content_type: 'audio/mp4; codecs="opus"'
