@@ -187,12 +187,13 @@ export async function deleteFontAsset(id: string): Promise<void> {
 /**
  * Hook to fetch font assets with caching
  */
-export function useFontAssets() {
+export function useFontAssets(enabled = true) {
   return useQuery({
     queryKey: ['fontAssets'],
     queryFn: listFontAssets,
     staleTime: 30_000,
     refetchOnWindowFocus: true,
+    enabled,
   });
 }
 

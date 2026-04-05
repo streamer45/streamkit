@@ -119,12 +119,13 @@ export async function deleteImageAsset(id: string): Promise<void> {
 /**
  * Hook to fetch image assets with caching
  */
-export function useImageAssets() {
+export function useImageAssets(enabled = true) {
   return useQuery({
     queryKey: ['imageAssets'],
     queryFn: listImageAssets,
     staleTime: 30_000,
     refetchOnWindowFocus: true,
+    enabled,
   });
 }
 

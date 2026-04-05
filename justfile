@@ -979,6 +979,11 @@ copy-plugins-native:
                 cp -f "$f" .plugins/native/
             fi
         done
+        # Copy plugin.yml manifest alongside the .so so asset types can be
+        # discovered at runtime (see plugin_assets::read_local_plugin_manifest).
+        if [[ -f "plugins/native/$name/plugin.yml" ]]; then
+            cp -f "plugins/native/$name/plugin.yml" ".plugins/native/${name}.plugin.yml"
+        fi
     done
     for f in \
         "$PLUGINS_TARGET"/release/libpocket_tts.so \

@@ -109,12 +109,13 @@ export async function deleteAudioAsset(id: string): Promise<void> {
 /**
  * Hook to fetch audio assets with caching
  */
-export function useAudioAssets() {
+export function useAudioAssets(enabled = true) {
   return useQuery({
     queryKey: ['audioAssets'],
     queryFn: listAudioAssets,
     staleTime: 30000, // Consider data fresh for 30 seconds
     refetchOnWindowFocus: true,
+    enabled,
   });
 }
 

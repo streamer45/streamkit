@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import styled from '@emotion/styled';
+import { useQueryClient } from '@tanstack/react-query';
 import { Upload } from 'lucide-react';
 import { useState, useCallback, useMemo } from 'react';
 
@@ -15,7 +16,7 @@ import { useImageAssets, useUploadImageAsset, useDeleteImageAsset } from '@/serv
 import {
   usePluginAssets,
   useUploadPluginAsset,
-  useDeletePluginAsset,
+  deletePluginAsset,
 } from '@/services/pluginAssets';
 import type { AssetTypeInfo, AudioAsset, FontAsset, ImageAsset } from '@/types/generated/api-types';
 
@@ -179,19 +180,18 @@ interface AssetLibraryProps {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Append core assets into `out` if the filter matches. */
-function appendCoreAssets<T extends AudioAsset | ImageAsset | FontAsset>(
+/** Append typed assets if the filter matches. */
+function appendIfMatches<T extends 'audio' | 'image' | 'font'>(
   out: UnifiedAsset[],
-  assetType: UnifiedAsset['type'],
-  data: T[] | undefined,
+  kind: T,
+  data: (T extends 'audio' ? AudioAsset : T extends 'image' ? ImageAsset : FontAsset)[] | undefined,
   typeFilter: TypeFilter,
   typeId: string
 ): void {
   if (typeFilter !== 'all' && typeFilter !== typeId) return;
   if (!data) return;
   for (const a of data) {
-    // The `as never` is safe — each call site matches the correct union branch.
-    out.push({ type: assetType, asset: a } as never);
+    out.push({ type: kind, asset: a } as UnifiedAsset);
   }
 }
 
@@ -205,9 +205,9 @@ function buildUnifiedItems(
   pluginTypeInfo: AssetTypeInfo | null
 ): UnifiedAsset[] {
   const items: UnifiedAsset[] = [];
-  appendCoreAssets(items, 'audio', audio, typeFilter, 'audio');
-  appendCoreAssets(items, 'image', images, typeFilter, 'images');
-  appendCoreAssets(items, 'font', fonts, typeFilter, 'fonts');
+  appendIfMatches(items, 'audio', audio, typeFilter, 'audio');
+  appendIfMatches(items, 'image', images, typeFilter, 'images');
+  appendIfMatches(items, 'font', fonts, typeFilter, 'fonts');
 
   if (pluginTypeInfo && pluginData) {
     for (const a of pluginData) {
@@ -275,6 +275,10 @@ function useAssetData(typeFilter: TypeFilter, assetTypes: AssetTypeInfo[] | unde
   const pluginTypeToFetch = useMemo(() => {
     if (selectedPluginType) return selectedPluginType.type_id;
     if (typeFilter !== 'all' || !assetTypes) return '';
+    // TODO: when multiple plugins register asset types, this only fetches the
+    // first one.  To show all plugin assets in the "All" view, either query
+    // each plugin type separately and merge, or add a backend endpoint that
+    // returns all plugin assets in one request.
     return assetTypes.find((t) => t.source === 'plugin')?.type_id ?? '';
   }, [selectedPluginType, typeFilter, assetTypes]);
 
@@ -284,10 +288,14 @@ function useAssetData(typeFilter: TypeFilter, assetTypes: AssetTypeInfo[] | unde
     return assetTypes.find((t) => t.type_id === pluginTypeToFetch) ?? null;
   }, [selectedPluginType, assetTypes, pluginTypeToFetch]);
 
-  // Queries
-  const audioQuery = useAudioAssets();
-  const imageQuery = useImageAssets();
-  const fontQuery = useFontAssets();
+  // Queries — skip fetches when the user has filtered to a different type.
+  const shouldFetchAudio = typeFilter === 'all' || typeFilter === 'audio';
+  const shouldFetchImages = typeFilter === 'all' || typeFilter === 'images';
+  const shouldFetchFonts = typeFilter === 'all' || typeFilter === 'fonts';
+
+  const audioQuery = useAudioAssets(shouldFetchAudio);
+  const imageQuery = useImageAssets(shouldFetchImages);
+  const fontQuery = useFontAssets(shouldFetchFonts);
   const pluginQuery = usePluginAssets(pluginTypeToFetch);
 
   // Mutations
@@ -298,7 +306,6 @@ function useAssetData(typeFilter: TypeFilter, assetTypes: AssetTypeInfo[] | unde
   const uploadFont = useUploadFontAsset();
   const deleteFont = useDeleteFontAsset();
   const uploadPlugin = useUploadPluginAsset(selectedPluginType?.type_id ?? '');
-  const deletePlugin = useDeletePluginAsset(selectedPluginType?.type_id ?? '');
 
   const allItems = useMemo(
     () =>
@@ -330,7 +337,6 @@ function useAssetData(typeFilter: TypeFilter, assetTypes: AssetTypeInfo[] | unde
     deleteAudio,
     deleteImage,
     deleteFont,
-    deletePlugin,
   };
 }
 
@@ -339,6 +345,7 @@ function useAssetData(typeFilter: TypeFilter, assetTypes: AssetTypeInfo[] | unde
 export function AssetLibrary({ onDragStart }: AssetLibraryProps) {
   const { can } = usePermissions();
   const toast = useToast();
+  const queryClient = useQueryClient();
 
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
   const [searchTerm, setSearchTerm] = useState('');
@@ -422,16 +429,19 @@ export function AssetLibrary({ onDragStart }: AssetLibraryProps) {
         case 'font':
           await data.deleteFont.mutateAsync(id);
           break;
-        case 'plugin':
-          await data.deletePlugin.mutateAsync(id);
+        case 'plugin': {
+          const typeId = assetToDelete.asset.type_id;
+          await deletePluginAsset(typeId, id);
+          await queryClient.invalidateQueries({ queryKey: ['pluginAssets', typeId] });
           break;
+        }
       }
       toast.success(`Deleted ${assetToDelete.asset.name}`);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Delete failed');
     }
     setAssetToDelete(null);
-  }, [assetToDelete, data, toast]);
+  }, [assetToDelete, data, toast, queryClient]);
 
   // ── Loading / Error ────────────────────────────────────────────────────
   if (data.isLoading) {

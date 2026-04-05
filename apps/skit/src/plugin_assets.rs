@@ -81,9 +81,39 @@ impl PluginAssetRegistry {
     /// Register asset types declared by a plugin.
     ///
     /// `plugin_id` and `node_kind` come from the plugin manifest.
+    /// Returns the number of types successfully registered; invalid specs
+    /// (bad `type_id` or `system_dir` with path-traversal components) are
+    /// logged and skipped.
     pub async fn register(&self, plugin_id: &str, node_kind: &str, specs: &[PluginAssetSpec]) {
         let mut map = self.inner.write().await;
         for spec in specs {
+            // Reject type_id values that aren't URL-safe identifiers.
+            if !spec
+                .type_id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            {
+                warn!(
+                    type_id = %spec.type_id,
+                    plugin_id = %plugin_id,
+                    "Skipping plugin asset type: type_id must be [a-zA-Z0-9_-]+"
+                );
+                continue;
+            }
+
+            // Reject system_dir with path-traversal components.
+            if let Some(ref dir) = spec.system_dir {
+                if dir.contains("..") {
+                    warn!(
+                        type_id = %spec.type_id,
+                        plugin_id = %plugin_id,
+                        system_dir = %dir,
+                        "Skipping plugin asset type: system_dir contains '..'"
+                    );
+                    continue;
+                }
+            }
+
             let system_dir = spec.system_dir.as_deref().map_or_else(
                 || PathBuf::from(format!("samples/{}/system", spec.type_id)),
                 PathBuf::from,
@@ -163,7 +193,7 @@ fn validate_filename(
     if filename.len() > MAX_FILENAME_LENGTH {
         return Err(PluginAssetError::InvalidFilename("Filename too long".to_string()));
     }
-    if filename.is_empty() {
+    if filename.is_empty() || filename == "." {
         return Err(PluginAssetError::InvalidFilename("Filename cannot be empty".to_string()));
     }
     if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
@@ -302,7 +332,7 @@ async fn list_handler(
     }
 
     all_assets.sort_by(|a, b| a.name.cmp(&b.name));
-    info!("Listed {} {} assets", all_assets.len(), type_id);
+    debug!("Listed {} {} assets", all_assets.len(), type_id);
     Json(all_assets).into_response()
 }
 
@@ -364,7 +394,7 @@ async fn upload_handler(
 
             info!("Uploaded plugin asset: {} (type: {})", filename, type_id);
 
-            Json(PluginAsset {
+            (StatusCode::CREATED, Json(PluginAsset {
                 id: filename,
                 name: display_name,
                 path: relative_path,
@@ -373,7 +403,7 @@ async fn upload_handler(
                 is_system: false,
                 type_id: asset_type.type_id.clone(),
                 plugin_id: asset_type.plugin_id.clone(),
-            })
+            }))
             .into_response()
         },
         Err(e) => {
@@ -462,6 +492,11 @@ async fn serve_handler(
 
     if !file_path.exists() {
         return PluginAssetError::NotFound(id).into_response();
+    }
+
+    // Symlink-safe canonical path validation (same as delete/update handlers).
+    if let Err(e) = validate_file_in_directory(&file_path, dir) {
+        return e.into_response();
     }
 
     let content_type_header = if asset_type.content_type == AssetContentType::Text {
@@ -740,16 +775,37 @@ pub fn plugin_assets_router() -> Router<Arc<AppState>> {
 ///
 /// Used when loading local (non-marketplace) plugins from disk.  The manifest
 /// is parsed as a [`PluginManifest`] to extract `assets` declarations.
+///
+/// Searches for the manifest in two locations:
+/// 1. `plugin.yml` / `plugin.yaml` in the same directory as the `.so` file
+///    (works when the plugin is in its source tree, e.g. `plugins/native/slint/`).
+/// 2. `{stem}.plugin.yml` next to the `.so` file (works with the flat layout
+///    produced by `just copy-plugins-native`, e.g. `.plugins/native/slint.plugin.yml`).
 pub fn read_local_plugin_manifest(
     library_path: &std::path::Path,
 ) -> Option<crate::marketplace::PluginManifest> {
     let dir = library_path.parent()?;
 
-    // Try plugin.yml first, then plugin.yaml
-    for name in &["plugin.yml", "plugin.yaml"] {
-        let manifest_path = dir.join(name);
+    // Derive the plugin name from the library filename:
+    //   libslint.so  ->  slint
+    //   libgain_plugin_native.so  ->  gain_plugin_native
+    let stem = library_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| s.strip_prefix("lib").unwrap_or(s));
+
+    // Build candidate paths: generic names first, then stem-based.
+    let mut candidates: Vec<std::path::PathBuf> =
+        vec![dir.join("plugin.yml"), dir.join("plugin.yaml")];
+
+    if let Some(stem) = stem {
+        candidates.push(dir.join(format!("{stem}.plugin.yml")));
+        candidates.push(dir.join(format!("{stem}.plugin.yaml")));
+    }
+
+    for manifest_path in &candidates {
         if manifest_path.exists() {
-            match std::fs::read_to_string(&manifest_path) {
+            match std::fs::read_to_string(manifest_path) {
                 Ok(contents) => match serde_saphyr::from_str(&contents) {
                     Ok(manifest) => return Some(manifest),
                     Err(e) => {

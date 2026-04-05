@@ -662,17 +662,6 @@ pub struct PluginAsset {
 
 // --- Asset Type Discovery ---
 
-/// Whether an asset's file content is text (editable) or binary.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, TS)]
-#[ts(export)]
-#[serde(rename_all = "lowercase")]
-pub enum AssetContentKind {
-    /// UTF-8 text content, can be served and edited in-place.
-    Text,
-    /// Binary content, served as `application/octet-stream`.
-    Binary,
-}
-
 /// Describes a registered asset type (core or plugin-provided).
 ///
 /// Returned by `GET /api/v1/asset-types` so the UI can dynamically render

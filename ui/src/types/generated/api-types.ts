@@ -506,8 +506,6 @@ type_id: string,
  */
 plugin_id: string, };
 
-export type AssetContentKind = "text" | "binary";
-
 export type AssetTypeInfo = { 
 /**
  * URL-safe identifier (e.g. `audio`, `images`, `fonts`, `slint`).

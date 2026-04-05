@@ -132,16 +132,3 @@ export function useUploadPluginAsset(typeId: string) {
   });
 }
 
-/**
- * Hook to delete a plugin asset.
- */
-export function useDeletePluginAsset(typeId: string) {
-  const queryClient = useQueryClient();
-
-  return useMutation({
-    mutationFn: (id: string) => deletePluginAsset(typeId, id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['pluginAssets', typeId] });
-    },
-  });
-}

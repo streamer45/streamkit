@@ -62,7 +62,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         format!("export {}", streamkit_api::ImageAsset::decl(&cfg)),
         format!("export {}", streamkit_api::FontAsset::decl(&cfg)),
         format!("export {}", streamkit_api::PluginAsset::decl(&cfg)),
-        format!("export {}", streamkit_api::AssetContentKind::decl(&cfg)),
         format!("export {}", streamkit_api::AssetTypeInfo::decl(&cfg)),
         format!("export {}", streamkit_api::BatchOperation::decl(&cfg)),
         format!("export {}", streamkit_api::ValidationError::decl(&cfg)),
