@@ -1037,15 +1037,18 @@ const DesignViewContent: React.FC = () => {
     (event: React.DragEvent, item: UnifiedAsset) => {
       let dragType: string;
       switch (item.type) {
+        case 'audio':
+          dragType = `audio-asset:${item.asset.path}`;
+          break;
         case 'image':
           dragType = `image-asset:${item.asset.path}`;
           break;
         case 'slint':
           dragType = `slint-asset:${item.asset.path}`;
           break;
-        default:
-          dragType = `audio-asset:${item.asset.path}`;
-          break;
+        case 'font':
+          // Fonts are not droppable onto the canvas
+          return;
       }
       setType(dragType);
       event.dataTransfer.setData('application/x-streamkit-asset', JSON.stringify(item));
