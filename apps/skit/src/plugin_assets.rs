@@ -399,6 +399,11 @@ async fn delete_handler(
         return (StatusCode::NOT_FOUND, format!("Unknown asset type: {type_id}")).into_response();
     };
 
+    if id.contains("..") || id.contains('/') || id.contains('\\') {
+        return PluginAssetError::InvalidFilename("Invalid characters in filename".to_string())
+            .into_response();
+    }
+
     let file_path = asset_type.user_dir.join(&id);
 
     if !file_path.exists() {

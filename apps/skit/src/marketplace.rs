@@ -225,7 +225,10 @@ pub struct PluginManifest {
     pub homepage: Option<String>,
     pub repository: Option<String>,
     pub entrypoint: String,
-    pub bundle: PluginBundle,
+    /// Marketplace bundle info.  Required for marketplace-distributed plugins;
+    /// absent for local-only plugins that ship alongside their `.so`.
+    #[serde(default)]
+    pub bundle: Option<PluginBundle>,
     pub compatibility: Option<PluginCompatibility>,
     #[serde(default)]
     pub models: Vec<ModelSpec>,

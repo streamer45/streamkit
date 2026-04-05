@@ -925,9 +925,12 @@ impl PluginInstaller {
         registry_origin: &OriginKey,
         base_real: &Path,
     ) -> Result<PathBuf, InstallError> {
+        let bundle = manifest.bundle.as_ref().ok_or_else(|| {
+            InstallError::Other(anyhow!("Plugin manifest missing required `bundle` section"))
+        })?;
         let bundle_url = self
             .marketplace_policy
-            .validate_url("bundle url", &manifest.bundle.url, Some(registry_origin))
+            .validate_url("bundle url", &bundle.url, Some(registry_origin))
             .await?;
         let cache_dir = self.plugin_dir.join("cache").join(&manifest.id).join(&manifest.version);
         plugin_paths::ensure_dir_under(base_real, &cache_dir, "cache").await?;
@@ -1031,8 +1034,8 @@ impl PluginInstaller {
             })?;
 
             let actual_hash = to_hex(&hasher.finalize());
-            if !actual_hash.eq_ignore_ascii_case(&manifest.bundle.sha256) {
-                let expected = manifest.bundle.sha256.as_str();
+            if !actual_hash.eq_ignore_ascii_case(&bundle.sha256) {
+                let expected = bundle.sha256.as_str();
                 let actual = actual_hash.as_str();
                 hash_mismatch = true;
                 return Err(
@@ -2101,11 +2104,11 @@ mod tests {
             homepage: None,
             repository: None,
             entrypoint: "libtest.so".to_string(),
-            bundle: crate::marketplace::PluginBundle {
+            bundle: Some(crate::marketplace::PluginBundle {
                 url: "http://example.com/bundle.tar.zst".to_string(),
                 sha256: "deadbeef".to_string(),
                 size_bytes: None,
-            },
+            }),
             compatibility: None,
             models,
             assets: Vec::new(),

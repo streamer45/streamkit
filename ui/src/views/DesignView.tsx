@@ -1091,12 +1091,12 @@ const DesignViewContent: React.FC = () => {
       let dragType: string;
       if (item.type === 'audio') {
         dragType = `audio-asset:${item.asset.path}`;
-      } else if (item.type === 'image') {
-        dragType = `image-asset:${item.asset.path}`;
       } else if (item.type === 'plugin') {
         dragType = `plugin-asset:${item.asset.type_id}:${item.asset.path}`;
       } else {
-        dragType = `asset:${item.asset.path}`;
+        // Image and font assets don't have drop handlers yet — prevent drag.
+        event.preventDefault();
+        return;
       }
       setType(dragType);
       event.dataTransfer.setData('application/x-streamkit-asset', JSON.stringify(item));
