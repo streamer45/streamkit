@@ -326,14 +326,15 @@ impl OutputSender {
         let cb = self.cb();
         let alloc_fn = cb.alloc_video?;
         let res = alloc_fn(min_bytes, cb.alloc_user_data);
-        if res.data.is_null() {
+        if res.data.is_null() || res.free_fn.is_none() {
             return None;
         }
         Some(PooledVideoBuffer {
             data: res.data,
             len: res.len,
             handle: res.handle,
-            free_fn: res.free_fn?,
+            // SAFETY: free_fn is guaranteed to be Some by the check above.
+            free_fn: unsafe { res.free_fn.unwrap_unchecked() },
             consumed: false,
         })
     }
@@ -345,14 +346,15 @@ impl OutputSender {
         let cb = self.cb();
         let alloc_fn = cb.alloc_audio?;
         let res = alloc_fn(min_samples, cb.alloc_user_data);
-        if res.data.is_null() {
+        if res.data.is_null() || res.free_fn.is_none() {
             return None;
         }
         Some(PooledAudioBuffer {
             data: res.data,
             sample_count: res.sample_count,
             handle: res.handle,
-            free_fn: res.free_fn?,
+            // SAFETY: free_fn is guaranteed to be Some by the check above.
+            free_fn: unsafe { res.free_fn.unwrap_unchecked() },
             consumed: false,
         })
     }
