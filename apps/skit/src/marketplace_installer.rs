@@ -126,7 +126,11 @@ impl InstallJobQueue {
     /// # Errors
     ///
     /// Returns an error if the registry client or verifier cannot be initialized.
-    pub fn new(config: &PluginConfig, plugin_manager: SharedUnifiedPluginManager) -> Result<Self> {
+    pub fn new(
+        config: &PluginConfig,
+        plugin_manager: SharedUnifiedPluginManager,
+        plugin_asset_registry: crate::plugin_assets::PluginAssetRegistry,
+    ) -> Result<Self> {
         let registry_client = RegistryClient::new(
             Duration::from_secs(REGISTRY_TIMEOUT_SECS),
             Duration::from_secs(REGISTRY_INDEX_TTL_SECS),
@@ -168,6 +172,7 @@ impl InstallJobQueue {
             registry_client,
             verifier,
             plugin_manager,
+            plugin_asset_registry,
             PluginInstallerSettings {
                 plugin_dir: PathBuf::from(&config.directory),
                 models_dir,
@@ -498,6 +503,7 @@ struct PluginInstaller {
     download_client: Client,
     verifier: MinisignVerifier,
     plugin_manager: SharedUnifiedPluginManager,
+    plugin_asset_registry: crate::plugin_assets::PluginAssetRegistry,
     plugin_dir: PathBuf,
     models_dir: PathBuf,
     huggingface_token: Option<String>,
@@ -534,6 +540,7 @@ impl PluginInstaller {
         registry_client: RegistryClient,
         verifier: MinisignVerifier,
         plugin_manager: SharedUnifiedPluginManager,
+        plugin_asset_registry: crate::plugin_assets::PluginAssetRegistry,
         settings: PluginInstallerSettings,
     ) -> Result<Self> {
         let download_client = Client::builder()
@@ -547,6 +554,7 @@ impl PluginInstaller {
             download_client,
             verifier,
             plugin_manager,
+            plugin_asset_registry,
             plugin_dir: settings.plugin_dir,
             models_dir: settings.models_dir,
             huggingface_token: settings.huggingface_token,
@@ -1243,6 +1251,12 @@ impl PluginInstaller {
                 "Loaded plugin kind '{actual_kind}' does not match manifest kind '{expected_kind}'"
             )
             .into());
+        }
+
+        // Register asset types declared by this plugin's manifest.
+        if !manifest.assets.is_empty() {
+            let node_kind = format!("plugin::native::{}", manifest.id);
+            self.plugin_asset_registry.register(&manifest.id, &node_kind, &manifest.assets).await;
         }
 
         Ok(summary)
@@ -2160,7 +2174,11 @@ mod tests {
             huggingface_token: None,
         };
 
-        let queue = InstallJobQueue::new(&config, test_plugin_manager(&plugin_dir)?)?;
+        let queue = InstallJobQueue::new(
+            &config,
+            test_plugin_manager(&plugin_dir)?,
+            crate::plugin_assets::PluginAssetRegistry::new(),
+        )?;
         let manifest = test_manifest(vec![crate::marketplace::ModelSpec {
             id: None,
             name: None,
@@ -2257,7 +2275,11 @@ mod tests {
             huggingface_token: None,
         };
 
-        let queue = InstallJobQueue::new(&config, test_plugin_manager(&plugin_dir)?)?;
+        let queue = InstallJobQueue::new(
+            &config,
+            test_plugin_manager(&plugin_dir)?,
+            crate::plugin_assets::PluginAssetRegistry::new(),
+        )?;
         let manifest = test_manifest(vec![crate::marketplace::ModelSpec {
             id: None,
             name: None,
@@ -2317,7 +2339,11 @@ mod tests {
             huggingface_token: None,
         };
 
-        let queue = InstallJobQueue::new(&config, test_plugin_manager(&plugin_dir)?)?;
+        let queue = InstallJobQueue::new(
+            &config,
+            test_plugin_manager(&plugin_dir)?,
+            crate::plugin_assets::PluginAssetRegistry::new(),
+        )?;
         let manifest = test_manifest(vec![crate::marketplace::ModelSpec {
             id: None,
             name: None,

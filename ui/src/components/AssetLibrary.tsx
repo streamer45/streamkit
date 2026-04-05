@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import styled from '@emotion/styled';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQueries, useQueryClient } from '@tanstack/react-query';
 import { Upload } from 'lucide-react';
 import { useState, useCallback, useMemo } from 'react';
 
@@ -13,7 +13,7 @@ import { useAudioAssets, useUploadAudioAsset, useDeleteAudioAsset } from '@/serv
 import { useAssetTypes } from '@/services/assetTypes';
 import { useFontAssets, useUploadFontAsset, useDeleteFontAsset } from '@/services/fontAssets';
 import { useImageAssets, useUploadImageAsset, useDeleteImageAsset } from '@/services/imageAssets';
-import { usePluginAssets, useUploadPluginAsset, deletePluginAsset } from '@/services/pluginAssets';
+import { useUploadPluginAsset, deletePluginAsset, listPluginAssets } from '@/services/pluginAssets';
 import type { AssetTypeInfo, AudioAsset, FontAsset, ImageAsset } from '@/types/generated/api-types';
 
 import { AssetCard, type UnifiedAsset } from './AssetCard';
@@ -197,17 +197,21 @@ function buildUnifiedItems(
   audio: AudioAsset[] | undefined,
   images: ImageAsset[] | undefined,
   fonts: FontAsset[] | undefined,
-  pluginData: import('@/types/generated/api-types').PluginAsset[] | undefined,
-  pluginTypeInfo: AssetTypeInfo | null
+  pluginEntries: {
+    data: import('@/types/generated/api-types').PluginAsset[] | undefined;
+    typeInfo: AssetTypeInfo;
+  }[]
 ): UnifiedAsset[] {
   const items: UnifiedAsset[] = [];
   appendIfMatches(items, 'audio', audio, typeFilter, 'audio');
   appendIfMatches(items, 'image', images, typeFilter, 'images');
   appendIfMatches(items, 'font', fonts, typeFilter, 'fonts');
 
-  if (pluginTypeInfo && pluginData) {
-    for (const a of pluginData) {
-      items.push({ type: 'plugin', asset: a, typeInfo: pluginTypeInfo });
+  for (const entry of pluginEntries) {
+    if (entry.data) {
+      for (const a of entry.data) {
+        items.push({ type: 'plugin', asset: a, typeInfo: entry.typeInfo });
+      }
     }
   }
   return items;
@@ -268,21 +272,13 @@ function useAssetData(typeFilter: TypeFilter, assetTypes: AssetTypeInfo[] | unde
     return assetTypes.find((t) => t.source === 'plugin' && t.type_id === typeFilter) ?? null;
   }, [assetTypes, typeFilter]);
 
-  const pluginTypeToFetch = useMemo(() => {
-    if (selectedPluginType) return selectedPluginType.type_id;
-    if (typeFilter !== 'all' || !assetTypes) return '';
-    // TODO: when multiple plugins register asset types, this only fetches the
-    // first one.  To show all plugin assets in the "All" view, either query
-    // each plugin type separately and merge, or add a backend endpoint that
-    // returns all plugin assets in one request.
-    return assetTypes.find((t) => t.source === 'plugin')?.type_id ?? '';
+  // Collect all plugin types to query: either the single selected type, or all
+  // plugin types when showing the "All" view.
+  const pluginTypesToFetch = useMemo((): AssetTypeInfo[] => {
+    if (selectedPluginType) return [selectedPluginType];
+    if (typeFilter !== 'all' || !assetTypes) return [];
+    return assetTypes.filter((t) => t.source === 'plugin');
   }, [selectedPluginType, typeFilter, assetTypes]);
-
-  const pluginTypeInfo = useMemo((): AssetTypeInfo | null => {
-    if (selectedPluginType) return selectedPluginType;
-    if (!assetTypes) return null;
-    return assetTypes.find((t) => t.type_id === pluginTypeToFetch) ?? null;
-  }, [selectedPluginType, assetTypes, pluginTypeToFetch]);
 
   // Queries — skip fetches when the user has filtered to a different type.
   const shouldFetchAudio = typeFilter === 'all' || typeFilter === 'audio';
@@ -292,7 +288,16 @@ function useAssetData(typeFilter: TypeFilter, assetTypes: AssetTypeInfo[] | unde
   const audioQuery = useAudioAssets(shouldFetchAudio);
   const imageQuery = useImageAssets(shouldFetchImages);
   const fontQuery = useFontAssets(shouldFetchFonts);
-  const pluginQuery = usePluginAssets(pluginTypeToFetch);
+
+  // Dynamic parallel queries for all relevant plugin types.
+  const pluginQueries = useQueries({
+    queries: pluginTypesToFetch.map((t) => ({
+      queryKey: ['pluginAssets', t.type_id],
+      queryFn: () => listPluginAssets(t.type_id),
+      staleTime: 30_000,
+      refetchOnWindowFocus: true,
+    })),
+  });
 
   // Mutations
   const uploadAudio = useUploadAudioAsset();
@@ -303,6 +308,16 @@ function useAssetData(typeFilter: TypeFilter, assetTypes: AssetTypeInfo[] | unde
   const deleteFont = useDeleteFontAsset();
   const uploadPlugin = useUploadPluginAsset(selectedPluginType?.type_id ?? '');
 
+  // Merge plugin query results with their type info.
+  const pluginEntries = useMemo(
+    () =>
+      pluginTypesToFetch.map((typeInfo, i) => ({
+        data: pluginQueries[i]?.data,
+        typeInfo,
+      })),
+    [pluginTypesToFetch, pluginQueries]
+  );
+
   const allItems = useMemo(
     () =>
       buildUnifiedItems(
@@ -310,10 +325,9 @@ function useAssetData(typeFilter: TypeFilter, assetTypes: AssetTypeInfo[] | unde
         audioQuery.data,
         imageQuery.data,
         fontQuery.data,
-        pluginQuery.data,
-        pluginTypeInfo
+        pluginEntries
       ),
-    [typeFilter, audioQuery.data, imageQuery.data, fontQuery.data, pluginQuery.data, pluginTypeInfo]
+    [typeFilter, audioQuery.data, imageQuery.data, fontQuery.data, pluginEntries]
   );
 
   return {

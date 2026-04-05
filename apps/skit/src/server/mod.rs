@@ -3145,6 +3145,7 @@ pub fn create_app(
     let marketplace_jobs = crate::marketplace_installer::InstallJobQueue::new(
         &config.plugins,
         Arc::clone(&plugin_manager),
+        plugin_asset_registry.clone(),
     )
     .expect("Failed to initialize marketplace installer");
 

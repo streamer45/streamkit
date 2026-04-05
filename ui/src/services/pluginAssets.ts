@@ -10,7 +10,7 @@
  * plugin asset type.
  */
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 
 import type { PluginAsset } from '@/types/generated/api-types';
 import { getLogger } from '@/utils/logger';
@@ -23,7 +23,7 @@ const logger = getLogger('pluginAssets');
  * List all assets for a plugin-registered type.
  */
 export async function listPluginAssets(typeId: string): Promise<PluginAsset[]> {
-  logger.info('Fetching plugin assets:', typeId);
+  logger.debug('Fetching plugin assets:', typeId);
 
   const response = await fetchApi(`/api/v1/assets/plugin/${encodeURIComponent(typeId)}`, {
     method: 'GET',
@@ -40,7 +40,7 @@ export async function listPluginAssets(typeId: string): Promise<PluginAsset[]> {
   }
 
   const assets: PluginAsset[] = await response.json();
-  logger.info('Fetched', assets.length, typeId, 'assets');
+  logger.debug('Fetched', assets.length, typeId, 'assets');
 
   return assets;
 }
@@ -102,21 +102,6 @@ export async function deletePluginAsset(typeId: string, id: string): Promise<voi
 }
 
 // ── React Query Hooks ────────────────────────────────────────────────────────
-
-/**
- * Hook to fetch plugin assets of a specific type with caching.
- *
- * The query is only enabled when `typeId` is provided (non-empty).
- */
-export function usePluginAssets(typeId: string) {
-  return useQuery({
-    queryKey: ['pluginAssets', typeId],
-    queryFn: () => listPluginAssets(typeId),
-    enabled: typeId.length > 0,
-    staleTime: 30_000,
-    refetchOnWindowFocus: true,
-  });
-}
 
 /**
  * Hook to upload a plugin asset.

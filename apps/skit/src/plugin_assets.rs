@@ -99,14 +99,23 @@ impl PluginAssetRegistry {
                 continue;
             }
 
-            // Reject system_dir with path-traversal components.
+            // Reject system_dir with path-traversal or absolute path components.
             if let Some(ref dir) = spec.system_dir {
-                if dir.contains("..") {
+                let path = std::path::Path::new(dir);
+                let has_traversal = path.components().any(|c| {
+                    matches!(
+                        c,
+                        std::path::Component::ParentDir
+                            | std::path::Component::RootDir
+                            | std::path::Component::Prefix(_)
+                    )
+                });
+                if has_traversal {
                     warn!(
                         type_id = %spec.type_id,
                         plugin_id = %plugin_id,
                         system_dir = %dir,
-                        "Skipping plugin asset type: system_dir contains '..'"
+                        "Skipping plugin asset type: system_dir must be a relative path without '..'"
                     );
                     continue;
                 }
@@ -174,13 +183,23 @@ impl PluginAssetRegistry {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /// Sanitize filename by removing dangerous characters.
+///
+/// After sanitization, rejects results that resolve to `.` or `..` (directory
+/// references) to avoid path confusion downstream.
 fn sanitize_filename(filename: &str) -> String {
-    filename
+    let sanitized: String = filename
         .chars()
         .map(
             |c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' },
         )
-        .collect()
+        .collect();
+
+    // Guard against inputs like "." or ".." that survive sanitization unchanged.
+    if sanitized == "." || sanitized == ".." {
+        return String::from("_invalid_");
+    }
+
+    sanitized
 }
 
 /// Validate a filename against a registered asset type's allowed extensions.
@@ -268,7 +287,7 @@ async fn process_entry(
 
 /// Scan a directory for assets matching a registered type.
 async fn scan_directory(
-    dir_path: &PathBuf,
+    dir_path: &std::path::Path,
     is_system: bool,
     perms: &RolePermissions,
     asset_type: &RegisteredAssetType,
@@ -381,6 +400,12 @@ async fn upload_handler(
     }
 
     let file_path = asset_type.user_dir.join(&filename);
+
+    // Defense-in-depth: validate the resolved path stays within the user directory
+    // before writing, in case sanitize_filename has a bypass.
+    if let Err(e) = validate_file_in_directory(&file_path, &asset_type.user_dir) {
+        return e.into_response();
+    }
 
     // Stream to disk with size enforcement.
     match write_upload_to_disk(field, &file_path, asset_type.max_size_bytes).await {
@@ -883,3 +908,276 @@ impl std::fmt::Display for PluginAssetError {
 }
 
 impl std::error::Error for PluginAssetError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper to build a minimal `RegisteredAssetType` for testing.
+    fn test_asset_type(extensions: &[&str]) -> RegisteredAssetType {
+        RegisteredAssetType {
+            type_id: "test".to_string(),
+            plugin_id: "test-plugin".to_string(),
+            node_kind: "plugin::native::test".to_string(),
+            label: "Test".to_string(),
+            extensions: extensions.iter().map(|s| s.to_string()).collect(),
+            max_size_bytes: 1024,
+            content_type: AssetContentType::Binary,
+            icon_hint: None,
+            node_param: None,
+            system_dir: PathBuf::from("samples/test/system"),
+            user_dir: PathBuf::from("samples/test/user"),
+        }
+    }
+
+    // ── sanitize_filename ────────────────────────────────────────────────
+
+    #[test]
+    fn sanitize_keeps_safe_chars() {
+        assert_eq!(sanitize_filename("hello_world-1.slint"), "hello_world-1.slint");
+    }
+
+    #[test]
+    fn sanitize_replaces_dangerous_chars() {
+        assert_eq!(sanitize_filename("../../etc/passwd"), ".._.._etc_passwd");
+    }
+
+    #[test]
+    fn sanitize_replaces_slashes() {
+        assert_eq!(sanitize_filename("path/to\\file.txt"), "path_to_file.txt");
+    }
+
+    #[test]
+    fn sanitize_replaces_spaces_and_special() {
+        assert_eq!(sanitize_filename("my file (1).txt"), "my_file__1_.txt");
+    }
+
+    #[test]
+    fn sanitize_rejects_dot() {
+        assert_eq!(sanitize_filename("."), "_invalid_");
+    }
+
+    #[test]
+    fn sanitize_rejects_dotdot() {
+        assert_eq!(sanitize_filename(".."), "_invalid_");
+    }
+
+    #[test]
+    fn sanitize_handles_empty_string() {
+        assert_eq!(sanitize_filename(""), "");
+    }
+
+    #[test]
+    fn sanitize_handles_null_bytes() {
+        // Null bytes are not in the allow-list, so they become underscores.
+        assert_eq!(sanitize_filename("file\0.txt"), "file_.txt");
+    }
+
+    #[test]
+    fn sanitize_handles_unicode() {
+        // Non-ASCII chars are replaced with underscores.
+        assert_eq!(sanitize_filename("café.txt"), "caf_.txt");
+    }
+
+    #[test]
+    fn sanitize_preserves_hidden_file() {
+        assert_eq!(sanitize_filename(".hidden.txt"), ".hidden.txt");
+    }
+
+    // ── validate_filename ────────────────────────────────────────────────
+
+    #[test]
+    fn validate_accepts_valid_extension() {
+        let at = test_asset_type(&["slint", "txt"]);
+        assert_eq!(validate_filename("test.slint", &at).unwrap(), "slint");
+    }
+
+    #[test]
+    fn validate_case_insensitive_extension() {
+        let at = test_asset_type(&["slint"]);
+        assert_eq!(validate_filename("test.SLINT", &at).unwrap(), "slint");
+    }
+
+    #[test]
+    fn validate_rejects_dot() {
+        let at = test_asset_type(&["txt"]);
+        assert!(validate_filename(".", &at).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_dotdot() {
+        let at = test_asset_type(&["txt"]);
+        assert!(validate_filename("..", &at).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_path_traversal() {
+        let at = test_asset_type(&["txt"]);
+        assert!(validate_filename("../../etc/passwd", &at).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_slash() {
+        let at = test_asset_type(&["txt"]);
+        assert!(validate_filename("sub/file.txt", &at).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_backslash() {
+        let at = test_asset_type(&["txt"]);
+        assert!(validate_filename("sub\\file.txt", &at).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_no_extension() {
+        let at = test_asset_type(&["txt"]);
+        assert!(validate_filename("noextension", &at).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_wrong_extension() {
+        let at = test_asset_type(&["slint"]);
+        assert!(validate_filename("test.exe", &at).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_too_long_filename() {
+        let at = test_asset_type(&["txt"]);
+        let long_name = format!("{}.txt", "a".repeat(300));
+        assert!(validate_filename(&long_name, &at).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_empty() {
+        let at = test_asset_type(&["txt"]);
+        assert!(validate_filename("", &at).is_err());
+    }
+
+    // ── validate_file_in_directory ───────────────────────────────────────
+
+    #[test]
+    fn validate_file_in_dir_accepts_child() {
+        let dir = std::env::temp_dir();
+        let child = dir.join("test_child.txt");
+        std::fs::write(&child, "test").unwrap();
+        assert!(validate_file_in_directory(&child, &dir).is_ok());
+        std::fs::remove_file(&child).unwrap();
+    }
+
+    #[test]
+    fn validate_file_in_dir_rejects_outside() {
+        let dir = std::env::temp_dir().join("plugin_asset_test_subdir");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Create a file one level above the expected directory.
+        let outside = std::env::temp_dir().join("outside_test.txt");
+        std::fs::write(&outside, "test").unwrap();
+        assert!(validate_file_in_directory(&outside, &dir).is_err());
+        std::fs::remove_file(&outside).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+    }
+
+    // ── register validation ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn register_rejects_empty_type_id() {
+        let registry = PluginAssetRegistry::new();
+        let spec = PluginAssetSpec {
+            type_id: String::new(),
+            label: "Empty".to_string(),
+            extensions: vec!["txt".to_string()],
+            max_size_bytes: 1024,
+            content_type: AssetContentType::Binary,
+            icon_hint: None,
+            node_param: None,
+            system_dir: None,
+        };
+        registry.register("test", "plugin::native::test", &[spec]).await;
+        assert!(registry.all().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn register_rejects_traversal_type_id() {
+        let registry = PluginAssetRegistry::new();
+        let spec = PluginAssetSpec {
+            type_id: "../audio".to_string(),
+            label: "Bad".to_string(),
+            extensions: vec!["txt".to_string()],
+            max_size_bytes: 1024,
+            content_type: AssetContentType::Binary,
+            icon_hint: None,
+            node_param: None,
+            system_dir: None,
+        };
+        registry.register("test", "plugin::native::test", &[spec]).await;
+        assert!(registry.all().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn register_rejects_absolute_system_dir() {
+        let registry = PluginAssetRegistry::new();
+        let spec = PluginAssetSpec {
+            type_id: "test".to_string(),
+            label: "Bad".to_string(),
+            extensions: vec!["txt".to_string()],
+            max_size_bytes: 1024,
+            content_type: AssetContentType::Binary,
+            icon_hint: None,
+            node_param: None,
+            system_dir: Some("/etc/secrets".to_string()),
+        };
+        registry.register("test", "plugin::native::test", &[spec]).await;
+        assert!(registry.all().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn register_rejects_dotdot_system_dir() {
+        let registry = PluginAssetRegistry::new();
+        let spec = PluginAssetSpec {
+            type_id: "test".to_string(),
+            label: "Bad".to_string(),
+            extensions: vec!["txt".to_string()],
+            max_size_bytes: 1024,
+            content_type: AssetContentType::Binary,
+            icon_hint: None,
+            node_param: None,
+            system_dir: Some("../../etc".to_string()),
+        };
+        registry.register("test", "plugin::native::test", &[spec]).await;
+        assert!(registry.all().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn register_accepts_valid_spec() {
+        let registry = PluginAssetRegistry::new();
+        let spec = PluginAssetSpec {
+            type_id: "slint".to_string(),
+            label: "Slint Files".to_string(),
+            extensions: vec!["slint".to_string()],
+            max_size_bytes: 1_048_576,
+            content_type: AssetContentType::Text,
+            icon_hint: Some("code".to_string()),
+            node_param: Some("slint_file".to_string()),
+            system_dir: Some("samples/slint/system".to_string()),
+        };
+        registry.register("slint", "plugin::native::slint", &[spec]).await;
+        assert_eq!(registry.all().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn register_accepts_dotdot_substring_in_dirname() {
+        // "my..assets" contains ".." as a substring but is not a ParentDir component.
+        let registry = PluginAssetRegistry::new();
+        let spec = PluginAssetSpec {
+            type_id: "test".to_string(),
+            label: "Test".to_string(),
+            extensions: vec!["txt".to_string()],
+            max_size_bytes: 1024,
+            content_type: AssetContentType::Binary,
+            icon_hint: None,
+            node_param: None,
+            system_dir: Some("samples/my..assets/system".to_string()),
+        };
+        registry.register("test", "plugin::native::test", &[spec]).await;
+        assert_eq!(registry.all().await.len(), 1);
+    }
+}
