@@ -11,7 +11,7 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use openh264::encoder::{EncoderConfig, FrameType};
+use openh264::encoder::{BitRate, EncoderConfig, FrameRate, FrameType};
 use openh264::formats::YUVBuffer;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -177,9 +177,9 @@ impl OpenH264Encoder {
         let _ = (width, height); // dimensions are set per-frame by the openh264 crate
 
         let enc_config = EncoderConfig::new()
-            .set_bitrate_bps(config.bitrate_kbps * 1000)
-            .max_frame_rate(config.max_frame_rate)
-            .enable_skip_frame(false);
+            .bitrate(BitRate::from_bps(config.bitrate_kbps * 1000))
+            .max_frame_rate(FrameRate::from_hz(config.max_frame_rate))
+            .skip_frames(false);
 
         let encoder = openh264::encoder::Encoder::with_api_config(
             openh264::OpenH264API::from_source(),

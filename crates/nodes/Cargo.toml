@@ -85,7 +85,7 @@ smallvec = { version = "1.13", optional = true, features = ["serde"] }
 ts-rs = { version = "12.0.1", optional = true }
 
 # H.264 codec via Cisco's OpenH264 (optional, behind `openh264` feature)
-openh264 = { version = "0.6", optional = true }
+openh264 = { version = "0.9", optional = true }
 
 # AV1 codec (optional, behind `av1` feature)
 rav1e = { version = "0.8", optional = true, default-features = false, features = ["threading", "asm"] }
