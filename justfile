@@ -931,15 +931,17 @@ upload-slint-plugin: build-plugin-native-slint
 build-plugin-native name:
     @just build-plugin-native-{{name}}
 
-# Build and install a single native plugin to .plugins/native/ (idempotent).
-# Copies the compiled library and plugin.yml manifest (if present).
+# Build and install a single native plugin to .plugins/native/<name>/ (idempotent).
+# Creates a bundle directory with the compiled library and plugin.yml manifest.
+# The plugin loader scans subdirectories, so this layout is discovered at startup.
 # Usage: just install-plugin slint
 #        just install-plugin pocket-tts
 install-plugin name: (build-plugin-native name)
     #!/usr/bin/env bash
     set -euo pipefail
     PLUGINS_TARGET="{{plugins_target_dir}}"
-    mkdir -p .plugins/native
+    BUNDLE_DIR=".plugins/native/{{name}}"
+    mkdir -p "$BUNDLE_DIR"
 
     # Rust library names use underscores for hyphens.
     LIB_STEM="lib$(echo '{{name}}' | tr '-' '_')"
@@ -958,14 +960,14 @@ install-plugin name: (build-plugin-native name)
         exit 1
     fi
 
-    cp -f "$SO_FILE" .plugins/native/
-    echo "✓ Copied $(basename "$SO_FILE") → .plugins/native/"
+    cp -f "$SO_FILE" "$BUNDLE_DIR/"
+    echo "✓ Copied $(basename "$SO_FILE") → $BUNDLE_DIR/"
 
-    # Copy plugin.yml alongside the .so so asset types are discovered at startup
+    # Copy plugin.yml into the bundle so asset types are discovered at startup
     # (see plugin_assets::read_local_plugin_manifest).
     if [[ -f "plugins/native/{{name}}/plugin.yml" ]]; then
-        cp -f "plugins/native/{{name}}/plugin.yml" ".plugins/native/{{name}}.plugin.yml"
-        echo "✓ Copied plugin.yml → .plugins/native/{{name}}.plugin.yml"
+        cp -f "plugins/native/{{name}}/plugin.yml" "$BUNDLE_DIR/plugin.yml"
+        echo "✓ Copied plugin.yml → $BUNDLE_DIR/plugin.yml"
     fi
 
 # Build all native plugin examples
