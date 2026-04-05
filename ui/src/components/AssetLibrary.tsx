@@ -172,6 +172,8 @@ type TypeFilter = 'all' | string; // 'all' or a type_id
 
 interface AssetLibraryProps {
   onDragStart?: (event: React.DragEvent, item: UnifiedAsset) => void;
+  /** When provided, only items for which this returns true show a drag affordance. */
+  isDraggable?: (item: UnifiedAsset) => boolean;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -240,12 +242,14 @@ function AssetListSection({
   canDelete,
   onDelete,
   onDragStart,
+  isDraggable,
 }: {
   title: string;
   items: UnifiedAsset[];
   canDelete: boolean;
   onDelete?: (item: UnifiedAsset) => void;
   onDragStart?: (event: React.DragEvent, item: UnifiedAsset) => void;
+  isDraggable?: (item: UnifiedAsset) => boolean;
 }) {
   if (items.length === 0) return null;
   return (
@@ -258,6 +262,7 @@ function AssetListSection({
           canDelete={canDelete}
           onDelete={onDelete}
           onDragStart={onDragStart}
+          isDraggable={isDraggable ? isDraggable(item) : undefined}
         />
       ))}
     </>
@@ -379,7 +384,7 @@ function useAssetData(typeFilter: TypeFilter, assetTypes: AssetTypeInfo[] | unde
 
 // ── Component ────────────────────────────────────────────────────────────────
 
-export function AssetLibrary({ onDragStart }: AssetLibraryProps) {
+export function AssetLibrary({ onDragStart, isDraggable }: AssetLibraryProps) {
   const { can } = usePermissions();
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -387,6 +392,13 @@ export function AssetLibrary({ onDragStart }: AssetLibraryProps) {
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
   const [searchTerm, setSearchTerm] = useState('');
   const [formatFilter, setFormatFilter] = useState<string>('all');
+
+  // Reset format filter when switching asset type so stale selections from a
+  // previous type don't hide all results in the new type.
+  const handleTypeFilterChange = useCallback((newType: TypeFilter) => {
+    setTypeFilter(newType);
+    setFormatFilter('all');
+  }, []);
   const [assetToDelete, setAssetToDelete] = useState<UnifiedAsset | null>(null);
 
   const { data: assetTypes } = useAssetTypes();
@@ -517,14 +529,14 @@ export function AssetLibrary({ onDragStart }: AssetLibraryProps) {
         </HeaderRow>
 
         <TypeFilterRow>
-          <TypeButton $active={typeFilter === 'all'} onClick={() => setTypeFilter('all')}>
+          <TypeButton $active={typeFilter === 'all'} onClick={() => handleTypeFilterChange('all')}>
             All
           </TypeButton>
           {allTypes.map((t) => (
             <TypeButton
               key={t.type_id}
               $active={typeFilter === t.type_id}
-              onClick={() => setTypeFilter(t.type_id)}
+              onClick={() => handleTypeFilterChange(t.type_id)}
             >
               {t.label}
             </TypeButton>
@@ -578,6 +590,7 @@ export function AssetLibrary({ onDragStart }: AssetLibraryProps) {
           items={systemItems}
           canDelete={can.deleteAsset}
           onDragStart={onDragStart}
+          isDraggable={isDraggable}
         />
         <AssetListSection
           title="User Assets"
@@ -585,6 +598,7 @@ export function AssetLibrary({ onDragStart }: AssetLibraryProps) {
           canDelete={can.deleteAsset}
           onDelete={setAssetToDelete}
           onDragStart={onDragStart}
+          isDraggable={isDraggable}
         />
       </AssetsList>
 

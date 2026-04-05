@@ -26,7 +26,10 @@ interface AssetCardProps {
   item: UnifiedAsset;
   onDelete?: (item: UnifiedAsset) => void;
   canDelete: boolean;
+  /** Called when the user drags the card.  When absent the card is not draggable. */
   onDragStart?: (event: React.DragEvent, item: UnifiedAsset) => void;
+  /** Override the default draggable check (`!!onDragStart`). */
+  isDraggable?: boolean;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -108,7 +111,7 @@ function getLicense(item: UnifiedAsset): string | undefined {
 
 // ── Styled components ────────────────────────────────────────────────────────
 
-const CardWrapper = styled.div`
+const CardWrapper = styled.div<{ $draggable: boolean }>`
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -118,7 +121,7 @@ const CardWrapper = styled.div`
   border-radius: 8px;
   color: var(--sk-text);
   position: relative;
-  cursor: grab;
+  cursor: ${({ $draggable }) => ($draggable ? 'grab' : 'default')};
   transition: none;
 
   &:hover {
@@ -131,7 +134,7 @@ const CardWrapper = styled.div`
   }
 
   &:active {
-    cursor: grabbing;
+    cursor: ${({ $draggable }) => ($draggable ? 'grabbing' : 'default')};
   }
 `;
 
@@ -241,7 +244,9 @@ const DeleteButton = styled.button`
 
 // ── Component ────────────────────────────────────────────────────────────────
 
-export function AssetCard({ item, onDelete, canDelete, onDragStart }: AssetCardProps) {
+export function AssetCard({ item, onDelete, canDelete, onDragStart, isDraggable }: AssetCardProps) {
+  const canDrag = isDraggable ?? !!onDragStart;
+
   const handleDragStart = (event: React.DragEvent) => {
     onDragStart?.(event, item);
   };
@@ -256,9 +261,10 @@ export function AssetCard({ item, onDelete, canDelete, onDragStart }: AssetCardP
 
   return (
     <CardWrapper
-      draggable
-      onDragStart={handleDragStart}
-      title={`Drag to add node for ${getName(item)}`}
+      $draggable={canDrag}
+      draggable={canDrag}
+      onDragStart={canDrag ? handleDragStart : undefined}
+      title={canDrag ? `Drag to add node for ${getName(item)}` : getName(item)}
     >
       {canDelete && !isSystem(item) && onDelete && (
         <DeleteButton className="delete-button" onClick={handleDelete}>

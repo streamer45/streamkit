@@ -144,10 +144,13 @@ impl PluginAssetRegistry {
                 || PathBuf::from(format!("samples/{}/system", spec.type_id)),
                 PathBuf::from,
             );
-            let user_dir = system_dir.parent().map_or_else(
-                || PathBuf::from(format!("samples/{}/user", spec.type_id)),
-                |p| p.join("user"),
-            );
+            let user_dir = system_dir
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .map_or_else(
+                    || PathBuf::from(format!("samples/{}/user", spec.type_id)),
+                    |p| p.join("user"),
+                );
 
             let registered = RegisteredAssetType {
                 type_id: spec.type_id.clone(),
@@ -1444,5 +1447,27 @@ mod tests {
         assert_eq!(patterns.len(), 1);
         assert_eq!(patterns[0].0, "data/custom/system/*");
         assert_eq!(patterns[0].1, "data/custom/user/*");
+    }
+
+    #[tokio::test]
+    async fn single_component_system_dir_falls_back_to_default_user_dir() {
+        let registry = PluginAssetRegistry::new();
+        let spec = PluginAssetSpec {
+            type_id: "quirky".to_string(),
+            label: "Quirky".to_string(),
+            extensions: vec!["bin".to_string()],
+            max_size_bytes: 1024,
+            content_type: AssetContentType::Binary,
+            icon_hint: None,
+            node_param: None,
+            // Single-component path — parent() would return "".
+            system_dir: Some("system".to_string()),
+        };
+        registry.register("myplugin", "plugin::native::myplugin", &[spec]).await;
+        let patterns = registry.registered_permission_patterns();
+        assert_eq!(patterns.len(), 1);
+        assert_eq!(patterns[0].0, "system/*");
+        // user_dir should fall back to `samples/quirky/user`, not bare `user`.
+        assert_eq!(patterns[0].1, "samples/quirky/user/*");
     }
 }

@@ -269,6 +269,7 @@ interface ControlPaneProps {
   nodeDefinitions: NodeDefinition[];
   onDragStart: (event: React.DragEvent, nodeType: string) => void;
   onAssetDragStart?: (event: React.DragEvent, asset: UnifiedAsset) => void;
+  isAssetDraggable?: (item: UnifiedAsset) => boolean;
   onLoadSample?: (yaml: string, name: string, description: string) => void;
   samplesRef?: React.RefObject<SamplePipelinesPaneRef | null>;
   mode?: 'oneshot' | 'dynamic';
@@ -280,6 +281,7 @@ const ControlPane: React.FC<ControlPaneProps> = ({
   nodeDefinitions,
   onDragStart,
   onAssetDragStart,
+  isAssetDraggable,
   mode,
   onLoadSample,
   samplesRef,
@@ -800,7 +802,7 @@ const ControlPane: React.FC<ControlPaneProps> = ({
           </TabsList>
           <TabsContent value="nodes">{nodeLibraryContent}</TabsContent>
           <TabsContent value="assets">
-            <AssetLibrary onDragStart={onAssetDragStart} />
+            <AssetLibrary onDragStart={onAssetDragStart} isDraggable={isAssetDraggable} />
           </TabsContent>
           <TabsContent value="samples">{samplesTabContent}</TabsContent>
           {isAdmin() && <TabsContent value="plugins">{pluginManagementContent}</TabsContent>}

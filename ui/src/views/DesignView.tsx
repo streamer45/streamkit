@@ -1086,6 +1086,13 @@ const DesignViewContent: React.FC = () => {
     [setType]
   );
 
+  /** Only audio and plugin assets can be dropped onto the canvas right now. */
+  const isAssetDraggable = React.useCallback(
+    (item: import('@/components/AssetCard').UnifiedAsset) =>
+      item.type === 'audio' || item.type === 'plugin',
+    []
+  );
+
   const onAssetDragStart = React.useCallback(
     (event: React.DragEvent, item: import('@/components/AssetCard').UnifiedAsset) => {
       let dragType: string;
@@ -1094,8 +1101,6 @@ const DesignViewContent: React.FC = () => {
       } else if (item.type === 'plugin') {
         dragType = `plugin-asset:${item.asset.type_id}:${item.asset.path}`;
       } else {
-        // Image and font assets don't have drop handlers yet — prevent drag.
-        event.preventDefault();
         return;
       }
       setType(dragType);
@@ -1435,6 +1440,7 @@ const DesignViewContent: React.FC = () => {
         nodeDefinitions={filteredNodeDefinitions}
         onDragStart={onDragStart}
         onAssetDragStart={onAssetDragStart}
+        isAssetDraggable={isAssetDraggable}
         onLoadSample={handleLoadSample}
         samplesRef={samplesRef}
         mode={mode}
@@ -1446,6 +1452,7 @@ const DesignViewContent: React.FC = () => {
       filteredNodeDefinitions,
       onDragStart,
       onAssetDragStart,
+      isAssetDraggable,
       handleLoadSample,
       mode,
       onFragmentDragStart,
