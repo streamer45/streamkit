@@ -191,10 +191,7 @@ impl PluginAssetRegistry {
             *patterns = map
                 .values()
                 .map(|r| {
-                    (
-                        format!("{}/*", r.system_dir.display()),
-                        format!("{}/*", r.user_dir.display()),
-                    )
+                    (format!("{}/*", r.system_dir.display()), format!("{}/*", r.user_dir.display()))
                 })
                 .collect();
         }
@@ -215,10 +212,7 @@ impl PluginAssetRegistry {
             *patterns = map
                 .values()
                 .map(|r| {
-                    (
-                        format!("{}/*", r.system_dir.display()),
-                        format!("{}/*", r.user_dir.display()),
-                    )
+                    (format!("{}/*", r.system_dir.display()), format!("{}/*", r.user_dir.display()))
                 })
                 .collect();
         }
