@@ -110,36 +110,6 @@ export async function deleteSlintAsset(id: string): Promise<void> {
   logger.info('Deleted slint asset:', id);
 }
 
-/**
- * Fetches the text content of a Slint asset file
- * @param scope - "system" or "user"
- * @param id - The asset filename
- */
-async function fetchSlintAssetContent(scope: string, id: string): Promise<string> {
-  logger.info('Fetching slint asset content:', { scope, id });
-
-  const response = await fetchApi(
-    `/api/v1/assets/slint/file/${encodeURIComponent(scope)}/${encodeURIComponent(id)}`,
-    {
-      method: 'GET',
-    }
-  );
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    logger.error('Failed to fetch slint asset content:', {
-      scope,
-      id,
-      status: response.status,
-      statusText: response.statusText,
-      error: errorText,
-    });
-    throw new Error(`Failed to fetch slint asset content: ${response.statusText}`);
-  }
-
-  return response.text();
-}
-
 // React Query hooks
 
 /**
