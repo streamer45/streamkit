@@ -290,5 +290,3 @@ export function AssetCard({ item, onDelete, canDelete, onDragStart }: AssetCardP
     </CardWrapper>
   );
 }
-
-
