@@ -190,7 +190,162 @@ the architectural patterns already exist in the MoQ transport nodes.
 
 ---
 
-## Honorable Mentions (High Value, Lower Urgency)
+## Deep Dive: Exit Nodes / Platform Sinks (RTMP Output)
+
+This section expands on a critical gap raised during brainstorming: StreamKit
+can compose beautiful video — but right now the only way to get that output
+*out* is via MoQ (for browser watchers) or MSE (HTTP chunked). There's no way
+to push to YouTube, Twitch, Kick, or any other platform. That's a huge missed
+opportunity.
+
+### The Platform Ingest Landscape (2025)
+
+| Platform | Primary Ingest | Secure Variant | Alt Protocols | Video Codecs |
+|----------|---------------|----------------|---------------|--------------|
+| **YouTube** | RTMP | RTMPS | HLS, DASH | H.264 (RTMP), VP9/HEVC (HLS/DASH) |
+| **Twitch** | RTMP | RTMPS | — | H.264 only |
+| **Kick** | RTMP | RTMPS | — | H.264 only |
+| **Facebook** | RTMP | RTMPS | — | H.264 only |
+| **Custom/self-hosted** | RTMP | RTMPS, SRT | SRT, WHIP | varies |
+
+**The bottom line:** RTMP/RTMPS with H.264+AAC is the universal ingest
+protocol. Every single major platform supports it, and most *require* it for
+their primary ingest path. SRT is gaining ground for contribution (encoder →
+relay) but is not yet accepted by most consumer platforms directly.
+
+### What StreamKit Needs
+
+To go from "compositor output → live on YouTube/Twitch", StreamKit needs two
+things that don't exist yet:
+
+#### 1. H.264 Encoder Node
+
+StreamKit currently has VP9 and AV1 (SVT-AV1 + dav1d) codecs, but no H.264.
+The `VideoCodec::H264` enum variant exists in `crates/core/src/types.rs` as a
+"forward-looking placeholder — not yet wired into any encoder/decoder."
+
+For RTMP output, H.264 is non-negotiable — it's the only video codec that
+every platform accepts via RTMP. Options for implementation:
+
+- **openh264** (Cisco's BSD-licensed H.264): Pure C, well-maintained, no
+  patent fees (Cisco pays). The `openh264-sys2` Rust crate provides bindings.
+  This is the cleanest path license-wise.
+- **x264** (VideoLAN): GPL-licensed, highest quality software H.264 encoder.
+  Would need to be a separate feature flag or plugin due to GPL.
+- **FFmpeg/libavcodec**: Would add a large dependency but gives access to all
+  codecs. Probably overkill for just H.264.
+
+**Recommendation:** Start with openh264 — it's BSD-licensed, compiles from
+source (no system dependency), and is good enough for real-time streaming at
+720p/1080p. Can always add x264 as a quality-oriented alternative later.
+Following the existing SVT-AV1 and dav1d patterns (hand-written FFI, static
+linking), an `openh264` encoder node would fit naturally into the codebase.
+
+#### 2. RTMP Output Node (or Plugin)
+
+Once H.264 frames are available, they need to be muxed into FLV and pushed
+over RTMP to a platform ingest endpoint. This involves:
+
+- **FLV muxing**: Pack H.264 NALUs + AAC audio into FLV tags with correct
+  timestamps.
+- **RTMP handshake + publish**: Connect to `rtmp://a.rtmp.youtube.com/live2`,
+  authenticate with a stream key, and push FLV data.
+- **RTMPS**: TLS wrapper for platforms that require it (increasingly all of
+  them).
+
+**Implementation options:**
+
+- **`rtmp-rs` crate** (MIT, Tokio-native, published Jan 2026): Async RTMP
+  client/server with Enhanced RTMP v2 support (H.264, HEVC, AV1, VP9, Opus).
+  This is the most natural fit for StreamKit's Tokio-based architecture. It
+  handles the RTMP handshake, chunking, and publish flow. The library is
+  young (v0.5.0, ~200 downloads) but the feature set is exactly right.
+- **FFmpeg subprocess**: Shell out to `ffmpeg -f flv rtmp://...`. Quick and
+  dirty, but adds a process dependency and makes error handling harder.
+- **Hand-rolled RTMP**: The protocol is well-documented but has enough quirks
+  (encoder compatibility, timestamp handling) that using a library is safer.
+
+**Recommendation:** Build an RTMP output node (`transport::rtmp::publisher` or
+a native plugin) using `rtmp-rs`. The node would accept encoded video (H.264)
+and audio (AAC or Opus with transcoding to AAC) packets and push them to a
+configured RTMP/RTMPS URL.
+
+#### 3. AAC Audio (Stretch Goal)
+
+RTMP platforms universally expect AAC audio, not Opus. StreamKit currently
+only has Opus. For a complete RTMP output story, you'd eventually need an
+AAC encoder (probably via `fdk-aac` or `libfaac`). However, Enhanced RTMP v2
+(which `rtmp-rs` supports) does support Opus — and YouTube specifically
+supports it via HLS/DASH ingest. For a v1, you could:
+
+- Use Opus over Enhanced RTMP (works with some platforms/relays)
+- Or use FFmpeg for the Opus→AAC transcode step initially
+- Or add a native AAC encoder node as a follow-up
+
+### The Full Pipeline Would Look Like
+
+```
+compositor → pixel_convert (NV12) → h264_encoder → ┐
+                                                     ├→ rtmp_publisher → YouTube/Twitch
+opus_encoder ────────────────────────────────────────┘
+```
+
+Or in YAML:
+
+```yaml
+nodes:
+  # ... compositor and audio nodes as before ...
+
+  h264_encoder:
+    kind: video::h264::encoder
+    params:
+      bitrate: 4000000      # 4 Mbps
+      keyframe_interval: 60 # 2s at 30fps
+      preset: fast
+    needs: pixel_convert
+
+  rtmp_publisher:
+    kind: transport::rtmp::publisher
+    params:
+      url: "rtmps://a.rtmp.youtube.com/live2"
+      stream_key_secret: youtube_stream_key  # from skit.toml secrets
+    needs:
+      video: h264_encoder
+      audio: opus_encoder  # or aac_encoder
+```
+
+### Effort Estimate
+
+| Component | Effort | Dependency |
+|-----------|--------|------------|
+| H.264 encoder node (openh264) | Medium | None — can start immediately |
+| FLV container support | Low-medium | H.264 encoder |
+| RTMP output node (using rtmp-rs) | Medium | H.264 encoder + FLV |
+| AAC encoder node | Medium | Independent |
+| **Total** | **~2-3 sprints** | Sequential (H.264 first) |
+
+### Why This Matters More Than Almost Anything
+
+Right now, StreamKit's value proposition is: "compose real-time video pipelines
+on your own infrastructure." But the output is stuck inside StreamKit's own
+ecosystem (MoQ viewers, MSE endpoints). Adding RTMP output would change the
+pitch to: **"compose real-time video pipelines and stream them anywhere."**
+
+That's the difference between a cool tech demo and a tool people actually use
+for production streaming. Every streamer, every content creator, every live
+event producer needs to get their output to a platform. RTMP is how.
+
+### Alternative: SRT Output (Simpler, Narrower)
+
+If RTMP feels too heavy for a first pass, SRT output would be simpler to
+implement (it's basically "UDP + retransmission + encryption" — no complex
+handshake, no FLV muxing) and would work with self-hosted relays, Nginx-RTMP
+via SRT input, and some professional workflows. But it wouldn't directly
+connect to YouTube/Twitch, so the user impact is narrower.
+
+---
+
+## Other Honorable Mentions (High Value, Lower Urgency)
 
 ### A/V Sync Polish
 
@@ -204,6 +359,8 @@ that's invisible when it works and devastating when it doesn't.
 An RTMP ingest node would immediately connect StreamKit to the existing
 streaming ecosystem (OBS, hardware encoders, etc.). This is on the roadmap and
 would unlock a large class of users who already have RTMP-based workflows.
+Note: the `rtmp-rs` crate supports both server and client modes, so the same
+dependency could power both RTMP input and output.
 
 ### S3 Sink Node
 
