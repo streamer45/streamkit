@@ -101,51 +101,6 @@ export async function deletePluginAsset(typeId: string, id: string): Promise<voi
   logger.info('Deleted plugin asset:', id);
 }
 
-/**
- * Fetch raw text content of a plugin asset (for editable text assets).
- */
-export async function fetchPluginAssetContent(
-  typeId: string,
-  scope: string,
-  id: string
-): Promise<string> {
-  const response = await fetchApi(
-    `/api/v1/assets/plugin/${encodeURIComponent(typeId)}/file/${encodeURIComponent(scope)}/${encodeURIComponent(id)}`,
-    { method: 'GET' }
-  );
-
-  if (!response.ok) {
-    throw new Error(`Failed to fetch asset content: ${response.statusText}`);
-  }
-
-  return response.text();
-}
-
-/**
- * Update text content of a plugin asset in-place (user assets only).
- */
-export async function updatePluginAssetContent(
-  typeId: string,
-  id: string,
-  content: string
-): Promise<PluginAsset> {
-  const response = await fetchApi(
-    `/api/v1/assets/plugin/${encodeURIComponent(typeId)}/file/user/${encodeURIComponent(id)}`,
-    {
-      method: 'PUT',
-      headers: { 'Content-Type': 'text/plain' },
-      body: content,
-    }
-  );
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Failed to update asset: ${errorText || response.statusText}`);
-  }
-
-  return response.json();
-}
-
 // ── React Query Hooks ────────────────────────────────────────────────────────
 
 /**

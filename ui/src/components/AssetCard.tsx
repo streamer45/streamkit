@@ -22,7 +22,7 @@ export type UnifiedAsset =
   | { type: 'font'; asset: FontAsset }
   | { type: 'plugin'; asset: PluginAsset; typeInfo: AssetTypeInfo };
 
-export type AssetType = 'audio' | 'image' | 'font' | 'plugin';
+type AssetType = 'audio' | 'image' | 'font' | 'plugin';
 
 interface AssetCardProps {
   item: UnifiedAsset;
@@ -291,5 +291,4 @@ export function AssetCard({ item, onDelete, canDelete, onDragStart }: AssetCardP
   );
 }
 
-// Re-export the getId for use by parent components
-export { getId as getAssetId };
+
