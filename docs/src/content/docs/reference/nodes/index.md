@@ -69,3 +69,12 @@ Notes:
 - [`video::pixel_convert`](./video-pixel-convert/)
 - [`video::vp9::decoder`](./video-vp9-decoder/)
 - [`video::vp9::encoder`](./video-vp9-encoder/)
+
+### Feature-gated video nodes
+
+These nodes require optional Cargo features and are not included in the default build:
+
+- `video::av1::encoder` — rav1e AV1 encoder (feature: `av1`)
+- `video::av1::decoder` — rav1d AV1 decoder (feature: `av1`)
+- `video::svt_av1::encoder` — SVT-AV1 encoder via FFI (feature: `svt_av1` or `svt_av1_static`)
+- `video::dav1d::decoder` — C dav1d AV1 decoder via FFI (feature: `dav1d`)

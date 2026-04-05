@@ -67,7 +67,8 @@ If you try it and something feels off, please open an issue (or a small PR). For
 - **Speech pipelines** — Build a transcription service: ingest audio via MoQ, run Whisper STT, stream transcription updates to clients.
 - **Real-time translation** — Bilingual streams with live subtitles using NLLB or Helsinki translation models.
 - **Voice agents** — TTS-powered bots that respond to audio input with Kokoro, Piper, or Matcha.
-- **Video compositing** — Combine camera feeds with overlays and PiP layouts using the built-in compositor, encoded with VP9 for real-time transport.
+- **Video compositing** — Combine camera feeds with overlays and PiP layouts using the built-in compositor (CPU or GPU via wgpu), encoded with VP9 or AV1 for real-time transport.
+- **Dynamic UI overlays** — Render scriptable, data-driven overlays (scoreboards, lower thirds, watermarks) using the Slint plugin and composite them into live video.
 - **Audio processing** — Mixing, gain control, format conversion, and custom routing.
 - **Batch processing** — High-throughput file conversion or offline transcription using the Oneshot HTTP API.
 - **Your idea** — Add your own node or plugin and compose it into a pipeline
@@ -80,7 +81,7 @@ If you try it and something feels off, please open an issue (or a small PR). For
   - **Dynamic**: long-running sessions you can inspect and reconfigure while they run
 - **Transport**: real-time media over MoQ/WebTransport (QUIC) plus a WebSocket control plane for UI and automation (WebSocket transport nodes are on the roadmap; in the near term, non-media streams may also ride MoQ)
 - **Plugins**: native (C ABI, in-process) and WASM (Component Model).
-- **Media focus**: audio (Opus, WAV, OGG, FLAC, MP3) and basic video (VP9 encode/decode, compositing, WebM muxing). Video capabilities are expanding — see the [roadmap](ROADMAP.md).
+- **Media focus**: audio (Opus, WAV, OGG, FLAC, MP3) and video (VP9, AV1 encode/decode, compositing with CPU/GPU backends, WebM muxing). See the [roadmap](ROADMAP.md) for what's next.
 
 ## Quickstart (Docker)
 
@@ -168,7 +169,8 @@ docker run --rm --env-file streamkit.env \
 - Node graph model (DAG) with built-in nodes plus modular extensions
 - Web UI for building/inspecting pipelines and a client CLI (`skit-cli`) for scripting (included in GitHub Release tarballs)
 - Load testing + observability building blocks (see `samples/loadtest/` and `samples/grafana-dashboard.json`)
-- Optional ML plugins + models (mounted externally by default): Whisper/SenseVoice (STT), Kokoro/Piper/Matcha (TTS), NLLB/Helsinki (translation). Some models may have restrictive licenses (e.g. NLLB is CC-BY-NC); review model licenses before production use.
+- Video compositing with CPU (tiny-skia) and GPU (wgpu) backends, VP9 and AV1 codec support, and a dedicated compositor UI in the web interface
+- Optional ML plugins + models (mounted externally by default): Whisper/SenseVoice (STT), Kokoro/Piper/Matcha (TTS), NLLB/Helsinki (translation), Slint (dynamic UI overlays). Some models may have restrictive licenses (e.g. NLLB is CC-BY-NC); review model licenses before production use.
 
 ## Development
 

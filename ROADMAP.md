@@ -58,10 +58,11 @@ These are in place today and will be iterated on (not “added from scratch”):
 - **A/V sync** — Jitter/drift strategy, drop/late-frame policy, and regression tests (dynamic pipelines)
 - **Hang/MoQ alignment** — Clear mapping between StreamKit timing metadata and Hang/MoQ timestamps/groups
 
-### Dynamic Video over MoQ (VP9 MVP) (P0)
+### Dynamic Video over MoQ (P0)
 
 - ~~**Video packet types** — First-class video packets alongside audio, with explicit timing requirements~~
-- ~~**VP9 baseline** — Real-time VP9 encode/decode path suitable for browser clients; **AV1 optional later**~~
+- ~~**VP9 baseline** — Real-time VP9 encode/decode path suitable for browser clients~~
+- ~~**AV1 support** — Real-time AV1 encode/decode via rav1e/rav1d (pure Rust) and SVT-AV1/dav1d (C FFI); drop-in replacement for VP9 in any pipeline~~
 - **MoQ/Hang-first interop** — Start by interoperating cleanly with `@moq/hang`, then generalize to “MoQ in general”
 - ~~**Compositor MVP (main + PiP)** — Two live video inputs → one composed output, plus simple overlays (watermark/text/images)~~
 - **Golden-path demo** — A canonical “screen share + webcam → PiP → watchers” dynamic pipeline sample
@@ -108,7 +109,7 @@ These are in place today and will be iterated on (not “added from scratch”):
 
 - **TypeScript support in script nodes** — Compile `.ts` scripts at load time for type-safe pipeline logic
 - **UI code editor** — In-browser JavaScript/TypeScript editor with syntax highlighting and validation
-- **Compositor UI (basic)** — Dedicated scene/layer editor for main + PiP positioning and simple overlays (crop/transform/watermark)
+- ~~**Compositor UI (basic)** — Dedicated scene/layer editor for main + PiP positioning and simple overlays (crop/transform/watermark)~~
 - **Admin/Manage section** — Dedicated UI area for plugins, permissions/roles, secrets/config, and operational controls (separate from pipeline design/monitor views)
 
 ### Stability & Polish
@@ -139,9 +140,11 @@ StreamKit is media/processing-focused, not "audio-only". As real use cases emerg
 
 After the VP9 + compositor MVP is solid, expand video capabilities:
 
-- **More codecs/accelerators** — AV1, H.264, hardware acceleration options where possible
+- ~~**AV1 codecs** — AV1 encode/decode shipped (rav1e, SVT-AV1, rav1d, dav1d)~~
+- **More codecs/accelerators** — H.264, hardware acceleration options where possible
 - **Container support** — MP4 and WebM muxing with video tracks (beyond the initial WebM-focused PoC path)
-- **More compositing** — Multi-video compositing beyond PiP (layouts, grids, transitions)
+- ~~**Multi-video compositing** — N-input compositor with full per-layer transforms (position, scale, rotation, opacity, crop/zoom, z-order, mirror) shipped~~
+- **Compositing polish** — Pre-built layouts, grid templates, animated transitions
 
 ### Advanced Transports
 
