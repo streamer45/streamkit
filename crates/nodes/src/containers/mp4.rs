@@ -267,7 +267,7 @@ impl FileBackedBuffer {
     fn take_data(&mut self) -> std::io::Result<Option<Bytes>> {
         self.inner.flush()?;
         let file = self.inner.get_mut();
-        let len = file.stream_position()?;
+        let len = file.seek(SeekFrom::End(0))?;
         if len == 0 {
             return Ok(None);
         }
