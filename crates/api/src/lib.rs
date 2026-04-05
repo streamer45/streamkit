@@ -663,6 +663,15 @@ pub struct PluginAsset {
 // --- Asset Type Discovery ---
 
 /// Describes a registered asset type (core or plugin-provided).
+/// Whether an asset type is built into the server or registered by a plugin.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, TS)]
+#[ts(export)]
+#[serde(rename_all = "lowercase")]
+pub enum AssetTypeSource {
+    Core,
+    Plugin,
+}
+
 ///
 /// Returned by `GET /api/v1/asset-types` so the UI can dynamically render
 /// type filters, upload zones, and drag-drop behaviour.
@@ -673,8 +682,8 @@ pub struct AssetTypeInfo {
     pub type_id: String,
     /// Human-readable label (e.g. "Audio", "Slint Files").
     pub label: String,
-    /// `"core"` for built-in asset types, `"plugin"` for plugin-registered.
-    pub source: String,
+    /// Whether this type is built-in or registered by a plugin.
+    pub source: AssetTypeSource,
     /// Plugin ID that registered this type (only set when `source == "plugin"`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plugin_id: Option<String>,

@@ -28,10 +28,13 @@ use crate::marketplace::{AssetContentType, PluginAssetSpec};
 use crate::permissions::Permissions as RolePermissions;
 use crate::role_extractor::get_permissions;
 use crate::state::AppState;
-use streamkit_api::{AssetTypeInfo, PluginAsset};
+use streamkit_api::{AssetTypeInfo, AssetTypeSource, PluginAsset};
 
 // Security limits
 const MAX_FILENAME_LENGTH: usize = 255;
+/// Hard cap on `max_size_bytes` for any plugin asset type (100 MiB).
+/// Prevents memory exhaustion when `serve_handler` reads files into memory.
+const MAX_ASSET_SIZE_BYTES: usize = 100 * 1024 * 1024;
 
 // ── Registered asset type ────────────────────────────────────────────────────
 
@@ -72,14 +75,23 @@ pub struct RegisteredAssetType {
 ///
 /// Stored in [`AppState`] and shared across handlers.  Uses an `RwLock` so
 /// reads (listing, serving) don't block each other.
+///
+/// A separate sync cache of registered type IDs is maintained so the
+/// permission layer can query it without an async context (see
+/// [`registered_type_ids`](Self::registered_type_ids)).
 #[derive(Debug, Default, Clone)]
 pub struct PluginAssetRegistry {
     inner: Arc<RwLock<HashMap<String, RegisteredAssetType>>>,
+    /// Sync-accessible list of registered type_ids for permission augmentation.
+    type_ids: Arc<std::sync::RwLock<Vec<String>>>,
 }
 
 impl PluginAssetRegistry {
     pub fn new() -> Self {
-        Self { inner: Arc::new(RwLock::new(HashMap::new())) }
+        Self {
+            inner: Arc::new(RwLock::new(HashMap::new())),
+            type_ids: Arc::new(std::sync::RwLock::new(Vec::new())),
+        }
     }
 
     /// Register asset types declared by a plugin.
@@ -88,6 +100,9 @@ impl PluginAssetRegistry {
     /// Returns the number of types successfully registered; invalid specs
     /// (bad `type_id` or `system_dir` with path-traversal components) are
     /// logged and skipped.
+    ///
+    /// `max_size_bytes` is capped at [`MAX_ASSET_SIZE_BYTES`] to prevent
+    /// memory exhaustion when serving files.
     pub async fn register(&self, plugin_id: &str, node_kind: &str, specs: &[PluginAssetSpec]) {
         let mut map = self.inner.write().await;
         for spec in specs {
@@ -140,7 +155,7 @@ impl PluginAssetRegistry {
                 node_kind: node_kind.to_string(),
                 label: spec.label.clone(),
                 extensions: spec.extensions.clone(),
-                max_size_bytes: spec.max_size_bytes,
+                max_size_bytes: spec.max_size_bytes.min(MAX_ASSET_SIZE_BYTES),
                 content_type: spec.content_type.clone(),
                 icon_hint: spec.icon_hint.clone(),
                 node_param: spec.node_param.clone(),
@@ -148,13 +163,32 @@ impl PluginAssetRegistry {
                 user_dir,
             };
 
+            // Reject if another plugin already owns this type_id.
+            if let Some(existing) = map.get(&spec.type_id) {
+                if existing.plugin_id != plugin_id {
+                    warn!(
+                        type_id = %spec.type_id,
+                        existing_plugin = %existing.plugin_id,
+                        new_plugin = %plugin_id,
+                        "Skipping plugin asset type: type_id already registered by a different plugin"
+                    );
+                    continue;
+                }
+            }
+
             info!(
                 type_id = %spec.type_id,
                 plugin_id = %plugin_id,
                 extensions = ?spec.extensions,
                 "Registered plugin asset type"
             );
+
             map.insert(spec.type_id.clone(), registered);
+        }
+
+        // Rebuild the sync type_ids cache from the authoritative map.
+        if let Ok(mut ids) = self.type_ids.write() {
+            *ids = map.keys().cloned().collect();
         }
     }
 
@@ -167,10 +201,24 @@ impl PluginAssetRegistry {
         let before = map.len();
         map.retain(|_, v| v.plugin_id != plugin_id);
         let removed = before - map.len();
+
+        // Rebuild the sync type_ids cache.
+        if let Ok(mut ids) = self.type_ids.write() {
+            *ids = map.keys().cloned().collect();
+        }
+
         drop(map);
         if removed > 0 {
             info!(plugin_id = %plugin_id, removed, "Unregistered plugin asset types");
         }
+    }
+
+    /// Returns the currently registered plugin type IDs (sync, lock-free read).
+    ///
+    /// Used by the permission layer to dynamically generate asset-path globs
+    /// for each role without requiring broad `samples/*/` wildcards.
+    pub fn registered_type_ids(&self) -> Vec<String> {
+        self.type_ids.read().map_or_else(|_| Vec::new(), |ids| ids.clone())
     }
 
     /// Look up a registered type by its `type_id`.
@@ -561,6 +609,10 @@ async fn serve_handler(
             [
                 (header::CONTENT_TYPE, content_type_header.to_string()),
                 (header::CACHE_CONTROL, "public, must-revalidate".to_string()),
+                (
+                    header::CONTENT_DISPOSITION,
+                    format!("attachment; filename=\"{id}\""),
+                ),
             ],
             data,
         )
@@ -666,7 +718,7 @@ pub async fn list_asset_types_handler(
         AssetTypeInfo {
             type_id: "audio".to_string(),
             label: "Audio".to_string(),
-            source: "core".to_string(),
+            source: AssetTypeSource::Core,
             plugin_id: None,
             node_kind: None,
             node_param: None,
@@ -681,9 +733,9 @@ pub async fn list_asset_types_handler(
             editable: false,
         },
         AssetTypeInfo {
-            type_id: "images".to_string(),
+            type_id: "image".to_string(),
             label: "Images".to_string(),
-            source: "core".to_string(),
+            source: AssetTypeSource::Core,
             plugin_id: None,
             node_kind: None,
             node_param: None,
@@ -698,9 +750,9 @@ pub async fn list_asset_types_handler(
             editable: false,
         },
         AssetTypeInfo {
-            type_id: "fonts".to_string(),
+            type_id: "font".to_string(),
             label: "Fonts".to_string(),
-            source: "core".to_string(),
+            source: AssetTypeSource::Core,
             plugin_id: None,
             node_kind: None,
             node_param: None,
@@ -715,7 +767,7 @@ pub async fn list_asset_types_handler(
         types.push(AssetTypeInfo {
             type_id: reg.type_id,
             label: reg.label,
-            source: "plugin".to_string(),
+            source: AssetTypeSource::Plugin,
             plugin_id: Some(reg.plugin_id),
             node_kind: Some(reg.node_kind),
             node_param: reg.node_param,
@@ -1276,5 +1328,89 @@ mod tests {
         let remaining = registry.all().await;
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].plugin_id, "plugin-b");
+    }
+
+    #[tokio::test]
+    async fn register_skips_collision_from_different_plugin() {
+        let registry = PluginAssetRegistry::new();
+        let spec = PluginAssetSpec {
+            type_id: "shared".to_string(),
+            label: "Shared".to_string(),
+            extensions: vec!["txt".to_string()],
+            max_size_bytes: 1024,
+            content_type: AssetContentType::Binary,
+            icon_hint: None,
+            node_param: None,
+            system_dir: None,
+        };
+        // First plugin registers successfully.
+        registry.register("plugin-a", "plugin::native::a", std::slice::from_ref(&spec)).await;
+        assert_eq!(registry.all().await.len(), 1);
+        assert_eq!(registry.all().await[0].plugin_id, "plugin-a");
+
+        // Second plugin with same type_id is rejected.
+        registry.register("plugin-b", "plugin::native::b", &[spec]).await;
+        assert_eq!(registry.all().await.len(), 1);
+        assert_eq!(registry.all().await[0].plugin_id, "plugin-a");
+    }
+
+    #[tokio::test]
+    async fn register_allows_same_plugin_reregistration() {
+        let registry = PluginAssetRegistry::new();
+        let spec = PluginAssetSpec {
+            type_id: "mine".to_string(),
+            label: "Mine".to_string(),
+            extensions: vec!["txt".to_string()],
+            max_size_bytes: 1024,
+            content_type: AssetContentType::Binary,
+            icon_hint: None,
+            node_param: None,
+            system_dir: None,
+        };
+        registry.register("plugin-a", "plugin::native::a", std::slice::from_ref(&spec)).await;
+        // Re-registering from the same plugin should succeed (idempotent).
+        registry.register("plugin-a", "plugin::native::a", std::slice::from_ref(&spec)).await;
+        assert_eq!(registry.all().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn register_caps_max_size_bytes() {
+        let registry = PluginAssetRegistry::new();
+        let spec = PluginAssetSpec {
+            type_id: "big".to_string(),
+            label: "Big".to_string(),
+            extensions: vec!["bin".to_string()],
+            max_size_bytes: 1_000_000_000, // 1 GB — exceeds the 100 MiB cap
+            content_type: AssetContentType::Binary,
+            icon_hint: None,
+            node_param: None,
+            system_dir: None,
+        };
+        registry.register("test", "plugin::native::test", &[spec]).await;
+        let types = registry.all().await;
+        assert_eq!(types.len(), 1);
+        assert_eq!(types[0].max_size_bytes, MAX_ASSET_SIZE_BYTES);
+    }
+
+    #[tokio::test]
+    async fn registered_type_ids_tracks_register_and_unregister() {
+        let registry = PluginAssetRegistry::new();
+        assert!(registry.registered_type_ids().is_empty());
+
+        let spec = PluginAssetSpec {
+            type_id: "test".to_string(),
+            label: "Test".to_string(),
+            extensions: vec!["txt".to_string()],
+            max_size_bytes: 1024,
+            content_type: AssetContentType::Binary,
+            icon_hint: None,
+            node_param: None,
+            system_dir: None,
+        };
+        registry.register("myplugin", "plugin::native::myplugin", &[spec]).await;
+        assert_eq!(registry.registered_type_ids(), vec!["test".to_string()]);
+
+        registry.unregister_plugin("myplugin").await;
+        assert!(registry.registered_type_ids().is_empty());
     }
 }

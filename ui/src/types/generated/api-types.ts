@@ -506,6 +506,8 @@ type_id: string,
  */
 plugin_id: string, };
 
+export type AssetTypeSource = "core" | "plugin";
+
 export type AssetTypeInfo = { 
 /**
  * URL-safe identifier (e.g. `audio`, `images`, `fonts`, `slint`).
@@ -516,9 +518,9 @@ type_id: string,
  */
 label: string, 
 /**
- * `"core"` for built-in asset types, `"plugin"` for plugin-registered.
+ * Whether this type is built-in or registered by a plugin.
  */
-source: string, 
+source: AssetTypeSource, 
 /**
  * Plugin ID that registered this type (only set when `source == "plugin"`).
  */
