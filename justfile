@@ -1034,6 +1034,10 @@ copy-plugins-native:
             cp -f "$f" .plugins/native/
         fi
     done
+    # Copy pocket-tts plugin.yml for consistency with the main loop above.
+    if [[ -f "plugins/native/pocket-tts/plugin.yml" ]]; then
+        cp -f "plugins/native/pocket-tts/plugin.yml" ".plugins/native/pocket-tts.plugin.yml"
+    fi
     echo "✓ Native plugins copied to .plugins/native/"
 
 # --- License Headers (REUSE) ---

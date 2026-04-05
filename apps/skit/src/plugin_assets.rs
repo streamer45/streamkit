@@ -76,21 +76,21 @@ pub struct RegisteredAssetType {
 /// Stored in [`AppState`] and shared across handlers.  Uses an `RwLock` so
 /// reads (listing, serving) don't block each other.
 ///
-/// A separate sync cache of registered type IDs is maintained so the
+/// A separate sync cache of permission patterns is maintained so the
 /// permission layer can query it without an async context (see
-/// [`registered_type_ids`](Self::registered_type_ids)).
+/// [`registered_permission_patterns`](Self::registered_permission_patterns)).
 #[derive(Debug, Default, Clone)]
 pub struct PluginAssetRegistry {
     inner: Arc<RwLock<HashMap<String, RegisteredAssetType>>>,
-    /// Sync-accessible list of registered type_ids for permission augmentation.
-    type_ids: Arc<std::sync::RwLock<Vec<String>>>,
+    /// Sync-accessible `(system_glob, user_glob)` pairs for permission augmentation.
+    permission_patterns: Arc<std::sync::RwLock<Vec<(String, String)>>>,
 }
 
 impl PluginAssetRegistry {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(RwLock::new(HashMap::new())),
-            type_ids: Arc::new(std::sync::RwLock::new(Vec::new())),
+            permission_patterns: Arc::new(std::sync::RwLock::new(Vec::new())),
         }
     }
 
@@ -186,9 +186,17 @@ impl PluginAssetRegistry {
             map.insert(spec.type_id.clone(), registered);
         }
 
-        // Rebuild the sync type_ids cache from the authoritative map.
-        if let Ok(mut ids) = self.type_ids.write() {
-            *ids = map.keys().cloned().collect();
+        // Rebuild the sync permission patterns cache from the authoritative map.
+        if let Ok(mut patterns) = self.permission_patterns.write() {
+            *patterns = map
+                .values()
+                .map(|r| {
+                    (
+                        format!("{}/*", r.system_dir.display()),
+                        format!("{}/*", r.user_dir.display()),
+                    )
+                })
+                .collect();
         }
     }
 
@@ -202,9 +210,17 @@ impl PluginAssetRegistry {
         map.retain(|_, v| v.plugin_id != plugin_id);
         let removed = before - map.len();
 
-        // Rebuild the sync type_ids cache.
-        if let Ok(mut ids) = self.type_ids.write() {
-            *ids = map.keys().cloned().collect();
+        // Rebuild the sync permission patterns cache.
+        if let Ok(mut patterns) = self.permission_patterns.write() {
+            *patterns = map
+                .values()
+                .map(|r| {
+                    (
+                        format!("{}/*", r.system_dir.display()),
+                        format!("{}/*", r.user_dir.display()),
+                    )
+                })
+                .collect();
         }
 
         drop(map);
@@ -213,12 +229,14 @@ impl PluginAssetRegistry {
         }
     }
 
-    /// Returns the currently registered plugin type IDs (sync, lock-free read).
+    /// Returns permission glob patterns for all registered plugin asset types.
     ///
-    /// Used by the permission layer to dynamically generate asset-path globs
-    /// for each role without requiring broad `samples/*/` wildcards.
-    pub fn registered_type_ids(&self) -> Vec<String> {
-        self.type_ids.read().map_or_else(|_| Vec::new(), |ids| ids.clone())
+    /// Each entry is a `(system_glob, user_glob)` pair derived from the actual
+    /// `system_dir` and `user_dir` of each registered type — not hardcoded to
+    /// `samples/{type_id}/`.  Used by the permission layer to dynamically
+    /// augment role permissions without broad wildcards.
+    pub fn registered_permission_patterns(&self) -> Vec<(String, String)> {
+        self.permission_patterns.read().map_or_else(|_| Vec::new(), |p| p.clone())
     }
 
     /// Look up a registered type by its `type_id`.
@@ -1390,9 +1408,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn registered_type_ids_tracks_register_and_unregister() {
+    async fn permission_patterns_track_register_and_unregister() {
         let registry = PluginAssetRegistry::new();
-        assert!(registry.registered_type_ids().is_empty());
+        assert!(registry.registered_permission_patterns().is_empty());
 
         let spec = PluginAssetSpec {
             type_id: "test".to_string(),
@@ -1405,9 +1423,32 @@ mod tests {
             system_dir: None,
         };
         registry.register("myplugin", "plugin::native::myplugin", &[spec]).await;
-        assert_eq!(registry.registered_type_ids(), vec!["test".to_string()]);
+        let patterns = registry.registered_permission_patterns();
+        assert_eq!(patterns.len(), 1);
+        assert_eq!(patterns[0].0, "samples/test/system/*");
+        assert_eq!(patterns[0].1, "samples/test/user/*");
 
         registry.unregister_plugin("myplugin").await;
-        assert!(registry.registered_type_ids().is_empty());
+        assert!(registry.registered_permission_patterns().is_empty());
+    }
+
+    #[tokio::test]
+    async fn permission_patterns_respect_custom_system_dir() {
+        let registry = PluginAssetRegistry::new();
+        let spec = PluginAssetSpec {
+            type_id: "custom".to_string(),
+            label: "Custom".to_string(),
+            extensions: vec!["dat".to_string()],
+            max_size_bytes: 1024,
+            content_type: AssetContentType::Binary,
+            icon_hint: None,
+            node_param: None,
+            system_dir: Some("data/custom/system".to_string()),
+        };
+        registry.register("myplugin", "plugin::native::myplugin", &[spec]).await;
+        let patterns = registry.registered_permission_patterns();
+        assert_eq!(patterns.len(), 1);
+        assert_eq!(patterns[0].0, "data/custom/system/*");
+        assert_eq!(patterns[0].1, "data/custom/user/*");
     }
 }
