@@ -1849,7 +1849,9 @@ pub fn slint_assets_router() -> Router<Arc<AppState>> {
         )
         .route(
             "/api/v1/assets/slint/file/{scope}/{id}",
-            get(serve_slint_asset_handler).put(update_slint_asset_handler),
+            get(serve_slint_asset_handler)
+                .put(update_slint_asset_handler)
+                .layer(DefaultBodyLimit::max(MAX_SLINT_FILE_SIZE)),
         )
         .route("/api/v1/assets/slint/{id}", delete(delete_slint_asset_handler))
 }
