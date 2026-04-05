@@ -1971,6 +1971,11 @@ async fn write_manifest_yml(
     manifest: &crate::marketplace::PluginManifest,
     bundle_dir: &Path,
 ) -> Result<()> {
+    anyhow::ensure!(
+        !manifest.entrypoint.is_empty(),
+        "Cannot write plugin.yml: manifest entrypoint is empty"
+    );
+
     // Place the file next to the entrypoint so `read_local_plugin_manifest`
     // (which searches relative to the library path) will find it regardless
     // of whether the entrypoint is at the bundle root or nested.
