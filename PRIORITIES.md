@@ -36,7 +36,7 @@ technical difficulty.
 | # | Priority | Why it matters now |
 |---|----------|--------------------|
 | 1 | **Golden-path "Screen + Cam PiP" end-to-end demo** | The canonical use case is *almost* there but has no polished, tested walkthrough. This is the single biggest "wow" moment for new users. |
-| 2 | **Voice agent conversation memory** | The voice agent sample is stateless — it forgets everything between turns. Even a simple in-memory history buffer would make the demo dramatically more compelling. |
+| 2 | **Voice agent conversation memory (generic sample)** | The generic voice agent sample is stateless (the weather agent already has memory). Bringing the generic agent up to parity would make it dramatically more compelling as a starting point. |
 | 3 | **Streamlined first-run experience (fewer prerequisites)** | Getting from `docker run` to a working audio pipeline is smooth, but the interesting demos (voice agent, video compositor) require multiple model downloads, `skit.toml` edits, and env vars. A `--demo` flag or guided setup would collapse this. |
 | 4 | **Error message quality for common mistakes** | Pipeline validation errors are often terse Rust-internal messages. The most common user mistakes (wrong model path, missing plugin, pin type mismatch) deserve human-friendly, actionable error messages. |
 | 5 | **WebSocket transport nodes for non-media data** | On the roadmap but not landed — this would unlock a huge class of integrations (webhooks, chat, events, dashboard data) that don't need MoQ's complexity. |
@@ -70,29 +70,31 @@ all at once.
 
 ---
 
-### 2. Voice Agent Conversation Memory
+### 2. Voice Agent Conversation Memory (Generic Sample)
 
-**Status:** Both voice agent samples (`voice-agent-openai.yaml` and
-`voice-weather-open-meteo.yaml`) are stateless — each STT segment is sent to
-the LLM with no conversation history. The `VOICE_AGENT.md` doc even calls this
-out under "Adding Conversation History" and punts to Redis/database.
+**Status:** The weather agent (`voice-weather-open-meteo.js`) already has proper
+conversation memory — a sliding window of 12 messages (6 turns) plus location
+persistence via `lastResolved`. However, the *generic* voice agent
+(`voice-agent-openai.yaml`) is fully stateless: its inline script sends only
+`[system, user]` per request with no history. The `VOICE_AGENT.md` doc even
+calls this out under "Adding Conversation History" and punts to Redis/database.
 
-**Why it matters:** A voice agent that can't remember what you said 10 seconds
-ago feels like a toy. Even a simple sliding-window memory (keep the last N
-turns in JavaScript state within the script node) would transform the demo from
-"neat proof of concept" to "I could actually build on this."
+**Why it matters:** The generic voice agent is the more prominent sample and
+likely the first one new users try. A voice agent that can't remember what you
+said 10 seconds ago feels like a toy. The weather agent already proves the
+pattern works — the generic agent just needs to be brought up to parity.
 
 **What's needed:**
 - Update the `openai_processor` script node in `voice-agent-openai.yaml` to
-  maintain a `messages` array across `process()` calls (the QuickJS runtime
-  already supports persistent state between calls via top-level `let`).
-- Cap the history to a reasonable window (e.g., last 10 exchanges or ~4000
-  tokens) to avoid unbounded growth.
-- Add a `max_history_turns` param comment so users know they can tune it.
-- Update `VOICE_AGENT.md` to document the conversation memory behavior.
+  maintain a `messages` array across `process()` calls, following the same
+  pattern used in `voice-weather-open-meteo.js` (`pushConversation()` +
+  `MAX_CONVERSATION_MESSAGES` sliding window).
+- Update `VOICE_AGENT.md` to document the conversation memory behavior and
+  remove/update the section that punts to Redis/database.
 
 **Effort:** Very low — this is a ~20-line change to the inline JavaScript in the
-YAML sample, plus doc updates.
+YAML sample, plus doc updates. The pattern is already proven in the weather
+agent.
 
 ---
 
