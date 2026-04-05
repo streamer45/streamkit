@@ -1,0 +1,95 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Demonstrates SVG overlay support in the video::compositor node.
+#
+# Composites a colorbars background with an SVG image overlay rendered
+# at the target rect dimensions.  The SVG is rasterized once at init
+# time via resvg and composited like any other image overlay.
+
+name: Video Compositor SVG Overlay Demo
+description: Composites colorbars with an SVG overlay (test_logo.svg), encodes to VP9, and streams a WebM via http_output (3 seconds)
+mode: oneshot
+client:
+  input:
+    type: none
+  output:
+    type: video
+
+nodes:
+  colorbars_bg:
+    kind: video::colorbars
+    params:
+      width: 1280
+      height: 720
+      fps: 30
+      frame_count: 90
+      pixel_format: rgba8
+      draw_time: true
+      draw_time_use_pts: true
+
+  compositor:
+    kind: video::compositor
+    params:
+      width: 1280
+      height: 720
+      num_inputs: 1
+      layers:
+        in:
+          opacity: 1.0
+          z_index: 0
+      image_overlays:
+        - id: svg_logo
+          asset_path: samples/images/system/test_logo.svg
+          rect:
+            x: 1140
+            y: 20
+            width: 120
+            height: 120
+          opacity: 0.9
+          z_index: 1
+      text_overlays:
+        - id: title
+          text: "SVG Overlay Demo"
+          rect:
+            x: 20
+            y: 20
+            width: 400
+            height: 40
+          color: [255, 255, 255, 230]
+          font_size: 28
+          opacity: 1.0
+          rotation_degrees: 0.0
+          z_index: 2
+          font_name: samples/fonts/system/DejaVuSans.ttf
+    needs:
+      - colorbars_bg
+
+  pixel_convert:
+    kind: video::pixel_convert
+    params:
+      output_format: nv12
+    needs: compositor
+
+  vp9_encoder:
+    kind: video::vp9::encoder
+    needs: pixel_convert
+
+  webm_muxer:
+    kind: containers::webm::muxer
+    params:
+      video_width: 1280
+      video_height: 720
+      streaming_mode: live
+    needs: vp9_encoder
+
+  pacer:
+    kind: core::pacer
+    needs: webm_muxer
+
+  http_output:
+    kind: streamkit::http_output
+    params:
+      content_type: 'video/webm; codecs="vp9"'
+    needs: pacer

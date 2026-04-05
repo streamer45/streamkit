@@ -25,6 +25,7 @@ use super::config::{CropShape, Rect};
 use super::gpu::{self, GpuContext, GpuMode, GpuPathState};
 use super::kernel::LayerSnapshot;
 use super::overlay::DecodedOverlay;
+use super::overlay::OverlaySourceKind;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -530,6 +531,7 @@ fn gpu_overlay_compositing() {
         mirror_vertical: false,
         measured_text_width: None,
         measured_text_height: None,
+        source_kind: OverlaySourceKind::Raster,
     });
 
     let layers = vec![Some(bg)];

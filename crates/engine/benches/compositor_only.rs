@@ -40,6 +40,7 @@ use streamkit_core::VideoFramePool;
 use streamkit_nodes::video::compositor::config::Rect;
 use streamkit_nodes::video::compositor::kernel::{composite_frame, ConversionCache, LayerSnapshot};
 use streamkit_nodes::video::compositor::overlay::DecodedOverlay;
+use streamkit_nodes::video::compositor::overlay::OverlaySourceKind;
 use streamkit_nodes::video::pixel_ops::rgba8_to_nv12_buf;
 
 use bench_utils::{generate_i420_frame, generate_nv12_frame, generate_rgba_frame, RESOLUTIONS};
@@ -160,6 +161,7 @@ fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
         mirror_vertical: false,
         measured_text_width: None,
         measured_text_height: None,
+        source_kind: OverlaySourceKind::Raster,
     });
 
     // Image overlay: a corner logo watermark.
@@ -178,6 +180,7 @@ fn build_scenarios(canvas_w: u32, canvas_h: u32) -> Vec<Scenario> {
         mirror_vertical: false,
         measured_text_width: None,
         measured_text_height: None,
+        source_kind: OverlaySourceKind::Raster,
     });
 
     vec![

@@ -37,7 +37,10 @@ use config::{
 };
 use kernel::{CompositeResult, CompositeWorkItem, LayerSnapshot};
 use opentelemetry::{global, KeyValue};
-use overlay::{decode_image_overlay, rasterize_text_overlay, validate_asset_path, DecodedOverlay};
+use overlay::{
+    decode_image_overlay, rasterize_text_overlay, validate_asset_path, DecodedOverlay,
+    OverlaySourceKind,
+};
 use schemars::schema_for;
 use smallvec::SmallVec;
 use std::collections::HashMap;
@@ -1249,6 +1252,41 @@ impl CompositorNode {
                     ov.mirror_vertical = img_cfg.transform.mirror_vertical;
                     result.push(Arc::new(ov));
                     continue;
+                }
+
+                // For vector overlays with unchanged path but changed dimensions,
+                // re-rasterize from the cached tree (avoids file I/O + XML re-parse).
+                if let OverlaySourceKind::Vector { ref tree } = existing.source_kind {
+                    let old_cfg = old_config.image_overlays.iter().find(|c| c.id == img_cfg.id);
+                    if old_cfg.is_some_and(|oc| oc.asset_path == img_cfg.asset_path) {
+                        match overlay::rasterize_svg_tree(
+                            tree,
+                            img_cfg,
+                            limits.max_canvas_dimension,
+                        ) {
+                            Ok((rgba_data, w, h, rect)) => {
+                                result.push(Arc::new(DecodedOverlay {
+                                    id: img_cfg.id.clone(),
+                                    rgba_data,
+                                    width: w,
+                                    height: h,
+                                    rect,
+                                    opacity: img_cfg.transform.opacity,
+                                    rotation_degrees: img_cfg.transform.rotation_degrees,
+                                    z_index: img_cfg.transform.z_index,
+                                    mirror_horizontal: img_cfg.transform.mirror_horizontal,
+                                    mirror_vertical: img_cfg.transform.mirror_vertical,
+                                    measured_text_width: None,
+                                    measured_text_height: None,
+                                    source_kind: OverlaySourceKind::Vector {
+                                        tree: Arc::clone(tree),
+                                    },
+                                }));
+                                continue;
+                            },
+                            Err(e) => tracing::warn!("SVG re-rasterize failed: {e}"),
+                        }
+                    }
                 }
             }
             if let Err(e) = validate_asset_path(&img_cfg.asset_path) {

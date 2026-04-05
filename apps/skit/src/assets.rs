@@ -481,7 +481,7 @@ const MAX_IMAGE_FILE_SIZE: usize = 10 * 1024 * 1024; // 10MB
 const MAX_IMAGE_PIXELS: u64 = 40_000_000; // ~40 MP — bounds decoded RGBA to ~160 MB
 
 // Allowed image formats
-const ALLOWED_IMAGE_FORMATS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif"];
+const ALLOWED_IMAGE_FORMATS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif", "svg"];
 
 /// Validates a filename for image asset security
 fn validate_image_filename(filename: &str) -> Result<String, AssetsError> {
@@ -552,26 +552,32 @@ async fn process_image_entry(
     }
 
     // Read only the image header to extract dimensions (avoids full pixel decode).
-    // Use ImageReader::open() which reads directly from file rather than
-    // loading the entire file into memory first.
-    let path_clone = path.clone();
-    let (width, height) = match tokio::task::spawn_blocking(move || {
-        image::ImageReader::open(&path_clone)
-            .and_then(image::ImageReader::with_guessed_format)
-            .map_err(|e| e.to_string())
-            .and_then(|r| r.into_dimensions().map_err(|e| e.to_string()))
-    })
-    .await
-    {
-        Ok(Ok(dims)) => dims,
-        Ok(Err(e)) => {
-            warn!("Failed to read image dimensions {}: {}", filename, e);
-            return None;
-        },
-        Err(e) => {
-            warn!("Failed to read image dimensions {}: {}", filename, e);
-            return None;
-        },
+    // SVGs use the resvg parser; raster formats use ImageReader::open().
+    let (width, height) = if extension == "svg" {
+        let svg_data = fs::read(&path).await.ok()?;
+        streamkit_nodes::video::compositor::overlay::svg_viewbox_dimensions(&svg_data)?
+    } else {
+        // Use ImageReader::open() which reads directly from file rather than
+        // loading the entire file into memory first.
+        let path_clone = path.clone();
+        match tokio::task::spawn_blocking(move || {
+            image::ImageReader::open(&path_clone)
+                .and_then(image::ImageReader::with_guessed_format)
+                .map_err(|e| e.to_string())
+                .and_then(|r| r.into_dimensions().map_err(|e| e.to_string()))
+        })
+        .await
+        {
+            Ok(Ok(dims)) => dims,
+            Ok(Err(e)) => {
+                warn!("Failed to read image dimensions {}: {}", filename, e);
+                return None;
+            },
+            Err(e) => {
+                warn!("Failed to read image dimensions {}: {}", filename, e);
+                return None;
+            },
+        }
     };
 
     Some(ImageAsset {
@@ -719,6 +725,50 @@ async fn process_image_upload(
     let file_path = user_dir.join(&filename);
 
     let written_bytes = write_image_upload_to_disk(field, &file_path).await?;
+
+    // SVG validation: parse with resvg to check validity and extract dimensions.
+    // Skip raster decode path entirely for SVGs.
+    if extension == "svg" {
+        let file_data = match fs::read(&file_path).await {
+            Ok(data) => data,
+            Err(e) => {
+                let _ = fs::remove_file(&file_path).await;
+                return Err(AssetsError::IoError(format!("Failed to read uploaded file: {e}")));
+            },
+        };
+
+        let dims = streamkit_nodes::video::compositor::overlay::svg_viewbox_dimensions(&file_data);
+        let (width, height) = if let Some((w, h)) = dims {
+            if w > max_image_dimension || h > max_image_dimension {
+                let _ = fs::remove_file(&file_path).await;
+                return Err(AssetsError::InvalidFormat(format!(
+                    "SVG dimensions {w}x{h} exceed maximum \
+                     {max_image_dimension}x{max_image_dimension}"
+                )));
+            }
+            (w, h)
+        } else {
+            let _ = fs::remove_file(&file_path).await;
+            return Err(AssetsError::InvalidFormat("Uploaded file is not a valid SVG".to_string()));
+        };
+
+        let name_without_ext = filename.trim_end_matches(&format!(".{extension}"));
+        let display_name = name_without_ext.replace(['_', '-'], " ");
+        let relative_path = format!("samples/images/user/{filename}");
+
+        info!("Uploaded SVG image asset: {} ({}x{})", filename, width, height);
+
+        return Ok(ImageAsset {
+            id: filename,
+            name: display_name,
+            path: relative_path,
+            format: extension,
+            width,
+            height,
+            size_bytes: written_bytes as u64,
+            is_system: false,
+        });
+    }
 
     // Read the file once — used for both header-only dimension check and full decode.
     let file_data = match fs::read(&file_path).await {
@@ -929,6 +979,7 @@ async fn serve_image_asset_handler(
         "jpg" | "jpeg" => "image/jpeg",
         "webp" => "image/webp",
         "gif" => "image/gif",
+        "svg" => "image/svg+xml",
         _ => "application/octet-stream",
     };
 
