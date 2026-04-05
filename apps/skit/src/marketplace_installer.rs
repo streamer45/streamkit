@@ -829,6 +829,19 @@ impl PluginInstaller {
         };
         tracker.succeed_step(STEP_EXTRACT_BUNDLE).await;
 
+        // Write a plugin.yml into the bundle directory so that
+        // `read_local_plugin_manifest` can rediscover asset types on server
+        // restart.  The marketplace manifest is JSON; the local loader expects
+        // YAML, so we serialize the manifest here.
+        if let Err(err) = write_manifest_yml(manifest, &bundle_dir).await {
+            tracing::warn!(
+                plugin_id = %manifest.id,
+                error = %err,
+                "Failed to write plugin.yml into bundle directory; \
+                 asset types may not survive restart"
+            );
+        }
+
         Self::ensure_not_cancelled(cancel)?;
 
         tracker.start_step(STEP_ACTIVATE).await;
@@ -1228,6 +1241,8 @@ impl PluginInstaller {
         .context("Plugin unload task failed")??;
         if unloaded {
             info!(plugin = %expected_kind_owned, "Unloaded existing plugin before install");
+            // Clear stale asset types so they are re-registered from the new manifest.
+            self.plugin_asset_registry.unregister_plugin(&manifest.id).await;
         }
 
         let summary = tokio::task::spawn_blocking(move || {
@@ -1945,6 +1960,30 @@ fn model_archive_dir(path: &Path, base_dir: &Path) -> Option<PathBuf> {
     Some(base_dir.join(base))
 }
 
+/// Write the marketplace manifest as `plugin.yml` inside the bundle directory.
+///
+/// [`crate::plugin_assets::read_local_plugin_manifest`] searches for YAML
+/// manifests next to the plugin library file.  Marketplace bundles ship with
+/// `manifest.json` (or nothing at all), so on server restart the asset-type
+/// declarations would be lost.  Writing a `plugin.yml` next to the
+/// entrypoint closes that gap.
+async fn write_manifest_yml(
+    manifest: &crate::marketplace::PluginManifest,
+    bundle_dir: &Path,
+) -> Result<()> {
+    // Place the file next to the entrypoint so `read_local_plugin_manifest`
+    // (which searches relative to the library path) will find it regardless
+    // of whether the entrypoint is at the bundle root or nested.
+    let entrypoint_dir = bundle_dir.join(&manifest.entrypoint);
+    let yml_dir = entrypoint_dir.parent().unwrap_or(bundle_dir);
+    let yml_path = yml_dir.join("plugin.yml");
+    let yaml = serde_saphyr::to_string(manifest).context("Failed to serialize manifest to YAML")?;
+    tokio::fs::write(&yml_path, yaml.as_bytes())
+        .await
+        .with_context(|| format!("Failed to write {}", yml_path.display()))?;
+    Ok(())
+}
+
 fn is_safe_relative_path(path: &Path) -> bool {
     if path.is_absolute() {
         return false;
@@ -2373,6 +2412,62 @@ mod tests {
             bail!("expected InstallError::Other");
         };
         assert!(err.to_string().contains("token"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn write_manifest_yml_creates_yaml_next_to_entrypoint() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let bundle_dir = temp_dir.path().join("bundle");
+        tokio::fs::create_dir_all(&bundle_dir).await?;
+
+        let mut manifest = test_manifest(Vec::new());
+        manifest.assets = vec![crate::marketplace::PluginAssetSpec {
+            type_id: "test-asset".to_string(),
+            label: "Test Assets".to_string(),
+            extensions: vec!["txt".to_string()],
+            max_size_bytes: 1024,
+            content_type: crate::marketplace::AssetContentType::Text,
+            icon_hint: None,
+            node_param: None,
+            system_dir: None,
+        }];
+
+        write_manifest_yml(&manifest, &bundle_dir).await?;
+
+        let yml_path = bundle_dir.join("plugin.yml");
+        assert!(yml_path.exists(), "plugin.yml should be created in bundle dir");
+
+        // Verify the written YAML can be parsed back as a PluginManifest.
+        let contents = tokio::fs::read_to_string(&yml_path).await?;
+        let parsed: crate::marketplace::PluginManifest =
+            serde_saphyr::from_str(&contents).context("Failed to parse written plugin.yml")?;
+        assert_eq!(parsed.id, "test");
+        assert_eq!(parsed.assets.len(), 1);
+        assert_eq!(parsed.assets[0].type_id, "test-asset");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn write_manifest_yml_nested_entrypoint() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let bundle_dir = temp_dir.path().join("bundle");
+        let nested_dir = bundle_dir.join("lib");
+        tokio::fs::create_dir_all(&nested_dir).await?;
+
+        let mut manifest = test_manifest(Vec::new());
+        manifest.entrypoint = "lib/libtest.so".to_string();
+
+        write_manifest_yml(&manifest, &bundle_dir).await?;
+
+        // plugin.yml should be written next to the entrypoint, not at the
+        // bundle root.
+        let yml_in_nested = nested_dir.join("plugin.yml");
+        let yml_in_root = bundle_dir.join("plugin.yml");
+        assert!(yml_in_nested.exists(), "plugin.yml should be next to entrypoint");
+        assert!(!yml_in_root.exists(), "plugin.yml should NOT be at bundle root");
 
         Ok(())
     }

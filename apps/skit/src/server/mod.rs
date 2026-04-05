@@ -1382,6 +1382,11 @@ async fn delete_plugin_handler(
         },
     };
 
+    // Unregister any asset types owned by this plugin so the CRUD endpoints
+    // stop serving stale types.  User-uploaded files are intentionally left
+    // in place — they will become available again if the plugin is re-installed.
+    app_state.plugin_asset_registry.unregister_plugin(&summary.original_kind).await;
+
     if let Some((record_path, record)) = active_record {
         if query.keep_file {
             info!(

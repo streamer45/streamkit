@@ -160,8 +160,8 @@ impl PluginAssetRegistry {
 
     /// Remove all asset types owned by a plugin.
     ///
-    /// Not yet called — will be wired into the plugin unload path.
-    #[allow(dead_code)]
+    /// Called when a plugin is unloaded or deleted so the CRUD endpoints stop
+    /// serving stale types.  User-uploaded files are left in place.
     pub async fn unregister_plugin(&self, plugin_id: &str) {
         let mut map = self.inner.write().await;
         let before = map.len();
@@ -1211,5 +1211,70 @@ mod tests {
         };
         registry.register("test", "plugin::native::test", &[spec]).await;
         assert_eq!(registry.all().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn unregister_removes_all_types_for_plugin() {
+        let registry = PluginAssetRegistry::new();
+        let specs = vec![
+            PluginAssetSpec {
+                type_id: "alpha".to_string(),
+                label: "Alpha".to_string(),
+                extensions: vec!["a".to_string()],
+                max_size_bytes: 1024,
+                content_type: AssetContentType::Binary,
+                icon_hint: None,
+                node_param: None,
+                system_dir: None,
+            },
+            PluginAssetSpec {
+                type_id: "beta".to_string(),
+                label: "Beta".to_string(),
+                extensions: vec!["b".to_string()],
+                max_size_bytes: 1024,
+                content_type: AssetContentType::Binary,
+                icon_hint: None,
+                node_param: None,
+                system_dir: None,
+            },
+        ];
+        registry.register("myplugin", "plugin::native::myplugin", &specs).await;
+        assert_eq!(registry.all().await.len(), 2);
+
+        registry.unregister_plugin("myplugin").await;
+        assert!(registry.all().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn unregister_leaves_other_plugins_intact() {
+        let registry = PluginAssetRegistry::new();
+        let spec_a = PluginAssetSpec {
+            type_id: "a".to_string(),
+            label: "A".to_string(),
+            extensions: vec!["a".to_string()],
+            max_size_bytes: 1024,
+            content_type: AssetContentType::Binary,
+            icon_hint: None,
+            node_param: None,
+            system_dir: None,
+        };
+        let spec_b = PluginAssetSpec {
+            type_id: "b".to_string(),
+            label: "B".to_string(),
+            extensions: vec!["b".to_string()],
+            max_size_bytes: 1024,
+            content_type: AssetContentType::Binary,
+            icon_hint: None,
+            node_param: None,
+            system_dir: None,
+        };
+        registry.register("plugin-a", "plugin::native::a", &[spec_a]).await;
+        registry.register("plugin-b", "plugin::native::b", &[spec_b]).await;
+        assert_eq!(registry.all().await.len(), 2);
+
+        registry.unregister_plugin("plugin-a").await;
+        let remaining = registry.all().await;
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].plugin_id, "plugin-b");
     }
 }
