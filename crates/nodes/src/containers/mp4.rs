@@ -480,7 +480,7 @@ impl ProcessorNode for Mp4MuxerNode {
 
     fn content_type(&self) -> Option<String> {
         let has_video = self.config.video_width > 0 && self.config.video_height > 0;
-        Some(mp4_content_type(true, has_video, false).to_string())
+        Some(mp4_content_type(true, has_video, true).to_string())
     }
 
     async fn run(self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
