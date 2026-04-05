@@ -115,7 +115,7 @@ export async function deleteSlintAsset(id: string): Promise<void> {
  * @param scope - "system" or "user"
  * @param id - The asset filename
  */
-export async function fetchSlintAssetContent(scope: string, id: string): Promise<string> {
+async function fetchSlintAssetContent(scope: string, id: string): Promise<string> {
   logger.info('Fetching slint asset content:', { scope, id });
 
   const response = await fetchApi(
