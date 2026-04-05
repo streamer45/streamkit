@@ -144,13 +144,10 @@ impl PluginAssetRegistry {
                 || PathBuf::from(format!("samples/{}/system", spec.type_id)),
                 PathBuf::from,
             );
-            let user_dir = system_dir
-                .parent()
-                .filter(|p| !p.as_os_str().is_empty())
-                .map_or_else(
-                    || PathBuf::from(format!("samples/{}/user", spec.type_id)),
-                    |p| p.join("user"),
-                );
+            let user_dir = system_dir.parent().filter(|p| !p.as_os_str().is_empty()).map_or_else(
+                || PathBuf::from(format!("samples/{}/user", spec.type_id)),
+                |p| p.join("user"),
+            );
 
             let registered = RegisteredAssetType {
                 type_id: spec.type_id.clone(),
