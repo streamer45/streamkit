@@ -204,10 +204,11 @@ function buildUnifiedItems(
 ): UnifiedAsset[] {
   const items: UnifiedAsset[] = [];
   appendIfMatches(items, 'audio', audio, typeFilter, 'audio');
-  appendIfMatches(items, 'image', images, typeFilter, 'images');
-  appendIfMatches(items, 'font', fonts, typeFilter, 'fonts');
+  appendIfMatches(items, 'image', images, typeFilter, 'image');
+  appendIfMatches(items, 'font', fonts, typeFilter, 'font');
 
   for (const entry of pluginEntries) {
+    if (typeFilter !== 'all' && typeFilter !== entry.typeInfo.type_id) continue;
     if (entry.data) {
       for (const a of entry.data) {
         items.push({ type: 'plugin', asset: a, typeInfo: entry.typeInfo });
@@ -265,6 +266,18 @@ function AssetListSection({
 
 // ── Hooks ────────────────────────────────────────────────────────────────────
 
+/** Aggregate loading / error state across core and plugin queries. */
+function aggregateQueryState(
+  coreQueries: { isLoading: boolean; error: Error | null }[],
+  pluginQueries: { isLoading: boolean; error: Error | null }[]
+) {
+  return {
+    isLoading: coreQueries.some((q) => q.isLoading) || pluginQueries.some((q) => q.isLoading),
+    error:
+      coreQueries.find((q) => q.error)?.error || pluginQueries.find((q) => q.error)?.error || null,
+  };
+}
+
 /** Encapsulates all asset queries, mutations, and derived data. */
 function useAssetData(typeFilter: TypeFilter, assetTypes: AssetTypeInfo[] | undefined) {
   const selectedPluginType = useMemo(() => {
@@ -282,8 +295,8 @@ function useAssetData(typeFilter: TypeFilter, assetTypes: AssetTypeInfo[] | unde
 
   // Queries — skip fetches when the user has filtered to a different type.
   const shouldFetchAudio = typeFilter === 'all' || typeFilter === 'audio';
-  const shouldFetchImages = typeFilter === 'all' || typeFilter === 'images';
-  const shouldFetchFonts = typeFilter === 'all' || typeFilter === 'fonts';
+  const shouldFetchImages = typeFilter === 'all' || typeFilter === 'image';
+  const shouldFetchFonts = typeFilter === 'all' || typeFilter === 'font';
 
   const audioQuery = useAudioAssets(shouldFetchAudio);
   const imageQuery = useImageAssets(shouldFetchImages);
@@ -339,11 +352,16 @@ function useAssetData(typeFilter: TypeFilter, assetTypes: AssetTypeInfo[] | unde
     [typeFilter, audioQuery.data, imageQuery.data, fontQuery.data, pluginEntries]
   );
 
+  const { isLoading, error } = aggregateQueryState(
+    [audioQuery, imageQuery, fontQuery],
+    pluginQueries
+  );
+
   return {
     selectedPluginType,
     allItems,
-    isLoading: audioQuery.isLoading || imageQuery.isLoading || fontQuery.isLoading,
-    error: audioQuery.error || imageQuery.error || fontQuery.error,
+    isLoading,
+    error,
     isUploading:
       uploadAudio.isPending ||
       uploadImage.isPending ||
@@ -392,8 +410,12 @@ export function AssetLibrary({ onDragStart }: AssetLibraryProps) {
   const userItems = useMemo(() => filteredItems.filter((i) => !i.asset.is_system), [filteredItems]);
 
   const availableFormats = useMemo(() => {
-    const fmts = new Set(data.allItems.map((i) => i.asset.format.toLowerCase()));
-    return Array.from(fmts).sort();
+    const counts = new Map<string, number>();
+    for (const item of data.allItems) {
+      const fmt = item.asset.format.toLowerCase();
+      counts.set(fmt, (counts.get(fmt) ?? 0) + 1);
+    }
+    return Array.from(counts.entries()).sort(([a], [b]) => a.localeCompare(b));
   }, [data.allItems]);
 
   const uploadConfig = useMemo(
@@ -412,10 +434,10 @@ export function AssetLibrary({ onDragStart }: AssetLibraryProps) {
           case 'audio':
             await data.uploadAudio.mutateAsync(file);
             break;
-          case 'images':
+          case 'image':
             await data.uploadImage.mutateAsync(file);
             break;
-          case 'fonts':
+          case 'font':
             await data.uploadFont.mutateAsync(file);
             break;
           default:
@@ -485,7 +507,7 @@ export function AssetLibrary({ onDragStart }: AssetLibraryProps) {
     );
   }
 
-  const pluginTypes: AssetTypeInfo[] = assetTypes?.filter((t) => t.source === 'plugin') ?? [];
+  const allTypes: AssetTypeInfo[] = assetTypes ?? [];
 
   return (
     <LibraryWrapper>
@@ -498,22 +520,13 @@ export function AssetLibrary({ onDragStart }: AssetLibraryProps) {
           <TypeButton $active={typeFilter === 'all'} onClick={() => setTypeFilter('all')}>
             All
           </TypeButton>
-          <TypeButton $active={typeFilter === 'audio'} onClick={() => setTypeFilter('audio')}>
-            Audio
-          </TypeButton>
-          <TypeButton $active={typeFilter === 'images'} onClick={() => setTypeFilter('images')}>
-            Images
-          </TypeButton>
-          <TypeButton $active={typeFilter === 'fonts'} onClick={() => setTypeFilter('fonts')}>
-            Fonts
-          </TypeButton>
-          {pluginTypes.map((pt) => (
+          {allTypes.map((t) => (
             <TypeButton
-              key={pt.type_id}
-              $active={typeFilter === pt.type_id}
-              onClick={() => setTypeFilter(pt.type_id)}
+              key={t.type_id}
+              $active={typeFilter === t.type_id}
+              onClick={() => setTypeFilter(t.type_id)}
             >
-              {pt.label}
+              {t.label}
             </TypeButton>
           ))}
         </TypeFilterRow>
@@ -528,9 +541,9 @@ export function AssetLibrary({ onDragStart }: AssetLibraryProps) {
           {availableFormats.length > 1 && (
             <FilterSelect value={formatFilter} onChange={(e) => setFormatFilter(e.target.value)}>
               <option value="all">All Formats</option>
-              {availableFormats.map((fmt) => (
+              {availableFormats.map(([fmt, count]) => (
                 <option key={fmt} value={fmt}>
-                  {fmt.toUpperCase()}
+                  {fmt.toUpperCase()} ({count})
                 </option>
               ))}
             </FilterSelect>
