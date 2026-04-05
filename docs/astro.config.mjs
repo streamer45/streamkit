@@ -50,7 +50,10 @@ export default defineConfig({
 				},
 				{
 					label: 'Architecture',
-					items: [{ label: 'Overview', slug: 'architecture/overview' }],
+					items: [
+						{ label: 'Overview', slug: 'architecture/overview' },
+						{ label: 'Plugin Bundle Convention', slug: 'architecture/plugin-bundle-convention' },
+					],
 				},
 				{
 					label: 'Guides',
