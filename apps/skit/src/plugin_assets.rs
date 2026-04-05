@@ -938,6 +938,7 @@ impl std::fmt::Display for PluginAssetError {
 impl std::error::Error for PluginAssetError {}
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -948,7 +949,7 @@ mod tests {
             plugin_id: "test-plugin".to_string(),
             node_kind: "plugin::native::test".to_string(),
             label: "Test".to_string(),
-            extensions: extensions.iter().map(|s| s.to_string()).collect(),
+            extensions: extensions.iter().copied().map(String::from).collect(),
             max_size_bytes: 1024,
             content_type: AssetContentType::Binary,
             icon_hint: None,
