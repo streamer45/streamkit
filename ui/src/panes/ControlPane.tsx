@@ -7,7 +7,8 @@ import * as AlertDialog from '@radix-ui/react-alert-dialog';
 import { Upload } from 'lucide-react';
 import React from 'react';
 
-import { AudioAssetLibrary } from '@/components/AudioAssetLibrary';
+import type { UnifiedAsset } from '@/components/AssetCard';
+import { AssetLibrary } from '@/components/AssetLibrary';
 import NodePalette from '@/components/NodePalette';
 import { SKTooltip } from '@/components/Tooltip';
 import { Button } from '@/components/ui/Button';
@@ -267,10 +268,8 @@ const DialogDangerButton = styled(Button)`
 interface ControlPaneProps {
   nodeDefinitions: NodeDefinition[];
   onDragStart: (event: React.DragEvent, nodeType: string) => void;
-  onAssetDragStart?: (
-    event: React.DragEvent,
-    asset: import('@/types/generated/api-types').AudioAsset
-  ) => void;
+  onAssetDragStart?: (event: React.DragEvent, asset: UnifiedAsset) => void;
+  isAssetDraggable?: (item: UnifiedAsset) => boolean;
   onLoadSample?: (yaml: string, name: string, description: string) => void;
   samplesRef?: React.RefObject<SamplePipelinesPaneRef | null>;
   mode?: 'oneshot' | 'dynamic';
@@ -282,6 +281,7 @@ const ControlPane: React.FC<ControlPaneProps> = ({
   nodeDefinitions,
   onDragStart,
   onAssetDragStart,
+  isAssetDraggable,
   mode,
   onLoadSample,
   samplesRef,
@@ -802,7 +802,7 @@ const ControlPane: React.FC<ControlPaneProps> = ({
           </TabsList>
           <TabsContent value="nodes">{nodeLibraryContent}</TabsContent>
           <TabsContent value="assets">
-            <AudioAssetLibrary onDragStart={onAssetDragStart} />
+            <AssetLibrary onDragStart={onAssetDragStart} isDraggable={isAssetDraggable} />
           </TabsContent>
           <TabsContent value="samples">{samplesTabContent}</TabsContent>
           {isAdmin() && <TabsContent value="plugins">{pluginManagementContent}</TabsContent>}

@@ -192,25 +192,43 @@ impl UnifiedPluginManager {
         })
     }
 
-    /// Load all native plugins from the native directory
+    /// Load all native plugins from the native directory.
+    ///
+    /// Scans the top-level directory for `.so`/`.dylib`/`.dll` files (flat
+    /// layout) and also one level of subdirectories (bundle layout, e.g.
+    /// `native/slint/libslint.so`).
     fn load_native_plugins_from_dir(&mut self) -> Result<Vec<PluginSummary>> {
         let mut summaries = Vec::new();
 
         info!("Loading native plugins...");
+
+        let mut lib_paths: Vec<std::path::PathBuf> = Vec::new();
+
         for entry in std::fs::read_dir(&self.native_directory).with_context(|| {
             format!("failed to read native plugin directory {}", self.native_directory.display())
         })? {
             let entry = entry?;
             let path = entry.path();
 
-            // Check for native library extensions
-            let extension = path.extension().and_then(|ext| ext.to_str());
-            let is_native_lib = matches!(extension, Some("so" | "dylib" | "dll"));
-
-            if !is_native_lib || path.to_string_lossy().ends_with(".d") {
+            if path.is_dir() {
+                // Scan one level of subdirectories for plugin bundles.
+                if let Ok(sub_entries) = std::fs::read_dir(&path) {
+                    for sub_entry in sub_entries.flatten() {
+                        let sub_path = sub_entry.path();
+                        if Self::is_native_lib(&sub_path) {
+                            lib_paths.push(sub_path);
+                        }
+                    }
+                }
                 continue;
             }
 
+            if Self::is_native_lib(&path) {
+                lib_paths.push(path);
+            }
+        }
+
+        for path in lib_paths {
             match self.load_native_plugin(&path) {
                 Ok(summary) => {
                     info!(plugin = %summary.kind, file = ?path, plugin_type = ?summary.plugin_type, "Loaded plugin from disk");
@@ -223,6 +241,12 @@ impl UnifiedPluginManager {
         }
 
         Ok(summaries)
+    }
+
+    /// Returns `true` if the path looks like a native plugin library.
+    fn is_native_lib(path: &std::path::Path) -> bool {
+        let extension = path.extension().and_then(|ext| ext.to_str());
+        matches!(extension, Some("so" | "dylib" | "dll")) && !path.to_string_lossy().ends_with(".d")
     }
 
     /// Load all WASM plugins from the WASM directory
@@ -453,6 +477,7 @@ impl UnifiedPluginManager {
     pub fn spawn_load_existing(
         manager: SharedUnifiedPluginManager,
         prewarm_config: crate::config::PrewarmConfig,
+        plugin_asset_registry: crate::plugin_assets::PluginAssetRegistry,
     ) {
         tokio::spawn(async move {
             info!("Starting background plugin loading");
@@ -461,7 +486,10 @@ impl UnifiedPluginManager {
                 let manager = Arc::clone(&manager);
                 move || {
                     let mut mgr = manager.blocking_lock();
-                    mgr.load_existing()
+                    let summaries = mgr.load_existing()?;
+                    let asset_specs = mgr.collect_plugin_asset_specs();
+                    drop(mgr);
+                    Ok::<_, anyhow::Error>((summaries, asset_specs))
                 }
             })
             .await
@@ -474,7 +502,7 @@ impl UnifiedPluginManager {
             };
 
             match result {
-                Ok(summaries) => {
+                Ok((summaries, asset_specs)) => {
                     if summaries.is_empty() {
                         info!("Background plugin loading completed (no plugins found)");
                     } else {
@@ -483,6 +511,11 @@ impl UnifiedPluginManager {
                             plugins = ?summaries.iter().map(|s| (s.kind.as_str(), s.plugin_type)).collect::<Vec<_>>(),
                             "Completed background plugin loading"
                         );
+                    }
+
+                    // Register plugin asset types
+                    for (plugin_id, node_kind, specs) in &asset_specs {
+                        plugin_asset_registry.register(plugin_id, node_kind, specs).await;
                     }
 
                     // Pre-warm plugins if configured
@@ -919,6 +952,28 @@ impl UnifiedPluginManager {
         path: P,
     ) -> Result<PluginSummary> {
         self.load_from_written_path(plugin_type, path.as_ref().to_path_buf())
+    }
+
+    /// Collect asset type declarations from all loaded plugins.
+    ///
+    /// For each loaded plugin, attempts to read a `plugin.yml` manifest from the
+    /// same directory as the plugin library.  Returns `(plugin_id, node_kind, specs)`
+    /// tuples for plugins that declare asset types.
+    pub fn collect_plugin_asset_specs(
+        &self,
+    ) -> Vec<(String, String, Vec<crate::marketplace::PluginAssetSpec>)> {
+        let mut result = Vec::new();
+
+        for (kind, managed) in &self.plugins {
+            let manifest = crate::plugin_assets::read_local_plugin_manifest(&managed.file_path);
+            if let Some(manifest) = manifest {
+                if !manifest.assets.is_empty() {
+                    result.push((manifest.id.clone(), kind.clone(), manifest.assets));
+                }
+            }
+        }
+
+        result
     }
 }
 

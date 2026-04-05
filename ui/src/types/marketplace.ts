@@ -78,7 +78,7 @@ export type PluginManifest = {
   homepage?: string | null;
   repository?: string | null;
   entrypoint: string;
-  bundle: PluginBundle;
+  bundle: PluginBundle | null;
   compatibility?: PluginCompatibility | null;
   models: ModelSpec[];
 };

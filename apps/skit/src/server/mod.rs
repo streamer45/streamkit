@@ -1382,6 +1382,18 @@ async fn delete_plugin_handler(
         },
     };
 
+    // Unregister any asset types owned by this plugin so the CRUD endpoints
+    // stop serving stale types.  User-uploaded files are intentionally left
+    // in place — they will become available again if the plugin is re-installed.
+    //
+    // For marketplace plugins use the authoritative `plugin_id` from the
+    // active record (matches `manifest.id` used during registration).
+    // For non-marketplace plugins fall back to `original_kind` which, by
+    // convention, equals the manifest `id`.
+    let unregister_id =
+        active_record.as_ref().map_or(&summary.original_kind, |(_, record)| &record.plugin_id);
+    app_state.plugin_asset_registry.unregister_plugin(unregister_id).await;
+
     if let Some((record_path, record)) = active_record {
         if query.keep_file {
             info!(
@@ -3133,15 +3145,19 @@ pub fn create_app(
     .expect("Failed to initialize unified plugin manager");
     let plugin_manager = Arc::new(tokio::sync::Mutex::new(plugin_manager));
 
+    let plugin_asset_registry = crate::plugin_assets::PluginAssetRegistry::new();
+
     // Spawn background task to load plugins asynchronously to avoid blocking startup
     UnifiedPluginManager::spawn_load_existing(
         Arc::clone(&plugin_manager),
         config.resources.prewarm.clone(),
+        plugin_asset_registry.clone(),
     );
 
     let marketplace_jobs = crate::marketplace_installer::InstallJobQueue::new(
         &config.plugins,
         Arc::clone(&plugin_manager),
+        plugin_asset_registry.clone(),
     )
     .expect("Failed to initialize marketplace installer");
 
@@ -3181,6 +3197,7 @@ pub fn create_app(
         marketplace_jobs,
         auth,
         shutdown_tracker: crate::state::ShutdownTracker::default(),
+        plugin_asset_registry,
         #[cfg(feature = "moq")]
         moq_gateway,
         mse_gateway,
@@ -3268,7 +3285,8 @@ pub fn create_app(
         .merge(crate::samples::samples_router())
         .merge(crate::assets::assets_router())
         .merge(crate::assets::image_assets_router())
-        .merge(crate::assets::font_assets_router());
+        .merge(crate::assets::font_assets_router())
+        .merge(crate::plugin_assets::plugin_assets_router());
 
     // Add MoQ routes if feature is enabled
     #[cfg(feature = "moq")]

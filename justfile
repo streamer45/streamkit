@@ -931,6 +931,45 @@ upload-slint-plugin: build-plugin-native-slint
 build-plugin-native name:
     @just build-plugin-native-{{name}}
 
+# Build and install a single native plugin to .plugins/native/<name>/ (idempotent).
+# Creates a bundle directory with the compiled library and plugin.yml manifest.
+# The plugin loader scans subdirectories, so this layout is discovered at startup.
+# Usage: just install-plugin slint
+#        just install-plugin pocket-tts
+install-plugin name: (build-plugin-native name)
+    #!/usr/bin/env bash
+    set -euo pipefail
+    PLUGINS_TARGET="{{plugins_target_dir}}"
+    BUNDLE_DIR=".plugins/native/{{name}}"
+    mkdir -p "$BUNDLE_DIR"
+
+    # Rust library names use underscores for hyphens.
+    LIB_STEM="lib$(echo '{{name}}' | tr '-' '_')"
+
+    SO_FILE=""
+    for ext in so dylib dll; do
+        candidate="$PLUGINS_TARGET/release/${LIB_STEM}.${ext}"
+        if [[ -f "$candidate" ]]; then
+            SO_FILE="$candidate"
+            break
+        fi
+    done
+
+    if [[ -z "$SO_FILE" ]]; then
+        echo "❌ Built library not found (expected ${LIB_STEM}.{so,dylib,dll} in $PLUGINS_TARGET/release/)"
+        exit 1
+    fi
+
+    cp -f "$SO_FILE" "$BUNDLE_DIR/"
+    echo "✓ Copied $(basename "$SO_FILE") → $BUNDLE_DIR/"
+
+    # Copy plugin.yml into the bundle so asset types are discovered at startup
+    # (see plugin_assets::read_local_plugin_manifest).
+    if [[ -f "plugins/native/{{name}}/plugin.yml" ]]; then
+        cp -f "plugins/native/{{name}}/plugin.yml" "$BUNDLE_DIR/plugin.yml"
+        echo "✓ Copied plugin.yml → $BUNDLE_DIR/plugin.yml"
+    fi
+
 # Build all native plugin examples
 build-plugins-native: build-plugin-native-gain build-plugin-native-whisper build-plugin-native-kokoro build-plugin-native-piper build-plugin-native-matcha build-plugin-native-pocket-tts build-plugin-native-sensevoice build-plugin-native-nllb build-plugin-native-vad build-plugin-native-helsinki build-plugin-native-supertonic build-plugin-native-slint
 
@@ -979,6 +1018,11 @@ copy-plugins-native:
                 cp -f "$f" .plugins/native/
             fi
         done
+        # Copy plugin.yml manifest alongside the .so so asset types can be
+        # discovered at runtime (see plugin_assets::read_local_plugin_manifest).
+        if [[ -f "plugins/native/$name/plugin.yml" ]]; then
+            cp -f "plugins/native/$name/plugin.yml" ".plugins/native/${name}.plugin.yml"
+        fi
     done
     for f in \
         "$PLUGINS_TARGET"/release/libpocket_tts.so \
@@ -990,6 +1034,10 @@ copy-plugins-native:
             cp -f "$f" .plugins/native/
         fi
     done
+    # Copy pocket-tts plugin.yml for consistency with the main loop above.
+    if [[ -f "plugins/native/pocket-tts/plugin.yml" ]]; then
+        cp -f "plugins/native/pocket-tts/plugin.yml" ".plugins/native/pocket-tts.plugin.yml"
+    fi
     echo "✓ Native plugins copied to .plugins/native/"
 
 # --- License Headers (REUSE) ---

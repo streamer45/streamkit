@@ -25,6 +25,7 @@ impl BroadcastEvent {
 use crate::auth::AuthState;
 use crate::config::Config;
 use crate::marketplace_installer::InstallJobQueue;
+use crate::plugin_assets::PluginAssetRegistry;
 use crate::plugins::SharedUnifiedPluginManager;
 use crate::session::SessionManager;
 
@@ -96,6 +97,7 @@ pub struct AppState {
     pub marketplace_jobs: InstallJobQueue,
     pub auth: Arc<AuthState>,
     pub shutdown_tracker: ShutdownTracker,
+    pub plugin_asset_registry: PluginAssetRegistry,
     #[cfg(feature = "moq")]
     pub moq_gateway: Option<Arc<MoqGateway>>,
     pub mse_gateway: Arc<MseGateway>,

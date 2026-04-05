@@ -6,6 +6,8 @@
  * Service for managing image assets
  */
 
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+
 import type { ImageAsset } from '@/types/generated/api-types';
 import { getLogger } from '@/utils/logger';
 
@@ -17,7 +19,7 @@ const logger = getLogger('imageAssets');
  * Lists all available image assets (system + user)
  * @returns A promise that resolves to an array of image assets
  */
-async function listImageAssets(): Promise<ImageAsset[]> {
+export async function listImageAssets(): Promise<ImageAsset[]> {
   logger.info('Fetching image assets');
 
   const response = await fetchApi('/api/v1/assets/images', {
@@ -85,4 +87,72 @@ export async function uploadImageAsset(file: File): Promise<ImageAsset> {
   logger.info('Uploaded image asset:', asset.name);
 
   return asset;
+}
+
+/**
+ * Deletes an image asset by ID
+ * @param id - The image asset ID to delete
+ */
+export async function deleteImageAsset(id: string): Promise<void> {
+  logger.info('Deleting image asset:', id);
+
+  const response = await fetchApi(`/api/v1/assets/images/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    logger.error('Failed to delete image asset:', {
+      id,
+      status: response.status,
+      statusText: response.statusText,
+      error: errorText,
+    });
+    throw new Error(`Failed to delete image asset: ${errorText || response.statusText}`);
+  }
+
+  logger.info('Deleted image asset:', id);
+}
+
+// ── React Query hooks ───────────────────────────────────────────────────────
+
+/**
+ * Hook to fetch image assets with caching
+ */
+export function useImageAssets(enabled = true) {
+  return useQuery({
+    queryKey: ['imageAssets'],
+    queryFn: listImageAssets,
+    staleTime: 30_000,
+    refetchOnWindowFocus: true,
+    enabled,
+  });
+}
+
+/**
+ * Hook to upload an image asset
+ */
+export function useUploadImageAsset() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: uploadImageAsset,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['imageAssets'] });
+    },
+  });
+}
+
+/**
+ * Hook to delete an image asset
+ */
+export function useDeleteImageAsset() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: deleteImageAsset,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['imageAssets'] });
+    },
+  });
 }

@@ -3,7 +3,7 @@
     {
       "id": "helsinki",
       "name": "Helsinki",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "node_kind": "helsinki",
       "kind": "native",
       "entrypoint": "libhelsinki.so",
@@ -46,7 +46,7 @@
     {
       "id": "kokoro",
       "name": "Kokoro",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "node_kind": "kokoro",
       "kind": "native",
       "entrypoint": "libkokoro.so",
@@ -74,7 +74,7 @@
     {
       "id": "matcha",
       "name": "Matcha",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "node_kind": "matcha",
       "kind": "native",
       "entrypoint": "libmatcha.so",
@@ -106,7 +106,7 @@
     {
       "id": "nllb",
       "name": "NLLB",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "node_kind": "nllb",
       "kind": "native",
       "entrypoint": "libnllb.so",
@@ -134,7 +134,7 @@
     {
       "id": "piper",
       "name": "Piper",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "node_kind": "piper",
       "kind": "native",
       "entrypoint": "libpiper.so",
@@ -177,7 +177,7 @@
     {
       "id": "pocket-tts",
       "name": "Pocket TTS",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "node_kind": "pocket-tts",
       "kind": "native",
       "entrypoint": "libpocket_tts.so",
@@ -205,7 +205,7 @@
     {
       "id": "sensevoice",
       "name": "SenseVoice",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "node_kind": "sensevoice",
       "kind": "native",
       "entrypoint": "libsensevoice.so",
@@ -248,18 +248,32 @@
     {
       "id": "slint",
       "name": "Slint",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "node_kind": "slint",
       "kind": "native",
       "entrypoint": "libslint.so",
       "artifact": "target/plugins/release/libslint.so",
       "description": "Slint UI rendering as a video source \u2014 render .slint files to RGBA8 frames at configurable resolution and frame rate",
-      "license": "MPL-2.0"
+      "license": "MPL-2.0",
+      "assets": [
+        {
+          "type_id": "slint",
+          "label": "Slint Files",
+          "extensions": [
+            "slint"
+          ],
+          "max_size_bytes": 1048576,
+          "content_type": "text",
+          "icon_hint": "code",
+          "node_param": "slint_file",
+          "system_dir": "samples/slint/system"
+        }
+      ]
     },
     {
       "id": "supertonic",
       "name": "Supertonic",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "node_kind": "supertonic",
       "kind": "native",
       "entrypoint": "libsupertonic.so",
@@ -287,7 +301,7 @@
     {
       "id": "vad",
       "name": "VAD",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "node_kind": "vad",
       "kind": "native",
       "entrypoint": "libvad.so",
@@ -315,7 +329,7 @@
     {
       "id": "whisper",
       "name": "Whisper",
-      "version": "0.1.1",
+      "version": "0.2.0",
       "node_kind": "whisper",
       "kind": "native",
       "entrypoint": "libwhisper.so",

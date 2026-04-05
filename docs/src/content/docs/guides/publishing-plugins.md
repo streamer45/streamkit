@@ -14,8 +14,14 @@ and optional license files:
 
 ```
 libmy_plugin.so
+plugin.yml
 LICENSES/
 ```
+
+The `plugin.yml` manifest is written into the bundle directory automatically during marketplace
+installation so that the server can rediscover plugin metadata (including asset type declarations)
+on restart. See [Plugin Bundle Convention](/architecture/plugin-bundle-convention/) for the
+long-term directory layout proposal.
 
 The entrypoint path in the manifest must match the plugin binary inside the bundle. The manifest and
 signature are hosted alongside the bundle in the registry.

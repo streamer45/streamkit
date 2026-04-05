@@ -472,6 +472,80 @@ size_bytes: number,
  */
 is_system: boolean, };
 
+export type PluginAsset = { 
+/**
+ * Unique identifier (filename, including extension)
+ */
+id: string, 
+/**
+ * Display name
+ */
+name: string, 
+/**
+ * Server-relative path (e.g., `samples/slint/system/scoreboard.slint`)
+ */
+path: string, 
+/**
+ * File extension/format
+ */
+format: string, 
+/**
+ * File size in bytes
+ */
+size_bytes: number, 
+/**
+ * Whether this is a system asset (true) or user upload (false)
+ */
+is_system: boolean, 
+/**
+ * Which plugin asset type this belongs to
+ */
+type_id: string, 
+/**
+ * Which plugin owns this asset
+ */
+plugin_id: string, };
+
+export type AssetTypeSource = "core" | "plugin";
+
+export type AssetTypeInfo = { 
+/**
+ * URL-safe identifier (e.g. `audio`, `images`, `fonts`, `slint`).
+ */
+type_id: string, 
+/**
+ * Human-readable label (e.g. "Audio", "Slint Files").
+ */
+label: string, 
+/**
+ * Whether this type is built-in or registered by a plugin.
+ */
+source: AssetTypeSource, 
+/**
+ * Plugin ID that registered this type (only set when `source == "plugin"`).
+ */
+plugin_id: string | null, 
+/**
+ * Namespaced node kind to create on drag-drop (e.g. `plugin::native::slint`).
+ */
+node_kind: string | null, 
+/**
+ * Node parameter that references this asset (e.g. `slint_file`).
+ */
+node_param: string | null, 
+/**
+ * Allowed file extensions.
+ */
+extensions: Array<string>, 
+/**
+ * UI icon hint (e.g. `music`, `image`, `type`, `code`, `file`).
+ */
+icon_hint: string, 
+/**
+ * Whether files of this type can be edited in-place (text content).
+ */
+editable: boolean, };
+
 export type BatchOperation = { "action": "addnode", node_id: string, kind: string, params: JsonValue, } | { "action": "removenode", node_id: string, } | { "action": "connect", from_node: string, from_pin: string, to_node: string, to_pin: string, mode: ConnectionMode, } | { "action": "disconnect", from_node: string, from_pin: string, to_node: string, to_pin: string, };
 
 export type ValidationError = { error_type: ValidationErrorType, message: string, node_id: string | null, connection_id: string | null, };

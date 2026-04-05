@@ -360,7 +360,7 @@ const MarketplaceDetailsFields: React.FC<MarketplaceDetailsFieldsProps> = ({
       <KeyValue>{details.manifest.entrypoint}</KeyValue>
       <KeyLabel>Bundle size</KeyLabel>
       <KeyValue>
-        {formatBytes(details.manifest.bundle.size_bytes ?? undefined) || 'Unknown'}
+        {formatBytes(details.manifest.bundle?.size_bytes ?? undefined) || 'Unknown'}
       </KeyValue>
       <KeyLabel>Signature</KeyLabel>
       <KeyValue>

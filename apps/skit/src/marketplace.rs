@@ -225,10 +225,64 @@ pub struct PluginManifest {
     pub homepage: Option<String>,
     pub repository: Option<String>,
     pub entrypoint: String,
-    pub bundle: PluginBundle,
+    /// Marketplace bundle info.  Required for marketplace-distributed plugins;
+    /// absent for local-only plugins that ship alongside their `.so`.
+    #[serde(default)]
+    pub bundle: Option<PluginBundle>,
     pub compatibility: Option<PluginCompatibility>,
     #[serde(default)]
     pub models: Vec<ModelSpec>,
+    /// Asset types registered by this plugin.
+    ///
+    /// When a plugin declares asset types, the server creates generic CRUD
+    /// endpoints under `/api/v1/assets/plugin/{type_id}` and includes them
+    /// in the `GET /api/v1/asset-types` discovery response.
+    #[serde(default)]
+    pub assets: Vec<PluginAssetSpec>,
+}
+
+/// An asset type declared by a plugin in its manifest.
+///
+/// Each spec causes the server to register generic CRUD endpoints and
+/// include the type in the asset-type discovery API.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginAssetSpec {
+    /// URL-safe identifier, unique per plugin (e.g. `slint`).
+    pub type_id: String,
+    /// Human-readable label for the UI (e.g. "Slint Files").
+    pub label: String,
+    /// Allowed file extensions (e.g. `["slint"]`).
+    pub extensions: Vec<String>,
+    /// Maximum upload size in bytes (default: 1 MiB).
+    #[serde(default = "default_max_asset_size")]
+    pub max_size_bytes: usize,
+    /// Whether the file content is text (editable) or binary.
+    #[serde(default = "default_asset_content_type")]
+    pub content_type: AssetContentType,
+    /// UI icon hint (e.g. `code`, `music`, `image`, `type`, `file`).
+    pub icon_hint: Option<String>,
+    /// Which node parameter references this asset on drag-drop
+    /// (e.g. `slint_file`).
+    pub node_param: Option<String>,
+    /// Directory (relative to server CWD) containing bundled system assets.
+    /// User uploads go to a sibling `user/` directory derived from this path.
+    pub system_dir: Option<String>,
+}
+
+/// Whether a plugin asset is text (editable) or binary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AssetContentType {
+    Text,
+    Binary,
+}
+
+const fn default_max_asset_size() -> usize {
+    1_048_576 // 1 MiB
+}
+
+const fn default_asset_content_type() -> AssetContentType {
+    AssetContentType::Binary
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -854,5 +908,59 @@ abcd";
     fn decode_base64_line_invalid() {
         let err = decode_base64_line("!!!").unwrap_err();
         assert!(err.to_string().contains("Base64 decode failed"));
+    }
+
+    // ==================== PluginManifest Deserialization Tests ====================
+
+    /// Local plugin manifests (e.g. `plugins/native/slint/plugin.yml`) omit
+    /// the `bundle` section because they aren't distributed via marketplace.
+    /// Ensure deserialization succeeds with `bundle` absent.
+    #[test]
+    fn deserialize_manifest_without_bundle() {
+        let yaml = r#"
+schema_version: 1
+id: slint
+version: "0.1.0"
+node_kind: "plugin::native::slint"
+kind: native
+entrypoint: libslint_plugin.so
+assets:
+  - type_id: slint
+    label: "Slint Files"
+    extensions: [slint]
+    max_size_bytes: 1048576
+    content_type: text
+    icon_hint: code
+    node_param: slint_file
+    system_dir: samples/slint/system
+"#;
+        let manifest: PluginManifest = serde_saphyr::from_str(yaml).unwrap();
+        assert_eq!(manifest.id, "slint");
+        assert!(manifest.bundle.is_none());
+        assert_eq!(manifest.assets.len(), 1);
+        assert_eq!(manifest.assets[0].type_id, "slint");
+        assert_eq!(manifest.assets[0].content_type, AssetContentType::Text);
+    }
+
+    /// Marketplace manifests include `bundle`; deserialization should populate it.
+    #[test]
+    fn deserialize_manifest_with_bundle() {
+        let yaml = r#"
+schema_version: 1
+id: test-plugin
+version: "1.0.0"
+node_kind: "plugin::native::test"
+kind: native
+entrypoint: libtest.so
+bundle:
+  url: "https://example.com/bundle.tar.zst"
+  sha256: "abc123"
+"#;
+        let manifest: PluginManifest = serde_saphyr::from_str(yaml).unwrap();
+        assert_eq!(manifest.id, "test-plugin");
+        let bundle = manifest.bundle.unwrap();
+        assert_eq!(bundle.url, "https://example.com/bundle.tar.zst");
+        assert_eq!(bundle.sha256, "abc123");
+        assert!(manifest.assets.is_empty());
     }
 }

@@ -1,9 +1,19 @@
 id: slint
 name: Slint
-version: 0.1.0
+version: 0.2.0
 node_kind: slint
 kind: native
 entrypoint: libslint.so
 artifact: target/plugins/release/libslint.so
 description: Slint UI rendering as a video source — render .slint files to RGBA8 frames at configurable resolution and frame rate
 license: MPL-2.0
+
+assets:
+  - type_id: slint
+    label: Slint Files
+    extensions: [slint]
+    max_size_bytes: 1048576
+    content_type: text
+    icon_hint: code
+    node_param: slint_file
+    system_dir: samples/slint/system

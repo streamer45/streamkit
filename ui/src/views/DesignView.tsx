@@ -349,6 +349,89 @@ function processAudioAssetDrop(
 }
 
 /**
+ * Helper function to handle plugin asset drops.
+ *
+ * Uses the asset type's `node_kind` and `node_param` from the discovery
+ * endpoint to create the correct node with the asset path pre-filled.
+ */
+function processPluginAssetDrop(
+  assetPath: string,
+  nodeKind: string,
+  nodeParam: string,
+  position: { x: number; y: number },
+  filteredNodeDefinitions: NodeDefinition[],
+  getId: () => string,
+  nextLabelForKind: (kind: string) => string,
+  stableHandleParamChange: (nodeId: string, paramName: string, value: unknown) => void,
+  stableHandleLabelChange: (nodeId: string, newLabel: string) => void
+) {
+  const definition = filteredNodeDefinitions.find((def) => def.kind === nodeKind);
+  const newId = getId();
+
+  const params: Record<string, unknown> = {};
+  params[nodeParam] = assetPath;
+
+  const newNode = {
+    id: newId,
+    type: 'configurable',
+    dragHandle: '.drag-handle',
+    position,
+    data: {
+      label: nextLabelForKind(nodeKind),
+      kind: nodeKind,
+      params,
+      paramSchema: definition?.param_schema,
+      inputs: definition?.inputs || [],
+      outputs: definition?.outputs || [],
+      nodeDefinition: definition,
+      definition: { bidirectional: definition?.bidirectional },
+      onParamChange: stableHandleParamChange,
+      onLabelChange: stableHandleLabelChange,
+    },
+    selected: true,
+  };
+
+  return { node: newNode, nodeId: newId };
+}
+
+/**
+ * Parse the drag event data for a plugin asset drop and create the node.
+ *
+ * Returns `null` if the event data is missing or invalid.
+ */
+function parsePluginAssetDrop(
+  event: React.DragEvent,
+  position: { x: number; y: number },
+  filteredNodeDefinitions: NodeDefinition[],
+  getId: () => string,
+  nextLabelForKind: (kind: string) => string,
+  stableHandleParamChange: (nodeId: string, paramName: string, value: unknown) => void,
+  stableHandleLabelChange: (nodeId: string, newLabel: string) => void
+): { node: ReturnType<typeof processPluginAssetDrop>['node']; nodeId: string } | null {
+  try {
+    const raw = event.dataTransfer.getData('application/x-streamkit-asset');
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as import('@/components/AssetCard').UnifiedAsset;
+    if (parsed.type !== 'plugin' || !parsed.typeInfo.node_kind || !parsed.typeInfo.node_param) {
+      return null;
+    }
+    return processPluginAssetDrop(
+      parsed.asset.path,
+      parsed.typeInfo.node_kind,
+      parsed.typeInfo.node_param,
+      position,
+      filteredNodeDefinitions,
+      getId,
+      nextLabelForKind,
+      stableHandleParamChange,
+      stableHandleLabelChange
+    );
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Helper function to handle regular node drops
  */
 function processRegularNodeDrop(
@@ -937,6 +1020,27 @@ const DesignViewContent: React.FC = () => {
         return;
       }
 
+      // Handle plugin asset drop (e.g. slint files)
+      if (type.startsWith('plugin-asset:')) {
+        const pluginNode = parsePluginAssetDrop(
+          event,
+          position,
+          filteredNodeDefinitions,
+          getId,
+          nextLabelForKind,
+          stableHandleParamChange,
+          stableHandleLabelChange
+        );
+        if (pluginNode) {
+          setNodes((nds) => nds.map((n) => ({ ...n, selected: false })).concat([pluginNode.node]));
+          setSelectedNodes([pluginNode.nodeId]);
+          if (rightCollapsed) {
+            setRightCollapsed(false);
+          }
+        }
+        return;
+      }
+
       // Handle regular node drop
       const { node: newNode, nodeId: newId } = processRegularNodeDrop(
         type,
@@ -982,11 +1086,25 @@ const DesignViewContent: React.FC = () => {
     [setType]
   );
 
+  /** Only audio and plugin assets can be dropped onto the canvas right now. */
+  const isAssetDraggable = React.useCallback(
+    (item: import('@/components/AssetCard').UnifiedAsset) =>
+      item.type === 'audio' || item.type === 'plugin',
+    []
+  );
+
   const onAssetDragStart = React.useCallback(
-    (event: React.DragEvent, asset: import('@/types/generated/api-types').AudioAsset) => {
-      const dragType = `audio-asset:${asset.path}`;
+    (event: React.DragEvent, item: import('@/components/AssetCard').UnifiedAsset) => {
+      let dragType: string;
+      if (item.type === 'audio') {
+        dragType = `audio-asset:${item.asset.path}`;
+      } else if (item.type === 'plugin') {
+        dragType = `plugin-asset:${item.asset.type_id}:${item.asset.path}`;
+      } else {
+        return;
+      }
       setType(dragType);
-      event.dataTransfer.setData('application/x-streamkit-audio-asset', JSON.stringify(asset));
+      event.dataTransfer.setData('application/x-streamkit-asset', JSON.stringify(item));
       event.dataTransfer.effectAllowed = 'move';
     },
     [setType]
@@ -1322,6 +1440,7 @@ const DesignViewContent: React.FC = () => {
         nodeDefinitions={filteredNodeDefinitions}
         onDragStart={onDragStart}
         onAssetDragStart={onAssetDragStart}
+        isAssetDraggable={isAssetDraggable}
         onLoadSample={handleLoadSample}
         samplesRef={samplesRef}
         mode={mode}
@@ -1333,6 +1452,7 @@ const DesignViewContent: React.FC = () => {
       filteredNodeDefinitions,
       onDragStart,
       onAssetDragStart,
+      isAssetDraggable,
       handleLoadSample,
       mode,
       onFragmentDragStart,

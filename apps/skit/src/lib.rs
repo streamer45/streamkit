@@ -16,6 +16,7 @@ pub mod marketplace_security;
 pub mod moq_gateway;
 pub mod mse_gateway;
 pub mod permissions;
+pub mod plugin_assets;
 pub mod plugin_paths;
 pub mod plugin_records;
 pub mod plugins;

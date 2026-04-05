@@ -635,6 +635,72 @@ pub struct FontAsset {
     pub is_system: bool,
 }
 
+// --- Plugin Assets (generic, registered by plugins) ---
+
+/// A generic asset owned by a plugin, served via the plugin asset registry.
+#[derive(Serialize, Deserialize, Debug, Clone, TS)]
+#[ts(export)]
+pub struct PluginAsset {
+    /// Unique identifier (filename, including extension)
+    pub id: String,
+    /// Display name
+    pub name: String,
+    /// Server-relative path (e.g., `samples/slint/system/scoreboard.slint`)
+    pub path: String,
+    /// File extension/format
+    pub format: String,
+    /// File size in bytes
+    #[ts(type = "number")]
+    pub size_bytes: u64,
+    /// Whether this is a system asset (true) or user upload (false)
+    pub is_system: bool,
+    /// Which plugin asset type this belongs to
+    pub type_id: String,
+    /// Which plugin owns this asset
+    pub plugin_id: String,
+}
+
+// --- Asset Type Discovery ---
+
+/// Describes a registered asset type (core or plugin-provided).
+/// Whether an asset type is built into the server or registered by a plugin.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, TS)]
+#[ts(export)]
+#[serde(rename_all = "lowercase")]
+pub enum AssetTypeSource {
+    Core,
+    Plugin,
+}
+
+///
+/// Returned by `GET /api/v1/asset-types` so the UI can dynamically render
+/// type filters, upload zones, and drag-drop behaviour.
+#[derive(Serialize, Deserialize, Debug, Clone, TS)]
+#[ts(export)]
+pub struct AssetTypeInfo {
+    /// URL-safe identifier (e.g. `audio`, `images`, `fonts`, `slint`).
+    pub type_id: String,
+    /// Human-readable label (e.g. "Audio", "Slint Files").
+    pub label: String,
+    /// Whether this type is built-in or registered by a plugin.
+    pub source: AssetTypeSource,
+    /// Plugin ID that registered this type (only set when `source == "plugin"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugin_id: Option<String>,
+    /// Namespaced node kind to create on drag-drop (e.g. `plugin::native::slint`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_kind: Option<String>,
+    /// Node parameter that references this asset (e.g. `slint_file`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_param: Option<String>,
+    /// Allowed file extensions.
+    pub extensions: Vec<String>,
+    /// UI icon hint (e.g. `music`, `image`, `type`, `code`, `file`).
+    pub icon_hint: String,
+    /// Whether files of this type can be edited in-place (text content).
+    pub editable: bool,
+}
+
 // --- Image Assets ---
 
 #[derive(Serialize, Deserialize, Debug, Clone, TS)]
