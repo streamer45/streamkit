@@ -931,6 +931,43 @@ upload-slint-plugin: build-plugin-native-slint
 build-plugin-native name:
     @just build-plugin-native-{{name}}
 
+# Build and install a single native plugin to .plugins/native/ (idempotent).
+# Copies the compiled library and plugin.yml manifest (if present).
+# Usage: just install-plugin slint
+#        just install-plugin pocket-tts
+install-plugin name: (build-plugin-native name)
+    #!/usr/bin/env bash
+    set -euo pipefail
+    PLUGINS_TARGET="{{plugins_target_dir}}"
+    mkdir -p .plugins/native
+
+    # Rust library names use underscores for hyphens.
+    LIB_STEM="lib$(echo '{{name}}' | tr '-' '_')"
+
+    SO_FILE=""
+    for ext in so dylib dll; do
+        candidate="$PLUGINS_TARGET/release/${LIB_STEM}.${ext}"
+        if [[ -f "$candidate" ]]; then
+            SO_FILE="$candidate"
+            break
+        fi
+    done
+
+    if [[ -z "$SO_FILE" ]]; then
+        echo "❌ Built library not found (expected ${LIB_STEM}.{so,dylib,dll} in $PLUGINS_TARGET/release/)"
+        exit 1
+    fi
+
+    cp -f "$SO_FILE" .plugins/native/
+    echo "✓ Copied $(basename "$SO_FILE") → .plugins/native/"
+
+    # Copy plugin.yml alongside the .so so asset types are discovered at startup
+    # (see plugin_assets::read_local_plugin_manifest).
+    if [[ -f "plugins/native/{{name}}/plugin.yml" ]]; then
+        cp -f "plugins/native/{{name}}/plugin.yml" ".plugins/native/{{name}}.plugin.yml"
+        echo "✓ Copied plugin.yml → .plugins/native/{{name}}.plugin.yml"
+    fi
+
 # Build all native plugin examples
 build-plugins-native: build-plugin-native-gain build-plugin-native-whisper build-plugin-native-kokoro build-plugin-native-piper build-plugin-native-matcha build-plugin-native-pocket-tts build-plugin-native-sensevoice build-plugin-native-nllb build-plugin-native-vad build-plugin-native-helsinki build-plugin-native-supertonic build-plugin-native-slint
 
