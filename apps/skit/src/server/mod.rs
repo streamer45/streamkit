@@ -1390,9 +1390,8 @@ async fn delete_plugin_handler(
     // active record (matches `manifest.id` used during registration).
     // For non-marketplace plugins fall back to `original_kind` which, by
     // convention, equals the manifest `id`.
-    let unregister_id = active_record
-        .as_ref()
-        .map_or(&summary.original_kind, |(_, record)| &record.plugin_id);
+    let unregister_id =
+        active_record.as_ref().map_or(&summary.original_kind, |(_, record)| &record.plugin_id);
     app_state.plugin_asset_registry.unregister_plugin(unregister_id).await;
 
     if let Some((record_path, record)) = active_record {
