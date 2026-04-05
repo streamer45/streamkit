@@ -67,7 +67,7 @@ nodes:
       height: 44
       fps: 30
       frame_count: 300
-      slint_file: samples/slint/watermark.slint
+      slint_file: samples/slint/system/watermark.slint
       static_ui: true
       properties:
         channel: "StreamKit"

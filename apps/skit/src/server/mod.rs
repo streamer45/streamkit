@@ -3268,7 +3268,8 @@ pub fn create_app(
         .merge(crate::samples::samples_router())
         .merge(crate::assets::assets_router())
         .merge(crate::assets::image_assets_router())
-        .merge(crate::assets::font_assets_router());
+        .merge(crate::assets::font_assets_router())
+        .merge(crate::assets::slint_assets_router());
 
     // Add MoQ routes if feature is enabled
     #[cfg(feature = "moq")]

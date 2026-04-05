@@ -635,6 +635,26 @@ pub struct FontAsset {
     pub is_system: bool,
 }
 
+// --- Slint Assets ---
+
+#[derive(Serialize, Deserialize, Debug, Clone, TS)]
+#[ts(export)]
+pub struct SlintAsset {
+    /// Unique identifier (filename, including extension)
+    pub id: String,
+    /// Display name (e.g. "Scoreboard", "Lower Third")
+    pub name: String,
+    /// Server-relative path (e.g. `samples/slint/system/scoreboard.slint`)
+    pub path: String,
+    /// File extension/format (always "slint")
+    pub format: String,
+    /// File size in bytes
+    #[ts(type = "number")]
+    pub size_bytes: u64,
+    /// Whether this is a system asset (true) or user upload (false)
+    pub is_system: bool,
+}
+
 // --- Image Assets ---
 
 #[derive(Serialize, Deserialize, Debug, Clone, TS)]

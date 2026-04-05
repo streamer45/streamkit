@@ -21,6 +21,7 @@ use crate::state::AppState;
 use streamkit_api::AudioAsset;
 use streamkit_api::FontAsset;
 use streamkit_api::ImageAsset;
+use streamkit_api::SlintAsset;
 
 // Security limits
 const MAX_AUDIO_FILE_SIZE: usize = 100 * 1024 * 1024; // 100MB
@@ -1400,6 +1401,457 @@ pub fn font_assets_router() -> Router<Arc<AppState>> {
         )
         .route("/api/v1/assets/fonts/file/{scope}/{id}", get(serve_font_asset_handler))
         .route("/api/v1/assets/fonts/{id}", delete(delete_font_asset_handler))
+}
+
+// ── Slint Assets ─────────────────────────────────────────────────────────────
+
+// Security limits for slint assets
+const MAX_SLINT_FILE_SIZE: usize = 1024 * 1024; // 1MB — slint files are small text
+
+// Allowed slint formats
+const ALLOWED_SLINT_FORMATS: &[&str] = &["slint"];
+
+/// Validates a filename for slint asset security
+fn validate_slint_filename(filename: &str) -> Result<String, AssetsError> {
+    if filename.len() > MAX_FILENAME_LENGTH {
+        return Err(AssetsError::InvalidFilename("Filename too long".to_string()));
+    }
+
+    if filename.is_empty() {
+        return Err(AssetsError::InvalidFilename("Filename cannot be empty".to_string()));
+    }
+
+    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
+        return Err(AssetsError::InvalidFilename("Invalid characters in filename".to_string()));
+    }
+
+    let extension = match filename.rsplit('.').next() {
+        Some(ext) if filename.contains('.') => ext.to_lowercase(),
+        _ => return Err(AssetsError::InvalidFilename("File must have an extension".to_string())),
+    };
+
+    if !ALLOWED_SLINT_FORMATS.contains(&extension.as_str()) {
+        return Err(AssetsError::InvalidFormat(format!(
+            "Unsupported slint format: {}. Allowed: {}",
+            extension,
+            ALLOWED_SLINT_FORMATS.join(", ")
+        )));
+    }
+
+    Ok(extension)
+}
+
+/// Process a single directory entry and convert it to a SlintAsset if valid
+async fn process_slint_entry(
+    path: std::path::PathBuf,
+    is_system: bool,
+    perms: &RolePermissions,
+) -> Option<SlintAsset> {
+    if path.is_dir() {
+        return None;
+    }
+
+    let filename = path.file_name().and_then(|s| s.to_str())?.to_string();
+
+    let extension = path.extension().and_then(|s| s.to_str()).map(str::to_lowercase)?;
+
+    if !ALLOWED_SLINT_FORMATS.contains(&extension.as_str()) {
+        return None;
+    }
+
+    let metadata = fs::metadata(&path).await.ok()?;
+    let size_bytes = metadata.len();
+
+    let id = filename.clone();
+
+    let name_without_ext = filename.trim_end_matches(&format!(".{extension}"));
+    let display_name = name_without_ext.replace(['_', '-'], " ");
+
+    let asset_path_str = if is_system {
+        format!("samples/slint/system/{filename}")
+    } else {
+        format!("samples/slint/user/{filename}")
+    };
+
+    if !perms.is_asset_allowed(&asset_path_str) {
+        debug!("Slint asset filtered by permissions: {}", asset_path_str);
+        return None;
+    }
+
+    Some(SlintAsset {
+        id,
+        name: display_name,
+        path: asset_path_str,
+        format: extension,
+        size_bytes,
+        is_system,
+    })
+}
+
+/// Scan a directory for slint assets
+async fn scan_slint_directory(
+    dir_path: &PathBuf,
+    is_system: bool,
+    perms: &RolePermissions,
+) -> Result<Vec<SlintAsset>, AssetsError> {
+    let mut assets = Vec::new();
+
+    if !dir_path.exists() {
+        warn!("Slint directory does not exist: {:?}", dir_path);
+        return Ok(assets);
+    }
+
+    let mut entries = fs::read_dir(dir_path)
+        .await
+        .map_err(|e| AssetsError::IoError(format!("Failed to read directory: {e}")))?;
+
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .map_err(|e| AssetsError::IoError(format!("Failed to read entry: {e}")))?
+    {
+        if let Some(asset) = process_slint_entry(entry.path(), is_system, perms).await {
+            assets.push(asset);
+        }
+    }
+
+    Ok(assets)
+}
+
+/// List all slint assets (system + user) with permission filtering
+pub async fn list_slint_assets_handler(
+    State(app_state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let perms = get_permissions(&headers, &app_state);
+
+    match list_slint_assets(&perms).await {
+        Ok(assets) => {
+            info!("Listed {} slint assets", assets.len());
+            Json(assets).into_response()
+        },
+        Err(e) => {
+            error!("Failed to list slint assets: {}", e);
+            e.into_response()
+        },
+    }
+}
+
+async fn list_slint_assets(perms: &RolePermissions) -> Result<Vec<SlintAsset>, AssetsError> {
+    let base_path = PathBuf::from("samples/slint");
+    let system_path = base_path.join("system");
+    let user_path = base_path.join("user");
+
+    let mut all_assets = Vec::new();
+
+    let system_assets = scan_slint_directory(&system_path, true, perms).await?;
+    all_assets.extend(system_assets);
+
+    let user_assets = scan_slint_directory(&user_path, false, perms).await?;
+    all_assets.extend(user_assets);
+
+    all_assets.sort_by(|a, b| a.name.cmp(&b.name));
+
+    Ok(all_assets)
+}
+
+/// Stream an uploaded multipart slint field to disk with size enforcement.
+async fn write_slint_upload_to_disk(
+    mut field: axum::extract::multipart::Field<'_>,
+    file_path: &std::path::Path,
+) -> Result<usize, AssetsError> {
+    use tokio::fs::OpenOptions;
+
+    let mut file =
+        OpenOptions::new().create_new(true).write(true).open(file_path).await.map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                AssetsError::FileExists(
+                    file_path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown").to_string(),
+                )
+            } else {
+                AssetsError::IoError(format!("Failed to create file: {e}"))
+            }
+        })?;
+
+    let mut total_bytes: usize = 0;
+    loop {
+        match field.chunk().await {
+            Ok(Some(chunk)) => {
+                total_bytes = total_bytes.saturating_add(chunk.len());
+                if total_bytes > MAX_SLINT_FILE_SIZE {
+                    let _ = fs::remove_file(file_path).await;
+                    return Err(AssetsError::FileTooLarge(MAX_SLINT_FILE_SIZE));
+                }
+
+                if let Err(e) = file.write_all(&chunk).await {
+                    let _ = fs::remove_file(file_path).await;
+                    return Err(AssetsError::IoError(format!("Failed to write file: {e}")));
+                }
+            },
+            Ok(None) => break,
+            Err(e) => {
+                let _ = fs::remove_file(file_path).await;
+                return Err(AssetsError::InvalidRequest(format!(
+                    "Failed to read upload stream: {e}"
+                )));
+            },
+        }
+    }
+
+    Ok(total_bytes)
+}
+
+/// Core slint upload logic after permission check
+async fn process_slint_upload(
+    filename: String,
+    extension: String,
+    field: axum::extract::multipart::Field<'_>,
+) -> Result<SlintAsset, AssetsError> {
+    let base_path = PathBuf::from("samples/slint");
+    let user_dir = base_path.join("user");
+
+    fs::create_dir_all(&user_dir)
+        .await
+        .map_err(|e| AssetsError::IoError(format!("Failed to create directory: {e}")))?;
+
+    let file_path = user_dir.join(&filename);
+
+    let written_bytes = write_slint_upload_to_disk(field, &file_path).await?;
+
+    let name_without_ext = filename.trim_end_matches(&format!(".{extension}"));
+    let display_name = name_without_ext.replace(['_', '-'], " ");
+    let relative_path = format!("samples/slint/user/{filename}");
+
+    info!("Uploaded slint asset: {}", filename);
+
+    Ok(SlintAsset {
+        id: filename,
+        name: display_name,
+        path: relative_path,
+        format: extension,
+        size_bytes: written_bytes as u64,
+        is_system: false,
+    })
+}
+
+/// Upload a new slint asset (user directory only)
+pub async fn upload_slint_asset_handler(
+    State(app_state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> impl IntoResponse {
+    let perms = get_permissions(&headers, &app_state);
+
+    if !perms.upload_assets {
+        return AssetsError::Forbidden.into_response();
+    }
+
+    let field = match multipart.next_field().await {
+        Ok(Some(field)) => field,
+        Ok(None) => {
+            return AssetsError::InvalidRequest("No file provided".to_string()).into_response()
+        },
+        Err(e) => {
+            return AssetsError::InvalidRequest(format!("Failed to read multipart: {e}"))
+                .into_response()
+        },
+    };
+
+    let filename = match field.file_name() {
+        Some(name) => sanitize_filename(name),
+        None => {
+            return AssetsError::InvalidRequest("No filename provided".to_string()).into_response()
+        },
+    };
+    let extension = match validate_slint_filename(&filename) {
+        Ok(ext) => ext,
+        Err(e) => return e.into_response(),
+    };
+
+    match process_slint_upload(filename, extension, field).await {
+        Ok(asset) => Json(asset).into_response(),
+        Err(e) => {
+            error!("Failed to process slint upload: {}", e);
+            e.into_response()
+        },
+    }
+}
+
+/// Delete a slint asset (user directory only)
+pub async fn delete_slint_asset_handler(
+    State(app_state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let perms = get_permissions(&headers, &app_state);
+
+    if !perms.delete_assets {
+        return AssetsError::Forbidden.into_response();
+    }
+
+    let base_path = PathBuf::from("samples/slint");
+    let user_dir = base_path.join("user");
+    let file_path = user_dir.join(&id);
+
+    if !file_path.exists() {
+        return AssetsError::NotFound(id).into_response();
+    }
+
+    if let Err(e) = validate_file_in_user_directory(&file_path, &user_dir) {
+        return e.into_response();
+    }
+
+    if let Err(e) = fs::remove_file(&file_path)
+        .await
+        .map_err(|e| AssetsError::IoError(format!("Failed to delete file: {e}")))
+    {
+        error!("Failed to delete slint file: {}", e);
+        return e.into_response();
+    }
+
+    info!("Deleted slint asset: {}", id);
+    StatusCode::NO_CONTENT.into_response()
+}
+
+/// Serve a slint asset file by scope and ID.
+async fn serve_slint_asset_handler(
+    State(app_state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((scope, id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    use axum::http::header;
+
+    let perms = get_permissions(&headers, &app_state);
+
+    if id.contains("..") || id.contains('/') || id.contains('\\') {
+        return AssetsError::InvalidFilename("Invalid characters in filename".to_string())
+            .into_response();
+    }
+
+    if scope != "user" && scope != "system" {
+        return AssetsError::InvalidFilename(
+            "Invalid scope: must be 'user' or 'system'".to_string(),
+        )
+        .into_response();
+    }
+
+    let file_path = PathBuf::from("samples/slint").join(&scope).join(&id);
+    let asset_path_str = format!("samples/slint/{scope}/{id}");
+
+    let extension = file_path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+    if !ALLOWED_SLINT_FORMATS.contains(&extension.as_str()) {
+        return AssetsError::InvalidFormat(format!("Not an allowed slint format: {extension}"))
+            .into_response();
+    }
+
+    if !perms.is_asset_allowed(&asset_path_str) {
+        return AssetsError::Forbidden.into_response();
+    }
+
+    if !file_path.exists() {
+        return AssetsError::NotFound(id).into_response();
+    }
+
+    match fs::read(&file_path).await {
+        Ok(data) => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "text/plain; charset=utf-8".to_string()),
+                (header::CACHE_CONTROL, "public, must-revalidate".to_string()),
+            ],
+            data,
+        )
+            .into_response(),
+        Err(e) => {
+            error!("Failed to read slint file {:?}: {}", file_path, e);
+            AssetsError::IoError(format!("Failed to read file: {e}")).into_response()
+        },
+    }
+}
+
+/// Update a slint asset file in-place (user files only).
+/// Accepts raw text body and writes it to the file.
+async fn update_slint_asset_handler(
+    State(app_state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((scope, id)): Path<(String, String)>,
+    body: String,
+) -> impl IntoResponse {
+    let perms = get_permissions(&headers, &app_state);
+
+    if !perms.upload_assets {
+        return AssetsError::Forbidden.into_response();
+    }
+
+    if scope != "user" {
+        return AssetsError::Forbidden.into_response();
+    }
+
+    if id.contains("..") || id.contains('/') || id.contains('\\') {
+        return AssetsError::InvalidFilename("Invalid characters in filename".to_string())
+            .into_response();
+    }
+
+    let extension = match validate_slint_filename(&id) {
+        Ok(ext) => ext,
+        Err(e) => return e.into_response(),
+    };
+
+    let base_path = PathBuf::from("samples/slint");
+    let user_dir = base_path.join("user");
+    let file_path = user_dir.join(&id);
+
+    if !file_path.exists() {
+        return AssetsError::NotFound(id).into_response();
+    }
+
+    if let Err(e) = validate_file_in_user_directory(&file_path, &user_dir) {
+        return e.into_response();
+    }
+
+    if let Err(e) = fs::write(&file_path, body.as_bytes()).await {
+        error!("Failed to write slint file {:?}: {}", file_path, e);
+        return AssetsError::IoError(format!("Failed to write file: {e}")).into_response();
+    }
+
+    let metadata = match fs::metadata(&file_path).await {
+        Ok(m) => m,
+        Err(e) => {
+            return AssetsError::IoError(format!("Failed to read metadata: {e}")).into_response()
+        },
+    };
+
+    let name_without_ext = id.trim_end_matches(&format!(".{extension}"));
+    let display_name = name_without_ext.replace(['_', '-'], " ");
+    let relative_path = format!("samples/slint/user/{id}");
+
+    info!("Updated slint asset: {}", id);
+
+    Json(SlintAsset {
+        id,
+        name: display_name,
+        path: relative_path,
+        format: extension,
+        size_bytes: metadata.len(),
+        is_system: false,
+    })
+    .into_response()
+}
+
+/// Create router for slint asset endpoints
+pub fn slint_assets_router() -> Router<Arc<AppState>> {
+    Router::new()
+        .route(
+            "/api/v1/assets/slint",
+            get(list_slint_assets_handler)
+                .post(upload_slint_asset_handler)
+                .layer(DefaultBodyLimit::max(MAX_SLINT_FILE_SIZE)),
+        )
+        .route(
+            "/api/v1/assets/slint/file/{scope}/{id}",
+            get(serve_slint_asset_handler).put(update_slint_asset_handler),
+        )
+        .route("/api/v1/assets/slint/{id}", delete(delete_slint_asset_handler))
 }
 
 // Error types
