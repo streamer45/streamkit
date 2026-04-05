@@ -20,7 +20,11 @@ use std::os::raw::{c_char, c_void};
 ///     dynamic runtime parameter discovery.
 /// v5: Added `on_upstream_hint` for receiving advisory hints from
 ///     downstream consumers (e.g. preferred output resolution).
-pub const NATIVE_PLUGIN_API_VERSION: u32 = 5;
+/// v6: Added frame pool allocation (`CNodeCallbacks`, `CAllocVideoResult`,
+///     `CAllocAudioResult`).  Consolidated per-call callback parameters
+///     into a single `CNodeCallbacks` struct.  Extended `CVideoFrame` and
+///     `CAudioFrame` with `buffer_handle` and `metadata` fields.
+pub const NATIVE_PLUGIN_API_VERSION: u32 = 6;
 
 /// Opaque handle to a plugin instance
 pub type CPluginHandle = *mut c_void;
@@ -165,6 +169,10 @@ pub struct CRawVideoFormat {
 /// Video frame data passed across the C ABI boundary.
 ///
 /// `data` points to raw pixel bytes; layout depends on `pixel_format`.
+///
+/// When `buffer_handle` is non-null, the buffer was allocated from the
+/// host's frame pool via [`CAllocVideoFn`].  The host reclaims the
+/// underlying [`PooledVideoData`] directly — no copy is needed.
 #[repr(C)]
 pub struct CVideoFrame {
     pub width: u32,
@@ -172,6 +180,11 @@ pub struct CVideoFrame {
     pub pixel_format: CPixelFormat,
     pub data: *const u8,
     pub data_len: usize,
+    /// Opaque handle returned by [`CAllocVideoFn`].  NULL for legacy
+    /// (non-pooled) frames.
+    pub buffer_handle: *mut c_void,
+    /// Optional metadata (may be null).
+    pub metadata: *const CPacketMetadata,
 }
 
 /// Encoding for Custom packets.
@@ -225,12 +238,21 @@ pub struct CPacketTypeInfo {
 }
 
 /// Audio frame data (for RawAudio packets)
+///
+/// When `buffer_handle` is non-null, the buffer was allocated from the
+/// host's audio frame pool via [`CAllocAudioFn`].  The host reclaims
+/// the underlying [`PooledSamples`] directly — no copy is needed.
 #[repr(C)]
 pub struct CAudioFrame {
     pub sample_rate: u32,
     pub channels: u16,
     pub samples: *const f32,
     pub sample_count: usize,
+    /// Opaque handle returned by [`CAllocAudioFn`].  NULL for legacy
+    /// (non-pooled) frames.
+    pub buffer_handle: *mut c_void,
+    /// Optional metadata (may be null).
+    pub metadata: *const CPacketMetadata,
 }
 
 /// Generic packet container
@@ -358,18 +380,12 @@ pub struct CNativePluginAPI {
     /// handle: Plugin instance handle.
     /// input_pin: Name of the input pin.
     /// packet: The packet to process.
-    /// output_callback: Callback to send output packets.
-    /// callback_data: User data to pass to output callback.
-    /// telemetry_callback: Callback to emit telemetry events.
-    /// telemetry_user_data: User data to pass to telemetry callback.
+    /// callbacks: Consolidated callback bundle (output + telemetry + alloc).
     pub process_packet: extern "C" fn(
         CPluginHandle,
         *const c_char,
         *const CPacket,
-        COutputCallback,
-        *mut c_void,
-        CTelemetryCallback,
-        *mut c_void,
+        *const CNodeCallbacks,
     ) -> CResult,
 
     /// Update runtime parameters.
@@ -379,17 +395,8 @@ pub struct CNativePluginAPI {
 
     /// Flush any buffered data (called when input stream ends).
     /// handle: Plugin instance handle.
-    /// output_callback: Callback to send output packets.
-    /// callback_data: User data to pass to output callback.
-    /// telemetry_callback: Callback to emit telemetry events.
-    /// telemetry_user_data: User data to pass to telemetry callback.
-    pub flush: extern "C" fn(
-        CPluginHandle,
-        COutputCallback,
-        *mut c_void,
-        CTelemetryCallback,
-        *mut c_void,
-    ) -> CResult,
+    /// callbacks: Consolidated callback bundle (output + telemetry + alloc).
+    pub flush: extern "C" fn(CPluginHandle, *const CNodeCallbacks) -> CResult,
 
     /// Destroy a plugin instance.
     /// handle: Plugin instance handle.
@@ -411,15 +418,7 @@ pub struct CNativePluginAPI {
     /// completion.
     ///
     /// `None` for processor plugins.
-    pub tick: Option<
-        extern "C" fn(
-            CPluginHandle,
-            COutputCallback,
-            *mut c_void,
-            CTelemetryCallback,
-            *mut c_void,
-        ) -> CTickResult,
-    >,
+    pub tick: Option<extern "C" fn(CPluginHandle, *const CNodeCallbacks) -> CTickResult>,
 
     // ── v4 additions ──────────────────────────────────────────────────────
     /// Query runtime-discovered param schema after instance creation.
@@ -444,6 +443,103 @@ pub struct CNativePluginAPI {
     /// `None` for processor plugins or source plugins that don't handle
     /// hints.
     pub on_upstream_hint: Option<extern "C" fn(CPluginHandle, *const c_char) -> CResult>,
+}
+
+// ── v6 additions: frame pool allocation ────────────────────────────────
+
+/// Result of a video buffer allocation from the host's frame pool.
+///
+/// If `data` is non-null the allocation succeeded and the plugin owns the
+/// buffer until it either passes it back via `CVideoFrame::buffer_handle`
+/// or calls `free_fn(handle)` to release it without sending.
+#[repr(C)]
+pub struct CAllocVideoResult {
+    /// Pointer to the writable buffer, or null on failure.
+    pub data: *mut u8,
+    /// Usable byte count (≥ requested `min_bytes`).
+    pub len: usize,
+    /// Opaque handle the plugin must store in `CVideoFrame::buffer_handle`
+    /// (or pass to `free_fn` if the buffer is discarded).
+    pub handle: *mut c_void,
+    /// Releases the buffer without sending.  The plugin **must** call this
+    /// if it decides not to send the frame (e.g. on error paths).
+    pub free_fn: Option<extern "C" fn(*mut c_void)>,
+}
+
+impl CAllocVideoResult {
+    /// Null / failed allocation sentinel.
+    pub const fn null() -> Self {
+        Self { data: std::ptr::null_mut(), len: 0, handle: std::ptr::null_mut(), free_fn: None }
+    }
+}
+
+/// Result of an audio buffer allocation from the host's frame pool.
+#[repr(C)]
+pub struct CAllocAudioResult {
+    /// Pointer to the writable sample buffer, or null on failure.
+    pub data: *mut f32,
+    /// Number of usable samples (≥ requested `min_samples`).
+    pub sample_count: usize,
+    /// Opaque handle the plugin must store in `CAudioFrame::buffer_handle`
+    /// (or pass to `free_fn` if the buffer is discarded).
+    pub handle: *mut c_void,
+    /// Releases the buffer without sending.
+    pub free_fn: Option<extern "C" fn(*mut c_void)>,
+}
+
+impl CAllocAudioResult {
+    /// Null / failed allocation sentinel.
+    pub const fn null() -> Self {
+        Self {
+            data: std::ptr::null_mut(),
+            sample_count: 0,
+            handle: std::ptr::null_mut(),
+            free_fn: None,
+        }
+    }
+}
+
+/// Callback: allocate a video buffer from the host's frame pool.
+///
+/// `min_bytes` — minimum buffer size in bytes.
+/// `user_data` — opaque pointer provided by the host.
+pub type CAllocVideoFn = extern "C" fn(usize, *mut c_void) -> CAllocVideoResult;
+
+/// Callback: allocate an audio buffer from the host's frame pool.
+///
+/// `min_samples` — minimum buffer size in samples.
+/// `user_data` — opaque pointer provided by the host.
+pub type CAllocAudioFn = extern "C" fn(usize, *mut c_void) -> CAllocAudioResult;
+
+/// Consolidated callback bundle passed to `process_packet`, `flush`, and
+/// `tick` starting in API v6.
+///
+/// Replaces the previous positional callback + user-data pairs with a
+/// single struct pointer, making the ABI easier to extend in the future.
+///
+/// `struct_size` is set by the host so that a v7 plugin running on a v6
+/// host can detect which fields are present.
+#[repr(C)]
+pub struct CNodeCallbacks {
+    /// Size of this struct in bytes (set by the host).
+    pub struct_size: usize,
+
+    // ── output ──────────────────────────────────────────────────────────
+    pub output_callback: COutputCallback,
+    pub output_user_data: *mut c_void,
+
+    // ── telemetry ───────────────────────────────────────────────────────
+    pub telemetry_callback: CTelemetryCallback,
+    pub telemetry_user_data: *mut c_void,
+
+    // ── frame pool allocation (v6) ─────────────────────────────────────
+    /// May be `None` if the host has no video pool for this pipeline.
+    pub alloc_video: Option<CAllocVideoFn>,
+    /// May be `None` if the host has no audio pool for this pipeline.
+    pub alloc_audio: Option<CAllocAudioFn>,
+    /// Opaque pointer passed as the last argument to `alloc_video` /
+    /// `alloc_audio`.
+    pub alloc_user_data: *mut c_void,
 }
 
 /// Symbol name that plugins must export
