@@ -483,8 +483,48 @@ struct TrackProgress {
     video_done: bool,
 }
 
+/// Shared immutable state for a muxing session, threaded through mode helpers.
+struct MuxSession<'a> {
+    config: &'a Mp4MuxerConfig,
+    node_name: &'a str,
+    content_type: &'static str,
+    audio_codec: AudioCodec,
+    video_codec: VideoCodec,
+}
+
+/// Owned input channels and track metadata, consumed by the mode entry points.
+struct MuxInputs {
+    audio_rx: Option<tokio::sync::mpsc::Receiver<Packet>>,
+    video_rx: Option<tokio::sync::mpsc::Receiver<Packet>>,
+    all_receivers: Vec<tokio::sync::mpsc::Receiver<Packet>>,
+    tp: TrackPresence,
+    tg: TrackProgress,
+}
+
+/// Accumulated state for an in-progress fMP4 segment (stream mode).
+struct Fmp4SegmentState {
+    pending_samples: Vec<Sample>,
+    pending_payloads: Vec<Bytes>,
+    segment_data_offset: u64,
+    init_sent: bool,
+}
+
+/// Muxer and file-backed state for regular MP4 file mode.
+struct FileMuxState {
+    muxer: Mp4FileMuxer,
+    file_buf: FileBackedBuffer,
+    video_sample_entry: SampleEntry,
+    audio_sample_entry: SampleEntry,
+    video_timescale: NonZeroU32,
+    audio_timescale: NonZeroU32,
+    video_keyframe_seen: bool,
+    video_sample_entry_sent: bool,
+    audio_sample_entry_sent: bool,
+    packet_count: u64,
+}
+
 #[async_trait]
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines)] // ProcessorNode::run orchestrates input classification, codec detection, and mode dispatch; further splitting would obscure the control flow.
 impl ProcessorNode for Mp4MuxerNode {
     fn input_pins(&self) -> Vec<InputPin> {
         let media_types = vec![
@@ -668,40 +708,28 @@ impl ProcessorNode for Mp4MuxerNode {
 
         // ---- Dispatch to mode-specific muxing logic ----
 
+        let session = MuxSession {
+            config: &self.config,
+            node_name: &node_name,
+            content_type: content_type_str,
+            audio_codec,
+            video_codec,
+        };
+
+        let inputs = MuxInputs {
+            audio_rx,
+            video_rx,
+            all_receivers,
+            tp: TrackPresence { audio: has_audio, video: has_video, skip_classification },
+            tg: TrackProgress { audio_done: false, video_done: false },
+        };
+
         match self.config.mode {
             Mp4StreamingMode::Stream => {
-                run_stream_mode(
-                    &self.config,
-                    &mut context,
-                    &node_name,
-                    content_type_str,
-                    &mut stats_tracker,
-                    audio_codec,
-                    video_codec,
-                    audio_rx,
-                    video_rx,
-                    all_receivers,
-                    TrackPresence { audio: has_audio, video: has_video, skip_classification },
-                    TrackProgress { audio_done: false, video_done: false },
-                )
-                .await?;
+                run_stream_mode(&session, &mut context, &mut stats_tracker, inputs).await?;
             },
             Mp4StreamingMode::File => {
-                run_file_mode(
-                    &self.config,
-                    &mut context,
-                    &node_name,
-                    content_type_str,
-                    &mut stats_tracker,
-                    audio_codec,
-                    video_codec,
-                    audio_rx,
-                    video_rx,
-                    all_receivers,
-                    TrackPresence { audio: has_audio, video: has_video, skip_classification },
-                    TrackProgress { audio_done: false, video_done: false },
-                )
-                .await?;
+                run_file_mode(&session, &mut context, &mut stats_tracker, inputs).await?;
             },
         }
 
@@ -759,50 +787,43 @@ const fn all_inputs_done(tp: TrackPresence, tg: &TrackProgress, inputs_open: usi
 /// Each batch of samples is turned into a media segment (moof + mdat) and
 /// sent downstream immediately.  The init segment (ftyp + moov) is sent
 /// once, either prepended to the first media segment or as a separate packet.
-#[allow(clippy::too_many_arguments)]
 async fn run_stream_mode(
-    config: &Mp4MuxerConfig,
+    session: &MuxSession<'_>,
     context: &mut NodeContext,
-    node_name: &str,
-    content_type: &'static str,
     stats_tracker: &mut NodeStatsTracker,
-    audio_codec: AudioCodec,
-    video_codec: VideoCodec,
-    mut audio_rx: Option<tokio::sync::mpsc::Receiver<Packet>>,
-    mut video_rx: Option<tokio::sync::mpsc::Receiver<Packet>>,
-    mut all_receivers: Vec<tokio::sync::mpsc::Receiver<Packet>>,
-    tp: TrackPresence,
-    mut tg: TrackProgress,
+    mut inputs: MuxInputs,
 ) -> Result<(), StreamKitError> {
     let mut muxer = Fmp4SegmentMuxer::new().map_err(|e| {
         let msg = format!("Failed to create Fmp4SegmentMuxer: {e}");
-        state_helpers::emit_failed(&context.state_tx, node_name, &msg);
+        state_helpers::emit_failed(&context.state_tx, session.node_name, &msg);
         StreamKitError::Runtime(msg)
     })?;
 
-    let (video_timescale, audio_timescale) = resolve_timescales(config);
+    let (video_timescale, audio_timescale) = resolve_timescales(session.config);
     let (video_sample_entry, audio_sample_entry) =
-        build_sample_entries(config, audio_codec, video_codec);
+        build_sample_entries(session.config, session.audio_codec, session.video_codec);
 
-    let mut pending_samples: Vec<Sample> = Vec::new();
-    let mut pending_payloads: Vec<Bytes> = Vec::new();
-    let mut init_sent = false;
+    let mut seg = Fmp4SegmentState {
+        pending_samples: Vec::new(),
+        pending_payloads: Vec::new(),
+        segment_data_offset: 0,
+        init_sent: false,
+    };
     let mut video_keyframe_seen = false;
     let mut packet_count: u64 = 0;
-    // Running data offset within the current segment.
-    let mut segment_data_offset: u64 = 0;
 
-    let mut inputs_open = if tp.skip_classification { all_receivers.len() } else { 0 };
+    let mut inputs_open =
+        if inputs.tp.skip_classification { inputs.all_receivers.len() } else { 0 };
 
-    while !all_inputs_done(tp, &tg, inputs_open) {
+    while !all_inputs_done(inputs.tp, &inputs.tg, inputs_open) {
         let Some(frame) = receive_frame(
             context,
-            &mut audio_rx,
-            &mut video_rx,
-            &mut all_receivers,
+            &mut inputs.audio_rx,
+            &mut inputs.video_rx,
+            &mut inputs.all_receivers,
             &mut inputs_open,
-            &tp,
-            &tg,
+            &inputs.tp,
+            &inputs.tg,
         )
         .await
         else {
@@ -816,11 +837,11 @@ async fn run_stream_mode(
             },
             MuxFrame::AudioClosed => {
                 tracing::info!("Mp4MuxerNode audio input closed");
-                tg.audio_done = true;
+                inputs.tg.audio_done = true;
             },
             MuxFrame::VideoClosed => {
                 tracing::info!("Mp4MuxerNode video input closed");
-                tg.video_done = true;
+                inputs.tg.video_done = true;
             },
             MuxFrame::Video(data, metadata) => {
                 let is_keyframe = metadata.as_ref().and_then(|m| m.keyframe).unwrap_or(false);
@@ -843,18 +864,18 @@ async fn run_stream_mode(
                 let duration_ticks = us_to_ticks(duration_us, video_timescale.get());
 
                 let data_size = data.len();
-                pending_samples.push(Sample {
+                seg.pending_samples.push(Sample {
                     track_kind: TrackKind::Video,
                     timescale: video_timescale,
                     sample_entry: Some(video_sample_entry.clone()),
                     duration: duration_ticks,
                     keyframe: is_keyframe,
                     composition_time_offset: None,
-                    data_offset: segment_data_offset,
+                    data_offset: seg.segment_data_offset,
                     data_size,
                 });
-                segment_data_offset += data_size as u64;
-                pending_payloads.push(data);
+                seg.segment_data_offset += data_size as u64;
+                seg.pending_payloads.push(data);
             },
             MuxFrame::Audio(data, metadata) => {
                 packet_count += 1;
@@ -867,35 +888,25 @@ async fn run_stream_mode(
                 let duration_ticks = us_to_ticks(duration_us, audio_timescale.get());
 
                 let data_size = data.len();
-                pending_samples.push(Sample {
+                seg.pending_samples.push(Sample {
                     track_kind: TrackKind::Audio,
                     timescale: audio_timescale,
                     sample_entry: Some(audio_sample_entry.clone()),
                     duration: duration_ticks,
                     keyframe: true, // audio frames are always keyframes
                     composition_time_offset: None,
-                    data_offset: segment_data_offset,
+                    data_offset: seg.segment_data_offset,
                     data_size,
                 });
-                segment_data_offset += data_size as u64;
-                pending_payloads.push(data);
+                seg.segment_data_offset += data_size as u64;
+                seg.pending_payloads.push(data);
             },
         }
 
         // Flush segment when we have enough samples.
-        if pending_samples.len() >= FMP4_SEGMENT_FLUSH_THRESHOLD {
-            let stopped = flush_fmp4_segment(
-                &mut muxer,
-                &mut pending_samples,
-                &mut pending_payloads,
-                &mut segment_data_offset,
-                &mut init_sent,
-                context,
-                content_type,
-                stats_tracker,
-                node_name,
-            )
-            .await?;
+        if seg.pending_samples.len() >= FMP4_SEGMENT_FLUSH_THRESHOLD {
+            let stopped =
+                flush_fmp4_segment(session, &mut muxer, &mut seg, context, stats_tracker).await?;
             if stopped {
                 return Ok(());
             }
@@ -903,19 +914,8 @@ async fn run_stream_mode(
     }
 
     // Flush any remaining samples.
-    if !pending_samples.is_empty() {
-        flush_fmp4_segment(
-            &mut muxer,
-            &mut pending_samples,
-            &mut pending_payloads,
-            &mut segment_data_offset,
-            &mut init_sent,
-            context,
-            content_type,
-            stats_tracker,
-            node_name,
-        )
-        .await?;
+    if !seg.pending_samples.is_empty() {
+        flush_fmp4_segment(session, &mut muxer, &mut seg, context, stats_tracker).await?;
     }
 
     tracing::info!("Mp4MuxerNode stream mode: processed {packet_count} packets");
@@ -925,35 +925,31 @@ async fn run_stream_mode(
 /// Flush accumulated samples as a single fMP4 media segment.
 ///
 /// Returns `true` if the output channel is closed (caller should stop).
-#[allow(clippy::too_many_arguments)]
 async fn flush_fmp4_segment(
+    session: &MuxSession<'_>,
     muxer: &mut Fmp4SegmentMuxer,
-    pending_samples: &mut Vec<Sample>,
-    pending_payloads: &mut Vec<Bytes>,
-    segment_data_offset: &mut u64,
-    init_sent: &mut bool,
+    seg: &mut Fmp4SegmentState,
     context: &mut NodeContext,
-    content_type: &'static str,
     stats_tracker: &mut NodeStatsTracker,
-    node_name: &str,
 ) -> Result<bool, StreamKitError> {
-    let segment_metadata = muxer.create_media_segment_metadata(pending_samples).map_err(|e| {
-        let msg = format!("Failed to create fMP4 segment metadata: {e}");
-        state_helpers::emit_failed(&context.state_tx, node_name, &msg);
-        StreamKitError::Runtime(msg)
-    })?;
+    let segment_metadata =
+        muxer.create_media_segment_metadata(&seg.pending_samples).map_err(|e| {
+            let msg = format!("Failed to create fMP4 segment metadata: {e}");
+            state_helpers::emit_failed(&context.state_tx, session.node_name, &msg);
+            StreamKitError::Runtime(msg)
+        })?;
 
     // Build segment bytes: [moof+mdat header] + [payload data]
-    let payload_size: usize = pending_samples.iter().map(|s| s.data_size).sum();
+    let payload_size: usize = seg.pending_samples.iter().map(|s| s.data_size).sum();
     let mut segment_bytes = Vec::with_capacity(segment_metadata.len() + payload_size);
     segment_bytes.extend_from_slice(&segment_metadata);
-    for payload in pending_payloads.drain(..) {
+    for payload in seg.pending_payloads.drain(..) {
         segment_bytes.extend_from_slice(&payload);
     }
 
-    let ct = Some(content_type.into());
+    let ct = Some(session.content_type.into());
 
-    if *init_sent {
+    if seg.init_sent {
         // Subsequent segment — send media segment only.
         tracing::trace!("Sending fMP4 media segment ({} bytes)", segment_bytes.len());
         if context
@@ -977,7 +973,7 @@ async fn flush_fmp4_segment(
         // First segment — prepend init segment (ftyp + moov).
         let init = muxer.init_segment_bytes().map_err(|e| {
             let msg = format!("Failed to create fMP4 init segment: {e}");
-            state_helpers::emit_failed(&context.state_tx, node_name, &msg);
+            state_helpers::emit_failed(&context.state_tx, session.node_name, &msg);
             StreamKitError::Runtime(msg)
         })?;
 
@@ -1004,11 +1000,11 @@ async fn flush_fmp4_segment(
             return Ok(true);
         }
         stats_tracker.sent();
-        *init_sent = true;
+        seg.init_sent = true;
     }
 
-    pending_samples.clear();
-    *segment_data_offset = 0;
+    seg.pending_samples.clear();
+    seg.segment_data_offset = 0;
 
     stats_tracker.maybe_send();
     Ok(false)
@@ -1024,30 +1020,21 @@ async fn flush_fmp4_segment(
 /// metadata (sample tables, chunk offsets) in memory.  At finalization the
 /// file is patched with the moov box (via `offset_and_bytes_pairs()`) and
 /// read back for a single downstream send.
-#[allow(clippy::too_many_arguments)]
 async fn run_file_mode(
-    config: &Mp4MuxerConfig,
+    session: &MuxSession<'_>,
     context: &mut NodeContext,
-    node_name: &str,
-    content_type: &'static str,
     stats_tracker: &mut NodeStatsTracker,
-    audio_codec: AudioCodec,
-    video_codec: VideoCodec,
-    mut audio_rx: Option<tokio::sync::mpsc::Receiver<Packet>>,
-    mut video_rx: Option<tokio::sync::mpsc::Receiver<Packet>>,
-    mut all_receivers: Vec<tokio::sync::mpsc::Receiver<Packet>>,
-    tp: TrackPresence,
-    mut tg: TrackProgress,
+    mut inputs: MuxInputs,
 ) -> Result<(), StreamKitError> {
-    let mut muxer = Mp4FileMuxer::new().map_err(|e| {
+    let muxer = Mp4FileMuxer::new().map_err(|e| {
         let msg = format!("Failed to create Mp4FileMuxer: {e}");
-        state_helpers::emit_failed(&context.state_tx, node_name, &msg);
+        state_helpers::emit_failed(&context.state_tx, session.node_name, &msg);
         StreamKitError::Runtime(msg)
     })?;
 
     let mut file_buf = FileBackedBuffer::new().map_err(|e| {
         let msg = format!("Failed to create temp file for MP4 file mode: {e}");
-        state_helpers::emit_failed(&context.state_tx, node_name, &msg);
+        state_helpers::emit_failed(&context.state_tx, session.node_name, &msg);
         StreamKitError::Runtime(msg)
     })?;
 
@@ -1057,25 +1044,35 @@ async fn run_file_mode(
         .write_all(initial)
         .map_err(|e| StreamKitError::Runtime(format!("Failed to write initial MP4 boxes: {e}")))?;
 
-    let (video_timescale, audio_timescale) = resolve_timescales(config);
+    let (video_timescale, audio_timescale) = resolve_timescales(session.config);
     let (video_sample_entry, audio_sample_entry) =
-        build_sample_entries(config, audio_codec, video_codec);
+        build_sample_entries(session.config, session.audio_codec, session.video_codec);
 
-    let mut video_keyframe_seen = false;
-    let mut packet_count: u64 = 0;
-    let mut video_sample_entry_sent = false;
-    let mut audio_sample_entry_sent = false;
-    let mut inputs_open = if tp.skip_classification { all_receivers.len() } else { 0 };
+    let mut state = FileMuxState {
+        muxer,
+        file_buf,
+        video_sample_entry,
+        audio_sample_entry,
+        video_timescale,
+        audio_timescale,
+        video_keyframe_seen: false,
+        video_sample_entry_sent: false,
+        audio_sample_entry_sent: false,
+        packet_count: 0,
+    };
 
-    while !all_inputs_done(tp, &tg, inputs_open) {
+    let mut inputs_open =
+        if inputs.tp.skip_classification { inputs.all_receivers.len() } else { 0 };
+
+    while !all_inputs_done(inputs.tp, &inputs.tg, inputs_open) {
         let Some(frame) = receive_frame(
             context,
-            &mut audio_rx,
-            &mut video_rx,
-            &mut all_receivers,
+            &mut inputs.audio_rx,
+            &mut inputs.video_rx,
+            &mut inputs.all_receivers,
             &mut inputs_open,
-            &tp,
-            &tg,
+            &inputs.tp,
+            &inputs.tg,
         )
         .await
         else {
@@ -1089,99 +1086,82 @@ async fn run_file_mode(
             },
             MuxFrame::AudioClosed => {
                 tracing::info!("Mp4MuxerNode file mode: audio closed");
-                tg.audio_done = true;
+                inputs.tg.audio_done = true;
             },
             MuxFrame::VideoClosed => {
                 tracing::info!("Mp4MuxerNode file mode: video closed");
-                tg.video_done = true;
+                inputs.tg.video_done = true;
             },
             MuxFrame::Video(data, metadata) => {
-                process_file_video_frame(
-                    &data,
-                    metadata.as_ref(),
-                    &mut muxer,
-                    &mut file_buf,
-                    video_timescale,
-                    &video_sample_entry,
-                    &mut video_keyframe_seen,
-                    &mut video_sample_entry_sent,
-                    &mut packet_count,
-                    stats_tracker,
-                )?;
+                process_file_video_frame(&data, metadata.as_ref(), &mut state, stats_tracker)?;
             },
             MuxFrame::Audio(data, metadata) => {
-                process_file_audio_frame(
-                    &data,
-                    metadata.as_ref(),
-                    &mut muxer,
-                    &mut file_buf,
-                    audio_timescale,
-                    &audio_sample_entry,
-                    &mut audio_sample_entry_sent,
-                    &mut packet_count,
-                    stats_tracker,
-                )?;
+                process_file_audio_frame(&data, metadata.as_ref(), &mut state, stats_tracker)?;
             },
         }
     }
 
     tracing::info!(
-        "Mp4MuxerNode file mode: all inputs closed, finalizing ({packet_count} packets)"
+        "Mp4MuxerNode file mode: all inputs closed, finalizing ({} packets)",
+        state.packet_count,
     );
 
-    finalize_file_mode(&mut muxer, &mut file_buf, context, content_type, stats_tracker, node_name)
-        .await
+    finalize_file_mode(
+        &mut state.muxer,
+        &mut state.file_buf,
+        context,
+        session.content_type,
+        stats_tracker,
+        session.node_name,
+    )
+    .await
 }
 
 /// Process a single video frame in file mode.
-#[allow(clippy::too_many_arguments)]
 fn process_file_video_frame(
     data: &Bytes,
     metadata: Option<&PacketMetadata>,
-    muxer: &mut Mp4FileMuxer,
-    file_buf: &mut FileBackedBuffer,
-    video_timescale: NonZeroU32,
-    video_sample_entry: &SampleEntry,
-    video_keyframe_seen: &mut bool,
-    video_sample_entry_sent: &mut bool,
-    packet_count: &mut u64,
+    state: &mut FileMuxState,
     stats_tracker: &mut NodeStatsTracker,
 ) -> Result<(), StreamKitError> {
     let is_keyframe = metadata.and_then(|m| m.keyframe).unwrap_or(false);
 
-    if !*video_keyframe_seen {
+    if !state.video_keyframe_seen {
         if is_keyframe {
-            *video_keyframe_seen = true;
+            state.video_keyframe_seen = true;
         } else {
             return Ok(());
         }
     }
 
-    *packet_count += 1;
+    state.packet_count += 1;
     stats_tracker.received();
 
     let duration_us =
         metadata.and_then(|m| m.duration_us).unwrap_or(DEFAULT_VIDEO_FRAME_DURATION_US);
-    let duration_ticks = us_to_ticks(duration_us, video_timescale.get());
+    let duration_ticks = us_to_ticks(duration_us, state.video_timescale.get());
 
-    let data_offset = file_buf
+    let data_offset = state
+        .file_buf
         .position()
         .map_err(|e| StreamKitError::Runtime(format!("Failed to get file position: {e}")))?;
-    file_buf
+    state
+        .file_buf
         .write_all(data)
         .map_err(|e| StreamKitError::Runtime(format!("Failed to write video data: {e}")))?;
 
-    let entry = if *video_sample_entry_sent {
+    let entry = if state.video_sample_entry_sent {
         None
     } else {
-        *video_sample_entry_sent = true;
-        Some(video_sample_entry.clone())
+        state.video_sample_entry_sent = true;
+        Some(state.video_sample_entry.clone())
     };
 
-    muxer
+    state
+        .muxer
         .append_sample(&Sample {
             track_kind: TrackKind::Video,
-            timescale: video_timescale,
+            timescale: state.video_timescale,
             sample_entry: entry,
             duration: duration_ticks,
             keyframe: is_keyframe,
@@ -1195,43 +1175,40 @@ fn process_file_video_frame(
 }
 
 /// Process a single audio frame in file mode.
-#[allow(clippy::too_many_arguments)]
 fn process_file_audio_frame(
     data: &Bytes,
     metadata: Option<&PacketMetadata>,
-    muxer: &mut Mp4FileMuxer,
-    file_buf: &mut FileBackedBuffer,
-    audio_timescale: NonZeroU32,
-    audio_sample_entry: &SampleEntry,
-    audio_sample_entry_sent: &mut bool,
-    packet_count: &mut u64,
+    state: &mut FileMuxState,
     stats_tracker: &mut NodeStatsTracker,
 ) -> Result<(), StreamKitError> {
-    *packet_count += 1;
+    state.packet_count += 1;
     stats_tracker.received();
 
     let duration_us =
         metadata.and_then(|m| m.duration_us).unwrap_or(DEFAULT_AUDIO_FRAME_DURATION_US);
-    let duration_ticks = us_to_ticks(duration_us, audio_timescale.get());
+    let duration_ticks = us_to_ticks(duration_us, state.audio_timescale.get());
 
-    let data_offset = file_buf
+    let data_offset = state
+        .file_buf
         .position()
         .map_err(|e| StreamKitError::Runtime(format!("Failed to get file position: {e}")))?;
-    file_buf
+    state
+        .file_buf
         .write_all(data)
         .map_err(|e| StreamKitError::Runtime(format!("Failed to write audio data: {e}")))?;
 
-    let entry = if *audio_sample_entry_sent {
+    let entry = if state.audio_sample_entry_sent {
         None
     } else {
-        *audio_sample_entry_sent = true;
-        Some(audio_sample_entry.clone())
+        state.audio_sample_entry_sent = true;
+        Some(state.audio_sample_entry.clone())
     };
 
-    muxer
+    state
+        .muxer
         .append_sample(&Sample {
             track_kind: TrackKind::Audio,
-            timescale: audio_timescale,
+            timescale: state.audio_timescale,
             sample_entry: entry,
             duration: duration_ticks,
             keyframe: true,
@@ -1464,25 +1441,22 @@ use streamkit_core::{config_helpers, registry::StaticPins};
 /// Panics if config schemas cannot be serialized to JSON.
 #[allow(clippy::expect_used)]
 pub fn register_mp4_nodes(registry: &mut NodeRegistry) {
-    #[cfg(feature = "mp4")]
-    {
-        let default_muxer = Mp4MuxerNode::new(Mp4MuxerConfig::default());
-        registry.register_static_with_description(
-            "containers::mp4::muxer",
-            |params| {
-                let config = config_helpers::parse_config_with_context(params, "Mp4Muxer")?;
-                Ok(Box::new(Mp4MuxerNode::new(config)))
-            },
-            serde_json::to_value(schema_for!(Mp4MuxerConfig))
-                .expect("Mp4MuxerConfig schema should serialize to JSON"),
-            StaticPins { inputs: default_muxer.input_pins(), outputs: default_muxer.output_pins() },
-            vec!["containers".to_string(), "mp4".to_string()],
-            false,
-            "Muxes H.264 video and/or AAC/Opus audio into an MP4 container. \
-             Supports fragmented MP4 (fMP4) for DASH/HLS streaming and \
-             regular MP4 file output with fast-start.",
-        );
-    }
+    let default_muxer = Mp4MuxerNode::new(Mp4MuxerConfig::default());
+    registry.register_static_with_description(
+        "containers::mp4::muxer",
+        |params| {
+            let config = config_helpers::parse_config_with_context(params, "Mp4Muxer")?;
+            Ok(Box::new(Mp4MuxerNode::new(config)))
+        },
+        serde_json::to_value(schema_for!(Mp4MuxerConfig))
+            .expect("Mp4MuxerConfig schema should serialize to JSON"),
+        StaticPins { inputs: default_muxer.input_pins(), outputs: default_muxer.output_pins() },
+        vec!["containers".to_string(), "mp4".to_string()],
+        false,
+        "Muxes H.264 video and/or AAC/Opus audio into an MP4 container. \
+         Supports fragmented MP4 (fMP4) for DASH/HLS streaming and \
+         regular MP4 file output with fast-start.",
+    );
 }
 
 // ---------------------------------------------------------------------------
