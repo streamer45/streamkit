@@ -612,7 +612,7 @@ fn mp4_content_type(audio: Option<AudioCodec>, video: Option<VideoCodec>) -> &'s
         if !matches!(vc, VideoCodec::H264 | VideoCodec::Av1) {
             tracing::warn!(
                 ?vc,
-                "mp4_content_type: unrecognised video codec — codecs param will report avc1"
+                "mp4_content_type: unrecognised video codec — codecs param will omit video codec"
             );
         }
     }
