@@ -583,13 +583,19 @@ impl ProcessorNode for Mp4MuxerNode {
     }
 
     fn content_type(&self) -> Option<String> {
+        // Static pre-connection hint only — the runtime content type is resolved
+        // from actual input codec types.  We hardcode AV1 here because it is the
+        // most common video codec in StreamKit pipelines today.  If a pipeline
+        // uses H.264 or VP9, the static hint will be slightly inaccurate but the
+        // runtime MIME type on each output packet will be correct.  Consider
+        // adding a `video_codec` config field if precise pre-connection
+        // negotiation becomes important.
         let video = if self.config.video_width > 0 && self.config.video_height > 0 {
             Some(VideoCodec::Av1)
         } else {
             None
         };
-        // Static hint: default to Opus since it's the only AudioCodec variant.
-        // The runtime content type is resolved from actual input types.
+        // Default to Opus since it's the only AudioCodec variant today.
         Some(mp4_content_type(Some(AudioCodec::Opus), video).to_string())
     }
 
@@ -613,6 +619,8 @@ impl ProcessorNode for Mp4MuxerNode {
         let mut audio_rx: Option<tokio::sync::mpsc::Receiver<Packet>> = None;
         let mut video_rx: Option<tokio::sync::mpsc::Receiver<Packet>> = None;
         let mut audio_codec = AudioCodec::Opus;
+        // Default video codec is AV1; only used when a video input is actually
+        // connected.  For audio-only pipelines this value is never read.
         let mut video_codec = VideoCodec::Av1;
         let mut all_receivers: Vec<tokio::sync::mpsc::Receiver<Packet>> = Vec::new();
 
@@ -1097,7 +1105,6 @@ async fn flush_fmp4_segment(
         seg.init_sent = true;
     }
 
-    seg.pending_samples.clear();
     seg.segment_data_offset = 0;
 
     stats_tracker.maybe_send();
@@ -1899,6 +1906,56 @@ mod tests {
 
         let segment_result = demuxer.handle_media_segment(&segment).unwrap();
         assert_eq!(segment_result.len(), 6, "Should have 6 samples (3 video + 3 audio)");
+    }
+
+    /// Round-trip test: audio-only fMP4 (matches the mp4_mux_audio.yml pipeline path).
+    #[test]
+    fn fmp4_round_trip_audio_only() {
+        use shiguredo_mp4::demux::Fmp4SegmentDemuxer;
+
+        let audio_timescale = NonZeroU32::new(48_000).unwrap();
+        let audio_entry = build_opus_sample_entry(48_000, 2);
+
+        let mut muxer = Fmp4SegmentMuxer::new().unwrap();
+
+        let mut samples = Vec::new();
+        let mut payloads: Vec<Bytes> = Vec::new();
+        let mut offset: u64 = 0;
+        for i in 0..5u8 {
+            let data = vec![0xA0 + i; 128];
+            samples.push(Sample {
+                track_kind: TrackKind::Audio,
+                timescale: audio_timescale,
+                sample_entry: if i == 0 { Some(audio_entry.clone()) } else { None },
+                duration: 960,
+                keyframe: true,
+                composition_time_offset: None,
+                data_offset: offset,
+                data_size: data.len(),
+            });
+            offset += data.len() as u64;
+            payloads.push(Bytes::from(data));
+        }
+
+        // Audio-only: partition is a no-op but should still work correctly.
+        let (sorted_samples, sorted_payloads) = partition_samples_by_track(samples, payloads);
+
+        let metadata = muxer.create_media_segment_metadata(&sorted_samples).unwrap();
+        let mut segment = metadata;
+        for p in &sorted_payloads {
+            segment.extend_from_slice(p);
+        }
+
+        let init = muxer.init_segment_bytes().unwrap();
+
+        let mut demuxer = Fmp4SegmentDemuxer::new();
+        demuxer.handle_init_segment(&init).unwrap();
+
+        let tracks = demuxer.tracks().unwrap();
+        assert_eq!(tracks.len(), 1, "Should have audio track only");
+
+        let segment_result = demuxer.handle_media_segment(&segment).unwrap();
+        assert_eq!(segment_result.len(), 5, "Should have 5 audio samples");
     }
 
     /// File mode round-trip: mux and verify file is valid MP4.
