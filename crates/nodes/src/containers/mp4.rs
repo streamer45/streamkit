@@ -1201,8 +1201,6 @@ async fn flush_fmp4_segment(
         seg.init_sent = true;
     }
 
-    seg.segment_data_offset = 0;
-
     stats_tracker.maybe_send();
     Ok(false)
 }
