@@ -219,6 +219,13 @@ impl ProcessorNode for MoqPeerNode {
             &context.input_types,
         );
 
+        // Publisher-side audio codec: used for dynamic output pins that carry
+        // data FROM the publisher.  Must match `output_pins()` logic so that
+        // runtime-created pins (e.g. for non-primary broadcasts) have the
+        // correct type.
+        let publisher_audio_codec =
+            resolve_audio_codec(self.config.audio_codec.as_deref(), &context.input_types);
+
         if pin_0_rx.is_none() && pin_1_rx.is_none() {
             return Err(StreamKitError::Configuration(
                 "MoQ peer requires at least one input pin (\"in\" or \"in_1\")".to_string(),
@@ -646,7 +653,7 @@ impl ProcessorNode for MoqPeerNode {
                         None => std::future::pending().await,
                     }
                 } => {
-                    Self::handle_pin_management(msg, &dynamic_outputs, &subscriber_broadcast_tx, &stats_delta_tx, &shutdown_tx, &mut forwarder_handles, MediaCodecConfig { video: video_codec, audio: subscriber_audio_codec });
+                    Self::handle_pin_management(msg, &dynamic_outputs, &subscriber_broadcast_tx, &stats_delta_tx, &shutdown_tx, &mut forwarder_handles, MediaCodecConfig { video: video_codec, audio: publisher_audio_codec });
                 }
 
                 // Check for shutdown signal
