@@ -14,7 +14,7 @@
 //!   box and read back for a single downstream send.
 //!
 //! Codec support: H.264 (AVC) and AV1 video + AAC/Opus audio.  Additional
-//! codecs (VP9) can be added by extending the sample-entry construction helpers.
+//! codecs (e.g. VP9) can be added by extending the sample-entry construction helpers.
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -65,6 +65,11 @@ const DEFAULT_AUDIO_TIMESCALE_OPUS: NonZeroU32 = match NonZeroU32::new(48_000) {
 
 /// Number of samples per fMP4 segment before flushing downstream.
 const FMP4_SEGMENT_FLUSH_THRESHOLD: usize = 30;
+
+/// Safety cap for the first-flush gate: if we accumulate this many samples
+/// without all expected tracks registering, force a flush with a warning
+/// rather than growing without bound.
+const FMP4_FIRST_FLUSH_DEFER_CAP: usize = 10 * FMP4_SEGMENT_FLUSH_THRESHOLD;
 
 // ---------------------------------------------------------------------------
 // Sample entry construction helpers
@@ -445,9 +450,6 @@ fn classify_packet(packet: Packet) -> Option<MuxFrame> {
     }
 }
 
-/// Determine the MP4 MIME content-type string from optional codec info.
-///
-/// `audio` and `video` are `None` when the respective track is absent.
 /// Determine the MP4 MIME content-type string from optional codec info.
 ///
 /// `audio` and `video` are `None` when the respective track is absent.
@@ -1042,23 +1044,9 @@ async fn run_stream_mode(
         // Once the init segment has been sent, subsequent flushes are
         // unconditional.  We also allow the flush if a missing track's input
         // has already closed (the stream truly is single-track).
-        if seg.pending_samples.len() >= FMP4_SEGMENT_FLUSH_THRESHOLD {
-            if !seg.init_sent {
-                let video_ready =
-                    !inputs.tp.video || seg.video_sample_entry_sent || inputs.tg.video_done;
-                let audio_ready =
-                    !inputs.tp.audio || seg.audio_sample_entry_sent || inputs.tg.audio_done;
-                if !video_ready || !audio_ready {
-                    tracing::debug!(
-                        "Deferring first fMP4 flush: waiting for all expected tracks \
-                         (video_ready={video_ready}, audio_ready={audio_ready}, \
-                         pending={})",
-                        seg.pending_samples.len(),
-                    );
-                    continue;
-                }
-            }
-
+        if seg.pending_samples.len() >= FMP4_SEGMENT_FLUSH_THRESHOLD
+            && should_flush_fmp4_segment(&seg, &inputs)
+        {
             let stopped =
                 flush_fmp4_segment(session, &mut muxer, &mut seg, context, stats_tracker).await?;
             if stopped {
@@ -1074,6 +1062,50 @@ async fn run_stream_mode(
 
     tracing::info!("Mp4MuxerNode stream mode: processed {packet_count} packets");
     Ok(())
+}
+
+/// Decide whether the fMP4 segment should be flushed now.
+///
+/// After the init segment has been sent, flushes are unconditional.  Before
+/// the init segment, we defer until all expected tracks have registered their
+/// sample entries (so the moov describes every track).  A safety cap prevents
+/// unbounded accumulation when a misconfigured pipeline never sends data for
+/// an expected track.
+///
+/// Returns `true` when the caller should flush, `false` when it should
+/// `continue` the receive loop.
+fn should_flush_fmp4_segment(seg: &Fmp4SegmentState, inputs: &MuxInputs) -> bool {
+    if seg.init_sent {
+        return true;
+    }
+
+    let video_ready = !inputs.tp.video || seg.video_sample_entry_sent || inputs.tg.video_done;
+    let audio_ready = !inputs.tp.audio || seg.audio_sample_entry_sent || inputs.tg.audio_done;
+
+    if video_ready && audio_ready {
+        return true;
+    }
+
+    // Safety cap: force flush with a warning rather than accumulating without
+    // bound when an expected track never sends data.
+    if seg.pending_samples.len() >= FMP4_FIRST_FLUSH_DEFER_CAP {
+        tracing::warn!(
+            "First fMP4 flush deferred too long ({} pending, cap={}). \
+             Forcing flush with available tracks \
+             (video_ready={video_ready}, audio_ready={audio_ready}).",
+            seg.pending_samples.len(),
+            FMP4_FIRST_FLUSH_DEFER_CAP,
+        );
+        return true;
+    }
+
+    tracing::debug!(
+        "Deferring first fMP4 flush: waiting for all expected tracks \
+         (video_ready={video_ready}, audio_ready={audio_ready}, \
+         pending={})",
+        seg.pending_samples.len(),
+    );
+    false
 }
 
 /// Flush accumulated samples as a single fMP4 media segment.
@@ -1461,6 +1493,13 @@ async fn receive_frame(
 }
 
 /// Receive from all input channels in unified (skip-classification) mode.
+///
+/// When a channel closes (`recv()` returns `None`), it is removed from
+/// `all_receivers` via `Vec::remove(idx)`.  Because `tokio::select!` fires
+/// at most one branch per invocation, only one removal can happen per call.
+/// The `len() >= 2` guard at the top means we never re-enter the two-channel
+/// path after a removal has shrunk the vec to 1, so the index arithmetic
+/// stays correct despite the shifting caused by `remove(0)`.
 async fn receive_unified(
     context: &mut NodeContext,
     all_receivers: &mut Vec<tokio::sync::mpsc::Receiver<Packet>>,
@@ -1729,7 +1768,7 @@ mod tests {
             let samples = vec![Sample {
                 track_kind: TrackKind::Video,
                 timescale: video_timescale,
-                sample_entry: Some(sample_entry.clone()),
+                sample_entry: if seg_idx == 0 { Some(sample_entry.clone()) } else { None },
                 duration: 3000, // 90000/30 = 3000
                 keyframe: seg_idx == 0,
                 composition_time_offset: None,
