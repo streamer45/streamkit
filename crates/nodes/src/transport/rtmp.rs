@@ -271,7 +271,7 @@ impl ProcessorNode for RtmpPublishNode {
 
         match result {
             Ok(()) => {
-                state_helpers::emit_stopped(&context.state_tx, &node_name, "finished");
+                state_helpers::emit_stopped(&context.state_tx, &node_name, "completed");
                 Ok(())
             },
             Err(e) => {
