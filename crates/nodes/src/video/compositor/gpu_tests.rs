@@ -25,6 +25,7 @@ use super::config::{CropShape, Rect};
 use super::gpu::{self, GpuContext, GpuMode, GpuPathState};
 use super::kernel::LayerSnapshot;
 use super::overlay::DecodedOverlay;
+use super::overlay::OverlaySourceKind;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -514,7 +515,7 @@ fn gpu_overlay_compositing() {
     let ov_h = 60;
     let overlay = Arc::new(DecodedOverlay {
         id: "test-overlay".to_string(),
-        rgba_data: solid_rgba(ov_w, ov_h, 255, 255, 0, 255),
+        rgba_data: Arc::from(solid_rgba(ov_w, ov_h, 255, 255, 0, 255)),
         width: ov_w,
         height: ov_h,
         rect: Rect {
@@ -530,6 +531,7 @@ fn gpu_overlay_compositing() {
         mirror_vertical: false,
         measured_text_width: None,
         measured_text_height: None,
+        source_kind: OverlaySourceKind::Raster,
     });
 
     let layers = vec![Some(bg)];

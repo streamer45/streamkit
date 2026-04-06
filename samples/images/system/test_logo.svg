@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120">
+  <!-- SPDX-FileCopyrightText: © 2025 StreamKit Contributors -->
+  <!-- SPDX-License-Identifier: MPL-2.0 -->
+  <circle cx="60" cy="60" r="55" fill="#2563eb" opacity="0.85"/>
+  <text x="60" y="68" text-anchor="middle" font-size="36" font-family="sans-serif" fill="white" font-weight="bold">SK</text>
+</svg>

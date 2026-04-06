@@ -2099,7 +2099,7 @@ fn test_resolve_scene_overlay_geometry() {
 
     let text_overlay = Arc::new(overlay::DecodedOverlay {
         id: "text_0".to_string(),
-        rgba_data: vec![0u8; 4],
+        rgba_data: Arc::from(vec![0u8; 4]),
         width: 200,
         height: 40,
         rect: Rect { x: 50, y: 100, width: 200, height: 40 },
@@ -2110,6 +2110,7 @@ fn test_resolve_scene_overlay_geometry() {
         mirror_vertical: false,
         measured_text_width: Some(195),
         measured_text_height: Some(38),
+        source_kind: overlay::OverlaySourceKind::Raster,
     });
     let text_overlays: Arc<[Arc<overlay::DecodedOverlay>]> = Arc::from(vec![text_overlay]);
 
@@ -2682,4 +2683,205 @@ fn send_resize_hints_skips_slot_without_hint_tx() {
 
     // Should not panic even with hint_tx: None
     CompositorNode::send_resize_hints(&old_config, &new_config, &[slot]);
+}
+
+// ── SVG overlay tests ───────────────────────────────────────────────
+
+/// Minimal valid SVG for testing.
+const TEST_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="red"/></svg>"#;
+
+/// 2:1 aspect ratio SVG for aspect-fit testing.
+const TEST_SVG_WIDE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"><rect width="200" height="100" fill="blue"/></svg>"#;
+
+fn svg_image_config(id: &str, w: u32, h: u32) -> config::ImageOverlayConfig {
+    config::ImageOverlayConfig {
+        id: id.to_string(),
+        asset_path: "samples/images/system/test.svg".to_string(),
+        transform: config::OverlayTransform {
+            rect: Rect { x: 0, y: 0, width: w, height: h },
+            opacity: 1.0,
+            rotation_degrees: 0.0,
+            z_index: 0,
+            mirror_horizontal: false,
+            mirror_vertical: false,
+        },
+    }
+}
+
+#[test]
+fn test_rasterize_svg_basic() {
+    let cfg = svg_image_config("svg-basic", 100, 100);
+    let result = overlay::decode_image_overlay(&cfg, TEST_SVG.as_bytes(), 7680);
+    let ov = result.expect("SVG decode should succeed");
+    assert!(ov.width > 0);
+    assert!(ov.height > 0);
+    assert!(matches!(ov.source_kind, overlay::OverlaySourceKind::Vector { .. }));
+    assert!(!ov.rgba_data.is_empty());
+}
+
+#[test]
+fn test_rasterize_svg_aspect_fit() {
+    // 2:1 SVG (200x100) into a square 100x100 rect.
+    let cfg = svg_image_config("svg-aspect", 100, 100);
+    let result = overlay::decode_image_overlay(&cfg, TEST_SVG_WIDE.as_bytes(), 7680);
+    let ov = result.expect("SVG decode should succeed");
+    // Aspect-preserving fit: width should fill 100, height should be 50.
+    assert_eq!(ov.width, 100);
+    assert_eq!(ov.height, 50);
+    // Centred vertically: y offset should be (100 - 50) / 2 = 25.
+    assert_eq!(ov.rect.y, 25);
+    assert_eq!(ov.rect.x, 0);
+}
+
+#[test]
+fn test_rasterize_svg_max_dimension_clamp() {
+    // Request a very large target but clamp to max_dimension=50.
+    let cfg = svg_image_config("svg-clamp", 200, 200);
+    let result = overlay::decode_image_overlay(&cfg, TEST_SVG.as_bytes(), 50);
+    let ov = result.expect("SVG decode should succeed");
+    assert!(ov.width <= 50);
+    assert!(ov.height <= 50);
+}
+
+#[test]
+fn test_rasterize_svg_invalid_data() {
+    let cfg = config::ImageOverlayConfig {
+        id: "svg-invalid".to_string(),
+        asset_path: "samples/images/system/bad.svg".to_string(),
+        transform: config::OverlayTransform {
+            rect: Rect { x: 0, y: 0, width: 100, height: 100 },
+            opacity: 1.0,
+            rotation_degrees: 0.0,
+            z_index: 0,
+            mirror_horizontal: false,
+            mirror_vertical: false,
+        },
+    };
+    let result = overlay::decode_image_overlay(&cfg, b"not an svg at all", 7680);
+    assert!(result.is_err(), "Non-SVG bytes with .svg extension should fail");
+}
+
+#[test]
+fn test_decode_image_overlay_dispatches_svg() {
+    let cfg = svg_image_config("svg-dispatch", 80, 80);
+    let result = overlay::decode_image_overlay(&cfg, TEST_SVG.as_bytes(), 7680);
+    let ov = result.expect("SVG should be dispatched and decoded");
+    assert!(matches!(ov.source_kind, overlay::OverlaySourceKind::Vector { .. }));
+}
+
+#[test]
+fn test_unpremultiply_alpha() {
+    // Premultiplied red at 50% alpha: R=128, G=0, B=0, A=128
+    // Straight alpha: R = 128 / (128/255) ≈ 255, G=0, B=0, A=128
+    // Due to integer rounding, R may be 254 or 255.
+    let mut data = vec![128u8, 0, 0, 128];
+    overlay::unpremultiply_alpha_for_test(&mut data);
+    assert!(data[0] >= 254, "R should be ~255, got {}", data[0]);
+    assert_eq!(data[1], 0); // G
+    assert_eq!(data[2], 0); // B
+    assert_eq!(data[3], 128); // A unchanged
+
+    // Fully opaque pixel should remain unchanged.
+    let mut opaque = vec![200u8, 100, 50, 255];
+    overlay::unpremultiply_alpha_for_test(&mut opaque);
+    assert_eq!(opaque, vec![200, 100, 50, 255]);
+
+    // Fully transparent pixel should remain unchanged.
+    let mut transparent = vec![0u8, 0, 0, 0];
+    overlay::unpremultiply_alpha_for_test(&mut transparent);
+    assert_eq!(transparent, vec![0, 0, 0, 0]);
+}
+
+#[test]
+fn test_is_svg_detection() {
+    // Extension detection
+    assert!(overlay::is_svg_for_test(b"anything", "logo.svg"));
+    assert!(overlay::is_svg_for_test(b"anything", "logo.svgz"));
+    assert!(!overlay::is_svg_for_test(b"anything", "logo.png"));
+
+    // Content detection (no SVG extension)
+    assert!(overlay::is_svg_for_test(b"<svg xmlns='http://www.w3.org/2000/svg'>", "file.xml"));
+    assert!(overlay::is_svg_for_test(b"<?xml version='1.0'?><svg>", "file.xml"));
+    assert!(!overlay::is_svg_for_test(b"PNG header stuff", "file.xml"));
+}
+
+#[test]
+fn test_svg_viewbox_dimensions() {
+    let dims = overlay::svg_viewbox_dimensions(TEST_SVG.as_bytes());
+    assert_eq!(dims, Some((100, 100)));
+
+    let dims = overlay::svg_viewbox_dimensions(TEST_SVG_WIDE.as_bytes());
+    assert_eq!(dims, Some((200, 100)));
+
+    let dims = overlay::svg_viewbox_dimensions(b"not valid svg");
+    assert_eq!(dims, None);
+}
+
+#[test]
+fn test_rebuild_svg_rerasterizes_on_resize() {
+    let svg_bytes = TEST_SVG.as_bytes();
+    let cfg_100 = svg_image_config("svg-resize", 100, 100);
+    let cfg_200 = config::ImageOverlayConfig {
+        id: "svg-resize".to_string(),
+        asset_path: "samples/images/system/test.svg".to_string(),
+        transform: config::OverlayTransform {
+            rect: Rect { x: 0, y: 0, width: 200, height: 200 },
+            opacity: 1.0,
+            rotation_degrees: 0.0,
+            z_index: 0,
+            mirror_horizontal: false,
+            mirror_vertical: false,
+        },
+    };
+
+    // Build initial overlay at 100x100.
+    let initial = overlay::decode_image_overlay(&cfg_100, svg_bytes, 7680).expect("initial decode");
+    assert_eq!(initial.width, 100);
+    assert!(matches!(initial.source_kind, overlay::OverlaySourceKind::Vector { .. }));
+
+    let old_overlays: Arc<[Arc<DecodedOverlay>]> = Arc::from(vec![Arc::new(initial)]);
+
+    let old_config = CompositorConfig { image_overlays: vec![cfg_100], ..Default::default() };
+    let new_config = CompositorConfig { image_overlays: vec![cfg_200], ..Default::default() };
+
+    let rebuilt = CompositorNode::rebuild_image_overlays(
+        &old_config,
+        &new_config,
+        &old_overlays,
+        &config::GlobalCompositorConfig::default(),
+    );
+
+    assert_eq!(rebuilt.len(), 1);
+    // Re-rasterized at new dimensions.
+    assert_eq!(rebuilt[0].width, 200);
+    assert_eq!(rebuilt[0].height, 200);
+    assert!(matches!(rebuilt[0].source_kind, overlay::OverlaySourceKind::Vector { .. }));
+}
+
+#[test]
+fn test_rebuild_svg_reuses_bitmap_when_unchanged() {
+    let svg_bytes = TEST_SVG.as_bytes();
+    let cfg = svg_image_config("svg-reuse", 100, 100);
+
+    let initial = overlay::decode_image_overlay(&cfg, svg_bytes, 7680).expect("initial decode");
+    let initial_arc = Arc::new(initial);
+
+    let old_overlays: Arc<[Arc<DecodedOverlay>]> = Arc::from(vec![Arc::clone(&initial_arc)]);
+
+    let config_with_overlay = CompositorConfig { image_overlays: vec![cfg], ..Default::default() };
+
+    // Rebuild with identical config — should reuse the existing bitmap.
+    let rebuilt = CompositorNode::rebuild_image_overlays(
+        &config_with_overlay,
+        &config_with_overlay,
+        &old_overlays,
+        &config::GlobalCompositorConfig::default(),
+    );
+
+    assert_eq!(rebuilt.len(), 1);
+    // content_same is true (same path + same dimensions), so the bitmap
+    // data was cloned from the existing overlay (shallow clone of Vec).
+    // The width/height should be identical.
+    assert_eq!(rebuilt[0].width, initial_arc.width);
+    assert_eq!(rebuilt[0].height, initial_arc.height);
 }

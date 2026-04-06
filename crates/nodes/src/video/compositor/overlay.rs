@@ -9,6 +9,21 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 use streamkit_core::StreamKitError;
 
+// ── Overlay source kind ─────────────────────────────────────────────────────
+
+/// Tracks the source format of a decoded overlay for cache invalidation.
+///
+/// Raster overlays are pre-scaled once and reused even when dimensions change.
+/// Vector overlays carry the parsed SVG tree so they can be cheaply
+/// re-rasterized at new target dimensions without re-parsing the XML.
+#[derive(Clone)]
+pub enum OverlaySourceKind {
+    /// Decoded from a raster format (PNG, JPEG, WebP, GIF).
+    Raster,
+    /// Decoded from an SVG.  Carries the parsed tree for re-rasterization.
+    Vector { tree: Arc<resvg::usvg::Tree> },
+}
+
 // ── Decoded overlay bitmap ──────────────────────────────────────────────────
 
 /// A pre-decoded RGBA8 bitmap overlay ready for per-frame blitting.
@@ -20,7 +35,7 @@ use streamkit_core::StreamKitError;
 pub struct DecodedOverlay {
     /// Stable identifier carried through from the config.
     pub id: String,
-    pub rgba_data: Vec<u8>,
+    pub rgba_data: Arc<[u8]>,
     pub width: u32,
     pub height: u32,
     pub rect: Rect,
@@ -37,6 +52,8 @@ pub struct DecodedOverlay {
     pub measured_text_width: Option<u32>,
     /// Actual text height measured by the font engine (text overlays only).
     pub measured_text_height: Option<u32>,
+    /// Source format — used by rebuild logic to decide re-rasterization strategy.
+    pub source_kind: OverlaySourceKind,
 }
 
 /// Validates that an asset path is safe to read.
@@ -75,6 +92,10 @@ pub fn decode_image_overlay(
     max_dimension: u32,
 ) -> Result<DecodedOverlay, StreamKitError> {
     use image::GenericImageView;
+
+    if is_svg(bytes, &config.asset_path) {
+        return rasterize_svg(config, bytes, max_dimension);
+    }
 
     let img = image::load_from_memory(bytes).map_err(|e| {
         StreamKitError::Configuration(format!("Failed to decode image overlay: {e}"))
@@ -133,7 +154,7 @@ pub fn decode_image_overlay(
 
         Ok(DecodedOverlay {
             id: config.id.clone(),
-            rgba_data: scaled,
+            rgba_data: Arc::from(scaled),
             width: fit_w,
             height: fit_h,
             rect,
@@ -144,11 +165,12 @@ pub fn decode_image_overlay(
             mirror_vertical: config.transform.mirror_vertical,
             measured_text_width: None,
             measured_text_height: None,
+            source_kind: OverlaySourceKind::Raster,
         })
     } else {
         Ok(DecodedOverlay {
             id: config.id.clone(),
-            rgba_data: rgba.into_raw(),
+            rgba_data: Arc::from(rgba.into_raw()),
             width: w,
             height: h,
             rect: config.transform.rect,
@@ -159,6 +181,7 @@ pub fn decode_image_overlay(
             mirror_vertical: config.transform.mirror_vertical,
             measured_text_width: None,
             measured_text_height: None,
+            source_kind: OverlaySourceKind::Raster,
         })
     }
 }
@@ -176,6 +199,149 @@ fn prescale_rgba(src: &[u8], sw: u32, sh: u32, dw: u32, dh: u32) -> Vec<u8> {
         .expect("prescale_rgba: source dimensions do not match buffer length");
     let resized = image::imageops::resize(&src_img, dw, dh, image::imageops::FilterType::Triangle);
     resized.into_raw()
+}
+
+// ── SVG helpers ──────────────────────────────────────────────────────────────
+
+/// Build `usvg::Options` with the image href resolver disabled so that
+/// `<image href="file:///etc/shadow"/>` (or any other local/remote reference)
+/// inside an uploaded SVG cannot trigger server-side file reads.
+fn safe_svg_options() -> resvg::usvg::Options<'static> {
+    resvg::usvg::Options {
+        image_href_resolver: resvg::usvg::ImageHrefResolver {
+            resolve_data: Box::new(|_, _, _| None),
+            resolve_string: Box::new(|_, _| None),
+        },
+        ..Default::default()
+    }
+}
+
+/// Check whether the given bytes represent an SVG file, using both the
+/// file extension and a content sniff for `<svg`.
+fn is_svg(bytes: &[u8], path: &str) -> bool {
+    let p = std::path::Path::new(path);
+    if p.extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("svg") || ext.eq_ignore_ascii_case("svgz"))
+    {
+        return true;
+    }
+    let prefix = &bytes[..bytes.len().min(256)];
+    prefix.windows(4).any(|w| w == b"<svg")
+}
+
+/// Convert premultiplied RGBA to straight (un-associated) alpha in-place.
+fn unpremultiply_alpha(data: &mut [u8]) {
+    for pixel in data.chunks_exact_mut(4) {
+        let a = pixel[3];
+        if a > 0 && a < 255 {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            {
+                let a_f = f32::from(a) / 255.0;
+                pixel[0] = (f32::from(pixel[0]) / a_f).min(255.0) as u8;
+                pixel[1] = (f32::from(pixel[1]) / a_f).min(255.0) as u8;
+                pixel[2] = (f32::from(pixel[2]) / a_f).min(255.0) as u8;
+            }
+        }
+    }
+}
+
+/// Render a pre-parsed SVG tree to an RGBA8 bitmap at the target rect size.
+/// Aspect-ratio-preserving fit, straight-alpha RGBA8 output.
+///
+/// Returns `(rgba_data, width, height, adjusted_rect)`.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+pub(crate) fn rasterize_svg_tree(
+    tree: &resvg::usvg::Tree,
+    config: &ImageOverlayConfig,
+    max_dimension: u32,
+) -> Result<(Vec<u8>, u32, u32, Rect), StreamKitError> {
+    let svg_size = tree.size();
+    let svg_w = svg_size.width();
+    let svg_h = svg_size.height();
+
+    let target_w = config.transform.rect.width.max(1);
+    let target_h = config.transform.rect.height.max(1);
+
+    // Aspect-ratio-preserving fit within (target_w, target_h), clamped to max_dimension.
+    let scale = (target_w as f32 / svg_w).min(target_h as f32 / svg_h);
+    let fit_w = ((svg_w * scale).round() as u32).max(1).min(max_dimension);
+    let fit_h = ((svg_h * scale).round() as u32).max(1).min(max_dimension);
+
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(fit_w, fit_h).ok_or_else(|| {
+        StreamKitError::Configuration(format!(
+            "Failed to create pixmap for SVG rasterization ({fit_w}x{fit_h})"
+        ))
+    })?;
+
+    let transform =
+        resvg::tiny_skia::Transform::from_scale(fit_w as f32 / svg_w, fit_h as f32 / svg_h);
+
+    resvg::render(tree, transform, &mut pixmap.as_mut());
+
+    let mut rgba_data = pixmap.take();
+    unpremultiply_alpha(&mut rgba_data);
+
+    // Centre-adjust rect (same pattern as decode_image_overlay).
+    let mut rect = config.transform.rect;
+    rect.x += (target_w.cast_signed() - fit_w.cast_signed()) / 2;
+    rect.y += (target_h.cast_signed() - fit_h.cast_signed()) / 2;
+    rect.width = fit_w;
+    rect.height = fit_h;
+
+    Ok((rgba_data, fit_w, fit_h, rect))
+}
+
+/// Rasterize an SVG with aspect-ratio-preserving fit within `config.transform.rect`.
+fn rasterize_svg(
+    config: &ImageOverlayConfig,
+    svg_data: &[u8],
+    max_dimension: u32,
+) -> Result<DecodedOverlay, StreamKitError> {
+    let tree = resvg::usvg::Tree::from_data(svg_data, &safe_svg_options())
+        .map_err(|e| StreamKitError::Configuration(format!("Failed to parse SVG: {e}")))?;
+
+    let (rgba_data, w, h, rect) = rasterize_svg_tree(&tree, config, max_dimension)?;
+    let tree = Arc::new(tree);
+
+    Ok(DecodedOverlay {
+        id: config.id.clone(),
+        rgba_data: Arc::from(rgba_data),
+        width: w,
+        height: h,
+        rect,
+        opacity: config.transform.opacity,
+        rotation_degrees: config.transform.rotation_degrees,
+        z_index: config.transform.z_index,
+        mirror_horizontal: config.transform.mirror_horizontal,
+        mirror_vertical: config.transform.mirror_vertical,
+        measured_text_width: None,
+        measured_text_height: None,
+        source_kind: OverlaySourceKind::Vector { tree },
+    })
+}
+
+/// Extract viewBox dimensions from raw SVG data.
+/// Used by skit asset pipeline without pulling resvg as a direct dependency.
+pub fn svg_viewbox_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+    let tree = resvg::usvg::Tree::from_data(data, &safe_svg_options()).ok()?;
+    let size = tree.size();
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let w = (size.width().ceil() as u32).max(1);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let h = (size.height().ceil() as u32).max(1);
+    Some((w, h))
+}
+
+/// Test-only re-export of [`unpremultiply_alpha`].
+#[cfg(test)]
+pub fn unpremultiply_alpha_for_test(data: &mut [u8]) {
+    unpremultiply_alpha(data);
+}
+
+/// Test-only re-export of [`is_svg`].
+#[cfg(test)]
+pub fn is_svg_for_test(bytes: &[u8], path: &str) -> bool {
+    is_svg(bytes, path)
 }
 
 // ── Font helpers ─────────────────────────────────────────────────────────────
@@ -453,7 +619,7 @@ pub fn rasterize_text_overlay(
 
     DecodedOverlay {
         id: config.id.clone(),
-        rgba_data,
+        rgba_data: Arc::from(rgba_data),
         width: w,
         height: h,
         rect: {
@@ -472,5 +638,6 @@ pub fn rasterize_text_overlay(
         mirror_vertical: config.transform.mirror_vertical,
         measured_text_width: Some(measured_w),
         measured_text_height: Some(measured_h),
+        source_kind: OverlaySourceKind::Raster,
     }
 }
