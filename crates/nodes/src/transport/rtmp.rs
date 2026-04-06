@@ -138,7 +138,10 @@ impl ProcessorNode for RtmpPublishNode {
 
         // ── Parse RTMP URL ──────────────────────────────────────────────
         let rtmp_url: RtmpUrl = self.config.url.parse().map_err(|e| {
-            StreamKitError::Configuration(format!("Invalid RTMP URL '{}': {e}", self.config.url))
+            StreamKitError::Configuration(format!(
+                "Invalid RTMP URL '{}': {e}",
+                mask_stream_key(&self.config.url)
+            ))
         })?;
 
         tracing::info!(
@@ -235,7 +238,10 @@ impl ProcessorNode for RtmpPublishNode {
                                 tracing::warn!(%node_name, error = %e, "Error feeding RTMP recv buffer");
                             }
                             // Drain events (acks, pings, etc.)
-                            drain_events(&mut connection, &node_name);
+                            if drain_events(&mut connection, &node_name) {
+                                tracing::info!(%node_name, "Breaking loop: peer disconnected");
+                                break;
+                            }
                             flush_send_buf(&mut connection, &mut stream).await?;
                         }
                         Err(e) => {
@@ -286,6 +292,13 @@ impl RtmpStream {
         match self {
             Self::Plain(s) => s.write_all(buf).await,
             Self::Tls(s) => s.write_all(buf).await,
+        }
+    }
+
+    async fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Plain(s) => tokio::io::AsyncWriteExt::flush(s).await,
+            Self::Tls(s) => tokio::io::AsyncWriteExt::flush(s).await,
         }
     }
 }
@@ -390,15 +403,22 @@ async fn flush_send_buf_raw(
         let len = buf.len();
         connection.advance_send_buf(len);
     }
+    // Explicit flush to ensure TLS buffered data is sent immediately.
+    stream.flush().await?;
     Ok(())
 }
 
 /// Drain and log any pending RTMP events (acks, pings, ignored commands).
-fn drain_events(connection: &mut RtmpPublishClientConnection, node_name: &str) {
+///
+/// Returns `true` if the peer signalled a disconnect, indicating that the
+/// publishing loop should exit.
+fn drain_events(connection: &mut RtmpPublishClientConnection, node_name: &str) -> bool {
+    let mut disconnected = false;
     while let Some(event) = connection.next_event() {
         match &event {
             shiguredo_rtmp::RtmpConnectionEvent::DisconnectedByPeer { reason } => {
                 tracing::warn!(%node_name, %reason, "RTMP server disconnected");
+                disconnected = true;
             },
             shiguredo_rtmp::RtmpConnectionEvent::StateChanged(state) => {
                 tracing::info!(%node_name, %state, "RTMP state changed");
@@ -408,6 +428,7 @@ fn drain_events(connection: &mut RtmpPublishClientConnection, node_name: &str) {
             },
         }
     }
+    disconnected
 }
 
 // ---------------------------------------------------------------------------
@@ -721,6 +742,7 @@ fn build_aac_audio_specific_config(sample_rate: u32, channels: u8) -> Vec<u8> {
         96_000 => 0,
         88_200 => 1,
         64_000 => 2,
+        48_000 => 3,
         44_100 => 4,
         32_000 => 5,
         24_000 => 6,
@@ -730,7 +752,10 @@ fn build_aac_audio_specific_config(sample_rate: u32, channels: u8) -> Vec<u8> {
         11_025 => 10,
         8_000 => 11,
         7_350 => 12,
-        _ => 3, // Default to 48 kHz index
+        _ => {
+            tracing::warn!(sample_rate, "Unrecognized AAC sample rate, defaulting to 48 kHz index");
+            3
+        },
     };
 
     // AAC-LC object type = 2
