@@ -2,10 +2,10 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-# Real-time mixing pipeline using AAC encoding, output to MP4 via MoQ peer.
+# Real-time mixing pipeline with AAC encoding over MoQ.
 #
 # Topology:
-#   MoQ peer (Opus input) → decode → mix with music → AAC encode → MP4 mux
+#   MoQ peer (Opus input) → decode → mix with music → AAC encode → MoQ output
 #
 # The mixer outputs 960 samples/channel (Opus frame size at 48 kHz);
 # the AAC encoder's internal residual buffer accumulates samples until
@@ -14,11 +14,23 @@
 #
 # Requires: aac-encoder native plugin (just install-plugin aac-encoder)
 
-name: Real-Time MoQ Mixing (AAC to MP4)
+name: Real-Time MoQ Mixing (AAC)
 description: |
   Accepts Opus audio via MoQ, mixes with a local music track,
-  encodes to AAC, and muxes into a streamable MP4.
+  encodes to AAC, and broadcasts the mixed AAC stream to subscribers.
 mode: dynamic
+client:
+  gateway_path: /moq/mixing-aac
+  publish:
+    broadcast: input
+    tracks:
+      - kind: audio
+        source: microphone
+  watch:
+    broadcast: output
+    audio: true
+    video: false
+
 nodes:
   # ============================================================
   # MOQ INPUT: Accept Opus audio from a WebTransport publisher
@@ -26,8 +38,13 @@ nodes:
   moq_peer:
     kind: transport::moq::peer
     params:
-      path: /moq/mixing-aac
-      audio_only: true
+      gateway_path: /moq/mixing-aac
+      input_broadcasts:
+        - input
+      output_broadcast: output
+      allow_reconnect: true
+      subscriber_audio_codec: aac
+    needs: aac_encoder
 
   mic_opus_decoder:
     kind: audio::opus::decoder
@@ -70,7 +87,7 @@ nodes:
     needs: music_opus_decoder
 
   # ============================================================
-  # MIX + ENCODE + MUX
+  # MIX + ENCODE
   # ============================================================
   mixer:
     kind: audio::mixer
@@ -86,10 +103,3 @@ nodes:
     params:
       bitrate: 128000
     needs: mixer
-
-  mp4_muxer:
-    kind: containers::mp4::muxer
-    params:
-      mode: stream
-      audio_codec: aac
-    needs: aac_encoder

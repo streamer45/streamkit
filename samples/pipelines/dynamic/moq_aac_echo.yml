@@ -7,6 +7,11 @@
 # Accepts Opus audio from a WebTransport publisher, decodes it,
 # re-encodes to AAC, and broadcasts the AAC stream back to subscribers.
 #
+# The moq_peer's output pin (`audio/data`) defaults to Opus (matching the
+# publisher).  `subscriber_audio_codec: aac` tells the subscriber catalog
+# to advertise AAC — the actual codec of the re-encoded stream fed back
+# into the peer's input pin.
+#
 # Requires: aac-encoder native plugin (just install-plugin aac-encoder)
 
 name: MoQ AAC Echo
@@ -35,7 +40,7 @@ nodes:
         - input
       output_broadcast: output
       allow_reconnect: true
-      audio_codec: aac
+      subscriber_audio_codec: aac
     needs: aac_encoder
 
   opus_decoder:

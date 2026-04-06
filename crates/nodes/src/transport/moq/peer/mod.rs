@@ -209,9 +209,18 @@ impl ProcessorNode for MoqPeerNode {
         let video_codec =
             resolve_video_codec(self.config.video_codec.as_deref(), &context.input_types);
 
-        // Detect the upstream audio codec (same pattern as video).
-        let audio_codec =
-            resolve_audio_codec(self.config.audio_codec.as_deref(), &context.input_types);
+        // Subscriber-side audio codec: use `subscriber_audio_codec` config if
+        // set, otherwise fall back to `audio_codec` / auto-detect from
+        // `input_types`.  This allows transcoding pipelines (e.g. Opus in →
+        // AAC out) to advertise the correct codec in the subscriber catalog
+        // without changing the publisher output pin type.
+        let subscriber_audio_codec = resolve_audio_codec(
+            self.config
+                .subscriber_audio_codec
+                .as_deref()
+                .or(self.config.audio_codec.as_deref()),
+            &context.input_types,
+        );
 
         if pin_0_rx.is_none() && pin_1_rx.is_none() {
             return Err(StreamKitError::Configuration(
@@ -375,7 +384,7 @@ impl ProcessorNode for MoqPeerNode {
                                 output_group_duration_ms: self.config.output_group_duration_ms,
                                 output_initial_delay_ms: self.config.output_initial_delay_ms,
                                 video_codec,
-                                audio_codec,
+                                audio_codec: subscriber_audio_codec,
                             },
                             media_state_rx: media_state_rx.clone(),
                             dynamic_outputs: dynamic_outputs.clone(),
@@ -485,7 +494,7 @@ impl ProcessorNode for MoqPeerNode {
                             output_group_duration_ms: self.config.output_group_duration_ms,
                             output_initial_delay_ms: self.config.output_initial_delay_ms,
                             video_codec,
-                            audio_codec,
+                            audio_codec: subscriber_audio_codec,
                         },
                         media_state_rx.clone(),
                     ).await {
@@ -640,7 +649,7 @@ impl ProcessorNode for MoqPeerNode {
                         None => std::future::pending().await,
                     }
                 } => {
-                    Self::handle_pin_management(msg, &dynamic_outputs, &subscriber_broadcast_tx, &stats_delta_tx, &shutdown_tx, &mut forwarder_handles, MediaCodecConfig { video: video_codec, audio: audio_codec });
+                    Self::handle_pin_management(msg, &dynamic_outputs, &subscriber_broadcast_tx, &stats_delta_tx, &shutdown_tx, &mut forwarder_handles, MediaCodecConfig { video: video_codec, audio: subscriber_audio_codec });
                 }
 
                 // Check for shutdown signal
@@ -2598,6 +2607,7 @@ mod tests {
             video_height: 480,
             video_codec: None,
             audio_codec: None,
+            subscriber_audio_codec: None,
         });
         let pins = node.output_pins();
         assert_eq!(pins[0].name, "audio/data");

@@ -332,7 +332,25 @@ pub struct MoqPeerConfig {
     /// startup.  Accepted values: `"opus"`, `"aac"`.  When `None`, the codec
     /// is auto-detected from `input_types` (static pipelines) and falls back
     /// to Opus.
+    ///
+    /// Controls the **publisher output pin** type (`audio/data`).  For
+    /// transcoding scenarios where the subscriber receives a different codec
+    /// (e.g. Opus in → AAC out), use [`subscriber_audio_codec`] to override
+    /// the subscriber catalog codec independently.
     pub audio_codec: Option<String>,
+    /// Audio codec advertised in the **subscriber** MoQ catalog.
+    ///
+    /// When set, overrides [`audio_codec`] for the subscriber side only
+    /// (catalog, frame duration).  The publisher output pin (`audio/data`)
+    /// continues to use [`audio_codec`].
+    ///
+    /// Useful for transcoding pipelines where the publisher sends one codec
+    /// (e.g. Opus) but the pipeline re-encodes to another (e.g. AAC) before
+    /// feeding it back to subscribers.
+    ///
+    /// Accepted values: `"opus"`, `"aac"`.  When `None`, falls back to
+    /// [`audio_codec`].
+    pub subscriber_audio_codec: Option<String>,
 }
 
 impl Default for MoqPeerConfig {
@@ -348,6 +366,7 @@ impl Default for MoqPeerConfig {
             video_height: 480,
             video_codec: None,
             audio_codec: None,
+            subscriber_audio_codec: None,
         }
     }
 }
