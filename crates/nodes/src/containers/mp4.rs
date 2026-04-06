@@ -542,11 +542,11 @@ pub struct Mp4MuxerConfig {
     pub num_inputs: u32,
 
     /// Override the audio codec used for sample-entry construction and MIME
-    /// content-type resolution.  When omitted the codec is auto-detected from
-    /// the upstream `EncodedAudio` pin type; if detection fails it falls back
-    /// to `Opus`.
+    /// content-type resolution.  Accepted values: `"opus"`, `"aac"`.
+    /// When omitted the codec is auto-detected from the upstream
+    /// `EncodedAudio` pin type; if detection fails it falls back to `Opus`.
     #[serde(default)]
-    pub audio_codec: Option<AudioCodec>,
+    pub audio_codec: Option<String>,
 }
 
 const fn default_num_inputs() -> u32 {
@@ -603,6 +603,25 @@ fn classify_packet(packet: Packet) -> Option<MuxFrame> {
             })
         },
         _ => None,
+    }
+}
+
+/// Parse an optional audio codec config string into an [`AudioCodec`].
+///
+/// Accepted values (case-insensitive): `"opus"`, `"aac"`.
+/// Returns `AudioCodec::Opus` when the input is `None` or unrecognised.
+fn parse_mp4_audio_codec_config(s: Option<&str>) -> AudioCodec {
+    match s {
+        Some(v) if v.eq_ignore_ascii_case("aac") => AudioCodec::Aac,
+        Some(v) if v.eq_ignore_ascii_case("opus") => AudioCodec::Opus,
+        Some(other) => {
+            tracing::warn!(
+                audio_codec = other,
+                "unrecognised audio_codec config value, defaulting to Opus"
+            );
+            AudioCodec::Opus
+        },
+        None => AudioCodec::Opus,
     }
 }
 
@@ -790,7 +809,7 @@ impl ProcessorNode for Mp4MuxerNode {
         } else {
             None
         };
-        let audio = self.config.audio_codec.unwrap_or(AudioCodec::Opus);
+        let audio = parse_mp4_audio_codec_config(self.config.audio_codec.as_deref());
         Some(mp4_content_type(Some(audio), video).to_string())
     }
 
@@ -813,7 +832,7 @@ impl ProcessorNode for Mp4MuxerNode {
 
         let mut audio_rx: Option<tokio::sync::mpsc::Receiver<Packet>> = None;
         let mut video_rx: Option<tokio::sync::mpsc::Receiver<Packet>> = None;
-        let mut audio_codec = self.config.audio_codec.unwrap_or(AudioCodec::Opus);
+        let mut audio_codec = parse_mp4_audio_codec_config(self.config.audio_codec.as_deref());
         // Default video codec is AV1; only used when a video input is actually
         // connected.  For audio-only pipelines this value is never read.
         let mut video_codec = VideoCodec::Av1;

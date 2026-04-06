@@ -303,6 +303,32 @@ pub struct CPacketRepr {
     _owned: CPacketOwned,
 }
 
+impl CPacketRepr {
+    /// Downgrade a `BinaryWithMeta` packet to a plain `Binary` packet.
+    ///
+    /// v6 plugins do not understand the `BinaryWithMeta` discriminant (value 10)
+    /// and would drop/error on it.  Calling this before forwarding to a v6
+    /// plugin preserves the raw bytes while discarding `content_type` and
+    /// `metadata` that the older plugin cannot interpret.
+    ///
+    /// No-op if the packet is not `BinaryWithMeta`.
+    #[allow(clippy::used_underscore_binding)]
+    pub fn downgrade_binary_with_meta(&mut self) {
+        if self.packet.packet_type == CPacketType::BinaryWithMeta {
+            if let CPacketOwned::BinaryWithMeta(ref bwm) = self._owned {
+                // Point directly at the raw data buffer, same as the plain
+                // Binary path in `packet_to_c`.
+                self.packet = CPacket {
+                    packet_type: CPacketType::Binary,
+                    data: bwm.binary.data.cast::<c_void>(),
+                    len: bwm.binary.data_len,
+                };
+                // Keep _owned alive — the data pointer still references it.
+            }
+        }
+    }
+}
+
 #[allow(dead_code)] // Owned values are kept alive to support FFI pointers during callbacks.
 enum CPacketOwned {
     None,
@@ -876,5 +902,57 @@ mod tests {
             Err(msg) => assert!(msg.contains("Null samples pointer"), "unexpected: {msg}"),
             Ok(_) => panic!("expected error for null audio samples pointer"),
         }
+    }
+
+    /// `downgrade_binary_with_meta` must convert a BinaryWithMeta packet to
+    /// plain Binary so that v6 plugins (which don't know discriminant 10)
+    /// receive the raw bytes without crashing.
+    #[test]
+    fn downgrade_binary_with_meta_converts_to_plain_binary() {
+        let payload = b"hello-aac-data";
+        let packet = Packet::Binary {
+            data: bytes::Bytes::from_static(payload),
+            content_type: Some(std::borrow::Cow::Borrowed("audio/aac")),
+            metadata: Some(PacketMetadata {
+                timestamp_us: Some(42_000),
+                duration_us: Some(21_333),
+                sequence: Some(1),
+                keyframe: None,
+            }),
+        };
+
+        let mut repr = packet_to_c(&packet);
+        assert_eq!(
+            repr.packet.packet_type,
+            CPacketType::BinaryWithMeta,
+            "should start as BinaryWithMeta"
+        );
+
+        repr.downgrade_binary_with_meta();
+        assert_eq!(repr.packet.packet_type, CPacketType::Binary, "should be downgraded to Binary");
+        assert_eq!(repr.packet.len, payload.len(), "data length must be preserved");
+
+        // Verify the data pointer still references the original bytes.
+        let slice =
+            unsafe { std::slice::from_raw_parts(repr.packet.data.cast::<u8>(), repr.packet.len) };
+        assert_eq!(slice, payload);
+    }
+
+    /// `downgrade_binary_with_meta` is a no-op for non-BinaryWithMeta packets.
+    #[test]
+    fn downgrade_binary_with_meta_noop_for_plain_binary() {
+        let payload = b"raw-bytes";
+        let packet = Packet::Binary {
+            data: bytes::Bytes::from_static(payload),
+            content_type: None,
+            metadata: None,
+        };
+
+        let mut repr = packet_to_c(&packet);
+        assert_eq!(repr.packet.packet_type, CPacketType::Binary, "plain Binary without meta");
+
+        repr.downgrade_binary_with_meta();
+        assert_eq!(repr.packet.packet_type, CPacketType::Binary, "should remain Binary");
+        assert_eq!(repr.packet.len, payload.len());
     }
 }
