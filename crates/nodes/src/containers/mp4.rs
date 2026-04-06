@@ -421,7 +421,16 @@ enum MuxFrame {
 fn classify_packet(packet: Packet) -> Option<MuxFrame> {
     match packet {
         Packet::Binary { data, content_type, metadata } => {
-            let is_video = content_type.as_deref().unwrap_or("").starts_with("video/");
+            let is_video = content_type.as_deref().map_or_else(
+                || {
+                    tracing::warn!(
+                        "Packet has no content_type — defaulting to audio; \
+                         set content_type on upstream nodes to avoid misclassification"
+                    );
+                    false
+                },
+                |ct| ct.starts_with("video/"),
+            );
             Some(if is_video {
                 MuxFrame::Video(data, metadata)
             } else {
@@ -507,6 +516,8 @@ struct Fmp4SegmentState {
     pending_payloads: Vec<Bytes>,
     segment_data_offset: u64,
     init_sent: bool,
+    video_sample_entry_sent: bool,
+    audio_sample_entry_sent: bool,
 }
 
 /// Muxer and file-backed state for regular MP4 file mode.
@@ -761,10 +772,18 @@ fn build_sample_entries(
         // H264, Vp9, and any future variants fall back to AVC1 for now.
         _ => build_avc1_sample_entry(config.video_width, config.video_height, None),
     };
-    let audio_entry = if matches!(audio_codec, AudioCodec::Opus) {
-        build_opus_sample_entry(config.sample_rate, config.channels)
-    } else {
-        build_mp4a_sample_entry(config.sample_rate, config.channels)
+    let audio_entry = match audio_codec {
+        AudioCodec::Opus => build_opus_sample_entry(config.sample_rate, config.channels),
+        // AudioCodec is #[non_exhaustive]; warn and fall back to mp4a (AAC) for
+        // any future variant so the muxer degrades visibly rather than silently.
+        #[allow(unreachable_patterns)] // only Opus exists today
+        other => {
+            tracing::warn!(
+                ?other,
+                "Unknown AudioCodec variant — falling back to mp4a (AAC) sample entry"
+            );
+            build_mp4a_sample_entry(config.sample_rate, config.channels)
+        },
     };
     (video_entry, audio_entry)
 }
@@ -776,6 +795,57 @@ const fn all_inputs_done(tp: TrackPresence, tg: &TrackProgress, inputs_open: usi
     } else {
         (tg.audio_done || !tp.audio) && (tg.video_done || !tp.video)
     }
+}
+
+/// Partition interleaved samples+payloads by track so each track's data is
+/// contiguous within the segment, then recompute `data_offset` values.
+///
+/// `shiguredo_mp4` requires that all data for a given track appears as a
+/// contiguous byte range in the mdat box.  When audio and video arrive
+/// interleaved, the naive arrival-order offsets break this invariant.
+fn partition_samples_by_track(
+    samples: Vec<Sample>,
+    payloads: Vec<Bytes>,
+) -> (Vec<Sample>, Vec<Bytes>) {
+    debug_assert_eq!(samples.len(), payloads.len());
+
+    let mut video_samples = Vec::new();
+    let mut video_payloads = Vec::new();
+    let mut audio_samples = Vec::new();
+    let mut audio_payloads = Vec::new();
+
+    for (sample, payload) in samples.into_iter().zip(payloads) {
+        match sample.track_kind {
+            TrackKind::Video => {
+                video_samples.push(sample);
+                video_payloads.push(payload);
+            },
+            TrackKind::Audio => {
+                audio_samples.push(sample);
+                audio_payloads.push(payload);
+            },
+        }
+    }
+
+    // Recompute data_offset: video first, then audio.
+    let mut offset: u64 = 0;
+    let mut sorted_samples = Vec::with_capacity(video_samples.len() + audio_samples.len());
+    let mut sorted_payloads = Vec::with_capacity(video_payloads.len() + audio_payloads.len());
+
+    for (mut sample, payload) in video_samples.into_iter().zip(video_payloads) {
+        sample.data_offset = offset;
+        offset += sample.data_size as u64;
+        sorted_samples.push(sample);
+        sorted_payloads.push(payload);
+    }
+    for (mut sample, payload) in audio_samples.into_iter().zip(audio_payloads) {
+        sample.data_offset = offset;
+        offset += sample.data_size as u64;
+        sorted_samples.push(sample);
+        sorted_payloads.push(payload);
+    }
+
+    (sorted_samples, sorted_payloads)
 }
 
 // ---------------------------------------------------------------------------
@@ -808,6 +878,8 @@ async fn run_stream_mode(
         pending_payloads: Vec::new(),
         segment_data_offset: 0,
         init_sent: false,
+        video_sample_entry_sent: false,
+        audio_sample_entry_sent: false,
     };
     let mut video_keyframe_seen = false;
     let mut packet_count: u64 = 0;
@@ -864,10 +936,16 @@ async fn run_stream_mode(
                 let duration_ticks = us_to_ticks(duration_us, video_timescale.get());
 
                 let data_size = data.len();
+                let entry = if seg.video_sample_entry_sent {
+                    None
+                } else {
+                    seg.video_sample_entry_sent = true;
+                    Some(video_sample_entry.clone())
+                };
                 seg.pending_samples.push(Sample {
                     track_kind: TrackKind::Video,
                     timescale: video_timescale,
-                    sample_entry: Some(video_sample_entry.clone()),
+                    sample_entry: entry,
                     duration: duration_ticks,
                     keyframe: is_keyframe,
                     composition_time_offset: None,
@@ -888,10 +966,16 @@ async fn run_stream_mode(
                 let duration_ticks = us_to_ticks(duration_us, audio_timescale.get());
 
                 let data_size = data.len();
+                let entry = if seg.audio_sample_entry_sent {
+                    None
+                } else {
+                    seg.audio_sample_entry_sent = true;
+                    Some(audio_sample_entry.clone())
+                };
                 seg.pending_samples.push(Sample {
                     track_kind: TrackKind::Audio,
                     timescale: audio_timescale,
-                    sample_entry: Some(audio_sample_entry.clone()),
+                    sample_entry: entry,
                     duration: duration_ticks,
                     keyframe: true, // audio frames are always keyframes
                     composition_time_offset: None,
@@ -924,6 +1008,11 @@ async fn run_stream_mode(
 
 /// Flush accumulated samples as a single fMP4 media segment.
 ///
+/// Before creating segment metadata, samples and payloads are partitioned by
+/// track (all video first, then all audio) with data offsets recomputed so
+/// each track's data is contiguous.  This is required by `shiguredo_mp4`
+/// which expects per-track contiguous byte ranges within a segment.
+///
 /// Returns `true` if the output channel is closed (caller should stop).
 async fn flush_fmp4_segment(
     session: &MuxSession<'_>,
@@ -932,19 +1021,24 @@ async fn flush_fmp4_segment(
     context: &mut NodeContext,
     stats_tracker: &mut NodeStatsTracker,
 ) -> Result<bool, StreamKitError> {
-    let segment_metadata =
-        muxer.create_media_segment_metadata(&seg.pending_samples).map_err(|e| {
-            let msg = format!("Failed to create fMP4 segment metadata: {e}");
-            state_helpers::emit_failed(&context.state_tx, session.node_name, &msg);
-            StreamKitError::Runtime(msg)
-        })?;
+    // Partition samples+payloads by track so each track's data is contiguous.
+    let (sorted_samples, sorted_payloads) = partition_samples_by_track(
+        std::mem::take(&mut seg.pending_samples),
+        std::mem::take(&mut seg.pending_payloads),
+    );
+
+    let segment_metadata = muxer.create_media_segment_metadata(&sorted_samples).map_err(|e| {
+        let msg = format!("Failed to create fMP4 segment metadata: {e}");
+        state_helpers::emit_failed(&context.state_tx, session.node_name, &msg);
+        StreamKitError::Runtime(msg)
+    })?;
 
     // Build segment bytes: [moof+mdat header] + [payload data]
-    let payload_size: usize = seg.pending_samples.iter().map(|s| s.data_size).sum();
+    let payload_size: usize = sorted_samples.iter().map(|s| s.data_size).sum();
     let mut segment_bytes = Vec::with_capacity(segment_metadata.len() + payload_size);
     segment_bytes.extend_from_slice(&segment_metadata);
-    for payload in seg.pending_payloads.drain(..) {
-        segment_bytes.extend_from_slice(&payload);
+    for payload in &sorted_payloads {
+        segment_bytes.extend_from_slice(payload);
     }
 
     let ct = Some(session.content_type.into());
@@ -1650,6 +1744,161 @@ mod tests {
 
         let segment_result = demuxer.handle_media_segment(&segment).unwrap();
         assert_eq!(segment_result.len(), 2, "Should have 2 samples (1 video + 1 audio)");
+    }
+
+    /// Verify `partition_samples_by_track` reorders interleaved A/V samples
+    /// so that video data comes first with contiguous offsets, followed by
+    /// audio data with contiguous offsets.
+    #[test]
+    fn partition_samples_by_track_reorders_interleaved() {
+        let vts = NonZeroU32::new(90_000).unwrap();
+        let ats = NonZeroU32::new(48_000).unwrap();
+        let ve = build_avc1_sample_entry(320, 240, None);
+        let ae = build_opus_sample_entry(48_000, 2);
+
+        // Simulate interleaved arrival: V(1024) A(256) V(1024) A(256)
+        let samples = vec![
+            Sample {
+                track_kind: TrackKind::Video,
+                timescale: vts,
+                sample_entry: Some(ve),
+                duration: 3000,
+                keyframe: true,
+                composition_time_offset: None,
+                data_offset: 0,
+                data_size: 1024,
+            },
+            Sample {
+                track_kind: TrackKind::Audio,
+                timescale: ats,
+                sample_entry: Some(ae),
+                duration: 960,
+                keyframe: true,
+                composition_time_offset: None,
+                data_offset: 1024,
+                data_size: 256,
+            },
+            Sample {
+                track_kind: TrackKind::Video,
+                timescale: vts,
+                sample_entry: None,
+                duration: 3000,
+                keyframe: false,
+                composition_time_offset: None,
+                data_offset: 1280,
+                data_size: 1024,
+            },
+            Sample {
+                track_kind: TrackKind::Audio,
+                timescale: ats,
+                sample_entry: None,
+                duration: 960,
+                keyframe: true,
+                composition_time_offset: None,
+                data_offset: 2304,
+                data_size: 256,
+            },
+        ];
+        let payloads: Vec<Bytes> = vec![
+            Bytes::from(vec![0xAAu8; 1024]),
+            Bytes::from(vec![0xBBu8; 256]),
+            Bytes::from(vec![0xCCu8; 1024]),
+            Bytes::from(vec![0xDDu8; 256]),
+        ];
+
+        let (sorted_s, sorted_p) = partition_samples_by_track(samples, payloads);
+
+        // Expect: V, V, A, A
+        assert_eq!(sorted_s.len(), 4);
+        assert!(matches!(sorted_s[0].track_kind, TrackKind::Video));
+        assert!(matches!(sorted_s[1].track_kind, TrackKind::Video));
+        assert!(matches!(sorted_s[2].track_kind, TrackKind::Audio));
+        assert!(matches!(sorted_s[3].track_kind, TrackKind::Audio));
+
+        // Video offsets: 0, 1024; Audio offsets: 2048, 2048+256=2304
+        assert_eq!(sorted_s[0].data_offset, 0);
+        assert_eq!(sorted_s[1].data_offset, 1024);
+        assert_eq!(sorted_s[2].data_offset, 2048);
+        assert_eq!(sorted_s[3].data_offset, 2304);
+
+        // Payloads reordered to match
+        assert_eq!(sorted_p[0][0], 0xAA);
+        assert_eq!(sorted_p[1][0], 0xCC);
+        assert_eq!(sorted_p[2][0], 0xBB);
+        assert_eq!(sorted_p[3][0], 0xDD);
+    }
+
+    /// Round-trip test: interleaved A/V samples in fMP4 mode.
+    ///
+    /// This test sends multiple interleaved video+audio samples per segment
+    /// (the common real-world case) and verifies that partitioning produces
+    /// a valid segment that can be demuxed.
+    #[test]
+    fn fmp4_round_trip_interleaved_audio_video() {
+        use shiguredo_mp4::demux::Fmp4SegmentDemuxer;
+
+        let video_timescale = NonZeroU32::new(90_000).unwrap();
+        let audio_timescale = NonZeroU32::new(48_000).unwrap();
+        let video_entry = build_avc1_sample_entry(320, 240, None);
+        let audio_entry = build_opus_sample_entry(48_000, 2);
+
+        let mut muxer = Fmp4SegmentMuxer::new().unwrap();
+
+        // Create interleaved samples: V A V A V A (6 samples, common real-world pattern)
+        let mut samples = Vec::new();
+        let mut payloads: Vec<Bytes> = Vec::new();
+        let mut offset: u64 = 0;
+        for i in 0..3u8 {
+            let vdata = vec![0x10 + i; 512];
+            let adata = vec![0x80 + i; 128];
+
+            samples.push(Sample {
+                track_kind: TrackKind::Video,
+                timescale: video_timescale,
+                sample_entry: if i == 0 { Some(video_entry.clone()) } else { None },
+                duration: 3000,
+                keyframe: i == 0,
+                composition_time_offset: None,
+                data_offset: offset,
+                data_size: vdata.len(),
+            });
+            offset += vdata.len() as u64;
+            payloads.push(Bytes::from(vdata));
+
+            samples.push(Sample {
+                track_kind: TrackKind::Audio,
+                timescale: audio_timescale,
+                sample_entry: if i == 0 { Some(audio_entry.clone()) } else { None },
+                duration: 960,
+                keyframe: true,
+                composition_time_offset: None,
+                data_offset: offset,
+                data_size: adata.len(),
+            });
+            offset += adata.len() as u64;
+            payloads.push(Bytes::from(adata));
+        }
+
+        // Without partition, create_media_segment_metadata would fail because
+        // video offsets are non-contiguous (audio data sits between them).
+        let (sorted_samples, sorted_payloads) = partition_samples_by_track(samples, payloads);
+
+        let metadata = muxer.create_media_segment_metadata(&sorted_samples).unwrap();
+        let mut segment = metadata;
+        for p in &sorted_payloads {
+            segment.extend_from_slice(p);
+        }
+
+        let init = muxer.init_segment_bytes().unwrap();
+
+        let mut demuxer = Fmp4SegmentDemuxer::new();
+        demuxer.handle_init_segment(&init).unwrap();
+
+        let tracks = demuxer.tracks().unwrap();
+        assert_eq!(tracks.len(), 2, "Should have video + audio tracks");
+
+        let segment_result = demuxer.handle_media_segment(&segment).unwrap();
+        assert_eq!(segment_result.len(), 6, "Should have 6 samples (3 video + 3 audio)");
     }
 
     /// File mode round-trip: mux and verify file is valid MP4.

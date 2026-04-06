@@ -276,6 +276,7 @@ export function getExtensionFromContentType(contentType: string): string {
     'audio/wav': '.wav',
     'audio/webm': '.webm',
     'audio/flac': '.flac',
+    'audio/mp4': '.mp4',
     'application/ogg': '.ogg',
     'application/json': '.json',
     'video/mp4': '.mp4',

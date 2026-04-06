@@ -389,6 +389,11 @@ describe('converter service', () => {
       expect(getExtensionFromContentType('video/ogg')).toBe('.ogv');
     });
 
+    it('should map MP4 audio content types', () => {
+      expect(getExtensionFromContentType('audio/mp4')).toBe('.mp4');
+      expect(getExtensionFromContentType('audio/mp4; codecs="opus"')).toBe('.mp4');
+    });
+
     it('should handle content types with codecs', () => {
       expect(getExtensionFromContentType('audio/ogg; codecs=opus')).toBe('.ogg');
       expect(getExtensionFromContentType('audio/webm; codecs=vorbis')).toBe('.webm');

@@ -4,7 +4,7 @@
 
 # Demonstrates the MP4 muxer node in file mode with AV1 video.
 #
-# Generates colorbars, encodes to AV1 via rav1e, and muxes into a regular
+# Generates colorbars, encodes to AV1 via SVT-AV1, and muxes into a regular
 # MP4 container (AV1-in-MP4 per ISO 14496-12 / AV1-ISOBMFF spec).
 
 name: MP4 Mux (AV1 video, file mode)
@@ -34,9 +34,9 @@ nodes:
     needs: colorbars
 
   av1_encoder:
-    kind: video::av1::encoder
+    kind: video::svt_av1::encoder
     params:
-      speed: 10
+      preset: 12
       low_latency: true
     needs: pixel_convert
 
