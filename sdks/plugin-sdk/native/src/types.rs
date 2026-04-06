@@ -24,7 +24,10 @@ use std::os::raw::{c_char, c_void};
 ///     `CAllocAudioResult`).  Consolidated per-call callback parameters
 ///     into a single `CNodeCallbacks` struct.  Extended `CVideoFrame` and
 ///     `CAudioFrame` with `buffer_handle` and `metadata` fields.
-pub const NATIVE_PLUGIN_API_VERSION: u32 = 6;
+/// v7: Added `BinaryWithMeta` packet type (`CBinaryPacket`) that preserves
+///     optional `content_type` and per-packet `metadata` across the plugin
+///     ↔ host boundary.  Plain `Binary` remains for backward compatibility.
+pub const NATIVE_PLUGIN_API_VERSION: u32 = 7;
 
 /// Opaque handle to a plugin instance
 pub type CPluginHandle = *mut c_void;
@@ -143,6 +146,9 @@ pub enum CPacketType {
     Passthrough = 7,
     RawVideo = 8,
     EncodedVideo = 9,
+    /// Binary packet that preserves optional `content_type` and `metadata`
+    /// across the plugin ↔ host boundary.  Points to a [`CBinaryPacket`].
+    BinaryWithMeta = 10,
 }
 
 /// Pixel format discriminant for raw video frames.
@@ -252,6 +258,22 @@ pub struct CAudioFrame {
     /// (non-pooled) frames.
     pub buffer_handle: *mut c_void,
     /// Optional metadata (may be null).
+    pub metadata: *const CPacketMetadata,
+}
+
+/// Binary packet with optional content-type and per-packet metadata.
+///
+/// Used as the `data` payload of a [`CPacket`] when
+/// `packet_type == BinaryWithMeta`.  Unlike the plain `Binary` variant this
+/// preserves MIME content-type (e.g. `"audio/aac"`) and timing metadata
+/// across the plugin ↔ host boundary.
+#[repr(C)]
+pub struct CBinaryPacket {
+    pub data: *const u8,
+    pub data_len: usize,
+    /// Nullable.  Null-terminated MIME content-type string.
+    pub content_type: *const c_char,
+    /// Nullable.  Per-packet timing metadata.
     pub metadata: *const CPacketMetadata,
 }
 

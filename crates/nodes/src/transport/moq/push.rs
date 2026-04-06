@@ -5,8 +5,8 @@
 //! MoQ Push Node - publishes packets to a MoQ broadcast
 
 use super::constants::{
-    catalog_video_codec, moq_accepted_media_types, resolve_video_codec,
-    DEFAULT_AUDIO_FRAME_DURATION_US,
+    catalog_audio_codec, catalog_video_codec, moq_accepted_media_types, resolve_audio_codec,
+    resolve_video_codec, DEFAULT_AUDIO_FRAME_DURATION_US,
 };
 use async_trait::async_trait;
 use futures::future::poll_fn;
@@ -15,7 +15,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use streamkit_core::pins::PinManagementMessage;
 use streamkit_core::timing::MediaClock;
-use streamkit_core::types::{Packet, PacketType, VideoCodec};
+use streamkit_core::types::{AudioCodec, Packet, PacketType, VideoCodec};
 use streamkit_core::{
     state_helpers, stats::NodeStatsTracker, InputPin, NodeContext, OutputPin, PinCardinality,
     ProcessorNode, StreamKitError,
@@ -51,6 +51,13 @@ pub struct MoqPushConfig {
     /// is auto-detected from `input_types` (static pipelines) and falls back
     /// to VP9.
     pub video_codec: Option<String>,
+    /// Audio codec for the MoQ catalog.
+    ///
+    /// Required for dynamic pipelines where `input_types` is not available at
+    /// startup.  Accepted values: `"opus"`, `"aac"`.  When `None`, the codec
+    /// is auto-detected from `input_types` (static pipelines) and falls back
+    /// to Opus.
+    pub audio_codec: Option<String>,
     /// Duration of each MoQ group in milliseconds.
     /// Smaller groups = lower latency but more overhead.
     /// Larger groups = higher latency but better efficiency.
@@ -85,6 +92,7 @@ impl Default for MoqPushConfig {
             audio: None,
             video: None,
             video_codec: None,
+            audio_codec: None,
             group_duration_ms: default_group_duration_ms(),
             initial_delay_ms: 0,
         }
@@ -229,6 +237,10 @@ impl ProcessorNode for MoqPushNode {
         let video_codec =
             resolve_video_codec(self.config.video_codec.as_deref(), &context.input_types);
 
+        // Detect the upstream audio codec (same pattern as video).
+        let audio_codec =
+            resolve_audio_codec(self.config.audio_codec.as_deref(), &context.input_types);
+
         if !has_audio && !has_video {
             let err_msg = "MoqPushNode requires at least one audio or video input";
             state_helpers::emit_failed(&context.state_tx, &node_name, err_msg);
@@ -273,7 +285,7 @@ impl ProcessorNode for MoqPushNode {
             audio_renditions.insert(
                 at.name.clone(),
                 hang::catalog::AudioConfig {
-                    codec: hang::catalog::AudioCodec::Opus,
+                    codec: catalog_audio_codec(audio_codec),
                     sample_rate: 48000,
                     channel_count: self.config.channels,
                     bitrate: Some(128_000),
@@ -421,6 +433,7 @@ impl ProcessorNode for MoqPushNode {
                         &mut catalog_producer,
                         self.config.channels,
                         video_codec,
+                        audio_codec,
                     );
                     continue;
                 },
@@ -665,6 +678,7 @@ impl MoqPushNode {
         catalog_producer: &mut moq_lite::TrackProducer,
         channels: u32,
         video_codec: VideoCodec,
+        audio_codec: AudioCodec,
     ) {
         match msg {
             PinManagementMessage::RequestAddInputPin { suggested_name, response_tx } => {
@@ -688,6 +702,7 @@ impl MoqPushNode {
                     catalog_producer,
                     channels,
                     video_codec,
+                    audio_codec,
                 );
             },
             PinManagementMessage::RemoveInputPin { pin_name } => {
@@ -756,6 +771,7 @@ impl MoqPushNode {
         catalog_producer: &mut moq_lite::TrackProducer,
         channels: u32,
         video_codec: VideoCodec,
+        audio_codec: AudioCodec,
     ) {
         tracing::info!("MoqPushNode: activated dynamic input pin '{}'", pin.name);
 
@@ -776,7 +792,14 @@ impl MoqPushNode {
         };
 
         // Update the catalog with the new track rendition.
-        Self::insert_catalog_rendition(catalog, &track_name, is_video, channels, video_codec);
+        Self::insert_catalog_rendition(
+            catalog,
+            &track_name,
+            is_video,
+            channels,
+            video_codec,
+            audio_codec,
+        );
 
         if !Self::republish_catalog(catalog, catalog_producer) {
             // Roll back — subscribers won't discover this track.
@@ -825,6 +848,7 @@ impl MoqPushNode {
         is_video: bool,
         channels: u32,
         video_codec: VideoCodec,
+        audio_codec: AudioCodec,
     ) {
         if is_video {
             catalog.video.renditions.insert(
@@ -847,7 +871,7 @@ impl MoqPushNode {
             catalog.audio.renditions.insert(
                 track_name.to_string(),
                 hang::catalog::AudioConfig {
-                    codec: hang::catalog::AudioCodec::Opus,
+                    codec: catalog_audio_codec(audio_codec),
                     sample_rate: 48000,
                     channel_count: channels,
                     bitrate: Some(128_000),

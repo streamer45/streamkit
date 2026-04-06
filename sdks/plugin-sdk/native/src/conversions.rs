@@ -7,8 +7,9 @@
 //! These functions provide safe wrappers around unsafe FFI operations.
 
 use crate::types::{
-    CAudioFormat, CAudioFrame, CCustomEncoding, CCustomPacket, CPacket, CPacketMetadata,
-    CPacketType, CPacketTypeInfo, CPixelFormat, CRawVideoFormat, CSampleFormat, CVideoFrame,
+    CAudioFormat, CAudioFrame, CBinaryPacket, CCustomEncoding, CCustomPacket, CPacket,
+    CPacketMetadata, CPacketType, CPacketTypeInfo, CPixelFormat, CRawVideoFormat, CSampleFormat,
+    CVideoFrame,
 };
 use std::cell::RefCell;
 use std::ffi::{c_void, CStr, CString};
@@ -68,7 +69,7 @@ pub fn packet_type_from_c(cpt_info: CPacketTypeInfo) -> Result<PacketType, Strin
             // silently mislabelling the codec.
             Ok(PacketType::Binary)
         },
-        CPacketType::Binary => Ok(PacketType::Binary),
+        CPacketType::Binary | CPacketType::BinaryWithMeta => Ok(PacketType::Binary),
         CPacketType::Any => Ok(PacketType::Any),
         CPacketType::Passthrough => Ok(PacketType::Passthrough),
     }
@@ -310,6 +311,7 @@ enum CPacketOwned {
     Text(CString),
     Bytes(Vec<u8>),
     Custom(CustomOwned),
+    BinaryWithMeta(BinaryWithMetaOwned),
 }
 
 #[allow(dead_code)] // Owned values are kept alive to support FFI pointers during callbacks.
@@ -330,6 +332,13 @@ struct CustomOwned {
     data_json: Vec<u8>,
     metadata: Option<Box<CPacketMetadata>>,
     custom: Box<CCustomPacket>,
+}
+
+#[allow(dead_code)] // Owned values are kept alive to support FFI pointers during callbacks.
+struct BinaryWithMetaOwned {
+    content_type: Option<CString>,
+    metadata: Option<Box<CPacketMetadata>>,
+    binary: Box<CBinaryPacket>,
 }
 
 pub fn metadata_to_c(meta: &PacketMetadata) -> CPacketMetadata {
@@ -447,13 +456,39 @@ pub fn packet_to_c(packet: &Packet) -> CPacketRepr {
                 }),
             }
         },
-        Packet::Binary { data, .. } => CPacketRepr {
-            packet: CPacket {
-                packet_type: CPacketType::Binary,
-                data: data.as_ref().as_ptr().cast::<c_void>(),
-                len: data.len(),
-            },
-            _owned: CPacketOwned::None,
+        Packet::Binary { data, content_type, metadata } => {
+            if content_type.is_some() || metadata.is_some() {
+                let ct_cstring = content_type.as_deref().map(cstring_sanitize);
+                let meta_box = metadata.as_ref().map(|m| Box::new(metadata_to_c(m)));
+                let mut bp = Box::new(CBinaryPacket {
+                    data: data.as_ref().as_ptr(),
+                    data_len: data.len(),
+                    content_type: ct_cstring.as_ref().map_or(std::ptr::null(), |cs| cs.as_ptr()),
+                    metadata: meta_box.as_deref().map_or(std::ptr::null(), std::ptr::from_ref),
+                });
+                let packet = CPacket {
+                    packet_type: CPacketType::BinaryWithMeta,
+                    data: std::ptr::from_mut::<CBinaryPacket>(&mut *bp).cast::<c_void>(),
+                    len: std::mem::size_of::<CBinaryPacket>(),
+                };
+                CPacketRepr {
+                    packet,
+                    _owned: CPacketOwned::BinaryWithMeta(BinaryWithMetaOwned {
+                        content_type: ct_cstring,
+                        metadata: meta_box,
+                        binary: bp,
+                    }),
+                }
+            } else {
+                CPacketRepr {
+                    packet: CPacket {
+                        packet_type: CPacketType::Binary,
+                        data: data.as_ref().as_ptr().cast::<c_void>(),
+                        len: data.len(),
+                    },
+                    _owned: CPacketOwned::None,
+                }
+            }
         },
         Packet::Video(frame) => {
             let metadata = frame.metadata.as_ref().map(|m| Box::new(metadata_to_c(m)));
@@ -591,6 +626,25 @@ pub unsafe fn packet_from_c(c_packet: *const CPacket) -> Result<Packet, String> 
                 content_type: None,
                 metadata: None,
             })
+        },
+        CPacketType::BinaryWithMeta => {
+            let bp = &*c_pkt.data.cast::<CBinaryPacket>();
+            if bp.data.is_null() && bp.data_len > 0 {
+                return Err("BinaryWithMeta packet has null data pointer".to_string());
+            }
+            let data = if bp.data_len == 0 {
+                bytes::Bytes::new()
+            } else {
+                bytes::Bytes::copy_from_slice(std::slice::from_raw_parts(bp.data, bp.data_len))
+            };
+            let content_type = if bp.content_type.is_null() {
+                None
+            } else {
+                Some(std::borrow::Cow::Owned(c_str_to_string(bp.content_type)?))
+            };
+            let metadata =
+                if bp.metadata.is_null() { None } else { Some(metadata_from_c(&*bp.metadata)) };
+            Ok(Packet::Binary { data, content_type, metadata })
         },
         CPacketType::RawVideo => {
             let c_frame = &*c_pkt.data.cast::<CVideoFrame>();

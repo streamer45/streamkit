@@ -66,6 +66,8 @@ impl LoadedNativePlugin {
     /// - The API version is incompatible
     /// - Plugin metadata is invalid or cannot be read
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
+        const MIN_SUPPORTED_API_VERSION: u32 = 6;
+
         let path = path.as_ref();
 
         info!(?path, "Loading native plugin");
@@ -104,11 +106,14 @@ impl LoadedNativePlugin {
         // the lifetime of the loaded library, which we keep alive via Arc<Library>.
         let api = unsafe { &*api_ptr };
 
-        // Check API version compatibility
-        if api.version != NATIVE_PLUGIN_API_VERSION {
+        // Check API version compatibility — accept v6 (pre-BinaryWithMeta)
+        // and v7 (current).  Both are wire-compatible; v6 plugins simply never
+        // emit `BinaryWithMeta` packets.
+        if api.version < MIN_SUPPORTED_API_VERSION || api.version > NATIVE_PLUGIN_API_VERSION {
             let plugin_version = api.version;
             return Err(anyhow!(
-                "Plugin API version mismatch: plugin has {plugin_version}, host expects {NATIVE_PLUGIN_API_VERSION}"
+                "Plugin API version mismatch: plugin has v{plugin_version}, \
+                 host supports v{MIN_SUPPORTED_API_VERSION}–v{NATIVE_PLUGIN_API_VERSION}"
             ));
         }
 

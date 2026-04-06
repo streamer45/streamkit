@@ -335,6 +335,7 @@ lint-plugins:
     @cd plugins/native/nllb && cargo fmt -- --check && CMAKE_ARGS="-DCMAKE_INSTALL_PREFIX=$$(pwd)/target/cmake-install" CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
     @cd plugins/native/supertonic && cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
     @cd plugins/native/slint && cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
+    @cd plugins/native/aac-encoder && cargo fmt -- --check && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy -- -D warnings
     @echo "✓ All native plugins passed linting"
 
 # Auto-fix formatting and linting issues in native plugins
@@ -350,6 +351,7 @@ fix-plugins:
     @cd plugins/native/nllb && cargo fmt && CMAKE_ARGS="-DCMAKE_INSTALL_PREFIX=$$(pwd)/target/cmake-install" CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
     @cd plugins/native/supertonic && cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
     @cd plugins/native/slint && cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
+    @cd plugins/native/aac-encoder && cargo fmt && CARGO_TARGET_DIR={{plugins_target_dir}} cargo clippy --fix --allow-dirty --allow-staged -- -D warnings
     @echo "✓ All native plugins fixed"
 
 # --- Profiling ---
@@ -927,6 +929,12 @@ upload-slint-plugin: build-plugin-native-slint
     @curl -X POST -F "plugin=@{{plugins_target_dir}}/release/libslint.so" \
         http://127.0.0.1:4545/api/v1/plugins
 
+# Build AAC encoder native plugin (requires libfdk-aac-dev)
+[working-directory: 'plugins/native/aac-encoder']
+build-plugin-native-aac-encoder:
+    @echo "Building native AAC encoder plugin..."
+    @CARGO_TARGET_DIR={{plugins_target_dir}} cargo build --release
+
 # Build specific native plugin by name
 build-plugin-native name:
     @just build-plugin-native-{{name}}
@@ -971,7 +979,7 @@ install-plugin name: (build-plugin-native name)
     fi
 
 # Build all native plugin examples
-build-plugins-native: build-plugin-native-gain build-plugin-native-whisper build-plugin-native-kokoro build-plugin-native-piper build-plugin-native-matcha build-plugin-native-pocket-tts build-plugin-native-sensevoice build-plugin-native-nllb build-plugin-native-vad build-plugin-native-helsinki build-plugin-native-supertonic build-plugin-native-slint
+build-plugins-native: build-plugin-native-gain build-plugin-native-whisper build-plugin-native-kokoro build-plugin-native-piper build-plugin-native-matcha build-plugin-native-pocket-tts build-plugin-native-sensevoice build-plugin-native-nllb build-plugin-native-vad build-plugin-native-helsinki build-plugin-native-supertonic build-plugin-native-slint build-plugin-native-aac-encoder
 
 ## Combined
 

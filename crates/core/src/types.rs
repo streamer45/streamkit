@@ -63,6 +63,7 @@ pub struct RawVideoFormat {
 #[non_exhaustive]
 pub enum AudioCodec {
     Opus,
+    Aac,
 }
 
 /// Supported encoded video codecs.

@@ -540,6 +540,13 @@ pub struct Mp4MuxerConfig {
     #[serde(default = "default_num_inputs")]
     #[schemars(range(min = 1, max = 2))]
     pub num_inputs: u32,
+
+    /// Override the audio codec used for sample-entry construction and MIME
+    /// content-type resolution.  When omitted the codec is auto-detected from
+    /// the upstream `EncodedAudio` pin type; if detection fails it falls back
+    /// to `Opus`.
+    #[serde(default)]
+    pub audio_codec: Option<AudioCodec>,
 }
 
 const fn default_num_inputs() -> u32 {
@@ -557,6 +564,7 @@ impl Default for Mp4MuxerConfig {
             video_timescale: DEFAULT_VIDEO_TIMESCALE.get(),
             audio_timescale: DEFAULT_AUDIO_TIMESCALE_OPUS.get(),
             num_inputs: default_num_inputs(),
+            audio_codec: None,
         }
     }
 }
@@ -617,23 +625,24 @@ fn mp4_content_type(audio: Option<AudioCodec>, video: Option<VideoCodec>) -> &'s
         }
     }
 
-    let has_audio = audio.is_some();
-    let audio_is_opus = matches!(audio, Some(AudioCodec::Opus));
-
-    // Match on the concrete video codec to avoid conflating VP9/H264/AV1.
-    match (has_audio, video, audio_is_opus) {
-        (true, Some(VideoCodec::Av1), false) => "video/mp4; codecs=\"av01,mp4a\"",
-        (true, Some(VideoCodec::Av1), true) => "video/mp4; codecs=\"av01,opus\"",
-        (true, Some(VideoCodec::H264), false) => "video/mp4; codecs=\"avc1,mp4a\"",
-        (true, Some(VideoCodec::H264), true) => "video/mp4; codecs=\"avc1,opus\"",
-        // VP9 and any future codec: fall back to generic "video/mp4".
-        (true, Some(_), false) => "video/mp4; codecs=\"mp4a\"",
-        (true, Some(_), true) => "video/mp4; codecs=\"opus\"",
-        (false, Some(VideoCodec::Av1), _) => "video/mp4; codecs=\"av01\"",
-        (false, Some(VideoCodec::H264), _) => "video/mp4; codecs=\"avc1\"",
-        (true, None, false) => "audio/mp4; codecs=\"mp4a\"",
-        (true, None, true) => "audio/mp4; codecs=\"opus\"",
-        (false, Some(_) | None, _) => "video/mp4",
+    // Match on (audio_codec, video_codec) to produce a precise MIME codecs string.
+    match (audio, video) {
+        // Audio + Video
+        (Some(AudioCodec::Opus), Some(VideoCodec::Av1)) => "video/mp4; codecs=\"av01,opus\"",
+        (Some(AudioCodec::Opus), Some(VideoCodec::H264)) => "video/mp4; codecs=\"avc1,opus\"",
+        (Some(AudioCodec::Aac), Some(VideoCodec::Av1)) => "video/mp4; codecs=\"av01,mp4a\"",
+        (Some(AudioCodec::Aac), Some(VideoCodec::H264)) => "video/mp4; codecs=\"avc1,mp4a\"",
+        // Audio + unknown/future video codec
+        (Some(AudioCodec::Opus), Some(_)) => "video/mp4; codecs=\"opus\"",
+        (Some(AudioCodec::Aac | _), Some(_)) => "video/mp4; codecs=\"mp4a\"",
+        // Audio-only
+        (Some(AudioCodec::Opus), None) => "audio/mp4; codecs=\"opus\"",
+        (Some(AudioCodec::Aac | _), None) => "audio/mp4; codecs=\"mp4a\"",
+        // Video-only
+        (None, Some(VideoCodec::Av1)) => "video/mp4; codecs=\"av01\"",
+        (None, Some(VideoCodec::H264)) => "video/mp4; codecs=\"avc1\"",
+        // Fallback
+        (None, Some(_) | None) => "video/mp4",
     }
 }
 
@@ -725,6 +734,10 @@ impl ProcessorNode for Mp4MuxerNode {
                 codec: AudioCodec::Opus,
                 codec_private: None,
             }),
+            PacketType::EncodedAudio(EncodedAudioFormat {
+                codec: AudioCodec::Aac,
+                codec_private: None,
+            }),
             PacketType::EncodedVideo(EncodedVideoFormat {
                 codec: VideoCodec::H264,
                 bitstream_format: None,
@@ -777,8 +790,8 @@ impl ProcessorNode for Mp4MuxerNode {
         } else {
             None
         };
-        // Default to Opus since it's the only AudioCodec variant today.
-        Some(mp4_content_type(Some(AudioCodec::Opus), video).to_string())
+        let audio = self.config.audio_codec.unwrap_or(AudioCodec::Opus);
+        Some(mp4_content_type(Some(audio), video).to_string())
     }
 
     async fn run(self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
@@ -800,7 +813,7 @@ impl ProcessorNode for Mp4MuxerNode {
 
         let mut audio_rx: Option<tokio::sync::mpsc::Receiver<Packet>> = None;
         let mut video_rx: Option<tokio::sync::mpsc::Receiver<Packet>> = None;
-        let mut audio_codec = AudioCodec::Opus;
+        let mut audio_codec = self.config.audio_codec.unwrap_or(AudioCodec::Opus);
         // Default video codec is AV1; only used when a video input is actually
         // connected.  For audio-only pipelines this value is never read.
         let mut video_codec = VideoCodec::Av1;
@@ -973,9 +986,10 @@ fn build_sample_entries(
     };
     let audio_entry = match audio_codec {
         AudioCodec::Opus => build_opus_sample_entry(config.sample_rate, config.channels),
+        AudioCodec::Aac => build_mp4a_sample_entry(config.sample_rate, config.channels),
         // AudioCodec is #[non_exhaustive]; warn and fall back to mp4a (AAC) for
         // any future variant so the muxer degrades visibly rather than silently.
-        #[allow(unreachable_patterns)] // only Opus exists today
+        #[allow(unreachable_patterns)]
         other => {
             tracing::warn!(
                 ?other,

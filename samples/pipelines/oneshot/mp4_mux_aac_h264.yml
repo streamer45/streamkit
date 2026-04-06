@@ -1,0 +1,83 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Demonstrates AAC audio + H.264 video muxed into a single MP4 container.
+#
+# Video: SMPTE color bars → OpenH264 encoder
+# Audio: Uploaded Ogg/Opus file → Opus decoder → AAC encoder (native plugin)
+# Both streams are muxed into an MP4 container (stream mode).
+#
+# Requires: aac-encoder native plugin (just install-plugin aac-encoder)
+
+name: MP4 Mux (AAC + H264)
+description: Muxes AAC-encoded audio with H.264 video into an MP4 container
+mode: oneshot
+client:
+  input:
+    type: file_upload
+    accept: "audio/opus"
+  output:
+    type: video
+
+nodes:
+  # ============================================================
+  # AUDIO PATH: Upload → decode → AAC encode
+  # ============================================================
+  http_input:
+    kind: streamkit::http_input
+
+  ogg_demuxer:
+    kind: containers::ogg::demuxer
+    needs: http_input
+
+  opus_decoder:
+    kind: audio::opus::decoder
+    needs: ogg_demuxer
+
+  aac_encoder:
+    kind: plugin::native::aac_encoder
+    params:
+      bitrate: 128000
+    needs: opus_decoder
+
+  # ============================================================
+  # VIDEO PATH: Color bars → H.264 encode
+  # ============================================================
+  colorbars:
+    kind: video::colorbars
+    params:
+      width: 640
+      height: 480
+      fps: 30
+      frame_count: 900
+      pixel_format: nv12
+      draw_time: true
+      draw_time_use_pts: true
+
+  h264_encoder:
+    kind: video::openh264::encoder
+    params:
+      bitrate_kbps: 2000
+      max_frame_rate: 30.0
+    needs: colorbars
+
+  # ============================================================
+  # MUX + OUTPUT
+  # ============================================================
+  mp4_muxer:
+    kind: containers::mp4::muxer
+    params:
+      mode: stream
+      video_width: 640
+      video_height: 480
+      audio_codec: aac
+    needs:
+      - aac_encoder
+      - h264_encoder
+
+  http_output:
+    kind: streamkit::http_output
+    params:
+      content_type: 'video/mp4; codecs="avc1.42c01f,mp4a.40.2"'
+    needs: mp4_muxer

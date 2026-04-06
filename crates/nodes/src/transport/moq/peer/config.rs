@@ -11,7 +11,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use streamkit_core::timing::MediaClock;
-use streamkit_core::types::{Packet, PacketType, VideoCodec};
+use streamkit_core::types::{AudioCodec, Packet, PacketType, VideoCodec};
 use tokio::sync::{broadcast, mpsc, watch, Semaphore};
 
 // ── Internal helper types ────────────────────────────────────────────────────
@@ -98,6 +98,7 @@ pub(super) struct SubscriberMediaConfig {
     pub output_group_duration_ms: u64,
     pub output_initial_delay_ms: u64,
     pub video_codec: VideoCodec,
+    pub audio_codec: AudioCodec,
 }
 
 pub(super) struct BidirectionalTaskConfig {
@@ -313,6 +314,13 @@ pub struct MoqPeerConfig {
     /// is auto-detected from `input_types` (static pipelines) and falls back
     /// to VP9.
     pub video_codec: Option<String>,
+    /// Audio codec for the MoQ catalog.
+    ///
+    /// Required for dynamic pipelines where `input_types` is not available at
+    /// startup.  Accepted values: `"opus"`, `"aac"`.  When `None`, the codec
+    /// is auto-detected from `input_types` (static pipelines) and falls back
+    /// to Opus.
+    pub audio_codec: Option<String>,
 }
 
 impl Default for MoqPeerConfig {
@@ -327,6 +335,7 @@ impl Default for MoqPeerConfig {
             video_width: 640,
             video_height: 480,
             video_codec: None,
+            audio_codec: None,
         }
     }
 }

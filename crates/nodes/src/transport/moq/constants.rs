@@ -18,7 +18,7 @@ pub fn packet_duration_us(metadata: Option<&PacketMetadata>) -> Option<u64> {
     metadata.and_then(|m| m.duration_us).filter(|d| *d > 0)
 }
 
-/// Return the accepted media types for dynamic MoQ pins (Opus audio + VP9/AV1/H264 video).
+/// Return the accepted media types for dynamic MoQ pins (Opus/AAC audio + VP9/AV1/H264 video).
 ///
 /// This is shared across `moq_peer` and `moq_push` to avoid duplicating the
 /// type construction in every `RequestAddInputPin` / `RequestAddOutputPin` handler.
@@ -26,6 +26,10 @@ pub fn moq_accepted_media_types() -> Vec<PacketType> {
     vec![
         PacketType::EncodedAudio(EncodedAudioFormat {
             codec: AudioCodec::Opus,
+            codec_private: None,
+        }),
+        PacketType::EncodedAudio(EncodedAudioFormat {
+            codec: AudioCodec::Aac,
             codec_private: None,
         }),
         PacketType::EncodedVideo(EncodedVideoFormat {
@@ -127,6 +131,59 @@ pub fn parse_video_codec_config(s: &str) -> Option<VideoCodec> {
         "h264" => Some(VideoCodec::H264),
         _ => {
             tracing::warn!(video_codec = %s, "unrecognised video_codec config value — ignoring");
+            None
+        },
+    }
+}
+
+/// Build the [`hang::catalog::AudioCodec`] entry for a given [`AudioCodec`].
+///
+/// Centralises the AAC/Opus catalog construction, mirroring
+/// [`catalog_video_codec`] for the video side.
+pub fn catalog_audio_codec(codec: AudioCodec) -> hang::catalog::AudioCodec {
+    match codec {
+        AudioCodec::Opus => hang::catalog::AudioCodec::Opus,
+        AudioCodec::Aac => hang::catalog::AudioCodec::AAC(hang::catalog::AAC { profile: 2 }),
+        // Future-proof: fall back to Opus and warn.
+        _ => {
+            tracing::warn!(?codec, "unsupported AudioCodec for MoQ catalog, defaulting to Opus");
+            hang::catalog::AudioCodec::Opus
+        },
+    }
+}
+
+/// Resolve the audio codec from config → input_types → default (Opus).
+///
+/// Priority order:
+/// 1. Explicit `audio_codec` config param (required for dynamic pipelines)
+/// 2. Auto-detected from `input_types` (static pipelines)
+/// 3. Default: Opus
+///
+/// Shared by `moq_peer` and `moq_push` to avoid duplicating the resolution chain.
+pub fn resolve_audio_codec(
+    config_codec: Option<&str>,
+    input_types: &std::collections::HashMap<String, PacketType>,
+) -> AudioCodec {
+    config_codec
+        .and_then(parse_audio_codec_config)
+        .or_else(|| {
+            input_types.iter().find_map(|(_, pt)| match pt {
+                PacketType::EncodedAudio(fmt) => Some(fmt.codec),
+                _ => None,
+            })
+        })
+        .unwrap_or(AudioCodec::Opus)
+}
+
+/// Parse an `audio_codec` config string (e.g. `"opus"`, `"aac"`) into the
+/// corresponding [`AudioCodec`].  Returns `None` for unrecognised values so
+/// the caller can fall back to auto-detection.
+pub fn parse_audio_codec_config(s: &str) -> Option<AudioCodec> {
+    match s.to_ascii_lowercase().as_str() {
+        "opus" => Some(AudioCodec::Opus),
+        "aac" => Some(AudioCodec::Aac),
+        _ => {
+            tracing::warn!(audio_codec = %s, "unrecognised audio_codec config value — ignoring");
             None
         },
     }
