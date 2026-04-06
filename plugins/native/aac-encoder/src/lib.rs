@@ -4,14 +4,14 @@
 
 //! AAC-LC audio encoder native plugin using FDK AAC (Fraunhofer).
 //!
-//! Accepts 48 kHz stereo f32 PCM audio on pin `"in"`, encodes to AAC-LC
+//! Accepts 48 kHz mono or stereo f32 PCM audio on pin `"in"`, encodes to AAC-LC
 //! (ISO 14496-3 profile 2), and emits raw AAC frames on pin `"out"` as
 //! `Packet::Binary` with `content_type = "audio/aac"` and per-packet
 //! timing metadata.
 //!
-//! The encoder is hardcoded to 2 channels / 48 kHz.  Input audio at other
-//! sample rates or channel counts will be rejected.  The AAC frame size is
-//! 1024 samples per channel.
+//! The encoder always produces stereo output at 48 kHz.  Mono input is
+//! automatically upmixed (duplicated to both channels).  The AAC frame size
+//! is 1024 samples per channel.
 
 use serde::Deserialize;
 use streamkit_plugin_sdk_native::prelude::*;
@@ -122,16 +122,23 @@ impl NativeProcessorNode for AacEncoderNode {
     fn metadata() -> NodeMetadata {
         NodeMetadata::builder("aac_encoder")
             .description(
-                "AAC-LC audio encoder (48 kHz stereo) using FDK AAC.  \
+                "AAC-LC audio encoder (48 kHz, mono or stereo) using FDK AAC.  \
                  Accepts f32 PCM on pin \"in\", outputs raw AAC frames on pin \"out\".",
             )
             .input(
                 "in",
-                &[PacketType::RawAudio(AudioFormat {
-                    sample_rate: AAC_SAMPLE_RATE,
-                    channels: AAC_CHANNELS,
-                    sample_format: SampleFormat::F32,
-                })],
+                &[
+                    PacketType::RawAudio(AudioFormat {
+                        sample_rate: AAC_SAMPLE_RATE,
+                        channels: 2,
+                        sample_format: SampleFormat::F32,
+                    }),
+                    PacketType::RawAudio(AudioFormat {
+                        sample_rate: AAC_SAMPLE_RATE,
+                        channels: 1,
+                        sample_format: SampleFormat::F32,
+                    }),
+                ],
             )
             .output("out", PacketType::Binary)
             .param_schema(serde_json::json!({
@@ -184,14 +191,31 @@ impl NativeProcessorNode for AacEncoderNode {
             },
         };
 
-        if frame.sample_rate != AAC_SAMPLE_RATE || frame.channels != AAC_CHANNELS {
+        if frame.sample_rate != AAC_SAMPLE_RATE {
             return Err(format!(
-                "AAC encoder requires {}Hz/{}ch, got {}Hz/{}ch",
-                AAC_SAMPLE_RATE, AAC_CHANNELS, frame.sample_rate, frame.channels
+                "AAC encoder requires {}Hz, got {}Hz",
+                AAC_SAMPLE_RATE, frame.sample_rate
             ));
         }
 
-        self.residual.extend_from_slice(&frame.samples);
+        // The FDK AAC encoder requires stereo (interleaved L/R).  If the
+        // input is mono, duplicate each sample to both channels.
+        match frame.channels {
+            1 => {
+                let samples: &[f32] = &frame.samples;
+                self.residual.reserve(samples.len() * 2);
+                for &s in samples {
+                    self.residual.push(s);
+                    self.residual.push(s);
+                }
+            },
+            2 => {
+                self.residual.extend_from_slice(&frame.samples);
+            },
+            other => {
+                return Err(format!("AAC encoder supports 1 or 2 channels, got {other}"));
+            },
+        }
         self.encode_residual(output)
     }
 
