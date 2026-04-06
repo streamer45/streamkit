@@ -80,17 +80,10 @@ pub fn packet_type_from_c(cpt_info: CPacketTypeInfo) -> Result<PacketType, Strin
                 match name.as_str() {
                     "opus" => AudioCodec::Opus,
                     "aac" => AudioCodec::Aac,
-                    other => {
-                        return Err(format!(
-                            "Unknown EncodedAudio codec name: {other:?}"
-                        ))
-                    },
+                    other => return Err(format!("Unknown EncodedAudio codec name: {other:?}")),
                 }
             };
-            Ok(PacketType::EncodedAudio(EncodedAudioFormat {
-                codec,
-                codec_private: None,
-            }))
+            Ok(PacketType::EncodedAudio(EncodedAudioFormat { codec, codec_private: None }))
         },
         CPacketType::Binary | CPacketType::BinaryWithMeta => Ok(PacketType::Binary),
         CPacketType::Any => Ok(PacketType::Any),
