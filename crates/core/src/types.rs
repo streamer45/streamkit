@@ -59,6 +59,7 @@ pub struct RawVideoFormat {
 
 /// Supported encoded audio codecs.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "lowercase")]
 #[ts(export)]
 #[non_exhaustive]
 pub enum AudioCodec {
@@ -66,13 +67,29 @@ pub enum AudioCodec {
     Aac,
 }
 
+impl AudioCodec {
+    /// Default frame duration in microseconds for this codec.
+    ///
+    /// Used as a fallback when audio packets lack `duration_us` metadata.
+    /// - Opus: 20 ms (960 samples at 48 kHz)
+    /// - AAC-LC: ~21.333 ms (1024 samples at 48 kHz)
+    pub const fn default_frame_duration_us(self) -> u64 {
+        match self {
+            Self::Aac => 21_333,
+            _ => 20_000,
+        }
+    }
+}
+
 /// Supported encoded video codecs.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "lowercase")]
 #[ts(export)]
 #[non_exhaustive]
 pub enum VideoCodec {
     Vp9,
-    /// Forward-looking placeholder — not yet wired into any encoder/decoder.
+    /// OpenH264 Constrained Baseline encoder/decoder.
+    #[serde(alias = "avc", alias = "avc1")]
     H264,
     /// CPU AV1 codec support via rav1e (encoder) and rav1d (decoder).
     Av1,

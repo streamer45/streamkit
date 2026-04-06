@@ -5,8 +5,8 @@
 //! MoQ Push Node - publishes packets to a MoQ broadcast
 
 use super::constants::{
-    catalog_audio_codec, catalog_video_codec, default_audio_frame_duration_us,
-    moq_accepted_media_types, resolve_audio_codec, resolve_video_codec,
+    catalog_audio_codec, catalog_video_codec, moq_accepted_media_types, resolve_audio_codec,
+    resolve_video_codec,
 };
 use async_trait::async_trait;
 use futures::future::poll_fn;
@@ -47,17 +47,15 @@ pub struct MoqPushConfig {
     /// Video codec for the MoQ catalog.
     ///
     /// Required for dynamic pipelines where `input_types` is not available at
-    /// startup.  Accepted values: `"vp9"`, `"av1"`.  When `None`, the codec
-    /// is auto-detected from `input_types` (static pipelines) and falls back
-    /// to VP9.
-    pub video_codec: Option<String>,
+    /// startup.  When `None`, the codec is auto-detected from `input_types`
+    /// (static pipelines) and falls back to VP9.
+    pub video_codec: Option<VideoCodec>,
     /// Audio codec for the MoQ catalog.
     ///
     /// Required for dynamic pipelines where `input_types` is not available at
-    /// startup.  Accepted values: `"opus"`, `"aac"`.  When `None`, the codec
-    /// is auto-detected from `input_types` (static pipelines) and falls back
-    /// to Opus.
-    pub audio_codec: Option<String>,
+    /// startup.  When `None`, the codec is auto-detected from `input_types`
+    /// (static pipelines) and falls back to Opus.
+    pub audio_codec: Option<AudioCodec>,
     /// Duration of each MoQ group in milliseconds.
     /// Smaller groups = lower latency but more overhead.
     /// Larger groups = higher latency but better efficiency.
@@ -234,12 +232,10 @@ impl ProcessorNode for MoqPushNode {
         // 1. Explicit `video_codec` config param (required for dynamic pipelines)
         // 2. Auto-detected from `input_types` (static pipelines)
         // 3. Default: VP9
-        let video_codec =
-            resolve_video_codec(self.config.video_codec.as_deref(), &context.input_types);
+        let video_codec = resolve_video_codec(self.config.video_codec, &context.input_types);
 
         // Detect the upstream audio codec (same pattern as video).
-        let audio_codec =
-            resolve_audio_codec(self.config.audio_codec.as_deref(), &context.input_types);
+        let audio_codec = resolve_audio_codec(self.config.audio_codec, &context.input_types);
 
         if !has_audio && !has_video {
             let err_msg = "MoqPushNode requires at least one audio or video input";
@@ -511,7 +507,7 @@ impl ProcessorNode for MoqPushNode {
                         (
                             &mut audio_clock,
                             &mut audio_seeded,
-                            default_audio_frame_duration_us(audio_codec),
+                            audio_codec.default_frame_duration_us(),
                             &mut audio_first_sent,
                             ap,
                         )
@@ -537,7 +533,7 @@ impl ProcessorNode for MoqPushNode {
                         let dur = if state.is_video {
                             crate::video::DEFAULT_VIDEO_FRAME_DURATION_US
                         } else {
-                            default_audio_frame_duration_us(audio_codec)
+                            audio_codec.default_frame_duration_us()
                         };
                         (
                             &mut state.clock,
@@ -930,6 +926,7 @@ mod tests {
     #[test]
     fn video_codec_config_deserialization() {
         use super::MoqPushConfig;
+        use streamkit_core::types::VideoCodec;
 
         // Default: video_codec is None
         let default: MoqPushConfig = serde_json::from_str("{}").unwrap();
@@ -937,10 +934,10 @@ mod tests {
 
         // Explicit av1
         let av1: MoqPushConfig = serde_json::from_str(r#"{"video_codec": "av1"}"#).unwrap();
-        assert_eq!(av1.video_codec.as_deref(), Some("av1"));
+        assert_eq!(av1.video_codec, Some(VideoCodec::Av1));
 
         // Explicit vp9
         let vp9: MoqPushConfig = serde_json::from_str(r#"{"video_codec": "vp9"}"#).unwrap();
-        assert_eq!(vp9.video_codec.as_deref(), Some("vp9"));
+        assert_eq!(vp9.video_codec, Some(VideoCodec::Vp9));
     }
 }

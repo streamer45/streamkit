@@ -24,8 +24,7 @@ use config::{
 };
 
 use crate::transport::moq::constants::{
-    catalog_audio_codec, catalog_video_codec, parse_video_codec_config, resolve_audio_codec,
-    resolve_video_codec,
+    catalog_audio_codec, catalog_video_codec, resolve_audio_codec, resolve_video_codec,
 };
 use crate::video::{AV1_CONTENT_TYPE, H264_CONTENT_TYPE, VP9_CONTENT_TYPE};
 use async_trait::async_trait;
@@ -94,18 +93,8 @@ impl ProcessorNode for MoqPeerNode {
     }
 
     fn output_pins(&self) -> Vec<OutputPin> {
-        let codec = self
-            .config
-            .video_codec
-            .as_deref()
-            .and_then(parse_video_codec_config)
-            .unwrap_or(VideoCodec::Vp9);
-        let acodec = self
-            .config
-            .audio_codec
-            .as_deref()
-            .and_then(super::constants::parse_audio_codec_config)
-            .unwrap_or(AudioCodec::Opus);
+        let codec = self.config.video_codec.unwrap_or(VideoCodec::Vp9);
+        let acodec = self.config.audio_codec.unwrap_or(AudioCodec::Opus);
         vec![
             make_dynamic_output_pin("audio/data", codec, acodec),
             make_dynamic_output_pin("video/data", codec, acodec),
@@ -206,8 +195,7 @@ impl ProcessorNode for MoqPeerNode {
         // 1. Explicit `video_codec` config param (required for dynamic pipelines)
         // 2. Auto-detected from `input_types` (static pipelines)
         // 3. Default: VP9
-        let video_codec =
-            resolve_video_codec(self.config.video_codec.as_deref(), &context.input_types);
+        let video_codec = resolve_video_codec(self.config.video_codec, &context.input_types);
 
         // Subscriber-side audio codec: use `subscriber_audio_codec` config if
         // set, otherwise fall back to `audio_codec` / auto-detect from
@@ -215,7 +203,7 @@ impl ProcessorNode for MoqPeerNode {
         // AAC out) to advertise the correct codec in the subscriber catalog
         // without changing the publisher output pin type.
         let subscriber_audio_codec = resolve_audio_codec(
-            self.config.subscriber_audio_codec.as_deref().or(self.config.audio_codec.as_deref()),
+            self.config.subscriber_audio_codec.or(self.config.audio_codec),
             &context.input_types,
         );
 
@@ -224,7 +212,7 @@ impl ProcessorNode for MoqPeerNode {
         // runtime-created pins (e.g. for non-primary broadcasts) have the
         // correct type.
         let publisher_audio_codec =
-            resolve_audio_codec(self.config.audio_codec.as_deref(), &context.input_types);
+            resolve_audio_codec(self.config.audio_codec, &context.input_types);
 
         if pin_0_rx.is_none() && pin_1_rx.is_none() {
             return Err(StreamKitError::Configuration(
@@ -2433,9 +2421,7 @@ impl MoqPeerNode {
                 }
 
                 let default_duration = match broadcast_frame.kind {
-                    MediaKind::Audio => {
-                        super::constants::default_audio_frame_duration_us(ctx.audio_codec)
-                    },
+                    MediaKind::Audio => ctx.audio_codec.default_frame_duration_us(),
                     MediaKind::Video => crate::video::DEFAULT_VIDEO_FRAME_DURATION_US,
                 };
                 clock.advance_by_duration_us(broadcast_frame.duration_us, default_duration);
@@ -2551,7 +2537,7 @@ mod tests {
     #[test]
     fn output_pins_respects_video_codec_config() {
         let node = MoqPeerNode::new(MoqPeerConfig {
-            video_codec: Some("av1".to_string()),
+            video_codec: Some(VideoCodec::Av1),
             ..MoqPeerConfig::default()
         });
         let pins = node.output_pins();
@@ -2722,10 +2708,10 @@ mod tests {
 
         // Explicit av1
         let av1: MoqPeerConfig = serde_json::from_str(r#"{"video_codec": "av1"}"#).unwrap();
-        assert_eq!(av1.video_codec.as_deref(), Some("av1"));
+        assert_eq!(av1.video_codec, Some(VideoCodec::Av1));
 
         // Explicit vp9
         let vp9: MoqPeerConfig = serde_json::from_str(r#"{"video_codec": "vp9"}"#).unwrap();
-        assert_eq!(vp9.video_codec.as_deref(), Some("vp9"));
+        assert_eq!(vp9.video_codec, Some(VideoCodec::Vp9));
     }
 }
