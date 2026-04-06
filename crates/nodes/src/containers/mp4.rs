@@ -170,6 +170,10 @@ fn parse_avcc_codec_private(data: &[u8]) -> (Vec<Vec<u8>>, Vec<Vec<u8>>, u8, u8,
 ///
 /// Constructs a minimal ESDS descriptor for AAC-LC with the given sample rate
 /// and channel count.
+///
+/// Currently only reachable as a fallback when a future `AudioCodec` variant is
+/// added.  Kept as scaffolding so AAC support can be enabled by simply wiring
+/// up the new variant in `build_sample_entries`.
 fn build_mp4a_sample_entry(sample_rate: u32, channels: u16) -> SampleEntry {
     // Build a minimal AudioSpecificConfig for AAC-LC.
     // Format: 5 bits object type (2 = AAC-LC) + 4 bits freq index + 4 bits channel config
@@ -444,7 +448,25 @@ fn classify_packet(packet: Packet) -> Option<MuxFrame> {
 /// Determine the MP4 MIME content-type string from optional codec info.
 ///
 /// `audio` and `video` are `None` when the respective track is absent.
-const fn mp4_content_type(audio: Option<AudioCodec>, video: Option<VideoCodec>) -> &'static str {
+/// Determine the MP4 MIME content-type string from optional codec info.
+///
+/// `audio` and `video` are `None` when the respective track is absent.
+///
+/// **Future-proofing note:** Any video codec that is not `Av1` currently maps
+/// to `avc1` in the codecs parameter, and any audio codec that is not `Opus`
+/// maps to `mp4a`.  When new codecs are added (e.g. VP9, HEVC), the match
+/// arms below must be extended — the fallback will log a warning so the
+/// mismatch is visible.
+fn mp4_content_type(audio: Option<AudioCodec>, video: Option<VideoCodec>) -> &'static str {
+    if let Some(vc) = &video {
+        if !matches!(vc, VideoCodec::H264 | VideoCodec::Av1) {
+            tracing::warn!(
+                ?vc,
+                "mp4_content_type: unrecognised video codec — codecs param will report avc1"
+            );
+        }
+    }
+
     let has_audio = audio.is_some();
     let has_video = video.is_some();
     let audio_is_opus = matches!(audio, Some(AudioCodec::Opus));
@@ -511,10 +533,16 @@ struct MuxInputs {
 }
 
 /// Accumulated state for an in-progress fMP4 segment (stream mode).
+///
+/// The `video_sample_entry_sent` / `audio_sample_entry_sent` flags are
+/// intentionally **not** reset across segments.  `shiguredo_mp4` stores
+/// sample entries in its own `TrackEntry::sample_entries` vec on first
+/// encounter and uses `current_sample_entry_index` for subsequent samples
+/// that arrive with `sample_entry: None`.  Sending the entry only once
+/// avoids unnecessary cloning.
 struct Fmp4SegmentState {
     pending_samples: Vec<Sample>,
     pending_payloads: Vec<Bytes>,
-    segment_data_offset: u64,
     init_sent: bool,
     video_sample_entry_sent: bool,
     audio_sample_entry_sent: bool,
@@ -777,8 +805,17 @@ fn build_sample_entries(
 ) -> (SampleEntry, SampleEntry) {
     let video_entry = match video_codec {
         VideoCodec::Av1 => build_av01_sample_entry(config.video_width, config.video_height, None),
-        // H264, Vp9, and any future variants fall back to AVC1 for now.
-        _ => build_avc1_sample_entry(config.video_width, config.video_height, None),
+        VideoCodec::H264 => build_avc1_sample_entry(config.video_width, config.video_height, None),
+        // VideoCodec is #[non_exhaustive]; warn and fall back to AVC1 for any
+        // future variant so the muxer degrades visibly rather than silently.
+        #[allow(unreachable_patterns)] // only H264, Av1, Vp9 exist today
+        other => {
+            tracing::warn!(
+                ?other,
+                "Unknown VideoCodec variant \u{2014} falling back to avc1 (H.264) sample entry"
+            );
+            build_avc1_sample_entry(config.video_width, config.video_height, None)
+        },
     };
     let audio_entry = match audio_codec {
         AudioCodec::Opus => build_opus_sample_entry(config.sample_rate, config.channels),
@@ -884,7 +921,6 @@ async fn run_stream_mode(
     let mut seg = Fmp4SegmentState {
         pending_samples: Vec::new(),
         pending_payloads: Vec::new(),
-        segment_data_offset: 0,
         init_sent: false,
         video_sample_entry_sent: false,
         audio_sample_entry_sent: false,
@@ -957,10 +993,9 @@ async fn run_stream_mode(
                     duration: duration_ticks,
                     keyframe: is_keyframe,
                     composition_time_offset: None,
-                    data_offset: seg.segment_data_offset,
+                    data_offset: 0, // placeholder; partition_samples_by_track recomputes
                     data_size,
                 });
-                seg.segment_data_offset += data_size as u64;
                 seg.pending_payloads.push(data);
             },
             MuxFrame::Audio(data, metadata) => {
@@ -987,10 +1022,9 @@ async fn run_stream_mode(
                     duration: duration_ticks,
                     keyframe: true, // audio frames are always keyframes
                     composition_time_offset: None,
-                    data_offset: seg.segment_data_offset,
+                    data_offset: 0, // placeholder; partition_samples_by_track recomputes
                     data_size,
                 });
-                seg.segment_data_offset += data_size as u64;
                 seg.pending_payloads.push(data);
             },
         }
@@ -1133,7 +1167,6 @@ async fn flush_fmp4_segment(
         seg.init_sent = true;
     }
 
-    seg.segment_data_offset = 0;
 
     stats_tracker.maybe_send();
     Ok(false)
@@ -1582,7 +1615,7 @@ pub fn register_mp4_nodes(registry: &mut NodeRegistry) {
         StaticPins { inputs: default_muxer.input_pins(), outputs: default_muxer.output_pins() },
         vec!["containers".to_string(), "mp4".to_string()],
         false,
-        "Muxes H.264 video and/or AAC/Opus audio into an MP4 container. \
+        "Muxes H.264/AV1 video and/or AAC/Opus audio into an MP4 container. \
          Supports fragmented MP4 (fMP4) for DASH/HLS streaming and \
          regular MP4 file output with fast-start.",
     );
@@ -1984,6 +2017,92 @@ mod tests {
 
         let segment_result = demuxer.handle_media_segment(&segment).unwrap();
         assert_eq!(segment_result.len(), 5, "Should have 5 audio samples");
+    }
+
+    /// Multi-segment round-trip: verifies that sample_entry dedup flags work
+    /// correctly across multiple fMP4 segments.
+    ///
+    /// The sample entry is sent only with the first segment; subsequent segments
+    /// pass `sample_entry: None`.  `shiguredo_mp4` remembers the entry in its
+    /// internal `TrackEntry::sample_entries` vec and reuses it via
+    /// `current_sample_entry_index`.  This test proves the dedup is safe by
+    /// creating three segments and demuxing all of them.
+    #[test]
+    fn fmp4_multi_segment_sample_entry_dedup() {
+        use shiguredo_mp4::demux::Fmp4SegmentDemuxer;
+
+        let video_timescale = NonZeroU32::new(90_000).unwrap();
+        let audio_timescale = NonZeroU32::new(48_000).unwrap();
+        let video_entry = build_avc1_sample_entry(320, 240, None);
+        let audio_entry = build_opus_sample_entry(48_000, 2);
+
+        let mut muxer = Fmp4SegmentMuxer::new().unwrap();
+
+        // Build 3 segments.  Only the first segment carries sample entries.
+        let mut segments: Vec<Vec<u8>> = Vec::new();
+        for seg_idx in 0u8..3 {
+            let vdata = vec![0x10 + seg_idx; 512];
+            let adata = vec![0x80 + seg_idx; 128];
+
+            let samples = vec![
+                Sample {
+                    track_kind: TrackKind::Video,
+                    timescale: video_timescale,
+                    sample_entry: if seg_idx == 0 {
+                        Some(video_entry.clone())
+                    } else {
+                        None
+                    },
+                    duration: 3000,
+                    keyframe: true,
+                    composition_time_offset: None,
+                    data_offset: 0,
+                    data_size: vdata.len(),
+                },
+                Sample {
+                    track_kind: TrackKind::Audio,
+                    timescale: audio_timescale,
+                    sample_entry: if seg_idx == 0 {
+                        Some(audio_entry.clone())
+                    } else {
+                        None
+                    },
+                    duration: 960,
+                    keyframe: true,
+                    composition_time_offset: None,
+                    data_offset: vdata.len() as u64,
+                    data_size: adata.len(),
+                },
+            ];
+
+            let metadata = muxer
+                .create_media_segment_metadata(&samples)
+                .unwrap_or_else(|e| panic!("segment {seg_idx} metadata failed: {e}"));
+            let mut seg_bytes = metadata;
+            seg_bytes.extend_from_slice(&vdata);
+            seg_bytes.extend_from_slice(&adata);
+            segments.push(seg_bytes);
+        }
+
+        let init = muxer.init_segment_bytes().unwrap();
+
+        let mut demuxer = Fmp4SegmentDemuxer::new();
+        demuxer.handle_init_segment(&init).unwrap();
+
+        let tracks = demuxer.tracks().unwrap();
+        assert_eq!(tracks.len(), 2, "Init segment should describe 2 tracks");
+
+        // Demux all 3 segments — each should produce 2 samples.
+        for (i, seg) in segments.iter().enumerate() {
+            let result = demuxer
+                .handle_media_segment(seg)
+                .unwrap_or_else(|e| panic!("segment {i} demux failed: {e}"));
+            assert_eq!(
+                result.len(),
+                2,
+                "Segment {i} should have 2 samples (1 video + 1 audio)"
+            );
+        }
     }
 
     /// File mode round-trip: mux and verify file is valid MP4.

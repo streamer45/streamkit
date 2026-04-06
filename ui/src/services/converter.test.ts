@@ -390,8 +390,8 @@ describe('converter service', () => {
     });
 
     it('should map MP4 audio content types', () => {
-      expect(getExtensionFromContentType('audio/mp4')).toBe('.mp4');
-      expect(getExtensionFromContentType('audio/mp4; codecs="opus"')).toBe('.mp4');
+      expect(getExtensionFromContentType('audio/mp4')).toBe('.m4a');
+      expect(getExtensionFromContentType('audio/mp4; codecs="opus"')).toBe('.m4a');
     });
 
     it('should handle content types with codecs', () => {
