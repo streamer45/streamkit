@@ -89,9 +89,9 @@ const FMP4_FIRST_FLUSH_DEFER_CAP: usize = 10 * FMP4_SEGMENT_FLUSH_THRESHOLD;
 /// Hard upper bound for skip-classification deferral.  Even when inputs are
 /// still open, force-flush after this many pending samples to prevent
 /// unbounded memory growth from pathological misconfiguration.
-/// 100× the normal cap = 30,000 samples ≈ 10 minutes of audio at typical
+/// 10× the normal cap = 3,000 samples ≈ 1 minute of audio at typical
 /// AAC frame rates (~47 frames/sec).
-const FMP4_SKIP_CLASS_HARD_CAP: usize = 100 * FMP4_FIRST_FLUSH_DEFER_CAP;
+const FMP4_SKIP_CLASS_HARD_CAP: usize = 10 * FMP4_FIRST_FLUSH_DEFER_CAP;
 
 // ---------------------------------------------------------------------------
 // Sample entry construction helpers

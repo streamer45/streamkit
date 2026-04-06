@@ -37,8 +37,10 @@ struct InstanceState {
     handle_addr: AtomicUsize,
     in_flight_calls: AtomicUsize,
     drop_requested: AtomicBool,
-    /// Plugin's declared API version (6 or 7).  Used to avoid sending
+    /// Plugin's declared API version (6, 7, or 8).  Used to avoid sending
     /// `BinaryWithMeta` packets to v6 plugins that don't understand them.
+    /// v7 plugins understand BinaryWithMeta but not EncodedAudio metadata
+    /// (which is fine — EncodedAudio is metadata-only, not a runtime packet).
     api_version: u32,
 }
 
@@ -520,6 +522,9 @@ impl NativeNodeWrapper {
                         // v6 plugins do not understand BinaryWithMeta (discriminant 10).
                         // Downgrade to plain Binary so the raw bytes still arrive; the
                         // metadata/content_type fields are lost but the plugin won't crash.
+                        // Note: no downgrade needed for EncodedAudio (discriminant 11)
+                        // because it is a metadata-only type used in CPacketTypeInfo for
+                        // pin declarations — it never appears in runtime CPacket transport.
                         if state.api_version < 7 {
                             packet_repr.downgrade_binary_with_meta();
                         }

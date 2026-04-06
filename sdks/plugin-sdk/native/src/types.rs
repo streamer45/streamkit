@@ -27,10 +27,11 @@ use std::os::raw::{c_char, c_void};
 /// v7: Added `BinaryWithMeta` packet type (`CBinaryPacket`) that preserves
 ///     optional `content_type` and per-packet `metadata` across the plugin
 ///     ↔ host boundary.  Plain `Binary` remains for backward compatibility.
-/// v8: Added `EncodedAudio` packet type discriminant with [`CAudioCodec`]
-///     enum, allowing plugins to declare encoded audio output types (e.g.
-///     AAC) that are compatible with MoQ transport nodes.  Uses the
-///     existing `audio_codec` field in [`CPacketTypeInfo`].
+/// v8: Added `EncodedAudio` packet type discriminant, allowing plugins to
+///     declare encoded audio output types (e.g. AAC) that are compatible
+///     with MoQ transport nodes.  The codec name is carried as a
+///     null-terminated string via the `custom_type_id` pointer in
+///     [`CPacketTypeInfo`].
 pub const NATIVE_PLUGIN_API_VERSION: u32 = 8;
 
 /// Opaque handle to a plugin instance
@@ -156,14 +157,6 @@ pub enum CPacketType {
     /// Encoded audio with codec metadata.  Uses `audio_codec` in
     /// [`CPacketTypeInfo`] to identify the codec.
     EncodedAudio = 11,
-}
-
-/// Audio codec discriminant for [`CPacketType::EncodedAudio`].
-#[repr(C)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum CAudioCodec {
-    Opus = 0,
-    Aac = 1,
 }
 
 /// Pixel format discriminant for raw video frames.
