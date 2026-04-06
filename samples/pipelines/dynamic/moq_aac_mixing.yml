@@ -40,8 +40,7 @@ nodes:
 
   mic_opus_decoder:
     kind: audio::opus::decoder
-    needs:
-      - moq_peer[audio/data]
+    needs: moq_peer.audio/data
 
   mic_gain:
     kind: audio::gain

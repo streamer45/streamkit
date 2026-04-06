@@ -605,7 +605,11 @@ enum MuxFrame {
     Shutdown,
 }
 
-/// Classify a [`Packet`] as audio or video from its `content_type` field.
+/// Classify a [`Packet`] as audio or video.
+///
+/// Handles `Binary` packets (from both native plugins and core encoder
+/// nodes) by inspecting the `content_type` field.  `Audio` and `Video`
+/// frame packets are classified intrinsically.
 fn classify_packet(packet: Packet) -> Option<MuxFrame> {
     match packet {
         Packet::Binary { data, content_type, metadata } => {
