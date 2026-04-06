@@ -12,7 +12,6 @@
 #![cfg(feature = "moq")]
 
 mod constants;
-pub(crate) use constants::parse_audio_codec_config;
 mod peer;
 mod pull;
 mod push;
