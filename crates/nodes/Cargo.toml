@@ -87,6 +87,12 @@ ts-rs = { version = "12.0.1", optional = true }
 # H.264 codec via Cisco's OpenH264 (optional, behind `openh264` feature)
 openh264 = { version = "0.9", optional = true }
 
+# RTMP publishing (optional, behind `rtmp` feature)
+shiguredo_rtmp = { version = "2026.1.0-canary.5", optional = true }
+tokio-rustls = { version = "0.26", optional = true }
+rustls = { version = "0.23", optional = true, default-features = false, features = ["std"] }
+rustls-platform-verifier = { version = "0.5", optional = true }
+
 # AV1 codec (optional, behind `av1` feature)
 rav1e = { version = "0.8", optional = true, default-features = false, features = ["threading", "asm"] }
 rav1d = { version = "1.1", optional = true, default-features = false, features = ["bitdepth_8", "bitdepth_16", "asm"] }
@@ -117,6 +123,7 @@ default = [
   "video",
   "mp4",
   "openh264",
+  "rtmp",
 ]
 
 # Individual features for each node.
@@ -148,6 +155,7 @@ symphonia = ["dep:symphonia", "dep:schemars"]
 vp9 = ["dep:env-libvpx-sys", "dep:schemars"]
 av1 = ["dep:rav1e", "dep:rav1d", "dep:schemars"]
 openh264 = ["dep:openh264", "dep:schemars", "dep:serde_json"]
+rtmp = ["dep:shiguredo_rtmp", "dep:tokio-rustls", "dep:rustls", "dep:rustls-platform-verifier", "dep:schemars", "dep:serde_json"]
 svt_av1 = ["dep:schemars", "dep:serde_json", "dep:pkg-config", "dep:cc"]
 # svt_av1_static downloads + builds SVT-AV1 at compile time (no system install).
 # Not in `default` to keep dev builds fast; enabled explicitly in Dockerfiles and

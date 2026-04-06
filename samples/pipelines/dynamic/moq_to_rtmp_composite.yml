@@ -1,0 +1,127 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# MoQ-to-RTMP compositing pipeline.
+#
+# Receives audio and video from a WebTransport publisher via MoQ,
+# composites the video (main + PiP + logo overlay), re-encodes to
+# H.264 (OpenH264) + AAC, and publishes the result to an RTMP endpoint
+# such as YouTube Live or Twitch.
+#
+# Requires:
+#   - aac-encoder native plugin (just install-plugin aac-encoder)
+#   - Replace the RTMP URL below with your actual stream key.
+
+name: MoQ to RTMP (Composited)
+description: |
+  Receives audio+video via MoQ peer, composites with PiP and logo overlay,
+  re-encodes to H.264+AAC, and publishes to an RTMP endpoint (e.g. YouTube Live).
+mode: dynamic
+client:
+  gateway_path: /moq/rtmp-out
+  publish:
+    broadcast: input
+    tracks:
+      - kind: audio
+        source: microphone
+      - kind: video
+        source: camera
+  watch:
+    broadcast: monitor
+    audio: false
+    video: true
+
+nodes:
+  # ── MoQ input ──────────────────────────────────────────────────────
+  moq_peer:
+    kind: transport::moq::peer
+    params:
+      gateway_path: /moq/rtmp-out
+      input_broadcasts:
+        - input
+      output_broadcast: monitor
+      allow_reconnect: true
+    needs:
+      - vp9_monitor
+
+  # ── Audio path: Opus → PCM → AAC ──────────────────────────────────
+  opus_decoder:
+    kind: audio::opus::decoder
+    needs:
+      in: moq_peer.audio/data
+
+  aac_encoder:
+    kind: plugin::native::aac_encoder
+    params:
+      bitrate: 128000
+    needs: opus_decoder
+
+  # ── Video path: decode → composite → encode ────────────────────────
+  colorbars_pip:
+    kind: video::colorbars
+    params:
+      width: 320
+      height: 240
+      fps: 30
+      pixel_format: rgba8
+      draw_time: true
+
+  compositor:
+    kind: video::compositor
+    params:
+      width: 1280
+      height: 720
+      num_inputs: 2
+      layers:
+        in_0:
+          opacity: 1.0
+          z_index: 0
+        in_1:
+          rect:
+            x: 920
+            y: 20
+            width: 320
+            height: 240
+          opacity: 0.85
+          z_index: 1
+      image_overlays:
+        - id: logo
+          asset_path: samples/images/system/streamkit-logo.png
+          rect:
+            x: 1190
+            y: 630
+            width: 46
+            height: 80
+          opacity: 0.7
+          z_index: 3
+    needs:
+      - moq_peer.video/data
+      - colorbars_pip
+
+  pixel_convert:
+    kind: video::pixel_convert
+    params:
+      output_format: nv12
+    needs: compositor
+
+  h264_encoder:
+    kind: video::openh264::encoder
+    params:
+      bitrate_kbps: 2500
+      max_frame_rate: 30.0
+    needs: pixel_convert
+
+  # ── Monitor output (view composited result via MoQ) ────────────────
+  vp9_monitor:
+    kind: video::vp9::encoder
+    needs: pixel_convert
+
+  # ── RTMP output ────────────────────────────────────────────────────
+  rtmp_publish:
+    kind: transport::rtmp::publish
+    params:
+      url: "rtmp://a.rtmp.youtube.com/live2/YOUR_STREAM_KEY"
+    needs:
+      video: h264_encoder
+      audio: aac_encoder
