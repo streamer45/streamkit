@@ -6,8 +6,9 @@
 //!
 //! Accepts 48 kHz mono or stereo f32 PCM audio on pin `"in"`, encodes to AAC-LC
 //! (ISO 14496-3 profile 2), and emits raw AAC frames on pin `"out"` as
+//! `PacketType::EncodedAudio(Aac)`.  At runtime, packets are carried as
 //! `Packet::Binary` with `content_type = "audio/aac"` and per-packet
-//! timing metadata.
+//! timing metadata (the same transport used by the Opus encoder).
 //!
 //! The encoder always produces stereo output at 48 kHz.  Mono input is
 //! automatically upmixed (duplicated to both channels).  The AAC frame size
@@ -16,7 +17,7 @@
 use serde::Deserialize;
 use streamkit_plugin_sdk_native::prelude::*;
 use streamkit_plugin_sdk_native::streamkit_core::types::{
-    AudioFormat, PacketMetadata, SampleFormat,
+    AudioCodec, AudioFormat, EncodedAudioFormat, PacketMetadata, SampleFormat,
 };
 
 // ---------------------------------------------------------------------------
@@ -144,15 +145,10 @@ impl NativeProcessorNode for AacEncoderNode {
                     }),
                 ],
             )
-            // NOTE: The output type is `PacketType::Binary` rather than
-            // `PacketType::EncodedAudio(Aac)` because the native plugin C ABI
-            // does not yet have a discriminant for `EncodedAudio`.  The
-            // `BinaryWithMeta` transport preserves `content_type` and metadata
-            // so downstream nodes that inspect these fields (e.g. MP4 muxer)
-            // can still identify the codec.  MoQ transport nodes, however,
-            // expect `EncodedAudio` and will reject `Binary` — this is a known
-            // limitation until `EncodedAudio` support is added to the C ABI.
-            .output("out", PacketType::Binary)
+            .output("out", PacketType::EncodedAudio(EncodedAudioFormat {
+                codec: AudioCodec::Aac,
+                codec_private: None,
+            }))
             .param_schema(serde_json::json!({
                 "type": "object",
                 "properties": {

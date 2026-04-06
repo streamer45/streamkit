@@ -27,7 +27,11 @@ use std::os::raw::{c_char, c_void};
 /// v7: Added `BinaryWithMeta` packet type (`CBinaryPacket`) that preserves
 ///     optional `content_type` and per-packet `metadata` across the plugin
 ///     ↔ host boundary.  Plain `Binary` remains for backward compatibility.
-pub const NATIVE_PLUGIN_API_VERSION: u32 = 7;
+/// v8: Added `EncodedAudio` packet type discriminant with [`CAudioCodec`]
+///     enum, allowing plugins to declare encoded audio output types (e.g.
+///     AAC) that are compatible with MoQ transport nodes.  Uses the
+///     existing `audio_codec` field in [`CPacketTypeInfo`].
+pub const NATIVE_PLUGIN_API_VERSION: u32 = 8;
 
 /// Opaque handle to a plugin instance
 pub type CPluginHandle = *mut c_void;
@@ -149,6 +153,17 @@ pub enum CPacketType {
     /// Binary packet that preserves optional `content_type` and `metadata`
     /// across the plugin ↔ host boundary.  Points to a [`CBinaryPacket`].
     BinaryWithMeta = 10,
+    /// Encoded audio with codec metadata.  Uses `audio_codec` in
+    /// [`CPacketTypeInfo`] to identify the codec.
+    EncodedAudio = 11,
+}
+
+/// Audio codec discriminant for [`CPacketType::EncodedAudio`].
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum CAudioCodec {
+    Opus = 0,
+    Aac = 1,
 }
 
 /// Pixel format discriminant for raw video frames.
@@ -227,17 +242,28 @@ pub struct CCustomPacket {
 
 /// Full packet type with optional format information.
 ///
-/// Exactly one of the optional pointers is non-null depending on `type_discriminant`:
-/// - `RawAudio`  → `audio_format`
-/// - `Custom`    → `custom_type_id`
-/// - `RawVideo`  → `raw_video_format`
+/// Exactly one of the optional pointers is non-null depending on
+/// `type_discriminant`:
+/// - `RawAudio`     → `audio_format`
+/// - `Custom`       → `custom_type_id`
+/// - `RawVideo`     → `raw_video_format`
+/// - `EncodedAudio` → `custom_type_id` (null-terminated codec name, e.g. `"aac"`)
+///
+/// # ABI stability
+///
+/// This struct is embedded (by value) in [`COutputPin`] and [`CInputPin`],
+/// which live in arrays returned from `get_metadata`.  Adding fields would
+/// change the struct size and break array indexing for older plugins.
+/// New discriminants must reuse existing pointer fields.
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct CPacketTypeInfo {
     pub type_discriminant: CPacketType,
     /// For RawAudio: pointer to CAudioFormat, otherwise null.
     pub audio_format: *const CAudioFormat,
-    /// For Custom: pointer to a null-terminated type id string, otherwise null.
+    /// For Custom: pointer to a null-terminated type id string.
+    /// For EncodedAudio: pointer to a null-terminated codec name
+    /// (e.g. `"opus"`, `"aac"`).  Otherwise null.
     pub custom_type_id: *const c_char,
     /// For RawVideo: pointer to CRawVideoFormat, otherwise null.
     pub raw_video_format: *const CRawVideoFormat,

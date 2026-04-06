@@ -69,6 +69,29 @@ pub fn packet_type_from_c(cpt_info: CPacketTypeInfo) -> Result<PacketType, Strin
             // silently mislabelling the codec.
             Ok(PacketType::Binary)
         },
+        CPacketType::EncodedAudio => {
+            // The codec name is carried in `custom_type_id` to avoid changing
+            // the CPacketTypeInfo struct layout (see ABI stability note).
+            let codec = if cpt_info.custom_type_id.is_null() {
+                // Default to Opus when no codec name is provided.
+                AudioCodec::Opus
+            } else {
+                let name = unsafe { c_str_to_string(cpt_info.custom_type_id) }?;
+                match name.as_str() {
+                    "opus" => AudioCodec::Opus,
+                    "aac" => AudioCodec::Aac,
+                    other => {
+                        return Err(format!(
+                            "Unknown EncodedAudio codec name: {other:?}"
+                        ))
+                    },
+                }
+            };
+            Ok(PacketType::EncodedAudio(EncodedAudioFormat {
+                codec,
+                codec_private: None,
+            }))
+        },
         CPacketType::Binary | CPacketType::BinaryWithMeta => Ok(PacketType::Binary),
         CPacketType::Any => Ok(PacketType::Any),
         CPacketType::Passthrough => Ok(PacketType::Passthrough),
@@ -208,11 +231,18 @@ pub fn packet_type_to_c(pt: &PacketType) -> (CPacketTypeInfo, CPacketTypeOwned) 
                     CPacketTypeOwned::None,
                 )
             } else {
+                // Carry the codec name in `custom_type_id` (reusing the
+                // existing pointer field to avoid changing the struct layout).
+                let codec_name: &'static [u8] = match format.codec {
+                    AudioCodec::Opus => b"opus\0",
+                    AudioCodec::Aac => b"aac\0",
+                    _ => b"unknown\0",
+                };
                 (
                     CPacketTypeInfo {
-                        type_discriminant: CPacketType::Binary,
+                        type_discriminant: CPacketType::EncodedAudio,
                         audio_format: std::ptr::null(),
-                        custom_type_id: std::ptr::null(),
+                        custom_type_id: codec_name.as_ptr().cast::<c_char>(),
                         raw_video_format: std::ptr::null(),
                     },
                     CPacketTypeOwned::None,
@@ -716,6 +746,18 @@ pub unsafe fn packet_from_c(c_packet: *const CPacket) -> Result<Packet, String> 
         },
         CPacketType::EncodedVideo => {
             // Encoded video is carried as opaque bytes across the C ABI.
+            let data = std::slice::from_raw_parts(c_pkt.data.cast::<u8>(), c_pkt.len);
+            Ok(Packet::Binary {
+                data: bytes::Bytes::copy_from_slice(data),
+                content_type: None,
+                metadata: None,
+            })
+        },
+        CPacketType::EncodedAudio => {
+            // EncodedAudio is a *type-level* discriminant used in pin
+            // declarations.  At runtime, encoded audio packets travel as
+            // BinaryWithMeta (preserving content_type and metadata).
+            // If we somehow receive one here, treat it as opaque bytes.
             let data = std::slice::from_raw_parts(c_pkt.data.cast::<u8>(), c_pkt.len);
             Ok(Packet::Binary {
                 data: bytes::Bytes::copy_from_slice(data),

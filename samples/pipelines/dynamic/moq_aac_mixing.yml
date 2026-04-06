@@ -4,16 +4,7 @@
 
 # Real-time mixing pipeline using AAC encoding, output to MP4 via MoQ peer.
 #
-# NOTE — MoQ AAC transport limitation:
-# The AAC encoder native plugin outputs `PacketType::Binary` (via the
-# BinaryWithMeta C ABI) rather than `PacketType::EncodedAudio(Aac)`.
-# MoQ transport nodes only accept `EncodedAudio`, so the AAC encoder
-# cannot feed directly into a moq_peer output pin.  Once the native
-# plugin C ABI gains an `EncodedAudio` discriminant (or the host adds
-# automatic Binary→EncodedAudio promotion), the pipeline can be
-# rewired to broadcast AAC over MoQ directly.
-#
-# Current topology:
+# Topology:
 #   MoQ peer (Opus input) → decode → mix with music → AAC encode → MP4 mux
 #
 # The mixer outputs 960 samples/channel (Opus frame size at 48 kHz);

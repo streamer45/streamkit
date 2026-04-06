@@ -86,6 +86,12 @@ const FMP4_SEGMENT_FLUSH_THRESHOLD: usize = 30;
 /// rather than growing without bound.
 const FMP4_FIRST_FLUSH_DEFER_CAP: usize = 10 * FMP4_SEGMENT_FLUSH_THRESHOLD;
 
+/// Hard upper bound for skip-classification deferral.  Even when inputs are
+/// still open, force-flush after this many pending samples to prevent
+/// unbounded memory growth from pathological misconfiguration.
+/// 100× the normal cap ≈ several seconds of audio at typical rates.
+const FMP4_SKIP_CLASS_HARD_CAP: usize = 100 * FMP4_FIRST_FLUSH_DEFER_CAP;
+
 // ---------------------------------------------------------------------------
 // Sample entry construction helpers
 // ---------------------------------------------------------------------------
@@ -1377,6 +1383,18 @@ fn should_flush_fmp4_segment(
         // omits an expected track would cause the browser to reject it
         // ("Initialization segment misses expected … track").
         if inputs.tp.skip_classification && inputs_open > 0 {
+            // Secondary hard cap: prevent truly unbounded growth from
+            // pathological misconfiguration even in skip-classification mode.
+            if seg.pending_samples.len() >= FMP4_SKIP_CLASS_HARD_CAP {
+                tracing::warn!(
+                    "Skip-classification deferral hard cap reached \
+                     ({} pending, cap={}). Forcing flush \
+                     (video_ready={video_ready}, audio_ready={audio_ready}).",
+                    seg.pending_samples.len(),
+                    FMP4_SKIP_CLASS_HARD_CAP,
+                );
+                return true;
+            }
             if seg.pending_samples.len().is_multiple_of(FMP4_FIRST_FLUSH_DEFER_CAP) {
                 tracing::debug!(
                     "First fMP4 flush deferred: {} pending samples, \

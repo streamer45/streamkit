@@ -1,0 +1,50 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Simple AAC echo pipeline over MoQ.
+#
+# Accepts Opus audio from a WebTransport publisher, decodes it,
+# re-encodes to AAC, and broadcasts the AAC stream back to subscribers.
+#
+# Requires: aac-encoder native plugin (just install-plugin aac-encoder)
+
+name: MoQ AAC Echo
+description: |
+  Accepts Opus audio via MoQ peer, re-encodes to AAC, and
+  broadcasts the AAC echo back to subscribers.
+mode: dynamic
+client:
+  gateway_path: /moq/aac-echo
+  publish:
+    broadcast: input
+    tracks:
+      - kind: audio
+        source: microphone
+  watch:
+    broadcast: output
+    audio: true
+    video: false
+
+nodes:
+  moq_peer:
+    kind: transport::moq::peer
+    params:
+      gateway_path: /moq/aac-echo
+      input_broadcasts:
+        - input
+      output_broadcast: output
+      allow_reconnect: true
+      audio_codec: aac
+    needs: aac_encoder
+
+  opus_decoder:
+    kind: audio::opus::decoder
+    needs:
+      in: moq_peer.audio/data
+
+  aac_encoder:
+    kind: plugin::native::aac_encoder
+    params:
+      bitrate: 128000
+    needs: opus_decoder
