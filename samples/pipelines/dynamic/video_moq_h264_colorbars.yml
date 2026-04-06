@@ -35,5 +35,6 @@ nodes:
       gateway_path: /moq/video
       output_broadcast: output
       allow_reconnect: true
+      video_codec: h264
     needs:
       in: h264_encoder

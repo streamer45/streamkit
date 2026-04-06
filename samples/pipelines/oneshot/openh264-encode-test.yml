@@ -3,11 +3,11 @@
 # SPDX-License-Identifier: MPL-2.0
 
 # Demonstrates the video::openh264::encoder node:
-#   Generates SMPTE color bars (I420), encodes to H.264 via OpenH264,
-#   and writes the raw Annex B bitstream to an HTTP output (3 seconds).
+#   Generates SMPTE color bars (NV12), encodes to H.264 via OpenH264,
+#   muxes into an MP4 container, and writes the result to HTTP output.
 
-name: OpenH264 Encode Test
-description: Generates color bars and encodes to H.264 using OpenH264 (Constrained Baseline)
+name: OpenH264 Encode Test (MP4)
+description: Generates color bars, encodes to H.264 using OpenH264, and muxes into MP4
 mode: oneshot
 client:
   input:
@@ -34,12 +34,16 @@ nodes:
       max_frame_rate: 30.0
     needs: colorbars
 
-  pacer:
-    kind: core::pacer
+  mp4_muxer:
+    kind: containers::mp4::muxer
+    params:
+      mode: file
+      video_width: 640
+      video_height: 480
     needs: h264_encoder
 
   http_output:
     kind: streamkit::http_output
     params:
-      content_type: 'video/h264'
-    needs: pacer
+      content_type: 'video/mp4; codecs="avc1"'
+    needs: mp4_muxer

@@ -5,7 +5,7 @@
 //! MoQ Pull Node - subscribes to broadcasts from a MoQ server
 
 use super::constants::DEFAULT_AUDIO_FRAME_DURATION_US;
-use crate::video::{AV1_CONTENT_TYPE, VP9_CONTENT_TYPE};
+use crate::video::{AV1_CONTENT_TYPE, H264_CONTENT_TYPE, VP9_CONTENT_TYPE};
 use async_trait::async_trait;
 use bytes::Buf;
 use moq_lite::AsPath;
@@ -433,6 +433,13 @@ impl MoqPullNode {
                         video_codec: Some(VideoCodec::Av1),
                     });
                 },
+                hang::catalog::VideoCodec::H264(_) => {
+                    tracing::info!(track = %name, "found H264 video track");
+                    tracks.push(DiscoveredTrack {
+                        track: moq_lite::Track { name: name.clone(), priority: 60 },
+                        video_codec: Some(VideoCodec::H264),
+                    });
+                },
                 _ => {
                     tracing::debug!(track = %name, codec = ?config.codec, "skipping unsupported video track");
                 },
@@ -705,6 +712,7 @@ impl MoqPullNode {
         // Falls back to "video/vp9" if no codec info is available.
         let video_content_type: &str = match video_track.and_then(|dt| dt.video_codec) {
             Some(VideoCodec::Av1) => AV1_CONTENT_TYPE,
+            Some(VideoCodec::H264) => H264_CONTENT_TYPE,
             _ => VP9_CONTENT_TYPE,
         };
 

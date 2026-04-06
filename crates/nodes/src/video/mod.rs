@@ -45,6 +45,18 @@ pub const AV1_BIT_DEPTH: u8 = 8;
 /// AV1 Main tier.
 pub const AV1_TIER: char = 'M';
 
+// ── Default H.264 codec parameters ───────────────────────────────────────────
+//
+// OpenH264 produces Constrained Baseline profile. These are shared across
+// MoQ catalog creation for H.264 tracks.
+
+/// H.264 Constrained Baseline profile indicator (0x42).
+pub const H264_PROFILE: u8 = 0x42;
+/// H.264 constraint flags for Constrained Baseline (0xC0).
+pub const H264_CONSTRAINTS: u8 = 0xC0;
+/// H.264 level 3.0 (0x1E) — suitable for up to 720p30.
+pub const H264_LEVEL: u8 = 0x1E;
+
 // ── Codec content-type strings ───────────────────────────────────────────────
 //
 // Shared across encoder nodes, MoQ transport, and container muxers.

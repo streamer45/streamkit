@@ -11,8 +11,8 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use openh264::encoder::{BitRate, EncoderConfig, FrameRate, FrameType};
-use openh264::formats::YUVBuffer;
+use openh264::encoder::{BitRate, EncoderConfig, FrameRate, FrameType, RateControlMode};
+use openh264::formats::YUVSlices;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use streamkit_core::types::{
@@ -46,9 +46,9 @@ const H264_DEFAULT_MAX_FRAME_RATE: f32 = 30.0;
 #[derive(Deserialize, Debug, JsonSchema, Clone)]
 #[serde(default)]
 pub struct OpenH264EncoderConfig {
-    /// Target bitrate in kilobits per second.
+    /// Target bitrate in kilobits per second.  Must be greater than zero.
     pub bitrate_kbps: u32,
-    /// Maximum frame rate in Hz.
+    /// Maximum frame rate in Hz.  Must be greater than zero.
     pub max_frame_rate: f32,
 }
 
@@ -71,7 +71,17 @@ pub struct OpenH264EncoderNode {
 
 impl OpenH264EncoderNode {
     #[allow(clippy::missing_errors_doc)]
-    pub const fn new(config: OpenH264EncoderConfig) -> Result<Self, StreamKitError> {
+    pub fn new(config: OpenH264EncoderConfig) -> Result<Self, StreamKitError> {
+        if config.bitrate_kbps == 0 {
+            return Err(StreamKitError::Configuration(
+                "OpenH264 encoder: bitrate_kbps must be greater than zero".into(),
+            ));
+        }
+        if config.max_frame_rate <= 0.0 || !config.max_frame_rate.is_finite() {
+            return Err(StreamKitError::Configuration(
+                "OpenH264 encoder: max_frame_rate must be a positive finite value".into(),
+            ));
+        }
         Ok(Self { config })
     }
 }
@@ -170,15 +180,20 @@ impl StandardVideoEncoder for OpenH264Encoder {
 
 struct OpenH264Encoder {
     encoder: openh264::encoder::Encoder,
+    /// Reusable I420 buffer to avoid per-frame heap allocation.
+    yuv_buf: Vec<u8>,
 }
 
 impl OpenH264Encoder {
-    fn new(width: u32, height: u32, config: &OpenH264EncoderConfig) -> Result<Self, String> {
-        let _ = (width, height); // dimensions are set per-frame by the openh264 crate
+    fn new(_width: u32, _height: u32, config: &OpenH264EncoderConfig) -> Result<Self, String> {
+        // Dimensions are set per-frame by the openh264 crate (via YUVBuffer),
+        // so we don't use width/height here.  A new encoder is created on each
+        // resolution change by the StandardVideoEncoder infrastructure.
 
         let enc_config = EncoderConfig::new()
             .bitrate(BitRate::from_bps(config.bitrate_kbps * 1000))
             .max_frame_rate(FrameRate::from_hz(config.max_frame_rate))
+            .rate_control_mode(RateControlMode::Bitrate)
             .skip_frames(false);
 
         let encoder = openh264::encoder::Encoder::with_api_config(
@@ -187,7 +202,7 @@ impl OpenH264Encoder {
         )
         .map_err(|e| format!("OpenH264: failed to create encoder: {e}"))?;
 
-        Ok(Self { encoder })
+        Ok(Self { encoder, yuv_buf: Vec::new() })
     }
 
     fn encode_frame(
@@ -204,6 +219,12 @@ impl OpenH264Encoder {
 
         let width = frame.width as usize;
         let height = frame.height as usize;
+
+        // H.264 requires even dimensions (4:2:0 chroma subsampling).
+        if !width.is_multiple_of(2) || !height.is_multiple_of(2) {
+            return Err(format!("OpenH264 encoder requires even dimensions, got {width}x{height}"));
+        }
+
         let layout = frame.layout();
 
         if frame.data_len() < layout.total_bytes() {
@@ -221,7 +242,19 @@ impl OpenH264Encoder {
         }
 
         // Build I420 YUV data for the openh264 crate.
-        let yuv = Self::build_yuv_buffer(frame, width, height, &layout);
+        self.fill_yuv_buffer(frame, width, height, &layout);
+
+        let y_size = width * height;
+        let uv_size = (width / 2) * (height / 2);
+        let yuv = YUVSlices::new(
+            (
+                &self.yuv_buf[..y_size],
+                &self.yuv_buf[y_size..y_size + uv_size],
+                &self.yuv_buf[y_size + uv_size..],
+            ),
+            (width, height),
+            (width, width / 2, width / 2),
+        );
 
         let bitstream =
             self.encoder.encode(&yuv).map_err(|e| format!("OpenH264: encode failed: {e}"))?;
@@ -249,31 +282,35 @@ impl OpenH264Encoder {
         Ok(vec![EncodedPacket { data: Bytes::from(data), metadata: output_metadata }])
     }
 
-    /// Convert a [`VideoFrame`] (I420 or NV12) into a [`YUVBuffer`] suitable
-    /// for the openh264 encoder.
-    fn build_yuv_buffer(
+    /// Fill `self.yuv_buf` with packed I420 data from a [`VideoFrame`]
+    /// (I420 or NV12).  The buffer is reused across calls to avoid
+    /// per-frame heap allocation.
+    fn fill_yuv_buffer(
+        &mut self,
         frame: &VideoFrame,
         width: usize,
         height: usize,
         layout: &streamkit_core::types::VideoLayout,
-    ) -> YUVBuffer {
+    ) {
         let data = frame.data.as_slice();
         let planes = layout.planes();
-        let chroma_w = width.div_ceil(2);
-        let chroma_h = height.div_ceil(2);
+        let chroma_w = width / 2;
+        let chroma_h = height / 2;
 
         // Build a contiguous I420 buffer: Y (w*h) + U (w/2*h/2) + V (w/2*h/2).
         let y_size = width * height;
         let uv_size = chroma_w * chroma_h;
         let total = y_size + 2 * uv_size;
-        let mut i420_buf = vec![0u8; total];
+
+        // Reuse the allocation; only re-allocates if the frame grew.
+        self.yuv_buf.resize(total, 0);
 
         // Copy Y plane (common for both I420 and NV12).
         let y_plane = &planes[0];
         for row in 0..height {
             let src_start = y_plane.offset + row * y_plane.stride;
             let dst_start = row * width;
-            i420_buf[dst_start..dst_start + width]
+            self.yuv_buf[dst_start..dst_start + width]
                 .copy_from_slice(&data[src_start..src_start + width]);
         }
 
@@ -284,7 +321,7 @@ impl OpenH264Encoder {
                 for row in 0..chroma_h {
                     let src_start = u_plane.offset + row * u_plane.stride;
                     let dst_start = y_size + row * chroma_w;
-                    i420_buf[dst_start..dst_start + chroma_w]
+                    self.yuv_buf[dst_start..dst_start + chroma_w]
                         .copy_from_slice(&data[src_start..src_start + chroma_w]);
                 }
                 // V plane
@@ -292,7 +329,7 @@ impl OpenH264Encoder {
                 for row in 0..chroma_h {
                     let src_start = v_plane.offset + row * v_plane.stride;
                     let dst_start = y_size + uv_size + row * chroma_w;
-                    i420_buf[dst_start..dst_start + chroma_w]
+                    self.yuv_buf[dst_start..dst_start + chroma_w]
                         .copy_from_slice(&data[src_start..src_start + chroma_w]);
                 }
             },
@@ -302,16 +339,14 @@ impl OpenH264Encoder {
                 for row in 0..chroma_h {
                     let src_start = uv_plane.offset + row * uv_plane.stride;
                     for col in 0..chroma_w {
-                        i420_buf[y_size + row * chroma_w + col] = data[src_start + col * 2];
-                        i420_buf[y_size + uv_size + row * chroma_w + col] =
+                        self.yuv_buf[y_size + row * chroma_w + col] = data[src_start + col * 2];
+                        self.yuv_buf[y_size + uv_size + row * chroma_w + col] =
                             data[src_start + col * 2 + 1];
                     }
                 }
             },
             _ => unreachable!("already checked above"),
         }
-
-        YUVBuffer::from_vec(i420_buf, width, height)
     }
 }
 
@@ -485,6 +520,66 @@ mod tests {
                 },
                 _ => panic!("Expected Binary packet from OpenH264 encoder"),
             }
+        }
+    }
+
+    #[test]
+    fn test_config_validation_zero_bitrate() {
+        let result = OpenH264EncoderNode::new(OpenH264EncoderConfig {
+            bitrate_kbps: 0,
+            max_frame_rate: 30.0,
+        });
+        assert!(result.is_err(), "bitrate_kbps=0 should be rejected");
+    }
+
+    #[test]
+    fn test_config_validation_negative_frame_rate() {
+        let result = OpenH264EncoderNode::new(OpenH264EncoderConfig {
+            bitrate_kbps: 2000,
+            max_frame_rate: -1.0,
+        });
+        assert!(result.is_err(), "negative max_frame_rate should be rejected");
+    }
+
+    #[test]
+    fn test_config_validation_zero_frame_rate() {
+        let result = OpenH264EncoderNode::new(OpenH264EncoderConfig {
+            bitrate_kbps: 2000,
+            max_frame_rate: 0.0,
+        });
+        assert!(result.is_err(), "zero max_frame_rate should be rejected");
+    }
+
+    #[test]
+    fn test_config_validation_nan_frame_rate() {
+        let result = OpenH264EncoderNode::new(OpenH264EncoderConfig {
+            bitrate_kbps: 2000,
+            max_frame_rate: f32::NAN,
+        });
+        assert!(result.is_err(), "NaN max_frame_rate should be rejected");
+    }
+
+    #[test]
+    fn test_odd_dimensions_rejected() {
+        let config = OpenH264EncoderConfig::default();
+        let mut encoder = OpenH264Encoder::new(64, 64, &config).unwrap();
+
+        let frame = create_test_video_frame(63, 64, PixelFormat::I420, 16);
+        match encoder.encode_frame(&frame, None) {
+            Err(msg) => assert!(
+                msg.contains("even dimensions"),
+                "error should mention even dimensions, got: {msg}"
+            ),
+            Ok(_) => panic!("odd width should be rejected"),
+        }
+
+        let frame = create_test_video_frame(64, 63, PixelFormat::I420, 16);
+        match encoder.encode_frame(&frame, None) {
+            Err(msg) => assert!(
+                msg.contains("even dimensions"),
+                "error should mention even dimensions, got: {msg}"
+            ),
+            Ok(_) => panic!("odd height should be rejected"),
         }
     }
 }

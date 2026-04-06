@@ -5,7 +5,8 @@
 //! Shared constants for MoQ transport nodes
 
 use crate::video::{
-    AV1_BIT_DEPTH, AV1_LEVEL, AV1_PROFILE, AV1_TIER, VP9_BIT_DEPTH, VP9_LEVEL, VP9_PROFILE,
+    AV1_BIT_DEPTH, AV1_LEVEL, AV1_PROFILE, AV1_TIER, H264_CONSTRAINTS, H264_LEVEL, H264_PROFILE,
+    VP9_BIT_DEPTH, VP9_LEVEL, VP9_PROFILE,
 };
 use streamkit_core::types::{
     AudioCodec, EncodedAudioFormat, EncodedVideoFormat, PacketMetadata, PacketType, VideoCodec,
@@ -17,7 +18,7 @@ pub fn packet_duration_us(metadata: Option<&PacketMetadata>) -> Option<u64> {
     metadata.and_then(|m| m.duration_us).filter(|d| *d > 0)
 }
 
-/// Return the accepted media types for dynamic MoQ pins (Opus audio + VP9/AV1 video).
+/// Return the accepted media types for dynamic MoQ pins (Opus audio + VP9/AV1/H264 video).
 ///
 /// This is shared across `moq_peer` and `moq_push` to avoid duplicating the
 /// type construction in every `RequestAddInputPin` / `RequestAddOutputPin` handler.
@@ -36,6 +37,13 @@ pub fn moq_accepted_media_types() -> Vec<PacketType> {
         }),
         PacketType::EncodedVideo(EncodedVideoFormat {
             codec: VideoCodec::Av1,
+            bitstream_format: None,
+            codec_private: None,
+            profile: None,
+            level: None,
+        }),
+        PacketType::EncodedVideo(EncodedVideoFormat {
+            codec: VideoCodec::H264,
             bitstream_format: None,
             codec_private: None,
             profile: None,
@@ -62,6 +70,14 @@ pub fn catalog_video_codec(codec: VideoCodec) -> hang::catalog::VideoCodec {
             level: VP9_LEVEL,
             bit_depth: VP9_BIT_DEPTH,
             ..hang::catalog::VP9::default()
+        }),
+        // OpenH264 produces Constrained Baseline (profile 0x42, constraints
+        // 0xC0) — inline SPS/PPS in bitstream (avc3 style, Annex B NALUs).
+        VideoCodec::H264 => hang::catalog::VideoCodec::H264(hang::catalog::H264 {
+            profile: H264_PROFILE,
+            constraints: H264_CONSTRAINTS,
+            level: H264_LEVEL,
+            inline: true,
         }),
         // Unsupported codec — fall back to VP9 catalog entry and log a warning.
         _ => {
@@ -108,6 +124,7 @@ pub fn parse_video_codec_config(s: &str) -> Option<VideoCodec> {
     match s.to_ascii_lowercase().as_str() {
         "vp9" => Some(VideoCodec::Vp9),
         "av1" => Some(VideoCodec::Av1),
+        "h264" => Some(VideoCodec::H264),
         _ => {
             tracing::warn!(video_codec = %s, "unrecognised video_codec config value — ignoring");
             None
@@ -134,11 +151,16 @@ mod tests {
         assert_eq!(parse_video_codec_config("AV1"), Some(VideoCodec::Av1));
         assert_eq!(parse_video_codec_config("VP9"), Some(VideoCodec::Vp9));
         assert_eq!(parse_video_codec_config("Av1"), Some(VideoCodec::Av1));
+        assert_eq!(parse_video_codec_config("H264"), Some(VideoCodec::H264));
+    }
+
+    #[test]
+    fn parse_video_codec_config_h264() {
+        assert_eq!(parse_video_codec_config("h264"), Some(VideoCodec::H264));
     }
 
     #[test]
     fn parse_video_codec_config_unknown_returns_none() {
-        assert_eq!(parse_video_codec_config("h264"), None);
         assert_eq!(parse_video_codec_config(""), None);
         assert_eq!(parse_video_codec_config("unknown"), None);
     }
@@ -158,6 +180,15 @@ mod tests {
         assert!(
             matches!(result, hang::catalog::VideoCodec::VP9(_)),
             "expected VP9 catalog codec, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn catalog_video_codec_h264_produces_h264() {
+        let result = catalog_video_codec(VideoCodec::H264);
+        assert!(
+            matches!(result, hang::catalog::VideoCodec::H264(_)),
+            "expected H264 catalog codec, got {result:?}"
         );
     }
 
