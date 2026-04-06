@@ -190,83 +190,95 @@ impl ProcessorNode for RtmpPublishNode {
         // ── Main publishing loop ────────────────────────────────────────
         tracing::info!(%node_name, "Entering RTMP publishing loop");
 
-        loop {
-            tokio::select! {
-                // Video input
-                maybe_pkt = video_rx.recv() => {
-                    let Some(pkt) = maybe_pkt else {
-                        tracing::info!(%node_name, "Video input channel closed");
-                        break;
-                    };
-                    if let Err(e) = process_video_packet(
-                        &pkt, &mut connection, &packet_counter, &metric_labels,
-                        &mut stats, &mut packet_count, &node_name,
-                    ) {
-                        tracing::warn!(%node_name, error = %e, "Error processing video packet");
-                        stats.errored();
-                    }
-                    flush_send_buf(&mut connection, &mut stream).await?;
-                }
-
-                // Audio input
-                maybe_pkt = audio_rx.recv() => {
-                    let Some(pkt) = maybe_pkt else {
-                        tracing::info!(%node_name, "Audio input channel closed");
-                        break;
-                    };
-                    if let Err(e) = process_audio_packet(
-                        &pkt, &mut connection, &mut audio_seq_header_sent,
-                        self.config.sample_rate, self.config.channels,
-                        &packet_counter, &metric_labels,
-                        &mut stats, &mut packet_count, &node_name,
-                    ) {
-                        tracing::warn!(%node_name, error = %e, "Error processing audio packet");
-                        stats.errored();
-                    }
-                    flush_send_buf(&mut connection, &mut stream).await?;
-                }
-
-                // TCP read (server responses / keepalive)
-                read_result = stream.read(&mut tcp_read_buf) => {
-                    match read_result {
-                        Ok(0) => {
-                            tracing::warn!(%node_name, "RTMP server closed connection");
+        let result: Result<(), StreamKitError> = async {
+            loop {
+                tokio::select! {
+                    // Video input
+                    maybe_pkt = video_rx.recv() => {
+                        let Some(pkt) = maybe_pkt else {
+                            tracing::info!(%node_name, "Video input channel closed");
                             break;
+                        };
+                        if let Err(e) = process_video_packet(
+                            &pkt, &mut connection, &packet_counter, &metric_labels,
+                            &mut stats, &mut packet_count, &node_name,
+                        ) {
+                            tracing::warn!(%node_name, error = %e, "Error processing video packet");
+                            stats.errored();
                         }
-                        Ok(n) => {
-                            if let Err(e) = connection.feed_recv_buf(&tcp_read_buf[..n]) {
-                                tracing::warn!(%node_name, error = %e, "Error feeding RTMP recv buffer");
-                            }
-                            // Drain events (acks, pings, etc.)
-                            if drain_events(&mut connection, &node_name) {
-                                tracing::info!(%node_name, "Breaking loop: peer disconnected");
+                        flush_send_buf(&mut connection, &mut stream).await?;
+                    }
+
+                    // Audio input
+                    maybe_pkt = audio_rx.recv() => {
+                        let Some(pkt) = maybe_pkt else {
+                            tracing::info!(%node_name, "Audio input channel closed");
+                            break;
+                        };
+                        if let Err(e) = process_audio_packet(
+                            &pkt, &mut connection, &mut audio_seq_header_sent,
+                            self.config.sample_rate, self.config.channels,
+                            &packet_counter, &metric_labels,
+                            &mut stats, &mut packet_count, &node_name,
+                        ) {
+                            tracing::warn!(%node_name, error = %e, "Error processing audio packet");
+                            stats.errored();
+                        }
+                        flush_send_buf(&mut connection, &mut stream).await?;
+                    }
+
+                    // TCP read (server responses / keepalive)
+                    read_result = stream.read(&mut tcp_read_buf) => {
+                        match read_result {
+                            Ok(0) => {
+                                tracing::warn!(%node_name, "RTMP server closed connection");
                                 break;
                             }
-                            flush_send_buf(&mut connection, &mut stream).await?;
+                            Ok(n) => {
+                                if let Err(e) = connection.feed_recv_buf(&tcp_read_buf[..n]) {
+                                    tracing::warn!(%node_name, error = %e, "Error feeding RTMP recv buffer");
+                                }
+                                // Drain events (acks, pings, etc.)
+                                if drain_events(&mut connection, &node_name) {
+                                    tracing::info!(%node_name, "Breaking loop: peer disconnected");
+                                    break;
+                                }
+                                flush_send_buf(&mut connection, &mut stream).await?;
+                            }
+                            Err(e) => {
+                                tracing::warn!(%node_name, error = %e, "TCP read error");
+                                break;
+                            }
                         }
-                        Err(e) => {
-                            tracing::warn!(%node_name, error = %e, "TCP read error");
+                    }
+
+                    // Shutdown signal
+                    Some(control_msg) = context.control_rx.recv() => {
+                        if matches!(control_msg, streamkit_core::control::NodeControlMessage::Shutdown) {
+                            tracing::info!(%node_name, "Received shutdown signal");
                             break;
                         }
                     }
                 }
 
-                // Shutdown signal
-                Some(control_msg) = context.control_rx.recv() => {
-                    if matches!(control_msg, streamkit_core::control::NodeControlMessage::Shutdown) {
-                        tracing::info!(%node_name, "Received shutdown signal");
-                        break;
-                    }
-                }
+                stats.maybe_send();
             }
-
-            stats.maybe_send();
+            Ok(())
         }
+        .await;
 
         tracing::info!(%node_name, packets = packet_count, "RTMP publishing finished");
-        state_helpers::emit_stopped(&context.state_tx, &node_name, "finished");
 
-        Ok(())
+        match result {
+            Ok(()) => {
+                state_helpers::emit_stopped(&context.state_tx, &node_name, "finished");
+                Ok(())
+            },
+            Err(e) => {
+                state_helpers::emit_failed(&context.state_tx, &node_name, e.to_string());
+                Err(e)
+            },
+        }
     }
 }
 
@@ -318,6 +330,7 @@ async fn connect(url: &RtmpUrl) -> Result<RtmpStream, String> {
     let tcp = TcpStream::connect(&addr)
         .await
         .map_err(|e| format!("TCP connect to {addr} failed: {e}"))?;
+    tcp.set_nodelay(true).map_err(|e| format!("Failed to set TCP_NODELAY: {e}"))?;
 
     if url.tls {
         let config = rustls::ClientConfig::builder()
