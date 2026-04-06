@@ -1167,7 +1167,6 @@ async fn flush_fmp4_segment(
         seg.init_sent = true;
     }
 
-
     stats_tracker.maybe_send();
     Ok(false)
 }
@@ -2048,11 +2047,7 @@ mod tests {
                 Sample {
                     track_kind: TrackKind::Video,
                     timescale: video_timescale,
-                    sample_entry: if seg_idx == 0 {
-                        Some(video_entry.clone())
-                    } else {
-                        None
-                    },
+                    sample_entry: if seg_idx == 0 { Some(video_entry.clone()) } else { None },
                     duration: 3000,
                     keyframe: true,
                     composition_time_offset: None,
@@ -2062,11 +2057,7 @@ mod tests {
                 Sample {
                     track_kind: TrackKind::Audio,
                     timescale: audio_timescale,
-                    sample_entry: if seg_idx == 0 {
-                        Some(audio_entry.clone())
-                    } else {
-                        None
-                    },
+                    sample_entry: if seg_idx == 0 { Some(audio_entry.clone()) } else { None },
                     duration: 960,
                     keyframe: true,
                     composition_time_offset: None,
@@ -2097,11 +2088,7 @@ mod tests {
             let result = demuxer
                 .handle_media_segment(seg)
                 .unwrap_or_else(|e| panic!("segment {i} demux failed: {e}"));
-            assert_eq!(
-                result.len(),
-                2,
-                "Segment {i} should have 2 samples (1 video + 1 audio)"
-            );
+            assert_eq!(result.len(), 2, "Segment {i} should have 2 samples (1 video + 1 audio)");
         }
     }
 
