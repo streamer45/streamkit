@@ -72,6 +72,7 @@ nodes:
       video_width: 640
       video_height: 480
       audio_codec: aac
+      video_codec: h264
     needs:
       - aac_encoder
       - h264_encoder

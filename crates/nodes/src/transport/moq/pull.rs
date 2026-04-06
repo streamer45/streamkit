@@ -67,6 +67,9 @@ impl MoqPullNode {
         Self {
             config,
             // Start with a single stable output pin.
+            // TODO: hardcoded to Opus — once the Binary→EncodedAudio gap
+            // is resolved and AAC MoQ broadcasts are possible, this should
+            // respect an `audio_codec` config field (like moq_peer/moq_push).
             output_pins: vec![OutputPin {
                 name: "out".to_string(),
                 produces_type: PacketType::EncodedAudio(EncodedAudioFormat {
@@ -78,6 +81,10 @@ impl MoqPullNode {
         }
     }
 
+    /// The stable output pin always advertises Opus.
+    ///
+    /// TODO: should respect an `audio_codec` config once AAC MoQ broadcasts
+    /// are supported (currently blocked by the Binary→EncodedAudio C ABI gap).
     fn stable_out_pin() -> OutputPin {
         OutputPin {
             name: "out".to_string(),
@@ -105,6 +112,8 @@ impl MoqPullNode {
                     level: None,
                 })
             } else {
+                // TODO: hardcoded to Opus — should use the catalog's
+                // audio codec once AAC MoQ broadcasts are supported.
                 PacketType::EncodedAudio(EncodedAudioFormat {
                     codec: AudioCodec::Opus,
                     codec_private: None,
@@ -853,6 +862,8 @@ impl MoqPullNode {
                     };
 
                     let (last_ts, default_dur, clock, is_first_in_group) = match source {
+                        // TODO: always uses Opus duration — should be
+                        // codec-aware once AAC MoQ broadcasts are supported.
                         ReadSource::Audio => (
                             &mut last_audio_timestamp_us,
                             DEFAULT_AUDIO_FRAME_DURATION_US_OPUS,

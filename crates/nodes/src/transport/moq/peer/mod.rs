@@ -2514,6 +2514,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn make_dynamic_output_pin_audio_uses_aac_codec() {
+        let pin = make_dynamic_output_pin("audio/data", VideoCodec::Vp9, AudioCodec::Aac);
+        match &pin.produces_type {
+            PacketType::EncodedAudio(fmt) => assert_eq!(
+                fmt.codec,
+                AudioCodec::Aac,
+                "audio pin should use the supplied AAC codec, not default to Opus"
+            ),
+            other => panic!("expected EncodedAudio, got {other:?}"),
+        }
+    }
+
     /// Regression: `output_pins()` should respect the configured `video_codec`
     /// so that the engine's type validation passes for AV1 pipelines.
     #[test]

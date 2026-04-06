@@ -562,6 +562,13 @@ pub struct Mp4MuxerConfig {
     /// `EncodedAudio` pin type; if detection fails it falls back to `Opus`.
     #[serde(default)]
     pub audio_codec: Option<String>,
+
+    /// Override the video codec used for the pre-connection MIME content-type
+    /// hint.  Accepted values: `"av1"`, `"h264"`, `"vp9"`.
+    /// When omitted, the hint defaults to AV1 (if video dimensions are set).
+    /// The runtime MIME type is always resolved from the actual input codec.
+    #[serde(default)]
+    pub video_codec: Option<String>,
 }
 
 const fn default_num_inputs() -> u32 {
@@ -580,6 +587,7 @@ impl Default for Mp4MuxerConfig {
             audio_timescale: DEFAULT_AUDIO_TIMESCALE_OPUS.get(),
             num_inputs: default_num_inputs(),
             audio_codec: None,
+            video_codec: None,
         }
     }
 }
@@ -637,6 +645,22 @@ fn parse_mp4_audio_codec_config(s: Option<&str>) -> AudioCodec {
                 AudioCodec::Opus
             },
         }
+    })
+}
+
+/// Parse an optional video codec config string into a [`VideoCodec`].
+///
+/// Returns `None` when the input is `None`, and defaults to `Av1` for
+/// unrecognised values.  Used only for the pre-connection MIME hint.
+fn parse_mp4_video_codec_config(s: Option<&str>) -> Option<VideoCodec> {
+    s.map(|v| match v.to_ascii_lowercase().as_str() {
+        "h264" | "avc1" | "avc" => VideoCodec::H264,
+        "vp9" => VideoCodec::Vp9,
+        "av1" => VideoCodec::Av1,
+        other => {
+            tracing::warn!(video_codec = %other, "unrecognised video_codec config — defaulting to AV1");
+            VideoCodec::Av1
+        },
     })
 }
 
@@ -821,15 +845,15 @@ impl ProcessorNode for Mp4MuxerNode {
     }
 
     fn content_type(&self) -> Option<String> {
-        // Static pre-connection hint only — the runtime content type is resolved
-        // from actual input codec types.  We hardcode AV1 here because it is the
-        // most common video codec in StreamKit pipelines today.  If a pipeline
-        // uses H.264 or VP9, the static hint will be slightly inaccurate but the
-        // runtime MIME type on each output packet will be correct.  Consider
-        // adding a `video_codec` config field if precise pre-connection
-        // negotiation becomes important.
+        // Static pre-connection hint — the runtime content type is resolved
+        // from actual input codec types.  The video codec defaults to AV1 when
+        // no `video_codec` config is set; this can be overridden for H.264 or
+        // VP9 pipelines.
         let video = if self.config.video_width > 0 && self.config.video_height > 0 {
-            Some(VideoCodec::Av1)
+            Some(
+                parse_mp4_video_codec_config(self.config.video_codec.as_deref())
+                    .unwrap_or(VideoCodec::Av1),
+            )
         } else {
             None
         };

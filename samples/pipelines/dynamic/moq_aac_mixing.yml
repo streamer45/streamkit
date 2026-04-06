@@ -2,32 +2,53 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-# Real-time MoQ mixing pipeline using AAC encoding instead of Opus.
+# Real-time mixing pipeline using AAC encoding, output to MP4 via MoQ peer.
 #
-# NOTE: This pipeline is a placeholder — the AAC encoder native plugin
-# currently outputs `PacketType::Binary` (via the BinaryWithMeta C ABI)
-# rather than `PacketType::EncodedAudio(Aac)`.  MoQ transport nodes
-# (moq_peer, moq_push) only accept `EncodedAudio`, so plugging the AAC
-# encoder directly into MoQ is not yet possible.
+# NOTE — MoQ AAC transport limitation:
+# The AAC encoder native plugin outputs `PacketType::Binary` (via the
+# BinaryWithMeta C ABI) rather than `PacketType::EncodedAudio(Aac)`.
+# MoQ transport nodes only accept `EncodedAudio`, so the AAC encoder
+# cannot feed directly into a moq_peer output pin.  Once the native
+# plugin C ABI gains an `EncodedAudio` discriminant (or the host adds
+# automatic Binary→EncodedAudio promotion), the pipeline can be
+# rewired to broadcast AAC over MoQ directly.
 #
-# Once the native plugin C ABI gains an `EncodedAudio` discriminant (or
-# the host adds automatic Binary→EncodedAudio promotion for known
-# content-types), this pipeline can be enabled by wiring aac_encoder.out
-# into a moq_push or moq_peer input.
+# Current topology:
+#   MoQ peer (Opus input) → decode → mix with music → AAC encode → MP4 mux
 #
-# For now, use the oneshot AAC pipelines (aac_encode.yml,
-# mp4_mux_aac_h264.yml) which route through the MP4 muxer — the muxer
-# accepts Binary packets with content_type "audio/aac".
+# The mixer outputs 960 samples/channel (Opus frame size at 48 kHz);
+# the AAC encoder's internal residual buffer accumulates samples until
+# a full 1024-sample AAC-LC frame is available, so the frame-size
+# mismatch is handled transparently.
 #
 # Requires: aac-encoder native plugin (just install-plugin aac-encoder)
 
-name: Real-Time MoQ Mixing (AAC) [placeholder]
+name: Real-Time MoQ Mixing (AAC to MP4)
 description: |
-  Mixes a local music track, encodes to AAC, and writes to MP4.
-  MoQ output is blocked by the Binary vs EncodedAudio type gap
-  (see note above).
+  Accepts Opus audio via MoQ, mixes with a local music track,
+  encodes to AAC, and muxes into a streamable MP4.
 mode: dynamic
 nodes:
+  # ============================================================
+  # MOQ INPUT: Accept Opus audio from a WebTransport publisher
+  # ============================================================
+  moq_peer:
+    kind: transport::moq::peer
+    params:
+      path: /moq/mixing-aac
+      audio_only: true
+
+  mic_opus_decoder:
+    kind: audio::opus::decoder
+    needs:
+      - moq_peer[audio/data]
+
+  mic_gain:
+    kind: audio::gain
+    params:
+      gain: 1.0
+    needs: mic_opus_decoder
+
   # ============================================================
   # MUSIC SOURCE: Read, demux, pace, decode, and apply gain
   # ============================================================
@@ -55,17 +76,30 @@ nodes:
   music_gain:
     kind: audio::gain
     params:
-      gain: 0.8
+      gain: 0.15
     needs: music_opus_decoder
 
   # ============================================================
-  # OUTPUT: Encode to AAC
-  # The mixer outputs 960 samples/channel (Opus frame size);
-  # the AAC encoder's residual buffer accumulates samples until
-  # a full 1024-sample AAC frame is available.
+  # MIX + ENCODE + MUX
   # ============================================================
+  mixer:
+    kind: audio::mixer
+    params:
+      samples_per_channel: 960
+      generate_silence: true
+    needs:
+      - mic_gain[in_0]
+      - music_gain[in_1]
+
   aac_encoder:
     kind: plugin::native::aac_encoder
     params:
       bitrate: 128000
-    needs: music_gain
+    needs: mixer
+
+  mp4_muxer:
+    kind: containers::mp4::muxer
+    params:
+      mode: stream
+      audio_codec: aac
+    needs: aac_encoder
