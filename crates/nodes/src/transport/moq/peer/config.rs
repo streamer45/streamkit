@@ -11,7 +11,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use streamkit_core::timing::MediaClock;
-use streamkit_core::types::{Packet, PacketType, VideoCodec};
+use streamkit_core::types::{AudioCodec, Packet, PacketType, VideoCodec};
 use tokio::sync::{broadcast, mpsc, watch, Semaphore};
 
 // ── Internal helper types ────────────────────────────────────────────────────
@@ -89,6 +89,16 @@ pub(super) enum PublisherEvent {
     Disconnected { path: String, error: Option<String> },
 }
 
+/// Resolved codec pair for video and audio.
+///
+/// Bundles the two codec fields that would otherwise be passed as separate
+/// parameters to `handle_pin_management` and friends.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct MediaCodecConfig {
+    pub video: VideoCodec,
+    pub audio: AudioCodec,
+}
+
 /// Media and output configuration shared across subscriber-related functions.
 pub(super) struct SubscriberMediaConfig {
     pub has_video: bool,
@@ -98,6 +108,7 @@ pub(super) struct SubscriberMediaConfig {
     pub output_group_duration_ms: u64,
     pub output_initial_delay_ms: u64,
     pub video_codec: VideoCodec,
+    pub audio_codec: AudioCodec,
 }
 
 pub(super) struct BidirectionalTaskConfig {
@@ -157,6 +168,8 @@ pub(super) struct SubscriberSendCtx<'a> {
     pub last_audio_ts_ms: Option<u64>,
     pub last_video_ts_ms: Option<u64>,
     pub stats_delta_tx: &'a mpsc::Sender<NodeStatsDelta>,
+    /// Resolved audio codec — used for codec-aware default frame durations.
+    pub audio_codec: AudioCodec,
 }
 
 // ── Shared map of dynamic output pin senders ─────────────────────────────────
@@ -313,6 +326,31 @@ pub struct MoqPeerConfig {
     /// is auto-detected from `input_types` (static pipelines) and falls back
     /// to VP9.
     pub video_codec: Option<String>,
+    /// Audio codec for the MoQ catalog.
+    ///
+    /// Required for dynamic pipelines where `input_types` is not available at
+    /// startup.  Accepted values: `"opus"`, `"aac"`.  When `None`, the codec
+    /// is auto-detected from `input_types` (static pipelines) and falls back
+    /// to Opus.
+    ///
+    /// Controls the **publisher output pin** type (`audio/data`).  For
+    /// transcoding scenarios where the subscriber receives a different codec
+    /// (e.g. Opus in → AAC out), use [`subscriber_audio_codec`] to override
+    /// the subscriber catalog codec independently.
+    pub audio_codec: Option<String>,
+    /// Audio codec advertised in the **subscriber** MoQ catalog.
+    ///
+    /// When set, overrides [`audio_codec`] for the subscriber side only
+    /// (catalog, frame duration).  The publisher output pin (`audio/data`)
+    /// continues to use [`audio_codec`].
+    ///
+    /// Useful for transcoding pipelines where the publisher sends one codec
+    /// (e.g. Opus) but the pipeline re-encodes to another (e.g. AAC) before
+    /// feeding it back to subscribers.
+    ///
+    /// Accepted values: `"opus"`, `"aac"`.  When `None`, falls back to
+    /// [`audio_codec`].
+    pub subscriber_audio_codec: Option<String>,
 }
 
 impl Default for MoqPeerConfig {
@@ -327,6 +365,8 @@ impl Default for MoqPeerConfig {
             video_width: 640,
             video_height: 480,
             video_codec: None,
+            audio_codec: None,
+            subscriber_audio_codec: None,
         }
     }
 }

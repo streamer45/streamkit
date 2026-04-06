@@ -48,8 +48,23 @@ use crate::video::DEFAULT_VIDEO_FRAME_DURATION_US;
 // Constants
 // ---------------------------------------------------------------------------
 
-/// Default audio frame duration when metadata is missing (20 ms Opus frame).
-const DEFAULT_AUDIO_FRAME_DURATION_US: u64 = 20_000;
+/// Default audio frame duration when metadata is missing.
+///
+/// The correct value depends on the codec:
+/// - Opus: 20 ms (960 samples at 48 kHz)
+/// - AAC-LC: ~21.333 ms (1024 samples at 48 kHz)
+///
+/// Use [`default_audio_frame_duration_us`] to get the codec-aware value.
+const DEFAULT_AUDIO_FRAME_DURATION_US_OPUS: u64 = 20_000;
+const DEFAULT_AUDIO_FRAME_DURATION_US_AAC: u64 = 21_333;
+
+/// Return the default audio frame duration for the given codec.
+const fn default_audio_frame_duration_us(codec: AudioCodec) -> u64 {
+    match codec {
+        AudioCodec::Aac => DEFAULT_AUDIO_FRAME_DURATION_US_AAC,
+        _ => DEFAULT_AUDIO_FRAME_DURATION_US_OPUS,
+    }
+}
 
 /// Default video timescale (90 kHz — standard for MPEG transport streams / MP4).
 const DEFAULT_VIDEO_TIMESCALE: NonZeroU32 = match NonZeroU32::new(90_000) {
@@ -71,6 +86,13 @@ const FMP4_SEGMENT_FLUSH_THRESHOLD: usize = 30;
 /// rather than growing without bound.
 const FMP4_FIRST_FLUSH_DEFER_CAP: usize = 10 * FMP4_SEGMENT_FLUSH_THRESHOLD;
 
+/// Hard upper bound for skip-classification deferral.  Even when inputs are
+/// still open, force-flush after this many pending samples to prevent
+/// unbounded memory growth from pathological misconfiguration.
+/// 10× the normal cap = 3,000 samples ≈ 1 minute of audio at typical
+/// AAC frame rates (~47 frames/sec).
+const FMP4_SKIP_CLASS_HARD_CAP: usize = 10 * FMP4_FIRST_FLUSH_DEFER_CAP;
+
 // ---------------------------------------------------------------------------
 // Sample entry construction helpers
 // ---------------------------------------------------------------------------
@@ -81,7 +103,7 @@ const FMP4_FIRST_FLUSH_DEFER_CAP: usize = 10 * FMP4_SEGMENT_FLUSH_THRESHOLD;
 /// or raw SPS/PPS NAL units.  Otherwise a minimal placeholder is used.
 fn build_avc1_sample_entry(width: u16, height: u16, codec_private: Option<&[u8]>) -> SampleEntry {
     let (sps_list, pps_list, profile, compat, level) = codec_private.map_or_else(
-        || (vec![vec![0x67, 0x42, 0xc0, 0x1f]], vec![vec![0x68, 0xce, 0x38, 0x80]], 66, 0, 31),
+        || (vec![vec![0x67, 0x42, 0xc0, 0x1f]], vec![vec![0x68, 0xce, 0x38, 0x80]], 66, 0xC0, 31),
         parse_avcc_codec_private,
     );
 
@@ -540,6 +562,20 @@ pub struct Mp4MuxerConfig {
     #[serde(default = "default_num_inputs")]
     #[schemars(range(min = 1, max = 2))]
     pub num_inputs: u32,
+
+    /// Override the audio codec used for sample-entry construction and MIME
+    /// content-type resolution.  Accepted values: `"opus"`, `"aac"`.
+    /// When omitted the codec is auto-detected from the upstream
+    /// `EncodedAudio` pin type; if detection fails it falls back to `Opus`.
+    #[serde(default)]
+    pub audio_codec: Option<String>,
+
+    /// Override the video codec used for the pre-connection MIME content-type
+    /// hint.  Accepted values: `"av1"`, `"h264"`, `"vp9"`.
+    /// When omitted, the hint defaults to AV1 (if video dimensions are set).
+    /// The runtime MIME type is always resolved from the actual input codec.
+    #[serde(default)]
+    pub video_codec: Option<String>,
 }
 
 const fn default_num_inputs() -> u32 {
@@ -557,6 +593,8 @@ impl Default for Mp4MuxerConfig {
             video_timescale: DEFAULT_VIDEO_TIMESCALE.get(),
             audio_timescale: DEFAULT_AUDIO_TIMESCALE_OPUS.get(),
             num_inputs: default_num_inputs(),
+            audio_codec: None,
+            video_codec: None,
         }
     }
 }
@@ -574,7 +612,11 @@ enum MuxFrame {
     Shutdown,
 }
 
-/// Classify a [`Packet`] as audio or video from its `content_type` field.
+/// Classify a [`Packet`] as audio or video.
+///
+/// Handles `Binary` packets (from both native plugins and core encoder
+/// nodes) by inspecting the `content_type` field.  `Audio` and `Video`
+/// frame packets are classified intrinsically.
 fn classify_packet(packet: Packet) -> Option<MuxFrame> {
     match packet {
         Packet::Binary { data, content_type, metadata } => {
@@ -598,6 +640,41 @@ fn classify_packet(packet: Packet) -> Option<MuxFrame> {
     }
 }
 
+/// Parse an optional audio codec config string into an [`AudioCodec`].
+///
+/// Returns `Opus` when the input is `None` or unrecognised.
+/// The parsing logic is intentionally inlined here (rather than imported from
+/// `transport::moq::constants`) so that the `mp4` feature does not depend on
+/// the `moq` feature at compile time.
+fn parse_mp4_audio_codec_config(s: Option<&str>) -> AudioCodec {
+    s.map_or(AudioCodec::Opus, |v| {
+        match v.to_ascii_lowercase().as_str() {
+            "aac" => AudioCodec::Aac,
+            "opus" => AudioCodec::Opus,
+            other => {
+                tracing::warn!(audio_codec = %other, "unrecognised audio_codec config — defaulting to Opus");
+                AudioCodec::Opus
+            },
+        }
+    })
+}
+
+/// Parse a video codec config string into a [`VideoCodec`].
+///
+/// Defaults to `Av1` for unrecognised values.  Used only for the
+/// pre-connection MIME hint.
+fn parse_mp4_video_codec_config(s: &str) -> VideoCodec {
+    match s.to_ascii_lowercase().as_str() {
+        "h264" | "avc1" | "avc" => VideoCodec::H264,
+        "vp9" => VideoCodec::Vp9,
+        "av1" => VideoCodec::Av1,
+        other => {
+            tracing::warn!(video_codec = %other, "unrecognised video_codec config — defaulting to AV1");
+            VideoCodec::Av1
+        },
+    }
+}
+
 /// Determine the MP4 MIME content-type string from optional codec info.
 ///
 /// `audio` and `video` are `None` when the respective track is absent.
@@ -617,23 +694,33 @@ fn mp4_content_type(audio: Option<AudioCodec>, video: Option<VideoCodec>) -> &'s
         }
     }
 
-    let has_audio = audio.is_some();
-    let audio_is_opus = matches!(audio, Some(AudioCodec::Opus));
-
-    // Match on the concrete video codec to avoid conflating VP9/H264/AV1.
-    match (has_audio, video, audio_is_opus) {
-        (true, Some(VideoCodec::Av1), false) => "video/mp4; codecs=\"av01,mp4a\"",
-        (true, Some(VideoCodec::Av1), true) => "video/mp4; codecs=\"av01,opus\"",
-        (true, Some(VideoCodec::H264), false) => "video/mp4; codecs=\"avc1,mp4a\"",
-        (true, Some(VideoCodec::H264), true) => "video/mp4; codecs=\"avc1,opus\"",
-        // VP9 and any future codec: fall back to generic "video/mp4".
-        (true, Some(_), false) => "video/mp4; codecs=\"mp4a\"",
-        (true, Some(_), true) => "video/mp4; codecs=\"opus\"",
-        (false, Some(VideoCodec::Av1), _) => "video/mp4; codecs=\"av01\"",
-        (false, Some(VideoCodec::H264), _) => "video/mp4; codecs=\"avc1\"",
-        (true, None, false) => "audio/mp4; codecs=\"mp4a\"",
-        (true, None, true) => "audio/mp4; codecs=\"opus\"",
-        (false, Some(_) | None, _) => "video/mp4",
+    // Match on (audio_codec, video_codec) to produce a precise MIME codecs string.
+    match (audio, video) {
+        // Audio + Video
+        (Some(AudioCodec::Opus), Some(VideoCodec::Av1)) => "video/mp4; codecs=\"av01,opus\"",
+        (Some(AudioCodec::Opus), Some(VideoCodec::H264)) => "video/mp4; codecs=\"avc1,opus\"",
+        (Some(AudioCodec::Aac), Some(VideoCodec::Av1)) => "video/mp4; codecs=\"av01,mp4a\"",
+        (Some(AudioCodec::Aac), Some(VideoCodec::H264)) => "video/mp4; codecs=\"avc1,mp4a\"",
+        // Audio + unknown/future video codec
+        (Some(AudioCodec::Opus), Some(_)) => "video/mp4; codecs=\"opus\"",
+        (Some(AudioCodec::Aac), Some(_)) => "video/mp4; codecs=\"mp4a\"",
+        // Audio-only
+        (Some(AudioCodec::Opus), None) => "audio/mp4; codecs=\"opus\"",
+        (Some(AudioCodec::Aac), None) => "audio/mp4; codecs=\"mp4a\"",
+        // Future audio codec — warn and omit codecs param.
+        (Some(_), Some(_)) => {
+            tracing::warn!("mp4_content_type: unrecognised audio codec — omitting codecs param");
+            "video/mp4"
+        },
+        (Some(_), None) => {
+            tracing::warn!("mp4_content_type: unrecognised audio codec — omitting codecs param");
+            "audio/mp4"
+        },
+        // Video-only
+        (None, Some(VideoCodec::Av1)) => "video/mp4; codecs=\"av01\"",
+        (None, Some(VideoCodec::H264)) => "video/mp4; codecs=\"avc1\"",
+        // Fallback
+        (None, Some(_) | None) => "video/mp4",
     }
 }
 
@@ -725,6 +812,10 @@ impl ProcessorNode for Mp4MuxerNode {
                 codec: AudioCodec::Opus,
                 codec_private: None,
             }),
+            PacketType::EncodedAudio(EncodedAudioFormat {
+                codec: AudioCodec::Aac,
+                codec_private: None,
+            }),
             PacketType::EncodedVideo(EncodedVideoFormat {
                 codec: VideoCodec::H264,
                 bitstream_format: None,
@@ -739,6 +830,10 @@ impl ProcessorNode for Mp4MuxerNode {
                 profile: None,
                 level: None,
             }),
+            // Accept Binary packets from native plugins whose C ABI does not
+            // yet support EncodedAudio/EncodedVideo discriminants.  The muxer
+            // resolves the actual codec from content_type metadata at runtime.
+            PacketType::Binary,
         ];
 
         let mut pins = vec![InputPin {
@@ -765,20 +860,22 @@ impl ProcessorNode for Mp4MuxerNode {
     }
 
     fn content_type(&self) -> Option<String> {
-        // Static pre-connection hint only — the runtime content type is resolved
-        // from actual input codec types.  We hardcode AV1 here because it is the
-        // most common video codec in StreamKit pipelines today.  If a pipeline
-        // uses H.264 or VP9, the static hint will be slightly inaccurate but the
-        // runtime MIME type on each output packet will be correct.  Consider
-        // adding a `video_codec` config field if precise pre-connection
-        // negotiation becomes important.
+        // Static pre-connection hint — the runtime content type is resolved
+        // from actual input codec types.  The video codec defaults to AV1 when
+        // no `video_codec` config is set; this can be overridden for H.264 or
+        // VP9 pipelines.
         let video = if self.config.video_width > 0 && self.config.video_height > 0 {
-            Some(VideoCodec::Av1)
+            Some(
+                self.config
+                    .video_codec
+                    .as_deref()
+                    .map_or(VideoCodec::Av1, parse_mp4_video_codec_config),
+            )
         } else {
             None
         };
-        // Default to Opus since it's the only AudioCodec variant today.
-        Some(mp4_content_type(Some(AudioCodec::Opus), video).to_string())
+        let audio = parse_mp4_audio_codec_config(self.config.audio_codec.as_deref());
+        Some(mp4_content_type(Some(audio), video).to_string())
     }
 
     async fn run(self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
@@ -800,10 +897,16 @@ impl ProcessorNode for Mp4MuxerNode {
 
         let mut audio_rx: Option<tokio::sync::mpsc::Receiver<Packet>> = None;
         let mut video_rx: Option<tokio::sync::mpsc::Receiver<Packet>> = None;
-        let mut audio_codec = AudioCodec::Opus;
-        // Default video codec is AV1; only used when a video input is actually
-        // connected.  For audio-only pipelines this value is never read.
-        let mut video_codec = VideoCodec::Av1;
+        let mut audio_codec = parse_mp4_audio_codec_config(self.config.audio_codec.as_deref());
+        // Initialise video codec from config (matching audio_codec above).
+        // Type resolution from upstream encoders will override this when
+        // available, but the config-based default ensures the correct codec
+        // is used even when type resolution is unavailable or times out.
+        let mut video_codec = self
+            .config
+            .video_codec
+            .as_deref()
+            .map_or(VideoCodec::Av1, parse_mp4_video_codec_config);
         let mut all_receivers: Vec<tokio::sync::mpsc::Receiver<Packet>> = Vec::new();
 
         // Resolve input types from engine or pin management messages.
@@ -883,6 +986,11 @@ impl ProcessorNode for Mp4MuxerNode {
                 audio_rx = Some(rx);
             }
         }
+
+        tracing::info!(
+            "Mp4MuxerNode codec detection complete: audio={audio_codec:?} video={video_codec:?} \
+             skip_classification={skip_classification}",
+        );
 
         let has_audio = if skip_classification { true } else { audio_rx.is_some() };
         let has_video = if skip_classification { true } else { video_rx.is_some() };
@@ -973,9 +1081,10 @@ fn build_sample_entries(
     };
     let audio_entry = match audio_codec {
         AudioCodec::Opus => build_opus_sample_entry(config.sample_rate, config.channels),
+        AudioCodec::Aac => build_mp4a_sample_entry(config.sample_rate, config.channels),
         // AudioCodec is #[non_exhaustive]; warn and fall back to mp4a (AAC) for
         // any future variant so the muxer degrades visibly rather than silently.
-        #[allow(unreachable_patterns)] // only Opus exists today
+        #[allow(unreachable_patterns)]
         other => {
             tracing::warn!(
                 ?other,
@@ -1180,7 +1289,7 @@ async fn run_stream_mode(
                 let duration_us = metadata
                     .as_ref()
                     .and_then(|m| m.duration_us)
-                    .unwrap_or(DEFAULT_AUDIO_FRAME_DURATION_US);
+                    .unwrap_or_else(|| default_audio_frame_duration_us(session.audio_codec));
                 let duration_ticks = us_to_ticks(duration_us, audio_timescale.get());
 
                 let data_size = data.len();
@@ -1218,7 +1327,7 @@ async fn run_stream_mode(
         // unconditional.  We also allow the flush if a missing track's input
         // has already closed (the stream truly is single-track).
         if seg.pending_samples.len() >= FMP4_SEGMENT_FLUSH_THRESHOLD
-            && should_flush_fmp4_segment(&seg, &inputs)
+            && should_flush_fmp4_segment(&seg, &inputs, inputs_open)
         {
             let stopped =
                 flush_fmp4_segment(session, &mut muxer, &mut seg, context, stats_tracker).await?;
@@ -1247,7 +1356,11 @@ async fn run_stream_mode(
 ///
 /// Returns `true` when the caller should flush, `false` when it should
 /// `continue` the receive loop.
-fn should_flush_fmp4_segment(seg: &Fmp4SegmentState, inputs: &MuxInputs) -> bool {
+fn should_flush_fmp4_segment(
+    seg: &Fmp4SegmentState,
+    inputs: &MuxInputs,
+    inputs_open: usize,
+) -> bool {
     if seg.init_sent {
         return true;
     }
@@ -1262,6 +1375,39 @@ fn should_flush_fmp4_segment(seg: &Fmp4SegmentState, inputs: &MuxInputs) -> bool
     // Safety cap: force flush with a warning rather than accumulating without
     // bound when an expected track never sends data.
     if seg.pending_samples.len() >= FMP4_FIRST_FLUSH_DEFER_CAP {
+        // In skip-classification mode, input channels are not split into
+        // separate audio/video receivers so the per-track `*_done` flags
+        // are never set during the receive loop.  Instead, check whether
+        // any input channels are still open: as long as they are, a
+        // slow-starting track (e.g. a video generator initialising fonts)
+        // may still produce data.  Force-flushing an init segment that
+        // omits an expected track would cause the browser to reject it
+        // ("Initialization segment misses expected … track").
+        if inputs.tp.skip_classification && inputs_open > 0 {
+            // Secondary hard cap: prevent truly unbounded growth from
+            // pathological misconfiguration even in skip-classification mode.
+            if seg.pending_samples.len() >= FMP4_SKIP_CLASS_HARD_CAP {
+                tracing::warn!(
+                    "Skip-classification deferral hard cap reached \
+                     ({} pending, cap={}). Forcing flush \
+                     (video_ready={video_ready}, audio_ready={audio_ready}).",
+                    seg.pending_samples.len(),
+                    FMP4_SKIP_CLASS_HARD_CAP,
+                );
+                return true;
+            }
+            if seg.pending_samples.len().is_multiple_of(FMP4_FIRST_FLUSH_DEFER_CAP) {
+                tracing::debug!(
+                    "First fMP4 flush deferred: {} pending samples, \
+                     {} input(s) still open — waiting for all expected tracks \
+                     (video_ready={video_ready}, audio_ready={audio_ready})",
+                    seg.pending_samples.len(),
+                    inputs_open,
+                );
+            }
+            return false;
+        }
+
         tracing::warn!(
             "First fMP4 flush deferred too long ({} pending, cap={}). \
              Forcing flush with available tracks \
@@ -1471,7 +1617,13 @@ async fn run_file_mode(
                 )?;
             },
             MuxFrame::Audio(data, metadata) => {
-                process_file_audio_frame(&data, metadata.as_ref(), &mut state, stats_tracker)?;
+                process_file_audio_frame(
+                    &data,
+                    metadata.as_ref(),
+                    session.audio_codec,
+                    &mut state,
+                    stats_tracker,
+                )?;
             },
         }
     }
@@ -1575,14 +1727,16 @@ fn process_file_video_frame(
 fn process_file_audio_frame(
     data: &Bytes,
     metadata: Option<&PacketMetadata>,
+    audio_codec: AudioCodec,
     state: &mut FileMuxState,
     stats_tracker: &mut NodeStatsTracker,
 ) -> Result<(), StreamKitError> {
     state.packet_count += 1;
     stats_tracker.received();
 
-    let duration_us =
-        metadata.and_then(|m| m.duration_us).unwrap_or(DEFAULT_AUDIO_FRAME_DURATION_US);
+    let duration_us = metadata
+        .and_then(|m| m.duration_us)
+        .unwrap_or_else(|| default_audio_frame_duration_us(audio_codec));
     let duration_ticks = us_to_ticks(duration_us, state.audio_timescale.get());
 
     let data_offset = state
@@ -1935,6 +2089,65 @@ mod tests {
     fn build_avc1_sample_entry_produces_avc1() {
         let entry = build_avc1_sample_entry(1280, 720, None);
         assert!(matches!(entry, SampleEntry::Avc1(_)));
+    }
+
+    /// Regression test: the placeholder AVC1 sample entry must have
+    /// `profile_compatibility` matching the SPS constraint flags (0xC0),
+    /// not zero.  A zero value can cause compliant demuxers to reject
+    /// the init segment.
+    #[test]
+    fn build_avc1_placeholder_has_correct_profile_compat() {
+        let entry = build_avc1_sample_entry(640, 480, None);
+        match entry {
+            SampleEntry::Avc1(avc1) => {
+                assert_eq!(
+                    avc1.avcc_box.profile_compatibility, 0xC0,
+                    "Placeholder profile_compatibility must match SPS constraint flags"
+                );
+            },
+            other => panic!("Expected Avc1, got {other:?}"),
+        }
+    }
+
+    /// Regression test: `parse_mp4_video_codec_config` must return H264 for
+    /// "h264" so that the muxer's config-based initialisation produces the
+    /// correct codec when the YAML specifies `video_codec: h264`.
+    ///
+    /// Previously `video_codec` was hardcoded to `Av1` regardless of config,
+    /// which caused the init segment to contain an `av01` track instead of
+    /// `avc1` when type resolution was unavailable.
+    #[test]
+    fn parse_video_codec_config_h264() {
+        assert_eq!(parse_mp4_video_codec_config("h264"), VideoCodec::H264);
+        assert_eq!(parse_mp4_video_codec_config("avc1"), VideoCodec::H264);
+        assert_eq!(parse_mp4_video_codec_config("avc"), VideoCodec::H264);
+        assert_eq!(parse_mp4_video_codec_config("H264"), VideoCodec::H264);
+    }
+
+    /// Verify that `build_sample_entries` produces AVC1 + MP4A when configured
+    /// with H264 video and AAC audio — the exact combination used by the
+    /// `mp4_mux_aac_h264` oneshot pipeline.
+    #[test]
+    fn build_sample_entries_h264_aac() {
+        let config = Mp4MuxerConfig {
+            video_width: 640,
+            video_height: 480,
+            video_codec: Some("h264".to_string()),
+            audio_codec: Some("aac".to_string()),
+            ..Mp4MuxerConfig::default()
+        };
+        let audio = parse_mp4_audio_codec_config(config.audio_codec.as_deref());
+        let video =
+            config.video_codec.as_deref().map_or(VideoCodec::Av1, parse_mp4_video_codec_config);
+        let (video_entry, audio_entry) = build_sample_entries(&config, audio, video);
+        assert!(
+            matches!(video_entry, SampleEntry::Avc1(_)),
+            "Expected AVC1 video entry for H264 config, got {video_entry:?}"
+        );
+        assert!(
+            matches!(audio_entry, SampleEntry::Mp4a(_)),
+            "Expected MP4A audio entry for AAC config, got {audio_entry:?}"
+        );
     }
 
     #[test]

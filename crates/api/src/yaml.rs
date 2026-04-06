@@ -1636,6 +1636,25 @@ nodes:
         );
     }
 
+    /// Regression test: `moq_aac_mixing.yml` must compile without errors.
+    ///
+    /// Previously the mixer's `needs` used bracket syntax (`mic_gain[in_0]`)
+    /// which the parser does not support, causing a "references non-existent
+    /// node" error.  The fix switched to simple array syntax so that
+    /// `Needs::Multiple` auto-generates `in_0`, `in_1` by index.
+    #[test]
+    fn test_sample_moq_aac_mixing_compiles() {
+        let yaml = include_str!("../../../samples/pipelines/dynamic/moq_aac_mixing.yml");
+        let user_pipeline = parse_yaml(yaml).unwrap();
+        let result = compile(user_pipeline);
+
+        assert!(
+            result.is_ok(),
+            "Sample pipeline moq_aac_mixing.yml should compile: {:?}",
+            result.err()
+        );
+    }
+
     #[test]
     #[allow(clippy::unwrap_used, clippy::expect_used)]
     fn test_multiple_inputs_numbered_pins() {

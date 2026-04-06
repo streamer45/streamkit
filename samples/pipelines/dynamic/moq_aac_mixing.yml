@@ -1,0 +1,105 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Real-time mixing pipeline with AAC encoding over MoQ.
+#
+# Topology:
+#   MoQ peer (Opus input) → decode → mix with music → AAC encode → MoQ output
+#
+# The mixer outputs 960 samples/channel (Opus frame size at 48 kHz);
+# the AAC encoder's internal residual buffer accumulates samples until
+# a full 1024-sample AAC-LC frame is available, so the frame-size
+# mismatch is handled transparently.
+#
+# Requires: aac-encoder native plugin (just install-plugin aac-encoder)
+
+name: Real-Time MoQ Mixing (AAC)
+description: |
+  Accepts Opus audio via MoQ, mixes with a local music track,
+  encodes to AAC, and broadcasts the mixed AAC stream to subscribers.
+mode: dynamic
+client:
+  gateway_path: /moq/mixing-aac
+  publish:
+    broadcast: input
+    tracks:
+      - kind: audio
+        source: microphone
+  watch:
+    broadcast: output
+    audio: true
+    video: false
+
+nodes:
+  # ============================================================
+  # MOQ INPUT: Accept Opus audio from a WebTransport publisher
+  # ============================================================
+  moq_peer:
+    kind: transport::moq::peer
+    params:
+      gateway_path: /moq/mixing-aac
+      input_broadcasts:
+        - input
+      output_broadcast: output
+      allow_reconnect: true
+      subscriber_audio_codec: aac
+    needs: aac_encoder
+
+  mic_opus_decoder:
+    kind: audio::opus::decoder
+    needs: moq_peer.audio/data
+
+  mic_gain:
+    kind: audio::gain
+    params:
+      gain: 1.0
+    needs: mic_opus_decoder
+
+  # ============================================================
+  # MUSIC SOURCE: Read, demux, pace, decode, and apply gain
+  # ============================================================
+  music_file_reader:
+    kind: core::file_reader
+    params:
+      chunk_size: 8192
+      path: samples/audio/system/THE LADY IS A TRAMP.opus
+
+  music_ogg_demuxer:
+    kind: containers::ogg::demuxer
+    needs: music_file_reader
+
+  music_pacer:
+    kind: core::pacer
+    params:
+      buffer_size: 16
+      speed: 1
+    needs: music_ogg_demuxer
+
+  music_opus_decoder:
+    kind: audio::opus::decoder
+    needs: music_pacer
+
+  music_gain:
+    kind: audio::gain
+    params:
+      gain: 0.15
+    needs: music_opus_decoder
+
+  # ============================================================
+  # MIX + ENCODE
+  # ============================================================
+  mixer:
+    kind: audio::mixer
+    params:
+      samples_per_channel: 960
+      generate_silence: true
+    needs:
+      - mic_gain
+      - music_gain
+
+  aac_encoder:
+    kind: plugin::native::aac_encoder
+    params:
+      bitrate: 128000
+    needs: mixer

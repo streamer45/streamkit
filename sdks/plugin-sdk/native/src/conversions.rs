@@ -7,8 +7,9 @@
 //! These functions provide safe wrappers around unsafe FFI operations.
 
 use crate::types::{
-    CAudioFormat, CAudioFrame, CCustomEncoding, CCustomPacket, CPacket, CPacketMetadata,
-    CPacketType, CPacketTypeInfo, CPixelFormat, CRawVideoFormat, CSampleFormat, CVideoFrame,
+    CAudioFormat, CAudioFrame, CBinaryPacket, CCustomEncoding, CCustomPacket, CPacket,
+    CPacketMetadata, CPacketType, CPacketTypeInfo, CPixelFormat, CRawVideoFormat, CSampleFormat,
+    CVideoFrame,
 };
 use std::cell::RefCell;
 use std::ffi::{c_void, CStr, CString};
@@ -68,7 +69,23 @@ pub fn packet_type_from_c(cpt_info: CPacketTypeInfo) -> Result<PacketType, Strin
             // silently mislabelling the codec.
             Ok(PacketType::Binary)
         },
-        CPacketType::Binary => Ok(PacketType::Binary),
+        CPacketType::EncodedAudio => {
+            // The codec name is carried in `custom_type_id` to avoid changing
+            // the CPacketTypeInfo struct layout (see ABI stability note).
+            let codec = if cpt_info.custom_type_id.is_null() {
+                // Default to Opus when no codec name is provided.
+                AudioCodec::Opus
+            } else {
+                let name = unsafe { c_str_to_string(cpt_info.custom_type_id) }?;
+                match name.as_str() {
+                    "opus" => AudioCodec::Opus,
+                    "aac" => AudioCodec::Aac,
+                    other => return Err(format!("Unknown EncodedAudio codec name: {other:?}")),
+                }
+            };
+            Ok(PacketType::EncodedAudio(EncodedAudioFormat { codec, codec_private: None }))
+        },
+        CPacketType::Binary | CPacketType::BinaryWithMeta => Ok(PacketType::Binary),
         CPacketType::Any => Ok(PacketType::Any),
         CPacketType::Passthrough => Ok(PacketType::Passthrough),
     }
@@ -207,11 +224,18 @@ pub fn packet_type_to_c(pt: &PacketType) -> (CPacketTypeInfo, CPacketTypeOwned) 
                     CPacketTypeOwned::None,
                 )
             } else {
+                // Carry the codec name in `custom_type_id` (reusing the
+                // existing pointer field to avoid changing the struct layout).
+                let codec_name: &'static [u8] = match format.codec {
+                    AudioCodec::Opus => b"opus\0",
+                    AudioCodec::Aac => b"aac\0",
+                    _ => b"unknown\0",
+                };
                 (
                     CPacketTypeInfo {
-                        type_discriminant: CPacketType::Binary,
+                        type_discriminant: CPacketType::EncodedAudio,
                         audio_format: std::ptr::null(),
-                        custom_type_id: std::ptr::null(),
+                        custom_type_id: codec_name.as_ptr().cast::<c_char>(),
                         raw_video_format: std::ptr::null(),
                     },
                     CPacketTypeOwned::None,
@@ -302,6 +326,32 @@ pub struct CPacketRepr {
     _owned: CPacketOwned,
 }
 
+impl CPacketRepr {
+    /// Downgrade a `BinaryWithMeta` packet to a plain `Binary` packet.
+    ///
+    /// v6 plugins do not understand the `BinaryWithMeta` discriminant (value 10)
+    /// and would drop/error on it.  Calling this before forwarding to a v6
+    /// plugin preserves the raw bytes while discarding `content_type` and
+    /// `metadata` that the older plugin cannot interpret.
+    ///
+    /// No-op if the packet is not `BinaryWithMeta`.
+    #[allow(clippy::used_underscore_binding)]
+    pub fn downgrade_binary_with_meta(&mut self) {
+        if self.packet.packet_type == CPacketType::BinaryWithMeta {
+            if let CPacketOwned::BinaryWithMeta(ref bwm) = self._owned {
+                // Point directly at the raw data buffer, same as the plain
+                // Binary path in `packet_to_c`.
+                self.packet = CPacket {
+                    packet_type: CPacketType::Binary,
+                    data: bwm.binary.data.cast::<c_void>(),
+                    len: bwm.binary.data_len,
+                };
+                // Keep _owned alive — the data pointer still references it.
+            }
+        }
+    }
+}
+
 #[allow(dead_code)] // Owned values are kept alive to support FFI pointers during callbacks.
 enum CPacketOwned {
     None,
@@ -310,6 +360,7 @@ enum CPacketOwned {
     Text(CString),
     Bytes(Vec<u8>),
     Custom(CustomOwned),
+    BinaryWithMeta(BinaryWithMetaOwned),
 }
 
 #[allow(dead_code)] // Owned values are kept alive to support FFI pointers during callbacks.
@@ -330,6 +381,13 @@ struct CustomOwned {
     data_json: Vec<u8>,
     metadata: Option<Box<CPacketMetadata>>,
     custom: Box<CCustomPacket>,
+}
+
+#[allow(dead_code)] // Owned values are kept alive to support FFI pointers during callbacks.
+struct BinaryWithMetaOwned {
+    content_type: Option<CString>,
+    metadata: Option<Box<CPacketMetadata>>,
+    binary: Box<CBinaryPacket>,
 }
 
 pub fn metadata_to_c(meta: &PacketMetadata) -> CPacketMetadata {
@@ -447,13 +505,39 @@ pub fn packet_to_c(packet: &Packet) -> CPacketRepr {
                 }),
             }
         },
-        Packet::Binary { data, .. } => CPacketRepr {
-            packet: CPacket {
-                packet_type: CPacketType::Binary,
-                data: data.as_ref().as_ptr().cast::<c_void>(),
-                len: data.len(),
-            },
-            _owned: CPacketOwned::None,
+        Packet::Binary { data, content_type, metadata } => {
+            if content_type.is_some() || metadata.is_some() {
+                let ct_cstring = content_type.as_deref().map(cstring_sanitize);
+                let meta_box = metadata.as_ref().map(|m| Box::new(metadata_to_c(m)));
+                let mut bp = Box::new(CBinaryPacket {
+                    data: data.as_ref().as_ptr(),
+                    data_len: data.len(),
+                    content_type: ct_cstring.as_ref().map_or(std::ptr::null(), |cs| cs.as_ptr()),
+                    metadata: meta_box.as_deref().map_or(std::ptr::null(), std::ptr::from_ref),
+                });
+                let packet = CPacket {
+                    packet_type: CPacketType::BinaryWithMeta,
+                    data: std::ptr::from_mut::<CBinaryPacket>(&mut *bp).cast::<c_void>(),
+                    len: std::mem::size_of::<CBinaryPacket>(),
+                };
+                CPacketRepr {
+                    packet,
+                    _owned: CPacketOwned::BinaryWithMeta(BinaryWithMetaOwned {
+                        content_type: ct_cstring,
+                        metadata: meta_box,
+                        binary: bp,
+                    }),
+                }
+            } else {
+                CPacketRepr {
+                    packet: CPacket {
+                        packet_type: CPacketType::Binary,
+                        data: data.as_ref().as_ptr().cast::<c_void>(),
+                        len: data.len(),
+                    },
+                    _owned: CPacketOwned::None,
+                }
+            }
         },
         Packet::Video(frame) => {
             let metadata = frame.metadata.as_ref().map(|m| Box::new(metadata_to_c(m)));
@@ -592,6 +676,25 @@ pub unsafe fn packet_from_c(c_packet: *const CPacket) -> Result<Packet, String> 
                 metadata: None,
             })
         },
+        CPacketType::BinaryWithMeta => {
+            let bp = &*c_pkt.data.cast::<CBinaryPacket>();
+            if bp.data.is_null() && bp.data_len > 0 {
+                return Err("BinaryWithMeta packet has null data pointer".to_string());
+            }
+            let data = if bp.data_len == 0 {
+                bytes::Bytes::new()
+            } else {
+                bytes::Bytes::copy_from_slice(std::slice::from_raw_parts(bp.data, bp.data_len))
+            };
+            let content_type = if bp.content_type.is_null() {
+                None
+            } else {
+                Some(std::borrow::Cow::Owned(c_str_to_string(bp.content_type)?))
+            };
+            let metadata =
+                if bp.metadata.is_null() { None } else { Some(metadata_from_c(&*bp.metadata)) };
+            Ok(Packet::Binary { data, content_type, metadata })
+        },
         CPacketType::RawVideo => {
             let c_frame = &*c_pkt.data.cast::<CVideoFrame>();
             if c_frame.data.is_null() {
@@ -636,6 +739,18 @@ pub unsafe fn packet_from_c(c_packet: *const CPacket) -> Result<Packet, String> 
         },
         CPacketType::EncodedVideo => {
             // Encoded video is carried as opaque bytes across the C ABI.
+            let data = std::slice::from_raw_parts(c_pkt.data.cast::<u8>(), c_pkt.len);
+            Ok(Packet::Binary {
+                data: bytes::Bytes::copy_from_slice(data),
+                content_type: None,
+                metadata: None,
+            })
+        },
+        CPacketType::EncodedAudio => {
+            // EncodedAudio is a *type-level* discriminant used in pin
+            // declarations.  At runtime, encoded audio packets travel as
+            // BinaryWithMeta (preserving content_type and metadata).
+            // If we somehow receive one here, treat it as opaque bytes.
             let data = std::slice::from_raw_parts(c_pkt.data.cast::<u8>(), c_pkt.len);
             Ok(Packet::Binary {
                 data: bytes::Bytes::copy_from_slice(data),
@@ -822,5 +937,57 @@ mod tests {
             Err(msg) => assert!(msg.contains("Null samples pointer"), "unexpected: {msg}"),
             Ok(_) => panic!("expected error for null audio samples pointer"),
         }
+    }
+
+    /// `downgrade_binary_with_meta` must convert a BinaryWithMeta packet to
+    /// plain Binary so that v6 plugins (which don't know discriminant 10)
+    /// receive the raw bytes without crashing.
+    #[test]
+    fn downgrade_binary_with_meta_converts_to_plain_binary() {
+        let payload = b"hello-aac-data";
+        let packet = Packet::Binary {
+            data: bytes::Bytes::from_static(payload),
+            content_type: Some(std::borrow::Cow::Borrowed("audio/aac")),
+            metadata: Some(PacketMetadata {
+                timestamp_us: Some(42_000),
+                duration_us: Some(21_333),
+                sequence: Some(1),
+                keyframe: None,
+            }),
+        };
+
+        let mut repr = packet_to_c(&packet);
+        assert_eq!(
+            repr.packet.packet_type,
+            CPacketType::BinaryWithMeta,
+            "should start as BinaryWithMeta"
+        );
+
+        repr.downgrade_binary_with_meta();
+        assert_eq!(repr.packet.packet_type, CPacketType::Binary, "should be downgraded to Binary");
+        assert_eq!(repr.packet.len, payload.len(), "data length must be preserved");
+
+        // Verify the data pointer still references the original bytes.
+        let slice =
+            unsafe { std::slice::from_raw_parts(repr.packet.data.cast::<u8>(), repr.packet.len) };
+        assert_eq!(slice, payload);
+    }
+
+    /// `downgrade_binary_with_meta` is a no-op for non-BinaryWithMeta packets.
+    #[test]
+    fn downgrade_binary_with_meta_noop_for_plain_binary() {
+        let payload = b"raw-bytes";
+        let packet = Packet::Binary {
+            data: bytes::Bytes::from_static(payload),
+            content_type: None,
+            metadata: None,
+        };
+
+        let mut repr = packet_to_c(&packet);
+        assert_eq!(repr.packet.packet_type, CPacketType::Binary, "plain Binary without meta");
+
+        repr.downgrade_binary_with_meta();
+        assert_eq!(repr.packet.packet_type, CPacketType::Binary, "should remain Binary");
+        assert_eq!(repr.packet.len, payload.len());
     }
 }

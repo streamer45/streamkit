@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: © 2025 StreamKit Contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+
+[package]
+name = "aac-encoder-plugin-native"
+version = "0.1.0"
+edition = "2021"
+license = "MPL-2.0"
+
+[lib]
+name = "aac_encoder"
+crate-type = ["cdylib"]
+
+[dependencies]
+streamkit-plugin-sdk-native = { path = "../../../sdks/plugin-sdk/native" }
+shiguredo_fdk_aac = "2025.1.1"
+bytes = "1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+cognitive_complexity = "warn"
+cast_possible_truncation = "warn"
+cast_precision_loss = "warn"
+cast_sign_loss = "warn"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+doc_markdown = "allow"

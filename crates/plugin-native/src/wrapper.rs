@@ -37,16 +37,27 @@ struct InstanceState {
     handle_addr: AtomicUsize,
     in_flight_calls: AtomicUsize,
     drop_requested: AtomicBool,
+    /// Plugin's declared API version (6, 7, or 8).  Used to avoid sending
+    /// `BinaryWithMeta` packets to v6 plugins that don't understand them.
+    /// v7 plugins understand BinaryWithMeta but not EncodedAudio metadata
+    /// (which is fine — EncodedAudio is metadata-only, not a runtime packet).
+    api_version: u32,
 }
 
 impl InstanceState {
-    fn new(library: Arc<Library>, api: &'static CNativePluginAPI, handle: CPluginHandle) -> Self {
+    fn new(
+        library: Arc<Library>,
+        api: &'static CNativePluginAPI,
+        handle: CPluginHandle,
+        api_version: u32,
+    ) -> Self {
         Self {
             library,
             api_addr: std::ptr::from_ref(api) as usize,
             handle_addr: AtomicUsize::new(handle as usize),
             in_flight_calls: AtomicUsize::new(0),
             drop_requested: AtomicBool::new(false),
+            api_version,
         }
     }
 
@@ -190,7 +201,10 @@ impl NativeNodeWrapper {
             ));
         }
 
-        Ok(Self { state: Arc::new(InstanceState::new(library, api, handle)), metadata })
+        Ok(Self {
+            state: Arc::new(InstanceState::new(library, api, handle, api.version)),
+            metadata,
+        })
     }
 }
 
@@ -503,7 +517,17 @@ impl NativeNodeWrapper {
                         let _lib = Arc::clone(&state.library);
                         let api = state.api();
                         // Convert packet to C representation
-                        let packet_repr = conversions::packet_to_c(&packet);
+                        let mut packet_repr = conversions::packet_to_c(&packet);
+
+                        // v6 plugins do not understand BinaryWithMeta (discriminant 10).
+                        // Downgrade to plain Binary so the raw bytes still arrive; the
+                        // metadata/content_type fields are lost but the plugin won't crash.
+                        // Note: no downgrade needed for EncodedAudio (discriminant 11)
+                        // because it is a metadata-only type used in CPacketTypeInfo for
+                        // pin declarations — it never appears in runtime CPacket transport.
+                        if state.api_version < 7 {
+                            packet_repr.downgrade_binary_with_meta();
+                        }
 
                         // Create callback context
                         let mut callback_ctx = CallbackContext {
