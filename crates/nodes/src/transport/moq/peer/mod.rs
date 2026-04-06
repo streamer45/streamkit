@@ -2232,7 +2232,13 @@ impl MoqPeerNode {
                 hang::catalog::AudioConfig {
                     codec: catalog_audio_codec(audio_codec),
                     sample_rate: 48000,
-                    channel_count: 1,
+                    // AAC-LC encoder always outputs stereo (upmixing mono
+                    // input), so advertise 2 channels when the subscriber
+                    // codec is AAC.  Opus uses mono by default.
+                    channel_count: match audio_codec {
+                        AudioCodec::Aac => 2,
+                        _ => 1,
+                    },
                     bitrate: Some(64_000),
                     description: None,
                     container: hang::catalog::Container::default(),
