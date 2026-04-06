@@ -470,20 +470,22 @@ fn mp4_content_type(audio: Option<AudioCodec>, video: Option<VideoCodec>) -> &'s
     }
 
     let has_audio = audio.is_some();
-    let has_video = video.is_some();
     let audio_is_opus = matches!(audio, Some(AudioCodec::Opus));
-    let video_is_av1 = matches!(video, Some(VideoCodec::Av1));
 
-    match (has_audio, has_video, audio_is_opus, video_is_av1) {
-        (true, true, false, false) => "video/mp4; codecs=\"avc1,mp4a\"",
-        (true, true, true, false) => "video/mp4; codecs=\"avc1,opus\"",
-        (true, true, false, true) => "video/mp4; codecs=\"av01,mp4a\"",
-        (true, true, true, true) => "video/mp4; codecs=\"av01,opus\"",
-        (false, true, _, false) => "video/mp4; codecs=\"avc1\"",
-        (false, true, _, true) => "video/mp4; codecs=\"av01\"",
-        (true, false, false, _) => "audio/mp4; codecs=\"mp4a\"",
-        (true, false, true, _) => "audio/mp4; codecs=\"opus\"",
-        (false, false, _, _) => "video/mp4",
+    // Match on the concrete video codec to avoid conflating VP9/H264/AV1.
+    match (has_audio, video, audio_is_opus) {
+        (true, Some(VideoCodec::Av1), false) => "video/mp4; codecs=\"av01,mp4a\"",
+        (true, Some(VideoCodec::Av1), true) => "video/mp4; codecs=\"av01,opus\"",
+        (true, Some(VideoCodec::H264), false) => "video/mp4; codecs=\"avc1,mp4a\"",
+        (true, Some(VideoCodec::H264), true) => "video/mp4; codecs=\"avc1,opus\"",
+        // VP9 and any future codec: fall back to generic "video/mp4".
+        (true, Some(_), false) => "video/mp4; codecs=\"mp4a\"",
+        (true, Some(_), true) => "video/mp4; codecs=\"opus\"",
+        (false, Some(VideoCodec::Av1), _) => "video/mp4; codecs=\"av01\"",
+        (false, Some(VideoCodec::H264), _) => "video/mp4; codecs=\"avc1\"",
+        (true, None, false) => "audio/mp4; codecs=\"mp4a\"",
+        (true, None, true) => "audio/mp4; codecs=\"opus\"",
+        (false, Some(_) | None, _) => "video/mp4",
     }
 }
 
@@ -1198,6 +1200,8 @@ async fn flush_fmp4_segment(
         stats_tracker.sent();
         seg.init_sent = true;
     }
+
+    seg.segment_data_offset = 0;
 
     stats_tracker.maybe_send();
     Ok(false)

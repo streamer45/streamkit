@@ -191,7 +191,7 @@ impl OpenH264Encoder {
         // resolution change by the StandardVideoEncoder infrastructure.
 
         let enc_config = EncoderConfig::new()
-            .bitrate(BitRate::from_bps(config.bitrate_kbps * 1000))
+            .bitrate(BitRate::from_bps(config.bitrate_kbps.saturating_mul(1000)))
             .max_frame_rate(FrameRate::from_hz(config.max_frame_rate))
             .rate_control_mode(RateControlMode::Bitrate)
             .skip_frames(false);
