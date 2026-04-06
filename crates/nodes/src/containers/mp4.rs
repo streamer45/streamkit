@@ -648,12 +648,12 @@ fn parse_mp4_audio_codec_config(s: Option<&str>) -> AudioCodec {
     })
 }
 
-/// Parse an optional video codec config string into a [`VideoCodec`].
+/// Parse a video codec config string into a [`VideoCodec`].
 ///
-/// Returns `None` when the input is `None`, and defaults to `Av1` for
-/// unrecognised values.  Used only for the pre-connection MIME hint.
-fn parse_mp4_video_codec_config(s: Option<&str>) -> Option<VideoCodec> {
-    s.map(|v| match v.to_ascii_lowercase().as_str() {
+/// Defaults to `Av1` for unrecognised values.  Used only for the
+/// pre-connection MIME hint.
+fn parse_mp4_video_codec_config(s: &str) -> VideoCodec {
+    match s.to_ascii_lowercase().as_str() {
         "h264" | "avc1" | "avc" => VideoCodec::H264,
         "vp9" => VideoCodec::Vp9,
         "av1" => VideoCodec::Av1,
@@ -661,7 +661,7 @@ fn parse_mp4_video_codec_config(s: Option<&str>) -> Option<VideoCodec> {
             tracing::warn!(video_codec = %other, "unrecognised video_codec config — defaulting to AV1");
             VideoCodec::Av1
         },
-    })
+    }
 }
 
 /// Determine the MP4 MIME content-type string from optional codec info.
@@ -819,6 +819,10 @@ impl ProcessorNode for Mp4MuxerNode {
                 profile: None,
                 level: None,
             }),
+            // Accept Binary packets from native plugins whose C ABI does not
+            // yet support EncodedAudio/EncodedVideo discriminants.  The muxer
+            // resolves the actual codec from content_type metadata at runtime.
+            PacketType::Binary,
         ];
 
         let mut pins = vec![InputPin {
@@ -851,8 +855,10 @@ impl ProcessorNode for Mp4MuxerNode {
         // VP9 pipelines.
         let video = if self.config.video_width > 0 && self.config.video_height > 0 {
             Some(
-                parse_mp4_video_codec_config(self.config.video_codec.as_deref())
-                    .unwrap_or(VideoCodec::Av1),
+                self.config
+                    .video_codec
+                    .as_deref()
+                    .map_or(VideoCodec::Av1, parse_mp4_video_codec_config),
             )
         } else {
             None

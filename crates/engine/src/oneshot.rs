@@ -477,16 +477,21 @@ impl Engine {
         // --- 5.5. Start source / generator nodes ---
         // File readers need an explicit Start signal, and so do generator nodes
         // (e.g. video::colorbars) that follow the Ready → Start lifecycle.
-        // In generator mode we find root nodes (never a to_node in any connection)
-        // and send them Start as well.
+        // We always scan for root nodes (never a to_node in any connection) so
+        // that mixed pipelines (e.g. http_input + colorbars) work correctly.
+        // http_input nodes are excluded because they are driven by the incoming
+        // HTTP stream rather than a Start signal.
         let mut start_node_ids: Vec<String> = source_node_ids.clone();
 
-        if !has_http_input && source_node_ids.is_empty() {
-            // Generator mode — find root nodes that need a Start signal.
+        {
             let downstream_nodes: std::collections::HashSet<&str> =
                 definition.connections.iter().map(|c| c.to_node.as_str()).collect();
             for name in definition.nodes.keys() {
-                if name != &output_node_id && !downstream_nodes.contains(name.as_str()) {
+                if name != &output_node_id
+                    && !downstream_nodes.contains(name.as_str())
+                    && !start_node_ids.contains(name)
+                    && !http_input_nodes.contains(name)
+                {
                     start_node_ids.push(name.clone());
                 }
             }

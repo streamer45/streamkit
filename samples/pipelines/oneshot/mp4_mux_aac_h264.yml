@@ -71,11 +71,12 @@ nodes:
       mode: stream
       video_width: 640
       video_height: 480
+      num_inputs: 2
       audio_codec: aac
       video_codec: h264
     needs:
-      - aac_encoder
-      - h264_encoder
+      in: aac_encoder
+      in_1: h264_encoder
 
   http_output:
     kind: streamkit::http_output
