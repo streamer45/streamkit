@@ -26,8 +26,6 @@ use streamkit_plugin_sdk_native::streamkit_core::types::{
 const AAC_SAMPLE_RATE: u32 = 48_000;
 const AAC_CHANNELS: u16 = 2;
 const AAC_FRAME_SAMPLES: usize = 1024;
-/// Duration of one AAC frame in microseconds: 1024 / 48000 × 1_000_000.
-const AAC_FRAME_DURATION_US: u64 = 21_333;
 const AAC_CONTENT_TYPE: &str = "audio/aac";
 
 const DEFAULT_BITRATE: usize = 128_000;
@@ -98,18 +96,21 @@ impl AacEncoderNode {
 
     /// Send one encoded AAC frame downstream with timing metadata.
     fn emit_frame(&mut self, data: &[u8], output: &OutputSender) -> Result<(), String> {
-        // Compute timestamp from frame count to avoid accumulating truncation
-        // drift.  1024 samples / 48 000 Hz = 21.333… µs per frame; using
-        // integer arithmetic: sequence * 1024 * 1_000_000 / 48_000.
-        let timestamp_us =
-            (self.sequence as u128 * 1_024 * 1_000_000 / 48_000) as u64;
+        // Compute timestamp and duration from frame count to avoid
+        // accumulating truncation drift.  1024 samples / 48 000 Hz =
+        // 21.333… µs per frame; using integer arithmetic:
+        //   timestamp = sequence * 1024 * 1_000_000 / 48_000
+        //   duration  = next_timestamp − this_timestamp
+        let ts = |seq: u64| (seq as u128 * 1_024 * 1_000_000 / 48_000) as u64;
+        let timestamp_us = ts(self.sequence);
+        let duration_us = ts(self.sequence + 1) - timestamp_us;
 
         let packet = Packet::Binary {
             data: bytes::Bytes::copy_from_slice(data),
             content_type: Some(std::borrow::Cow::Borrowed(AAC_CONTENT_TYPE)),
             metadata: Some(PacketMetadata {
                 timestamp_us: Some(timestamp_us),
-                duration_us: Some(AAC_FRAME_DURATION_US),
+                duration_us: Some(duration_us),
                 sequence: Some(self.sequence),
                 keyframe: None,
             }),

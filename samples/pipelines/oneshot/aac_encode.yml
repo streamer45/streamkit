@@ -41,7 +41,7 @@ nodes:
   mp4_muxer:
     kind: containers::mp4::muxer
     params:
-      mode: file
+      mode: stream
       sample_rate: 48000
       channels: 2
       audio_codec: aac
