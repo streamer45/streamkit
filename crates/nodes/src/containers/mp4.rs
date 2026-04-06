@@ -48,8 +48,23 @@ use crate::video::DEFAULT_VIDEO_FRAME_DURATION_US;
 // Constants
 // ---------------------------------------------------------------------------
 
-/// Default audio frame duration when metadata is missing (20 ms Opus frame).
-const DEFAULT_AUDIO_FRAME_DURATION_US: u64 = 20_000;
+/// Default audio frame duration when metadata is missing.
+///
+/// The correct value depends on the codec:
+/// - Opus: 20 ms (960 samples at 48 kHz)
+/// - AAC-LC: ~21.333 ms (1024 samples at 48 kHz)
+///
+/// Use [`default_audio_frame_duration_us`] to get the codec-aware value.
+const DEFAULT_AUDIO_FRAME_DURATION_US_OPUS: u64 = 20_000;
+const DEFAULT_AUDIO_FRAME_DURATION_US_AAC: u64 = 21_333;
+
+/// Return the default audio frame duration for the given codec.
+const fn default_audio_frame_duration_us(codec: AudioCodec) -> u64 {
+    match codec {
+        AudioCodec::Aac => DEFAULT_AUDIO_FRAME_DURATION_US_AAC,
+        _ => DEFAULT_AUDIO_FRAME_DURATION_US_OPUS,
+    }
+}
 
 /// Default video timescale (90 kHz — standard for MPEG transport streams / MP4).
 const DEFAULT_VIDEO_TIMESCALE: NonZeroU32 = match NonZeroU32::new(90_000) {
@@ -608,21 +623,10 @@ fn classify_packet(packet: Packet) -> Option<MuxFrame> {
 
 /// Parse an optional audio codec config string into an [`AudioCodec`].
 ///
-/// Accepted values (case-insensitive): `"opus"`, `"aac"`.
-/// Returns `AudioCodec::Opus` when the input is `None` or unrecognised.
+/// Delegates to the shared [`crate::transport::moq::parse_audio_codec_config`]
+/// parser and defaults to `Opus` when the input is `None` or unrecognised.
 fn parse_mp4_audio_codec_config(s: Option<&str>) -> AudioCodec {
-    match s {
-        Some(v) if v.eq_ignore_ascii_case("aac") => AudioCodec::Aac,
-        Some(v) if v.eq_ignore_ascii_case("opus") => AudioCodec::Opus,
-        Some(other) => {
-            tracing::warn!(
-                audio_codec = other,
-                "unrecognised audio_codec config value, defaulting to Opus"
-            );
-            AudioCodec::Opus
-        },
-        None => AudioCodec::Opus,
-    }
+    s.and_then(crate::transport::moq::parse_audio_codec_config).unwrap_or(AudioCodec::Opus)
 }
 
 /// Determine the MP4 MIME content-type string from optional codec info.
@@ -653,10 +657,19 @@ fn mp4_content_type(audio: Option<AudioCodec>, video: Option<VideoCodec>) -> &'s
         (Some(AudioCodec::Aac), Some(VideoCodec::H264)) => "video/mp4; codecs=\"avc1,mp4a\"",
         // Audio + unknown/future video codec
         (Some(AudioCodec::Opus), Some(_)) => "video/mp4; codecs=\"opus\"",
-        (Some(AudioCodec::Aac | _), Some(_)) => "video/mp4; codecs=\"mp4a\"",
+        (Some(AudioCodec::Aac), Some(_)) => "video/mp4; codecs=\"mp4a\"",
         // Audio-only
         (Some(AudioCodec::Opus), None) => "audio/mp4; codecs=\"opus\"",
-        (Some(AudioCodec::Aac | _), None) => "audio/mp4; codecs=\"mp4a\"",
+        (Some(AudioCodec::Aac), None) => "audio/mp4; codecs=\"mp4a\"",
+        // Future audio codec — warn and omit codecs param.
+        (Some(_), Some(_)) => {
+            tracing::warn!("mp4_content_type: unrecognised audio codec — omitting codecs param");
+            "video/mp4"
+        },
+        (Some(_), None) => {
+            tracing::warn!("mp4_content_type: unrecognised audio codec — omitting codecs param");
+            "audio/mp4"
+        },
         // Video-only
         (None, Some(VideoCodec::Av1)) => "video/mp4; codecs=\"av01\"",
         (None, Some(VideoCodec::H264)) => "video/mp4; codecs=\"avc1\"",
@@ -1213,7 +1226,7 @@ async fn run_stream_mode(
                 let duration_us = metadata
                     .as_ref()
                     .and_then(|m| m.duration_us)
-                    .unwrap_or(DEFAULT_AUDIO_FRAME_DURATION_US);
+                    .unwrap_or_else(|| default_audio_frame_duration_us(session.audio_codec));
                 let duration_ticks = us_to_ticks(duration_us, audio_timescale.get());
 
                 let data_size = data.len();
@@ -1504,7 +1517,13 @@ async fn run_file_mode(
                 )?;
             },
             MuxFrame::Audio(data, metadata) => {
-                process_file_audio_frame(&data, metadata.as_ref(), &mut state, stats_tracker)?;
+                process_file_audio_frame(
+                    &data,
+                    metadata.as_ref(),
+                    session.audio_codec,
+                    &mut state,
+                    stats_tracker,
+                )?;
             },
         }
     }
@@ -1608,14 +1627,16 @@ fn process_file_video_frame(
 fn process_file_audio_frame(
     data: &Bytes,
     metadata: Option<&PacketMetadata>,
+    audio_codec: AudioCodec,
     state: &mut FileMuxState,
     stats_tracker: &mut NodeStatsTracker,
 ) -> Result<(), StreamKitError> {
     state.packet_count += 1;
     stats_tracker.received();
 
-    let duration_us =
-        metadata.and_then(|m| m.duration_us).unwrap_or(DEFAULT_AUDIO_FRAME_DURATION_US);
+    let duration_us = metadata
+        .and_then(|m| m.duration_us)
+        .unwrap_or_else(|| default_audio_frame_duration_us(audio_codec));
     let duration_ticks = us_to_ticks(duration_us, state.audio_timescale.get());
 
     let data_offset = state

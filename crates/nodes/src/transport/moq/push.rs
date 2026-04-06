@@ -5,8 +5,8 @@
 //! MoQ Push Node - publishes packets to a MoQ broadcast
 
 use super::constants::{
-    catalog_audio_codec, catalog_video_codec, moq_accepted_media_types, resolve_audio_codec,
-    resolve_video_codec, DEFAULT_AUDIO_FRAME_DURATION_US,
+    catalog_audio_codec, catalog_video_codec, default_audio_frame_duration_us,
+    moq_accepted_media_types, resolve_audio_codec, resolve_video_codec,
 };
 use async_trait::async_trait;
 use futures::future::poll_fn;
@@ -511,7 +511,7 @@ impl ProcessorNode for MoqPushNode {
                         (
                             &mut audio_clock,
                             &mut audio_seeded,
-                            DEFAULT_AUDIO_FRAME_DURATION_US,
+                            default_audio_frame_duration_us(audio_codec),
                             &mut audio_first_sent,
                             ap,
                         )
@@ -537,7 +537,7 @@ impl ProcessorNode for MoqPushNode {
                         let dur = if state.is_video {
                             crate::video::DEFAULT_VIDEO_FRAME_DURATION_US
                         } else {
-                            DEFAULT_AUDIO_FRAME_DURATION_US
+                            default_audio_frame_duration_us(audio_codec)
                         };
                         (
                             &mut state.clock,

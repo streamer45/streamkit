@@ -4,65 +4,39 @@
 
 # Real-time MoQ mixing pipeline using AAC encoding instead of Opus.
 #
-# Mirrors moq_mixing.yml but replaces the Opus encoder with the AAC
-# encoder native plugin.  The browser publishes Opus (mic), the pipeline
-# decodes, mixes with a local music track, encodes to AAC-LC, and
-# republishes over MoQ.  Chrome decodes AAC natively via WebCodecs.
+# NOTE: This pipeline is a placeholder — the AAC encoder native plugin
+# currently outputs `PacketType::Binary` (via the BinaryWithMeta C ABI)
+# rather than `PacketType::EncodedAudio(Aac)`.  MoQ transport nodes
+# (moq_peer, moq_push) only accept `EncodedAudio`, so plugging the AAC
+# encoder directly into MoQ is not yet possible.
+#
+# Once the native plugin C ABI gains an `EncodedAudio` discriminant (or
+# the host adds automatic Binary→EncodedAudio promotion for known
+# content-types), this pipeline can be enabled by wiring aac_encoder.out
+# into a moq_push or moq_peer input.
+#
+# For now, use the oneshot AAC pipelines (aac_encode.yml,
+# mp4_mux_aac_h264.yml) which route through the MP4 muxer — the muxer
+# accepts Binary packets with content_type "audio/aac".
 #
 # Requires: aac-encoder native plugin (just install-plugin aac-encoder)
 
-name: Real-Time MoQ Mixing (AAC)
-description: Mixes a live MoQ mic input with a local music track, encodes to AAC, and republishes
+name: Real-Time MoQ Mixing (AAC) [placeholder]
+description: |
+  Mixes a local music track, encodes to AAC, and writes to MP4.
+  MoQ output is blocked by the Binary vs EncodedAudio type gap
+  (see note above).
 mode: dynamic
-client:
-  gateway_path: /moq/mixing-aac
-  publish:
-    broadcast: input
-    tracks:
-      - kind: audio
-        source: microphone
-  watch:
-    broadcast: output
-    audio: true
-    video: false
 nodes:
   # ============================================================
-  # INPUTS: MoQ mic input + local music file
+  # MUSIC SOURCE: Read, demux, pace, decode, and apply gain
   # ============================================================
-  moq_peer:
-    kind: transport::moq::peer
-    params:
-      gateway_path: /moq/mixing-aac
-      input_broadcasts:
-        - input
-      output_broadcast: output
-      allow_reconnect: true
-      audio_codec: aac
-    needs: aac_encoder
-
   music_file_reader:
     kind: core::file_reader
     params:
       chunk_size: 8192
       path: samples/audio/system/THE LADY IS A TRAMP.opus
 
-  # ============================================================
-  # MIC STREAM: Decode and apply gain
-  # ============================================================
-  mic_opus_decoder:
-    kind: audio::opus::decoder
-    needs:
-      in: moq_peer.audio/data
-
-  mic_gain:
-    kind: audio::gain
-    params:
-      gain: 1.0
-    needs: mic_opus_decoder
-
-  # ============================================================
-  # MUSIC STREAM: Demux, pace, decode, and apply gain
-  # ============================================================
   music_ogg_demuxer:
     kind: containers::ogg::demuxer
     needs: music_file_reader
@@ -81,27 +55,17 @@ nodes:
   music_gain:
     kind: audio::gain
     params:
-      gain: 0.15
+      gain: 0.8
     needs: music_opus_decoder
 
   # ============================================================
-  # OUTPUT: Mix streams and encode to AAC
+  # OUTPUT: Encode to AAC
+  # The mixer outputs 960 samples/channel (Opus frame size);
+  # the AAC encoder's residual buffer accumulates samples until
+  # a full 1024-sample AAC frame is available.
   # ============================================================
-  mixer:
-    kind: audio::mixer
-    params:
-      num_inputs: 2
-      clocked:
-        sample_rate: 48000
-        frame_samples_per_channel: 960
-        jitter_buffer_frames: 3
-        generate_silence: true
-    needs:
-      - mic_gain
-      - music_gain
-
   aac_encoder:
     kind: plugin::native::aac_encoder
     params:
       bitrate: 128000
-    needs: mixer
+    needs: music_gain

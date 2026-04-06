@@ -89,6 +89,16 @@ pub(super) enum PublisherEvent {
     Disconnected { path: String, error: Option<String> },
 }
 
+/// Resolved codec pair for video and audio.
+///
+/// Bundles the two codec fields that would otherwise be passed as separate
+/// parameters to `handle_pin_management` and friends.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct MediaCodecConfig {
+    pub video: VideoCodec,
+    pub audio: AudioCodec,
+}
+
 /// Media and output configuration shared across subscriber-related functions.
 pub(super) struct SubscriberMediaConfig {
     pub has_video: bool,
@@ -158,6 +168,8 @@ pub(super) struct SubscriberSendCtx<'a> {
     pub last_audio_ts_ms: Option<u64>,
     pub last_video_ts_ms: Option<u64>,
     pub stats_delta_tx: &'a mpsc::Sender<NodeStatsDelta>,
+    /// Resolved audio codec — used for codec-aware default frame durations.
+    pub audio_codec: AudioCodec,
 }
 
 // ── Shared map of dynamic output pin senders ─────────────────────────────────

@@ -12,7 +12,16 @@ use streamkit_core::types::{
     AudioCodec, EncodedAudioFormat, EncodedVideoFormat, PacketMetadata, PacketType, VideoCodec,
 };
 
-pub const DEFAULT_AUDIO_FRAME_DURATION_US: u64 = 20_000;
+pub const DEFAULT_AUDIO_FRAME_DURATION_US_OPUS: u64 = 20_000;
+pub const DEFAULT_AUDIO_FRAME_DURATION_US_AAC: u64 = 21_333;
+
+/// Return the default audio frame duration for the given codec.
+pub const fn default_audio_frame_duration_us(codec: AudioCodec) -> u64 {
+    match codec {
+        AudioCodec::Aac => DEFAULT_AUDIO_FRAME_DURATION_US_AAC,
+        _ => DEFAULT_AUDIO_FRAME_DURATION_US_OPUS,
+    }
+}
 
 pub fn packet_duration_us(metadata: Option<&PacketMetadata>) -> Option<u64> {
     metadata.and_then(|m| m.duration_us).filter(|d| *d > 0)

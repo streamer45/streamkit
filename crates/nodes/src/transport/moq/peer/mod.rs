@@ -18,8 +18,9 @@ pub use config::MoqPeerConfig;
 use config::{
     infer_kind_from_packet, join_gateway_path, make_broadcast_frame, media_kind_for_packet_type,
     normalize_gateway_path, BidirectionalTaskConfig, BroadcastFrame, DynamicOutputs, FrameResult,
-    MediaKind, MediaTypeState, NodeStatsDelta, PublisherEvent, PublisherReceiveLoopWithSlotConfig,
-    SendResult, SubscriberMediaConfig, SubscriberSendCtx, TrackExit,
+    MediaCodecConfig, MediaKind, MediaTypeState, NodeStatsDelta, PublisherEvent,
+    PublisherReceiveLoopWithSlotConfig, SendResult, SubscriberMediaConfig, SubscriberSendCtx,
+    TrackExit,
 };
 
 use crate::transport::moq::constants::{
@@ -639,7 +640,7 @@ impl ProcessorNode for MoqPeerNode {
                         None => std::future::pending().await,
                     }
                 } => {
-                    Self::handle_pin_management(msg, &dynamic_outputs, &subscriber_broadcast_tx, &stats_delta_tx, &shutdown_tx, &mut forwarder_handles, video_codec, audio_codec);
+                    Self::handle_pin_management(msg, &dynamic_outputs, &subscriber_broadcast_tx, &stats_delta_tx, &shutdown_tx, &mut forwarder_handles, MediaCodecConfig { video: video_codec, audio: audio_codec });
                 }
 
                 // Check for shutdown signal
@@ -804,7 +805,6 @@ impl MoqPeerNode {
     ///   respond with an appropriate pin definition.
     /// - [`PinManagementMessage::AddedOutputPin`]: the engine has set up the pin
     ///   distributor and sends us the channel to write frames to.
-    #[allow(clippy::too_many_arguments)]
     fn handle_pin_management(
         msg: PinManagementMessage,
         dynamic_outputs: &DynamicOutputs,
@@ -812,14 +812,13 @@ impl MoqPeerNode {
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
         shutdown_tx: &broadcast::Sender<()>,
         forwarder_handles: &mut HashMap<String, tokio::task::JoinHandle<()>>,
-        video_codec: VideoCodec,
-        audio_codec: AudioCodec,
+        codecs: MediaCodecConfig,
     ) {
         match msg {
             PinManagementMessage::RequestAddOutputPin { suggested_name, response_tx } => {
                 let pin_name = suggested_name.unwrap_or_else(|| "dynamic_out".to_string());
                 tracing::info!("MoqPeerNode: creating dynamic output pin '{}'", pin_name);
-                let pin = make_dynamic_output_pin(&pin_name, video_codec, audio_codec);
+                let pin = make_dynamic_output_pin(&pin_name, codecs.video, codecs.audio);
                 let _ = response_tx.send(Ok(pin));
             },
             PinManagementMessage::AddedOutputPin { pin, channel } => {
@@ -2128,6 +2127,7 @@ impl MoqPeerNode {
             node_id,
             broadcast_name,
             &stats_delta_tx,
+            media.audio_codec,
         )
         .await?;
 
@@ -2284,6 +2284,7 @@ impl MoqPeerNode {
         node_id: String,
         broadcast_name: String,
         stats_delta_tx: &mpsc::Sender<NodeStatsDelta>,
+        audio_codec: AudioCodec,
     ) -> Result<u64, StreamKitError> {
         let meter = opentelemetry::global::meter("skit_nodes");
         let gap_histogram = meter
@@ -2310,6 +2311,7 @@ impl MoqPeerNode {
             last_audio_ts_ms: None,
             last_video_ts_ms: None,
             stats_delta_tx,
+            audio_codec,
         };
 
         loop {
@@ -2412,7 +2414,9 @@ impl MoqPeerNode {
                 }
 
                 let default_duration = match broadcast_frame.kind {
-                    MediaKind::Audio => super::constants::DEFAULT_AUDIO_FRAME_DURATION_US,
+                    MediaKind::Audio => {
+                        super::constants::default_audio_frame_duration_us(ctx.audio_codec)
+                    },
                     MediaKind::Video => crate::video::DEFAULT_VIDEO_FRAME_DURATION_US,
                 };
                 clock.advance_by_duration_us(broadcast_frame.duration_us, default_duration);
@@ -2556,8 +2560,7 @@ mod tests {
             &stats_delta_tx,
             &shutdown_tx,
             &mut forwarder_handles,
-            VideoCodec::Vp9,
-            AudioCodec::Opus,
+            MediaCodecConfig { video: VideoCodec::Vp9, audio: AudioCodec::Opus },
         );
 
         // If the channel was dropped, try_send would return a closed error.

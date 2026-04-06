@@ -61,9 +61,7 @@ pub struct AacEncoderNode {
     encoder: shiguredo_fdk_aac::Encoder,
     /// Residual f32 samples that didn't fill a complete 1024×2 frame.
     residual: Vec<f32>,
-    /// Running presentation timestamp in microseconds.
-    timestamp_us: u64,
-    /// Running sequence counter.
+    /// Running sequence counter (also used to compute drift-free timestamps).
     sequence: u64,
     logger: Logger,
 }
@@ -100,11 +98,17 @@ impl AacEncoderNode {
 
     /// Send one encoded AAC frame downstream with timing metadata.
     fn emit_frame(&mut self, data: &[u8], output: &OutputSender) -> Result<(), String> {
+        // Compute timestamp from frame count to avoid accumulating truncation
+        // drift.  1024 samples / 48 000 Hz = 21.333… µs per frame; using
+        // integer arithmetic: sequence * 1024 * 1_000_000 / 48_000.
+        let timestamp_us =
+            (self.sequence as u128 * 1_024 * 1_000_000 / 48_000) as u64;
+
         let packet = Packet::Binary {
             data: bytes::Bytes::copy_from_slice(data),
             content_type: Some(std::borrow::Cow::Borrowed(AAC_CONTENT_TYPE)),
             metadata: Some(PacketMetadata {
-                timestamp_us: Some(self.timestamp_us),
+                timestamp_us: Some(timestamp_us),
                 duration_us: Some(AAC_FRAME_DURATION_US),
                 sequence: Some(self.sequence),
                 keyframe: None,
@@ -112,7 +116,6 @@ impl AacEncoderNode {
         };
         output.send("out", &packet)?;
 
-        self.timestamp_us += AAC_FRAME_DURATION_US;
         self.sequence += 1;
         Ok(())
     }
@@ -140,6 +143,14 @@ impl NativeProcessorNode for AacEncoderNode {
                     }),
                 ],
             )
+            // NOTE: The output type is `PacketType::Binary` rather than
+            // `PacketType::EncodedAudio(Aac)` because the native plugin C ABI
+            // does not yet have a discriminant for `EncodedAudio`.  The
+            // `BinaryWithMeta` transport preserves `content_type` and metadata
+            // so downstream nodes that inspect these fields (e.g. MP4 muxer)
+            // can still identify the codec.  MoQ transport nodes, however,
+            // expect `EncodedAudio` and will reject `Binary` — this is a known
+            // limitation until `EncodedAudio` support is added to the C ABI.
             .output("out", PacketType::Binary)
             .param_schema(serde_json::json!({
                 "type": "object",
@@ -176,7 +187,6 @@ impl NativeProcessorNode for AacEncoderNode {
         Ok(Self {
             encoder,
             residual: Vec::with_capacity(AAC_FRAME_SAMPLES * usize::from(AAC_CHANNELS) * 2),
-            timestamp_us: 0,
             sequence: 0,
             logger,
         })
