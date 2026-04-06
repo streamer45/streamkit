@@ -628,17 +628,16 @@ fn classify_packet(packet: Packet) -> Option<MuxFrame> {
 /// `transport::moq::constants`) so that the `mp4` feature does not depend on
 /// the `moq` feature at compile time.
 fn parse_mp4_audio_codec_config(s: Option<&str>) -> AudioCodec {
-    match s {
-        Some(v) => match v.to_ascii_lowercase().as_str() {
+    s.map_or(AudioCodec::Opus, |v| {
+        match v.to_ascii_lowercase().as_str() {
             "aac" => AudioCodec::Aac,
             "opus" => AudioCodec::Opus,
             other => {
                 tracing::warn!(audio_codec = %other, "unrecognised audio_codec config — defaulting to Opus");
                 AudioCodec::Opus
             },
-        },
-        None => AudioCodec::Opus,
-    }
+        }
+    })
 }
 
 /// Determine the MP4 MIME content-type string from optional codec info.
