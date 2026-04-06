@@ -96,7 +96,7 @@ const FMP4_FIRST_FLUSH_DEFER_CAP: usize = 10 * FMP4_SEGMENT_FLUSH_THRESHOLD;
 /// or raw SPS/PPS NAL units.  Otherwise a minimal placeholder is used.
 fn build_avc1_sample_entry(width: u16, height: u16, codec_private: Option<&[u8]>) -> SampleEntry {
     let (sps_list, pps_list, profile, compat, level) = codec_private.map_or_else(
-        || (vec![vec![0x67, 0x42, 0xc0, 0x1f]], vec![vec![0x68, 0xce, 0x38, 0x80]], 66, 0, 31),
+        || (vec![vec![0x67, 0x42, 0xc0, 0x1f]], vec![vec![0x68, 0xce, 0x38, 0x80]], 66, 0xC0, 31),
         parse_avcc_codec_private,
     );
 
@@ -891,9 +891,15 @@ impl ProcessorNode for Mp4MuxerNode {
         let mut audio_rx: Option<tokio::sync::mpsc::Receiver<Packet>> = None;
         let mut video_rx: Option<tokio::sync::mpsc::Receiver<Packet>> = None;
         let mut audio_codec = parse_mp4_audio_codec_config(self.config.audio_codec.as_deref());
-        // Default video codec is AV1; only used when a video input is actually
-        // connected.  For audio-only pipelines this value is never read.
-        let mut video_codec = VideoCodec::Av1;
+        // Initialise video codec from config (matching audio_codec above).
+        // Type resolution from upstream encoders will override this when
+        // available, but the config-based default ensures the correct codec
+        // is used even when type resolution is unavailable or times out.
+        let mut video_codec = self
+            .config
+            .video_codec
+            .as_deref()
+            .map_or(VideoCodec::Av1, parse_mp4_video_codec_config);
         let mut all_receivers: Vec<tokio::sync::mpsc::Receiver<Packet>> = Vec::new();
 
         // Resolve input types from engine or pin management messages.
@@ -973,6 +979,11 @@ impl ProcessorNode for Mp4MuxerNode {
                 audio_rx = Some(rx);
             }
         }
+
+        tracing::info!(
+            "Mp4MuxerNode codec detection complete: audio={audio_codec:?} video={video_codec:?} \
+             skip_classification={skip_classification}",
+        );
 
         let has_audio = if skip_classification { true } else { audio_rx.is_some() };
         let has_video = if skip_classification { true } else { video_rx.is_some() };
@@ -2034,6 +2045,65 @@ mod tests {
     fn build_avc1_sample_entry_produces_avc1() {
         let entry = build_avc1_sample_entry(1280, 720, None);
         assert!(matches!(entry, SampleEntry::Avc1(_)));
+    }
+
+    /// Regression test: the placeholder AVC1 sample entry must have
+    /// `profile_compatibility` matching the SPS constraint flags (0xC0),
+    /// not zero.  A zero value can cause compliant demuxers to reject
+    /// the init segment.
+    #[test]
+    fn build_avc1_placeholder_has_correct_profile_compat() {
+        let entry = build_avc1_sample_entry(640, 480, None);
+        match entry {
+            SampleEntry::Avc1(avc1) => {
+                assert_eq!(
+                    avc1.avcc_box.profile_compatibility, 0xC0,
+                    "Placeholder profile_compatibility must match SPS constraint flags"
+                );
+            },
+            other => panic!("Expected Avc1, got {other:?}"),
+        }
+    }
+
+    /// Regression test: `parse_mp4_video_codec_config` must return H264 for
+    /// "h264" so that the muxer's config-based initialisation produces the
+    /// correct codec when the YAML specifies `video_codec: h264`.
+    ///
+    /// Previously `video_codec` was hardcoded to `Av1` regardless of config,
+    /// which caused the init segment to contain an `av01` track instead of
+    /// `avc1` when type resolution was unavailable.
+    #[test]
+    fn parse_video_codec_config_h264() {
+        assert_eq!(parse_mp4_video_codec_config("h264"), VideoCodec::H264);
+        assert_eq!(parse_mp4_video_codec_config("avc1"), VideoCodec::H264);
+        assert_eq!(parse_mp4_video_codec_config("avc"), VideoCodec::H264);
+        assert_eq!(parse_mp4_video_codec_config("H264"), VideoCodec::H264);
+    }
+
+    /// Verify that `build_sample_entries` produces AVC1 + MP4A when configured
+    /// with H264 video and AAC audio — the exact combination used by the
+    /// `mp4_mux_aac_h264` oneshot pipeline.
+    #[test]
+    fn build_sample_entries_h264_aac() {
+        let config = Mp4MuxerConfig {
+            video_width: 640,
+            video_height: 480,
+            video_codec: Some("h264".to_string()),
+            audio_codec: Some("aac".to_string()),
+            ..Mp4MuxerConfig::default()
+        };
+        let audio = parse_mp4_audio_codec_config(config.audio_codec.as_deref());
+        let video =
+            config.video_codec.as_deref().map_or(VideoCodec::Av1, parse_mp4_video_codec_config);
+        let (video_entry, audio_entry) = build_sample_entries(&config, audio, video);
+        assert!(
+            matches!(video_entry, SampleEntry::Avc1(_)),
+            "Expected AVC1 video entry for H264 config, got {video_entry:?}"
+        );
+        assert!(
+            matches!(audio_entry, SampleEntry::Mp4a(_)),
+            "Expected MP4A audio entry for AAC config, got {audio_entry:?}"
+        );
     }
 
     #[test]

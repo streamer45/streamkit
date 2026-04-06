@@ -87,8 +87,8 @@ nodes:
       samples_per_channel: 960
       generate_silence: true
     needs:
-      - mic_gain[in_0]
-      - music_gain[in_1]
+      - mic_gain
+      - music_gain
 
   aac_encoder:
     kind: plugin::native::aac_encoder
