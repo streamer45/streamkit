@@ -215,10 +215,7 @@ impl ProcessorNode for MoqPeerNode {
         // AAC out) to advertise the correct codec in the subscriber catalog
         // without changing the publisher output pin type.
         let subscriber_audio_codec = resolve_audio_codec(
-            self.config
-                .subscriber_audio_codec
-                .as_deref()
-                .or(self.config.audio_codec.as_deref()),
+            self.config.subscriber_audio_codec.as_deref().or(self.config.audio_codec.as_deref()),
             &context.input_types,
         );
 
