@@ -49,6 +49,30 @@ pub struct RtmpPublishConfig {
     /// - `rtmp://a.rtmp.youtube.com/live2/xxxx-xxxx-xxxx-xxxx`
     /// - `rtmps://live.twitch.tv/app/live_xxxx`
     pub url: String,
+
+    /// Audio sample rate in Hz for the AAC sequence header.
+    ///
+    /// Must match the sample rate produced by the upstream AAC encoder.
+    /// Common values: 48000, 44100, 32000.
+    /// Defaults to 48000.
+    #[serde(default = "default_sample_rate")]
+    pub sample_rate: u32,
+
+    /// Number of audio channels for the AAC sequence header.
+    ///
+    /// Must match the channel count produced by the upstream AAC encoder.
+    /// 1 = mono, 2 = stereo.
+    /// Defaults to 2 (stereo).
+    #[serde(default = "default_channels")]
+    pub channels: u8,
+}
+
+const fn default_sample_rate() -> u32 {
+    48_000
+}
+
+const fn default_channels() -> u8 {
+    2
 }
 
 // ---------------------------------------------------------------------------
@@ -106,7 +130,9 @@ impl ProcessorNode for RtmpPublishNode {
 
     async fn run(self: Box<Self>, mut context: NodeContext) -> Result<(), StreamKitError> {
         let node_name = context.output_sender.node_name().to_string();
-        tracing::info!(%node_name, url = %self.config.url, "RtmpPublishNode starting");
+        // Log without the stream key (it's effectively a bearer token).
+        let masked_url = mask_stream_key(&self.config.url);
+        tracing::info!(%node_name, url = %masked_url, "RtmpPublishNode starting");
 
         state_helpers::emit_initializing(&context.state_tx, &node_name);
 
@@ -187,6 +213,7 @@ impl ProcessorNode for RtmpPublishNode {
                     };
                     if let Err(e) = process_audio_packet(
                         &pkt, &mut connection, &mut audio_seq_header_sent,
+                        self.config.sample_rate, self.config.channels,
                         &packet_counter, &metric_labels,
                         &mut stats, &mut packet_count, &node_name,
                     ) {
@@ -261,6 +288,15 @@ impl RtmpStream {
             Self::Tls(s) => s.write_all(buf).await,
         }
     }
+}
+
+/// Mask the stream-key portion of an RTMP URL for safe logging.
+///
+/// Returns the URL with everything after the last `/` in the path replaced
+/// by `****`.  If parsing fails, returns `<redacted>`.
+fn mask_stream_key(url: &str) -> String {
+    url.rfind('/')
+        .map_or_else(|| "<redacted>".to_string(), |idx| format!("{}/<redacted>", &url[..idx]))
 }
 
 /// Connect to the RTMP server, using TLS if the URL scheme is `rtmps://`.
@@ -382,7 +418,7 @@ fn drain_events(connection: &mut RtmpPublishClientConnection, node_name: &str) {
 ///
 /// Converts H.264 Annex B to AVCC format, extracts SPS/PPS on keyframes
 /// to send as an AVC sequence header, then sends the video frame.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // Packet-processing context (connection, counters, stats) is passed individually; bundling into a struct is a future cleanup.
 fn process_video_packet(
     packet: &Packet,
     connection: &mut RtmpPublishClientConnection,
@@ -448,14 +484,15 @@ fn process_video_packet(
         tracing::debug!(%node_name, %timestamp_ms, "Sent AVC sequence header");
     }
 
-    // Send the actual video data (AVCC-formatted).
+    // Send the actual video data (AVCC-formatted), excluding SPS/PPS NALUs
+    // which are already conveyed in the sequence header above.
     let frame = RtmpVideoFrame {
         timestamp: RtmpTimestamp::from_millis(timestamp_ms),
         composition_timestamp_offset: RtmpTimestampDelta::ZERO,
         frame_type: if keyframe { VideoFrameType::KeyFrame } else { VideoFrameType::InterFrame },
         codec: RtmpVideoCodec::Avc,
         avc_packet_type: Some(AvcPacketType::NalUnit),
-        data: conv.data,
+        data: conv.video_data,
     };
 
     connection
@@ -481,11 +518,13 @@ fn process_video_packet(
 ///
 /// On the first audio packet, sends an AAC `AudioSpecificConfig` as the
 /// RTMP sequence header.  Subsequent packets are sent as raw AAC frames.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // Packet-processing context (connection, counters, stats) is passed individually; bundling into a struct is a future cleanup.
 fn process_audio_packet(
     packet: &Packet,
     connection: &mut RtmpPublishClientConnection,
     seq_header_sent: &mut bool,
+    sample_rate: u32,
+    channels: u8,
     counter: &opentelemetry::metrics::Counter<u64>,
     labels: &[KeyValue],
     stats: &mut NodeStatsTracker,
@@ -511,7 +550,7 @@ fn process_audio_packet(
 
     // Send AAC sequence header (AudioSpecificConfig) on first audio packet.
     if !*seq_header_sent {
-        let asc = build_aac_audio_specific_config(48_000, 2);
+        let asc = build_aac_audio_specific_config(sample_rate, channels);
 
         let seq_frame = RtmpAudioFrame {
             timestamp: RtmpTimestamp::from_millis(timestamp_ms),
@@ -573,8 +612,9 @@ const H264_NAL_PPS: u8 = 8;
 
 /// Result of converting an H.264 Annex B access unit to AVCC format.
 struct AvccConversion {
-    /// AVCC-formatted data (4-byte length-prefixed NAL units).
-    data: Vec<u8>,
+    /// AVCC-formatted video data (4-byte length-prefixed NAL units),
+    /// excluding SPS/PPS parameter sets (those go in the sequence header).
+    video_data: Vec<u8>,
     /// SPS NAL units found in this access unit.
     sps_list: Vec<Vec<u8>>,
     /// PPS NAL units found in this access unit.
@@ -634,7 +674,7 @@ fn parse_annexb_nal_units(data: &[u8]) -> Vec<&[u8]> {
 /// can build the RTMP `AvcSequenceHeader`.
 fn convert_annexb_to_avcc(data: &[u8]) -> AvccConversion {
     let nals = parse_annexb_nal_units(data);
-    let mut out = Vec::with_capacity(data.len());
+    let mut video_data = Vec::with_capacity(data.len());
     let mut sps_list = Vec::new();
     let mut pps_list = Vec::new();
 
@@ -643,21 +683,23 @@ fn convert_annexb_to_avcc(data: &[u8]) -> AvccConversion {
             continue;
         }
 
-        // 4-byte big-endian length prefix.
-        let len = u32::try_from(nal.len()).unwrap_or(u32::MAX);
-        out.extend_from_slice(&len.to_be_bytes());
-        out.extend_from_slice(nal);
-
         // Classify and extract parameter sets.
         let nal_type = nal[0] & H264_NAL_TYPE_MASK;
         if nal_type == H264_NAL_SPS {
             sps_list.push(nal.to_vec());
+            continue; // SPS goes in the sequence header, not the NalUnit data.
         } else if nal_type == H264_NAL_PPS {
             pps_list.push(nal.to_vec());
+            continue; // PPS goes in the sequence header, not the NalUnit data.
         }
+
+        // 4-byte big-endian length prefix.
+        let len = u32::try_from(nal.len()).unwrap_or(u32::MAX);
+        video_data.extend_from_slice(&len.to_be_bytes());
+        video_data.extend_from_slice(nal);
     }
 
-    AvccConversion { data: out, sps_list, pps_list }
+    AvccConversion { video_data, sps_list, pps_list }
 }
 
 // ---------------------------------------------------------------------------
@@ -674,7 +716,6 @@ fn convert_annexb_to_avcc(data: &[u8]) -> AvccConversion {
 /// 4 bits  channelConfiguration
 /// 3 bits  GASpecificConfig (frameLengthFlag=0, dependsOnCoreCoder=0, extensionFlag=0)
 /// ```
-#[allow(clippy::cast_possible_truncation)]
 fn build_aac_audio_specific_config(sample_rate: u32, channels: u8) -> Vec<u8> {
     let freq_index: u8 = match sample_rate {
         96_000 => 0,
@@ -714,7 +755,11 @@ fn build_aac_audio_specific_config(sample_rate: u32, channels: u8) -> Vec<u8> {
 /// should never happen for a valid `schemars`-derived type.
 #[allow(clippy::expect_used)] // Schema serialization should never fail for valid types
 pub fn register_rtmp_nodes(registry: &mut NodeRegistry) {
-    let default_node = RtmpPublishNode::new(RtmpPublishConfig { url: String::new() });
+    let default_node = RtmpPublishNode::new(RtmpPublishConfig {
+        url: String::new(),
+        sample_rate: default_sample_rate(),
+        channels: default_channels(),
+    });
 
     registry.register_static_with_description(
         "transport::rtmp::publish",
@@ -801,22 +846,12 @@ mod tests {
         assert_eq!(result.sps_list[0], sps.to_vec());
         assert_eq!(result.pps_list[0], pps.to_vec());
 
-        // Verify AVCC output: each NAL prefixed with 4-byte BE length
-        let avcc = &result.data;
-        let mut offset = 0;
-        for expected_nal in &[&sps[..], &pps[..], &idr[..]] {
-            let len = u32::from_be_bytes([
-                avcc[offset],
-                avcc[offset + 1],
-                avcc[offset + 2],
-                avcc[offset + 3],
-            ]) as usize;
-            offset += 4;
-            assert_eq!(len, expected_nal.len());
-            assert_eq!(&avcc[offset..offset + len], *expected_nal);
-            offset += len;
-        }
-        assert_eq!(offset, avcc.len());
+        // Verify AVCC video_data contains only the IDR NAL (SPS/PPS excluded).
+        let avcc = &result.video_data;
+        let len = u32::from_be_bytes([avcc[0], avcc[1], avcc[2], avcc[3]]) as usize;
+        assert_eq!(len, idr.len());
+        assert_eq!(&avcc[4..4 + len], &idr[..]);
+        assert_eq!(avcc.len(), 4 + idr.len());
     }
 
     #[test]
@@ -837,5 +872,57 @@ mod tests {
         // 00010 0100 0001 000 = 0x12 0x08
         assert_eq!(asc[0], 0x12);
         assert_eq!(asc[1], 0x08);
+    }
+
+    #[test]
+    fn mask_stream_key_hides_key() {
+        let url = "rtmp://a.rtmp.youtube.com/live2/xxxx-xxxx-xxxx-xxxx";
+        let masked = mask_stream_key(url);
+        assert_eq!(masked, "rtmp://a.rtmp.youtube.com/live2/<redacted>");
+        assert!(!masked.contains("xxxx"));
+    }
+
+    #[test]
+    fn mask_stream_key_no_slash() {
+        let masked = mask_stream_key("no-slash-at-all");
+        assert_eq!(masked, "<redacted>");
+    }
+
+    #[test]
+    fn convert_annexb_sps_pps_not_in_video_data() {
+        // Regression test: SPS/PPS NALUs must NOT appear in the AVCC video_data
+        // field — they belong only in the AVC sequence header.
+        let mut annexb = Vec::new();
+        // SPS
+        annexb.extend_from_slice(&[0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xC0, 0x1F]);
+        // PPS
+        annexb.extend_from_slice(&[0x00, 0x00, 0x01, 0x68, 0xCE, 0x38, 0x80]);
+        // IDR slice
+        annexb.extend_from_slice(&[0x00, 0x00, 0x00, 0x01, 0x65, 0x11, 0x22]);
+
+        let result = convert_annexb_to_avcc(&annexb);
+
+        // SPS/PPS should be extracted.
+        assert_eq!(result.sps_list.len(), 1);
+        assert_eq!(result.pps_list.len(), 1);
+
+        // video_data should contain only the IDR NAL, not SPS/PPS.
+        // Verify no NAL in video_data has type 7 (SPS) or 8 (PPS).
+        let avcc = &result.video_data;
+        let mut offset = 0;
+        while offset + 4 <= avcc.len() {
+            let len = u32::from_be_bytes([
+                avcc[offset],
+                avcc[offset + 1],
+                avcc[offset + 2],
+                avcc[offset + 3],
+            ]) as usize;
+            offset += 4;
+            assert!(offset + len <= avcc.len(), "AVCC data truncated");
+            let nal_type = avcc[offset] & H264_NAL_TYPE_MASK;
+            assert_ne!(nal_type, H264_NAL_SPS, "SPS should not be in video_data");
+            assert_ne!(nal_type, H264_NAL_PPS, "PPS should not be in video_data");
+            offset += len;
+        }
     }
 }
