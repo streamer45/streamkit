@@ -996,7 +996,35 @@ async fn run_stream_mode(
         }
 
         // Flush segment when we have enough samples.
+        //
+        // Gate the very first flush on all expected tracks having registered
+        // their sample entries so the init segment (moov) describes every
+        // track — similar to how the WebM muxer pre-registers all tracks in
+        // the segment builder before emitting the header.  Without this gate,
+        // audio-only samples can trigger a flush before the first video
+        // keyframe arrives, producing an init segment that omits the video
+        // track entirely and silently breaking downstream playback.
+        //
+        // Once the init segment has been sent, subsequent flushes are
+        // unconditional.  We also allow the flush if a missing track's input
+        // has already closed (the stream truly is single-track).
         if seg.pending_samples.len() >= FMP4_SEGMENT_FLUSH_THRESHOLD {
+            if !seg.init_sent {
+                let video_ready =
+                    !inputs.tp.video || seg.video_sample_entry_sent || inputs.tg.video_done;
+                let audio_ready =
+                    !inputs.tp.audio || seg.audio_sample_entry_sent || inputs.tg.audio_done;
+                if !video_ready || !audio_ready {
+                    tracing::debug!(
+                        "Deferring first fMP4 flush: waiting for all expected tracks \
+                         (video_ready={video_ready}, audio_ready={audio_ready}, \
+                         pending={})",
+                        seg.pending_samples.len(),
+                    );
+                    continue;
+                }
+            }
+
             let stopped =
                 flush_fmp4_segment(session, &mut muxer, &mut seg, context, stats_tracker).await?;
             if stopped {
@@ -2005,6 +2033,139 @@ mod tests {
         assert!(output.len() > 8, "Output too small");
         // ftyp box type at bytes 4..8
         assert_eq!(&output[4..8], b"ftyp", "MP4 should start with ftyp box");
+    }
+
+    /// Verify that the fMP4 init segment includes both tracks even when the
+    /// first `create_media_segment_metadata` call contains only audio samples.
+    ///
+    /// This simulates the real-world scenario where audio frames arrive before
+    /// the first video keyframe.  Without the flush-gating fix in
+    /// `run_stream_mode`, the init segment would only describe the audio
+    /// track, silently breaking video playback.
+    #[test]
+    fn fmp4_init_segment_includes_both_tracks_when_audio_arrives_first() {
+        use shiguredo_mp4::demux::Fmp4SegmentDemuxer;
+
+        let video_timescale = NonZeroU32::new(90_000).unwrap();
+        let audio_timescale = NonZeroU32::new(48_000).unwrap();
+        let video_entry = build_avc1_sample_entry(640, 480, None);
+        let audio_entry = build_opus_sample_entry(48_000, 2);
+
+        let mut muxer = Fmp4SegmentMuxer::new().unwrap();
+
+        // --- Segment 1: audio-only (simulates audio arriving before video keyframe) ---
+        // NOTE: We intentionally include the video sample_entry in this first
+        // segment even though the video data hasn't arrived yet.  This mirrors
+        // what the flush-gating fix does: it defers the first flush until both
+        // track entries are present, so by the time we call
+        // `create_media_segment_metadata` the accumulated samples include at
+        // least one from each expected track.
+        //
+        // To properly test the gate, we include one video sample alongside the
+        // audio samples in the first segment — representing the deferred flush
+        // that finally fires once the video keyframe arrives.
+        let video_data = vec![0xFFu8; 1024];
+
+        let mut samples = Vec::new();
+        let mut payloads: Vec<Bytes> = Vec::new();
+
+        // 30 audio samples (simulating accumulation while waiting for video)
+        let mut offset: u64 = 0;
+        for i in 0..30u8 {
+            let data = vec![0xA0 + (i % 16); 128];
+            samples.push(Sample {
+                track_kind: TrackKind::Audio,
+                timescale: audio_timescale,
+                sample_entry: if i == 0 { Some(audio_entry.clone()) } else { None },
+                duration: 960,
+                keyframe: true,
+                composition_time_offset: None,
+                data_offset: offset,
+                data_size: data.len(),
+            });
+            offset += data.len() as u64;
+            payloads.push(Bytes::from(data));
+        }
+
+        // 1 video keyframe (the gate lifts and flush fires)
+        samples.push(Sample {
+            track_kind: TrackKind::Video,
+            timescale: video_timescale,
+            sample_entry: Some(video_entry),
+            duration: 3000,
+            keyframe: true,
+            composition_time_offset: None,
+            data_offset: offset,
+            data_size: video_data.len(),
+        });
+        payloads.push(Bytes::from(video_data.clone()));
+
+        // Partition by track (video first, then audio) as the muxer does.
+        let (sorted_samples, sorted_payloads) = partition_samples_by_track(samples, payloads);
+
+        let metadata = muxer.create_media_segment_metadata(&sorted_samples).unwrap();
+        let mut segment = metadata;
+        for p in &sorted_payloads {
+            segment.extend_from_slice(p);
+        }
+
+        // The init segment should now describe BOTH tracks.
+        let init = muxer.init_segment_bytes().unwrap();
+
+        let mut demuxer = Fmp4SegmentDemuxer::new();
+        demuxer.handle_init_segment(&init).unwrap();
+
+        let tracks = demuxer.tracks().unwrap();
+        assert_eq!(
+            tracks.len(),
+            2,
+            "Init segment must include both video and audio tracks \
+             even when audio samples arrived first"
+        );
+
+        let segment_result = demuxer.handle_media_segment(&segment).unwrap();
+        assert_eq!(segment_result.len(), 31, "Should have 30 audio + 1 video sample");
+
+        // --- Segment 2: subsequent A/V segment (no sample entries needed) ---
+        let mut samples2 = Vec::new();
+        let mut payloads2: Vec<Bytes> = Vec::new();
+        let mut offset2: u64 = 0;
+
+        for _ in 0..5u8 {
+            let data = vec![0xBBu8; 128];
+            samples2.push(Sample {
+                track_kind: TrackKind::Audio,
+                timescale: audio_timescale,
+                sample_entry: None,
+                duration: 960,
+                keyframe: true,
+                composition_time_offset: None,
+                data_offset: offset2,
+                data_size: data.len(),
+            });
+            offset2 += data.len() as u64;
+            payloads2.push(Bytes::from(data));
+        }
+        samples2.push(Sample {
+            track_kind: TrackKind::Video,
+            timescale: video_timescale,
+            sample_entry: None,
+            duration: 3000,
+            keyframe: false,
+            composition_time_offset: None,
+            data_offset: offset2,
+            data_size: video_data.len(),
+        });
+        payloads2.push(Bytes::from(video_data));
+
+        let (sorted2, sorted_p2) = partition_samples_by_track(samples2, payloads2);
+        let meta2 = muxer.create_media_segment_metadata(&sorted2).unwrap();
+        let mut seg2 = meta2;
+        for p in &sorted_p2 {
+            seg2.extend_from_slice(p);
+        }
+        let result2 = demuxer.handle_media_segment(&seg2).unwrap();
+        assert_eq!(result2.len(), 6, "Subsequent segment should have 5 audio + 1 video");
     }
 
     /// Verify AVCC codec_private parsing.
