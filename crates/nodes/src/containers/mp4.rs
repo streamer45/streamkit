@@ -1320,7 +1320,7 @@ async fn run_stream_mode(
         // unconditional.  We also allow the flush if a missing track's input
         // has already closed (the stream truly is single-track).
         if seg.pending_samples.len() >= FMP4_SEGMENT_FLUSH_THRESHOLD
-            && should_flush_fmp4_segment(&seg, &inputs)
+            && should_flush_fmp4_segment(&seg, &inputs, inputs_open)
         {
             let stopped =
                 flush_fmp4_segment(session, &mut muxer, &mut seg, context, stats_tracker).await?;
@@ -1349,7 +1349,11 @@ async fn run_stream_mode(
 ///
 /// Returns `true` when the caller should flush, `false` when it should
 /// `continue` the receive loop.
-fn should_flush_fmp4_segment(seg: &Fmp4SegmentState, inputs: &MuxInputs) -> bool {
+fn should_flush_fmp4_segment(
+    seg: &Fmp4SegmentState,
+    inputs: &MuxInputs,
+    inputs_open: usize,
+) -> bool {
     if seg.init_sent {
         return true;
     }
@@ -1364,6 +1368,27 @@ fn should_flush_fmp4_segment(seg: &Fmp4SegmentState, inputs: &MuxInputs) -> bool
     // Safety cap: force flush with a warning rather than accumulating without
     // bound when an expected track never sends data.
     if seg.pending_samples.len() >= FMP4_FIRST_FLUSH_DEFER_CAP {
+        // In skip-classification mode, input channels are not split into
+        // separate audio/video receivers so the per-track `*_done` flags
+        // are never set during the receive loop.  Instead, check whether
+        // any input channels are still open: as long as they are, a
+        // slow-starting track (e.g. a video generator initialising fonts)
+        // may still produce data.  Force-flushing an init segment that
+        // omits an expected track would cause the browser to reject it
+        // ("Initialization segment misses expected … track").
+        if inputs.tp.skip_classification && inputs_open > 0 {
+            if seg.pending_samples.len().is_multiple_of(FMP4_FIRST_FLUSH_DEFER_CAP) {
+                tracing::debug!(
+                    "First fMP4 flush deferred: {} pending samples, \
+                     {} input(s) still open — waiting for all expected tracks \
+                     (video_ready={video_ready}, audio_ready={audio_ready})",
+                    seg.pending_samples.len(),
+                    inputs_open,
+                );
+            }
+            return false;
+        }
+
         tracing::warn!(
             "First fMP4 flush deferred too long ({} pending, cap={}). \
              Forcing flush with available tracks \
