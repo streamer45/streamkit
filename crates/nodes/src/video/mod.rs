@@ -54,8 +54,8 @@ pub const AV1_TIER: char = 'M';
 pub const H264_PROFILE: u8 = 0x42;
 /// H.264 constraint flags for Constrained Baseline (0xC0).
 pub const H264_CONSTRAINTS: u8 = 0xC0;
-/// H.264 level 3.0 (0x1E) — suitable for up to 720p30.
-pub const H264_LEVEL: u8 = 0x1E;
+/// H.264 level 3.1 (0x1F) — suitable for up to 720p30 (1280×720).
+pub const H264_LEVEL: u8 = 0x1F;
 
 // ── Codec content-type strings ───────────────────────────────────────────────
 //

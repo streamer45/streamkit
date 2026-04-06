@@ -70,12 +70,23 @@ pub struct OpenH264EncoderNode {
 }
 
 impl OpenH264EncoderNode {
+    /// Maximum sane bitrate (500 Mbps).  Values above this are almost
+    /// certainly typos and would overflow when converted to bps.
+    const MAX_BITRATE_KBPS: u32 = 500_000;
+
     #[allow(clippy::missing_errors_doc)]
     pub fn new(config: OpenH264EncoderConfig) -> Result<Self, StreamKitError> {
         if config.bitrate_kbps == 0 {
             return Err(StreamKitError::Configuration(
                 "OpenH264 encoder: bitrate_kbps must be greater than zero".into(),
             ));
+        }
+        if config.bitrate_kbps > Self::MAX_BITRATE_KBPS {
+            return Err(StreamKitError::Configuration(format!(
+                "OpenH264 encoder: bitrate_kbps {} exceeds maximum of {} (500 Mbps)",
+                config.bitrate_kbps,
+                Self::MAX_BITRATE_KBPS,
+            )));
         }
         if config.max_frame_rate <= 0.0 || !config.max_frame_rate.is_finite() {
             return Err(StreamKitError::Configuration(
@@ -186,10 +197,10 @@ struct OpenH264Encoder {
 
 impl OpenH264Encoder {
     fn new(_width: u32, _height: u32, config: &OpenH264EncoderConfig) -> Result<Self, String> {
-        // Dimensions are set per-frame by the openh264 crate (via YUVBuffer),
-        // so we don't use width/height here.  A new encoder is created on each
-        // resolution change by the StandardVideoEncoder infrastructure.
-
+        // The openh264 crate auto-detects resolution from the YUVSource on
+        // each encode() call and reinits internally when it changes.  The
+        // StandardVideoEncoder infrastructure recreates the encoder on
+        // resolution changes anyway, so we don't set dimensions here.
         let enc_config = EncoderConfig::new()
             .bitrate(BitRate::from_bps(config.bitrate_kbps.saturating_mul(1000)))
             .max_frame_rate(FrameRate::from_hz(config.max_frame_rate))
@@ -557,6 +568,37 @@ mod tests {
             max_frame_rate: f32::NAN,
         });
         assert!(result.is_err(), "NaN max_frame_rate should be rejected");
+    }
+
+    #[test]
+    fn test_config_validation_infinity_frame_rate() {
+        let result = OpenH264EncoderNode::new(OpenH264EncoderConfig {
+            bitrate_kbps: 2000,
+            max_frame_rate: f32::INFINITY,
+        });
+        assert!(result.is_err(), "INFINITY max_frame_rate should be rejected");
+
+        let result = OpenH264EncoderNode::new(OpenH264EncoderConfig {
+            bitrate_kbps: 2000,
+            max_frame_rate: f32::NEG_INFINITY,
+        });
+        assert!(result.is_err(), "NEG_INFINITY max_frame_rate should be rejected");
+    }
+
+    #[test]
+    fn test_config_validation_excessive_bitrate() {
+        let result = OpenH264EncoderNode::new(OpenH264EncoderConfig {
+            bitrate_kbps: 500_001,
+            max_frame_rate: 30.0,
+        });
+        assert!(result.is_err(), "bitrate_kbps above 500_000 should be rejected");
+
+        // Boundary: 500_000 should be accepted.
+        let result = OpenH264EncoderNode::new(OpenH264EncoderConfig {
+            bitrate_kbps: 500_000,
+            max_frame_rate: 30.0,
+        });
+        assert!(result.is_ok(), "bitrate_kbps=500_000 should be accepted");
     }
 
     #[test]

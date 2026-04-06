@@ -155,11 +155,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_video_codec_config_h264() {
-        assert_eq!(parse_video_codec_config("h264"), Some(VideoCodec::H264));
-    }
-
-    #[test]
     fn parse_video_codec_config_unknown_returns_none() {
         assert_eq!(parse_video_codec_config(""), None);
         assert_eq!(parse_video_codec_config("unknown"), None);

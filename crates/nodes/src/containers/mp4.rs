@@ -81,7 +81,7 @@ const FMP4_FIRST_FLUSH_DEFER_CAP: usize = 10 * FMP4_SEGMENT_FLUSH_THRESHOLD;
 /// or raw SPS/PPS NAL units.  Otherwise a minimal placeholder is used.
 fn build_avc1_sample_entry(width: u16, height: u16, codec_private: Option<&[u8]>) -> SampleEntry {
     let (sps_list, pps_list, profile, compat, level) = codec_private.map_or_else(
-        || (vec![vec![0x67, 0x42, 0xc0, 0x1e]], vec![vec![0x68, 0xce, 0x38, 0x80]], 66, 0, 30),
+        || (vec![vec![0x67, 0x42, 0xc0, 0x1f]], vec![vec![0x68, 0xce, 0x38, 0x80]], 66, 0, 31),
         parse_avcc_codec_private,
     );
 
@@ -158,7 +158,7 @@ fn parse_avcc_codec_private(data: &[u8]) -> (Vec<Vec<u8>>, Vec<Vec<u8>>, u8, u8,
         }
 
         if sps_list.is_empty() {
-            sps_list.push(vec![0x67, 0x42, 0xc0, 0x1e]);
+            sps_list.push(vec![0x67, 0x42, 0xc0, 0x1f]);
         }
         if pps_list.is_empty() {
             pps_list.push(vec![0x68, 0xce, 0x38, 0x80]);
@@ -167,7 +167,7 @@ fn parse_avcc_codec_private(data: &[u8]) -> (Vec<Vec<u8>>, Vec<Vec<u8>>, u8, u8,
         (sps_list, pps_list, profile, compat, level)
     } else {
         // Fallback: treat as raw SPS data
-        (vec![data.to_vec()], vec![vec![0x68, 0xce, 0x38, 0x80]], 66, 0, 30)
+        (vec![data.to_vec()], vec![vec![0x68, 0xce, 0x38, 0x80]], 66, 0, 31)
     }
 }
 

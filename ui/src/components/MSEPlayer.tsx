@@ -415,9 +415,9 @@ async function streamMediaData(
 /**
  * MSE-based media player for oneshot/convert pipeline streams.
  *
- * Uses Media Source Extensions to progressively play a WebM ReadableStream
- * (typically from a POST response body) that cannot be addressed by URL.
- * Automatically detects audio vs video from contentType.
+ * Uses Media Source Extensions to progressively play a WebM or fMP4
+ * ReadableStream (typically from a POST response body) that cannot be
+ * addressed by URL.  Automatically detects audio vs video from contentType.
  *
  * For live streaming over HTTP (chunked transfer), use NativeStreamPlayer
  * instead — it uses a plain `<video>` element with a URL source.

@@ -37,7 +37,7 @@ nodes:
   mp4_muxer:
     kind: containers::mp4::muxer
     params:
-      mode: file
+      mode: stream
       video_width: 640
       video_height: 480
     needs: h264_encoder
