@@ -23,7 +23,7 @@ nodes:
       width: 640
       height: 480
       fps: 30
-      frame_count: 90
+      frame_count: 900
       pixel_format: rgba8
       draw_time: true
 

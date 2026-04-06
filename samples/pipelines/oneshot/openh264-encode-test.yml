@@ -22,7 +22,7 @@ nodes:
       width: 640
       height: 480
       fps: 30
-      frame_count: 90
+      frame_count: 900
       pixel_format: nv12
       draw_time: true
       draw_time_use_pts: true

@@ -15,7 +15,7 @@
 # the very next composited frame.
 
 name: Video Compositor Demo
-description: Composites two colorbars sources (main + PiP) with a text overlay and the StreamKit logo watermark through the compositor node, encodes to VP9, and streams a WebM via http_output with real-time pacing (3 seconds)
+description: Composites two colorbars sources (main + PiP) with a text overlay and the StreamKit logo watermark through the compositor node, encodes to VP9, and streams a WebM via http_output with real-time pacing (30 seconds)
 mode: oneshot
 client:
   input:
@@ -30,7 +30,7 @@ nodes:
       width: 1280
       height: 720
       fps: 30
-      frame_count: 300
+      frame_count: 900
       pixel_format: rgba8
       # Draw the presentation timestamp (PTS) so every frame visibly differs.
       # Wall-clock mode would show nearly identical times since oneshot
@@ -44,7 +44,7 @@ nodes:
       width: 320
       height: 240
       fps: 30
-      frame_count: 300
+      frame_count: 900
       pixel_format: rgba8
       draw_time: true
       draw_time_use_pts: true

@@ -31,7 +31,7 @@ nodes:
       width: 1280
       height: 720
       fps: 30
-      frame_count: 300
+      frame_count: 900
       pixel_format: rgba8
       draw_time: true
       draw_time_use_pts: true
@@ -42,7 +42,7 @@ nodes:
       width: 180
       height: 44
       fps: 30
-      frame_count: 300
+      frame_count: 900
       slint_file: samples/slint/system/watermark.slint
       static_ui: true
       properties:
