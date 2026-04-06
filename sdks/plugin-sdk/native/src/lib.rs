@@ -1446,9 +1446,10 @@ macro_rules! native_source_plugin_entry {
                                         $crate::streamkit_core::types::AudioCodec::Aac => "aac",
                                         _ => "unknown",
                                     };
-                                    Some(std::ffi::CString::new(codec_name).expect(
-                                        "Codec name should not contain null bytes",
-                                    ))
+                                    Some(
+                                        std::ffi::CString::new(codec_name)
+                                            .expect("Codec name should not contain null bytes"),
+                                    )
                                 },
                                 _ => None,
                             };
@@ -1573,10 +1574,11 @@ macro_rules! native_source_plugin_entry {
                                     $crate::streamkit_core::types::AudioCodec::Aac => "aac",
                                     _ => "unknown",
                                 };
-                                Some(std::ffi::CString::new(codec_name).expect(
-                                    "Codec name should not contain null bytes",
-                                ))
-                            }
+                                Some(
+                                    std::ffi::CString::new(codec_name)
+                                        .expect("Codec name should not contain null bytes"),
+                                )
+                            },
                             _ => None,
                         };
                         output_custom_type_ids.push(output_custom_type_id);
