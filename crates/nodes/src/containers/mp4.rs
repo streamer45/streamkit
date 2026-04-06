@@ -81,7 +81,7 @@ const FMP4_FIRST_FLUSH_DEFER_CAP: usize = 10 * FMP4_SEGMENT_FLUSH_THRESHOLD;
 /// or raw SPS/PPS NAL units.  Otherwise a minimal placeholder is used.
 fn build_avc1_sample_entry(width: u16, height: u16, codec_private: Option<&[u8]>) -> SampleEntry {
     let (sps_list, pps_list, profile, compat, level) = codec_private.map_or_else(
-        || (vec![vec![0x67, 0x42, 0xc0, 0x1e]], vec![vec![0x68, 0xce, 0x38, 0x80]], 66, 0, 30),
+        || (vec![vec![0x67, 0x42, 0xc0, 0x1f]], vec![vec![0x68, 0xce, 0x38, 0x80]], 66, 0, 31),
         parse_avcc_codec_private,
     );
 
@@ -158,7 +158,7 @@ fn parse_avcc_codec_private(data: &[u8]) -> (Vec<Vec<u8>>, Vec<Vec<u8>>, u8, u8,
         }
 
         if sps_list.is_empty() {
-            sps_list.push(vec![0x67, 0x42, 0xc0, 0x1e]);
+            sps_list.push(vec![0x67, 0x42, 0xc0, 0x1f]);
         }
         if pps_list.is_empty() {
             pps_list.push(vec![0x68, 0xce, 0x38, 0x80]);
@@ -167,8 +167,156 @@ fn parse_avcc_codec_private(data: &[u8]) -> (Vec<Vec<u8>>, Vec<Vec<u8>>, u8, u8,
         (sps_list, pps_list, profile, compat, level)
     } else {
         // Fallback: treat as raw SPS data
-        (vec![data.to_vec()], vec![vec![0x68, 0xce, 0x38, 0x80]], 66, 0, 30)
+        (vec![data.to_vec()], vec![vec![0x68, 0xce, 0x38, 0x80]], 66, 0, 31)
     }
+}
+
+// ---------------------------------------------------------------------------
+// H.264 Annex B → AVCC conversion
+// ---------------------------------------------------------------------------
+
+/// NAL unit type bitmask (lower 5 bits of NAL header byte).
+const H264_NAL_TYPE_MASK: u8 = 0x1F;
+/// NAL unit type: Sequence Parameter Set.
+const H264_NAL_SPS: u8 = 7;
+/// NAL unit type: Picture Parameter Set.
+const H264_NAL_PPS: u8 = 8;
+
+/// Parse an H.264 Annex B bitstream into individual NAL unit payloads.
+///
+/// NAL units are delimited by 3-byte (`00 00 01`) or 4-byte (`00 00 00 01`)
+/// start codes.  The returned slices exclude the start-code prefix.
+fn parse_annexb_nal_units(data: &[u8]) -> Vec<&[u8]> {
+    let mut nals = Vec::new();
+    let mut nal_start: Option<usize> = None;
+    let len = data.len();
+    let mut i = 0;
+
+    while i < len {
+        // Check for 3-byte or 4-byte start code.
+        let sc_len = if i + 2 < len && data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 {
+            3
+        } else if i + 3 < len
+            && data[i] == 0
+            && data[i + 1] == 0
+            && data[i + 2] == 0
+            && data[i + 3] == 1
+        {
+            4
+        } else {
+            0
+        };
+
+        if sc_len > 0 {
+            // End previous NAL unit (if any).
+            if let Some(start) = nal_start {
+                if start < i {
+                    nals.push(&data[start..i]);
+                }
+            }
+            i += sc_len;
+            nal_start = Some(i);
+        } else {
+            i += 1;
+        }
+    }
+
+    // Last NAL unit extends to end of data.
+    if let Some(start) = nal_start {
+        if start < len {
+            nals.push(&data[start..len]);
+        }
+    }
+
+    nals
+}
+
+/// Result of converting an H.264 Annex B access unit to AVCC format.
+struct H264AvccConversion {
+    /// AVCC-formatted data (4-byte length-prefixed NAL units).
+    data: Bytes,
+    /// SPS NAL units found in this access unit (empty if none).
+    sps_list: Vec<Vec<u8>>,
+    /// PPS NAL units found in this access unit (empty if none).
+    pps_list: Vec<Vec<u8>>,
+}
+
+/// Convert an H.264 Annex B bitstream to AVCC format.
+///
+/// Each NAL unit's start code is replaced with a 4-byte big-endian length
+/// prefix.  SPS and PPS NAL units are extracted separately so the caller
+/// can populate the `AvccBox` in the MP4 sample entry.
+fn convert_annexb_to_avcc(data: &[u8]) -> H264AvccConversion {
+    let nals = parse_annexb_nal_units(data);
+    let mut out = Vec::with_capacity(data.len());
+    let mut sps_list = Vec::new();
+    let mut pps_list = Vec::new();
+
+    for nal in nals {
+        if nal.is_empty() {
+            continue;
+        }
+
+        // 4-byte big-endian length prefix.
+        let len = u32::try_from(nal.len()).unwrap_or(u32::MAX);
+        out.extend_from_slice(&len.to_be_bytes());
+        out.extend_from_slice(nal);
+
+        // Classify and extract parameter sets.
+        let nal_type = nal[0] & H264_NAL_TYPE_MASK;
+        if nal_type == H264_NAL_SPS {
+            sps_list.push(nal.to_vec());
+        } else if nal_type == H264_NAL_PPS {
+            pps_list.push(nal.to_vec());
+        }
+    }
+
+    H264AvccConversion { data: Bytes::from(out), sps_list, pps_list }
+}
+
+/// Rebuild an AVC1 sample entry using real SPS/PPS extracted from the bitstream.
+///
+/// This replaces the placeholder SPS/PPS in the initial sample entry with
+/// actual parameter sets from the encoder, ensuring the `AvccBox` accurately
+/// describes the stream for MSE and compliant demuxers.
+fn rebuild_avc1_entry_from_params(
+    width: u16,
+    height: u16,
+    sps_list: Vec<Vec<u8>>,
+    pps_list: Vec<Vec<u8>>,
+) -> SampleEntry {
+    // Extract profile/constraints/level from the first SPS NAL unit.
+    // SPS layout: [nal_header, profile_idc, constraint_flags, level_idc, ...]
+    let (profile, compat, level) = sps_list
+        .first()
+        .filter(|sps| sps.len() >= 4)
+        .map_or((66, 0, 31), |sps| (sps[1], sps[2], sps[3]));
+
+    SampleEntry::Avc1(Avc1Box {
+        visual: VisualSampleEntryFields {
+            data_reference_index: VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
+            width,
+            height,
+            horizresolution: VisualSampleEntryFields::DEFAULT_HORIZRESOLUTION,
+            vertresolution: VisualSampleEntryFields::DEFAULT_VERTRESOLUTION,
+            frame_count: VisualSampleEntryFields::DEFAULT_FRAME_COUNT,
+            compressorname: VisualSampleEntryFields::NULL_COMPRESSORNAME,
+            depth: VisualSampleEntryFields::DEFAULT_DEPTH,
+        },
+        avcc_box: AvccBox {
+            avc_profile_indication: profile,
+            profile_compatibility: compat,
+            avc_level_indication: level,
+            length_size_minus_one: Uint::new(3),
+            sps_list,
+            pps_list,
+            chroma_format: None,
+            bit_depth_luma_minus8: None,
+            bit_depth_chroma_minus8: None,
+            sps_ext_list: vec![],
+        },
+        unknown_boxes: vec![],
+    })
 }
 
 /// Build an mp4a (AAC) sample entry box.
@@ -464,26 +612,28 @@ fn mp4_content_type(audio: Option<AudioCodec>, video: Option<VideoCodec>) -> &'s
         if !matches!(vc, VideoCodec::H264 | VideoCodec::Av1) {
             tracing::warn!(
                 ?vc,
-                "mp4_content_type: unrecognised video codec — codecs param will report avc1"
+                "mp4_content_type: unrecognised video codec — codecs param will omit video codec"
             );
         }
     }
 
     let has_audio = audio.is_some();
-    let has_video = video.is_some();
     let audio_is_opus = matches!(audio, Some(AudioCodec::Opus));
-    let video_is_av1 = matches!(video, Some(VideoCodec::Av1));
 
-    match (has_audio, has_video, audio_is_opus, video_is_av1) {
-        (true, true, false, false) => "video/mp4; codecs=\"avc1,mp4a\"",
-        (true, true, true, false) => "video/mp4; codecs=\"avc1,opus\"",
-        (true, true, false, true) => "video/mp4; codecs=\"av01,mp4a\"",
-        (true, true, true, true) => "video/mp4; codecs=\"av01,opus\"",
-        (false, true, _, false) => "video/mp4; codecs=\"avc1\"",
-        (false, true, _, true) => "video/mp4; codecs=\"av01\"",
-        (true, false, false, _) => "audio/mp4; codecs=\"mp4a\"",
-        (true, false, true, _) => "audio/mp4; codecs=\"opus\"",
-        (false, false, _, _) => "video/mp4",
+    // Match on the concrete video codec to avoid conflating VP9/H264/AV1.
+    match (has_audio, video, audio_is_opus) {
+        (true, Some(VideoCodec::Av1), false) => "video/mp4; codecs=\"av01,mp4a\"",
+        (true, Some(VideoCodec::Av1), true) => "video/mp4; codecs=\"av01,opus\"",
+        (true, Some(VideoCodec::H264), false) => "video/mp4; codecs=\"avc1,mp4a\"",
+        (true, Some(VideoCodec::H264), true) => "video/mp4; codecs=\"avc1,opus\"",
+        // VP9 and any future codec: fall back to generic "video/mp4".
+        (true, Some(_), false) => "video/mp4; codecs=\"mp4a\"",
+        (true, Some(_), true) => "video/mp4; codecs=\"opus\"",
+        (false, Some(VideoCodec::Av1), _) => "video/mp4; codecs=\"av01\"",
+        (false, Some(VideoCodec::H264), _) => "video/mp4; codecs=\"avc1\"",
+        (true, None, false) => "audio/mp4; codecs=\"mp4a\"",
+        (true, None, true) => "audio/mp4; codecs=\"opus\"",
+        (false, Some(_) | None, _) => "video/mp4",
     }
 }
 
@@ -562,6 +712,8 @@ struct FileMuxState {
     video_sample_entry_sent: bool,
     audio_sample_entry_sent: bool,
     packet_count: u64,
+    /// Reusable scratch buffer for H.264 Annex B → AVCC conversion (file mode).
+    h264_scratch: Bytes,
 }
 
 #[async_trait]
@@ -917,8 +1069,9 @@ async fn run_stream_mode(
     })?;
 
     let (video_timescale, audio_timescale) = resolve_timescales(session.config);
-    let (video_sample_entry, audio_sample_entry) =
+    let (mut video_sample_entry, audio_sample_entry) =
         build_sample_entries(session.config, session.audio_codec, session.video_codec);
+    let is_h264 = session.video_codec == VideoCodec::H264;
 
     let mut seg = Fmp4SegmentState {
         pending_samples: Vec::new(),
@@ -974,6 +1127,26 @@ async fn run_stream_mode(
 
                 packet_count += 1;
                 stats_tracker.received();
+
+                // Convert Annex B → AVCC for H.264 streams so the mdat
+                // contains length-prefixed NAL units matching the avc1 box.
+                let data = if is_h264 {
+                    let conv = convert_annexb_to_avcc(&data);
+                    // On the first keyframe, update the sample entry with
+                    // real SPS/PPS so the init segment (moov) describes the
+                    // actual stream parameters instead of placeholders.
+                    if !conv.sps_list.is_empty() && !seg.video_sample_entry_sent {
+                        video_sample_entry = rebuild_avc1_entry_from_params(
+                            session.config.video_width,
+                            session.config.video_height,
+                            conv.sps_list,
+                            conv.pps_list,
+                        );
+                    }
+                    conv.data
+                } else {
+                    data
+                };
 
                 let duration_us = metadata
                     .as_ref()
@@ -1252,6 +1425,7 @@ async fn run_file_mode(
         video_sample_entry_sent: false,
         audio_sample_entry_sent: false,
         packet_count: 0,
+        h264_scratch: Bytes::new(),
     };
 
     let mut inputs_open =
@@ -1286,7 +1460,15 @@ async fn run_file_mode(
                 inputs.tg.video_done = true;
             },
             MuxFrame::Video(data, metadata) => {
-                process_file_video_frame(&data, metadata.as_ref(), &mut state, stats_tracker)?;
+                process_file_video_frame(
+                    &data,
+                    metadata.as_ref(),
+                    &mut state,
+                    stats_tracker,
+                    session.video_codec,
+                    session.config.video_width,
+                    session.config.video_height,
+                )?;
             },
             MuxFrame::Audio(data, metadata) => {
                 process_file_audio_frame(&data, metadata.as_ref(), &mut state, stats_tracker)?;
@@ -1316,6 +1498,9 @@ fn process_file_video_frame(
     metadata: Option<&PacketMetadata>,
     state: &mut FileMuxState,
     stats_tracker: &mut NodeStatsTracker,
+    video_codec: VideoCodec,
+    video_width: u16,
+    video_height: u16,
 ) -> Result<(), StreamKitError> {
     let is_keyframe = metadata.and_then(|m| m.keyframe).unwrap_or(false);
 
@@ -1334,13 +1519,32 @@ fn process_file_video_frame(
         metadata.and_then(|m| m.duration_us).unwrap_or(DEFAULT_VIDEO_FRAME_DURATION_US);
     let duration_ticks = us_to_ticks(duration_us, state.video_timescale.get());
 
+    // Convert Annex B → AVCC for H.264 streams.
+    let write_data: &[u8] = if video_codec == VideoCodec::H264 {
+        let conv = convert_annexb_to_avcc(data);
+        // On the first keyframe, update the sample entry with real SPS/PPS.
+        if !conv.sps_list.is_empty() && !state.video_sample_entry_sent {
+            state.video_sample_entry = rebuild_avc1_entry_from_params(
+                video_width,
+                video_height,
+                conv.sps_list,
+                conv.pps_list,
+            );
+        }
+        // Store converted data in a temporary so we can borrow it below.
+        state.h264_scratch = conv.data;
+        &state.h264_scratch
+    } else {
+        data
+    };
+
     let data_offset = state
         .file_buf
         .position()
         .map_err(|e| StreamKitError::Runtime(format!("Failed to get file position: {e}")))?;
     state
         .file_buf
-        .write_all(data)
+        .write_all(write_data)
         .map_err(|e| StreamKitError::Runtime(format!("Failed to write video data: {e}")))?;
 
     let entry = if state.video_sample_entry_sent {
@@ -1360,7 +1564,7 @@ fn process_file_video_frame(
             keyframe: is_keyframe,
             composition_time_offset: None,
             data_offset,
-            data_size: data.len(),
+            data_size: write_data.len(),
         })
         .map_err(|e| StreamKitError::Runtime(format!("Failed to append video sample: {e}")))?;
 
@@ -2343,5 +2547,150 @@ mod tests {
         assert_eq!(level, 30);
         assert_eq!(sps_list[0], sps);
         assert_eq!(pps_list[0], pps);
+    }
+
+    // -----------------------------------------------------------------------
+    // Annex B → AVCC conversion tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_annexb_single_nal_4byte_sc() {
+        // 4-byte start code + 3-byte NAL payload
+        let data = [0x00, 0x00, 0x00, 0x01, 0x65, 0xAA, 0xBB];
+        let nals = parse_annexb_nal_units(&data);
+        assert_eq!(nals.len(), 1);
+        assert_eq!(nals[0], &[0x65, 0xAA, 0xBB]);
+    }
+
+    #[test]
+    fn parse_annexb_single_nal_3byte_sc() {
+        // 3-byte start code + 2-byte NAL payload
+        let data = [0x00, 0x00, 0x01, 0x41, 0xCC];
+        let nals = parse_annexb_nal_units(&data);
+        assert_eq!(nals.len(), 1);
+        assert_eq!(nals[0], &[0x41, 0xCC]);
+    }
+
+    #[test]
+    fn parse_annexb_multiple_nals() {
+        // SPS + PPS + IDR slice with 4-byte start codes (typical OpenH264 output)
+        let mut data = Vec::new();
+        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]); // sc
+        data.extend_from_slice(&[0x67, 0x42, 0xC0, 0x1F]); // SPS
+        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]); // sc
+        data.extend_from_slice(&[0x68, 0xCE, 0x38, 0x80]); // PPS
+        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]); // sc
+        data.extend_from_slice(&[0x65, 0x11, 0x22]); // IDR slice
+
+        let nals = parse_annexb_nal_units(&data);
+        assert_eq!(nals.len(), 3);
+        assert_eq!(nals[0], &[0x67, 0x42, 0xC0, 0x1F]); // SPS
+        assert_eq!(nals[1], &[0x68, 0xCE, 0x38, 0x80]); // PPS
+        assert_eq!(nals[2], &[0x65, 0x11, 0x22]); // IDR
+    }
+
+    #[test]
+    fn parse_annexb_mixed_start_codes() {
+        // Mix of 3-byte and 4-byte start codes
+        let mut data = Vec::new();
+        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]); // 4-byte sc
+        data.extend_from_slice(&[0x67, 0x42]); // SPS (short)
+        data.extend_from_slice(&[0x00, 0x00, 0x01]); // 3-byte sc
+        data.extend_from_slice(&[0x68, 0xCE]); // PPS (short)
+
+        let nals = parse_annexb_nal_units(&data);
+        assert_eq!(nals.len(), 2);
+        assert_eq!(nals[0], &[0x67, 0x42]);
+        assert_eq!(nals[1], &[0x68, 0xCE]);
+    }
+
+    #[test]
+    fn parse_annexb_empty_input() {
+        let nals = parse_annexb_nal_units(&[]);
+        assert!(nals.is_empty());
+    }
+
+    #[test]
+    fn parse_annexb_no_start_code() {
+        let data = [0x01, 0x02, 0x03];
+        let nals = parse_annexb_nal_units(&data);
+        assert!(nals.is_empty());
+    }
+
+    #[test]
+    fn convert_annexb_to_avcc_basic() {
+        // SPS + PPS + IDR
+        let mut annexb = Vec::new();
+        annexb.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+        let sps = [0x67, 0x42, 0xC0, 0x1F];
+        annexb.extend_from_slice(&sps);
+        annexb.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+        let pps = [0x68, 0xCE, 0x38, 0x80];
+        annexb.extend_from_slice(&pps);
+        annexb.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+        let idr = [0x65, 0x11, 0x22, 0x33];
+        annexb.extend_from_slice(&idr);
+
+        let result = convert_annexb_to_avcc(&annexb);
+
+        // Check SPS/PPS extraction
+        assert_eq!(result.sps_list.len(), 1);
+        assert_eq!(result.pps_list.len(), 1);
+        assert_eq!(result.sps_list[0], sps);
+        assert_eq!(result.pps_list[0], pps);
+
+        // Check AVCC output: each NAL prefixed with 4-byte BE length
+        let avcc = &result.data[..];
+        let mut offset = 0;
+        for expected_nal in &[&sps[..], &pps[..], &idr[..]] {
+            let len = u32::from_be_bytes([
+                avcc[offset],
+                avcc[offset + 1],
+                avcc[offset + 2],
+                avcc[offset + 3],
+            ]) as usize;
+            offset += 4;
+            assert_eq!(len, expected_nal.len());
+            assert_eq!(&avcc[offset..offset + len], *expected_nal);
+            offset += len;
+        }
+        assert_eq!(offset, avcc.len());
+    }
+
+    #[test]
+    fn convert_annexb_to_avcc_non_idr_has_no_params() {
+        // A non-IDR P-frame has no SPS/PPS
+        let mut annexb = Vec::new();
+        annexb.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+        annexb.extend_from_slice(&[0x41, 0xAA, 0xBB]); // NAL type 1 (non-IDR slice)
+
+        let result = convert_annexb_to_avcc(&annexb);
+        assert!(result.sps_list.is_empty());
+        assert!(result.pps_list.is_empty());
+
+        // AVCC output should have one length-prefixed NAL
+        assert_eq!(result.data.len(), 4 + 3);
+        let len =
+            u32::from_be_bytes([result.data[0], result.data[1], result.data[2], result.data[3]]);
+        assert_eq!(len, 3);
+    }
+
+    #[test]
+    fn rebuild_avc1_entry_extracts_profile_level() {
+        let sps = vec![0x67, 0x42, 0xC0, 0x1F]; // profile=66, compat=0xC0, level=31
+        let pps = vec![0x68, 0xCE, 0x38, 0x80];
+        let entry = rebuild_avc1_entry_from_params(640, 480, vec![sps.clone()], vec![pps.clone()]);
+        match entry {
+            SampleEntry::Avc1(avc1) => {
+                assert_eq!(avc1.avcc_box.avc_profile_indication, 66);
+                assert_eq!(avc1.avcc_box.profile_compatibility, 0xC0);
+                assert_eq!(avc1.avcc_box.avc_level_indication, 31);
+                assert_eq!(avc1.avcc_box.sps_list, vec![sps]);
+                assert_eq!(avc1.avcc_box.pps_list, vec![pps]);
+                assert_eq!(avc1.visual.width, 640);
+                assert_eq!(avc1.visual.height, 480);
+            },
+            other => panic!("Expected Avc1, got {other:?}"),
+        }
     }
 }

@@ -45,6 +45,18 @@ pub const AV1_BIT_DEPTH: u8 = 8;
 /// AV1 Main tier.
 pub const AV1_TIER: char = 'M';
 
+// ── Default H.264 codec parameters ───────────────────────────────────────────
+//
+// OpenH264 produces Constrained Baseline profile. These are shared across
+// MoQ catalog creation for H.264 tracks.
+
+/// H.264 Constrained Baseline profile indicator (0x42).
+pub const H264_PROFILE: u8 = 0x42;
+/// H.264 constraint flags for Constrained Baseline (0xC0).
+pub const H264_CONSTRAINTS: u8 = 0xC0;
+/// H.264 level 3.1 (0x1F) — suitable for up to 720p30 (1280×720).
+pub const H264_LEVEL: u8 = 0x1F;
+
 // ── Codec content-type strings ───────────────────────────────────────────────
 //
 // Shared across encoder nodes, MoQ transport, and container muxers.
@@ -54,6 +66,9 @@ pub const VP9_CONTENT_TYPE: &str = "video/vp9";
 
 /// MIME-style content type for AV1-encoded video packets.
 pub const AV1_CONTENT_TYPE: &str = "video/av1";
+
+/// MIME-style content type for H.264-encoded video packets.
+pub const H264_CONTENT_TYPE: &str = "video/h264";
 
 /// Parse a pixel format string into a [`PixelFormat`].
 ///
@@ -85,7 +100,7 @@ pub mod pixel_ops;
 #[cfg(feature = "compositor")]
 pub mod pixel_convert;
 
-#[cfg(any(feature = "vp9", feature = "av1", feature = "svt_av1"))]
+#[cfg(any(feature = "vp9", feature = "av1", feature = "svt_av1", feature = "openh264"))]
 pub(crate) mod encoder_trait;
 
 // ── Shared I420→NV12 conversion helpers ──────────────────────────────────────
@@ -234,6 +249,9 @@ pub mod vp9;
 
 #[cfg(feature = "av1")]
 pub mod av1;
+
+#[cfg(feature = "openh264")]
+pub mod openh264;
 
 #[cfg(feature = "svt_av1")]
 pub mod svt_av1;
@@ -563,6 +581,9 @@ pub fn register_video_nodes(registry: &mut NodeRegistry, constraints: &GlobalNod
 
     #[cfg(feature = "av1")]
     av1::register_av1_nodes(registry);
+
+    #[cfg(feature = "openh264")]
+    openh264::register_openh264_nodes(registry);
 
     #[cfg(feature = "svt_av1")]
     svt_av1::register_svt_av1_nodes(registry);

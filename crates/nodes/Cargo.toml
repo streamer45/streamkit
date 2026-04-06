@@ -84,6 +84,9 @@ fontdue = { version = "0.9", optional = true }
 smallvec = { version = "1.13", optional = true, features = ["serde"] }
 ts-rs = { version = "12.0.1", optional = true }
 
+# H.264 codec via Cisco's OpenH264 (optional, behind `openh264` feature)
+openh264 = { version = "0.9", optional = true }
+
 # AV1 codec (optional, behind `av1` feature)
 rav1e = { version = "0.8", optional = true, default-features = false, features = ["threading", "asm"] }
 rav1d = { version = "1.1", optional = true, default-features = false, features = ["bitdepth_8", "bitdepth_16", "asm"] }
@@ -113,6 +116,7 @@ default = [
   "script",
   "video",
   "mp4",
+  "openh264",
 ]
 
 # Individual features for each node.
@@ -143,6 +147,7 @@ mp4 = ["dep:shiguredo_mp4", "dep:schemars", "dep:tempfile", "dep:serde_json"]
 symphonia = ["dep:symphonia", "dep:schemars"]
 vp9 = ["dep:env-libvpx-sys", "dep:schemars"]
 av1 = ["dep:rav1e", "dep:rav1d", "dep:schemars"]
+openh264 = ["dep:openh264", "dep:schemars", "dep:serde_json"]
 svt_av1 = ["dep:schemars", "dep:serde_json", "dep:pkg-config", "dep:cc"]
 # svt_av1_static downloads + builds SVT-AV1 at compile time (no system install).
 # Not in `default` to keep dev builds fast; enabled explicitly in Dockerfiles and
@@ -156,7 +161,7 @@ colorbars = ["dep:schemars", "dep:serde_json", "dep:fontdue"]
 compositor = ["dep:schemars", "dep:serde_json", "dep:image", "dep:tiny-skia", "dep:rayon", "dep:fontdue", "dep:smallvec", "dep:uuid", "dep:resvg"]
 gpu = ["compositor", "dep:wgpu", "dep:pollster", "dep:bytemuck"]
 codegen = ["dep:ts-rs"]
-video = ["vp9", "av1", "colorbars", "compositor"]
+video = ["vp9", "av1", "openh264", "colorbars", "compositor"]
 
 [[bin]]
 name = "generate-compositor-types"

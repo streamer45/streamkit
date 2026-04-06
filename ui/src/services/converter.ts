@@ -78,7 +78,7 @@ function createWrappedStream(
 }
 
 /**
- * Handles streaming response for JSON or WebM content
+ * Handles streaming response for JSON, WebM, or MP4 (fMP4) content
  */
 function handleStreamingResponse(
   response: Response,
@@ -88,6 +88,7 @@ function handleStreamingResponse(
 ): ConversionResult | null {
   const isJSON = contentType.includes('application/json');
   const isWebM = contentType.includes('webm');
+  const isMp4 = contentType.includes('video/mp4') || contentType.includes('audio/mp4');
 
   if (isJSON && response.body) {
     logger.info('Using streaming for JSON output');
@@ -115,6 +116,24 @@ function handleStreamingResponse(
     logger.info('Using MSE streaming for WebM playback');
     const reader = response.body.getReader();
     const wrappedStream = createWrappedStream(reader, signal, 'WebM');
+
+    return {
+      success: true,
+      responseStream: wrappedStream,
+      contentType,
+      useStreaming: true,
+    };
+  }
+
+  if (isMp4 && response.body) {
+    if (!canUseMseForMimeType(contentType)) {
+      logger.info('Falling back to blob playback for MP4 (MSE unavailable or unsupported)');
+      return null;
+    }
+
+    logger.info('Using MSE streaming for MP4 (fMP4) playback');
+    const reader = response.body.getReader();
+    const wrappedStream = createWrappedStream(reader, signal, 'MP4');
 
     return {
       success: true,
@@ -241,7 +260,7 @@ export async function convertFile(
     logger.info('Conversion successful, content type:', contentType);
 
     if (mode === 'playback') {
-      // Try streaming response first (for JSON/WebM)
+      // Try streaming response first (for JSON/WebM/MP4)
       const streamingResult = handleStreamingResponse(response, contentType, signal, options);
       if (streamingResult) {
         return streamingResult;

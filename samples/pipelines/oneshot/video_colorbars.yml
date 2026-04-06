@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MPL-2.0
 
 name: Video Color Bars (VP9/WebM)
-description: Generates SMPTE color bars, encodes to VP9, and outputs a WebM file (5 seconds)
+description: Generates SMPTE color bars, encodes to VP9, and outputs a WebM file (30 seconds)
 mode: oneshot
 client:
   input:
@@ -18,7 +18,7 @@ nodes:
       width: 1280
       height: 720
       fps: 30
-      frame_count: 300  # 10 seconds at 30fps
+      frame_count: 900  # 30 seconds at 30fps
       pixel_format: nv12
       draw_time: true
       draw_time_use_pts: true

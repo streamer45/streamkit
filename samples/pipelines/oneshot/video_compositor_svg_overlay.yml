@@ -9,7 +9,7 @@
 # time via resvg and composited like any other image overlay.
 
 name: Video Compositor SVG Overlay Demo
-description: Composites colorbars with an SVG overlay (test_logo.svg), encodes to VP9, and streams a WebM via http_output (3 seconds)
+description: Composites colorbars with an SVG overlay (test_logo.svg), encodes to VP9, and streams a WebM via http_output (30 seconds)
 mode: oneshot
 client:
   input:
@@ -24,7 +24,7 @@ nodes:
       width: 1280
       height: 720
       fps: 30
-      frame_count: 90
+      frame_count: 900
       pixel_format: rgba8
       draw_time: true
       draw_time_use_pts: true

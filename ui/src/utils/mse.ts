@@ -16,6 +16,9 @@ export function normalizeMimeType(contentType: string): string {
   if (contentType.includes('audio/mp4')) {
     return 'audio/mp4; codecs="mp4a.40.2"';
   }
+  if (contentType.includes('video/mp4')) {
+    return 'video/mp4; codecs="avc1.42c01f"';
+  }
 
   return contentType;
 }

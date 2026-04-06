@@ -25,7 +25,7 @@ use config::{
 use crate::transport::moq::constants::{
     catalog_video_codec, parse_video_codec_config, resolve_video_codec,
 };
-use crate::video::{AV1_CONTENT_TYPE, VP9_CONTENT_TYPE};
+use crate::video::{AV1_CONTENT_TYPE, H264_CONTENT_TYPE, VP9_CONTENT_TYPE};
 use async_trait::async_trait;
 use bytes::Buf;
 use std::collections::HashMap;
@@ -1876,6 +1876,7 @@ impl MoqPeerNode {
                         let content_type = if is_video {
                             Some(std::borrow::Cow::Borrowed(match video_codec {
                                 VideoCodec::Av1 => AV1_CONTENT_TYPE,
+                                VideoCodec::H264 => H264_CONTENT_TYPE,
                                 _ => VP9_CONTENT_TYPE,
                             }))
                         } else {
