@@ -63,7 +63,9 @@ pub struct RawVideoFormat {
 #[ts(export)]
 #[non_exhaustive]
 pub enum AudioCodec {
+    #[serde(alias = "Opus")]
     Opus,
+    #[serde(alias = "Aac", alias = "AAC")]
     Aac,
 }
 
@@ -75,8 +77,8 @@ impl AudioCodec {
     /// - AAC-LC: ~21.333 ms (1024 samples at 48 kHz)
     pub const fn default_frame_duration_us(self) -> u64 {
         match self {
+            Self::Opus => 20_000,
             Self::Aac => 21_333,
-            _ => 20_000,
         }
     }
 }
@@ -87,11 +89,13 @@ impl AudioCodec {
 #[ts(export)]
 #[non_exhaustive]
 pub enum VideoCodec {
+    #[serde(alias = "Vp9", alias = "VP9")]
     Vp9,
     /// OpenH264 Constrained Baseline encoder/decoder.
-    #[serde(alias = "avc", alias = "avc1")]
+    #[serde(alias = "avc", alias = "avc1", alias = "H264")]
     H264,
     /// CPU AV1 codec support via rav1e (encoder) and rav1d (decoder).
+    #[serde(alias = "Av1", alias = "AV1")]
     Av1,
 }
 

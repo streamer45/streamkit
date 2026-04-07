@@ -2047,9 +2047,9 @@ mod tests {
         }
     }
 
-    /// Regression test: serde deserializes `"h264"`, `"avc1"`, and `"avc"` as
-    /// `VideoCodec::H264` thanks to `rename_all = "lowercase"` and serde
-    /// aliases on the enum variant.
+    /// Regression test: serde deserializes `"h264"`, `"avc1"`, `"avc"`, and
+    /// `"H264"` as `VideoCodec::H264` thanks to `rename_all = "lowercase"`
+    /// and serde aliases on the enum variant.
     ///
     /// Previously `video_codec` was hardcoded to `Av1` regardless of config,
     /// which caused the init segment to contain an `av01` track instead of
@@ -2060,12 +2060,45 @@ mod tests {
         struct Cfg {
             video_codec: VideoCodec,
         }
+        // lowercase (rename_all canonical form)
         let h264: Cfg = serde_json::from_str(r#"{"video_codec":"h264"}"#).unwrap();
         assert_eq!(h264.video_codec, VideoCodec::H264);
+        // aliases
         let avc1: Cfg = serde_json::from_str(r#"{"video_codec":"avc1"}"#).unwrap();
         assert_eq!(avc1.video_codec, VideoCodec::H264);
         let avc: Cfg = serde_json::from_str(r#"{"video_codec":"avc"}"#).unwrap();
         assert_eq!(avc.video_codec, VideoCodec::H264);
+        // PascalCase alias (backward compat with old serialization)
+        let pascal: Cfg = serde_json::from_str(r#"{"video_codec":"H264"}"#).unwrap();
+        assert_eq!(pascal.video_codec, VideoCodec::H264);
+        // Other codecs: case-insensitive via aliases
+        let vp9: Cfg = serde_json::from_str(r#"{"video_codec":"VP9"}"#).unwrap();
+        assert_eq!(vp9.video_codec, VideoCodec::Vp9);
+        let av1: Cfg = serde_json::from_str(r#"{"video_codec":"AV1"}"#).unwrap();
+        assert_eq!(av1.video_codec, VideoCodec::Av1);
+    }
+
+    /// AudioCodec serde roundtrip: lowercase canonical form plus PascalCase
+    /// and uppercase aliases all deserialize correctly.
+    #[test]
+    fn audio_codec_serde_aliases() {
+        #[derive(serde::Deserialize)]
+        struct Cfg {
+            audio_codec: AudioCodec,
+        }
+        // lowercase (canonical)
+        let opus: Cfg = serde_json::from_str(r#"{"audio_codec":"opus"}"#).unwrap();
+        assert_eq!(opus.audio_codec, AudioCodec::Opus);
+        let aac: Cfg = serde_json::from_str(r#"{"audio_codec":"aac"}"#).unwrap();
+        assert_eq!(aac.audio_codec, AudioCodec::Aac);
+        // PascalCase alias (backward compat with old serialization)
+        let opus_pascal: Cfg = serde_json::from_str(r#"{"audio_codec":"Opus"}"#).unwrap();
+        assert_eq!(opus_pascal.audio_codec, AudioCodec::Opus);
+        let aac_pascal: Cfg = serde_json::from_str(r#"{"audio_codec":"Aac"}"#).unwrap();
+        assert_eq!(aac_pascal.audio_codec, AudioCodec::Aac);
+        // Uppercase alias
+        let aac_upper: Cfg = serde_json::from_str(r#"{"audio_codec":"AAC"}"#).unwrap();
+        assert_eq!(aac_upper.audio_codec, AudioCodec::Aac);
     }
 
     /// Verify that `build_sample_entries` produces AVC1 + MP4A when configured
