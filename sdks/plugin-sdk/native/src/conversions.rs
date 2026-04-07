@@ -67,11 +67,18 @@ pub fn packet_type_from_c(cpt_info: CPacketTypeInfo) -> Result<PacketType, Strin
             // backward compat with plugins compiled before codec strings were
             // added to EncodedVideo.
             if cpt_info.custom_type_id.is_null() {
+                tracing::warn!(
+                    "EncodedVideo pin has null custom_type_id; \
+                     falling back to Binary (pre-codec-string plugin?)"
+                );
                 Ok(PacketType::Binary)
             } else {
                 let name = unsafe { c_str_to_string(cpt_info.custom_type_id) }?;
                 let codec = VideoCodec::from_c_name(&name)
-                    .map_err(|_| format!("Unknown EncodedVideo codec name: {name:?}"))?;
+                    .map_err(|e| format!("EncodedVideo: {e}"))?;
+                // Note: bitstream_format, codec_private, profile, and level
+                // are not carried through the C ABI — this conversion is used
+                // for pin-type declarations only, not runtime packet data.
                 Ok(PacketType::EncodedVideo(EncodedVideoFormat {
                     codec,
                     bitstream_format: None,
@@ -90,8 +97,10 @@ pub fn packet_type_from_c(cpt_info: CPacketTypeInfo) -> Result<PacketType, Strin
             } else {
                 let name = unsafe { c_str_to_string(cpt_info.custom_type_id) }?;
                 AudioCodec::from_c_name(&name)
-                    .map_err(|_| format!("Unknown EncodedAudio codec name: {name:?}"))?
+                    .map_err(|e| format!("EncodedAudio: {e}"))?
             };
+            // Note: codec_private is not carried through the C ABI — this
+            // conversion is used for pin-type declarations only.
             Ok(PacketType::EncodedAudio(EncodedAudioFormat { codec, codec_private: None }))
         },
         CPacketType::Binary | CPacketType::BinaryWithMeta => Ok(PacketType::Binary),
@@ -182,12 +191,9 @@ pub const fn raw_video_format_from_c(cfmt: &CRawVideoFormat) -> RawVideoFormat {
 ///
 /// Codec names are compile-time ASCII constants that never contain interior
 /// null bytes, so `CString::new` cannot fail here.
+#[allow(clippy::expect_used)] // as_c_name() returns controlled constants; null bytes are a programmer error
 fn codec_name_to_cstring(name: &str) -> CString {
-    // Safety-net: as_c_name() values are controlled constants ("opus", "aac",
-    // "vp9", etc.) that will never contain '\0'.  If this somehow fails, the
-    // empty CString is a safe (if wrong) fallback that will be rejected by
-    // from_c_name() on the receiving side.
-    CString::new(name).unwrap_or_default()
+    CString::new(name).expect("codec name from as_c_name() must not contain null bytes")
 }
 
 /// Ancillary data kept alive alongside a `CPacketTypeInfo`.
