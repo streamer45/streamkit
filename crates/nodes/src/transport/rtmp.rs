@@ -458,8 +458,10 @@ fn mask_stream_key(url: &str) -> String {
 }
 
 /// Valid AAC sampling frequencies (ISO 14496-3 Table 1.18).
-const AAC_SAMPLE_RATES: [u32; 13] =
-    [96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000, 7_350];
+const AAC_SAMPLE_RATES: [u32; 13] = [
+    96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000,
+    7_350,
+];
 
 /// Validate AAC-related config fields at startup so we fail fast with a
 /// clear error instead of producing a corrupt AudioSpecificConfig at runtime.
@@ -1182,20 +1184,17 @@ fn build_aac_audio_specific_config(sample_rate: u32, channels: u8) -> Vec<u8> {
     // The array has 13 entries (indices 0..=12), so the position always
     // fits in a u8.  Fallback to index 3 (48 kHz) if not found — callers
     // are expected to validate beforehand, but we avoid panicking here.
-    let freq_index: u8 = AAC_SAMPLE_RATES
-        .iter()
-        .position(|&r| r == sample_rate)
-        .map_or_else(
-            || {
-                tracing::warn!(sample_rate, "Unrecognized AAC sample rate, defaulting to 48 kHz index");
-                3
-            },
-            |i| {
-                // Safe: AAC_SAMPLE_RATES has 13 entries, index ≤ 12.
-                // unwrap_or(3) is unreachable but avoids clippy::expect_used.
-                u8::try_from(i).unwrap_or(3)
-            },
-        );
+    let freq_index: u8 = AAC_SAMPLE_RATES.iter().position(|&r| r == sample_rate).map_or_else(
+        || {
+            tracing::warn!(sample_rate, "Unrecognized AAC sample rate, defaulting to 48 kHz index");
+            3
+        },
+        |i| {
+            // Safe: AAC_SAMPLE_RATES has 13 entries, index ≤ 12.
+            // unwrap_or(3) is unreachable but avoids clippy::expect_used.
+            u8::try_from(i).unwrap_or(3)
+        },
+    );
 
     // AAC-LC object type = 2
     let object_type: u8 = 2;
