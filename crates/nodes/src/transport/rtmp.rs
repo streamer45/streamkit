@@ -151,6 +151,13 @@ impl ProcessorNode for RtmpPublishNode {
 
         state_helpers::emit_initializing(&context.state_tx, &node_name);
 
+        // ── Validate AAC config ──────────────────────────────────────────
+        validate_aac_config(&self.config).map_err(|e| {
+            let msg = format!("Invalid AAC config: {e}");
+            state_helpers::emit_failed(&context.state_tx, &node_name, &msg);
+            StreamKitError::Configuration(msg)
+        })?;
+
         // ── Resolve stream key (env var takes precedence) ───────────────
         let full_url = resolve_rtmp_url(&self.config).map_err(|e| {
             let msg = format!("RTMP URL resolution failed: {e}");
@@ -450,6 +457,29 @@ fn mask_stream_key(url: &str) -> String {
     )
 }
 
+/// Valid AAC sampling frequencies (ISO 14496-3 Table 1.18).
+const AAC_SAMPLE_RATES: [u32; 13] =
+    [96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000, 7_350];
+
+/// Validate AAC-related config fields at startup so we fail fast with a
+/// clear error instead of producing a corrupt AudioSpecificConfig at runtime.
+fn validate_aac_config(config: &RtmpPublishConfig) -> Result<(), String> {
+    if config.channels == 0 || config.channels > 7 {
+        return Err(format!(
+            "channels must be 1..=7 (AAC channelConfiguration is 4 bits), got {}",
+            config.channels
+        ));
+    }
+    if !AAC_SAMPLE_RATES.contains(&config.sample_rate) {
+        return Err(format!(
+            "sample_rate {} is not a standard AAC sampling frequency; \
+             valid values: {:?}",
+            config.sample_rate, AAC_SAMPLE_RATES
+        ));
+    }
+    Ok(())
+}
+
 /// Resolve the final RTMP URL from config fields.
 ///
 /// Priority:
@@ -482,8 +512,9 @@ fn resolve_rtmp_url(config: &RtmpPublishConfig) -> Result<String, String> {
 /// Connect to the RTMP server, using TLS if the URL scheme is `rtmps://`.
 async fn connect(url: &RtmpUrl) -> Result<RtmpStream, String> {
     let addr = format!("{}:{}", url.host, url.port);
-    let tcp = TcpStream::connect(&addr)
+    let tcp = tokio::time::timeout(std::time::Duration::from_secs(10), TcpStream::connect(&addr))
         .await
+        .map_err(|_| format!("TCP connect to {addr} timed out after 10s"))?
         .map_err(|e| format!("TCP connect to {addr} failed: {e}"))?;
     tcp.set_nodelay(true).map_err(|e| format!("Failed to set TCP_NODELAY: {e}"))?;
 
@@ -652,7 +683,11 @@ async fn flush_send_buf(
                 if let Err(e) = connection.feed_recv_buf(&tcp_read_buf[..n]) {
                     tracing::warn!(%node_name, error = %e, "Error feeding RTMP recv buffer (flush drain)");
                 }
-                drain_events(connection, node_name);
+                if drain_events(connection, node_name) {
+                    return Err(StreamKitError::Runtime(
+                        "RTMP server disconnected during flush drain".to_string(),
+                    ));
+                }
             },
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 // No data available right now — done draining.
@@ -1137,26 +1172,30 @@ fn convert_annexb_to_avcc(data: &[u8]) -> AvccConversion {
 /// 4 bits  channelConfiguration
 /// 3 bits  GASpecificConfig (frameLengthFlag=0, dependsOnCoreCoder=0, extensionFlag=0)
 /// ```
+///
+/// # Panics
+///
+/// Never — `sample_rate` and `channels` are validated at node startup by
+/// [`validate_aac_config`].  If an unrecognized rate somehow reaches here
+/// the index defaults to 3 (48 kHz) and a warning is logged.
 fn build_aac_audio_specific_config(sample_rate: u32, channels: u8) -> Vec<u8> {
-    let freq_index: u8 = match sample_rate {
-        96_000 => 0,
-        88_200 => 1,
-        64_000 => 2,
-        48_000 => 3,
-        44_100 => 4,
-        32_000 => 5,
-        24_000 => 6,
-        22_050 => 7,
-        16_000 => 8,
-        12_000 => 9,
-        11_025 => 10,
-        8_000 => 11,
-        7_350 => 12,
-        _ => {
-            tracing::warn!(sample_rate, "Unrecognized AAC sample rate, defaulting to 48 kHz index");
-            3
-        },
-    };
+    // The array has 13 entries (indices 0..=12), so the position always
+    // fits in a u8.  Fallback to index 3 (48 kHz) if not found — callers
+    // are expected to validate beforehand, but we avoid panicking here.
+    let freq_index: u8 = AAC_SAMPLE_RATES
+        .iter()
+        .position(|&r| r == sample_rate)
+        .map_or_else(
+            || {
+                tracing::warn!(sample_rate, "Unrecognized AAC sample rate, defaulting to 48 kHz index");
+                3
+            },
+            |i| {
+                // Safe: AAC_SAMPLE_RATES has 13 entries, index ≤ 12.
+                // unwrap_or(3) is unreachable but avoids clippy::expect_used.
+                u8::try_from(i).unwrap_or(3)
+            },
+        );
 
     // AAC-LC object type = 2
     let object_type: u8 = 2;
@@ -1305,6 +1344,59 @@ mod tests {
         // 00010 0100 0001 000 = 0x12 0x08
         assert_eq!(asc[0], 0x12);
         assert_eq!(asc[1], 0x08);
+    }
+
+    // ── AAC config validation tests ─────────────────────────────────────
+
+    #[test]
+    fn validate_aac_config_valid() {
+        let cfg = RtmpPublishConfig {
+            url: String::new(),
+            stream_key: None,
+            stream_key_env: None,
+            sample_rate: 48_000,
+            channels: 2,
+        };
+        assert!(validate_aac_config(&cfg).is_ok());
+    }
+
+    #[test]
+    fn validate_aac_config_channels_zero_rejected() {
+        let cfg = RtmpPublishConfig {
+            url: String::new(),
+            stream_key: None,
+            stream_key_env: None,
+            sample_rate: 48_000,
+            channels: 0,
+        };
+        let err = validate_aac_config(&cfg).unwrap_err();
+        assert!(err.contains("channels"), "{err}");
+    }
+
+    #[test]
+    fn validate_aac_config_channels_overflow_rejected() {
+        let cfg = RtmpPublishConfig {
+            url: String::new(),
+            stream_key: None,
+            stream_key_env: None,
+            sample_rate: 48_000,
+            channels: 8,
+        };
+        let err = validate_aac_config(&cfg).unwrap_err();
+        assert!(err.contains("channels"), "{err}");
+    }
+
+    #[test]
+    fn validate_aac_config_invalid_sample_rate_rejected() {
+        let cfg = RtmpPublishConfig {
+            url: String::new(),
+            stream_key: None,
+            stream_key_env: None,
+            sample_rate: 22_000,
+            channels: 2,
+        };
+        let err = validate_aac_config(&cfg).unwrap_err();
+        assert!(err.contains("sample_rate"), "{err}");
     }
 
     #[test]
