@@ -68,7 +68,6 @@ steps:
   - kind: audio::opus::encoder
     params:
       bitrate: 64000
-      frame_size: 960
 
   - kind: containers::webm::muxer
     params:
