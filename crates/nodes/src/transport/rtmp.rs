@@ -208,11 +208,9 @@ impl ProcessorNode for RtmpPublishNode {
         // so we raise the window to ~2 GB to effectively disable it.
         override_ack_window(&mut connection, &node_name);
         // Flush the WinAckSize response the library queues internally.
-        flush_send_buf_raw(&mut connection, &mut stream)
-            .await
-            .map_err(|e| {
-                StreamKitError::Runtime(format!("Failed to flush after ACK window override: {e}"))
-            })?;
+        flush_send_buf_raw(&mut connection, &mut stream).await.map_err(|e| {
+            StreamKitError::Runtime(format!("Failed to flush after ACK window override: {e}"))
+        })?;
 
         state_helpers::emit_running(&context.state_tx, &node_name);
 
@@ -583,8 +581,7 @@ fn override_ack_window(connection: &mut RtmpPublishClientConnection, node_name: 
         0x06, // message type = SetPeerBandwidth
         0x00, 0x00, 0x00, 0x00, // message stream id = 0 (little-endian)
         // Payload: window_size (4B BE) + limit_type (1B)
-        ws[0], ws[1], ws[2], ws[3],
-        0x02, // limit type = Dynamic
+        ws[0], ws[1], ws[2], ws[3], 0x02, // limit type = Dynamic
     ];
 
     if let Err(e) = connection.feed_recv_buf(&chunk) {
