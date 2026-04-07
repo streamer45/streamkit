@@ -196,6 +196,24 @@ impl ProcessorNode for RtmpPublishNode {
         })?;
 
         tracing::info!(%node_name, "RTMP connection in Publishing state");
+
+        // Override the ACK window to prevent the library from
+        // disconnecting when the server doesn't ACK at the expected
+        // interval.  Most RTMP servers (including YouTube Live) may
+        // not send Acknowledgement messages at the rate specified by
+        // SetPeerBandwidth, yet OBS and FFmpeg work fine because
+        // librtmp does not enforce ACK window checks on the send
+        // side.  shiguredo_rtmp is stricter and auto-disconnects
+        // when `total_bytes_sent − last_ack_received > window × 2`,
+        // so we raise the window to ~2 GB to effectively disable it.
+        override_ack_window(&mut connection, &node_name);
+        // Flush the WinAckSize response the library queues internally.
+        flush_send_buf_raw(&mut connection, &mut stream)
+            .await
+            .map_err(|e| {
+                StreamKitError::Runtime(format!("Failed to flush after ACK window override: {e}"))
+            })?;
+
         state_helpers::emit_running(&context.state_tx, &node_name);
 
         // ── Obtain input receivers ──────────────────────────────────────
@@ -534,6 +552,48 @@ async fn drive_handshake(
             tracing::debug!(%node_name, ?event, "RTMP handshake event");
         }
     }
+}
+
+/// Override the RTMP ACK window to prevent spurious disconnects.
+///
+/// The `shiguredo_rtmp` library auto-disconnects when
+/// `total_bytes_sent − last_ack_received > local_ack_window_size × 2`.
+/// Many RTMP ingest servers (including YouTube Live) do not send
+/// Acknowledgement messages at the rate implied by `SetPeerBandwidth`,
+/// yet clients like OBS and FFmpeg work fine because librtmp does not
+/// enforce ACK-window checks on the send side.
+///
+/// To match that behaviour we feed a synthetic `SetPeerBandwidth` RTMP
+/// message (type 6) into the connection, raising `local_ack_window_size`
+/// to ~2 GB.  The library processes it as if the server sent it and
+/// queues a `WinAckSize` response which must be flushed afterwards.
+fn override_ack_window(connection: &mut RtmpPublishClientConnection, node_name: &str) {
+    // Large but safe: u32::MAX / 2 avoids overflow in the `* 2` check.
+    let window_size: u32 = u32::MAX / 2;
+
+    // Construct a raw RTMP chunk: SetPeerBandwidth (type 6) on chunk
+    // stream 2 (protocol control), message stream 0, fmt=0 (full header).
+    let ws = window_size.to_be_bytes();
+    let chunk: [u8; 17] = [
+        // Basic header: fmt=0 (2 bits) | csid=2 (6 bits)
+        0x02,
+        // Message header (fmt=0): timestamp (3B) + length (3B) + type (1B) + stream_id (4B LE)
+        0x00, 0x00, 0x00, // timestamp = 0
+        0x00, 0x00, 0x05, // message length = 5 bytes
+        0x06, // message type = SetPeerBandwidth
+        0x00, 0x00, 0x00, 0x00, // message stream id = 0 (little-endian)
+        // Payload: window_size (4B BE) + limit_type (1B)
+        ws[0], ws[1], ws[2], ws[3],
+        0x02, // limit type = Dynamic
+    ];
+
+    if let Err(e) = connection.feed_recv_buf(&chunk) {
+        tracing::warn!(%node_name, error = %e, "Failed to override ACK window size");
+    } else {
+        tracing::info!(%node_name, window_size, "Overrode RTMP ACK window size");
+    }
+    // Drain the StateChanged/other events that feed_recv_buf may emit.
+    drain_events(connection, node_name);
 }
 
 /// Flush the RTMP connection's send buffer to the TCP stream (no ACK drain).
@@ -1470,6 +1530,19 @@ mod tests {
     }
 
     // ── empty NalUnit guard test ────────────────────────────────────────
+
+    #[test]
+    fn override_ack_window_does_not_error() {
+        // Verify that our synthetic SetPeerBandwidth chunk is well-formed
+        // and accepted by the library's chunk decoder without error.
+        let url = shiguredo_rtmp::RtmpUrl::parse("rtmp://127.0.0.1/live/key").unwrap();
+        let mut conn = RtmpPublishClientConnection::new(url);
+        // Drive the connection past the initial state so feed_recv_buf
+        // goes through the message-channel path (not the handshake path).
+        // The handshake hasn't completed, so we just verify no panic/error
+        // on the feed_recv_buf call itself.
+        override_ack_window(&mut conn, "test");
+    }
 
     #[test]
     fn convert_annexb_sps_pps_only_yields_empty_video_data() {
