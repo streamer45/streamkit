@@ -4,23 +4,23 @@
 
 //! RTMP publisher (sink) node.
 //!
-//! Uses [`shiguredo_rtmp`] (a Sans I/O RTMP library) to publish encoded
+//! Uses an internal sans-I/O RTMP client (`rtmp_client`) to publish encoded
 //! H.264 video and AAC audio to an arbitrary RTMP or RTMPS endpoint
 //! (e.g. YouTube Live, Twitch).
 //!
 //! The node manages the TCP (or TLS) socket itself, feeding bytes between
-//! tokio I/O and the library's `feed_recv_buf()` / `send_buf()` interface.
+//! tokio I/O and the client's `feed_recv_buf()` / `send_buf()` interface.
 
+use super::rtmp_client::{
+    AudioFormat as RtmpAudioFormat, AudioFrame as RtmpAudioFrame, AvcPacketType, AvcSequenceHeader,
+    RtmpConnectionState, RtmpPublishClientConnection, RtmpTimestamp, RtmpTimestampDelta, RtmpUrl,
+    VideoCodec as RtmpVideoCodec, VideoFrame as RtmpVideoFrame, VideoFrameType,
+};
 use async_trait::async_trait;
 use opentelemetry::KeyValue;
 use schemars::schema_for;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use shiguredo_rtmp::{
-    AudioFormat as RtmpAudioFormat, AudioFrame as RtmpAudioFrame, AvcPacketType, AvcSequenceHeader,
-    RtmpConnectionState, RtmpPublishClientConnection, RtmpTimestamp, RtmpTimestampDelta, RtmpUrl,
-    VideoCodec as RtmpVideoCodec, VideoFrame as RtmpVideoFrame, VideoFrameType,
-};
 use streamkit_core::stats::NodeStatsTracker;
 use streamkit_core::types::{
     AudioCodec, EncodedAudioFormat, EncodedVideoFormat, Packet, PacketType, VideoCodec,
@@ -204,21 +204,6 @@ impl ProcessorNode for RtmpPublishNode {
 
         tracing::info!(%node_name, "RTMP connection in Publishing state");
 
-        // Override the ACK window to prevent the library from
-        // disconnecting when the server doesn't ACK at the expected
-        // interval.  Most RTMP servers (including YouTube Live) may
-        // not send Acknowledgement messages at the rate specified by
-        // SetPeerBandwidth, yet OBS and FFmpeg work fine because
-        // librtmp does not enforce ACK window checks on the send
-        // side.  shiguredo_rtmp is stricter and auto-disconnects
-        // when `total_bytes_sent − last_ack_received > window × 2`,
-        // so we raise the window to ~2 GB to effectively disable it.
-        override_ack_window(&mut connection, &node_name);
-        // Flush the WinAckSize response the library queues internally.
-        flush_send_buf_raw(&mut connection, &mut stream).await.map_err(|e| {
-            StreamKitError::Runtime(format!("Failed to flush after ACK window override: {e}"))
-        })?;
-
         state_helpers::emit_running(&context.state_tx, &node_name);
 
         // ── Obtain input receivers ──────────────────────────────────────
@@ -359,10 +344,10 @@ impl ProcessorNode for RtmpPublishNode {
         tracing::info!(%node_name, video_packets = video_packet_count, audio_packets = audio_packet_count, "RTMP publishing finished");
 
         // Best-effort graceful TCP shutdown so the server sees a FIN
-        // rather than an abrupt RST.  The shiguredo_rtmp library does
-        // not expose deleteStream/FCUnpublish on the publish client,
-        // so we cannot send a clean RTMP-level teardown; the TCP
-        // close is the next best signal.
+        // rather than an abrupt RST.  The rtmp_client module does not
+        // expose deleteStream/FCUnpublish on the publish client, so we
+        // cannot send a clean RTMP-level teardown; the TCP close is the
+        // next best signal.
         let _ = stream.shutdown().await;
 
         match result {
@@ -585,47 +570,6 @@ async fn drive_handshake(
     }
 }
 
-/// Override the RTMP ACK window to prevent spurious disconnects.
-///
-/// The `shiguredo_rtmp` library auto-disconnects when
-/// `total_bytes_sent − last_ack_received > local_ack_window_size × 2`.
-/// Many RTMP ingest servers (including YouTube Live) do not send
-/// Acknowledgement messages at the rate implied by `SetPeerBandwidth`,
-/// yet clients like OBS and FFmpeg work fine because librtmp does not
-/// enforce ACK-window checks on the send side.
-///
-/// To match that behaviour we feed a synthetic `SetPeerBandwidth` RTMP
-/// message (type 6) into the connection, raising `local_ack_window_size`
-/// to ~2 GB.  The library processes it as if the server sent it and
-/// queues a `WinAckSize` response which must be flushed afterwards.
-fn override_ack_window(connection: &mut RtmpPublishClientConnection, node_name: &str) {
-    // Large but safe: u32::MAX / 2 avoids overflow in the `* 2` check.
-    let window_size: u32 = u32::MAX / 2;
-
-    // Construct a raw RTMP chunk: SetPeerBandwidth (type 6) on chunk
-    // stream 2 (protocol control), message stream 0, fmt=0 (full header).
-    let ws = window_size.to_be_bytes();
-    let chunk: [u8; 17] = [
-        // Basic header: fmt=0 (2 bits) | csid=2 (6 bits)
-        0x02,
-        // Message header (fmt=0): timestamp (3B) + length (3B) + type (1B) + stream_id (4B LE)
-        0x00, 0x00, 0x00, // timestamp = 0
-        0x00, 0x00, 0x05, // message length = 5 bytes
-        0x06, // message type = SetPeerBandwidth
-        0x00, 0x00, 0x00, 0x00, // message stream id = 0 (little-endian)
-        // Payload: window_size (4B BE) + limit_type (1B)
-        ws[0], ws[1], ws[2], ws[3], 0x02, // limit type = Dynamic
-    ];
-
-    if let Err(e) = connection.feed_recv_buf(&chunk) {
-        tracing::warn!(%node_name, error = %e, "Failed to override ACK window size");
-    } else {
-        tracing::info!(%node_name, window_size, "Overrode RTMP ACK window size");
-    }
-    // Drain the StateChanged/other events that feed_recv_buf may emit.
-    drain_events(connection, node_name);
-}
-
 /// Flush the RTMP connection's send buffer to the TCP stream (no ACK drain).
 ///
 /// Used during the handshake phase where ACK window overflow is not a concern
@@ -714,15 +658,12 @@ fn drain_events(connection: &mut RtmpPublishClientConnection, node_name: &str) -
     let mut disconnected = false;
     while let Some(event) = connection.next_event() {
         match &event {
-            shiguredo_rtmp::RtmpConnectionEvent::DisconnectedByPeer { reason } => {
+            super::rtmp_client::RtmpConnectionEvent::DisconnectedByPeer { reason } => {
                 tracing::warn!(%node_name, %reason, "RTMP server disconnected");
                 disconnected = true;
             },
-            shiguredo_rtmp::RtmpConnectionEvent::StateChanged(state) => {
+            super::rtmp_client::RtmpConnectionEvent::StateChanged(state) => {
                 tracing::info!(%node_name, %state, "RTMP state changed");
-            },
-            _ => {
-                tracing::debug!(%node_name, ?event, "RTMP event");
             },
         }
     }
@@ -930,7 +871,7 @@ fn process_video_packet(
             data: seq_data,
         };
 
-        connection.send_video(seq_frame).map_err(|e| {
+        connection.send_video(&seq_frame).map_err(|e| {
             StreamKitError::Runtime(format!("Failed to send AVC sequence header: {e}"))
         })?;
 
@@ -957,7 +898,7 @@ fn process_video_packet(
         };
 
         connection
-            .send_video(frame)
+            .send_video(&frame)
             .map_err(|e| StreamKitError::Runtime(format!("Failed to send video frame: {e}")))?;
     }
 
@@ -1020,7 +961,7 @@ fn process_audio_packet(
             data: asc,
         };
 
-        connection.send_audio(seq_frame).map_err(|e| {
+        connection.send_audio(&seq_frame).map_err(|e| {
             StreamKitError::Runtime(format!("Failed to send AAC sequence header: {e}"))
         })?;
 
@@ -1040,7 +981,7 @@ fn process_audio_packet(
     };
 
     connection
-        .send_audio(frame)
+        .send_audio(&frame)
         .map_err(|e| StreamKitError::Runtime(format!("Failed to send audio frame: {e}")))?;
 
     *packet_count += 1;
@@ -1624,21 +1565,6 @@ mod tests {
         // Small backward jitter (< 500ms threshold).
         let ts1 = state.stamp(&make_packet(Some(99_000)), Track::Video, "test");
         assert!(ts1 > ts0, "timestamps must be monotonically increasing: ts0={ts0}, ts1={ts1}");
-    }
-
-    // ── empty NalUnit guard test ────────────────────────────────────────
-
-    #[test]
-    fn override_ack_window_does_not_error() {
-        // Verify that our synthetic SetPeerBandwidth chunk is well-formed
-        // and accepted by the library's chunk decoder without error.
-        let url = shiguredo_rtmp::RtmpUrl::parse("rtmp://127.0.0.1/live/key").unwrap();
-        let mut conn = RtmpPublishClientConnection::new(url);
-        // Drive the connection past the initial state so feed_recv_buf
-        // goes through the message-channel path (not the handshake path).
-        // The handshake hasn't completed, so we just verify no panic/error
-        // on the feed_recv_buf call itself.
-        override_ack_window(&mut conn, "test");
     }
 
     #[test]

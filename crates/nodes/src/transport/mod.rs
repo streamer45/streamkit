@@ -15,6 +15,9 @@ pub mod http;
 pub mod http_mse;
 
 #[cfg(feature = "rtmp")]
+mod rtmp_client;
+
+#[cfg(feature = "rtmp")]
 pub mod rtmp;
 
 /// Registers all available transport nodes with the engine's registry.
