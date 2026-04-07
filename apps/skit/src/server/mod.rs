@@ -3382,18 +3382,30 @@ fn start_moq_webtransport_acceptor(
 
     let auth_state = Arc::clone(&app_state.auth);
 
-    // Parse address for WebTransport (UDP will use the same port as HTTP/HTTPS)
-    let addr: SocketAddr = config.server.address.parse()?;
+    // Parse address for WebTransport — use moq_address when set, otherwise fall back
+    // to the main server address (same port for HTTP and QUIC).
+    let addr: SocketAddr =
+        config.server.moq_address.as_deref().unwrap_or(&config.server.address).parse()?;
 
-    // Configure TLS - use provided certificates if available, otherwise auto-generate
-    let tls = if config.server.tls
+    // Configure TLS for MoQ WebTransport.
+    // Priority: moq_cert_path/moq_key_path → server cert_path/key_path (when tls=true) → self-signed.
+    let moq_cert = config.server.moq_cert_path.as_deref().filter(|s| !s.is_empty());
+    let moq_key = config.server.moq_key_path.as_deref().filter(|s| !s.is_empty());
+
+    let tls = if let (Some(cert), Some(key)) = (moq_cert, moq_key) {
+        info!(cert_path = %cert, key_path = %key, "Using MoQ-specific TLS certificates for WebTransport");
+        let mut tls = ServerTlsConfig::default();
+        tls.cert = vec![std::path::PathBuf::from(cert)];
+        tls.key = vec![std::path::PathBuf::from(key)];
+        tls
+    } else if config.server.tls
         && !config.server.cert_path.is_empty()
         && !config.server.key_path.is_empty()
     {
         info!(
             cert_path = %config.server.cert_path,
             key_path = %config.server.key_path,
-            "Using provided TLS certificates for MoQ WebTransport"
+            "Using server TLS certificates for MoQ WebTransport"
         );
         let mut tls = ServerTlsConfig::default();
         tls.cert = vec![std::path::PathBuf::from(&config.server.cert_path)];
@@ -3412,7 +3424,7 @@ fn start_moq_webtransport_acceptor(
 
     info!(
         address = %addr,
-        "Starting MoQ WebTransport acceptor on UDP (same port as HTTP server)"
+        "Starting MoQ WebTransport acceptor on UDP"
     );
 
     tokio::spawn(async move {
@@ -3430,7 +3442,7 @@ fn start_moq_webtransport_acceptor(
                 for (i, fp) in fingerprints.iter().enumerate() {
                     info!("🔐 MoQ WebTransport certificate fingerprint #{}: {}", i + 1, fp);
                 }
-                info!("💡 Access fingerprints at: http://{}/api/v1/moq/fingerprints", addr);
+                info!("💡 Access fingerprints at: /api/v1/moq/fingerprints (served by the HTTP server)");
 
                 info!("MoQ WebTransport server listening for connections");
 

@@ -312,6 +312,16 @@ pub struct ServerConfig {
     pub cors: CorsConfig,
     #[cfg(feature = "moq")]
     pub moq_address: Option<String>,
+    /// TLS certificate for the MoQ WebTransport listener.
+    /// When set, the MoQ QUIC server uses these certs independently of `[server].tls`.
+    /// When unset, falls back to `cert_path`/`key_path` (if `tls = true`) or self-signed.
+    #[cfg(feature = "moq")]
+    #[serde(default)]
+    pub moq_cert_path: Option<String>,
+    /// TLS private key for the MoQ WebTransport listener (see `moq_cert_path`).
+    #[cfg(feature = "moq")]
+    #[serde(default)]
+    pub moq_key_path: Option<String>,
     /// MoQ Gateway URL to use in the frontend (can be overridden via SK_SERVER__MOQ_GATEWAY_URL)
     #[cfg(feature = "moq")]
     pub moq_gateway_url: Option<String>,
@@ -330,6 +340,10 @@ impl Default for ServerConfig {
             cors: CorsConfig::default(),
             #[cfg(feature = "moq")]
             moq_address: Some("127.0.0.1:4545".to_string()),
+            #[cfg(feature = "moq")]
+            moq_cert_path: None,
+            #[cfg(feature = "moq")]
+            moq_key_path: None,
             #[cfg(feature = "moq")]
             moq_gateway_url: None,
         }
