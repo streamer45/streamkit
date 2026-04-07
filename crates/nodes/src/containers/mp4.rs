@@ -2074,8 +2074,8 @@ mod tests {
         // Other codecs: case-insensitive via aliases
         let vp9: Cfg = serde_json::from_str(r#"{"video_codec":"VP9"}"#).unwrap();
         assert_eq!(vp9.video_codec, VideoCodec::Vp9);
-        let av1: Cfg = serde_json::from_str(r#"{"video_codec":"AV1"}"#).unwrap();
-        assert_eq!(av1.video_codec, VideoCodec::Av1);
+        let av1_upper: Cfg = serde_json::from_str(r#"{"video_codec":"AV1"}"#).unwrap();
+        assert_eq!(av1_upper.video_codec, VideoCodec::Av1);
     }
 
     /// AudioCodec serde roundtrip: lowercase canonical form plus PascalCase
