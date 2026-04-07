@@ -42,7 +42,7 @@ pub fn register_core_nodes(registry: &mut NodeRegistry, constraints: &GlobalNode
         use serde::Deserialize;
 
         #[derive(Deserialize, Debug, Default, JsonSchema)]
-        #[serde(default)]
+        #[serde(default, deny_unknown_fields)]
         pub struct PassthroughConfig {}
 
         registry.register_static_with_description(
