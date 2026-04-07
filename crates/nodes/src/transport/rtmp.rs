@@ -238,7 +238,39 @@ impl ProcessorNode for RtmpPublishNode {
 
         let result: Result<(), StreamKitError> = async {
             loop {
+                // Biased select: TCP read is checked FIRST every
+                // iteration so server ACKs / pings are always drained
+                // before we send more media.  Without this, the
+                // video/audio arms can starve the read arm and cause
+                // an ACK window overflow (`unacked > window * 2`).
                 tokio::select! {
+                    biased;
+
+                    // TCP read (server responses / keepalive) — highest priority
+                    read_result = stream.read(&mut tcp_read_buf) => {
+                        match read_result {
+                            Ok(0) => {
+                                tracing::warn!(%node_name, "RTMP server closed connection");
+                                break;
+                            }
+                            Ok(n) => {
+                                if let Err(e) = connection.feed_recv_buf(&tcp_read_buf[..n]) {
+                                    tracing::warn!(%node_name, error = %e, "Error feeding RTMP recv buffer");
+                                }
+                                // Drain events (acks, pings, etc.)
+                                if drain_events(&mut connection, &node_name) {
+                                    tracing::info!(%node_name, "Breaking loop: peer disconnected");
+                                    break;
+                                }
+                                flush_send_buf(&mut connection, &mut stream, &mut tcp_read_buf, &node_name).await?;
+                            }
+                            Err(e) => {
+                                tracing::warn!(%node_name, error = %e, "TCP read error");
+                                break;
+                            }
+                        }
+                    }
+
                     // Video input
                     maybe_pkt = video_rx.recv() => {
                         let Some(pkt) = maybe_pkt else {
@@ -286,31 +318,6 @@ impl ProcessorNode for RtmpPublishNode {
                         flush_send_buf(&mut connection, &mut stream, &mut tcp_read_buf, &node_name).await?;
                     }
 
-                    // TCP read (server responses / keepalive)
-                    read_result = stream.read(&mut tcp_read_buf) => {
-                        match read_result {
-                            Ok(0) => {
-                                tracing::warn!(%node_name, "RTMP server closed connection");
-                                break;
-                            }
-                            Ok(n) => {
-                                if let Err(e) = connection.feed_recv_buf(&tcp_read_buf[..n]) {
-                                    tracing::warn!(%node_name, error = %e, "Error feeding RTMP recv buffer");
-                                }
-                                // Drain events (acks, pings, etc.)
-                                if drain_events(&mut connection, &node_name) {
-                                    tracing::info!(%node_name, "Breaking loop: peer disconnected");
-                                    break;
-                                }
-                                flush_send_buf(&mut connection, &mut stream, &mut tcp_read_buf, &node_name).await?;
-                            }
-                            Err(e) => {
-                                tracing::warn!(%node_name, error = %e, "TCP read error");
-                                break;
-                            }
-                        }
-                    }
-
                     // Shutdown signal
                     Some(control_msg) = context.control_rx.recv() => {
                         if matches!(control_msg, streamkit_core::control::NodeControlMessage::Shutdown) {
@@ -356,6 +363,19 @@ impl RtmpStream {
         match self {
             Self::Plain(s) => s.read(buf).await,
             Self::Tls(s) => s.read(buf).await,
+        }
+    }
+
+    /// Non-blocking read that returns `WouldBlock` when no data is available.
+    ///
+    /// For plain TCP this calls `TcpStream::try_read`, a direct syscall that
+    /// bypasses the tokio reactor.  For TLS there is no synchronous decrypt
+    /// path, so this always returns `WouldBlock` — the biased main select
+    /// loop handles TLS ACK draining instead.
+    fn try_read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Plain(s) => s.try_read(buf),
+            Self::Tls(_) => Err(std::io::Error::from(std::io::ErrorKind::WouldBlock)),
         }
     }
 
@@ -506,10 +526,11 @@ async fn flush_send_buf_raw(
 /// Flush the RTMP connection's send buffer to the TCP stream.
 ///
 /// After flushing, performs a non-blocking drain of any pending server data
-/// (ACK messages, pings, etc.).  This prevents the ACK window from
-/// overflowing when media packets arrive faster than the main select loop
-/// services the TCP read arm — without this, `advance_send_buf` sees
-/// `unacked_bytes > window * 2` and transitions to `Disconnecting`.
+/// (ACK messages, pings, etc.) via `try_read` (a direct non-blocking
+/// syscall that works for plain TCP).  For TLS streams `try_read` returns
+/// `WouldBlock` immediately because there is no synchronous decryption
+/// path — the biased main `select!` loop handles TLS ACK draining instead
+/// by always checking the TCP read arm first.
 async fn flush_send_buf(
     connection: &mut RtmpPublishClientConnection,
     stream: &mut RtmpStream,
@@ -529,38 +550,31 @@ async fn flush_send_buf(
     // Explicit flush to ensure TLS buffered data is sent immediately.
     stream.flush().await.map_err(|e| StreamKitError::Runtime(format!("RTMP flush failed: {e}")))?;
 
-    // Non-blocking drain of any pending server data (ACKs, pings).
-    // Uses biased select: try the async read first, but if it would block,
-    // the `ready(())` arm fires immediately and we break out.  This works
-    // for both plain TCP and TLS streams (unlike `try_read` which can't
-    // decrypt TLS data synchronously).
+    // Non-blocking drain: `try_read` does a direct non-blocking syscall
+    // (bypasses the tokio reactor) so it returns data that is already
+    // sitting in the OS receive buffer.  This catches ACKs that arrived
+    // while we were writing.  For TLS, `try_read` returns `WouldBlock`
+    // and the biased main loop handles draining instead.
     loop {
-        tokio::select! {
-            biased;
-            result = stream.read(tcp_read_buf) => {
-                match result {
-                    Ok(0) => {
-                        return Err(StreamKitError::Runtime(
-                            "RTMP server closed connection".to_string(),
-                        ));
-                    }
-                    Ok(n) => {
-                        if let Err(e) = connection.feed_recv_buf(&tcp_read_buf[..n]) {
-                            tracing::warn!(%node_name, error = %e, "Error feeding RTMP recv buffer (flush drain)");
-                        }
-                        drain_events(connection, node_name);
-                    }
-                    Err(e) => {
-                        return Err(StreamKitError::Runtime(format!(
-                            "RTMP read failed during flush drain: {e}"
-                        )));
-                    }
+        match stream.try_read(tcp_read_buf) {
+            Ok(0) => {
+                return Err(StreamKitError::Runtime("RTMP server closed connection".to_string()));
+            },
+            Ok(n) => {
+                if let Err(e) = connection.feed_recv_buf(&tcp_read_buf[..n]) {
+                    tracing::warn!(%node_name, error = %e, "Error feeding RTMP recv buffer (flush drain)");
                 }
-            }
-            () = std::future::ready(()) => {
-                // No data immediately available — done draining.
+                drain_events(connection, node_name);
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                // No data available right now — done draining.
                 break;
-            }
+            },
+            Err(e) => {
+                return Err(StreamKitError::Runtime(format!(
+                    "RTMP read failed during flush drain: {e}"
+                )));
+            },
         }
     }
 
